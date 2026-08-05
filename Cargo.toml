@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/engine-core", "crates/engine-app"]
+members = ["crates/engine-core", "crates/engine-platform", "crates/engine-app"]
 
 [workspace.package]
 version = "0.1.0"
@@ -10,7 +10,9 @@ publish = false
 
 [workspace.dependencies]
 engine-core = { path = "crates/engine-core" }
+engine-platform = { path = "crates/engine-platform" }
 log = "0.4"
+windows = "0.62"
 
 [workspace.lints.rust]
 missing_docs = "warn"
