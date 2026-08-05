@@ -28,6 +28,16 @@ Still planned:
   one or more frames later, so the CPU never blocks on the GPU to obtain them (M5).
   GPU time is never derived from wall-clock timing.
 
+## Measurement hygiene
+
+* **Do not drag or resize the window during a measured run.** Windows runs a modal
+  message loop for the duration of a drag, so no frames are produced and the whole drag
+  is recorded as one frame sample — which then distorts `max`, `p99` and the mean for the
+  next 1024 frames. Use `--frames N` and leave the window alone.
+* Vsync must be off (the default) or the numbers describe the display, not the engine.
+* Debug builds run the D3D12 validation layer and are several times slower; only release
+  numbers belong in the results table below.
+
 ## Bottleneck attribution
 
 The benchmark must make the limiting factor identifiable:
@@ -98,6 +108,9 @@ cargo run --release --bin mygame -- --frames 60000 --report 1
 | min / max | 0.050 ms / ~24 ms |
 | Stage means | events 0.000 ms, update 0.000 ms, render ~1.15 ms, present ~0.053 ms |
 
+> **This run did not reproduce and its conclusion has been retracted — see "Retraction"
+> below.** It is kept because the retraction is the useful part.
+
 The distribution is **bimodal**: most frames are essentially free, and a minority cost
 whole display refresh periods.
 
@@ -116,7 +129,54 @@ limiter. The cost lands in the per-slot fence wait inside `render`, waiting for 
 buffer to come free. A windowed swap chain under DWM composition returns buffers on the
 compositor's schedule, so `ALLOW_TEARING` does not make windowed presentation uncapped.
 
-**This is a synchronization bottleneck, and it means the windowed loop cannot measure the
-engine's ceiling.** The benchmark executable must therefore either render offscreen or
-present outside composition. No mitigation has been applied — measure first, and GPU
-timestamps (M5) come before any attempt to fix this.
+### Retraction (2026-08-06, Milestone 5)
+
+The paragraph above concluded that windowed DWM composition imposes a synchronization
+bottleneck. **That conclusion is withdrawn.** The same command on the Milestone 5 build
+produces:
+
+| Run | Frames | Wall clock | Average | CPU p99 |
+| --- | --- | --- | --- | --- |
+| 1 | 60,000 | 10.25 s | 5856 FPS | 0.684 ms |
+| 2 | 60,000 | 10.38 s | 5782 FPS | 0.632 ms |
+| 3 | 60,000 | 10.31 s | 5821 FPS | 0.664 ms |
+| 4 | 150,000 | 26.14 s | 5739 FPS | 0.458 ms |
+
+No refresh-quantized stalls appear in any of them. It was also checked explicitly that
+bringing the window to the foreground changes nothing, so occlusion is not the difference
+either. The original 921 FPS run is most plausibly explained by other work contending for
+the GPU or compositor while it ran.
+
+What this costs: an attribution table entry that looked authoritative was built on **one**
+run. A single run is not a measurement. Every figure in this document from here on states
+its run count, and conclusions about bottlenecks require repeated runs that agree.
+
+## Milestone 5 — CPU and GPU frame time
+
+GPU time now comes from D3D12 timestamp queries, never from wall clock. Release build,
+1920x1080, clear + one triangle, four runs as tabulated above; representative figures:
+
+| Metric | Value |
+| --- | --- |
+| CPU frame mean | 0.166–0.184 ms (~5500–6100 FPS) |
+| CPU p50 / p95 / p99 | 0.149 / 0.234 / 0.63 ms |
+| GPU frame mean | 0.044–0.051 ms |
+| GPU p50 / p95 / p99 | 0.044 / 0.048 / 0.052 ms |
+| Stage means | events 0.001, update 0.000, render 0.035, present 0.153 ms |
+| Timestamp frequency | 100,000,000 ticks/s |
+
+### What this says about the bottleneck
+
+Reading the attribution table above: CPU frame time (0.166 ms) is roughly **3.7x** the GPU
+frame time (0.045 ms), so the GPU is idle most of the frame and the workload is CPU-bound
+— which is expected when the entire scene is one triangle.
+
+More precisely, the cost is inside `present`: 0.153 ms of the 0.166 ms CPU frame, against
+0.035 ms to record and submit the whole command list. The limiter at this scene size is
+the `Present` call itself, not rendering. That is the number Milestones 7 and 8 have to
+push against: until the scene is heavy enough to exceed ~0.15 ms of GPU work, added
+geometry will be nearly free and any FPS comparison will really be measuring `Present`.
+
+GPU frame times are stale by up to `FRAME_COUNT` (3) frames by design — see
+`crates/engine-renderer/src/gpu_timer.rs` for why reading them sooner would require
+blocking on the GPU and would change the measurement.

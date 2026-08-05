@@ -12,7 +12,7 @@ Milestone status:
 | 2 | D3D12 initialization | done |
 | 3 | Render loop | done |
 | 4 | Triangle renderer | done |
-| 5 | GPU timing | not started |
+| 5 | GPU timing | done |
 | 6 | Debug performance overlay | not started |
 | 7 | Rendering stress tests | not started |
 | 8 | Instancing test | not started |
@@ -299,6 +299,16 @@ This is exactly what the measurement system was built to expose, and it is why t
 benchmark executable (section 6 of the plan) must not measure through a composed window.
 No optimization has been attempted — measure first.
 
+> **Correction (Milestone 5).** The stall pattern above **did not reproduce**. Running the
+> same command on the Milestone 5 build gives ~5800 FPS with p99 ≈ 0.65 ms and no
+> refresh-quantized stalls at all, reproducibly across four runs, both with the window in
+> the foreground and occluded. The conclusion that windowed DWM composition imposes a
+> synchronization bottleneck was drawn from a single run and is **not supported**; the
+> most likely explanation for the original numbers is contention from other work on the
+> machine during that one measurement. The lesson is recorded rather than deleted: a
+> single run is not a measurement, and an attribution built on one is a guess. Current
+> figures are in `docs/performance.md`.
+
 ### Manual verification
 
 ```powershell
@@ -323,6 +333,17 @@ logs a clean shutdown.
   worse p95 than a steady-state window would.
 * `--frames` exits after a frame count, not a duration; a run's wall-clock length depends
   on how fast the frames are.
+* **Dragging or resizing the window stops rendering, and one drag becomes one enormous
+  frame sample.** Windows runs a modal message loop inside `DefWindowProcW` for the whole
+  drag, so `pump_events` does not return and `render`/`present` are never reached. The
+  window keeps showing its last presented frame (DWM composites it), so it looks frozen
+  rather than black. The measurement consequence matters more: the entire drag lands in a
+  single `FrameClock::tick`, and that one multi-second sample distorts `max`, `p99` and
+  the mean until it rolls out of the 1024-frame window. Deliberately left as-is for now —
+  fixing it means either emitting `WM_ENTERSIZEMOVE`/`WM_EXITSIZEMOVE` events and dropping
+  the spanning sample, or driving redraws from a `WM_TIMER` inside the modal loop, which
+  would require the platform layer to call back into application code. **Treat frame-time
+  statistics taken across a window drag as invalid.**
 * **GPU integration tests must run serialized.** Presenting from several D3D12 devices
   concurrently in one process crashes inside the driver; the tests now take a
   process-wide mutex. Full diagnosis in `docs/testing.md`. The engine itself has one
@@ -438,3 +459,86 @@ proportioned while the window is resized.
   cache.
 * `offscreen.rs` creates its own device per call, so it is a verification tool, not a
   rendering path.
+
+---
+
+## Milestone 5 — GPU timing
+
+### What was built
+
+* `gpu_timer.rs` — `GpuTimer`: a timestamp query heap with one query pair per frame slot,
+  a readback buffer for resolved results, and the queue's timestamp frequency.
+* `renderer.rs` — a timestamp is written at the start of each frame's command list and
+  another after the final barrier, then resolved into the readback buffer. The result is
+  read at the *next* use of that slot.
+* `engine-app` — GPU frame times get their own statistics window and their own report
+  line, so CPU and GPU numbers are never mistaken for the same sample.
+
+### Why not wall-clock timing
+
+CPU timing around `ExecuteCommandLists` measures submission — the call returns once the
+driver has queued the work. Timing around a fence wait measures how long the CPU was
+blocked, which mostly reflects how far ahead it was allowed to run. Neither is GPU time.
+Only timestamps written by the GPU itself measure GPU execution.
+
+### Synchronization implications
+
+A timestamp pair lives on the GPU timeline and can only be read once the GPU has passed
+it. Reading it in the same frame would mean a fence wait every frame, serializing CPU and
+GPU — which would change the very thing being measured.
+
+So the read is deferred: each slot's timestamps are read at the start of that slot's next
+use, `FRAME_COUNT` (3) frames later, at a point where the renderer **already** waits on
+that slot's fence for its own pacing. The extra synchronization cost is therefore zero,
+and the price is that reported GPU time lags CPU time by up to three frames. In steady
+state that is invisible; when frame cost changes abruptly the two lines disagree for a few
+frames, and the overlay in Milestone 6 must not present them as simultaneous.
+
+`last_gpu_frame_ms()` returns `None` until a slot has been reused, so the first frames
+have CPU time but no GPU time. Timestamps that run backwards (a GPU reset between the
+pair) are reported as `None` rather than as a negative or wrapped duration.
+
+### Acceptance criteria
+
+| Criterion | Result |
+| --- | --- |
+| GPU timestamp queries implemented | pass |
+| Debug output distinguishes CPU and GPU frame time | pass, on separate lines |
+| GPU time not derived from CPU wall clock | pass — `ID3D12GraphicsCommandList::EndQuery` + `ResolveQueryData`, converted with `GetTimestampFrequency` |
+| Synchronization implications documented | pass — above, and in `gpu_timer.rs` |
+
+### Performance
+
+Release, 1920x1080, clear + one triangle, 60,000 frames, four runs (full table in
+`docs/performance.md`):
+
+```
+CPU frame: mean 0.168 ms (5961 FPS) | p50 0.149 | p95 0.231 | p99 0.652 | max 0.919
+GPU frame: mean 0.045 ms            | p50 0.044 | p95 0.045 | p99 0.046 | max 0.331
+stages:    events 0.001 | update 0.000 | render 0.035 | present 0.153 ms
+```
+
+CPU time is ~3.7x GPU time, and 0.153 ms of the 0.166 ms CPU frame is the `Present` call
+itself. At this scene size the engine is bound by presentation, not by rendering.
+
+**This also retracted a Milestone 3 conclusion** — see the correction note in that
+section. The stall pattern reported there did not reproduce in any of four runs.
+
+### Manual verification
+
+```powershell
+cargo run --release --bin mygame -- --frames 60000 --report 5
+```
+
+Expect a `GPU frame:` line beside each `CPU frame:` line, with GPU mean well below CPU
+mean, and a `GPU timestamp frequency` line at debug level during startup.
+
+### Known limitations
+
+* One timestamp pair per frame: the whole command list, with no per-pass breakdown. Finer
+  scopes are only worth adding once there is more than one pass.
+* GPU time is up to three frames stale, by design.
+* Timestamps come from the direct queue only; a future copy or compute queue needs its own
+  heap and its own frequency.
+* `GetTimestampFrequency` is read once at startup. Modern hardware keeps a fixed timestamp
+  clock, but a driver that changed it at runtime would silently skew the numbers.
