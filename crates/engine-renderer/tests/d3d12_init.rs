@@ -1,18 +1,49 @@
-//! GPU integration tests for Milestone 2: device creation, swap chain, presentation.
+//! GPU integration tests: device creation, swap chain, presentation, resize.
 //!
 //! These need a real D3D12 adapter. On a machine without one they skip with a message
 //! rather than fail, so the suite stays runnable on hardware the engine does not target.
 //! The windows they create are hidden, so the run steals no focus.
+//!
+//! **Every test that touches the GPU takes [`gpu_lock`] first.** `cargo test` runs test
+//! functions on separate threads, and presenting concurrently from several D3D12 devices
+//! in one process crashes with an access violation inside the driver — reproduced with
+//! as few as two threads, with the validation layer enabled and reporting nothing, and
+//! independently of window visibility, message pumping and object teardown order. The
+//! engine itself only ever has one device on one thread, so serializing the tests
+//! restores the conditions the code is actually written for. See `docs/testing.md`.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use engine_platform::{Window, WindowConfig};
 use engine_renderer::device::{GpuContext, feature_level_name};
 use engine_renderer::{Renderer, RendererConfig, RendererError};
 
+/// Serializes GPU work across test threads.
+static GPU: Mutex<()> = Mutex::new(());
+
+/// Takes the process-wide GPU lock.
+///
+/// Poisoning is ignored on purpose: one failing test must not cascade into every later
+/// test reporting a lock error instead of its own result.
+fn gpu_lock() -> MutexGuard<'static, ()> {
+    GPU.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Renderer configuration used by the tests.
+///
+/// The validation layer is on so misuse surfaces, but breaking is off: a test process
+/// has no debugger attached, so a break would kill the run instead of reporting.
+fn test_config(width: u32, height: u32) -> RendererConfig {
+    RendererConfig::new(width, height)
+        .with_debug_layer(true)
+        .with_break_on_validation_error(false)
+}
+
 /// Creates a GPU context, or `None` if this machine has no usable D3D12 adapter.
 fn gpu_context() -> Option<GpuContext> {
-    match GpuContext::new(false) {
+    match GpuContext::new(false, false) {
         Ok(context) => Some(context),
         Err(RendererError::NoSuitableAdapter { examined }) => {
             eprintln!("SKIP: no D3D12 adapter on this machine ({examined} examined)");
@@ -30,6 +61,7 @@ fn hidden_window(title: &str, width: u32, height: u32) -> Window {
 
 #[test]
 fn device_initializes_and_reports_a_usable_adapter() {
+    let _gpu = gpu_lock();
     let Some(context) = gpu_context() else {
         return;
     };
@@ -54,11 +86,12 @@ fn device_initializes_and_reports_a_usable_adapter() {
 
 #[test]
 fn renderer_presents_frames_and_shuts_down_cleanly() {
+    let _gpu = gpu_lock();
     if gpu_context().is_none() {
         return;
     }
     let window = hidden_window("present test", 640, 480);
-    let config = RendererConfig::new(640, 480).with_debug_layer(false);
+    let config = test_config(640, 480);
     let mut renderer =
         Renderer::new(window.raw_handle(), &config).expect("renderer creation must succeed");
 
@@ -85,11 +118,12 @@ fn renderer_presents_frames_and_shuts_down_cleanly() {
 
 #[test]
 fn resize_changes_the_back_buffer_size_and_keeps_rendering() {
+    let _gpu = gpu_lock();
     if gpu_context().is_none() {
         return;
     }
     let window = hidden_window("resize test", 800, 600);
-    let config = RendererConfig::new(800, 600).with_debug_layer(false);
+    let config = test_config(800, 600);
     let mut renderer =
         Renderer::new(window.raw_handle(), &config).expect("renderer creation must succeed");
 
@@ -111,11 +145,12 @@ fn resize_changes_the_back_buffer_size_and_keeps_rendering() {
 
 #[test]
 fn minimize_sized_resize_is_ignored() {
+    let _gpu = gpu_lock();
     if gpu_context().is_none() {
         return;
     }
     let window = hidden_window("zero resize test", 640, 480);
-    let config = RendererConfig::new(640, 480).with_debug_layer(false);
+    let config = test_config(640, 480);
     let mut renderer =
         Renderer::new(window.raw_handle(), &config).expect("renderer creation must succeed");
 
@@ -127,11 +162,12 @@ fn minimize_sized_resize_is_ignored() {
 
 #[test]
 fn present_without_a_recorded_frame_is_an_error() {
+    let _gpu = gpu_lock();
     if gpu_context().is_none() {
         return;
     }
     let window = hidden_window("present order test", 640, 480);
-    let config = RendererConfig::new(640, 480).with_debug_layer(false);
+    let config = test_config(640, 480);
     let mut renderer =
         Renderer::new(window.raw_handle(), &config).expect("renderer creation must succeed");
 
@@ -151,11 +187,12 @@ fn present_without_a_recorded_frame_is_an_error() {
 
 #[test]
 fn resize_drops_a_frame_recorded_against_the_old_buffers() {
+    let _gpu = gpu_lock();
     if gpu_context().is_none() {
         return;
     }
     let window = hidden_window("resize drop test", 640, 480);
-    let config = RendererConfig::new(640, 480).with_debug_layer(false);
+    let config = test_config(640, 480);
     let mut renderer =
         Renderer::new(window.raw_handle(), &config).expect("renderer creation must succeed");
 
@@ -173,6 +210,36 @@ fn resize_drops_a_frame_recorded_against_the_old_buffers() {
     assert_eq!(renderer.frames_presented(), 1);
 }
 
+/// Regression test for an access violation: `ResizeBuffers` was called while the command
+/// list still referenced the old back buffers. It only crashed under concurrent GPU work,
+/// so this test hammers the resize path with rendering interleaved.
+#[test]
+fn repeated_resizes_between_frames_stay_stable() {
+    let _gpu = gpu_lock();
+    if gpu_context().is_none() {
+        return;
+    }
+    let window = hidden_window("resize stress test", 640, 480);
+    let config = test_config(640, 480);
+    let mut renderer =
+        Renderer::new(window.raw_handle(), &config).expect("renderer creation must succeed");
+
+    for step in 0..24_u32 {
+        let width = 320 + (step % 8) * 64;
+        let height = 240 + (step % 5) * 48;
+        renderer
+            .resize(width, height)
+            .expect("resize must succeed repeatedly");
+        assert_eq!(renderer.size(), (width, height));
+
+        renderer.render_clear([0.1, 0.2, 0.3, 1.0]).expect("record");
+        renderer.present().expect("present");
+    }
+
+    assert_eq!(renderer.frames_presented(), 24);
+    renderer.wait_for_idle().expect("GPU must go idle");
+}
+
 #[test]
 fn rejects_a_null_window_handle_without_touching_the_gpu() {
     let error = Renderer::new(0, &RendererConfig::new(640, 480))
@@ -183,6 +250,7 @@ fn rejects_a_null_window_handle_without_touching_the_gpu() {
 
 #[test]
 fn rejects_a_zero_sized_back_buffer() {
+    let _gpu = gpu_lock();
     let window = hidden_window("zero size test", 640, 480);
     let error = Renderer::new(window.raw_handle(), &RendererConfig::new(0, 1080))
         .err()
