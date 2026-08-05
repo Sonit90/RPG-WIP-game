@@ -13,6 +13,7 @@
 pub mod adapter;
 pub mod device;
 pub mod error;
+pub mod gpu_timer;
 pub mod offscreen;
 pub mod pipeline;
 pub mod renderer;
