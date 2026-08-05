@@ -42,6 +42,8 @@ pub struct Renderer {
     execute_lists: [Option<ID3D12CommandList>; 1],
     fence: GpuFence,
     frames_presented: u64,
+    /// Slot recorded by `render_clear` and not yet presented.
+    recorded_frame_slot: Option<usize>,
 }
 
 impl Renderer {
@@ -121,6 +123,7 @@ impl Renderer {
             execute_lists,
             fence,
             frames_presented: 0,
+            recorded_frame_slot: None,
         };
         renderer.log_startup_info();
         Ok(renderer)
@@ -179,14 +182,18 @@ impl Renderer {
         feature_level_name(self.context.feature_level())
     }
 
-    /// Records and submits a frame that clears the back buffer, then presents it.
+    /// Records and submits a frame that clears the back buffer.
+    ///
+    /// Does **not** present: [`Renderer::present`] is a separate step so the application
+    /// loop keeps the `process_events -> update -> render -> present` shape and can time
+    /// the stages independently.
     ///
     /// Performs no heap allocation: the command list, its allocators and the submission
     /// argument are all created once in [`Renderer::new`].
     ///
     /// # Errors
     ///
-    /// Returns [`RendererError::Api`] if recording, submission or presentation fails.
+    /// Returns [`RendererError::Api`] if recording or submission fails.
     pub fn render_clear(&mut self, color: [f32; 4]) -> Result<(), RendererError> {
         let index = self.swap_chain.current_back_buffer_index();
 
@@ -243,8 +250,26 @@ impl Renderer {
                 .ExecuteCommandLists(&self.execute_lists);
         }
 
-        self.swap_chain.present()?;
+        self.recorded_frame_slot = Some(index);
+        Ok(())
+    }
 
+    /// Presents the frame recorded by [`Renderer::render_clear`] and signals its fence.
+    ///
+    /// The fence is signalled after `Present` so the slot's value covers the whole
+    /// submission; the next use of that slot waits on it before resetting its allocator.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RendererError::Api`] if `Present` or the fence signal fails.
+    pub fn present(&mut self) -> Result<(), RendererError> {
+        let Some(index) = self.recorded_frame_slot.take() else {
+            return Err(RendererError::InvalidConfig {
+                reason: "present called without a recorded frame".to_owned(),
+            });
+        };
+
+        self.swap_chain.present()?;
         self.frames[index].fence_value = self.fence.signal(self.context.queue())?;
         self.frames_presented += 1;
         Ok(())
@@ -267,6 +292,14 @@ impl Renderer {
         }
 
         self.wait_for_idle()?;
+
+        // A frame recorded against the old back buffers must not be presented after the
+        // buffers are replaced; its work is already submitted and complete after the
+        // idle wait above, so dropping the pending present is the correct recovery.
+        if self.recorded_frame_slot.take().is_some() {
+            log::debug!("dropped a recorded frame because the swap chain was resized");
+        }
+
         self.swap_chain.resize(&self.context, width, height)?;
 
         // After ResizeBuffers every slot is free again; forget the old fence values so
