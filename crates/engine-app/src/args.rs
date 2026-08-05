@@ -15,6 +15,8 @@ options:
                          monitor, not the engine)
   --frames <count>       exit after rendering this many frames
   --report <seconds>     frame-time report interval (default 1.0, 0 disables)
+  --no-overlay           hide the debug overlay (builds without the debug-overlay
+                         feature have no overlay at all)
   -h, --help             print this help and exit";
 
 /// Parsed command line.
@@ -30,6 +32,8 @@ pub struct Args {
     pub frames: Option<u64>,
     /// Seconds between frame-time reports. Zero disables reporting.
     pub report_interval_secs: f64,
+    /// Whether the debug overlay is drawn, when the build includes one.
+    pub overlay: bool,
     /// Whether `--help` was requested.
     pub help: bool,
 }
@@ -42,6 +46,7 @@ impl Default for Args {
             vsync: false,
             frames: None,
             report_interval_secs: 1.0,
+            overlay: true,
             help: false,
         }
     }
@@ -98,6 +103,7 @@ where
             "--frames" => args.frames = Some(next_value(&mut iter, "--frames")?),
             "--report" => args.report_interval_secs = next_value(&mut iter, "--report")?,
             "--vsync" => args.vsync = true,
+            "--no-overlay" => args.overlay = false,
             "-h" | "--help" => args.help = true,
             other => return Err(ArgsError::Unknown(other.to_owned())),
         }
@@ -148,6 +154,20 @@ mod tests {
         assert!(args.vsync);
         assert_eq!(args.frames, Some(500));
         assert!((args.report_interval_secs - 0.5).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn overlay_is_on_unless_disabled() {
+        assert!(
+            parse::<[&str; 0], &str>([])
+                .expect("empty is valid")
+                .overlay
+        );
+        assert!(
+            !parse(["--no-overlay"])
+                .expect("--no-overlay is valid")
+                .overlay
+        );
     }
 
     #[test]

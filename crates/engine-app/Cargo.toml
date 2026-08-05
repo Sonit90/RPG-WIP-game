@@ -9,6 +9,11 @@ publish.workspace = true
 name = "mygame"
 path = "src/main.rs"
 
+[features]
+default = ["debug-overlay"]
+# Forwards to engine-renderer. A shipping build uses --no-default-features.
+debug-overlay = ["engine-renderer/debug-overlay"]
+
 [dependencies]
 engine-core = { workspace = true }
 engine-platform = { workspace = true }

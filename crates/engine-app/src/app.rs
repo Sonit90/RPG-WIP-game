@@ -116,7 +116,19 @@ pub struct App {
     last_report: Instant,
     frame_budget: Option<u64>,
     running: bool,
+    /// Overlay text, rebuilt on an interval rather than per frame: formatting allocates.
+    #[cfg(feature = "debug-overlay")]
+    overlay_lines: Vec<String>,
+    #[cfg(feature = "debug-overlay")]
+    last_overlay_update: Instant,
 }
+
+/// How often the overlay text is rebuilt.
+///
+/// Four updates a second is readable without the numbers flickering, and it keeps string
+/// formatting — which allocates — off the per-frame path.
+#[cfg(feature = "debug-overlay")]
+const OVERLAY_UPDATE_INTERVAL: Duration = Duration::from_millis(250);
 
 impl App {
     /// Creates the window and the renderer.
@@ -132,7 +144,13 @@ impl App {
 
         let (width, height) = window.client_size();
         let renderer_config = RendererConfig::new(width, height).with_vsync(args.vsync);
-        let renderer = Renderer::new(window.raw_handle(), &renderer_config)?;
+        #[cfg_attr(
+            not(feature = "debug-overlay"),
+            expect(unused_mut, reason = "the overlay switch only exists with the feature")
+        )]
+        let mut renderer = Renderer::new(window.raw_handle(), &renderer_config)?;
+        #[cfg(feature = "debug-overlay")]
+        renderer.set_overlay_enabled(args.overlay);
 
         let report_interval = if args.report_interval_secs > 0.0 {
             Some(Duration::from_secs_f64(args.report_interval_secs))
@@ -151,6 +169,10 @@ impl App {
             last_report: Instant::now(),
             frame_budget: args.frames,
             running: true,
+            #[cfg(feature = "debug-overlay")]
+            overlay_lines: Vec::with_capacity(4),
+            #[cfg(feature = "debug-overlay")]
+            last_overlay_update: Instant::now(),
         })
     }
 
@@ -196,6 +218,8 @@ impl App {
             self.stages.frames += 1;
 
             self.maybe_report();
+            #[cfg(feature = "debug-overlay")]
+            self.maybe_update_overlay();
 
             if let Some(budget) = self.frame_budget
                 && self.clock.frame_index() >= budget
@@ -278,7 +302,9 @@ impl App {
         );
         log::info!(
             "stages: events {events:.3} ms | update {update:.3} ms | \
-             render {render:.3} ms | present {present:.3} ms"
+             render {render:.3} ms | present {present:.3} ms | draws {} | tris {}",
+            self.renderer.draw_calls_last_frame(),
+            self.renderer.triangles_last_frame()
         );
 
         // GPU time comes from GPU timestamps, not wall clock, and lags the CPU numbers by
@@ -298,6 +324,72 @@ impl App {
                 gpu.count
             );
         }
+    }
+
+    /// Rebuilds the overlay text if the update interval has elapsed.
+    ///
+    /// The strings are rebuilt in place, so after the first update this reuses the same
+    /// `String` allocations rather than making new ones.
+    #[cfg(feature = "debug-overlay")]
+    fn maybe_update_overlay(&mut self) {
+        use std::fmt::Write as _;
+
+        if !self.renderer.overlay_enabled()
+            || self.last_overlay_update.elapsed() < OVERLAY_UPDATE_INTERVAL
+        {
+            return;
+        }
+        self.last_overlay_update = Instant::now();
+
+        let Some(cpu) = self.frame_times.stats() else {
+            return;
+        };
+        let gpu = self.gpu_times.stats();
+        let (width, height) = self.renderer.size();
+
+        while self.overlay_lines.len() < 4 {
+            self.overlay_lines.push(String::new());
+        }
+
+        self.overlay_lines[0].clear();
+        let _ = write!(
+            self.overlay_lines[0],
+            "FPS {:.0}  ({:.0} P99)",
+            cpu.mean_fps(),
+            cpu.p99_fps()
+        );
+
+        self.overlay_lines[1].clear();
+        let _ = write!(
+            self.overlay_lines[1],
+            "CPU {:.3} MS  P99 {:.3} MS",
+            cpu.mean_ms, cpu.p99_ms
+        );
+
+        self.overlay_lines[2].clear();
+        match gpu {
+            Some(gpu) => {
+                let _ = write!(
+                    self.overlay_lines[2],
+                    "GPU {:.3} MS  P99 {:.3} MS",
+                    gpu.mean_ms, gpu.p99_ms
+                );
+            }
+            None => {
+                let _ = write!(self.overlay_lines[2], "GPU -- MS");
+            }
+        }
+
+        self.overlay_lines[3].clear();
+        let _ = write!(
+            self.overlay_lines[3],
+            "{}X{}  {}",
+            width,
+            height,
+            self.renderer.adapter_info().name
+        );
+
+        self.renderer.set_overlay_text(&self.overlay_lines);
     }
 
     /// Logs a final summary over the last window of frames.
