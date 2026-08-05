@@ -101,7 +101,7 @@ fn renderer_presents_frames_and_shuts_down_cleanly() {
     for index in 0..FRAMES {
         let shade = index as f32 / FRAMES as f32;
         renderer
-            .render_clear([shade, 0.0, 1.0 - shade, 1.0])
+            .render([shade, 0.0, 1.0 - shade, 1.0])
             .expect("frame must record");
         renderer.present().expect("frame must present");
     }
@@ -127,14 +127,14 @@ fn resize_changes_the_back_buffer_size_and_keeps_rendering() {
     let mut renderer =
         Renderer::new(window.raw_handle(), &config).expect("renderer creation must succeed");
 
-    renderer.render_clear([0.0, 0.0, 0.0, 1.0]).unwrap();
+    renderer.render([0.0, 0.0, 0.0, 1.0]).unwrap();
     renderer.present().unwrap();
     renderer.resize(1024, 768).expect("resize must succeed");
     assert_eq!(renderer.size(), (1024, 768));
 
     for _ in 0..4 {
         renderer
-            .render_clear([0.0, 1.0, 0.0, 1.0])
+            .render([0.0, 1.0, 0.0, 1.0])
             .expect("rendering must continue after a resize");
         renderer
             .present()
@@ -176,7 +176,7 @@ fn present_without_a_recorded_frame_is_an_error() {
         "presenting before recording must be rejected"
     );
 
-    renderer.render_clear([0.0; 4]).expect("frame must record");
+    renderer.render([0.0; 4]).expect("frame must record");
     renderer.present().expect("frame must present");
     assert!(
         renderer.present().is_err(),
@@ -196,7 +196,7 @@ fn resize_drops_a_frame_recorded_against_the_old_buffers() {
     let mut renderer =
         Renderer::new(window.raw_handle(), &config).expect("renderer creation must succeed");
 
-    renderer.render_clear([0.0; 4]).expect("frame must record");
+    renderer.render([0.0; 4]).expect("frame must record");
     renderer.resize(800, 600).expect("resize must succeed");
 
     assert!(
@@ -205,7 +205,7 @@ fn resize_drops_a_frame_recorded_against_the_old_buffers() {
     );
     assert_eq!(renderer.frames_presented(), 0);
 
-    renderer.render_clear([0.0; 4]).expect("frame must record");
+    renderer.render([0.0; 4]).expect("frame must record");
     renderer.present().expect("frame must present after resize");
     assert_eq!(renderer.frames_presented(), 1);
 }
@@ -232,11 +232,38 @@ fn repeated_resizes_between_frames_stay_stable() {
             .expect("resize must succeed repeatedly");
         assert_eq!(renderer.size(), (width, height));
 
-        renderer.render_clear([0.1, 0.2, 0.3, 1.0]).expect("record");
+        renderer.render([0.1, 0.2, 0.3, 1.0]).expect("record");
         renderer.present().expect("present");
     }
 
     assert_eq!(renderer.frames_presented(), 24);
+    renderer.wait_for_idle().expect("GPU must go idle");
+}
+
+#[test]
+fn drawing_the_triangle_reports_one_draw_call_and_one_triangle() {
+    let _gpu = gpu_lock();
+    if gpu_context().is_none() {
+        return;
+    }
+    let window = hidden_window("triangle test", 640, 480);
+    let config = test_config(640, 480);
+    let mut renderer =
+        Renderer::new(window.raw_handle(), &config).expect("renderer creation must succeed");
+
+    assert_eq!(renderer.draw_calls_last_frame(), 0, "nothing drawn yet");
+
+    for _ in 0..3 {
+        renderer
+            .render([0.0, 0.0, 0.0, 1.0])
+            .expect("frame must record");
+        renderer.present().expect("frame must present");
+        assert_eq!(renderer.draw_calls_last_frame(), 1);
+        assert_eq!(renderer.triangles_last_frame(), 1);
+    }
+
+    // The validation layer is enabled for these tests, so an invalid pipeline state,
+    // root signature or vertex buffer binding would have produced an error by now.
     renderer.wait_for_idle().expect("GPU must go idle");
 }
 
