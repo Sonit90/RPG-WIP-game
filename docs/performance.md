@@ -45,9 +45,34 @@ must list every allocation that occurs once per frame, with its justification.
 
 | Site | Allocation | Justification |
 | --- | --- | --- |
-| — | — | — |
+| `Renderer::render_clear` | none | Command list, allocators and the `ExecuteCommandLists` argument are all built once in `Renderer::new`; barriers live on the stack |
+| `Window::pump_events` | none in the common case | `EventQueue` pre-reserves 32 events and reuses the buffer; only a burst beyond that grows the `VecDeque` |
+
+Logging allocates while formatting its message, which is why it is banned from the frame
+path. `Renderer::resize` allocates (it rebuilds the back-buffer vector), but it runs only
+when the window size changes.
+
+## Presentation model
+
+Frame rate can only be measured above the display refresh rate if presentation does not
+block on it. The swap chain is therefore flip-discard with `DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING`
+when the system supports it, and presents with `Present(0, ALLOW_TEARING)` while vsync is
+off. `RendererConfig::vsync` defaults to `false` for exactly this reason: a vsync-locked
+swap chain measures the monitor, not the engine.
+
+Three back buffers let the CPU run up to two frames ahead of the GPU before the pacing
+fence blocks it.
 
 ## Measured results
 
-None yet. Populated from Milestone 3 onward with hardware, build profile, resolution,
-sample count and the exact command used.
+No frame-time measurements exist yet — Milestone 3 adds the timing system and Milestone 5
+adds GPU timestamps. The single figure recorded so far is a raw frame count, kept only as
+evidence that presentation is uncapped:
+
+| Date | Build | Resolution | Work | Result |
+| --- | --- | --- | --- | --- |
+| 2026-08-06 | debug + validation layer | 1920x1080 | clear only | 39,402 frames in ~3.63 s (~10,850 FPS) |
+
+Hardware: Ryzen 7 5800X, Radeon RX 6700 XT (12242 MiB), feature level 12_1, tearing
+supported. This is not a benchmark: it has no percentiles, no CPU/GPU split, and it was
+taken in a debug build.

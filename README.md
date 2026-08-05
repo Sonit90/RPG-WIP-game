@@ -35,11 +35,10 @@ Cargo.toml            workspace root
 crates/
   engine-core/        logging, timing, shared utilities (no platform, no renderer)
   engine-platform/    Win32 window, message pump, window events (no GPU types)
+  engine-renderer/    DXGI/D3D12 device, swap chain, command recording (no gameplay)
   engine-app/         the game executable (bin: mygame)
 docs/                 architecture, phase 0 log, testing, performance
 ```
-
-`engine-renderer` (D3D12 device, swap chain, GPU timing) is added in Milestone 2.
 
 ## Documentation
 

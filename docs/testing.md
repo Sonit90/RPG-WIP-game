@@ -59,9 +59,24 @@ manual checklist for Milestone 1 in `docs/phase0.md`.
 
 ## GPU test caveats
 
-GPU integration tests (Milestone 9) require a D3D12 capable adapter on the machine
-running them. On a machine without one — a CI container, for example — they must skip
-with a clear message rather than fail. They render offscreen and never open a window.
+GPU integration tests require a D3D12 capable adapter on the machine running them. On a
+machine without one — a CI container, for example — they skip with a `SKIP:` message
+rather than fail; `crates/engine-renderer/tests/d3d12_init.rs` shows the pattern
+(`GpuContext::new` returning `NoSuitableAdapter` means skip, any other error is a real
+failure).
+
+Those tests create a swap chain, which needs an `HWND`, so `engine-renderer` takes
+`engine-platform` as a **dev**-dependency. The library never depends on it — it accepts
+an opaque `isize` handle — so the layering rule still holds for anything that ships.
+The windows are hidden.
+
+Run them with output to see which adapter was used:
+
+```powershell
+cargo test -p engine-renderer --test d3d12_init -- --nocapture --test-threads=1
+```
+
+The fully offscreen pixel-readback test (Milestone 9) needs no window at all.
 
 ## Manual verification
 

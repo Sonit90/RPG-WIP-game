@@ -9,7 +9,7 @@ Milestone status:
 | --- | --- | --- |
 | 0 | Project bootstrap | done |
 | 1 | Windows platform layer | done |
-| 2 | D3D12 initialization | not started |
+| 2 | D3D12 initialization | done |
 | 3 | Render loop | not started |
 | 4 | Triangle renderer | not started |
 | 5 | GPU timing | not started |
@@ -128,3 +128,95 @@ Run `cargo run --bin mygame` and check:
 * The temporary 1 ms sleep in the app loop exists only because there is nothing to render
   yet. Milestone 3 removes it.
 * Integration tests need an interactive desktop session; see `docs/testing.md`.
+
+---
+
+## Milestone 2 — D3D12 initialization
+
+### What was built
+
+`engine-renderer`, depending on `windows` 0.62 and `engine-core` only — never on
+`engine-platform`. A window arrives as an opaque `isize` handle.
+
+* `adapter.rs` — `AdapterInfo` plus `select_adapter`, the pure selection policy:
+  hardware always beats software; among hardware, most dedicated video memory wins;
+  ties keep enumeration order; software is used only if it is all that exists. No vendor
+  or device id is ever consulted for behaviour, so no GPU model is hardcoded.
+* `device.rs` — DXGI factory, adapter enumeration, `D3D12CreateDevice`, direct command
+  queue, feature-level probe (12_2 down to 11_0), tearing-support query, and the
+  validation layer (debug builds only, with break-on-error).
+* `swapchain.rs` — flip-discard swap chain, 3 back buffers, RTV heap, `ResizeBuffers`,
+  `Present`. Alt+Enter is detached from DXGI so it cannot resize the chain behind us.
+* `sync.rs` — `GpuFence`: a fence plus an auto-reset event, separating per-frame pacing
+  waits from full idle waits.
+* `renderer.rs` — `Renderer`: per-slot command allocators, one command list, record →
+  execute → present → signal, plus `resize` and `wait_for_idle`.
+* `engine-app` now creates the renderer and presents cleared frames until close.
+
+Synchronization model — the two waits are deliberately different:
+
+* **Pacing**: before reusing slot `i`, wait for the fence value signalled the last time
+  slot `i` was submitted. With three slots the CPU only blocks when it is a full lap
+  ahead of the GPU. This is the only wait in the frame path.
+* **Idle**: signal, then wait for that value. Fully serializes CPU and GPU. Used before
+  `ResizeBuffers` (the GPU may still be reading the old back buffers) and in `Drop`
+  (releasing resources the GPU still references is what produces device-removed reports
+  and debug-layer live-object errors at shutdown). Never used per frame.
+
+### Startup output (this machine)
+
+```
+GPU: AMD Radeon RX 6700 XT
+dedicated GPU memory: 12242 MiB
+feature level: 12_1
+backend: Direct3D 12
+resolution: 1920x1080
+presentation: vsync=false, tearing=true
+```
+
+Adapter 1, `Microsoft Basic Render Driver` (software), was enumerated and rejected by the
+selection policy.
+
+### Acceptance criteria
+
+| Criterion | Result |
+| --- | --- |
+| D3D12 device initializes | pass |
+| Correct GPU selected | pass (discrete adapter chosen over the software one, by policy) |
+| Swap chain initializes | pass |
+| Application can present frames | pass (39,402 frames in a 3.6 s debug run) |
+| Clean shutdown without GPU synchronization errors | pass (exit 0, no validation output) |
+
+### Manual verification
+
+`cargo run --bin mygame`, then check:
+
+1. The startup block above appears with *your* GPU name and VRAM.
+2. The window is filled with a dark blue-grey, not an unpainted white/black rectangle.
+3. Resizing repaints at the new size with no stretching and no validation errors.
+4. Minimizing and restoring does not crash (rendering is skipped while minimized).
+5. Closing logs `presented N frames`, `renderer shut down after N frames`,
+   `clean shutdown`, and exits with code 0.
+
+### Performance
+
+Not a benchmark — there is no timing infrastructure until Milestone 3. The only figure
+available is a frame count over a wall-clock window: **39,402 frames in ~3.63 s
+(~10,850 FPS)** clearing 1920x1080 in a **debug** build with the validation layer on.
+It shows presentation is uncapped, nothing more. No CPU or GPU frame time has been
+measured yet, and no claim about the 240/360/480 FPS targets is made.
+
+### Known limitations
+
+* Only clears the back buffer. No pipeline state, no geometry — Milestone 4.
+* GPU frame time is not measured; Milestone 5 adds timestamp queries.
+* No handling of `DXGI_ERROR_DEVICE_REMOVED`: a TDR or driver update currently surfaces
+  as a generic `Present` failure. Recovery needs a device-recreation path.
+* No fullscreen or display-mode handling; the swap chain is windowed only.
+* Resize waits for full GPU idle. Correct, but it stutters during a drag; a future
+  version can recycle buffers without a full stall.
+* The renderer reads `GetCurrentBackBufferIndex` as its frame-slot index, which assumes
+  the flip model's round-robin ordering. Valid for flip-discard, but it must be revisited
+  if the swap effect ever changes.
+* `engine-renderer` has `engine-platform` as a **dev**-dependency so GPU tests can create
+  a real window. The library itself does not depend on it, so the layering holds.
