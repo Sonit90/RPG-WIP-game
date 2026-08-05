@@ -5,6 +5,13 @@ edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 
+[features]
+default = ["debug-overlay"]
+# The debug performance overlay. Enabled by default for development; a shipping build is
+# made with --no-default-features, which removes the font, the overlay geometry and the
+# per-frame upload buffers from the binary entirely.
+debug-overlay = []
+
 [dependencies]
 engine-core = { workspace = true }
 log = { workspace = true }

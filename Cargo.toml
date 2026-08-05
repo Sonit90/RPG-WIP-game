@@ -11,7 +11,9 @@ publish = false
 [workspace.dependencies]
 engine-core = { path = "crates/engine-core" }
 engine-platform = { path = "crates/engine-platform" }
-engine-renderer = { path = "crates/engine-renderer" }
+# default-features is off here so each consumer opts in; engine-app re-exports the
+# `debug-overlay` feature so a shipping build can drop it with --no-default-features.
+engine-renderer = { path = "crates/engine-renderer", default-features = false }
 log = "0.4"
 windows = "0.62"
 
