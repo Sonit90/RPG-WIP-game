@@ -21,6 +21,7 @@ use windows::core::Interface;
 
 use crate::device::{BACKEND, GpuContext, feature_level_name};
 use crate::error::RendererError;
+use crate::gpu_timer::GpuTimer;
 use crate::pipeline::{TRIANGLE_VERTICES, TrianglePipeline};
 use crate::swapchain::{FRAME_COUNT, SwapChain};
 use crate::sync::GpuFence;
@@ -48,6 +49,12 @@ pub struct Renderer {
     /// allocation and no `QueryInterface`.
     execute_lists: [Option<ID3D12CommandList>; 1],
     fence: GpuFence,
+    /// GPU-side frame timing. Read with a `FRAME_COUNT`-frame lag so the CPU never
+    /// blocks to obtain it.
+    gpu_timer: GpuTimer,
+    /// Most recent GPU frame time in milliseconds, or `None` before the first slot has
+    /// completed a full lap.
+    last_gpu_frame_ms: Option<f64>,
     /// Root signature, pipeline state and vertex buffer for the triangle.
     pipeline: TrianglePipeline,
     frames_presented: u64,
@@ -129,6 +136,7 @@ impl Renderer {
         )?)];
 
         let fence = GpuFence::new(context.device())?;
+        let gpu_timer = GpuTimer::new(context.device(), context.queue(), FRAME_COUNT)?;
         let pipeline = TrianglePipeline::new(context.device(), &TRIANGLE_VERTICES)?;
 
         let renderer = Self {
@@ -137,6 +145,8 @@ impl Renderer {
             command_list,
             execute_lists,
             fence,
+            gpu_timer,
+            last_gpu_frame_ms: None,
             pipeline,
             frames_presented: 0,
             draw_calls_last_frame: 0,
@@ -207,6 +217,22 @@ impl Renderer {
         self.triangles_last_frame
     }
 
+    /// Most recent GPU frame time in milliseconds, measured with GPU timestamps.
+    ///
+    /// `None` until a frame slot has been reused, which takes `FRAME_COUNT` frames. The
+    /// value lags the CPU frame time by up to `FRAME_COUNT` frames, because reading it
+    /// sooner would require blocking on the GPU and would change what is being measured.
+    #[must_use]
+    pub fn last_gpu_frame_ms(&self) -> Option<f64> {
+        self.last_gpu_frame_ms
+    }
+
+    /// Timestamp ticks per second on the direct queue.
+    #[must_use]
+    pub fn timestamp_frequency(&self) -> u64 {
+        self.gpu_timer.frequency()
+    }
+
     /// Name of the highest supported feature level, e.g. `12_1`.
     #[must_use]
     pub fn feature_level_name(&self) -> &'static str {
@@ -232,6 +258,14 @@ impl Renderer {
         // allocator can be reset. Only blocks when the CPU is a full lap ahead.
         self.fence.wait(self.frames[index].fence_value)?;
 
+        // The wait above is exactly the point where this slot's previous timestamps are
+        // known to be resolved, so reading them costs no extra synchronization. The value
+        // therefore describes the frame FRAME_COUNT frames ago, not the one about to be
+        // recorded — see `gpu_timer` for why that lag is the right trade.
+        if let Some(milliseconds) = self.gpu_timer.read_frame_ms(index)? {
+            self.last_gpu_frame_ms = Some(milliseconds);
+        }
+
         let allocator = &self.frames[index].allocator;
         // SAFETY: FFI call. The GPU is done with this allocator, as enforced by the wait
         // above, which is exactly the precondition Reset requires.
@@ -241,6 +275,8 @@ impl Renderer {
         // the previous frame), which is what Reset requires.
         unsafe { self.command_list.Reset(allocator, None) }
             .map_err(|error| RendererError::api("ID3D12GraphicsCommandList::Reset", error))?;
+
+        self.gpu_timer.begin_frame(&self.command_list, index);
 
         let buffer = self.swap_chain.buffer(index);
         let rtv = self.swap_chain.rtv_handle(index);
@@ -290,6 +326,10 @@ impl Renderer {
         unsafe {
             self.command_list.ResourceBarrier(&[to_present]);
         }
+
+        // The closing timestamp brackets the frame's own work; the resolve that follows it
+        // is a GPU-side copy into the readback buffer.
+        self.gpu_timer.end_frame(&self.command_list, index);
 
         // SAFETY: FFI call closing the list recorded above.
         unsafe { self.command_list.Close() }
