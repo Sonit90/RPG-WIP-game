@@ -98,6 +98,51 @@ fn resize_updates_cached_size_and_emits_one_event() {
 }
 
 #[test]
+fn key_presses_reach_the_event_queue_and_auto_repeat_is_filtered() {
+    use engine_platform::Key;
+    use windows::Win32::UI::WindowsAndMessaging::WM_KEYDOWN;
+
+    let config = WindowConfig::new("key test", 640, 480).with_visible(false);
+    let mut window = Window::new(&config).expect("window creation must succeed");
+    let hwnd = hwnd_of(&window);
+
+    const VK_F5: usize = 0x74;
+    const PREVIOUS_STATE_DOWN: isize = 1 << 30;
+
+    // A fresh press, then two auto-repeats, then a second fresh press.
+    // SAFETY: `hwnd` belongs to a live window owned by this test, and SendMessageW
+    // dispatches synchronously on the thread that created it.
+    unsafe {
+        SendMessageW(hwnd, WM_KEYDOWN, Some(WPARAM(VK_F5)), Some(LPARAM(0)));
+        SendMessageW(
+            hwnd,
+            WM_KEYDOWN,
+            Some(WPARAM(VK_F5)),
+            Some(LPARAM(PREVIOUS_STATE_DOWN)),
+        );
+        SendMessageW(
+            hwnd,
+            WM_KEYDOWN,
+            Some(WPARAM(VK_F5)),
+            Some(LPARAM(PREVIOUS_STATE_DOWN)),
+        );
+        SendMessageW(hwnd, WM_KEYDOWN, Some(WPARAM(VK_F5)), Some(LPARAM(0)));
+    }
+
+    let mut presses = 0;
+    while let Some(event) = window.poll_event() {
+        if event == WindowEvent::KeyPressed(Key::Function(5)) {
+            presses += 1;
+        }
+    }
+
+    assert_eq!(
+        presses, 2,
+        "two physical presses must produce two events, with auto-repeat filtered out"
+    );
+}
+
+#[test]
 fn dropping_the_window_does_not_panic_and_releases_the_handle() {
     let config = WindowConfig::new("shutdown test", 320, 240).with_visible(false);
     let window = Window::new(&config).expect("window creation must succeed");

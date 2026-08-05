@@ -11,9 +11,42 @@ use std::collections::VecDeque;
 /// per-frame path performs no allocation unless a burst exceeds this capacity.
 const INITIAL_CAPACITY: usize = 32;
 
+/// A keyboard key, as far as the engine currently distinguishes them.
+///
+/// Only the keys the engine acts on are named. Everything else keeps its virtual-key code
+/// in [`Key::Other`] rather than being dropped, so adding a binding later needs no change
+/// to the platform layer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Key {
+    /// Function key `F1` through `F12`; the payload is the number, 1-based.
+    Function(u8),
+    /// The escape key.
+    Escape,
+    /// Any other key, carrying its Windows virtual-key code.
+    Other(u16),
+}
+
+/// Maps a Windows virtual-key code to a [`Key`].
+///
+/// Pure, so the mapping is unit-tested without a window.
+#[must_use]
+pub fn key_from_virtual_code(code: u16) -> Key {
+    const VK_ESCAPE: u16 = 0x1B;
+    const VK_F1: u16 = 0x70;
+    const VK_F12: u16 = 0x7B;
+
+    match code {
+        VK_ESCAPE => Key::Escape,
+        VK_F1..=VK_F12 => Key::Function((code - VK_F1 + 1) as u8),
+        other => Key::Other(other),
+    }
+}
+
 /// Something that happened to a window since the last pump.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WindowEvent {
+    /// A key was pressed. Auto-repeat is filtered out, so holding a key emits one event.
+    KeyPressed(Key),
     /// The client area changed size. Both dimensions are non-zero.
     Resized {
         /// New client width in pixels.
@@ -142,6 +175,33 @@ mod tests {
             height: 768,
         });
         assert_eq!(queue.len(), 3);
+    }
+
+    #[test]
+    fn maps_function_keys_to_their_numbers() {
+        assert_eq!(key_from_virtual_code(0x70), Key::Function(1));
+        assert_eq!(key_from_virtual_code(0x74), Key::Function(5));
+        assert_eq!(key_from_virtual_code(0x7B), Key::Function(12));
+    }
+
+    #[test]
+    fn maps_escape_and_keeps_unknown_codes() {
+        assert_eq!(key_from_virtual_code(0x1B), Key::Escape);
+        assert_eq!(key_from_virtual_code(0x41), Key::Other(0x41));
+        assert_eq!(
+            key_from_virtual_code(0x7C),
+            Key::Other(0x7C),
+            "F13 is not named"
+        );
+    }
+
+    #[test]
+    fn key_events_are_queued_like_any_other() {
+        let mut queue = EventQueue::new();
+        queue.push(WindowEvent::KeyPressed(Key::Function(5)));
+        queue.push(WindowEvent::CloseRequested);
+        assert_eq!(queue.pop(), Some(WindowEvent::KeyPressed(Key::Function(5))));
+        assert_eq!(queue.pop(), Some(WindowEvent::CloseRequested));
     }
 
     #[test]

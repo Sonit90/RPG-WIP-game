@@ -15,14 +15,14 @@ use windows::Win32::UI::WindowsAndMessaging::{
     GetWindowLongPtrW, IDC_ARROW, LoadCursorW, MSG, PM_REMOVE, PeekMessageW, PostQuitMessage,
     RegisterClassExW, SIZE_MAXIMIZED, SIZE_MINIMIZED, SIZE_RESTORED, SW_HIDE, SW_SHOW,
     SW_SHOWNORMAL, SetWindowLongPtrW, SetWindowTextW, ShowWindow, TranslateMessage,
-    WINDOW_EX_STYLE, WM_ACTIVATEAPP, WM_CLOSE, WM_DESTROY, WM_ERASEBKGND, WM_NCCREATE, WM_QUIT,
-    WM_SIZE, WNDCLASSEXW, WS_OVERLAPPED, WS_OVERLAPPEDWINDOW, WS_SYSMENU,
+    WINDOW_EX_STYLE, WM_ACTIVATEAPP, WM_CLOSE, WM_DESTROY, WM_ERASEBKGND, WM_KEYDOWN, WM_NCCREATE,
+    WM_QUIT, WM_SIZE, WM_SYSKEYDOWN, WNDCLASSEXW, WS_OVERLAPPED, WS_OVERLAPPEDWINDOW, WS_SYSMENU,
 };
 use windows::core::{HSTRING, PCWSTR, w};
 
 use crate::config::WindowConfig;
 use crate::error::PlatformError;
-use crate::event::{EventQueue, WindowEvent, size_from_lparam};
+use crate::event::{EventQueue, WindowEvent, key_from_virtual_code, size_from_lparam};
 
 /// Window class name. One class is enough for the whole process.
 const CLASS_NAME: PCWSTR = w!("myGameWindowClass");
@@ -372,6 +372,22 @@ unsafe extern "system" fn window_proc(
                     }
                 }
                 _ => {}
+            }
+            LRESULT(0)
+        }
+        WM_KEYDOWN | WM_SYSKEYDOWN => {
+            // Bit 30 of lparam is the previous key state: set means this is auto-repeat.
+            // Toggles must fire once per physical press, not sixty times a second.
+            const PREVIOUS_STATE_DOWN: isize = 1 << 30;
+            if lparam.0 & PREVIOUS_STATE_DOWN == 0 {
+                let key = key_from_virtual_code(wparam.0 as u16);
+                state.events.push(WindowEvent::KeyPressed(key));
+            }
+            // System keys still need default processing, or Alt+F4 and the system menu
+            // stop working.
+            if message == WM_SYSKEYDOWN {
+                // SAFETY: FFI call with the parameters Windows supplied.
+                return unsafe { DefWindowProcW(hwnd, message, wparam, lparam) };
             }
             LRESULT(0)
         }

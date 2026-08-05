@@ -15,5 +15,5 @@ pub mod window;
 
 pub use config::WindowConfig;
 pub use error::PlatformError;
-pub use event::{EventQueue, WindowEvent};
+pub use event::{EventQueue, Key, WindowEvent};
 pub use window::Window;
