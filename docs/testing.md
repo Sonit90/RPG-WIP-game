@@ -40,6 +40,23 @@ cargo test --workspace
 Test files may relax `clippy::unwrap_used` / `expect_used` with a crate-level
 `#![allow(...)]`; engine code may not.
 
+## Window test caveats
+
+`crates/engine-platform/tests/window_lifecycle.rs` creates real `HWND`s. They are created
+with `visible = false` so the test run does not steal focus or flash windows, but they
+still need an interactive desktop session — a headless service account or a container
+without a window station cannot run them, and `CreateWindowExW` will fail there.
+
+The tests drive the window procedure with `SendMessageW`, which dispatches synchronously
+on the calling thread. That is deliberate: it exercises the real `WM_CLOSE` and `WM_SIZE`
+handling without depending on user input or timing. `cargo test` runs test functions on
+separate threads, and each test owns the window it creates, so the message pump never
+sees another test's window.
+
+What is *not* covered automatically: that the window is actually painted, that dragging a
+border feels correct, and that the title bar renders the expected text. Those are in the
+manual checklist for Milestone 1 in `docs/phase0.md`.
+
 ## GPU test caveats
 
 GPU integration tests (Milestone 9) require a D3D12 capable adapter on the machine

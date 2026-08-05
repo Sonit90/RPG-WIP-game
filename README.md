@@ -34,12 +34,12 @@ cargo test --workspace
 Cargo.toml            workspace root
 crates/
   engine-core/        logging, timing, shared utilities (no platform, no renderer)
+  engine-platform/    Win32 window, message pump, window events (no GPU types)
   engine-app/         the game executable (bin: mygame)
 docs/                 architecture, phase 0 log, testing, performance
 ```
 
-`engine-platform` (Windows window + message loop) and `engine-renderer` (D3D12) are
-added in Milestone 1 and Milestone 2 respectively.
+`engine-renderer` (D3D12 device, swap chain, GPU timing) is added in Milestone 2.
 
 ## Documentation
 
