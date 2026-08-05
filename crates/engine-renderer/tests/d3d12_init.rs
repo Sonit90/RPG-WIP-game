@@ -69,7 +69,8 @@ fn renderer_presents_frames_and_shuts_down_cleanly() {
         let shade = index as f32 / FRAMES as f32;
         renderer
             .render_clear([shade, 0.0, 1.0 - shade, 1.0])
-            .expect("frame must render and present");
+            .expect("frame must record");
+        renderer.present().expect("frame must present");
     }
 
     assert_eq!(renderer.frames_presented(), FRAMES);
@@ -93,6 +94,7 @@ fn resize_changes_the_back_buffer_size_and_keeps_rendering() {
         Renderer::new(window.raw_handle(), &config).expect("renderer creation must succeed");
 
     renderer.render_clear([0.0, 0.0, 0.0, 1.0]).unwrap();
+    renderer.present().unwrap();
     renderer.resize(1024, 768).expect("resize must succeed");
     assert_eq!(renderer.size(), (1024, 768));
 
@@ -100,6 +102,9 @@ fn resize_changes_the_back_buffer_size_and_keeps_rendering() {
         renderer
             .render_clear([0.0, 1.0, 0.0, 1.0])
             .expect("rendering must continue after a resize");
+        renderer
+            .present()
+            .expect("present must continue after a resize");
     }
     assert_eq!(renderer.frames_presented(), 5);
 }
@@ -118,6 +123,54 @@ fn minimize_sized_resize_is_ignored() {
         .resize(0, 0)
         .expect("a zero resize must be a no-op");
     assert_eq!(renderer.size(), (640, 480));
+}
+
+#[test]
+fn present_without_a_recorded_frame_is_an_error() {
+    if gpu_context().is_none() {
+        return;
+    }
+    let window = hidden_window("present order test", 640, 480);
+    let config = RendererConfig::new(640, 480).with_debug_layer(false);
+    let mut renderer =
+        Renderer::new(window.raw_handle(), &config).expect("renderer creation must succeed");
+
+    assert!(
+        renderer.present().is_err(),
+        "presenting before recording must be rejected"
+    );
+
+    renderer.render_clear([0.0; 4]).expect("frame must record");
+    renderer.present().expect("frame must present");
+    assert!(
+        renderer.present().is_err(),
+        "the same frame must not be presented twice"
+    );
+    assert_eq!(renderer.frames_presented(), 1);
+}
+
+#[test]
+fn resize_drops_a_frame_recorded_against_the_old_buffers() {
+    if gpu_context().is_none() {
+        return;
+    }
+    let window = hidden_window("resize drop test", 640, 480);
+    let config = RendererConfig::new(640, 480).with_debug_layer(false);
+    let mut renderer =
+        Renderer::new(window.raw_handle(), &config).expect("renderer creation must succeed");
+
+    renderer.render_clear([0.0; 4]).expect("frame must record");
+    renderer.resize(800, 600).expect("resize must succeed");
+
+    assert!(
+        renderer.present().is_err(),
+        "a frame recorded against destroyed buffers must not be presented"
+    );
+    assert_eq!(renderer.frames_presented(), 0);
+
+    renderer.render_clear([0.0; 4]).expect("frame must record");
+    renderer.present().expect("frame must present after resize");
+    assert_eq!(renderer.frames_presented(), 1);
 }
 
 #[test]
