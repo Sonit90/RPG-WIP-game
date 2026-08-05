@@ -10,7 +10,7 @@ Milestone status:
 | 0 | Project bootstrap | done |
 | 1 | Windows platform layer | done |
 | 2 | D3D12 initialization | done |
-| 3 | Render loop | not started |
+| 3 | Render loop | done |
 | 4 | Triangle renderer | not started |
 | 5 | GPU timing | not started |
 | 6 | Debug performance overlay | not started |
@@ -220,3 +220,106 @@ measured yet, and no claim about the 240/360/480 FPS targets is made.
   if the swap effect ever changes.
 * `engine-renderer` has `engine-platform` as a **dev**-dependency so GPU tests can create
   a real window. The library itself does not depend on it, so the layering holds.
+
+---
+
+## Milestone 3 — Render loop and CPU frame timing
+
+### What was built
+
+* `engine-core::time` — `FrameClock` (monotonic deltas, frame counter) and
+  `FrameStatsWindow`: a fixed-capacity ring of frame times with mean/min/max and
+  nearest-rank p50/p95/p99. Both the sample buffer and the sort scratch are allocated
+  once, so recording a sample and computing statistics allocate nothing.
+  Nearest rank rather than interpolation: a reported p99 should be a frame that actually
+  happened.
+* `engine-renderer` — `render_clear` no longer presents. `present` is a separate call
+  that presents and then signals the slot fence, so the loop keeps its four-stage shape
+  and each stage can be timed on its own. Presenting without a recorded frame, or twice,
+  is an error; a resize drops a frame recorded against the destroyed buffers.
+* `engine-app` — `app.rs` holds the loop, `args.rs` the command line
+  (`--width`, `--height`, `--vsync`, `--frames`, `--report`, `--help`).
+
+The loop:
+
+```text
+process_events() -> update() -> render() -> present()
+```
+
+No frame cap, no sleep, no vsync by default. `update` is deliberately an empty stage: it
+exists so the shape and its timing are in place before there is anything to simulate.
+Statistics are logged on an interval (default 1 s) because `log!` allocates while
+formatting, which is banned from the frame path.
+
+### Acceptance criteria
+
+| Criterion | Result |
+| --- | --- |
+| Loop follows process_events -> update -> render -> present | pass |
+| No artificial frame cap, no fixed sleep | pass (verified: 60,000 frames in 65.2 s, uncapped) |
+| CPU frame time measured | pass |
+| FPS reported | pass |
+| Frame-time percentiles | pass (p50/p95/p99, plus min/max, over a 1024-frame window) |
+
+### Performance
+
+Release build, 1920x1080, clear-only, Ryzen 7 5800X + RX 6700 XT, 60,000 frames:
+
+```
+ran 60000 frames in 65.154 s (921 FPS average over the whole run)
+CPU frame: mean 1.20 ms (~830 FPS) | p50 0.076 | p95 ~8 | p99 ~18 | min 0.050 | max ~24
+stages:    events 0.000 ms | update 0.000 ms | render ~1.15 ms | present ~0.053 ms
+```
+
+**The distribution is bimodal and that is the headline result.** Half of all frames cost
+0.076 ms (~13,000 FPS), but roughly one frame in twenty costs 7–10 ms and one in a
+hundred costs 16–24 ms. The stall is charged to the `render` stage because that is where
+the per-slot fence wait lives.
+
+The display refresh period on this machine is **4.166 ms (240 Hz)**, measured directly by
+running with `--vsync`:
+
+```
+--vsync: mean 4.206 ms (238 FPS) | p50 4.166 | p95 4.202 | n=600
+```
+
+Every stall value is an integer multiple of that period: p95 ≈ 2 refreshes, p99 ≈ 4,
+max ≈ 6. That quantization is the signature of a **synchronization/presentation**
+bottleneck, not a CPU or GPU one. A windowed swap chain under DWM composition hands back
+buffers on the compositor's schedule, so `ALLOW_TEARING` does not make windowed
+presentation truly uncapped: the frame queue drains, the pacing fence blocks, and a burst
+of cheap frames is followed by a refresh-quantized stall. The average (921 FPS) is real,
+but neither it nor the p99 says anything yet about how fast the engine *can* run.
+
+Worth noting for later: the 240 FPS minimum target is exactly this display's refresh
+rate, so with vsync on the engine already meets it (238 FPS measured) — but that number
+describes the monitor, which is precisely why the default is vsync off.
+
+This is exactly what the measurement system was built to expose, and it is why the
+benchmark executable (section 6 of the plan) must not measure through a composed window.
+No optimization has been attempted — measure first.
+
+### Manual verification
+
+```powershell
+cargo run --release --bin mygame -- --frames 60000 --report 1
+cargo run --release --bin mygame -- --frames 600 --report 2 --vsync
+cargo run --bin mygame -- --help
+```
+
+Check that reports appear once per second, that `--vsync` pins the mean to your display's
+refresh period (4.166 ms on the 240 Hz panel used here), and that closing the window still
+logs a clean shutdown.
+
+### Known limitations
+
+* GPU frame time is still not measured. Every number above is CPU wall time; the GPU may
+  be idle or saturated and these numbers cannot tell them apart. Milestone 5.
+* The presentation stall described above is measured but not addressed. Options for later:
+  a waitable swap-chain object, a lower maximum frame latency, or fullscreen/independent
+  flip. All are optimizations and belong after the GPU timing exists.
+* `update` does nothing, so its 0.000 ms says nothing about future simulation cost.
+* Statistics cover a rolling 1024-frame window, so a report during a stall burst shows a
+  worse p95 than a steady-state window would.
+* `--frames` exits after a frame count, not a duration; a run's wall-clock length depends
+  on how fast the frames are.

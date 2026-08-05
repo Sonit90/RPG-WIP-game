@@ -20,6 +20,22 @@ cargo run --bin mygame      # run the game executable
 cargo build --release       # release build (no test or bench code)
 ```
 
+Options (`cargo run --bin mygame -- --help`):
+
+```
+--width <pixels>     client width (default 1920)
+--height <pixels>    client height (default 1080)
+--vsync              wait for vertical blank (off by default)
+--frames <count>     exit after rendering this many frames
+--report <seconds>   frame-time report interval (default 1.0, 0 disables)
+```
+
+A reproducible timing run:
+
+```powershell
+cargo run --release --bin mygame -- --frames 60000 --report 1
+```
+
 ## Checks
 
 ```powershell
