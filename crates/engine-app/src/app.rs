@@ -15,6 +15,8 @@ use std::fmt;
 use std::time::{Duration, Instant};
 
 use engine_core::time::{FrameClock, FrameStatsWindow, duration_to_ms};
+#[cfg(feature = "debug-overlay")]
+use engine_platform::Key;
 use engine_platform::{PlatformError, Window, WindowConfig, WindowEvent};
 use engine_renderer::{Renderer, RendererConfig, RendererError};
 
@@ -122,6 +124,13 @@ pub struct App {
     #[cfg(feature = "debug-overlay")]
     last_overlay_update: Instant,
 }
+
+/// Function key that toggles the debug overlay.
+///
+/// The overlay ships in release builds, so players and testers need a way to bring it up
+/// without a command line.
+#[cfg(feature = "debug-overlay")]
+const OVERLAY_TOGGLE_KEY: u8 = 5;
 
 /// How often the overlay text is rebuilt.
 ///
@@ -250,6 +259,18 @@ impl App {
                 WindowEvent::Minimized => log::info!("minimized"),
                 WindowEvent::Restored => log::info!("restored"),
                 WindowEvent::FocusChanged(focused) => log::debug!("focus: {focused}"),
+                #[cfg(feature = "debug-overlay")]
+                WindowEvent::KeyPressed(Key::Function(OVERLAY_TOGGLE_KEY)) => {
+                    let enabled = !self.renderer.overlay_enabled();
+                    self.renderer.set_overlay_enabled(enabled);
+                    log::info!("debug overlay {}", if enabled { "shown" } else { "hidden" });
+                    if enabled {
+                        // Force an immediate rebuild so the overlay appears on the next
+                        // frame instead of at the next scheduled update.
+                        self.last_overlay_update = Instant::now() - OVERLAY_UPDATE_INTERVAL;
+                    }
+                }
+                WindowEvent::KeyPressed(key) => log::trace!("key pressed: {key:?}"),
             }
         }
 

@@ -15,8 +15,8 @@ options:
                          monitor, not the engine)
   --frames <count>       exit after rendering this many frames
   --report <seconds>     frame-time report interval (default 1.0, 0 disables)
-  --no-overlay           hide the debug overlay (builds without the debug-overlay
-                         feature have no overlay at all)
+  --overlay              start with the debug overlay visible (F5 toggles it at any
+                         time; hidden by default because it costs frame time)
   -h, --help             print this help and exit";
 
 /// Parsed command line.
@@ -32,7 +32,7 @@ pub struct Args {
     pub frames: Option<u64>,
     /// Seconds between frame-time reports. Zero disables reporting.
     pub report_interval_secs: f64,
-    /// Whether the debug overlay is drawn, when the build includes one.
+    /// Whether the debug overlay starts visible. It can always be toggled with F5.
     pub overlay: bool,
     /// Whether `--help` was requested.
     pub help: bool,
@@ -46,7 +46,7 @@ impl Default for Args {
             vsync: false,
             frames: None,
             report_interval_secs: 1.0,
-            overlay: true,
+            overlay: false,
             help: false,
         }
     }
@@ -103,7 +103,7 @@ where
             "--frames" => args.frames = Some(next_value(&mut iter, "--frames")?),
             "--report" => args.report_interval_secs = next_value(&mut iter, "--report")?,
             "--vsync" => args.vsync = true,
-            "--no-overlay" => args.overlay = false,
+            "--overlay" => args.overlay = true,
             "-h" | "--help" => args.help = true,
             other => return Err(ArgsError::Unknown(other.to_owned())),
         }
@@ -157,17 +157,14 @@ mod tests {
     }
 
     #[test]
-    fn overlay_is_on_unless_disabled() {
+    fn overlay_starts_hidden_unless_requested() {
         assert!(
-            parse::<[&str; 0], &str>([])
+            !parse::<[&str; 0], &str>([])
                 .expect("empty is valid")
-                .overlay
+                .overlay,
+            "the overlay costs frame time, so it is off until asked for"
         );
-        assert!(
-            !parse(["--no-overlay"])
-                .expect("--no-overlay is valid")
-                .overlay
-        );
+        assert!(parse(["--overlay"]).expect("--overlay is valid").overlay);
     }
 
     #[test]
