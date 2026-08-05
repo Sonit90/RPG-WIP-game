@@ -28,11 +28,15 @@ Options (`cargo run --bin mygame -- --help`):
 --vsync              wait for vertical blank (off by default)
 --frames <count>     exit after rendering this many frames
 --report <seconds>   frame-time report interval (default 1.0, 0 disables)
---no-overlay         hide the debug overlay
+--overlay            start with the debug overlay visible
 ```
 
-The debug overlay (FPS, CPU/GPU frame time, resolution, adapter) is behind the
-`debug-overlay` Cargo feature, on by default. A shipping build removes it from the binary:
+The debug overlay shows FPS, CPU and GPU frame time, resolution and adapter name. It ships
+in release builds, starts hidden, and is toggled with **F5**. Its cost is below the noise
+floor of measurement (see `docs/performance.md`).
+
+It can still be removed from the binary entirely, which is what the `debug-overlay` Cargo
+feature is for:
 
 ```powershell
 cargo build --release --no-default-features

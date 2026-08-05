@@ -37,6 +37,11 @@ Still planned:
 * Vsync must be off (the default) or the numbers describe the display, not the engine.
 * Debug builds run the D3D12 validation layer and are several times slower; only release
   numbers belong in the results table below.
+* **Interleave A/B comparisons.** Alternate the configurations run by run rather than
+  measuring all of one and then all of the other; machine state drifts on a scale of
+  minutes and grouped runs attribute that drift to the change. This rule exists because
+  ignoring it produced two retracted conclusions, in Milestones 3 and 6.
+* State the number of runs beside every figure.
 
 ## Bottleneck attribution
 
@@ -184,19 +189,29 @@ GPU frame times are stale by up to `FRAME_COUNT` (3) frames by design — see
 `crates/engine-renderer/src/gpu_timer.rs` for why reading them sooner would require
 blocking on the GPU and would change the measurement.
 
-## Milestone 6 — the debug overlay is not free
+## Milestone 6 — the debug overlay costs nothing measurable
 
-Three runs of 30,000 frames per configuration, release, 1920x1080:
+Four **interleaved** pairs of 20,000-frame runs, release, 1920x1080. Interleaved means the
+two configurations alternate, so drift in machine state hits both equally:
 
-| Configuration | FPS | CPU mean | GPU mean |
-| --- | --- | --- | --- |
-| Overlay on | 4593 / 4677 / 4667 | 0.210–0.212 ms | 0.058 ms |
-| Overlay off | 5435 / 5680 / 5719 | 0.163–0.174 ms | 0.043–0.046 ms |
+| Configuration | FPS (4 runs) | mean FPS | CPU mean | GPU mean |
+| --- | --- | --- | --- | --- |
+| Overlay hidden | 5240 / 5363 / 5433 / 5515 | 5388 | 0.193 ms | 0.049 ms |
+| Overlay visible | 5438 / 5307 / 5425 / 5545 | 5429 | 0.185 ms | 0.0495 ms |
 
-About 17% of frame rate: +0.045 ms CPU, +0.014 ms GPU. Four lines of text is ~1,200 quads
-against a scene of one triangle, so the overlay is most of the geometry. **Benchmark runs
-should use `--no-overlay`, and the shipping build removes it entirely.**
+The difference is inside the noise floor of about ±5%; the visible configuration even
+measured nominally faster. ~2,400 extra tiny triangles are negligible for this GPU. The
+overlay is confirmed to be drawing during those runs (`draws 2 | tris 2381`).
 
-Measured and rejected: skipping the per-frame vertex upload when the text has not changed
-made no measurable difference (4567 / 4719 / 4499 FPS). The change was kept as waste
-avoidance, not as an optimization that delivered.
+### Retraction, and a rule
+
+The previous version of this section reported the overlay costing ~17% of frame rate. That
+came from three runs with the overlay on followed by three with it off — **grouped, not
+interleaved** — so a slow patch on the machine fell entirely into one group. Same mistake
+as the Milestone 3 retraction, one milestone later.
+
+**Rule from now on: any A/B performance comparison must interleave its configurations.**
+Grouped runs measure the machine's mood as much as the change.
+
+The upload-skipping change made for the same wrong reason is kept only as waste avoidance
+(see the allocation table), and is credited with no performance improvement.

@@ -571,19 +571,30 @@ upload/transition of texture data. That is the smallest thing that can display t
 and it keeps the overlay to a vertex generator plus an upload buffer. The trade is
 measured below and is not free.
 
-### How it is compiled out
+### Shipping in the release build (decision changed)
 
-A Cargo feature, `debug-overlay`, on by default:
+The Phase 0 brief asked for the overlay to be *disabled or compiled out* of the final
+release build. **The project owner has since decided the final build needs the overlay**,
+so the shipped configuration now includes it, hidden by default and toggled with **F5**.
 
-```powershell
-cargo build --release                        # includes the overlay
-cargo build --release --no-default-features  # shipping: no overlay in the binary
-```
+The mechanics that support both:
 
-Verified rather than assumed. The overlay's format string `MS  P99` is present in the
-default release binary and **absent** from the `--no-default-features` one, which is also
-8 KiB smaller (262,656 vs 254,464 bytes). `--no-overlay` additionally hides it at runtime
-in a build that has it.
+| Control | Effect |
+| --- | --- |
+| `debug-overlay` Cargo feature (default **on**) | Whether the overlay exists in the binary. `--no-default-features` removes it entirely, verified below. |
+| `--overlay` | Start with the overlay visible. |
+| **F5** | Toggle at any time, including in a release build. |
+
+Default state is hidden: an overlay nobody asked for should not draw.
+
+The removal path still works and is verified rather than assumed — the overlay's format
+string `MS  P99` is present in the default release binary and **absent** from the
+`--no-default-features` one, which is also 8 KiB smaller (262,656 vs 254,464 bytes).
+
+Supporting F5 required keyboard input, which the platform layer did not have:
+`WM_KEYDOWN`/`WM_SYSKEYDOWN` now produce `WindowEvent::KeyPressed(Key)`. Auto-repeat is
+filtered using bit 30 of `lparam`, so holding a key toggles once rather than thousands of
+times. Unmapped keys keep their virtual-key code in `Key::Other` instead of being dropped.
 
 ### Acceptance criteria
 
@@ -591,47 +602,56 @@ in a build that has it.
 | --- | --- |
 | Displays FPS, CPU frame time, GPU frame time, resolution, adapter name | pass |
 | No heavyweight UI framework | pass — 5x7 bitmap font, existing pipeline, no texture |
-| Disabled or compiled out of the release build via a clean build configuration | pass — `--no-default-features`, verified by inspecting both binaries |
+| Controlled by a clean build configuration | pass — `debug-overlay` feature removes it from the binary; the shipped build keeps it, hidden, per the owner's decision |
 
 ### Performance
 
-Release, 1920x1080, three runs of 30,000 frames each per configuration:
+Release, 1920x1080, four **interleaved** pairs of 20,000-frame runs — hidden and visible
+alternating, so machine drift affects both equally:
 
-| Configuration | FPS (3 runs) | CPU mean | GPU mean |
-| --- | --- | --- | --- |
-| Overlay on | 4593 / 4677 / 4667 | 0.210–0.212 ms | 0.058 ms |
-| Overlay off (`--no-overlay`) | 5435 / 5680 / 5719 | 0.163–0.174 ms | 0.043–0.046 ms |
+| Configuration | FPS (4 runs) | mean FPS | CPU mean | GPU mean |
+| --- | --- | --- | --- | --- |
+| Overlay hidden | 5240 / 5363 / 5433 / 5515 | 5388 | 0.193 ms | 0.049 ms |
+| Overlay visible | 5438 / 5307 / 5425 / 5545 | 5429 | 0.185 ms | 0.0495 ms |
 
-**The overlay costs about 17% of frame rate at this scene size**: +0.045 ms CPU and
-+0.014 ms GPU. Four lines of text is roughly 1,200 quads — 2,400 tiny triangles — against
-a scene of exactly one. That ratio is why it is expensive here and why it compiles out of
-shipping builds. With a real workload (Milestone 7) the relative cost will shrink; the
-absolute 0.014 ms of GPU time will not.
+**The overlay's cost is below this setup's noise floor** (roughly ±5%). Visible even
+measured nominally faster, which is simply run-to-run variance. About 2,400 extra tiny
+triangles are nothing for this GPU. The draw is confirmed to happen: reports show
+`draws 2 | tris 2381` when it is visible.
 
-A hypothesis that did not survive measurement: the per-frame vertex upload (~200 KiB of
-`memcpy`) was assumed to be the CPU cost, so uploads are now skipped unless the text
-changed. Three further runs showed **no measurable difference** (4567 / 4719 / 4499 FPS).
-The caching was kept because a per-frame copy of unchanged data is waste the allocation
-policy in `docs/performance.md` calls out, but it bought nothing here and is not credited
-with anything.
+> **Retraction.** An earlier version of this section claimed the overlay cost ~17% of
+> frame rate (+0.045 ms CPU, +0.014 ms GPU), from three runs with it on and three with it
+> off. Those runs were **grouped by configuration**, not interleaved, so a slow patch on
+> the machine landed entirely in the "on" group. This is the same error as the Milestone 3
+> retraction, one milestone later. **A/B comparisons are interleaved from now on**, and
+> that is why the table above alternates.
+>
+> A second claim goes with it: the per-frame vertex upload (~200 KiB of `memcpy`) was
+> blamed for the CPU cost, and change-detection was added to skip it. Since the cost it
+> was meant to explain does not exist, the caching is credited with nothing. It is kept
+> only because copying unchanged data every frame is waste the allocation policy in
+> `docs/performance.md` calls out.
 
 ### Manual verification
 
 ```powershell
-cargo run --release --bin mygame
-cargo run --release --bin mygame -- --no-overlay
-cargo run --release --bin mygame --no-default-features
+cargo run --release --bin mygame                    # no overlay until F5
+cargo run --release --bin mygame -- --overlay       # overlay from the first frame
+cargo run --release --bin mygame --no-default-features   # F5 does nothing, no overlay
 ```
 
-The first shows four lines of text in the top-left corner over the triangle, updating
-about four times a second. The second and third show no overlay.
+Press **F5** in the first: four lines of text appear in the top-left corner over the
+triangle, updating about four times a second. Press it again and they disappear. Holding
+F5 down must toggle once, not flicker.
 
 ### Known limitations
 
-* One quad per lit cell is simple but inefficient. A font atlas texture would need one
-  quad per glyph — roughly a 30x reduction in primitives — at the cost of a texture, an
-  SRV heap and a second shader. Worth revisiting only if the overlay's 0.014 ms ever
-  matters against a real scene.
+* One quad per lit cell is simple but inefficient in principle — a font atlas would need
+  one quad per glyph, roughly a 30x reduction in primitives. Measurement says the current
+  approach costs nothing detectable, so this stays unchanged until a measurement says
+  otherwise.
+* Only key *presses* are reported; there is no `KeyReleased`, no modifier state and no
+  text input. Enough for a toggle, not enough for gameplay.
 * Uppercase only; text is upper-cased before lookup.
 * The overlay is drawn with the scene's pipeline, so it has no blending and no background
   panel. Over a bright scene it may be hard to read.
