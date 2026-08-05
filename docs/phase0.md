@@ -11,7 +11,7 @@ Milestone status:
 | 1 | Windows platform layer | done |
 | 2 | D3D12 initialization | done |
 | 3 | Render loop | done |
-| 4 | Triangle renderer | not started |
+| 4 | Triangle renderer | done |
 | 5 | GPU timing | not started |
 | 6 | Debug performance overlay | not started |
 | 7 | Rendering stress tests | not started |
@@ -343,3 +343,98 @@ defects, both fixed:
 
 Neither turned out to be the cause of that particular crash, which was reproduced with
 correct API usage and a silent validation layer, but both were genuine.
+
+---
+
+## Milestone 4 — Triangle renderer
+
+### What was built
+
+* `shader.rs` — `compile_hlsl` via `D3DCompile` from `d3dcompiler_47.dll`. Errors carry
+  the compiler's own diagnostics, not a bare `HRESULT`. Debug builds compile with
+  `WARNINGS_ARE_ERRORS` and no optimization; release builds optimize. No cache, no
+  reflection, no hot reload — this is not a shader system.
+* `shaders/triangle.hlsl` — `VSMain`/`PSMain`, position + colour, embedded with
+  `include_str!` so the binary needs no files beside it.
+* `pipeline.rs` — `Vertex` (`repr(C)`, 28 bytes), `TRIANGLE_VERTICES`, an empty root
+  signature (input-assembler layout only), the graphics PSO, and an upload-heap vertex
+  buffer.
+* `renderer.rs` — `render_clear` became `render`: it clears, sets viewport and scissor
+  from the swap-chain size, binds the root signature, PSO, topology and vertex buffer,
+  and issues one `DrawInstanced`. Adds `draw_calls_last_frame` / `triangles_last_frame`.
+* `offscreen.rs` — renders to a texture, copies to a readback buffer and returns the
+  pixels. No window required. Milestone 9 will build on this.
+
+### Acceptance criteria
+
+| Criterion | Result |
+| --- | --- |
+| Vertex buffer, root signature, PSO, VS, PS, command recording, presentation | pass |
+| A visible triangle is rendered | pass — verified by offscreen readback, see below |
+
+### How "visible" was verified
+
+A recorded draw call and a silent validation layer are **not** evidence that anything was
+drawn. The first version of this milestone produced both while rendering an empty screen.
+
+`tests/offscreen_triangle.rs` therefore renders offscreen and inspects the pixels:
+
+* the triangle covers 16.5% ± tolerance of the image (0% if culled, 100% if the target is
+  filled — both fail);
+* samples near each vertex are red, green and blue respectively, and the centre is a lit
+  blend, which proves the input layout, interpolation and vertex order;
+* the four corners keep the clear colour;
+* a distinctive clear colour arrives at the render target unchanged.
+
+The test's power was checked by reintroducing the bug: with `FrontCounterClockwise` set
+back to `false`, coverage drops to 0.0% and the test fails. It was then reverted.
+
+### Bug found and fixed: the triangle was culled
+
+Symptoms: a correctly recorded draw call, no validation-layer output, and an empty
+screen showing only the clear colour.
+
+Cause: winding is judged on the **render target**, where Y points down.
+`TRIANGLE_VERTICES` is counter-clockwise in clip space (Y up) and stays counter-clockwise
+after the flip, but the rasterizer was configured with `FrontCounterClockwise: false`,
+declaring clockwise triangles front-facing. The triangle was therefore back-facing and
+back-face culling discarded it — silently.
+
+Fix: `FrontCounterClockwise: true`, with the reasoning written into `rasterizer_desc` and
+a unit test asserting that the vertex winding and the rasterizer setting agree.
+
+A second bug was fixed on the way: `ManuallyDrop::into_inner` on the PSO descriptor's
+`pRootSignature` dropped the non-owning interface copy, releasing a reference the
+descriptor never took. That underflowed the root signature's refcount and killed the test
+process at exit code 2173. `ManuallyDrop` fields holding borrowed COM pointers must simply
+be left alone.
+
+### Performance
+
+Not re-measured. The frame now contains one draw call of one triangle, which is not a
+meaningful workload — Milestone 7's stress test is where geometry cost gets measured.
+
+### Manual verification
+
+```powershell
+cargo run --release --bin mygame
+```
+
+A triangle with a red top vertex, green bottom-left and blue bottom-right, smoothly
+interpolated, on the dark blue-grey background. It should stay centred and correctly
+proportioned while the window is resized.
+
+### Known limitations
+
+* The vertex buffer lives on an upload heap. Correct, and the simplest thing that works
+  for three static vertices, but it means the GPU reads vertex data over PCIe every draw.
+  Real geometry needs a default-heap buffer filled through a staging copy; that belongs
+  with Milestone 7, where the difference is measurable.
+* Vertices are already in clip space — there is no camera, no transform and no constant
+  buffer. Milestone 7 needs at least a per-instance transform.
+* Shader model 5_1 via `D3DCompile`, not shader model 6 via DXC: DXIL would require
+  shipping `dxcompiler.dll`.
+* Shaders compile at startup on every run (~milliseconds for two entry points), with no
+  cache.
+* `offscreen.rs` creates its own device per call, so it is a verification tool, not a
+  rendering path.

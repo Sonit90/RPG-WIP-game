@@ -105,7 +105,23 @@ Run them with output to see which adapter was used:
 cargo test -p engine-renderer --test d3d12_init -- --nocapture --test-threads=1
 ```
 
-The fully offscreen pixel-readback test (Milestone 9) needs no window at all.
+### Verifying that something was actually drawn
+
+`crates/engine-renderer/tests/offscreen_triangle.rs` renders through
+`engine_renderer::offscreen`, which draws into a texture, copies it into a readback buffer
+and returns the pixels. Assertions are made on those pixels: coverage fraction, colours
+near each vertex, corners left at the clear colour.
+
+This exists because weaker signals lie. During Milestone 4 the renderer recorded a valid
+draw call, the validation layer said nothing, and the screen stayed empty — the triangle
+was being back-face culled. Only a pixel-level check catches that.
+
+**Do not verify rendering by taking screenshots of the desktop.** A screen capture picks
+up whatever window happens to be in front, which makes it both unreliable as a test and a
+way to capture unrelated on-screen content. Offscreen readback needs no window, no
+desktop session and no compositor, and it is deterministic.
+
+Milestone 9 extends this same module into the full automated GPU integration test.
 
 ## Manual verification
 
