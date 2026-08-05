@@ -63,6 +63,9 @@ must list every allocation that occurs once per frame, with its justification.
 | `FrameStatsWindow::record` | none | Ring buffer and sort scratch allocated once in `new` |
 | `FrameStatsWindow::stats` | none | Sorts into the pre-allocated scratch; runs on the report interval, not per frame |
 | `App` stage timing | none | Plain `f64` counters in a `Copy` struct |
+| Overlay geometry | none | Vertex scratch reserved once; overflow is dropped, not grown |
+| Overlay vertex upload | none, and skipped entirely unless the text changed | One persistently mapped upload buffer per frame slot |
+| Overlay text formatting | allocates, 4x per second | Rebuilt in place into reused `String`s, off the per-frame path |
 
 Logging allocates while formatting its message, which is why it is banned from the frame
 path. `Renderer::resize` allocates (it rebuilds the back-buffer vector), but it runs only
@@ -180,3 +183,20 @@ geometry will be nearly free and any FPS comparison will really be measuring `Pr
 GPU frame times are stale by up to `FRAME_COUNT` (3) frames by design — see
 `crates/engine-renderer/src/gpu_timer.rs` for why reading them sooner would require
 blocking on the GPU and would change the measurement.
+
+## Milestone 6 — the debug overlay is not free
+
+Three runs of 30,000 frames per configuration, release, 1920x1080:
+
+| Configuration | FPS | CPU mean | GPU mean |
+| --- | --- | --- | --- |
+| Overlay on | 4593 / 4677 / 4667 | 0.210–0.212 ms | 0.058 ms |
+| Overlay off | 5435 / 5680 / 5719 | 0.163–0.174 ms | 0.043–0.046 ms |
+
+About 17% of frame rate: +0.045 ms CPU, +0.014 ms GPU. Four lines of text is ~1,200 quads
+against a scene of one triangle, so the overlay is most of the geometry. **Benchmark runs
+should use `--no-overlay`, and the shipping build removes it entirely.**
+
+Measured and rejected: skipping the per-frame vertex upload when the text has not changed
+made no measurable difference (4567 / 4719 / 4499 FPS). The change was kept as waste
+avoidance, not as an optimization that delivered.

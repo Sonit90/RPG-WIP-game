@@ -28,6 +28,14 @@ Options (`cargo run --bin mygame -- --help`):
 --vsync              wait for vertical blank (off by default)
 --frames <count>     exit after rendering this many frames
 --report <seconds>   frame-time report interval (default 1.0, 0 disables)
+--no-overlay         hide the debug overlay
+```
+
+The debug overlay (FPS, CPU/GPU frame time, resolution, adapter) is behind the
+`debug-overlay` Cargo feature, on by default. A shipping build removes it from the binary:
+
+```powershell
+cargo build --release --no-default-features
 ```
 
 A reproducible timing run:

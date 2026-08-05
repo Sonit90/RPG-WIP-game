@@ -13,7 +13,7 @@ Milestone status:
 | 3 | Render loop | done |
 | 4 | Triangle renderer | done |
 | 5 | GPU timing | done |
-| 6 | Debug performance overlay | not started |
+| 6 | Debug performance overlay | done |
 | 7 | Rendering stress tests | not started |
 | 8 | Instancing test | not started |
 | 9 | Automated GPU integration test | not started |
@@ -542,3 +542,101 @@ mean, and a `GPU timestamp frequency` line at debug level during startup.
   heap and its own frequency.
 * `GetTimestampFrequency` is read once at startup. Modern hardware keeps a fixed timestamp
   clock, but a driver that changed it at runtime would silently skew the numbers.
+
+---
+
+## Milestone 6 — Debug performance overlay
+
+### What was built
+
+* `font.rs` — a 5x7 bitmap font as bit patterns: digits, uppercase letters and the
+  punctuation the overlay uses. Unknown characters render as a hollow box so a missing
+  glyph is visible rather than silently blank.
+* `overlay.rs` — `OverlayGeometry` turns text into quads in clip space, one quad per lit
+  font cell, and `OverlayBuffers` holds one persistently mapped upload buffer per frame
+  slot.
+* `renderer.rs` — draws the overlay last, through the **same** root signature, pipeline
+  state and topology as the scene. Only the vertex buffer changes.
+* `engine-app` — builds the text four times a second (formatting allocates, so it stays
+  off the per-frame path) and adds `--no-overlay`.
+
+The overlay shows FPS (mean and p99), CPU frame time, GPU frame time, resolution and
+adapter name.
+
+### Why no texture, and no UI framework
+
+Drawing one quad per lit cell reuses the existing pipeline exactly as it is: no font
+atlas texture, no sampler, no shader-visible descriptor heap, no second shader, no
+upload/transition of texture data. That is the smallest thing that can display text here,
+and it keeps the overlay to a vertex generator plus an upload buffer. The trade is
+measured below and is not free.
+
+### How it is compiled out
+
+A Cargo feature, `debug-overlay`, on by default:
+
+```powershell
+cargo build --release                        # includes the overlay
+cargo build --release --no-default-features  # shipping: no overlay in the binary
+```
+
+Verified rather than assumed. The overlay's format string `MS  P99` is present in the
+default release binary and **absent** from the `--no-default-features` one, which is also
+8 KiB smaller (262,656 vs 254,464 bytes). `--no-overlay` additionally hides it at runtime
+in a build that has it.
+
+### Acceptance criteria
+
+| Criterion | Result |
+| --- | --- |
+| Displays FPS, CPU frame time, GPU frame time, resolution, adapter name | pass |
+| No heavyweight UI framework | pass — 5x7 bitmap font, existing pipeline, no texture |
+| Disabled or compiled out of the release build via a clean build configuration | pass — `--no-default-features`, verified by inspecting both binaries |
+
+### Performance
+
+Release, 1920x1080, three runs of 30,000 frames each per configuration:
+
+| Configuration | FPS (3 runs) | CPU mean | GPU mean |
+| --- | --- | --- | --- |
+| Overlay on | 4593 / 4677 / 4667 | 0.210–0.212 ms | 0.058 ms |
+| Overlay off (`--no-overlay`) | 5435 / 5680 / 5719 | 0.163–0.174 ms | 0.043–0.046 ms |
+
+**The overlay costs about 17% of frame rate at this scene size**: +0.045 ms CPU and
++0.014 ms GPU. Four lines of text is roughly 1,200 quads — 2,400 tiny triangles — against
+a scene of exactly one. That ratio is why it is expensive here and why it compiles out of
+shipping builds. With a real workload (Milestone 7) the relative cost will shrink; the
+absolute 0.014 ms of GPU time will not.
+
+A hypothesis that did not survive measurement: the per-frame vertex upload (~200 KiB of
+`memcpy`) was assumed to be the CPU cost, so uploads are now skipped unless the text
+changed. Three further runs showed **no measurable difference** (4567 / 4719 / 4499 FPS).
+The caching was kept because a per-frame copy of unchanged data is waste the allocation
+policy in `docs/performance.md` calls out, but it bought nothing here and is not credited
+with anything.
+
+### Manual verification
+
+```powershell
+cargo run --release --bin mygame
+cargo run --release --bin mygame -- --no-overlay
+cargo run --release --bin mygame --no-default-features
+```
+
+The first shows four lines of text in the top-left corner over the triangle, updating
+about four times a second. The second and third show no overlay.
+
+### Known limitations
+
+* One quad per lit cell is simple but inefficient. A font atlas texture would need one
+  quad per glyph — roughly a 30x reduction in primitives — at the cost of a texture, an
+  SRV heap and a second shader. Worth revisiting only if the overlay's 0.014 ms ever
+  matters against a real scene.
+* Uppercase only; text is upper-cased before lookup.
+* The overlay is drawn with the scene's pipeline, so it has no blending and no background
+  panel. Over a bright scene it may be hard to read.
+* Cell size is fixed at 2 px, so the overlay shrinks in relative terms at higher
+  resolutions.
+* Overlay text is built by the application, not the renderer. That keeps the renderer free
+  of formatting, but it means the overlay cannot show anything the application does not
+  pass it.

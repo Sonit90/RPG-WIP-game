@@ -36,6 +36,14 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 ```
 
+Both feature configurations must build and lint cleanly, because the shipping build is
+the one without the overlay:
+
+```powershell
+cargo clippy --workspace --all-targets --no-default-features -- -D warnings
+cargo build --release --no-default-features
+```
+
 `clippy` runs with `--all-targets` so that test and bench code is linted too.
 Test files may relax `clippy::unwrap_used` / `expect_used` with a crate-level
 `#![allow(...)]`; engine code may not.
