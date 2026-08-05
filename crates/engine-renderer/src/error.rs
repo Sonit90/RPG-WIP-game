@@ -25,6 +25,13 @@ pub enum RendererError {
         /// Human-readable explanation.
         reason: String,
     },
+    /// An HLSL shader failed to compile.
+    ShaderCompilation {
+        /// Name the shader was compiled under, as it appears in the messages.
+        name: String,
+        /// The compiler's own diagnostics.
+        messages: String,
+    },
 }
 
 impl RendererError {
@@ -49,6 +56,9 @@ impl fmt::Display for RendererError {
                  update the GPU driver or check that the GPU supports feature level 11_0"
             ),
             Self::InvalidConfig { reason } => write!(f, "invalid renderer configuration: {reason}"),
+            Self::ShaderCompilation { name, messages } => {
+                write!(f, "failed to compile shader {name}:\n{messages}")
+            }
         }
     }
 }
@@ -57,7 +67,9 @@ impl std::error::Error for RendererError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Api { source, .. } => Some(source),
-            Self::NoSuitableAdapter { .. } | Self::InvalidConfig { .. } => None,
+            Self::NoSuitableAdapter { .. }
+            | Self::InvalidConfig { .. }
+            | Self::ShaderCompilation { .. } => None,
         }
     }
 }
