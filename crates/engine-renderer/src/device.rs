@@ -49,13 +49,14 @@ impl GpuContext {
     /// Creates the factory, selects an adapter, and creates the device and queue.
     ///
     /// `enable_debug_layer` turns on the D3D12 validation layer, which is expensive and
-    /// intended for debug builds only.
+    /// intended for debug builds only. `break_on_error` additionally breaks into the
+    /// debugger on a validation error; it has no effect without the layer.
     ///
     /// # Errors
     ///
     /// Returns [`RendererError::NoSuitableAdapter`] if no adapter can create a device at
     /// feature level 11_0, or [`RendererError::Api`] if a DXGI/D3D12 call fails.
-    pub fn new(enable_debug_layer: bool) -> Result<Self, RendererError> {
+    pub fn new(enable_debug_layer: bool, break_on_error: bool) -> Result<Self, RendererError> {
         let mut factory_flags = DXGI_CREATE_FACTORY_FLAGS(0);
         if enable_debug_layer && enable_d3d12_debug_layer() {
             factory_flags |= DXGI_CREATE_FACTORY_DEBUG;
@@ -102,7 +103,7 @@ impl GpuContext {
             return Err(RendererError::NoSuitableAdapter { examined });
         };
 
-        if enable_debug_layer {
+        if enable_debug_layer && break_on_error {
             configure_info_queue(&device);
         }
 

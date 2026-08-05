@@ -39,6 +39,11 @@ pub struct RendererConfig {
     /// Defaults to on in debug builds and off in release builds, because validation
     /// costs several times the CPU frame time.
     pub enable_debug_layer: bool,
+    /// Whether a validation error should break into the debugger.
+    ///
+    /// Useful while developing, but a test process has no debugger attached, so tests
+    /// enable the layer with this off and rely on the returned `HRESULT`s instead.
+    pub break_on_validation_error: bool,
 }
 
 impl Default for RendererConfig {
@@ -48,6 +53,7 @@ impl Default for RendererConfig {
             height: 1080,
             vsync: false,
             enable_debug_layer: cfg!(debug_assertions),
+            break_on_validation_error: cfg!(debug_assertions),
         }
     }
 }
@@ -71,9 +77,20 @@ impl RendererConfig {
     }
 
     /// Returns the configuration with the debug layer overridden.
+    ///
+    /// Disabling the layer also disables breaking on validation errors, since there is
+    /// nothing left to report them.
     #[must_use]
     pub fn with_debug_layer(mut self, enable: bool) -> Self {
         self.enable_debug_layer = enable;
+        self.break_on_validation_error &= enable;
+        self
+    }
+
+    /// Returns the configuration with debugger breaks on validation errors overridden.
+    #[must_use]
+    pub fn with_break_on_validation_error(mut self, enable: bool) -> Self {
+        self.break_on_validation_error = enable;
         self
     }
 }
