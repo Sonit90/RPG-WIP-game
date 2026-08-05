@@ -108,6 +108,9 @@ pub struct App {
     renderer: Renderer,
     clock: FrameClock,
     frame_times: FrameStatsWindow,
+    /// GPU frame times, kept in their own window because they arrive with a lag and may
+    /// be missing for the first few frames.
+    gpu_times: FrameStatsWindow,
     stages: StageTotals,
     report_interval: Option<Duration>,
     last_report: Instant,
@@ -142,6 +145,7 @@ impl App {
             renderer,
             clock: FrameClock::new(),
             frame_times: FrameStatsWindow::new(STATS_WINDOW),
+            gpu_times: FrameStatsWindow::new(STATS_WINDOW),
             stages: StageTotals::default(),
             report_interval,
             last_report: Instant::now(),
@@ -182,6 +186,9 @@ impl App {
 
             delta = self.clock.tick();
             self.frame_times.record(delta);
+            if let Some(gpu_ms) = self.renderer.last_gpu_frame_ms() {
+                self.gpu_times.record_ms(gpu_ms);
+            }
             self.stages.events_ms += events_ms;
             self.stages.update_ms += update_ms;
             self.stages.render_ms += render_ms;
@@ -273,6 +280,24 @@ impl App {
             "stages: events {events:.3} ms | update {update:.3} ms | \
              render {render:.3} ms | present {present:.3} ms"
         );
+
+        // GPU time comes from GPU timestamps, not wall clock, and lags the CPU numbers by
+        // a few frames. It is reported on its own line so the two are never mistaken for
+        // simultaneous samples of the same frame.
+        if let Some(gpu) = self.gpu_times.stats() {
+            log::info!(
+                "GPU frame: mean {:.3} ms ({:.0} FPS) | p50 {:.3} | p95 {:.3} | p99 {:.3} | \
+                 min {:.3} | max {:.3} | n={}",
+                gpu.mean_ms,
+                gpu.mean_fps(),
+                gpu.p50_ms,
+                gpu.p95_ms,
+                gpu.p99_ms,
+                gpu.min_ms,
+                gpu.max_ms,
+                gpu.count
+            );
+        }
     }
 
     /// Logs a final summary over the last window of frames.
@@ -289,11 +314,20 @@ impl App {
         );
         if let Some(stats) = self.frame_times.stats() {
             log::info!(
-                "final window: mean {:.3} ms | p95 {:.3} ms | p99 {:.3} ms | n={}",
+                "final CPU window: mean {:.3} ms | p95 {:.3} ms | p99 {:.3} ms | n={}",
                 stats.mean_ms,
                 stats.p95_ms,
                 stats.p99_ms,
                 stats.count
+            );
+        }
+        if let Some(gpu) = self.gpu_times.stats() {
+            log::info!(
+                "final GPU window: mean {:.3} ms | p95 {:.3} ms | p99 {:.3} ms | n={}",
+                gpu.mean_ms,
+                gpu.p95_ms,
+                gpu.p99_ms,
+                gpu.count
             );
         }
     }
