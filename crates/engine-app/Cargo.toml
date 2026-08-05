@@ -11,6 +11,7 @@ path = "src/main.rs"
 
 [dependencies]
 engine-core = { workspace = true }
+engine-platform = { workspace = true }
 log = { workspace = true }
 
 [lints]
