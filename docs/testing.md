@@ -70,6 +70,35 @@ Those tests create a swap chain, which needs an `HWND`, so `engine-renderer` tak
 an opaque `isize` handle — so the layering rule still holds for anything that ships.
 The windows are hidden.
 
+### GPU tests are serialized on purpose
+
+`cargo test` runs test functions on separate threads. Presenting concurrently from
+several D3D12 devices inside one process crashes with `STATUS_ACCESS_VIOLATION` inside
+the driver on the reference machine (RX 6700 XT). What was established while diagnosing
+it, on 2026-08-06:
+
+* Every test passes when run alone; the crash needs at least two threads presenting.
+* Creating and destroying devices, windows and swap chains concurrently is fine.
+* Recording and submitting command lists concurrently is fine. Adding `Present` is what
+  triggers it.
+* It is unaffected by window visibility, message pumping, `MakeWindowAssociation`,
+  `CS_OWNDC`, and object teardown order, and it still happens when both objects are
+  leaked rather than dropped.
+* The D3D12 validation layer reports nothing before the crash.
+
+The engine has exactly one device on one thread, so this configuration never occurs
+outside the test harness. Every GPU test therefore takes a process-wide mutex
+(`gpu_lock()` in `d3d12_init.rs`) before touching the GPU. If a future test creates a
+renderer, it must take that lock too.
+
+Two real bugs were found while chasing this and fixed regardless:
+
+1. `ResizeBuffers` was called while the command list still held references to the old
+   back buffers. The list is now reset to an empty state first.
+2. `Renderer`'s fields were declared so the device was released before the swap chain and
+   command list. `context` is now declared last; field order in that struct is
+   load-bearing.
+
 Run them with output to see which adapter was used:
 
 ```powershell

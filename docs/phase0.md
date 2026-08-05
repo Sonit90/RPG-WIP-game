@@ -323,3 +323,23 @@ logs a clean shutdown.
   worse p95 than a steady-state window would.
 * `--frames` exits after a frame count, not a duration; a run's wall-clock length depends
   on how fast the frames are.
+* **GPU integration tests must run serialized.** Presenting from several D3D12 devices
+  concurrently in one process crashes inside the driver; the tests now take a
+  process-wide mutex. Full diagnosis in `docs/testing.md`. The engine itself has one
+  device on one thread, so it is unaffected — but a future multi-device tool would be.
+
+### Bugs found and fixed during this milestone
+
+Chasing an intermittent `STATUS_ACCESS_VIOLATION` in the test suite turned up two real
+defects, both fixed:
+
+1. `Renderer::resize` called `ResizeBuffers` while the command list still referenced the
+   old back buffers. A recorded list holds references until it is reset, and
+   `ResizeBuffers` requires that none survive. The list is now reset to an empty state
+   after the idle wait.
+2. `Renderer`'s field order released the device before the swap chain and command list.
+   D3D12 objects must outlive nothing — the device must be released last. `context` is
+   now the final field, with a comment saying the order is load-bearing.
+
+Neither turned out to be the cause of that particular crash, which was reproduced with
+correct API usage and a silent validation layer, but both were genuine.
