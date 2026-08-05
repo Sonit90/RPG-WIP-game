@@ -172,7 +172,7 @@ impl App {
                 (0.0, 0.0)
             } else {
                 let render_start = Instant::now();
-                self.renderer.render_clear(CLEAR_COLOR)?;
+                self.renderer.render(CLEAR_COLOR)?;
                 let render_ms = duration_to_ms(render_start.elapsed());
 
                 let present_start = Instant::now();

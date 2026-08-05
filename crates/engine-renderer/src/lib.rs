@@ -13,13 +13,17 @@
 pub mod adapter;
 pub mod device;
 pub mod error;
+pub mod offscreen;
+pub mod pipeline;
 pub mod renderer;
+pub mod shader;
 pub mod swapchain;
 pub mod sync;
 
 pub use adapter::{AdapterInfo, select_adapter};
 pub use device::BACKEND;
 pub use error::RendererError;
+pub use pipeline::{TRIANGLE_VERTICES, Vertex};
 pub use renderer::Renderer;
 pub use swapchain::{BACK_BUFFER_FORMAT, FRAME_COUNT};
 

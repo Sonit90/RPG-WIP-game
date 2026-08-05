@@ -6,19 +6,22 @@
 
 use std::mem::ManuallyDrop;
 
-use windows::Win32::Foundation::HWND;
+use windows::Win32::Foundation::{HWND, RECT};
+use windows::Win32::Graphics::Direct3D::D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
 use windows::Win32::Graphics::Direct3D12::{
-    D3D12_COMMAND_LIST_TYPE_DIRECT, D3D12_RESOURCE_BARRIER, D3D12_RESOURCE_BARRIER_0,
-    D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES, D3D12_RESOURCE_BARRIER_FLAG_NONE,
-    D3D12_RESOURCE_BARRIER_TYPE_TRANSITION, D3D12_RESOURCE_STATE_PRESENT,
-    D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATES, D3D12_RESOURCE_TRANSITION_BARRIER,
-    ID3D12CommandAllocator, ID3D12CommandList, ID3D12GraphicsCommandList, ID3D12Resource,
+    D3D12_COMMAND_LIST_TYPE_DIRECT, D3D12_MAX_DEPTH, D3D12_MIN_DEPTH, D3D12_RESOURCE_BARRIER,
+    D3D12_RESOURCE_BARRIER_0, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,
+    D3D12_RESOURCE_BARRIER_FLAG_NONE, D3D12_RESOURCE_BARRIER_TYPE_TRANSITION,
+    D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATES,
+    D3D12_RESOURCE_TRANSITION_BARRIER, D3D12_VIEWPORT, ID3D12CommandAllocator, ID3D12CommandList,
+    ID3D12GraphicsCommandList, ID3D12Resource,
 };
 
 use windows::core::Interface;
 
 use crate::device::{BACKEND, GpuContext, feature_level_name};
 use crate::error::RendererError;
+use crate::pipeline::{TRIANGLE_VERTICES, TrianglePipeline};
 use crate::swapchain::{FRAME_COUNT, SwapChain};
 use crate::sync::GpuFence;
 use crate::{AdapterInfo, RendererConfig};
@@ -45,8 +48,14 @@ pub struct Renderer {
     /// allocation and no `QueryInterface`.
     execute_lists: [Option<ID3D12CommandList>; 1],
     fence: GpuFence,
+    /// Root signature, pipeline state and vertex buffer for the triangle.
+    pipeline: TrianglePipeline,
     frames_presented: u64,
-    /// Slot recorded by `render_clear` and not yet presented.
+    /// Draw calls recorded by the most recent frame.
+    draw_calls_last_frame: u32,
+    /// Triangles submitted by the most recent frame.
+    triangles_last_frame: u64,
+    /// Slot recorded by `render` and not yet presented.
     recorded_frame_slot: Option<usize>,
     /// Device, queue and factory. Declared last so it is released last.
     context: GpuContext,
@@ -120,6 +129,7 @@ impl Renderer {
         )?)];
 
         let fence = GpuFence::new(context.device())?;
+        let pipeline = TrianglePipeline::new(context.device(), &TRIANGLE_VERTICES)?;
 
         let renderer = Self {
             swap_chain,
@@ -127,7 +137,10 @@ impl Renderer {
             command_list,
             execute_lists,
             fence,
+            pipeline,
             frames_presented: 0,
+            draw_calls_last_frame: 0,
+            triangles_last_frame: 0,
             recorded_frame_slot: None,
             context,
         };
@@ -182,13 +195,25 @@ impl Renderer {
         self.frames_presented
     }
 
+    /// Draw calls recorded by the most recent frame.
+    #[must_use]
+    pub fn draw_calls_last_frame(&self) -> u32 {
+        self.draw_calls_last_frame
+    }
+
+    /// Triangles submitted by the most recent frame.
+    #[must_use]
+    pub fn triangles_last_frame(&self) -> u64 {
+        self.triangles_last_frame
+    }
+
     /// Name of the highest supported feature level, e.g. `12_1`.
     #[must_use]
     pub fn feature_level_name(&self) -> &'static str {
         feature_level_name(self.context.feature_level())
     }
 
-    /// Records and submits a frame that clears the back buffer.
+    /// Records and submits a frame that clears the back buffer and draws the triangle.
     ///
     /// Does **not** present: [`Renderer::present`] is a separate step so the application
     /// loop keeps the `process_events -> update -> render -> present` shape and can time
@@ -200,7 +225,7 @@ impl Renderer {
     /// # Errors
     ///
     /// Returns [`RendererError::Api`] if recording or submission fails.
-    pub fn render_clear(&mut self, color: [f32; 4]) -> Result<(), RendererError> {
+    pub fn render(&mut self, color: [f32; 4]) -> Result<(), RendererError> {
         let index = self.swap_chain.current_back_buffer_index();
 
         // Frame pacing: this slot's previous submission must have completed before its
@@ -225,14 +250,36 @@ impl Renderer {
             D3D12_RESOURCE_STATE_PRESENT,
             D3D12_RESOURCE_STATE_RENDER_TARGET,
         );
-        // SAFETY: FFI calls recording into the open list. The barrier array lives on the
-        // stack for the duration of the call, and `rtv` points into our own RTV heap.
+        let (width, height) = self.swap_chain.size();
+        let viewport = viewport_for(width, height);
+        let scissor = scissor_for(width, height);
+
+        // SAFETY: FFI calls recording into the open list. Every referenced object — the
+        // barrier array, viewport, scissor, RTV handle, pipeline objects and vertex
+        // buffer view — is owned by this renderer or lives on the stack for the duration
+        // of the call.
         unsafe {
             self.command_list.ResourceBarrier(&[to_render_target]);
             self.command_list
                 .OMSetRenderTargets(1, Some(&rtv), false, None);
             self.command_list.ClearRenderTargetView(rtv, &color, None);
+
+            self.command_list.RSSetViewports(&[viewport]);
+            self.command_list.RSSetScissorRects(&[scissor]);
+            self.command_list
+                .SetGraphicsRootSignature(self.pipeline.root_signature());
+            self.command_list
+                .SetPipelineState(self.pipeline.pipeline_state());
+            self.command_list
+                .IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+            self.command_list
+                .IASetVertexBuffers(0, Some(&[*self.pipeline.vertex_buffer_view()]));
+            self.command_list
+                .DrawInstanced(self.pipeline.vertex_count(), 1, 0, 0);
         }
+
+        self.draw_calls_last_frame = 1;
+        self.triangles_last_frame = u64::from(self.pipeline.vertex_count()) / 3;
 
         let to_present = transition_barrier(
             buffer,
@@ -260,7 +307,7 @@ impl Renderer {
         Ok(())
     }
 
-    /// Presents the frame recorded by [`Renderer::render_clear`] and signals its fence.
+    /// Presents the frame recorded by [`Renderer::render`] and signals its fence.
     ///
     /// The fence is signalled after `Present` so the slot's value covers the whole
     /// submission; the next use of that slot waits on it before resetting its allocator.
@@ -368,12 +415,40 @@ impl Drop for Renderer {
     }
 }
 
+/// Viewport covering the whole back buffer.
+///
+/// Pure, so the mapping from swap-chain size to viewport is testable without a GPU.
+#[must_use]
+pub fn viewport_for(width: u32, height: u32) -> D3D12_VIEWPORT {
+    D3D12_VIEWPORT {
+        TopLeftX: 0.0,
+        TopLeftY: 0.0,
+        Width: width as f32,
+        Height: height as f32,
+        MinDepth: D3D12_MIN_DEPTH,
+        MaxDepth: D3D12_MAX_DEPTH,
+    }
+}
+
+/// Scissor rectangle covering the whole back buffer.
+#[must_use]
+pub fn scissor_for(width: u32, height: u32) -> RECT {
+    RECT {
+        left: 0,
+        top: 0,
+        right: width as i32,
+        bottom: height as i32,
+    }
+}
+
 /// Builds a resource transition barrier.
+///
+/// Shared with [`crate::offscreen`], which records the same kind of transition.
 ///
 /// The `pResource` field is a non-owning copy of the interface pointer: `ManuallyDrop`
 /// keeps the barrier from releasing a reference it never took, and the resource is kept
 /// alive by the swap chain for the whole recording.
-fn transition_barrier(
+pub(crate) fn transition_barrier(
     resource: &ID3D12Resource,
     before: D3D12_RESOURCE_STATES,
     after: D3D12_RESOURCE_STATES,
@@ -392,5 +467,36 @@ fn transition_barrier(
                 StateAfter: after,
             }),
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn viewport_covers_the_whole_back_buffer() {
+        let viewport = viewport_for(1920, 1080);
+        assert_eq!((viewport.TopLeftX, viewport.TopLeftY), (0.0, 0.0));
+        assert_eq!((viewport.Width, viewport.Height), (1920.0, 1080.0));
+        assert_eq!(viewport.MinDepth, D3D12_MIN_DEPTH);
+        assert_eq!(viewport.MaxDepth, D3D12_MAX_DEPTH);
+    }
+
+    #[test]
+    fn scissor_covers_the_whole_back_buffer() {
+        let scissor = scissor_for(1280, 720);
+        assert_eq!((scissor.left, scissor.top), (0, 0));
+        assert_eq!((scissor.right, scissor.bottom), (1280, 720));
+    }
+
+    #[test]
+    fn viewport_and_scissor_agree_after_a_resize() {
+        for (width, height) in [(640, 480), (1920, 1080), (3840, 2160)] {
+            let viewport = viewport_for(width, height);
+            let scissor = scissor_for(width, height);
+            assert_eq!(viewport.Width as i32, scissor.right);
+            assert_eq!(viewport.Height as i32, scissor.bottom);
+        }
     }
 }
