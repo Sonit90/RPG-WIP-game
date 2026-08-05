@@ -1,3 +1,8 @@
+# Rust
+/target/
+**/*.rs.bk
+*.pdb
+
 # JetBrains
 .idea/
 *.iml
@@ -9,19 +14,10 @@ ehthumbs.db
 Desktop.ini
 .DS_Store
 
-# Build output
-build/
-dist/
-out/
-bin/
-obj/
-
-# Logs / temp
+# Benchmark / capture output
+/artifacts/
 *.log
-*.tmp
-.cache/
 
 # Env / secrets
 .env
 .env.local
-*.local
