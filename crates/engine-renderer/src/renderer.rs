@@ -22,10 +22,31 @@ use windows::core::Interface;
 use crate::device::{BACKEND, GpuContext, feature_level_name};
 use crate::error::RendererError;
 use crate::gpu_timer::GpuTimer;
+#[cfg(feature = "debug-overlay")]
+use crate::overlay::{OverlayBuffers, OverlayGeometry};
 use crate::pipeline::{TRIANGLE_VERTICES, TrianglePipeline};
 use crate::swapchain::{FRAME_COUNT, SwapChain};
 use crate::sync::GpuFence;
 use crate::{AdapterInfo, RendererConfig};
+
+/// Debug overlay state owned by the renderer.
+#[cfg(feature = "debug-overlay")]
+struct OverlayState {
+    geometry: OverlayGeometry,
+    buffers: OverlayBuffers,
+    /// Whether the overlay is drawn. Runtime switch on top of the compile-time feature.
+    enabled: bool,
+    /// Cached vertex buffer view per frame slot.
+    ///
+    /// The overlay text changes a few times a second but the frame runs thousands of
+    /// times a second, so uploading unconditionally would memcpy hundreds of kilobytes
+    /// per frame for identical data. Each slot keeps its view until the text changes.
+    views: Vec<Option<windows::Win32::Graphics::Direct3D12::D3D12_VERTEX_BUFFER_VIEW>>,
+    /// Slots whose upload buffer no longer matches the current geometry.
+    stale: Vec<bool>,
+    /// Vertices drawn by the most recent frame.
+    drawn_vertices: u32,
+}
 
 /// Per-frame-slot resources.
 struct Frame {
@@ -57,6 +78,10 @@ pub struct Renderer {
     last_gpu_frame_ms: Option<f64>,
     /// Root signature, pipeline state and vertex buffer for the triangle.
     pipeline: TrianglePipeline,
+    /// Debug overlay geometry and its per-slot upload buffers. Absent entirely from a
+    /// build without the `debug-overlay` feature.
+    #[cfg(feature = "debug-overlay")]
+    overlay: OverlayState,
     frames_presented: u64,
     /// Draw calls recorded by the most recent frame.
     draw_calls_last_frame: u32,
@@ -139,6 +164,16 @@ impl Renderer {
         let gpu_timer = GpuTimer::new(context.device(), context.queue(), FRAME_COUNT)?;
         let pipeline = TrianglePipeline::new(context.device(), &TRIANGLE_VERTICES)?;
 
+        #[cfg(feature = "debug-overlay")]
+        let overlay = OverlayState {
+            geometry: OverlayGeometry::new(),
+            buffers: OverlayBuffers::new(context.device(), FRAME_COUNT)?,
+            enabled: true,
+            views: vec![None; FRAME_COUNT],
+            stale: vec![true; FRAME_COUNT],
+            drawn_vertices: 0,
+        };
+
         let renderer = Self {
             swap_chain,
             frames,
@@ -148,6 +183,8 @@ impl Renderer {
             gpu_timer,
             last_gpu_frame_ms: None,
             pipeline,
+            #[cfg(feature = "debug-overlay")]
+            overlay,
             frames_presented: 0,
             draw_calls_last_frame: 0,
             triangles_last_frame: 0,
@@ -233,6 +270,50 @@ impl Renderer {
         self.gpu_timer.frequency()
     }
 
+    /// Replaces the overlay text, one entry per line.
+    ///
+    /// Call before [`Renderer::render`]; the geometry is rebuilt here rather than per
+    /// frame, so callers should only pass new text when it changes. Text beyond the
+    /// overlay's reserved capacity is dropped rather than allocated for.
+    #[cfg(feature = "debug-overlay")]
+    pub fn set_overlay_text<S: AsRef<str>>(&mut self, lines: &[S]) {
+        let (width, height) = self.swap_chain.size();
+        self.overlay.geometry.begin();
+        for (index, line) in lines.iter().enumerate() {
+            self.overlay
+                .geometry
+                .push_line(index, line.as_ref(), width, height);
+        }
+        // Every slot's upload buffer now holds the previous text.
+        self.overlay.stale.fill(true);
+        if self.overlay.geometry.is_empty() {
+            self.overlay.views.fill(None);
+        }
+    }
+
+    /// Turns overlay drawing on or off at runtime.
+    ///
+    /// Independent of the `debug-overlay` feature, which decides whether any of this
+    /// exists in the binary at all.
+    #[cfg(feature = "debug-overlay")]
+    pub fn set_overlay_enabled(&mut self, enabled: bool) {
+        self.overlay.enabled = enabled;
+    }
+
+    /// Whether the overlay is currently drawn.
+    #[cfg(feature = "debug-overlay")]
+    #[must_use]
+    pub fn overlay_enabled(&self) -> bool {
+        self.overlay.enabled
+    }
+
+    /// Vertices the overlay drew in the most recent frame, for tests and diagnostics.
+    #[cfg(feature = "debug-overlay")]
+    #[must_use]
+    pub fn overlay_vertex_count(&self) -> u32 {
+        self.overlay.drawn_vertices
+    }
+
     /// Name of the highest supported feature level, e.g. `12_1`.
     #[must_use]
     pub fn feature_level_name(&self) -> &'static str {
@@ -316,6 +397,38 @@ impl Renderer {
 
         self.draw_calls_last_frame = 1;
         self.triangles_last_frame = u64::from(self.pipeline.vertex_count()) / 3;
+
+        // The overlay reuses the root signature, pipeline state and topology bound above;
+        // only the vertex buffer changes. It is drawn last so it sits over the scene.
+        #[cfg(feature = "debug-overlay")]
+        {
+            self.overlay.drawn_vertices = 0;
+            if self.overlay.enabled {
+                // Upload only when this slot's buffer no longer matches the text. Safe to
+                // overwrite then: the pacing wait above proved the GPU finished the
+                // previous frame that used this slot.
+                if self.overlay.stale[index] {
+                    self.overlay.views[index] = self
+                        .overlay
+                        .buffers
+                        .upload(index, self.overlay.geometry.vertices());
+                    self.overlay.stale[index] = false;
+                }
+
+                if let Some(view) = self.overlay.views[index] {
+                    let count = view.SizeInBytes / view.StrideInBytes;
+                    // SAFETY: FFI calls on the open list. The view refers to this slot's
+                    // upload buffer, which lives as long as the renderer.
+                    unsafe {
+                        self.command_list.IASetVertexBuffers(0, Some(&[view]));
+                        self.command_list.DrawInstanced(count, 1, 0, 0);
+                    }
+                    self.overlay.drawn_vertices = count;
+                    self.draw_calls_last_frame += 1;
+                    self.triangles_last_frame += u64::from(count) / 3;
+                }
+            }
+        }
 
         let to_present = transition_barrier(
             buffer,

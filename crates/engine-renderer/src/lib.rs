@@ -13,8 +13,12 @@
 pub mod adapter;
 pub mod device;
 pub mod error;
+#[cfg(feature = "debug-overlay")]
+pub mod font;
 pub mod gpu_timer;
 pub mod offscreen;
+#[cfg(feature = "debug-overlay")]
+pub mod overlay;
 pub mod pipeline;
 pub mod renderer;
 pub mod shader;
