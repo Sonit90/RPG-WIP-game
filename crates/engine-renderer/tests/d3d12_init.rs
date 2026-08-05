@@ -268,6 +268,55 @@ fn drawing_the_triangle_reports_one_draw_call_and_one_triangle() {
 }
 
 #[test]
+fn gpu_frame_time_is_measured_with_timestamps() {
+    let _gpu = gpu_lock();
+    if gpu_context().is_none() {
+        return;
+    }
+    let window = hidden_window("gpu timing test", 640, 480);
+    let config = test_config(640, 480);
+    let mut renderer =
+        Renderer::new(window.raw_handle(), &config).expect("renderer creation must succeed");
+
+    assert!(
+        renderer.timestamp_frequency() > 0,
+        "the queue must report a timestamp frequency"
+    );
+    assert!(
+        renderer.last_gpu_frame_ms().is_none(),
+        "no GPU time can exist before the first frame completes"
+    );
+
+    // A slot's timestamps are only readable when that slot is reused, which takes
+    // FRAME_COUNT frames; a few more give the value time to appear.
+    for _ in 0..(engine_renderer::FRAME_COUNT * 3) {
+        renderer
+            .render([0.0, 0.0, 0.0, 1.0])
+            .expect("frame must record");
+        renderer.present().expect("frame must present");
+    }
+
+    let gpu_ms = renderer
+        .last_gpu_frame_ms()
+        .expect("GPU time must be available after a full lap of frame slots");
+
+    assert!(
+        gpu_ms.is_finite() && gpu_ms > 0.0,
+        "GPU time was {gpu_ms} ms"
+    );
+    assert!(
+        gpu_ms < 1000.0,
+        "clearing and drawing one triangle cannot take {gpu_ms} ms"
+    );
+    eprintln!(
+        "GPU frame time: {gpu_ms:.4} ms at {} ticks/s",
+        renderer.timestamp_frequency()
+    );
+
+    renderer.wait_for_idle().expect("GPU must go idle");
+}
+
+#[test]
 fn rejects_a_null_window_handle_without_touching_the_gpu() {
     let error = Renderer::new(0, &RendererConfig::new(640, 480))
         .err()
