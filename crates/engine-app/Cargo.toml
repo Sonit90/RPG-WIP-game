@@ -1,0 +1,17 @@
+[package]
+name = "engine-app"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "mygame"
+path = "src/main.rs"
+
+[dependencies]
+engine-core = { workspace = true }
+log = { workspace = true }
+
+[lints]
+workspace = true
