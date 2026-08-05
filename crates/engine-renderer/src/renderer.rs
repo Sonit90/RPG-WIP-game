@@ -32,8 +32,12 @@ struct Frame {
 }
 
 /// D3D12 renderer.
+///
+/// **Field order is load-bearing.** Rust drops fields in declaration order, and D3D12
+/// objects must be released before the device and queue that created them — releasing
+/// the device while a swap chain or command list still lives crashes inside the driver
+/// on some adapters. `context` therefore comes last.
 pub struct Renderer {
-    context: GpuContext,
     swap_chain: SwapChain,
     frames: Vec<Frame>,
     command_list: ID3D12GraphicsCommandList,
@@ -44,6 +48,8 @@ pub struct Renderer {
     frames_presented: u64,
     /// Slot recorded by `render_clear` and not yet presented.
     recorded_frame_slot: Option<usize>,
+    /// Device, queue and factory. Declared last so it is released last.
+    context: GpuContext,
 }
 
 impl Renderer {
@@ -72,7 +78,7 @@ impl Renderer {
             });
         }
 
-        let context = GpuContext::new(config.enable_debug_layer)?;
+        let context = GpuContext::new(config.enable_debug_layer, config.break_on_validation_error)?;
         let hwnd = HWND(window_handle as *mut std::ffi::c_void);
         let swap_chain = SwapChain::new(&context, hwnd, config.width, config.height, config.vsync)?;
 
@@ -116,7 +122,6 @@ impl Renderer {
         let fence = GpuFence::new(context.device())?;
 
         let renderer = Self {
-            context,
             swap_chain,
             frames,
             command_list,
@@ -124,6 +129,7 @@ impl Renderer {
             fence,
             frames_presented: 0,
             recorded_frame_slot: None,
+            context,
         };
         renderer.log_startup_info();
         Ok(renderer)
@@ -300,6 +306,14 @@ impl Renderer {
             log::debug!("dropped a recorded frame because the swap chain was resized");
         }
 
+        // A recorded command list keeps references to every resource it touched, and
+        // those references live until the list is reset. ResizeBuffers requires that no
+        // reference to a back buffer survives anywhere, so the list is reset to an empty
+        // state here. Skipping this leaves the old buffers referenced and corrupts the
+        // driver's state — it manifests as an access violation under concurrent GPU work
+        // rather than as a clean HRESULT failure.
+        self.reset_command_list_to_empty()?;
+
         self.swap_chain.resize(&self.context, width, height)?;
 
         // After ResizeBuffers every slot is free again; forget the old fence values so
@@ -309,6 +323,25 @@ impl Renderer {
             frame.fence_value = completed;
         }
         Ok(())
+    }
+
+    /// Resets the command list without recording anything, releasing every resource
+    /// reference it still holds.
+    ///
+    /// The caller must have waited for the GPU to go idle: resetting an allocator whose
+    /// submissions are still executing is undefined behaviour in D3D12.
+    fn reset_command_list_to_empty(&mut self) -> Result<(), RendererError> {
+        let allocator = &self.frames[0].allocator;
+        // SAFETY: FFI call. The GPU is idle, which is exactly Reset's precondition.
+        unsafe { allocator.Reset() }
+            .map_err(|error| RendererError::api("ID3D12CommandAllocator::Reset", error))?;
+        // SAFETY: FFI call. The list is closed here (every path either closes it or has
+        // never opened it), which is what Reset requires.
+        unsafe { self.command_list.Reset(allocator, None) }
+            .map_err(|error| RendererError::api("ID3D12GraphicsCommandList::Reset", error))?;
+        // SAFETY: FFI call closing the list that was just reset and holds no commands.
+        unsafe { self.command_list.Close() }
+            .map_err(|error| RendererError::api("ID3D12GraphicsCommandList::Close", error))
     }
 
     /// Blocks until the GPU has finished all submitted work.
