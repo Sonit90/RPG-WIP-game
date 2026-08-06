@@ -11,6 +11,13 @@ publish.workspace = true
 name = "performance_test"
 path = "src/main.rs"
 
+# CPU-side benchmarks (allocators, job system, input, profiler). Separate from the
+# renderer benchmark because it needs no GPU and runs in seconds, so it can be used as a
+# quick regression check.
+[[bin]]
+name = "cpu_bench"
+path = "src/cpu_bench.rs"
+
 [dependencies]
 engine-core = { workspace = true }
 engine-renderer = { workspace = true, default-features = false }
