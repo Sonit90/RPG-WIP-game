@@ -24,6 +24,7 @@
 
 use std::time::{Duration, Instant};
 
+use crate::metrics::{DEFAULT_HISTORY, DEFAULT_REFRESH_INTERVAL, FrameMetrics};
 use crate::time::Time;
 
 /// Where a frame spent its CPU time, measured by the engine loop.
@@ -57,12 +58,26 @@ impl StageTimings {
 ///
 /// Deliberately tiny. Window size, vsync and the rest are platform and renderer concerns
 /// and are configured there; only the loop's own knobs belong here.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EngineConfig {
     /// Stop after this many frames. `None` runs until the application asks to exit.
     ///
     /// Used by benchmarks and by automated runs that must terminate on their own.
     pub frame_budget: Option<u64>,
+    /// Frames of CPU and GPU frame-time history kept for percentiles.
+    pub metrics_history: usize,
+    /// How often frame-time percentiles are recomputed.
+    pub metrics_refresh_interval: Duration,
+}
+
+impl Default for EngineConfig {
+    fn default() -> Self {
+        Self {
+            frame_budget: None,
+            metrics_history: DEFAULT_HISTORY,
+            metrics_refresh_interval: DEFAULT_REFRESH_INTERVAL,
+        }
+    }
 }
 
 impl EngineConfig {
@@ -70,6 +85,14 @@ impl EngineConfig {
     #[must_use]
     pub fn with_frame_budget(mut self, frames: Option<u64>) -> Self {
         self.frame_budget = frames;
+        self
+    }
+
+    /// Returns the configuration with the metrics window and refresh interval applied.
+    #[must_use]
+    pub fn with_metrics(mut self, history: usize, refresh_interval: Duration) -> Self {
+        self.metrics_history = history;
+        self.metrics_refresh_interval = refresh_interval;
         self
     }
 }
@@ -80,6 +103,7 @@ impl EngineConfig {
 #[derive(Debug)]
 pub struct EngineContext {
     time: Time,
+    metrics: FrameMetrics,
     stages: StageTimings,
     config: EngineConfig,
     running: bool,
@@ -90,10 +114,22 @@ impl EngineContext {
     fn new(config: EngineConfig) -> Self {
         Self {
             time: Time::new(),
+            metrics: FrameMetrics::new(config.metrics_history, config.metrics_refresh_interval),
             stages: StageTimings::default(),
             config,
             running: true,
         }
+    }
+
+    /// Frame-time history and the most recent summary.
+    #[must_use]
+    pub fn metrics(&self) -> &FrameMetrics {
+        &self.metrics
+    }
+
+    /// Mutable frame metrics, for clearing history when the workload changes.
+    pub fn metrics_mut(&mut self) -> &mut FrameMetrics {
+        &mut self.metrics
     }
 
     /// Real and simulation time for the current frame.
@@ -166,6 +202,7 @@ impl EngineContext {
     /// the delta clamp survive.
     pub fn reset_clock(&mut self) {
         self.time.reset();
+        self.metrics.clear();
         self.stages = StageTimings::default();
     }
 }
@@ -228,6 +265,19 @@ pub trait Application {
     fn present(&mut self, ctx: &mut EngineContext) -> Result<(), Self::Error> {
         let _ = ctx;
         Ok(())
+    }
+
+    /// GPU time for the most recently resolved frame, in milliseconds.
+    ///
+    /// Returns `None` while timestamps are still in flight, which is normal for the first
+    /// frames after startup or a resize. `engine-core` has no GPU concept of its own, so
+    /// the value has to come from the application's renderer; the engine only records it.
+    ///
+    /// GPU timestamps lag the CPU by a few frames, so this is *not* the GPU time of the
+    /// frame just recorded. The two are summarized separately and must never be presented
+    /// as simultaneous samples of one frame.
+    fn gpu_frame_ms(&self) -> Option<f64> {
+        None
     }
 
     /// Whether rendering this frame is possible at all.
@@ -364,6 +414,14 @@ impl<A: Application> Engine<A> {
                 render,
                 present,
             };
+            // Real delta, not the simulation delta: metrics measure the machine, so a
+            // paused or slowed simulation must not make the engine look faster.
+            self.ctx.metrics.record(
+                self.ctx.time.frame_index(),
+                self.ctx.time.real_delta(),
+                self.ctx.stages,
+                self.app.gpu_frame_ms(),
+            );
 
             self.app.end_frame(&mut self.ctx);
 

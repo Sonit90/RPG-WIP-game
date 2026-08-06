@@ -107,6 +107,37 @@ frame allocator, input state and profiler will live in later milestones.
   accumulates `delta()` and consumes it in fixed increments, and since the simulation only
   ever reads `Time`, nothing outside the loop changes.
 
+## Frame metrics (Phase 1, M3)
+
+`engine-core::metrics::FrameMetrics` owns CPU and GPU frame-time history, per-stage
+averages, and the `FrameSummary` that both the log reports and the debug overlay read.
+The engine records one sample per frame; nothing else has to.
+
+The split that matters is **record vs. summarize**:
+
+| | Cost | When |
+| --- | --- | --- |
+| `record` | a few stores into pre-allocated buffers | every frame |
+| `refresh` | sorts both windows, `O(n log n)` | every 250 ms |
+
+At 5000 FPS a per-frame sort of a 1024-sample window would cost more than the frame it
+measures. Readers call `summary()`, which returns the cached snapshot and never sorts, so
+adding a reader cannot make the frame slower. `FrameSummary` is `Copy`, so a reader gets a
+consistent snapshot rather than a half-updated view.
+
+Consequences worth knowing:
+
+* Stage averages cover the frames since the last *refresh* (250 ms), not since the last
+  report. A one-second report line therefore shows the most recent quarter-second of stage
+  times, not the whole second.
+* CPU and GPU are separate windows. GPU timestamps lag the CPU by a few frames and are
+  absent right after startup or a resize, so a missing GPU sample is skipped rather than
+  recorded as zero — averaging in zeros would understate GPU time.
+* The final report calls `refresh()` explicitly: the cached summary can be up to 250 ms
+  old, and the closing numbers should cover the whole window.
+* `EngineContext::reset_clock` clears the history too. Frame times from the previous stress
+  level describe a different workload.
+
 ## Deviations from the originally proposed repository layout
 
 1. **The workspace lives at the repository root** rather than in a nested

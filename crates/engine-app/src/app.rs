@@ -21,7 +21,7 @@ use std::fmt;
 use std::time::{Duration, Instant};
 
 use engine_core::application::{Application, EngineContext};
-use engine_core::time::{FrameStatsWindow, duration_to_ms};
+use engine_core::metrics::FrameSummary;
 use engine_platform::{Key, PlatformError, Window, WindowConfig, WindowEvent};
 use engine_renderer::stress::{STRESS_LEVELS, level_at, nearest_level_index};
 use engine_renderer::{Renderer, RendererConfig, RendererError};
@@ -31,13 +31,6 @@ use crate::args::Args;
 /// Clear colour of the back buffer: a dark blue-grey, so an empty frame is obviously
 /// rendered rather than an unpainted window.
 const CLEAR_COLOR: [f32; 4] = [0.05, 0.07, 0.10, 1.0];
-
-/// Frames kept for percentile reporting.
-///
-/// At 240 FPS this is roughly four seconds of history, and at 4000 FPS a quarter of a
-/// second — enough for a stable p99 without letting old behaviour dominate. Allocated
-/// once at startup.
-const STATS_WINDOW: usize = 1024;
 
 /// Anything that can end the run loop.
 #[derive(Debug)]
@@ -78,47 +71,13 @@ impl From<RendererError> for AppError {
     }
 }
 
-/// Per-stage CPU time accumulated since the last report.
+/// Window, renderer and reporting state.
 ///
-/// Plain counters, so accumulating them allocates nothing.
-#[derive(Debug, Default, Clone, Copy)]
-struct StageTotals {
-    events_ms: f64,
-    update_ms: f64,
-    render_ms: f64,
-    present_ms: f64,
-    frames: u32,
-}
-
-impl StageTotals {
-    fn reset(&mut self) {
-        *self = Self::default();
-    }
-
-    /// Mean stage times in milliseconds, or `None` if nothing was accumulated.
-    fn means(&self) -> Option<(f64, f64, f64, f64)> {
-        if self.frames == 0 {
-            return None;
-        }
-        let frames = f64::from(self.frames);
-        Some((
-            self.events_ms / frames,
-            self.update_ms / frames,
-            self.render_ms / frames,
-            self.present_ms / frames,
-        ))
-    }
-}
-
-/// Window, renderer and frame statistics.
+/// Frame-time history lives in `EngineContext::metrics`, not here: every application that
+/// the engine drives gets the same statistics, computed the same way.
 pub struct App {
     window: Window,
     renderer: Renderer,
-    frame_times: FrameStatsWindow,
-    /// GPU frame times, kept in their own window because they arrive with a lag and may
-    /// be missing for the first few frames.
-    gpu_times: FrameStatsWindow,
-    stages: StageTotals,
     report_interval: Option<Duration>,
     last_report: Instant,
     /// Index into [`STRESS_LEVELS`] of the level currently loaded.
@@ -173,9 +132,6 @@ impl App {
         Ok(Self {
             window,
             renderer,
-            frame_times: FrameStatsWindow::new(STATS_WINDOW),
-            gpu_times: FrameStatsWindow::new(STATS_WINDOW),
-            stages: StageTotals::default(),
             report_interval,
             last_report: Instant::now(),
             stress_index: nearest_level_index(args.triangles.max(1)),
@@ -199,9 +155,8 @@ impl App {
         self.renderer.set_scene_triangles(triangles)?;
         self.stress_index = index;
 
-        self.frame_times.clear();
-        self.gpu_times.clear();
-        self.stages.reset();
+        // Clears the frame-time history as well: the previous level's timings describe a
+        // different workload.
         ctx.reset_clock();
         log::info!("stress level {}: {triangles} triangles", index + 1);
         Ok(())
@@ -211,7 +166,7 @@ impl App {
     ///
     /// Logging allocates while formatting, so it happens on an interval and never per
     /// frame.
-    fn maybe_report(&mut self) {
+    fn maybe_report(&mut self, summary: FrameSummary) {
         let Some(interval) = self.report_interval else {
             return;
         };
@@ -220,13 +175,14 @@ impl App {
         }
         self.last_report = Instant::now();
 
-        let Some(stats) = self.frame_times.stats() else {
-            return;
-        };
-        let Some((events, update, render, present)) = self.stages.means() else {
-            return;
-        };
-        self.stages.reset();
+        let stats = summary.cpu;
+        let stages = summary.stages;
+        let (events, update, render, present) = (
+            stages.events_ms,
+            stages.update_ms,
+            stages.render_ms,
+            stages.present_ms,
+        );
 
         log::info!(
             "CPU frame: mean {:.3} ms ({:.0} FPS) | p50 {:.3} | p95 {:.3} | p99 {:.3} \
@@ -253,7 +209,7 @@ impl App {
         // GPU time comes from GPU timestamps, not wall clock, and lags the CPU numbers by
         // a few frames. It is reported on its own line so the two are never mistaken for
         // simultaneous samples of the same frame.
-        if let Some(gpu) = self.gpu_times.stats() {
+        if let Some(gpu) = summary.gpu {
             log::info!(
                 "GPU frame: mean {:.3} ms ({:.0} FPS) | p50 {:.3} | p95 {:.3} | p99 {:.3} | \
                  min {:.3} | max {:.3} | n={}",
@@ -274,7 +230,7 @@ impl App {
     /// The strings are rebuilt in place, so after the first update this reuses the same
     /// `String` allocations rather than making new ones.
     #[cfg(feature = "debug-overlay")]
-    fn maybe_update_overlay(&mut self) {
+    fn maybe_update_overlay(&mut self, summary: FrameSummary) {
         use std::fmt::Write as _;
 
         if !self.renderer.overlay_enabled()
@@ -284,10 +240,8 @@ impl App {
         }
         self.last_overlay_update = Instant::now();
 
-        let Some(cpu) = self.frame_times.stats() else {
-            return;
-        };
-        let gpu = self.gpu_times.stats();
+        let cpu = summary.cpu;
+        let gpu = summary.gpu;
         let (width, height) = self.renderer.size();
 
         while self.overlay_lines.len() < 5 {
@@ -344,7 +298,7 @@ impl App {
     }
 
     /// Logs a final summary over the last window of frames.
-    fn report_final(&mut self, ctx: &EngineContext) {
+    fn report_final(&mut self, ctx: &mut EngineContext) {
         let frames = ctx.frame_index();
         let seconds = ctx.elapsed().as_secs_f64();
         log::info!(
@@ -355,16 +309,20 @@ impl App {
                 0.0
             }
         );
-        if let Some(stats) = self.frame_times.stats() {
-            log::info!(
-                "final CPU window: mean {:.3} ms | p95 {:.3} ms | p99 {:.3} ms | n={}",
-                stats.mean_ms,
-                stats.p95_ms,
-                stats.p99_ms,
-                stats.count
-            );
-        }
-        if let Some(gpu) = self.gpu_times.stats() {
+        // Recompute rather than reading the cached summary: the last refresh can be up to
+        // a quarter of a second old, and the final numbers should cover the whole window.
+        ctx.metrics_mut().refresh();
+        let Some(summary) = ctx.metrics().summary() else {
+            return;
+        };
+        log::info!(
+            "final CPU window: mean {:.3} ms | p95 {:.3} ms | p99 {:.3} ms | n={}",
+            summary.cpu.mean_ms,
+            summary.cpu.p95_ms,
+            summary.cpu.p99_ms,
+            summary.cpu.count
+        );
+        if let Some(gpu) = summary.gpu {
             log::info!(
                 "final GPU window: mean {:.3} ms | p95 {:.3} ms | p99 {:.3} ms | n={}",
                 gpu.mean_ms,
@@ -453,24 +411,20 @@ impl Application for App {
         !self.window.is_minimized()
     }
 
+    fn gpu_frame_ms(&self) -> Option<f64> {
+        self.renderer.last_gpu_frame_ms()
+    }
+
+    /// Reporting and overlay text only; the engine has already recorded the frame.
+    ///
+    /// Both consumers read the cached summary, so neither triggers a percentile sort.
     fn end_frame(&mut self, ctx: &mut EngineContext) {
-        // Real delta, not the simulation delta: frame-time statistics measure the machine,
-        // so a paused or slowed simulation must not make the engine look faster.
-        self.frame_times.record(ctx.time().real_delta());
-        if let Some(gpu_ms) = self.renderer.last_gpu_frame_ms() {
-            self.gpu_times.record_ms(gpu_ms);
-        }
-
-        let stages = ctx.stage_timings();
-        self.stages.events_ms += duration_to_ms(stages.events);
-        self.stages.update_ms += duration_to_ms(stages.update);
-        self.stages.render_ms += duration_to_ms(stages.render);
-        self.stages.present_ms += duration_to_ms(stages.present);
-        self.stages.frames += 1;
-
-        self.maybe_report();
+        let Some(summary) = ctx.metrics().summary() else {
+            return;
+        };
+        self.maybe_report(summary);
         #[cfg(feature = "debug-overlay")]
-        self.maybe_update_overlay();
+        self.maybe_update_overlay(summary);
     }
 
     fn shutdown(&mut self, ctx: &mut EngineContext) {

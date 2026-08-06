@@ -7,4 +7,5 @@
 
 pub mod application;
 pub mod logging;
+pub mod metrics;
 pub mod time;
