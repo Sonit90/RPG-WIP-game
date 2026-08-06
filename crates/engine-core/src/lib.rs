@@ -10,5 +10,6 @@ pub mod diagnostics;
 pub mod error;
 pub mod input;
 pub mod logging;
+pub mod memory;
 pub mod metrics;
 pub mod time;

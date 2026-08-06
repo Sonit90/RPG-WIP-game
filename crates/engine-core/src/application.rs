@@ -25,6 +25,7 @@
 use std::time::{Duration, Instant};
 
 use crate::input::InputState;
+use crate::memory::{DEFAULT_FRAME_CAPACITY, FrameAllocator};
 use crate::metrics::{DEFAULT_HISTORY, DEFAULT_REFRESH_INTERVAL, FrameMetrics};
 use crate::time::Time;
 
@@ -69,6 +70,8 @@ pub struct EngineConfig {
     pub metrics_history: usize,
     /// How often frame-time percentiles are recomputed.
     pub metrics_refresh_interval: Duration,
+    /// Bytes reserved for the per-frame scratch allocator.
+    pub frame_allocator_capacity: usize,
 }
 
 impl Default for EngineConfig {
@@ -77,6 +80,7 @@ impl Default for EngineConfig {
             frame_budget: None,
             metrics_history: DEFAULT_HISTORY,
             metrics_refresh_interval: DEFAULT_REFRESH_INTERVAL,
+            frame_allocator_capacity: DEFAULT_FRAME_CAPACITY,
         }
     }
 }
@@ -96,6 +100,13 @@ impl EngineConfig {
         self.metrics_refresh_interval = refresh_interval;
         self
     }
+
+    /// Returns the configuration with the frame allocator's capacity applied.
+    #[must_use]
+    pub fn with_frame_allocator_capacity(mut self, bytes: usize) -> Self {
+        self.frame_allocator_capacity = bytes;
+        self
+    }
 }
 
 /// Per-frame state the engine owns and the application reads.
@@ -106,6 +117,7 @@ pub struct EngineContext {
     time: Time,
     metrics: FrameMetrics,
     input: InputState,
+    frame_allocator: FrameAllocator,
     stages: StageTimings,
     config: EngineConfig,
     running: bool,
@@ -118,6 +130,7 @@ impl EngineContext {
             time: Time::new(),
             metrics: FrameMetrics::new(config.metrics_history, config.metrics_refresh_interval),
             input: InputState::new(),
+            frame_allocator: FrameAllocator::with_capacity(config.frame_allocator_capacity),
             stages: StageTimings::default(),
             config,
             running: true,
@@ -137,6 +150,22 @@ impl EngineContext {
     /// press for exactly the frame it arrived in.
     pub fn input_mut(&mut self) -> &mut InputState {
         &mut self.input
+    }
+
+    /// Scratch memory valid for the current frame only.
+    ///
+    /// Everything allocated here is reclaimed at the start of the next frame. Nothing may
+    /// hold a reference across a frame boundary — and nothing can: the reset takes
+    /// `&mut self`, so the borrow checker rejects it.
+    #[must_use]
+    pub fn frame_arena(&self) -> &crate::memory::Arena {
+        self.frame_allocator.arena()
+    }
+
+    /// The frame allocator itself, for its statistics.
+    #[must_use]
+    pub fn frame_allocator(&self) -> &FrameAllocator {
+        &self.frame_allocator
     }
 
     /// Frame-time history and the most recent summary.
@@ -408,6 +437,10 @@ impl<A: Application> Engine<A> {
             // Before the events, never after: rolling the previous frame's key bits
             // afterwards would make every press look like a hold.
             self.ctx.input.begin_frame();
+            // Reclaims the previous frame's scratch memory. Safe by construction: the
+            // reset needs `&mut EngineContext`, which no outstanding arena reference
+            // allows to exist.
+            self.ctx.frame_allocator.begin_frame();
 
             let events_start = Instant::now();
             self.app.process_events(&mut self.ctx)?;
@@ -699,6 +732,51 @@ mod tests {
         assert_eq!(ctx.elapsed(), Duration::ZERO);
         assert_eq!(ctx.stage_timings(), StageTimings::default());
         assert_eq!(ctx.frame_index(), 0);
+    }
+
+    /// An application that allocates from the frame arena every frame.
+    #[derive(Debug, Default)]
+    struct Allocator {
+        peak_seen: usize,
+    }
+
+    impl Application for Allocator {
+        type Error = TestError;
+
+        fn process_events(&mut self, _ctx: &mut EngineContext) -> Result<(), Self::Error> {
+            Ok(())
+        }
+
+        fn update(&mut self, ctx: &mut EngineContext) -> Result<(), Self::Error> {
+            let scratch = ctx
+                .frame_arena()
+                .alloc_slice(&[0_u64; 64])
+                .ok_or(TestError("the frame arena ran out"))?;
+            scratch[0] = ctx.frame_index();
+            self.peak_seen = self.peak_seen.max(ctx.frame_allocator().stats().used);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn frame_memory_is_reclaimed_every_frame() {
+        let mut engine = Engine::new(
+            Allocator::default(),
+            EngineConfig::default()
+                .with_frame_budget(Some(100))
+                .with_frame_allocator_capacity(4096),
+        );
+        engine.run().expect("the arena is large enough");
+
+        let stats = engine.context().frame_allocator().stats();
+        assert_eq!(engine.context().frame_index(), 100);
+        assert_eq!(
+            stats.peak,
+            64 * size_of::<u64>(),
+            "100 frames must not accumulate: the peak is one frame's worth"
+        );
+        assert_eq!(stats.failures, 0);
+        assert_eq!(engine.app().peak_seen, 64 * size_of::<u64>());
     }
 
     #[test]
