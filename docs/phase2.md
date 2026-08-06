@@ -22,7 +22,7 @@ Milestone status:
 | --- | --- | --- |
 | 0 | Architecture proposal | done |
 | 1 | Renderer device abstraction | done |
-| 2 | Frame resources and synchronization | todo |
+| 2 | Frame resources and synchronization | done |
 | 3 | Command context | todo |
 | 4 | Descriptor management | todo |
 | 5 | Resource abstraction | todo |
@@ -387,3 +387,103 @@ open one, and every call site had its own "close it so the frame path can start 
   legitimately need the raw objects.
 * One queue, one device, one adapter. Multi-queue (a copy queue for uploads) is a later
   question and would change the fence model; nothing here forecloses it.
+
+---
+
+# Milestone 2 — Frame resources and synchronization
+
+## What was built
+
+`engine-renderer::frame::FrameRing` owns the frame slots and the fence that paces them.
+Each slot holds a command allocator and the fence value signalled after its last
+submission. `RendererConfig::frames_in_flight` selects the slot count (default 3, bounded
+by the swap chain's buffer count and **rejected** rather than clamped when out of range).
+
+The renderer's per-frame path became:
+
+```rust
+let slot = self.frames.begin_frame()?;   // waits if needed, resets the allocator
+// ... record ...
+self.frames.end_frame(queue, slot)?;     // signals, advances to the next slot
+```
+
+## Frame slot is not the back-buffer index
+
+Phase 0 used the swap chain's current back-buffer index as the frame slot. That is only
+correct while the two counts are equal *and* the presentation model hands them out in the
+same order — an assumption that costs nothing to remove and is invisible when it breaks.
+The ring now owns a monotonic frame counter and derives its slot from it; the back buffer
+is looked up separately, and a `debug_assert` catches the swap chain advancing between
+recording and presenting.
+
+## The wait is measured, and the measurement is free
+
+`SyncStats` counts stalled frames, total and maximum stall time. The fence's completed
+value is read first, and the clock is only sampled on the path that genuinely blocks, so a
+frame that does not wait pays one atomic load and never touches `Instant::now`.
+
+## What the measurement says
+
+Release build, 20,000 frames, 1920×1080, three frames in flight:
+
+| Scene | CPU mean | GPU mean | Frames that stalled |
+| --- | --- | --- | --- |
+| 1,000 triangles | 0.167 ms | 0.051 ms | 3 / 20,000 (0.02%) |
+| 100,000 triangles | 0.129 ms | 0.069 ms | 3 / 20,000 (0.02%) |
+
+**The renderer is CPU-bound, not GPU-bound.** The CPU essentially never waits for the GPU;
+the GPU finishes in a third of the time the CPU takes to prepare and submit the frame.
+This confirms from the synchronization side what Phase 0 found from the timing side —
+`Present` and submission dominate — and it sets the target for the rest of Phase 2: work
+that reduces CPU submission cost will move the frame time, and work that reduces GPU cost
+will not.
+
+It also means the frame-in-flight count is not currently doing anything for throughput
+here. It is still correct to have: it costs nothing when the CPU is ahead, and the moment
+the GPU workload grows — depth, lighting, thousands of objects — it is what stops the CPU
+from serializing against it.
+
+## Tests
+
+`crates/engine-renderer/tests/frame_sync.rs`, seven tests against a real device with no
+window and no swap chain:
+
+| Test | Asserts |
+| --- | --- |
+| `slots_cycle_and_allocators_are_reused` | slot sequence `0,1,2,0,1,2,…`, allocators reset safely across laps |
+| `trivial_work_never_makes_the_cpu_wait` | one slot, empty lists → **zero** stalls |
+| `one_slot_stalls_on_every_frame_under_real_gpu_load` | one slot, 64 MiB copies → stalls on every frame after the first |
+| `three_slots_absorb_the_first_frames_without_waiting` | first lap cannot stall; second lap must |
+| `fence_values_advance_and_complete` | monotonic values, all passed after an idle wait |
+| `releasing_slots_lets_the_next_frames_run_without_waiting` | the resize path frees slots correctly |
+| `an_out_of_range_frame_count_is_rejected` | 0 and `MAX+1` rejected, 1..=MAX accepted |
+
+The second and third tests exist because **the first version of this suite asserted the
+wrong thing**: it assumed a single-slot ring must serialize, and it failed. Empty command
+lists complete before the CPU can get back around the loop, so no wait ever happens. What
+serializes is one slot *plus GPU work that outlasts a CPU iteration* — hence the buffer-copy
+load, and hence a test that now pins down both halves of that statement.
+
+## Acceptance criteria
+
+| Criterion | Result |
+| --- | --- |
+| Multiple frames in flight | pass — configurable 1..=3, default 3 |
+| Fence synchronization | pass |
+| Command allocator recycling | pass — one per slot, reset after its fence passes |
+| Frame index | pass — monotonic, owned by the ring |
+| CPU/GPU synchronization | pass |
+| Safe resource reuse | pass — a slot is only reused after the GPU passes its fence |
+| CPU does not block unnecessarily | pass — measured: 3 stalls in 20,000 frames |
+| Synchronization stalls measured | pass — `SyncStats`, reported at shutdown |
+| No regression | pass — 0.168 ms CPU mean against the 0.166–0.184 ms band |
+
+## Known limitations
+
+* Per-slot *transient resources* are not here yet: a slot owns an allocator and a fence
+  value, but the upload ring and descriptor slices arrive in Milestones 4 and 6. The ring
+  is the place they will hang from.
+* No deferred destruction queue yet. Destroying a resource still means `wait_for_idle`,
+  which is correct but fully serializing. Milestone 5 addresses it.
+* The stall statistics accumulate for the process lifetime; there is no per-interval view.
+  The overlay in Milestone 15 will want one.

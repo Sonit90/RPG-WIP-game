@@ -13,22 +13,21 @@ use windows::Win32::Graphics::Direct3D12::{
     D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES, D3D12_RESOURCE_BARRIER_FLAG_NONE,
     D3D12_RESOURCE_BARRIER_TYPE_TRANSITION, D3D12_RESOURCE_STATE_PRESENT,
     D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATES, D3D12_RESOURCE_TRANSITION_BARRIER,
-    D3D12_VIEWPORT, ID3D12CommandAllocator, ID3D12CommandList, ID3D12GraphicsCommandList,
-    ID3D12Resource,
+    D3D12_VIEWPORT, ID3D12CommandList, ID3D12GraphicsCommandList, ID3D12Resource,
 };
 
 use windows::core::Interface;
 
 use crate::device::{BACKEND, RenderDevice, feature_level_name};
 use crate::error::RendererError;
+use crate::frame::{FrameRing, SyncStats};
 use crate::gpu_timer::GpuTimer;
 use crate::mesh::GpuMesh;
 #[cfg(feature = "debug-overlay")]
 use crate::overlay::{OverlayBuffers, OverlayGeometry};
 use crate::pipeline::{ScenePipeline, Vertex};
 use crate::stress;
-use crate::swapchain::{FRAME_COUNT, SwapChain};
-use crate::sync::GpuFence;
+use crate::swapchain::SwapChain;
 use crate::{AdapterInfo, RendererConfig};
 
 /// Debug overlay state owned by the renderer.
@@ -50,14 +49,6 @@ struct OverlayState {
     drawn_vertices: u32,
 }
 
-/// Per-frame-slot resources.
-struct Frame {
-    allocator: ID3D12CommandAllocator,
-    /// Fence value signalled after this slot's work was submitted. The slot may not be
-    /// reused until the GPU has passed it.
-    fence_value: u64,
-}
-
 /// D3D12 renderer.
 ///
 /// **Field order is load-bearing.** Rust drops fields in declaration order, and D3D12
@@ -66,12 +57,12 @@ struct Frame {
 /// on some adapters. `context` therefore comes last.
 pub struct Renderer {
     swap_chain: SwapChain,
-    frames: Vec<Frame>,
+    /// Frame slots, their allocators and the fence that paces them.
+    frames: FrameRing,
     command_list: ID3D12GraphicsCommandList,
     /// Pre-built argument for `ExecuteCommandLists`, so submitting a frame performs no
     /// allocation and no `QueryInterface`.
     execute_lists: [Option<ID3D12CommandList>; 1],
-    fence: GpuFence,
     /// GPU-side frame timing. Read with a `FRAME_COUNT`-frame lag so the CPU never
     /// blocks to obtain it.
     gpu_timer: GpuTimer,
@@ -95,6 +86,9 @@ pub struct Renderer {
     triangles_last_frame: u64,
     /// Slot recorded by `render` and not yet presented.
     recorded_frame_slot: Option<usize>,
+    /// Back-buffer index the recorded frame targeted. Tracked separately from the frame
+    /// slot: one is a texture, the other is CPU-side recording state.
+    recorded_back_buffer: usize,
     /// Device, queue and factory. Declared last so it is released last.
     context: RenderDevice,
 }
@@ -130,23 +124,17 @@ impl Renderer {
         let hwnd = HWND(window_handle as *mut std::ffi::c_void);
         let swap_chain = SwapChain::new(&context, hwnd, config.width, config.height, config.vsync)?;
 
-        let mut frames = Vec::with_capacity(FRAME_COUNT);
-        for _ in 0..FRAME_COUNT {
-            frames.push(Frame {
-                allocator: context.create_command_allocator()?,
-                fence_value: 0,
-            });
-        }
+        let frames = FrameRing::new(&context, config.frames_in_flight)?;
+        let frames_in_flight = frames.frames_in_flight();
 
         // Created closed, so the per-frame path can always begin with Reset.
-        let command_list = context.create_command_list(&frames[0].allocator)?;
+        let command_list = context.create_command_list(frames.allocator(0))?;
 
         let execute_lists = [Some(command_list.cast::<ID3D12CommandList>().map_err(
             |error| RendererError::api("ID3D12GraphicsCommandList::cast<ID3D12CommandList>", error),
         )?)];
 
-        let fence = GpuFence::new(&context)?;
-        let gpu_timer = GpuTimer::new(context.device(), context.queue(), FRAME_COUNT)?;
+        let gpu_timer = GpuTimer::new(context.device(), context.queue(), frames_in_flight)?;
         let pipeline = ScenePipeline::new(context.device())?;
         let mut scene_scratch = Vec::new();
         stress::build_grid(1, &mut scene_scratch);
@@ -155,10 +143,10 @@ impl Renderer {
         #[cfg(feature = "debug-overlay")]
         let overlay = OverlayState {
             geometry: OverlayGeometry::new(),
-            buffers: OverlayBuffers::new(context.device(), FRAME_COUNT)?,
+            buffers: OverlayBuffers::new(context.device(), frames_in_flight)?,
             enabled: true,
-            views: vec![None; FRAME_COUNT],
-            stale: vec![true; FRAME_COUNT],
+            views: vec![None; frames_in_flight],
+            stale: vec![true; frames_in_flight],
             drawn_vertices: 0,
         };
 
@@ -167,7 +155,6 @@ impl Renderer {
             frames,
             command_list,
             execute_lists,
-            fence,
             gpu_timer,
             last_gpu_frame_ms: None,
             pipeline,
@@ -179,6 +166,7 @@ impl Renderer {
             draw_calls_last_frame: 0,
             triangles_last_frame: 0,
             recorded_frame_slot: None,
+            recorded_back_buffer: 0,
             context,
         };
         renderer.log_startup_info();
@@ -367,34 +355,33 @@ impl Renderer {
     ///
     /// Returns [`RendererError::Api`] if recording or submission fails.
     pub fn render(&mut self, color: [f32; 4]) -> Result<(), RendererError> {
-        let index = self.swap_chain.current_back_buffer_index();
+        // Frame pacing lives in the ring: it waits for this slot's previous submission,
+        // resets the allocator, and records whether the wait actually blocked.
+        let slot = self.frames.begin_frame()?;
 
-        // Frame pacing: this slot's previous submission must have completed before its
-        // allocator can be reset. Only blocks when the CPU is a full lap ahead.
-        self.fence.wait(self.frames[index].fence_value)?;
-
-        // The wait above is exactly the point where this slot's previous timestamps are
-        // known to be resolved, so reading them costs no extra synchronization. The value
-        // therefore describes the frame FRAME_COUNT frames ago, not the one about to be
-        // recorded — see `gpu_timer` for why that lag is the right trade.
-        if let Some(milliseconds) = self.gpu_timer.read_frame_ms(index)? {
+        // The wait inside `begin_frame` is exactly the point where this slot's previous
+        // timestamps are known to be resolved, so reading them costs no extra
+        // synchronization. The value describes the frame one lap ago, not the one about to
+        // be recorded — see `gpu_timer` for why that lag is the right trade.
+        if let Some(milliseconds) = self.gpu_timer.read_frame_ms(slot)? {
             self.last_gpu_frame_ms = Some(milliseconds);
         }
 
-        let allocator = &self.frames[index].allocator;
-        // SAFETY: FFI call. The GPU is done with this allocator, as enforced by the wait
-        // above, which is exactly the precondition Reset requires.
-        unsafe { allocator.Reset() }
-            .map_err(|error| RendererError::api("ID3D12CommandAllocator::Reset", error))?;
+        // The back buffer to draw into is the swap chain's business, and is deliberately
+        // not assumed to equal the frame slot.
+        let back_buffer = self.swap_chain.current_back_buffer_index();
+
         // SAFETY: FFI call. The list is closed at this point (either from `new` or from
-        // the previous frame), which is what Reset requires.
-        unsafe { self.command_list.Reset(allocator, None) }
+        // the previous frame), which is what Reset requires, and the allocator was just
+        // reset by the ring after proving the GPU was done with it.
+        unsafe { self.command_list.Reset(self.frames.allocator(slot), None) }
             .map_err(|error| RendererError::api("ID3D12GraphicsCommandList::Reset", error))?;
 
-        self.gpu_timer.begin_frame(&self.command_list, index);
+        self.gpu_timer.begin_frame(&self.command_list, slot);
 
-        let buffer = self.swap_chain.buffer(index);
-        let rtv = self.swap_chain.rtv_handle(index);
+        let buffer = self.swap_chain.buffer(back_buffer);
+        let rtv = self.swap_chain.rtv_handle(back_buffer);
+        let index = slot;
 
         let to_render_target = transition_barrier(
             buffer,
@@ -476,7 +463,7 @@ impl Renderer {
 
         // The closing timestamp brackets the frame's own work; the resolve that follows it
         // is a GPU-side copy into the readback buffer.
-        self.gpu_timer.end_frame(&self.command_list, index);
+        self.gpu_timer.end_frame(&self.command_list, slot);
 
         // SAFETY: FFI call closing the list recorded above.
         unsafe { self.command_list.Close() }
@@ -490,7 +477,8 @@ impl Renderer {
                 .ExecuteCommandLists(&self.execute_lists);
         }
 
-        self.recorded_frame_slot = Some(index);
+        self.recorded_frame_slot = Some(slot);
+        self.recorded_back_buffer = back_buffer;
         Ok(())
     }
 
@@ -503,16 +491,43 @@ impl Renderer {
     ///
     /// Returns [`RendererError::Api`] if `Present` or the fence signal fails.
     pub fn present(&mut self) -> Result<(), RendererError> {
-        let Some(index) = self.recorded_frame_slot.take() else {
+        let Some(slot) = self.recorded_frame_slot.take() else {
             return Err(RendererError::InvalidConfig {
                 reason: "present called without a recorded frame".to_owned(),
             });
         };
 
+        // The frame was recorded against a specific back buffer. If the swap chain moved
+        // on between recording and presenting, something reset it behind the renderer's
+        // back and the presented image would not be the one recorded.
+        debug_assert_eq!(
+            self.recorded_back_buffer,
+            self.swap_chain.current_back_buffer_index(),
+            "the swap chain advanced between render and present"
+        );
+
         self.swap_chain.present()?;
-        self.frames[index].fence_value = self.fence.signal(self.context.queue())?;
+        // Signalled after Present, so the slot's fence value covers the whole submission;
+        // this also advances the ring to the next slot.
+        self.frames.end_frame(self.context.queue(), slot)?;
         self.frames_presented += 1;
         Ok(())
+    }
+
+    /// How often, and for how long, the CPU has waited for the GPU.
+    ///
+    /// A high stall ratio means the renderer is GPU-bound, which is the healthy state for
+    /// an uncapped loop; a low one means the CPU is the limit. The number exists so that
+    /// claim is measured rather than assumed.
+    #[must_use]
+    pub fn sync_stats(&self) -> SyncStats {
+        self.frames.stats()
+    }
+
+    /// Number of frames the CPU may run ahead of the GPU.
+    #[must_use]
+    pub fn frames_in_flight(&self) -> usize {
+        self.frames.frames_in_flight()
     }
 
     /// Resizes the swap chain, waiting for the GPU to finish with the old buffers first.
@@ -552,10 +567,7 @@ impl Renderer {
 
         // After ResizeBuffers every slot is free again; forget the old fence values so
         // the next frames do not wait on submissions that referenced destroyed buffers.
-        let completed = self.fence.completed_value();
-        for frame in &mut self.frames {
-            frame.fence_value = completed;
-        }
+        self.frames.release_all_slots();
         Ok(())
     }
 
@@ -565,7 +577,7 @@ impl Renderer {
     /// The caller must have waited for the GPU to go idle: resetting an allocator whose
     /// submissions are still executing is undefined behaviour in D3D12.
     fn reset_command_list_to_empty(&mut self) -> Result<(), RendererError> {
-        let allocator = &self.frames[0].allocator;
+        let allocator = self.frames.allocator(0);
         // SAFETY: FFI call. The GPU is idle, which is exactly Reset's precondition.
         unsafe { allocator.Reset() }
             .map_err(|error| RendererError::api("ID3D12CommandAllocator::Reset", error))?;
@@ -586,7 +598,7 @@ impl Renderer {
     ///
     /// Returns [`RendererError::Api`] if the fence signal or wait fails.
     pub fn wait_for_idle(&mut self) -> Result<(), RendererError> {
-        self.fence.wait_for_idle(self.context.queue())
+        self.frames.wait_for_idle(self.context.queue())
     }
 }
 
@@ -598,7 +610,22 @@ impl Drop for Renderer {
         if let Err(error) = self.wait_for_idle() {
             log::error!("GPU did not go idle during shutdown: {error}");
         }
-        log::info!("renderer shut down after {} frames", self.frames_presented);
+        let sync = self.frames.stats();
+        log::info!(
+            "renderer shut down after {} frames ({} frames in flight)",
+            self.frames_presented,
+            self.frames.frames_in_flight()
+        );
+        // Which processor was the limit, as a measurement rather than an assumption: a
+        // high ratio means the CPU spent the frame waiting for the GPU.
+        log::info!(
+            "CPU waited for the GPU on {}/{} frames ({:.1}%), mean {:.3} ms per frame, max {:.3} ms",
+            sync.stalled_frames,
+            sync.total_frames,
+            sync.stall_ratio() * 100.0,
+            sync.mean_stall_ms(),
+            sync.max_stall.as_secs_f64() * 1e3
+        );
     }
 }
 

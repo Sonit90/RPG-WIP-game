@@ -351,3 +351,37 @@ runs, 60,000 frames at 1000 triangles:
 
 Within the Phase 0 band, so the added per-frame work is below the run-to-run noise of the
 measurement. This is checked after every milestone rather than at the end.
+
+# Phase 2 — renderer foundation
+
+## Milestone 2 — is the frame CPU-bound or GPU-bound?
+
+Release build, 1920x1080, 20,000 frames, three frames in flight. "Stalled" counts frames
+where the CPU's pacing wait actually had to block on the fence.
+
+| Scene | CPU mean | GPU mean | Stalled frames | Max stall |
+| --- | --- | --- | --- | --- |
+| 1,000 triangles | 0.167 ms | 0.051 ms | 3 / 20,000 (0.02%) | 1.83 ms |
+| 100,000 triangles | 0.129 ms | 0.069 ms | 3 / 20,000 (0.02%) | 2.06 ms |
+
+**The renderer is CPU-bound.** The GPU finishes in roughly a third of the time the CPU
+spends preparing and submitting, and the CPU almost never waits for it. The handful of
+stalls are startup artefacts — the first frames of each slot, plus one long outlier that
+matches a driver or scheduler hiccup rather than steady-state pacing.
+
+Consequences for the rest of Phase 2:
+
+* Work that reduces **CPU submission cost** — batching, instancing, fewer descriptor and
+  pipeline changes — moves the frame time.
+* Work that reduces **GPU cost** will not, until the GPU workload grows past the CPU's.
+  Depth, lighting and thousands of objects will change that, and this measurement should be
+  repeated when they land.
+* The three frames in flight are currently doing nothing for throughput, because the CPU
+  is never the one waiting. They cost nothing and become load-bearing the moment the GPU
+  side grows.
+
+Counter-intuitive result worth recording: a **single** frame in flight also shows zero
+stalls when the GPU work is trivial. An empty command list completes before the CPU can get
+back around the loop. What serializes CPU and GPU is one slot *plus* GPU work that outlasts
+a CPU iteration — verified in `frame_sync.rs` by giving the GPU 64 MiB buffer copies, which
+does produce a stall on every frame after the first.

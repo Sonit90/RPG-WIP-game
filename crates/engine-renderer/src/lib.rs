@@ -16,6 +16,7 @@ pub mod device;
 pub mod error;
 #[cfg(feature = "debug-overlay")]
 pub mod font;
+pub mod frame;
 pub mod gpu_timer;
 pub mod instancing;
 pub mod mesh;
@@ -33,6 +34,7 @@ pub use adapter::{AdapterInfo, select_adapter};
 pub use bench::{BenchHarness, BenchResult, DrawMode};
 pub use device::BACKEND;
 pub use error::RendererError;
+pub use frame::{DEFAULT_FRAMES_IN_FLIGHT, MAX_FRAMES_IN_FLIGHT, SyncStats};
 pub use instancing::{InstanceData, UNIT_TRIANGLE};
 pub use mesh::GpuMesh;
 pub use pipeline::{TRIANGLE_VERTICES, Vertex};
@@ -61,6 +63,13 @@ pub struct RendererConfig {
     /// Useful while developing, but a test process has no debugger attached, so tests
     /// enable the layer with this off and rely on the returned `HRESULT`s instead.
     pub break_on_validation_error: bool,
+    /// Frames the CPU may run ahead of the GPU.
+    ///
+    /// One serializes CPU and GPU and is useful for isolating GPU cost; the default of
+    /// three overlaps them and absorbs a frame that runs long. Bounded by the swap chain's
+    /// buffer count — queueing more frames than there are back buffers cannot help,
+    /// because `Present` blocks once every buffer is spoken for.
+    pub frames_in_flight: usize,
 }
 
 impl Default for RendererConfig {
@@ -71,6 +80,7 @@ impl Default for RendererConfig {
             vsync: false,
             enable_debug_layer: cfg!(debug_assertions),
             break_on_validation_error: cfg!(debug_assertions),
+            frames_in_flight: frame::DEFAULT_FRAMES_IN_FLIGHT,
         }
     }
 }
@@ -90,6 +100,17 @@ impl RendererConfig {
     #[must_use]
     pub fn with_vsync(mut self, vsync: bool) -> Self {
         self.vsync = vsync;
+        self
+    }
+
+    /// Returns the configuration with the number of frames in flight overridden.
+    ///
+    /// Out-of-range values are rejected when the renderer is created, not silently
+    /// clamped: a caller asking for eight frames in flight has a wrong expectation, and
+    /// quietly giving them three would hide it.
+    #[must_use]
+    pub fn with_frames_in_flight(mut self, frames: usize) -> Self {
+        self.frames_in_flight = frames;
         self
     }
 
