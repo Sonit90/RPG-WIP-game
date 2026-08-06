@@ -18,6 +18,55 @@ Milestone status:
 | 8 | Instancing test | done |
 | 9 | Automated GPU integration test | done |
 
+## Definition of Done
+
+Checked on 2026-08-06 against a **fresh `git clone` into a temporary directory**, not the
+working tree.
+
+| Requirement | Status |
+| --- | --- |
+| Rust workspace builds | pass |
+| `cargo test` passes | pass — 155 tests across 16 targets, no `SKIP:` lines |
+| `cargo fmt --check` passes | pass |
+| `cargo clippy` passes | pass, with `-D warnings`, in both feature configurations |
+| Windows application starts | pass |
+| D3D12 device initializes | pass |
+| Correct GPU is selected | pass — discrete adapter chosen by policy, no hardcoded model |
+| Swap chain works | pass |
+| Render loop works | pass — uncapped, no sleep, no artificial cap |
+| Triangle renders | pass — verified by pixel readback, not by eye |
+| CPU frame time measured | pass |
+| GPU frame time measured with GPU timestamps | pass — never derived from wall clock |
+| Debug metrics visible | pass — overlay (F5) and interval logging |
+| Stress test exists | pass — 1 to 100,000 triangles, runtime keys |
+| Instancing benchmark exists | pass |
+| GPU integration test exists | pass |
+| Performance benchmark exists | pass — `performance_test`, separate crate |
+| Release build excludes test executables | pass — `cargo build --release --bin mygame` produces `mygame.exe` only |
+| Documentation exists | pass |
+| Milestones reproducible from a clean checkout | pass — verified by cloning and running the full suite |
+
+### What Phase 0 established, in numbers
+
+| Question | Answer |
+| --- | --- |
+| Cost of a draw call | ~27 ns CPU, ~41 ns GPU |
+| Cost of 100,000 triangles in one draw | 0.014 ms CPU, 0.077 ms GPU |
+| Cost of 100,000 objects as separate draws | 2.65 ms CPU, 4.11 ms GPU — 64% of a 240 FPS frame |
+| Where the windowed frame goes | `present` dominates: 0.107–0.147 ms against 0.034 ms to record |
+| Batching crossover | around 1,000 objects |
+
+### Carried into the next phase
+
+* Presentation, not rendering, limits the windowed loop today. Any frame-rate target work
+  starts there — waitable swap chain, frame latency, or fullscreen presentation — and
+  Milestone 7 recorded an unexplained result in that area that deserves a proper look.
+* The renderer has no camera, no transforms and no depth buffer. Everything so far is in
+  clip space.
+* Two performance conclusions were retracted during Phase 0 for the same methodological
+  error. `docs/performance.md` now requires interleaved A/B runs and a stated run count;
+  that rule is the most durable thing the measurement work produced.
+
 ---
 
 ## Milestone 0 — Project bootstrap
