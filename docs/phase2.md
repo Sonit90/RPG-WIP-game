@@ -31,7 +31,7 @@ Milestone status:
 | 8 | Camera | done |
 | 9 | Transform system | done |
 | 10 | Mesh system | done |
-| 11 | Basic material | todo |
+| 11 | Basic material | done |
 | 12 | Depth buffer | todo |
 | 13 | 3D scene | todo |
 | 14 | Basic lighting | todo |
@@ -1380,3 +1380,117 @@ before its copy executed leaves *one* mesh full of garbage while the others look
 * Vertex and index data live in separate buffers. One buffer with two offsets would halve
   the resource count; it would also complicate state tracking, and the resource count is not
   a measured problem.
+
+---
+
+# Milestone 11 — Basic material
+
+## What was built
+
+`MaterialDesc` (what a surface looks like), `MaterialConstants` (the same thing in the
+shader's memory layout) and `Material` (the constants resident on the GPU).
+
+A material is a colour and two scalars. It is deliberately **not** a shader, a pass, a
+technique or a permutation system: one pipeline draws every material in Phase 2, and the
+material only supplies constants to it. §46 rules out a material graph, and nothing here
+needs one.
+
+```rust
+let material = Material::new(&device, MaterialDesc::colored(0.8, 0.2, 0.2)
+    .with_roughness(0.4))?;
+// material.gpu_address() -> a root constant-buffer view
+```
+
+## Constants live in device-local memory, not the upload ring
+
+A material's parameters change when the material changes, which is approximately never. The
+upload ring is for data that changes every frame; putting a material there would rewrite the
+same bytes 480 times a second. So the constants are written once through the staging
+uploader, exactly like mesh data, and several materials created together share one
+synchronization.
+
+## Why a root CBV rather than a descriptor table
+
+With no textures, a material's descriptor table would contain exactly one CBV. A root
+constant-buffer view puts the GPU address directly in the root signature: no descriptor
+allocation, no table bind per draw.
+
+When a material gains a texture that stops being true, and the material moves to a table in
+the persistent descriptor region — which is what Milestone 4 built that region for. The
+change is local to this type and the root signature.
+
+## The constant layout is the shader's layout
+
+HLSL packs constant buffers into 16-byte registers and never straddles one, so
+`MaterialConstants` writes its padding out explicitly rather than relying on Rust and HLSL
+happening to agree:
+
+| Field | Offset | Register |
+| --- | --- | --- |
+| `base_color` | 0 | b.x — b.w |
+| `emissive` | 16 | b+1.x — b+1.z |
+| `roughness` | 28 | b+1.w |
+| `metallic` | 32 | b+2.x |
+| padding | 36 | b+2.y — b+2.w |
+
+A test pins all of it, because a field inserted without matching padding shifts every
+subsequent value and shades the scene with whatever landed in the wrong register.
+
+The buffer itself is 256 bytes, not 48: a constant buffer's **size** must be a 256-byte
+multiple, not only its address. The slack is never read. A test asserts the GPU address is
+256-aligned, because a misaligned CBV is rejected at bind time — a long way from the code
+that created it.
+
+## Validation
+
+`roughness` and `metallic` are clamped by the builders and *rejected* by `validate`. Both,
+deliberately: the builder is the normal path and a typo there should not become an error to
+handle, while a value that bypassed the builder must not reach the GPU.
+
+Non-finite values are rejected outright. `NaN` propagates through the whole lighting
+expression and produces a black or white pixel with nothing pointing at where it came from.
+
+`roughness` and `metallic` exist now, before lighting does, because adding a field to a
+constant buffer later means changing the struct, the shader and the padding together. They
+are not a claim that the renderer is physically based.
+
+## Tests
+
+Six unit tests and four against a real device:
+
+| Test | Asserts |
+| --- | --- |
+| `the_default_material_is_a_plain_grey_dielectric` | a sane default |
+| `builders_clamp_rather_than_produce_unusable_values` | 2.0 roughness becomes 1.0 |
+| `out_of_range_parameters_are_rejected` | the bypass path still fails |
+| `non_finite_parameters_are_rejected` | `NaN` and infinity |
+| `the_constant_layout_matches_the_shader_registers` | size 48, offsets 0/16/28/32 |
+| `a_description_converts_field_for_field` | no field silently dropped |
+| `a_materials_constants_reach_the_gpu_unchanged` | read back from device-local memory |
+| `the_constant_address_is_aligned_for_a_root_view` | 256-byte multiple |
+| `a_batch_of_materials_uploads_correctly` | three distinct materials, not three copies of the last |
+| `an_invalid_material_is_rejected_before_it_reaches_the_gpu` | validation runs before allocation |
+
+## Acceptance criteria
+
+| Criterion | Result |
+| --- | --- |
+| Material with colour and simple parameters | pass |
+| Constant buffer per material | pass — 256 bytes, device-local |
+| Layout matches the shader | pass — pinned by test |
+| Efficient binding | pass — root CBV, no per-draw descriptor |
+| Created and destroyed like any resource | pass — `GpuBuffer`, same lifetime rules |
+| Batched creation | pass — `new_many`, one synchronization |
+| No material graph, no permutations | correct — none built |
+| No regression | pass — nothing here runs in the frame path yet |
+
+## Known limitations
+
+* No textures. That is what a descriptor table and an SRV are for, and the material moves to
+  one when there is an image to sample. Nothing in the current shape prevents it.
+* No `MaterialHandle`. Handles arrive with the `RenderWorld` in Milestone 13; a material is
+  currently owned by whoever created it.
+* No transparency. `base_color.w` is carried through but nothing blends — Phase 2 is opaque
+  only, and a blended pass needs sorting by depth, which the sort key does not yet do.
+* Nothing binds a material yet. The mesh pipeline and its root signature arrive with the 3D
+  scene in Milestone 13; this milestone supplies what that pipeline will read.

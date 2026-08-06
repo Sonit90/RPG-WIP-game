@@ -22,6 +22,7 @@ pub mod font;
 pub mod frame;
 pub mod gpu_timer;
 pub mod instancing;
+pub mod material;
 pub mod mesh;
 pub mod offscreen;
 #[cfg(feature = "debug-overlay")]
@@ -42,6 +43,7 @@ pub use device::BACKEND;
 pub use error::RendererError;
 pub use frame::{DEFAULT_FRAMES_IN_FLIGHT, MAX_FRAMES_IN_FLIGHT, SyncStats};
 pub use instancing::{InstanceData, UNIT_TRIANGLE};
+pub use material::{Material, MaterialConstants, MaterialDesc};
 pub use mesh::{GpuMesh, Index, MeshData, MeshVertex, VertexStream};
 pub use pipeline::{TRIANGLE_VERTICES, Vertex};
 pub use renderer::Renderer;
