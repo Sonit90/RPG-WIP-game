@@ -25,7 +25,7 @@ Milestone status:
 | 2 | Frame resources and synchronization | done |
 | 3 | Command context | done |
 | 4 | Descriptor management | done |
-| 5 | Resource abstraction | todo |
+| 5 | Resource abstraction | done |
 | 6 | Upload system | todo |
 | 7 | Shader system | todo |
 | 8 | Camera | todo |
@@ -699,3 +699,118 @@ wrong descriptor — invisible until something renders wrong.
   Milestone 5's deferred destruction will cover both resources and their views.
 * Heap capacities are constructor arguments with no defaults chosen yet. The numbers get
   chosen when there is a real scene to size them against, from the reported peaks.
+
+---
+
+# Milestone 5 — Resource abstraction
+
+## What was built
+
+`engine-renderer::resource`: `GpuBuffer`, `GpuTexture` (render target, depth buffer or
+plain texture), the `TrackedResource` trait, and `DeferredReleaseQueue`. `RenderDevice`
+gained `create_texture_2d`, `create_render_target_view` and `create_depth_stencil_view`.
+
+## A resource knows its own state
+
+Before this milestone a caller wrote:
+
+```rust
+context.transition(&buffer, PRESENT, RENDER_TARGET);
+```
+
+The "before" state is something the caller has to *remember*, across frames and across
+code paths. Now:
+
+```rust
+context.transition_to(&buffer, RENDER_TARGET);
+```
+
+There is no "before" to state, so it cannot be stated wrongly. The renderer's back-buffer
+transitions were the first users; the swap chain hands out `GpuTexture` values adopted in
+`PRESENT`, which is both the state DXGI delivers them in and the state they must return to.
+
+Two consequences fall out for free:
+
+* **A transition to the current state costs nothing.** It is a comparison, not a driver
+  call — which is the "avoid blindly issuing barriers every frame" requirement, enforced
+  rather than remembered. `CommandStats::redundant_transitions` counts them.
+* **A wrong barrier is now impossible to write**, rather than being caught by the
+  validation layer if someone happens to be running it.
+
+## Tracking is per-resource, single-queue, and says so
+
+Not per-subresource: every texture here has one mip and one array slice. Not cross-queue:
+there is one queue. Both limits are real, both are documented, and neither is engineered
+around, because nothing in the renderer needs either yet.
+
+The state lives in a `Cell`. Recording borrows resources immutably — a texture is
+referenced by its view, its render list entry and the command context in the same frame —
+while a transition must update the state. That is single-threaded interior mutation, which
+is what command recording is; `GpuTexture` is deliberately not `Sync`.
+
+## Destruction is deferred rather than blocking
+
+Releasing a resource the GPU may still be reading is a use-after-free whose symptom is a
+driver crash somewhere else. The two safe options are to block until the GPU is idle —
+correct, and a full pipeline drain — or to hold the resource until the fence value covering
+its last use has passed.
+
+`DeferredReleaseQueue` does the second. Releasing costs a push; collecting costs a
+comparison per released resource, and the renderer collects once per frame against the
+fence value the ring already knows. Entries are pushed in increasing fence order, so
+everything releasable is a prefix and the scan stops at the first entry the GPU has not
+reached.
+
+`peak_pending` exists because a queue that keeps growing is a leak in slow motion: it means
+resources are being released faster than frames complete.
+
+## Tests
+
+Unit tests cover the queue's ordering rule without a GPU (nothing released early,
+everything up to the completed value released, collection stopping at the first unpassed
+entry, shared fence values releasing together).
+
+`tests/resource_lifetime.rs`, eight tests against a real device:
+
+| Test | Asserts |
+| --- | --- |
+| `buffers_and_textures_are_created_in_the_state_they_report` | creation states match what the wrappers claim |
+| `a_zero_sized_resource_is_rejected` | zero dimensions refused before reaching D3D12 |
+| `a_transition_updates_the_tracked_state_and_the_driver_accepts_it` | the driver accepts a barrier built from tracked state |
+| `transitioning_to_the_current_state_costs_nothing` | no barrier, no driver call, counted as redundant |
+| `a_resource_survives_until_the_gpu_has_passed_its_fence_value` | nothing released while work is in flight |
+| `resources_are_released_in_submission_order` | prefix collection, peak preserved |
+| `a_resource_can_be_created_used_destroyed_and_recreated` | three full create/use/destroy cycles |
+| `an_upload_buffer_accepts_data_and_rejects_what_does_not_fit` | size and heap-type checks |
+
+Every one of these submits and waits rather than only recording. A barrier the driver
+rejects is invisible until something executes it — the lesson from Milestone 3, applied.
+
+## Acceptance criteria
+
+| Criterion | Result |
+| --- | --- |
+| Buffer, Texture, RenderTarget, DepthBuffer abstractions | pass — `GpuBuffer`, `GpuTexture` with render-target and depth constructors |
+| Creation and destruction | pass |
+| Resource state tracking | pass — per resource, updated at transition time |
+| Upload | pass — `GpuBuffer::write` for upload-heap buffers |
+| Transition | pass — `transition_to`, destination only |
+| Transitions explicit and correct | pass — verified by submitting, not just recording |
+| No blind per-frame barriers | pass — redundant transitions are a comparison |
+| Tests verify common transitions | pass |
+| Deferred destruction where needed | pass — `DeferredReleaseQueue`, collected per frame |
+| No render graph | correct — none built |
+| No regression | pass — median p50 0.152 ms |
+
+## Known limitations
+
+* Per-resource, not per-subresource, tracking. A mipmapped texture whose levels need
+  different states would need a state per subresource; nothing has mips yet.
+* Single-queue. A copy queue for uploads would need cross-queue state handling, which D3D12
+  handles through `COMMON` and queue ownership transfers — a real design question, deferred
+  until there is a copy queue.
+* The deferred queue holds `ID3D12Resource` directly, so a released `GpuTexture` must hand
+  over its resource clone. When the mesh and material systems own resources, they will do
+  this in their `Drop` rather than the caller doing it by hand.
+* Nothing yet uses `GpuBuffer` for geometry — `GpuMesh` still owns its own resource. The
+  mesh system in Milestone 10 replaces it.

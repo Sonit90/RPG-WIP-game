@@ -2,7 +2,8 @@
 
 use windows::Win32::Foundation::HWND;
 use windows::Win32::Graphics::Direct3D12::{
-    D3D12_CPU_DESCRIPTOR_HANDLE, D3D12_DESCRIPTOR_HEAP_TYPE_RTV, ID3D12Resource,
+    D3D12_CPU_DESCRIPTOR_HANDLE, D3D12_DESCRIPTOR_HEAP_TYPE_RTV, D3D12_RESOURCE_STATE_PRESENT,
+    ID3D12Resource,
 };
 use windows::Win32::Graphics::Dxgi::Common::{
     DXGI_ALPHA_MODE_UNSPECIFIED, DXGI_FORMAT, DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_SAMPLE_DESC,
@@ -18,6 +19,7 @@ use windows::core::Interface;
 use crate::descriptor::{CpuDescriptorHeap, DescriptorHandle};
 use crate::device::RenderDevice;
 use crate::error::RendererError;
+use crate::resource::GpuTexture;
 
 /// Number of back buffers, and therefore of frames the CPU may run ahead.
 ///
@@ -40,7 +42,7 @@ pub struct SwapChain {
     rtv_heap: CpuDescriptorHeap,
     /// One render-target view per back buffer, allocated once.
     rtvs: Vec<DescriptorHandle>,
-    buffers: Vec<ID3D12Resource>,
+    buffers: Vec<GpuTexture>,
     width: u32,
     height: u32,
     allow_tearing: bool,
@@ -138,9 +140,13 @@ impl SwapChain {
         (unsafe { self.swap_chain.GetCurrentBackBufferIndex() }) as usize
     }
 
-    /// The back-buffer resource at `index`.
+    /// The back buffer at `index`, with its tracked resource state.
+    ///
+    /// A back buffer is in `PRESENT` when DXGI hands it over and must be back in `PRESENT`
+    /// before it is presented again, so its state is tracked like any other resource
+    /// rather than assumed by the render path.
     #[must_use]
-    pub fn buffer(&self, index: usize) -> &ID3D12Resource {
+    pub fn buffer(&self, index: usize) -> &GpuTexture {
         &self.buffers[index]
     }
 
@@ -240,14 +246,18 @@ impl SwapChain {
             // created with, so the call cannot address a non-existent buffer.
             let buffer: ID3D12Resource = unsafe { self.swap_chain.GetBuffer(index as u32) }
                 .map_err(|error| RendererError::api("IDXGISwapChain3::GetBuffer", error))?;
-            // SAFETY: FFI call. Passing `None` for the view description uses the
-            // resource's own format, and the handle points inside our own RTV heap.
-            unsafe {
-                context
-                    .device()
-                    .CreateRenderTargetView(&buffer, None, self.rtv_handle(index));
-            }
-            self.buffers.push(buffer);
+            context.create_render_target_view(&buffer, self.rtv_handle(index));
+
+            // DXGI hands over a back buffer in PRESENT, which is also the state it must be
+            // in to be presented again. Adopting it with that state is what lets the
+            // render path transition it by destination alone.
+            self.buffers.push(GpuTexture::adopt(
+                buffer,
+                self.width,
+                self.height,
+                BACK_BUFFER_FORMAT,
+                D3D12_RESOURCE_STATE_PRESENT,
+            ));
         }
         Ok(())
     }

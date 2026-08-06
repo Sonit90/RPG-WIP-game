@@ -27,6 +27,7 @@ pub mod offscreen;
 pub mod overlay;
 pub mod pipeline;
 pub mod renderer;
+pub mod resource;
 pub mod shader;
 pub mod stress;
 pub mod swapchain;

@@ -21,6 +21,7 @@ use crate::mesh::GpuMesh;
 #[cfg(feature = "debug-overlay")]
 use crate::overlay::{OverlayBuffers, OverlayGeometry};
 use crate::pipeline::{ScenePipeline, Vertex};
+use crate::resource::DeferredReleaseQueue;
 use crate::stress;
 use crate::swapchain::SwapChain;
 use crate::{AdapterInfo, RendererConfig};
@@ -82,6 +83,8 @@ pub struct Renderer {
     draw_calls_last_frame: u32,
     /// Triangles submitted by the most recent frame.
     triangles_last_frame: u64,
+    /// Resources waiting for the GPU to finish with them before being released.
+    pending_release: DeferredReleaseQueue,
     /// Slot recorded by `render` and not yet presented.
     recorded_frame_slot: Option<usize>,
     /// Back-buffer index the recorded frame targeted. Tracked separately from the frame
@@ -164,6 +167,7 @@ impl Renderer {
             frames_presented: 0,
             draw_calls_last_frame: 0,
             triangles_last_frame: 0,
+            pending_release: DeferredReleaseQueue::new(),
             recorded_frame_slot: None,
             recorded_back_buffer: 0,
             context,
@@ -366,6 +370,10 @@ impl Renderer {
             self.last_gpu_frame_ms = Some(milliseconds);
         }
 
+        // Resources whose last use the GPU has now passed. Costs a comparison per frame
+        // when the queue is empty, which it usually is.
+        self.pending_release.collect(self.frames.completed_value());
+
         // The back buffer to draw into is the swap chain's business, and is deliberately
         // not assumed to equal the frame slot.
         let back_buffer = self.swap_chain.current_back_buffer_index();
@@ -377,18 +385,16 @@ impl Renderer {
 
         self.gpu_timer.begin_frame(self.commands.list(), slot);
 
-        let buffer = self.swap_chain.buffer(back_buffer).clone();
+        let buffer = self.swap_chain.buffer(back_buffer);
         let rtv = self.swap_chain.rtv_handle(back_buffer);
         let index = slot;
         let (width, height) = self.swap_chain.size();
 
-        // Queued, not submitted: the context flushes it before the first command that
-        // depends on the back buffer being a render target — which is the clear below.
-        self.commands.transition(
-            &buffer,
-            D3D12_RESOURCE_STATE_PRESENT,
-            D3D12_RESOURCE_STATE_RENDER_TARGET,
-        );
+        // Transition by destination only: the back buffer knows it is in PRESENT, so the
+        // "before" state cannot be stated wrongly. Queued, not submitted — the context
+        // flushes it before the clear below, which is the first command that depends on it.
+        self.commands
+            .transition_to(buffer, D3D12_RESOURCE_STATE_RENDER_TARGET);
         self.commands.set_render_target(rtv);
         self.commands.clear_render_target(rtv, color);
         self.commands.set_viewport(width, height);
@@ -429,11 +435,8 @@ impl Renderer {
             }
         }
 
-        self.commands.transition(
-            &buffer,
-            D3D12_RESOURCE_STATE_RENDER_TARGET,
-            D3D12_RESOURCE_STATE_PRESENT,
-        );
+        self.commands
+            .transition_to(buffer, D3D12_RESOURCE_STATE_PRESENT);
 
         // The closing timestamp brackets the frame's own work; the resolve that follows it
         // is a GPU-side copy into the readback buffer. Barriers are flushed first so the
@@ -566,6 +569,15 @@ impl Renderer {
     #[must_use]
     pub fn command_stats(&self) -> CommandStats {
         self.command_stats
+    }
+
+    /// Resources waiting for the GPU before they can be released.
+    ///
+    /// A number that keeps growing means resources are being released faster than frames
+    /// complete, which is a leak in slow motion.
+    #[must_use]
+    pub fn pending_releases(&self) -> usize {
+        self.pending_release.pending()
     }
 
     /// Blocks until the GPU has finished all submitted work.

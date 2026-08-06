@@ -44,6 +44,7 @@ use windows::core::Interface;
 
 use crate::device::RenderDevice;
 use crate::error::RendererError;
+use crate::resource::TrackedResource;
 
 /// Barriers batched before the array is submitted.
 ///
@@ -71,6 +72,8 @@ pub struct CommandStats {
     pub barriers: u32,
     /// `ResourceBarrier` calls made. Fewer than `barriers` means batching worked.
     pub barrier_flushes: u32,
+    /// Transitions skipped because the resource was already in the requested state.
+    pub redundant_transitions: u32,
 }
 
 impl CommandStats {
@@ -195,6 +198,31 @@ impl CommandContext {
         }
         self.pending
             .push(transition_barrier(resource, before, after));
+    }
+
+    /// Queues a transition of a tracked resource into `after`.
+    ///
+    /// The "before" state comes from the resource, so it cannot be stated wrongly. A
+    /// resource already in `after` produces no barrier at all — which is the other half of
+    /// "avoid blindly issuing barriers every frame": the check is a comparison, not a
+    /// driver call.
+    ///
+    /// The resource's state is updated when the barrier is *queued*, not when it is
+    /// flushed. That is correct because barriers are submitted in order and before any
+    /// command that depends on them, so by the time anything observes the resource it is
+    /// in the recorded state.
+    pub fn transition_to<R: TrackedResource + ?Sized>(
+        &mut self,
+        resource: &R,
+        after: D3D12_RESOURCE_STATES,
+    ) {
+        let before = resource.state();
+        if before == after {
+            self.stats.redundant_transitions += 1;
+            return;
+        }
+        self.transition(resource.resource(), before, after);
+        resource.set_state(after);
     }
 
     /// Submits every queued barrier as one call.

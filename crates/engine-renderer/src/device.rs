@@ -14,17 +14,19 @@ use windows::Win32::Graphics::Direct3D::{
     D3D_FEATURE_LEVEL_12_1, D3D_FEATURE_LEVEL_12_2,
 };
 use windows::Win32::Graphics::Direct3D12::{
-    D3D12_COMMAND_LIST_TYPE_DIRECT, D3D12_COMMAND_QUEUE_DESC, D3D12_COMMAND_QUEUE_FLAG_NONE,
-    D3D12_DESCRIPTOR_HEAP_DESC, D3D12_DESCRIPTOR_HEAP_FLAG_NONE,
-    D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE, D3D12_DESCRIPTOR_HEAP_TYPE,
-    D3D12_FEATURE_DATA_FEATURE_LEVELS, D3D12_FEATURE_FEATURE_LEVELS, D3D12_FENCE_FLAG_NONE,
-    D3D12_HEAP_FLAG_NONE, D3D12_HEAP_PROPERTIES, D3D12_HEAP_TYPE, D3D12_MESSAGE_SEVERITY_ERROR,
-    D3D12_RESOURCE_DESC, D3D12_RESOURCE_DIMENSION_BUFFER, D3D12_RESOURCE_STATES,
-    D3D12_TEXTURE_LAYOUT_ROW_MAJOR, D3D12CreateDevice, D3D12GetDebugInterface,
-    ID3D12CommandAllocator, ID3D12CommandQueue, ID3D12Debug, ID3D12DescriptorHeap, ID3D12Device,
-    ID3D12Fence, ID3D12GraphicsCommandList, ID3D12InfoQueue, ID3D12Resource,
+    D3D12_CLEAR_VALUE, D3D12_COMMAND_LIST_TYPE_DIRECT, D3D12_COMMAND_QUEUE_DESC,
+    D3D12_COMMAND_QUEUE_FLAG_NONE, D3D12_CPU_DESCRIPTOR_HANDLE, D3D12_DESCRIPTOR_HEAP_DESC,
+    D3D12_DESCRIPTOR_HEAP_FLAG_NONE, D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,
+    D3D12_DESCRIPTOR_HEAP_TYPE, D3D12_FEATURE_DATA_FEATURE_LEVELS, D3D12_FEATURE_FEATURE_LEVELS,
+    D3D12_FENCE_FLAG_NONE, D3D12_HEAP_FLAG_NONE, D3D12_HEAP_PROPERTIES, D3D12_HEAP_TYPE,
+    D3D12_HEAP_TYPE_DEFAULT, D3D12_MESSAGE_SEVERITY_ERROR, D3D12_RESOURCE_DESC,
+    D3D12_RESOURCE_DIMENSION_BUFFER, D3D12_RESOURCE_DIMENSION_TEXTURE2D, D3D12_RESOURCE_FLAGS,
+    D3D12_RESOURCE_STATES, D3D12_TEXTURE_LAYOUT_ROW_MAJOR, D3D12_TEXTURE_LAYOUT_UNKNOWN,
+    D3D12CreateDevice, D3D12GetDebugInterface, ID3D12CommandAllocator, ID3D12CommandQueue,
+    ID3D12Debug, ID3D12DescriptorHeap, ID3D12Device, ID3D12Fence, ID3D12GraphicsCommandList,
+    ID3D12InfoQueue, ID3D12Resource,
 };
-use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_UNKNOWN, DXGI_SAMPLE_DESC};
+use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT, DXGI_FORMAT_UNKNOWN, DXGI_SAMPLE_DESC};
 use windows::Win32::Graphics::Dxgi::{
     CreateDXGIFactory2, DXGI_CREATE_FACTORY_DEBUG, DXGI_CREATE_FACTORY_FLAGS,
     DXGI_FEATURE_PRESENT_ALLOW_TEARING, IDXGIFactory6,
@@ -322,6 +324,94 @@ impl RenderDevice {
         buffer.ok_or_else(|| RendererError::InvalidConfig {
             reason: "buffer creation produced no resource".to_owned(),
         })
+    }
+
+    /// Creates a committed 2D texture.
+    ///
+    /// `clear_value` must be `Some` for a render target or depth-stencil texture and
+    /// `None` otherwise: D3D12 warns when an optimized clear value is supplied for a
+    /// resource that cannot be cleared, and clearing with a value other than the one the
+    /// resource was created with is slower on some hardware.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RendererError::Api`] if the device rejects the request, or
+    /// [`RendererError::InvalidConfig`] if it succeeds without producing a resource.
+    pub fn create_texture_2d(
+        &self,
+        width: u32,
+        height: u32,
+        format: DXGI_FORMAT,
+        flags: D3D12_RESOURCE_FLAGS,
+        initial_state: D3D12_RESOURCE_STATES,
+        clear_value: Option<D3D12_CLEAR_VALUE>,
+    ) -> Result<ID3D12Resource, RendererError> {
+        if width == 0 || height == 0 {
+            return Err(RendererError::InvalidConfig {
+                reason: format!("texture size {width}x{height} has a zero dimension"),
+            });
+        }
+
+        let heap_properties = D3D12_HEAP_PROPERTIES {
+            Type: D3D12_HEAP_TYPE_DEFAULT,
+            ..Default::default()
+        };
+        let desc = D3D12_RESOURCE_DESC {
+            Dimension: D3D12_RESOURCE_DIMENSION_TEXTURE2D,
+            Alignment: 0,
+            Width: u64::from(width),
+            Height: height,
+            DepthOrArraySize: 1,
+            MipLevels: 1,
+            Format: format,
+            SampleDesc: DXGI_SAMPLE_DESC {
+                Count: 1,
+                Quality: 0,
+            },
+            Layout: D3D12_TEXTURE_LAYOUT_UNKNOWN,
+            Flags: flags,
+        };
+
+        let mut texture: Option<ID3D12Resource> = None;
+        // SAFETY: FFI call with fully initialized descriptors that outlive it, and a valid
+        // out-parameter. `clear_value` is borrowed for the duration of the call only.
+        unsafe {
+            self.device.CreateCommittedResource(
+                &heap_properties,
+                D3D12_HEAP_FLAG_NONE,
+                &desc,
+                initial_state,
+                clear_value.as_ref().map(std::ptr::from_ref),
+                &mut texture,
+            )
+        }
+        .map_err(|error| RendererError::api("ID3D12Device::CreateCommittedResource", error))?;
+
+        texture.ok_or_else(|| RendererError::InvalidConfig {
+            reason: "texture creation produced no resource".to_owned(),
+        })
+    }
+
+    /// Creates a render-target view for `resource` at `handle`.
+    pub fn create_render_target_view(
+        &self,
+        resource: &ID3D12Resource,
+        handle: D3D12_CPU_DESCRIPTOR_HANDLE,
+    ) {
+        // SAFETY: FFI call. `None` for the description uses the resource's own format, and
+        // the handle addresses a slot in a heap the caller owns.
+        unsafe { self.device.CreateRenderTargetView(resource, None, handle) };
+    }
+
+    /// Creates a depth-stencil view for `resource` at `handle`.
+    pub fn create_depth_stencil_view(
+        &self,
+        resource: &ID3D12Resource,
+        handle: D3D12_CPU_DESCRIPTOR_HANDLE,
+    ) {
+        // SAFETY: FFI call. `None` for the description uses the resource's own format, and
+        // the handle addresses a slot in a heap the caller owns.
+        unsafe { self.device.CreateDepthStencilView(resource, None, handle) };
     }
 
     /// Creates a fence starting at `initial_value`.
