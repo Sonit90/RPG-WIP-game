@@ -454,7 +454,9 @@ impl Application for App {
     }
 
     fn end_frame(&mut self, ctx: &mut EngineContext) {
-        self.frame_times.record(ctx.delta());
+        // Real delta, not the simulation delta: frame-time statistics measure the machine,
+        // so a paused or slowed simulation must not make the engine look faster.
+        self.frame_times.record(ctx.time().real_delta());
         if let Some(gpu_ms) = self.renderer.last_gpu_frame_ms() {
             self.gpu_times.record_ms(gpu_ms);
         }

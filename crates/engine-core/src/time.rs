@@ -1,8 +1,10 @@
-//! Frame timing: a monotonic clock and a fixed-capacity statistics window.
+//! Frame timing: a monotonic clock, real/simulation time, and a statistics window.
 //!
 //! Everything here is pure CPU-side timing built on [`Instant`], which is backed by
-//! `QueryPerformanceCounter` on Windows (sub-microsecond resolution). GPU time cannot be
-//! derived from these numbers — it needs GPU timestamps, added in Milestone 5.
+//! `QueryPerformanceCounter` on Windows (sub-microsecond resolution) and is monotonic:
+//! it cannot jump backwards when the wall clock is adjusted or when NTP steps the system
+//! time. Wall-clock time is never used for frame timing. GPU time cannot be derived from
+//! these numbers — it needs GPU timestamps, which the renderer provides.
 //!
 //! Allocation policy: the sample window and its sort scratch are allocated once in
 //! [`FrameStatsWindow::new`]. Recording a sample and computing statistics never allocate,
@@ -58,6 +60,210 @@ impl FrameClock {
     #[must_use]
     pub fn frame_index(&self) -> u64 {
         self.frame_index
+    }
+}
+
+/// Longest frame delta the simulation is allowed to see, by default.
+///
+/// A real frame never takes this long at the engine's frame-rate targets, so a larger
+/// delta means the process was stalled: a breakpoint, a window drag, a driver reset, a
+/// swapped-out page. Feeding that to a simulation makes bodies teleport through walls
+/// and ability timers fire in a burst. Real time still records the true value; only the
+/// simulation delta is clamped.
+pub const DEFAULT_MAX_DELTA: Duration = Duration::from_millis(250);
+
+/// The engine's clock: real time, simulation time and the frame counter.
+///
+/// Two timelines, deliberately separate:
+///
+/// * **Real time** is what the frame actually took. Frame-time statistics, profiling and
+///   anything measuring performance must use it, unclamped and unscaled.
+/// * **Simulation time** is what gameplay advances by. It is the real delta clamped to
+///   [`Time::max_delta`] and multiplied by [`Time::scale`], and it stops while paused.
+///
+/// Keeping them apart is what allows pausing, slow motion and a stalled frame without
+/// corrupting either performance measurement or simulation behaviour.
+///
+/// A fixed timestep is not implemented yet, but the shape supports it: a future fixed-step
+/// loop accumulates [`Time::delta`] and consumes it in fixed increments, and because the
+/// simulation only ever reads this type, nothing else has to change.
+///
+/// Allocation policy: plain scalars, no allocation anywhere.
+#[derive(Debug)]
+pub struct Time {
+    clock: FrameClock,
+    frame_index: u64,
+    real_delta: Duration,
+    real_elapsed: Duration,
+    simulation_delta: Duration,
+    simulation_elapsed: Duration,
+    max_delta: Duration,
+    scale: f64,
+    paused: bool,
+}
+
+impl Default for Time {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Time {
+    /// Starts both timelines at zero.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            clock: FrameClock::new(),
+            frame_index: 0,
+            real_delta: Duration::ZERO,
+            real_elapsed: Duration::ZERO,
+            simulation_delta: Duration::ZERO,
+            simulation_elapsed: Duration::ZERO,
+            max_delta: DEFAULT_MAX_DELTA,
+            scale: 1.0,
+            paused: false,
+        }
+    }
+
+    /// Ends the current frame: samples the monotonic clock and advances both timelines.
+    ///
+    /// Called once per frame by the engine loop. Nothing else should call it — two callers
+    /// would split one frame's duration across two deltas.
+    pub fn advance(&mut self) {
+        let real_delta = self.clock.tick();
+        self.advance_by(real_delta);
+    }
+
+    /// Advances both timelines by a supplied real delta instead of sampling the clock.
+    ///
+    /// The clock is left untouched, so mixing this with [`Time::advance`] in one run makes
+    /// real time disagree with wall time. That is the point: it is how tests exercise
+    /// clamping and scaling without sleeping, and it is the hook a future deterministic
+    /// replay needs to drive the simulation from recorded deltas rather than from this
+    /// machine's clock.
+    pub fn advance_by(&mut self, real_delta: Duration) {
+        self.frame_index += 1;
+        self.real_delta = real_delta;
+        self.real_elapsed += real_delta;
+        self.simulation_delta = self.scaled_delta(real_delta);
+        self.simulation_elapsed += self.simulation_delta;
+    }
+
+    /// Applies the pause, clamp and scale rules to a real delta.
+    fn scaled_delta(&self, real: Duration) -> Duration {
+        if self.paused {
+            return Duration::ZERO;
+        }
+        let clamped = real.min(self.max_delta);
+        if self.scale == 1.0 {
+            clamped
+        } else {
+            clamped.mul_f64(self.scale)
+        }
+    }
+
+    /// Duration of the previous frame, as it really happened.
+    ///
+    /// Never clamped, never scaled, unaffected by pause. This is the number performance
+    /// measurement must use.
+    #[must_use]
+    pub fn real_delta(&self) -> Duration {
+        self.real_delta
+    }
+
+    /// Time since the clock started, as it really happened.
+    ///
+    /// The sum of every real delta, which for clock-driven frames is exactly the time the
+    /// clock has been running.
+    #[must_use]
+    pub fn real_elapsed(&self) -> Duration {
+        self.real_elapsed
+    }
+
+    /// Duration the simulation should advance by this frame.
+    ///
+    /// Zero on the first frame and while paused, so simulation code must tolerate a zero
+    /// delta rather than dividing by it.
+    #[must_use]
+    pub fn delta(&self) -> Duration {
+        self.simulation_delta
+    }
+
+    /// Simulation time accumulated so far.
+    ///
+    /// The sum of every [`Time::delta`], so it is behind [`Time::real_elapsed`] by every
+    /// paused, slowed or clamped frame.
+    #[must_use]
+    pub fn elapsed(&self) -> Duration {
+        self.simulation_elapsed
+    }
+
+    /// Simulation delta in seconds, the form gameplay integration usually wants.
+    #[must_use]
+    pub fn delta_seconds(&self) -> f32 {
+        self.simulation_delta.as_secs_f32()
+    }
+
+    /// Number of completed frames.
+    #[must_use]
+    pub fn frame_index(&self) -> u64 {
+        self.frame_index
+    }
+
+    /// Rate simulation time passes at relative to real time. `1.0` is normal speed.
+    #[must_use]
+    pub fn scale(&self) -> f64 {
+        self.scale
+    }
+
+    /// Sets the simulation rate. Negative values are clamped to zero: time does not
+    /// run backwards, and a rewind is a replay feature, not a clock feature.
+    pub fn set_scale(&mut self, scale: f64) {
+        self.scale = if scale.is_finite() {
+            scale.max(0.0)
+        } else {
+            1.0
+        };
+    }
+
+    /// Whether simulation time is stopped.
+    #[must_use]
+    pub fn is_paused(&self) -> bool {
+        self.paused
+    }
+
+    /// Stops or resumes simulation time. Real time keeps running either way.
+    pub fn set_paused(&mut self, paused: bool) {
+        self.paused = paused;
+    }
+
+    /// Longest delta the simulation may see in one frame.
+    #[must_use]
+    pub fn max_delta(&self) -> Duration {
+        self.max_delta
+    }
+
+    /// Sets the clamp. A zero clamp freezes the simulation, so it is rejected in favour
+    /// of the default.
+    pub fn set_max_delta(&mut self, max_delta: Duration) {
+        self.max_delta = if max_delta.is_zero() {
+            DEFAULT_MAX_DELTA
+        } else {
+            max_delta
+        };
+    }
+
+    /// Restarts both timelines and the frame counter, keeping scale, pause and clamp.
+    ///
+    /// Used when the workload changes: old frame times describe a different scene, and
+    /// blending the two produces statistics that describe neither.
+    pub fn reset(&mut self) {
+        self.clock = FrameClock::new();
+        self.frame_index = 0;
+        self.real_delta = Duration::ZERO;
+        self.real_elapsed = Duration::ZERO;
+        self.simulation_delta = Duration::ZERO;
+        self.simulation_elapsed = Duration::ZERO;
     }
 }
 
@@ -331,6 +537,158 @@ mod tests {
     fn duration_conversion_keeps_sub_microsecond_resolution() {
         assert!((duration_to_ms(Duration::from_nanos(1_500)) - 0.0015).abs() < 1e-12);
         assert!((duration_to_ms(Duration::from_millis(4)) - 4.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn a_fresh_time_is_at_zero_on_both_timelines() {
+        let time = Time::new();
+        assert_eq!(time.frame_index(), 0);
+        assert_eq!(time.real_delta(), Duration::ZERO);
+        assert_eq!(time.real_elapsed(), Duration::ZERO);
+        assert_eq!(time.delta(), Duration::ZERO);
+        assert_eq!(time.elapsed(), Duration::ZERO);
+        assert_eq!(time.scale(), 1.0);
+        assert!(!time.is_paused());
+        assert_eq!(time.max_delta(), DEFAULT_MAX_DELTA);
+    }
+
+    #[test]
+    fn timelines_agree_at_normal_speed() {
+        let mut time = Time::new();
+        for _ in 0..3 {
+            time.advance_by(Duration::from_millis(4));
+        }
+        assert_eq!(time.frame_index(), 3);
+        assert_eq!(time.real_elapsed(), Duration::from_millis(12));
+        assert_eq!(time.elapsed(), Duration::from_millis(12));
+        assert_eq!(time.delta(), time.real_delta());
+    }
+
+    #[test]
+    fn a_stalled_frame_is_clamped_for_the_simulation_only() {
+        let mut time = Time::new();
+        let stall = Duration::from_secs(3);
+        time.advance_by(stall);
+
+        assert_eq!(time.real_delta(), stall, "real time records what happened");
+        assert_eq!(time.real_elapsed(), stall);
+        assert_eq!(time.delta(), DEFAULT_MAX_DELTA);
+        assert_eq!(time.elapsed(), DEFAULT_MAX_DELTA);
+    }
+
+    #[test]
+    fn the_clamp_is_configurable_and_rejects_zero() {
+        let mut time = Time::new();
+        time.set_max_delta(Duration::from_millis(10));
+        time.advance_by(Duration::from_millis(500));
+        assert_eq!(time.delta(), Duration::from_millis(10));
+
+        time.set_max_delta(Duration::ZERO);
+        assert_eq!(
+            time.max_delta(),
+            DEFAULT_MAX_DELTA,
+            "a zero clamp would freeze the simulation"
+        );
+    }
+
+    #[test]
+    fn scale_slows_and_speeds_simulation_time_but_not_real_time() {
+        let mut time = Time::new();
+        time.set_scale(0.5);
+        time.advance_by(Duration::from_millis(10));
+        assert_eq!(time.real_delta(), Duration::from_millis(10));
+        assert_eq!(time.delta(), Duration::from_millis(5));
+
+        time.set_scale(2.0);
+        time.advance_by(Duration::from_millis(10));
+        assert_eq!(time.delta(), Duration::from_millis(20));
+        assert_eq!(time.real_elapsed(), Duration::from_millis(20));
+        assert_eq!(time.elapsed(), Duration::from_millis(25));
+    }
+
+    #[test]
+    fn scale_rejects_negative_and_non_finite_values() {
+        let mut time = Time::new();
+        time.set_scale(-1.0);
+        assert_eq!(time.scale(), 0.0, "time does not run backwards");
+        time.set_scale(f64::NAN);
+        assert_eq!(time.scale(), 1.0);
+        time.set_scale(f64::INFINITY);
+        assert_eq!(time.scale(), 1.0);
+    }
+
+    #[test]
+    fn pausing_stops_simulation_time_and_leaves_real_time_running() {
+        let mut time = Time::new();
+        time.advance_by(Duration::from_millis(4));
+        time.set_paused(true);
+        time.advance_by(Duration::from_millis(4));
+
+        assert_eq!(time.delta(), Duration::ZERO);
+        assert_eq!(time.elapsed(), Duration::from_millis(4));
+        assert_eq!(time.real_elapsed(), Duration::from_millis(8));
+        assert_eq!(time.frame_index(), 2, "frames still pass while paused");
+
+        time.set_paused(false);
+        time.advance_by(Duration::from_millis(4));
+        assert_eq!(time.elapsed(), Duration::from_millis(8));
+    }
+
+    #[test]
+    fn elapsed_is_monotonic_across_pause_scale_and_clamp() {
+        let mut time = Time::new();
+        let mut previous_real = Duration::ZERO;
+        let mut previous_sim = Duration::ZERO;
+
+        for (index, delta) in [1_u64, 4, 3000, 8, 2, 900]
+            .into_iter()
+            .map(Duration::from_millis)
+            .enumerate()
+        {
+            time.set_paused(index == 2);
+            time.set_scale(if index == 4 { 0.25 } else { 1.0 });
+            time.advance_by(delta);
+
+            assert!(time.real_elapsed() >= previous_real);
+            assert!(time.elapsed() >= previous_sim);
+            previous_real = time.real_elapsed();
+            previous_sim = time.elapsed();
+        }
+        assert_eq!(time.frame_index(), 6);
+    }
+
+    #[test]
+    fn advancing_from_the_clock_produces_a_real_delta_and_counts_the_frame() {
+        let mut time = Time::new();
+        time.advance();
+        assert_eq!(time.frame_index(), 1);
+        assert!(time.real_elapsed() >= time.real_delta());
+        assert_eq!(time.delta(), time.real_delta(), "no scaling by default");
+    }
+
+    #[test]
+    fn reset_restarts_both_timelines_and_keeps_the_settings() {
+        let mut time = Time::new();
+        time.set_scale(0.5);
+        time.set_paused(true);
+        time.set_max_delta(Duration::from_millis(10));
+        time.advance_by(Duration::from_millis(4));
+        time.reset();
+
+        assert_eq!(time.frame_index(), 0);
+        assert_eq!(time.real_elapsed(), Duration::ZERO);
+        assert_eq!(time.elapsed(), Duration::ZERO);
+        assert_eq!(time.real_delta(), Duration::ZERO);
+        assert_eq!(time.scale(), 0.5);
+        assert!(time.is_paused());
+        assert_eq!(time.max_delta(), Duration::from_millis(10));
+    }
+
+    #[test]
+    fn delta_seconds_matches_the_simulation_delta() {
+        let mut time = Time::new();
+        time.advance_by(Duration::from_millis(16));
+        assert!((time.delta_seconds() - 0.016).abs() < 1e-6);
     }
 
     #[test]

@@ -24,7 +24,7 @@
 
 use std::time::{Duration, Instant};
 
-use crate::time::FrameClock;
+use crate::time::Time;
 
 /// Where a frame spent its CPU time, measured by the engine loop.
 ///
@@ -79,8 +79,7 @@ impl EngineConfig {
 /// The application never constructs this; the engine hands it to every hook.
 #[derive(Debug)]
 pub struct EngineContext {
-    clock: FrameClock,
-    delta: Duration,
+    time: Time,
     stages: StageTimings,
     config: EngineConfig,
     running: bool,
@@ -90,33 +89,48 @@ impl EngineContext {
     /// Creates a context and starts its clock.
     fn new(config: EngineConfig) -> Self {
         Self {
-            clock: FrameClock::new(),
-            delta: Duration::ZERO,
+            time: Time::new(),
             stages: StageTimings::default(),
             config,
             running: true,
         }
     }
 
-    /// Duration of the previous frame.
-    ///
-    /// Zero during the first frame, because no frame has completed yet. Simulation code
-    /// must tolerate a zero delta rather than dividing by it.
+    /// Real and simulation time for the current frame.
     #[must_use]
-    pub fn delta(&self) -> Duration {
-        self.delta
+    pub fn time(&self) -> &Time {
+        &self.time
     }
 
-    /// Time since the engine loop started.
+    /// Mutable time, for changing the simulation scale, the pause state or the clamp.
+    ///
+    /// Advancing time is the engine loop's job; an application that calls
+    /// [`Time::advance`] itself splits one frame across two deltas.
+    pub fn time_mut(&mut self) -> &mut Time {
+        &mut self.time
+    }
+
+    /// Duration the simulation should advance by this frame.
+    ///
+    /// Shorthand for `ctx.time().delta()`. Zero during the first frame, because no frame
+    /// has completed yet; simulation code must tolerate that rather than dividing by it.
+    #[must_use]
+    pub fn delta(&self) -> Duration {
+        self.time.delta()
+    }
+
+    /// Real time since the engine loop started.
+    ///
+    /// Shorthand for `ctx.time().real_elapsed()`.
     #[must_use]
     pub fn elapsed(&self) -> Duration {
-        self.clock.elapsed()
+        self.time.real_elapsed()
     }
 
     /// Number of completed frames.
     #[must_use]
     pub fn frame_index(&self) -> u64 {
-        self.clock.frame_index()
+        self.time.frame_index()
     }
 
     /// CPU time each stage of the previous frame took.
@@ -145,13 +159,13 @@ impl EngineContext {
         self.running = false;
     }
 
-    /// Restarts the clock and clears the measured deltas.
+    /// Restarts both timelines and clears the measured stage times.
     ///
     /// Used when the workload changes — old frame times describe a different scene and
-    /// blending the two produces statistics that describe neither.
+    /// blending the two produces statistics that describe neither. Scale, pause state and
+    /// the delta clamp survive.
     pub fn reset_clock(&mut self) {
-        self.clock = FrameClock::new();
-        self.delta = Duration::ZERO;
+        self.time.reset();
         self.stages = StageTimings::default();
     }
 }
@@ -343,7 +357,7 @@ impl<A: Application> Engine<A> {
                 (Duration::ZERO, Duration::ZERO)
             };
 
-            self.ctx.delta = self.ctx.clock.tick();
+            self.ctx.time.advance();
             self.ctx.stages = StageTimings {
                 events,
                 update,
@@ -597,11 +611,12 @@ mod tests {
     #[test]
     fn resetting_the_clock_clears_the_measured_frame_state() {
         let mut ctx = EngineContext::new(EngineConfig::default());
-        ctx.delta = Duration::from_millis(4);
+        ctx.time_mut().advance_by(Duration::from_millis(4));
         ctx.stages.update = Duration::from_millis(1);
         ctx.reset_clock();
 
         assert_eq!(ctx.delta(), Duration::ZERO);
+        assert_eq!(ctx.elapsed(), Duration::ZERO);
         assert_eq!(ctx.stage_timings(), StageTimings::default());
         assert_eq!(ctx.frame_index(), 0);
     }

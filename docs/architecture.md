@@ -80,6 +80,33 @@ frame allocator, input state and profiler will live in later milestones.
 * The clock is reset after `initialize` returns: device creation and shader compilation
   take hundreds of milliseconds and are not frame time.
 
+## Time (Phase 1, M2)
+
+`engine-core::time::Time` carries two timelines and one frame counter:
+
+| | Source | Clamped | Scaled | Stops on pause | Used by |
+| --- | --- | --- | --- | --- | --- |
+| Real | `Instant` (QPC) | no | no | no | frame statistics, profiling, benchmarks |
+| Simulation | real delta | yes | yes | yes | gameplay, animation, abilities |
+
+* **Monotonic only.** `Instant` cannot move backwards; wall-clock time is never used for
+  frame timing, so an NTP step or a user changing the system clock cannot produce a
+  negative or enormous delta.
+* **The simulation delta is clamped** to `DEFAULT_MAX_DELTA` (250 ms). A longer frame means
+  the process was stalled — a breakpoint, a window drag, a driver reset. Passing that
+  through makes bodies teleport through walls and ability timers fire in a burst. Real time
+  still records the true value, so a stall stays visible in the statistics.
+* **Performance numbers must read real time.** `App::end_frame` records
+  `time().real_delta()`; using the simulation delta would make a paused game look infinitely
+  fast.
+* **`advance_by` exists for determinism, not only for tests.** Driving `Time` from supplied
+  deltas rather than from this machine's clock is what a recorded replay — and later a
+  network authority — needs. Tests use the same door to exercise clamping and scaling
+  without sleeping.
+* **Fixed timestep is not implemented.** The shape supports it: a fixed-step loop
+  accumulates `delta()` and consumes it in fixed increments, and since the simulation only
+  ever reads `Time`, nothing outside the loop changes.
+
 ## Deviations from the originally proposed repository layout
 
 1. **The workspace lives at the repository root** rather than in a nested
