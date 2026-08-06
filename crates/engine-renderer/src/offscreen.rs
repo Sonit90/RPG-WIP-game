@@ -10,13 +10,14 @@
 
 use windows::Win32::Graphics::Direct3D::D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
 use windows::Win32::Graphics::Direct3D12::{
-    D3D12_COMMAND_LIST_TYPE_DIRECT, D3D12_DESCRIPTOR_HEAP_DESC, D3D12_DESCRIPTOR_HEAP_FLAG_NONE,
-    D3D12_DESCRIPTOR_HEAP_TYPE_RTV, D3D12_HEAP_FLAG_NONE, D3D12_HEAP_PROPERTIES,
-    D3D12_HEAP_TYPE_DEFAULT, D3D12_HEAP_TYPE_READBACK, D3D12_PLACED_SUBRESOURCE_FOOTPRINT,
-    D3D12_RANGE, D3D12_RESOURCE_DESC, D3D12_RESOURCE_DIMENSION_BUFFER,
-    D3D12_RESOURCE_DIMENSION_TEXTURE2D, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET,
-    D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_COPY_SOURCE,
-    D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_TEXTURE_COPY_LOCATION, D3D12_TEXTURE_COPY_LOCATION_0,
+    D3D12_CLEAR_FLAG_DEPTH, D3D12_COMMAND_LIST_TYPE_DIRECT, D3D12_DESCRIPTOR_HEAP_DESC,
+    D3D12_DESCRIPTOR_HEAP_FLAG_NONE, D3D12_DESCRIPTOR_HEAP_TYPE_RTV, D3D12_HEAP_FLAG_NONE,
+    D3D12_HEAP_PROPERTIES, D3D12_HEAP_TYPE_DEFAULT, D3D12_HEAP_TYPE_READBACK,
+    D3D12_PLACED_SUBRESOURCE_FOOTPRINT, D3D12_RANGE, D3D12_RESOURCE_DESC,
+    D3D12_RESOURCE_DIMENSION_BUFFER, D3D12_RESOURCE_DIMENSION_TEXTURE2D,
+    D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_DEST,
+    D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET,
+    D3D12_TEXTURE_COPY_LOCATION, D3D12_TEXTURE_COPY_LOCATION_0,
     D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT, D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
     D3D12_TEXTURE_LAYOUT_ROW_MAJOR, ID3D12CommandAllocator, ID3D12DescriptorHeap,
     ID3D12GraphicsCommandList, ID3D12Resource,
@@ -25,6 +26,7 @@ use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_UNKNOWN, DXGI_SAMPLE_DE
 use windows::core::Interface;
 
 use crate::command::{scissor_for, transition_barrier, viewport_for};
+use crate::depth::{DEPTH_CLEAR, DepthBuffer};
 use crate::device::RenderDevice;
 use crate::error::RendererError;
 use crate::mesh::VertexStream;
@@ -218,6 +220,10 @@ pub fn render_vertices(
 
     let pipeline = ScenePipeline::new(device)?;
     let mesh = VertexStream::upload(&context, vertices)?;
+    // The pipeline declares a depth format, so a depth buffer must be bound: a PSO with a
+    // `DSVFormat` and no view bound disables depth silently, which would make this path
+    // test something different from what the window path runs.
+    let depth = DepthBuffer::new(&context, width, height)?;
 
     // SAFETY: FFI call on a live device with a valid command list type.
     let allocator: ID3D12CommandAllocator =
@@ -252,8 +258,10 @@ pub fn render_vertices(
     unsafe {
         list.RSSetViewports(&[viewport_for(width, height)]);
         list.RSSetScissorRects(&[scissor_for(width, height)]);
-        list.OMSetRenderTargets(1, Some(&rtv), false, None);
+        let dsv = depth.view().cpu;
+        list.OMSetRenderTargets(1, Some(&rtv), false, Some(&dsv));
         list.ClearRenderTargetView(rtv, &clear_color, None);
+        list.ClearDepthStencilView(dsv, D3D12_CLEAR_FLAG_DEPTH, DEPTH_CLEAR, 0, None);
         list.SetGraphicsRootSignature(pipeline.root_signature());
         list.SetPipelineState(pipeline.pipeline_state());
         list.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);

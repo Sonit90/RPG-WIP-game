@@ -481,3 +481,20 @@ array far larger than L2: two contiguous streams, one pass, no allocation.
 culling or transform chunk has to be about 4,500 transforms before submitting it pays for
 itself. At 10,000 objects the whole pass is 26 us - two chunks - which is not obviously
 worth the submission overhead. Chunking stays a call-site change rather than a rewrite.
+
+## Milestone 12 - the depth buffer's cost
+
+Release build, 1000-triangle stress scene, 1920x1080, three reporting intervals, median of
+per-interval p50.
+
+| | Before (M11) | After (M12) | Change |
+| --- | --- | --- | --- |
+| CPU frame | 0.144 ms | 0.161 ms | +0.017 ms |
+| GPU frame | 0.034 ms | 0.054 ms | +0.020 ms |
+
+A cost, not a regression: a full 1920x1080 depth clear plus per-fragment depth testing is
+work that did not exist before. 20 us of GPU time is 1% of the 2.08 ms stretch budget.
+
+The CPU delta is one extra ClearDepthStencilView and one extra bind per frame. 17 us is more
+than those two calls should cost, so some of it is machine state; it is recorded as measured
+rather than explained away.

@@ -17,8 +17,11 @@ use windows::Win32::Graphics::Dxgi::Common::{
 };
 use windows::core::s;
 
+use crate::depth::DEPTH_FORMAT;
 use crate::error::RendererError;
-use crate::pipeline::{Vertex, blend_desc, create_root_signature, rasterizer_desc};
+use crate::pipeline::{
+    Vertex, blend_desc, create_root_signature, depth_stencil_desc, rasterizer_desc,
+};
 use crate::shader::{INSTANCED_PS, INSTANCED_VS, bytecode};
 use crate::swapchain::BACK_BUFFER_FORMAT;
 
@@ -165,6 +168,11 @@ impl InstancedPipeline {
             PS: bytecode(INSTANCED_PS),
             RasterizerState: rasterizer_desc(),
             BlendState: blend_desc(),
+            // Must match the scene pipeline: the two are swapped between benchmark modes
+            // against the same render target and depth buffer, and a PSO whose DSV format
+            // disagrees with the bound view is a driver error at draw time.
+            DepthStencilState: depth_stencil_desc(),
+            DSVFormat: DEPTH_FORMAT,
             SampleMask: u32::MAX,
             PrimitiveTopologyType: D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE,
             NumRenderTargets: 1,

@@ -14,6 +14,7 @@ pub mod adapter;
 pub mod bench;
 pub mod camera;
 pub mod command;
+pub mod depth;
 pub mod descriptor;
 pub mod device;
 pub mod error;

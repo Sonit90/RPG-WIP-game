@@ -32,7 +32,7 @@ Milestone status:
 | 9 | Transform system | done |
 | 10 | Mesh system | done |
 | 11 | Basic material | done |
-| 12 | Depth buffer | todo |
+| 12 | Depth buffer | done |
 | 13 | 3D scene | todo |
 | 14 | Basic lighting | todo |
 | 15 | Frustum culling | todo |
@@ -1494,3 +1494,106 @@ Six unit tests and four against a real device:
   only, and a blended pass needs sorting by depth, which the sort key does not yet do.
 * Nothing binds a material yet. The mesh pipeline and its root signature arrive with the 3D
   scene in Milestone 13; this milestone supplies what that pipeline will read.
+
+---
+
+# Milestone 12 — Depth buffer
+
+## What was built
+
+`DepthBuffer`: one depth texture the size of the back buffer, its DSV, and a resize that
+keeps the two in step. The frame path clears it and binds it; both pipelines test and write
+against it.
+
+Without it, geometry is drawn in submission order and whatever was recorded last wins. That
+happens to look correct for one triangle and stops looking correct the moment there are two
+objects — which is the scene Milestone 13 builds.
+
+## The format and the comparison
+
+| Choice | Value | Why |
+| --- | --- | --- |
+| Format | `D32_FLOAT` | No stencil work exists. A 32-bit float spends precision near the eye, which is where depth fighting shows. Same 4 bytes as `D24_UNORM_S8_UINT` |
+| Clear | 1.0 | The far plane |
+| Comparison | `LESS` | A fragment is drawn when it is *nearer* than what is stored |
+| Stencil | off | Nothing writes it; enabling it costs a read-modify-write per fragment for a buffer nothing reads |
+
+`LESS` rather than `LESS_EQUAL` is pinned by a test. The two look interchangeable and are
+not: with `LESS`, a coplanar surface drawn second is rejected, which makes z-fighting
+deterministic instead of dependent on rasterization order.
+
+Reverse-Z is not adopted. It is a real precision win at long range and it touches the clear
+constant, the projection matrix and one PSO field together — which is exactly what the risk
+table said, and it remains a cheap change.
+
+## Both pipelines had to change together
+
+`ScenePipeline` and `InstancedPipeline` are swapped between benchmark modes against the same
+render target and depth buffer. A PSO whose `DSVFormat` disagrees with the bound view is a
+draw-time driver error, so both declare the same format and the same depth state.
+
+The offscreen path also gained a depth buffer. A PSO that declares a `DSVFormat` with no view
+bound silently disables depth — which would have left every pixel test measuring something
+different from what the window path runs.
+
+## The depth transition is free
+
+The depth texture is created in `DEPTH_WRITE` and never leaves it: nothing samples it. The
+per-frame `transition_to` therefore finds the state already correct, emits no barrier, and
+counts a redundant transition. It is written explicitly rather than omitted because the day
+something *does* sample depth, the transition has to be there — and `CommandStats` shows
+that today it costs nothing.
+
+## Measured cost
+
+Release build, 1000-triangle stress scene, three reporting intervals, median of per-interval
+p50:
+
+| | Before (M11) | After (M12) | Change |
+| --- | --- | --- | --- |
+| CPU frame | 0.144 ms | 0.161 ms | +0.017 ms |
+| GPU frame | 0.034 ms | 0.054 ms | +0.020 ms |
+
+This is a cost, not a regression: a full 1920×1080 depth clear plus per-fragment testing is
+work that did not exist before. The GPU number is the honest one — 20 µs for a 2 MB clear
+and depth testing across the frame — and it is 1% of the 2.08 ms stretch budget. The CPU
+number is one extra `ClearDepthStencilView` and one extra bind per frame; 17 µs is more than
+those two calls should cost, so part of it is the machine, and it is recorded as measured
+rather than explained away.
+
+## Tests
+
+`tests/depth_ordering.rs`, four tests that judge pixels rather than API calls:
+
+| Test | Asserts |
+| --- | --- |
+| `the_nearer_surface_wins_whatever_order_it_was_submitted_in` | the same image from both submission orders — the whole point of the milestone |
+| `a_surface_behind_another_does_not_show_through` | zero pixels of the occluded surface, not "few" |
+| `coplanar_surfaces_keep_the_first_one_drawn` | `LESS`, not `LESS_EQUAL` |
+| `nothing_beyond_the_far_plane_is_drawn` | depth outside [0, 1] is clipped — an OpenGL-range projection would draw it |
+
+The first test is the one that would have failed before this milestone, and it fails in the
+right way: it compares two renders against each other rather than against a magic colour.
+
+## Acceptance criteria
+
+| Criterion | Result |
+| --- | --- |
+| Depth buffer created and bound | pass |
+| Depth testing enabled | pass — proven by pixels |
+| Depth cleared per frame | pass |
+| Resize keeps depth and colour in step | pass — same call path, same idle wait |
+| Format chosen deliberately | pass — `D32_FLOAT`, reasons recorded |
+| Cost measured | pass — +0.020 ms GPU, table above |
+| No regression beyond the feature's own cost | pass — CPU +0.017 ms, attributed |
+
+## Known limitations
+
+* No depth pre-pass. It would help when overdraw is high and cost a full extra geometry
+  submission when it is not; there is no scene yet with enough overdraw to tell.
+* No reverse-Z, as above.
+* Depth is never read. When something samples it — SSAO, soft particles, a depth-aware
+  effect — the texture needs a shader-resource view and a real transition, which is why the
+  transition is already in the frame path.
+* One depth buffer, matching the back buffer. Shadow maps in a later phase would each need
+  their own; nothing here assumes there is only ever one.

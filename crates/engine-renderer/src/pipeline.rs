@@ -9,7 +9,8 @@
 use windows::Win32::Graphics::Direct3D::ID3DBlob;
 use windows::Win32::Graphics::Direct3D12::{
     D3D_ROOT_SIGNATURE_VERSION_1, D3D12_BLEND_DESC, D3D12_BLEND_ONE, D3D12_BLEND_OP_ADD,
-    D3D12_BLEND_ZERO, D3D12_COLOR_WRITE_ENABLE_ALL, D3D12_CULL_MODE_BACK, D3D12_DEPTH_STENCIL_DESC,
+    D3D12_BLEND_ZERO, D3D12_COLOR_WRITE_ENABLE_ALL, D3D12_COMPARISON_FUNC_LESS,
+    D3D12_CULL_MODE_BACK, D3D12_DEPTH_STENCIL_DESC, D3D12_DEPTH_WRITE_MASK_ALL,
     D3D12_FILL_MODE_SOLID, D3D12_GRAPHICS_PIPELINE_STATE_DESC,
     D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, D3D12_INPUT_ELEMENT_DESC, D3D12_INPUT_LAYOUT_DESC,
     D3D12_LOGIC_OP_NOOP, D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE, D3D12_RASTERIZER_DESC,
@@ -22,6 +23,7 @@ use windows::Win32::Graphics::Dxgi::Common::{
 };
 use windows::core::s;
 
+use crate::depth::DEPTH_FORMAT;
 use crate::error::RendererError;
 use crate::shader::{TRIANGLE_PS, TRIANGLE_VS, bytecode};
 use crate::swapchain::BACK_BUFFER_FORMAT;
@@ -186,7 +188,8 @@ fn create_pipeline_state(
         PS: bytecode(TRIANGLE_PS),
         RasterizerState: rasterizer_desc(),
         BlendState: blend_desc(),
-        DepthStencilState: D3D12_DEPTH_STENCIL_DESC::default(),
+        DepthStencilState: depth_stencil_desc(),
+        DSVFormat: DEPTH_FORMAT,
         SampleMask: u32::MAX,
         PrimitiveTopologyType: D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE,
         NumRenderTargets: 1,
@@ -208,6 +211,21 @@ fn create_pipeline_state(
     // left alone when `desc` goes out of scope — unwrapping it here would drop the value
     // and underflow the root signature's refcount.
     state
+}
+
+/// Depth testing on, depth writing on, `LESS`.
+///
+/// A fragment is drawn when it is nearer than what is already in the depth buffer. Stencil
+/// is off: nothing writes it, and enabling it would cost a read-modify-write per fragment
+/// for a buffer nothing reads.
+pub(crate) fn depth_stencil_desc() -> D3D12_DEPTH_STENCIL_DESC {
+    D3D12_DEPTH_STENCIL_DESC {
+        DepthEnable: true.into(),
+        DepthWriteMask: D3D12_DEPTH_WRITE_MASK_ALL,
+        DepthFunc: D3D12_COMPARISON_FUNC_LESS,
+        StencilEnable: false.into(),
+        ..Default::default()
+    }
 }
 
 /// Solid fill, back-face culling, no depth bias.

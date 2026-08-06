@@ -7,12 +7,14 @@
 use windows::Win32::Foundation::HWND;
 use windows::Win32::Graphics::Direct3D::D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
 use windows::Win32::Graphics::Direct3D12::{
-    D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET, ID3D12CommandList,
+    D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_PRESENT,
+    D3D12_RESOURCE_STATE_RENDER_TARGET, ID3D12CommandList,
 };
 
 use windows::core::Interface;
 
 use crate::command::{CommandContext, CommandStats};
+use crate::depth::{DEPTH_CLEAR, DepthBuffer};
 use crate::device::{BACKEND, RenderDevice, feature_level_name};
 use crate::error::RendererError;
 use crate::frame::{FrameRing, SyncStats};
@@ -71,6 +73,8 @@ pub struct Renderer {
     last_gpu_frame_ms: Option<f64>,
     /// Root signature and pipeline state, independent of the geometry.
     pipeline: ScenePipeline,
+    /// Depth target, the size of the back buffer.
+    depth: DepthBuffer,
     /// The geometry currently being drawn.
     scene: VertexStream,
     /// Scratch buffer for regenerating scene geometry without allocating each time.
@@ -141,6 +145,7 @@ impl Renderer {
         let uploads = UploadRing::new(&context, config.upload_bytes_per_frame, frames_in_flight)?;
         let gpu_timer = GpuTimer::new(context.device(), context.queue(), frames_in_flight)?;
         let pipeline = ScenePipeline::new(context.device())?;
+        let depth = DepthBuffer::new(&context, config.width, config.height)?;
         let mut scene_scratch = Vec::new();
         stress::build_grid(1, &mut scene_scratch);
         let scene = VertexStream::upload(&context, &scene_scratch)?;
@@ -164,6 +169,7 @@ impl Renderer {
             gpu_timer,
             last_gpu_frame_ms: None,
             pipeline,
+            depth,
             scene,
             scene_scratch,
             #[cfg(feature = "debug-overlay")]
@@ -404,8 +410,15 @@ impl Renderer {
         // flushes it before the clear below, which is the first command that depends on it.
         self.commands
             .transition_to(buffer, D3D12_RESOURCE_STATE_RENDER_TARGET);
-        self.commands.set_render_target(rtv);
+        // The depth buffer stays in DEPTH_WRITE for its whole life — nothing samples it —
+        // so this transition is a comparison that finds the state already correct and
+        // records a redundant transition rather than a barrier.
+        self.commands
+            .transition_to(self.depth.texture(), D3D12_RESOURCE_STATE_DEPTH_WRITE);
+        let dsv = self.depth.view().cpu;
+        self.commands.set_render_target_and_depth(rtv, dsv);
         self.commands.clear_render_target(rtv, color);
+        self.commands.clear_depth(dsv, DEPTH_CLEAR);
         self.commands.set_viewport(width, height);
         self.commands.set_pipeline(
             self.pipeline.root_signature(),
@@ -555,6 +568,10 @@ impl Renderer {
         self.reset_command_list_to_empty()?;
 
         self.swap_chain.resize(&self.context, width, height)?;
+        // After the idle wait above, nothing references the old depth texture, so replacing
+        // it is safe. It must match the back buffer exactly: a depth buffer smaller than
+        // the render target is a draw-time error, and a larger one wastes memory.
+        self.depth.resize(&self.context, width, height)?;
 
         // After ResizeBuffers every slot is free again; forget the old fence values so
         // the next frames do not wait on submissions that referenced destroyed buffers.

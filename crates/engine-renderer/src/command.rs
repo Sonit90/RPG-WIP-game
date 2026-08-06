@@ -33,8 +33,8 @@ use std::mem::ManuallyDrop;
 use windows::Win32::Foundation::RECT;
 use windows::Win32::Graphics::Direct3D::D3D_PRIMITIVE_TOPOLOGY;
 use windows::Win32::Graphics::Direct3D12::{
-    D3D12_CPU_DESCRIPTOR_HANDLE, D3D12_INDEX_BUFFER_VIEW, D3D12_RESOURCE_BARRIER,
-    D3D12_RESOURCE_BARRIER_0, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,
+    D3D12_CLEAR_FLAG_DEPTH, D3D12_CPU_DESCRIPTOR_HANDLE, D3D12_INDEX_BUFFER_VIEW,
+    D3D12_RESOURCE_BARRIER, D3D12_RESOURCE_BARRIER_0, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,
     D3D12_RESOURCE_BARRIER_FLAG_NONE, D3D12_RESOURCE_BARRIER_TYPE_TRANSITION,
     D3D12_RESOURCE_STATES, D3D12_RESOURCE_TRANSITION_BARRIER, D3D12_VERTEX_BUFFER_VIEW,
     D3D12_VIEWPORT, ID3D12CommandAllocator, ID3D12GraphicsCommandList, ID3D12PipelineState,
@@ -248,6 +248,39 @@ impl CommandContext {
         self.flush_barriers();
         // SAFETY: FFI call on the open list with a handle from a heap the caller owns.
         unsafe { self.list.OMSetRenderTargets(1, Some(&rtv), false, None) };
+    }
+
+    /// Binds a render target together with a depth-stencil view.
+    ///
+    /// Separate from [`Self::set_render_target`] rather than an `Option` parameter: every
+    /// call site knows statically whether it has depth, and an `Option` at every one of them
+    /// would be `None` at exactly the sites that never will.
+    pub fn set_render_target_and_depth(
+        &mut self,
+        rtv: D3D12_CPU_DESCRIPTOR_HANDLE,
+        dsv: D3D12_CPU_DESCRIPTOR_HANDLE,
+    ) {
+        self.flush_barriers();
+        // SAFETY: FFI call on the open list with handles from heaps the caller owns.
+        unsafe {
+            self.list
+                .OMSetRenderTargets(1, Some(&rtv), false, Some(&dsv))
+        };
+    }
+
+    /// Clears the depth part of a depth-stencil view.
+    ///
+    /// Stencil is not cleared because nothing writes it. Clearing it anyway would be a
+    /// second full-target write per frame for a buffer that is never read.
+    pub fn clear_depth(&mut self, dsv: D3D12_CPU_DESCRIPTOR_HANDLE, depth: f32) {
+        self.flush_barriers();
+        // SAFETY: FFI call on the open list. The handle addresses a DSV in a heap the
+        // caller owns, and the resource behind it is in DEPTH_WRITE — which the flush above
+        // guarantees, since that transition is queued before this call.
+        unsafe {
+            self.list
+                .ClearDepthStencilView(dsv, D3D12_CLEAR_FLAG_DEPTH, depth, 0, None);
+        }
     }
 
     /// Clears a render target, flushing any pending transitions first.
