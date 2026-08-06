@@ -32,6 +32,12 @@ pub struct WindowConfig {
     /// Hidden windows are used by offscreen benchmarks and by tests that need a real
     /// `HWND` without stealing focus. This is a normal runtime option, not a test hook.
     pub visible: bool,
+    /// Whether to create a borderless window covering the primary monitor.
+    ///
+    /// When set, `width` and `height` are ignored: the window takes the monitor's size.
+    /// Borderless rather than exclusive fullscreen — see
+    /// [`engine_core::config::DisplayMode`].
+    pub fullscreen: bool,
 }
 
 impl Default for WindowConfig {
@@ -42,6 +48,7 @@ impl Default for WindowConfig {
             height: 1080,
             resizable: true,
             visible: true,
+            fullscreen: false,
         }
     }
 }
@@ -69,6 +76,13 @@ impl WindowConfig {
     #[must_use]
     pub fn with_resizable(mut self, resizable: bool) -> Self {
         self.resizable = resizable;
+        self
+    }
+
+    /// Returns the configuration with borderless fullscreen overridden.
+    #[must_use]
+    pub fn with_fullscreen(mut self, fullscreen: bool) -> Self {
+        self.fullscreen = fullscreen;
         self
     }
 

@@ -32,6 +32,45 @@ fn creates_a_window_with_the_requested_client_size() {
 }
 
 #[test]
+fn a_fullscreen_window_covers_the_primary_monitor() {
+    // Hidden, so the test run does not black out the desktop. The size is decided at
+    // creation regardless of visibility.
+    let config = WindowConfig::new("fullscreen test", 640, 480)
+        .with_visible(false)
+        .with_fullscreen(true);
+    let window = Window::new(&config).expect("window creation must succeed");
+
+    let (width, height) = window.client_size();
+    let queried = query_client_size(&window).expect("GetClientRect must succeed");
+    assert_eq!(
+        (width, height),
+        queried,
+        "the cached client size must match what the OS reports"
+    );
+    assert!(
+        width >= 640 && height >= 480,
+        "fullscreen must ignore the requested size, got {width}x{height}"
+    );
+    assert_eq!(
+        (width, height),
+        primary_monitor_size(),
+        "a borderless fullscreen window is exactly the monitor size"
+    );
+}
+
+/// Primary monitor size, read independently of the platform crate's own helper.
+fn primary_monitor_size() -> (u32, u32) {
+    use windows::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN};
+    // SAFETY: FFI calls that read a global system value and cannot fail.
+    unsafe {
+        (
+            GetSystemMetrics(SM_CXSCREEN) as u32,
+            GetSystemMetrics(SM_CYSCREEN) as u32,
+        )
+    }
+}
+
+#[test]
 fn rejects_an_invalid_configuration_before_touching_win32() {
     let config = WindowConfig::new("too small", 1, 1);
     assert!(Window::new(&config).is_err());

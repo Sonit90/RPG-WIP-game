@@ -33,8 +33,16 @@ fn main() -> ExitCode {
 
     log::info!("{} {}", env!("CARGO_BIN_NAME"), env!("CARGO_PKG_VERSION"));
 
-    let config = EngineConfig::default().with_frame_budget(args.frames);
-    let result = App::new(&args).and_then(|app| Engine::new(app, config).run());
+    // Configuration is validated before anything is created, so a bad value is a message
+    // here rather than a failed Win32 call three layers down.
+    let settings = args.to_settings();
+    if let Err(error) = settings.validate() {
+        eprintln!("error: {}\n\n{}", error.chain(), args::USAGE);
+        return ExitCode::FAILURE;
+    }
+
+    let config = EngineConfig::default().with_frame_budget(settings.frame_budget);
+    let result = App::new(&settings, &args).and_then(|app| Engine::new(app, config).run());
 
     match result {
         Ok(()) => {

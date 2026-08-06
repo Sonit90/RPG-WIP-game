@@ -1,8 +1,13 @@
 //! Command-line arguments for the game executable.
 //!
 //! Pure parsing, no I/O, so every rule below is unit-tested.
+//!
+//! Arguments are *overrides* on top of [`EngineSettings::default`], not a second source of
+//! truth. Parsing produces settings; the engine and its subsystems read only those.
 
 use std::fmt;
+
+use engine_core::config::{DisplayMode, EngineSettings};
 
 /// Usage text printed for `--help` and on a parse error.
 pub const USAGE: &str = "\
@@ -11,8 +16,12 @@ usage: mygame [options]
 options:
   --width <pixels>       client width (default 1920)
   --height <pixels>      client height (default 1080)
+  --fullscreen           borderless fullscreen on the primary monitor (--width and
+                         --height are then ignored)
   --vsync                wait for vertical blank (off by default: vsync measures the
                          monitor, not the engine)
+  --validation           enable the D3D12 validation layer (on by default in debug
+                         builds; it costs several times the frame time)
   --frames <count>       exit after rendering this many frames
   --report <seconds>     frame-time report interval (default 1.0, 0 disables)
   --overlay              start with the debug overlay visible (F5 toggles it at any
@@ -39,6 +48,12 @@ pub struct Args {
     pub overlay: bool,
     /// Triangles the stress scene starts with.
     pub triangles: u32,
+    /// Whether to open a borderless fullscreen window.
+    pub fullscreen: bool,
+    /// Whether the renderer's validation layer was explicitly requested.
+    ///
+    /// `None` leaves the build's default in place; `Some(true)` forces it on.
+    pub validation: Option<bool>,
     /// Whether `--help` was requested.
     pub help: bool,
 }
@@ -53,7 +68,35 @@ impl Default for Args {
             report_interval_secs: 1.0,
             overlay: false,
             triangles: 1,
+            fullscreen: false,
+            validation: None,
             help: false,
+        }
+    }
+}
+
+impl Args {
+    /// Applies the command line on top of the default settings.
+    ///
+    /// Only the fields an option actually names are changed, so a default that moves
+    /// moves for every run that did not override it.
+    #[must_use]
+    pub fn to_settings(&self) -> EngineSettings {
+        let defaults = EngineSettings::default();
+        EngineSettings {
+            width: self.width,
+            height: self.height,
+            display_mode: if self.fullscreen {
+                DisplayMode::BorderlessFullscreen
+            } else {
+                DisplayMode::Windowed
+            },
+            vsync: self.vsync,
+            debug_overlay: self.overlay,
+            renderer_validation: self.validation.unwrap_or(defaults.renderer_validation),
+            frame_budget: self.frames,
+            report_interval_seconds: self.report_interval_secs,
+            title: "myGame — phase 1".to_owned(),
         }
     }
 }
@@ -109,6 +152,8 @@ where
             "--frames" => args.frames = Some(next_value(&mut iter, "--frames")?),
             "--report" => args.report_interval_secs = next_value(&mut iter, "--report")?,
             "--vsync" => args.vsync = true,
+            "--fullscreen" => args.fullscreen = true,
+            "--validation" => args.validation = Some(true),
             "--overlay" => args.overlay = true,
             "--triangles" => args.triangles = next_value(&mut iter, "--triangles")?,
             "-h" | "--help" => args.help = true,
@@ -149,6 +194,45 @@ mod tests {
         assert!(!args.vsync);
         assert_eq!(args.frames, None);
         assert!((args.report_interval_secs - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn settings_default_where_no_option_was_given() {
+        let settings = Args::default().to_settings();
+        assert_eq!((settings.width, settings.height), (1920, 1080));
+        assert_eq!(settings.display_mode, DisplayMode::Windowed);
+        assert!(!settings.vsync);
+        assert_eq!(
+            settings.renderer_validation,
+            EngineSettings::default().renderer_validation,
+            "an unnamed option must not change the build's default"
+        );
+        settings.validate().expect("the defaults must be valid");
+    }
+
+    #[test]
+    fn options_override_the_settings_they_name() {
+        let args = parse(["--fullscreen", "--vsync", "--validation", "--overlay"])
+            .expect("a well-formed command line is valid");
+        let settings = args.to_settings();
+
+        assert_eq!(settings.display_mode, DisplayMode::BorderlessFullscreen);
+        assert!(settings.vsync);
+        assert!(settings.renderer_validation);
+        assert!(settings.debug_overlay);
+        settings.validate().expect("the overrides must be valid");
+    }
+
+    #[test]
+    fn invalid_settings_are_rejected_by_validation_not_by_parsing() {
+        // Parsing accepts any number; the meaning of the number is the configuration's
+        // business, so the error names the field and its bounds.
+        let args = parse(["--width", "10"]).expect("parsing accepts the value");
+        let error = args
+            .to_settings()
+            .validate()
+            .expect_err("10 pixels is below the minimum");
+        assert!(error.to_string().contains("width 10"), "{error}");
     }
 
     #[test]

@@ -20,6 +20,7 @@
 use std::time::{Duration, Instant};
 
 use engine_core::application::{Application, EngineContext};
+use engine_core::config::EngineSettings;
 use engine_core::error::EngineError;
 use engine_core::input::{InputEvent, KeyCode};
 use engine_core::metrics::FrameSummary;
@@ -71,25 +72,32 @@ impl App {
     /// # Errors
     ///
     /// Returns [`EngineError`] if the window or the D3D12 device cannot be created.
-    pub fn new(args: &Args) -> Result<Self, EngineError> {
+    pub fn new(settings: &EngineSettings, args: &Args) -> Result<Self, EngineError> {
+        // Before any window exists: without it, a "fullscreen" window on a scaled display
+        // covers only part of the screen, and the client size the renderer is given does
+        // not match the pixels on screen.
         engine_platform::dpi::set_process_dpi_aware();
 
-        let window_config = WindowConfig::new("myGame — phase 1", args.width, args.height);
+        let window_config = WindowConfig::new(&settings.title, settings.width, settings.height)
+            .with_fullscreen(settings.display_mode.is_fullscreen());
         let window = Window::new(&window_config)?;
 
+        // The window is the authority on its client size: fullscreen takes the monitor's
+        // size, and the OS may clamp a requested size on a small display.
         let (width, height) = window.client_size();
-        let renderer_config = RendererConfig::new(width, height).with_vsync(args.vsync);
+        let mut renderer_config = RendererConfig::new(width, height).with_vsync(settings.vsync);
+        renderer_config.enable_debug_layer = settings.renderer_validation;
+        renderer_config.break_on_validation_error =
+            settings.renderer_validation && cfg!(debug_assertions);
         let mut renderer = Renderer::new(window.raw_handle(), &renderer_config)?;
         #[cfg(feature = "debug-overlay")]
-        renderer.set_overlay_enabled(args.overlay);
+        renderer.set_overlay_enabled(settings.debug_overlay);
 
         renderer.set_scene_triangles(args.triangles.max(1))?;
 
-        let report_interval = if args.report_interval_secs > 0.0 {
-            Some(Duration::from_secs_f64(args.report_interval_secs))
-        } else {
-            None
-        };
+        let report_interval = settings
+            .reports_enabled()
+            .then(|| Duration::from_secs_f64(settings.report_interval_seconds));
 
         Ok(Self {
             window,

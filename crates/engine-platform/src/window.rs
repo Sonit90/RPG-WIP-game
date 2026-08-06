@@ -12,13 +12,14 @@ use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::{
     AdjustWindowRectEx, CREATESTRUCTW, CS_HREDRAW, CS_OWNDC, CS_VREDRAW, CW_USEDEFAULT,
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GWLP_USERDATA, GetClientRect,
-    GetWindowLongPtrW, IDC_ARROW, LoadCursorW, MSG, PM_REMOVE, PeekMessageW, PostQuitMessage,
-    RegisterClassExW, SIZE_MAXIMIZED, SIZE_MINIMIZED, SIZE_RESTORED, SW_HIDE, SW_SHOW,
-    SW_SHOWNORMAL, SetWindowLongPtrW, SetWindowTextW, ShowWindow, TranslateMessage,
-    WINDOW_EX_STYLE, WM_ACTIVATEAPP, WM_CLOSE, WM_DESTROY, WM_ERASEBKGND, WM_KEYDOWN, WM_KEYUP,
-    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL,
-    WM_NCCREATE, WM_QUIT, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SIZE, WM_SYSKEYDOWN, WM_SYSKEYUP,
-    WM_XBUTTONDOWN, WM_XBUTTONUP, WNDCLASSEXW, WS_OVERLAPPED, WS_OVERLAPPEDWINDOW, WS_SYSMENU,
+    GetSystemMetrics, GetWindowLongPtrW, IDC_ARROW, LoadCursorW, MSG, PM_REMOVE, PeekMessageW,
+    PostQuitMessage, RegisterClassExW, SIZE_MAXIMIZED, SIZE_MINIMIZED, SIZE_RESTORED, SM_CXSCREEN,
+    SM_CYSCREEN, SW_HIDE, SW_SHOW, SW_SHOWNORMAL, SetWindowLongPtrW, SetWindowTextW, ShowWindow,
+    TranslateMessage, WINDOW_EX_STYLE, WM_ACTIVATEAPP, WM_CLOSE, WM_DESTROY, WM_ERASEBKGND,
+    WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEMOVE,
+    WM_MOUSEWHEEL, WM_NCCREATE, WM_QUIT, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SIZE, WM_SYSKEYDOWN,
+    WM_SYSKEYUP, WM_XBUTTONDOWN, WM_XBUTTONUP, WNDCLASSEXW, WS_OVERLAPPED, WS_OVERLAPPEDWINDOW,
+    WS_POPUP, WS_SYSMENU,
 };
 use windows::core::{HSTRING, PCWSTR, w};
 
@@ -73,20 +74,44 @@ impl Window {
         let instance = module_handle()?;
         ensure_class_registered(instance)?;
 
-        let style = if config.resizable {
-            WS_OVERLAPPEDWINDOW
+        // Borderless fullscreen is a popup window the size of the primary monitor: the
+        // client area is then exactly the outer size, with no border to subtract.
+        let (style, position, outer, client) = if config.fullscreen {
+            let (width, height) = primary_monitor_size();
+            log::info!("borderless fullscreen: primary monitor is {width}x{height}");
+            (
+                WS_POPUP,
+                (0, 0),
+                (width as i32, height as i32),
+                (width, height),
+            )
         } else {
-            WS_OVERLAPPED | WS_SYSMENU
+            let style = if config.resizable {
+                WS_OVERLAPPEDWINDOW
+            } else {
+                WS_OVERLAPPED | WS_SYSMENU
+            };
+            let outer = outer_size(
+                config.width,
+                config.height,
+                style,
+                WINDOW_EX_STYLE::default(),
+            )?;
+            (
+                style,
+                (CW_USEDEFAULT, CW_USEDEFAULT),
+                outer,
+                (config.width, config.height),
+            )
         };
         let ex_style = WINDOW_EX_STYLE::default();
-        let outer = outer_size(config.width, config.height, style, ex_style)?;
 
         // The state is created before the window because WM_NCCREATE, which stores the
         // pointer in GWLP_USERDATA, is delivered from inside CreateWindowExW.
         let state = Box::into_raw(Box::new(WindowState {
             events: EventQueue::new(),
-            client_width: config.width,
-            client_height: config.height,
+            client_width: client.0,
+            client_height: client.1,
             minimized: false,
         }));
 
@@ -102,8 +127,8 @@ impl Window {
                 CLASS_NAME,
                 PCWSTR(title.as_ptr()),
                 style,
-                CW_USEDEFAULT,
-                CW_USEDEFAULT,
+                position.0,
+                position.1,
                 outer.0,
                 outer.1,
                 None,
@@ -139,11 +164,12 @@ impl Window {
         let _ = unsafe { ShowWindow(hwnd, command) };
 
         log::info!(
-            "window created: {}x{} client, resizable={}, visible={}",
-            config.width,
-            config.height,
-            config.resizable,
-            config.visible
+            "window created: {}x{} client, resizable={}, visible={}, fullscreen={}",
+            client.0,
+            client.1,
+            config.resizable && !config.fullscreen,
+            config.visible,
+            config.fullscreen
         );
 
         Ok(window)
@@ -294,6 +320,23 @@ fn ensure_class_registered(instance: HINSTANCE) -> Result<(), PlatformError> {
     result
         .clone()
         .map_err(|error| PlatformError::win32("RegisterClassExW", error))
+}
+
+/// Size of the primary monitor in pixels.
+///
+/// `GetSystemMetrics` is per-process DPI aware once `set_process_dpi_aware` has run, which
+/// the application does before creating any window — otherwise this reports the scaled
+/// size and a "fullscreen" window covers part of the screen.
+fn primary_monitor_size() -> (u32, u32) {
+    // SAFETY: FFI calls that read a global system value and cannot fail; an unknown
+    // metric returns 0, which the fallback below covers.
+    let (width, height) = unsafe { (GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN)) };
+    if width > 0 && height > 0 {
+        (width as u32, height as u32)
+    } else {
+        log::warn!("GetSystemMetrics reported no primary monitor; falling back to 1920x1080");
+        (1920, 1080)
+    }
 }
 
 /// Converts a desired client size into the outer window size for a given style.
