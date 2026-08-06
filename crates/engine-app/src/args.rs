@@ -17,6 +17,9 @@ options:
   --report <seconds>     frame-time report interval (default 1.0, 0 disables)
   --overlay              start with the debug overlay visible (F5 toggles it at any
                          time; hidden by default because it costs frame time)
+  --triangles <count>    stress-test triangle count (default 1). F1-F4 select the
+                         standard levels 1 / 100 / 1000 / 10000 at runtime, F6 selects
+                         100000, F7 and F8 step down and up
   -h, --help             print this help and exit";
 
 /// Parsed command line.
@@ -34,6 +37,8 @@ pub struct Args {
     pub report_interval_secs: f64,
     /// Whether the debug overlay starts visible. It can always be toggled with F5.
     pub overlay: bool,
+    /// Triangles the stress scene starts with.
+    pub triangles: u32,
     /// Whether `--help` was requested.
     pub help: bool,
 }
@@ -47,6 +52,7 @@ impl Default for Args {
             frames: None,
             report_interval_secs: 1.0,
             overlay: false,
+            triangles: 1,
             help: false,
         }
     }
@@ -104,6 +110,7 @@ where
             "--report" => args.report_interval_secs = next_value(&mut iter, "--report")?,
             "--vsync" => args.vsync = true,
             "--overlay" => args.overlay = true,
+            "--triangles" => args.triangles = next_value(&mut iter, "--triangles")?,
             "-h" | "--help" => args.help = true,
             other => return Err(ArgsError::Unknown(other.to_owned())),
         }
@@ -165,6 +172,22 @@ mod tests {
             "the overlay costs frame time, so it is off until asked for"
         );
         assert!(parse(["--overlay"]).expect("--overlay is valid").overlay);
+    }
+
+    #[test]
+    fn triangles_default_to_one_and_can_be_set() {
+        assert_eq!(
+            parse::<[&str; 0], &str>([])
+                .expect("empty is valid")
+                .triangles,
+            1
+        );
+        assert_eq!(
+            parse(["--triangles", "100000"])
+                .expect("--triangles is valid")
+                .triangles,
+            100_000
+        );
     }
 
     #[test]

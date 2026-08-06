@@ -15,9 +15,8 @@ use std::fmt;
 use std::time::{Duration, Instant};
 
 use engine_core::time::{FrameClock, FrameStatsWindow, duration_to_ms};
-#[cfg(feature = "debug-overlay")]
-use engine_platform::Key;
-use engine_platform::{PlatformError, Window, WindowConfig, WindowEvent};
+use engine_platform::{Key, PlatformError, Window, WindowConfig, WindowEvent};
+use engine_renderer::stress::{STRESS_LEVELS, level_at, nearest_level_index};
 use engine_renderer::{Renderer, RendererConfig, RendererError};
 
 use crate::args::Args;
@@ -118,6 +117,8 @@ pub struct App {
     last_report: Instant,
     frame_budget: Option<u64>,
     running: bool,
+    /// Index into [`STRESS_LEVELS`] of the level currently loaded.
+    stress_index: usize,
     /// Overlay text, rebuilt on an interval rather than per frame: formatting allocates.
     #[cfg(feature = "debug-overlay")]
     overlay_lines: Vec<String>,
@@ -161,6 +162,8 @@ impl App {
         #[cfg(feature = "debug-overlay")]
         renderer.set_overlay_enabled(args.overlay);
 
+        renderer.set_scene_triangles(args.triangles.max(1))?;
+
         let report_interval = if args.report_interval_secs > 0.0 {
             Some(Duration::from_secs_f64(args.report_interval_secs))
         } else {
@@ -178,6 +181,7 @@ impl App {
             last_report: Instant::now(),
             frame_budget: args.frames,
             running: true,
+            stress_index: nearest_level_index(args.triangles.max(1)),
             #[cfg(feature = "debug-overlay")]
             overlay_lines: Vec::with_capacity(4),
             #[cfg(feature = "debug-overlay")]
@@ -259,6 +263,22 @@ impl App {
                 WindowEvent::Minimized => log::info!("minimized"),
                 WindowEvent::Restored => log::info!("restored"),
                 WindowEvent::FocusChanged(focused) => log::debug!("focus: {focused}"),
+                // F1-F4 pick the first four stress levels, F6 the largest, F7/F8 step.
+                // F5 is the overlay toggle, so the levels skip it.
+                WindowEvent::KeyPressed(Key::Function(number @ 1..=4)) => {
+                    self.set_stress_level(usize::from(number) - 1)?;
+                }
+                WindowEvent::KeyPressed(Key::Function(6)) => {
+                    self.set_stress_level(STRESS_LEVELS.len() - 1)?;
+                }
+                WindowEvent::KeyPressed(Key::Function(7)) => {
+                    let index = self.stress_index.saturating_sub(1);
+                    self.set_stress_level(index)?;
+                }
+                WindowEvent::KeyPressed(Key::Function(8)) => {
+                    let index = (self.stress_index + 1).min(STRESS_LEVELS.len() - 1);
+                    self.set_stress_level(index)?;
+                }
                 #[cfg(feature = "debug-overlay")]
                 WindowEvent::KeyPressed(Key::Function(OVERLAY_TOGGLE_KEY)) => {
                     let enabled = !self.renderer.overlay_enabled();
@@ -277,6 +297,27 @@ impl App {
         if self.window.quit_received() {
             self.running = false;
         }
+        Ok(())
+    }
+
+    /// Loads stress level `index` and resets the statistics windows.
+    ///
+    /// The old level's frame times say nothing about the new one, so keeping them would
+    /// blend two workloads into one set of percentiles.
+    fn set_stress_level(&mut self, index: usize) -> Result<(), AppError> {
+        let triangles = level_at(index);
+        if triangles == self.renderer.scene_triangle_count() {
+            return Ok(());
+        }
+
+        self.renderer.set_scene_triangles(triangles)?;
+        self.stress_index = index;
+
+        self.frame_times.clear();
+        self.gpu_times.clear();
+        self.stages.reset();
+        self.clock = FrameClock::new();
+        log::info!("stress level {}: {triangles} triangles", index + 1);
         Ok(())
     }
 
@@ -323,9 +364,11 @@ impl App {
         );
         log::info!(
             "stages: events {events:.3} ms | update {update:.3} ms | \
-             render {render:.3} ms | present {present:.3} ms | draws {} | tris {}",
+             render {render:.3} ms | present {present:.3} ms | draws {} | tris {} | \
+             scene {} tris",
             self.renderer.draw_calls_last_frame(),
-            self.renderer.triangles_last_frame()
+            self.renderer.triangles_last_frame(),
+            self.renderer.scene_triangle_count()
         );
 
         // GPU time comes from GPU timestamps, not wall clock, and lags the CPU numbers by
@@ -404,6 +447,17 @@ impl App {
         self.overlay_lines[3].clear();
         let _ = write!(
             self.overlay_lines[3],
+            "{} TRIS  {} DRAWS",
+            self.renderer.scene_triangle_count(),
+            self.renderer.draw_calls_last_frame()
+        );
+
+        while self.overlay_lines.len() < 5 {
+            self.overlay_lines.push(String::new());
+        }
+        self.overlay_lines[4].clear();
+        let _ = write!(
+            self.overlay_lines[4],
             "{}X{}  {}",
             width,
             height,
