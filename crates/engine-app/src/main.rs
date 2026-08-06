@@ -1,12 +1,14 @@
 //! Game executable entry point.
 //!
-//! Phase 0 / Milestone 3: window, D3D12 device and an uncapped frame loop with CPU
-//! frame-time statistics. GPU frame time arrives in Milestone 5.
+//! Wiring only: parse arguments, build the application, hand it to the engine.
+//! The lifecycle and the frame loop belong to `engine-core`.
 
 mod app;
 mod args;
 
 use std::process::ExitCode;
+
+use engine_core::application::{Engine, EngineConfig};
 
 use crate::app::App;
 
@@ -31,7 +33,8 @@ fn main() -> ExitCode {
 
     log::info!("{} {}", env!("CARGO_BIN_NAME"), env!("CARGO_PKG_VERSION"));
 
-    let result = App::new(&args).and_then(|mut app| app.run());
+    let config = EngineConfig::default().with_frame_budget(args.frames);
+    let result = App::new(&args).and_then(|app| Engine::new(app, config).run());
 
     match result {
         Ok(()) => {

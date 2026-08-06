@@ -1,20 +1,27 @@
-//! The application: window, renderer and the frame loop.
+//! The application: window, renderer and the per-stage work the engine loop drives.
 //!
-//! The loop is deliberately shaped as
+//! The loop itself lives in `engine-core` ([`engine_core::application::Engine`]). This
+//! module supplies the stages:
 //!
 //! ```text
-//! process_events() -> update() -> render() -> present()
+//! process_events() -> update() -> render() -> present() -> end_frame()
 //! ```
 //!
-//! and each stage is timed separately, so a future bottleneck can be attributed to a
-//! stage rather than to "the frame". There is no frame cap and no sleep: the loop runs
-//! as fast as the CPU and GPU allow, which is the only way the 240/360/480 FPS targets
-//! can be measured honestly.
+//! Each stage is timed by the engine, so a future bottleneck can be attributed to a stage
+//! rather than to "the frame". There is no frame cap and no sleep: the loop runs as fast
+//! as the CPU and GPU allow, which is the only way the 240/360/480 FPS targets can be
+//! measured honestly.
+//!
+//! Window and device creation happen in [`App::new`] rather than in
+//! [`Application::initialize`]: both produce values the application cannot exist without,
+//! and holding them as `Option` to allow a two-phase init would put a check on every use
+//! for no gain.
 
 use std::fmt;
 use std::time::{Duration, Instant};
 
-use engine_core::time::{FrameClock, FrameStatsWindow, duration_to_ms};
+use engine_core::application::{Application, EngineContext};
+use engine_core::time::{FrameStatsWindow, duration_to_ms};
 use engine_platform::{Key, PlatformError, Window, WindowConfig, WindowEvent};
 use engine_renderer::stress::{STRESS_LEVELS, level_at, nearest_level_index};
 use engine_renderer::{Renderer, RendererConfig, RendererError};
@@ -103,11 +110,10 @@ impl StageTotals {
     }
 }
 
-/// Window, renderer and frame-loop state.
+/// Window, renderer and frame statistics.
 pub struct App {
     window: Window,
     renderer: Renderer,
-    clock: FrameClock,
     frame_times: FrameStatsWindow,
     /// GPU frame times, kept in their own window because they arrive with a lag and may
     /// be missing for the first few frames.
@@ -115,8 +121,6 @@ pub struct App {
     stages: StageTotals,
     report_interval: Option<Duration>,
     last_report: Instant,
-    frame_budget: Option<u64>,
-    running: bool,
     /// Index into [`STRESS_LEVELS`] of the level currently loaded.
     stress_index: usize,
     /// Overlay text, rebuilt on an interval rather than per frame: formatting allocates.
@@ -149,7 +153,7 @@ impl App {
     pub fn new(args: &Args) -> Result<Self, AppError> {
         engine_platform::dpi::set_process_dpi_aware();
 
-        let window_config = WindowConfig::new("myGame — phase 0", args.width, args.height);
+        let window_config = WindowConfig::new("myGame — phase 1", args.width, args.height);
         let window = Window::new(&window_config)?;
 
         let (width, height) = window.client_size();
@@ -169,138 +173,24 @@ impl App {
         Ok(Self {
             window,
             renderer,
-            clock: FrameClock::new(),
             frame_times: FrameStatsWindow::new(STATS_WINDOW),
             gpu_times: FrameStatsWindow::new(STATS_WINDOW),
             stages: StageTotals::default(),
             report_interval,
             last_report: Instant::now(),
-            frame_budget: args.frames,
-            running: true,
             stress_index: nearest_level_index(args.triangles.max(1)),
             #[cfg(feature = "debug-overlay")]
-            overlay_lines: Vec::with_capacity(4),
+            overlay_lines: Vec::with_capacity(5),
             #[cfg(feature = "debug-overlay")]
             last_overlay_update: Instant::now(),
         })
-    }
-
-    /// Runs the frame loop until the window closes or the frame budget is spent.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`AppError`] if any stage fails.
-    pub fn run(&mut self) -> Result<(), AppError> {
-        let mut delta = Duration::ZERO;
-
-        while self.running {
-            let events_start = Instant::now();
-            self.process_events()?;
-            let events_ms = duration_to_ms(events_start.elapsed());
-
-            let update_start = Instant::now();
-            self.update(delta);
-            let update_ms = duration_to_ms(update_start.elapsed());
-
-            // A minimized window has a zero-sized client area and nothing to present to.
-            let (render_ms, present_ms) = if self.window.is_minimized() {
-                (0.0, 0.0)
-            } else {
-                let render_start = Instant::now();
-                self.renderer.render(CLEAR_COLOR)?;
-                let render_ms = duration_to_ms(render_start.elapsed());
-
-                let present_start = Instant::now();
-                self.renderer.present()?;
-                (render_ms, duration_to_ms(present_start.elapsed()))
-            };
-
-            delta = self.clock.tick();
-            self.frame_times.record(delta);
-            if let Some(gpu_ms) = self.renderer.last_gpu_frame_ms() {
-                self.gpu_times.record_ms(gpu_ms);
-            }
-            self.stages.events_ms += events_ms;
-            self.stages.update_ms += update_ms;
-            self.stages.render_ms += render_ms;
-            self.stages.present_ms += present_ms;
-            self.stages.frames += 1;
-
-            self.maybe_report();
-            #[cfg(feature = "debug-overlay")]
-            self.maybe_update_overlay();
-
-            if let Some(budget) = self.frame_budget
-                && self.clock.frame_index() >= budget
-            {
-                log::info!("frame budget of {budget} frames reached");
-                self.running = false;
-            }
-        }
-
-        self.report_final();
-        Ok(())
-    }
-
-    /// Drains window messages and applies them.
-    fn process_events(&mut self) -> Result<(), AppError> {
-        self.window.pump_events();
-
-        while let Some(event) = self.window.poll_event() {
-            match event {
-                WindowEvent::CloseRequested => {
-                    log::info!("close requested");
-                    self.running = false;
-                }
-                WindowEvent::Resized { width, height } => {
-                    log::info!("resized to {width}x{height}");
-                    self.renderer.resize(width, height)?;
-                }
-                WindowEvent::Minimized => log::info!("minimized"),
-                WindowEvent::Restored => log::info!("restored"),
-                WindowEvent::FocusChanged(focused) => log::debug!("focus: {focused}"),
-                // F1-F4 pick the first four stress levels, F6 the largest, F7/F8 step.
-                // F5 is the overlay toggle, so the levels skip it.
-                WindowEvent::KeyPressed(Key::Function(number @ 1..=4)) => {
-                    self.set_stress_level(usize::from(number) - 1)?;
-                }
-                WindowEvent::KeyPressed(Key::Function(6)) => {
-                    self.set_stress_level(STRESS_LEVELS.len() - 1)?;
-                }
-                WindowEvent::KeyPressed(Key::Function(7)) => {
-                    let index = self.stress_index.saturating_sub(1);
-                    self.set_stress_level(index)?;
-                }
-                WindowEvent::KeyPressed(Key::Function(8)) => {
-                    let index = (self.stress_index + 1).min(STRESS_LEVELS.len() - 1);
-                    self.set_stress_level(index)?;
-                }
-                #[cfg(feature = "debug-overlay")]
-                WindowEvent::KeyPressed(Key::Function(OVERLAY_TOGGLE_KEY)) => {
-                    let enabled = !self.renderer.overlay_enabled();
-                    self.renderer.set_overlay_enabled(enabled);
-                    log::info!("debug overlay {}", if enabled { "shown" } else { "hidden" });
-                    if enabled {
-                        // Force an immediate rebuild so the overlay appears on the next
-                        // frame instead of at the next scheduled update.
-                        self.last_overlay_update = Instant::now() - OVERLAY_UPDATE_INTERVAL;
-                    }
-                }
-                WindowEvent::KeyPressed(key) => log::trace!("key pressed: {key:?}"),
-            }
-        }
-
-        if self.window.quit_received() {
-            self.running = false;
-        }
-        Ok(())
     }
 
     /// Loads stress level `index` and resets the statistics windows.
     ///
     /// The old level's frame times say nothing about the new one, so keeping them would
     /// blend two workloads into one set of percentiles.
-    fn set_stress_level(&mut self, index: usize) -> Result<(), AppError> {
+    fn set_stress_level(&mut self, index: usize, ctx: &mut EngineContext) -> Result<(), AppError> {
         let triangles = level_at(index);
         if triangles == self.renderer.scene_triangle_count() {
             return Ok(());
@@ -312,17 +202,10 @@ impl App {
         self.frame_times.clear();
         self.gpu_times.clear();
         self.stages.reset();
-        self.clock = FrameClock::new();
+        ctx.reset_clock();
         log::info!("stress level {}: {triangles} triangles", index + 1);
         Ok(())
     }
-
-    /// Advances the simulation. Empty in Phase 0 — there is no gameplay to simulate.
-    #[expect(
-        clippy::unused_self,
-        reason = "the stage exists so the loop shape and its timing are established now"
-    )]
-    fn update(&mut self, _delta: Duration) {}
 
     /// Logs frame statistics if the reporting interval has elapsed.
     ///
@@ -407,7 +290,7 @@ impl App {
         let gpu = self.gpu_times.stats();
         let (width, height) = self.renderer.size();
 
-        while self.overlay_lines.len() < 4 {
+        while self.overlay_lines.len() < 5 {
             self.overlay_lines.push(String::new());
         }
 
@@ -448,9 +331,6 @@ impl App {
             self.renderer.draw_calls_last_frame()
         );
 
-        while self.overlay_lines.len() < 5 {
-            self.overlay_lines.push(String::new());
-        }
         self.overlay_lines[4].clear();
         let _ = write!(
             self.overlay_lines[4],
@@ -464,9 +344,9 @@ impl App {
     }
 
     /// Logs a final summary over the last window of frames.
-    fn report_final(&mut self) {
-        let frames = self.clock.frame_index();
-        let seconds = self.clock.elapsed().as_secs_f64();
+    fn report_final(&mut self, ctx: &EngineContext) {
+        let frames = ctx.frame_index();
+        let seconds = ctx.elapsed().as_secs_f64();
         log::info!(
             "ran {frames} frames in {seconds:.3} s ({:.0} FPS average over the whole run)",
             if seconds > 0.0 {
@@ -493,5 +373,105 @@ impl App {
                 gpu.count
             );
         }
+    }
+}
+
+impl Application for App {
+    type Error = AppError;
+
+    /// Drains window messages and applies them.
+    fn process_events(&mut self, ctx: &mut EngineContext) -> Result<(), AppError> {
+        self.window.pump_events();
+
+        while let Some(event) = self.window.poll_event() {
+            match event {
+                WindowEvent::CloseRequested => {
+                    log::info!("close requested");
+                    ctx.request_exit();
+                }
+                WindowEvent::Resized { width, height } => {
+                    log::info!("resized to {width}x{height}");
+                    self.renderer.resize(width, height)?;
+                }
+                WindowEvent::Minimized => log::info!("minimized"),
+                WindowEvent::Restored => log::info!("restored"),
+                WindowEvent::FocusChanged(focused) => log::debug!("focus: {focused}"),
+                // F1-F4 pick the first four stress levels, F6 the largest, F7/F8 step.
+                // F5 is the overlay toggle, so the levels skip it.
+                WindowEvent::KeyPressed(Key::Function(number @ 1..=4)) => {
+                    self.set_stress_level(usize::from(number) - 1, ctx)?;
+                }
+                WindowEvent::KeyPressed(Key::Function(6)) => {
+                    self.set_stress_level(STRESS_LEVELS.len() - 1, ctx)?;
+                }
+                WindowEvent::KeyPressed(Key::Function(7)) => {
+                    let index = self.stress_index.saturating_sub(1);
+                    self.set_stress_level(index, ctx)?;
+                }
+                WindowEvent::KeyPressed(Key::Function(8)) => {
+                    let index = (self.stress_index + 1).min(STRESS_LEVELS.len() - 1);
+                    self.set_stress_level(index, ctx)?;
+                }
+                #[cfg(feature = "debug-overlay")]
+                WindowEvent::KeyPressed(Key::Function(OVERLAY_TOGGLE_KEY)) => {
+                    let enabled = !self.renderer.overlay_enabled();
+                    self.renderer.set_overlay_enabled(enabled);
+                    log::info!("debug overlay {}", if enabled { "shown" } else { "hidden" });
+                    if enabled {
+                        // Force an immediate rebuild so the overlay appears on the next
+                        // frame instead of at the next scheduled update.
+                        self.last_overlay_update = Instant::now() - OVERLAY_UPDATE_INTERVAL;
+                    }
+                }
+                WindowEvent::KeyPressed(key) => log::trace!("key pressed: {key:?}"),
+            }
+        }
+
+        if self.window.quit_received() {
+            ctx.request_exit();
+        }
+        Ok(())
+    }
+
+    /// Advances the simulation. Empty so far — there is no gameplay to simulate.
+    fn update(&mut self, _ctx: &mut EngineContext) -> Result<(), AppError> {
+        Ok(())
+    }
+
+    fn render(&mut self, _ctx: &mut EngineContext) -> Result<(), AppError> {
+        self.renderer.render(CLEAR_COLOR)?;
+        Ok(())
+    }
+
+    fn present(&mut self, _ctx: &mut EngineContext) -> Result<(), AppError> {
+        self.renderer.present()?;
+        Ok(())
+    }
+
+    /// A minimized window has a zero-sized client area and nothing to present to.
+    fn is_render_ready(&self) -> bool {
+        !self.window.is_minimized()
+    }
+
+    fn end_frame(&mut self, ctx: &mut EngineContext) {
+        self.frame_times.record(ctx.delta());
+        if let Some(gpu_ms) = self.renderer.last_gpu_frame_ms() {
+            self.gpu_times.record_ms(gpu_ms);
+        }
+
+        let stages = ctx.stage_timings();
+        self.stages.events_ms += duration_to_ms(stages.events);
+        self.stages.update_ms += duration_to_ms(stages.update);
+        self.stages.render_ms += duration_to_ms(stages.render);
+        self.stages.present_ms += duration_to_ms(stages.present);
+        self.stages.frames += 1;
+
+        self.maybe_report();
+        #[cfg(feature = "debug-overlay")]
+        self.maybe_update_overlay();
+    }
+
+    fn shutdown(&mut self, ctx: &mut EngineContext) {
+        self.report_final(ctx);
     }
 }

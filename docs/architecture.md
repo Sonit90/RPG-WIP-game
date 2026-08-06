@@ -32,6 +32,54 @@ schedule and, eventually, to be driven by a network authority.
 `engine-platform` hands the renderer an opaque window handle and a client size.
 It does not link D3D12; the renderer does not create windows.
 
+## Engine lifecycle (Phase 1, M1)
+
+`engine-core::application` owns the lifecycle and the frame loop:
+
+```
+Engine::new() -> initialize() -> run() -> shutdown()
+```
+
+```
+process_events() -> update() -> render() -> present() -> end_frame()
+```
+
+`engine-core` cannot depend on `engine-platform` or `engine-renderer` (see Layering), so
+the seam is the `Application` trait: `engine-app` implements it over the window and the
+renderer, and `Engine<A: Application>` drives it.
+
+### Why a generic and not `Box<dyn Application>`
+
+Monomorphization turns the six per-frame hooks into direct calls — no vtable, no boxed
+application, nothing allocated per frame. A runtime-swappable application has no use case
+in a single-game engine, so the flexibility of `dyn` would be paid for and not used.
+
+### Why the loop moved out of `engine-app`
+
+Simulation and rendering will eventually run at different rates. That is a property of the
+loop, so it belongs where the engine can change it once rather than in each executable
+(game, benchmark harness, future tools). `EngineContext` is the only channel: it carries
+the frame delta, frame index, elapsed time and per-stage CPU timings, and it is where the
+frame allocator, input state and profiler will live in later milestones.
+
+### Loop invariants
+
+* Exit is requested via `EngineContext::request_exit`, never by returning from a stage.
+  The current frame always completes, so the renderer never exits with a recorded but
+  unpresented frame in flight.
+* A stage returning `Err` stops the loop immediately; `end_frame` does not run for that
+  frame, and `shutdown` always does.
+* `Application::is_render_ready() == false` skips `render` and `present`; their stage
+  timings then read zero. A minimized window is the motivating case.
+* The first frame's delta is zero: no frame has completed yet. Simulation code must
+  tolerate that rather than dividing by it.
+* Construction (window, D3D12 device) happens in `App::new`, not in `initialize`. Both are
+  values the application cannot exist without, and holding them as `Option` to permit a
+  two-phase init would add a check to every use for no gain. `initialize` exists for work
+  that needs a running engine context.
+* The clock is reset after `initialize` returns: device creation and shader compilation
+  take hundreds of milliseconds and are not frame time.
+
 ## Deviations from the originally proposed repository layout
 
 1. **The workspace lives at the repository root** rather than in a nested
