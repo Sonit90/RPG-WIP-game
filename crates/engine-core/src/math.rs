@@ -730,6 +730,145 @@ impl Mul for Mat4 {
     }
 }
 
+/// An axis-aligned bounding box.
+///
+/// Built by accumulating points, which is what a mesh loader does. An empty box is
+/// represented by `min > max` so that the first point accumulated replaces both — the
+/// alternative, a separate `is_empty` flag, has to be checked in the inner loop.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Aabb {
+    /// Lowest corner.
+    pub min: Vec3,
+    /// Highest corner.
+    pub max: Vec3,
+}
+
+impl Default for Aabb {
+    fn default() -> Self {
+        Self::EMPTY
+    }
+}
+
+impl Aabb {
+    /// A box containing nothing.
+    pub const EMPTY: Self = Self {
+        min: Vec3::splat(f32::INFINITY),
+        max: Vec3::splat(f32::NEG_INFINITY),
+    };
+
+    /// Builds a box from two corners.
+    #[must_use]
+    pub const fn new(min: Vec3, max: Vec3) -> Self {
+        Self { min, max }
+    }
+
+    /// Whether the box contains nothing.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.min.x > self.max.x || self.min.y > self.max.y || self.min.z > self.max.z
+    }
+
+    /// Grows the box to contain `point`.
+    pub fn insert(&mut self, point: Vec3) {
+        self.min = self.min.min(point);
+        self.max = self.max.max(point);
+    }
+
+    /// The box containing every point given.
+    #[must_use]
+    pub fn from_points(points: impl IntoIterator<Item = Vec3>) -> Self {
+        let mut bounds = Self::EMPTY;
+        for point in points {
+            bounds.insert(point);
+        }
+        bounds
+    }
+
+    /// The point in the middle, or the origin for an empty box.
+    #[must_use]
+    pub fn center(&self) -> Vec3 {
+        if self.is_empty() {
+            Vec3::ZERO
+        } else {
+            (self.min + self.max) * 0.5
+        }
+    }
+
+    /// Half the size along each axis, or zero for an empty box.
+    #[must_use]
+    pub fn half_extents(&self) -> Vec3 {
+        if self.is_empty() {
+            Vec3::ZERO
+        } else {
+            (self.max - self.min) * 0.5
+        }
+    }
+
+    /// Whether the box contains `point`, inclusive of the surface.
+    #[must_use]
+    pub fn contains(&self, point: Vec3) -> bool {
+        point.x >= self.min.x
+            && point.y >= self.min.y
+            && point.z >= self.min.z
+            && point.x <= self.max.x
+            && point.y <= self.max.y
+            && point.z <= self.max.z
+    }
+}
+
+/// A bounding sphere: the shape culling tests against.
+///
+/// A sphere rather than a box because a frustum test against a sphere is four multiplies
+/// and a compare per plane and needs no transform of the bounds — a rotated box does.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct Sphere {
+    /// Centre, in the same space as the geometry it bounds.
+    pub center: Vec3,
+    /// Radius. Zero for a sphere bounding nothing.
+    pub radius: f32,
+}
+
+impl Sphere {
+    /// A sphere bounding nothing, at the origin.
+    pub const EMPTY: Self = Self {
+        center: Vec3::ZERO,
+        radius: 0.0,
+    };
+
+    /// Builds a sphere.
+    #[must_use]
+    pub const fn new(center: Vec3, radius: f32) -> Self {
+        Self { center, radius }
+    }
+
+    /// The sphere around a box's centre that contains the whole box.
+    ///
+    /// Not the smallest sphere containing the points — computing that (Welzl's algorithm)
+    /// costs far more and buys a marginally tighter cull. This one is one pass and never
+    /// under-estimates, which is the property that matters: an under-estimating bound culls
+    /// something that is on screen.
+    #[must_use]
+    pub fn around(points: impl IntoIterator<Item = Vec3> + Clone) -> Self {
+        let bounds = Aabb::from_points(points.clone());
+        if bounds.is_empty() {
+            return Self::EMPTY;
+        }
+        let center = bounds.center();
+        let radius = points
+            .into_iter()
+            .map(|point| (point - center).length_squared())
+            .fold(0.0_f32, f32::max)
+            .sqrt();
+        Self { center, radius }
+    }
+
+    /// Whether the sphere contains `point`.
+    #[must_use]
+    pub fn contains(&self, point: Vec3) -> bool {
+        (point - self.center).length_squared() <= self.radius * self.radius
+    }
+}
+
 #[cfg(test)]
 #[allow(
     clippy::expect_used,
@@ -937,6 +1076,53 @@ mod tests {
         // Translation lives in the fourth column, so elements 12..15 — the layout HLSL
         // reads when the constant buffer is declared column_major.
         assert_eq!(&array[12..15], &[1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn an_empty_box_absorbs_the_first_point_it_is_given() {
+        let mut bounds = Aabb::EMPTY;
+        assert!(bounds.is_empty());
+        bounds.insert(Vec3::new(1.0, 2.0, 3.0));
+        assert!(!bounds.is_empty());
+        assert_eq!(bounds.min, bounds.max);
+        assert_eq!(bounds.center(), Vec3::new(1.0, 2.0, 3.0));
+        assert_eq!(bounds.half_extents(), Vec3::ZERO);
+    }
+
+    #[test]
+    fn a_box_contains_the_points_it_was_built_from() {
+        let points = [
+            Vec3::new(-1.0, 0.0, 2.0),
+            Vec3::new(3.0, -4.0, 0.0),
+            Vec3::new(0.0, 5.0, -6.0),
+        ];
+        let bounds = Aabb::from_points(points);
+        assert!(points.iter().all(|point| bounds.contains(*point)));
+        assert!(!bounds.contains(Vec3::new(4.0, 0.0, 0.0)));
+    }
+
+    #[test]
+    fn an_empty_box_has_no_centre_to_report() {
+        assert_eq!(Aabb::EMPTY.center(), Vec3::ZERO);
+        assert_eq!(Aabb::EMPTY.half_extents(), Vec3::ZERO);
+    }
+
+    #[test]
+    fn a_bounding_sphere_never_under_estimates() {
+        // Under-estimating culls geometry that is on screen, so the test is containment,
+        // not tightness.
+        let points = [
+            Vec3::new(-1.0, -1.0, -1.0),
+            Vec3::new(1.0, 1.0, 1.0),
+            Vec3::new(0.0, 3.0, 0.0),
+        ];
+        let sphere = Sphere::around(points);
+        assert!(points.iter().all(|point| sphere.contains(*point)));
+    }
+
+    #[test]
+    fn a_sphere_around_nothing_is_empty() {
+        assert_eq!(Sphere::around(std::iter::empty()), Sphere::EMPTY);
     }
 
     #[test]

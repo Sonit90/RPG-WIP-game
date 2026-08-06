@@ -33,12 +33,12 @@ use std::mem::ManuallyDrop;
 use windows::Win32::Foundation::RECT;
 use windows::Win32::Graphics::Direct3D::D3D_PRIMITIVE_TOPOLOGY;
 use windows::Win32::Graphics::Direct3D12::{
-    D3D12_CPU_DESCRIPTOR_HANDLE, D3D12_RESOURCE_BARRIER, D3D12_RESOURCE_BARRIER_0,
-    D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES, D3D12_RESOURCE_BARRIER_FLAG_NONE,
-    D3D12_RESOURCE_BARRIER_TYPE_TRANSITION, D3D12_RESOURCE_STATES,
-    D3D12_RESOURCE_TRANSITION_BARRIER, D3D12_VERTEX_BUFFER_VIEW, D3D12_VIEWPORT,
-    ID3D12CommandAllocator, ID3D12GraphicsCommandList, ID3D12PipelineState, ID3D12Resource,
-    ID3D12RootSignature,
+    D3D12_CPU_DESCRIPTOR_HANDLE, D3D12_INDEX_BUFFER_VIEW, D3D12_RESOURCE_BARRIER,
+    D3D12_RESOURCE_BARRIER_0, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,
+    D3D12_RESOURCE_BARRIER_FLAG_NONE, D3D12_RESOURCE_BARRIER_TYPE_TRANSITION,
+    D3D12_RESOURCE_STATES, D3D12_RESOURCE_TRANSITION_BARRIER, D3D12_VERTEX_BUFFER_VIEW,
+    D3D12_VIEWPORT, ID3D12CommandAllocator, ID3D12GraphicsCommandList, ID3D12PipelineState,
+    ID3D12Resource, ID3D12RootSignature,
 };
 use windows::core::Interface;
 
@@ -329,6 +329,38 @@ impl CommandContext {
         self.stats.draw_calls += 1;
         self.stats.instances += u64::from(instance_count);
         self.stats.triangles += u64::from(vertex_count / 3) * u64::from(instance_count);
+        if instance_count > 1 {
+            self.stats.instanced_draws += 1;
+        }
+    }
+
+    /// Binds an index buffer.
+    pub fn set_index_buffer(&mut self, view: D3D12_INDEX_BUFFER_VIEW) {
+        // SAFETY: FFI call on the open list. The view refers to a buffer the caller keeps
+        // alive, and it lives for the duration of the call.
+        unsafe { self.list.IASetIndexBuffer(Some(&view)) };
+    }
+
+    /// Draws `index_count` indices, `instance_count` times.
+    ///
+    /// `start_instance` selects where per-instance data begins, which is what lets the
+    /// benchmark issue N single-instance draws against one N-instance draw over the same
+    /// buffer.
+    ///
+    /// Flushes pending barriers first: a draw that reads a resource still in its old state
+    /// is undefined.
+    pub fn draw_indexed(&mut self, index_count: u32, instance_count: u32, start_instance: u32) {
+        self.flush_barriers();
+        // SAFETY: FFI call on the open list. The bound pipeline, vertex buffers and index
+        // buffer were set by the caller and outlive the submission.
+        unsafe {
+            self.list
+                .DrawIndexedInstanced(index_count, instance_count, 0, 0, start_instance);
+        }
+
+        self.stats.draw_calls += 1;
+        self.stats.instances += u64::from(instance_count);
+        self.stats.triangles += u64::from(index_count / 3) * u64::from(instance_count);
         if instance_count > 1 {
             self.stats.instanced_draws += 1;
         }

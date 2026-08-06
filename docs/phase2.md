@@ -30,7 +30,7 @@ Milestone status:
 | 7 | Shader system | done |
 | 8 | Camera | done |
 | 9 | Transform system | done |
-| 10 | Mesh system | todo |
+| 10 | Mesh system | done |
 | 11 | Basic material | todo |
 | 12 | Depth buffer | todo |
 | 13 | 3D scene | todo |
@@ -1256,3 +1256,127 @@ the same lesson `docs/performance.md` already records for frame-time comparisons
   the upload ring in Milestone 17 rather than into an intermediate array.
 * Scalar math. A SIMD `Mat4` would help the 100,000-object row above and nothing below it.
   Worth revisiting when a real scene reaches that count, not before.
+
+---
+
+# Milestone 10 — Mesh system
+
+## What was built
+
+`MeshVertex`, `MeshData` and an indexed `GpuMesh`, plus the primitives the later
+milestones' scenes are built from. The Phase 0 raw-stream type survives under its real name.
+
+| Type | Is | Used by |
+| --- | --- | --- |
+| `MeshVertex` | position, normal, UV — 32 bytes, `repr(C)` | the mesh vertex layout |
+| `MeshData` | vertices, indices, bounding sphere, on the CPU | mesh creation, primitives |
+| `GpuMesh` | vertex buffer + index buffer + bounds, device-local | the scene from Milestone 13 |
+| `VertexStream` | one raw vertex buffer, no indices | the Phase 0 stress scene, per-instance streams |
+
+The old `GpuMesh` was a raw vertex buffer, so it was **renamed** to `VertexStream` rather
+than deleted, and the name freed for the indexed mesh the milestone is about. Giving the
+stress scene's generated triangles an index buffer and bounds they do not have would be
+fields that exist only to be ignored — and deleting the stress path would throw away the
+regression baseline every milestone is measured against.
+
+## Indices are validated on the CPU, because the GPU will not
+
+`MeshData::new` rejects an index past the end of the vertex array. D3D12 does not
+bounds-check indices: an out-of-range one reads whatever memory follows the buffer and draws
+a triangle with a vertex somewhere near infinity. The symptom is a spike across the screen,
+which is a long way from the cause.
+
+It also rejects an index count that is not a multiple of three, and empty input.
+
+## Vertices, and what is not being optimized
+
+32 bytes: two vertices per cache line. The normal could be packed to 4 bytes and the UV to
+4, halving it. That is not being done, because nothing is vertex-fetch bound yet and an
+unmeasured packing buys a decode in every shader against a saving nobody has seen. Indices
+are 32-bit for the same reason inverted: 16-bit halves index bandwidth but caps a mesh at
+65,536 vertices, and a mesh that crosses the cap needs a splitting step that does not exist.
+
+The layout is pinned by a test — `size_of` 32, offsets 0, 12, 24 — because the input layout
+hard-codes those offsets and a silent change would read the normal as part of the position.
+
+## Primitives
+
+| Primitive | Why it exists |
+| --- | --- |
+| `cube` | The scene's building block. 24 vertices, not 8 — a corner has three different face normals, and sharing them averages a cube into a bad ball |
+| `plane` | A ground quad, so depth testing in Milestone 12 has something to test against |
+| `uv_sphere` | The only shape whose shading is obviously right or wrong at a glance; a cube's flat faces hide a normal that is subtly off |
+
+`uv_sphere` clamps its segment and ring counts rather than rejecting them. It is a generator
+for test scenes, not an asset importer, and a caller asking for one segment should get the
+smallest sphere that exists rather than an error to handle.
+
+## Bounds are computed once, at construction
+
+Every mesh carries a local-space `Sphere`, computed from the box centre and the furthest
+vertex from it. That is one pass and never under-estimates. The tightest possible sphere
+(Welzl's algorithm) costs far more and buys a marginally tighter cull — and the property
+that matters is the direction of the error: an under-estimating bound culls something that
+is on screen.
+
+`Aabb` and `Sphere` were added to `engine_core::math` for this. `Plane` and `Frustum` were
+not, because culling arrives in Milestone 15 and building them now means building them
+against no caller.
+
+## Command context
+
+`set_index_buffer` and `draw_indexed` were added — the wrapper methods Milestone 3
+deliberately left out until there were index buffers to bind. `draw_indexed` takes a
+`start_instance` so the individual-versus-instanced benchmark can index one instance buffer
+two ways.
+
+## Tests
+
+Ten unit tests (no GPU) and five against a real device:
+
+| Test | Asserts |
+| --- | --- |
+| `a_mesh_rejects_an_index_past_its_vertices` | the check the GPU does not do |
+| `a_mesh_rejects_an_incomplete_triangle` | index count is a multiple of three |
+| `a_mesh_rejects_emptiness` | neither array may be empty |
+| `a_cube_has_flat_faces_and_the_right_counts` | 24 vertices, 12 triangles, every normal on exactly one axis |
+| `a_cube_is_bounded_by_the_sphere_through_its_corners` | radius is the half-diagonal; every vertex inside |
+| `a_sphere_stays_on_its_radius` | every position at `r`, every normal unit |
+| `a_sphere_indexes_every_quad_of_its_grid` | `segments × rings × 2` triangles, all indices in range |
+| `a_degenerate_sphere_request_is_clamped_rather_than_rejected` | zero segments still produces a mesh |
+| `a_plane_faces_up_and_is_flat` | all `y = 0`, all normals +Y |
+| `a_vertex_is_the_size_the_input_layout_describes` | 32 bytes, offsets 0/12/24 |
+| `a_cube_reaches_the_gpu_vertex_for_vertex` | read back from device-local memory, byte-identical |
+| `the_views_describe_the_buffers_they_point_at` | stride, sizes and non-null addresses |
+| `a_meshs_bounds_survive_the_upload` | the CPU bounds reach the GPU mesh |
+| `a_batch_of_meshes_uploads_correctly` | all three meshes complete, not just the last queued |
+| `a_mesh_can_be_dropped_and_another_uploaded_in_its_place` | three create/use/destroy cycles |
+
+The batch test is the one that would catch the subtle failure: a staging buffer released
+before its copy executed leaves *one* mesh full of garbage while the others look fine.
+
+## Acceptance criteria
+
+| Criterion | Result |
+| --- | --- |
+| Vertex and index buffers | pass |
+| Vertex format: position, normal, UV | pass — 32 bytes, layout pinned by test |
+| Bounding volume per mesh | pass — local-space sphere, computed at construction |
+| Efficient GPU upload | pass — default heap, one staging batch per mesh or per batch |
+| Mesh creation and destruction | pass — tested across three cycles |
+| Indexed drawing supported | pass — `set_index_buffer`, `draw_indexed` |
+| No asset loading | correct — primitives are generated, nothing is read from disk |
+| No regression | pass — median p50 0.144 ms |
+
+## Known limitations
+
+* Nothing draws a `GpuMesh` yet. The frame path still uses `VertexStream` and the clip-space
+  triangle pipeline; a `MeshVertex` pipeline needs a camera constant buffer and a root
+  signature, which is Milestone 13.
+* No mesh handles. `MeshHandle` and the storage behind it arrive with the `RenderWorld`;
+  today a mesh is owned directly by whoever uploaded it.
+* No LODs, no tangents, no vertex colours, no submeshes. Submeshes are what a material per
+  mesh section needs, and that question belongs to Milestone 11.
+* Vertex and index data live in separate buffers. One buffer with two offsets would halve
+  the resource count; it would also complicate state tracking, and the resource count is not
+  a measured problem.

@@ -41,7 +41,7 @@ use crate::device::RenderDevice;
 use crate::error::RendererError;
 use crate::gpu_timer::GpuTimer;
 use crate::instancing::{InstanceData, InstancedPipeline, UNIT_TRIANGLE, build_instance_grid};
-use crate::mesh::GpuMesh;
+use crate::mesh::VertexStream;
 use crate::offscreen::{BYTES_PER_PIXEL, CapturedImage};
 use crate::swapchain::BACK_BUFFER_FORMAT;
 use crate::sync::GpuFence;
@@ -121,8 +121,8 @@ pub struct BenchHarness {
     rtv_heap: ID3D12DescriptorHeap,
     rtv: D3D12_CPU_DESCRIPTOR_HANDLE,
     pipeline: InstancedPipeline,
-    mesh: GpuMesh,
-    instance_buffer: Option<GpuMesh>,
+    mesh: VertexStream,
+    instance_buffer: Option<VertexStream>,
     instance_scratch: Vec<InstanceData>,
     instances: u32,
     allocator: ID3D12CommandAllocator,
@@ -171,7 +171,7 @@ impl BenchHarness {
         };
 
         let pipeline = InstancedPipeline::new(device)?;
-        let mesh = GpuMesh::upload(&context, &UNIT_TRIANGLE)?;
+        let mesh = VertexStream::upload(&context, &UNIT_TRIANGLE)?;
 
         let allocator = context.create_command_allocator()?;
         let list = context.create_command_list(&allocator)?;
@@ -230,7 +230,10 @@ impl BenchHarness {
             });
         }
         build_instance_grid(count, &mut self.instance_scratch);
-        self.instance_buffer = Some(GpuMesh::upload_raw(&self.context, &self.instance_scratch)?);
+        self.instance_buffer = Some(VertexStream::upload_raw(
+            &self.context,
+            &self.instance_scratch,
+        )?);
         self.instances = count;
         Ok(())
     }

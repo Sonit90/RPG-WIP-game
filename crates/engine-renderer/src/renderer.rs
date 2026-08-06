@@ -17,7 +17,7 @@ use crate::device::{BACKEND, RenderDevice, feature_level_name};
 use crate::error::RendererError;
 use crate::frame::{FrameRing, SyncStats};
 use crate::gpu_timer::GpuTimer;
-use crate::mesh::GpuMesh;
+use crate::mesh::VertexStream;
 #[cfg(feature = "debug-overlay")]
 use crate::overlay::{OverlayBuffers, OverlayGeometry};
 use crate::pipeline::{ScenePipeline, Vertex};
@@ -72,7 +72,7 @@ pub struct Renderer {
     /// Root signature and pipeline state, independent of the geometry.
     pipeline: ScenePipeline,
     /// The geometry currently being drawn.
-    scene: GpuMesh,
+    scene: VertexStream,
     /// Scratch buffer for regenerating scene geometry without allocating each time.
     scene_scratch: Vec<Vertex>,
     /// Debug overlay geometry and its per-slot upload buffers. Absent entirely from a
@@ -143,7 +143,7 @@ impl Renderer {
         let pipeline = ScenePipeline::new(context.device())?;
         let mut scene_scratch = Vec::new();
         stress::build_grid(1, &mut scene_scratch);
-        let scene = GpuMesh::upload(&context, &scene_scratch)?;
+        let scene = VertexStream::upload(&context, &scene_scratch)?;
 
         #[cfg(feature = "debug-overlay")]
         let overlay = OverlayState {
@@ -290,7 +290,7 @@ impl Renderer {
         self.reset_command_list_to_empty()?;
 
         stress::build_grid(triangles, &mut self.scene_scratch);
-        self.scene = GpuMesh::upload(&self.context, &self.scene_scratch)?;
+        self.scene = VertexStream::upload(&self.context, &self.scene_scratch)?;
 
         log::info!(
             "scene: {triangles} triangles ({} vertices, {} KiB)",

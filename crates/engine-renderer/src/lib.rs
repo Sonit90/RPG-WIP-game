@@ -42,7 +42,7 @@ pub use device::BACKEND;
 pub use error::RendererError;
 pub use frame::{DEFAULT_FRAMES_IN_FLIGHT, MAX_FRAMES_IN_FLIGHT, SyncStats};
 pub use instancing::{InstanceData, UNIT_TRIANGLE};
-pub use mesh::GpuMesh;
+pub use mesh::{GpuMesh, Index, MeshData, MeshVertex, VertexStream};
 pub use pipeline::{TRIANGLE_VERTICES, Vertex};
 pub use renderer::Renderer;
 pub use stress::STRESS_LEVELS;

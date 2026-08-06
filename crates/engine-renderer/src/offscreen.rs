@@ -27,7 +27,7 @@ use windows::core::Interface;
 use crate::command::{scissor_for, transition_barrier, viewport_for};
 use crate::device::RenderDevice;
 use crate::error::RendererError;
-use crate::mesh::GpuMesh;
+use crate::mesh::VertexStream;
 use crate::pipeline::{ScenePipeline, TRIANGLE_VERTICES, Vertex};
 use crate::swapchain::BACK_BUFFER_FORMAT;
 
@@ -217,7 +217,7 @@ pub fn render_vertices(
     };
 
     let pipeline = ScenePipeline::new(device)?;
-    let mesh = GpuMesh::upload(&context, vertices)?;
+    let mesh = VertexStream::upload(&context, vertices)?;
 
     // SAFETY: FFI call on a live device with a valid command list type.
     let allocator: ID3D12CommandAllocator =
