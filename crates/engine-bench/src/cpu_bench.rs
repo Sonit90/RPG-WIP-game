@@ -21,7 +21,11 @@ use engine_core::input::{InputEvent, InputState, KeyCode};
 use engine_core::jobs::JobSystem;
 use engine_core::memory::{Arena, FrameAllocator};
 use engine_core::profiling::Profiler;
+use engine_renderer::descriptor::{CpuDescriptorHeap, GpuDescriptorHeap};
+use engine_renderer::device::RenderDevice;
+
 use engine_core::threading::recommended_worker_count;
+use windows::Win32::Graphics::Direct3D12::D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
 
 /// Iterations per sample for the micro-benchmarks.
 const DEFAULT_ITERATIONS: u32 = 100_000;
@@ -69,6 +73,7 @@ fn main() -> ExitCode {
     benchmark_allocators(iterations);
     benchmark_input(iterations);
     benchmark_profiler(iterations);
+    benchmark_descriptors(iterations);
     benchmark_jobs();
 
     ExitCode::SUCCESS
@@ -211,6 +216,78 @@ fn benchmark_profiler(iterations: u32) {
     });
     report("profile scope (recording off)", disabled);
 
+    println!();
+}
+
+/// Descriptor allocation cost.
+///
+/// The requirement this answers is that descriptor allocation must not become a per-object
+/// CPU bottleneck. A frame with 10,000 visible objects binds up to 10,000 tables, so the
+/// per-allocation cost multiplies by the object count and lands directly in the frame time.
+fn benchmark_descriptors(iterations: u32) {
+    println!("-- descriptors --");
+
+    let Ok(device) = RenderDevice::new(false, false) else {
+        println!("SKIP: no D3D12 adapter\n");
+        return;
+    };
+
+    // Sized so the whole benchmark fits without refusing an allocation: the failure path
+    // is cheap and would flatter the numbers.
+    let per_frame = iterations.min(200_000);
+    let Ok(mut heap) = GpuDescriptorHeap::new(&device, 4096, per_frame, 1) else {
+        println!("SKIP: could not create a shader-visible heap\n");
+        return;
+    };
+
+    // The per-draw case: one bump per table.
+    let frame_alloc = measure(iterations.min(per_frame), |count| {
+        heap.begin_frame(0);
+        for _ in 0..count {
+            let handle = heap.allocate_frame(0, black_box(1));
+            black_box(&handle);
+        }
+    });
+    report("per-frame table (1 descriptor)", frame_alloc);
+
+    let table_alloc = measure(iterations.min(per_frame / 4), |count| {
+        heap.begin_frame(0);
+        for _ in 0..count {
+            let handle = heap.allocate_frame(0, black_box(4));
+            black_box(&handle);
+        }
+    });
+    report("per-frame table (4 descriptors)", table_alloc);
+
+    // Reclaiming a frame's worth: one store, whatever was allocated.
+    let reset = measure(iterations, |count| {
+        for _ in 0..count {
+            heap.begin_frame(black_box(0));
+        }
+    });
+    report("frame region reset", reset);
+
+    // The persistent case, for contrast: a free list with individual release.
+    let Ok(mut persistent) = CpuDescriptorHeap::new(&device, D3D12_DESCRIPTOR_HEAP_TYPE_RTV, 4096)
+    else {
+        println!("SKIP: could not create an RTV heap\n");
+        return;
+    };
+    let cycle = measure(iterations, |count| {
+        for _ in 0..count {
+            // Allocate and immediately release, so the free list is exercised rather than
+            // the bump path that fills a fresh heap.
+            if let Ok(handle) = persistent.allocate() {
+                let _ = persistent.free(black_box(handle));
+            }
+        }
+    });
+    report("free-list allocate + free", cycle);
+
+    println!(
+        "peak per-frame descriptors used: {}",
+        heap.frame_stats(0).peak
+    );
     println!();
 }
 

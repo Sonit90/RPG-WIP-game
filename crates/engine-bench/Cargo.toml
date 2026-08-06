@@ -21,6 +21,9 @@ path = "src/cpu_bench.rs"
 [dependencies]
 engine-core = { workspace = true }
 engine-renderer = { workspace = true, default-features = false }
+# Only for the descriptor-heap type constants the benchmark passes through to the
+# renderer's API. No D3D12 calls are made here.
+windows = { workspace = true, features = ["Win32_Graphics_Direct3D12"] }
 log = { workspace = true }
 
 [lints]

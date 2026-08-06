@@ -413,3 +413,30 @@ Two rules follow, and they now apply to every comparison in this document:
 A corollary worth stating: absolute numbers are only comparable within one session on one
 machine state. The 0.155 ms p50 measured here and the 0.168 ms mean measured in milestone 2
 are not in conflict - they are different statistics of different runs under different load.
+
+## Milestone 4 - descriptor allocation
+
+`cargo run --release --bin cpu_bench`, median of 9 samples.
+
+| Operation | Cost |
+| --- | --- |
+| Per-frame table, 1 descriptor (bump) | 2.85 ns |
+| Per-frame table, 4 descriptors (bump) | 2.86 ns |
+| Frame region reset | 0.44 ns |
+| Free-list allocate + free (persistent) | 3.54 ns |
+
+Table size does not affect the cost: a bump is a bump whether it hands out one descriptor
+or four. Reclaiming a whole frame's descriptors is one store regardless of how many were
+allocated.
+
+Against the frame budget, for the case that scales with scene size:
+
+| Visible objects, one table each | Descriptor cost | Share of a 2.08 ms frame |
+| --- | --- | --- |
+| 1,000 | 2.9 us | 0.14% |
+| 10,000 | 28.5 us | 1.4% |
+| 100,000 | 285 us | 13.7% |
+
+At 10,000 objects descriptor allocation is not the bottleneck. At 100,000 individually
+bound objects it starts to matter - which is another argument for instancing, where one
+table serves the whole batch, rather than for a faster descriptor allocator.

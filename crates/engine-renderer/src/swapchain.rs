@@ -2,8 +2,7 @@
 
 use windows::Win32::Foundation::HWND;
 use windows::Win32::Graphics::Direct3D12::{
-    D3D12_CPU_DESCRIPTOR_HANDLE, D3D12_DESCRIPTOR_HEAP_DESC, D3D12_DESCRIPTOR_HEAP_FLAG_NONE,
-    D3D12_DESCRIPTOR_HEAP_TYPE_RTV, ID3D12DescriptorHeap, ID3D12Resource,
+    D3D12_CPU_DESCRIPTOR_HANDLE, D3D12_DESCRIPTOR_HEAP_TYPE_RTV, ID3D12Resource,
 };
 use windows::Win32::Graphics::Dxgi::Common::{
     DXGI_ALPHA_MODE_UNSPECIFIED, DXGI_FORMAT, DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_SAMPLE_DESC,
@@ -16,6 +15,7 @@ use windows::Win32::Graphics::Dxgi::{
 
 use windows::core::Interface;
 
+use crate::descriptor::{CpuDescriptorHeap, DescriptorHandle};
 use crate::device::RenderDevice;
 use crate::error::RendererError;
 
@@ -31,8 +31,15 @@ pub const BACK_BUFFER_FORMAT: DXGI_FORMAT = DXGI_FORMAT_R8G8B8A8_UNORM;
 /// The swap chain, its back buffers and the RTV heap describing them.
 pub struct SwapChain {
     swap_chain: IDXGISwapChain3,
-    rtv_heap: ID3D12DescriptorHeap,
-    rtv_descriptor_size: u32,
+    /// Kept alive because the views live in it. Never read after creation — the handles
+    /// in `rtvs` address it, and dropping it would invalidate every one of them.
+    #[expect(
+        dead_code,
+        reason = "ownership only: the heap must outlive the handles that point into it"
+    )]
+    rtv_heap: CpuDescriptorHeap,
+    /// One render-target view per back buffer, allocated once.
+    rtvs: Vec<DescriptorHandle>,
     buffers: Vec<ID3D12Resource>,
     width: u32,
     height: u32,
@@ -95,28 +102,19 @@ impl SwapChain {
             .cast()
             .map_err(|error| RendererError::api("IDXGISwapChain1::cast<IDXGISwapChain3>", error))?;
 
-        let heap_desc = D3D12_DESCRIPTOR_HEAP_DESC {
-            Type: D3D12_DESCRIPTOR_HEAP_TYPE_RTV,
-            NumDescriptors: FRAME_COUNT as u32,
-            Flags: D3D12_DESCRIPTOR_HEAP_FLAG_NONE,
-            NodeMask: 0,
-        };
-        // SAFETY: FFI call with a fully initialized descriptor that outlives the call.
-        let rtv_heap: ID3D12DescriptorHeap =
-            unsafe { context.device().CreateDescriptorHeap(&heap_desc) }
-                .map_err(|error| RendererError::api("ID3D12Device::CreateDescriptorHeap", error))?;
-
-        // SAFETY: FFI call returning a constant for this device and heap type.
-        let rtv_descriptor_size = unsafe {
-            context
-                .device()
-                .GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV)
-        };
+        // One RTV per back buffer, from the engine descriptor allocator rather than a
+        // heap this module manages itself.
+        let mut rtv_heap =
+            CpuDescriptorHeap::new(context, D3D12_DESCRIPTOR_HEAP_TYPE_RTV, FRAME_COUNT as u32)?;
+        let mut rtvs = Vec::with_capacity(FRAME_COUNT);
+        for _ in 0..FRAME_COUNT {
+            rtvs.push(rtv_heap.allocate()?);
+        }
 
         let mut this = Self {
             swap_chain,
             rtv_heap,
-            rtv_descriptor_size,
+            rtvs,
             buffers: Vec::with_capacity(FRAME_COUNT),
             width,
             height,
@@ -149,11 +147,7 @@ impl SwapChain {
     /// CPU descriptor handle of the render-target view at `index`.
     #[must_use]
     pub fn rtv_handle(&self, index: usize) -> D3D12_CPU_DESCRIPTOR_HANDLE {
-        // SAFETY: FFI call returning the heap's base handle.
-        let base = unsafe { self.rtv_heap.GetCPUDescriptorHandleForHeapStart() };
-        D3D12_CPU_DESCRIPTOR_HANDLE {
-            ptr: base.ptr + index * self.rtv_descriptor_size as usize,
-        }
+        self.rtvs[index].cpu
     }
 
     /// Current back-buffer size in pixels.

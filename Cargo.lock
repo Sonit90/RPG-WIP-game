@@ -19,6 +19,7 @@ dependencies = [
  "engine-core",
  "engine-renderer",
  "log",
+ "windows",
 ]
 
 [[package]]

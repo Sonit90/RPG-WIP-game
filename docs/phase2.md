@@ -24,7 +24,7 @@ Milestone status:
 | 1 | Renderer device abstraction | done |
 | 2 | Frame resources and synchronization | done |
 | 3 | Command context | done |
-| 4 | Descriptor management | todo |
+| 4 | Descriptor management | done |
 | 5 | Resource abstraction | todo |
 | 6 | Upload system | todo |
 | 7 | Shader system | todo |
@@ -589,3 +589,113 @@ executes it.
   lives.
 * One list, one thread. Parallel command recording would need a context per thread and a
   submission order; nothing here forecloses it.
+
+---
+
+# Milestone 4 — Descriptor management
+
+## What was built
+
+Three lifetimes, three strategies, because using one allocator for all of them means
+paying the most expensive strategy's cost for the case that runs thousands of times a
+second.
+
+| Region | Visibility | Allocation | Reclaimed | Used for |
+| --- | --- | --- | --- | --- |
+| `CpuDescriptorHeap` | CPU only | free list | on release | RTV, DSV |
+| `GpuDescriptorHeap` persistent | shader-visible | free list | on release | material views |
+| `GpuDescriptorHeap` per frame | shader-visible | **bump** | whole slice, per frame | per-draw tables |
+
+The allocator logic is two small pure types — `FreeListAllocator` and `BumpAllocator` —
+with no D3D12 in them, so the rules that matter (no index handed out twice, no double
+free, contiguous tables, peaks that survive resets) are unit-tested without a GPU.
+
+`SwapChain` no longer manages its own RTV heap; it allocates three handles from a
+`CpuDescriptorHeap`. That was the point of building it — a module that nothing uses is a
+module nothing has validated.
+
+## Why the per-draw case bumps
+
+A descriptor table for one draw lives exactly one frame, and every table in that frame
+dies at the same instant. Tracking them individually buys a free-list entry, a release
+call and a lifetime to get wrong, in exchange for nothing. Bumping an offset is an add and
+a compare; reclaiming a whole frame's worth is one store.
+
+So the requirement "descriptor allocation must not become a per-object CPU bottleneck" is
+met by not making the per-object case an allocation problem at all.
+
+## Why one shader-visible heap
+
+Changing the bound descriptor heap is among the more expensive state changes in D3D12 — on
+some drivers it flushes. One heap, split into a persistent region and one slice per frame
+slot, is bound once per frame and never changed. It is also the layout a bindless renderer
+wants, so that path stays open without being built.
+
+## Measured cost
+
+`cargo run --release --bin cpu_bench`, median of 9 samples:
+
+| Operation | Cost |
+| --- | --- |
+| Per-frame table, 1 descriptor | 2.85 ns |
+| Per-frame table, 4 descriptors | 2.86 ns |
+| Frame region reset | 0.44 ns |
+| Free-list allocate + free | 3.54 ns |
+
+The table size does not matter — 1 and 4 descriptors cost the same, because a bump is a
+bump. Against the frame budget:
+
+* 10,000 visible objects, one table each: **28.5 µs**, or 1.4% of a 2.08 ms frame at
+  480 FPS.
+* Reclaiming a frame's descriptors: **0.44 ns**, whatever was allocated.
+
+Descriptor allocation is not going to be the bottleneck. That is now a measurement rather
+than a design intention.
+
+## Tests
+
+Unit tests (no GPU) cover the allocator rules: distinct slots, most-recently-freed reused
+first, rejection of freeing an unallocated or already-freed slot, contiguous ranges,
+whole-region reset, zero-length requests, refusal without wrapping, non-overlapping frame
+slices, and peaks surviving release.
+
+`tests/descriptors.rs` covers what needs a driver:
+
+| Test | Asserts |
+| --- | --- |
+| `cpu_handles_step_by_the_devices_descriptor_size` | handles step by the device's real stride, for RTV *and* DSV |
+| `a_full_cpu_heap_reports_which_heap_it_was` | a full heap names itself and its capacity |
+| `gpu_handles_carry_both_addresses_and_step_together` | CPU and GPU views of one heap advance in step |
+| `frame_slices_are_disjoint_from_each_other_and_from_the_persistent_region` | no index handed out twice across all regions |
+| `a_frame_slice_is_reclaimed_whole_and_reused` | reset returns the same descriptors; peak survives |
+| `a_descriptor_table_is_contiguous` | the second table begins exactly `count` descriptors after the first |
+| `a_heap_with_no_frame_slices_is_rejected` | zero slices refused; an empty heap is legal |
+
+The stride tests matter because the descriptor size is hardware-specific and differs
+between heap types. Computing handles with an assumed size produces views that address the
+wrong descriptor — invisible until something renders wrong.
+
+## Acceptance criteria
+
+| Criterion | Result |
+| --- | --- |
+| RTV, DSV, CBV/SRV/UAV supported | pass |
+| CPU-visible and GPU-visible separated | pass — different types, different strategies |
+| Designed for reuse | pass — free list for long-lived, whole-region reset for per-frame |
+| No expensive per-frame dynamic allocation | pass — 2.85 ns per table, measured |
+| Allocation benchmarked and documented | pass — table above and `docs/performance.md` |
+| Supports future material textures, constant buffers, instancing | pass — persistent region plus per-frame tables |
+| Bindless not implemented | correct — the single-heap layout leaves the path open |
+
+## Known limitations
+
+* Nothing *creates views* into these heaps yet beyond the swap chain's RTVs. Constant
+  buffer views and shader resource views arrive with the resource and material systems in
+  Milestones 5 and 11; the heap is what they will allocate from.
+* The renderer does not yet own a `GpuDescriptorHeap` — there is nothing to bind. It is
+  created and bound when the first shader-visible descriptor exists.
+* Freeing a persistent descriptor is immediate. A descriptor released while a frame in
+  flight still references it would be reused too early; today nothing releases them, and
+  Milestone 5's deferred destruction will cover both resources and their views.
+* Heap capacities are constructor arguments with no defaults chosen yet. The numbers get
+  chosen when there is a real scene to size them against, from the reported peaks.
