@@ -21,7 +21,7 @@ Milestone status:
 | # | Milestone | Status |
 | --- | --- | --- |
 | 0 | Architecture proposal | done |
-| 1 | Renderer device abstraction | todo |
+| 1 | Renderer device abstraction | done |
 | 2 | Frame resources and synchronization | todo |
 | 3 | Command context | todo |
 | 4 | Descriptor management | todo |
@@ -333,3 +333,57 @@ whether the CPU-driven baseline meets the frame budget.
 | Reverse-Z not adopted now, wanted later | Depth format and comparison live in one place; the change is the projection matrix, the clear value and one PSO field |
 | The renderer refactor regresses Phase 0 frame time | The Phase 0 stress scene and its 0.166–0.184 ms CPU band are re-measured after every milestone |
 | Descriptor or upload ring too small under load | Both report high-water marks; both fail loudly rather than silently wrapping |
+
+---
+
+# Milestone 1 — Renderer device abstraction
+
+## What was built
+
+`GpuContext` became `RenderDevice`, and **every `ID3D12Device::Create*` call in the crate
+now goes through it**:
+
+| Method | Replaces raw calls in |
+| --- | --- |
+| `create_command_allocator` | `renderer.rs`, `bench.rs`, `mesh.rs` |
+| `create_command_list` | `renderer.rs`, `bench.rs`, `mesh.rs` |
+| `create_buffer` | `mesh.rs` (was a private `create_buffer` free function) |
+| `create_descriptor_heap` | ready for Milestone 4 |
+| `create_fence` | `sync.rs` |
+| `descriptor_size` | ready for Milestone 4 |
+
+`GpuFence::new` and `GpuMesh::upload` / `upload_raw` now take a `&RenderDevice` instead of
+a `&ID3D12Device` plus a `&ID3D12CommandQueue`. Passing both separately was an invitation
+to pass a queue from one device and a device from another — a class of bug that no longer
+has a call signature to live in.
+
+## Why this is worth doing rather than leaving alone
+
+Object creation is where `unsafe`, `HRESULT` mapping and cross-object agreement
+(command-list type, heap flags, initial resource state) all meet. Spread across five files
+it has to be audited in five places; the milestones that follow add descriptors,
+resources, upload buffers, depth textures and pipelines, each of which is another
+`Create*` call. Centralizing before adding them is cheaper than after.
+
+`create_command_list` also returns a list that is already **closed**. D3D12 hands back an
+open one, and every call site had its own "close it so the frame path can start with
+`Reset`" comment. That trap is now gone from every call site.
+
+## Acceptance criteria
+
+| Criterion | Result |
+| --- | --- |
+| Application still starts | pass |
+| Phase 0 triangle still renders | pass — offscreen pixel tests unchanged and passing |
+| All existing tests pass | pass — 302 tests, no `SKIP:` lines |
+| No regression in Phase 0 | pass — 60,000 frames at 1000 triangles, CPU mean 0.174 ms against the 0.166–0.184 ms band |
+| `engine-core` still has no graphics dependency | pass |
+
+## Known limitations
+
+* `RenderDevice` still exposes `device()` and `queue()`, and the swap chain, GPU timer,
+  pipelines and offscreen path still use them directly. Removing those accessors entirely
+  is not the goal — the goal is that *creation* is centralized. Direct recording calls
+  legitimately need the raw objects.
+* One queue, one device, one adapter. Multi-queue (a copy queue for uploads) is a later
+  question and would change the fence model; nothing here forecloses it.

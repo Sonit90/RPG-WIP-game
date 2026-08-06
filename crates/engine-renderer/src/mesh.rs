@@ -10,16 +10,13 @@
 //! the scene changes, never per frame.
 
 use windows::Win32::Graphics::Direct3D12::{
-    D3D12_COMMAND_LIST_TYPE_DIRECT, D3D12_HEAP_FLAG_NONE, D3D12_HEAP_PROPERTIES,
-    D3D12_HEAP_TYPE_DEFAULT, D3D12_HEAP_TYPE_UPLOAD, D3D12_RANGE, D3D12_RESOURCE_DESC,
-    D3D12_RESOURCE_DIMENSION_BUFFER, D3D12_RESOURCE_STATE_COPY_DEST,
+    D3D12_HEAP_TYPE_DEFAULT, D3D12_HEAP_TYPE_UPLOAD, D3D12_RANGE, D3D12_RESOURCE_STATE_COPY_DEST,
     D3D12_RESOURCE_STATE_GENERIC_READ, D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER,
-    D3D12_TEXTURE_LAYOUT_ROW_MAJOR, D3D12_VERTEX_BUFFER_VIEW, ID3D12CommandAllocator,
-    ID3D12CommandQueue, ID3D12Device, ID3D12GraphicsCommandList, ID3D12Resource,
+    D3D12_VERTEX_BUFFER_VIEW, ID3D12Resource,
 };
-use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_UNKNOWN, DXGI_SAMPLE_DESC};
 use windows::core::Interface;
 
+use crate::device::RenderDevice;
 use crate::error::RendererError;
 use crate::pipeline::Vertex;
 use crate::renderer::transition_barrier;
@@ -40,11 +37,7 @@ impl GpuMesh {
     ///
     /// Returns [`RendererError::InvalidConfig`] for empty input, or
     /// [`RendererError::Api`] if any D3D12 call fails.
-    pub fn upload(
-        device: &ID3D12Device,
-        queue: &ID3D12CommandQueue,
-        vertices: &[Vertex],
-    ) -> Result<Self, RendererError> {
+    pub fn upload(device: &RenderDevice, vertices: &[Vertex]) -> Result<Self, RendererError> {
         if vertices.is_empty() {
             return Err(RendererError::InvalidConfig {
                 reason: "a mesh needs at least one vertex".to_owned(),
@@ -52,21 +45,19 @@ impl GpuMesh {
         }
 
         let byte_size = std::mem::size_of_val(vertices);
-        let destination = create_buffer(
-            device,
+        let destination = device.create_buffer(
             byte_size,
             D3D12_HEAP_TYPE_DEFAULT,
             D3D12_RESOURCE_STATE_COPY_DEST,
         )?;
-        let staging = create_buffer(
-            device,
+        let staging = device.create_buffer(
             byte_size,
             D3D12_HEAP_TYPE_UPLOAD,
             D3D12_RESOURCE_STATE_GENERIC_READ,
         )?;
 
         write_staging_raw(&staging, vertices.as_ptr().cast::<u8>(), byte_size)?;
-        copy_and_wait(device, queue, &staging, &destination, byte_size)?;
+        copy_and_wait(device, &staging, &destination, byte_size)?;
 
         // SAFETY: FFI call returning the resource's GPU address, valid while it lives.
         let gpu_address = unsafe { destination.GetGPUVirtualAddress() };
@@ -115,11 +106,7 @@ impl GpuMesh {
     ///
     /// Returns [`RendererError::InvalidConfig`] for empty input, or
     /// [`RendererError::Api`] if any D3D12 call fails.
-    pub fn upload_raw<T: Copy>(
-        device: &ID3D12Device,
-        queue: &ID3D12CommandQueue,
-        data: &[T],
-    ) -> Result<Self, RendererError> {
+    pub fn upload_raw<T: Copy>(device: &RenderDevice, data: &[T]) -> Result<Self, RendererError> {
         if data.is_empty() {
             return Err(RendererError::InvalidConfig {
                 reason: "a vertex stream needs at least one element".to_owned(),
@@ -127,21 +114,19 @@ impl GpuMesh {
         }
 
         let byte_size = std::mem::size_of_val(data);
-        let destination = create_buffer(
-            device,
+        let destination = device.create_buffer(
             byte_size,
             D3D12_HEAP_TYPE_DEFAULT,
             D3D12_RESOURCE_STATE_COPY_DEST,
         )?;
-        let staging = create_buffer(
-            device,
+        let staging = device.create_buffer(
             byte_size,
             D3D12_HEAP_TYPE_UPLOAD,
             D3D12_RESOURCE_STATE_GENERIC_READ,
         )?;
 
         write_staging_raw(&staging, data.as_ptr().cast::<u8>(), byte_size)?;
-        copy_and_wait(device, queue, &staging, &destination, byte_size)?;
+        copy_and_wait(device, &staging, &destination, byte_size)?;
 
         // SAFETY: FFI call returning the resource's GPU address, valid while it lives.
         let gpu_address = unsafe { destination.GetGPUVirtualAddress() };
@@ -161,52 +146,6 @@ impl GpuMesh {
     pub fn resource(&self) -> &ID3D12Resource {
         &self.buffer
     }
-}
-
-/// Creates a buffer of `byte_size` bytes on the given heap.
-fn create_buffer(
-    device: &ID3D12Device,
-    byte_size: usize,
-    heap_type: windows::Win32::Graphics::Direct3D12::D3D12_HEAP_TYPE,
-    initial_state: windows::Win32::Graphics::Direct3D12::D3D12_RESOURCE_STATES,
-) -> Result<ID3D12Resource, RendererError> {
-    let heap_properties = D3D12_HEAP_PROPERTIES {
-        Type: heap_type,
-        ..Default::default()
-    };
-    let desc = D3D12_RESOURCE_DESC {
-        Dimension: D3D12_RESOURCE_DIMENSION_BUFFER,
-        Width: byte_size as u64,
-        Height: 1,
-        DepthOrArraySize: 1,
-        MipLevels: 1,
-        Format: DXGI_FORMAT_UNKNOWN,
-        SampleDesc: DXGI_SAMPLE_DESC {
-            Count: 1,
-            Quality: 0,
-        },
-        Layout: D3D12_TEXTURE_LAYOUT_ROW_MAJOR,
-        ..Default::default()
-    };
-
-    let mut buffer: Option<ID3D12Resource> = None;
-    // SAFETY: FFI call with fully initialized descriptors that outlive it, and a valid
-    // out-parameter.
-    unsafe {
-        device.CreateCommittedResource(
-            &heap_properties,
-            D3D12_HEAP_FLAG_NONE,
-            &desc,
-            initial_state,
-            None,
-            &mut buffer,
-        )
-    }
-    .map_err(|error| RendererError::api("ID3D12Device::CreateCommittedResource", error))?;
-
-    buffer.ok_or_else(|| RendererError::InvalidConfig {
-        reason: "buffer creation produced no resource".to_owned(),
-    })
 }
 
 /// Copies `byte_size` bytes from `source` into an upload-heap buffer.
@@ -233,21 +172,18 @@ fn write_staging_raw(
 
 /// Records and executes the staging copy, then blocks until the GPU finishes it.
 fn copy_and_wait(
-    device: &ID3D12Device,
-    queue: &ID3D12CommandQueue,
+    device: &RenderDevice,
     staging: &ID3D12Resource,
     destination: &ID3D12Resource,
     byte_size: usize,
 ) -> Result<(), RendererError> {
-    // SAFETY: FFI call on a live device with a valid command list type.
-    let allocator: ID3D12CommandAllocator =
-        unsafe { device.CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT) }
-            .map_err(|error| RendererError::api("ID3D12Device::CreateCommandAllocator", error))?;
-    // SAFETY: FFI call. The allocator is live and no initial pipeline state is needed for
-    // a list that only copies.
-    let list: ID3D12GraphicsCommandList =
-        unsafe { device.CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, &allocator, None) }
-            .map_err(|error| RendererError::api("ID3D12Device::CreateCommandList", error))?;
+    let allocator = device.create_command_allocator()?;
+    let list = device.create_command_list(&allocator)?;
+    // The device layer hands back a closed list; recording needs it open.
+    // SAFETY: FFI call. The list was created and closed by the device layer, and the
+    // allocator is live and used by nothing else, which is what Reset requires.
+    unsafe { list.Reset(&allocator, None) }
+        .map_err(|error| RendererError::api("ID3D12GraphicsCommandList::Reset", error))?;
 
     // SAFETY: FFI calls recording into the open list. Both resources outlive the
     // submission because this function waits for it to complete before returning, and the
@@ -269,11 +205,11 @@ fn copy_and_wait(
         RendererError::api("ID3D12GraphicsCommandList::cast", error)
     })?)];
     // SAFETY: FFI call submitting the closed list, which outlives the call.
-    unsafe { queue.ExecuteCommandLists(&submission) };
+    unsafe { device.queue().ExecuteCommandLists(&submission) };
 
     // Blocking here is what makes the staging buffer safe to drop on return.
     let mut fence = GpuFence::new(device)?;
-    fence.wait_for_idle(queue)
+    fence.wait_for_idle(device.queue())
 }
 
 // `GpuMesh` needs a device, so its behaviour is covered by the GPU integration tests in

@@ -10,11 +10,10 @@
 //!   fully serializes CPU and GPU, so it must never appear in the per-frame path.
 
 use windows::Win32::Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0};
-use windows::Win32::Graphics::Direct3D12::{
-    D3D12_FENCE_FLAG_NONE, ID3D12CommandQueue, ID3D12Device, ID3D12Fence,
-};
+use windows::Win32::Graphics::Direct3D12::{ID3D12CommandQueue, ID3D12Fence};
 use windows::Win32::System::Threading::{CreateEventW, INFINITE, WaitForSingleObject};
 
+use crate::device::RenderDevice;
 use crate::error::RendererError;
 
 /// A fence and the event used to block on it.
@@ -30,11 +29,8 @@ impl GpuFence {
     /// # Errors
     ///
     /// Returns [`RendererError::Api`] if `CreateFence` or `CreateEventW` fails.
-    pub fn new(device: &ID3D12Device) -> Result<Self, RendererError> {
-        // SAFETY: FFI call on a live device; the returned fence is refcounted by
-        // the `windows` crate.
-        let fence: ID3D12Fence = unsafe { device.CreateFence(0, D3D12_FENCE_FLAG_NONE) }
-            .map_err(|error| RendererError::api("ID3D12Device::CreateFence", error))?;
+    pub fn new(device: &RenderDevice) -> Result<Self, RendererError> {
+        let fence = device.create_fence(0)?;
 
         // SAFETY: FFI call creating an unnamed, auto-reset, initially unsignalled event.
         // The handle is closed in `Drop`.

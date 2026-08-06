@@ -12,7 +12,7 @@
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use engine_renderer::RendererError;
-use engine_renderer::device::GpuContext;
+use engine_renderer::device::RenderDevice;
 use engine_renderer::offscreen::{CapturedImage, render_triangle};
 
 /// Serializes GPU work across test threads and, through it, across test binaries in the
@@ -26,7 +26,7 @@ fn gpu_lock() -> MutexGuard<'static, ()> {
 
 /// Whether this machine has a usable D3D12 adapter.
 fn gpu_available() -> bool {
-    match GpuContext::new(false, false) {
+    match RenderDevice::new(false, false) {
         Ok(_) => true,
         Err(RendererError::NoSuitableAdapter { examined }) => {
             eprintln!("SKIP: no D3D12 adapter on this machine ({examined} examined)");

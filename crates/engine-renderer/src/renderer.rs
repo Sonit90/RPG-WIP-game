@@ -9,17 +9,17 @@ use std::mem::ManuallyDrop;
 use windows::Win32::Foundation::{HWND, RECT};
 use windows::Win32::Graphics::Direct3D::D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
 use windows::Win32::Graphics::Direct3D12::{
-    D3D12_COMMAND_LIST_TYPE_DIRECT, D3D12_MAX_DEPTH, D3D12_MIN_DEPTH, D3D12_RESOURCE_BARRIER,
-    D3D12_RESOURCE_BARRIER_0, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,
-    D3D12_RESOURCE_BARRIER_FLAG_NONE, D3D12_RESOURCE_BARRIER_TYPE_TRANSITION,
-    D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATES,
-    D3D12_RESOURCE_TRANSITION_BARRIER, D3D12_VIEWPORT, ID3D12CommandAllocator, ID3D12CommandList,
-    ID3D12GraphicsCommandList, ID3D12Resource,
+    D3D12_MAX_DEPTH, D3D12_MIN_DEPTH, D3D12_RESOURCE_BARRIER, D3D12_RESOURCE_BARRIER_0,
+    D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES, D3D12_RESOURCE_BARRIER_FLAG_NONE,
+    D3D12_RESOURCE_BARRIER_TYPE_TRANSITION, D3D12_RESOURCE_STATE_PRESENT,
+    D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATES, D3D12_RESOURCE_TRANSITION_BARRIER,
+    D3D12_VIEWPORT, ID3D12CommandAllocator, ID3D12CommandList, ID3D12GraphicsCommandList,
+    ID3D12Resource,
 };
 
 use windows::core::Interface;
 
-use crate::device::{BACKEND, GpuContext, feature_level_name};
+use crate::device::{BACKEND, RenderDevice, feature_level_name};
 use crate::error::RendererError;
 use crate::gpu_timer::GpuTimer;
 use crate::mesh::GpuMesh;
@@ -96,7 +96,7 @@ pub struct Renderer {
     /// Slot recorded by `render` and not yet presented.
     recorded_frame_slot: Option<usize>,
     /// Device, queue and factory. Declared last so it is released last.
-    context: GpuContext,
+    context: RenderDevice,
 }
 
 impl Renderer {
@@ -125,53 +125,32 @@ impl Renderer {
             });
         }
 
-        let context = GpuContext::new(config.enable_debug_layer, config.break_on_validation_error)?;
+        let context =
+            RenderDevice::new(config.enable_debug_layer, config.break_on_validation_error)?;
         let hwnd = HWND(window_handle as *mut std::ffi::c_void);
         let swap_chain = SwapChain::new(&context, hwnd, config.width, config.height, config.vsync)?;
 
         let mut frames = Vec::with_capacity(FRAME_COUNT);
         for _ in 0..FRAME_COUNT {
-            // SAFETY: FFI call on a live device with a valid command list type.
-            let allocator: ID3D12CommandAllocator = unsafe {
-                context
-                    .device()
-                    .CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT)
-            }
-            .map_err(|error| RendererError::api("ID3D12Device::CreateCommandAllocator", error))?;
             frames.push(Frame {
-                allocator,
+                allocator: context.create_command_allocator()?,
                 fence_value: 0,
             });
         }
 
-        // SAFETY: FFI call. The allocator is live and owned by `frames`; passing `None`
-        // for the initial pipeline state is valid for a list that only clears.
-        let command_list: ID3D12GraphicsCommandList = unsafe {
-            context.device().CreateCommandList(
-                0,
-                D3D12_COMMAND_LIST_TYPE_DIRECT,
-                &frames[0].allocator,
-                None,
-            )
-        }
-        .map_err(|error| RendererError::api("ID3D12Device::CreateCommandList", error))?;
-
-        // A freshly created list is open; close it so the per-frame path can always
-        // start with Reset.
-        // SAFETY: FFI call on the list created immediately above, which records nothing.
-        unsafe { command_list.Close() }
-            .map_err(|error| RendererError::api("ID3D12GraphicsCommandList::Close", error))?;
+        // Created closed, so the per-frame path can always begin with Reset.
+        let command_list = context.create_command_list(&frames[0].allocator)?;
 
         let execute_lists = [Some(command_list.cast::<ID3D12CommandList>().map_err(
             |error| RendererError::api("ID3D12GraphicsCommandList::cast<ID3D12CommandList>", error),
         )?)];
 
-        let fence = GpuFence::new(context.device())?;
+        let fence = GpuFence::new(&context)?;
         let gpu_timer = GpuTimer::new(context.device(), context.queue(), FRAME_COUNT)?;
         let pipeline = ScenePipeline::new(context.device())?;
         let mut scene_scratch = Vec::new();
         stress::build_grid(1, &mut scene_scratch);
-        let scene = GpuMesh::upload(context.device(), context.queue(), &scene_scratch)?;
+        let scene = GpuMesh::upload(&context, &scene_scratch)?;
 
         #[cfg(feature = "debug-overlay")]
         let overlay = OverlayState {
@@ -315,11 +294,7 @@ impl Renderer {
         self.reset_command_list_to_empty()?;
 
         stress::build_grid(triangles, &mut self.scene_scratch);
-        self.scene = GpuMesh::upload(
-            self.context.device(),
-            self.context.queue(),
-            &self.scene_scratch,
-        )?;
+        self.scene = GpuMesh::upload(&self.context, &self.scene_scratch)?;
 
         log::info!(
             "scene: {triangles} triangles ({} vertices, {} KiB)",

@@ -7,7 +7,7 @@
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use engine_platform::{Window, WindowConfig};
-use engine_renderer::device::GpuContext;
+use engine_renderer::device::RenderDevice;
 use engine_renderer::offscreen::render_vertices;
 use engine_renderer::stress::{STRESS_LEVELS, build_grid};
 use engine_renderer::{Renderer, RendererConfig, RendererError};
@@ -19,7 +19,7 @@ fn gpu_lock() -> MutexGuard<'static, ()> {
 }
 
 fn gpu_available() -> bool {
-    match GpuContext::new(false, false) {
+    match RenderDevice::new(false, false) {
         Ok(_) => true,
         Err(RendererError::NoSuitableAdapter { examined }) => {
             eprintln!("SKIP: no D3D12 adapter on this machine ({examined} examined)");

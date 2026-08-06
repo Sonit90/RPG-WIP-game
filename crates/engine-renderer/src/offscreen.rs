@@ -24,7 +24,7 @@ use windows::Win32::Graphics::Direct3D12::{
 use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_UNKNOWN, DXGI_SAMPLE_DESC};
 use windows::core::Interface;
 
-use crate::device::GpuContext;
+use crate::device::RenderDevice;
 use crate::error::RendererError;
 use crate::mesh::GpuMesh;
 use crate::pipeline::{ScenePipeline, TRIANGLE_VERTICES, Vertex};
@@ -100,7 +100,7 @@ pub fn render_vertices(
         });
     }
 
-    let context = GpuContext::new(false, false)?;
+    let context = RenderDevice::new(false, false)?;
     let device = context.device();
 
     let target_desc = D3D12_RESOURCE_DESC {
@@ -217,7 +217,7 @@ pub fn render_vertices(
     };
 
     let pipeline = ScenePipeline::new(device)?;
-    let mesh = GpuMesh::upload(device, context.queue(), vertices)?;
+    let mesh = GpuMesh::upload(&context, vertices)?;
 
     // SAFETY: FFI call on a live device with a valid command list type.
     let allocator: ID3D12CommandAllocator =
@@ -278,7 +278,7 @@ pub fn render_vertices(
     // SAFETY: FFI call submitting the closed list, which outlives the call.
     unsafe { context.queue().ExecuteCommandLists(&submission) };
 
-    let mut fence = crate::sync::GpuFence::new(device)?;
+    let mut fence = crate::sync::GpuFence::new(&context)?;
     fence.wait_for_idle(context.queue())?;
 
     let pixels = read_pixels(&readback, &footprint, width, height, total_bytes)?;

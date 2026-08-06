@@ -22,14 +22,13 @@ use std::time::Instant;
 use engine_core::time::{FrameStats, FrameStatsWindow, duration_to_ms};
 use windows::Win32::Graphics::Direct3D::D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
 use windows::Win32::Graphics::Direct3D12::{
-    D3D12_COMMAND_LIST_TYPE_DIRECT, D3D12_CPU_DESCRIPTOR_HANDLE, D3D12_DESCRIPTOR_HEAP_DESC,
-    D3D12_DESCRIPTOR_HEAP_FLAG_NONE, D3D12_DESCRIPTOR_HEAP_TYPE_RTV, D3D12_HEAP_FLAG_NONE,
-    D3D12_HEAP_PROPERTIES, D3D12_HEAP_TYPE_DEFAULT, D3D12_HEAP_TYPE_READBACK,
-    D3D12_PLACED_SUBRESOURCE_FOOTPRINT, D3D12_RANGE, D3D12_RESOURCE_DESC,
-    D3D12_RESOURCE_DIMENSION_BUFFER, D3D12_RESOURCE_DIMENSION_TEXTURE2D,
-    D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_DEST,
-    D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET,
-    D3D12_TEXTURE_COPY_LOCATION, D3D12_TEXTURE_COPY_LOCATION_0,
+    D3D12_CPU_DESCRIPTOR_HANDLE, D3D12_DESCRIPTOR_HEAP_DESC, D3D12_DESCRIPTOR_HEAP_FLAG_NONE,
+    D3D12_DESCRIPTOR_HEAP_TYPE_RTV, D3D12_HEAP_FLAG_NONE, D3D12_HEAP_PROPERTIES,
+    D3D12_HEAP_TYPE_DEFAULT, D3D12_HEAP_TYPE_READBACK, D3D12_PLACED_SUBRESOURCE_FOOTPRINT,
+    D3D12_RANGE, D3D12_RESOURCE_DESC, D3D12_RESOURCE_DIMENSION_BUFFER,
+    D3D12_RESOURCE_DIMENSION_TEXTURE2D, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET,
+    D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_COPY_SOURCE,
+    D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_TEXTURE_COPY_LOCATION, D3D12_TEXTURE_COPY_LOCATION_0,
     D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT, D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
     D3D12_TEXTURE_LAYOUT_ROW_MAJOR, ID3D12CommandAllocator, ID3D12CommandList,
     ID3D12DescriptorHeap, ID3D12GraphicsCommandList, ID3D12Resource,
@@ -37,7 +36,7 @@ use windows::Win32::Graphics::Direct3D12::{
 use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_UNKNOWN, DXGI_SAMPLE_DESC};
 use windows::core::Interface;
 
-use crate::device::GpuContext;
+use crate::device::RenderDevice;
 use crate::error::RendererError;
 use crate::gpu_timer::GpuTimer;
 use crate::instancing::{InstanceData, InstancedPipeline, UNIT_TRIANGLE, build_instance_grid};
@@ -131,7 +130,7 @@ pub struct BenchHarness {
     execute_lists: [Option<ID3D12CommandList>; 1],
     fence: GpuFence,
     timer: GpuTimer,
-    context: GpuContext,
+    context: RenderDevice,
 }
 
 impl BenchHarness {
@@ -150,7 +149,7 @@ impl BenchHarness {
 
         // The validation layer costs several times the frame time, so a benchmark must
         // not run with it on.
-        let context = GpuContext::new(false, false)?;
+        let context = RenderDevice::new(false, false)?;
         let device = context.device();
 
         let target = create_render_target(&context, width, height)?;
@@ -172,27 +171,16 @@ impl BenchHarness {
         };
 
         let pipeline = InstancedPipeline::new(device)?;
-        let mesh = GpuMesh::upload(device, context.queue(), &UNIT_TRIANGLE)?;
+        let mesh = GpuMesh::upload(&context, &UNIT_TRIANGLE)?;
 
-        // SAFETY: FFI call on a live device with a valid command list type.
-        let allocator: ID3D12CommandAllocator =
-            unsafe { device.CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT) }.map_err(
-                |error| RendererError::api("ID3D12Device::CreateCommandAllocator", error),
-            )?;
-        // SAFETY: FFI call with a live allocator; no initial pipeline state is required.
-        let list: ID3D12GraphicsCommandList = unsafe {
-            device.CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, &allocator, None)
-        }
-        .map_err(|error| RendererError::api("ID3D12Device::CreateCommandList", error))?;
-        // SAFETY: FFI call closing the freshly created, empty list.
-        unsafe { list.Close() }
-            .map_err(|error| RendererError::api("ID3D12GraphicsCommandList::Close", error))?;
+        let allocator = context.create_command_allocator()?;
+        let list = context.create_command_list(&allocator)?;
 
         let execute_lists = [Some(list.cast().map_err(|error| {
             RendererError::api("ID3D12GraphicsCommandList::cast", error)
         })?)];
 
-        let fence = GpuFence::new(device)?;
+        let fence = GpuFence::new(&context)?;
         let timer = GpuTimer::new(device, context.queue(), 1)?;
 
         Ok(Self {
@@ -242,11 +230,7 @@ impl BenchHarness {
             });
         }
         build_instance_grid(count, &mut self.instance_scratch);
-        self.instance_buffer = Some(GpuMesh::upload_raw(
-            self.context.device(),
-            self.context.queue(),
-            &self.instance_scratch,
-        )?);
+        self.instance_buffer = Some(GpuMesh::upload_raw(&self.context, &self.instance_scratch)?);
         self.instances = count;
         Ok(())
     }
@@ -580,7 +564,7 @@ fn read_back_pixels(
 
 /// Creates the offscreen colour target.
 fn create_render_target(
-    context: &GpuContext,
+    context: &RenderDevice,
     width: u32,
     height: u32,
 ) -> Result<ID3D12Resource, RendererError> {

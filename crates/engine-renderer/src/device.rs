@@ -1,4 +1,13 @@
-//! DXGI factory, adapter selection, D3D12 device and the direct command queue.
+//! The device layer: DXGI factory, adapter selection, the D3D12 device, the direct queue,
+//! and the creation of every D3D12 object the renderer owns.
+//!
+//! Everything that calls a `ID3D12Device::Create*` method lives here. That is the point of
+//! the layer: object creation is where `unsafe`, `HRESULT` mapping and the parameters that
+//! must agree across objects (command list type, descriptor heap flags) all meet, and
+//! spreading it across the renderer means auditing it in a dozen places instead of one.
+//!
+//! Nothing above `engine-renderer` sees a D3D12 interface. `engine-core` has no graphics
+//! dependency at all; the application holds a [`crate::Renderer`], not a device.
 
 use windows::Win32::Graphics::Direct3D::{
     D3D_FEATURE_LEVEL, D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_12_0,
@@ -6,10 +15,16 @@ use windows::Win32::Graphics::Direct3D::{
 };
 use windows::Win32::Graphics::Direct3D12::{
     D3D12_COMMAND_LIST_TYPE_DIRECT, D3D12_COMMAND_QUEUE_DESC, D3D12_COMMAND_QUEUE_FLAG_NONE,
-    D3D12_FEATURE_DATA_FEATURE_LEVELS, D3D12_FEATURE_FEATURE_LEVELS, D3D12_MESSAGE_SEVERITY_ERROR,
-    D3D12CreateDevice, D3D12GetDebugInterface, ID3D12CommandQueue, ID3D12Debug, ID3D12Device,
-    ID3D12InfoQueue,
+    D3D12_DESCRIPTOR_HEAP_DESC, D3D12_DESCRIPTOR_HEAP_FLAG_NONE,
+    D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE, D3D12_DESCRIPTOR_HEAP_TYPE,
+    D3D12_FEATURE_DATA_FEATURE_LEVELS, D3D12_FEATURE_FEATURE_LEVELS, D3D12_FENCE_FLAG_NONE,
+    D3D12_HEAP_FLAG_NONE, D3D12_HEAP_PROPERTIES, D3D12_HEAP_TYPE, D3D12_MESSAGE_SEVERITY_ERROR,
+    D3D12_RESOURCE_DESC, D3D12_RESOURCE_DIMENSION_BUFFER, D3D12_RESOURCE_STATES,
+    D3D12_TEXTURE_LAYOUT_ROW_MAJOR, D3D12CreateDevice, D3D12GetDebugInterface,
+    ID3D12CommandAllocator, ID3D12CommandQueue, ID3D12Debug, ID3D12DescriptorHeap, ID3D12Device,
+    ID3D12Fence, ID3D12GraphicsCommandList, ID3D12InfoQueue, ID3D12Resource,
 };
+use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_UNKNOWN, DXGI_SAMPLE_DESC};
 use windows::Win32::Graphics::Dxgi::{
     CreateDXGIFactory2, DXGI_CREATE_FACTORY_DEBUG, DXGI_CREATE_FACTORY_FLAGS,
     DXGI_FEATURE_PRESENT_ALLOW_TEARING, IDXGIFactory6,
@@ -36,7 +51,7 @@ const PROBED_FEATURE_LEVELS: [D3D_FEATURE_LEVEL; 5] = [
 ];
 
 /// Device, queue and the DXGI objects they came from.
-pub struct GpuContext {
+pub struct RenderDevice {
     factory: IDXGIFactory6,
     device: ID3D12Device,
     queue: ID3D12CommandQueue,
@@ -45,7 +60,7 @@ pub struct GpuContext {
     allow_tearing: bool,
 }
 
-impl GpuContext {
+impl RenderDevice {
     /// Creates the factory, selects an adapter, and creates the device and queue.
     ///
     /// `enable_debug_layer` turns on the D3D12 validation layer, which is expensive and
@@ -164,6 +179,163 @@ impl GpuContext {
     #[must_use]
     pub fn allow_tearing(&self) -> bool {
         self.allow_tearing
+    }
+
+    /// Creates a command allocator for the direct queue.
+    ///
+    /// One allocator per frame slot: an allocator's memory cannot be reset while the GPU
+    /// is still executing commands recorded from it, so slots need their own.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RendererError::Api`] if the device rejects the request.
+    pub fn create_command_allocator(&self) -> Result<ID3D12CommandAllocator, RendererError> {
+        // SAFETY: FFI call on a live device with a valid command list type constant.
+        unsafe {
+            self.device
+                .CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT)
+        }
+        .map_err(|error| RendererError::api("ID3D12Device::CreateCommandAllocator", error))
+    }
+
+    /// Creates a direct command list, already closed.
+    ///
+    /// D3D12 hands back an *open* list, which every caller then has to remember to close
+    /// before the first frame — the per-frame path always begins with `Reset`, which
+    /// requires a closed list. Closing it here removes that trap from every call site.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RendererError::Api`] if creation or the initial close fails.
+    pub fn create_command_list(
+        &self,
+        allocator: &ID3D12CommandAllocator,
+    ) -> Result<ID3D12GraphicsCommandList, RendererError> {
+        // SAFETY: FFI call. The allocator is a live object owned by the caller, and
+        // passing `None` for the initial pipeline state is valid — the recorded frame sets
+        // its own pipeline before drawing.
+        let list: ID3D12GraphicsCommandList = unsafe {
+            self.device
+                .CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, allocator, None)
+        }
+        .map_err(|error| RendererError::api("ID3D12Device::CreateCommandList", error))?;
+
+        // SAFETY: FFI call on the list created immediately above, which has recorded
+        // nothing.
+        unsafe { list.Close() }
+            .map_err(|error| RendererError::api("ID3D12GraphicsCommandList::Close", error))?;
+
+        Ok(list)
+    }
+
+    /// Creates a descriptor heap.
+    ///
+    /// `shader_visible` must be false for RTV and DSV heaps — D3D12 rejects the
+    /// combination — and true for the CBV/SRV/UAV heap the shaders sample from.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RendererError::Api`] if the device rejects the descriptor.
+    pub fn create_descriptor_heap(
+        &self,
+        kind: D3D12_DESCRIPTOR_HEAP_TYPE,
+        capacity: u32,
+        shader_visible: bool,
+    ) -> Result<ID3D12DescriptorHeap, RendererError> {
+        let desc = D3D12_DESCRIPTOR_HEAP_DESC {
+            Type: kind,
+            NumDescriptors: capacity,
+            Flags: if shader_visible {
+                D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE
+            } else {
+                D3D12_DESCRIPTOR_HEAP_FLAG_NONE
+            },
+            NodeMask: 0,
+        };
+        // SAFETY: FFI call with a fully initialized descriptor that outlives the call.
+        unsafe { self.device.CreateDescriptorHeap(&desc) }
+            .map_err(|error| RendererError::api("ID3D12Device::CreateDescriptorHeap", error))
+    }
+
+    /// Size in bytes of one descriptor of `kind` on this device.
+    ///
+    /// Hardware-specific, so it must be queried rather than assumed; it is the stride for
+    /// stepping through a heap by hand.
+    #[must_use]
+    pub fn descriptor_size(&self, kind: D3D12_DESCRIPTOR_HEAP_TYPE) -> u32 {
+        // SAFETY: FFI call on a live device with a valid heap type constant. It cannot
+        // fail; the return value is a size.
+        unsafe { self.device.GetDescriptorHandleIncrementSize(kind) }
+    }
+
+    /// Creates a committed buffer of `byte_size` bytes on `heap_type`.
+    ///
+    /// `DEFAULT` is device-local memory the GPU reads at full speed but the CPU cannot
+    /// touch; `UPLOAD` is CPU-visible memory the GPU reads across the bus. Geometry
+    /// belongs in the first, staging and per-frame data in the second — a vertex buffer
+    /// left on an upload heap turns a benchmark into a measurement of bus bandwidth.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RendererError::Api`] if the device rejects the request, or
+    /// [`RendererError::InvalidConfig`] if it succeeds without producing a resource.
+    pub fn create_buffer(
+        &self,
+        byte_size: usize,
+        heap_type: D3D12_HEAP_TYPE,
+        initial_state: D3D12_RESOURCE_STATES,
+    ) -> Result<ID3D12Resource, RendererError> {
+        let heap_properties = D3D12_HEAP_PROPERTIES {
+            Type: heap_type,
+            ..Default::default()
+        };
+        let desc = D3D12_RESOURCE_DESC {
+            Dimension: D3D12_RESOURCE_DIMENSION_BUFFER,
+            Width: byte_size as u64,
+            Height: 1,
+            DepthOrArraySize: 1,
+            MipLevels: 1,
+            Format: DXGI_FORMAT_UNKNOWN,
+            SampleDesc: DXGI_SAMPLE_DESC {
+                Count: 1,
+                Quality: 0,
+            },
+            Layout: D3D12_TEXTURE_LAYOUT_ROW_MAJOR,
+            ..Default::default()
+        };
+
+        let mut buffer: Option<ID3D12Resource> = None;
+        // SAFETY: FFI call with fully initialized descriptors that outlive it, and a valid
+        // out-parameter. The resource is refcounted by the `windows` crate from here on.
+        unsafe {
+            self.device.CreateCommittedResource(
+                &heap_properties,
+                D3D12_HEAP_FLAG_NONE,
+                &desc,
+                initial_state,
+                None,
+                &mut buffer,
+            )
+        }
+        .map_err(|error| RendererError::api("ID3D12Device::CreateCommittedResource", error))?;
+
+        buffer.ok_or_else(|| RendererError::InvalidConfig {
+            reason: "buffer creation produced no resource".to_owned(),
+        })
+    }
+
+    /// Creates a fence starting at `initial_value`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RendererError::Api`] if the device rejects the request.
+    pub fn create_fence(&self, initial_value: u64) -> Result<ID3D12Fence, RendererError> {
+        // SAFETY: FFI call on a live device; `D3D12_FENCE_FLAG_NONE` is valid.
+        unsafe {
+            self.device
+                .CreateFence(initial_value, D3D12_FENCE_FLAG_NONE)
+        }
+        .map_err(|error| RendererError::api("ID3D12Device::CreateFence", error))
     }
 }
 

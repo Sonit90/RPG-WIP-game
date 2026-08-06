@@ -16,7 +16,7 @@ use windows::Win32::Graphics::Dxgi::{
 
 use windows::core::Interface;
 
-use crate::device::GpuContext;
+use crate::device::RenderDevice;
 use crate::error::RendererError;
 
 /// Number of back buffers, and therefore of frames the CPU may run ahead.
@@ -47,7 +47,7 @@ impl SwapChain {
     ///
     /// Returns [`RendererError::Api`] if any DXGI or D3D12 call fails.
     pub fn new(
-        context: &GpuContext,
+        context: &RenderDevice,
         hwnd: HWND,
         width: u32,
         height: u32,
@@ -202,7 +202,7 @@ impl SwapChain {
     /// Returns [`RendererError::Api`] if `ResizeBuffers` or view recreation fails.
     pub fn resize(
         &mut self,
-        context: &GpuContext,
+        context: &RenderDevice,
         width: u32,
         height: u32,
     ) -> Result<(), RendererError> {
@@ -239,7 +239,7 @@ impl SwapChain {
     }
 
     /// Fetches the back buffers and writes one RTV per buffer into the heap.
-    fn create_render_targets(&mut self, context: &GpuContext) -> Result<(), RendererError> {
+    fn create_render_targets(&mut self, context: &RenderDevice) -> Result<(), RendererError> {
         self.buffers.clear();
         for index in 0..FRAME_COUNT {
             // SAFETY: FFI call. `index` is below the buffer count the swap chain was

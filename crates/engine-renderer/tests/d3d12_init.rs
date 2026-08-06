@@ -17,7 +17,7 @@
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use engine_platform::{Window, WindowConfig};
-use engine_renderer::device::{GpuContext, feature_level_name};
+use engine_renderer::device::{RenderDevice, feature_level_name};
 use engine_renderer::{Renderer, RendererConfig, RendererError};
 
 /// Serializes GPU work across test threads.
@@ -42,8 +42,8 @@ fn test_config(width: u32, height: u32) -> RendererConfig {
 }
 
 /// Creates a GPU context, or `None` if this machine has no usable D3D12 adapter.
-fn gpu_context() -> Option<GpuContext> {
-    match GpuContext::new(false, false) {
+fn gpu_context() -> Option<RenderDevice> {
+    match RenderDevice::new(false, false) {
         Ok(context) => Some(context),
         Err(RendererError::NoSuitableAdapter { examined }) => {
             eprintln!("SKIP: no D3D12 adapter on this machine ({examined} examined)");
