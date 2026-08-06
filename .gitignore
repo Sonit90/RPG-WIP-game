@@ -21,3 +21,6 @@ Desktop.ini
 # Env / secrets
 .env
 .env.local
+
+# Packaged distributions (tools/package.ps1)
+/dist/

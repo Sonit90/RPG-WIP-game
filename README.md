@@ -82,16 +82,22 @@ cargo test --workspace
 ```
 Cargo.toml            workspace root
 crates/
-  engine-core/        logging, timing, shared utilities (no platform, no renderer)
-  engine-platform/    Win32 window, message pump, window events (no GPU types)
+  engine-core/        lifecycle, time, input, memory, jobs, profiling, logging, config
+  engine-platform/    Win32 window, message pump, input translation (no GPU types)
   engine-renderer/    DXGI/D3D12 device, swap chain, command recording (no gameplay)
   engine-app/         the game executable (bin: mygame)
-docs/                 architecture, phase 0 log, testing, performance
+  engine-bench/       benchmarks (bins: performance_test, cpu_bench) — never shipped
+docs/                 architecture, phase logs, testing, performance, memory, threading
+tools/                package.ps1 — builds and verifies a clean release distribution
 ```
 
 ## Documentation
 
 * [docs/architecture.md](docs/architecture.md) — layering and technology decisions
-* [docs/phase0.md](docs/phase0.md) — milestone-by-milestone log
+* [docs/phase0.md](docs/phase0.md) — Phase 0 log: Rust/D3D12 spike
+* [docs/phase1.md](docs/phase1.md) — Phase 1 log: engine core
 * [docs/testing.md](docs/testing.md) — test categories and how to run them
+* [docs/manual-tests.md](docs/manual-tests.md) — manual verification checklist
 * [docs/performance.md](docs/performance.md) — measurement methodology and results
+* [docs/memory.md](docs/memory.md) — allocation policy and allocator design
+* [docs/threading.md](docs/threading.md) — worker threads, job system, measured scaling

@@ -10,10 +10,45 @@ regressions, and no test code may end up in the shipped game executable.
 | 1 | Unit tests | `#[cfg(test)]` modules inside crate sources | `cargo test --workspace --lib` |
 | 2 | Integration tests | `crates/<crate>/tests/*.rs` | `cargo test --workspace --test '*'` |
 | 3 | GPU/rendering integration tests | `crates/engine-renderer/tests/` | `cargo test -p engine-renderer` |
-| 4 | Performance benchmarks | `crates/engine-bench` | `cargo run --release --bin performance_test` |
-| 5 | Manual verification | `docs/phase0.md`, per milestone | human |
+| 4 | GPU/renderer benchmarks | `crates/engine-bench` | `cargo run --release --bin performance_test` |
+| 5 | CPU subsystem benchmarks | `crates/engine-bench` | `cargo run --release --bin cpu_bench` |
+| 6 | Manual verification | `docs/manual-tests.md` | human |
 
 Everything in categories 1–3 runs under `cargo test --workspace`.
+
+## Build configurations that must be checked
+
+Behaviour differs by build, so a green `cargo test` in one configuration is not a green
+project. What each configuration changes:
+
+| Configuration | `engine_assert!` | `profile_scope!` | `trace!` / `debug!` | Validation layer |
+| --- | --- | --- | --- | --- |
+| debug | on | recording | on | on |
+| release | off | compiled out | compiled out | off |
+| release + `engine-core/assertions` | on | compiled out | compiled out | off |
+| release + `engine-core/profiling` | off | recording | compiled out | off |
+| release + `--validation` | off | compiled out | compiled out | on |
+
+The first two are the ones that matter and are checked every milestone. The others exist
+so a specific question can be asked of the build that ships: keep invariant checks in a
+tester's build, profile the optimized binary, or debug GPU misuse in release.
+
+## Regression tests
+
+Every bug that gets fixed gets a test, and the test stays after the bug is gone. The
+accumulated ones so far, each named for the behaviour rather than the bug:
+
+| Bug | Test |
+| --- | --- |
+| Triangle back-face culled, nothing on screen | `offscreen_triangle.rs` pixel assertions |
+| `ResizeBuffers` called with the old back buffers still referenced | `overlay_survives_many_frames_and_a_resize` |
+| Device released before the swap chain (field order) | `d3d12_init.rs` teardown tests |
+| Resize storm flooding the event queue | `coalesces_consecutive_resizes` |
+| Auto-repeat re-triggering a toggle | `auto_repeat_holds_the_key_without_repeating_the_press` |
+| Keys stuck down after alt-tab | `losing_focus_releases_everything_without_firing_release_logic` |
+| Negative cursor coordinates read as ~65000 | `unpacks_cursor_positions_including_negative_ones` |
+| A frame's scratch memory accumulating across frames | `frame_memory_is_reclaimed_every_frame` |
+| A panicking job killing its worker | `a_panicking_job_is_reported_and_the_pool_survives` |
 
 ## Why test code cannot reach the release build
 
@@ -141,8 +176,22 @@ That keeps the suite runnable on hardware the engine does not target, but it mea
 "tests passed" result from an unknown machine does **not** prove the GPU path works. CI
 that matters must run on a GPU runner and check that no `SKIP:` line appeared.
 
+## Packaging check
+
+`tools\package.ps1` builds the release binary, copies it to `dist\mygame\`, and then
+*verifies* the result: exactly one executable, no file whose name resembles a test or
+benchmark artefact, no test symbols in the binary, and a two-frame smoke run. Cargo already
+makes this true by construction, but a future build script, feature or copy step could
+break it silently, so it is checked rather than assumed.
+
 ## Manual verification
 
 Some behaviour cannot be asserted automatically: that a window actually appears, that
 it resizes without artefacts, that a triangle is visible, that the debug overlay is
-legible. Each milestone in `docs/phase0.md` lists its manual verification steps.
+legible, that input feels connected. `docs/manual-tests.md` is the checklist, with an ID,
+purpose, steps and expected result per entry. Per-milestone Phase 0 steps remain in
+`docs/phase0.md`.
+
+A SKIPPED manual test is not a pass. Two entries need hardware not every machine has
+(a second monitor, a machine without a D3D12 adapter), and they stay SKIPPED until someone
+runs them on that hardware.
