@@ -41,9 +41,49 @@ pub const ROOT_MATERIAL_CBV: u32 = 1;
 /// Per-object constants, `b1` in the shader.
 pub const ROOT_OBJECT_CBV: u32 = 2;
 
+/// One directional light and an ambient term.
+///
+/// Directional because a sun is the only light a third-person outdoor scene cannot do
+/// without, and because it needs no attenuation, no position and no per-object light list —
+/// point and spot lights need all three, and §46 rules out clustered shading, which is what
+/// makes many of them affordable.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Lighting {
+    /// The direction the light *travels*, normalized on use.
+    ///
+    /// Authored the way it is described — "the sun points down and to the left" — and
+    /// negated once, in the shader, rather than at every call site.
+    pub direction: Vec3,
+    /// Linear light colour.
+    pub color: Vec3,
+    /// Light strength. Not in physical units; there is no exposure control to calibrate it
+    /// against, so 1.0 means "a fully lit surface shows its base colour".
+    pub intensity: f32,
+    /// Linear ambient colour, standing in for everything that is not the sun.
+    pub ambient_color: Vec3,
+    /// Ambient strength. This is what stops an unlit face from being pure black, which is
+    /// what a single light with no bounce would otherwise produce.
+    pub ambient_intensity: f32,
+}
+
+impl Default for Lighting {
+    fn default() -> Self {
+        Self {
+            // Down, forward and slightly to the side: a face pointing up is fully lit and
+            // the two visible side faces of a cube get different amounts, which makes a
+            // wrong normal obvious at a glance.
+            direction: Vec3::new(-0.4, -1.0, -0.6),
+            color: Vec3::ONE,
+            intensity: 1.0,
+            ambient_color: Vec3::ONE,
+            ambient_intensity: 0.15,
+        }
+    }
+}
+
 /// Per-frame constants, matching `cbuffer Frame`.
 ///
-/// `repr(C)`, and padded to a whole 16-byte register for the same reason
+/// `repr(C)`, and padded to whole 16-byte registers for the same reason
 /// [`crate::material::MaterialConstants`] is.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -54,16 +94,39 @@ pub struct FrameConstants {
     pub camera_position: [f32; 3],
     /// Padding to a whole register.
     pub padding: f32,
+    /// The direction the light travels.
+    pub light_direction: [f32; 3],
+    /// Light strength. Shares a register with the direction.
+    pub light_intensity: f32,
+    /// Linear light colour.
+    pub light_color: [f32; 3],
+    /// Ambient strength. Shares a register with the light colour.
+    pub ambient_intensity: f32,
+    /// Linear ambient colour.
+    pub ambient_color: [f32; 3],
+    /// Padding to a whole register.
+    pub padding_2: f32,
 }
 
 impl FrameConstants {
-    /// Builds the constants for a camera.
+    /// Builds the constants for a camera and a light.
     #[must_use]
-    pub fn new(view_projection: Mat4, camera_position: Vec3) -> Self {
+    pub fn new(view_projection: Mat4, camera_position: Vec3, lighting: Lighting) -> Self {
+        let direction = lighting.direction.normalize();
         Self {
             view_projection: view_projection.to_cols_array(),
             camera_position: [camera_position.x, camera_position.y, camera_position.z],
             padding: 0.0,
+            light_direction: [direction.x, direction.y, direction.z],
+            light_intensity: lighting.intensity,
+            light_color: [lighting.color.x, lighting.color.y, lighting.color.z],
+            ambient_intensity: lighting.ambient_intensity,
+            ambient_color: [
+                lighting.ambient_color.x,
+                lighting.ambient_color.y,
+                lighting.ambient_color.z,
+            ],
+            padding_2: 0.0,
         }
     }
 }
@@ -657,8 +720,11 @@ mod tests {
 
     #[test]
     fn the_constant_layouts_match_the_shader_registers() {
-        assert_eq!(size_of::<FrameConstants>(), 80);
+        assert_eq!(size_of::<FrameConstants>(), 128);
         assert_eq!(std::mem::offset_of!(FrameConstants, camera_position), 64);
+        assert_eq!(std::mem::offset_of!(FrameConstants, light_direction), 80);
+        assert_eq!(std::mem::offset_of!(FrameConstants, light_color), 96);
+        assert_eq!(std::mem::offset_of!(FrameConstants, ambient_color), 112);
         assert_eq!(size_of::<ObjectConstants>(), 64);
     }
 
@@ -667,7 +733,28 @@ mod tests {
         // The shader declares column_major, which is the layout `Mat4` already has, so no
         // transpose happens anywhere. A transpose added "for safety" would break this.
         let view_projection = Mat4::from_translation(Vec3::new(1.0, 2.0, 3.0));
-        let constants = FrameConstants::new(view_projection, Vec3::ZERO);
+        let constants = FrameConstants::new(view_projection, Vec3::ZERO, Lighting::default());
         assert_eq!(&constants.view_projection[12..15], &[1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn the_light_direction_is_normalized_once_on_the_cpu() {
+        // Normalizing per pixel would be a square root per fragment for a value that is the
+        // same across the whole frame.
+        let lighting = Lighting {
+            direction: Vec3::new(0.0, -10.0, 0.0),
+            ..Lighting::default()
+        };
+        let constants = FrameConstants::new(Mat4::IDENTITY, Vec3::ZERO, lighting);
+        assert_eq!(constants.light_direction, [0.0, -1.0, 0.0]);
+    }
+
+    #[test]
+    fn the_default_light_leaves_unlit_faces_visible() {
+        // Ambient exists so a single directional light does not render half of every object
+        // as pure black — there is no bounce lighting to fill it in.
+        let lighting = Lighting::default();
+        assert!(lighting.ambient_intensity > 0.0);
+        assert!(lighting.direction.y < 0.0, "the sun points downward");
     }
 }

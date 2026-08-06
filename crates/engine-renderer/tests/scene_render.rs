@@ -17,6 +17,7 @@ use engine_renderer::camera::{Camera, Projection};
 use engine_renderer::material::MaterialDesc;
 use engine_renderer::mesh::MeshData;
 use engine_renderer::offscreen::{CapturedImage, SceneObject, render_scene};
+use engine_renderer::scene::Lighting;
 
 static GPU: Mutex<()> = Mutex::new(());
 
@@ -61,12 +62,13 @@ fn a_cube_in_front_of_the_camera_is_visible_and_its_material_colours_it() {
             transform: Transform::IDENTITY,
         }],
         &camera(),
+        Lighting::default(),
     )
     .expect("render must succeed");
 
     let pixel = center(&image);
     assert!(
-        pixel[0] > 200 && pixel[1] < 40,
+        pixel[0] > 80 && pixel[1] < 40,
         "expected the material's red, got {pixel:?}"
     );
     // The cube must not fill the frame: if the projection were wrong, it would either cover
@@ -95,6 +97,7 @@ fn an_object_moved_out_of_view_is_not_drawn() {
             transform: Transform::from_translation(Vec3::new(100.0, 0.0, 0.0)),
         }],
         &camera(),
+        Lighting::default(),
     )
     .expect("render must succeed");
 
@@ -119,7 +122,15 @@ fn the_nearer_of_two_objects_occludes_the_other() {
         transform: Transform::from_translation(Vec3::new(0.0, 0.0, -1.0)),
     };
 
-    let a = render_scene(SIZE, SIZE, CLEAR, &[near, far], &camera()).expect("render");
+    let a = render_scene(
+        SIZE,
+        SIZE,
+        CLEAR,
+        &[near, far],
+        &camera(),
+        Lighting::default(),
+    )
+    .expect("render");
     let near = SceneObject {
         mesh: &cube,
         material: red(),
@@ -130,12 +141,20 @@ fn the_nearer_of_two_objects_occludes_the_other() {
         material: green(),
         transform: Transform::from_translation(Vec3::new(0.0, 0.0, -1.0)),
     };
-    let b = render_scene(SIZE, SIZE, CLEAR, &[far, near], &camera()).expect("render");
+    let b = render_scene(
+        SIZE,
+        SIZE,
+        CLEAR,
+        &[far, near],
+        &camera(),
+        Lighting::default(),
+    )
+    .expect("render");
 
     assert_eq!(center(&a), center(&b), "submission order changed the image");
     let pixel = center(&a);
     assert!(
-        pixel[0] > 200 && pixel[1] < 40,
+        pixel[0] > 80 && pixel[1] < 40,
         "expected the nearer red cube, got {pixel:?}"
     );
 }
@@ -158,9 +177,10 @@ fn a_more_distant_object_covers_fewer_pixels() {
                 transform: Transform::from_translation(Vec3::new(0.0, 0.0, z)),
             }],
             &camera(),
+            Lighting::default(),
         )
         .expect("render must succeed");
-        image.count_pixels(|pixel| pixel[0] > 128)
+        image.count_pixels(|pixel| pixel[0] > 40)
     };
 
     let near = coverage(2.0);
@@ -196,11 +216,12 @@ fn each_object_gets_its_own_material() {
             },
         ],
         &camera(),
+        Lighting::default(),
     )
     .expect("render must succeed");
 
-    let reds = image.count_pixels(|pixel| pixel[0] > 200 && pixel[1] < 40);
-    let greens = image.count_pixels(|pixel| pixel[1] > 200 && pixel[0] < 40);
+    let reds = image.count_pixels(|pixel| pixel[0] > 80 && pixel[1] < 40);
+    let greens = image.count_pixels(|pixel| pixel[1] > 80 && pixel[0] < 40);
     assert!(reds > 0, "the red cube is missing");
     assert!(greens > 0, "the green cube is missing");
 }
@@ -209,8 +230,15 @@ fn each_object_gets_its_own_material() {
 fn an_empty_scene_renders_the_clear_colour() {
     let _guard = gpu_lock();
 
-    let image = render_scene(SIZE, SIZE, [0.1, 0.2, 0.3, 1.0], &[], &camera())
-        .expect("render must succeed");
+    let image = render_scene(
+        SIZE,
+        SIZE,
+        [0.1, 0.2, 0.3, 1.0],
+        &[],
+        &camera(),
+        Lighting::default(),
+    )
+    .expect("render must succeed");
     let pixel = center(&image);
     // sRGB is not applied — the back buffer is UNORM — so the byte is the linear value.
     assert!(pixel[2] > pixel[1] && pixel[1] > pixel[0], "{pixel:?}");

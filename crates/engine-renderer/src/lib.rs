@@ -50,8 +50,8 @@ pub use mesh::{GpuMesh, Index, MeshData, MeshVertex, VertexStream};
 pub use pipeline::{TRIANGLE_VERTICES, Vertex};
 pub use renderer::Renderer;
 pub use scene::{
-    FrameConstants, MaterialHandle, MeshHandle, MeshPipeline, ObjectConstants, RenderEntity,
-    RenderEntityDesc, RenderWorld,
+    FrameConstants, Lighting, MaterialHandle, MeshHandle, MeshPipeline, ObjectConstants,
+    RenderEntity, RenderEntityDesc, RenderWorld,
 };
 pub use stress::STRESS_LEVELS;
 pub use swapchain::{BACK_BUFFER_FORMAT, FRAME_COUNT};

@@ -13,6 +13,15 @@ cbuffer Frame : register(b0)
     column_major float4x4 view_projection;
     float3 camera_position;
     float frame_padding;
+    // The direction the light travels, not the direction towards it. Stored the way it is
+    // authored ("the sun points down and to the left") and negated once, here, rather than
+    // at every call site that sets it.
+    float3 light_direction;
+    float light_intensity;
+    float3 light_color;
+    float ambient_intensity;
+    float3 ambient_color;
+    float frame_padding_2;
 };
 
 cbuffer Object : register(b1)
@@ -58,5 +67,16 @@ PixelInput VSMain(VertexInput input)
 
 float4 PSMain(PixelInput input) : SV_TARGET
 {
-    return float4(base_color.rgb + emissive, base_color.a);
+    // Lambert diffuse plus a constant ambient term. Not a BRDF: roughness and metallic are
+    // carried in the material and deliberately unused, because a specular lobe would be a
+    // second thing to be wrong while establishing that normals and light direction are
+    // right. Milestone 14's job is that a lit surface is brighter than an unlit one, for
+    // the correct geometric reason.
+    float3 normal = normalize(input.world_normal);
+    float3 to_light = normalize(-light_direction);
+    float lambert = saturate(dot(normal, to_light));
+
+    float3 diffuse = base_color.rgb * light_color * (light_intensity * lambert);
+    float3 ambient = base_color.rgb * ambient_color * ambient_intensity;
+    return float4(diffuse + ambient + emissive, base_color.a);
 }

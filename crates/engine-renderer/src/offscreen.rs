@@ -36,7 +36,7 @@ use crate::material::{Material, MaterialDesc};
 use crate::mesh::{GpuMesh, MeshData, VertexStream};
 use crate::pipeline::{ScenePipeline, TRIANGLE_VERTICES, Vertex};
 use crate::scene::{
-    FrameConstants, MeshPipeline, ObjectConstants, ROOT_FRAME_CBV, ROOT_MATERIAL_CBV,
+    FrameConstants, Lighting, MeshPipeline, ObjectConstants, ROOT_FRAME_CBV, ROOT_MATERIAL_CBV,
     ROOT_OBJECT_CBV,
 };
 use crate::swapchain::BACK_BUFFER_FORMAT;
@@ -148,6 +148,7 @@ pub fn render_scene(
     clear_color: [f32; 4],
     objects: &[SceneObject<'_>],
     camera: &Camera,
+    lighting: Lighting,
 ) -> Result<CapturedImage, RendererError> {
     render_with(width, height, clear_color, |context, list, _| {
         let pipeline = MeshPipeline::new(context.device())?;
@@ -162,7 +163,7 @@ pub fn render_scene(
             materials.push(Material::new(context, object.material)?);
         }
 
-        let frame = FrameConstants::new(camera.view_projection(), camera.position());
+        let frame = FrameConstants::new(camera.view_projection(), camera.position(), lighting);
         let frame_allocation = ring.write_constants(0, &frame)?;
 
         // SAFETY: FFI calls recording into the open list. Every referenced object is

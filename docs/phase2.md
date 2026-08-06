@@ -34,7 +34,7 @@ Milestone status:
 | 11 | Basic material | done |
 | 12 | Depth buffer | done |
 | 13 | 3D scene | done |
-| 14 | Basic lighting | todo |
+| 14 | Basic lighting | done |
 | 15 | Frustum culling | todo |
 | 16 | Render list | todo |
 | 17 | Instanced rendering | todo |
@@ -1745,3 +1745,117 @@ that drives it, which is what Milestones 15 to 18 need and will add.
 * Normals are transformed by the model matrix, which is correct only for uniform scale. The
   inverse transpose costs an extra matrix per object and nothing scales non-uniformly yet —
   Milestone 14 is where a wrong normal would start to show.
+
+---
+
+# Milestone 14 — Basic lighting
+
+## What was built
+
+One directional light with an ambient term, Lambert diffuse, in the mesh shader.
+`Lighting` carries direction, colour, intensity, ambient colour and ambient intensity, and
+is passed to `Renderer::render_world` per frame.
+
+Directional because a sun is the only light an outdoor third-person scene cannot do without,
+and because it needs no attenuation, no position and no per-object light list. Point and
+spot lights need all three, and §46 rules out clustered shading — which is what makes many
+of them affordable.
+
+## What it deliberately is not
+
+Lambert diffuse plus constant ambient. No specular, no Fresnel, no BRDF. `roughness` and
+`metallic` are carried in the material and **unused**: a specular lobe would be a second
+thing to be wrong while establishing that normals and light direction are right. The job of
+this milestone is that a lit surface is brighter than an unlit one *for the correct
+geometric reason*, and that is testable to within a few percent.
+
+`intensity` is not in physical units. There is no exposure control to calibrate against, so
+1.0 means "a fully lit surface shows its base colour".
+
+## Direction is stored the way it is authored
+
+`Lighting::direction` is the direction the light *travels* — "the sun points down and to the
+left" — and is negated once in the shader rather than at every call site that sets it. It is
+also normalized once on the CPU: normalizing per pixel would be a square root per fragment
+for a value that is constant across the frame.
+
+## Ambient exists because there is no bounce
+
+With a single directional light and nothing else, every surface facing away from the sun is
+pure black. Ambient is a flat term standing in for the light that would have bounced. The
+default is 0.15, which keeps an unlit face readable without washing out the lit one.
+
+## This milestone found a real bug in Milestone 10
+
+`MeshData::cube` built each face from a (normal, tangent, bitangent) basis where
+`tangent × bitangent` did **not** equal the normal. Every face therefore wound clockwise seen
+from outside, the outward faces were back-face culled, and the *inward* faces were drawn in
+their place.
+
+That is invisible without lighting: the cube looks exactly the same, because the inward face
+of the far side occupies the same pixels as the outward face of the near side and carries the
+same flat colour. It became visible the instant a normal was read — every surface was lit
+from the wrong side, and the first lighting test returned pure ambient.
+
+The face table is now chosen so `tangent × bitangent == normal`, with a `debug_assert` that
+says so, and the comment explains the failure mode rather than just the rule.
+
+**The general point:** flat shading hides a whole class of geometric errors. This is the
+milestone that makes normals observable, so it is the milestone that finds them.
+
+## Tests
+
+`tests/lighting.rs`, six pixel tests that compare renders against each other rather than
+against magic colours:
+
+| Test | Asserts |
+| --- | --- |
+| `a_surface_facing_the_light_is_brighter_than_one_facing_away` | head-on is near full, turned away is exactly zero |
+| `brightness_follows_the_cosine_of_the_angle` | at 45° the ratio is cos 45° ± 0.05 — a shader lighting by distance rather than angle passes the on/off test and fails this |
+| `ambient_light_keeps_an_unlit_face_visible` | 0.25 ambient on white is 64 ± 2 |
+| `light_colour_tints_the_surface` | a red light on a white surface leaves green and blue at exactly zero |
+| `rotating_an_object_changes_which_of_its_faces_is_lit` | the normal is transformed by the model matrix — a normal left in local space renders identically to the unrotated cube |
+| `emissive_material_ignores_the_light` | lit from behind, the emissive term still shows |
+
+The cosine test is the one worth having. On/off lighting is easy to get accidentally right;
+the *shape* of the falloff is not.
+
+## Measured cost
+
+Release build, 1000-triangle stress scene, median of per-interval p50:
+
+| | M13 | M14 |
+| --- | --- | --- |
+| CPU frame | 0.160 ms | 0.160 ms |
+| GPU frame | 0.053 ms | 0.054 ms |
+
+Unchanged. The stress scene runs the Phase 0 pipeline, which this milestone does not touch;
+the lit path's own cost is a dot product and two multiplies per fragment, and there is no
+scene yet that drives enough fragments to measure it.
+
+## Acceptance criteria
+
+| Criterion | Result |
+| --- | --- |
+| One directional light | pass |
+| Diffuse lighting from surface normals | pass — Lambert, verified against cos θ |
+| Ambient term | pass, with the reason it exists |
+| Light colour and intensity configurable | pass |
+| Material colour respected | pass |
+| Normals transformed to world space | pass — proven by rotating an object |
+| No PBR, no shadows, no multiple lights | correct — none built |
+| No regression | pass — 0.160 ms |
+
+## Known limitations
+
+* `roughness` and `metallic` are carried and ignored. They exist so the constant buffer does
+  not have to change shape when a specular term arrives.
+* Normals use the model matrix, not its inverse transpose, so non-uniform scale skews them.
+  Nothing scales non-uniformly yet; the fix is one more matrix per object and belongs with
+  whatever first needs it.
+* One light, hard-coded into the frame constants. A light list means a per-object light
+  assignment, which means culling lights, which is the clustered-shading path §46 excludes.
+* No shadows. A directional shadow map is the single biggest visual win available and is
+  explicitly out of Phase 2's scope.
+* Lighting is computed per pixel in the same pass as the material. There is no deferred
+  path and no light pre-pass; with one light there is nothing to amortize.

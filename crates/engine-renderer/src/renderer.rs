@@ -27,8 +27,8 @@ use crate::overlay::{OverlayBuffers, OverlayGeometry};
 use crate::pipeline::{ScenePipeline, Vertex};
 use crate::resource::DeferredReleaseQueue;
 use crate::scene::{
-    FrameConstants, MaterialHandle, MeshHandle, MeshPipeline, ObjectConstants, ROOT_FRAME_CBV,
-    ROOT_MATERIAL_CBV, ROOT_OBJECT_CBV, RenderWorld,
+    FrameConstants, Lighting, MaterialHandle, MeshHandle, MeshPipeline, ObjectConstants,
+    ROOT_FRAME_CBV, ROOT_MATERIAL_CBV, ROOT_OBJECT_CBV, RenderWorld,
 };
 use crate::stress;
 use crate::swapchain::SwapChain;
@@ -411,6 +411,7 @@ impl Renderer {
         &mut self,
         world: &RenderWorld,
         camera: &Camera,
+        lighting: Lighting,
         color: [f32; 4],
     ) -> Result<(), RendererError> {
         let (slot, back_buffer) = self.begin_recording(color)?;
@@ -425,7 +426,8 @@ impl Renderer {
         // The frame constants are written once into this slot's upload memory and bound
         // once. This is the upload ring's first real use: transient data, alive for exactly
         // one frame, reclaimed by the reset in `begin_recording`.
-        let frame_constants = FrameConstants::new(camera.view_projection(), camera.position());
+        let frame_constants =
+            FrameConstants::new(camera.view_projection(), camera.position(), lighting);
         let allocation = self.uploads.write_constants(slot, &frame_constants)?;
         self.commands
             .set_root_cbv(ROOT_FRAME_CBV, allocation.gpu_address());

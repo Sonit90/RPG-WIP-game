@@ -144,16 +144,29 @@ impl MeshData {
         let mut vertices = Vec::with_capacity(24);
         let mut indices = Vec::with_capacity(36);
 
-        // Each face as (normal, tangent, bitangent); the face is built by stepping the
-        // tangent and bitangent around the normal's plane.
+        // Each face as (normal, tangent, bitangent), chosen so that `tangent × bitangent`
+        // equals the normal. That is what makes the quad below wind counter-clockwise seen
+        // from outside, which is what the rasterizer calls front-facing.
+        //
+        // Getting this wrong does not produce a missing cube: the outward faces are culled
+        // and the *inward* ones are drawn instead, which looks identical until something
+        // reads the normal — at which point every surface is lit from the wrong side.
         let faces = [
-            (Vec3::X, Vec3::Z, Vec3::Y),
-            (-Vec3::X, -Vec3::Z, Vec3::Y),
-            (Vec3::Y, Vec3::X, -Vec3::Z),
+            (Vec3::X, Vec3::Y, Vec3::Z),
+            (-Vec3::X, Vec3::Z, Vec3::Y),
+            (Vec3::Y, Vec3::Z, Vec3::X),
             (-Vec3::Y, Vec3::X, Vec3::Z),
-            (Vec3::Z, -Vec3::X, Vec3::Y),
-            (-Vec3::Z, Vec3::X, Vec3::Y),
+            (Vec3::Z, Vec3::X, Vec3::Y),
+            (-Vec3::Z, Vec3::Y, Vec3::X),
         ];
+        debug_assert!(
+            faces.iter().all(
+                |(normal, tangent, bitangent)| (tangent.cross(*bitangent) - *normal)
+                    .length_squared()
+                    < 1e-6
+            ),
+            "each face basis must be right-handed about its own normal"
+        );
 
         for (normal, tangent, bitangent) in faces {
             let base = vertices.len() as Index;
