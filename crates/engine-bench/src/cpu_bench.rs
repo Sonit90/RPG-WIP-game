@@ -20,6 +20,7 @@ use std::time::{Duration, Instant};
 use engine_core::input::{InputEvent, InputState, KeyCode};
 use engine_core::jobs::JobSystem;
 use engine_core::memory::{Arena, FrameAllocator};
+use engine_core::profiling::Profiler;
 use engine_core::threading::recommended_worker_count;
 
 /// Iterations per sample for the micro-benchmarks.
@@ -67,6 +68,7 @@ fn main() -> ExitCode {
 
     benchmark_allocators(iterations);
     benchmark_input(iterations);
+    benchmark_profiler(iterations);
     benchmark_jobs();
 
     ExitCode::SUCCESS
@@ -175,6 +177,39 @@ fn benchmark_input(iterations: u32) {
         }
     });
     report("input 2 queries", query);
+
+    println!();
+}
+
+fn benchmark_profiler(iterations: u32) {
+    println!("-- profiler --");
+    println!(
+        "instrumentation compiled in: {}",
+        engine_core::profiling::PROFILING_ENABLED
+    );
+
+    // The engine profiler as the build has it: enabled in a debug or `profiling` build,
+    // inert in a plain release build. This is the number that matters, because it is what
+    // the shipped frame actually pays.
+    let active = Profiler::default();
+    active.begin_frame(0);
+    let enabled = measure(iterations, |count| {
+        for _ in 0..count {
+            let _scope = active.scope(black_box("Scope"));
+        }
+        active.begin_frame(0);
+    });
+    report("profile scope (this build)", enabled);
+
+    // A profiler forced off, for the floor: what an instrumented call site costs when
+    // recording is disabled.
+    let inert = Profiler::disabled();
+    let disabled = measure(iterations, |count| {
+        for _ in 0..count {
+            let _scope = inert.scope(black_box("Scope"));
+        }
+    });
+    report("profile scope (recording off)", disabled);
 
     println!();
 }

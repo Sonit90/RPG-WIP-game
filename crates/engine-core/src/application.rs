@@ -22,11 +22,13 @@
 //! Allocation policy: the loop itself allocates nothing. Every per-frame value lives in
 //! [`EngineContext`], which is created once.
 
+use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use crate::input::InputState;
 use crate::memory::{DEFAULT_FRAME_CAPACITY, FrameAllocator};
 use crate::metrics::{DEFAULT_HISTORY, DEFAULT_REFRESH_INTERVAL, FrameMetrics};
+use crate::profiling::Profiler;
 use crate::time::Time;
 
 /// Where a frame spent its CPU time, measured by the engine loop.
@@ -118,6 +120,13 @@ pub struct EngineContext {
     metrics: FrameMetrics,
     input: InputState,
     frame_allocator: FrameAllocator,
+    /// Shared through an `Rc` so an application can hold a profiler handle while still
+    /// taking `&mut EngineContext` — borrowing the profiler out of the context would make
+    /// every profiled stage a borrow-checker conflict.
+    ///
+    /// `Rc`, not `Arc`: the profiler records one thread's frame and is not `Sync`. Worker
+    /// threads will need their own profilers and a merge step, not a shared one.
+    profiler: Rc<Profiler>,
     stages: StageTimings,
     config: EngineConfig,
     running: bool,
@@ -131,6 +140,7 @@ impl EngineContext {
             metrics: FrameMetrics::new(config.metrics_history, config.metrics_refresh_interval),
             input: InputState::new(),
             frame_allocator: FrameAllocator::with_capacity(config.frame_allocator_capacity),
+            profiler: Rc::new(Profiler::default()),
             stages: StageTimings::default(),
             config,
             running: true,
@@ -150,6 +160,18 @@ impl EngineContext {
     /// press for exactly the frame it arrived in.
     pub fn input_mut(&mut self) -> &mut InputState {
         &mut self.input
+    }
+
+    /// A handle to the CPU profiler for the current frame.
+    ///
+    /// Cheap to clone (one refcount bump). Hold the handle in a local, then use
+    /// [`crate::profile_scope!`] with it — that keeps the scope guard independent of the
+    /// context, so a profiled stage can still take `&mut EngineContext`.
+    ///
+    /// The engine already scopes the loop's own stages.
+    #[must_use]
+    pub fn profiler(&self) -> Rc<Profiler> {
+        Rc::clone(&self.profiler)
     }
 
     /// Scratch memory valid for the current frame only.
@@ -433,6 +455,10 @@ impl<A: Application> Engine<A> {
 
     /// The frame loop proper, without lifecycle bookkeeping.
     fn run_loop(&mut self) -> Result<(), A::Error> {
+        // A local handle, so the scope guards below do not borrow `self.ctx` while the
+        // stages take `&mut self.ctx`.
+        let profiler = self.ctx.profiler();
+
         while self.ctx.running {
             // Before the events, never after: rolling the previous frame's key bits
             // afterwards would make every press look like a hold.
@@ -441,22 +467,35 @@ impl<A: Application> Engine<A> {
             // reset needs `&mut EngineContext`, which no outstanding arena reference
             // allows to exist.
             self.ctx.frame_allocator.begin_frame();
+            profiler.begin_frame(self.ctx.time.frame_index());
 
             let events_start = Instant::now();
-            self.app.process_events(&mut self.ctx)?;
+            {
+                crate::profile_scope!(profiler, "Events");
+                self.app.process_events(&mut self.ctx)?;
+            }
             let events = events_start.elapsed();
 
             let update_start = Instant::now();
-            self.app.update(&mut self.ctx)?;
+            {
+                crate::profile_scope!(profiler, "Update");
+                self.app.update(&mut self.ctx)?;
+            }
             let update = update_start.elapsed();
 
             let (render, present) = if self.app.is_render_ready() {
                 let render_start = Instant::now();
-                self.app.render(&mut self.ctx)?;
+                {
+                    crate::profile_scope!(profiler, "Render");
+                    self.app.render(&mut self.ctx)?;
+                }
                 let render = render_start.elapsed();
 
                 let present_start = Instant::now();
-                self.app.present(&mut self.ctx)?;
+                {
+                    crate::profile_scope!(profiler, "Present");
+                    self.app.present(&mut self.ctx)?;
+                }
                 (render, present_start.elapsed())
             } else {
                 (Duration::ZERO, Duration::ZERO)

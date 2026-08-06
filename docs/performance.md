@@ -275,3 +275,79 @@ submission alone, before any simulation. The same picture instanced costs 0.014 
 
 The crossover is around 1,000 objects; below a few hundred the two are indistinguishable,
 so batching is a scaling decision, not a micro-optimization.
+
+# Phase 1 — engine core
+
+## CPU subsystem baselines
+
+`cargo run --release --bin cpu_bench`. Median of 9 samples, 100,000 iterations per sample.
+Same machine as the Phase 0 tables; the numbers are meaningless across machines.
+
+### Allocators
+
+| Operation | Cost |
+| --- | --- |
+| `Arena::alloc<u64>` | 1.49 ns |
+| `Arena::alloc_slice(256 B)` | 5.82 ns |
+| Frame allocator: allocate + reset | 0.42 ns |
+| `Box::new(u64)`, for scale | 34.97 ns |
+
+Bump allocation is ~23x cheaper than the system allocator for a scalar, and the per-frame
+reset is effectively free — it is one store, and the measurement is dominated by the
+allocation next to it. The 256-byte slice figure is `memcpy` cost, not allocator cost.
+
+### Input
+
+| Operation | Cost |
+| --- | --- |
+| `begin_frame` + 4 events | 1.95 ns |
+| Two state queries | 0.69 ns |
+
+A whole frame of input handling is under 2 ns, so the transition bookkeeping that lets
+gameplay ask "pressed this frame?" costs nothing worth reclaiming.
+
+### Profiler
+
+| Build | Cost per scope |
+| --- | --- |
+| Release (instrumentation compiled out) | 2.57 ns |
+| Release + `engine-core/profiling` | 29.16 ns |
+| Recording forced off | 2.58 ns |
+
+The release figure is the measurement harness, not the profiler: an inert scope and a
+compiled-out scope cost the same. Recording costs ~29 ns per scope, which is why
+instrumentation is opt-in for a release build rather than always on — 100 scopes a frame
+would be 2.9 us, about 0.7% of a 4.17 ms frame at 240 FPS.
+
+### Job system
+
+1000 jobs of a synthetic integer workload. Full table and analysis in `docs/threading.md`.
+
+| Work per job | Sequential | 1 worker | 11 workers | 23 workers |
+| --- | --- | --- | --- | --- |
+| ~0.1 us | 0.105 ms | 0.171 ms (0.61x) | 0.487 ms (0.22x) | 0.449 ms (0.23x) |
+| ~12 us | 12.48 ms | 12.46 ms (1.00x) | 1.29 ms (9.64x) | 0.72 ms (17.25x) |
+
+| Measurement | Cost |
+| --- | --- |
+| submit + wait, one empty job | ~3.3 us |
+| submit + wait, 1000 empty jobs | ~112 ns per job |
+
+**Small jobs are slower in parallel.** At ~0.1 us of work per job the pool is 4x slower
+than a sequential loop, and adding workers makes it worse — the shared queue is contended
+by threads that finish faster than they can be fed. Parallelize by chunking, and measure
+before moving anything onto jobs.
+
+## Engine loop overhead
+
+The Phase 1 loop adds per frame, to what Phase 0 did: one `Time::advance`, one metrics
+record, one input `begin_frame`, one frame-allocator reset, and four profiler scopes
+(inert in release). Measured end-to-end at the same workload as the Phase 0 regression
+runs, 60,000 frames at 1000 triangles:
+
+| Build | CPU mean | Phase 0 band |
+| --- | --- | --- |
+| Phase 1 release | 0.170–0.175 ms | 0.166–0.184 ms |
+
+Within the Phase 0 band, so the added per-frame work is below the run-to-run noise of the
+measurement. This is checked after every milestone rather than at the end.

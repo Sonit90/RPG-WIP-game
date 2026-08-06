@@ -13,5 +13,6 @@ pub mod jobs;
 pub mod logging;
 pub mod memory;
 pub mod metrics;
+pub mod profiling;
 pub mod threading;
 pub mod time;

@@ -9,6 +9,9 @@ publish.workspace = true
 # Keeps engine_assert! checks compiled into a release build. Off by default; enable it to
 # ship a release binary to a tester with invariant checks intact.
 assertions = []
+# Keeps profile_scope! instrumentation in a release build, for profiling the build that
+# actually ships rather than a debug build with different inlining.
+profiling = []
 
 [dependencies]
 log = { workspace = true }
