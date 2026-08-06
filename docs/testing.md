@@ -10,7 +10,7 @@ regressions, and no test code may end up in the shipped game executable.
 | 1 | Unit tests | `#[cfg(test)]` modules inside crate sources | `cargo test --workspace --lib` |
 | 2 | Integration tests | `crates/<crate>/tests/*.rs` | `cargo test --workspace --test '*'` |
 | 3 | GPU/rendering integration tests | `crates/engine-renderer/tests/` (M9) | `cargo test -p engine-renderer` |
-| 4 | Performance benchmarks | `crates/*/benches/`, `engine-bench` binary (M6+) | `cargo bench`, `cargo run --release --bin performance_test` |
+| 4 | Performance benchmarks | `crates/engine-bench` | `cargo run --release --bin performance_test` |
 | 5 | Manual verification | `docs/phase0.md`, per milestone | human |
 
 Everything in categories 1–3 runs under `cargo test --workspace`.

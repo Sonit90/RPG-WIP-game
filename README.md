@@ -58,6 +58,17 @@ A reproducible timing run:
 cargo run --release --bin mygame -- --frames 60000 --report 1
 ```
 
+## Benchmark
+
+```powershell
+cargo run --release --bin performance_test
+cargo run --release --bin performance_test -- --instances 1000 --frames 500
+```
+
+Compares one draw call per object against a single instanced draw, rendering offscreen so
+the numbers measure the renderer rather than the compositor. Lives in its own crate, so it
+is never part of the game executable.
+
 ## Checks
 
 ```powershell

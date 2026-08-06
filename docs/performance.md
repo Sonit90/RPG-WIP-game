@@ -248,3 +248,30 @@ it is not drift. No mechanism is claimed — nothing measured here tests one.
 Practical consequence: **frame rate through a composed window is not a clean measure of
 renderer cost.** GPU frame time and CPU recording time are the numbers to trust, and the
 benchmark executable should report those rather than leaning on FPS.
+
+## Milestone 8 — what a draw call costs
+
+`cargo run --release --bin performance_test`. Offscreen (no window, no swap chain, no
+present), 1920x1080, 300 measured frames plus 30 warm-up per configuration, modes
+interleaved per instance count, **three full runs**:
+
+| Instances | A CPU | B CPU | A GPU | B GPU | CPU ratio |
+| --- | --- | --- | --- | --- | --- |
+| 1 | 0.016–0.018 ms | 0.016–0.018 ms | 0.034 ms | 0.034–0.035 ms | ~1.0x |
+| 100 | 0.017–0.021 ms | 0.015–0.018 ms | 0.040 ms | 0.040 ms | 1.0–1.2x |
+| 1,000 | 0.040–0.043 ms | 0.015–0.020 ms | 0.075 ms | 0.054–0.058 ms | 2.1–2.6x |
+| 10,000 | 0.252–0.264 ms | 0.018–0.023 ms | 0.415–0.421 ms | 0.080–0.085 ms | 11.5–15.1x |
+| 100,000 | 2.654–2.702 ms | 0.014–0.019 ms | 3.98–4.11 ms | 0.076–0.141 ms | 141–188x |
+
+A = one draw call per instance, B = one instanced draw. Both produce byte-identical
+images, asserted by a pixel-readback test.
+
+**A draw call costs roughly 27 ns of CPU and 41 ns of GPU** on this machine. Instancing's
+cost is flat in the object count on the CPU.
+
+Against the frame budgets at the top of this document: at 240 FPS (4.17 ms) drawing
+100,000 objects one call at a time spends 2.65 ms — 64% of the entire frame — on
+submission alone, before any simulation. The same picture instanced costs 0.014 ms.
+
+The crossover is around 1,000 objects; below a few hundred the two are indistinguishable,
+so batching is a scaling decision, not a micro-optimization.
