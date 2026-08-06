@@ -18,7 +18,11 @@ debug-overlay = ["engine-renderer/debug-overlay"]
 engine-core = { workspace = true }
 engine-platform = { workspace = true }
 engine-renderer = { workspace = true }
-log = { workspace = true }
+# `release_max_level_info` compiles trace! and debug! out of release builds entirely:
+# no branch, no argument evaluation, nothing left in the binary. The feature is enabled
+# here, in the binary crate, because it is a process-wide decision — a library enabling it
+# would silently mute its consumers' verbose logging too.
+log = { workspace = true, features = ["release_max_level_info"] }
 
 [lints]
 workspace = true
