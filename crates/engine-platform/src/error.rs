@@ -1,6 +1,8 @@
-//! Platform layer error type.
+//! Platform layer error type, and its conversion into [`EngineError`].
 
 use std::fmt;
+
+use engine_core::error::{EngineError, ErrorCategory};
 
 /// Failure modes of the Windows platform layer.
 #[derive(Debug)]
@@ -48,6 +50,23 @@ impl std::error::Error for PlatformError {
             Self::InvalidConfig { .. } => None,
             Self::Win32 { source, .. } => Some(source),
         }
+    }
+}
+
+impl From<PlatformError> for EngineError {
+    /// Lifts a platform failure into the engine's error type.
+    ///
+    /// The conversion lives here, not in `engine-core`, because core must not know what a
+    /// `PlatformError` is — and not in the application, where the orphan rule forbids it.
+    ///
+    /// An invalid `WindowConfig` becomes a `Configuration` error rather than a `Platform`
+    /// one: nothing failed in the OS, the values were wrong before any call was made.
+    fn from(error: PlatformError) -> Self {
+        let category = match error {
+            PlatformError::InvalidConfig { .. } => ErrorCategory::Configuration,
+            PlatformError::Win32 { .. } => ErrorCategory::Platform,
+        };
+        Self::new(category, error.to_string()).with_source(error)
     }
 }
 

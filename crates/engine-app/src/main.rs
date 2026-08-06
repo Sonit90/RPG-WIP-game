@@ -42,8 +42,11 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         Err(error) => {
-            log::error!("fatal: {error}");
-            eprintln!("fatal: {error}");
+            // The chain, not just the outermost message: "graphics: initialize the
+            // renderer" alone says nothing about which call returned which HRESULT.
+            let chain = error.chain();
+            log::error!("fatal: {chain}");
+            eprintln!("fatal: {chain}");
             ExitCode::FAILURE
         }
     }

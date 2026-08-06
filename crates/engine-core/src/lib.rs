@@ -7,6 +7,7 @@
 
 pub mod application;
 pub mod diagnostics;
+pub mod error;
 pub mod input;
 pub mod logging;
 pub mod metrics;

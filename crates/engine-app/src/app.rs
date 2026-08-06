@@ -17,60 +17,21 @@
 //! and holding them as `Option` to allow a two-phase init would put a check on every use
 //! for no gain.
 
-use std::fmt;
 use std::time::{Duration, Instant};
 
 use engine_core::application::{Application, EngineContext};
+use engine_core::error::EngineError;
 use engine_core::input::{InputEvent, KeyCode};
 use engine_core::metrics::FrameSummary;
-use engine_platform::{PlatformError, Window, WindowConfig, WindowEvent};
+use engine_platform::{Window, WindowConfig, WindowEvent};
 use engine_renderer::stress::{STRESS_LEVELS, level_at, nearest_level_index};
-use engine_renderer::{Renderer, RendererConfig, RendererError};
+use engine_renderer::{Renderer, RendererConfig};
 
 use crate::args::Args;
 
 /// Clear colour of the back buffer: a dark blue-grey, so an empty frame is obviously
 /// rendered rather than an unpainted window.
 const CLEAR_COLOR: [f32; 4] = [0.05, 0.07, 0.10, 1.0];
-
-/// Anything that can end the run loop.
-#[derive(Debug)]
-pub enum AppError {
-    /// The platform layer failed.
-    Platform(PlatformError),
-    /// The renderer failed.
-    Renderer(RendererError),
-}
-
-impl fmt::Display for AppError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Platform(error) => write!(f, "{error}"),
-            Self::Renderer(error) => write!(f, "{error}"),
-        }
-    }
-}
-
-impl std::error::Error for AppError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::Platform(error) => Some(error),
-            Self::Renderer(error) => Some(error),
-        }
-    }
-}
-
-impl From<PlatformError> for AppError {
-    fn from(error: PlatformError) -> Self {
-        Self::Platform(error)
-    }
-}
-
-impl From<RendererError> for AppError {
-    fn from(error: RendererError) -> Self {
-        Self::Renderer(error)
-    }
-}
 
 /// Window, renderer and reporting state.
 ///
@@ -109,8 +70,8 @@ impl App {
     ///
     /// # Errors
     ///
-    /// Returns [`AppError`] if the window or the D3D12 device cannot be created.
-    pub fn new(args: &Args) -> Result<Self, AppError> {
+    /// Returns [`EngineError`] if the window or the D3D12 device cannot be created.
+    pub fn new(args: &Args) -> Result<Self, EngineError> {
         engine_platform::dpi::set_process_dpi_aware();
 
         let window_config = WindowConfig::new("myGame — phase 1", args.width, args.height);
@@ -148,7 +109,7 @@ impl App {
     /// F1-F4 pick the first four stress levels, F6 the largest, F7/F8 step down and up.
     /// F5 is the overlay toggle, so the levels skip it. These are engine debug controls,
     /// not gameplay bindings — gameplay actions do not exist yet.
-    fn handle_key(&mut self, key: KeyCode, ctx: &mut EngineContext) -> Result<(), AppError> {
+    fn handle_key(&mut self, key: KeyCode, ctx: &mut EngineContext) -> Result<(), EngineError> {
         match key {
             KeyCode::F1 => self.set_stress_level(0, ctx)?,
             KeyCode::F2 => self.set_stress_level(1, ctx)?,
@@ -183,7 +144,11 @@ impl App {
     ///
     /// The old level's frame times say nothing about the new one, so keeping them would
     /// blend two workloads into one set of percentiles.
-    fn set_stress_level(&mut self, index: usize, ctx: &mut EngineContext) -> Result<(), AppError> {
+    fn set_stress_level(
+        &mut self,
+        index: usize,
+        ctx: &mut EngineContext,
+    ) -> Result<(), EngineError> {
         let triangles = level_at(index);
         if triangles == self.renderer.scene_triangle_count() {
             return Ok(());
@@ -372,10 +337,10 @@ impl App {
 }
 
 impl Application for App {
-    type Error = AppError;
+    type Error = EngineError;
 
     /// Drains window messages and applies them.
-    fn process_events(&mut self, ctx: &mut EngineContext) -> Result<(), AppError> {
+    fn process_events(&mut self, ctx: &mut EngineContext) -> Result<(), EngineError> {
         self.window.pump_events();
 
         while let Some(event) = self.window.poll_event() {
@@ -414,16 +379,16 @@ impl Application for App {
     }
 
     /// Advances the simulation. Empty so far — there is no gameplay to simulate.
-    fn update(&mut self, _ctx: &mut EngineContext) -> Result<(), AppError> {
+    fn update(&mut self, _ctx: &mut EngineContext) -> Result<(), EngineError> {
         Ok(())
     }
 
-    fn render(&mut self, _ctx: &mut EngineContext) -> Result<(), AppError> {
+    fn render(&mut self, _ctx: &mut EngineContext) -> Result<(), EngineError> {
         self.renderer.render(CLEAR_COLOR)?;
         Ok(())
     }
 
-    fn present(&mut self, _ctx: &mut EngineContext) -> Result<(), AppError> {
+    fn present(&mut self, _ctx: &mut EngineContext) -> Result<(), EngineError> {
         self.renderer.present()?;
         Ok(())
     }

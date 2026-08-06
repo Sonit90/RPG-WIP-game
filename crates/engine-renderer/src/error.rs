@@ -5,6 +5,8 @@
 
 use std::fmt;
 
+use engine_core::error::{EngineError, ErrorCategory};
+
 /// Failure modes of the D3D12 renderer.
 #[derive(Debug)]
 pub enum RendererError {
@@ -74,6 +76,25 @@ impl std::error::Error for RendererError {
     }
 }
 
+impl From<RendererError> for EngineError {
+    /// Lifts a renderer failure into the engine's error type.
+    ///
+    /// The categories are not all `Graphics`: a machine with no D3D12-capable adapter is
+    /// an `UnsupportedFeature` — no retry or different call will help — while a bad
+    /// swap-chain size is `Configuration`. That distinction is what lets a caller decide
+    /// between "tell the user to update the driver" and "fix the value".
+    fn from(error: RendererError) -> Self {
+        let category = match error {
+            RendererError::Api { .. } | RendererError::ShaderCompilation { .. } => {
+                ErrorCategory::Graphics
+            }
+            RendererError::NoSuitableAdapter { .. } => ErrorCategory::UnsupportedFeature,
+            RendererError::InvalidConfig { .. } => ErrorCategory::Configuration,
+        };
+        Self::new(category, error.to_string()).with_source(error)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -93,5 +114,33 @@ mod tests {
     fn no_adapter_message_reports_how_many_were_examined() {
         let text = RendererError::NoSuitableAdapter { examined: 3 }.to_string();
         assert!(text.contains('3'), "{text}");
+    }
+
+    #[test]
+    fn conversion_picks_the_category_a_caller_can_act_on() {
+        use engine_core::error::ErrorCategory;
+
+        let missing_adapter = EngineError::from(RendererError::NoSuitableAdapter { examined: 2 });
+        assert_eq!(
+            missing_adapter.category(),
+            ErrorCategory::UnsupportedFeature,
+            "no retry helps a machine without a D3D12 adapter"
+        );
+
+        let bad_config = EngineError::from(RendererError::InvalidConfig {
+            reason: "width 0".to_owned(),
+        });
+        assert_eq!(bad_config.category(), ErrorCategory::Configuration);
+
+        let api = EngineError::from(RendererError::api(
+            "D3D12CreateDevice",
+            windows::core::Error::from_hresult(windows::core::HRESULT(-2005270523)),
+        ));
+        assert_eq!(api.category(), ErrorCategory::Graphics);
+        assert!(
+            api.chain().contains("D3D12CreateDevice"),
+            "the original error must survive the conversion: {}",
+            api.chain()
+        );
     }
 }
