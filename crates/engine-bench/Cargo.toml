@@ -1,0 +1,20 @@
+[package]
+name = "engine-bench"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+# A separate crate with its own binary, so nothing here can end up in the game
+# executable. `cargo build --release --bin mygame` does not build this at all.
+[[bin]]
+name = "performance_test"
+path = "src/main.rs"
+
+[dependencies]
+engine-core = { workspace = true }
+engine-renderer = { workspace = true, default-features = false }
+log = { workspace = true }
+
+[lints]
+workspace = true
