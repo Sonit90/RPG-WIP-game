@@ -12,4 +12,5 @@ pub mod input;
 pub mod logging;
 pub mod memory;
 pub mod metrics;
+pub mod threading;
 pub mod time;
