@@ -12,6 +12,7 @@ pub mod error;
 pub mod input;
 pub mod jobs;
 pub mod logging;
+pub mod math;
 pub mod memory;
 pub mod metrics;
 pub mod profiling;

@@ -28,7 +28,7 @@ Milestone status:
 | 5 | Resource abstraction | done |
 | 6 | Upload system | done |
 | 7 | Shader system | done |
-| 8 | Camera | todo |
+| 8 | Camera | done |
 | 9 | Transform system | todo |
 | 10 | Mesh system | todo |
 | 11 | Basic material | todo |
@@ -1036,3 +1036,112 @@ did not change the output" means.
   `build.rs` generate the root signature, which is worth doing when there is more than one.
 * No hot reload, by design. If shader iteration ever becomes the bottleneck, a
   `cfg(debug_assertions)` disk-loading path can be added without touching the release path.
+
+---
+
+# Milestone 8 — Camera
+
+## What was built
+
+Two things, because a camera without a math library is a camera that invents one.
+
+**`engine_core::math`** — `Vec2`, `Vec3`, `Vec4`, `Quat`, `Mat4`. Written here rather than
+taken from a crate, as decided in §10: the engine's only third-party dependencies are `log`
+and `windows`, and the conventions had to be pinned down and tested regardless of where the
+code came from.
+
+**`engine_renderer::camera`** — `Camera` and `Projection`.
+
+## The conventions, and why they are tested rather than commented
+
+| Convention | Consequence if wrong |
+| --- | --- |
+| Right-handed, camera looks down −Z | Every normal points inward; back-face culling removes exactly what should be visible |
+| Depth maps to [0, 1], not [−1, 1] | Half the scene is clipped away, and the half that survives looks plausible |
+| Column-major storage, `clip = P * V * M * v` | Transforms compose in the wrong order; translation gets scaled |
+| `a * b` applies `b` first | A follow camera lags its subject by one composition |
+
+Each has a test whose name states the rule. `projection_maps_the_near_and_far_planes_to_zero_and_one`
+is the most valuable one in the file: an OpenGL-style projection produces a scene that is
+half missing rather than obviously broken.
+
+## Inverse and determinant share their work
+
+`Mat4::inverse` returns an `Option`. A singular matrix comes from a zero scale, which a
+caller may legitimately have and must not silently propagate as a matrix of `NaN`s into a
+view transform. The adjugate and the determinant are computed together because the
+determinant is the weighted sum of the first column's cofactors — two implementations would
+duplicate eighteen products and could drift apart.
+
+## The camera is not a camera controller
+
+`Camera` is position, orientation and a projection. It does not follow anything, collide
+with anything or smooth anything. A third-person camera that orbits a character is a
+*controller*: it belongs to the game, and it drives this type by setting a position and a
+rotation. Putting the orbit here would mean the renderer knows what a character is, which
+§3 forbids.
+
+## Matrices are rebuilt on change, not on read
+
+The view, projection and their product are stored. Changing happens at most once per frame;
+reading happens once per draw. There is no dirty flag and no interior mutability, because a
+setter that recomputes three matrices is cheaper than a getter that has to check.
+
+The view matrix is built by inverting the camera transform *analytically* — conjugate the
+rotation, rotate the negated position — rather than running the general 4×4 inverse. For a
+rigid transform that is exact and about ten times cheaper.
+
+`look_at` is the exception: it builds the view matrix directly and *derives* the rotation
+from it, rather than the other way round, because a round trip through a quaternion is not
+exact and `look_at` is.
+
+## What is rejected rather than clamped
+
+| Input | Why it is an error |
+| --- | --- |
+| Zero or negative aspect ratio | Produces infinities; a minimized window is the usual source |
+| `fov_y` outside (0, π) | Degenerate or inverted projection |
+| `near <= 0` or `far <= near` | Divides by zero in the depth range |
+| `look_at` with eye == target | No view direction exists |
+| `up` parallel to the view direction | The cross product is zero; the view matrix fills with `NaN` |
+
+A follow camera that snaps to its subject produces the fourth, and one that looks straight
+down produces the fifth. Both would otherwise blank the screen with nothing to point at.
+
+## Tests
+
+19 math tests and 13 camera tests, none needing a GPU:
+
+| Area | Covers |
+| --- | --- |
+| Vectors | right-handed cross products, normalizing zero without `NaN` |
+| Matrices | identity, associativity, operand order, `M · M⁻¹ = I`, singular detection, determinant against a known scale, transpose involution, constant-buffer layout |
+| Projection | near/far to 0/1, frustum corners to screen edges, orthographic box to the unit cube |
+| Quaternions | matrix agreement, quarter turn about +Y sending +X to −Z, conjugate cancellation, operand order |
+| Camera | default pose, view moving the world opposite the camera, `look_at` agreeing with the rotation it reports, both aiming paths producing one view, `VP == P · V`, in-front inside the unit cube, behind outside the depth range, resize touching only aspect, every rejection above |
+
+## Acceptance criteria
+
+| Criterion | Result |
+| --- | --- |
+| View and projection matrices | pass |
+| Perspective and orthographic | pass |
+| Aspect ratio handled | pass — `set_viewport`, zero rejected |
+| Near/far configurable | pass, with defaults documented in terms of depth precision |
+| Right-handed, D3D depth range | pass — tested, not asserted in a comment |
+| Matrix math tested | pass — 19 tests |
+| No gameplay concepts | pass — no follow, no target entity, no smoothing |
+| No regression | pass — median p50 0.142 ms; nothing here runs in the frame path yet |
+
+## Known limitations
+
+* Nothing uses the camera yet. The frame path still draws clip-space triangles; the camera
+  reaches the GPU in Milestone 13, when there is a constant buffer and a root signature to
+  put it in.
+* No `Sphere`, `Aabb`, `Plane` or `Frustum` yet. They belong with culling in Milestone 15,
+  and building them now would mean building them against no caller.
+* No reverse-Z. The depth range is a single expression in `Mat4::perspective`, and the
+  change also touches the clear value and one PSO field — listed in the risk table and
+  still cheap.
+* `Mat4` is scalar. The stress benchmark does no matrix work at all yet, so a SIMD version
+  would be optimizing an unmeasured cost.
