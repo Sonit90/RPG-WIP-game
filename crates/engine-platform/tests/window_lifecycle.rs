@@ -5,6 +5,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use engine_core::input::{InputEvent, InputState, KeyCode, MouseButton};
 use engine_platform::window::query_client_size;
 use engine_platform::{Window, WindowConfig, WindowEvent};
 
@@ -97,10 +98,20 @@ fn resize_updates_cached_size_and_emits_one_event() {
     );
 }
 
+/// Drains the window's queue into a vector of engine input events.
+fn drain_input(window: &mut Window) -> Vec<InputEvent> {
+    let mut events = Vec::new();
+    while let Some(event) = window.poll_event() {
+        if let Some(input) = event.as_input() {
+            events.push(input);
+        }
+    }
+    events
+}
+
 #[test]
-fn key_presses_reach_the_event_queue_and_auto_repeat_is_filtered() {
-    use engine_platform::Key;
-    use windows::Win32::UI::WindowsAndMessaging::WM_KEYDOWN;
+fn key_presses_reach_the_event_queue_and_auto_repeat_is_marked() {
+    use windows::Win32::UI::WindowsAndMessaging::{WM_KEYDOWN, WM_KEYUP};
 
     let config = WindowConfig::new("key test", 640, 480).with_visible(false);
     let mut window = Window::new(&config).expect("window creation must succeed");
@@ -109,7 +120,7 @@ fn key_presses_reach_the_event_queue_and_auto_repeat_is_filtered() {
     const VK_F5: usize = 0x74;
     const PREVIOUS_STATE_DOWN: isize = 1 << 30;
 
-    // A fresh press, then two auto-repeats, then a second fresh press.
+    // A fresh press, two auto-repeats, a release, then a second fresh press.
     // SAFETY: `hwnd` belongs to a live window owned by this test, and SendMessageW
     // dispatches synchronously on the thread that created it.
     unsafe {
@@ -126,20 +137,126 @@ fn key_presses_reach_the_event_queue_and_auto_repeat_is_filtered() {
             Some(WPARAM(VK_F5)),
             Some(LPARAM(PREVIOUS_STATE_DOWN)),
         );
+        SendMessageW(hwnd, WM_KEYUP, Some(WPARAM(VK_F5)), Some(LPARAM(0)));
         SendMessageW(hwnd, WM_KEYDOWN, Some(WPARAM(VK_F5)), Some(LPARAM(0)));
     }
 
-    let mut presses = 0;
-    while let Some(event) = window.poll_event() {
-        if event == WindowEvent::KeyPressed(Key::Function(5)) {
-            presses += 1;
-        }
+    let events = drain_input(&mut window);
+    assert_eq!(
+        events,
+        vec![
+            InputEvent::KeyDown {
+                key: KeyCode::F5,
+                repeat: false
+            },
+            InputEvent::KeyDown {
+                key: KeyCode::F5,
+                repeat: true
+            },
+            InputEvent::KeyDown {
+                key: KeyCode::F5,
+                repeat: true
+            },
+            InputEvent::KeyUp { key: KeyCode::F5 },
+            InputEvent::KeyDown {
+                key: KeyCode::F5,
+                repeat: false
+            },
+        ],
+        "auto-repeat must be marked, not dropped: a held key is still held"
+    );
+}
+
+#[test]
+fn a_held_key_is_reported_as_down_by_the_engine_input_state() {
+    use windows::Win32::UI::WindowsAndMessaging::{WM_KEYDOWN, WM_KEYUP};
+
+    let config = WindowConfig::new("held key test", 640, 480).with_visible(false);
+    let mut window = Window::new(&config).expect("window creation must succeed");
+    let hwnd = hwnd_of(&window);
+
+    const VK_W: usize = 0x57;
+
+    let mut state = InputState::new();
+
+    // SAFETY: see the test above.
+    unsafe { SendMessageW(hwnd, WM_KEYDOWN, Some(WPARAM(VK_W)), Some(LPARAM(0))) };
+    state.begin_frame();
+    for event in drain_input(&mut window) {
+        state.apply(event);
+    }
+    assert!(state.is_key_down(KeyCode::W));
+    assert!(state.was_key_pressed(KeyCode::W));
+
+    // A frame with no messages: still held, no longer a new press.
+    state.begin_frame();
+    assert!(state.is_key_down(KeyCode::W));
+    assert!(!state.was_key_pressed(KeyCode::W));
+
+    // SAFETY: see the test above.
+    unsafe { SendMessageW(hwnd, WM_KEYUP, Some(WPARAM(VK_W)), Some(LPARAM(0))) };
+    state.begin_frame();
+    for event in drain_input(&mut window) {
+        state.apply(event);
+    }
+    assert!(!state.is_key_down(KeyCode::W));
+    assert!(state.was_key_released(KeyCode::W));
+}
+
+#[test]
+fn mouse_messages_translate_to_engine_input_events() {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_RBUTTONDOWN,
+    };
+
+    let config = WindowConfig::new("mouse test", 640, 480).with_visible(false);
+    let mut window = Window::new(&config).expect("window creation must succeed");
+    let hwnd = hwnd_of(&window);
+
+    // x = 200, y = 300 packed into LPARAM; one wheel notch away from the user.
+    let position = LPARAM((300_isize << 16) | 200);
+
+    // SAFETY: see the key test above.
+    unsafe {
+        SendMessageW(hwnd, WM_MOUSEMOVE, Some(WPARAM(0)), Some(position));
+        SendMessageW(hwnd, WM_LBUTTONDOWN, Some(WPARAM(0)), Some(position));
+        SendMessageW(hwnd, WM_RBUTTONDOWN, Some(WPARAM(0)), Some(position));
+        SendMessageW(hwnd, WM_LBUTTONUP, Some(WPARAM(0)), Some(position));
+        SendMessageW(hwnd, WM_MOUSEWHEEL, Some(WPARAM(120 << 16)), Some(position));
     }
 
+    let events = drain_input(&mut window);
     assert_eq!(
-        presses, 2,
-        "two physical presses must produce two events, with auto-repeat filtered out"
+        events,
+        vec![
+            InputEvent::MouseMoved { x: 200, y: 300 },
+            InputEvent::MouseButtonDown {
+                button: MouseButton::Left
+            },
+            InputEvent::MouseButtonDown {
+                button: MouseButton::Right
+            },
+            InputEvent::MouseButtonUp {
+                button: MouseButton::Left
+            },
+            InputEvent::MouseWheel { delta: 1.0 },
+        ]
     );
+
+    let mut state = InputState::new();
+    state.begin_frame();
+    for event in events {
+        state.apply(event);
+    }
+    assert_eq!(state.mouse_position(), (200, 300));
+    assert_eq!(state.mouse_delta(), (200, 300));
+    assert!(state.is_mouse_button_down(MouseButton::Right));
+    assert!(state.was_mouse_button_pressed(MouseButton::Right));
+    // Left went down and back up inside one frame, so it is neither held nor a visible
+    // transition — the same frame-granularity limit the key tests document.
+    assert!(!state.is_mouse_button_down(MouseButton::Left));
+    assert!(!state.was_mouse_button_released(MouseButton::Left));
+    assert!((state.wheel_delta() - 1.0).abs() < 1e-6);
 }
 
 #[test]

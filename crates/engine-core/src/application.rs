@@ -24,6 +24,7 @@
 
 use std::time::{Duration, Instant};
 
+use crate::input::InputState;
 use crate::metrics::{DEFAULT_HISTORY, DEFAULT_REFRESH_INTERVAL, FrameMetrics};
 use crate::time::Time;
 
@@ -104,6 +105,7 @@ impl EngineConfig {
 pub struct EngineContext {
     time: Time,
     metrics: FrameMetrics,
+    input: InputState,
     stages: StageTimings,
     config: EngineConfig,
     running: bool,
@@ -115,10 +117,26 @@ impl EngineContext {
         Self {
             time: Time::new(),
             metrics: FrameMetrics::new(config.metrics_history, config.metrics_refresh_interval),
+            input: InputState::new(),
             stages: StageTimings::default(),
             config,
             running: true,
         }
+    }
+
+    /// Keyboard and mouse state for the current frame, including transitions.
+    #[must_use]
+    pub fn input(&self) -> &InputState {
+        &self.input
+    }
+
+    /// Mutable input, for feeding platform events in during the event stage.
+    ///
+    /// The engine rolls transitions at the start of every frame, before
+    /// [`Application::process_events`] runs, so an event applied here is visible as a
+    /// press for exactly the frame it arrived in.
+    pub fn input_mut(&mut self) -> &mut InputState {
+        &mut self.input
     }
 
     /// Frame-time history and the most recent summary.
@@ -387,6 +405,10 @@ impl<A: Application> Engine<A> {
     /// The frame loop proper, without lifecycle bookkeeping.
     fn run_loop(&mut self) -> Result<(), A::Error> {
         while self.ctx.running {
+            // Before the events, never after: rolling the previous frame's key bits
+            // afterwards would make every press look like a hold.
+            self.ctx.input.begin_frame();
+
             let events_start = Instant::now();
             self.app.process_events(&mut self.ctx)?;
             let events = events_start.elapsed();

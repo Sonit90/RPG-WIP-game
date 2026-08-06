@@ -138,6 +138,52 @@ Consequences worth knowing:
 * `EngineContext::reset_clock` clears the history too. Frame times from the previous stress
   level describe a different workload.
 
+## Input (Phase 1, M4)
+
+```
+Windows messages -> engine-platform -> InputEvent -> InputState -> application
+```
+
+`engine-core::input` defines `KeyCode`, `MouseButton`, `InputEvent`, `InputState`.
+Virtual-key codes, `WPARAM` bit layouts and `WM_*` numbers stop inside `engine-platform`.
+Nothing here is a gameplay action: there is no `Jump` and no `Fireball`, because bindings
+belong to gameplay, which does not exist yet.
+
+### State *and* transitions
+
+`is_key_down` answers "held", `was_key_pressed` / `was_key_released` answer "changed this
+frame". Both are stored, not inferred. Polling alone cannot distinguish them, so every
+system that tried to infer transitions would keep its own copy of last frame's state and
+get it subtly differently.
+
+The engine calls `InputState::begin_frame()` **before** `process_events`, so a press is
+visible for exactly the frame its message arrived in. Rolling the bits afterwards would
+make every press look like a hold.
+
+Known limit: a key pressed *and* released within one frame shows neither transition. That
+is inherent to frame-granular state, it is tested explicitly, and it is why an event-driven
+consumer must read the event stream rather than the state.
+
+### Storage
+
+`InputState` is a bitset (`[u64; 1]` today) plus scalars — no `Vec`, no allocation, and
+`Copy`. That last property is deliberate: a deterministic replay records and replays a
+frame's input by copying this struct.
+
+### Auto-repeat and focus loss
+
+* Auto-repeat is **marked, not dropped**: `KeyDown { repeat: true }` keeps the key held
+  without re-firing a press. The window procedure passes the repeat bit through; consumers
+  that want physical presses match on `repeat: false`.
+* Losing focus releases every key and button, without reporting releases. Key-up messages
+  go to whichever window has focus, so a key held while alt-tabbing away would stay down
+  forever; but firing release logic for a dozen keys at once would trigger gameplay the
+  player never asked for.
+* Consecutive mouse moves coalesce in the queue like resizes do. A 1000 Hz mouse produces
+  several `WM_MOUSEMOVE` per frame and only the latest position matters — the delta is
+  preserved because `InputState` computes it from the previous position, not from the
+  number of events.
+
 ## Deviations from the originally proposed repository layout
 
 1. **The workspace lives at the repository root** rather than in a nested

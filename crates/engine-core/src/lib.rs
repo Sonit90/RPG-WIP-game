@@ -6,6 +6,7 @@
 //! Scope so far: the engine lifecycle, logging and frame timing.
 
 pub mod application;
+pub mod input;
 pub mod logging;
 pub mod metrics;
 pub mod time;

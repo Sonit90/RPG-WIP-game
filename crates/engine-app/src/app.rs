@@ -21,8 +21,9 @@ use std::fmt;
 use std::time::{Duration, Instant};
 
 use engine_core::application::{Application, EngineContext};
+use engine_core::input::{InputEvent, KeyCode};
 use engine_core::metrics::FrameSummary;
-use engine_platform::{Key, PlatformError, Window, WindowConfig, WindowEvent};
+use engine_platform::{PlatformError, Window, WindowConfig, WindowEvent};
 use engine_renderer::stress::{STRESS_LEVELS, level_at, nearest_level_index};
 use engine_renderer::{Renderer, RendererConfig, RendererError};
 
@@ -94,7 +95,7 @@ pub struct App {
 /// The overlay ships in release builds, so players and testers need a way to bring it up
 /// without a command line.
 #[cfg(feature = "debug-overlay")]
-const OVERLAY_TOGGLE_KEY: u8 = 5;
+const OVERLAY_TOGGLE_KEY: KeyCode = KeyCode::F5;
 
 /// How often the overlay text is rebuilt.
 ///
@@ -140,6 +141,42 @@ impl App {
             #[cfg(feature = "debug-overlay")]
             last_overlay_update: Instant::now(),
         })
+    }
+
+    /// Applies the engine's debug key bindings.
+    ///
+    /// F1-F4 pick the first four stress levels, F6 the largest, F7/F8 step down and up.
+    /// F5 is the overlay toggle, so the levels skip it. These are engine debug controls,
+    /// not gameplay bindings — gameplay actions do not exist yet.
+    fn handle_key(&mut self, key: KeyCode, ctx: &mut EngineContext) -> Result<(), AppError> {
+        match key {
+            KeyCode::F1 => self.set_stress_level(0, ctx)?,
+            KeyCode::F2 => self.set_stress_level(1, ctx)?,
+            KeyCode::F3 => self.set_stress_level(2, ctx)?,
+            KeyCode::F4 => self.set_stress_level(3, ctx)?,
+            KeyCode::F6 => self.set_stress_level(STRESS_LEVELS.len() - 1, ctx)?,
+            KeyCode::F7 => {
+                let index = self.stress_index.saturating_sub(1);
+                self.set_stress_level(index, ctx)?;
+            }
+            KeyCode::F8 => {
+                let index = (self.stress_index + 1).min(STRESS_LEVELS.len() - 1);
+                self.set_stress_level(index, ctx)?;
+            }
+            #[cfg(feature = "debug-overlay")]
+            OVERLAY_TOGGLE_KEY => {
+                let enabled = !self.renderer.overlay_enabled();
+                self.renderer.set_overlay_enabled(enabled);
+                log::info!("debug overlay {}", if enabled { "shown" } else { "hidden" });
+                if enabled {
+                    // Force an immediate rebuild so the overlay appears on the next frame
+                    // instead of at the next scheduled update.
+                    self.last_overlay_update = Instant::now() - OVERLAY_UPDATE_INTERVAL;
+                }
+            }
+            other => log::trace!("key pressed: {other:?}"),
+        }
+        Ok(())
     }
 
     /// Loads stress level `index` and resets the statistics windows.
@@ -342,6 +379,12 @@ impl Application for App {
         self.window.pump_events();
 
         while let Some(event) = self.window.poll_event() {
+            // Every input event updates the engine's input state, whether or not this
+            // application acts on it: gameplay reads state, not the event stream.
+            if let Some(input) = event.as_input() {
+                ctx.input_mut().apply(input);
+            }
+
             match event {
                 WindowEvent::CloseRequested => {
                     log::info!("close requested");
@@ -353,35 +396,14 @@ impl Application for App {
                 }
                 WindowEvent::Minimized => log::info!("minimized"),
                 WindowEvent::Restored => log::info!("restored"),
-                WindowEvent::FocusChanged(focused) => log::debug!("focus: {focused}"),
-                // F1-F4 pick the first four stress levels, F6 the largest, F7/F8 step.
-                // F5 is the overlay toggle, so the levels skip it.
-                WindowEvent::KeyPressed(Key::Function(number @ 1..=4)) => {
-                    self.set_stress_level(usize::from(number) - 1, ctx)?;
+                WindowEvent::Input(InputEvent::FocusChanged { focused }) => {
+                    log::debug!("focus: {focused}");
                 }
-                WindowEvent::KeyPressed(Key::Function(6)) => {
-                    self.set_stress_level(STRESS_LEVELS.len() - 1, ctx)?;
+                // Physical presses only: auto-repeat must not re-trigger a level change.
+                WindowEvent::Input(InputEvent::KeyDown { key, repeat: false }) => {
+                    self.handle_key(key, ctx)?;
                 }
-                WindowEvent::KeyPressed(Key::Function(7)) => {
-                    let index = self.stress_index.saturating_sub(1);
-                    self.set_stress_level(index, ctx)?;
-                }
-                WindowEvent::KeyPressed(Key::Function(8)) => {
-                    let index = (self.stress_index + 1).min(STRESS_LEVELS.len() - 1);
-                    self.set_stress_level(index, ctx)?;
-                }
-                #[cfg(feature = "debug-overlay")]
-                WindowEvent::KeyPressed(Key::Function(OVERLAY_TOGGLE_KEY)) => {
-                    let enabled = !self.renderer.overlay_enabled();
-                    self.renderer.set_overlay_enabled(enabled);
-                    log::info!("debug overlay {}", if enabled { "shown" } else { "hidden" });
-                    if enabled {
-                        // Force an immediate rebuild so the overlay appears on the next
-                        // frame instead of at the next scheduled update.
-                        self.last_overlay_update = Instant::now() - OVERLAY_UPDATE_INTERVAL;
-                    }
-                }
-                WindowEvent::KeyPressed(key) => log::trace!("key pressed: {key:?}"),
+                _ => {}
             }
         }
 
