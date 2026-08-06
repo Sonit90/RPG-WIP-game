@@ -27,7 +27,7 @@ Milestone status:
 | 4 | Descriptor management | done |
 | 5 | Resource abstraction | done |
 | 6 | Upload system | done |
-| 7 | Shader system | todo |
+| 7 | Shader system | done |
 | 8 | Camera | todo |
 | 9 | Transform system | todo |
 | 10 | Mesh system | todo |
@@ -932,3 +932,107 @@ side proves the bytes arrived where the GPU address said they would.
 * `StagingUploader::flush` blocks. For startup loading that is correct and simple; if
   streaming ever needs to load without stalling, the fence value is already there to poll
   against instead.
+
+---
+
+# Milestone 7 — Shader system
+
+## What was built
+
+`crates/engine-renderer/build.rs` compiles every HLSL entry point to DXIL with `dxc` and
+writes a generated `shaders.rs` into `OUT_DIR`; `src/shader.rs` includes it. The runtime
+compiler is gone: `D3DCompile`, `d3dcompiler_47.dll` and the `Win32_Graphics_Direct3D_Fxc`
+feature have all been removed from the crate.
+
+```rust
+// build.rs
+ShaderEntry { file: "triangle.hlsl", entry: "VSMain", profile: "vs_6_0", constant: "TRIANGLE_VS" },
+
+// generated, in OUT_DIR
+pub const TRIANGLE_VS: &[u8] = include_bytes!(r"…\triangle.VSMain.dxil");
+
+// pipeline.rs
+VS: bytecode(TRIANGLE_VS),
+```
+
+## What changes as a consequence
+
+| Before | After |
+| --- | --- |
+| A shader error is a runtime `Err` at pipeline creation | A shader error is a **build** error with `dxc`'s file, line and message |
+| Startup compiles four entry points | Startup compiles nothing |
+| Shader model 5.1 through FXC | Shader model **6.0**, DXIL, signed |
+| `ID3DBlob` lifetimes threaded through pipeline creation | `&'static [u8]`, which cannot dangle |
+
+The last one is not cosmetic. `D3D12_SHADER_BYTECODE` is a raw pointer and a length; with
+`ID3DBlob` the caller had to keep the blob alive across `CreateGraphicsPipelineState`, and
+nothing in the type system said so. A `&'static [u8]` outlives everything.
+
+## The shader table is explicit, not a directory scan
+
+`build.rs` names each entry point. Scanning `shaders/` would be shorter and would silently
+compile a file nobody references, and would silently *stop* compiling one that got renamed.
+Adding a shader means adding four lines; that is the correct amount of friction.
+
+## One set of flags for every build profile
+
+`-O3 -WX`, debug and release alike. The alternative — unoptimized shaders with debug info
+in debug builds — means the shipped bytecode is not the bytecode that was tested, and a
+shader bug that reproduces in one profile and not the other is a bad afternoon. Warnings
+are errors because an HLSL warning is nearly always a type or semantic mistake that renders
+as garbage rather than failing.
+
+## Finding `dxc`
+
+Search order: `DXC_PATH`, then `PATH`, then the newest Windows SDK
+`bin\<version>\<arch>\dxc.exe`. On this machine that resolves to SDK 10.0.17763.0 x64,
+which ships `dxil.dll` beside it so the container is signed. If none is found the build
+fails with a message naming the SDK and both overrides — the risk listed in the
+architecture proposal, mitigated as stated.
+
+## Tests
+
+Unit tests in `shader.rs`, which need no GPU because the bytecode is a compile-time
+artefact:
+
+| Test | Asserts |
+| --- | --- |
+| `every_shader_is_a_signed_dxil_container` | all four blobs are DXBC containers of plausible size |
+| `the_container_hash_is_not_all_zero` | the digest `dxc` writes when signing is present — an unsigned blob is refused by the driver, and only at pipeline creation |
+| `the_descriptor_points_at_the_blob` | `bytecode()` produces the right pointer and length |
+| `a_truncated_blob_is_not_mistaken_for_a_container` | the magic check needs a size too |
+
+The signature test earns its place: if `dxil.dll` is missing beside `dxc.exe`, compilation
+succeeds and produces an unsigned container that fails at `CreateGraphicsPipelineState`
+with a bare `E_INVALIDARG` naming nothing. This test names it.
+
+Behavioural coverage is the existing offscreen pixel tests: the triangle and the instanced
+grid render the same images through DXIL as they did through FXC, which is what "the port
+did not change the output" means.
+
+## Acceptance criteria
+
+| Criterion | Result |
+| --- | --- |
+| Shaders compiled offline | pass — `build.rs`, `dxc`, DXIL |
+| Compiled bytecode loaded, not source | pass — `include_bytes!` |
+| Errors reported clearly | pass — build failure carrying `dxc`'s own diagnostic |
+| No runtime compilation | pass — `D3DCompile` and its `windows` feature removed |
+| Deterministic across builds | pass — one flag set for every profile |
+| Shipping binary needs no shader files | pass — bytecode is embedded |
+| No regression | pass — median p50 0.150 ms |
+
+## Known limitations
+
+* Shaders live in `crates/engine-renderer/shaders/`, not the `assets/shaders/` the
+  architecture proposal named. A build script is crate-scoped, and shaders that only the
+  renderer uses belong beside the renderer; when there is an asset pipeline with several
+  consumers, moving them is a path change in one table.
+* No `#include` support is exercised. `dxc` handles includes natively, but
+  `rerun-if-changed` only watches `shaders/`, so an include from outside that directory
+  would not trigger a rebuild. The directory-level watch covers every include inside it.
+* No reflection. Root signatures are still written by hand and must agree with the shader;
+  a mismatch is a pipeline-creation error rather than a build error. Reflection would let
+  `build.rs` generate the root signature, which is worth doing when there is more than one.
+* No hot reload, by design. If shader iteration ever becomes the bottleneck, a
+  `cfg(debug_assertions)` disk-loading path can be added without touching the release path.

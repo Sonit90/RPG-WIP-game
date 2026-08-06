@@ -15,20 +15,12 @@ use windows::Win32::Graphics::Direct3D12::{
 use windows::Win32::Graphics::Dxgi::Common::{
     DXGI_FORMAT_R32G32B32_FLOAT, DXGI_FORMAT_R32G32B32A32_FLOAT, DXGI_SAMPLE_DESC,
 };
-use windows::core::{PCSTR, s};
+use windows::core::s;
 
 use crate::error::RendererError;
-use crate::pipeline::{
-    Vertex, blend_desc, create_root_signature, rasterizer_desc, shader_bytecode,
-};
-use crate::shader::compile_hlsl;
+use crate::pipeline::{Vertex, blend_desc, create_root_signature, rasterizer_desc};
+use crate::shader::{INSTANCED_PS, INSTANCED_VS, bytecode};
 use crate::swapchain::BACK_BUFFER_FORMAT;
-
-/// Instanced shader source, embedded like the scene shader.
-const INSTANCED_HLSL: &str = include_str!("../shaders/instanced.hlsl");
-
-const VS_TARGET: PCSTR = s!("vs_5_1");
-const PS_TARGET: PCSTR = s!("ps_5_1");
 
 /// Per-instance data: where to put the triangle and what colour to tint it.
 ///
@@ -113,17 +105,13 @@ pub struct InstancedPipeline {
 }
 
 impl InstancedPipeline {
-    /// Compiles the instanced shaders and builds the pipeline state.
+    /// Builds the pipeline state from the embedded instanced DXIL.
     ///
     /// # Errors
     ///
-    /// Returns [`RendererError::ShaderCompilation`] if the HLSL does not compile, or
-    /// [`RendererError::Api`] if a D3D12 call fails.
+    /// Returns [`RendererError::Api`] if a D3D12 call fails.
     pub fn new(device: &ID3D12Device) -> Result<Self, RendererError> {
         let root_signature = create_root_signature(device)?;
-        let vertex_shader =
-            compile_hlsl(INSTANCED_HLSL, "instanced.hlsl", s!("VSMain"), VS_TARGET)?;
-        let pixel_shader = compile_hlsl(INSTANCED_HLSL, "instanced.hlsl", s!("PSMain"), PS_TARGET)?;
 
         let input_elements = [
             D3D12_INPUT_ELEMENT_DESC {
@@ -173,8 +161,8 @@ impl InstancedPipeline {
             // SAFETY: copies the interface pointer without changing its refcount; the
             // copy lives only for this call and the real reference is owned here.
             pRootSignature: unsafe { std::mem::transmute_copy(&root_signature) },
-            VS: shader_bytecode(&vertex_shader),
-            PS: shader_bytecode(&pixel_shader),
+            VS: bytecode(INSTANCED_VS),
+            PS: bytecode(INSTANCED_PS),
             RasterizerState: rasterizer_desc(),
             BlendState: blend_desc(),
             SampleMask: u32::MAX,

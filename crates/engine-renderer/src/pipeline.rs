@@ -1,8 +1,10 @@
 //! Root signature and pipeline state for position + colour geometry.
 //!
-//! Phase 0 / Milestone 4 only needs one pipeline: position + colour vertices, no
-//! constant buffers, no textures, no depth. Anything more (materials, passes, a shader
-//! system) is explicitly out of scope.
+//! One pipeline: position + colour vertices, no constant buffers, no textures, no depth.
+//! Materials and passes arrive with Milestones 11 and 12.
+//!
+//! The shaders are DXIL blobs compiled by `build.rs` and embedded by [`crate::shader`];
+//! creating the pipeline state costs no compilation.
 
 use windows::Win32::Graphics::Direct3D::ID3DBlob;
 use windows::Win32::Graphics::Direct3D12::{
@@ -12,27 +14,17 @@ use windows::Win32::Graphics::Direct3D12::{
     D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, D3D12_INPUT_ELEMENT_DESC, D3D12_INPUT_LAYOUT_DESC,
     D3D12_LOGIC_OP_NOOP, D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE, D3D12_RASTERIZER_DESC,
     D3D12_RENDER_TARGET_BLEND_DESC, D3D12_ROOT_SIGNATURE_DESC,
-    D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT, D3D12_SHADER_BYTECODE,
-    D3D12SerializeRootSignature, ID3D12Device, ID3D12PipelineState, ID3D12RootSignature,
+    D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT, D3D12SerializeRootSignature,
+    ID3D12Device, ID3D12PipelineState, ID3D12RootSignature,
 };
 use windows::Win32::Graphics::Dxgi::Common::{
     DXGI_FORMAT_R32G32B32_FLOAT, DXGI_FORMAT_R32G32B32A32_FLOAT, DXGI_SAMPLE_DESC,
 };
-use windows::core::{PCSTR, s};
+use windows::core::s;
 
 use crate::error::RendererError;
-use crate::shader::compile_hlsl;
+use crate::shader::{TRIANGLE_PS, TRIANGLE_VS, bytecode};
 use crate::swapchain::BACK_BUFFER_FORMAT;
-
-/// The HLSL source, embedded so a shipped binary needs no shader files beside it.
-const TRIANGLE_HLSL: &str = include_str!("../shaders/triangle.hlsl");
-
-/// Shader model used for both entry points.
-///
-/// 5_1 is available on every D3D12 device at feature level 11_0 and needs no DXIL
-/// toolchain; shader model 6 would require `dxcompiler.dll` to be shipped.
-const VS_TARGET: PCSTR = s!("vs_5_1");
-const PS_TARGET: PCSTR = s!("ps_5_1");
 
 /// One vertex: clip-space position and a colour.
 ///
@@ -76,22 +68,21 @@ pub struct ScenePipeline {
 }
 
 impl ScenePipeline {
-    /// Compiles the shaders and creates the root signature and pipeline state.
+    /// Creates the root signature and pipeline state from the embedded DXIL.
+    ///
+    /// The shaders were compiled by `build.rs`; nothing is compiled here.
     ///
     /// # Errors
     ///
-    /// Returns [`RendererError::ShaderCompilation`] if the HLSL does not compile, or
-    /// [`RendererError::Api`] if a D3D12 call fails.
+    /// Returns [`RendererError::Api`] if a D3D12 call fails.
     pub fn new(device: &ID3D12Device) -> Result<Self, RendererError> {
         let root_signature = create_root_signature(device)?;
+        let pipeline_state = create_pipeline_state(device, &root_signature)?;
 
-        let vertex_shader = compile_hlsl(TRIANGLE_HLSL, "triangle.hlsl", s!("VSMain"), VS_TARGET)?;
-        let pixel_shader = compile_hlsl(TRIANGLE_HLSL, "triangle.hlsl", s!("PSMain"), PS_TARGET)?;
-
-        let pipeline_state =
-            create_pipeline_state(device, &root_signature, &vertex_shader, &pixel_shader)?;
-
-        log::info!("scene pipeline ready: position + colour, shader model 5_1");
+        log::info!(
+            "scene pipeline ready: position + colour, shader model {}",
+            crate::shader::SHADER_MODEL
+        );
 
         Ok(Self {
             root_signature,
@@ -161,8 +152,6 @@ pub(crate) fn create_root_signature(
 fn create_pipeline_state(
     device: &ID3D12Device,
     root_signature: &ID3D12RootSignature,
-    vertex_shader: &ID3DBlob,
-    pixel_shader: &ID3DBlob,
 ) -> Result<ID3D12PipelineState, RendererError> {
     let input_elements = [
         D3D12_INPUT_ELEMENT_DESC {
@@ -193,8 +182,8 @@ fn create_pipeline_state(
         // SAFETY: copies the interface pointer without changing its refcount. The copy
         // lives only for this call, and the real reference is owned by the caller.
         pRootSignature: unsafe { std::mem::transmute_copy(root_signature) },
-        VS: shader_bytecode(vertex_shader),
-        PS: shader_bytecode(pixel_shader),
+        VS: bytecode(TRIANGLE_VS),
+        PS: bytecode(TRIANGLE_PS),
         RasterizerState: rasterizer_desc(),
         BlendState: blend_desc(),
         DepthStencilState: D3D12_DEPTH_STENCIL_DESC::default(),
@@ -219,18 +208,6 @@ fn create_pipeline_state(
     // left alone when `desc` goes out of scope — unwrapping it here would drop the value
     // and underflow the root signature's refcount.
     state
-}
-
-/// Wraps a compiled blob as a shader bytecode descriptor.
-pub(crate) fn shader_bytecode(blob: &ID3DBlob) -> D3D12_SHADER_BYTECODE {
-    // SAFETY: FFI calls on a live blob. The descriptor borrows the blob's buffer, and
-    // every caller keeps the blob alive until the pipeline state is created.
-    unsafe {
-        D3D12_SHADER_BYTECODE {
-            pShaderBytecode: blob.GetBufferPointer(),
-            BytecodeLength: blob.GetBufferSize(),
-        }
-    }
 }
 
 /// Solid fill, back-face culling, no depth bias.
