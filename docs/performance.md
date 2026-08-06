@@ -71,6 +71,7 @@ must list every allocation that occurs once per frame, with its justification.
 | Overlay geometry | none | Vertex scratch reserved once; overflow is dropped, not grown |
 | Overlay vertex upload | none, and skipped entirely unless the text changed | One persistently mapped upload buffer per frame slot |
 | Overlay text formatting | allocates, 4x per second | Rebuilt in place into reused `String`s, off the per-frame path |
+| Stress scene geometry | none per frame | Built into a reused scratch `Vec` and uploaded to a default heap only when the level changes |
 
 Logging allocates while formatting its message, which is why it is banned from the frame
 path. `Renderer::resize` allocates (it rebuilds the back-buffer vector), but it runs only
@@ -215,3 +216,35 @@ Grouped runs measure the machine's mood as much as the change.
 
 The upload-skipping change made for the same wrong reason is kept only as waste avoidance
 (see the allocation table), and is credited with no performance improvement.
+
+## Milestone 7 — triangle count is not the limit
+
+Release, 1920x1080, overlay hidden, 15,000 frames per run, **three interleaved rounds**
+(every level once per round):
+
+| Triangles | mean FPS | CPU mean | GPU mean | render | present | Draw calls |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1 | 5557 | 0.180 ms | 0.052 ms | 0.035 ms | 0.147 ms | 1 |
+| 100 | 5656 | 0.173 ms | 0.050 ms | — | — | 1 |
+| 1,000 | 5586 | 0.177 ms | 0.052 ms | — | — | 1 |
+| 10,000 | 5567 | 0.177 ms | 0.055 ms | 0.034 ms | 0.142 ms | 1 |
+| 100,000 | 6831 | 0.143 ms | 0.077 ms | 0.032 ms | 0.107 ms | 1 |
+
+Applying the attribution table at the top of this document:
+
+* **Not GPU-bound.** GPU time grows only 0.052 → 0.077 ms across a 100,000x increase in
+  triangles. At the top level that is ~1.3 billion triangles/second.
+* **Not draw-call-bound.** There is one draw call at every level, and CPU recording time
+  is flat at ~0.034 ms. Milestone 8 is what moves this axis.
+* **Presentation-bound.** `present` costs 0.107–0.147 ms, three to four times the cost of
+  recording the entire frame.
+
+### An anomaly, left unexplained
+
+At 100,000 triangles `present` becomes *cheaper* (0.107 ms vs 0.147 ms), so the heaviest
+scene reaches the highest frame rate. This reproduced in all three interleaved rounds, so
+it is not drift. No mechanism is claimed — nothing measured here tests one.
+
+Practical consequence: **frame rate through a composed window is not a clean measure of
+renderer cost.** GPU frame time and CPU recording time are the numbers to trust, and the
+benchmark executable should report those rather than leaning on FPS.

@@ -29,7 +29,17 @@ Options (`cargo run --bin mygame -- --help`):
 --frames <count>     exit after rendering this many frames
 --report <seconds>   frame-time report interval (default 1.0, 0 disables)
 --overlay            start with the debug overlay visible
+--triangles <count>  stress-test triangle count (default 1)
 ```
+
+Runtime keys:
+
+| Key | Action |
+| --- | --- |
+| F1-F4 | stress level 1 / 100 / 1,000 / 10,000 triangles |
+| F6 | stress level 100,000 triangles |
+| F7 / F8 | step one stress level down / up |
+| F5 | show or hide the debug overlay |
 
 The debug overlay shows FPS, CPU and GPU frame time, resolution and adapter name. It ships
 in release builds, starts hidden, and is toggled with **F5**. Its cost is below the noise

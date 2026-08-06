@@ -14,7 +14,7 @@ Milestone status:
 | 4 | Triangle renderer | done |
 | 5 | GPU timing | done |
 | 6 | Debug performance overlay | done |
-| 7 | Rendering stress tests | not started |
+| 7 | Rendering stress tests | done |
 | 8 | Instancing test | not started |
 | 9 | Automated GPU integration test | not started |
 
@@ -652,6 +652,105 @@ F5 down must toggle once, not flicker.
   otherwise.
 * Only key *presses* are reported; there is no `KeyReleased`, no modifier state and no
   text input. Enough for a toggle, not enough for gameplay.
+
+---
+
+## Milestone 7 — Rendering stress tests
+
+### What was built
+
+* `stress.rs` — deterministic generation of N triangles in a grid that fills the clip
+  volume. Triangle *size* shrinks as the count grows, so every level covers roughly the
+  same screen area and the comparison measures geometry throughput rather than fill rate.
+* `mesh.rs` — `GpuMesh`: a **default-heap** vertex buffer filled through an upload-heap
+  staging copy. This replaces Milestone 4's upload-heap buffer, which would have had the
+  GPU reading 8.4 MiB of vertex data across PCIe every frame at the largest level — the
+  benchmark would have measured the bus.
+* `pipeline.rs` — `TrianglePipeline` became `ScenePipeline`: root signature and pipeline
+  state only, no geometry, so the scene can be swapped without recompiling shaders.
+* `renderer.rs` — `set_scene_triangles`, which waits for idle, resets the command list and
+  uploads the new mesh.
+* `engine-app` — `--triangles <n>` and runtime keys: **F1-F4** select 1 / 100 / 1,000 /
+  10,000, **F6** selects 100,000, **F7/F8** step down and up. F5 stays the overlay toggle.
+  Switching levels clears the statistics windows, because frame times from the old
+  workload say nothing about the new one.
+
+### Acceptance criteria
+
+| Criterion | Result |
+| --- | --- |
+| Supports 1 / 100 / 1,000 / 10,000 / 100,000 triangles | pass |
+| Measures CPU frame time, GPU frame time, FPS, draw calls | pass — reported per interval and in the overlay |
+| Simple runtime toggle | pass — F1-F4, F6, F7/F8, plus `--triangles` at startup |
+
+### Performance
+
+Release, 1920x1080, overlay hidden, 15,000 frames per run. **Three interleaved rounds**:
+each round runs every level once, so machine drift spreads across all levels rather than
+landing on one.
+
+| Triangles | FPS (3 rounds) | mean FPS | CPU mean | GPU mean | Draw calls |
+| --- | --- | --- | --- | --- | --- |
+| 1 | 5487 / 5579 / 5605 | 5557 | 0.180 ms | 0.052 ms | 1 |
+| 100 | 5595 / 5631 / 5743 | 5656 | 0.173 ms | 0.050 ms | 1 |
+| 1,000 | 5543 / 5597 / 5618 | 5586 | 0.177 ms | 0.052 ms | 1 |
+| 10,000 | 5531 / 5593 / 5577 | 5567 | 0.177 ms | 0.055 ms | 1 |
+| 100,000 | 6838 / 6829 / 6826 | 6831 | 0.143 ms | 0.077 ms | 1 |
+
+Stage breakdown, same runs:
+
+| Triangles | render (record + submit) | present |
+| --- | --- | --- |
+| 1 | 0.035 ms | 0.147 ms |
+| 10,000 | 0.034 ms | 0.142 ms |
+| 100,000 | 0.032 ms | 0.107 ms |
+
+### What this says
+
+**The engine is presentation-bound at every level, and geometry is nearly free.**
+
+* GPU time rises from 0.052 ms to 0.077 ms across a 100,000x increase in triangles —
+  100,000 triangles in 0.077 ms is about 1.3 billion triangles per second, which is a
+  believable primitive rate for this GPU and confirms the geometry itself is not a limit
+  at this scale.
+* CPU recording time is **flat** at ~0.034 ms regardless of triangle count, which is
+  expected: one draw call submits the whole scene, so the CPU does the same work every
+  time. This is the number Milestone 8 will move by splitting the scene into many draws.
+* `present` dominates the CPU frame at 0.107-0.147 ms — three to four times the recording
+  cost.
+
+**An unexplained result, stated as unexplained:** at 100,000 triangles `present` gets
+*cheaper* (0.107 ms vs 0.147 ms), making the heaviest scene the fastest overall. It
+reproduced in all three interleaved rounds, so it is real, not drift. Plausible causes
+include DXGI present-queue pacing interacting with the longer GPU frame, but nothing here
+tests that, so no mechanism is claimed. It is a flag for the benchmark executable: as long
+as `present` behaves like this, frame rate through a composed window is not a clean
+measure of renderer cost, and GPU time plus recording time are the trustworthy numbers.
+
+### Manual verification
+
+```powershell
+cargo run --release --bin mygame -- --overlay
+```
+
+Press F1-F4, then F6, and watch the overlay's triangle count and the log line
+`stress level N: M triangles`. F7 and F8 step through the levels. The screen should stay
+similarly covered at every level, with the triangles getting smaller — that constant
+coverage is what makes the levels comparable, and it is asserted by a test.
+
+### Known limitations
+
+* One draw call per frame at every level. The draw-call axis is Milestone 8's job; this
+  milestone deliberately varies only triangle count.
+* Every triangle is identical in size within a level and the whole scene is static — no
+  transforms, no camera, no per-object data. A real scene would also cost per-object CPU
+  work, which this does not model.
+* Switching levels stalls the GPU (`wait_for_idle`) and re-uploads the mesh; the frames
+  around a switch are not representative, which is why the statistics windows are cleared.
+* The largest level allocates an 8.4 MiB vertex buffer at load time. Nothing frees it
+  until the next switch.
+* Frame rate is limited by presentation, so these numbers say little about the 240/360/480
+  FPS targets for a real workload.
 * Uppercase only; text is upper-cased before lookup.
 * The overlay is drawn with the scene's pipeline, so it has no blending and no background
   panel. Over a bright scene it may be hard to read.
