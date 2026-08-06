@@ -22,9 +22,11 @@ use windows::core::Interface;
 use crate::device::{BACKEND, GpuContext, feature_level_name};
 use crate::error::RendererError;
 use crate::gpu_timer::GpuTimer;
+use crate::mesh::GpuMesh;
 #[cfg(feature = "debug-overlay")]
 use crate::overlay::{OverlayBuffers, OverlayGeometry};
-use crate::pipeline::{TRIANGLE_VERTICES, TrianglePipeline};
+use crate::pipeline::{ScenePipeline, Vertex};
+use crate::stress;
 use crate::swapchain::{FRAME_COUNT, SwapChain};
 use crate::sync::GpuFence;
 use crate::{AdapterInfo, RendererConfig};
@@ -76,8 +78,12 @@ pub struct Renderer {
     /// Most recent GPU frame time in milliseconds, or `None` before the first slot has
     /// completed a full lap.
     last_gpu_frame_ms: Option<f64>,
-    /// Root signature, pipeline state and vertex buffer for the triangle.
-    pipeline: TrianglePipeline,
+    /// Root signature and pipeline state, independent of the geometry.
+    pipeline: ScenePipeline,
+    /// The geometry currently being drawn.
+    scene: GpuMesh,
+    /// Scratch buffer for regenerating scene geometry without allocating each time.
+    scene_scratch: Vec<Vertex>,
     /// Debug overlay geometry and its per-slot upload buffers. Absent entirely from a
     /// build without the `debug-overlay` feature.
     #[cfg(feature = "debug-overlay")]
@@ -162,7 +168,10 @@ impl Renderer {
 
         let fence = GpuFence::new(context.device())?;
         let gpu_timer = GpuTimer::new(context.device(), context.queue(), FRAME_COUNT)?;
-        let pipeline = TrianglePipeline::new(context.device(), &TRIANGLE_VERTICES)?;
+        let pipeline = ScenePipeline::new(context.device())?;
+        let mut scene_scratch = Vec::new();
+        stress::build_grid(1, &mut scene_scratch);
+        let scene = GpuMesh::upload(context.device(), context.queue(), &scene_scratch)?;
 
         #[cfg(feature = "debug-overlay")]
         let overlay = OverlayState {
@@ -183,6 +192,8 @@ impl Renderer {
             gpu_timer,
             last_gpu_frame_ms: None,
             pipeline,
+            scene,
+            scene_scratch,
             #[cfg(feature = "debug-overlay")]
             overlay,
             frames_presented: 0,
@@ -268,6 +279,54 @@ impl Renderer {
     #[must_use]
     pub fn timestamp_frequency(&self) -> u64 {
         self.gpu_timer.frequency()
+    }
+
+    /// Triangles in the current scene.
+    #[must_use]
+    pub fn scene_triangle_count(&self) -> u32 {
+        self.scene.triangle_count()
+    }
+
+    /// Replaces the scene with a grid of `triangles` triangles.
+    ///
+    /// Waits for the GPU to go idle first, because the mesh it is currently reading is
+    /// about to be released. This is a scene change, not a per-frame operation, so the
+    /// stall is acceptable — and it is deliberately *not* on the measured path: callers
+    /// should switch levels, then measure.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RendererError::InvalidConfig`] if `triangles` is zero, or
+    /// [`RendererError::Api`] if the upload fails.
+    pub fn set_scene_triangles(&mut self, triangles: u32) -> Result<(), RendererError> {
+        if triangles == 0 {
+            return Err(RendererError::InvalidConfig {
+                reason: "a scene needs at least one triangle".to_owned(),
+            });
+        }
+        if triangles == self.scene.triangle_count() {
+            return Ok(());
+        }
+
+        self.wait_for_idle()?;
+        if self.recorded_frame_slot.take().is_some() {
+            log::debug!("dropped a recorded frame because the scene changed");
+        }
+        self.reset_command_list_to_empty()?;
+
+        stress::build_grid(triangles, &mut self.scene_scratch);
+        self.scene = GpuMesh::upload(
+            self.context.device(),
+            self.context.queue(),
+            &self.scene_scratch,
+        )?;
+
+        log::info!(
+            "scene: {triangles} triangles ({} vertices, {} KiB)",
+            self.scene.vertex_count(),
+            self.scene.vertex_count() as usize * size_of::<Vertex>() / 1024
+        );
+        Ok(())
     }
 
     /// Replaces the overlay text, one entry per line.
@@ -390,13 +449,13 @@ impl Renderer {
             self.command_list
                 .IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
             self.command_list
-                .IASetVertexBuffers(0, Some(&[*self.pipeline.vertex_buffer_view()]));
+                .IASetVertexBuffers(0, Some(&[*self.scene.view()]));
             self.command_list
-                .DrawInstanced(self.pipeline.vertex_count(), 1, 0, 0);
+                .DrawInstanced(self.scene.vertex_count(), 1, 0, 0);
         }
 
         self.draw_calls_last_frame = 1;
-        self.triangles_last_frame = u64::from(self.pipeline.vertex_count()) / 3;
+        self.triangles_last_frame = u64::from(self.scene.triangle_count());
 
         // The overlay reuses the root signature, pipeline state and topology bound above;
         // only the vertex buffer changes. It is drawn last so it sits over the scene.
