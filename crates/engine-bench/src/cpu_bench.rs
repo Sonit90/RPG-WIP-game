@@ -19,8 +19,10 @@ use std::time::{Duration, Instant};
 
 use engine_core::input::{InputEvent, InputState, KeyCode};
 use engine_core::jobs::JobSystem;
+use engine_core::math::{Mat4, Quat, Vec3};
 use engine_core::memory::{Arena, FrameAllocator};
 use engine_core::profiling::Profiler;
+use engine_core::transform::{Transform, write_matrices};
 use engine_renderer::descriptor::{CpuDescriptorHeap, GpuDescriptorHeap};
 use engine_renderer::device::RenderDevice;
 
@@ -74,6 +76,7 @@ fn main() -> ExitCode {
     benchmark_input(iterations);
     benchmark_profiler(iterations);
     benchmark_descriptors(iterations);
+    benchmark_transforms(iterations);
     benchmark_jobs();
 
     ExitCode::SUCCESS
@@ -224,6 +227,51 @@ fn benchmark_profiler(iterations: u32) {
 /// The requirement this answers is that descriptor allocation must not become a per-object
 /// CPU bottleneck. A frame with 10,000 visible objects binds up to 10,000 tables, so the
 /// per-allocation cost multiplies by the object count and lands directly in the frame time.
+/// Transform-to-matrix cost, which scales with the number of visible objects.
+///
+/// This is the per-object CPU work that happens before anything is recorded, so it sets a
+/// floor under the frame time at a given object count. It is also the number that says
+/// whether generating matrices needs chunking across the job system — `docs/threading.md`
+/// put the break-even at roughly 12 µs of work per job.
+fn benchmark_transforms(iterations: u32) {
+    println!("-- transforms --");
+
+    let rotation = Quat::from_yaw_pitch_roll(0.7, -0.3, 0.15);
+    let transform = Transform::new(Vec3::new(1.0, 2.0, 3.0), rotation, Vec3::splat(1.5));
+
+    let single = measure(iterations, |count| {
+        for _ in 0..count {
+            black_box(black_box(&transform).matrix());
+        }
+    });
+    report("Transform::matrix", single);
+
+    // The batched form the render path uses: two contiguous arrays, one pass, no
+    // allocation. Sized past the L2 cache so the number is not a best case.
+    let count = 100_000;
+    let transforms = vec![transform; count];
+    let mut matrices = vec![Mat4::IDENTITY; count];
+    let batched = measure(iterations.min(200), |samples| {
+        for _ in 0..samples {
+            let written = write_matrices(black_box(&transforms), black_box(&mut matrices));
+            black_box(written);
+        }
+    });
+    report(
+        "write_matrices per transform (100k)",
+        batched / count as f64,
+    );
+
+    let compose = measure(iterations, |count| {
+        for _ in 0..count {
+            black_box(black_box(&transform).then(black_box(transform)));
+        }
+    });
+    report("Transform::then", compose);
+
+    println!();
+}
+
 fn benchmark_descriptors(iterations: u32) {
     println!("-- descriptors --");
 

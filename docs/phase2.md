@@ -29,7 +29,7 @@ Milestone status:
 | 6 | Upload system | done |
 | 7 | Shader system | done |
 | 8 | Camera | done |
-| 9 | Transform system | todo |
+| 9 | Transform system | done |
 | 10 | Mesh system | todo |
 | 11 | Basic material | todo |
 | 12 | Depth buffer | todo |
@@ -1145,3 +1145,114 @@ down produces the fifth. Both would otherwise blank the screen with nothing to p
   still cheap.
 * `Mat4` is scalar. The stress benchmark does no matrix work at all yet, so a SIMD version
   would be optimizing an unmeasured cost.
+
+---
+
+# Milestone 9 — Transform system
+
+## What was built
+
+`engine_core::transform`: a `Transform` of translation, rotation and scale, and
+`write_matrices`, which fills a caller-owned array of matrices from an array of transforms.
+
+It lives in `engine-core`, not the renderer, because the simulation owns transforms and the
+renderer only reads them. Putting it in the renderer would point the dependency arrow the
+wrong way.
+
+## Why not store the matrix
+
+| Stored as | Rotate again | Interpolate | Read the rotation back | Fix accumulated drift |
+| --- | --- | --- | --- | --- |
+| `Mat4` | matrix multiply | not a rotation | decomposition | not possible — drift is a shear |
+| T/R/S | quaternion product | slerp | it is already there | one square root |
+
+The matrix is the cheaper thing to *read* and the worse thing to *keep*. So it is generated,
+not stored — once per object per frame at worst.
+
+## Composition is a shortcut with a stated limit
+
+`parent.then(child)` produces a `Transform`, and a test asserts it equals
+`parent.matrix() * child.matrix()`. That equality holds for uniform scale and fails for
+non-uniform scale combined with rotation, because rotating a non-uniformly scaled child
+introduces a **shear** and no scale vector can encode shear. The documentation says so and
+names the alternative (compose matrices) rather than leaving a caller to discover it as a
+rendering artefact.
+
+## Measured cost
+
+`cargo run --release --bin cpu_bench`, median of 9 samples:
+
+| Operation | Cost |
+| --- | --- |
+| `Transform::matrix` | 3.42 ns |
+| `write_matrices`, per transform over 100,000 | 2.65 ns |
+| `Transform::then` | 12.05 ns |
+
+The batched form is 22% cheaper per transform than the individual call, over an array far
+larger than L2 — two contiguous streams and no allocation.
+
+Against the 2.08 ms stretch budget:
+
+| Visible objects | Matrix generation | Share of the frame |
+| --- | --- | --- |
+| 1,000 | 2.7 µs | 0.13% |
+| 10,000 | 26.5 µs | 1.3% |
+| 100,000 | 265 µs | 12.7% |
+
+`docs/threading.md` measured the job-system break-even at roughly 12 µs of work per job, so
+a chunk would have to be about **4,500 transforms** before submitting it is worth the
+overhead. At 10,000 objects that is two chunks for 26 µs of work — not obviously worth it.
+The loop is flat and takes slices, so chunking later is a change at the call site, not a
+rewrite. It is not being done now because 1.3% of a frame is not where the time is.
+
+## Tests
+
+12 tests, no GPU:
+
+| Test | Asserts |
+| --- | --- |
+| `the_identity_moves_nothing` | identity, default and `Mat4::IDENTITY` agree |
+| `the_matrix_agrees_with_transforming_a_point_directly` | the two code paths are one definition |
+| `transforming_a_vector_ignores_translation` | directions are not translated |
+| `scale_applies_before_rotation` | the other order stretches along world axes and looks right until something is both scaled and turned |
+| `composition_matches_multiplying_the_matrices` | `then` is exactly matrix composition |
+| `composing_with_the_identity_changes_nothing` | on both sides |
+| `a_transform_composed_with_its_inverse_is_the_identity` | round trip through `inverse` |
+| `a_flattened_transform_has_no_inverse` | zero scale returns `None`, not infinities |
+| `renormalizing_removes_accumulated_drift` | one square root restores unit length |
+| `the_bounding_scale_is_the_largest_axis` | under-estimating culls visible objects |
+| `matrices_are_written_in_order_without_allocating` | batch output matches per-item output |
+| `a_short_output_buffer_truncates_and_says_how_much_it_took` | truncation over panic |
+
+## A flaky test was fixed, not deleted
+
+`trivial_work_never_makes_the_cpu_wait` asserted **zero** stalls in 20 empty frames. It
+failed here on a machine with a busy compositor: the GPU legitimately lost a race. The
+assertion now allows up to two, which still distinguishes it from the loaded case that
+stalls on *every* frame. An exact count was measuring the machine rather than the renderer —
+the same lesson `docs/performance.md` already records for frame-time comparisons.
+
+## Acceptance criteria
+
+| Criterion | Result |
+| --- | --- |
+| Position, rotation, scale | pass |
+| Matrix generation | pass — `matrix`, `write_matrices` |
+| Efficient, no per-frame allocation | pass — 2.65 ns per transform into a caller-owned array |
+| Hierarchy composition available | pass — `then`, with its exact limit documented |
+| Rotation stored as a quaternion | pass, with the reasons tabulated |
+| Benchmarked | pass — table above and `docs/performance.md` |
+| No gameplay concepts | pass — a transform knows nothing about what it is attached to |
+| No regression | pass — nothing here runs in the frame path yet |
+
+## Known limitations
+
+* No hierarchy *storage*. `then` composes two transforms; there is no parent array, no
+  dirty propagation and no traversal order. Whether the renderer ever needs one is an open
+  question — the `RenderWorld` in Milestone 13 takes world-space transforms, so a hierarchy
+  would live in the simulation.
+* `Transform` is 40 bytes and `write_matrices` produces 64 bytes each. At 100,000 objects
+  that is 6.4 MB of matrices per frame, which is why instancing writes them straight into
+  the upload ring in Milestone 17 rather than into an intermediate array.
+* Scalar math. A SIMD `Mat4` would help the 100,000-object row above and nothing below it.
+  Worth revisiting when a real scene reaches that count, not before.

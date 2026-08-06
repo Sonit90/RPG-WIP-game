@@ -457,3 +457,27 @@ store per slot; the difference above is machine state, not the change.
 The batching claim is measured by test rather than by benchmark: `batched_uploads_cost_one_synchronization` asserts that eight buffer uploads produce `total_copies == 8` and
 `total_flushes == 1`. The old per-mesh path would have produced eight of each, and each
 flush is a full GPU round trip.
+
+## Milestone 9 - transforms
+
+`cargo run --release --bin cpu_bench`, median of 9 samples.
+
+| Operation | Cost |
+| --- | --- |
+| `Transform::matrix` | 3.42 ns |
+| `write_matrices`, per transform over 100,000 | 2.65 ns |
+| `Transform::then` (compose two transforms) | 12.05 ns |
+
+The batched form is 22% cheaper per transform than the individual call, measured over an
+array far larger than L2: two contiguous streams, one pass, no allocation.
+
+| Visible objects | Matrix generation | Share of a 2.08 ms frame |
+| --- | --- | --- |
+| 1,000 | 2.7 us | 0.13% |
+| 10,000 | 26.5 us | 1.3% |
+| 100,000 | 265 us | 12.7% |
+
+`docs/threading.md` puts the job-system break-even at roughly 12 us of work per job, so a
+culling or transform chunk has to be about 4,500 transforms before submitting it pays for
+itself. At 10,000 objects the whole pass is 26 us - two chunks - which is not obviously
+worth the submission overhead. Chunking stays a call-site change rather than a rewrite.
