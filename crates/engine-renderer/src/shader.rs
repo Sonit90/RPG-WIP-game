@@ -55,6 +55,8 @@ mod tests {
         ("TRIANGLE_PS", TRIANGLE_PS),
         ("INSTANCED_VS", INSTANCED_VS),
         ("INSTANCED_PS", INSTANCED_PS),
+        ("MESH_VS", MESH_VS),
+        ("MESH_PS", MESH_PS),
     ];
 
     #[test]

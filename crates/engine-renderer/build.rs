@@ -39,6 +39,18 @@ const SHADERS: &[ShaderEntry] = &[
         constant: "TRIANGLE_PS",
     },
     ShaderEntry {
+        file: "mesh.hlsl",
+        entry: "VSMain",
+        profile: "vs_6_0",
+        constant: "MESH_VS",
+    },
+    ShaderEntry {
+        file: "mesh.hlsl",
+        entry: "PSMain",
+        profile: "ps_6_0",
+        constant: "MESH_PS",
+    },
+    ShaderEntry {
         file: "instanced.hlsl",
         entry: "VSMain",
         profile: "vs_6_0",

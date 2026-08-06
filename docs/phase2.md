@@ -33,7 +33,7 @@ Milestone status:
 | 10 | Mesh system | done |
 | 11 | Basic material | done |
 | 12 | Depth buffer | done |
-| 13 | 3D scene | todo |
+| 13 | 3D scene | done |
 | 14 | Basic lighting | todo |
 | 15 | Frustum culling | todo |
 | 16 | Render list | todo |
@@ -1597,3 +1597,151 @@ right way: it compares two renders against each other rather than against a magi
   transition is already in the frame path.
 * One depth buffer, matching the back buffer. Shadow maps in a later phase would each need
   their own; nothing here assumes there is only ever one.
+
+---
+
+# Milestone 13 — 3D scene
+
+## What was built
+
+The first frame that draws real geometry: `RenderWorld`, typed handles, a mesh pipeline with
+three constant buffers, and `Renderer::render_world`.
+
+```rust
+let mesh     = renderer.create_mesh(&MeshData::cube(1.0))?;   // MeshHandle
+let material = renderer.create_material(MaterialDesc::colored(0.8, 0.2, 0.2))?;
+let entity   = world.spawn(RenderEntityDesc { mesh, material, transform, bounds, visible: true });
+renderer.render_world(&world, &camera, CLEAR)?;
+renderer.present()?;
+```
+
+That is the API §1 of the architecture proposal committed to, reached without an ECS, a
+scene graph or a render graph.
+
+## `RenderWorld` is arrays, not objects
+
+Structure-of-arrays: transforms, meshes, materials, world bounds, visibility, generations.
+Culling in Milestone 15 reads `bounds` and `visible` and nothing else, and streaming mesh
+handles it does not look at would waste the cache line it is reading through.
+
+Handles are index plus generation in eight bytes. A despawn bumps the slot's generation,
+which makes every outstanding handle to it stale — detected by comparison rather than
+dereferenced. A test spawns, despawns, spawns again into the same slot and asserts the first
+handle is refused; without the generation it would silently address the second entity.
+
+Freed slots keep their array entries. Clearing them would be work for data nobody reads;
+`visible = false` is what makes a slot invisible, and `is_drawable` is the single question
+the draw loop asks.
+
+## World bounds are computed on write, not on read
+
+`spawn` and `set_transform` place the mesh's local sphere into world space immediately. The
+draw loop and the culler then read a ready value instead of transforming bounds per frame —
+transforms change far less often than frames happen.
+
+The radius is scaled by the **largest** axis. A non-uniformly scaled sphere is an ellipsoid;
+keeping it a sphere means over-estimating, and the direction matters: over-estimating draws
+something that could have been culled, under-estimating culls something that is on screen.
+
+## The shader, and why no transpose happens
+
+`shaders/mesh.hlsl` declares its matrices `column_major`, which is both the HLSL default and
+the layout `Mat4` already has — columns in consecutive registers. So a matrix is memcpy'd
+into the constant buffer and `mul(M, v)` is the same `M * v` the CPU-side math means. A test
+asserts the translation lands in elements 12-14, so a transpose added "for safety" fails
+loudly instead of silently mirroring the world.
+
+There is no lighting. That is Milestone 14; this milestone is about geometry arriving in the
+right place, and a flat colour makes "the right place" unambiguous.
+
+## Three root CBVs, ordered by update frequency
+
+| Slot | Register | Changes |
+| --- | --- | --- |
+| 0 | `b0` frame | once per frame |
+| 1 | `b2` material | once per material run |
+| 2 | `b1` object | once per draw |
+
+Root CBVs, not descriptor tables: each is a GPU address written straight into the root
+arguments, with no descriptor to allocate and no table to bind. That is the cheapest binding
+D3D12 offers and it is available precisely because nothing samples a texture yet.
+
+Frame and object constants are written into the **upload ring** — its first real use. They
+are exactly what it was built for: transient data, alive for one frame, reclaimed by the
+per-slot reset that was already in the frame path since Milestone 6.
+
+## The frame path is now shared
+
+`render` and `render_world` both call `begin_recording` and `finish_recording`. The pacing
+wait, the timestamp read, the deferred-release collection and the ring reset have to happen
+in that order; having that written twice is how one of them ends up missing from one path.
+
+The overlay now binds its own pipeline instead of inheriting whatever the scene left bound.
+It draws clip-space position+colour vertices, which the mesh pipeline's input layout does
+not describe.
+
+## Tests
+
+Eleven unit tests for the world and constants, six pixel tests for the scene:
+
+| Test | Asserts |
+| --- | --- |
+| `a_stale_handle_is_detected_rather_than_dereferenced` | the reason handles carry a generation |
+| `slots_are_reused_rather_than_growing` | four spawns after four despawns use four slots |
+| `bounds_follow_the_transform_into_world_space` | translation and the largest-axis radius |
+| `a_rotated_offset_bound_ends_up_where_the_geometry_is` | rotation applies to the centre |
+| `hiding_an_entity_keeps_it_alive` | hidden is not despawned |
+| `frame_constants_keep_the_matrix_column_major` | no transpose anywhere |
+| `a_cube_in_front_of_the_camera_is_visible_and_its_material_colours_it` | drawn, and *not* filling the frame — a wrong projection passes a naive centre-pixel test |
+| `an_object_moved_out_of_view_is_not_drawn` | the transform reaches the shader |
+| `the_nearer_of_two_objects_occludes_the_other` | identical images from both submission orders |
+| `a_more_distant_object_covers_fewer_pixels` | perspective, not orthographic |
+| `each_object_gets_its_own_material` | the material CBV is bound per draw, not once |
+| `an_empty_scene_renders_the_clear_colour` | zero objects is not an error |
+
+`offscreen::render_scene` was added so these judge the *same* pipeline, constant buffers and
+depth state the window path runs, rather than a simplified copy of it. It takes a closure
+that hands back what it recorded: a command list holds raw pointers, so a pipeline dropped
+between recording and submission is a use-after-free the type system cannot otherwise see.
+
+## Measured cost
+
+Release build, 1000-triangle stress scene (the `render` path, unchanged by this milestone),
+median of per-interval p50:
+
+| | M12 | M13 |
+| --- | --- | --- |
+| CPU frame | 0.161 ms | 0.160 ms |
+| GPU frame | 0.054 ms | 0.053 ms |
+
+No regression. The world path's own cost is not measured yet — there is no benchmark scene
+that drives it, which is what Milestones 15 to 18 need and will add.
+
+## Acceptance criteria
+
+| Criterion | Result |
+| --- | --- |
+| Multiple objects with transforms | pass |
+| Camera drives the view | pass — proven by moving an object out of frame |
+| Per-object constants | pass — through the upload ring |
+| Per-material constants | pass — bound per draw, proven by two colours |
+| Depth-correct rendering | pass — order-independent image |
+| Typed handles, no raw D3D12 exposed | pass |
+| `RenderWorld` owned by the caller | pass |
+| No gameplay concepts in the renderer | pass — a `RenderEntity` is a slot in three arrays |
+| No regression | pass — 0.160 ms |
+
+## Known limitations
+
+* **One draw per object, no sorting, no culling, no instancing.** That is the point: this is
+  the baseline Milestones 15 to 18 have to beat, and beating an unmeasured baseline is not a
+  measurement.
+* Meshes and materials are append-only. `create_mesh` never frees, so handle generations are
+  always 1 on that side. Destruction needs the deferred-release queue and a free list, and
+  it needs a caller that destroys things — the world has one, the asset side does not yet.
+* The object constant buffer is written per object per frame even when nothing moved. A
+  static object could keep its constants in device-local memory; whether that is worth the
+  bookkeeping is a measurement Milestone 17 will be able to make.
+* Normals are transformed by the model matrix, which is correct only for uniform scale. The
+  inverse transpose costs an extra matrix per object and nothing scales non-uniformly yet —
+  Milestone 14 is where a wrong normal would start to show.

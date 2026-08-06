@@ -367,6 +367,18 @@ impl CommandContext {
         }
     }
 
+    /// Binds a constant buffer directly into a root slot.
+    ///
+    /// No descriptor and no table: the GPU address goes straight into the root arguments,
+    /// which is the cheapest binding D3D12 offers and is why the mesh root signature is
+    /// built from root CBVs while nothing samples a texture.
+    pub fn set_root_cbv(&mut self, slot: u32, address: u64) {
+        // SAFETY: FFI call on the open list. The address comes from a live buffer the
+        // caller keeps alive for the frame, and the slot is a parameter index of the bound
+        // root signature.
+        unsafe { self.list.SetGraphicsRootConstantBufferView(slot, address) };
+    }
+
     /// Binds an index buffer.
     pub fn set_index_buffer(&mut self, view: D3D12_INDEX_BUFFER_VIEW) {
         // SAFETY: FFI call on the open list. The view refers to a buffer the caller keeps

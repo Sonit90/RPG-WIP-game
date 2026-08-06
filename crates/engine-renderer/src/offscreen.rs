@@ -10,9 +10,9 @@
 
 use windows::Win32::Graphics::Direct3D::D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
 use windows::Win32::Graphics::Direct3D12::{
-    D3D12_CLEAR_FLAG_DEPTH, D3D12_COMMAND_LIST_TYPE_DIRECT, D3D12_DESCRIPTOR_HEAP_DESC,
-    D3D12_DESCRIPTOR_HEAP_FLAG_NONE, D3D12_DESCRIPTOR_HEAP_TYPE_RTV, D3D12_HEAP_FLAG_NONE,
-    D3D12_HEAP_PROPERTIES, D3D12_HEAP_TYPE_DEFAULT, D3D12_HEAP_TYPE_READBACK,
+    D3D12_CLEAR_FLAG_DEPTH, D3D12_COMMAND_LIST_TYPE_DIRECT, D3D12_CPU_DESCRIPTOR_HANDLE,
+    D3D12_DESCRIPTOR_HEAP_DESC, D3D12_DESCRIPTOR_HEAP_FLAG_NONE, D3D12_DESCRIPTOR_HEAP_TYPE_RTV,
+    D3D12_HEAP_FLAG_NONE, D3D12_HEAP_PROPERTIES, D3D12_HEAP_TYPE_DEFAULT, D3D12_HEAP_TYPE_READBACK,
     D3D12_PLACED_SUBRESOURCE_FOOTPRINT, D3D12_RANGE, D3D12_RESOURCE_DESC,
     D3D12_RESOURCE_DIMENSION_BUFFER, D3D12_RESOURCE_DIMENSION_TEXTURE2D,
     D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_DEST,
@@ -25,13 +25,22 @@ use windows::Win32::Graphics::Direct3D12::{
 use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_UNKNOWN, DXGI_SAMPLE_DESC};
 use windows::core::Interface;
 
+use engine_core::transform::Transform;
+
+use crate::camera::Camera;
 use crate::command::{scissor_for, transition_barrier, viewport_for};
 use crate::depth::{DEPTH_CLEAR, DepthBuffer};
 use crate::device::RenderDevice;
 use crate::error::RendererError;
-use crate::mesh::VertexStream;
+use crate::material::{Material, MaterialDesc};
+use crate::mesh::{GpuMesh, MeshData, VertexStream};
 use crate::pipeline::{ScenePipeline, TRIANGLE_VERTICES, Vertex};
+use crate::scene::{
+    FrameConstants, MeshPipeline, ObjectConstants, ROOT_FRAME_CBV, ROOT_MATERIAL_CBV,
+    ROOT_OBJECT_CBV,
+};
 use crate::swapchain::BACK_BUFFER_FORMAT;
+use crate::upload::UploadRing;
 
 /// Bytes per pixel of [`BACK_BUFFER_FORMAT`].
 pub const BYTES_PER_PIXEL: usize = 4;
@@ -95,6 +104,111 @@ pub fn render_vertices(
     height: u32,
     clear_color: [f32; 4],
     vertices: &[Vertex],
+) -> Result<CapturedImage, RendererError> {
+    render_with(width, height, clear_color, |context, list, _| {
+        let pipeline = ScenePipeline::new(context.device())?;
+        let mesh = VertexStream::upload(context, vertices)?;
+
+        // SAFETY: FFI calls recording into the open list. The pipeline and the mesh are
+        // returned below and kept alive by the caller until the submission completes.
+        unsafe {
+            list.SetGraphicsRootSignature(pipeline.root_signature());
+            list.SetPipelineState(pipeline.pipeline_state());
+            list.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+            list.IASetVertexBuffers(0, Some(&[*mesh.view()]));
+            list.DrawInstanced(mesh.vertex_count(), 1, 0, 0);
+        }
+
+        Ok(Box::new((pipeline, mesh)) as Box<dyn std::any::Any>)
+    })
+}
+
+/// One object in an offscreen scene.
+pub struct SceneObject<'a> {
+    /// Its geometry.
+    pub mesh: &'a MeshData,
+    /// Its surface.
+    pub material: MaterialDesc,
+    /// Where it is in the world.
+    pub transform: Transform,
+}
+
+/// Renders a set of transformed, shaded meshes through a camera and reads the result back.
+///
+/// This is the offscreen equivalent of [`crate::Renderer::render_world`] — same pipeline,
+/// same constant buffers, same depth state — so a pixel test here is evidence about the
+/// path the window actually runs, rather than about a simplified copy of it.
+///
+/// # Errors
+///
+/// Returns [`RendererError`] if any D3D12 call fails or a material is invalid.
+pub fn render_scene(
+    width: u32,
+    height: u32,
+    clear_color: [f32; 4],
+    objects: &[SceneObject<'_>],
+    camera: &Camera,
+) -> Result<CapturedImage, RendererError> {
+    render_with(width, height, clear_color, |context, list, _| {
+        let pipeline = MeshPipeline::new(context.device())?;
+        // One frame slot: this path submits once and waits, so there is nothing to overlap.
+        let mut ring = UploadRing::new(context, 1 << 16, 1)?;
+        ring.begin_frame(0);
+
+        let mut meshes = Vec::with_capacity(objects.len());
+        let mut materials = Vec::with_capacity(objects.len());
+        for object in objects {
+            meshes.push(GpuMesh::upload(context, object.mesh)?);
+            materials.push(Material::new(context, object.material)?);
+        }
+
+        let frame = FrameConstants::new(camera.view_projection(), camera.position());
+        let frame_allocation = ring.write_constants(0, &frame)?;
+
+        // SAFETY: FFI calls recording into the open list. Every referenced object is
+        // returned below and kept alive until the submission completes.
+        unsafe {
+            list.SetGraphicsRootSignature(pipeline.root_signature());
+            list.SetPipelineState(pipeline.pipeline_state());
+            list.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+            list.SetGraphicsRootConstantBufferView(ROOT_FRAME_CBV, frame_allocation.gpu_address());
+        }
+
+        for (index, object) in objects.iter().enumerate() {
+            let constants = ObjectConstants::new(object.transform.matrix());
+            let allocation = ring.write_constants(0, &constants)?;
+            // SAFETY: as above.
+            unsafe {
+                list.SetGraphicsRootConstantBufferView(
+                    ROOT_MATERIAL_CBV,
+                    materials[index].gpu_address(),
+                );
+                list.SetGraphicsRootConstantBufferView(ROOT_OBJECT_CBV, allocation.gpu_address());
+                list.IASetVertexBuffers(0, Some(&[*meshes[index].vertex_view()]));
+                list.IASetIndexBuffer(Some(meshes[index].index_view()));
+                list.DrawIndexedInstanced(meshes[index].index_count(), 1, 0, 0, 0);
+            }
+        }
+
+        Ok(Box::new((pipeline, ring, meshes, materials)) as Box<dyn std::any::Any>)
+    })
+}
+
+/// Creates an offscreen target, lets `record` draw into it, and reads the pixels back.
+///
+/// `record` returns whatever it must keep alive: a command list holds raw pointers, not
+/// references, so a pipeline or buffer dropped between recording and submission is a
+/// use-after-free the type system cannot see. Handing ownership back is what makes that
+/// impossible rather than merely unlikely.
+fn render_with(
+    width: u32,
+    height: u32,
+    clear_color: [f32; 4],
+    record: impl FnOnce(
+        &RenderDevice,
+        &ID3D12GraphicsCommandList,
+        D3D12_CPU_DESCRIPTOR_HANDLE,
+    ) -> Result<Box<dyn std::any::Any>, RendererError>,
 ) -> Result<CapturedImage, RendererError> {
     if width == 0 || height == 0 {
         return Err(RendererError::InvalidConfig {
@@ -218,11 +332,9 @@ pub fn render_vertices(
         });
     };
 
-    let pipeline = ScenePipeline::new(device)?;
-    let mesh = VertexStream::upload(&context, vertices)?;
-    // The pipeline declares a depth format, so a depth buffer must be bound: a PSO with a
-    // `DSVFormat` and no view bound disables depth silently, which would make this path
-    // test something different from what the window path runs.
+    // Every pipeline here declares a depth format, so a depth buffer must be bound: a PSO
+    // with a `DSVFormat` and no view bound disables depth silently, which would make this
+    // path test something different from what the window path runs.
     let depth = DepthBuffer::new(&context, width, height)?;
 
     // SAFETY: FFI call on a live device with a valid command list type.
@@ -262,12 +374,13 @@ pub fn render_vertices(
         list.OMSetRenderTargets(1, Some(&rtv), false, Some(&dsv));
         list.ClearRenderTargetView(rtv, &clear_color, None);
         list.ClearDepthStencilView(dsv, D3D12_CLEAR_FLAG_DEPTH, DEPTH_CLEAR, 0, None);
-        list.SetGraphicsRootSignature(pipeline.root_signature());
-        list.SetPipelineState(pipeline.pipeline_state());
-        list.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-        list.IASetVertexBuffers(0, Some(&[*mesh.view()]));
-        list.DrawInstanced(mesh.vertex_count(), 1, 0, 0);
+    }
 
+    let recorded = record(&context, &list, rtv)?;
+
+    // SAFETY: FFI calls recording into the same open list; the target and readback buffer
+    // outlive the submission this function waits for.
+    unsafe {
         list.ResourceBarrier(&[transition_barrier(
             &target,
             D3D12_RESOURCE_STATE_RENDER_TARGET,
@@ -290,6 +403,9 @@ pub fn render_vertices(
     fence.wait_for_idle(context.queue())?;
 
     let pixels = read_pixels(&readback, &footprint, width, height, total_bytes)?;
+    // Everything the list referenced stayed alive until here, which is the point of
+    // handing it back rather than letting the closure drop it.
+    drop(recorded);
 
     Ok(CapturedImage {
         width,

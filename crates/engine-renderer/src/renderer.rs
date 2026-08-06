@@ -13,17 +13,23 @@ use windows::Win32::Graphics::Direct3D12::{
 
 use windows::core::Interface;
 
+use crate::camera::Camera;
 use crate::command::{CommandContext, CommandStats};
 use crate::depth::{DEPTH_CLEAR, DepthBuffer};
 use crate::device::{BACKEND, RenderDevice, feature_level_name};
 use crate::error::RendererError;
 use crate::frame::{FrameRing, SyncStats};
 use crate::gpu_timer::GpuTimer;
-use crate::mesh::VertexStream;
+use crate::material::{Material, MaterialDesc};
+use crate::mesh::{GpuMesh, MeshData, VertexStream};
 #[cfg(feature = "debug-overlay")]
 use crate::overlay::{OverlayBuffers, OverlayGeometry};
 use crate::pipeline::{ScenePipeline, Vertex};
 use crate::resource::DeferredReleaseQueue;
+use crate::scene::{
+    FrameConstants, MaterialHandle, MeshHandle, MeshPipeline, ObjectConstants, ROOT_FRAME_CBV,
+    ROOT_MATERIAL_CBV, ROOT_OBJECT_CBV, RenderWorld,
+};
 use crate::stress;
 use crate::swapchain::SwapChain;
 use crate::upload::UploadRing;
@@ -75,6 +81,12 @@ pub struct Renderer {
     pipeline: ScenePipeline,
     /// Depth target, the size of the back buffer.
     depth: DepthBuffer,
+    /// Root signature and pipeline state for `MeshVertex` geometry.
+    mesh_pipeline: MeshPipeline,
+    /// Meshes created through [`Renderer::create_mesh`], indexed by handle.
+    meshes: Vec<GpuMesh>,
+    /// Materials created through [`Renderer::create_material`], indexed by handle.
+    materials: Vec<Material>,
     /// The geometry currently being drawn.
     scene: VertexStream,
     /// Scratch buffer for regenerating scene geometry without allocating each time.
@@ -146,6 +158,7 @@ impl Renderer {
         let gpu_timer = GpuTimer::new(context.device(), context.queue(), frames_in_flight)?;
         let pipeline = ScenePipeline::new(context.device())?;
         let depth = DepthBuffer::new(&context, config.width, config.height)?;
+        let mesh_pipeline = MeshPipeline::new(context.device())?;
         let mut scene_scratch = Vec::new();
         stress::build_grid(1, &mut scene_scratch);
         let scene = VertexStream::upload(&context, &scene_scratch)?;
@@ -170,6 +183,9 @@ impl Renderer {
             last_gpu_frame_ms: None,
             pipeline,
             depth,
+            mesh_pipeline,
+            meshes: Vec::new(),
+            materials: Vec::new(),
             scene,
             scene_scratch,
             #[cfg(feature = "debug-overlay")]
@@ -369,6 +385,125 @@ impl Renderer {
     ///
     /// Returns [`RendererError::Api`] if recording or submission fails.
     pub fn render(&mut self, color: [f32; 4]) -> Result<(), RendererError> {
+        let (slot, back_buffer) = self.begin_recording(color)?;
+        self.commands.set_pipeline(
+            self.pipeline.root_signature(),
+            self.pipeline.pipeline_state(),
+        );
+        self.commands
+            .set_topology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        self.commands.set_vertex_buffer(0, *self.scene.view());
+        self.commands.draw(self.scene.vertex_count(), 1);
+        self.finish_recording(slot, back_buffer)
+    }
+
+    /// Records and submits a frame that draws a [`RenderWorld`] through a [`Camera`].
+    ///
+    /// Every visible entity becomes one draw. Culling, sorting and instancing arrive in
+    /// Milestones 15 to 18 — this is the unoptimized baseline they have to beat, and it is
+    /// deliberately the simplest thing that produces the right image.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RendererError::InvalidConfig`] if the world names a mesh or material that
+    /// was never created, or [`RendererError::Api`] if recording or submission fails.
+    pub fn render_world(
+        &mut self,
+        world: &RenderWorld,
+        camera: &Camera,
+        color: [f32; 4],
+    ) -> Result<(), RendererError> {
+        let (slot, back_buffer) = self.begin_recording(color)?;
+
+        self.commands.set_pipeline(
+            self.mesh_pipeline.root_signature(),
+            self.mesh_pipeline.pipeline_state(),
+        );
+        self.commands
+            .set_topology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+
+        // The frame constants are written once into this slot's upload memory and bound
+        // once. This is the upload ring's first real use: transient data, alive for exactly
+        // one frame, reclaimed by the reset in `begin_recording`.
+        let frame_constants = FrameConstants::new(camera.view_projection(), camera.position());
+        let allocation = self.uploads.write_constants(slot, &frame_constants)?;
+        self.commands
+            .set_root_cbv(ROOT_FRAME_CBV, allocation.gpu_address());
+
+        for entity in 0..world.slot_count() {
+            if !world.is_drawable(entity) {
+                continue;
+            }
+
+            let mesh = world.meshes()[entity];
+            let material = world.materials()[entity];
+            let Some(mesh) = self.meshes.get(mesh.index()) else {
+                return Err(RendererError::InvalidConfig {
+                    reason: format!(
+                        "entity {entity} names mesh {} which does not exist",
+                        mesh.index()
+                    ),
+                });
+            };
+            let Some(material) = self.materials.get(material.index()) else {
+                return Err(RendererError::InvalidConfig {
+                    reason: format!("entity {entity} names a material that does not exist"),
+                });
+            };
+
+            let object = ObjectConstants::new(world.transforms()[entity].matrix());
+            let allocation = self.uploads.write_constants(slot, &object)?;
+
+            self.commands
+                .set_root_cbv(ROOT_MATERIAL_CBV, material.gpu_address());
+            self.commands
+                .set_root_cbv(ROOT_OBJECT_CBV, allocation.gpu_address());
+            self.commands.set_vertex_buffer(0, *mesh.vertex_view());
+            self.commands.set_index_buffer(*mesh.index_view());
+            self.commands.draw_indexed(mesh.index_count(), 1, 0);
+        }
+
+        self.finish_recording(slot, back_buffer)
+    }
+
+    /// Uploads a mesh and returns a handle to it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RendererError::Api`] if a D3D12 call fails.
+    pub fn create_mesh(&mut self, data: &MeshData) -> Result<MeshHandle, RendererError> {
+        let mesh = GpuMesh::upload(&self.context, data)?;
+        let index = self.meshes.len() as u32;
+        self.meshes.push(mesh);
+        Ok(MeshHandle::new(index, 1))
+    }
+
+    /// Uploads a material and returns a handle to it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RendererError::InvalidConfig`] for out-of-range parameters, or
+    /// [`RendererError::Api`] if a D3D12 call fails.
+    pub fn create_material(&mut self, desc: MaterialDesc) -> Result<MaterialHandle, RendererError> {
+        let material = Material::new(&self.context, desc)?;
+        let index = self.materials.len() as u32;
+        self.materials.push(material);
+        Ok(MaterialHandle::new(index, 1))
+    }
+
+    /// The local-space bounds of a created mesh, which a caller needs to spawn an entity.
+    #[must_use]
+    pub fn mesh_bounds(&self, mesh: MeshHandle) -> Option<engine_core::math::Sphere> {
+        self.meshes.get(mesh.index()).map(GpuMesh::bounds)
+    }
+
+    /// Opens a frame: waits for the slot, resets per-frame state, and clears the targets.
+    ///
+    /// Shared by [`Renderer::render`] and [`Renderer::render_world`] so the two cannot
+    /// drift apart — the pacing, the timestamp read, the deferred releases and the ring
+    /// reset all have to happen in exactly this order, and having that written twice is how
+    /// one of them ends up missing.
+    fn begin_recording(&mut self, color: [f32; 4]) -> Result<(usize, usize), RendererError> {
         // Frame pacing lives in the ring: it waits for this slot's previous submission,
         // resets the allocator, and records whether the wait actually blocked.
         let slot = self.frames.begin_frame()?;
@@ -402,7 +537,6 @@ impl Renderer {
 
         let buffer = self.swap_chain.buffer(back_buffer);
         let rtv = self.swap_chain.rtv_handle(back_buffer);
-        let index = slot;
         let (width, height) = self.swap_chain.size();
 
         // Transition by destination only: the back buffer knows it is in PRESENT, so the
@@ -420,17 +554,18 @@ impl Renderer {
         self.commands.clear_render_target(rtv, color);
         self.commands.clear_depth(dsv, DEPTH_CLEAR);
         self.commands.set_viewport(width, height);
-        self.commands.set_pipeline(
-            self.pipeline.root_signature(),
-            self.pipeline.pipeline_state(),
-        );
-        self.commands
-            .set_topology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-        self.commands.set_vertex_buffer(0, *self.scene.view());
-        self.commands.draw(self.scene.vertex_count(), 1);
+        Ok((slot, back_buffer))
+    }
 
-        // The overlay reuses the root signature, pipeline state and topology bound above;
-        // only the vertex buffer changes. It is drawn last so it sits over the scene.
+    /// Closes a frame: draws the overlay, returns the back buffer to `PRESENT`, and submits.
+    fn finish_recording(&mut self, slot: usize, back_buffer: usize) -> Result<(), RendererError> {
+        let buffer = self.swap_chain.buffer(back_buffer);
+        #[cfg(feature = "debug-overlay")]
+        let index = slot;
+
+        // The overlay needs its own pipeline: it draws clip-space position+colour vertices,
+        // which the mesh pipeline's input layout does not describe. Binding it here rather
+        // than assuming whatever the scene left bound is what makes both draw paths work.
         #[cfg(feature = "debug-overlay")]
         {
             self.overlay.drawn_vertices = 0;
@@ -448,8 +583,12 @@ impl Renderer {
 
                 if let Some(view) = self.overlay.views[index] {
                     let count = view.SizeInBytes / view.StrideInBytes;
-                    // The overlay reuses the pipeline and topology already bound, so the
-                    // context skips those binds; only the vertex buffer changes.
+                    self.commands.set_pipeline(
+                        self.pipeline.root_signature(),
+                        self.pipeline.pipeline_state(),
+                    );
+                    self.commands
+                        .set_topology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
                     self.commands.set_vertex_buffer(0, view);
                     self.commands.draw(count, 1);
                     self.overlay.drawn_vertices = count;
