@@ -498,3 +498,20 @@ work that did not exist before. 20 us of GPU time is 1% of the 2.08 ms stretch b
 The CPU delta is one extra ClearDepthStencilView and one extra bind per frame. 17 us is more
 than those two calls should cost, so some of it is machine state; it is recorded as measured
 rather than explained away.
+
+## Milestone 15 - frustum culling
+
+`cargo run --release --bin cpu_bench`, median of 9 samples. Roughly half the scene is outside
+the view, so both the accept and the reject path are exercised.
+
+| Scene | Per object | Whole pass | Share of a 2.08 ms frame |
+| --- | --- | --- | --- |
+| 1,000 | 3.59 ns | 3.6 us | 0.17% |
+| 10,000 | 3.69 ns | 36.9 us | 1.8% |
+| 100,000 | 3.69 ns | 369 us | 17.7% |
+
+Flat per object, which is what a linear pass over two contiguous arrays should be.
+
+Against the 12 us per-job break-even from docs/threading.md, a 10,000-object cull is three
+chunks - three submissions to save at most 25 us, which is not worth it. At 100,000 objects
+it becomes worth doing. The loop reads slices, so chunking is a call-site change.

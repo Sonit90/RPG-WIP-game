@@ -19,12 +19,14 @@ use std::time::{Duration, Instant};
 
 use engine_core::input::{InputEvent, InputState, KeyCode};
 use engine_core::jobs::JobSystem;
-use engine_core::math::{Mat4, Quat, Vec3};
+use engine_core::math::{Frustum, Mat4, Quat, Sphere, Vec3};
 use engine_core::memory::{Arena, FrameAllocator};
 use engine_core::profiling::Profiler;
 use engine_core::transform::{Transform, write_matrices};
+use engine_renderer::culling::Culler;
 use engine_renderer::descriptor::{CpuDescriptorHeap, GpuDescriptorHeap};
 use engine_renderer::device::RenderDevice;
+use engine_renderer::scene::{MaterialHandle, MeshHandle, RenderEntityDesc, RenderWorld};
 
 use engine_core::threading::recommended_worker_count;
 use windows::Win32::Graphics::Direct3D12::D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
@@ -77,6 +79,7 @@ fn main() -> ExitCode {
     benchmark_profiler(iterations);
     benchmark_descriptors(iterations);
     benchmark_transforms(iterations);
+    benchmark_culling();
     benchmark_jobs();
 
     ExitCode::SUCCESS
@@ -268,6 +271,62 @@ fn benchmark_transforms(iterations: u32) {
         }
     });
     report("Transform::then", compose);
+
+    println!();
+}
+
+/// Frustum culling cost per object, which decides whether it needs threading.
+///
+/// Measured at three scene sizes because the answer is a share of the frame budget, not a
+/// nanosecond count: 20 ns per object is irrelevant at 1,000 objects and 40% of the frame
+/// at 100,000.
+fn benchmark_culling() {
+    println!("-- culling --");
+
+    let projection = Mat4::perspective(std::f32::consts::FRAC_PI_3, 16.0 / 9.0, 0.1, 1000.0);
+    let view = Mat4::look_at(Vec3::new(0.0, 0.0, 50.0), Vec3::ZERO, Vec3::Y);
+    let frustum = Frustum::from_view_projection(&(projection * view));
+
+    for count in [1_000_u32, 10_000, 100_000] {
+        // A spread wide enough that roughly half the objects fall outside the view, so the
+        // measurement includes both the accept and the reject path. A scene where nothing
+        // is culled measures only the cheap half.
+        let mut world = RenderWorld::with_capacity(count as usize);
+        for index in 0..count {
+            let angle = f32::from(u16::try_from(index % 360).unwrap_or(0)).to_radians();
+            let radius = 20.0 + (index % 100) as f32;
+            world.spawn(RenderEntityDesc {
+                transform: Transform::from_translation(Vec3::new(
+                    angle.cos() * radius,
+                    0.0,
+                    angle.sin() * radius,
+                )),
+                mesh: MeshHandle::INVALID,
+                material: MaterialHandle::INVALID,
+                bounds: Sphere::new(Vec3::ZERO, 1.0),
+                visible: true,
+            });
+        }
+
+        let mut culler = Culler::with_capacity(count as usize);
+        // Warm the buffer so the measurement is steady-state, not first-frame growth.
+        culler.cull(&world, &frustum);
+        let ratio = culler.stats().cull_ratio();
+
+        let passes = (1_000_000 / count).max(1);
+        let per_pass = measure(passes, |repeats| {
+            for _ in 0..repeats {
+                culler.cull(black_box(&world), black_box(&frustum));
+            }
+        });
+        report(
+            &format!(
+                "cull {count} objects ({:.0}% culled), per object",
+                ratio * 100.0
+            ),
+            per_pass / f64::from(count),
+        );
+    }
 
     println!();
 }

@@ -15,6 +15,7 @@ use windows::core::Interface;
 
 use crate::camera::Camera;
 use crate::command::{CommandContext, CommandStats};
+use crate::culling::{CullStats, Culler};
 use crate::depth::{DEPTH_CLEAR, DepthBuffer};
 use crate::device::{BACKEND, RenderDevice, feature_level_name};
 use crate::error::RendererError;
@@ -34,6 +35,7 @@ use crate::stress;
 use crate::swapchain::SwapChain;
 use crate::upload::UploadRing;
 use crate::{AdapterInfo, RendererConfig};
+use engine_core::math::Frustum;
 
 /// Debug overlay state owned by the renderer.
 #[cfg(feature = "debug-overlay")]
@@ -87,6 +89,12 @@ pub struct Renderer {
     meshes: Vec<GpuMesh>,
     /// Materials created through [`Renderer::create_material`], indexed by handle.
     materials: Vec<Material>,
+    /// Frustum culling, and the visible set it produces. Kept across frames so its buffer
+    /// stops growing once the scene reaches its high-water mark.
+    culler: Culler,
+    /// Whether `render_world` culls. Off makes the benchmark able to measure the same
+    /// frame with one step removed rather than comparing two code paths.
+    culling_enabled: bool,
     /// The geometry currently being drawn.
     scene: VertexStream,
     /// Scratch buffer for regenerating scene geometry without allocating each time.
@@ -186,6 +194,8 @@ impl Renderer {
             mesh_pipeline,
             meshes: Vec::new(),
             materials: Vec::new(),
+            culler: Culler::new(),
+            culling_enabled: true,
             scene,
             scene_scratch,
             #[cfg(feature = "debug-overlay")]
@@ -432,11 +442,18 @@ impl Renderer {
         self.commands
             .set_root_cbv(ROOT_FRAME_CBV, allocation.gpu_address());
 
-        for entity in 0..world.slot_count() {
-            if !world.is_drawable(entity) {
-                continue;
-            }
+        // Cull before recording, not while recording: the visible set is CPU-only work
+        // that touches no D3D12 object, which is what keeps it testable without a GPU and
+        // moveable onto worker threads later.
+        let frustum = Frustum::from_view_projection(&camera.view_projection());
+        if self.culling_enabled {
+            self.culler.cull(world, &frustum);
+        } else {
+            self.culler.accept_all(world);
+        }
 
+        for index in 0..self.culler.visible().len() {
+            let entity = self.culler.visible()[index] as usize;
             let mesh = world.meshes()[entity];
             let material = world.materials()[entity];
             let Some(mesh) = self.meshes.get(mesh.index()) else {
@@ -491,6 +508,26 @@ impl Renderer {
         let index = self.materials.len() as u32;
         self.materials.push(material);
         Ok(MaterialHandle::new(index, 1))
+    }
+
+    /// What the most recent `render_world` cull pass did.
+    #[must_use]
+    pub fn cull_stats(&self) -> CullStats {
+        self.culler.stats()
+    }
+
+    /// Turns frustum culling on or off.
+    ///
+    /// Exists so a benchmark can measure the same frame with one step removed, rather than
+    /// comparing two different code paths and attributing the difference to culling.
+    pub fn set_culling_enabled(&mut self, enabled: bool) {
+        self.culling_enabled = enabled;
+    }
+
+    /// Whether frustum culling is on.
+    #[must_use]
+    pub fn culling_enabled(&self) -> bool {
+        self.culling_enabled
     }
 
     /// The local-space bounds of a created mesh, which a caller needs to spawn an entity.

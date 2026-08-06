@@ -35,7 +35,7 @@ Milestone status:
 | 12 | Depth buffer | done |
 | 13 | 3D scene | done |
 | 14 | Basic lighting | done |
-| 15 | Frustum culling | todo |
+| 15 | Frustum culling | done |
 | 16 | Render list | todo |
 | 17 | Instanced rendering | todo |
 | 18 | Batching | todo |
@@ -1859,3 +1859,118 @@ scene yet that drives enough fragments to measure it.
   explicitly out of Phase 2's scope.
 * Lighting is computed per pixel in the same pass as the material. There is no deferred
   path and no light pre-pass; with one light there is nothing to amortize.
+
+---
+
+# Milestone 15 — Frustum culling
+
+## What was built
+
+`Plane` and `Frustum` in `engine_core::math`, and `Culler` in the renderer. `render_world`
+now records only what survives the frustum.
+
+## Plane extraction, and the two ways to get it wrong
+
+The frustum planes come from the rows of the view-projection matrix (Gribb–Hartmann). Two
+mistakes are easy and both produce a frustum that *mostly* works:
+
+* **Normalizing the normal without scaling the distance.** The plane then moves. Culling
+  stays correct near the centre of the screen and goes wrong at the edges — much harder to
+  notice than culling nothing. `Plane::new` scales both together, and a test asserts every
+  extracted plane has a unit normal.
+* **Using the OpenGL near plane.** With depth in [−1, 1] the near plane is `w + z`; with
+  D3D12's [0, 1] it is `z` alone. The wrong form puts the near plane in the wrong place and
+  the symptom is objects vanishing just in front of the camera. A test pins the plane's
+  position for a known camera.
+
+## The test is conservative on purpose
+
+A sphere that straddles a plane counts as visible. Culling something visible is a rendering
+error; drawing something invisible is only work. The same asymmetry is why world bounds
+scale by the largest axis (Milestone 13) — every approximation in the chain errs towards
+drawing too much.
+
+## Hidden is not culled
+
+`visible = false` entities never reach the frustum test and are not counted as culled.
+Counting them would flatter the cull ratio, which exists precisely to answer "is culling
+doing anything?".
+
+`CullStats` reports considered, visible, culled and the ratio. A culler that rejects nothing
+is pure cost; one that rejects everything is a bug that looks like a fast frame. Both are
+visible in the numbers.
+
+## Measured cost
+
+`cargo run --release --bin cpu_bench`, median of 9 samples, roughly half the scene outside
+the view so both the accept and reject paths are exercised:
+
+| Scene | Per object | Whole pass | Share of a 2.08 ms frame |
+| --- | --- | --- | --- |
+| 1,000 | 3.59 ns | 3.6 µs | 0.17% |
+| 10,000 | 3.69 ns | 36.9 µs | 1.8% |
+| 100,000 | 3.69 ns | 369 µs | 17.7% |
+
+Flat per object, which is what a linear pass over two contiguous arrays should be.
+
+**Threading is not applied**, and now for a measured reason rather than a suspicion.
+`docs/threading.md` put the job break-even at roughly 12 µs of work per job, so a
+10,000-object cull is three chunks — three job submissions to save at most 25 µs. At 100,000
+objects it becomes worth doing, and the loop reads slices so chunking is a change at the call
+site rather than a rewrite.
+
+## Culling can be switched off
+
+`Renderer::set_culling_enabled(false)` makes the frame draw everything, through the same
+loop. That exists so "does culling help?" compares one code path with one step removed,
+rather than two different code paths — the same discipline the interleaved A/B rule in
+`docs/performance.md` demands of timing runs.
+
+## Tests
+
+Six frustum tests in `engine_core::math` and eight for the culler:
+
+| Test | Asserts |
+| --- | --- |
+| `frustum_planes_are_normalized` | the distance was scaled with the normal |
+| `the_near_plane_uses_the_d3d_depth_convention` | `z`, not `w + z` |
+| `a_point_in_front_of_the_camera_is_inside_the_frustum` | behind, too near, too far and off to the side all rejected |
+| `a_sphere_straddling_a_plane_counts_as_visible` | conservative, deliberately |
+| `a_sphere_at_the_edge_of_view_is_kept` | the plane is where the projection says it is |
+| `only_what_is_in_front_of_the_camera_survives` | the whole pass, end to end |
+| `a_hidden_entity_is_not_even_considered` | hidden ≠ culled |
+| `moving_an_entity_changes_whether_it_survives` | bounds follow transforms |
+| `a_large_object_just_off_screen_is_kept` | centre outside, surface inside |
+| `scale_grows_the_bound_and_keeps_the_object` | the largest-axis scaling matters |
+| `the_cull_ratio_reports_what_the_pass_achieved` | 3 of 4 culled is 0.75 |
+| `culling_does_not_allocate_after_the_first_pass` | the visible buffer is reused |
+
+The allocation test is the one that would catch a slow regression: a `Vec` rebuilt each
+frame would pass every correctness test and quietly allocate 480 times a second.
+
+## Acceptance criteria
+
+| Criterion | Result |
+| --- | --- |
+| Frustum planes extracted from the view-projection | pass |
+| Bounding-sphere test | pass |
+| Only visible objects recorded | pass |
+| Culling statistics available | pass — `CullStats`, `cull_ratio` |
+| No per-frame allocation | pass — asserted by test |
+| Cost measured | pass — 3.7 ns per object, table above |
+| Threading decision based on measurement | pass — 37 µs at 10,000 objects against a 12 µs break-even |
+| No GPU culling | correct — out of scope |
+| No regression | pass — 0.155 ms |
+
+## Known limitations
+
+* Spheres only. An oriented box would cull long thin objects better and costs more per test;
+  §28 says sphere-first, and nothing in the scene is long and thin yet.
+* No hierarchical culling — no octree, no BVH, no portal system. At 3.7 ns per object a flat
+  pass is affordable well past any scene this engine can currently build, and a spatial
+  structure has to be maintained as objects move.
+* No occlusion culling. That needs a depth pyramid and a readback or a GPU pass, and §46
+  excludes GPU culling from Phase 2.
+* The culler runs on the main thread, as measured above.
+* Culling is per camera, and there is one camera. Shadow-map culling in a later phase would
+  want a second frustum, which is a second `Culler` rather than a change here.

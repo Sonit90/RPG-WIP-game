@@ -182,6 +182,16 @@ macro_rules! declare_handle {
         pub struct $name(Handle);
 
         impl $name {
+            /// A handle that names nothing.
+            ///
+            /// Generation 0 never matches a live slot, so this cannot be mistaken for a
+            /// real handle. It exists for a world built only to measure culling, where the
+            /// bounds matter and the geometry does not; `Renderer::render_world` rejects it.
+            pub const INVALID: Self = Self(Handle {
+                index: u32::MAX,
+                generation: 0,
+            });
+
             /// Wraps a raw handle.
             #[must_use]
             pub(crate) fn new(index: u32, generation: u32) -> Self {

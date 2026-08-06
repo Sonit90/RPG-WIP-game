@@ -16,9 +16,10 @@
 //!   `clip = P * V * M * v`.
 //! * Angles are radians.
 //!
-//! HLSL declares constant-buffer matrices row-major by default, so a `Mat4` is transposed
-//! when it is written into an upload buffer. That happens in one place — the renderer's
-//! camera constants — rather than being each shader's problem.
+//! The shaders declare their constant-buffer matrices `column_major`, which is the layout
+//! [`Mat4`] already has, so a matrix is memcpy'd into a constant buffer with **no
+//! transpose** anywhere. That agreement is asserted by a test in the renderer rather than
+//! left as a convention two files happen to share.
 
 use std::ops::{Add, AddAssign, Div, Mul, MulAssign, Neg, Sub, SubAssign};
 
@@ -869,6 +870,106 @@ impl Sphere {
     }
 }
 
+/// A plane, as a unit normal and a signed distance from the origin.
+///
+/// Points on the positive side satisfy `dot(normal, point) + distance > 0`. For a frustum
+/// plane the normal points **inward**, so "inside" and "positive" are the same thing and
+/// the culling test is one comparison per plane.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct Plane {
+    /// Unit normal, pointing inward for a frustum plane.
+    pub normal: Vec3,
+    /// Signed distance from the origin along the normal.
+    pub distance: f32,
+}
+
+impl Plane {
+    /// Builds a plane from a normal and a distance, normalizing both together.
+    ///
+    /// The distance has to be scaled by the same factor as the normal, or the plane moves.
+    /// That is the classic error in frustum extraction, and it produces a frustum that
+    /// culls correctly near the centre of the screen and wrongly at the edges.
+    #[must_use]
+    pub fn new(normal: Vec3, distance: f32) -> Self {
+        let length = normal.length();
+        if length > 0.0 {
+            Self {
+                normal: normal / length,
+                distance: distance / length,
+            }
+        } else {
+            Self { normal, distance }
+        }
+    }
+
+    /// How far `point` is from the plane, positive on the normal's side.
+    #[must_use]
+    pub fn signed_distance(&self, point: Vec3) -> f32 {
+        self.normal.dot(point) + self.distance
+    }
+}
+
+/// The six planes of a view frustum, all pointing inward.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct Frustum {
+    /// Left, right, bottom, top, near, far.
+    pub planes: [Plane; 6],
+}
+
+impl Frustum {
+    /// Extracts the planes from a view-projection matrix (Gribb–Hartmann).
+    ///
+    /// The rows of `view_projection` are the clip-space plane equations, so each frustum
+    /// plane is a sum or difference of two rows. The near plane is row 2 alone rather than
+    /// `w + z`, because D3D12 clips depth to **[0, 1]** — the `w + z` form is the OpenGL
+    /// [−1, 1] convention, and using it produces a near plane in the wrong place that only
+    /// shows up as objects vanishing just in front of the camera.
+    #[must_use]
+    pub fn from_view_projection(view_projection: &Mat4) -> Self {
+        let row = |index: usize| {
+            Vec4::new(
+                view_projection.get(index, 0),
+                view_projection.get(index, 1),
+                view_projection.get(index, 2),
+                view_projection.get(index, 3),
+            )
+        };
+        let (x, y, z, w) = (row(0), row(1), row(2), row(3));
+
+        let plane = |value: Vec4| Plane::new(value.truncate(), value.w);
+
+        Self {
+            planes: [
+                plane(w + x),
+                plane(w - x),
+                plane(w + y),
+                plane(w - y),
+                plane(z),
+                plane(w - z),
+            ],
+        }
+    }
+
+    /// Whether any part of `sphere` is inside the frustum.
+    ///
+    /// Conservative: a sphere straddling a plane counts as inside. Culling something
+    /// visible is a rendering error; drawing something invisible is only work.
+    #[must_use]
+    pub fn intersects_sphere(&self, sphere: &Sphere) -> bool {
+        self.planes
+            .iter()
+            .all(|plane| plane.signed_distance(sphere.center) >= -sphere.radius)
+    }
+
+    /// Whether `point` is inside the frustum.
+    #[must_use]
+    pub fn contains_point(&self, point: Vec3) -> bool {
+        self.planes
+            .iter()
+            .all(|plane| plane.signed_distance(point) >= 0.0)
+    }
+}
+
 #[cfg(test)]
 #[allow(
     clippy::expect_used,
@@ -1123,6 +1224,81 @@ mod tests {
     #[test]
     fn a_sphere_around_nothing_is_empty() {
         assert_eq!(Sphere::around(std::iter::empty()), Sphere::EMPTY);
+    }
+
+    /// A camera at the origin looking down −Z, 90° vertical, square aspect.
+    fn test_frustum() -> Frustum {
+        let projection = Mat4::perspective(std::f32::consts::FRAC_PI_2, 1.0, 1.0, 100.0);
+        let view = Mat4::look_at(Vec3::ZERO, -Vec3::Z, Vec3::Y);
+        Frustum::from_view_projection(&(projection * view))
+    }
+
+    #[test]
+    fn frustum_planes_are_normalized() {
+        // If the normal is normalized without scaling the distance, the plane moves — and
+        // the frustum then culls correctly near the centre of the screen and wrongly at the
+        // edges, which is much harder to spot than culling nothing at all.
+        for plane in test_frustum().planes {
+            assert!(close(plane.normal.length(), 1.0), "{plane:?}");
+        }
+    }
+
+    #[test]
+    fn a_point_in_front_of_the_camera_is_inside_the_frustum() {
+        let frustum = test_frustum();
+        assert!(frustum.contains_point(Vec3::new(0.0, 0.0, -10.0)));
+        assert!(!frustum.contains_point(Vec3::new(0.0, 0.0, 10.0)), "behind");
+        assert!(
+            !frustum.contains_point(Vec3::new(0.0, 0.0, -0.5)),
+            "too near"
+        );
+        assert!(
+            !frustum.contains_point(Vec3::new(0.0, 0.0, -200.0)),
+            "too far"
+        );
+        assert!(
+            !frustum.contains_point(Vec3::new(100.0, 0.0, -10.0)),
+            "far off to the side"
+        );
+    }
+
+    #[test]
+    fn a_sphere_straddling_a_plane_counts_as_visible() {
+        // Conservative on purpose: culling something visible is a rendering error, drawing
+        // something invisible is only work.
+        let frustum = test_frustum();
+        let straddling = Sphere::new(Vec3::new(0.0, 0.0, -0.5), 2.0);
+        assert!(!frustum.contains_point(straddling.center));
+        assert!(frustum.intersects_sphere(&straddling));
+    }
+
+    #[test]
+    fn a_sphere_well_outside_is_culled() {
+        let frustum = test_frustum();
+        assert!(!frustum.intersects_sphere(&Sphere::new(Vec3::new(0.0, 0.0, 50.0), 1.0)));
+        assert!(!frustum.intersects_sphere(&Sphere::new(Vec3::new(500.0, 0.0, -10.0), 1.0)));
+        assert!(!frustum.intersects_sphere(&Sphere::new(Vec3::new(0.0, 0.0, -500.0), 1.0)));
+    }
+
+    #[test]
+    fn the_near_plane_uses_the_d3d_depth_convention() {
+        // The near plane is row 2 alone, not w + z. With the OpenGL form it lands at the
+        // wrong distance, and the symptom is objects vanishing just in front of the camera.
+        let frustum = test_frustum();
+        let near = frustum.planes[4];
+        // Looking down -Z with near = 1, the plane's inward normal is -Z and it sits one
+        // unit in front of the origin.
+        assert!(close(near.normal.z, -1.0), "{near:?}");
+        assert!(close(near.distance, -1.0), "{near:?}");
+    }
+
+    #[test]
+    fn a_sphere_at_the_edge_of_view_is_kept() {
+        // At 90 degrees vertical FOV and square aspect, the frustum widens by one unit per
+        // unit of depth, so this point is exactly on the right-hand plane.
+        let frustum = test_frustum();
+        assert!(frustum.intersects_sphere(&Sphere::new(Vec3::new(10.0, 0.0, -10.0), 0.1)));
+        assert!(!frustum.intersects_sphere(&Sphere::new(Vec3::new(12.0, 0.0, -10.0), 0.1)));
     }
 
     #[test]
