@@ -154,10 +154,6 @@ impl App {
 
         let (width, height) = window.client_size();
         let renderer_config = RendererConfig::new(width, height).with_vsync(args.vsync);
-        #[cfg_attr(
-            not(feature = "debug-overlay"),
-            expect(unused_mut, reason = "the overlay switch only exists with the feature")
-        )]
         let mut renderer = Renderer::new(window.raw_handle(), &renderer_config)?;
         #[cfg(feature = "debug-overlay")]
         renderer.set_overlay_enabled(args.overlay);
