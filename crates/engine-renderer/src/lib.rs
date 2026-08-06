@@ -11,11 +11,13 @@
 //! frame that clears and presents. No pipeline state, no geometry, no GPU timing yet.
 
 pub mod adapter;
+pub mod bench;
 pub mod device;
 pub mod error;
 #[cfg(feature = "debug-overlay")]
 pub mod font;
 pub mod gpu_timer;
+pub mod instancing;
 pub mod mesh;
 pub mod offscreen;
 #[cfg(feature = "debug-overlay")]
@@ -28,8 +30,10 @@ pub mod swapchain;
 pub mod sync;
 
 pub use adapter::{AdapterInfo, select_adapter};
+pub use bench::{BenchHarness, BenchResult, DrawMode};
 pub use device::BACKEND;
 pub use error::RendererError;
+pub use instancing::{InstanceData, UNIT_TRIANGLE};
 pub use mesh::GpuMesh;
 pub use pipeline::{TRIANGLE_VERTICES, Vertex};
 pub use renderer::Renderer;

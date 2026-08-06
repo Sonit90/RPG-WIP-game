@@ -65,7 +65,7 @@ impl GpuMesh {
             D3D12_RESOURCE_STATE_GENERIC_READ,
         )?;
 
-        write_staging(&staging, vertices, byte_size)?;
+        write_staging_raw(&staging, vertices.as_ptr().cast::<u8>(), byte_size)?;
         copy_and_wait(device, queue, &staging, &destination, byte_size)?;
 
         // SAFETY: FFI call returning the resource's GPU address, valid while it lives.
@@ -105,6 +105,55 @@ impl GpuMesh {
     #[must_use]
     pub fn triangle_count(&self) -> u32 {
         self.vertex_count / 3
+    }
+
+    /// Uploads any tightly packed `repr(C)` data as a vertex stream.
+    ///
+    /// Used for per-instance streams, whose element type is not [`Vertex`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RendererError::InvalidConfig`] for empty input, or
+    /// [`RendererError::Api`] if any D3D12 call fails.
+    pub fn upload_raw<T: Copy>(
+        device: &ID3D12Device,
+        queue: &ID3D12CommandQueue,
+        data: &[T],
+    ) -> Result<Self, RendererError> {
+        if data.is_empty() {
+            return Err(RendererError::InvalidConfig {
+                reason: "a vertex stream needs at least one element".to_owned(),
+            });
+        }
+
+        let byte_size = std::mem::size_of_val(data);
+        let destination = create_buffer(
+            device,
+            byte_size,
+            D3D12_HEAP_TYPE_DEFAULT,
+            D3D12_RESOURCE_STATE_COPY_DEST,
+        )?;
+        let staging = create_buffer(
+            device,
+            byte_size,
+            D3D12_HEAP_TYPE_UPLOAD,
+            D3D12_RESOURCE_STATE_GENERIC_READ,
+        )?;
+
+        write_staging_raw(&staging, data.as_ptr().cast::<u8>(), byte_size)?;
+        copy_and_wait(device, queue, &staging, &destination, byte_size)?;
+
+        // SAFETY: FFI call returning the resource's GPU address, valid while it lives.
+        let gpu_address = unsafe { destination.GetGPUVirtualAddress() };
+        Ok(Self {
+            buffer: destination,
+            view: D3D12_VERTEX_BUFFER_VIEW {
+                BufferLocation: gpu_address,
+                SizeInBytes: byte_size as u32,
+                StrideInBytes: size_of::<T>() as u32,
+            },
+            vertex_count: data.len() as u32,
+        })
     }
 
     /// The underlying resource, for diagnostics.
@@ -160,10 +209,10 @@ fn create_buffer(
     })
 }
 
-/// Copies `vertices` into an upload-heap buffer.
-fn write_staging(
+/// Copies `byte_size` bytes from `source` into an upload-heap buffer.
+fn write_staging_raw(
     staging: &ID3D12Resource,
-    vertices: &[Vertex],
+    source: *const u8,
     byte_size: usize,
 ) -> Result<(), RendererError> {
     let mut mapped: *mut std::ffi::c_void = std::ptr::null_mut();
@@ -176,11 +225,7 @@ fn write_staging(
     // SAFETY: the mapping covers `byte_size` bytes, which is exactly the size the
     // resource was created with, and the two allocations are distinct.
     unsafe {
-        std::ptr::copy_nonoverlapping(
-            vertices.as_ptr().cast::<u8>(),
-            mapped.cast::<u8>(),
-            byte_size,
-        );
+        std::ptr::copy_nonoverlapping(source, mapped.cast::<u8>(), byte_size);
         staging.Unmap(0, None);
     }
     Ok(())
