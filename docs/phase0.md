@@ -16,7 +16,7 @@ Milestone status:
 | 6 | Debug performance overlay | done |
 | 7 | Rendering stress tests | done |
 | 8 | Instancing test | done |
-| 9 | Automated GPU integration test | not started |
+| 9 | Automated GPU integration test | done |
 
 ---
 
@@ -852,6 +852,92 @@ cargo run --release --bin performance_test -- --instances 1000 --frames 500
   so its frame rate would be higher than the figure printed here.
 * GPU times below ~0.04 ms are close to the timestamp resolution and to fixed per-frame
   overhead, which is why the smallest scenes show no difference between modes.
+
+---
+
+## Milestone 9 — Automated GPU integration test
+
+### What was built
+
+`crates/engine-renderer/tests/gpu_integration.rs`, following the milestone's steps with no
+window anywhere:
+
+1. create a D3D12 device,
+2. create an offscreen render target,
+3. render a known triangle,
+4. copy the result to a readback resource,
+5. read the pixels back to the CPU,
+6. verify the expected pixels and colours.
+
+Steps 1, 2, 4 and 5 are `engine_renderer::offscreen`, which has existed since Milestone 4;
+this milestone adds the known input and the verification, and makes the pass/fail contract
+explicit.
+
+### The expectation is derived, not hardcoded
+
+The test computes how much of the clip volume the triangle occupies from its own vertices
+and scales that by the target size:
+
+```text
+area(clip space) / 4 * width * height
+```
+
+So changing the triangle changes the expectation automatically, and the test cannot decay
+into asserting a stale constant. Output of a run:
+
+```text
+=== GPU INTEGRATION TEST ===
+Target:   512x512 offscreen, no window
+Expected: ~43254 pixels of colour rgb(64, 128, 191)
+Actual:   43274 matching pixels (0.05% error)
+Result:   PASS
+```
+
+The 5% tolerance exists for rasterization edge rules — a pixel is covered when its centre
+falls inside the triangle, so the boundary gains or loses about a perimeter's worth of
+pixels. The measured error is 0.05%, two orders of magnitude inside it.
+
+### What else is checked
+
+The count alone would miss whole classes of failure, so the file also asserts:
+
+* **No pixel is neither triangle nor background** — exactly zero, since anti-aliasing is
+  off and the triangle's colour is uniform. Catches swapped colour channels, uninitialized
+  readback memory and row padding leaking into the image.
+* **Corners are clear and the centre is the triangle colour** — a target that was simply
+  filled would pass a count-based check at the wrong tolerance but fails this.
+* **Determinism** — two identical renders produce byte-identical images. Every measurement
+  built on this path depends on that.
+* **The clear colour arrives exactly** — a distinctive colour, checked per channel.
+* **Degenerate targets are rejected** — zero width or height returns an error rather than
+  crashing.
+
+### Acceptance criteria
+
+| Criterion | Result |
+| --- | --- |
+| Creates a device, offscreen target, renders, copies to readback, reads pixels | pass |
+| Verifies expected pixels/colours exist | pass — 43,274 of ~43,254 expected, 0.05% error |
+| Requires no visible application window | pass — no window, no swap chain, no compositor |
+| Reports expected vs actual with PASS/FAIL | pass — printed above, and the assertion fails the test |
+
+### Known limitations
+
+* **Needs a D3D12 adapter.** On a machine without one the test prints `SKIP:` and returns
+  green rather than failing, so a CI container without a GPU reports success without
+  having verified anything. That is deliberate — the alternative is a permanently red
+  suite on hardware the engine does not target — but it means *"tests passed" on unknown
+  hardware is not proof the GPU path works*. Any CI that matters must run on a GPU runner
+  and check for the `SKIP:` line.
+* Only initialization failures classified as `NoSuitableAdapter` skip; every other error
+  panics, so a broken driver is a failure rather than a silent skip.
+* The test creates its own device per render, so it does not exercise the swap chain, the
+  frame pacing or the presentation path — those are covered by `d3d12_init.rs`.
+* Verification is colour and coverage only. It would not catch a triangle rendered in the
+  wrong *place* if the area happened to match; `the_target_is_not_simply_filled` covers
+  the obvious cases (corners, centre) but not a general position check.
+* Tolerances assume no MSAA and no anti-aliasing. Enabling either later will require
+  revisiting the exact-match assertion.
 * Uppercase only; text is upper-cased before lookup.
 * The overlay is drawn with the scene's pipeline, so it has no blending and no background
   panel. Over a bright scene it may be hard to read.

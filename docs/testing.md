@@ -9,7 +9,7 @@ regressions, and no test code may end up in the shipped game executable.
 | --- | --- | --- | --- |
 | 1 | Unit tests | `#[cfg(test)]` modules inside crate sources | `cargo test --workspace --lib` |
 | 2 | Integration tests | `crates/<crate>/tests/*.rs` | `cargo test --workspace --test '*'` |
-| 3 | GPU/rendering integration tests | `crates/engine-renderer/tests/` (M9) | `cargo test -p engine-renderer` |
+| 3 | GPU/rendering integration tests | `crates/engine-renderer/tests/` | `cargo test -p engine-renderer` |
 | 4 | Performance benchmarks | `crates/engine-bench` | `cargo run --release --bin performance_test` |
 | 5 | Manual verification | `docs/phase0.md`, per milestone | human |
 
@@ -129,7 +129,17 @@ up whatever window happens to be in front, which makes it both unreliable as a t
 way to capture unrelated on-screen content. Offscreen readback needs no window, no
 desktop session and no compositor, and it is deterministic.
 
-Milestone 9 extends this same module into the full automated GPU integration test.
+`crates/engine-renderer/tests/gpu_integration.rs` is the full automated GPU integration
+test built on that module: device, offscreen target, known triangle, readback, and a pixel
+count checked against an expectation **derived from the triangle's vertices** rather than
+hardcoded. It prints expected vs actual and PASS/FAIL.
+
+### A skip is not a pass
+
+Every GPU test returns green on a machine with no D3D12 adapter, after printing `SKIP:`.
+That keeps the suite runnable on hardware the engine does not target, but it means a
+"tests passed" result from an unknown machine does **not** prove the GPU path works. CI
+that matters must run on a GPU runner and check that no `SKIP:` line appeared.
 
 ## Manual verification
 
