@@ -1,4 +1,4 @@
-//! Root signature, pipeline state and the triangle's vertex buffer.
+//! Root signature and pipeline state for position + colour geometry.
 //!
 //! Phase 0 / Milestone 4 only needs one pipeline: position + colour vertices, no
 //! constant buffers, no textures, no depth. Anything more (materials, passes, a shader
@@ -8,19 +8,15 @@ use windows::Win32::Graphics::Direct3D::ID3DBlob;
 use windows::Win32::Graphics::Direct3D12::{
     D3D_ROOT_SIGNATURE_VERSION_1, D3D12_BLEND_DESC, D3D12_BLEND_ONE, D3D12_BLEND_OP_ADD,
     D3D12_BLEND_ZERO, D3D12_COLOR_WRITE_ENABLE_ALL, D3D12_CULL_MODE_BACK, D3D12_DEPTH_STENCIL_DESC,
-    D3D12_FILL_MODE_SOLID, D3D12_GRAPHICS_PIPELINE_STATE_DESC, D3D12_HEAP_FLAG_NONE,
-    D3D12_HEAP_PROPERTIES, D3D12_HEAP_TYPE_UPLOAD, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,
-    D3D12_INPUT_ELEMENT_DESC, D3D12_INPUT_LAYOUT_DESC, D3D12_LOGIC_OP_NOOP,
-    D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE, D3D12_RANGE, D3D12_RASTERIZER_DESC,
-    D3D12_RENDER_TARGET_BLEND_DESC, D3D12_RESOURCE_DESC, D3D12_RESOURCE_DIMENSION_BUFFER,
-    D3D12_RESOURCE_STATE_GENERIC_READ, D3D12_ROOT_SIGNATURE_DESC,
+    D3D12_FILL_MODE_SOLID, D3D12_GRAPHICS_PIPELINE_STATE_DESC,
+    D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, D3D12_INPUT_ELEMENT_DESC, D3D12_INPUT_LAYOUT_DESC,
+    D3D12_LOGIC_OP_NOOP, D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE, D3D12_RASTERIZER_DESC,
+    D3D12_RENDER_TARGET_BLEND_DESC, D3D12_ROOT_SIGNATURE_DESC,
     D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT, D3D12_SHADER_BYTECODE,
-    D3D12_TEXTURE_LAYOUT_ROW_MAJOR, D3D12_VERTEX_BUFFER_VIEW, D3D12SerializeRootSignature,
-    ID3D12Device, ID3D12PipelineState, ID3D12Resource, ID3D12RootSignature,
+    D3D12SerializeRootSignature, ID3D12Device, ID3D12PipelineState, ID3D12RootSignature,
 };
 use windows::Win32::Graphics::Dxgi::Common::{
-    DXGI_FORMAT_R32G32B32_FLOAT, DXGI_FORMAT_R32G32B32A32_FLOAT, DXGI_FORMAT_UNKNOWN,
-    DXGI_SAMPLE_DESC,
+    DXGI_FORMAT_R32G32B32_FLOAT, DXGI_FORMAT_R32G32B32A32_FLOAT, DXGI_SAMPLE_DESC,
 };
 use windows::core::{PCSTR, s};
 
@@ -70,34 +66,23 @@ pub const TRIANGLE_VERTICES: [Vertex; 3] = [
     },
 ];
 
-/// Root signature, pipeline state and vertex buffer for the triangle.
+/// Root signature and pipeline state for position + colour geometry.
 ///
-/// Field order matters for the same reason it does in `Renderer`: the vertex buffer and
-/// pipeline objects must be released before the device that created them, which is owned
-/// by the caller and therefore outlives this struct.
-pub struct TrianglePipeline {
+/// Holds no geometry of its own: meshes are separate ([`crate::mesh::GpuMesh`]) so the
+/// scene can be swapped without rebuilding shaders, which is what the stress test needs.
+pub struct ScenePipeline {
     root_signature: ID3D12RootSignature,
     pipeline_state: ID3D12PipelineState,
-    /// Kept alive because the vertex-buffer view points into it.
-    vertex_buffer: ID3D12Resource,
-    vertex_buffer_view: D3D12_VERTEX_BUFFER_VIEW,
-    vertex_count: u32,
 }
 
-impl TrianglePipeline {
-    /// Compiles the shaders and creates every object needed to draw `vertices`.
+impl ScenePipeline {
+    /// Compiles the shaders and creates the root signature and pipeline state.
     ///
     /// # Errors
     ///
     /// Returns [`RendererError::ShaderCompilation`] if the HLSL does not compile, or
     /// [`RendererError::Api`] if a D3D12 call fails.
-    pub fn new(device: &ID3D12Device, vertices: &[Vertex]) -> Result<Self, RendererError> {
-        if vertices.is_empty() {
-            return Err(RendererError::InvalidConfig {
-                reason: "a pipeline needs at least one vertex".to_owned(),
-            });
-        }
-
+    pub fn new(device: &ID3D12Device) -> Result<Self, RendererError> {
         let root_signature = create_root_signature(device)?;
 
         let vertex_shader = compile_hlsl(TRIANGLE_HLSL, "triangle.hlsl", s!("VSMain"), VS_TARGET)?;
@@ -106,19 +91,11 @@ impl TrianglePipeline {
         let pipeline_state =
             create_pipeline_state(device, &root_signature, &vertex_shader, &pixel_shader)?;
 
-        let (vertex_buffer, vertex_buffer_view) = create_vertex_buffer(device, vertices)?;
-
-        log::info!(
-            "triangle pipeline ready: {} vertices, shader model 5_1",
-            vertices.len()
-        );
+        log::info!("scene pipeline ready: position + colour, shader model 5_1");
 
         Ok(Self {
             root_signature,
             pipeline_state,
-            vertex_buffer,
-            vertex_buffer_view,
-            vertex_count: vertices.len() as u32,
         })
     }
 
@@ -132,24 +109,6 @@ impl TrianglePipeline {
     #[must_use]
     pub fn pipeline_state(&self) -> &ID3D12PipelineState {
         &self.pipeline_state
-    }
-
-    /// The vertex-buffer view to bind to input slot 0.
-    #[must_use]
-    pub fn vertex_buffer_view(&self) -> &D3D12_VERTEX_BUFFER_VIEW {
-        &self.vertex_buffer_view
-    }
-
-    /// Number of vertices to draw.
-    #[must_use]
-    pub fn vertex_count(&self) -> u32 {
-        self.vertex_count
-    }
-
-    /// The buffer resource backing the view, kept for diagnostics.
-    #[must_use]
-    pub fn vertex_buffer(&self) -> &ID3D12Resource {
-        &self.vertex_buffer
     }
 }
 
@@ -307,89 +266,6 @@ fn blend_desc() -> D3D12_BLEND_DESC {
         RenderTarget: [target; 8],
         ..Default::default()
     }
-}
-
-/// Creates an upload-heap vertex buffer and copies `vertices` into it.
-///
-/// An upload heap is CPU-visible and GPU-readable, which is the simplest correct choice
-/// for a handful of static vertices. It is *not* the right choice for real geometry: a
-/// default-heap buffer filled once through an upload staging copy avoids reading vertex
-/// data over PCIe every draw. That change belongs with the stress tests in Milestone 7,
-/// where the difference is measurable.
-fn create_vertex_buffer(
-    device: &ID3D12Device,
-    vertices: &[Vertex],
-) -> Result<(ID3D12Resource, D3D12_VERTEX_BUFFER_VIEW), RendererError> {
-    let byte_size = std::mem::size_of_val(vertices);
-
-    let heap_properties = D3D12_HEAP_PROPERTIES {
-        Type: D3D12_HEAP_TYPE_UPLOAD,
-        ..Default::default()
-    };
-    let resource_desc = D3D12_RESOURCE_DESC {
-        Dimension: D3D12_RESOURCE_DIMENSION_BUFFER,
-        Width: byte_size as u64,
-        Height: 1,
-        DepthOrArraySize: 1,
-        MipLevels: 1,
-        Format: DXGI_FORMAT_UNKNOWN,
-        SampleDesc: DXGI_SAMPLE_DESC {
-            Count: 1,
-            Quality: 0,
-        },
-        Layout: D3D12_TEXTURE_LAYOUT_ROW_MAJOR,
-        ..Default::default()
-    };
-
-    let mut buffer: Option<ID3D12Resource> = None;
-    // SAFETY: FFI call. Both descriptors are fully initialized and outlive the call, and
-    // `buffer` is a valid out-parameter. GENERIC_READ is the required initial state for
-    // an upload-heap resource.
-    unsafe {
-        device.CreateCommittedResource(
-            &heap_properties,
-            D3D12_HEAP_FLAG_NONE,
-            &resource_desc,
-            D3D12_RESOURCE_STATE_GENERIC_READ,
-            None,
-            &mut buffer,
-        )
-    }
-    .map_err(|error| RendererError::api("ID3D12Device::CreateCommittedResource", error))?;
-
-    let Some(buffer) = buffer else {
-        return Err(RendererError::InvalidConfig {
-            reason: "vertex buffer creation produced no resource".to_owned(),
-        });
-    };
-
-    let mut mapped: *mut std::ffi::c_void = std::ptr::null_mut();
-    // A read range of 0..0 tells the driver the CPU will not read the buffer back.
-    let read_range = D3D12_RANGE { Begin: 0, End: 0 };
-    // SAFETY: FFI call mapping subresource 0 of a buffer created on an upload heap.
-    unsafe { buffer.Map(0, Some(&read_range), Some(&mut mapped)) }
-        .map_err(|error| RendererError::api("ID3D12Resource::Map", error))?;
-
-    // SAFETY: `mapped` points to at least `byte_size` writable bytes, as that is the size
-    // the resource was created with, and the regions cannot overlap because `mapped` is a
-    // fresh GPU-visible allocation.
-    unsafe {
-        std::ptr::copy_nonoverlapping(
-            vertices.as_ptr().cast::<u8>(),
-            mapped.cast::<u8>(),
-            byte_size,
-        );
-        buffer.Unmap(0, None);
-    }
-
-    let view = D3D12_VERTEX_BUFFER_VIEW {
-        // SAFETY: FFI call returning the resource's GPU address, valid while it lives.
-        BufferLocation: unsafe { buffer.GetGPUVirtualAddress() },
-        SizeInBytes: byte_size as u32,
-        StrideInBytes: size_of::<Vertex>() as u32,
-    };
-
-    Ok((buffer, view))
 }
 
 #[cfg(test)]

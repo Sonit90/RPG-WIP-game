@@ -26,7 +26,8 @@ use windows::core::Interface;
 
 use crate::device::GpuContext;
 use crate::error::RendererError;
-use crate::pipeline::{TRIANGLE_VERTICES, TrianglePipeline, Vertex};
+use crate::mesh::GpuMesh;
+use crate::pipeline::{ScenePipeline, TRIANGLE_VERTICES, Vertex};
 use crate::renderer::{scissor_for, transition_barrier, viewport_for};
 use crate::swapchain::BACK_BUFFER_FORMAT;
 
@@ -215,7 +216,8 @@ pub fn render_vertices(
         });
     };
 
-    let pipeline = TrianglePipeline::new(device, vertices)?;
+    let pipeline = ScenePipeline::new(device)?;
+    let mesh = GpuMesh::upload(device, context.queue(), vertices)?;
 
     // SAFETY: FFI call on a live device with a valid command list type.
     let allocator: ID3D12CommandAllocator =
@@ -255,8 +257,8 @@ pub fn render_vertices(
         list.SetGraphicsRootSignature(pipeline.root_signature());
         list.SetPipelineState(pipeline.pipeline_state());
         list.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-        list.IASetVertexBuffers(0, Some(&[*pipeline.vertex_buffer_view()]));
-        list.DrawInstanced(pipeline.vertex_count(), 1, 0, 0);
+        list.IASetVertexBuffers(0, Some(&[*mesh.view()]));
+        list.DrawInstanced(mesh.vertex_count(), 1, 0, 0);
 
         list.ResourceBarrier(&[transition_barrier(
             &target,

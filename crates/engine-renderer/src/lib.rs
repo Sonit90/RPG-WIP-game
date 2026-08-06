@@ -16,20 +16,24 @@ pub mod error;
 #[cfg(feature = "debug-overlay")]
 pub mod font;
 pub mod gpu_timer;
+pub mod mesh;
 pub mod offscreen;
 #[cfg(feature = "debug-overlay")]
 pub mod overlay;
 pub mod pipeline;
 pub mod renderer;
 pub mod shader;
+pub mod stress;
 pub mod swapchain;
 pub mod sync;
 
 pub use adapter::{AdapterInfo, select_adapter};
 pub use device::BACKEND;
 pub use error::RendererError;
+pub use mesh::GpuMesh;
 pub use pipeline::{TRIANGLE_VERTICES, Vertex};
 pub use renderer::Renderer;
+pub use stress::STRESS_LEVELS;
 pub use swapchain::{BACK_BUFFER_FORMAT, FRAME_COUNT};
 
 /// How the renderer should be created.
