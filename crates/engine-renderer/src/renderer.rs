@@ -4,20 +4,15 @@
 //! This type knows nothing about gameplay. Milestone 2 can only clear the back buffer;
 //! geometry arrives in Milestone 4 through a `RenderWorld`-shaped input.
 
-use std::mem::ManuallyDrop;
-
-use windows::Win32::Foundation::{HWND, RECT};
+use windows::Win32::Foundation::HWND;
 use windows::Win32::Graphics::Direct3D::D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
 use windows::Win32::Graphics::Direct3D12::{
-    D3D12_MAX_DEPTH, D3D12_MIN_DEPTH, D3D12_RESOURCE_BARRIER, D3D12_RESOURCE_BARRIER_0,
-    D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES, D3D12_RESOURCE_BARRIER_FLAG_NONE,
-    D3D12_RESOURCE_BARRIER_TYPE_TRANSITION, D3D12_RESOURCE_STATE_PRESENT,
-    D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATES, D3D12_RESOURCE_TRANSITION_BARRIER,
-    D3D12_VIEWPORT, ID3D12CommandList, ID3D12GraphicsCommandList, ID3D12Resource,
+    D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET, ID3D12CommandList,
 };
 
 use windows::core::Interface;
 
+use crate::command::{CommandContext, CommandStats};
 use crate::device::{BACKEND, RenderDevice, feature_level_name};
 use crate::error::RendererError;
 use crate::frame::{FrameRing, SyncStats};
@@ -59,7 +54,10 @@ pub struct Renderer {
     swap_chain: SwapChain,
     /// Frame slots, their allocators and the fence that paces them.
     frames: FrameRing,
-    command_list: ID3D12GraphicsCommandList,
+    /// The command list and everything recorded through it.
+    commands: CommandContext,
+    /// What the most recent frame's recording cost.
+    command_stats: CommandStats,
     /// Pre-built argument for `ExecuteCommandLists`, so submitting a frame performs no
     /// allocation and no `QueryInterface`.
     execute_lists: [Option<ID3D12CommandList>; 1],
@@ -128,9 +126,9 @@ impl Renderer {
         let frames_in_flight = frames.frames_in_flight();
 
         // Created closed, so the per-frame path can always begin with Reset.
-        let command_list = context.create_command_list(frames.allocator(0))?;
+        let commands = CommandContext::new(&context, frames.allocator(0))?;
 
-        let execute_lists = [Some(command_list.cast::<ID3D12CommandList>().map_err(
+        let execute_lists = [Some(commands.list().cast::<ID3D12CommandList>().map_err(
             |error| RendererError::api("ID3D12GraphicsCommandList::cast<ID3D12CommandList>", error),
         )?)];
 
@@ -153,7 +151,8 @@ impl Renderer {
         let renderer = Self {
             swap_chain,
             frames,
-            command_list,
+            commands,
+            command_stats: CommandStats::default(),
             execute_lists,
             gpu_timer,
             last_gpu_frame_ms: None,
@@ -374,50 +373,33 @@ impl Renderer {
         // SAFETY: FFI call. The list is closed at this point (either from `new` or from
         // the previous frame), which is what Reset requires, and the allocator was just
         // reset by the ring after proving the GPU was done with it.
-        unsafe { self.command_list.Reset(self.frames.allocator(slot), None) }
-            .map_err(|error| RendererError::api("ID3D12GraphicsCommandList::Reset", error))?;
+        self.commands.begin(self.frames.allocator(slot))?;
 
-        self.gpu_timer.begin_frame(&self.command_list, slot);
+        self.gpu_timer.begin_frame(self.commands.list(), slot);
 
-        let buffer = self.swap_chain.buffer(back_buffer);
+        let buffer = self.swap_chain.buffer(back_buffer).clone();
         let rtv = self.swap_chain.rtv_handle(back_buffer);
         let index = slot;
+        let (width, height) = self.swap_chain.size();
 
-        let to_render_target = transition_barrier(
-            buffer,
+        // Queued, not submitted: the context flushes it before the first command that
+        // depends on the back buffer being a render target — which is the clear below.
+        self.commands.transition(
+            &buffer,
             D3D12_RESOURCE_STATE_PRESENT,
             D3D12_RESOURCE_STATE_RENDER_TARGET,
         );
-        let (width, height) = self.swap_chain.size();
-        let viewport = viewport_for(width, height);
-        let scissor = scissor_for(width, height);
-
-        // SAFETY: FFI calls recording into the open list. Every referenced object — the
-        // barrier array, viewport, scissor, RTV handle, pipeline objects and vertex
-        // buffer view — is owned by this renderer or lives on the stack for the duration
-        // of the call.
-        unsafe {
-            self.command_list.ResourceBarrier(&[to_render_target]);
-            self.command_list
-                .OMSetRenderTargets(1, Some(&rtv), false, None);
-            self.command_list.ClearRenderTargetView(rtv, &color, None);
-
-            self.command_list.RSSetViewports(&[viewport]);
-            self.command_list.RSSetScissorRects(&[scissor]);
-            self.command_list
-                .SetGraphicsRootSignature(self.pipeline.root_signature());
-            self.command_list
-                .SetPipelineState(self.pipeline.pipeline_state());
-            self.command_list
-                .IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-            self.command_list
-                .IASetVertexBuffers(0, Some(&[*self.scene.view()]));
-            self.command_list
-                .DrawInstanced(self.scene.vertex_count(), 1, 0, 0);
-        }
-
-        self.draw_calls_last_frame = 1;
-        self.triangles_last_frame = u64::from(self.scene.triangle_count());
+        self.commands.set_render_target(rtv);
+        self.commands.clear_render_target(rtv, color);
+        self.commands.set_viewport(width, height);
+        self.commands.set_pipeline(
+            self.pipeline.root_signature(),
+            self.pipeline.pipeline_state(),
+        );
+        self.commands
+            .set_topology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        self.commands.set_vertex_buffer(0, *self.scene.view());
+        self.commands.draw(self.scene.vertex_count(), 1);
 
         // The overlay reuses the root signature, pipeline state and topology bound above;
         // only the vertex buffer changes. It is drawn last so it sits over the scene.
@@ -438,36 +420,33 @@ impl Renderer {
 
                 if let Some(view) = self.overlay.views[index] {
                     let count = view.SizeInBytes / view.StrideInBytes;
-                    // SAFETY: FFI calls on the open list. The view refers to this slot's
-                    // upload buffer, which lives as long as the renderer.
-                    unsafe {
-                        self.command_list.IASetVertexBuffers(0, Some(&[view]));
-                        self.command_list.DrawInstanced(count, 1, 0, 0);
-                    }
+                    // The overlay reuses the pipeline and topology already bound, so the
+                    // context skips those binds; only the vertex buffer changes.
+                    self.commands.set_vertex_buffer(0, view);
+                    self.commands.draw(count, 1);
                     self.overlay.drawn_vertices = count;
-                    self.draw_calls_last_frame += 1;
-                    self.triangles_last_frame += u64::from(count) / 3;
                 }
             }
         }
 
-        let to_present = transition_barrier(
-            buffer,
+        self.commands.transition(
+            &buffer,
             D3D12_RESOURCE_STATE_RENDER_TARGET,
             D3D12_RESOURCE_STATE_PRESENT,
         );
-        // SAFETY: as above; the list is still open and owned by this renderer.
-        unsafe {
-            self.command_list.ResourceBarrier(&[to_present]);
-        }
 
         // The closing timestamp brackets the frame's own work; the resolve that follows it
-        // is a GPU-side copy into the readback buffer.
-        self.gpu_timer.end_frame(&self.command_list, slot);
+        // is a GPU-side copy into the readback buffer. Barriers are flushed first so the
+        // transition is recorded before the timestamp that closes the frame.
+        self.commands.flush_barriers();
+        self.gpu_timer.end_frame(self.commands.list(), slot);
 
-        // SAFETY: FFI call closing the list recorded above.
-        unsafe { self.command_list.Close() }
-            .map_err(|error| RendererError::api("ID3D12GraphicsCommandList::Close", error))?;
+        let stats = self.commands.stats();
+        self.draw_calls_last_frame = stats.draw_calls;
+        self.triangles_last_frame = stats.triangles;
+        self.command_stats = stats;
+
+        self.commands.close()?;
 
         // SAFETY: FFI call submitting the closed list. `execute_lists` holds exactly the
         // list closed above and outlives the call.
@@ -577,17 +556,16 @@ impl Renderer {
     /// The caller must have waited for the GPU to go idle: resetting an allocator whose
     /// submissions are still executing is undefined behaviour in D3D12.
     fn reset_command_list_to_empty(&mut self) -> Result<(), RendererError> {
-        let allocator = self.frames.allocator(0);
-        // SAFETY: FFI call. The GPU is idle, which is exactly Reset's precondition.
-        unsafe { allocator.Reset() }
-            .map_err(|error| RendererError::api("ID3D12CommandAllocator::Reset", error))?;
-        // SAFETY: FFI call. The list is closed here (every path either closes it or has
-        // never opened it), which is what Reset requires.
-        unsafe { self.command_list.Reset(allocator, None) }
-            .map_err(|error| RendererError::api("ID3D12GraphicsCommandList::Reset", error))?;
-        // SAFETY: FFI call closing the list that was just reset and holds no commands.
-        unsafe { self.command_list.Close() }
-            .map_err(|error| RendererError::api("ID3D12GraphicsCommandList::Close", error))
+        // Cloned because `reset_to_empty` needs `&mut self.commands` while the allocator
+        // is borrowed from `self.frames`; the clone is a refcount bump on a COM pointer.
+        let allocator = self.frames.allocator(0).clone();
+        self.commands.reset_to_empty(&allocator)
+    }
+
+    /// What the most recent frame's command recording cost.
+    #[must_use]
+    pub fn command_stats(&self) -> CommandStats {
+        self.command_stats
     }
 
     /// Blocks until the GPU has finished all submitted work.
@@ -626,91 +604,5 @@ impl Drop for Renderer {
             sync.mean_stall_ms(),
             sync.max_stall.as_secs_f64() * 1e3
         );
-    }
-}
-
-/// Viewport covering the whole back buffer.
-///
-/// Pure, so the mapping from swap-chain size to viewport is testable without a GPU.
-#[must_use]
-pub fn viewport_for(width: u32, height: u32) -> D3D12_VIEWPORT {
-    D3D12_VIEWPORT {
-        TopLeftX: 0.0,
-        TopLeftY: 0.0,
-        Width: width as f32,
-        Height: height as f32,
-        MinDepth: D3D12_MIN_DEPTH,
-        MaxDepth: D3D12_MAX_DEPTH,
-    }
-}
-
-/// Scissor rectangle covering the whole back buffer.
-#[must_use]
-pub fn scissor_for(width: u32, height: u32) -> RECT {
-    RECT {
-        left: 0,
-        top: 0,
-        right: width as i32,
-        bottom: height as i32,
-    }
-}
-
-/// Builds a resource transition barrier.
-///
-/// Shared with [`crate::offscreen`], which records the same kind of transition.
-///
-/// The `pResource` field is a non-owning copy of the interface pointer: `ManuallyDrop`
-/// keeps the barrier from releasing a reference it never took, and the resource is kept
-/// alive by the swap chain for the whole recording.
-pub(crate) fn transition_barrier(
-    resource: &ID3D12Resource,
-    before: D3D12_RESOURCE_STATES,
-    after: D3D12_RESOURCE_STATES,
-) -> D3D12_RESOURCE_BARRIER {
-    D3D12_RESOURCE_BARRIER {
-        Type: D3D12_RESOURCE_BARRIER_TYPE_TRANSITION,
-        Flags: D3D12_RESOURCE_BARRIER_FLAG_NONE,
-        Anonymous: D3D12_RESOURCE_BARRIER_0 {
-            Transition: ManuallyDrop::new(D3D12_RESOURCE_TRANSITION_BARRIER {
-                // SAFETY: copies the raw interface pointer without changing its refcount.
-                // The copy is wrapped in ManuallyDrop, so it is never released, and the
-                // real reference is owned by the swap chain for longer than this barrier.
-                pResource: unsafe { std::mem::transmute_copy(resource) },
-                Subresource: D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,
-                StateBefore: before,
-                StateAfter: after,
-            }),
-        },
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn viewport_covers_the_whole_back_buffer() {
-        let viewport = viewport_for(1920, 1080);
-        assert_eq!((viewport.TopLeftX, viewport.TopLeftY), (0.0, 0.0));
-        assert_eq!((viewport.Width, viewport.Height), (1920.0, 1080.0));
-        assert_eq!(viewport.MinDepth, D3D12_MIN_DEPTH);
-        assert_eq!(viewport.MaxDepth, D3D12_MAX_DEPTH);
-    }
-
-    #[test]
-    fn scissor_covers_the_whole_back_buffer() {
-        let scissor = scissor_for(1280, 720);
-        assert_eq!((scissor.left, scissor.top), (0, 0));
-        assert_eq!((scissor.right, scissor.bottom), (1280, 720));
-    }
-
-    #[test]
-    fn viewport_and_scissor_agree_after_a_resize() {
-        for (width, height) in [(640, 480), (1920, 1080), (3840, 2160)] {
-            let viewport = viewport_for(width, height);
-            let scissor = scissor_for(width, height);
-            assert_eq!(viewport.Width as i32, scissor.right);
-            assert_eq!(viewport.Height as i32, scissor.bottom);
-        }
     }
 }

@@ -36,13 +36,13 @@ use windows::Win32::Graphics::Direct3D12::{
 use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_UNKNOWN, DXGI_SAMPLE_DESC};
 use windows::core::Interface;
 
+use crate::command::{scissor_for, transition_barrier, viewport_for};
 use crate::device::RenderDevice;
 use crate::error::RendererError;
 use crate::gpu_timer::GpuTimer;
 use crate::instancing::{InstanceData, InstancedPipeline, UNIT_TRIANGLE, build_instance_grid};
 use crate::mesh::GpuMesh;
 use crate::offscreen::{BYTES_PER_PIXEL, CapturedImage};
-use crate::renderer::{scissor_for, transition_barrier, viewport_for};
 use crate::swapchain::BACK_BUFFER_FORMAT;
 use crate::sync::GpuFence;
 

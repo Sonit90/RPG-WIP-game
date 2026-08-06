@@ -385,3 +385,31 @@ stalls when the GPU work is trivial. An empty command list completes before the 
 back around the loop. What serializes CPU and GPU is one slot *plus* GPU work that outlasts
 a CPU iteration — verified in `frame_sync.rs` by giving the GPU 64 MiB buffer copies, which
 does produce a stall on every frame after the first.
+
+## Methodology addition — comparing two builds under background load
+
+Milestone 3 was first measured as a 47% regression (0.248 ms against a 0.168 ms baseline).
+It was not one. The two numbers came from different sessions, and the machine had picked up
+background load in between: an IDE holding 2.6 GB and the GPU vendor's service.
+
+What the same change looked like under four methods:
+
+| Method | Before | After | Verdict |
+| --- | --- | --- | --- |
+| Single run, mean, compared against an earlier session | 0.168 ms | 0.248 ms | "47% regression" |
+| 3 interleaved runs, mean | 0.229-0.309 ms | 0.219-0.332 ms | indistinguishable |
+| 5 interleaved runs, median of means | 0.223 ms | 0.243 ms | overlapping, unresolved |
+| 21 reporting intervals, median p50 | 0.155 ms | 0.155 ms | no change |
+
+Two rules follow, and they now apply to every comparison in this document:
+
+1. **Interleave.** Run A and B alternately in one session. This was already the rule after
+   phase 0 retracted two conclusions for the same reason.
+2. **Report a spike-robust statistic.** Interleaving is not sufficient. The mean is the
+   wrong estimator under interference: a handful of multi-millisecond scheduler spikes moves
+   it substantially while leaving the frame's actual cost untouched. Use the median of the
+   per-interval p50 values, which the running engine already reports.
+
+A corollary worth stating: absolute numbers are only comparable within one session on one
+machine state. The 0.155 ms p50 measured here and the 0.168 ms mean measured in milestone 2
+are not in conflict - they are different statistics of different runs under different load.

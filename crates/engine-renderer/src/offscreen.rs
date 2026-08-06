@@ -24,11 +24,11 @@ use windows::Win32::Graphics::Direct3D12::{
 use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_UNKNOWN, DXGI_SAMPLE_DESC};
 use windows::core::Interface;
 
+use crate::command::{scissor_for, transition_barrier, viewport_for};
 use crate::device::RenderDevice;
 use crate::error::RendererError;
 use crate::mesh::GpuMesh;
 use crate::pipeline::{ScenePipeline, TRIANGLE_VERTICES, Vertex};
-use crate::renderer::{scissor_for, transition_barrier, viewport_for};
 use crate::swapchain::BACK_BUFFER_FORMAT;
 
 /// Bytes per pixel of [`BACK_BUFFER_FORMAT`].

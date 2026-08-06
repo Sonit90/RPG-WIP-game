@@ -23,7 +23,7 @@ Milestone status:
 | 0 | Architecture proposal | done |
 | 1 | Renderer device abstraction | done |
 | 2 | Frame resources and synchronization | done |
-| 3 | Command context | todo |
+| 3 | Command context | done |
 | 4 | Descriptor management | todo |
 | 5 | Resource abstraction | todo |
 | 6 | Upload system | todo |
@@ -487,3 +487,105 @@ load, and hence a test that now pins down both halves of that statement.
   which is correct but fully serializing. Milestone 5 addresses it.
 * The stall statistics accumulate for the process lifetime; there is no per-interval view.
   The overlay in Milestone 15 will want one.
+
+---
+
+# Milestone 3 — Command context
+
+## What was built
+
+`engine-renderer::command::CommandContext` is now the only place the engine talks to a
+D3D12 command list. It wraps `begin`, `transition`, `flush_barriers`, `set_render_target`,
+`clear_render_target`, `set_viewport`, `set_pipeline`, `set_topology`, `set_vertex_buffer`,
+`draw`, `close` and `reset_to_empty` — and nothing else. A wrapper method with no caller
+has no test and no reason to be correct.
+
+What it adds over the raw list is the part worth centralizing:
+
+| Feature | Why |
+| --- | --- |
+| **Barrier batching** | Transitions queue and are submitted as one array. Each `ResourceBarrier` call has a fixed driver cost; one call with four barriers beats four with one. |
+| **Automatic flushing** | Clear, draw and close flush first. A queued barrier that was never submitted has not happened, and forgetting produces a validation error at best. |
+| **Redundant bind elimination** | Binding the pipeline, root signature or topology that is already bound is a driver call that changes nothing. The context skips it and counts it. |
+| **Statistics** | Draw calls, instances, triangles, pipeline changes and barriers counted where they happen, not estimated by the caller. |
+
+`transition_barrier`, `viewport_for` and `scissor_for` moved here from `renderer.rs`,
+which is where the rest of the crate already imported them from.
+
+## Redundant binds are counted, not silently dropped
+
+`CommandStats::redundant_pipeline_binds` exists so a caller that issues them can see it.
+Silently absorbing waste makes the waste invisible; the debug overlay in Milestone 15 will
+show this number precisely so a badly-sorted render list is visible rather than merely
+slow.
+
+## Performance: no measurable change, and how that was established
+
+The first measurement said 0.248 ms against a 0.168 ms baseline — a 47% regression. It was
+wrong, and the way it was wrong is worth recording, because `docs/performance.md` already
+warns about exactly this.
+
+| Method | M2 (before) | M3 (after) | Verdict |
+| --- | --- | --- | --- |
+| Single run, mean, compared against an earlier session | 0.168 ms | 0.248 ms | "47% regression" |
+| 3 interleaved runs, mean | 0.229–0.309 ms | 0.219–0.332 ms | indistinguishable |
+| 5 interleaved runs, median of means | 0.223 ms | 0.243 ms | overlapping, unresolved |
+| 21 reporting intervals, **median p50** | **0.155 ms** | **0.155 ms** | no change |
+
+The machine had picked up background load between sessions — an IDE holding 2.6 GB and
+the GPU vendor's service — which inflated *both* binaries and dominated the mean. The mean
+is the wrong estimator under interference: a handful of multi-millisecond spikes moves it
+while leaving the frame's actual cost untouched. The p50 across reporting intervals is
+robust to those spikes, and it says the two builds cost the same to within timer
+resolution.
+
+**The lesson, added to the methodology:** an A/B comparison must be interleaved *and*
+reported with a spike-robust statistic. Comparing a mean measured today against a mean
+measured yesterday measures the machine, not the change.
+
+## Tests
+
+Unit tests in `command.rs` cover the bookkeeping without a GPU: redundant-bind detection,
+that clearing the binding state forces the next bind (a reset list has no state, so
+remembering one would skip a bind the driver needs), slot independence, and the batching
+ratio.
+
+`tests/command_context.rs` covers what needs a driver:
+
+| Test | Asserts |
+| --- | --- |
+| `barriers_batch_into_one_submission` | 4 transitions → 1 `ResourceBarrier` call |
+| `closing_flushes_queued_barriers` | close leaves nothing queued |
+| `a_transition_to_the_same_state_is_dropped` | no barrier, no call — D3D12 rejects equal states |
+| `exceeding_the_batch_capacity_flushes_rather_than_growing` | 20 transitions, no lost barrier, no mid-frame allocation |
+| `beginning_a_frame_clears_the_previous_statistics` | statistics describe one frame, not the process |
+
+The first version of `barriers_batch_into_one_submission` transitioned buffers to
+`UNORDERED_ACCESS`. The driver rejected the whole command list with `E_INVALIDARG` at
+`Close`, because a buffer created without `ALLOW_UNORDERED_ACCESS` cannot enter that state.
+The test was wrong, not the context — and it is a good argument for submitting in tests
+rather than only recording: a barrier the driver refuses is invisible until something
+executes it.
+
+## Acceptance criteria
+
+| Criterion | Result |
+| --- | --- |
+| Command recording abstracted from the rest of the engine | pass |
+| Only what the engine uses is wrapped | pass — 12 methods |
+| D3D12 details not exposed | pass — `list()` remains for the GPU timer's query calls, documented |
+| Barriers batched | pass — asserted on a real device |
+| Statistics collected | pass — `CommandStats`, read by the renderer each frame |
+| No regression | pass — median p50 unchanged at 0.155 ms, established by interleaved A/B |
+
+## Known limitations
+
+* No index-buffer or `DrawIndexedInstanced` wrapper yet: there are no index buffers until
+  Milestone 10. It arrives with the mesh system rather than ahead of it.
+* No descriptor-table binding: descriptors arrive in Milestone 4.
+* Resource *state tracking* is not here — the caller still states `from` and `to`. The
+  context batches and validates equality, but does not know a resource's current state.
+  That belongs with the resource abstraction in Milestone 5, which is where the state
+  lives.
+* One list, one thread. Parallel command recording would need a context per thread and a
+  submission order; nothing here forecloses it.

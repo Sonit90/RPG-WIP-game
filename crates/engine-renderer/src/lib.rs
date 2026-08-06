@@ -12,6 +12,7 @@
 
 pub mod adapter;
 pub mod bench;
+pub mod command;
 pub mod device;
 pub mod error;
 #[cfg(feature = "debug-overlay")]

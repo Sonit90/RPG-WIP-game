@@ -16,10 +16,10 @@ use windows::Win32::Graphics::Direct3D12::{
 };
 use windows::core::Interface;
 
+use crate::command::transition_barrier;
 use crate::device::RenderDevice;
 use crate::error::RendererError;
 use crate::pipeline::Vertex;
-use crate::renderer::transition_barrier;
 use crate::sync::GpuFence;
 
 /// A vertex buffer in device-local memory.
