@@ -440,3 +440,20 @@ Against the frame budget, for the case that scales with scene size:
 At 10,000 objects descriptor allocation is not the bottleneck. At 100,000 individually
 bound objects it starts to matter - which is another argument for instancing, where one
 table serves the whole batch, rather than for a faster descriptor allocator.
+
+## Milestone 6 - upload system
+
+Release build, 1000-triangle stress scene, 20,000 frames, three reporting intervals.
+
+| Statistic | Value |
+| --- | --- |
+| CPU frame, median of per-interval p50 | 0.133 ms |
+| GPU frame, median of per-interval p50 | 0.034 ms |
+
+No regression against the 0.152 ms baseline from milestone 5. The upload ring is created
+and reset once per frame but nothing writes to it yet, so the only frame-path change is one
+store per slot; the difference above is machine state, not the change.
+
+The batching claim is measured by test rather than by benchmark: `batched_uploads_cost_one_synchronization` asserts that eight buffer uploads produce `total_copies == 8` and
+`total_flushes == 1`. The old per-mesh path would have produced eight of each, and each
+flush is a full GPU round trip.

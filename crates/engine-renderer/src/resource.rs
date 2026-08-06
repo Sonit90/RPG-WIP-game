@@ -158,6 +158,38 @@ impl GpuBuffer {
         self.heap_type == D3D12_HEAP_TYPE_UPLOAD
     }
 
+    /// Maps the buffer and leaves it mapped for its lifetime.
+    ///
+    /// Mapping an upload-heap resource is not free — it is a driver call — and a ring that
+    /// mapped and unmapped per allocation would pay it thousands of times a frame. D3D12
+    /// permits a resource to stay mapped indefinitely, and releasing it unmaps implicitly,
+    /// so the pointer stays valid exactly as long as this `GpuBuffer` does.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RendererError::InvalidConfig`] if this is not an upload buffer, or
+    /// [`RendererError::Api`] if mapping fails.
+    pub fn map_persistent(&self) -> Result<std::ptr::NonNull<u8>, RendererError> {
+        if !self.is_upload() {
+            return Err(RendererError::InvalidConfig {
+                reason: "only an upload-heap buffer can be mapped".to_owned(),
+            });
+        }
+
+        let mut mapped: *mut std::ffi::c_void = std::ptr::null_mut();
+        // A read range of 0..0 states that the CPU will not read this buffer back, which
+        // matters on discrete GPUs where the memory is write-combined.
+        let read_range = windows::Win32::Graphics::Direct3D12::D3D12_RANGE { Begin: 0, End: 0 };
+        // SAFETY: FFI call mapping subresource 0 of an upload-heap buffer this object owns.
+        // No matching Unmap: the mapping is released when the resource is.
+        unsafe { self.resource.Map(0, Some(&read_range), Some(&mut mapped)) }
+            .map_err(|error| RendererError::api("ID3D12Resource::Map", error))?;
+
+        std::ptr::NonNull::new(mapped.cast::<u8>()).ok_or_else(|| RendererError::InvalidConfig {
+            reason: "mapping an upload buffer produced a null pointer".to_owned(),
+        })
+    }
+
     /// Copies `data` into an upload-heap buffer.
     ///
     /// # Errors

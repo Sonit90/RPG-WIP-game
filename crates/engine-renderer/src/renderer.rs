@@ -24,6 +24,7 @@ use crate::pipeline::{ScenePipeline, Vertex};
 use crate::resource::DeferredReleaseQueue;
 use crate::stress;
 use crate::swapchain::SwapChain;
+use crate::upload::UploadRing;
 use crate::{AdapterInfo, RendererConfig};
 
 /// Debug overlay state owned by the renderer.
@@ -83,6 +84,8 @@ pub struct Renderer {
     draw_calls_last_frame: u32,
     /// Triangles submitted by the most recent frame.
     triangles_last_frame: u64,
+    /// Per-frame upload memory, reset at the start of each frame.
+    uploads: UploadRing,
     /// Resources waiting for the GPU to finish with them before being released.
     pending_release: DeferredReleaseQueue,
     /// Slot recorded by `render` and not yet presented.
@@ -135,6 +138,7 @@ impl Renderer {
             |error| RendererError::api("ID3D12GraphicsCommandList::cast<ID3D12CommandList>", error),
         )?)];
 
+        let uploads = UploadRing::new(&context, config.upload_bytes_per_frame, frames_in_flight)?;
         let gpu_timer = GpuTimer::new(context.device(), context.queue(), frames_in_flight)?;
         let pipeline = ScenePipeline::new(context.device())?;
         let mut scene_scratch = Vec::new();
@@ -167,6 +171,7 @@ impl Renderer {
             frames_presented: 0,
             draw_calls_last_frame: 0,
             triangles_last_frame: 0,
+            uploads,
             pending_release: DeferredReleaseQueue::new(),
             recorded_frame_slot: None,
             recorded_back_buffer: 0,
@@ -374,6 +379,10 @@ impl Renderer {
         // when the queue is empty, which it usually is.
         self.pending_release.collect(self.frames.completed_value());
 
+        // This slot's upload memory is free again, for the same reason its allocator is:
+        // the ring's wait proved the GPU finished the frame that used it.
+        self.uploads.begin_frame(slot);
+
         // The back buffer to draw into is the swap chain's business, and is deliberately
         // not assumed to equal the frame slot.
         let back_buffer = self.swap_chain.current_back_buffer_index();
@@ -569,6 +578,20 @@ impl Renderer {
     #[must_use]
     pub fn command_stats(&self) -> CommandStats {
         self.command_stats
+    }
+
+    /// Per-frame upload memory, for callers that need to stage dynamic data.
+    #[must_use]
+    pub fn uploads(&mut self) -> &mut UploadRing {
+        &mut self.uploads
+    }
+
+    /// Largest per-frame upload usage observed.
+    ///
+    /// The number that sizes `RendererConfig::upload_bytes_per_frame`.
+    #[must_use]
+    pub fn upload_peak_bytes(&self) -> usize {
+        self.uploads.peak()
     }
 
     /// Resources waiting for the GPU before they can be released.

@@ -26,7 +26,7 @@ Milestone status:
 | 3 | Command context | done |
 | 4 | Descriptor management | done |
 | 5 | Resource abstraction | done |
-| 6 | Upload system | todo |
+| 6 | Upload system | done |
 | 7 | Shader system | todo |
 | 8 | Camera | todo |
 | 9 | Transform system | todo |
@@ -814,3 +814,121 @@ rejects is invisible until something executes it — the lesson from Milestone 3
   this in their `Drop` rather than the caller doing it by hand.
 * Nothing yet uses `GpuBuffer` for geometry — `GpuMesh` still owns its own resource. The
   mesh system in Milestone 10 replaces it.
+
+---
+
+# Milestone 6 — Upload system
+
+## What was built
+
+`engine-renderer::upload` holds two paths, because per-frame data and static data have
+nothing in common except the word "upload".
+
+| Path | Type | Lifetime | Cost per use |
+| --- | --- | --- | --- |
+| Per-frame dynamic | `UploadRing` | one frame | a bump of an offset, no map, no fence |
+| Static, once | `StagingUploader` | forever | one copy, batched into one fence wait |
+
+`GpuBuffer::map_persistent` was added to support the first: the ring maps each slot's
+buffer once at creation and never unmaps it. D3D12 permits a resource to stay mapped
+indefinitely, and releasing it unmaps implicitly, so the per-frame `Map`/`Unmap` pair that
+a naive upload path pays is simply not there.
+
+## The ring bumps, for the same reason the descriptor heap does
+
+One upload buffer per frame slot, `[slot 0 | slot 1 | slot 2]`, each reset at
+`begin_frame`. Everything written into a slot dies at the same instant — when that frame's
+fence passes — so individual tracking buys nothing. Allocation is `align_up(cursor)`, a
+bounds check, and a pointer add.
+
+Alignment is a parameter rather than a constant because D3D12 demands different values in
+different places, and getting one wrong is a validation error at bind time rather than at
+write time:
+
+| Constant | Value | Applies to |
+| --- | --- | --- |
+| `CONSTANT_BUFFER_ALIGNMENT` | 256 | constant-buffer address **and** size |
+| `TEXTURE_DATA_ALIGNMENT` | 512 | texture row data in an upload buffer |
+| `DEFAULT_ALIGNMENT` | 16 | instance and vertex streams |
+
+`write_constants` rounds the *size* up as well as the address, because a CBV describes a
+256-byte multiple; a 68-byte struct occupies 256 bytes whether or not the caller thinks so.
+
+A full slot **refuses and reports what was left**, and counts the failure. It does not
+wrap — wrapping would overwrite data the GPU is reading this frame, which is silent
+corruption. `UploadStats { capacity, used, peak, failures }` per slot, plus
+`Renderer::upload_peak_bytes` across all slots, so the 4 MiB default gets replaced by a
+measured number rather than a guessed one.
+
+## Staging batches because a fence wait is not free
+
+Phase 0's `GpuMesh::upload` created a staging buffer, an allocator, a list and a fence per
+mesh, and blocked on each. Twenty meshes cost twenty full GPU round trips.
+
+`StagingUploader` queues any number of `queue_buffer` calls into one command list, keeping
+each staging buffer alive until `flush`, and pays **one** synchronization for the batch.
+`GpuMesh::upload_many` is the caller that proves it. `GpuMesh::upload` still exists and
+still uploads one mesh — but through the same uploader, so there is one code path rather
+than two.
+
+The uploader is reusable across batches: `flush` releases the staging buffers and resets,
+so a caller can load one group of meshes, flush, and load another without rebuilding the
+allocator, list and fence.
+
+## Why not a copy queue
+
+A dedicated copy queue would let uploads run concurrently with graphics. It also needs
+cross-queue resource state handling, a second fence, and ownership transfers through
+`COMMON`. Uploads happen when the scene changes, not per frame, and the renderer is
+CPU-bound on submission — so the copy queue would buy nothing measurable today. The
+staging path is one type; replacing its queue later is a local change.
+
+## Tests
+
+`crates/engine-renderer/tests/upload.rs`, nine tests against a real device:
+
+| Test | Asserts |
+| --- | --- |
+| `ring_allocations_are_aligned_and_distinct` | every allocation meets its alignment and no two overlap |
+| `slots_are_independent_and_reset_individually` | resetting slot 0 leaves slot 1 untouched |
+| `a_full_slot_refuses_and_says_what_is_left` | refusal, not wrapping; the error names the remaining bytes; `failures` counts it |
+| `written_data_reaches_the_gpu_through_the_ring` | data copied from the ring to a default-heap buffer reads back byte-identical |
+| `constant_writes_are_padded_to_the_required_size` | a 4-byte struct consumes 256 bytes of the ring |
+| `batched_uploads_cost_one_synchronization` | 8 buffers, `total_flushes == 1`, `total_copies == 8` |
+| `an_empty_flush_does_nothing` | no submission, no fence wait, no error |
+| `an_upload_larger_than_its_destination_is_rejected` | size checked before the copy is recorded |
+| `an_uploader_can_be_reused_across_batches` | two batches through one uploader, both correct |
+
+The read-back tests exist because a persistently mapped pointer that writes to the wrong
+offset produces a buffer full of plausible-looking zeros. Only reading it back on the GPU
+side proves the bytes arrived where the GPU address said they would.
+
+## Acceptance criteria
+
+| Criterion | Result |
+| --- | --- |
+| Efficient CPU→GPU transfer | pass — persistent map, bump allocate, no per-use `Map` |
+| Upload heap ring buffer | pass — one buffer per frame slot, reset at `begin_frame` |
+| Per-frame dynamic data supported | pass — constants, instance streams |
+| Static data uploaded once to a default heap | pass — `StagingUploader`, `GpuMesh` |
+| Batched uploads | pass — N buffers, one fence wait, asserted |
+| No unnecessary synchronization | pass — the ring never fences; staging fences once per batch |
+| No per-frame allocation | pass — the ring allocates only at creation |
+| High-water mark reported | pass — `UploadStats::peak`, `Renderer::upload_peak_bytes` |
+| No regression | pass — median p50 0.133 ms against the 0.152 ms baseline |
+
+## Known limitations
+
+* Nothing writes to the ring in the frame path yet. It is created, reset per frame and
+  tested, but constants arrive with the camera in Milestone 8 and instance data with
+  Milestone 17. The reset is in place so those milestones add a write, not a lifecycle.
+* Textures are not uploaded through either path. `TEXTURE_DATA_ALIGNMENT` is defined and a
+  texture upload needs `GetCopyableFootprints` plus `CopyTextureRegion`, which arrives with
+  materials in Milestone 11.
+* A slot that fills fails the allocation and the caller must handle it. There is no
+  fallback to a temporary committed buffer. That is deliberate for now: a failure is
+  visible and points at a capacity that needs raising, while a silent fallback would hide
+  a per-frame allocation.
+* `StagingUploader::flush` blocks. For startup loading that is correct and simple; if
+  streaming ever needs to load without stalling, the fence value is already there to poll
+  against instead.

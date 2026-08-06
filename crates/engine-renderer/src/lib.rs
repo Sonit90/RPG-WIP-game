@@ -32,6 +32,7 @@ pub mod shader;
 pub mod stress;
 pub mod swapchain;
 pub mod sync;
+pub mod upload;
 
 pub use adapter::{AdapterInfo, select_adapter};
 pub use bench::{BenchHarness, BenchResult, DrawMode};
@@ -73,7 +74,19 @@ pub struct RendererConfig {
     /// buffer count — queueing more frames than there are back buffers cannot help,
     /// because `Present` blocks once every buffer is spoken for.
     pub frames_in_flight: usize,
+    /// Bytes of upload memory reserved per frame slot.
+    ///
+    /// Holds one frame's constants, instance transforms and dynamic vertices. The default
+    /// is a starting point, not a measurement: `Renderer::upload_peak_bytes` reports what
+    /// a real scene actually uses, and the number should be chosen from that.
+    pub upload_bytes_per_frame: usize,
 }
+
+/// Default per-frame upload capacity: 4 MiB.
+///
+/// Enough for roughly 65,000 instance transforms at 64 bytes each, which is well past any
+/// scene the renderer can currently build.
+pub const DEFAULT_UPLOAD_BYTES_PER_FRAME: usize = 4 * 1024 * 1024;
 
 impl Default for RendererConfig {
     fn default() -> Self {
@@ -84,6 +97,7 @@ impl Default for RendererConfig {
             enable_debug_layer: cfg!(debug_assertions),
             break_on_validation_error: cfg!(debug_assertions),
             frames_in_flight: frame::DEFAULT_FRAMES_IN_FLIGHT,
+            upload_bytes_per_frame: DEFAULT_UPLOAD_BYTES_PER_FRAME,
         }
     }
 }
