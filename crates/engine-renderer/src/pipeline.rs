@@ -116,7 +116,9 @@ impl ScenePipeline {
 ///
 /// The shaders take no constant buffers, textures or samplers, so the signature only has
 /// to permit an input-assembler layout.
-fn create_root_signature(device: &ID3D12Device) -> Result<ID3D12RootSignature, RendererError> {
+pub(crate) fn create_root_signature(
+    device: &ID3D12Device,
+) -> Result<ID3D12RootSignature, RendererError> {
     let desc = D3D12_ROOT_SIGNATURE_DESC {
         Flags: D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT,
         ..Default::default()
@@ -220,7 +222,7 @@ fn create_pipeline_state(
 }
 
 /// Wraps a compiled blob as a shader bytecode descriptor.
-fn shader_bytecode(blob: &ID3DBlob) -> D3D12_SHADER_BYTECODE {
+pub(crate) fn shader_bytecode(blob: &ID3DBlob) -> D3D12_SHADER_BYTECODE {
     // SAFETY: FFI calls on a live blob. The descriptor borrows the blob's buffer, and
     // every caller keeps the blob alive until the pipeline state is created.
     unsafe {
@@ -238,7 +240,7 @@ fn shader_bytecode(blob: &ID3DBlob) -> D3D12_SHADER_BYTECODE {
 /// counter-clockwise in clip space (Y up) and stays counter-clockwise on screen, so
 /// declaring clockwise as front-facing makes the triangle back-facing and it is culled —
 /// silently, with no validation-layer message and a correctly recorded draw call.
-fn rasterizer_desc() -> D3D12_RASTERIZER_DESC {
+pub(crate) fn rasterizer_desc() -> D3D12_RASTERIZER_DESC {
     D3D12_RASTERIZER_DESC {
         FillMode: D3D12_FILL_MODE_SOLID,
         CullMode: D3D12_CULL_MODE_BACK,
@@ -249,7 +251,7 @@ fn rasterizer_desc() -> D3D12_RASTERIZER_DESC {
 }
 
 /// Opaque rendering: no blending, write every channel.
-fn blend_desc() -> D3D12_BLEND_DESC {
+pub(crate) fn blend_desc() -> D3D12_BLEND_DESC {
     let target = D3D12_RENDER_TARGET_BLEND_DESC {
         BlendEnable: false.into(),
         LogicOpEnable: false.into(),

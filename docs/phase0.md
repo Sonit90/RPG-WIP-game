@@ -15,8 +15,57 @@ Milestone status:
 | 5 | GPU timing | done |
 | 6 | Debug performance overlay | done |
 | 7 | Rendering stress tests | done |
-| 8 | Instancing test | not started |
-| 9 | Automated GPU integration test | not started |
+| 8 | Instancing test | done |
+| 9 | Automated GPU integration test | done |
+
+## Definition of Done
+
+Checked on 2026-08-06 against a **fresh `git clone` into a temporary directory**, not the
+working tree.
+
+| Requirement | Status |
+| --- | --- |
+| Rust workspace builds | pass |
+| `cargo test` passes | pass — 155 tests across 16 targets, no `SKIP:` lines |
+| `cargo fmt --check` passes | pass |
+| `cargo clippy` passes | pass, with `-D warnings`, in both feature configurations |
+| Windows application starts | pass |
+| D3D12 device initializes | pass |
+| Correct GPU is selected | pass — discrete adapter chosen by policy, no hardcoded model |
+| Swap chain works | pass |
+| Render loop works | pass — uncapped, no sleep, no artificial cap |
+| Triangle renders | pass — verified by pixel readback, not by eye |
+| CPU frame time measured | pass |
+| GPU frame time measured with GPU timestamps | pass — never derived from wall clock |
+| Debug metrics visible | pass — overlay (F5) and interval logging |
+| Stress test exists | pass — 1 to 100,000 triangles, runtime keys |
+| Instancing benchmark exists | pass |
+| GPU integration test exists | pass |
+| Performance benchmark exists | pass — `performance_test`, separate crate |
+| Release build excludes test executables | pass — `cargo build --release --bin mygame` produces `mygame.exe` only |
+| Documentation exists | pass |
+| Milestones reproducible from a clean checkout | pass — verified by cloning and running the full suite |
+
+### What Phase 0 established, in numbers
+
+| Question | Answer |
+| --- | --- |
+| Cost of a draw call | ~27 ns CPU, ~41 ns GPU |
+| Cost of 100,000 triangles in one draw | 0.014 ms CPU, 0.077 ms GPU |
+| Cost of 100,000 objects as separate draws | 2.65 ms CPU, 4.11 ms GPU — 64% of a 240 FPS frame |
+| Where the windowed frame goes | `present` dominates: 0.107–0.147 ms against 0.034 ms to record |
+| Batching crossover | around 1,000 objects |
+
+### Carried into the next phase
+
+* Presentation, not rendering, limits the windowed loop today. Any frame-rate target work
+  starts there — waitable swap chain, frame latency, or fullscreen presentation — and
+  Milestone 7 recorded an unexplained result in that area that deserves a proper look.
+* The renderer has no camera, no transforms and no depth buffer. Everything so far is in
+  clip space.
+* Two performance conclusions were retracted during Phase 0 for the same methodological
+  error. `docs/performance.md` now requires interleaved A/B runs and a stated run count;
+  that rule is the most durable thing the measurement work produced.
 
 ---
 
@@ -751,6 +800,193 @@ coverage is what makes the levels comparable, and it is asserted by a test.
   until the next switch.
 * Frame rate is limited by presentation, so these numbers say little about the 240/360/480
   FPS targets for a real workload.
+
+---
+
+## Milestone 8 — Instancing benchmark
+
+### What was built
+
+* `instancing.rs` — `InstanceData` (offset, scale, colour), a `UNIT_TRIANGLE` mesh, a
+  deterministic instance grid, and `InstancedPipeline`: a two-slot input layout where slot
+  1 is `PER_INSTANCE_DATA` with a step rate of 1.
+* `shaders/instanced.hlsl` — places and tints the unit triangle from the per-instance
+  stream.
+* `bench.rs` — `BenchHarness`: an **offscreen** device, render target, timestamp queries
+  and both draw modes, plus `capture` for pixel readback.
+* `crates/engine-bench` — the `performance_test` binary (section 6 of the plan). A
+  separate crate, so `cargo build --release --bin mygame` never compiles it.
+
+### What makes the comparison fair
+
+The two modes share the device, pipeline state, root signature, mesh, instance buffer and
+render target. The **only** difference is submission:
+
+| Mode | Call | Draw calls |
+| --- | --- | --- |
+| A | `DrawInstanced(3, 1, 0, i)` per instance — `StartInstanceLocation` picks the instance | N |
+| B | `DrawInstanced(3, N, 0, 0)` once | 1 |
+
+Because both read the same instance buffer, they must produce the same image — and that
+is asserted rather than assumed: `tests/instancing_equivalence.rs` renders both offscreen,
+reads the pixels back and requires **zero** differing pixels at 1, 7 and 100 instances.
+
+### Why the benchmark renders offscreen
+
+Milestone 7 measured `present` costing three to four times the CPU of recording an entire
+frame, and behaving in ways that do not track renderer cost. A benchmark that presented
+would mostly measure the compositor. `performance_test` therefore has no window, no swap
+chain and no `Present`, and reports:
+
+* **CPU record + submit** — the number draw-call count moves;
+* **GPU time** — from timestamp queries;
+* **serialized frame time** — record, submit *and wait*, since there is no pipelining
+  here. Any frame rate derived from it is labelled a lower bound, never plain "FPS".
+
+### Results
+
+1920x1080, release, 300 measured frames plus 30 warm-up per configuration. A and B are
+interleaved per instance count. **Three full runs of the benchmark:**
+
+| Instances | Draw calls A / B | A CPU | B CPU | A GPU | B GPU | CPU ratio |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1 | 1 / 1 | 0.016–0.018 ms | 0.016–0.018 ms | 0.034 ms | 0.034–0.035 ms | ~1.0x |
+| 100 | 100 / 1 | 0.017–0.021 ms | 0.015–0.018 ms | 0.040 ms | 0.040 ms | 1.0–1.2x |
+| 1,000 | 1,000 / 1 | 0.040–0.043 ms | 0.015–0.020 ms | 0.075 ms | 0.054–0.058 ms | 2.1–2.6x |
+| 10,000 | 10,000 / 1 | 0.252–0.264 ms | 0.018–0.023 ms | 0.415–0.421 ms | 0.080–0.085 ms | 11.5–15.1x |
+| 100,000 | 100,000 / 1 | 2.654–2.702 ms | 0.014–0.019 ms | 3.98–4.11 ms | 0.076–0.141 ms | 141–188x |
+
+### What this establishes
+
+* **Draw calls are not free, and they cost on both sides.** At 100,000 instances mode A
+  spends 2.65 ms of CPU and 4.11 ms of GPU; mode B spends 0.014 ms and 0.076 ms for the
+  identical image. That is roughly **27 ns of CPU and 41 ns of GPU per draw call**.
+* **Mode B's cost is flat.** From 1 to 100,000 instances, B's CPU time stays at
+  0.014–0.023 ms: the CPU issues one call regardless, and only the GPU notices the extra
+  geometry.
+* **The crossover is around 1,000 objects.** Below a few hundred instances the two modes
+  are indistinguishable — instancing is not worth complexity at that scale. By 10,000 it
+  is a 12–15x CPU difference, and at 100,000 it decides whether the frame fits in budget
+  at all.
+* **Budget context:** at 240 FPS the whole frame is 4.17 ms. Mode A at 100,000 objects
+  spends 2.65 ms of that on the CPU alone before any gameplay runs; mode B spends 0.3% of
+  the budget. For the target of many enemies and effects on screen, per-object draw calls
+  are not viable and the renderer must batch.
+
+### Acceptance criteria
+
+| Criterion | Result |
+| --- | --- |
+| Compares many draw calls against one instanced draw | pass |
+| Reports instance count, draw calls, CPU time, GPU time, frame rate | pass |
+| Establishes a baseline for data-oriented rendering | pass — per-draw-call cost quantified above |
+| Benchmark is not part of the game executable | pass — separate crate and binary |
+
+### Manual verification
+
+```powershell
+cargo run --release --bin performance_test
+cargo run --release --bin performance_test -- --instances 1000 --frames 500
+```
+
+### Known limitations
+
+* Every instance uses the same mesh and pipeline state. Real scenes change state between
+  draws, which is usually more expensive than the draw call itself, so mode A here is a
+  *best case* for per-object drawing and the real penalty would be larger.
+* Instance data is uploaded once and never changes. A real renderer rewrites transforms
+  every frame, which adds upload cost that this benchmark does not measure.
+* No depth buffer, no overdraw control, no textures, no culling.
+* The serialized frame time is a lower bound: a pipelined renderer overlaps CPU and GPU,
+  so its frame rate would be higher than the figure printed here.
+* GPU times below ~0.04 ms are close to the timestamp resolution and to fixed per-frame
+  overhead, which is why the smallest scenes show no difference between modes.
+
+---
+
+## Milestone 9 — Automated GPU integration test
+
+### What was built
+
+`crates/engine-renderer/tests/gpu_integration.rs`, following the milestone's steps with no
+window anywhere:
+
+1. create a D3D12 device,
+2. create an offscreen render target,
+3. render a known triangle,
+4. copy the result to a readback resource,
+5. read the pixels back to the CPU,
+6. verify the expected pixels and colours.
+
+Steps 1, 2, 4 and 5 are `engine_renderer::offscreen`, which has existed since Milestone 4;
+this milestone adds the known input and the verification, and makes the pass/fail contract
+explicit.
+
+### The expectation is derived, not hardcoded
+
+The test computes how much of the clip volume the triangle occupies from its own vertices
+and scales that by the target size:
+
+```text
+area(clip space) / 4 * width * height
+```
+
+So changing the triangle changes the expectation automatically, and the test cannot decay
+into asserting a stale constant. Output of a run:
+
+```text
+=== GPU INTEGRATION TEST ===
+Target:   512x512 offscreen, no window
+Expected: ~43254 pixels of colour rgb(64, 128, 191)
+Actual:   43274 matching pixels (0.05% error)
+Result:   PASS
+```
+
+The 5% tolerance exists for rasterization edge rules — a pixel is covered when its centre
+falls inside the triangle, so the boundary gains or loses about a perimeter's worth of
+pixels. The measured error is 0.05%, two orders of magnitude inside it.
+
+### What else is checked
+
+The count alone would miss whole classes of failure, so the file also asserts:
+
+* **No pixel is neither triangle nor background** — exactly zero, since anti-aliasing is
+  off and the triangle's colour is uniform. Catches swapped colour channels, uninitialized
+  readback memory and row padding leaking into the image.
+* **Corners are clear and the centre is the triangle colour** — a target that was simply
+  filled would pass a count-based check at the wrong tolerance but fails this.
+* **Determinism** — two identical renders produce byte-identical images. Every measurement
+  built on this path depends on that.
+* **The clear colour arrives exactly** — a distinctive colour, checked per channel.
+* **Degenerate targets are rejected** — zero width or height returns an error rather than
+  crashing.
+
+### Acceptance criteria
+
+| Criterion | Result |
+| --- | --- |
+| Creates a device, offscreen target, renders, copies to readback, reads pixels | pass |
+| Verifies expected pixels/colours exist | pass — 43,274 of ~43,254 expected, 0.05% error |
+| Requires no visible application window | pass — no window, no swap chain, no compositor |
+| Reports expected vs actual with PASS/FAIL | pass — printed above, and the assertion fails the test |
+
+### Known limitations
+
+* **Needs a D3D12 adapter.** On a machine without one the test prints `SKIP:` and returns
+  green rather than failing, so a CI container without a GPU reports success without
+  having verified anything. That is deliberate — the alternative is a permanently red
+  suite on hardware the engine does not target — but it means *"tests passed" on unknown
+  hardware is not proof the GPU path works*. Any CI that matters must run on a GPU runner
+  and check for the `SKIP:` line.
+* Only initialization failures classified as `NoSuitableAdapter` skip; every other error
+  panics, so a broken driver is a failure rather than a silent skip.
+* The test creates its own device per render, so it does not exercise the swap chain, the
+  frame pacing or the presentation path — those are covered by `d3d12_init.rs`.
+* Verification is colour and coverage only. It would not catch a triangle rendered in the
+  wrong *place* if the area happened to match; `the_target_is_not_simply_filled` covers
+  the obvious cases (corners, centre) but not a general position check.
+* Tolerances assume no MSAA and no anti-aliasing. Enabling either later will require
+  revisiting the exact-match assertion.
 * Uppercase only; text is upper-cased before lookup.
 * The overlay is drawn with the scene's pipeline, so it has no blending and no background
   panel. Over a bright scene it may be hard to read.

@@ -13,6 +13,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "engine-bench"
+version = "0.1.0"
+dependencies = [
+ "engine-core",
+ "engine-renderer",
+ "log",
+]
+
+[[package]]
 name = "engine-core"
 version = "0.1.0"
 dependencies = [
