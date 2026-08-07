@@ -1,5 +1,26 @@
 //! Descriptor heaps and their allocators.
 //!
+//! # Status: partly staged
+//!
+//! [`CpuDescriptorHeap`] is live — the swap chain's RTVs and the depth buffer's DSV come
+//! from it, and that is every descriptor the renderer creates today.
+//!
+//! [`GpuDescriptorHeap`] is **not used by the production render path**, deliberately.
+//! Nothing samples a texture yet, so the mesh root signature binds three root CBVs: a GPU
+//! address written straight into the root arguments, with no descriptor to allocate and no
+//! table to bind. That is the cheapest binding D3D12 offers, and while it remains available
+//! a shader-visible heap would be pure overhead.
+//!
+//! It exists now rather than later because the shape it needs is decided by a question that
+//! is easier to answer before there are callers than after: one heap or many, and a bump
+//! region per frame slot or a general allocator. Both answers are below, both are tested,
+//! and both are what the first textured material will need on day one.
+//!
+//! * **Expected to be used by:** the milestone that gives materials a texture, which turns
+//!   the material root CBV into a descriptor table.
+//! * **Intentionally staged.** Do not delete it as unused; do not wire it without a caller
+//!   that needs a descriptor.
+//!
 //! Three lifetimes, three strategies. Using one allocator for all of them would mean
 //! paying the most expensive strategy's cost for the cheapest case, and the per-draw case
 //! is the one that runs thousands of times a second.

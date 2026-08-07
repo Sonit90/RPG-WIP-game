@@ -4,6 +4,24 @@
 //! single 64-bit key per object that a plain sort orders correctly. Sorting by that key
 //! groups pipeline changes first, then materials, then meshes — so batching in Milestone 18
 //! is a linear scan over the sorted list rather than a separate system.
+//!
+//! # Status: staged, and NOT COMPILED
+//!
+//! This file is **not declared as a module in `lib.rs`**. Nothing includes it, nothing
+//! compiles it, and nothing can call it. It predates the Milestone 15 checkpoint and is
+//! committed so that it is visible rather than sitting untracked on someone's disk.
+//!
+//! * **Expected to be used by:** Milestone 16, which is where the render list gets designed
+//!   properly and wired in.
+//! * **Intentionally staged, and intentionally a draft.** The Milestone 15 audit's proposal
+//!   differs from what is here: it argues the list should hold a *compact structure-of-
+//!   arrays copy* of the per-draw data rather than handles back into `RenderWorld`, because
+//!   sorting handles makes every comparison and every recorded draw an indirection into
+//!   cold memory, and because an SoA copy is already the shape an indirect-argument buffer
+//!   wants. Treat this file as a starting point to argue with, not as the design.
+//!
+//! Because it is not compiled, nothing here is checked by `cargo build`, `cargo clippy` or
+//! the test suite. Assume it is stale until Milestone 16 makes it real.
 
 use engine_core::math::Vec3;
 

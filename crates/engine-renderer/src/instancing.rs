@@ -6,6 +6,24 @@
 //! triangle and the same instance buffer, so the **only** variable between them is the
 //! number of draw calls. Mode A selects instance `i` with `StartInstanceLocation`; mode B
 //! passes an instance count. Nothing else changes.
+//!
+//! # Status: staged, not used by the production render path
+//!
+//! `Renderer::render_world` does not touch [`InstancedPipeline`]. It draws through
+//! [`crate::mesh_pipeline::MeshPipeline`], one `DrawIndexedInstanced` per visible object
+//! with an instance count of one — the deliberately unoptimized Milestone 15 baseline that
+//! batching and instancing have to beat.
+//!
+//! What lives here is the *measurement* of what they would be worth, not the feature. It
+//! draws a unit triangle with per-instance colours and transforms, which is enough to price
+//! draw-call submission against instanced submission and nothing more; it does not
+//! understand meshes, materials or a `RenderWorld`.
+//!
+//! * **Used today by:** `engine-bench`'s `performance_test`, via [`crate::bench`].
+//! * **Expected to inform:** the batching and instancing milestones, which will need a real
+//!   per-instance path against `MeshVertex` geometry rather than this one.
+//! * **Intentionally staged.** Do not delete it as unused — the benchmark is a caller — and
+//!   do not mistake it for the instancing feature itself.
 
 use windows::Win32::Graphics::Direct3D12::{
     D3D12_GRAPHICS_PIPELINE_STATE_DESC, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA,

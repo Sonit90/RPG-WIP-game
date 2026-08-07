@@ -411,6 +411,28 @@ impl TrackedResource for GpuTexture {
 ///
 /// The alternative — blocking until the GPU is idle before every release — is correct and
 /// costs a full pipeline drain. This costs a push and a comparison per collected resource.
+///
+/// # Status: staged, not used by the production render path
+///
+/// The renderer owns one of these and calls [`DeferredReleaseQueue::collect`] every frame,
+/// but **nothing calls [`DeferredReleaseQueue::release`] outside the tests**. Every
+/// destruction the renderer performs today — replacing the stress scene, resizing the swap
+/// chain — happens behind an explicit `wait_for_idle`, because both are rare and neither is
+/// on a measured path.
+///
+/// That is a deliberate choice, not an oversight. Wiring this up needs a destruction API,
+/// and the renderer has none: `create_mesh` and `create_material` push onto a `Vec` that is
+/// never shortened, because nothing streams content in or out yet. Adding a `destroy_mesh`
+/// purely to give this queue a caller would be inventing a workload to justify machinery.
+///
+/// * **Expected to be used by:** asset streaming, when a level can load and unload geometry
+///   while frames are in flight. At that point a full pipeline drain per unload becomes a
+///   visible hitch, which is exactly the cost this removes.
+/// * **Intentionally staged.** The mechanism is correct and tested; what is missing is a
+///   reason to use it.
+///
+/// Until then, the honest answer to "what stops a resource being freed while the GPU reads
+/// it?" is: an explicit idle wait, everywhere.
 #[derive(Default)]
 pub struct DeferredReleaseQueue {
     /// Kept in submission order, so collection can stop at the first entry not yet passed.
