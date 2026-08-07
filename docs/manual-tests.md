@@ -122,25 +122,44 @@ the game leaves nothing held; no movement or repeated action continues on its ow
 
 **Expected** — the overlay appears immediately on the first press, not a quarter of a
 second later. Text is readable against the scene. FPS, CPU ms, GPU ms, triangle and draw
-counts, resolution and adapter name all appear, update about four times a second, and
-agree with the log. Hiding it removes its draw call (visible in the reported draw count).
+counts, resolution and adapter name all appear, update about ten times a second, and agree
+with the log. Hiding it removes its draw call (visible in the reported draw count). See
+MT-015 for the combat and simulation lines.
 
 ---
 
-## MT-007 — Stress levels
+## MT-007 — Playable prototype
 
-**Purpose** — the runtime workload switch works and the statistics reset with it.
+**Purpose** — the Phase 3 acceptance test: the game is playable, and every combat mechanic
+is visible on screen rather than only in a test.
 
 **Steps**
 
-1. `.\target\release\mygame.exe --overlay --report 1`
-2. Press F1, F2, F3, F4 in turn, then F6.
-3. Step down and up with F7 and F8.
-4. Watch the overlay and the log after each change.
+1. `.	argetelease\mygame.exe --overlay`
+2. Left-click to capture the mouse, then move it: the camera orbits the character.
+3. Hold W, A, S and D; the character runs in the direction the camera faces.
+4. Press SPACE while running.
+5. Press 1 several times in a row.
+6. Press 2, wait a second, then press 3.
+7. Press TAB a few times, then walk into the dummy group and press 3.
+8. Press R.
+9. Roll the mouse wheel both ways. Press ESC.
 
-**Expected** — the triangle count in the overlay matches the level (1 / 100 / 1000 /
-10000, and 100000 for F6). Frame-time statistics restart at each change rather than
-blending the old workload with the new one. Nothing flickers or disappears.
+**Expected**
+
+* A blue box on a dark green floor, a red dummy ahead and four more to the right, with a
+  yellow marker floating above the selected one.
+* The camera follows smoothly and orbits without the character sliding across the screen.
+* The character jumps once per press, arcs, lands, and cannot double-jump by holding SPACE.
+* The first 1 damages the target — its health falls in the overlay — and the next presses
+  within 1.5 s do nothing except print `CANNOT CAST: ON COOLDOWN`.
+* After 2, the target keeps losing health for six seconds with no further input.
+* 3 pressed on a burning target removes far more health than 3 on a cold one.
+* 3 next to the group damages all four dummies at once and leaves the lone dummy untouched.
+* TAB moves the marker between dummies.
+* R restores every dummy to full health and resets DAMAGE DONE and DPS to zero.
+* The wheel changes the camera distance between about 2.5 and 25 metres; ESC releases the
+  cursor.
 
 ---
 
@@ -258,10 +277,32 @@ timestamp, level, thread name and subsystem.
 
 **Steps**
 
-1. `.\target\release\mygame.exe --overlay --report 10 --triangles 10000`
+1. `.\target\release\mygame.exe --overlay --report 10 --dummies 500`
 2. Leave it running for 30 minutes, interacting occasionally.
 3. Watch memory in Task Manager and frame times in the overlay.
 
 **Expected** — memory is flat after the first few seconds. Frame times at the end match
-those at the start. No warning about the frame allocator exceeding its budget. Closing at
-the end is still clean.
+those at the start. No warning about the frame allocator exceeding its budget. The
+simulation's tick count keeps pace with elapsed time (roughly 60 per second) and the SIM
+line does not grow. Closing at the end is still clean.
+
+---
+
+## MT-015 — Developer overlay: combat and simulation
+
+**Purpose** — the overlay reports what is actually happening, not plausible numbers.
+
+**Steps**
+
+1. `.	argetelease\mygame.exe --overlay`
+2. Note DAMAGE DONE, then cast 1 once and note it again.
+3. Watch the SIM line while standing still, then while running.
+4. Watch a cooldown on the ability bar after casting.
+5. Press R.
+
+**Expected** — DAMAGE DONE rises by roughly the damage of one Fireball and DPS becomes
+non-zero. The SIM line shows a sub-millisecond figure, `TICKS 0` or `1` most frames, and
+`60 HZ`. A cast ability's bar entry counts down in tenths and returns to READY exactly when
+the ability becomes usable again. R zeroes the meter and every cooldown.
+
+---

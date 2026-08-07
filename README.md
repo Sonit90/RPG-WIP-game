@@ -3,7 +3,10 @@
 Custom Rust + Direct3D 12 engine for a future third-person PvE combat game.
 Windows 10/11 only, MSVC toolchain, `windows-rs` bindings, no third-party game engine.
 
-**Current state: Phase 0 (technical spike). No gameplay.**
+**Current state: Phase 3 complete — a playable local prototype.** A character in a training
+arena that moves, jumps, targets, casts ten abilities with cooldowns and costs, damages
+training dummies with single-target, damage-over-time and area synergy mechanics, and
+reports it in a developer combat meter. No networking.
 
 ## Requirements
 
@@ -29,19 +32,26 @@ Options (`cargo run --bin mygame -- --help`):
 --frames <count>     exit after rendering this many frames
 --report <seconds>   frame-time report interval (default 1.0, 0 disables)
 --overlay            start with the debug overlay visible
---triangles <count>  stress-test triangle count (default 1)
+--dummies <count>    training dummies in the group (default 4)
 ```
 
-Runtime keys:
+Controls:
 
 | Key | Action |
 | --- | --- |
-| F1-F4 | stress level 1 / 100 / 1,000 / 10,000 triangles |
-| F6 | stress level 100,000 triangles |
-| F7 / F8 | step one stress level down / up |
-| F5 | show or hide the debug overlay |
+| W A S D | move, relative to the camera |
+| SPACE | jump |
+| 1 / 2 / 3 | Fireball / Ignite / Detonate |
+| 4 – 0 | placeholder abilities |
+| TAB | cycle target |
+| R | reset the dummies and the combat meter |
+| LEFT CLICK / ESC | capture / release the mouse for camera control |
+| MOUSE WHEEL | camera distance |
+| F5 | show or hide the developer overlay |
+| F9 | wireframe on/off |
 
-The debug overlay shows FPS, CPU and GPU frame time, resolution and adapter name. It ships
+The developer overlay shows FPS, CPU and GPU frame time, simulation and extraction timing,
+the damage meter (total, DPS, by ability, by target) and the ability bar with cooldowns. It ships
 in release builds, starts hidden, and is toggled with **F5**. Its cost is below the noise
 floor of measurement (see `docs/performance.md`).
 
@@ -63,11 +73,14 @@ cargo run --release --bin mygame -- --frames 60000 --report 1
 ```powershell
 cargo run --release --bin performance_test
 cargo run --release --bin performance_test -- --instances 1000 --frames 500
+cargo run --release --bin game_bench
 ```
 
-Compares one draw call per object against a single instanced draw, rendering offscreen so
-the numbers measure the renderer rather than the compositor. Lives in its own crate, so it
-is never part of the game executable.
+`performance_test` compares one draw call per object against a single instanced draw,
+rendering offscreen so the numbers measure the renderer rather than the compositor.
+`game_bench` measures the gameplay pipeline — simulation, combat, extraction, culling — with
+no device at all, and counts every allocation while it does. Both live in their own crate,
+so neither is ever part of the game executable.
 
 ## Checks
 
@@ -86,9 +99,13 @@ crates/
   engine-platform/    Win32 window, message pump, input translation (no GPU types)
   engine-render-data/ what the game hands the renderer: RenderWorld, camera, lighting,
                       handles. Pure data — no windows, no D3D12
+  engine-game/        the gameplay simulation: entities, movement, combat, abilities,
+                      statuses, events, telemetry. engine-core only — no D3D12, no windows
+  engine-presentation/ gameplay to rendering: extraction, third-person camera, HUD text
   engine-renderer/    DXGI/D3D12 device, swap chain, command recording (no gameplay)
   engine-app/         the game executable (bin: mygame)
-  engine-bench/       benchmarks (bins: performance_test, cpu_bench, cull_bench) — never shipped
+  engine-bench/       benchmarks (bins: performance_test, cpu_bench, cull_bench,
+                      game_bench) — never shipped
   engine-showcase/    visual test bed for the renderer (bin: showcase) — never shipped
 docs/                 architecture, phase logs, testing, performance, memory, threading
 tools/                package.ps1 — builds and verifies a clean release distribution
@@ -99,6 +116,8 @@ tools/                package.ps1 — builds and verifies a clean release distri
 * [docs/architecture.md](docs/architecture.md) — layering and technology decisions
 * [docs/phase0.md](docs/phase0.md) — Phase 0 log: Rust/D3D12 spike
 * [docs/phase1.md](docs/phase1.md) — Phase 1 log: engine core
+* [docs/phase2.md](docs/phase2.md) — Phase 2 log: the D3D12 renderer
+* [docs/phase3.md](docs/phase3.md) — Phase 3 log: gameplay, combat and the prototype
 * [docs/testing.md](docs/testing.md) — test categories and how to run them
 * [docs/manual-tests.md](docs/manual-tests.md) — manual verification checklist
 * [docs/performance.md](docs/performance.md) — measurement methodology and results

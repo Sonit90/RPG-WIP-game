@@ -5,7 +5,11 @@
 ```
 Game            (executable, wiring only)
   |
-Gameplay / Simulation      (not in Phase 0)
+Input -> Commands          (engine-game::input_map, engine-game::command)
+  |
+Gameplay / Simulation      (engine-game, fixed 60 Hz, no D3D12)
+  |
+Render extraction          (engine-presentation)
   |
 RenderWorld                (data handoff: transforms, meshes, camera, instances)
   |
@@ -30,6 +34,8 @@ schedule and, eventually, to be driven by a network authority.
 | `engine-renderer` | DXGI/D3D12 device, swap chain, pipelines, GPU timing. | M2 |
 | `engine-render-data` | What the game hands the renderer. Pure data, no `windows`. | M15 |
 | `engine-showcase` | Development-only visual test bed. Nothing depends on it. | M15 |
+| `engine-game` | The gameplay simulation. `engine-core` only — no renderer, no `windows`, not even render data. | Phase 3 |
+| `engine-presentation` | Gameplay to rendering: extraction, the third-person camera, HUD text. | Phase 3 |
 
 `engine-platform` hands the renderer an opaque window handle and a client size.
 It does not link D3D12; the renderer does not create windows.
@@ -37,16 +43,19 @@ It does not link D3D12; the renderer does not create windows.
 ### Dependency graph
 
 ```text
-                  engine-core
-                 /     |      \
-                /      |       \
-    engine-platform    |   engine-render-data
-                \      |      /        ^
-                 \     |     /         |
-                  engine-renderer      |
-                        ^              |
-                        |         (future) gameplay
-                    engine-app
+                        engine-core
+                       /     |      \        \
+                      /      |       \        \
+        engine-platform      |   engine-render-data
+                      \      |      /  ^        ^
+                       \     |     /   |        |
+                     engine-renderer   |    engine-game
+                             ^         |        ^
+                             |         |        |
+                             |    engine-presentation
+                             |              ^
+                             \             /
+                              engine-app
 ```
 
 `engine-render-data` depends on **`engine-core` and nothing else**. That absence is the
@@ -105,6 +114,60 @@ What stayed in `engine-renderer` and why:
 | `Culler` | Pure CPU, but visibility is the renderer's policy, not data the game authors. |
 | `FrameConstants`, `ObjectConstants` | Plain data, but they are the CPU mirror of an HLSL `cbuffer`. Shader ABI belongs beside the shader. |
 | `MeshData`, `MaterialDesc` | Asset-authoring data, not scene data. Candidates for a future asset crate. |
+
+## Gameplay (Phase 3)
+
+```text
+InputState -> PlayerCommand -> Simulation -> CombatEvent -> CombatMeter
+                                   |
+                                   +-> GameWorld -> extraction -> RenderWorld
+```
+
+`engine-game` depends on **`engine-core` and nothing else** — deliberately not
+`engine-render-data` either. It cannot name a `MeshHandle`, so it cannot start owning one,
+and `crates/engine-game/tests/headless_simulation.rs` runs the whole pipeline with no
+device. Checkable:
+
+```
+cargo tree -p engine-game
+engine-game
+├── engine-core
+│   └── log
+└── log
+```
+
+`engine-presentation` is the only crate that knows both sides. It decides that a dummy is a
+scaled cube in a particular colour, which is a decision neither neighbour can make:
+`engine-game` has no meshes and `engine-render-data` has no health.
+
+### Fixed timestep
+
+Gameplay advances in whole 60 Hz ticks from an accumulator
+(`engine_core::time::FixedTimestep`); the renderer runs at whatever rate it reaches. Nothing
+in gameplay reads the frame delta. A simulation tied to the frame rate gives a player at
+1400 FPS a different jump arc than one at 240 FPS, makes cooldowns frame-rate dependent, and
+makes a recording unreproducible. Catch-up is bounded at eight ticks per frame so a stall
+cannot spiral.
+
+The camera is the exception and is presentation: it is smoothed at the *render* rate, which
+is what stops a 60 Hz simulation from looking like 60 FPS.
+
+### Commands and events
+
+Two seams that exist for what comes after Phase 3:
+
+* **Commands** — `engine-game::input_map` is the only code in the project that knows which
+  key does what. The simulation consumes `PlayerCommand`, so a replay, an AI or a network
+  client drives it identically.
+* **Events** — every combat state change is announced as a `CombatEvent`. The damage meter
+  reads a slice of them; nothing in the ability system mentions telemetry. VFX, a combat log
+  and replication are further readers of the same slice.
+
+### What gameplay must never put in `RenderWorld`
+
+Health, cooldowns, statuses, resources, factions, targets. `RenderWorld` carries transforms,
+mesh and material handles, bounds and visibility, and there is nowhere in it for the rest to
+go — which is enforced by the crate split rather than by review.
 
 ## Engine lifecycle (Phase 1, M1)
 

@@ -676,3 +676,100 @@ Against the Phase 2 frame budgets:
 
 And against the architectural target of "CPU renderer overhead < 1 ms, GPU < 1 ms for a
 simple scene": 0.69 ms CPU and 0.49 ms GPU, for a scene that is not simple.
+
+---
+
+# Phase 3 — gameplay and combat
+
+## Methodology
+
+Two different measurements, kept apart on purpose:
+
+* **`cargo run --release --bin game_bench`** measures the gameplay pipeline with no device:
+  the simulation tick, the combat share of it, render extraction and frustum culling. Per
+  *tick*, not per frame — a 60 Hz tick happens roughly once every five frames at 300 FPS.
+* **`mygame --dummies <n> --frames 3000 --report 0`** measures the whole frame, including
+  presentation. FPS and GPU time are properties of a frame, and mixing the two would measure
+  the swap chain.
+
+Both play a fixed rotation, so two runs are the same workload rather than two different
+ones. Reference machine, release, vsync off, 1920×1080 windowed.
+
+## Milestone 24 — the gameplay pipeline, per tick
+
+3,000 measured ticks per scenario after 600 warm-up ticks.
+
+| Dummies | Entities | Sim mean | of which combat | Extraction | Culling | Sim p99 |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1 | 3 | 0.40 µs | 0.10 µs | 0.12 µs | 0.07 µs | 0.5 µs |
+| 10 | 12 | 0.55 µs | 0.13 µs | 0.29 µs | 0.14 µs | 0.8 µs |
+| 100 | 102 | 2.24 µs | 0.51 µs | 2.16 µs | 0.84 µs | 5.0 µs |
+| 500 | 502 | 9.71 µs | 2.18 µs | 10.35 µs | 3.43 µs | 24.0 µs |
+| 1,000 | 1,002 | 19.22 µs | 4.30 µs | 20.80 µs | 5.99 µs | 49.0 µs |
+
+Linear in entity count, which is what a pass over parallel arrays should be.
+
+## Milestone 24 — the whole frame
+
+3,000 frames per scenario.
+
+| Dummies | CPU frame mean | CPU p99 | GPU frame mean | FPS |
+| --- | --- | --- | --- | --- |
+| 1 | 0.208 ms | 0.728 ms | 0.076 ms | 4753 |
+| 10 | 0.203 ms | 0.645 ms | 0.074 ms | 4427 |
+| 100 | 0.214 ms | 0.666 ms | 0.079 ms | 4654 |
+| 500 | 0.264 ms | 0.805 ms | 0.116 ms | 3769 |
+| 1,000 | 0.340 ms | 1.156 ms | 0.150 ms | 2941 |
+
+At 1,000 entities the simulation costs about 4 µs of an average 300 FPS frame: **0.06% of
+the 480 FPS stretch budget**. Gameplay is not the bottleneck and is not close to being one.
+
+## What the measurement found
+
+The first targeting implementation ranked every hostile by distance with an insertion sort,
+and `nearest_hostile` — which runs every tick to keep a valid target selected — read one
+element off the front of that sort.
+
+| 1,000 dummies | Sim mean | Sim p99 |
+| --- | --- | --- |
+| Insertion sort, ranked every tick | 39.06 µs | 398.5 µs |
+| Single scan for nearest, `sort_unstable_by` for the ranking | 19.22 µs | 49.0 µs |
+
+**2× on the mean and 8× on the p99.** A 398 µs spike every fifteen ticks would have been
+invisible in an average and clearly visible on screen. This is the entire reason the
+benchmark exists, and it is the only optimization Phase 3 made.
+
+## Milestone 25 — allocation
+
+`game_bench` counts every process allocation with a counting global allocator, over the
+measured ticks only.
+
+| Dummies | Allocations over 3,000 ticks | Per tick |
+| --- | --- | --- |
+| 1 | 0 | 0.0000 |
+| 10 | 2 | 0.0007 |
+| 100 | 9 | 0.0030 |
+| 500 | 8 | 0.0027 |
+| 1,000 | 8 | 0.0027 |
+
+The residue is amortized growth rather than per-frame work: the damage meter appends a row
+the first time each distinct target is hit, and the target cycle keeps reaching new dummies
+for tens of seconds in the larger scenarios. The scenario where every target has been seen
+during warm-up allocates **exactly zero** over 3,000 ticks.
+
+Known per-frame allocations added by Phase 3: none. The event stream, command buffer,
+ability hit list, status outcome list, target scratch, meter rows, extractor slot map and
+overlay strings are all cleared rather than freed, and each has a test asserting its
+capacity does not move in a steady state.
+
+No custom allocator and no object pool: 0.003 allocations per tick justifies neither.
+
+## Phase 2 regression check
+
+| Measurement | Phase 2 baseline | Phase 3 |
+| --- | --- | --- |
+| `cull_bench`, 100,000 objects, 50% visible | ~6.0 ns/object | 5.54 ns/object, 0 allocations |
+| Showcase, 10,000 objects, windowed | 0.401–0.514 ms CPU | 0.469 ms CPU, 2132 FPS |
+
+No rendering regression. The only change to shared code is the additive
+`engine_core::time::FixedTimestep`.

@@ -12,9 +12,25 @@ regressions, and no test code may end up in the shipped game executable.
 | 3 | GPU/rendering integration tests | `crates/engine-renderer/tests/` | `cargo test -p engine-renderer` |
 | 4 | GPU/renderer benchmarks | `crates/engine-bench` | `cargo run --release --bin performance_test` |
 | 5 | CPU subsystem benchmarks | `crates/engine-bench` | `cargo run --release --bin cpu_bench` |
-| 6 | Manual verification | `docs/manual-tests.md` | human |
+| 6 | Gameplay benchmarks | `crates/engine-bench` | `cargo run --release --bin game_bench` |
+| 7 | Manual verification | `docs/manual-tests.md` | human |
 
 Everything in categories 1–3 runs under `cargo test --workspace`.
+
+## Gameplay tests need no GPU, and that is enforced
+
+`engine-game` depends on `engine-core` alone, so every gameplay, combat, ability, targeting
+and telemetry test runs with no device, no window and no adapter — they cannot be skipped
+the way a GPU test can, and they run in milliseconds.
+
+`crates/engine-game/tests/headless_simulation.rs` exists to make that structural rather than
+incidental: it is a separate integration target linking only `engine-game` and
+`engine-core`, so a change that makes the simulation depend on the renderer stops it
+compiling instead of quietly making the suite need a GPU.
+
+`crates/engine-game/tests/determinism.rs` compares fixed-point snapshots of two runs of the
+same command script, and the event log of both. Floating-point state compared loosely is
+what makes a determinism test useless, so it is compared exactly.
 
 ## Build configurations that must be checked
 
@@ -49,6 +65,11 @@ accumulated ones so far, each named for the behaviour rather than the bug:
 | Negative cursor coordinates read as ~65000 | `unpacks_cursor_positions_including_negative_ones` |
 | A frame's scratch memory accumulating across frames | `frame_memory_is_reclaimed_every_frame` |
 | A panicking job killing its worker | `a_panicking_job_is_reported_and_the_pool_survives` |
+| A cooldown that never expires because 1/60 s is inexact in `f32` | `a_cooldown_runs_down_at_the_simulation_rate_and_stops_at_zero` |
+| A six-second burn ticking five times for the same reason | `a_status_ticks_once_a_second_for_its_whole_duration` |
+| One jump press becoming eight jumps in a catch-up batch | `a_jump_command_lifts_the_character_once_per_press` |
+| Damage applied to the world but missing from the meter | `the_full_rotation_runs_and_the_meter_agrees_with_the_health_lost` |
+| A new entity inheriting a dead one's render entity or damage row | `a_reused_gameplay_slot_gets_its_own_render_entity`, `a_reused_slot_gets_its_own_row_rather_than_inheriting_one` |
 
 ## Why test code cannot reach the release build
 
