@@ -147,7 +147,13 @@ pub fn write_lines(lines: &mut Vec<String>, stats: &HudStats<'_>) {
 
     let _ = write!(lines[2], "FPS           {:>10.0}", cpu.mean_fps());
     let _ = write!(lines[3], "FRAME         {:>10.2} MS", cpu.mean_ms);
-    let _ = write!(lines[4], "P99           {:>10.2} MS", cpu.p99_ms);
+    // p50 next to p95 and p99, because a mean hides exactly the spikes the percentiles
+    // exist to expose, and a p99 alone cannot say whether the typical frame moved with it.
+    let _ = write!(
+        lines[4],
+        "P50/P95/P99   {:>5.2} {:>5.2} {:>5.2}",
+        cpu.p50_ms, cpu.p95_ms, cpu.p99_ms
+    );
 
     let _ = write!(lines[6], "CPU");
     let _ = write!(lines[7], "  RENDER      {:>10.2} MS", stages.render_ms);

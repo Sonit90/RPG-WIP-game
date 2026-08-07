@@ -308,15 +308,19 @@ impl Showcase {
 
         let cull = self.renderer.cull_stats();
         log::info!(
-            "{}: {} objects | CPU mean {:.3} ms ({:.0} FPS) p99 {:.3} ms | GPU {} | \
-             visible {} culled {} | cull {:.3} ms | draws {} | tris {}",
+            "{}: {} objects | CPU mean {:.3} ms ({:.0} FPS) p50 {:.3} p95 {:.3} p99 {:.3} ms | \
+             GPU {} | visible {} culled {} | cull {:.3} ms | draws {} | tris {}",
             self.scene.preset_name(),
             self.scene.object_count(),
             summary.cpu.mean_ms,
             summary.cpu.mean_fps(),
+            summary.cpu.p50_ms,
+            summary.cpu.p95_ms,
             summary.cpu.p99_ms,
             match summary.gpu {
-                Some(gpu) => format!("{:.3} ms", gpu.mean_ms),
+                // Mean and p99 for the GPU: its timestamps lag the CPU by a few frames, so
+                // the two are summarized separately and never presented as one frame.
+                Some(gpu) => format!("mean {:.3} p99 {:.3} ms", gpu.mean_ms, gpu.p99_ms),
                 None => "N/A".to_owned(),
             },
             cull.visible,
@@ -433,16 +437,19 @@ impl Application for Showcase {
         ctx.metrics_mut().refresh();
         if let Some(summary) = ctx.metrics().summary() {
             log::info!(
-                "final CPU: mean {:.3} ms | p95 {:.3} ms | p99 {:.3} ms | n={}",
+                "final CPU: mean {:.3} ms ({:.0} FPS) | p50 {:.3} | p95 {:.3} | p99 {:.3} ms | n={}",
                 summary.cpu.mean_ms,
+                summary.cpu.mean_fps(),
+                summary.cpu.p50_ms,
                 summary.cpu.p95_ms,
                 summary.cpu.p99_ms,
                 summary.cpu.count
             );
             if let Some(gpu) = summary.gpu {
                 log::info!(
-                    "final GPU: mean {:.3} ms | p95 {:.3} ms | p99 {:.3} ms | n={}",
+                    "final GPU: mean {:.3} ms | p50 {:.3} | p95 {:.3} | p99 {:.3} ms | n={}",
                     gpu.mean_ms,
+                    gpu.p50_ms,
                     gpu.p95_ms,
                     gpu.p99_ms,
                     gpu.count
