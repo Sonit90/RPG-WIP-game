@@ -1,0 +1,18 @@
+[package]
+name = "engine-presentation"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+# The only crate that knows both worlds: it reads gameplay state and writes rendering data.
+# It still links no D3D12, because engine-render-data does not — so extraction, the camera
+# controller and the HUD text are all testable without a device.
+[dependencies]
+engine-core = { workspace = true }
+engine-game = { workspace = true }
+engine-render-data = { workspace = true }
+log = { workspace = true }
+
+[lints]
+workspace = true
