@@ -6,20 +6,20 @@
 
 use std::sync::OnceLock;
 
-use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM};
-use windows::Win32::Graphics::Gdi::HBRUSH;
+use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
+use windows::Win32::Graphics::Gdi::{ClientToScreen, HBRUSH};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::{
     AdjustWindowRectEx, CREATESTRUCTW, CS_HREDRAW, CS_OWNDC, CS_VREDRAW, CW_USEDEFAULT,
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GWLP_USERDATA, GetClientRect,
     GetSystemMetrics, GetWindowLongPtrW, IDC_ARROW, LoadCursorW, MSG, PM_REMOVE, PeekMessageW,
     PostQuitMessage, RegisterClassExW, SIZE_MAXIMIZED, SIZE_MINIMIZED, SIZE_RESTORED, SM_CXSCREEN,
-    SM_CYSCREEN, SW_HIDE, SW_SHOW, SW_SHOWNORMAL, SetWindowLongPtrW, SetWindowTextW, ShowWindow,
-    TranslateMessage, WINDOW_EX_STYLE, WM_ACTIVATEAPP, WM_CLOSE, WM_DESTROY, WM_ERASEBKGND,
-    WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEMOVE,
-    WM_MOUSEWHEEL, WM_NCCREATE, WM_QUIT, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SIZE, WM_SYSKEYDOWN,
-    WM_SYSKEYUP, WM_XBUTTONDOWN, WM_XBUTTONUP, WNDCLASSEXW, WS_OVERLAPPED, WS_OVERLAPPEDWINDOW,
-    WS_POPUP, WS_SYSMENU,
+    SM_CYSCREEN, SW_HIDE, SW_SHOW, SW_SHOWNORMAL, SetCursorPos, SetWindowLongPtrW, SetWindowTextW,
+    ShowCursor, ShowWindow, TranslateMessage, WINDOW_EX_STYLE, WM_ACTIVATEAPP, WM_CLOSE,
+    WM_DESTROY, WM_ERASEBKGND, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN,
+    WM_MBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCCREATE, WM_QUIT, WM_RBUTTONDOWN, WM_RBUTTONUP,
+    WM_SIZE, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_XBUTTONDOWN, WM_XBUTTONUP, WNDCLASSEXW, WS_OVERLAPPED,
+    WS_OVERLAPPEDWINDOW, WS_POPUP, WS_SYSMENU,
 };
 use windows::core::{HSTRING, PCWSTR, w};
 
@@ -47,6 +47,12 @@ struct WindowState {
     client_width: u32,
     client_height: u32,
     minimized: bool,
+    /// Whether the cursor is currently shown.
+    ///
+    /// Tracked because `ShowCursor` maintains a *counter*, not a flag: calling it twice to
+    /// hide and once to show leaves the cursor hidden. Keeping the desired state here means
+    /// the counter only ever moves between 0 and -1.
+    cursor_visible: bool,
 }
 
 /// A native Windows window.
@@ -113,6 +119,7 @@ impl Window {
             client_width: client.0,
             client_height: client.1,
             minimized: false,
+            cursor_visible: true,
         }));
 
         let title = HSTRING::from(config.title.as_str());
@@ -245,6 +252,68 @@ impl Window {
             .map_err(|error| PlatformError::win32("SetWindowTextW", error))
     }
 
+    /// Shows or hides the mouse cursor.
+    ///
+    /// Idempotent, which `ShowCursor` on its own is not: it keeps a counter and hides the
+    /// cursor while that counter is negative, so two hides need two shows. Calling this
+    /// repeatedly with the same value does nothing.
+    ///
+    /// A hidden cursor is a *process-wide* state on Windows. Anything that hides it must
+    /// show it again before the window loses focus or the user is left without a pointer.
+    pub fn set_cursor_visible(&mut self, visible: bool) {
+        if self.state_ref().cursor_visible == visible {
+            return;
+        }
+        self.state_mut().cursor_visible = visible;
+        // SAFETY: FFI call that only adjusts this process's cursor display counter. The
+        // returned counter is not needed: the desired state is tracked above.
+        let _ = unsafe { ShowCursor(visible) };
+    }
+
+    /// Whether the cursor is currently shown.
+    #[must_use]
+    pub fn cursor_visible(&self) -> bool {
+        self.state_ref().cursor_visible
+    }
+
+    /// Warps the cursor to the centre of the client area.
+    ///
+    /// This is what a mouse-look camera does every frame: it reads the offset from the
+    /// centre as the frame's rotation, then re-centres so the cursor can never reach an
+    /// edge of the screen and stop producing movement.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PlatformError::Win32`] if the client rectangle cannot be read or the
+    /// cursor cannot be moved.
+    pub fn center_cursor(&self) -> Result<(), PlatformError> {
+        let mut rect = RECT::default();
+        // SAFETY: `hwnd` is live and `rect` is a valid out-parameter.
+        unsafe { GetClientRect(self.hwnd, &mut rect) }
+            .map_err(|error| PlatformError::win32("GetClientRect", error))?;
+
+        let mut point = POINT {
+            x: (rect.left + rect.right) / 2,
+            y: (rect.top + rect.bottom) / 2,
+        };
+        // SAFETY: `hwnd` is live and `point` is a valid in/out parameter. The BOOL result
+        // only fails for an invalid window, which the next call reports anyway.
+        let _ = unsafe { ClientToScreen(self.hwnd, &mut point) };
+
+        // SAFETY: FFI call moving the system cursor to a screen coordinate.
+        unsafe { SetCursorPos(point.x, point.y) }
+            .map_err(|error| PlatformError::win32("SetCursorPos", error))
+    }
+
+    /// The client-area centre in client pixels.
+    ///
+    /// The reference point a mouse-look camera measures its per-frame offset against.
+    #[must_use]
+    pub fn client_center(&self) -> (i32, i32) {
+        let (width, height) = self.client_size();
+        ((width / 2) as i32, (height / 2) as i32)
+    }
+
     /// Shows or hides the window.
     pub fn set_visible(&self, visible: bool) {
         let command = if visible { SW_SHOW } else { SW_HIDE };
@@ -268,6 +337,9 @@ impl Window {
 
 impl Drop for Window {
     fn drop(&mut self) {
+        // The cursor's display counter is process-wide: a window that hid it and then went
+        // away would leave the desktop without a pointer.
+        self.set_cursor_visible(true);
         // SAFETY: `hwnd` is live and owned by this value. DestroyWindow synchronously
         // delivers WM_DESTROY/WM_NCDESTROY, so the procedure can still reach the state
         // during this call; the box is only reclaimed afterwards.
