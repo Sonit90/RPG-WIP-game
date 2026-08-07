@@ -1,0 +1,25 @@
+[package]
+name = "engine-showcase"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "showcase"
+path = "src/main.rs"
+
+[features]
+# The showcase exists to look at the renderer, so the overlay is not optional here the way
+# it is in the game binary: without it there are no statistics to read.
+default = ["debug-overlay"]
+debug-overlay = ["engine-renderer/debug-overlay"]
+
+[dependencies]
+engine-core = { workspace = true }
+engine-platform = { workspace = true }
+engine-renderer = { workspace = true }
+log = { workspace = true }
+
+[lints]
+workspace = true

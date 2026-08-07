@@ -28,6 +28,7 @@ schedule and, eventually, to be driven by a network authority.
 | `engine-app` | The `mygame` executable. Wires platform + renderer. | M0 |
 | `engine-platform` | Win32 window, message pump, input events. No GPU types. | M1 |
 | `engine-renderer` | DXGI/D3D12 device, swap chain, pipelines, GPU timing. | M2 |
+| `engine-showcase` | Development-only visual test bed. Nothing depends on it. | M15 |
 
 `engine-platform` hands the renderer an opaque window handle and a client size.
 It does not link D3D12; the renderer does not create windows.

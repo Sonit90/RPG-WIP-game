@@ -87,6 +87,7 @@ crates/
   engine-renderer/    DXGI/D3D12 device, swap chain, command recording (no gameplay)
   engine-app/         the game executable (bin: mygame)
   engine-bench/       benchmarks (bins: performance_test, cpu_bench) — never shipped
+  engine-showcase/    visual test bed for the renderer (bin: showcase) — never shipped
 docs/                 architecture, phase logs, testing, performance, memory, threading
 tools/                package.ps1 — builds and verifies a clean release distribution
 ```

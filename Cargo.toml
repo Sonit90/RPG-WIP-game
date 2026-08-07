@@ -1,6 +1,15 @@
 [workspace]
 resolver = "3"
-members = ["crates/engine-core", "crates/engine-platform", "crates/engine-renderer", "crates/engine-app", "crates/engine-bench"]
+members = [
+    "crates/engine-core",
+    "crates/engine-platform",
+    "crates/engine-renderer",
+    "crates/engine-app",
+    "crates/engine-bench",
+    # Development-only: a visual test bed for the renderer. Nothing depends on it, and the
+    # shipped game never links it.
+    "crates/engine-showcase",
+]
 
 [workspace.package]
 version = "0.1.0"
