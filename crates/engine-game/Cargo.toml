@@ -1,0 +1,17 @@
+[package]
+name = "engine-game"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+# Deliberately only engine-core. This crate must never gain `windows`, `engine-platform`,
+# `engine-renderer` or even `engine-render-data`: the simulation does not know that
+# rendering exists, and the absence of those dependencies is what makes the seam real. It
+# is checkable with `cargo tree -p engine-game`.
+[dependencies]
+engine-core = { workspace = true }
+log = { workspace = true }
+
+[lints]
+workspace = true

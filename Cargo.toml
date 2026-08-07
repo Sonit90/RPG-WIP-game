@@ -5,6 +5,10 @@ members = [
     "crates/engine-platform",
     "crates/engine-render-data",
     "crates/engine-renderer",
+    # Gameplay. Depends on engine-core alone; see its lib docs for why that is the point.
+    "crates/engine-game",
+    # Gameplay to rendering: extraction, the third-person camera, the developer overlay.
+    "crates/engine-presentation",
     "crates/engine-app",
     "crates/engine-bench",
     # Development-only: a visual test bed for the renderer. Nothing depends on it, and the
@@ -27,6 +31,9 @@ engine-render-data = { path = "crates/engine-render-data" }
 # default-features is off here so each consumer opts in; engine-app re-exports the
 # `debug-overlay` feature so a shipping build can drop it with --no-default-features.
 engine-renderer = { path = "crates/engine-renderer", default-features = false }
+# The gameplay simulation. Must never gain a `windows`, renderer or render-data dependency.
+engine-game = { path = "crates/engine-game" }
+engine-presentation = { path = "crates/engine-presentation" }
 log = "0.4"
 windows = "0.62"
 

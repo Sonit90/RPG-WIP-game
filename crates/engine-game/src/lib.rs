@@ -1,0 +1,93 @@
+//! The gameplay simulation.
+//!
+//! ```text
+//! Input -> Commands -> Simulation -> (state + events) -> extraction -> RenderWorld
+//!                      ^^^^^^^^^^
+//!                      this crate
+//! ```
+//!
+//! ## What makes this crate the seam
+//!
+//! It depends on `engine-core` and nothing else. Not `windows`, not `engine-platform`, not
+//! `engine-renderer`, and deliberately not even `engine-render-data`: the simulation cannot
+//! name a `MeshHandle`, so it cannot accidentally start owning one. Gameplay therefore runs
+//! with no device, no window and no GPU, which is what
+//! `crates/engine-game/tests/headless_simulation.rs` asserts and what makes a determinism
+//! test and a future dedicated server possible.
+//!
+//! ```text
+//! cargo tree -p engine-game
+//! engine-game
+//! ├── engine-core
+//! │   └── log
+//! └── log
+//! ```
+//!
+//! ## The shape of a tick
+//!
+//! ```text
+//! commands -> movement -> cooldowns -> abilities -> statuses -> deaths -> telemetry
+//!                                          |            |         |
+//!                                          +------> CombatEvent <-+
+//! ```
+//!
+//! Time arrives as a real frame delta and is spent in whole fixed 60 Hz ticks
+//! ([`engine_core::time::FixedTimestep`]), so gameplay behaviour does not change with the
+//! frame rate. Everything a system does to the world is announced as a
+//! [`event::CombatEvent`], so telemetry — and later VFX, a combat log, or network
+//! replication — observes rather than hooks.
+//!
+//! ## Module map
+//!
+//! | Module | Owns |
+//! | --- | --- |
+//! | [`entity`] | Entity identity and the slot allocator |
+//! | [`world`] | Every entity's state, in parallel arrays |
+//! | [`movement`] | The character controller |
+//! | [`combat`] | Health, resource, factions, damage types |
+//! | [`status`] | Lasting effects such as burning |
+//! | [`ability`] | Ability definitions, slots and cooldowns |
+//! | [`targeting`] | Who an ability affects |
+//! | [`event`] | What happened, as data |
+//! | [`telemetry`] | The combat meter |
+//! | [`command`] | What the player asked for |
+//! | [`input_map`] | Keys to commands — the only module that knows a key |
+//! | [`arena`] | The training arena |
+//! | [`sim`] | The tick, and everything that owns state across one |
+
+/// Seconds below which a countdown is treated as finished.
+///
+/// A fixed step of 1/60 s is not exactly representable in `f32`, so subtracting it sixty
+/// times from 1.0 leaves a residue of a few millionths rather than zero. Without a
+/// tolerance a six-second burn ticks five times instead of six and an ability whose
+/// cooldown has "expired" is still refused — both of which look like logic bugs and are
+/// arithmetic. A tenth of a millisecond is far below anything gameplay can express and far
+/// above the accumulated error.
+pub const TIME_EPSILON: f32 = 1e-4;
+
+pub mod ability;
+pub mod arena;
+pub mod combat;
+pub mod command;
+pub mod entity;
+pub mod event;
+pub mod input_map;
+pub mod movement;
+pub mod sim;
+pub mod status;
+pub mod targeting;
+pub mod telemetry;
+pub mod world;
+
+pub use ability::{ABILITY_SLOTS, AbilityDef, AbilityError, AbilityId};
+pub use arena::{Arena, ArenaConfig, training_arena};
+pub use combat::{DamageType, Faction, Health, Resource};
+pub use command::{CommandBuffer, PlayerCommand};
+pub use entity::EntityId;
+pub use event::{CombatEvent, DamageEvent};
+pub use input_map::Bindings;
+pub use movement::{Body, MovementState};
+pub use sim::{Player, SimConfig, SimStats, Simulation};
+pub use status::{StatusKind, StatusSet};
+pub use telemetry::CombatMeter;
+pub use world::{EntityDesc, EntityKind, GameWorld};

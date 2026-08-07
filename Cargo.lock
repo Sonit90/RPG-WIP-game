@@ -7,7 +7,9 @@ name = "engine-app"
 version = "0.1.0"
 dependencies = [
  "engine-core",
+ "engine-game",
  "engine-platform",
+ "engine-presentation",
  "engine-renderer",
  "log",
 ]
@@ -17,6 +19,8 @@ name = "engine-bench"
 version = "0.1.0"
 dependencies = [
  "engine-core",
+ "engine-game",
+ "engine-presentation",
  "engine-render-data",
  "engine-renderer",
  "log",
@@ -31,12 +35,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "engine-game"
+version = "0.1.0"
+dependencies = [
+ "engine-core",
+ "log",
+]
+
+[[package]]
 name = "engine-platform"
 version = "0.1.0"
 dependencies = [
  "engine-core",
  "log",
  "windows",
+]
+
+[[package]]
+name = "engine-presentation"
+version = "0.1.0"
+dependencies = [
+ "engine-core",
+ "engine-game",
+ "engine-render-data",
+ "log",
 ]
 
 [[package]]
