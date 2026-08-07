@@ -25,8 +25,17 @@ path = "src/cpu_bench.rs"
 name = "cull_bench"
 path = "src/cull_bench.rs"
 
+# Gameplay on its own: simulation, combat, extraction and culling with no device. The
+# question "is gameplay fast enough?" is about a CPU pass over arrays, and measuring it
+# inside a frame that also records draw calls measures the draw calls.
+[[bin]]
+name = "game_bench"
+path = "src/game_bench.rs"
+
 [dependencies]
 engine-core = { workspace = true }
+engine-game = { workspace = true }
+engine-presentation = { workspace = true }
 engine-render-data = { workspace = true }
 engine-renderer = { workspace = true, default-features = false }
 # Only for the descriptor-heap type constants the benchmark passes through to the
