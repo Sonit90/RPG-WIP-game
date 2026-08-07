@@ -38,7 +38,8 @@ Milestone status:
 | 15 | Frustum culling | done |
 | — | Checkpoint: audit, and the `engine-render-data` split | done |
 | 16 | Render list | done |
-| 17 | Instanced rendering | todo |
+| 17 | Render submission profiling, parallel culling | partial |
+| 17b | Instanced rendering | todo |
 | 18 | Batching | todo |
 
 ---

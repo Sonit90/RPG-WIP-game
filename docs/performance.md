@@ -28,6 +28,11 @@ Still planned:
   one or more frames later, so the CPU never blocks on the GPU to obtain them (M5).
   GPU time is never derived from wall-clock timing.
 
+**Windowed and fullscreen are two different measurements.** Every result must say which,
+and results that matter should report both — see "Milestone 17 — windowed and fullscreen"
+below. A windowed swap chain is composited by DWM, which ignores `ALLOW_TEARING` and
+contends for the GPU; our own GPU timestamps read up to 3.4x high because of it.
+
 ## Measurement hygiene
 
 * **Do not drag or resize the window during a measured run.** Windows runs a modal
@@ -515,3 +520,127 @@ Flat per object, which is what a linear pass over two contiguous arrays should b
 Against the 12 us per-job break-even from docs/threading.md, a 10,000-object cull is three
 chunks - three submissions to save at most 25 us, which is not worth it. At 100,000 objects
 it becomes worth doing. The loop reads slices, so chunking is a call-site change.
+
+## Milestone 17 — windowed and fullscreen are two different measurements
+
+Every measurement in this document before this section was taken in a **window**. That was
+never stated, because until it was measured nobody suspected it mattered. It matters a lot.
+
+A windowed swap chain is composited by the Desktop Window Manager. `DXGI_PRESENT_ALLOW_TEARING`
+is ignored under composition, DWM has to blit a 1920×1080 client area onto whatever the
+desktop actually is, and its work contends for the same GPU. A borderless fullscreen swap
+chain can take the independent-flip path and skip all of that.
+
+Same scene, same build, same machine, 10,000 objects and 100,000 objects:
+
+| Scene | Mode | CPU | GPU | Present | FPS |
+| --- | --- | --- | --- | --- | --- |
+| 10,000 | windowed | 0.846 ms | 0.400 ms | 0.577 ms | 1182 |
+| 10,000 | fullscreen | 0.515 ms | 0.224 ms | 0.132 ms | 1942 |
+| 100,000 | windowed | 3.877 ms | 2.308 ms | 1.271 ms | 258 |
+| 100,000 | fullscreen | 3.101 ms | 0.686 ms | 0.246 ms | 322 |
+
+**Our own GPU timestamps read 3.4× high at 100,000 objects when windowed.** The timestamps
+are correct — they measure how long our command list took to execute — but a contended GPU
+executes it slower, so the number describes the machine's total load rather than the
+renderer's cost.
+
+### The rule from here
+
+**Report both.** Neither column is the truth on its own:
+
+* **Fullscreen** is the renderer's cost. It is what an optimization has to move, and it is
+  what the frame budgets in this document should be compared against.
+* **Windowed** is what a windowed game actually delivers on a desktop with other things on
+  it. It is the number a player would see, and it is the development default.
+
+A single-column result is ambiguous and should not be recorded. Where a table below this
+section has one column, it is fullscreen unless it says otherwise.
+
+Earlier sections keep their windowed numbers and are **not** re-measured. They are a log of
+what each milestone found, their relative conclusions all still hold — a comparison between
+two builds measured the same way is unaffected by a constant factor — and re-running fifteen
+milestones' tables would produce different numbers with the same meanings.
+
+### What Present actually is
+
+Present had never been attributed. It is not the renderer:
+
+* It does **not** scale with draw calls. 100,001 draws present *faster* (0.752 ms) than
+  17,299 (1.233 ms), because the slower CPU frame gives the GPU time to drain.
+* It does **not** scale with resolution. 1920×1080 to 480×270 changes it by nothing, and
+  changes GPU time by nothing either — this renderer is geometry and submission bound, not
+  pixel bound.
+* It does **not** move with frames in flight. 1, 2 and 3 all present in 0.56–0.61 ms, while
+  the *fence* stall behaves exactly as designed: 0% at 2 and 3 frames, 15% at 10,000 objects
+  and 81% at 100,000 with 1.
+
+It is where the CPU waits for the display pipeline, and windowed that pipeline includes DWM.
+The frame ring's stall counter cannot see it — that measures the fence at the top of the
+*next* frame, a different queue — which is why the Milestone 15 audit concluded the engine
+was CPU-bound with 0.1% stalls. That conclusion was drawn from the wrong queue.
+
+There is also a **~2000 FPS ceiling** in fullscreen and ~1200 windowed, enforced by Present
+regardless of workload: at 10 objects and at 10,000 the frame lands at almost exactly the
+same 0.50 ms. Any result near those numbers is measuring the swap chain, not the engine.
+Well clear of the 480 FPS stretch target, but it invalidates comparisons taken up there.
+
+## Milestone 17 — render submission profile
+
+Counters for every driver call the recording loop makes, at 100,000 objects / 17,298 visible:
+
+| Counter | Value |
+| --- | --- |
+| Binding calls | 86,495 |
+| PSO changes | 2 (+0 redundant) |
+| Material changes | 16,273 |
+| Mesh changes | 12,606 |
+| Root CBV binds | 34,597 (+1,025 redundant) |
+| Vertex buffer binds | 17,299 (+4,693 redundant) |
+| Index buffer binds | 17,298 (+4,693 redundant) |
+| Redundant overall | 15.0% |
+
+**PSO changes are already 2, not 17,299.** There is one mesh pipeline and one overlay
+pipeline, and the command context has eliminated redundant pipeline binds since Milestone 3.
+Sorting by pipeline can win nothing at the current material model — which is worth knowing
+before building a sort key with twelve bits reserved for it.
+
+Material and mesh changes are near the draw count against **9 materials and 4 meshes**, so
+that is where the headroom is. What a material change costs today is one
+`SetGraphicsRootConstantBufferView` — roughly 18 ns — so removing 16,264 of them is worth
+about 0.3 ms of the 1.7 ms recording time. Real, and much larger later: when a material
+gains a texture, a material change becomes a descriptor table bind.
+
+## Milestone 17 — parallel culling
+
+`Culler::cull_parallel` chunks the world across the job system, one `RenderList` per chunk,
+merged in chunk order. The merged list is identical to the serial one — asserted at 1, 2, 4,
+8 and 16 workers.
+
+Chunks are at least 4,096 slots. `docs/threading.md` puts the job break-even near 12 µs and
+a cull-and-gather pass measures ~6 ns per object, so a few thousand objects is the smallest
+chunk worth handing to a worker; below that the pass stays serial.
+
+Alternating runs, 1920×1080:
+
+| Scene | Mode | Cull | CPU frame | FPS |
+| --- | --- | --- | --- | --- |
+| 100,000, windowed | serial | 1.198 ms | 3.877 ms | 258 |
+| 100,000, windowed | parallel | 0.218 ms | 2.619 ms | 382 |
+| 100,000, fullscreen | serial | 1.203 ms | 3.101 ms | 322 |
+| 100,000, fullscreen | parallel | 0.209 ms | 2.108 ms | 474 |
+| 10,000, windowed | serial | 0.082 ms | 0.846 ms | 1182 |
+| 10,000, windowed | parallel | 0.055 ms | 0.821 ms | 1218 |
+| 10,000, fullscreen | serial | 0.082 ms | 0.515 ms | 1942 |
+| 10,000, fullscreen | parallel | 0.064 ms | 0.511 ms | 1957 |
+
+**5.5× on the cull pass and 1.47× on the whole frame at 100,000 objects**, which is 322 to
+474 FPS fullscreen — across the 480 FPS stretch target's threshold within measurement error.
+
+At 10,000 objects it is within noise, exactly as the break-even predicts: 1,772 visible is a
+0.08 ms pass and there is nothing there to win. The threshold keeps it serial rather than
+paying submission overhead for no gain, which is the whole reason the threshold exists.
+
+The per-object cull cost also rose from 3.7 ns (Milestone 15) to 6.0 ns, measured by
+`cpu_bench`. That is not a regression: since Milestone 16 the pass also gathers each
+survivor into the render list, which is work the recording loop used to do.
