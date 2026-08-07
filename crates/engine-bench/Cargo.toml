@@ -18,6 +18,13 @@ path = "src/main.rs"
 name = "cpu_bench"
 path = "src/cpu_bench.rs"
 
+# Frustum culling on its own: no device, no draws. Separate because "is culling fast
+# enough?" is a question about a CPU pass over an array, and measuring it inside a frame
+# that also records thousands of draw calls measures the draw calls.
+[[bin]]
+name = "cull_bench"
+path = "src/cull_bench.rs"
+
 [dependencies]
 engine-core = { workspace = true }
 engine-renderer = { workspace = true, default-features = false }
