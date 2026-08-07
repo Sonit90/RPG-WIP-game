@@ -359,8 +359,8 @@ impl Showcase {
         log::info!(
             "  submission: {} binding calls | PSO {}+{} redundant | material changes {} | \
              mesh changes {} | root CBV {}+{} redundant | VB {}+{} | IB {}+{} | \
-             redundant {:.1}% | present {} | fence signal {:.3} ms | \
-             fence stalls {:.1}% of frames, {:.3} ms mean",
+             redundant {:.1}% | batches {} | group {:.3} ms | present {} | \
+             fence signal {:.3} ms | fence stalls {:.1}% of frames, {:.3} ms mean",
             commands.binding_calls(),
             commands.pipeline_changes,
             commands.redundant_pipeline_binds,
@@ -373,6 +373,8 @@ impl Showcase {
             commands.index_buffer_binds,
             commands.redundant_index_buffer_binds,
             commands.redundant_bind_ratio() * 100.0,
+            self.renderer.render_list().batches().len(),
+            self.renderer.last_group_ms(),
             match self.renderer.present_stats() {
                 Some(present) => format!(
                     "mean {:.3} p50 {:.3} p99 {:.3} max {:.3} ms",

@@ -122,6 +122,8 @@ pub struct Renderer {
     /// Per-chunk render lists for a parallel cull, kept across frames so the chunks stop
     /// allocating once the scene reaches its high-water mark.
     cull_scratch: Vec<RenderList>,
+    /// Milliseconds the most recent grouping pass took.
+    last_group_ms: f64,
     /// Milliseconds the most recent `Present` call took.
     last_present_ms: f64,
     /// Milliseconds the most recent post-present fence signal took.
@@ -240,6 +242,7 @@ impl Renderer {
             cull_view_projection: None,
             last_cull_ms: 0.0,
             cull_scratch: Vec::new(),
+            last_group_ms: 0.0,
             last_present_ms: 0.0,
             last_fence_signal_ms: 0.0,
             present_window: FrameStatsWindow::new(PRESENT_WINDOW),
@@ -595,6 +598,20 @@ impl Renderer {
             }
         }
         self.last_cull_ms = started.elapsed().as_secs_f64() * 1e3;
+
+        // Grouping is timed with the cull rather than with recording: it is list-building
+        // work, it runs on the same CPU-only side of the seam, and attributing it to
+        // recording would credit the sort with the saving it produces.
+        let grouping = std::time::Instant::now();
+        self.visible
+            .group_by_material_and_mesh(self.materials.len(), self.meshes.len());
+        self.last_group_ms = grouping.elapsed().as_secs_f64() * 1e3;
+    }
+
+    /// Milliseconds the most recent grouping pass took.
+    #[must_use]
+    pub fn last_group_ms(&self) -> f64 {
+        self.last_group_ms
     }
 
     /// Records and submits a frame drawing whatever [`Renderer::build_render_list`] left in
@@ -635,38 +652,43 @@ impl Renderer {
         self.commands
             .set_root_cbv(ROOT_FRAME_CBV, allocation.gpu_address());
 
-        // Three dense arrays read in step. Every field this loop needs was gathered while
-        // culling, so nothing here reaches back into the world.
-        for index in 0..self.visible.len() {
-            let mesh_handle = self.visible.meshes()[index];
-            let material_handle = self.visible.materials()[index];
-            let Some(mesh) = self.meshes.get(mesh_handle.index()) else {
+        // Batch by batch. Grouping put entries sharing a mesh and a material next to each
+        // other, so the mesh and material binds happen once per run rather than once per
+        // object — and the command context skips them anyway if the run is a continuation
+        // of the previous one.
+        for batch in self.visible.batches() {
+            let Some(mesh) = self.meshes.get(batch.mesh.index()) else {
                 return Err(RendererError::InvalidConfig {
                     reason: format!(
-                        "render list entry {index} names mesh {} which does not exist",
-                        mesh_handle.index()
+                        "render list names mesh {} which does not exist",
+                        batch.mesh.index()
                     ),
                 });
             };
-            let Some(material) = self.materials.get(material_handle.index()) else {
+            let Some(material) = self.materials.get(batch.material.index()) else {
                 return Err(RendererError::InvalidConfig {
                     reason: format!(
-                        "render list entry {index} names material {} which does not exist",
-                        material_handle.index()
+                        "render list names material {} which does not exist",
+                        batch.material.index()
                     ),
                 });
             };
-
-            let object = ObjectConstants::new(self.visible.transforms()[index].matrix());
-            let allocation = self.uploads.write_constants(slot, &object)?;
 
             self.commands
                 .set_root_cbv(ROOT_MATERIAL_CBV, material.gpu_address());
-            self.commands
-                .set_root_cbv(ROOT_OBJECT_CBV, allocation.gpu_address());
             self.commands.set_vertex_buffer(0, *mesh.vertex_view());
             self.commands.set_index_buffer(*mesh.index_view());
-            self.commands.draw_indexed(mesh.index_count(), 1, 0);
+
+            let first = batch.first as usize;
+            let last = first + batch.count as usize;
+            for &entry in &self.visible.order()[first..last] {
+                let object =
+                    ObjectConstants::new(self.visible.transforms()[entry as usize].matrix());
+                let allocation = self.uploads.write_constants(slot, &object)?;
+                self.commands
+                    .set_root_cbv(ROOT_OBJECT_CBV, allocation.gpu_address());
+                self.commands.draw_indexed(mesh.index_count(), 1, 0);
+            }
         }
 
         self.finish_recording(slot, back_buffer)

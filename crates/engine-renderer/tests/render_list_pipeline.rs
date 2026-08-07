@@ -468,3 +468,141 @@ mod parallel {
         );
     }
 }
+
+/// Grouping puts entries sharing a mesh and a material next to each other.
+mod grouping {
+    use super::*;
+
+    /// Every entry exactly once, and every batch describing what it actually contains.
+    fn assert_grouping_is_a_permutation(list: &RenderList) {
+        let mut seen = vec![false; list.len()];
+        let mut total = 0;
+        for batch in list.batches() {
+            assert!(batch.count > 0, "an empty batch is a bind for nothing");
+            let first = batch.first as usize;
+            for &entry in &list.order()[first..first + batch.count as usize] {
+                let entry = entry as usize;
+                assert!(!seen[entry], "entry {entry} appears in two batches");
+                seen[entry] = true;
+                assert_eq!(list.meshes()[entry], batch.mesh, "entry {entry} mesh");
+                assert_eq!(
+                    list.materials()[entry],
+                    batch.material,
+                    "entry {entry} material"
+                );
+            }
+            total += batch.count as usize;
+        }
+        assert_eq!(total, list.len(), "batches must cover every entry");
+        assert!(seen.iter().all(|&s| s), "every entry must be drawn once");
+    }
+
+    fn grouped(objects: u32, meshes: u32, materials: u32) -> RenderList {
+        let mut world = RenderWorld::new();
+        for index in 0..objects {
+            world.spawn(desc(INSIDE, index % meshes, index % materials));
+        }
+        let mut list = RenderList::new();
+        let mut culler = Culler::new();
+        culler.cull(&world, &frustum(), &mut list);
+        list.group_by_material_and_mesh(materials as usize, meshes as usize);
+        list
+    }
+
+    #[test]
+    fn grouping_draws_every_entry_exactly_once() {
+        // The property that matters most: a grouping that dropped or duplicated an entry
+        // would change the image, and the counters would not notice.
+        assert_grouping_is_a_permutation(&grouped(500, 4, 9));
+    }
+
+    #[test]
+    fn entries_sharing_a_mesh_and_material_end_up_in_one_batch() {
+        // 4 meshes x 9 materials, every combination present, so 36 batches and not one more.
+        let list = grouped(36 * 20, 4, 9);
+        assert_eq!(list.batches().len(), 36);
+        assert_grouping_is_a_permutation(&list);
+    }
+
+    #[test]
+    fn one_mesh_and_one_material_collapse_to_a_single_batch() {
+        let list = grouped(1000, 1, 1);
+        assert_eq!(list.batches().len(), 1);
+        assert_eq!(list.batches()[0].count, 1000);
+    }
+
+    #[test]
+    fn grouping_is_stable_and_deterministic() {
+        // Two runs of the same build must produce the same frame, and within a batch the
+        // entries must stay in gather order — a scatter that reordered them would make the
+        // frame depend on the histogram's internals.
+        let first = grouped(400, 3, 5);
+        let second = grouped(400, 3, 5);
+        assert_eq!(first.order(), second.order());
+        assert_eq!(first.batches(), second.batches());
+
+        for batch in first.batches() {
+            let start = batch.first as usize;
+            let run = &first.order()[start..start + batch.count as usize];
+            assert!(
+                run.windows(2).all(|pair| pair[0] < pair[1]),
+                "entries within a batch must stay in gather order"
+            );
+        }
+    }
+
+    #[test]
+    fn an_empty_list_groups_into_nothing() {
+        let mut list = RenderList::new();
+        list.group_by_material_and_mesh(4, 4);
+        assert!(list.batches().is_empty());
+        assert!(list.order().is_empty());
+    }
+
+    #[test]
+    fn grouping_falls_back_rather_than_allocating_an_impossible_histogram() {
+        // A scene with a huge handle space must still draw correctly; it just does not get
+        // the benefit. The fallback derives batches from the runs already present.
+        let list = grouped(200, 4, 9);
+        let mut fallback = list.clone();
+        fallback.group_by_material_and_mesh(usize::MAX, usize::MAX);
+        assert_grouping_is_a_permutation(&fallback);
+        assert_eq!(
+            fallback.order().len(),
+            fallback.len(),
+            "every entry is still drawn"
+        );
+    }
+
+    #[test]
+    fn a_handle_outside_the_renderers_arrays_falls_back_safely() {
+        // The counting sort cannot bucket a handle it has no room for. Falling back keeps
+        // the frame correct; recording rejects the bad handle by name a moment later.
+        let list = grouped(200, 4, 9);
+        let mut narrow = list.clone();
+        narrow.group_by_material_and_mesh(1, 1);
+        assert_grouping_is_a_permutation(&narrow);
+    }
+
+    #[test]
+    fn regrouping_reuses_its_buffers() {
+        let mut world = RenderWorld::new();
+        for index in 0..2000 {
+            world.spawn(desc(INSIDE, index % 4, index % 9));
+        }
+        let mut list = RenderList::new();
+        let mut culler = Culler::new();
+        for _ in 0..4 {
+            culler.cull(&world, &frustum(), &mut list);
+            list.group_by_material_and_mesh(9, 4);
+        }
+        let order = list.order().len();
+
+        for _ in 0..16 {
+            culler.cull(&world, &frustum(), &mut list);
+            list.group_by_material_and_mesh(9, 4);
+        }
+        assert_eq!(list.order().len(), order);
+        assert_grouping_is_a_permutation(&list);
+    }
+}

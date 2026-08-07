@@ -82,6 +82,30 @@
 use engine_core::transform::Transform;
 use engine_render_data::{MaterialHandle, MeshHandle, RenderEntity};
 
+/// A run of entries sharing one mesh and one material.
+///
+/// What grouping produces and what recording consumes: bind the mesh and material once,
+/// then draw `count` entries starting at `first` in [`RenderList::order`]. Instancing
+/// replaces the inner loop with a single draw; the batch is the same either way.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RenderBatch {
+    /// The mesh every entry in the run uses.
+    pub mesh: MeshHandle,
+    /// The material every entry in the run uses.
+    pub material: MaterialHandle,
+    /// Index into [`RenderList::order`] where the run starts.
+    pub first: u32,
+    /// Entries in the run. Never zero.
+    pub count: u32,
+}
+
+/// Largest histogram the counting sort will build.
+///
+/// `material_count * mesh_count` above this would allocate a bucket array larger than the
+/// list it is sorting, so the grouping is skipped instead. 64Ki buckets is 256 KiB of
+/// counters, which is already generous for a scene with one pipeline.
+const MAX_GROUPING_BUCKETS: usize = 64 * 1024;
+
 /// One entry, gathered from the parallel arrays.
 ///
 /// A view for tests and diagnostics, not the storage layout: reading an entry is a rare
@@ -110,6 +134,12 @@ pub struct RenderList {
     transforms: Vec<Transform>,
     meshes: Vec<MeshHandle>,
     materials: Vec<MaterialHandle>,
+    /// The order recording walks, filled by `group_by_material_and_mesh`.
+    order: Vec<u32>,
+    /// Runs of entries sharing a mesh and a material.
+    batches: Vec<RenderBatch>,
+    /// Histogram scratch for the counting sort, reused across frames.
+    counts: Vec<u32>,
 }
 
 impl RenderList {
@@ -127,6 +157,9 @@ impl RenderList {
             transforms: Vec::with_capacity(capacity),
             meshes: Vec::with_capacity(capacity),
             materials: Vec::with_capacity(capacity),
+            order: Vec::with_capacity(capacity),
+            batches: Vec::new(),
+            counts: Vec::new(),
         }
     }
 
@@ -139,6 +172,8 @@ impl RenderList {
         self.transforms.clear();
         self.meshes.clear();
         self.materials.clear();
+        self.order.clear();
+        self.batches.clear();
     }
 
     /// Appends one drawable.
@@ -230,6 +265,150 @@ impl RenderList {
         self.transforms.reserve(additional);
         self.meshes.reserve(additional);
         self.materials.reserve(additional);
+    }
+
+    /// Groups the list so entries sharing a material and a mesh are adjacent.
+    ///
+    /// Does not move the entries. It fills [`RenderList::order`] with a permutation and
+    /// [`RenderList::batches`] with the runs that permutation creates — the payload arrays
+    /// stay in gather order. Permuting 64-byte entries would cost a second full copy of the
+    /// list for a recording loop that reads two 8-byte handles per *batch* and the
+    /// transforms in bulk; an index array costs four bytes an entry.
+    ///
+    /// # A counting sort, not a comparison sort
+    ///
+    /// The key is `(material, mesh)`, and both are indices into arrays the renderer owns,
+    /// so the number of distinct keys is bounded by `material_count * mesh_count` and known
+    /// before the pass starts. That makes this a histogram, a prefix sum and a scatter —
+    /// three linear passes — rather than `n log n` comparisons.
+    ///
+    /// It matters at this size. A comparison sort of 17,000 entries is a few hundred
+    /// thousand comparisons, which is the same order as the ~0.3 ms of driver calls the
+    /// grouping is trying to save; it would have spent the win on the sort. Nine materials
+    /// and four meshes is 36 buckets.
+    ///
+    /// Above [`MAX_GROUPING_BUCKETS`] the histogram would be larger than the list, so the
+    /// list is left in gather order and the batches become whatever runs it already had.
+    /// That is a correct answer, just a worse one, and it keeps a scene with thousands of
+    /// materials from allocating a bucket array it cannot use.
+    ///
+    /// # Depth and pipeline are deliberately absent from the key
+    ///
+    /// Both were measured rather than assumed. Pipeline: the frame makes **two** pipeline
+    /// changes for 17,299 draws, because there is one mesh pipeline — ordering by it can
+    /// remove nothing. Depth: front-to-back ordering pays for itself through early-Z, and
+    /// this renderer is not pixel-bound — dropping from 1920x1080 to 480x270 changes GPU
+    /// time by nothing measurable. Adding either field would be sorting by something with
+    /// no demonstrated cost.
+    pub fn group_by_material_and_mesh(&mut self, material_count: usize, mesh_count: usize) {
+        self.order.clear();
+        self.batches.clear();
+        if self.is_empty() {
+            return;
+        }
+
+        let buckets = material_count.saturating_mul(mesh_count);
+        if buckets == 0 || buckets > MAX_GROUPING_BUCKETS {
+            self.batch_in_gather_order();
+            return;
+        }
+
+        // Histogram. `counts` is reused across frames, so this is a fill rather than an
+        // allocation once the scene has been seen.
+        self.counts.clear();
+        self.counts.resize(buckets + 1, 0);
+        let key_of = |mesh: MeshHandle, material: MaterialHandle| -> Option<usize> {
+            let (mesh, material) = (mesh.index(), material.index());
+            (mesh < mesh_count && material < material_count).then_some(material * mesh_count + mesh)
+        };
+
+        for (mesh, material) in self.meshes.iter().zip(&self.materials) {
+            let Some(key) = key_of(*mesh, *material) else {
+                // A handle outside the renderer's arrays cannot be bucketed. Recording
+                // rejects it by name a moment later, which is a better error than a
+                // silently mis-sorted frame.
+                self.batch_in_gather_order();
+                return;
+            };
+            self.counts[key + 1] += 1;
+        }
+
+        // Prefix sum turns counts into the first output index of each bucket.
+        for index in 1..self.counts.len() {
+            self.counts[index] += self.counts[index - 1];
+        }
+
+        // Scatter. Entries land in bucket order, and within a bucket in gather order —
+        // so the grouping is stable and two runs of the same build produce the same frame.
+        let starts: Vec<u32> = self.counts[..buckets].to_vec();
+        self.order.resize(self.len(), 0);
+        for (index, (mesh, material)) in self.meshes.iter().zip(&self.materials).enumerate() {
+            let Some(key) = key_of(*mesh, *material) else {
+                self.batch_in_gather_order();
+                return;
+            };
+            let slot = self.counts[key] as usize;
+            self.counts[key] += 1;
+            self.order[slot] = index as u32;
+        }
+
+        for (key, start) in starts.iter().enumerate() {
+            let end = self.counts[key];
+            if end == *start {
+                continue;
+            }
+            let first_entry = self.order[*start as usize] as usize;
+            self.batches.push(RenderBatch {
+                mesh: self.meshes[first_entry],
+                material: self.materials[first_entry],
+                first: *start,
+                count: end - *start,
+            });
+        }
+    }
+
+    /// Leaves the entries in gather order and derives batches from the runs already there.
+    ///
+    /// The fallback when grouping cannot help. Correct, and exactly what the ungrouped
+    /// recording loop did before batches existed — consecutive entries that happen to share
+    /// a mesh and material become one batch, and the rest are batches of one.
+    fn batch_in_gather_order(&mut self) {
+        self.order.clear();
+        self.order.extend(0..self.len() as u32);
+        self.batches.clear();
+
+        let mut start = 0_u32;
+        for index in 1..=self.len() {
+            let ends = index == self.len()
+                || self.meshes[index] != self.meshes[start as usize]
+                || self.materials[index] != self.materials[start as usize];
+            if ends {
+                self.batches.push(RenderBatch {
+                    mesh: self.meshes[start as usize],
+                    material: self.materials[start as usize],
+                    first: start,
+                    count: index as u32 - start,
+                });
+                start = index as u32;
+            }
+        }
+    }
+
+    /// The order recording should walk, as indices into the payload arrays.
+    ///
+    /// Empty until [`RenderList::group_by_material_and_mesh`] has run.
+    #[must_use]
+    pub fn order(&self) -> &[u32] {
+        &self.order
+    }
+
+    /// The runs of entries sharing a mesh and a material.
+    ///
+    /// Empty until [`RenderList::group_by_material_and_mesh`] has run. Their `count`s sum
+    /// to [`RenderList::len`].
+    #[must_use]
+    pub fn batches(&self) -> &[RenderBatch] {
+        &self.batches
     }
 
     /// One entry, gathered. `None` past the end.

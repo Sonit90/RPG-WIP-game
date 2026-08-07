@@ -84,17 +84,16 @@ pub struct CommandStats {
     pub redundant_pipeline_binds: u32,
     /// Root constant-buffer views bound, across every root slot.
     pub root_cbv_binds: u32,
-    /// Root CBV binds whose address was already in that slot.
+    /// Root CBV binds skipped because that address was already in the slot.
     ///
-    /// Counted rather than skipped: how many binds *could* be avoided is the question
-    /// Milestone 17 exists to answer, and answering it by changing the behaviour first
-    /// would measure the change instead of the opportunity.
+    /// The saving a grouped list produces. Counting them separately from the binds issued
+    /// is what lets "the sort found more redundancy" be told apart from "the scene changed".
     pub redundant_root_cbv_binds: u32,
     /// Root CBV binds to the material slot whose address differed from the previous one.
     ///
-    /// The material-change count. With one draw per object and no ordering guarantee this
-    /// is close to the draw count; sorting is supposed to collapse it towards the number of
-    /// distinct materials.
+    /// The material-change count. Ungrouped this sits near the draw count; grouped it
+    /// collapses towards the number of distinct materials, and each one removed is a
+    /// driver call the frame no longer makes.
     pub material_changes: u32,
     /// Vertex-buffer binds whose view differed from the previous one.
     ///
@@ -406,6 +405,12 @@ impl CommandContext {
         if root_changed {
             // SAFETY: FFI call on the open list with a live root signature.
             unsafe { self.list.SetGraphicsRootSignature(root_signature) };
+            // D3D12 invalidates every root argument when the root signature changes, so
+            // what this context believes is bound is no longer true. Forgetting it is what
+            // makes the redundant-bind skipping below safe: without this, the first draw
+            // after a signature change could skip a bind the driver has already discarded
+            // and read whatever the previous signature left in that slot.
+            self.bound.root_cbv = [0; MAX_TRACKED_ROOT_SLOTS];
         }
 
         if BindingState::bind(&mut self.bound.pipeline, pipeline_id) {
@@ -436,10 +441,10 @@ impl CommandContext {
         self.stats.vertex_buffer_binds += 1;
         if self.bound.vertex_buffer == view.BufferLocation {
             self.stats.redundant_vertex_buffer_binds += 1;
-        } else {
-            self.bound.vertex_buffer = view.BufferLocation;
-            self.stats.mesh_changes += 1;
+            return;
         }
+        self.bound.vertex_buffer = view.BufferLocation;
+        self.stats.mesh_changes += 1;
 
         // SAFETY: FFI call on the open list. The view refers to a buffer the caller keeps
         // alive, and the array lives for the duration of the call.
@@ -475,12 +480,15 @@ impl CommandContext {
         self.stats.root_cbv_binds += 1;
         if let Some(tracked) = self.bound.root_cbv.get_mut(slot as usize) {
             if *tracked == address {
+                // Already in that slot. Skipping is what turns a sort's fewer state
+                // *changes* into fewer driver *calls*; without it a grouped list issues
+                // exactly as many calls as an ungrouped one.
                 self.stats.redundant_root_cbv_binds += 1;
-            } else {
-                *tracked = address;
-                if slot as usize == MATERIAL_ROOT_SLOT {
-                    self.stats.material_changes += 1;
-                }
+                return;
+            }
+            *tracked = address;
+            if slot as usize == MATERIAL_ROOT_SLOT {
+                self.stats.material_changes += 1;
             }
         }
 
@@ -495,9 +503,9 @@ impl CommandContext {
         self.stats.index_buffer_binds += 1;
         if self.bound.index_buffer == view.BufferLocation {
             self.stats.redundant_index_buffer_binds += 1;
-        } else {
-            self.bound.index_buffer = view.BufferLocation;
+            return;
         }
+        self.bound.index_buffer = view.BufferLocation;
 
         // SAFETY: FFI call on the open list. The view refers to a buffer the caller keeps
         // alive, and it lives for the duration of the call.
