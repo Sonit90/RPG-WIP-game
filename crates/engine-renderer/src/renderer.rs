@@ -119,6 +119,9 @@ pub struct Renderer {
     cull_view_projection: Option<engine_core::math::Mat4>,
     /// Milliseconds the most recent cull pass took, measured on the CPU.
     last_cull_ms: f64,
+    /// Per-chunk render lists for a parallel cull, kept across frames so the chunks stop
+    /// allocating once the scene reaches its high-water mark.
+    cull_scratch: Vec<RenderList>,
     /// Milliseconds the most recent `Present` call took.
     last_present_ms: f64,
     /// Milliseconds the most recent post-present fence signal took.
@@ -236,6 +239,7 @@ impl Renderer {
             culling_enabled: true,
             cull_view_projection: None,
             last_cull_ms: 0.0,
+            cull_scratch: Vec::new(),
             last_present_ms: 0.0,
             last_fence_signal_ms: 0.0,
             present_window: FrameStatsWindow::new(PRESENT_WINDOW),
@@ -519,6 +523,24 @@ impl Renderer {
         self.draw_render_list(camera, lighting, color)
     }
 
+    /// [`Renderer::render_world`] with the render list built across `jobs`' workers.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RendererError`] for the same reasons `render_world` does. A failed chunk
+    /// is not one of them: it falls back to a serial cull and the frame still draws.
+    pub fn render_world_parallel(
+        &mut self,
+        world: &RenderWorld,
+        camera: &Camera,
+        lighting: Lighting,
+        color: [f32; 4],
+        jobs: &engine_core::jobs::JobSystem,
+    ) -> Result<(), RendererError> {
+        self.build_render_list_with(world, camera, Some(jobs));
+        self.draw_render_list(camera, lighting, color)
+    }
+
     /// Rebuilds [`Renderer::render_list`] from the entities of `world` that `camera` sees.
     ///
     /// Pure CPU: this touches no D3D12 object, which is what keeps it testable without a
@@ -528,6 +550,23 @@ impl Renderer {
     ///
     /// Reuses the list's allocation, so after the first few frames this allocates nothing.
     pub fn build_render_list(&mut self, world: &RenderWorld, camera: &Camera) {
+        self.build_render_list_with(world, camera, None);
+    }
+
+    /// Rebuilds the render list, optionally across `jobs`' workers.
+    ///
+    /// `None` culls on the calling thread. `Some` chunks the world and merges the chunks in
+    /// world order, producing a list identical to the serial one — the parallelism is an
+    /// implementation detail of how the same answer is reached, not a different answer.
+    ///
+    /// A chunk that panics is logged and the frame falls back to a serial cull, because a
+    /// half-filled render list would draw a half-finished scene.
+    pub fn build_render_list_with(
+        &mut self,
+        world: &RenderWorld,
+        camera: &Camera,
+        jobs: Option<&engine_core::jobs::JobSystem>,
+    ) {
         let frustum = Frustum::from_view_projection(
             &self
                 .cull_view_projection
@@ -536,10 +575,24 @@ impl Renderer {
         // Timed around the build alone, not the whole frame: the number the overlay reports
         // as "culling" has to be this pass, or it flatters or blames the wrong thing.
         let started = std::time::Instant::now();
-        if self.culling_enabled {
-            self.culler.cull(world, &frustum, &mut self.visible);
-        } else {
-            self.culler.accept_all(world, &mut self.visible);
+        match (self.culling_enabled, jobs) {
+            (false, _) => self.culler.accept_all(world, &mut self.visible),
+            (true, None) => self.culler.cull(world, &frustum, &mut self.visible),
+            (true, Some(jobs)) => {
+                let result = self.culler.cull_parallel(
+                    world,
+                    &frustum,
+                    jobs,
+                    &mut self.cull_scratch,
+                    &mut self.visible,
+                );
+                if let Err(error) = result {
+                    // A half-filled list would draw a half-finished scene, so the frame is
+                    // culled again serially rather than submitted as it stands.
+                    log::error!("parallel cull failed, falling back to serial: {error}");
+                    self.culler.cull(world, &frustum, &mut self.visible);
+                }
+            }
         }
         self.last_cull_ms = started.elapsed().as_secs_f64() * 1e3;
     }

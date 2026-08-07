@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 use engine_core::application::{Application, EngineContext};
 use engine_core::error::EngineError;
 use engine_core::input::{InputEvent, KeyCode, MouseButton};
+use engine_core::jobs::JobSystem;
 use engine_platform::{Window, WindowConfig, WindowEvent};
 use engine_renderer::{Camera, Lighting, Projection, Renderer, RendererConfig};
 
@@ -52,6 +53,11 @@ pub struct Showcase {
     animation_seconds: f32,
     report_interval: Option<Duration>,
     last_report: Instant,
+    /// Worker pool for chunked culling, or `None` to cull on the main thread.
+    ///
+    /// Held by the showcase rather than the renderer: a job system is an engine-wide
+    /// resource that gameplay will share, not something a renderer should own.
+    jobs: Option<JobSystem>,
 }
 
 impl Showcase {
@@ -105,6 +111,14 @@ impl Showcase {
         let report_interval = (args.report_interval_secs > 0.0)
             .then(|| Duration::from_secs_f64(args.report_interval_secs));
 
+        let jobs = if args.parallel_cull {
+            let jobs = JobSystem::new()?;
+            log::info!("parallel culling on {} workers", jobs.worker_count());
+            Some(jobs)
+        } else {
+            None
+        };
+
         log_controls();
 
         Ok(Self {
@@ -121,6 +135,7 @@ impl Showcase {
             animation_seconds: 0.0,
             report_interval,
             last_report: Instant::now(),
+            jobs,
         })
     }
 
@@ -434,8 +449,21 @@ impl Application for Showcase {
     }
 
     fn render(&mut self, _ctx: &mut EngineContext) -> Result<(), EngineError> {
-        self.renderer
-            .render_world(&self.scene.world, &self.camera, self.lighting, CLEAR_COLOR)?;
+        match &self.jobs {
+            Some(jobs) => self.renderer.render_world_parallel(
+                &self.scene.world,
+                &self.camera,
+                self.lighting,
+                CLEAR_COLOR,
+                jobs,
+            )?,
+            None => self.renderer.render_world(
+                &self.scene.world,
+                &self.camera,
+                self.lighting,
+                CLEAR_COLOR,
+            )?,
+        }
         Ok(())
     }
 

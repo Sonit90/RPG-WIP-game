@@ -298,3 +298,173 @@ fn accepting_everything_bypasses_the_test_but_fills_the_same_list() {
         "and the data is still gathered correctly"
     );
 }
+
+/// Parallel culling has to be the same answer, reached faster — not a different answer.
+mod parallel {
+    use super::*;
+    use engine_core::jobs::JobSystem;
+
+    /// A world large enough that `cull_parallel` actually splits it.
+    ///
+    /// Below the chunk threshold it falls back to the serial path, which would make every
+    /// test below pass without exercising a single worker.
+    fn large_world(objects: u32) -> RenderWorld {
+        let mut world = RenderWorld::with_capacity(objects as usize);
+        for index in 0..objects {
+            // A deterministic mix of inside and outside, interleaved rather than blocked so
+            // a chunk boundary lands in the middle of a run of survivors.
+            let inside = index % 3 != 0;
+            world.spawn(desc(
+                if inside { INSIDE } else { OUTSIDE },
+                index % 7,
+                index % 5,
+            ));
+        }
+        world
+    }
+
+    fn serial(world: &RenderWorld) -> RenderList {
+        let mut list = RenderList::new();
+        let mut culler = Culler::new();
+        culler.cull(world, &frustum(), &mut list);
+        list
+    }
+
+    fn parallel(world: &RenderWorld, workers: usize) -> (RenderList, engine_renderer::CullStats) {
+        let Ok(jobs) = JobSystem::with_workers(workers) else {
+            panic!("{workers} workers must start");
+        };
+        let mut list = RenderList::new();
+        let mut scratch = Vec::new();
+        let mut culler = Culler::new();
+        let Ok(()) = culler.cull_parallel(world, &frustum(), &jobs, &mut scratch, &mut list) else {
+            panic!("no chunk panics");
+        };
+        (list, culler.stats())
+    }
+
+    #[test]
+    fn the_parallel_list_is_identical_to_the_serial_one() {
+        // Same entries in the same order. Chunk order is world order, so a merge that
+        // reordered anything would be a visible rendering change.
+        let world = large_world(50_000);
+        let expected = serial(&world);
+
+        for workers in [1, 2, 4, 8, 16] {
+            let (actual, _) = parallel(&world, workers);
+            assert_eq!(
+                actual.len(),
+                expected.len(),
+                "entry count with {workers} workers"
+            );
+            assert_eq!(
+                actual.entities(),
+                expected.entities(),
+                "entities and their order with {workers} workers"
+            );
+            assert_eq!(actual.meshes(), expected.meshes(), "meshes, {workers}");
+            assert_eq!(
+                actual.materials(),
+                expected.materials(),
+                "materials, {workers}"
+            );
+            assert_eq!(
+                actual.transforms(),
+                expected.transforms(),
+                "transforms, {workers}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_parallel_statistics_match_the_serial_ones() {
+        let world = large_world(50_000);
+        let mut serial_list = RenderList::new();
+        let mut serial_culler = Culler::new();
+        serial_culler.cull(&world, &frustum(), &mut serial_list);
+
+        let (_, stats) = parallel(&world, 8);
+        assert_eq!(stats, serial_culler.stats());
+        assert_eq!(stats.considered, stats.visible + stats.culled);
+    }
+
+    #[test]
+    fn a_world_below_the_chunk_threshold_still_produces_the_right_list() {
+        // Falls back to serial. The answer must be the same either way, and the fallback
+        // must not be silently skipped — a small scene is the common case.
+        let world = large_world(100);
+        let expected = serial(&world);
+        let (actual, _) = parallel(&world, 8);
+        assert_eq!(actual.entities(), expected.entities());
+    }
+
+    #[test]
+    fn an_empty_world_is_safe_to_cull_in_parallel() {
+        let world = RenderWorld::new();
+        let (list, stats) = parallel(&world, 8);
+        assert!(list.is_empty());
+        assert_eq!(stats.considered, 0);
+    }
+
+    #[test]
+    fn a_shrinking_scene_does_not_merge_last_frames_chunks() {
+        // The scratch chunks are reused across frames. If the merge walked all of them
+        // rather than the ones this frame filled, a scene that shrank would keep drawing
+        // objects that are gone.
+        let Ok(jobs) = JobSystem::with_workers(8) else {
+            panic!("eight workers must start");
+        };
+        let mut list = RenderList::new();
+        let mut scratch = Vec::new();
+        let mut culler = Culler::new();
+
+        let big = large_world(50_000);
+        let Ok(()) = culler.cull_parallel(&big, &frustum(), &jobs, &mut scratch, &mut list) else {
+            panic!("no chunk panics");
+        };
+        let big_len = list.len();
+        assert!(big_len > 0);
+
+        let small = large_world(60);
+        let Ok(()) = culler.cull_parallel(&small, &frustum(), &jobs, &mut scratch, &mut list)
+        else {
+            panic!("no chunk panics");
+        };
+        assert_eq!(list.entities(), serial(&small).entities());
+        assert!(list.len() < big_len);
+    }
+
+    #[test]
+    fn repeated_parallel_frames_stop_allocating() {
+        let Ok(jobs) = JobSystem::with_workers(8) else {
+            panic!("eight workers must start");
+        };
+        let world = large_world(50_000);
+        let mut list = RenderList::new();
+        let mut scratch = Vec::new();
+        let mut culler = Culler::new();
+
+        for _ in 0..4 {
+            let Ok(()) = culler.cull_parallel(&world, &frustum(), &jobs, &mut scratch, &mut list)
+            else {
+                panic!("no chunk panics");
+            };
+        }
+        let merged = list.capacity();
+        let chunks: Vec<usize> = scratch.iter().map(RenderList::capacity).collect();
+
+        for _ in 0..16 {
+            let Ok(()) = culler.cull_parallel(&world, &frustum(), &jobs, &mut scratch, &mut list)
+            else {
+                panic!("no chunk panics");
+            };
+        }
+
+        assert_eq!(list.capacity(), merged, "the merged list must be reused");
+        assert_eq!(
+            scratch.iter().map(RenderList::capacity).collect::<Vec<_>>(),
+            chunks,
+            "every chunk list must be reused"
+        );
+    }
+}

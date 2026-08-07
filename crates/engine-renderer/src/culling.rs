@@ -14,18 +14,26 @@
 //! just touched that slot's bounds, so the object's other fields are in cache when they are
 //! read — which is the cheapest moment there is to copy them.
 //!
-//! # Threading is deliberately absent
+//! # Threading
 //!
-//! `docs/threading.md` measured the job-system break-even at roughly 12 µs of work per job,
-//! and culling measures 1.8–4.6 ns per object — so a 10,000 object scene is well under
-//! 50 µs, or a few chunks. A handful of jobs to save tens of microseconds is not obviously
-//! worth the submission overhead, and it is not a guess: both numbers are measured.
+//! [`Culler::cull_parallel`] chunks the world across the job system's workers, one
+//! [`RenderList`] per chunk, concatenated in chunk order afterwards. Chunk order is world
+//! order, so the merged list is identical to the serial one — same entries, same order —
+//! which a test asserts, because a parallel cull that quietly reordered the scene would be
+//! a rendering change dressed as an optimization.
 //!
-//! The shape is ready for it anyway. The loop reads slices and appends to a list, so the
-//! eventual parallel version is a chunked loop over the same slices with one `RenderList`
-//! per worker and a concatenation afterwards — a change at the call site rather than a
-//! rewrite. That is Milestone 18 or later, not this one.
+//! It falls back to the serial path below [`MIN_CHUNK`] slots per chunk.
+//! `docs/threading.md` measured the job break-even near 12 µs of work, and a cull-and-gather
+//! pass measures 2 to 10 ns per object, so a few thousand objects is the smallest chunk
+//! worth handing to a worker. Splitting a 1,000-object scene would cost more in submission
+//! than the whole pass takes.
+//!
+//! The serial path is not a legacy path. It is what runs whenever the scene is small, it is
+//! what a zero-worker configuration runs, and it shares [`cull_range`] with the parallel
+//! one so the two cannot drift apart.
 
+use engine_core::error::EngineError;
+use engine_core::jobs::JobSystem;
 use engine_core::math::{Frustum, Sphere};
 
 use engine_render_data::RenderWorld;
@@ -84,31 +92,12 @@ impl Culler {
     /// how many survived — the two agree by construction.
     pub fn cull(&mut self, world: &RenderWorld, frustum: &Frustum, list: &mut RenderList) {
         list.clear();
-        let mut considered = 0;
-
-        // Two contiguous arrays, read in step, and nothing else touched until an object
-        // actually survives. This is why `RenderWorld` is structure-of-arrays: an object
-        // that fails the test never pulls its mesh handle, material or transform through
-        // the cache, and at a 90% cull ratio that is most of them.
-        let bounds = world.bounds();
-        let transforms = world.transforms();
-        let meshes = world.meshes();
-        let materials = world.materials();
-
-        for (slot, visible) in world.visible_flags().iter().enumerate() {
-            if !visible {
-                continue;
-            }
-            considered += 1;
-            if frustum.intersects_sphere(&bounds[slot]) {
-                list.push(
-                    world.entity_at(slot),
-                    transforms[slot],
-                    meshes[slot],
-                    materials[slot],
-                );
-            }
-        }
+        // Counted separately from the pass rather than inside it, so the serial and the
+        // parallel path can share one loop body: a job returns nothing, and threading a
+        // per-chunk counter back would need a second output array for a number one pass
+        // over the flags already has.
+        let considered = world.visible_flags().iter().filter(|flag| **flag).count() as u32;
+        cull_range(world, frustum, 0..world.slot_count(), list);
 
         self.stats = CullStats {
             considered,
@@ -151,6 +140,135 @@ impl Culler {
     #[must_use]
     pub fn stats(&self) -> CullStats {
         self.stats
+    }
+
+    /// Culls `world` across `jobs`' workers, merging the result into `list`.
+    ///
+    /// ```text
+    /// RenderWorld
+    ///     |  split into chunks of at least MIN_CHUNK slots
+    ///     v
+    /// chunk 0     chunk 1     chunk 2   ...     one job each
+    ///     |           |           |
+    /// scratch[0]  scratch[1]  scratch[2]        thread-local render lists
+    ///      \          |          /
+    ///       `-------> list <----'                concatenated in chunk order
+    /// ```
+    ///
+    /// Chunk order is world order, so the merged list is *identical* to what
+    /// [`Culler::cull`] would have produced — same entries, same order. A parallel cull
+    /// that reordered the scene would be a rendering change dressed as an optimization.
+    ///
+    /// `scratch` is the caller's, kept across frames for the same reason `list` is: after
+    /// the first few frames neither allocates. It is resized to the chunk count here.
+    ///
+    /// Falls back to the serial path when the work is too small to be worth splitting —
+    /// `docs/threading.md` puts the job break-even near 12 µs, and a cull of a few hundred
+    /// objects is nowhere near it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`EngineError`] if a chunk panicked.
+    pub fn cull_parallel(
+        &mut self,
+        world: &RenderWorld,
+        frustum: &Frustum,
+        jobs: &JobSystem,
+        scratch: &mut Vec<RenderList>,
+        list: &mut RenderList,
+    ) -> Result<(), EngineError> {
+        let slots = world.slot_count();
+        let chunk_count = chunk_count_for(slots, jobs.worker_count());
+        if chunk_count <= 1 {
+            self.cull(world, frustum, list);
+            return Ok(());
+        }
+
+        let chunk_size = slots.div_ceil(chunk_count);
+        if scratch.len() < chunk_count {
+            scratch.resize_with(chunk_count, RenderList::new);
+        }
+
+        // Only the chunks that will actually be used, so a scene that shrank does not merge
+        // last frame's leftovers.
+        let active = &mut scratch[..chunk_count];
+        jobs.map_chunks(active, |chunk, output| {
+            output.clear();
+            let start = chunk * chunk_size;
+            let end = (start + chunk_size).min(slots);
+            cull_range(world, frustum, start..end, output);
+        })?;
+
+        list.clear();
+        let visible: usize = active.iter().map(RenderList::len).sum();
+        list.reserve(visible);
+        for chunk in active.iter() {
+            list.append(chunk);
+        }
+
+        // `considered` is recomputed rather than accumulated across chunks: a job returns
+        // nothing, and threading a counter back would need a second output array for a
+        // number a single pass over the flags already has.
+        let considered = world.visible_flags().iter().filter(|flag| **flag).count() as u32;
+        self.stats = CullStats {
+            considered,
+            visible: visible as u32,
+            culled: considered - visible as u32,
+        };
+        Ok(())
+    }
+}
+
+/// Smallest chunk worth giving to a worker.
+///
+/// `docs/threading.md` measured the job break-even near 12 µs of work, and a cull-and-gather
+/// pass measures 2 to 10 ns per object depending on how much survives. Four thousand
+/// objects is 8 to 40 µs — the low end of worthwhile, and deliberately so: chunks much
+/// larger than this leave workers idle at the tail of the pass.
+const MIN_CHUNK: usize = 4096;
+
+/// How many chunks to split `slots` into across `workers`.
+///
+/// Never more than one chunk per worker — extra chunks only add submission overhead once
+/// every worker already has one — and never smaller than [`MIN_CHUNK`]. Returns 1 when the
+/// work is too small to split, which is the caller's signal to stay serial.
+#[must_use]
+fn chunk_count_for(slots: usize, workers: usize) -> usize {
+    if workers <= 1 || slots < MIN_CHUNK * 2 {
+        return 1;
+    }
+    (slots / MIN_CHUNK).min(workers).max(1)
+}
+
+/// Culls one half-open range of world slots into `list`.
+///
+/// The body both [`Culler::cull`] and each parallel chunk run, so the two cannot drift
+/// apart — a serial pass and a one-chunk parallel pass are the same code over the same
+/// range.
+fn cull_range(
+    world: &RenderWorld,
+    frustum: &Frustum,
+    range: std::ops::Range<usize>,
+    list: &mut RenderList,
+) {
+    let bounds = world.bounds();
+    let transforms = world.transforms();
+    let meshes = world.meshes();
+    let materials = world.materials();
+    let flags = world.visible_flags();
+
+    for slot in range {
+        if !flags[slot] {
+            continue;
+        }
+        if frustum.intersects_sphere(&bounds[slot]) {
+            list.push(
+                world.entity_at(slot),
+                transforms[slot],
+                meshes[slot],
+                materials[slot],
+            );
+        }
     }
 }
 

@@ -23,6 +23,8 @@ options:
   --frames-in-flight <n>  frames the CPU may run ahead of the GPU, 1 to 3 (default 3).
                        One serializes CPU and GPU, which moves any back-pressure wait
                        from Present to the frame fence where it can be attributed
+  --parallel-cull      cull across the job system's workers instead of on the main
+                       thread. Produces an identical render list; only the time changes
   --no-culling         start with frustum culling off, so an automated run can measure
                        the same scene with and without it (F8 toggles it at runtime)
   --frames <count>     exit after this many frames, for automated measurement
@@ -46,6 +48,8 @@ pub struct Args {
     pub preset: usize,
     /// Whether frustum culling starts switched off.
     pub culling: bool,
+    /// Whether culling is chunked across the job system.
+    pub parallel_cull: bool,
     /// Frames the CPU may run ahead of the GPU.
     pub frames_in_flight: usize,
     /// Optional frame budget after which the showcase exits on its own.
@@ -68,6 +72,7 @@ impl Default for Args {
             // the counters in the overlay exist to show.
             preset: 3,
             culling: true,
+            parallel_cull: false,
             frames_in_flight: engine_renderer::DEFAULT_FRAMES_IN_FLIGHT,
             frames: None,
             report_interval_secs: 2.0,
@@ -128,6 +133,7 @@ where
             "--vsync" => args.vsync = true,
             "--validation" => args.validation = true,
             "--no-culling" => args.culling = false,
+            "--parallel-cull" => args.parallel_cull = true,
             "--frames-in-flight" => {
                 let value: usize = next_value(&mut iter, "--frames-in-flight")?;
                 if !(1..=engine_renderer::MAX_FRAMES_IN_FLIGHT).contains(&value) {

@@ -203,6 +203,35 @@ impl RenderList {
         &self.materials
     }
 
+    /// Appends every entry of `other`, leaving it untouched.
+    ///
+    /// The merge step of a chunked cull: each worker fills its own list, and the chunks are
+    /// concatenated in chunk order afterwards. Four `extend_from_slice` calls, which are
+    /// four memcpys — the arrays being separate is what makes that true, and is one more
+    /// reason the layout is parallel arrays rather than an array of structs.
+    ///
+    /// Chunk order is world order, so the concatenated list is identical to what a serial
+    /// cull would have produced. That is asserted by a test rather than assumed, because a
+    /// parallel cull that reordered the scene would be a rendering difference disguised as
+    /// an optimization.
+    pub fn append(&mut self, other: &Self) {
+        self.entities.extend_from_slice(&other.entities);
+        self.transforms.extend_from_slice(&other.transforms);
+        self.meshes.extend_from_slice(&other.meshes);
+        self.materials.extend_from_slice(&other.materials);
+    }
+
+    /// Reserves room for `additional` more entries in every array.
+    ///
+    /// Used before a merge, so the concatenation grows each array once instead of on the
+    /// way through every chunk.
+    pub fn reserve(&mut self, additional: usize) {
+        self.entities.reserve(additional);
+        self.transforms.reserve(additional);
+        self.meshes.reserve(additional);
+        self.materials.reserve(additional);
+    }
+
     /// One entry, gathered. `None` past the end.
     #[must_use]
     pub fn entry(&self, index: usize) -> Option<RenderListEntry> {
