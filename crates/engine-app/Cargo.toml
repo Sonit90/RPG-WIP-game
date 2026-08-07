@@ -18,6 +18,10 @@ debug-overlay = ["engine-renderer/debug-overlay"]
 engine-core = { workspace = true }
 engine-platform = { workspace = true }
 engine-renderer = { workspace = true }
+# The gameplay simulation and the layer that turns it into rendering data. This binary is
+# the only place all three meet; neither of them links D3D12.
+engine-game = { workspace = true }
+engine-presentation = { workspace = true }
 # `release_max_level_info` compiles trace! and debug! out of release builds entirely:
 # no branch, no argument evaluation, nothing left in the binary. The feature is enabled
 # here, in the binary crate, because it is a process-wide decision — a library enabling it

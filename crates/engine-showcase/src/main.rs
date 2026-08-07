@@ -13,6 +13,13 @@
 //! Run it with `cargo run -p engine-showcase --release`; `--help` lists the options and the
 //! controls are logged at startup.
 
+// The showcase exists to *display* renderer statistics, so with the overlay compiled out
+// its whole HUD — the text builder, the frame graph and the toggles that drive them — is
+// dead by construction rather than by accident. Building it that way is still checked, so a
+// change that breaks the no-overlay configuration is caught; only the dead-code report is
+// silenced. A shipping build never links this crate at all.
+#![cfg_attr(not(feature = "debug-overlay"), allow(dead_code, unused_imports))]
+
 mod app;
 mod args;
 mod camera;
