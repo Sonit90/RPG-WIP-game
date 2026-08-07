@@ -21,7 +21,7 @@ use windows::Win32::Graphics::Direct3D12::{
 use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_UNKNOWN, DXGI_SAMPLE_DESC};
 
 use crate::error::RendererError;
-use crate::font::{GLYPH_ADVANCE, GLYPH_WIDTH, LINE_ADVANCE, glyph};
+use crate::font::{GLYPH_ADVANCE, GLYPH_HEIGHT, GLYPH_WIDTH, LINE_ADVANCE, glyph};
 use crate::pipeline::Vertex;
 
 /// Vertices per quad: two triangles, no index buffer.
@@ -71,6 +71,32 @@ const FOREGROUND_DEPTH: f32 = 0.0;
 /// the test being disabled, because the same pipeline draws the scene.
 const GRAPH_BACKGROUND_DEPTH: f32 = 0.5;
 
+/// Pixel sizes of the overlay font at the current cell size.
+///
+/// Handed to a caller that has to size a box around text it is about to push — a nameplate
+/// panel, for instance. The numbers are runtime values rather than constants because the
+/// cell size scales with resolution, and a caller that hardcoded a 5x7 grid would misplace
+/// every plate the moment it changed.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct OverlayMetrics {
+    /// Size of one font cell.
+    pub cell_pixels: f32,
+    /// Height of one glyph.
+    pub glyph_height_pixels: f32,
+    /// Top of one line to the top of the next.
+    pub line_advance_pixels: f32,
+    /// Left edge of one glyph to the left edge of the next.
+    pub glyph_advance_pixels: f32,
+}
+
+impl OverlayMetrics {
+    /// Width of `characters` glyphs, including the gap after the last one.
+    #[must_use]
+    pub fn text_width(&self, characters: usize) -> f32 {
+        characters as f32 * self.glyph_advance_pixels
+    }
+}
+
 /// Builds overlay geometry in clip space.
 ///
 /// Reused between frames; `begin` clears it without releasing its capacity.
@@ -101,17 +127,42 @@ impl OverlayGeometry {
     /// space here. Cells beyond [`MAX_QUADS`] are dropped rather than growing the buffer,
     /// which keeps the frame path allocation-free.
     pub fn push_line(&mut self, line: usize, text: &str, width: u32, height: u32) {
+        let origin = (
+            MARGIN_PIXELS,
+            MARGIN_PIXELS + line as f32 * self.line_advance_pixels(),
+        );
+        self.push_text_at(origin, text, TEXT_COLOR, FOREGROUND_DEPTH, (width, height));
+    }
+
+    /// Appends text with its top-left corner at an arbitrary pixel position.
+    ///
+    /// What the fixed left margin and line index of [`OverlayGeometry::push_line`] cannot
+    /// express: a nameplate follows a character across the screen, so its position is a
+    /// projection of a world position rather than a row number.
+    ///
+    /// `depth` is clip-space depth, and it is how overlapping elements are ordered — the
+    /// overlay shares the scene's `LESS` depth test, so the smaller depth wins wherever two
+    /// quads cover the same pixel, whatever order they were pushed in.
+    pub fn push_text_at(
+        &mut self,
+        origin: (f32, f32),
+        text: &str,
+        color: [f32; 4],
+        depth: f32,
+        target: (u32, u32),
+    ) {
+        let (width, height) = target;
         if width == 0 || height == 0 {
             return;
         }
         let cell = self.cell_pixels;
-        let origin_y = MARGIN_PIXELS + line as f32 * LINE_ADVANCE as f32 * cell;
+        let (origin_x, origin_y) = origin;
 
         for (index, character) in text.chars().enumerate() {
             let Some(rows) = glyph(character) else {
                 continue;
             };
-            let origin_x = MARGIN_PIXELS + index as f32 * GLYPH_ADVANCE as f32 * cell;
+            let glyph_x = origin_x + index as f32 * GLYPH_ADVANCE as f32 * cell;
 
             for (row_index, row) in rows.into_iter().enumerate() {
                 for column in 0..GLYPH_WIDTH {
@@ -122,12 +173,87 @@ impl OverlayGeometry {
                     if self.vertices.len() + VERTICES_PER_QUAD > self.vertices.capacity() {
                         return;
                     }
-                    let x = origin_x + column as f32 * cell;
+                    let x = glyph_x + column as f32 * cell;
                     let y = origin_y + row_index as f32 * cell;
-                    self.push_quad(x, y, cell, width, height);
+                    self.push_colored_quad((x, y, cell, cell), color, depth, target);
                 }
             }
         }
+    }
+
+    /// Appends one filled rectangle in pixels from the top-left of the render target.
+    pub fn push_rect(
+        &mut self,
+        rect: (f32, f32, f32, f32),
+        color: [f32; 4],
+        depth: f32,
+        target: (u32, u32),
+    ) {
+        if target.0 == 0 || target.1 == 0 || rect.2 <= 0.0 || rect.3 <= 0.0 {
+            return;
+        }
+        self.push_colored_quad(rect, color, depth, target);
+    }
+
+    /// Appends a hollow rectangle: four filled edges of `thickness` pixels, drawn inside
+    /// `rect`.
+    ///
+    /// Four rectangles rather than a line primitive, because the overlay has exactly one
+    /// pipeline and it draws triangles. Inside rather than centred on the boundary, so a
+    /// plate and its outline occupy the same screen area whether or not it is drawn.
+    pub fn push_outline(
+        &mut self,
+        rect: (f32, f32, f32, f32),
+        thickness: f32,
+        color: [f32; 4],
+        depth: f32,
+        target: (u32, u32),
+    ) {
+        let (x, y, rect_width, rect_height) = rect;
+        if target.0 == 0 || target.1 == 0 || rect_width <= 0.0 || rect_height <= 0.0 {
+            return;
+        }
+        // Clamped, so an outline thicker than the box it surrounds is a filled box rather
+        // than four rectangles overlapping into the wrong shape.
+        let edge = thickness.clamp(1.0, (rect_width.min(rect_height) * 0.5).max(1.0));
+
+        for piece in [
+            (x, y, rect_width, edge),
+            (x, y + rect_height - edge, rect_width, edge),
+            (x, y + edge, edge, rect_height - edge * 2.0),
+            (
+                x + rect_width - edge,
+                y + edge,
+                edge,
+                rect_height - edge * 2.0,
+            ),
+        ] {
+            self.push_colored_quad(piece, color, depth, target);
+        }
+    }
+
+    /// Width in pixels of `characters` glyphs, including the gap after the last one.
+    #[must_use]
+    pub fn text_width_pixels(&self, characters: usize) -> f32 {
+        characters as f32 * GLYPH_ADVANCE as f32 * self.cell_pixels
+    }
+
+    /// Height in pixels of one glyph.
+    #[must_use]
+    pub fn glyph_height_pixels(&self) -> f32 {
+        GLYPH_HEIGHT as f32 * self.cell_pixels
+    }
+
+    /// Distance in pixels from the top of one line to the top of the next.
+    #[must_use]
+    pub fn line_advance_pixels(&self) -> f32 {
+        LINE_ADVANCE as f32 * self.cell_pixels
+    }
+
+    /// Size of one font cell in pixels.
+    #[must_use]
+    pub fn cell_pixels(&self) -> f32 {
+        self.cell_pixels
     }
 
     /// Appends an opaque backdrop large enough for `lines` rows of `columns` characters.
@@ -219,20 +345,11 @@ impl OverlayGeometry {
         }
     }
 
-    /// Emits the two counter-clockwise triangles of one cell.
-    ///
-    /// Winding matches `rasterizer_desc`: counter-clockwise in clip space, or back-face
-    /// culling would discard the overlay exactly as it once discarded the triangle.
-    fn push_quad(&mut self, x: f32, y: f32, size: f32, width: u32, height: u32) {
-        self.push_colored_quad(
-            (x, y, size, size),
-            TEXT_COLOR,
-            FOREGROUND_DEPTH,
-            (width, height),
-        );
-    }
-
     /// Emits one axis-aligned rectangle of an arbitrary size, colour and clip-space depth.
+    ///
+    /// The two triangles are wound counter-clockwise in clip space to match
+    /// `rasterizer_desc`, or back-face culling would discard the overlay exactly as it once
+    /// discarded the triangle.
     ///
     /// `rect` is `(x, y, width, height)` in pixels from the top-left of a `target`-sized
     /// render target. Overflow is dropped rather than allocated for, which is what keeps

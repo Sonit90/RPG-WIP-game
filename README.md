@@ -51,7 +51,11 @@ Controls:
 | F9 | wireframe on/off |
 
 The developer overlay shows FPS, CPU and GPU frame time, simulation and extraction timing,
-the damage meter (total, DPS, by ability, by target) and the ability bar with cooldowns. It ships
+the damage meter (total, DPS, by ability, by target) and the ability bar with cooldowns.
+
+Enemies within 40 metres carry a nameplate — name, health percentage and active debuffs —
+with a white outline on the current target. Nameplates are game UI and stay visible when the
+statistics overlay is hidden with F5. It ships
 in release builds, starts hidden, and is toggled with **F5**. Its cost is below the noise
 floor of measurement (see `docs/performance.md`).
 

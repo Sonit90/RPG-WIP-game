@@ -797,6 +797,120 @@ the configuration matrix in `docs/testing.md` is true again.
 
 ---
 
+## Addendum — enemy nameplates
+
+Added after the phase was declared complete, on request.
+
+### Implemented
+
+A nameplate above every nearby enemy: its name on the left, its health percentage on the
+right, its active statuses underneath, and a **white outline on the current target only**.
+
+```text
++------------------+
+| DUMMY        87% |   <- outlined, because it is the target
+| BURNING 3.2      |
++------------------+
+```
+
+| Rule | Behaviour |
+| --- | --- |
+| Distance | Enemies further than **40 m from the player** have no plate. Measured from the player rather than the camera, so pulling the camera back does not change which enemies are labelled. |
+| Liveness | Corpses and allies never get a plate. |
+| Visibility | An enemy behind the camera or off-screen is skipped. A point behind the camera still divides to a finite screen position, and drawing it produces a mirrored ghost plate — the classic nameplate bug. |
+| Target | Exactly one plate is outlined, and only when the entity is the player's current target. |
+| Statuses | Up to four, each with its remaining time, on a second line. A plate with no status is one line tall. |
+| Count | The **twenty nearest** are drawn; see the measurement below. |
+
+### Architecture
+
+Three pieces, in the layer each belongs to:
+
+* `engine-renderer::overlay` gained arbitrary-position primitives — `push_text_at`,
+  `push_rect`, `push_outline` — plus `OverlayMetrics` so a caller can size a box around
+  text it has not drawn yet. `push_line` is now a call to `push_text_at`, so the HUD and the
+  plates share one code path.
+* The renderer gained a **second overlay layer**, rebuilt every frame. The developer HUD
+  changes ten times a second and is cached per frame slot; a nameplate is stale the moment
+  the camera turns, so caching it would mean marking every slot dirty every frame — which is
+  the same as not caching, plus re-uploading the HUD's tens of thousands of quads alongside
+  it. Two layers, two draw calls, each with the lifetime it actually has.
+* `engine-presentation::nameplate` does the work: projection, the culling rules, the layout
+  and the text. It is arithmetic over `engine-core` types, so all nineteen of its tests run
+  with no device.
+
+Plate depth is derived from distance within a narrow band (0.010–0.100). The overlay shares
+the scene's `LESS` depth test, so a nearer plate wins wherever two overlap — the plates sort
+themselves without anything being sorted.
+
+Gameplay is untouched. `engine-game` has no idea nameplates exist.
+
+### Performance, and why the count is capped
+
+Text is one quad per lit font cell, so a plate costs roughly 330 quads and the cost is linear
+in the number of plates. Release, 1920×1080 windowed, 6,000 frames, mean CPU frame time:
+
+| Dummies | No nameplates | Uncapped | Capped at 20 |
+| --- | --- | --- | --- |
+| 1 | 0.208 ms | 0.213 ms | 0.228 ms |
+| 10 | 0.203 ms | 0.284 ms | 0.291 ms |
+| 100 | 0.214 ms | **0.650 ms** | 0.411 ms |
+| 500 | 0.264 ms | — | 0.495 ms |
+
+Uncapped, a hundred enemies cost 0.44 ms a frame — 1515 FPS against 4654 for the same scene
+without plates. Capped at the twenty nearest, the cost stops growing with the pull: 500
+enemies cost the same as 100. That is what the cap is for, and it is the rule every nameplate
+system in the genre uses.
+
+The remaining ~0.2 ms for twenty plates is the glyph-quad approach itself: 20 plates × ~22
+characters × ~15 lit cells is 1.1 MB of vertices uploaded per frame. Making that cheaper
+means a font atlas and instanced glyph quads, which is a renderer change and belongs with the
+per-instance material work in Phase 4, not here.
+
+### Tests
+
+| Test | Asserts |
+| --- | --- |
+| `a_point_in_front_projects_into_the_viewport` | the projection lands where it should |
+| `a_point_behind_the_camera_has_no_projection` | no mirrored ghost plates |
+| `screen_y_grows_downward` | the screen convention |
+| `every_nearby_enemy_gets_a_plate` | one plate per living dummy |
+| `the_player_never_has_a_plate` | plates are for enemies |
+| `only_the_current_target_is_outlined` | exactly one outline |
+| `an_enemy_beyond_the_distance_limit_has_no_plate` | the 40 m rule |
+| `the_limit_is_measured_from_the_player_not_the_camera` | zooming does not change the set |
+| `a_dead_enemy_has_no_plate` | corpses are not labelled |
+| `an_enemy_behind_the_camera_has_no_plate` | end-to-end, through a real camera |
+| `health_is_reported_as_a_percentage_that_never_reads_zero_while_alive` | 1% floor |
+| `the_title_puts_the_name_left_and_the_health_right` | layout, and a stable width |
+| `statuses_are_listed_with_the_time_left` | the debuff line, and its absence |
+| `every_character_a_plate_can_emit_has_a_glyph` | nothing renders as a hollow box |
+| `a_nearer_plate_is_drawn_in_front_of_a_further_one` | depth follows distance |
+| `plates_are_anchored_above_the_enemy_and_centred_on_it` | placement |
+| `the_number_of_plates_is_bounded_and_the_nearest_survive` | the cap, and which plates it keeps |
+| `rebuilding_reuses_the_allocation` | no per-frame allocation |
+| `the_dynamic_layer_draws_alongside_the_cached_one` (GPU) | two layers, three draw calls |
+| `nameplates_are_drawn_even_when_the_statistics_overlay_is_hidden` (GPU) | F5 hides statistics, not game UI |
+| `an_outline_thicker_than_its_box_stays_inside_it` (GPU) | degenerate rectangles are rejected |
+
+Suite after the addendum: **793 passed, 0 failed**.
+
+### Known limitations
+
+* **Nameplates need the `debug-overlay` feature**, because the overlay is the only text
+  renderer the engine has. A `--no-default-features` build has no nameplates. Separating "the
+  developer statistics" from "the engine's text drawing" is the fix, and it is a Phase 4
+  concern.
+* **Opaque panels.** The overlay pipeline has blending switched off, so a plate is a solid
+  dark rectangle rather than a translucent one.
+* **No occlusion.** A plate is drawn even if the enemy is behind a wall — there are no walls
+  yet, and a depth-buffer test against the scene would be the fix when there are.
+* **No overlap avoidance.** Two enemies in a line produce two plates that overlap; the depth
+  test picks the nearer one rather than nudging them apart.
+* **Fixed width.** A longer future enemy name is truncated rather than widening the plate.
+
+---
+
 ## Known limitations
 
 * **Nothing fights back.** Dummies have health and factions but no AI, no abilities and no

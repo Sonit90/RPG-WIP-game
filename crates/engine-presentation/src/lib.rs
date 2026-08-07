@@ -6,6 +6,7 @@
 //! Simulation      -->    RenderExtractor        -->    RenderWorld
 //! player body     -->    ThirdPersonCamera      -->    Camera
 //! meter, stats    -->    hud::write_lines       -->    [String]
+//! enemies, camera -->    NameplateSet           -->    screen-space plates
 //! ```
 //!
 //! This crate exists because the two things it joins must not know about each other.
@@ -20,7 +21,12 @@
 pub mod camera;
 pub mod extract;
 pub mod hud;
+pub mod nameplate;
 
 pub use camera::ThirdPersonCamera;
 pub use extract::{RenderExtractor, VisualBindings, VisualStats};
 pub use hud::{HudModel, write_lines};
+pub use nameplate::{
+    MAX_NAMEPLATES, NAMEPLATE_MAX_DISTANCE, Nameplate, NameplateConfig, NameplateSet,
+    NameplateStatus, project,
+};

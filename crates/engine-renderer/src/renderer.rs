@@ -24,7 +24,7 @@ use crate::material::{Material, MaterialDesc};
 use crate::mesh::{GpuMesh, MeshData, VertexStream};
 use crate::mesh_pipeline::{InstanceTransform, InstancedMeshPipeline, MeshPipeline};
 #[cfg(feature = "debug-overlay")]
-use crate::overlay::{OverlayBuffers, OverlayGeometry};
+use crate::overlay::{OverlayBuffers, OverlayGeometry, OverlayMetrics};
 use crate::pipeline::{ScenePipeline, Vertex};
 use crate::render_list::RenderList;
 use crate::resource::DeferredReleaseQueue;
@@ -68,7 +68,17 @@ struct OverlayState {
     views: Vec<Option<windows::Win32::Graphics::Direct3D12::D3D12_VERTEX_BUFFER_VIEW>>,
     /// Slots whose upload buffer no longer matches the current geometry.
     stale: Vec<bool>,
-    /// Vertices drawn by the most recent frame.
+    /// Geometry rebuilt from scratch every frame: nameplates and anything else anchored to
+    /// something that moves.
+    ///
+    /// A second buffer rather than more of the first, because the two have opposite
+    /// lifetimes. The developer HUD changes ten times a second and is cached; a nameplate
+    /// follows a character and is stale the moment the camera turns, so caching it would
+    /// mean marking every slot dirty every frame — which is the same as not caching, but
+    /// also re-uploads the HUD's tens of thousands of quads alongside it.
+    dynamic: OverlayGeometry,
+    dynamic_buffers: OverlayBuffers,
+    /// Vertices drawn by the most recent frame, both layers together.
     drawn_vertices: u32,
 }
 
@@ -234,6 +244,8 @@ impl Renderer {
 
         #[cfg(feature = "debug-overlay")]
         let overlay = OverlayState {
+            dynamic: OverlayGeometry::new(),
+            dynamic_buffers: OverlayBuffers::new(context.device(), frames_in_flight)?,
             geometry: OverlayGeometry::new(),
             buffers: OverlayBuffers::new(context.device(), frames_in_flight)?,
             enabled: true,
@@ -468,6 +480,73 @@ impl Renderer {
         // Every slot's upload buffer now holds geometry without the graph. The views
         // themselves are replaced by the re-upload this flag forces.
         self.overlay.stale.fill(true);
+    }
+
+    /// Discards the previous frame's dynamic overlay geometry.
+    ///
+    /// Call once a frame before pushing nameplates. The developer HUD is *not* affected:
+    /// it lives in the cached layer and is rebuilt only when its text changes.
+    #[cfg(feature = "debug-overlay")]
+    pub fn begin_dynamic_overlay(&mut self) {
+        self.overlay.dynamic.begin();
+    }
+
+    /// Appends text to the dynamic layer, positioned in pixels from the top-left.
+    ///
+    /// `depth` orders overlapping elements: the overlay shares the scene's `LESS` depth
+    /// test, so the smaller depth wins wherever two quads cover the same pixel. A caller
+    /// drawing nameplates derives it from distance, which sorts nearer plates in front of
+    /// further ones without sorting anything.
+    #[cfg(feature = "debug-overlay")]
+    pub fn push_overlay_text_at(
+        &mut self,
+        origin: (f32, f32),
+        text: &str,
+        color: [f32; 4],
+        depth: f32,
+    ) {
+        let target = self.swap_chain.size();
+        self.overlay
+            .dynamic
+            .push_text_at(origin, text, color, depth, target);
+    }
+
+    /// Appends a filled rectangle to the dynamic layer, in pixels from the top-left.
+    #[cfg(feature = "debug-overlay")]
+    pub fn push_overlay_rect(&mut self, rect: (f32, f32, f32, f32), color: [f32; 4], depth: f32) {
+        let target = self.swap_chain.size();
+        self.overlay.dynamic.push_rect(rect, color, depth, target);
+    }
+
+    /// Appends a hollow rectangle to the dynamic layer, in pixels from the top-left.
+    #[cfg(feature = "debug-overlay")]
+    pub fn push_overlay_outline(
+        &mut self,
+        rect: (f32, f32, f32, f32),
+        thickness: f32,
+        color: [f32; 4],
+        depth: f32,
+    ) {
+        let target = self.swap_chain.size();
+        self.overlay
+            .dynamic
+            .push_outline(rect, thickness, color, depth, target);
+    }
+
+    /// Pixel metrics of the overlay font, for a caller sizing a box around its own text.
+    ///
+    /// Returned rather than exported as constants because the cell size is a runtime
+    /// setting: a caller that hardcoded 5x7 cells would misplace every plate the moment the
+    /// overlay was scaled for a different resolution.
+    #[cfg(feature = "debug-overlay")]
+    #[must_use]
+    pub fn overlay_metrics(&self) -> OverlayMetrics {
+        OverlayMetrics {
+            cell_pixels: self.overlay.dynamic.cell_pixels(),
+            glyph_height_pixels: self.overlay.dynamic.glyph_height_pixels(),
+            line_advance_pixels: self.overlay.dynamic.line_advance_pixels(),
+            glyph_advance_pixels: self.overlay.dynamic.text_width_pixels(1),
+        }
     }
 
     /// Turns overlay drawing on or off at runtime.
@@ -1007,6 +1086,28 @@ impl Renderer {
                     self.commands.draw(count, 1);
                     self.overlay.drawn_vertices = count;
                 }
+            }
+
+            // The dynamic layer is drawn whether or not the developer HUD is enabled:
+            // nameplates are game UI, and F5 hides the statistics rather than the game's
+            // own readouts. Uploaded unconditionally, because it is rebuilt every frame by
+            // construction and a staleness check would always say "stale".
+            if !self.overlay.dynamic.is_empty()
+                && let Some(view) = self
+                    .overlay
+                    .dynamic_buffers
+                    .upload(index, self.overlay.dynamic.vertices())
+            {
+                let count = view.SizeInBytes / view.StrideInBytes;
+                self.commands.set_pipeline(
+                    self.pipeline.root_signature(),
+                    self.pipeline.pipeline_state(),
+                );
+                self.commands
+                    .set_topology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+                self.commands.set_vertex_buffer(0, view);
+                self.commands.draw(count, 1);
+                self.overlay.drawn_vertices += count;
             }
         }
 

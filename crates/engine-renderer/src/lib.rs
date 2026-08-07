@@ -50,6 +50,8 @@ pub use instancing::{InstanceData, UNIT_TRIANGLE};
 pub use material::{Material, MaterialConstants, MaterialDesc};
 pub use mesh::{GpuMesh, Index, MeshData, MeshVertex, VertexStream};
 pub use mesh_pipeline::MeshPipeline;
+#[cfg(feature = "debug-overlay")]
+pub use overlay::OverlayMetrics;
 pub use pipeline::{TRIANGLE_VERTICES, Vertex};
 pub use render_list::{RenderList, RenderListEntry};
 pub use renderer::Renderer;

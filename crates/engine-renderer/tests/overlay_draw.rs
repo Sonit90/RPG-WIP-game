@@ -200,3 +200,96 @@ fn empty_text_draws_nothing() {
 
     renderer.wait_for_idle().expect("GPU must go idle");
 }
+
+#[test]
+fn the_dynamic_layer_draws_alongside_the_cached_one() {
+    // Nameplates are rebuilt every frame while the developer HUD is cached, which is why
+    // they are a second layer rather than more of the first.
+    let _gpu = gpu_lock();
+    if !gpu_available() {
+        return;
+    }
+    let (_window, mut renderer) = renderer_for("overlay dynamic layer test");
+
+    renderer.set_overlay_text(&["FPS 1234"]);
+    renderer.render([0.0; 4]).expect("frame must record");
+    renderer.present().expect("frame must present");
+    let cached_only = renderer.overlay_vertex_count();
+    assert_eq!(renderer.draw_calls_last_frame(), 2);
+
+    renderer.begin_dynamic_overlay();
+    renderer.push_overlay_rect((100.0, 100.0, 220.0, 40.0), [0.1, 0.1, 0.1, 1.0], 0.02);
+    renderer.push_overlay_outline((100.0, 100.0, 220.0, 40.0), 2.0, [1.0; 4], 0.015);
+    renderer.push_overlay_text_at((104.0, 104.0), "DUMMY 87%", [1.0; 4], 0.01);
+    renderer.render([0.0; 4]).expect("frame must record");
+    renderer.present().expect("frame must present");
+
+    assert_eq!(
+        renderer.draw_calls_last_frame(),
+        3,
+        "the dynamic layer is a third draw call"
+    );
+    assert!(
+        renderer.overlay_vertex_count() > cached_only,
+        "the dynamic layer contributed no vertices"
+    );
+    assert_eq!(renderer.overlay_vertex_count() % 6, 0, "whole quads only");
+
+    renderer.wait_for_idle().expect("GPU must go idle");
+}
+
+#[test]
+fn nameplates_are_drawn_even_when_the_statistics_overlay_is_hidden() {
+    // F5 hides the developer statistics. A nameplate is game UI and stays.
+    let _gpu = gpu_lock();
+    if !gpu_available() {
+        return;
+    }
+    let (_window, mut renderer) = renderer_for("overlay dynamic toggle test");
+
+    renderer.set_overlay_text(&["FPS 1234"]);
+    renderer.set_overlay_enabled(false);
+    renderer.begin_dynamic_overlay();
+    renderer.push_overlay_text_at((32.0, 32.0), "DUMMY 100%", [1.0; 4], 0.01);
+    renderer.render([0.0; 4]).expect("frame must record");
+    renderer.present().expect("frame must present");
+
+    assert_eq!(
+        renderer.draw_calls_last_frame(),
+        2,
+        "the scene plus the dynamic layer, with the statistics hidden"
+    );
+    assert!(renderer.overlay_vertex_count() > 0);
+
+    // And clearing it stops the draw, so a frame with no nearby enemies costs nothing.
+    renderer.begin_dynamic_overlay();
+    renderer.render([0.0; 4]).expect("frame must record");
+    renderer.present().expect("frame must present");
+    assert_eq!(renderer.draw_calls_last_frame(), 1);
+    assert_eq!(renderer.overlay_vertex_count(), 0);
+
+    renderer.wait_for_idle().expect("GPU must go idle");
+}
+
+#[test]
+fn an_outline_thicker_than_its_box_stays_inside_it() {
+    let _gpu = gpu_lock();
+    if !gpu_available() {
+        return;
+    }
+    let (_window, mut renderer) = renderer_for("overlay outline clamp test");
+
+    renderer.begin_dynamic_overlay();
+    // Degenerate on purpose: a 4-pixel box with a 40-pixel outline.
+    renderer.push_overlay_outline((10.0, 10.0, 4.0, 4.0), 40.0, [1.0; 4], 0.01);
+    // And rectangles that should be rejected rather than drawn inside out.
+    renderer.push_overlay_rect((0.0, 0.0, 0.0, 10.0), [1.0; 4], 0.01);
+    renderer.push_overlay_rect((0.0, 0.0, 10.0, -5.0), [1.0; 4], 0.01);
+    renderer.render([0.0; 4]).expect("frame must record");
+    renderer.present().expect("frame must present");
+
+    // Four edges, six vertices each, and nothing from the two degenerate rectangles.
+    assert_eq!(renderer.overlay_vertex_count(), 24);
+
+    renderer.wait_for_idle().expect("GPU must go idle");
+}

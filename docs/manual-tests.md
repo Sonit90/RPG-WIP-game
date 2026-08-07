@@ -160,6 +160,11 @@ is visible on screen rather than only in a test.
 * R restores every dummy to full health and resets DAMAGE DONE and DPS to zero.
 * The wheel changes the camera distance between about 2.5 and 25 metres; ESC releases the
   cursor.
+* Every dummy carries a nameplate reading `DUMMY` with its health percentage on the right.
+  The targeted one — and only that one — has a white outline. After pressing 2 the burning
+  dummy's plate grows a second line reading `BURNING` and a countdown. Plates stay above the
+  heads as the camera turns, vanish when an enemy is behind the camera, and disappear once an
+  enemy is more than 40 metres away (run to the far side of the arena to check).
 
 ---
 

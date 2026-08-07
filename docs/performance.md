@@ -773,3 +773,27 @@ No custom allocator and no object pool: 0.003 allocations per tick justifies nei
 
 No rendering regression. The only change to shared code is the additive
 `engine_core::time::FixedTimestep`.
+
+## Addendum — enemy nameplates
+
+Text is one quad per lit font cell, so a nameplate costs roughly 330 quads and the total is
+linear in the number of plates. Release, 1920×1080 windowed, 6,000 frames, mean CPU frame:
+
+| Dummies | No nameplates | Uncapped | Capped at 20 nearest |
+| --- | --- | --- | --- |
+| 1 | 0.208 ms | 0.213 ms | 0.228 ms |
+| 10 | 0.203 ms | 0.284 ms | 0.291 ms |
+| 100 | 0.214 ms | 0.650 ms | 0.411 ms |
+| 500 | 0.264 ms | — | 0.495 ms |
+
+Uncapped, a hundred enemies cost 0.44 ms a frame: 1515 FPS against 4654 for the same scene
+without plates. Capping at the twenty nearest stops the cost growing with the pull — 500
+enemies cost what 100 do — which is why the cap exists rather than being a preference.
+
+The remaining ~0.2 ms for twenty plates is the approach: 20 plates × ~22 characters × ~15 lit
+cells is about 1.1 MB of vertices uploaded per frame. A font atlas with instanced glyph quads
+would remove it, and that is a renderer change rather than a nameplate one.
+
+The plates are a **second overlay layer**, rebuilt every frame and uploaded unconditionally,
+while the developer HUD keeps its per-slot cache. Merging them would re-upload the HUD's tens
+of thousands of quads every frame to move a plate by a pixel.

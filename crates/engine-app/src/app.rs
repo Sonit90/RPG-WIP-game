@@ -39,6 +39,8 @@ use engine_presentation::camera::ThirdPersonCamera;
 use engine_presentation::extract::{RenderExtractor, VisualBindings};
 #[cfg(feature = "debug-overlay")]
 use engine_presentation::hud::{self, HudModel};
+#[cfg(feature = "debug-overlay")]
+use engine_presentation::nameplate::{NameplateConfig, NameplateSet};
 use engine_renderer::mesh::MeshData;
 use engine_renderer::{
     Camera, Lighting, MaterialDesc, MaterialHandle, MeshHandle, Projection, Renderer,
@@ -59,6 +61,41 @@ const GROUND_HALF_EXTENT: f32 = 120.0;
 /// Function key that toggles the developer overlay.
 #[cfg(feature = "debug-overlay")]
 const OVERLAY_TOGGLE_KEY: KeyCode = KeyCode::F5;
+
+/// Colour of a nameplate's panel: dark enough that white text reads over the arena.
+///
+/// Opaque, because the overlay pipeline has blending switched off. A translucent plate
+/// would be nicer and is not worth a second blend state for a prototype.
+#[cfg(feature = "debug-overlay")]
+const PLATE_PANEL_COLOR: [f32; 4] = [0.06, 0.07, 0.09, 1.0];
+
+/// Colour of a nameplate's name and health text.
+#[cfg(feature = "debug-overlay")]
+const PLATE_TEXT_COLOR: [f32; 4] = [0.95, 0.95, 0.85, 1.0];
+
+/// Colour of the status line, so a debuff is distinguishable from the name at a glance.
+#[cfg(feature = "debug-overlay")]
+const PLATE_STATUS_COLOR: [f32; 4] = [0.95, 0.62, 0.25, 1.0];
+
+/// Colour of the outline around the current target's plate.
+#[cfg(feature = "debug-overlay")]
+const PLATE_TARGET_OUTLINE_COLOR: [f32; 4] = [1.0, 1.0, 1.0, 1.0];
+
+/// Thickness of that outline, in pixels.
+#[cfg(feature = "debug-overlay")]
+const PLATE_OUTLINE_PIXELS: f32 = 2.0;
+
+/// Depth added to a plate's own depth for its outline and panel.
+///
+/// Both are behind the text and in front of nothing else. The steps are far smaller than
+/// the gap distance puts between two plates, so a plate's own parts never interleave with
+/// another plate's.
+#[cfg(feature = "debug-overlay")]
+const PLATE_OUTLINE_DEPTH_STEP: f32 = 0.0004;
+
+/// Depth added to a plate's own depth for its panel.
+#[cfg(feature = "debug-overlay")]
+const PLATE_PANEL_DEPTH_STEP: f32 = 0.0008;
 
 /// How often the overlay text is rebuilt.
 ///
@@ -87,6 +124,14 @@ pub struct App {
     mouse_captured: bool,
     /// Milliseconds the last render extraction took.
     extract_ms: f64,
+    /// This frame's nameplates. Reused; never freed.
+    #[cfg(feature = "debug-overlay")]
+    nameplates: NameplateSet,
+    /// Scratch for a plate's title and status lines, so drawing one allocates nothing.
+    #[cfg(feature = "debug-overlay")]
+    plate_title: String,
+    #[cfg(feature = "debug-overlay")]
+    plate_statuses: String,
     report_interval: Option<Duration>,
     last_report: Instant,
     #[cfg(feature = "debug-overlay")]
@@ -166,6 +211,12 @@ impl App {
             commands: Vec::with_capacity(16),
             mouse_captured: false,
             extract_ms: 0.0,
+            #[cfg(feature = "debug-overlay")]
+            nameplates: NameplateSet::with_capacity(32),
+            #[cfg(feature = "debug-overlay")]
+            plate_title: String::with_capacity(32),
+            #[cfg(feature = "debug-overlay")]
+            plate_statuses: String::with_capacity(64),
             report_interval,
             last_report: Instant::now(),
             #[cfg(feature = "debug-overlay")]
@@ -248,6 +299,73 @@ impl App {
         self.controller.rotate(offset_x as f32, offset_y as f32);
         if let Err(error) = self.window.center_cursor() {
             log::warn!("could not centre the cursor: {error}");
+        }
+    }
+
+    /// Rebuilds and draws the nameplates for every nearby enemy.
+    ///
+    /// Every frame, not on the overlay's update interval: a plate is anchored to a
+    /// projected world position, so it is wrong the moment the camera turns.
+    ///
+    /// Drawn independently of the developer overlay's F5 toggle — a nameplate is game UI,
+    /// and F5 hides the statistics readout. It does depend on the `debug-overlay` *feature*,
+    /// because the overlay is the only text renderer the engine has; see the known
+    /// limitations in `docs/phase3.md`.
+    #[cfg(feature = "debug-overlay")]
+    fn draw_nameplates(&mut self) {
+        let metrics = self.renderer.overlay_metrics();
+        let config = NameplateConfig {
+            cell_pixels: metrics.cell_pixels,
+            glyph_advance_pixels: metrics.glyph_advance_pixels,
+            line_advance_pixels: metrics.line_advance_pixels,
+            glyph_height_pixels: metrics.glyph_height_pixels,
+            ..NameplateConfig::default()
+        };
+
+        let view_projection = self.camera.view_projection();
+        let viewport = self.renderer.size();
+        self.nameplates
+            .build(&self.simulation, &view_projection, viewport, &config);
+
+        self.renderer.begin_dynamic_overlay();
+        for index in 0..self.nameplates.plates().len() {
+            let plate = self.nameplates.plates()[index];
+            let rect = (plate.origin.0, plate.origin.1, plate.size.0, plate.size.1);
+
+            self.renderer.push_overlay_rect(
+                rect,
+                PLATE_PANEL_COLOR,
+                plate.depth + PLATE_PANEL_DEPTH_STEP,
+            );
+            // The outline is what says "this is what your abilities will hit", so it is the
+            // target's and nothing else's.
+            if plate.is_target {
+                self.renderer.push_overlay_outline(
+                    rect,
+                    PLATE_OUTLINE_PIXELS,
+                    PLATE_TARGET_OUTLINE_COLOR,
+                    plate.depth + PLATE_OUTLINE_DEPTH_STEP,
+                );
+            }
+
+            plate.write_title(&mut self.plate_title);
+            let text_x = plate.origin.0 + config.padding_pixels;
+            let text_y = plate.origin.1 + config.padding_pixels;
+            self.renderer.push_overlay_text_at(
+                (text_x, text_y),
+                &self.plate_title,
+                PLATE_TEXT_COLOR,
+                plate.depth,
+            );
+
+            if plate.write_statuses(&mut self.plate_statuses) {
+                self.renderer.push_overlay_text_at(
+                    (text_x, text_y + config.line_advance_pixels),
+                    &self.plate_statuses,
+                    PLATE_STATUS_COLOR,
+                    plate.depth,
+                );
+            }
         }
     }
 
@@ -481,6 +599,14 @@ impl Application for App {
                 self.controller
                     .apply(&mut self.camera, aspect_of(width, height))?;
             }
+        }
+
+        // After the camera, because a plate is a projection through it: building plates
+        // from last frame's camera lags them a frame behind the enemies they label.
+        #[cfg(feature = "debug-overlay")]
+        {
+            engine_core::profile_scope!(profiler, "Nameplates");
+            self.draw_nameplates();
         }
 
         Ok(())
