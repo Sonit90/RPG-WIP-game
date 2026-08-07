@@ -25,7 +25,7 @@ use windows::core::s;
 use crate::depth::DEPTH_FORMAT;
 use crate::error::RendererError;
 use crate::mesh::MeshVertex;
-use crate::pipeline::{blend_desc, depth_stencil_desc, rasterizer_desc};
+use crate::pipeline::{blend_desc, depth_stencil_desc, rasterizer_desc, wireframe_rasterizer_desc};
 use crate::shader::{MESH_PS, MESH_VS, bytecode};
 use crate::swapchain::BACK_BUFFER_FORMAT;
 
@@ -441,12 +441,33 @@ pub struct MeshPipeline {
 }
 
 impl MeshPipeline {
-    /// Creates the root signature and pipeline state from the embedded DXIL.
+    /// Creates the solid-fill root signature and pipeline state from the embedded DXIL.
     ///
     /// # Errors
     ///
     /// Returns [`RendererError::Api`] if a D3D12 call fails.
     pub fn new(device: &ID3D12Device) -> Result<Self, RendererError> {
+        Self::with_rasterizer(device, rasterizer_desc())
+    }
+
+    /// Creates the same pipeline with wireframe fill.
+    ///
+    /// A separate pipeline state rather than a dynamic state: D3D12 bakes the fill mode
+    /// into the PSO, so a wireframe toggle is a choice between two objects created at
+    /// startup, not a per-frame state change.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RendererError::Api`] if a D3D12 call fails.
+    pub fn wireframe(device: &ID3D12Device) -> Result<Self, RendererError> {
+        Self::with_rasterizer(device, wireframe_rasterizer_desc())
+    }
+
+    /// Creates the pipeline with an explicit rasterizer state.
+    fn with_rasterizer(
+        device: &ID3D12Device,
+        rasterizer: windows::Win32::Graphics::Direct3D12::D3D12_RASTERIZER_DESC,
+    ) -> Result<Self, RendererError> {
         let root_signature = create_root_signature(device)?;
 
         let input_elements = [
@@ -489,7 +510,7 @@ impl MeshPipeline {
             pRootSignature: unsafe { std::mem::transmute_copy(&root_signature) },
             VS: bytecode(MESH_VS),
             PS: bytecode(MESH_PS),
-            RasterizerState: rasterizer_desc(),
+            RasterizerState: rasterizer,
             BlendState: blend_desc(),
             DepthStencilState: depth_stencil_desc(),
             DSVFormat: DEPTH_FORMAT,

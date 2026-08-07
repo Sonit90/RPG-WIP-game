@@ -29,16 +29,47 @@ const VERTICES_PER_QUAD: usize = 6;
 
 /// Upper bound on quads per frame, and therefore on the upload buffer size.
 ///
-/// Five lines of roughly sixty characters, each character at most 35 lit cells, is about
-/// 10,000 quads; 16,384 leaves headroom without being a meaningful amount of memory
-/// (16,384 * 6 * 28 bytes ≈ 2.7 MiB per frame slot).
-const MAX_QUADS: usize = 16_384;
+/// The showcase overlay is about twenty lines of thirty characters plus a 120-sample frame
+/// graph; at up to 35 lit cells per character that is roughly 21,000 quads. 32,768 leaves
+/// headroom without being a meaningful amount of memory (32,768 * 6 * 28 bytes ≈ 5.4 MiB
+/// per frame slot).
+const MAX_QUADS: usize = 32_768;
 
 /// Screen-space position of the overlay's top-left corner, in pixels.
 const MARGIN_PIXELS: f32 = 12.0;
 
 /// Text colour: a bright, slightly warm white that stays readable over dark backgrounds.
 const TEXT_COLOR: [f32; 4] = [0.95, 0.95, 0.85, 1.0];
+
+/// Colour of a frame-graph bar that is inside its budget.
+const GRAPH_GOOD_COLOR: [f32; 4] = [0.35, 0.85, 0.45, 1.0];
+
+/// Colour of a frame-graph bar that is over its budget.
+///
+/// A single number cannot show a spike that lasts three frames out of a hundred; a graph
+/// can, and colouring the overrun is what makes it visible without reading the axis.
+const GRAPH_BAD_COLOR: [f32; 4] = [0.95, 0.45, 0.25, 1.0];
+
+/// Colour of the frame graph's background panel, and of the text backdrop.
+///
+/// Opaque, not translucent: the overlay draws through the scene's blend state, which has
+/// blending switched off because everything else it draws is opaque. A readable overlay is
+/// worth one dark rectangle; it is not worth a second blend state.
+const GRAPH_BACKGROUND_COLOR: [f32; 4] = [0.12, 0.14, 0.18, 1.0];
+
+/// Clip-space depth of everything the overlay draws in front.
+///
+/// Zero is the near plane, so an overlay quad passes the `LESS` depth test against any
+/// scene geometry and lands on top of the frame.
+const FOREGROUND_DEPTH: f32 = 0.0;
+
+/// Clip-space depth of the frame graph's background panel.
+///
+/// Behind the bars, and this is load-bearing rather than cosmetic: the overlay shares the
+/// scene's depth-testing pipeline, so a panel drawn at the same depth as the bars *writes*
+/// that depth first and the bars then fail `LESS` and vanish. They are separated instead of
+/// the test being disabled, because the same pipeline draws the scene.
+const GRAPH_BACKGROUND_DEPTH: f32 = 0.5;
 
 /// Builds overlay geometry in clip space.
 ///
@@ -99,22 +130,136 @@ impl OverlayGeometry {
         }
     }
 
+    /// Appends an opaque backdrop large enough for `lines` rows of `columns` characters.
+    ///
+    /// Without it the text sits directly on the scene and is unreadable wherever the scene
+    /// is bright — which, in a demo whose whole purpose is to be looked at, is most of the
+    /// screen. Drawn behind the text, which is what [`GRAPH_BACKGROUND_DEPTH`] arranges.
+    ///
+    /// Appends, so it must be called after the lines it covers; the depth test, not the
+    /// draw order, decides which one wins.
+    pub fn push_backdrop(&mut self, lines: usize, columns: usize, width: u32, height: u32) {
+        if width == 0 || height == 0 || lines == 0 || columns == 0 {
+            return;
+        }
+        let cell = self.cell_pixels;
+        let text_width = columns as f32 * GLYPH_ADVANCE as f32 * cell;
+        let text_height = lines as f32 * LINE_ADVANCE as f32 * cell;
+        self.push_colored_quad(
+            (
+                0.0,
+                0.0,
+                // The margin again on the far side, so the text is inset rather than
+                // touching the edge of its own backdrop.
+                MARGIN_PIXELS * 2.0 + text_width,
+                MARGIN_PIXELS * 2.0 + text_height,
+            ),
+            GRAPH_BACKGROUND_COLOR,
+            GRAPH_BACKGROUND_DEPTH,
+            (width, height),
+        );
+    }
+
+    /// Appends a frame-time graph: one bar per sample, oldest on the left.
+    ///
+    /// `samples` are milliseconds and `budget_ms` is the height the panel is scaled to; a
+    /// sample above it is clamped to full height and drawn in the overrun colour, so an
+    /// occasional spike is visible as a red bar rather than as a rescaled graph in which
+    /// every other bar suddenly shrinks.
+    ///
+    /// The panel is placed by its bottom-left corner in pixels. Appends, so callers push
+    /// their text lines first and the graph afterwards.
+    pub fn push_frame_graph(
+        &mut self,
+        samples: &[f32],
+        budget_ms: f32,
+        origin: (f32, f32),
+        size: (f32, f32),
+        width: u32,
+        height: u32,
+    ) {
+        if width == 0 || height == 0 || samples.is_empty() || size.0 <= 0.0 || size.1 <= 0.0 {
+            return;
+        }
+        let budget = if budget_ms > 0.0 { budget_ms } else { 1.0 };
+        let (left, bottom) = origin;
+        let (panel_width, panel_height) = size;
+
+        self.push_colored_quad(
+            (left, bottom - panel_height, panel_width, panel_height),
+            GRAPH_BACKGROUND_COLOR,
+            GRAPH_BACKGROUND_DEPTH,
+            (width, height),
+        );
+
+        // Bars are sized to fill the panel exactly, so the graph's width says how many
+        // frames it covers rather than being a function of how wide a bar happens to be.
+        let bar_width = panel_width / samples.len() as f32;
+        for (index, sample) in samples.iter().enumerate() {
+            let over_budget = *sample > budget;
+            let fraction = (*sample / budget).clamp(0.0, 1.0);
+            let bar_height = (fraction * panel_height).max(1.0);
+            let color = if over_budget {
+                GRAPH_BAD_COLOR
+            } else {
+                GRAPH_GOOD_COLOR
+            };
+            self.push_colored_quad(
+                (
+                    left + index as f32 * bar_width,
+                    bottom - bar_height,
+                    // A pixel of gap, so individual frames stay distinguishable.
+                    (bar_width - 1.0).max(1.0),
+                    bar_height,
+                ),
+                color,
+                FOREGROUND_DEPTH,
+                (width, height),
+            );
+        }
+    }
+
     /// Emits the two counter-clockwise triangles of one cell.
     ///
     /// Winding matches `rasterizer_desc`: counter-clockwise in clip space, or back-face
     /// culling would discard the overlay exactly as it once discarded the triangle.
     fn push_quad(&mut self, x: f32, y: f32, size: f32, width: u32, height: u32) {
+        self.push_colored_quad(
+            (x, y, size, size),
+            TEXT_COLOR,
+            FOREGROUND_DEPTH,
+            (width, height),
+        );
+    }
+
+    /// Emits one axis-aligned rectangle of an arbitrary size, colour and clip-space depth.
+    ///
+    /// `rect` is `(x, y, width, height)` in pixels from the top-left of a `target`-sized
+    /// render target. Overflow is dropped rather than allocated for, which is what keeps
+    /// the frame path allocation-free.
+    fn push_colored_quad(
+        &mut self,
+        rect: (f32, f32, f32, f32),
+        color: [f32; 4],
+        depth: f32,
+        target: (u32, u32),
+    ) {
+        if self.vertices.len() + VERTICES_PER_QUAD > self.vertices.capacity() {
+            return;
+        }
+        let (x, y, quad_width, quad_height) = rect;
+        let (width, height) = target;
         let to_clip_x = |px: f32| px / width as f32 * 2.0 - 1.0;
         let to_clip_y = |py: f32| 1.0 - py / height as f32 * 2.0;
 
         let left = to_clip_x(x);
-        let right = to_clip_x(x + size);
+        let right = to_clip_x(x + quad_width);
         let top = to_clip_y(y);
-        let bottom = to_clip_y(y + size);
+        let bottom = to_clip_y(y + quad_height);
 
         let corner = |cx: f32, cy: f32| Vertex {
-            position: [cx, cy, 0.0],
-            color: TEXT_COLOR,
+            position: [cx, cy, depth],
+            color,
         };
 
         self.vertices.extend_from_slice(&[
@@ -376,6 +521,134 @@ mod tests {
             fourth_line_top < first_line_top,
             "line 3 ({fourth_line_top}) must sit below line 0 ({first_line_top})"
         );
+    }
+
+    #[test]
+    fn a_frame_graph_emits_a_panel_and_one_bar_per_sample() {
+        let mut geometry = OverlayGeometry::new();
+        geometry.begin();
+        let samples = [1.0_f32, 2.0, 3.0, 4.0];
+        geometry.push_frame_graph(&samples, 4.0, (10.0, 500.0), (200.0, 80.0), 1920, 1080);
+        assert_eq!(
+            geometry.vertices().len(),
+            (samples.len() + 1) * VERTICES_PER_QUAD,
+            "one background panel plus one bar per sample"
+        );
+    }
+
+    #[test]
+    fn graph_bars_sit_in_front_of_their_own_background_panel() {
+        // The overlay shares the scene's depth-testing pipeline. A panel drawn at the same
+        // depth as the bars writes that depth first, the bars then fail LESS, and the graph
+        // renders as an empty rectangle — which is exactly what happened before this test.
+        let mut geometry = OverlayGeometry::new();
+        geometry.begin();
+        geometry.push_frame_graph(
+            &[1.0, 2.0, 3.0],
+            4.0,
+            (10.0, 500.0),
+            (200.0, 80.0),
+            1920,
+            1080,
+        );
+
+        let vertices = geometry.vertices();
+        let panel_depth = vertices[0].position[2];
+        for bar in vertices[VERTICES_PER_QUAD..].iter() {
+            assert!(
+                bar.position[2] < panel_depth,
+                "a bar at depth {} cannot pass LESS against a panel at {panel_depth}",
+                bar.position[2]
+            );
+        }
+    }
+
+    #[test]
+    fn text_is_drawn_at_the_near_plane_so_the_scene_cannot_hide_it() {
+        let geometry = geometry_for("FPS");
+        assert!(
+            geometry
+                .vertices()
+                .iter()
+                .all(|vertex| vertex.position[2] == FOREGROUND_DEPTH)
+        );
+    }
+
+    #[test]
+    fn a_backdrop_covers_the_text_it_is_sized_for_and_sits_behind_it() {
+        let mut geometry = geometry_for("ABCDE");
+        let text_bottom = geometry
+            .vertices()
+            .iter()
+            .map(|vertex| vertex.position[1])
+            .fold(f32::INFINITY, f32::min);
+        let text_right = geometry
+            .vertices()
+            .iter()
+            .map(|vertex| vertex.position[0])
+            .fold(f32::NEG_INFINITY, f32::max);
+
+        geometry.push_backdrop(1, 5, 1920, 1080);
+        let backdrop = &geometry.vertices()[geometry.vertices().len() - VERTICES_PER_QUAD..];
+        let backdrop_bottom = backdrop
+            .iter()
+            .map(|vertex| vertex.position[1])
+            .fold(f32::INFINITY, f32::min);
+        let backdrop_right = backdrop
+            .iter()
+            .map(|vertex| vertex.position[0])
+            .fold(f32::NEG_INFINITY, f32::max);
+
+        assert!(backdrop_bottom < text_bottom, "the text must fit inside");
+        assert!(backdrop_right > text_right, "the text must fit inside");
+        assert!(
+            backdrop.iter().all(|vertex| vertex.position[2] > 0.0),
+            "the backdrop must be behind the text it backs"
+        );
+    }
+
+    #[test]
+    fn an_empty_backdrop_produces_nothing() {
+        let mut geometry = OverlayGeometry::new();
+        geometry.begin();
+        geometry.push_backdrop(0, 30, 1920, 1080);
+        geometry.push_backdrop(20, 0, 1920, 1080);
+        geometry.push_backdrop(20, 30, 0, 0);
+        assert!(geometry.is_empty());
+    }
+
+    #[test]
+    fn a_frame_graph_appends_rather_than_replacing_the_text() {
+        let mut geometry = geometry_for("FPS");
+        let text_only = geometry.vertices().len();
+        geometry.push_frame_graph(&[1.0, 2.0], 4.0, (10.0, 500.0), (200.0, 80.0), 1920, 1080);
+        assert!(geometry.vertices().len() > text_only);
+    }
+
+    #[test]
+    fn a_spike_is_clamped_to_the_panel_rather_than_rescaling_it() {
+        // A 60 ms hitch must not shrink every other bar to invisibility; it is clamped and
+        // recoloured instead.
+        let mut geometry = OverlayGeometry::new();
+        geometry.begin();
+        geometry.push_frame_graph(&[60.0], 4.0, (0.0, 1080.0), (100.0, 80.0), 1920, 1080);
+        for vertex in geometry.vertices() {
+            assert!(
+                (-1.0..=1.0).contains(&vertex.position[1]),
+                "a spike must stay inside the panel: {vertex:?}"
+            );
+        }
+        let bar = geometry.vertices()[VERTICES_PER_QUAD];
+        assert_eq!(bar.color, GRAPH_BAD_COLOR, "an overrun is coloured");
+    }
+
+    #[test]
+    fn an_empty_frame_graph_produces_nothing() {
+        let mut geometry = OverlayGeometry::new();
+        geometry.begin();
+        geometry.push_frame_graph(&[], 4.0, (10.0, 500.0), (200.0, 80.0), 1920, 1080);
+        geometry.push_frame_graph(&[1.0], 4.0, (10.0, 500.0), (0.0, 0.0), 1920, 1080);
+        assert!(geometry.is_empty());
     }
 
     #[test]

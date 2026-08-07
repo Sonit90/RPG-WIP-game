@@ -10,13 +10,13 @@ use windows::Win32::Graphics::Direct3D::ID3DBlob;
 use windows::Win32::Graphics::Direct3D12::{
     D3D_ROOT_SIGNATURE_VERSION_1, D3D12_BLEND_DESC, D3D12_BLEND_ONE, D3D12_BLEND_OP_ADD,
     D3D12_BLEND_ZERO, D3D12_COLOR_WRITE_ENABLE_ALL, D3D12_COMPARISON_FUNC_LESS,
-    D3D12_CULL_MODE_BACK, D3D12_DEPTH_STENCIL_DESC, D3D12_DEPTH_WRITE_MASK_ALL,
-    D3D12_FILL_MODE_SOLID, D3D12_GRAPHICS_PIPELINE_STATE_DESC,
-    D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, D3D12_INPUT_ELEMENT_DESC, D3D12_INPUT_LAYOUT_DESC,
-    D3D12_LOGIC_OP_NOOP, D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE, D3D12_RASTERIZER_DESC,
-    D3D12_RENDER_TARGET_BLEND_DESC, D3D12_ROOT_SIGNATURE_DESC,
-    D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT, D3D12SerializeRootSignature,
-    ID3D12Device, ID3D12PipelineState, ID3D12RootSignature,
+    D3D12_CULL_MODE_BACK, D3D12_CULL_MODE_NONE, D3D12_DEPTH_STENCIL_DESC,
+    D3D12_DEPTH_WRITE_MASK_ALL, D3D12_FILL_MODE_SOLID, D3D12_FILL_MODE_WIREFRAME,
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,
+    D3D12_INPUT_ELEMENT_DESC, D3D12_INPUT_LAYOUT_DESC, D3D12_LOGIC_OP_NOOP,
+    D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE, D3D12_RASTERIZER_DESC, D3D12_RENDER_TARGET_BLEND_DESC,
+    D3D12_ROOT_SIGNATURE_DESC, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT,
+    D3D12SerializeRootSignature, ID3D12Device, ID3D12PipelineState, ID3D12RootSignature,
 };
 use windows::Win32::Graphics::Dxgi::Common::{
     DXGI_FORMAT_R32G32B32_FLOAT, DXGI_FORMAT_R32G32B32A32_FLOAT, DXGI_SAMPLE_DESC,
@@ -242,6 +242,19 @@ pub(crate) fn rasterizer_desc() -> D3D12_RASTERIZER_DESC {
         FrontCounterClockwise: true.into(),
         DepthClipEnable: true.into(),
         ..Default::default()
+    }
+}
+
+/// Wireframe fill with no face culling.
+///
+/// Culling is off deliberately: the point of a wireframe view is to see the triangle
+/// density of the whole object, and back-face culling would hide half of every mesh's
+/// edges — which looks like missing geometry rather than like a working wireframe.
+pub(crate) fn wireframe_rasterizer_desc() -> D3D12_RASTERIZER_DESC {
+    D3D12_RASTERIZER_DESC {
+        FillMode: D3D12_FILL_MODE_WIREFRAME,
+        CullMode: D3D12_CULL_MODE_NONE,
+        ..rasterizer_desc()
     }
 }
 

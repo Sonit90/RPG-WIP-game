@@ -85,6 +85,10 @@ pub struct Renderer {
     depth: DepthBuffer,
     /// Root signature and pipeline state for `MeshVertex` geometry.
     mesh_pipeline: MeshPipeline,
+    /// The same pipeline with wireframe fill, selected by [`Renderer::set_wireframe`].
+    mesh_pipeline_wireframe: MeshPipeline,
+    /// Whether `render_world` draws through the wireframe pipeline.
+    wireframe: bool,
     /// Meshes created through [`Renderer::create_mesh`], indexed by handle.
     meshes: Vec<GpuMesh>,
     /// Materials created through [`Renderer::create_material`], indexed by handle.
@@ -95,6 +99,14 @@ pub struct Renderer {
     /// Whether `render_world` culls. Off makes the benchmark able to measure the same
     /// frame with one step removed rather than comparing two code paths.
     culling_enabled: bool,
+    /// A frustum to cull against instead of the camera's own.
+    ///
+    /// Set to freeze the cull frustum where the camera was, then fly away and watch what
+    /// culling actually rejected. Without it, "is culling working?" can only be answered by
+    /// a counter, because the objects it removes are by definition the ones off screen.
+    cull_view_projection: Option<engine_core::math::Mat4>,
+    /// Milliseconds the most recent cull pass took, measured on the CPU.
+    last_cull_ms: f64,
     /// The geometry currently being drawn.
     scene: VertexStream,
     /// Scratch buffer for regenerating scene geometry without allocating each time.
@@ -167,6 +179,7 @@ impl Renderer {
         let pipeline = ScenePipeline::new(context.device())?;
         let depth = DepthBuffer::new(&context, config.width, config.height)?;
         let mesh_pipeline = MeshPipeline::new(context.device())?;
+        let mesh_pipeline_wireframe = MeshPipeline::wireframe(context.device())?;
         let mut scene_scratch = Vec::new();
         stress::build_grid(1, &mut scene_scratch);
         let scene = VertexStream::upload(&context, &scene_scratch)?;
@@ -192,10 +205,14 @@ impl Renderer {
             pipeline,
             depth,
             mesh_pipeline,
+            mesh_pipeline_wireframe,
+            wireframe: false,
             meshes: Vec::new(),
             materials: Vec::new(),
             culler: Culler::new(),
             culling_enabled: true,
+            cull_view_projection: None,
+            last_cull_ms: 0.0,
             scene,
             scene_scratch,
             #[cfg(feature = "debug-overlay")]
@@ -353,6 +370,48 @@ impl Renderer {
         }
     }
 
+    /// Appends an opaque backdrop behind the overlay text.
+    ///
+    /// Call *after* [`Renderer::set_overlay_text`], which rebuilds the geometry this
+    /// appends to. `columns` is the longest line's length; anything wider spills onto the
+    /// scene, which is a readability problem rather than a correctness one.
+    #[cfg(feature = "debug-overlay")]
+    pub fn push_overlay_backdrop(&mut self, lines: usize, columns: usize) {
+        let (width, height) = self.swap_chain.size();
+        self.overlay
+            .geometry
+            .push_backdrop(lines, columns, width, height);
+        self.overlay.stale.fill(true);
+    }
+
+    /// Appends a frame-time graph below the overlay text.
+    ///
+    /// Call *after* [`Renderer::set_overlay_text`]: that call rebuilds the geometry from
+    /// scratch, and this one appends to it. `samples` are milliseconds, oldest first, and
+    /// `budget_ms` is the height the panel is scaled to.
+    #[cfg(feature = "debug-overlay")]
+    pub fn push_overlay_frame_graph(&mut self, samples: &[f32], budget_ms: f32) {
+        /// Distance from the left edge, matching the text margin.
+        const LEFT_PIXELS: f32 = 12.0;
+        /// Distance from the bottom edge.
+        const BOTTOM_MARGIN_PIXELS: f32 = 16.0;
+        /// Panel size in pixels.
+        const PANEL: (f32, f32) = (360.0, 90.0);
+
+        let (width, height) = self.swap_chain.size();
+        self.overlay.geometry.push_frame_graph(
+            samples,
+            budget_ms,
+            (LEFT_PIXELS, height as f32 - BOTTOM_MARGIN_PIXELS),
+            PANEL,
+            width,
+            height,
+        );
+        // Every slot's upload buffer now holds geometry without the graph. The views
+        // themselves are replaced by the re-upload this flag forces.
+        self.overlay.stale.fill(true);
+    }
+
     /// Turns overlay drawing on or off at runtime.
     ///
     /// Independent of the `debug-overlay` feature, which decides whether any of this
@@ -426,10 +485,13 @@ impl Renderer {
     ) -> Result<(), RendererError> {
         let (slot, back_buffer) = self.begin_recording(color)?;
 
-        self.commands.set_pipeline(
-            self.mesh_pipeline.root_signature(),
-            self.mesh_pipeline.pipeline_state(),
-        );
+        let pipeline = if self.wireframe {
+            &self.mesh_pipeline_wireframe
+        } else {
+            &self.mesh_pipeline
+        };
+        self.commands
+            .set_pipeline(pipeline.root_signature(), pipeline.pipeline_state());
         self.commands
             .set_topology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 
@@ -445,12 +507,20 @@ impl Renderer {
         // Cull before recording, not while recording: the visible set is CPU-only work
         // that touches no D3D12 object, which is what keeps it testable without a GPU and
         // moveable onto worker threads later.
-        let frustum = Frustum::from_view_projection(&camera.view_projection());
+        let frustum = Frustum::from_view_projection(
+            &self
+                .cull_view_projection
+                .unwrap_or_else(|| camera.view_projection()),
+        );
+        // Timed here rather than around the whole render: the number the overlay reports as
+        // "culling" has to be the cull pass alone, or it flatters or blames the wrong thing.
+        let cull_start = std::time::Instant::now();
         if self.culling_enabled {
             self.culler.cull(world, &frustum);
         } else {
             self.culler.accept_all(world);
         }
+        self.last_cull_ms = cull_start.elapsed().as_secs_f64() * 1e3;
 
         for index in 0..self.culler.visible().len() {
             let entity = self.culler.visible()[index] as usize;
@@ -528,6 +598,45 @@ impl Renderer {
     #[must_use]
     pub fn culling_enabled(&self) -> bool {
         self.culling_enabled
+    }
+
+    /// Milliseconds the most recent `render_world` cull pass took.
+    ///
+    /// Zero before the first frame. Measured around the cull loop only, so it is comparable
+    /// against the render stage rather than a share of it.
+    #[must_use]
+    pub fn last_cull_ms(&self) -> f64 {
+        self.last_cull_ms
+    }
+
+    /// Culls against `view_projection` instead of the camera's own, or clears the override.
+    ///
+    /// Freezing the frustum is the only way to *see* culling: the objects it removes are
+    /// exactly the ones outside the view, so with a live frustum there is nothing on screen
+    /// to look at. With the frustum frozen and the camera free, the culled volume becomes a
+    /// visible hole in the scene.
+    pub fn set_cull_view_projection(&mut self, view_projection: Option<engine_core::math::Mat4>) {
+        self.cull_view_projection = view_projection;
+    }
+
+    /// Whether the cull frustum is frozen away from the camera.
+    #[must_use]
+    pub fn cull_frustum_is_frozen(&self) -> bool {
+        self.cull_view_projection.is_some()
+    }
+
+    /// Draws the world as wireframe instead of solid.
+    ///
+    /// Switches between two pipeline states created at startup; the fill mode is baked into
+    /// a D3D12 PSO and cannot be changed on a bound one.
+    pub fn set_wireframe(&mut self, enabled: bool) {
+        self.wireframe = enabled;
+    }
+
+    /// Whether wireframe fill is selected.
+    #[must_use]
+    pub fn wireframe(&self) -> bool {
+        self.wireframe
     }
 
     /// The local-space bounds of a created mesh, which a caller needs to spawn an entity.
