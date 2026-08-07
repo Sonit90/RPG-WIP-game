@@ -28,25 +28,54 @@
 [CmdletBinding()]
 param(
     [switch] $Overlay = $true,
-    [string] $OutputPath = (Join-Path $PSScriptRoot '..\dist\mygame')
+    # Resolved in the body, not here: a param default is evaluated in a scope where
+    # $PSScriptRoot is not reliably populated under every invocation form, and an empty
+    # string then reaches Join-Path and fails the script before it has done anything.
+    [string] $OutputPath
 )
 
 $ErrorActionPreference = 'Stop'
-$repositoryRoot = Resolve-Path (Join-Path $PSScriptRoot '..')
+$scriptRoot = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Path }
+$repositoryRoot = Resolve-Path (Join-Path $scriptRoot '..')
+if (-not $OutputPath) {
+    $OutputPath = Join-Path $repositoryRoot 'dist\mygame'
+}
 Set-Location $repositoryRoot
+
+# Runs a native command and returns its exit code, without letting Windows PowerShell turn
+# its stderr into a terminating error.
+#
+# Under $ErrorActionPreference = 'Stop', Windows PowerShell 5.1 wraps each stderr line from
+# a native executable in a NativeCommandError and treats it as terminating — even when the
+# process exits 0. Cargo writes its progress ("Compiling ...", "Finished ...") to stderr, so
+# every successful build looked like a failure. The exit code is the only thing that
+# actually reports success, so the preference is relaxed for the call and the code checked.
+function Invoke-Native {
+    param([string] $Command, [string[]] $Arguments)
+
+    $previous = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        & $Command @Arguments
+    }
+    finally {
+        $ErrorActionPreference = $previous
+    }
+    return $LASTEXITCODE
+}
 
 Write-Host 'Building release binary...' -ForegroundColor Cyan
 
-# --bin mygame, not --workspace: the benchmark crate has its own binaries and must not be
-# built, let alone copied.
+# --bin mygame, not --workspace: the benchmark and showcase crates have their own binaries
+# and must not be built, let alone copied.
 $buildArguments = @('build', '--release', '--bin', 'mygame')
 if (-not $Overlay) {
     $buildArguments += @('--no-default-features')
 }
 
-& cargo @buildArguments
-if ($LASTEXITCODE -ne 0) {
-    throw "cargo build failed with exit code $LASTEXITCODE"
+$buildExit = Invoke-Native 'cargo' $buildArguments
+if ($buildExit -ne 0) {
+    throw "cargo build failed with exit code $buildExit"
 }
 
 $binary = Join-Path $repositoryRoot 'target\release\mygame.exe'
@@ -69,8 +98,14 @@ Write-Host 'Verifying the package...' -ForegroundColor Cyan
 $failures = @()
 $packaged = Get-ChildItem -Recurse -File $OutputPath
 
-# 1. Nothing that looks like a test or benchmark artefact.
-$forbiddenNames = @('performance_test', 'cpu_bench', 'test', 'bench', 'deps', 'incremental')
+# 1. Nothing that looks like a test, benchmark or development artefact. Every development
+#    binary in the workspace is named here explicitly as well as caught by the generic
+#    patterns, so adding one to the workspace without adding it here is the only way to get
+#    it past this check — and the list is short enough to keep current.
+$forbiddenNames = @(
+    'performance_test', 'cpu_bench', 'cull_bench', 'showcase',
+    'test', 'bench', 'deps', 'incremental'
+)
 foreach ($file in $packaged) {
     foreach ($pattern in $forbiddenNames) {
         if ($file.Name -like "*$pattern*") {
@@ -87,22 +122,28 @@ if ($executables.Count -ne 1) {
     $failures += "unexpected executable: $($executables[0].Name)"
 }
 
-# 3. No test-only symbols linked into the binary. The benchmark and test harness names are
-#    distinctive enough that finding them would mean something was linked that should not
-#    have been.
-$symbols = & cmd /c "findstr /C:`"performance_test`" /C:`"cpu_bench`" /C:`"should_panic`" `"$($executables[0].FullName)`"" 2>$null
-if ($LASTEXITCODE -eq 0) {
-    $failures += 'the binary contains test or benchmark symbols'
+# 3. No test-only symbols linked into the binary. The benchmark, showcase and test harness
+#    names are distinctive enough that finding one would mean something was linked that
+#    should not have been.
+#
+#    findstr exits 1 when it finds nothing, which is the success case here, so the exit code
+#    is inspected rather than allowed to look like a failure.
+$symbolPatterns = @('performance_test', 'cpu_bench', 'cull_bench', 'engine_showcase', 'should_panic')
+$symbolQuery = ($symbolPatterns | ForEach-Object { "/C:`"$_`"" }) -join ' '
+$symbolExit = Invoke-Native 'cmd' @('/c', "findstr $symbolQuery `"$($executables[0].FullName)`" >nul")
+if ($symbolExit -eq 0) {
+    $failures += 'the binary contains test, benchmark or showcase symbols'
 }
 
 # 4. The package actually starts and exits cleanly. Two frames is enough to prove the
 #    window, the device and the loop all came up.
 Write-Host 'Smoke test: running two frames...'
-# No 2>&1 here: redirecting a native command's stderr in Windows PowerShell wraps every
-# line in an ErrorRecord and trips $ErrorActionPreference, even on a successful exit.
-& (Join-Path $OutputPath 'mygame.exe') --frames 2 --report 0
-if ($LASTEXITCODE -ne 0) {
-    $failures += "the packaged binary exited with code $LASTEXITCODE"
+# The game logs to stderr, so this goes through Invoke-Native for the same reason cargo
+# does: under $ErrorActionPreference = 'Stop', Windows PowerShell would treat a log line
+# from a successful run as a terminating error.
+$smokeExit = Invoke-Native (Join-Path $OutputPath 'mygame.exe') @('--frames', '2', '--report', '0')
+if ($smokeExit -ne 0) {
+    $failures += "the packaged binary exited with code $smokeExit"
 }
 
 Write-Host ''
