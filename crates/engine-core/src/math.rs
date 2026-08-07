@@ -1293,6 +1293,96 @@ mod tests {
     }
 
     #[test]
+    fn the_vertical_planes_reject_above_and_below() {
+        // The horizontal planes were covered; these were not, and a sign error in the
+        // `w + y` / `w - y` pair is invisible in a scene whose objects all sit near the
+        // ground.
+        let frustum = test_frustum();
+        assert!(frustum.contains_point(Vec3::new(0.0, 5.0, -10.0)), "inside");
+        assert!(
+            !frustum.contains_point(Vec3::new(0.0, 40.0, -10.0)),
+            "above"
+        );
+        assert!(
+            !frustum.contains_point(Vec3::new(0.0, -40.0, -10.0)),
+            "below"
+        );
+    }
+
+    #[test]
+    fn the_far_plane_rejects_just_beyond_it_and_keeps_just_inside() {
+        // The near plane has its own test because it uses the D3D convention. The far plane
+        // is `w - z` in both conventions, so what is checked here is the distance, not the
+        // form.
+        let frustum = test_frustum();
+        assert!(frustum.contains_point(Vec3::new(0.0, 0.0, -99.0)));
+        assert!(!frustum.contains_point(Vec3::new(0.0, 0.0, -101.0)));
+        // Straddling: conservative, so it survives.
+        assert!(frustum.intersects_sphere(&Sphere::new(Vec3::new(0.0, 0.0, -101.0), 2.0)));
+    }
+
+    #[test]
+    fn a_translated_camera_culls_relative_to_where_it_stands() {
+        // Every other frustum test puts the camera at the origin looking down -Z, which is
+        // exactly the configuration in which the view matrix is the identity — so a bug in
+        // how the view participates in the extraction would not show. This moves it.
+        let projection = Mat4::perspective(std::f32::consts::FRAC_PI_2, 1.0, 1.0, 100.0);
+        let eye = Vec3::new(100.0, 20.0, 50.0);
+        let view = Mat4::look_at(eye, eye - Vec3::Z, Vec3::Y);
+        let frustum = Frustum::from_view_projection(&(projection * view));
+
+        assert!(
+            frustum.contains_point(eye - Vec3::new(0.0, 0.0, 10.0)),
+            "ten units in front of the moved camera"
+        );
+        assert!(
+            !frustum.contains_point(Vec3::ZERO),
+            "the world origin is now behind and far off to the side"
+        );
+    }
+
+    #[test]
+    fn a_rotated_camera_culls_along_its_own_axes() {
+        // A quarter turn about +Y sends the view direction from -Z to -X. A frustum that
+        // ignored the rotation would still accept the point in front of the *world* axis.
+        let projection = Mat4::perspective(std::f32::consts::FRAC_PI_2, 1.0, 1.0, 100.0);
+        let view = Mat4::look_at(Vec3::ZERO, -Vec3::X, Vec3::Y);
+        let frustum = Frustum::from_view_projection(&(projection * view));
+
+        assert!(frustum.contains_point(Vec3::new(-10.0, 0.0, 0.0)), "ahead");
+        assert!(
+            !frustum.contains_point(Vec3::new(0.0, 0.0, -10.0)),
+            "where the camera used to look"
+        );
+        assert!(!frustum.contains_point(Vec3::new(10.0, 0.0, 0.0)), "behind");
+    }
+
+    #[test]
+    fn an_aspect_ratio_widens_the_horizontal_planes_only() {
+        // At 16:9 the frustum is wider than tall. A projection that applied the aspect to
+        // the wrong axis would pass every test that uses a square aspect.
+        let projection = Mat4::perspective(std::f32::consts::FRAC_PI_2, 16.0 / 9.0, 1.0, 100.0);
+        let view = Mat4::look_at(Vec3::ZERO, -Vec3::Z, Vec3::Y);
+        let frustum = Frustum::from_view_projection(&(projection * view));
+
+        // 90 degrees vertical means the half-height equals the depth; the half-width is
+        // that times the aspect ratio.
+        assert!(
+            frustum.contains_point(Vec3::new(17.0, 0.0, -10.0)),
+            "inside"
+        );
+        assert!(
+            !frustum.contains_point(Vec3::new(19.0, 0.0, -10.0)),
+            "wider"
+        );
+        assert!(frustum.contains_point(Vec3::new(0.0, 9.5, -10.0)), "inside");
+        assert!(
+            !frustum.contains_point(Vec3::new(0.0, 10.5, -10.0)),
+            "taller"
+        );
+    }
+
+    #[test]
     fn a_sphere_at_the_edge_of_view_is_kept() {
         // At 90 degrees vertical FOV and square aspect, the frustum widens by one unit per
         // unit of depth, so this point is exactly on the right-hand plane.
