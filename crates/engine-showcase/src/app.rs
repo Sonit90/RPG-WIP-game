@@ -90,6 +90,7 @@ impl Showcase {
         #[cfg(feature = "debug-overlay")]
         renderer.set_overlay_enabled(true);
         renderer.set_culling_enabled(args.culling);
+        renderer.set_instancing(args.instancing);
 
         let scene = Scene::new(&mut renderer, args.preset)?;
 
@@ -178,6 +179,14 @@ impl Showcase {
                     self.last_overlay_update = Instant::now() - OVERLAY_UPDATE_INTERVAL;
                 }
                 log::info!("overlay {}", on_off(enabled));
+            }
+            KeyCode::F11 => {
+                let enabled = !self.renderer.instancing();
+                self.renderer.set_instancing(enabled);
+                ctx.reset_clock();
+                self.graph.clear();
+                self.renderer.reset_present_stats();
+                log::info!("instancing {}", on_off(enabled));
             }
             KeyCode::F12 => {
                 self.controller = FlyCamera::START;
@@ -555,6 +564,7 @@ fn log_controls() {
     log::info!("  F8               frustum culling on/off");
     log::info!("  F9               wireframe on/off");
     log::info!("  F10              statistics overlay on/off");
+    log::info!("  F11              instanced batching on/off");
     log::info!("  F12              reset the camera");
 }
 

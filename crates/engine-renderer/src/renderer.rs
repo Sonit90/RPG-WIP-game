@@ -22,7 +22,7 @@ use crate::frame::{FrameRing, SyncStats};
 use crate::gpu_timer::GpuTimer;
 use crate::material::{Material, MaterialDesc};
 use crate::mesh::{GpuMesh, MeshData, VertexStream};
-use crate::mesh_pipeline::MeshPipeline;
+use crate::mesh_pipeline::{InstanceTransform, InstancedMeshPipeline, MeshPipeline};
 #[cfg(feature = "debug-overlay")]
 use crate::overlay::{OverlayBuffers, OverlayGeometry};
 use crate::pipeline::{ScenePipeline, Vertex};
@@ -45,6 +45,13 @@ use engine_render_data::{Lighting, MaterialHandle, MeshHandle, RenderWorld};
 /// The same window the engine's frame metrics use, so the two describe the same span of
 /// time and a present percentile can be read against a frame percentile.
 const PRESENT_WINDOW: usize = engine_core::metrics::DEFAULT_HISTORY;
+
+/// Alignment for a per-instance vertex stream in the upload ring.
+///
+/// A vertex buffer view has no 256-byte requirement the way a constant buffer view does;
+/// what it needs is that the address is a multiple of the element stride so the input
+/// assembler indexes it correctly. The stride here is 64 bytes.
+const INSTANCE_ALIGNMENT: usize = size_of::<InstanceTransform>();
 
 /// Debug overlay state owned by the renderer.
 #[cfg(feature = "debug-overlay")]
@@ -124,6 +131,14 @@ pub struct Renderer {
     cull_scratch: Vec<RenderList>,
     /// Milliseconds the most recent grouping pass took.
     last_group_ms: f64,
+    /// Root signature and pipeline state for instanced mesh geometry.
+    instanced_pipeline: InstancedMeshPipeline,
+    /// The same, with wireframe fill.
+    instanced_pipeline_wireframe: InstancedMeshPipeline,
+    /// Whether each batch is drawn as one instanced call.
+    instancing: bool,
+    /// Per-batch instance data, staged here before the memcpy into the upload ring.
+    instance_scratch: Vec<InstanceTransform>,
     /// Milliseconds the most recent `Present` call took.
     last_present_ms: f64,
     /// Milliseconds the most recent post-present fence signal took.
@@ -207,6 +222,8 @@ impl Renderer {
         let depth = DepthBuffer::new(&context, config.width, config.height)?;
         let mesh_pipeline = MeshPipeline::new(context.device())?;
         let mesh_pipeline_wireframe = MeshPipeline::wireframe(context.device())?;
+        let instanced_pipeline = InstancedMeshPipeline::new(context.device())?;
+        let instanced_pipeline_wireframe = InstancedMeshPipeline::wireframe(context.device())?;
         let mut scene_scratch = Vec::new();
         stress::build_grid(1, &mut scene_scratch);
         let scene = VertexStream::upload(&context, &scene_scratch)?;
@@ -243,6 +260,10 @@ impl Renderer {
             last_cull_ms: 0.0,
             cull_scratch: Vec::new(),
             last_group_ms: 0.0,
+            instanced_pipeline,
+            instanced_pipeline_wireframe,
+            instancing: false,
+            instance_scratch: Vec::new(),
             last_present_ms: 0.0,
             last_fence_signal_ms: 0.0,
             present_window: FrameStatsWindow::new(PRESENT_WINDOW),
@@ -652,6 +673,10 @@ impl Renderer {
         self.commands
             .set_root_cbv(ROOT_FRAME_CBV, allocation.gpu_address());
 
+        if self.instancing {
+            return self.draw_batches_instanced(slot, back_buffer);
+        }
+
         // Batch by batch. Grouping put entries sharing a mesh and a material next to each
         // other, so the mesh and material binds happen once per run rather than once per
         // object — and the command context skips them anyway if the run is a continuation
@@ -692,6 +717,95 @@ impl Renderer {
         }
 
         self.finish_recording(slot, back_buffer)
+    }
+
+    /// Records every batch as one instanced draw.
+    ///
+    /// The pipeline state and the per-object binds are what change. Each batch binds its
+    /// mesh and material once, uploads its instances contiguous in the frame's upload ring,
+    /// and issues one `DrawIndexedInstanced` — so a run of 3,000 objects costs one draw and
+    /// one buffer bind instead of 3,000 draws and 3,000 constant-buffer binds.
+    ///
+    /// The transforms are composed straight into the upload ring. That is the revisit
+    /// Milestone 16 predicted: composing the matrix in the recording loop used to hide under
+    /// the per-draw calls, and once those calls are gone there is nothing left to hide it
+    /// behind — so it moves to where the data is written, which is a memcpy that was
+    /// happening anyway.
+    fn draw_batches_instanced(
+        &mut self,
+        slot: usize,
+        back_buffer: usize,
+    ) -> Result<(), RendererError> {
+        let pipeline = if self.wireframe {
+            &self.instanced_pipeline_wireframe
+        } else {
+            &self.instanced_pipeline
+        };
+        self.commands
+            .set_pipeline(pipeline.root_signature(), pipeline.pipeline_state());
+
+        for batch in self.visible.batches() {
+            let Some(mesh) = self.meshes.get(batch.mesh.index()) else {
+                return Err(RendererError::InvalidConfig {
+                    reason: format!(
+                        "render list names mesh {} which does not exist",
+                        batch.mesh.index()
+                    ),
+                });
+            };
+            let Some(material) = self.materials.get(batch.material.index()) else {
+                return Err(RendererError::InvalidConfig {
+                    reason: format!(
+                        "render list names material {} which does not exist",
+                        batch.material.index()
+                    ),
+                });
+            };
+
+            // One allocation for the whole run, so the instances are contiguous — which is
+            // what a per-instance vertex stream requires.
+            let count = batch.count as usize;
+            let bytes = count * size_of::<InstanceTransform>();
+            let allocation = self.uploads.allocate(slot, bytes, INSTANCE_ALIGNMENT)?;
+
+            let first = batch.first as usize;
+            self.instance_scratch.clear();
+            self.instance_scratch.reserve(count);
+            for &entry in &self.visible.order()[first..first + count] {
+                self.instance_scratch.push(InstanceTransform::new(
+                    self.visible.transforms()[entry as usize].matrix(),
+                ));
+            }
+            allocation.write(&self.instance_scratch)?;
+
+            self.commands
+                .set_root_cbv(ROOT_MATERIAL_CBV, material.gpu_address());
+            self.commands.set_vertex_buffer(0, *mesh.vertex_view());
+            self.commands.set_vertex_buffer(
+                1,
+                windows::Win32::Graphics::Direct3D12::D3D12_VERTEX_BUFFER_VIEW {
+                    BufferLocation: allocation.gpu_address(),
+                    SizeInBytes: bytes as u32,
+                    StrideInBytes: size_of::<InstanceTransform>() as u32,
+                },
+            );
+            self.commands.set_index_buffer(*mesh.index_view());
+            self.commands
+                .draw_indexed(mesh.index_count(), batch.count, 0);
+        }
+
+        self.finish_recording(slot, back_buffer)
+    }
+
+    /// Draws each batch as one instanced call rather than one call per object.
+    pub fn set_instancing(&mut self, enabled: bool) {
+        self.instancing = enabled;
+    }
+
+    /// Whether instanced batching is on.
+    #[must_use]
+    pub fn instancing(&self) -> bool {
+        self.instancing
     }
 
     /// What the most recent [`Renderer::build_render_list`] selected.
