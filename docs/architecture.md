@@ -28,10 +28,58 @@ schedule and, eventually, to be driven by a network authority.
 | `engine-app` | The `mygame` executable. Wires platform + renderer. | M0 |
 | `engine-platform` | Win32 window, message pump, input events. No GPU types. | M1 |
 | `engine-renderer` | DXGI/D3D12 device, swap chain, pipelines, GPU timing. | M2 |
+| `engine-render-data` | What the game hands the renderer. Pure data, no `windows`. | M15 |
 | `engine-showcase` | Development-only visual test bed. Nothing depends on it. | M15 |
 
 `engine-platform` hands the renderer an opaque window handle and a client size.
 It does not link D3D12; the renderer does not create windows.
+
+### Dependency graph
+
+```text
+                  engine-core
+                 /     |      \
+                /      |       \
+    engine-platform    |   engine-render-data
+                \      |      /        ^
+                 \     |     /         |
+                  engine-renderer      |
+                        ^              |
+                        |         (future) gameplay
+                    engine-app
+```
+
+`engine-render-data` depends on **`engine-core` and nothing else**. That absence is the
+point of the crate and it is checkable:
+
+```
+cargo tree -p engine-render-data
+engine-render-data
+└── engine-core
+    └── log
+```
+
+Until the Milestone 15 checkpoint, `RenderWorld`, the handle types, `Camera` and `Lighting`
+lived in `engine-renderer` beside the D3D12 pipeline objects. Anything that wanted to
+*build* a world therefore had to link D3D12 — including the gameplay simulation of Phase 3,
+which must not. Splitting the data out is what makes this pipeline real:
+
+```text
+Input -> Commands -> Simulation -> RenderWorld -> Renderer -> GPU
+                                   ^^^^^^^^^^^
+                                   engine-render-data
+```
+
+**`engine-render-data` must never gain a `windows` dependency.** If it does, the seam is
+gone and gameplay is coupled to D3D12 again.
+
+What stayed in `engine-renderer` and why:
+
+| Type | Why it did not move |
+| --- | --- |
+| `Culler` | Pure CPU, but visibility is the renderer's policy, not data the game authors. |
+| `FrameConstants`, `ObjectConstants` | Plain data, but they are the CPU mirror of an HLSL `cbuffer`. Shader ABI belongs beside the shader. |
+| `MeshData`, `MaterialDesc` | Asset-authoring data, not scene data. Candidates for a future asset crate. |
 
 ## Engine lifecycle (Phase 1, M1)
 

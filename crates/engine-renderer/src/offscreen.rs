@@ -27,20 +27,21 @@ use windows::core::Interface;
 
 use engine_core::transform::Transform;
 
-use crate::camera::Camera;
 use crate::command::{scissor_for, transition_barrier, viewport_for};
 use crate::depth::{DEPTH_CLEAR, DepthBuffer};
 use crate::device::RenderDevice;
 use crate::error::RendererError;
 use crate::material::{Material, MaterialDesc};
 use crate::mesh::{GpuMesh, MeshData, VertexStream};
+use crate::mesh_pipeline::MeshPipeline;
 use crate::pipeline::{ScenePipeline, TRIANGLE_VERTICES, Vertex};
 use crate::scene::{
-    FrameConstants, Lighting, MeshPipeline, ObjectConstants, ROOT_FRAME_CBV, ROOT_MATERIAL_CBV,
-    ROOT_OBJECT_CBV,
+    FrameConstants, ObjectConstants, ROOT_FRAME_CBV, ROOT_MATERIAL_CBV, ROOT_OBJECT_CBV,
 };
 use crate::swapchain::BACK_BUFFER_FORMAT;
 use crate::upload::UploadRing;
+use engine_render_data::Camera;
+use engine_render_data::Lighting;
 
 /// Bytes per pixel of [`BACK_BUFFER_FORMAT`].
 pub const BYTES_PER_PIXEL: usize = 4;

@@ -26,7 +26,7 @@ use std::time::Instant;
 
 use engine_core::math::{Frustum, Sphere, Vec3};
 use engine_core::transform::Transform;
-use engine_renderer::scene::{MaterialHandle, MeshHandle, RenderEntityDesc, RenderWorld};
+use engine_render_data::{MaterialHandle, MeshHandle, RenderEntityDesc, RenderWorld};
 use engine_renderer::{Camera, Culler, Projection};
 
 /// Objects benchmarked when none are given.

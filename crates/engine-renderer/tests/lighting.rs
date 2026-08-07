@@ -11,11 +11,11 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use engine_core::math::Vec3;
 use engine_core::transform::Transform;
-use engine_renderer::camera::{Camera, Projection};
+use engine_render_data::Lighting;
+use engine_render_data::{Camera, Projection};
 use engine_renderer::material::MaterialDesc;
 use engine_renderer::mesh::MeshData;
 use engine_renderer::offscreen::{CapturedImage, SceneObject, render_scene};
-use engine_renderer::scene::Lighting;
 
 static GPU: Mutex<()> = Mutex::new(());
 

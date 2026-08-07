@@ -1,0 +1,15 @@
+[package]
+name = "engine-render-data"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+# Deliberately only engine-core. This crate must never gain `windows`, and the absence of
+# that dependency is the whole point of it existing — it is what lets a future gameplay
+# crate produce rendering data without linking D3D12.
+[dependencies]
+engine-core = { workspace = true }
+
+[lints]
+workspace = true

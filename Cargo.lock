@@ -17,6 +17,7 @@ name = "engine-bench"
 version = "0.1.0"
 dependencies = [
  "engine-core",
+ "engine-render-data",
  "engine-renderer",
  "log",
  "windows",
@@ -39,11 +40,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "engine-render-data"
+version = "0.1.0"
+dependencies = [
+ "engine-core",
+]
+
+[[package]]
 name = "engine-renderer"
 version = "0.1.0"
 dependencies = [
  "engine-core",
  "engine-platform",
+ "engine-render-data",
  "log",
  "windows",
 ]
@@ -54,6 +63,7 @@ version = "0.1.0"
 dependencies = [
  "engine-core",
  "engine-platform",
+ "engine-render-data",
  "engine-renderer",
  "log",
 ]

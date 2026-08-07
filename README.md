@@ -84,9 +84,11 @@ Cargo.toml            workspace root
 crates/
   engine-core/        lifecycle, time, input, memory, jobs, profiling, logging, config
   engine-platform/    Win32 window, message pump, input translation (no GPU types)
+  engine-render-data/ what the game hands the renderer: RenderWorld, camera, lighting,
+                      handles. Pure data — no windows, no D3D12
   engine-renderer/    DXGI/D3D12 device, swap chain, command recording (no gameplay)
   engine-app/         the game executable (bin: mygame)
-  engine-bench/       benchmarks (bins: performance_test, cpu_bench) — never shipped
+  engine-bench/       benchmarks (bins: performance_test, cpu_bench, cull_bench) — never shipped
   engine-showcase/    visual test bed for the renderer (bin: showcase) — never shipped
 docs/                 architecture, phase logs, testing, performance, memory, threading
 tools/                package.ps1 — builds and verifies a clean release distribution

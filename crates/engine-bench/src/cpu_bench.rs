@@ -23,10 +23,10 @@ use engine_core::math::{Frustum, Mat4, Quat, Sphere, Vec3};
 use engine_core::memory::{Arena, FrameAllocator};
 use engine_core::profiling::Profiler;
 use engine_core::transform::{Transform, write_matrices};
+use engine_render_data::{MaterialHandle, MeshHandle, RenderEntityDesc, RenderWorld};
 use engine_renderer::culling::Culler;
 use engine_renderer::descriptor::{CpuDescriptorHeap, GpuDescriptorHeap};
 use engine_renderer::device::RenderDevice;
-use engine_renderer::scene::{MaterialHandle, MeshHandle, RenderEntityDesc, RenderWorld};
 
 use engine_core::threading::recommended_worker_count;
 use windows::Win32::Graphics::Direct3D12::D3D12_DESCRIPTOR_HEAP_TYPE_RTV;

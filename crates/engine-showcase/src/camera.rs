@@ -1,14 +1,19 @@
 //! A free-fly developer camera.
 //!
-//! This is a *controller*: it reads input and drives an [`engine_renderer::Camera`] by
-//! setting a position and a rotation. The renderer's camera stays what it is — a view and a
-//! projection — and learns nothing about keys or mice. A third-person player camera is a
-//! different controller written against the same seam, and is not this.
+//! This is a *controller*: it reads input and drives an [`engine_render_data::Camera`] by
+//! setting a position and a rotation. The camera stays what it is — a view and a projection
+//! — and learns nothing about keys or mice. A third-person player camera is a different
+//! controller written against the same seam, and is not this.
+//!
+//! This module imports nothing from `engine-renderer`, which is the point of the Milestone
+//! 15 crate split: a camera controller is gameplay-shaped code, and gameplay must be able
+//! to name the type it drives without linking D3D12. The same will be true of the player
+//! camera in Phase 3.
 
 use engine_core::input::{InputState, KeyCode};
 use engine_core::math::{Quat, Vec3};
-use engine_renderer::error::RendererError;
-use engine_renderer::{Camera, DEFAULT_FAR, DEFAULT_NEAR, Projection};
+use engine_render_data::error::RenderDataError;
+use engine_render_data::{Camera, DEFAULT_FAR, DEFAULT_NEAR, Projection};
 
 /// Metres per second at the base movement speed.
 const BASE_SPEED: f32 = 18.0;
@@ -66,7 +71,7 @@ impl FlyCamera {
         position: Vec3::new(0.0, 13.0, 58.0),
         yaw: 0.0,
         pitch: -0.17,
-        fov_y: engine_renderer::DEFAULT_FOV_Y,
+        fov_y: engine_render_data::DEFAULT_FOV_Y,
     };
 
     /// A view of the stress field from its edge, where most of it is off screen.
@@ -78,7 +83,7 @@ impl FlyCamera {
         position: Vec3::new(0.0, 30.0, 0.0),
         yaw: 0.0,
         pitch: -0.1,
-        fov_y: engine_renderer::DEFAULT_FOV_Y,
+        fov_y: engine_render_data::DEFAULT_FOV_Y,
     };
 
     /// The camera's rotation, rebuilt from yaw and pitch.
@@ -165,9 +170,9 @@ impl FlyCamera {
     ///
     /// # Errors
     ///
-    /// Returns [`RendererError::InvalidConfig`] if the aspect ratio is degenerate, which a
+    /// Returns [`RenderDataError::InvalidConfig`] if the aspect ratio is degenerate, which a
     /// minimized window produces.
-    pub fn apply(&self, camera: &mut Camera, aspect: f32) -> Result<(), RendererError> {
+    pub fn apply(&self, camera: &mut Camera, aspect: f32) -> Result<(), RenderDataError> {
         camera.set_projection(Projection::Perspective {
             fov_y: self.fov_y,
             aspect,
@@ -314,7 +319,7 @@ mod tests {
             position: Vec3::new(4.0, 5.0, 6.0),
             yaw: 0.7,
             pitch: -0.3,
-            fov_y: engine_renderer::DEFAULT_FOV_Y,
+            fov_y: engine_render_data::DEFAULT_FOV_Y,
         };
         let Ok(()) = controller.apply(&mut camera, 16.0 / 9.0) else {
             panic!("a 16:9 aspect ratio is valid");

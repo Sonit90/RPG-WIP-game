@@ -5,12 +5,17 @@
 //! orbits a character is a *controller*, it belongs to the game, and it drives this type by
 //! setting a position and a rotation. The renderer must not learn what a character is.
 //!
+//! That sentence is why the camera lives here rather than in `engine-renderer`: the
+//! controller is gameplay, and a controller that cannot name the type it drives without
+//! linking D3D12 is not a seam. `engine-showcase`'s free-fly camera is the first such
+//! controller and is written against exactly this API.
+//!
 //! Conventions come from [`engine_core::math`]: right-handed, looking down −Z, depth in
 //! [0, 1].
 
 use engine_core::math::{Mat4, Quat, Vec3};
 
-use crate::error::RendererError;
+use crate::error::RenderDataError;
 
 /// How the camera flattens the world.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -127,7 +132,7 @@ impl Projection {
     /// the GPU turns into an empty screen, and `near >= far` produces a division by zero in
     /// the depth range. A wrong number is easier to find at the call site than in a frame
     /// capture.
-    fn validate(&self) -> Result<(), RendererError> {
+    fn validate(&self) -> Result<(), RenderDataError> {
         let reason = match *self {
             Self::Perspective {
                 fov_y,
@@ -156,7 +161,7 @@ impl Projection {
         };
 
         match reason {
-            Some(reason) => Err(RendererError::InvalidConfig { reason }),
+            Some(reason) => Err(RenderDataError::InvalidConfig { reason }),
             None => Ok(()),
         }
     }
@@ -197,8 +202,8 @@ impl Camera {
     ///
     /// # Errors
     ///
-    /// Returns [`RendererError::InvalidConfig`] if the projection is degenerate.
-    pub fn new(projection: Projection) -> Result<Self, RendererError> {
+    /// Returns [`RenderDataError::InvalidConfig`] if the projection is degenerate.
+    pub fn new(projection: Projection) -> Result<Self, RenderDataError> {
         projection.validate()?;
         let mut camera = Self {
             position: Vec3::ZERO,
@@ -217,14 +222,14 @@ impl Camera {
     ///
     /// # Errors
     ///
-    /// Returns [`RendererError::InvalidConfig`] if the projection is degenerate or the eye
+    /// Returns [`RenderDataError::InvalidConfig`] if the projection is degenerate or the eye
     /// and the target coincide, which leaves no direction to look in.
     pub fn looking_at(
         projection: Projection,
         eye: Vec3,
         target: Vec3,
         up: Vec3,
-    ) -> Result<Self, RendererError> {
+    ) -> Result<Self, RenderDataError> {
         let mut camera = Self::new(projection)?;
         camera.look_at(eye, target, up)?;
         Ok(camera)
@@ -264,18 +269,18 @@ impl Camera {
     ///
     /// # Errors
     ///
-    /// Returns [`RendererError::InvalidConfig`] if `eye` and `target` coincide or `up` is
+    /// Returns [`RenderDataError::InvalidConfig`] if `eye` and `target` coincide or `up` is
     /// parallel to the view direction — both leave the view matrix undefined, and both are
     /// easy to produce by accident when a follow camera snaps to its subject.
-    pub fn look_at(&mut self, eye: Vec3, target: Vec3, up: Vec3) -> Result<(), RendererError> {
+    pub fn look_at(&mut self, eye: Vec3, target: Vec3, up: Vec3) -> Result<(), RenderDataError> {
         let forward = target - eye;
         if forward.length_squared() <= f32::EPSILON {
-            return Err(RendererError::InvalidConfig {
+            return Err(RenderDataError::InvalidConfig {
                 reason: "the camera cannot look at its own position".to_owned(),
             });
         }
         if forward.normalize().cross(up.normalize()).length_squared() <= f32::EPSILON {
-            return Err(RendererError::InvalidConfig {
+            return Err(RenderDataError::InvalidConfig {
                 reason: "the up vector is parallel to the view direction".to_owned(),
             });
         }
@@ -294,8 +299,8 @@ impl Camera {
     ///
     /// # Errors
     ///
-    /// Returns [`RendererError::InvalidConfig`] if the projection is degenerate.
-    pub fn set_projection(&mut self, projection: Projection) -> Result<(), RendererError> {
+    /// Returns [`RenderDataError::InvalidConfig`] if the projection is degenerate.
+    pub fn set_projection(&mut self, projection: Projection) -> Result<(), RenderDataError> {
         projection.validate()?;
         self.projection = projection;
         self.rebuild_projection();
@@ -306,11 +311,11 @@ impl Camera {
     ///
     /// # Errors
     ///
-    /// Returns [`RendererError::InvalidConfig`] for a zero dimension. A minimized window
+    /// Returns [`RenderDataError::InvalidConfig`] for a zero dimension. A minimized window
     /// reports one, and dividing by it yields a projection full of infinities.
-    pub fn set_viewport(&mut self, width: u32, height: u32) -> Result<(), RendererError> {
+    pub fn set_viewport(&mut self, width: u32, height: u32) -> Result<(), RenderDataError> {
         if width == 0 || height == 0 {
-            return Err(RendererError::InvalidConfig {
+            return Err(RenderDataError::InvalidConfig {
                 reason: format!("a viewport needs a non-zero size, got {width}x{height}"),
             });
         }

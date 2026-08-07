@@ -13,7 +13,6 @@ use windows::Win32::Graphics::Direct3D12::{
 
 use windows::core::Interface;
 
-use crate::camera::Camera;
 use crate::command::{CommandContext, CommandStats};
 use crate::culling::{CullStats, Culler};
 use crate::depth::{DEPTH_CLEAR, DepthBuffer};
@@ -23,19 +22,21 @@ use crate::frame::{FrameRing, SyncStats};
 use crate::gpu_timer::GpuTimer;
 use crate::material::{Material, MaterialDesc};
 use crate::mesh::{GpuMesh, MeshData, VertexStream};
+use crate::mesh_pipeline::MeshPipeline;
 #[cfg(feature = "debug-overlay")]
 use crate::overlay::{OverlayBuffers, OverlayGeometry};
 use crate::pipeline::{ScenePipeline, Vertex};
 use crate::resource::DeferredReleaseQueue;
 use crate::scene::{
-    FrameConstants, Lighting, MaterialHandle, MeshHandle, MeshPipeline, ObjectConstants,
-    ROOT_FRAME_CBV, ROOT_MATERIAL_CBV, ROOT_OBJECT_CBV, RenderWorld,
+    FrameConstants, ObjectConstants, ROOT_FRAME_CBV, ROOT_MATERIAL_CBV, ROOT_OBJECT_CBV,
 };
 use crate::stress;
 use crate::swapchain::SwapChain;
 use crate::upload::UploadRing;
 use crate::{AdapterInfo, RendererConfig};
 use engine_core::math::Frustum;
+use engine_render_data::Camera;
+use engine_render_data::{Lighting, MaterialHandle, MeshHandle, RenderWorld};
 
 /// Debug overlay state owned by the renderer.
 #[cfg(feature = "debug-overlay")]

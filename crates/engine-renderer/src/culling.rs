@@ -12,7 +12,7 @@
 
 use engine_core::math::{Frustum, Sphere};
 
-use crate::scene::RenderWorld;
+use engine_render_data::RenderWorld;
 
 /// What one cull pass did.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -134,9 +134,9 @@ pub fn is_visible(frustum: &Frustum, bounds: &Sphere) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scene::{MaterialHandle, MeshHandle, RenderEntityDesc};
     use engine_core::math::{Mat4, Vec3};
     use engine_core::transform::Transform;
+    use engine_render_data::{MaterialHandle, MeshHandle, RenderEntityDesc};
 
     fn frustum() -> Frustum {
         let projection = Mat4::perspective(std::f32::consts::FRAC_PI_2, 1.0, 1.0, 100.0);

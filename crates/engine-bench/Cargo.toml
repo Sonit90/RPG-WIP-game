@@ -27,6 +27,7 @@ path = "src/cull_bench.rs"
 
 [dependencies]
 engine-core = { workspace = true }
+engine-render-data = { workspace = true }
 engine-renderer = { workspace = true, default-features = false }
 # Only for the descriptor-heap type constants the benchmark passes through to the
 # renderer's API. No D3D12 calls are made here.

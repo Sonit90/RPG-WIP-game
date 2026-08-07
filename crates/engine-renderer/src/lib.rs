@@ -12,7 +12,6 @@
 
 pub mod adapter;
 pub mod bench;
-pub mod camera;
 pub mod command;
 pub mod culling;
 pub mod depth;
@@ -26,6 +25,7 @@ pub mod gpu_timer;
 pub mod instancing;
 pub mod material;
 pub mod mesh;
+pub mod mesh_pipeline;
 pub mod offscreen;
 #[cfg(feature = "debug-overlay")]
 pub mod overlay;
@@ -41,7 +41,6 @@ pub mod upload;
 
 pub use adapter::{AdapterInfo, select_adapter};
 pub use bench::{BenchHarness, BenchResult, DrawMode};
-pub use camera::{Camera, DEFAULT_FAR, DEFAULT_FOV_Y, DEFAULT_NEAR, Projection};
 pub use culling::{CullStats, Culler};
 pub use device::BACKEND;
 pub use error::RendererError;
@@ -49,11 +48,18 @@ pub use frame::{DEFAULT_FRAMES_IN_FLIGHT, MAX_FRAMES_IN_FLIGHT, SyncStats};
 pub use instancing::{InstanceData, UNIT_TRIANGLE};
 pub use material::{Material, MaterialConstants, MaterialDesc};
 pub use mesh::{GpuMesh, Index, MeshData, MeshVertex, VertexStream};
+pub use mesh_pipeline::MeshPipeline;
 pub use pipeline::{TRIANGLE_VERTICES, Vertex};
 pub use renderer::Renderer;
-pub use scene::{
-    FrameConstants, Lighting, MaterialHandle, MeshHandle, MeshPipeline, ObjectConstants,
-    RenderEntity, RenderEntityDesc, RenderWorld,
+pub use scene::{FrameConstants, ObjectConstants};
+
+// Re-exported from `engine-render-data`, where these types moved at the Milestone 15
+// checkpoint so a gameplay crate can build a `RenderWorld` without linking D3D12. Kept
+// visible here because `use engine_renderer::RenderWorld` is what every existing caller,
+// test and benchmark writes, and the split was a boundary change rather than an API one.
+pub use engine_render_data::{
+    Camera, DEFAULT_FAR, DEFAULT_FOV_Y, DEFAULT_NEAR, Lighting, MaterialHandle, MeshHandle,
+    Projection, RenderEntity, RenderEntityDesc, RenderWorld,
 };
 pub use stress::STRESS_LEVELS;
 pub use swapchain::{BACK_BUFFER_FORMAT, FRAME_COUNT};
