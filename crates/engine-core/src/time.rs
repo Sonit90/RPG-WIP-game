@@ -267,6 +267,164 @@ impl Time {
     }
 }
 
+/// Simulation ticks per second the engine runs gameplay at.
+///
+/// 60 Hz is 16.67 ms of gameplay resolution. The renderer runs anywhere from 240 to 1500
+/// FPS, and a simulation tied to that rate would give a player at 1400 FPS a different
+/// jump arc than one at 240 FPS, make cooldowns frame-rate dependent, and make a recorded
+/// replay unreproducible.
+pub const DEFAULT_TICK_HZ: u32 = 60;
+
+/// Longest run of catch-up ticks a single [`FixedTimestep::accumulate`] may return.
+///
+/// Without a bound, a frame that took a second asks for sixty ticks, each of which takes
+/// time, which makes the next frame longer still — the spiral of death. Past the bound the
+/// simulation runs slow for a moment, which is visible and recoverable, rather than
+/// stopping.
+pub const DEFAULT_MAX_CATCH_UP_TICKS: u32 = 8;
+
+/// Turns a variable frame delta into a whole number of fixed simulation ticks.
+///
+/// ```text
+/// render delta 3.7 ms ->  accumulate -> 0 ticks (accumulator 3.7 ms)
+/// render delta 3.7 ms ->  accumulate -> 0 ticks (accumulator 7.4 ms)
+/// ...
+/// render delta 3.7 ms ->  accumulate -> 1 tick  (accumulator 1.1 ms)
+/// ```
+///
+/// The leftover is kept, so ticks happen at a fixed rate on average no matter how the
+/// frames fall. [`FixedTimestep::alpha`] exposes the leftover as a fraction of a step, for
+/// a renderer that wants to interpolate between the last two simulation states.
+///
+/// Allocation policy: plain scalars, no allocation anywhere.
+#[derive(Debug, Clone)]
+pub struct FixedTimestep {
+    step: Duration,
+    accumulator: Duration,
+    max_catch_up_ticks: u32,
+    ticks: u64,
+    dropped: u64,
+}
+
+impl Default for FixedTimestep {
+    fn default() -> Self {
+        Self::new(DEFAULT_TICK_HZ)
+    }
+}
+
+impl FixedTimestep {
+    /// A timestep running `hz` times a second.
+    ///
+    /// A zero rate falls back to [`DEFAULT_TICK_HZ`]: a zero-length step would make every
+    /// frame ask for an infinite number of ticks.
+    #[must_use]
+    pub fn new(hz: u32) -> Self {
+        let hz = if hz == 0 { DEFAULT_TICK_HZ } else { hz };
+        Self::with_step(Duration::from_secs_f64(1.0 / f64::from(hz)))
+    }
+
+    /// A timestep with an explicit step duration.
+    #[must_use]
+    pub fn with_step(step: Duration) -> Self {
+        Self {
+            step: if step.is_zero() {
+                Duration::from_secs_f64(1.0 / f64::from(DEFAULT_TICK_HZ))
+            } else {
+                step
+            },
+            accumulator: Duration::ZERO,
+            max_catch_up_ticks: DEFAULT_MAX_CATCH_UP_TICKS,
+            ticks: 0,
+            dropped: 0,
+        }
+    }
+
+    /// Sets how many catch-up ticks one call may return.
+    ///
+    /// Zero is rejected in favour of one: a timestep that can never tick is a stopped
+    /// simulation, which is what pausing is for.
+    pub fn set_max_catch_up_ticks(&mut self, ticks: u32) {
+        self.max_catch_up_ticks = ticks.max(1);
+    }
+
+    /// Adds a frame delta and returns how many ticks to run now.
+    ///
+    /// The remainder stays in the accumulator. Beyond [`FixedTimestep::max_catch_up_ticks`]
+    /// the surplus is discarded and counted in [`FixedTimestep::dropped_ticks`], because
+    /// running it would make the next frame longer still.
+    pub fn accumulate(&mut self, delta: Duration) -> u32 {
+        self.accumulator += delta;
+
+        let mut ticks = 0;
+        while self.accumulator >= self.step && ticks < self.max_catch_up_ticks {
+            self.accumulator -= self.step;
+            ticks += 1;
+        }
+        self.ticks += u64::from(ticks);
+
+        if self.accumulator >= self.step {
+            // Whole steps that will never run. Counted rather than kept, so a stall cannot
+            // leave the simulation permanently behind the clock.
+            let surplus = self.accumulator.as_nanos() / self.step.as_nanos();
+            self.dropped += surplus as u64;
+            self.accumulator = Duration::ZERO;
+        }
+        ticks
+    }
+
+    /// The fixed step.
+    #[must_use]
+    pub fn step(&self) -> Duration {
+        self.step
+    }
+
+    /// The fixed step in seconds, the form gameplay integration wants.
+    #[must_use]
+    pub fn step_seconds(&self) -> f32 {
+        self.step.as_secs_f32()
+    }
+
+    /// Ticks per second.
+    #[must_use]
+    pub fn hz(&self) -> f64 {
+        1.0 / self.step.as_secs_f64()
+    }
+
+    /// How far the next tick is into the future, as a fraction of a step.
+    ///
+    /// What a renderer interpolating between the previous and current simulation states
+    /// blends by. Always in [0, 1).
+    #[must_use]
+    pub fn alpha(&self) -> f32 {
+        (self.accumulator.as_secs_f64() / self.step.as_secs_f64()) as f32
+    }
+
+    /// Ticks returned since the timestep was created.
+    #[must_use]
+    pub fn ticks(&self) -> u64 {
+        self.ticks
+    }
+
+    /// Whole ticks discarded because the catch-up bound was reached.
+    #[must_use]
+    pub fn dropped_ticks(&self) -> u64 {
+        self.dropped
+    }
+
+    /// Most catch-up ticks one [`FixedTimestep::accumulate`] may return.
+    #[must_use]
+    pub fn max_catch_up_ticks(&self) -> u32 {
+        self.max_catch_up_ticks
+    }
+
+    /// Empties the accumulator and the counters, keeping the step.
+    pub fn reset(&mut self) {
+        self.accumulator = Duration::ZERO;
+        self.ticks = 0;
+        self.dropped = 0;
+    }
+}
+
 /// Summary of a window of frame times, all in milliseconds.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct FrameStats {
@@ -689,6 +847,94 @@ mod tests {
         let mut time = Time::new();
         time.advance_by(Duration::from_millis(16));
         assert!((time.delta_seconds() - 0.016).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_frame_shorter_than_a_step_runs_no_ticks_but_keeps_the_time() {
+        let mut timestep = FixedTimestep::new(60);
+        assert_eq!(timestep.accumulate(Duration::from_micros(4_000)), 0);
+        assert_eq!(timestep.accumulate(Duration::from_micros(4_000)), 0);
+        assert_eq!(timestep.accumulate(Duration::from_micros(4_000)), 0);
+        assert_eq!(timestep.accumulate(Duration::from_micros(4_000)), 0);
+        // 20 ms is past one 16.67 ms step: the four short frames were not thrown away.
+        assert_eq!(timestep.accumulate(Duration::from_micros(4_000)), 1);
+        assert_eq!(timestep.ticks(), 1);
+    }
+
+    #[test]
+    fn tick_rate_does_not_depend_on_how_the_frames_fall() {
+        // The property the whole type exists for: one second of real time is 60 ticks,
+        // whether it arrives as 300 fast frames or 30 slow ones.
+        let mut fast = FixedTimestep::new(60);
+        let mut ticks_fast = 0;
+        for _ in 0..300 {
+            ticks_fast += fast.accumulate(Duration::from_micros(3_333));
+        }
+
+        let mut slow = FixedTimestep::new(60);
+        let mut ticks_slow = 0;
+        for _ in 0..30 {
+            ticks_slow += slow.accumulate(Duration::from_micros(33_333));
+        }
+
+        assert_eq!(ticks_fast, 59, "299.97 ms short of a full second");
+        assert_eq!(ticks_slow, 59);
+        assert_eq!(fast.dropped_ticks(), 0);
+        assert_eq!(slow.dropped_ticks(), 0);
+    }
+
+    #[test]
+    fn a_stall_is_bounded_rather_than_spiralling() {
+        let mut timestep = FixedTimestep::new(60);
+        // Two seconds of stall would be 120 ticks, each of which costs time.
+        let ticks = timestep.accumulate(Duration::from_secs(2));
+        assert_eq!(ticks, DEFAULT_MAX_CATCH_UP_TICKS);
+        assert!(timestep.dropped_ticks() > 100, "the surplus is counted");
+        assert_eq!(
+            timestep.accumulate(Duration::ZERO),
+            0,
+            "the accumulator was emptied, not left behind the clock"
+        );
+    }
+
+    #[test]
+    fn alpha_is_the_leftover_as_a_fraction_of_a_step() {
+        let mut timestep = FixedTimestep::with_step(Duration::from_millis(10));
+        timestep.accumulate(Duration::from_millis(15));
+        assert!(
+            (timestep.alpha() - 0.5).abs() < 1e-5,
+            "{}",
+            timestep.alpha()
+        );
+        assert!((0.0..1.0).contains(&timestep.alpha()));
+    }
+
+    #[test]
+    fn a_degenerate_rate_falls_back_instead_of_ticking_forever() {
+        assert_eq!(
+            FixedTimestep::new(0).hz().round(),
+            f64::from(DEFAULT_TICK_HZ)
+        );
+        assert!(!FixedTimestep::with_step(Duration::ZERO).step().is_zero());
+
+        let mut timestep = FixedTimestep::new(60);
+        timestep.set_max_catch_up_ticks(0);
+        assert_eq!(
+            timestep.max_catch_up_ticks(),
+            1,
+            "a timestep must be able to tick"
+        );
+    }
+
+    #[test]
+    fn resetting_empties_the_accumulator_and_the_counters() {
+        let mut timestep = FixedTimestep::new(60);
+        timestep.accumulate(Duration::from_millis(100));
+        timestep.reset();
+        assert_eq!(timestep.ticks(), 0);
+        assert_eq!(timestep.dropped_ticks(), 0);
+        assert_eq!(timestep.alpha(), 0.0);
+        assert!((timestep.step_seconds() - 1.0 / 60.0).abs() < 1e-6);
     }
 
     #[test]
