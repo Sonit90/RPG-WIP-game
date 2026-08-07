@@ -27,6 +27,7 @@ use engine_render_data::{MaterialHandle, MeshHandle, RenderEntityDesc, RenderWor
 use engine_renderer::culling::Culler;
 use engine_renderer::descriptor::{CpuDescriptorHeap, GpuDescriptorHeap};
 use engine_renderer::device::RenderDevice;
+use engine_renderer::render_list::RenderList;
 
 use engine_core::threading::recommended_worker_count;
 use windows::Win32::Graphics::Direct3D12::D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
@@ -308,15 +309,16 @@ fn benchmark_culling() {
             });
         }
 
-        let mut culler = Culler::with_capacity(count as usize);
-        // Warm the buffer so the measurement is steady-state, not first-frame growth.
-        culler.cull(&world, &frustum);
+        let mut culler = Culler::new();
+        let mut list = RenderList::with_capacity(count as usize);
+        // Warm the list so the measurement is steady-state, not first-frame growth.
+        culler.cull(&world, &frustum, &mut list);
         let ratio = culler.stats().cull_ratio();
 
         let passes = (1_000_000 / count).max(1);
         let per_pass = measure(passes, |repeats| {
             for _ in 0..repeats {
-                culler.cull(black_box(&world), black_box(&frustum));
+                culler.cull(black_box(&world), black_box(&frustum), &mut list);
             }
         });
         report(

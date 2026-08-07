@@ -1,390 +1,382 @@
-//! The render list: what to draw, in what order.
+//! The render list: a compact copy of what this frame draws.
 //!
-//! Culling answers *whether* an object is drawn. This answers *when*, and the answer is a
-//! single 64-bit key per object that a plain sort orders correctly. Sorting by that key
-//! groups pipeline changes first, then materials, then meshes — so batching in Milestone 18
-//! is a linear scan over the sorted list rather than a separate system.
+//! ```text
+//! RenderWorld  ->  Culler  ->  RenderList  ->  command recording  ->  D3D12
+//!  (the world)   (visibility)  (this frame)
+//! ```
 //!
-//! # Status: staged, and NOT COMPILED
+//! `RenderWorld` describes the world and outlives the frame. A `RenderList` describes one
+//! frame's intent and is rebuilt from scratch every frame. Keeping them separate is the
+//! point of Milestone 16: until now the recording loop walked a list of *world slot indices*
+//! and reached back into `RenderWorld` for each one, which made the visible set an index
+//! into someone else's memory rather than a thing in its own right.
 //!
-//! This file is **not declared as a module in `lib.rs`**. Nothing includes it, nothing
-//! compiles it, and nothing can call it. It predates the Milestone 15 checkpoint and is
-//! committed so that it is visible rather than sitting untracked on someone's disk.
+//! # Why a compact copy, and not indices
 //!
-//! * **Expected to be used by:** Milestone 16, which is where the render list gets designed
-//!   properly and wired in.
-//! * **Intentionally staged, and intentionally a draft.** The Milestone 15 audit's proposal
-//!   differs from what is here: it argues the list should hold a *compact structure-of-
-//!   arrays copy* of the per-draw data rather than handles back into `RenderWorld`, because
-//!   sorting handles makes every comparison and every recorded draw an indirection into
-//!   cold memory, and because an SoA copy is already the shape an indirect-argument buffer
-//!   wants. Treat this file as a starting point to argue with, not as the design.
+//! Three shapes were possible. The list could hold handles back into `RenderWorld`, an
+//! array of per-object structs, or parallel arrays of exactly the fields the frame needs.
+//! The third was chosen:
 //!
-//! Because it is not compiled, nothing here is checked by `cargo build`, `cargo clippy` or
-//! the test suite. Assume it is stale until Milestone 16 makes it real.
+//! * **Handles into `RenderWorld`** keep the list tiny — four bytes an entry — but every
+//!   consumer then dereferences into five separate arrays in whatever order the list
+//!   happens to be in. That is tolerable while the order matches the world's, and it stops
+//!   being tolerable the moment the list is sorted (Milestone 17), because a sorted index
+//!   array turns every recorded draw into a random access across the whole world.
+//! * **An array of structs** keeps one object's fields together, which sounds right until
+//!   you notice that no consumer reads all of them at once. A future sort would move whole
+//!   64-byte elements; a future instancing pass wants the transforms contiguous and would
+//!   get them interleaved with handles it does not care about.
+//! * **Parallel arrays** cost one sequential copy per visible object at build time and give
+//!   every consumer afterwards a dense, linear read of exactly the field it wants.
+//!
+//! The copy is not free and is not pretended to be: at 17,000 visible objects it writes
+//! about 1.1 MB per frame. It is measured against the frame it replaces — see below — and
+//! it sits next to the 4.4 MB of constant-buffer uploads the same frame already performs.
+//!
+//! # Why these fields and no others
+//!
+//! Only what the frame consumes. `RenderWorld` also stores world-space bounds, a visibility
+//! flag and a generation array; none of the three reaches recording:
+//!
+//! * **bounds** are read by the culler, which reads them straight out of the world. Copying
+//!   them into the list would be 16 bytes per visible object written and never read.
+//! * **the visibility flag** has already been answered — an entry existing in the list *is*
+//!   the answer.
+//! * **generations** exist to detect a stale handle, and a list built and consumed inside
+//!   one frame cannot hold one.
+//!
+//! And nothing from gameplay: no health, no AI state, no ability state, no network
+//! identity. The list is what the renderer needs and stops there.
+//!
+//! # The transform, not the matrix — and this was measured, not reasoned
+//!
+//! The obvious design stores the composed [`Mat4`](engine_core::math::Mat4): 64 bytes, the
+//! exact thing a constant buffer wants, and a contiguous array a future instancing pass
+//! could upload in one memcpy. It was built that way first, and it cost **14%** of the
+//! frame at 10,000 objects — six runs each, medians 0.830 ms against a 0.727 ms baseline,
+//! with no overlap between the two sets.
+//!
+//! The reason is where the work sits rather than how much of it there is. The matrix has to
+//! be composed once per visible object per frame either way. In the recording loop it is
+//! surrounded by five driver calls per object, which are latency-bound — the composition
+//! disappears into the shadow of work the CPU is already waiting on. Hoisted into the
+//! gather loop it has nothing to hide behind, and a tight loop of quaternion-to-matrix
+//! conversions becomes visible serial time.
+//!
+//! So the list carries the 40-byte `Transform` and recording composes the matrix exactly
+//! where it always did. Storing it is measured at parity with the pre-Milestone-16 frame.
+//! The list is also smaller — 64 bytes an entry rather than 88 — which makes a future sort
+//! cheaper, and `translation` is a better depth key than digging a matrix column out.
+//!
+//! This will want revisiting at instancing. Once a batched draw replaces the per-object
+//! driver calls there is nothing left to hide the composition behind, and composing a run
+//! of transforms straight into the upload ring becomes the right shape. That is a change to
+//! one loop, not to this structure.
+//!
+//! # Capacity
+//!
+//! [`RenderList::clear`] keeps the allocation. After the first few frames every array has
+//! reached the scene's high-water mark and the build path allocates nothing at all — which
+//! is asserted by a test rather than assumed, and measured by `cull_bench`.
 
-use engine_core::math::Vec3;
+use engine_core::transform::Transform;
+use engine_render_data::{MaterialHandle, MeshHandle, RenderEntity};
 
-use crate::scene::{MaterialHandle, MeshHandle, RenderWorld};
-
-/// Bits reserved for each field of the sort key, most significant first.
+/// One entry, gathered from the parallel arrays.
 ///
-/// ```text
-/// [ layer 8 | pipeline 12 | material 20 | mesh 16 | depth 8 ]
-/// ```
+/// A view for tests and diagnostics, not the storage layout: reading an entry is a rare
+/// debugging operation, and the arrays exist because the *common* operations read one field
+/// across many entries.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RenderListEntry {
+    /// Which `RenderWorld` entity this came from.
+    pub entity: RenderEntity,
+    /// Where it is, in world space. Composed into a matrix at recording time.
+    pub transform: Transform,
+    /// What to draw.
+    pub mesh: MeshHandle,
+    /// How it looks.
+    pub material: MaterialHandle,
+}
+
+/// What one frame draws, as parallel arrays.
 ///
-/// The order is the cost order of the state changes it avoids. A pipeline change is the
-/// most expensive thing a frame can do, a material change is a root argument, a mesh change
-/// is two buffer binds, and depth affects nothing but early-Z efficiency — so depth is what
-/// gets sacrificed when two objects agree on everything else.
-pub const LAYER_BITS: u32 = 8;
-/// Bits for the pipeline index.
-pub const PIPELINE_BITS: u32 = 12;
-/// Bits for the material index.
-pub const MATERIAL_BITS: u32 = 20;
-/// Bits for the mesh index.
-pub const MESH_BITS: u32 = 16;
-/// Bits for the quantized depth.
-pub const DEPTH_BITS: u32 = 8;
-
-/// Render layers, coarse enough to be a byte.
-///
-/// One byte because a layer is a broad phase ordering — background, world, effects, UI —
-/// not a per-object property. Nothing needs 256 of them; the field is a byte because the
-/// key's other fields want the remaining bits more.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
-pub struct RenderLayer(pub u8);
-
-impl RenderLayer {
-    /// Ordinary opaque world geometry.
-    pub const WORLD: Self = Self(1);
-}
-
-/// One thing to draw, and the key that orders it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct DrawItem {
-    /// The packed sort key.
-    pub key: u64,
-    /// The world slot to read mesh, material and transform from.
-    pub entity: u32,
-}
-
-/// Packs a sort key.
-///
-/// Every field is masked to its width rather than asserted: an index past the field's range
-/// is a scene larger than the key can describe, and silently colliding two materials is a
-/// worse failure than drawing them in a slightly wrong order. The masking is documented and
-/// the limits are reported by [`SortKeyLimits`].
-#[must_use]
-pub fn sort_key(
-    layer: RenderLayer,
-    pipeline: u32,
-    material: u32,
-    mesh: u32,
-    depth: u8,
-) -> u64 {
-    let mask = |value: u64, bits: u32| value & ((1_u64 << bits) - 1);
-    let mut key = u64::from(layer.0);
-    key = (key << PIPELINE_BITS) | mask(u64::from(pipeline), PIPELINE_BITS);
-    key = (key << MATERIAL_BITS) | mask(u64::from(material), MATERIAL_BITS);
-    key = (key << MESH_BITS) | mask(u64::from(mesh), MESH_BITS);
-    key = (key << DEPTH_BITS) | u64::from(depth);
-    key
-}
-
-/// The largest index each key field can hold.
-pub struct SortKeyLimits;
-
-impl SortKeyLimits {
-    /// Distinct pipelines the key can order.
-    pub const PIPELINES: u32 = 1 << PIPELINE_BITS;
-    /// Distinct materials the key can order.
-    pub const MATERIALS: u32 = 1 << MATERIAL_BITS;
-    /// Distinct meshes the key can order.
-    pub const MESHES: u32 = 1 << MESH_BITS;
-}
-
-/// Quantizes a distance to the byte the key carries.
-///
-/// Front-to-back within a material run, so the nearest geometry fills the depth buffer
-/// first and later fragments fail early-Z. 256 buckets over the view distance is coarse,
-/// and coarse is correct: the sort only has to get the *order of magnitude* right for
-/// early-Z to work, and finer buckets would spend key bits that materials want more.
-#[must_use]
-pub fn quantize_depth(distance: f32, far: f32) -> u8 {
-    if !(distance > 0.0) || far <= 0.0 {
-        return 0;
-    }
-    let normalized = (distance / far).clamp(0.0, 1.0);
-    (normalized * 255.0) as u8
-}
-
-/// What building and sorting one list did.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub struct RenderListStats {
-    /// Items in the list.
-    pub items: u32,
-    /// Runs of consecutive items sharing a material.
-    ///
-    /// This is the number of material binds a recorder that skips redundant ones will
-    /// issue, and it is the number sorting is supposed to reduce.
-    pub material_runs: u32,
-    /// Runs of consecutive items sharing both mesh and material — the batches Milestone 18
-    /// will collapse into instanced draws.
-    pub batch_runs: u32,
-}
-
-/// The sorted list of things to draw.
-#[derive(Debug, Default)]
+/// Rebuilt every frame by [`crate::culling::Culler`]. Owned by the renderer, because it is
+/// a transient rendering artefact rather than something the game authors — which is also
+/// why it lives here and not in `engine-render-data`.
+#[derive(Debug, Default, Clone)]
 pub struct RenderList {
-    items: Vec<DrawItem>,
-    stats: RenderListStats,
+    entities: Vec<RenderEntity>,
+    transforms: Vec<Transform>,
+    meshes: Vec<MeshHandle>,
+    materials: Vec<MaterialHandle>,
 }
 
 impl RenderList {
-    /// An empty list.
+    /// An empty list with no reserved capacity.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// An empty list with room for `capacity` items.
+    /// An empty list sized for `capacity` visible objects.
     #[must_use]
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
-            items: Vec::with_capacity(capacity),
-            stats: RenderListStats::default(),
+            entities: Vec::with_capacity(capacity),
+            transforms: Vec::with_capacity(capacity),
+            meshes: Vec::with_capacity(capacity),
+            materials: Vec::with_capacity(capacity),
         }
     }
 
-    /// Builds the list from a visible set, without sorting it.
+    /// Empties the list, keeping every allocation.
     ///
-    /// The buffer is cleared rather than reallocated, so after the first few frames this
-    /// allocates nothing.
-    pub fn build(
+    /// The whole reason the renderer owns one list across frames rather than building one
+    /// per frame: after the scene reaches its high-water mark this is four length stores.
+    pub fn clear(&mut self) {
+        self.entities.clear();
+        self.transforms.clear();
+        self.meshes.clear();
+        self.materials.clear();
+    }
+
+    /// Appends one drawable.
+    ///
+    /// The arrays are only ever pushed to together, which is what keeps index `i` meaning
+    /// the same object in all four.
+    pub fn push(
         &mut self,
-        world: &RenderWorld,
-        visible: &[u32],
-        camera_position: Vec3,
-        far: f32,
+        entity: RenderEntity,
+        transform: Transform,
+        mesh: MeshHandle,
+        material: MaterialHandle,
     ) {
-        self.items.clear();
-        self.items.reserve(visible.len());
-
-        for slot in visible {
-            let entity = *slot as usize;
-            let distance = (world.bounds()[entity].center - camera_position).length();
-            self.items.push(DrawItem {
-                key: sort_key(
-                    RenderLayer::WORLD,
-                    0,
-                    world.materials()[entity].index() as u32,
-                    world.meshes()[entity].index() as u32,
-                    quantize_depth(distance, far),
-                ),
-                entity: *slot,
-            });
-        }
-
-        self.refresh_stats(world);
+        self.entities.push(entity);
+        self.transforms.push(transform);
+        self.meshes.push(mesh);
+        self.materials.push(material);
     }
 
-    /// Sorts the list by key.
-    ///
-    /// Unstable sort: the key already contains everything that decides order, so two items
-    /// that compare equal are genuinely interchangeable, and a stable sort would pay for a
-    /// guarantee nothing needs.
-    pub fn sort(&mut self) {
-        self.items.sort_unstable_by_key(|item| item.key);
-    }
-
-    /// Recomputes the run statistics after the order changes.
-    pub fn refresh_stats(&mut self, world: &RenderWorld) {
-        let mut material_runs = 0;
-        let mut batch_runs = 0;
-        let mut previous: Option<(MaterialHandle, MeshHandle)> = None;
-
-        for item in &self.items {
-            let entity = item.entity as usize;
-            let material = world.materials()[entity];
-            let mesh = world.meshes()[entity];
-            match previous {
-                Some((last_material, last_mesh)) => {
-                    if material != last_material {
-                        material_runs += 1;
-                        batch_runs += 1;
-                    } else if mesh != last_mesh {
-                        batch_runs += 1;
-                    }
-                }
-                None => {
-                    material_runs += 1;
-                    batch_runs += 1;
-                }
-            }
-            previous = Some((material, mesh));
-        }
-
-        self.stats = RenderListStats {
-            items: self.items.len() as u32,
-            material_runs,
-            batch_runs,
-        };
-    }
-
-    /// The items, in their current order.
-    #[must_use]
-    pub fn items(&self) -> &[DrawItem] {
-        &self.items
-    }
-
-    /// What the last build produced.
-    #[must_use]
-    pub fn stats(&self) -> RenderListStats {
-        self.stats
-    }
-
-    /// Whether the list is empty.
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.items.is_empty()
-    }
-
-    /// Items in the list.
+    /// Entries in the list.
     #[must_use]
     pub fn len(&self) -> usize {
-        self.items.len()
+        self.entities.len()
+    }
+
+    /// Whether the list draws nothing.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.entities.is_empty()
+    }
+
+    /// Entries the list can hold before it has to grow.
+    ///
+    /// Reported so a test can prove the build path stops allocating, and so a caller can
+    /// size the list from a previous frame.
+    #[must_use]
+    pub fn capacity(&self) -> usize {
+        self.entities.capacity()
+    }
+
+    /// The source entity of each entry.
+    #[must_use]
+    pub fn entities(&self) -> &[RenderEntity] {
+        &self.entities
+    }
+
+    /// The world transform of each entry.
+    #[must_use]
+    pub fn transforms(&self) -> &[Transform] {
+        &self.transforms
+    }
+
+    /// The mesh of each entry.
+    #[must_use]
+    pub fn meshes(&self) -> &[MeshHandle] {
+        &self.meshes
+    }
+
+    /// The material of each entry.
+    #[must_use]
+    pub fn materials(&self) -> &[MaterialHandle] {
+        &self.materials
+    }
+
+    /// One entry, gathered. `None` past the end.
+    #[must_use]
+    pub fn entry(&self, index: usize) -> Option<RenderListEntry> {
+        Some(RenderListEntry {
+            entity: *self.entities.get(index)?,
+            transform: *self.transforms.get(index)?,
+            mesh: *self.meshes.get(index)?,
+            material: *self.materials.get(index)?,
+        })
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scene::{MaterialHandle, MeshHandle, RenderEntityDesc};
-    use engine_core::math::Sphere;
+    use engine_core::math::Vec3;
     use engine_core::transform::Transform;
 
-    fn world_with(entries: &[(u32, u32, f32)]) -> RenderWorld {
-        let mut world = RenderWorld::new();
-        for (material, mesh, z) in entries {
-            world.spawn(RenderEntityDesc {
-                transform: Transform::from_translation(Vec3::new(0.0, 0.0, *z)),
-                mesh: MeshHandle::new(*mesh, 1),
-                material: MaterialHandle::new(*material, 1),
-                bounds: Sphere::new(Vec3::ZERO, 1.0),
-                visible: true,
-            });
+    fn entry(index: u32) -> (RenderEntity, Transform, MeshHandle, MaterialHandle) {
+        let transform = Transform::from_translation(Vec3::new(index as f32, 0.0, 0.0));
+        (
+            RenderEntity::new(index, 1),
+            transform,
+            MeshHandle::new(index % 3, 1),
+            MaterialHandle::new(index % 5, 1),
+        )
+    }
+
+    fn filled(count: u32) -> RenderList {
+        let mut list = RenderList::new();
+        for index in 0..count {
+            let (entity, transform, mesh, material) = entry(index);
+            list.push(entity, transform, mesh, material);
         }
-        world
-    }
-
-    fn all_slots(world: &RenderWorld) -> Vec<u32> {
-        (0..world.slot_count() as u32).collect()
+        list
     }
 
     #[test]
-    fn the_key_orders_by_pipeline_then_material_then_mesh() {
-        let base = sort_key(RenderLayer::WORLD, 1, 5, 9, 100);
-        assert!(base < sort_key(RenderLayer::WORLD, 2, 0, 0, 0), "pipeline wins");
-        assert!(base < sort_key(RenderLayer::WORLD, 1, 6, 0, 0), "then material");
-        assert!(base < sort_key(RenderLayer::WORLD, 1, 5, 10, 0), "then mesh");
-        assert!(base < sort_key(RenderLayer::WORLD, 1, 5, 9, 101), "then depth");
-    }
-
-    #[test]
-    fn the_layer_outranks_everything_else() {
-        let world = sort_key(RenderLayer::WORLD, 4095, 1048575, 65535, 255);
-        let later = sort_key(RenderLayer(2), 0, 0, 0, 0);
-        assert!(world < later, "a later layer must sort after any world object");
-    }
-
-    #[test]
-    fn an_index_past_a_field_wraps_rather_than_corrupting_its_neighbours() {
-        // Masking is deliberate: colliding two materials orders them oddly, while letting
-        // the value overflow into the pipeline field would reorder pipelines.
-        let a = sort_key(RenderLayer::WORLD, 0, SortKeyLimits::MATERIALS, 0, 0);
-        let b = sort_key(RenderLayer::WORLD, 0, 0, 0, 0);
-        assert_eq!(a, b);
-    }
-
-    #[test]
-    fn depth_quantizes_front_to_back() {
-        assert_eq!(quantize_depth(0.0, 100.0), 0);
-        assert!(quantize_depth(10.0, 100.0) < quantize_depth(50.0, 100.0));
-        assert_eq!(quantize_depth(200.0, 100.0), 255, "clamped, not wrapped");
-        assert_eq!(quantize_depth(f32::NAN, 100.0), 0, "NaN must not panic");
-    }
-
-    #[test]
-    fn sorting_groups_materials_that_arrived_interleaved() {
-        // The scene is built worst case: alternating materials, which is what an
-        // unsorted spawn order looks like.
-        let world = world_with(&[(0, 0, -1.0), (1, 0, -2.0), (0, 0, -3.0), (1, 0, -4.0)]);
-        let mut list = RenderList::new();
-        list.build(&world, &all_slots(&world), Vec3::ZERO, 100.0);
-        assert_eq!(list.stats().material_runs, 4, "interleaved before sorting");
-
-        list.sort();
-        list.refresh_stats(&world);
-        assert_eq!(list.stats().material_runs, 2, "one run per material after");
-    }
-
-    #[test]
-    fn sorting_groups_meshes_within_a_material() {
-        let world = world_with(&[(0, 0, -1.0), (0, 1, -2.0), (0, 0, -3.0), (0, 1, -4.0)]);
-        let mut list = RenderList::new();
-        list.build(&world, &all_slots(&world), Vec3::ZERO, 100.0);
-        assert_eq!(list.stats().batch_runs, 4);
-
-        list.sort();
-        list.refresh_stats(&world);
-        assert_eq!(list.stats().batch_runs, 2, "two mesh runs inside one material");
-        assert_eq!(list.stats().material_runs, 1);
-    }
-
-    #[test]
-    fn within_a_batch_the_nearest_object_is_drawn_first() {
-        // Front-to-back so early-Z rejects the far fragments. Depth is the least significant
-        // field, so this only holds once material and mesh agree — which is the point.
-        let world = world_with(&[(0, 0, -50.0), (0, 0, -5.0), (0, 0, -20.0)]);
-        let mut list = RenderList::new();
-        list.build(&world, &all_slots(&world), Vec3::ZERO, 100.0);
-        list.sort();
-
-        let order: Vec<u32> = list.items().iter().map(|item| item.entity).collect();
-        assert_eq!(order, vec![1, 2, 0]);
-    }
-
-    #[test]
-    fn only_the_visible_set_reaches_the_list() {
-        let world = world_with(&[(0, 0, -1.0), (1, 0, -2.0), (2, 0, -3.0)]);
-        let mut list = RenderList::new();
-        list.build(&world, &[2], Vec3::ZERO, 100.0);
-        assert_eq!(list.len(), 1);
-        assert_eq!(list.items()[0].entity, 2);
-    }
-
-    #[test]
-    fn building_does_not_allocate_after_the_first_frame() {
-        let world = world_with(&vec![(0, 0, -1.0); 64]);
-        let visible = all_slots(&world);
-        let mut list = RenderList::new();
-        list.build(&world, &visible, Vec3::ZERO, 100.0);
-        let capacity = list.items.capacity();
-
-        for _ in 0..8 {
-            list.build(&world, &visible, Vec3::ZERO, 100.0);
-            list.sort();
-        }
-        assert_eq!(list.items.capacity(), capacity);
-    }
-
-    #[test]
-    fn an_empty_visible_set_produces_an_empty_list() {
-        let world = world_with(&[(0, 0, -1.0)]);
-        let mut list = RenderList::new();
-        list.build(&world, &[], Vec3::ZERO, 100.0);
+    fn a_new_list_draws_nothing() {
+        let list = RenderList::new();
+        assert_eq!(list.len(), 0);
         assert!(list.is_empty());
-        assert_eq!(list.stats().material_runs, 0);
+        assert!(list.entities().is_empty());
+        assert!(list.transforms().is_empty());
+        assert!(list.entry(0).is_none());
+    }
+
+    #[test]
+    fn every_array_stays_the_same_length() {
+        // Index `i` has to mean the same object in all four, which is only true because
+        // they are pushed together. A test rather than a comment because nothing in the
+        // type system enforces it.
+        let list = filled(37);
+        assert_eq!(list.len(), 37);
+        assert_eq!(list.entities().len(), 37);
+        assert_eq!(list.transforms().len(), 37);
+        assert_eq!(list.meshes().len(), 37);
+        assert_eq!(list.materials().len(), 37);
+    }
+
+    #[test]
+    fn an_entry_reads_back_exactly_what_was_pushed() {
+        let list = filled(8);
+        for index in 0..8_u32 {
+            let (entity, transform, mesh, material) = entry(index);
+            let Some(read) = list.entry(index as usize) else {
+                panic!("entry {index} must exist in a list of eight");
+            };
+            assert_eq!(read.entity, entity);
+            assert_eq!(read.transform, transform);
+            assert_eq!(read.mesh, mesh);
+            assert_eq!(read.material, material);
+        }
+    }
+
+    #[test]
+    fn a_stored_transform_still_composes_the_matrix_recording_needs() {
+        // The list carries the transform and recording composes the matrix from it. If the
+        // stored value ever stopped round-tripping, objects would render somewhere other
+        // than where the world says they are.
+        let transform = Transform::from_translation(Vec3::new(3.0, 4.0, 5.0))
+            .with_scale(Vec3::splat(2.0))
+            .with_rotation(engine_core::math::Quat::from_axis_angle(Vec3::Y, 0.7));
+        let mut list = RenderList::new();
+        list.push(
+            RenderEntity::new(0, 1),
+            transform,
+            MeshHandle::new(0, 1),
+            MaterialHandle::new(0, 1),
+        );
+
+        let Some(read) = list.entry(0) else {
+            panic!("the list holds one entry");
+        };
+        assert_eq!(read.transform, transform);
+        assert_eq!(read.transform.matrix(), transform.matrix());
+        // `translation` is what a future depth sort reads, so it has to survive the copy
+        // exactly rather than approximately.
+        assert_eq!(read.transform.translation, Vec3::new(3.0, 4.0, 5.0));
+    }
+
+    #[test]
+    fn an_entry_is_the_size_the_layout_reasoning_assumes() {
+        // 8 + 40 + 8 + 8. The module prices a frame's copy from this number; if the layout
+        // grows, the reasoning needs revisiting rather than silently becoming wrong.
+        let bytes = size_of::<RenderEntity>()
+            + size_of::<Transform>()
+            + size_of::<MeshHandle>()
+            + size_of::<MaterialHandle>();
+        assert_eq!(bytes, 64, "one render list entry across the four arrays");
+    }
+
+    #[test]
+    fn clearing_leaves_nothing_readable() {
+        // Not just `len() == 0`: a stale entry still reachable through an accessor would be
+        // last frame's object drawn this frame.
+        let mut list = filled(16);
+        list.clear();
+
+        assert_eq!(list.len(), 0);
+        assert!(list.is_empty());
+        assert!(list.entry(0).is_none());
+        assert!(list.entities().is_empty());
+        assert!(list.transforms().is_empty());
+        assert!(list.meshes().is_empty());
+        assert!(list.materials().is_empty());
+    }
+
+    #[test]
+    fn a_cleared_list_refills_with_only_the_new_entries() {
+        let mut list = filled(20);
+        list.clear();
+        for index in 100..105_u32 {
+            let (entity, transform, mesh, material) = entry(index);
+            list.push(entity, transform, mesh, material);
+        }
+
+        assert_eq!(list.len(), 5, "the first twenty must not survive");
+        let Some(first) = list.entry(0) else {
+            panic!("the refilled list holds five entries");
+        };
+        assert_eq!(first.entity, RenderEntity::new(100, 1));
+    }
+
+    #[test]
+    fn reuse_stops_allocating_once_the_high_water_mark_is_reached() {
+        // The reason the renderer owns one list across frames instead of building one per
+        // frame. If this regresses, every frame allocates four vectors.
+        let mut list = RenderList::new();
+        for _ in 0..64 {
+            let (entity, transform, mesh, material) = entry(0);
+            list.push(entity, transform, mesh, material);
+        }
+        let capacity = list.capacity();
+        assert!(capacity >= 64);
+
+        for _ in 0..10 {
+            list.clear();
+            for index in 0..64 {
+                let (entity, transform, mesh, material) = entry(index);
+                list.push(entity, transform, mesh, material);
+            }
+        }
+        assert_eq!(
+            list.capacity(),
+            capacity,
+            "refilling to the same size must reuse the allocation"
+        );
+    }
+
+    #[test]
+    fn a_sized_list_starts_with_room() {
+        let list = RenderList::with_capacity(1024);
+        assert!(list.capacity() >= 1024);
+        assert!(list.is_empty(), "capacity is not content");
     }
 }

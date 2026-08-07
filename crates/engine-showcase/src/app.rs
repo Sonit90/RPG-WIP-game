@@ -265,6 +265,7 @@ impl Showcase {
             cull: self.renderer.cull_stats(),
             cull_ms: self.renderer.last_cull_ms(),
             objects: self.scene.object_count(),
+            render_list: self.renderer.render_list().len(),
             scene_triangles: self.scene.scene_triangles(),
             draw_calls: self.renderer.draw_calls_last_frame(),
             triangles: self.renderer.triangles_last_frame(),

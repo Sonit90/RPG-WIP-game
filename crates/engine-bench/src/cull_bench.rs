@@ -5,6 +5,13 @@
 //! over an array, and answering it inside a frame that also records 17,000 draw calls
 //! measures the draw calls.
 //!
+//! Since Milestone 16 the pass also *gathers* each survivor into a
+//! [`engine_renderer::RenderList`], so what is timed here is the frustum test plus the
+//! copy that used to happen inside the recording loop. The numbers therefore rose against
+//! the Milestone 15 baseline while the frame as a whole did not: work moved, it was not
+//! added. The `accept_all` row is the same gather with the test removed, which is what
+//! separates the two costs.
+//!
 //! Three scenarios over the same world, because the cost of culling depends on how much
 //! survives: a visible object is pushed onto the output buffer, a culled one is not, and a
 //! pass that rejects everything has a different branch profile from one that accepts
@@ -27,6 +34,7 @@ use std::time::Instant;
 use engine_core::math::{Frustum, Sphere, Vec3};
 use engine_core::transform::Transform;
 use engine_render_data::{MaterialHandle, MeshHandle, RenderEntityDesc, RenderWorld};
+use engine_renderer::render_list::RenderList;
 use engine_renderer::{Camera, Culler, Projection};
 
 /// Objects benchmarked when none are given.
@@ -158,25 +166,36 @@ fn run(objects: usize, iterations: usize) -> Result<(), String> {
     println!("frustum culling benchmark");
     println!("objects: {objects}, measured passes per scenario: {iterations}");
     println!(
-        "{:<16} {:>9} {:>9} {:>9} {:>9} {:>9} {:>9} {:>8}",
-        "scenario", "visible", "culled", "mean us", "p50 us", "p95 us", "p99 us", "ns/obj"
+        "{:<16} {:>9} {:>9} {:>9} {:>9} {:>9} {:>9} {:>8} {:>7}",
+        "scenario",
+        "visible",
+        "culled",
+        "mean us",
+        "p50 us",
+        "p95 us",
+        "p99 us",
+        "ns/obj",
+        "allocs"
     );
 
     for scenario in &SCENARIOS {
         let world = build_world(objects, scenario.visible_fraction);
         let mut culler = Culler::new();
+        let mut list = RenderList::new();
 
         for _ in 0..WARMUP_ITERATIONS {
-            culler.cull(&world, &frustum);
+            culler.cull(&world, &frustum, &mut list);
         }
 
         // Counted across the measured passes only: the world build and the warm-up are
-        // expected to allocate, and the question is whether the steady state does.
-        let before = ALLOCATIONS.load(Ordering::Relaxed);
+        // expected to allocate, and the question is whether the steady state does. The
+        // samples vector is reserved before the count starts so its growth is not
+        // attributed to the pass.
         let mut samples = Vec::with_capacity(iterations);
+        let before = ALLOCATIONS.load(Ordering::Relaxed);
         for _ in 0..iterations {
             let started = Instant::now();
-            culler.cull(&world, &frustum);
+            culler.cull(&world, &frustum, &mut list);
             samples.push(started.elapsed().as_secs_f64() * 1e6);
         }
         let allocations = ALLOCATIONS.load(Ordering::Relaxed) - before;
@@ -184,7 +203,7 @@ fn run(objects: usize, iterations: usize) -> Result<(), String> {
         let stats = culler.stats();
         let summary = summarize(&mut samples);
         println!(
-            "{:<16} {:>9} {:>9} {:>9.1} {:>9.1} {:>9.1} {:>9.1} {:>8.2}",
+            "{:<16} {:>9} {:>9} {:>9.1} {:>9.1} {:>9.1} {:>9.1} {:>8.2} {:>7}",
             scenario.name,
             stats.visible,
             stats.culled,
@@ -193,33 +212,29 @@ fn run(objects: usize, iterations: usize) -> Result<(), String> {
             summary.p95,
             summary.p99,
             summary.mean * 1e3 / objects as f64,
+            allocations,
         );
-
-        // One allocation for the samples `Vec` growing is this loop's own cost, not the
-        // culler's; anything beyond a handful would mean the cull path allocates.
-        if allocations > iterations {
-            println!(
-                "  WARNING: {allocations} heap allocations during {iterations} measured passes"
-            );
-        }
     }
 
     // The same world, accepted wholesale, so the cost of the frustum test can be separated
     // from the cost of building the visible list at all.
     let world = build_world(objects, 1.0);
     let mut culler = Culler::new();
+    let mut list = RenderList::new();
     for _ in 0..WARMUP_ITERATIONS {
-        culler.accept_all(&world);
+        culler.accept_all(&world, &mut list);
     }
     let mut samples = Vec::with_capacity(iterations);
+    let before = ALLOCATIONS.load(Ordering::Relaxed);
     for _ in 0..iterations {
         let started = Instant::now();
-        culler.accept_all(&world);
+        culler.accept_all(&world, &mut list);
         samples.push(started.elapsed().as_secs_f64() * 1e6);
     }
+    let allocations = ALLOCATIONS.load(Ordering::Relaxed) - before;
     let summary = summarize(&mut samples);
     println!(
-        "{:<16} {:>9} {:>9} {:>9.1} {:>9.1} {:>9.1} {:>9.1} {:>8.2}",
+        "{:<16} {:>9} {:>9} {:>9.1} {:>9.1} {:>9.1} {:>9.1} {:>8.2} {:>7}",
         "accept_all",
         culler.stats().visible,
         0,
@@ -228,6 +243,7 @@ fn run(objects: usize, iterations: usize) -> Result<(), String> {
         summary.p95,
         summary.p99,
         summary.mean * 1e3 / objects as f64,
+        allocations,
     );
 
     println!(

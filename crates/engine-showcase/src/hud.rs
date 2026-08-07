@@ -102,6 +102,12 @@ pub struct HudStats<'a> {
     pub cull_ms: f64,
     /// Objects in the world, culled or not.
     pub objects: usize,
+    /// Entries the renderer's render list holds this frame.
+    ///
+    /// Read from `Renderer::render_list().len()`, not from the cull counter. The two are
+    /// the same number by construction, and the overlay shows both so that stays visible
+    /// rather than being asserted in a comment.
+    pub render_list: usize,
     /// Triangles the world holds before culling.
     pub scene_triangles: u64,
     /// Draw calls the last frame recorded.
@@ -130,7 +136,7 @@ pub struct HudStats<'a> {
 /// after the first update this reuses the same `String` buffers rather than making new ones.
 pub fn write_lines(lines: &mut Vec<String>, stats: &HudStats<'_>) {
     /// Number of lines the overlay writes.
-    const LINE_COUNT: usize = 20;
+    const LINE_COUNT: usize = 21;
 
     while lines.len() < LINE_COUNT {
         lines.push(String::new());
@@ -175,23 +181,24 @@ pub fn write_lines(lines: &mut Vec<String>, stats: &HudStats<'_>) {
     let _ = write!(lines[13], "OBJECTS       {:>10}", stats.objects);
     let _ = write!(lines[14], "VISIBLE       {:>10}", stats.cull.visible);
     let _ = write!(lines[15], "CULLED        {:>10}", stats.cull.culled);
+    let _ = write!(lines[16], "RENDERLIST    {:>10}", stats.render_list);
     let _ = write!(
-        lines[16],
+        lines[17],
         "DRAWS         {:>10}   TRIS {}",
         stats.draw_calls, stats.triangles
     );
     let _ = write!(
-        lines[17],
+        lines[18],
         "SCENE TRIS    {:>10}   {}X{}",
         stats.scene_triangles, stats.resolution.0, stats.resolution.1
     );
     let _ = write!(
-        lines[18],
+        lines[19],
         "CAMERA  {:.0} / {:.0} / {:.0}",
         stats.camera_position.x, stats.camera_position.y, stats.camera_position.z
     );
     let _ = write!(
-        lines[19],
+        lines[20],
         "CULLING {}   FROZEN {}   WIRE {}   MOUSE {}",
         on_off(stats.culling),
         on_off(stats.cull_frozen),
@@ -234,6 +241,7 @@ mod tests {
             },
             cull_ms: 0.08,
             objects: 10_000,
+            render_list: 1_842,
             scene_triangles: 420_000,
             draw_calls: 1_842,
             triangles: 42_310,

@@ -30,6 +30,7 @@ pub mod offscreen;
 #[cfg(feature = "debug-overlay")]
 pub mod overlay;
 pub mod pipeline;
+pub mod render_list;
 pub mod renderer;
 pub mod resource;
 pub mod scene;
@@ -50,6 +51,7 @@ pub use material::{Material, MaterialConstants, MaterialDesc};
 pub use mesh::{GpuMesh, Index, MeshData, MeshVertex, VertexStream};
 pub use mesh_pipeline::MeshPipeline;
 pub use pipeline::{TRIANGLE_VERTICES, Vertex};
+pub use render_list::{RenderList, RenderListEntry};
 pub use renderer::Renderer;
 pub use scene::{FrameConstants, ObjectConstants};
 

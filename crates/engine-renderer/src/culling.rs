@@ -1,18 +1,36 @@
 //! Frustum culling.
 //!
-//! One flat pass over the world's bounds array, writing the indices that survive into a
-//! buffer the caller keeps across frames. No allocation, no branching on entity type, no
-//! knowledge of what an entity is.
+//! One flat pass over the world's bounds array, appending what survives to a
+//! [`RenderList`] the caller keeps across frames. No allocation, no branching on entity
+//! type, no knowledge of what an entity is.
 //!
-//! Threading is deliberately absent. `docs/threading.md` measured the job-system break-even
-//! at roughly 12 µs of work per job, and culling measures 3.7 ns per object — so a 10,000
-//! object scene is 37 µs, or three chunks. Three jobs to save at most 25 µs is not obviously
-//! worth the submission overhead, and it is not a guess: both numbers are measured. The loop
-//! reads slices, so chunking later is a change at the call site rather than a rewrite.
+//! # The test and the copy are one pass
+//!
+//! Before Milestone 16 the culler wrote surviving *slot indices* into a `Vec<u32>` of its
+//! own, and the recording loop then walked that and reached back into `RenderWorld` for each
+//! object. Two passes over the same data, and two representations of the same answer.
+//!
+//! Now the survivor is gathered into the render list as it is found. The frustum test has
+//! just touched that slot's bounds, so the object's other fields are in cache when they are
+//! read — which is the cheapest moment there is to copy them.
+//!
+//! # Threading is deliberately absent
+//!
+//! `docs/threading.md` measured the job-system break-even at roughly 12 µs of work per job,
+//! and culling measures 1.8–4.6 ns per object — so a 10,000 object scene is well under
+//! 50 µs, or a few chunks. A handful of jobs to save tens of microseconds is not obviously
+//! worth the submission overhead, and it is not a guess: both numbers are measured.
+//!
+//! The shape is ready for it anyway. The loop reads slices and appends to a list, so the
+//! eventual parallel version is a chunked loop over the same slices with one `RenderList`
+//! per worker and a concatenation afterwards — a change at the call site rather than a
+//! rewrite. That is Milestone 18 or later, not this one.
 
 use engine_core::math::{Frustum, Sphere};
 
 use engine_render_data::RenderWorld;
+
+use crate::render_list::RenderList;
 
 /// What one cull pass did.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -40,82 +58,93 @@ impl CullStats {
     }
 }
 
-/// Selects the entities a camera can see.
+/// Selects the entities a camera can see and gathers them into a [`RenderList`].
+///
+/// Holds no buffer of its own: the render list *is* the visible set, and keeping a second
+/// copy of the same answer was what Milestone 16 removed. What is left is the visibility
+/// policy and the statistics describing what it did.
 #[derive(Debug, Default)]
 pub struct Culler {
-    /// World slot indices that survived, in ascending order.
-    visible: Vec<u32>,
     stats: CullStats,
 }
 
 impl Culler {
-    /// A culler with no reserved capacity.
+    /// A culler that has run no passes.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// A culler sized for `capacity` visible entities.
-    #[must_use]
-    pub fn with_capacity(capacity: usize) -> Self {
-        Self {
-            visible: Vec::with_capacity(capacity),
-            stats: CullStats::default(),
-        }
-    }
-
-    /// Rebuilds the visible set for `frustum`.
+    /// Rebuilds `list` from the entities of `world` that `frustum` can see.
     ///
-    /// The output buffer is cleared, not reallocated: after the first few frames it has
-    /// grown to the scene's high-water mark and never allocates again.
-    pub fn cull(&mut self, world: &RenderWorld, frustum: &Frustum) {
-        self.visible.clear();
+    /// The list is cleared first and keeps its allocation, so after the first few frames
+    /// this performs no allocation at all.
+    ///
+    /// Returns nothing; read [`Culler::stats`] for what the pass did, or `list.len()` for
+    /// how many survived — the two agree by construction.
+    pub fn cull(&mut self, world: &RenderWorld, frustum: &Frustum, list: &mut RenderList) {
+        list.clear();
         let mut considered = 0;
 
-        // Two contiguous arrays, read in step. This is why `RenderWorld` is
-        // structure-of-arrays: mesh handles and materials are not touched here, and
-        // interleaving them would pull them through the cache for nothing.
+        // Two contiguous arrays, read in step, and nothing else touched until an object
+        // actually survives. This is why `RenderWorld` is structure-of-arrays: an object
+        // that fails the test never pulls its mesh handle, material or transform through
+        // the cache, and at a 90% cull ratio that is most of them.
         let bounds = world.bounds();
+        let transforms = world.transforms();
+        let meshes = world.meshes();
+        let materials = world.materials();
+
         for (slot, visible) in world.visible_flags().iter().enumerate() {
             if !visible {
                 continue;
             }
             considered += 1;
             if frustum.intersects_sphere(&bounds[slot]) {
-                self.visible.push(slot as u32);
+                list.push(
+                    world.entity_at(slot),
+                    transforms[slot],
+                    meshes[slot],
+                    materials[slot],
+                );
             }
         }
 
         self.stats = CullStats {
             considered,
-            visible: self.visible.len() as u32,
-            culled: considered - self.visible.len() as u32,
+            visible: list.len() as u32,
+            culled: considered - list.len() as u32,
         };
     }
 
-    /// Marks every drawable entity visible, without testing the frustum.
+    /// Gathers every drawable entity into `list`, without testing the frustum.
     ///
-    /// Exists so the benchmark can measure the same frame with culling on and off. Without
-    /// it, "does culling help?" would compare two different code paths rather than one
-    /// code path with one step removed.
-    pub fn accept_all(&mut self, world: &RenderWorld) {
-        self.visible.clear();
+    /// Exists so a benchmark can measure the same frame with one step removed. Without it,
+    /// "does culling help?" would compare two different code paths rather than one code
+    /// path minus the test.
+    pub fn accept_all(&mut self, world: &RenderWorld, list: &mut RenderList) {
+        list.clear();
+
+        let transforms = world.transforms();
+        let meshes = world.meshes();
+        let materials = world.materials();
+
         for (slot, visible) in world.visible_flags().iter().enumerate() {
             if *visible {
-                self.visible.push(slot as u32);
+                list.push(
+                    world.entity_at(slot),
+                    transforms[slot],
+                    meshes[slot],
+                    materials[slot],
+                );
             }
         }
+
         self.stats = CullStats {
-            considered: self.visible.len() as u32,
-            visible: self.visible.len() as u32,
+            considered: list.len() as u32,
+            visible: list.len() as u32,
             culled: 0,
         };
-    }
-
-    /// The surviving world slots.
-    #[must_use]
-    pub fn visible(&self) -> &[u32] {
-        &self.visible
     }
 
     /// What the last pass did.
@@ -162,11 +191,18 @@ mod tests {
         world.spawn(entity(Vec3::new(500.0, 0.0, -10.0)));
 
         let mut culler = Culler::new();
-        culler.cull(&world, &frustum());
+        let mut list = RenderList::new();
+        culler.cull(&world, &frustum(), &mut list);
 
-        assert_eq!(culler.visible(), &[0]);
+        assert_eq!(list.len(), 1);
+        assert_eq!(list.entities(), &[world.entity_at(0)]);
         assert_eq!(culler.stats().considered, 3);
         assert_eq!(culler.stats().culled, 2);
+        assert_eq!(
+            culler.stats().visible as usize,
+            list.len(),
+            "the counter and the list must be the same answer"
+        );
     }
 
     #[test]
@@ -179,10 +215,11 @@ mod tests {
         world.spawn(entity(Vec3::new(0.0, 0.0, -10.0)));
 
         let mut culler = Culler::new();
-        culler.cull(&world, &frustum());
+        let mut list = RenderList::new();
+        culler.cull(&world, &frustum(), &mut list);
 
         assert_eq!(culler.stats().considered, 1);
-        assert_eq!(culler.visible(), &[1]);
+        assert_eq!(list.entities(), &[world.entity_at(1)]);
     }
 
     #[test]
@@ -192,7 +229,8 @@ mod tests {
         let entity_handle = world.spawn(entity(Vec3::new(0.0, 0.0, -10.0)));
 
         let mut culler = Culler::new();
-        culler.cull(&world, &frustum());
+        let mut list = RenderList::new();
+        culler.cull(&world, &frustum(), &mut list);
         assert_eq!(culler.stats().visible, 1);
 
         world.set_transform(
@@ -200,7 +238,7 @@ mod tests {
             Transform::from_translation(Vec3::new(0.0, 0.0, 500.0)),
             local,
         );
-        culler.cull(&world, &frustum());
+        culler.cull(&world, &frustum(), &mut list);
         assert_eq!(culler.stats().visible, 0);
     }
 
@@ -216,7 +254,8 @@ mod tests {
         });
 
         let mut culler = Culler::new();
-        culler.cull(&world, &frustum());
+        let mut list = RenderList::new();
+        culler.cull(&world, &frustum(), &mut list);
         assert_eq!(culler.stats().visible, 1);
     }
 
@@ -231,7 +270,8 @@ mod tests {
         });
 
         let mut culler = Culler::new();
-        culler.cull(&world, &frustum());
+        let mut list = RenderList::new();
+        culler.cull(&world, &frustum(), &mut list);
         assert_eq!(
             culler.stats().visible,
             1,
@@ -246,8 +286,13 @@ mod tests {
         world.spawn(entity(Vec3::new(0.0, 0.0, 500.0)));
 
         let mut culler = Culler::new();
-        culler.accept_all(&world);
-        assert_eq!(culler.visible(), &[0, 1]);
+        let mut list = RenderList::new();
+        culler.accept_all(&world, &mut list);
+        assert_eq!(
+            list.entities(),
+            &[world.entity_at(0), world.entity_at(1)],
+            "accepting everything keeps world order"
+        );
         assert_eq!(culler.stats().culled, 0);
     }
 
@@ -260,11 +305,12 @@ mod tests {
         }
 
         let mut culler = Culler::new();
-        culler.cull(&world, &frustum());
+        let mut list = RenderList::new();
+        culler.cull(&world, &frustum(), &mut list);
         assert!((culler.stats().cull_ratio() - 0.75).abs() < 1e-6);
 
         // A culler that rejects nothing is pure cost; the number exists so that is visible.
-        culler.accept_all(&world);
+        culler.accept_all(&world, &mut list);
         assert_eq!(culler.stats().cull_ratio(), 0.0);
     }
 
@@ -276,16 +322,18 @@ mod tests {
         }
 
         let mut culler = Culler::new();
-        culler.cull(&world, &frustum());
-        let capacity = culler.visible.capacity();
+        let mut list = RenderList::new();
+        culler.cull(&world, &frustum(), &mut list);
+        let capacity = list.capacity();
+        assert!(capacity >= 64);
 
         for _ in 0..8 {
-            culler.cull(&world, &frustum());
+            culler.cull(&world, &frustum(), &mut list);
         }
         assert_eq!(
-            culler.visible.capacity(),
+            list.capacity(),
             capacity,
-            "the visible buffer must be reused, not regrown every frame"
+            "the render list must be reused, not regrown every frame"
         );
     }
 }

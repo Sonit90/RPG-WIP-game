@@ -73,6 +73,31 @@ Input -> Commands -> Simulation -> RenderWorld -> Renderer -> GPU
 **`engine-render-data` must never gain a `windows` dependency.** If it does, the seam is
 gone and gameplay is coupled to D3D12 again.
 
+### The frame pipeline (Phase 2, M16)
+
+```text
+RenderWorld          engine-render-data, outlives the frame
+    |
+    | Culler::cull   one pass over bounds; survivors gathered as they are found
+    v
+RenderList           engine-renderer, rebuilt every frame, allocation reused
+    |
+    | draw_render_list
+    v
+D3D12 command list -> GPU
+```
+
+`Renderer::render_world` is `build_render_list` followed by `draw_render_list`, and the two
+halves are separable on purpose: the first is pure CPU and touches no D3D12 object, the
+second reads only the list and the GPU resources it names. Recording never looks at the
+`RenderWorld`.
+
+`RenderList` is four parallel arrays — entity, transform, mesh handle, material handle — 64
+bytes an entry. It carries the `Transform` rather than the composed `Mat4`; storing the
+matrix was built first and measured **14% slower** at 10,000 objects, because composing it
+in the recording loop hides under the per-draw driver calls and composing it in a tight
+gather loop does not. See the module docs for the measurement.
+
 What stayed in `engine-renderer` and why:
 
 | Type | Why it did not move |

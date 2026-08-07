@@ -26,6 +26,7 @@ use crate::mesh_pipeline::MeshPipeline;
 #[cfg(feature = "debug-overlay")]
 use crate::overlay::{OverlayBuffers, OverlayGeometry};
 use crate::pipeline::{ScenePipeline, Vertex};
+use crate::render_list::RenderList;
 use crate::resource::DeferredReleaseQueue;
 use crate::scene::{
     FrameConstants, ObjectConstants, ROOT_FRAME_CBV, ROOT_MATERIAL_CBV, ROOT_OBJECT_CBV,
@@ -94,9 +95,12 @@ pub struct Renderer {
     meshes: Vec<GpuMesh>,
     /// Materials created through [`Renderer::create_material`], indexed by handle.
     materials: Vec<Material>,
-    /// Frustum culling, and the visible set it produces. Kept across frames so its buffer
-    /// stops growing once the scene reaches its high-water mark.
+    /// Frustum culling: the visibility policy and what the last pass counted.
     culler: Culler,
+    /// This frame's render list — what culling selected, in the compact form recording
+    /// reads. Kept across frames so it stops allocating once the scene reaches its
+    /// high-water mark.
+    visible: RenderList,
     /// Whether `render_world` culls. Off makes the benchmark able to measure the same
     /// frame with one step removed rather than comparing two code paths.
     culling_enabled: bool,
@@ -211,6 +215,7 @@ impl Renderer {
             meshes: Vec::new(),
             materials: Vec::new(),
             culler: Culler::new(),
+            visible: RenderList::new(),
             culling_enabled: true,
             cull_view_projection: None,
             last_cull_ms: 0.0,
@@ -469,9 +474,15 @@ impl Renderer {
 
     /// Records and submits a frame that draws a [`RenderWorld`] through a [`Camera`].
     ///
-    /// Every visible entity becomes one draw. Culling, sorting and instancing arrive in
-    /// Milestones 15 to 18 — this is the unoptimized baseline they have to beat, and it is
-    /// deliberately the simplest thing that produces the right image.
+    /// Two steps, and they are separate on purpose:
+    ///
+    /// ```text
+    /// build_render_list()  ->  what is visible   (CPU only, no D3D12)
+    /// draw_render_list()   ->  record it         (D3D12 only, no visibility logic)
+    /// ```
+    ///
+    /// Every entry in the list still becomes one draw. Sorting, batching and instancing
+    /// arrive in later milestones — this is the unoptimized baseline they have to beat.
     ///
     /// # Errors
     ///
@@ -480,6 +491,52 @@ impl Renderer {
     pub fn render_world(
         &mut self,
         world: &RenderWorld,
+        camera: &Camera,
+        lighting: Lighting,
+        color: [f32; 4],
+    ) -> Result<(), RendererError> {
+        self.build_render_list(world, camera);
+        self.draw_render_list(camera, lighting, color)
+    }
+
+    /// Rebuilds [`Renderer::render_list`] from the entities of `world` that `camera` sees.
+    ///
+    /// Pure CPU: this touches no D3D12 object, which is what keeps it testable without a
+    /// GPU and what will let it move onto worker threads later. It is also why it is a
+    /// separate call — "what is visible" and "how it is recorded" are different questions
+    /// and a caller may want to ask the first without the second.
+    ///
+    /// Reuses the list's allocation, so after the first few frames this allocates nothing.
+    pub fn build_render_list(&mut self, world: &RenderWorld, camera: &Camera) {
+        let frustum = Frustum::from_view_projection(
+            &self
+                .cull_view_projection
+                .unwrap_or_else(|| camera.view_projection()),
+        );
+        // Timed around the build alone, not the whole frame: the number the overlay reports
+        // as "culling" has to be this pass, or it flatters or blames the wrong thing.
+        let started = std::time::Instant::now();
+        if self.culling_enabled {
+            self.culler.cull(world, &frustum, &mut self.visible);
+        } else {
+            self.culler.accept_all(world, &mut self.visible);
+        }
+        self.last_cull_ms = started.elapsed().as_secs_f64() * 1e3;
+    }
+
+    /// Records and submits a frame drawing whatever [`Renderer::build_render_list`] left in
+    /// the render list.
+    ///
+    /// Reads the list and the GPU resources it names, and nothing else — in particular it
+    /// never looks at the `RenderWorld`. That is the boundary Milestone 16 established: by
+    /// this point "what to draw" is settled and recording only has to do it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RendererError::InvalidConfig`] if the list names a mesh or material that
+    /// was never created, or [`RendererError::Api`] if recording or submission fails.
+    pub fn draw_render_list(
+        &mut self,
         camera: &Camera,
         lighting: Lighting,
         color: [f32; 4],
@@ -505,43 +562,29 @@ impl Renderer {
         self.commands
             .set_root_cbv(ROOT_FRAME_CBV, allocation.gpu_address());
 
-        // Cull before recording, not while recording: the visible set is CPU-only work
-        // that touches no D3D12 object, which is what keeps it testable without a GPU and
-        // moveable onto worker threads later.
-        let frustum = Frustum::from_view_projection(
-            &self
-                .cull_view_projection
-                .unwrap_or_else(|| camera.view_projection()),
-        );
-        // Timed here rather than around the whole render: the number the overlay reports as
-        // "culling" has to be the cull pass alone, or it flatters or blames the wrong thing.
-        let cull_start = std::time::Instant::now();
-        if self.culling_enabled {
-            self.culler.cull(world, &frustum);
-        } else {
-            self.culler.accept_all(world);
-        }
-        self.last_cull_ms = cull_start.elapsed().as_secs_f64() * 1e3;
-
-        for index in 0..self.culler.visible().len() {
-            let entity = self.culler.visible()[index] as usize;
-            let mesh = world.meshes()[entity];
-            let material = world.materials()[entity];
-            let Some(mesh) = self.meshes.get(mesh.index()) else {
+        // Three dense arrays read in step. Every field this loop needs was gathered while
+        // culling, so nothing here reaches back into the world.
+        for index in 0..self.visible.len() {
+            let mesh_handle = self.visible.meshes()[index];
+            let material_handle = self.visible.materials()[index];
+            let Some(mesh) = self.meshes.get(mesh_handle.index()) else {
                 return Err(RendererError::InvalidConfig {
                     reason: format!(
-                        "entity {entity} names mesh {} which does not exist",
-                        mesh.index()
+                        "render list entry {index} names mesh {} which does not exist",
+                        mesh_handle.index()
                     ),
                 });
             };
-            let Some(material) = self.materials.get(material.index()) else {
+            let Some(material) = self.materials.get(material_handle.index()) else {
                 return Err(RendererError::InvalidConfig {
-                    reason: format!("entity {entity} names a material that does not exist"),
+                    reason: format!(
+                        "render list entry {index} names material {} which does not exist",
+                        material_handle.index()
+                    ),
                 });
             };
 
-            let object = ObjectConstants::new(world.transforms()[entity].matrix());
+            let object = ObjectConstants::new(self.visible.transforms()[index].matrix());
             let allocation = self.uploads.write_constants(slot, &object)?;
 
             self.commands
@@ -554,6 +597,15 @@ impl Renderer {
         }
 
         self.finish_recording(slot, back_buffer)
+    }
+
+    /// What the most recent [`Renderer::build_render_list`] selected.
+    ///
+    /// `render_list().len()` and `cull_stats().visible` are the same number by
+    /// construction — the culler derives the counter from the list it filled.
+    #[must_use]
+    pub fn render_list(&self) -> &RenderList {
+        &self.visible
     }
 
     /// Uploads a mesh and returns a handle to it.

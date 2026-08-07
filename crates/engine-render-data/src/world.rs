@@ -263,6 +263,22 @@ impl RenderWorld {
         &self.visible
     }
 
+    /// The handle addressing slot `slot`.
+    ///
+    /// The inverse of [`RenderEntity::index`]: a consumer walking the parallel arrays by
+    /// slot — the culler does — needs to name the entity it found without the caller
+    /// having kept a handle for every one. Rebuilding it from the slot's live generation is
+    /// what makes the returned handle valid rather than merely plausible.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `slot` is past the end. Slots come from iterating the world's own arrays,
+    /// so an out-of-range one is an engine bug rather than bad input.
+    #[must_use]
+    pub fn entity_at(&self, slot: usize) -> RenderEntity {
+        RenderEntity::new(slot as u32, self.generations[slot])
+    }
+
     /// Whether a slot holds something that should be drawn.
     ///
     /// A freed slot keeps its arrays populated — clearing them would be work for data
@@ -421,6 +437,26 @@ mod tests {
         assert!(world.is_empty());
         assert!(!world.contains(entity));
         assert_eq!(world.slot_count(), 0);
+    }
+
+    #[test]
+    fn a_slot_names_the_entity_that_lives_in_it() {
+        // The culler walks slots and has to name what it found. A handle rebuilt with the
+        // wrong generation would be indistinguishable from a stale one.
+        let mut world = RenderWorld::new();
+        let first = world.spawn(desc(0, 0));
+        let second = world.spawn(desc(1, 1));
+
+        assert_eq!(world.entity_at(first.index()), first);
+        assert_eq!(world.entity_at(second.index()), second);
+
+        // After a despawn and respawn the slot is reused with a new generation, and
+        // `entity_at` must report the live one rather than the handle that is now stale.
+        world.despawn(first);
+        let reused = world.spawn(desc(2, 2));
+        assert_eq!(reused.index(), first.index());
+        assert_eq!(world.entity_at(reused.index()), reused);
+        assert_ne!(world.entity_at(reused.index()), first);
     }
 
     #[test]
