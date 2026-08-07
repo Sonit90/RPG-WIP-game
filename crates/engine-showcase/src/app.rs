@@ -77,6 +77,7 @@ impl Showcase {
         let (width, height) = window.client_size();
         let mut renderer_config = RendererConfig::new(width, height).with_vsync(args.vsync);
         renderer_config.upload_bytes_per_frame = UPLOAD_BYTES_PER_FRAME;
+        renderer_config.frames_in_flight = args.frames_in_flight;
         renderer_config.enable_debug_layer = args.validation;
         renderer_config.break_on_validation_error = args.validation && cfg!(debug_assertions);
         let mut renderer = Renderer::new(window.raw_handle(), &renderer_config)?;
@@ -145,6 +146,7 @@ impl Showcase {
                 // The previous setting's frame times describe a different amount of work.
                 ctx.reset_clock();
                 self.graph.clear();
+                self.renderer.reset_present_stats();
                 log::info!("frustum culling {}", on_off(enabled));
             }
             KeyCode::F9 => {
@@ -200,6 +202,7 @@ impl Showcase {
         self.scene.load(index);
         ctx.reset_clock();
         self.graph.clear();
+        self.renderer.reset_present_stats();
     }
 
     /// Captures or releases the mouse for look control.
@@ -308,6 +311,10 @@ impl Showcase {
         self.last_report = Instant::now();
 
         let cull = self.renderer.cull_stats();
+        let commands = self.renderer.command_stats();
+        // The other queue. `Present` blocking and the frame fence blocking are two
+        // different back-pressure points, and only one of them was ever measured.
+        let sync = self.renderer.sync_stats();
         log::info!(
             "{}: {} objects | CPU mean {:.3} ms ({:.0} FPS) p50 {:.3} p95 {:.3} p99 {:.3} ms | \
              GPU {} | visible {} culled {} | cull {:.3} ms | draws {} | tris {}",
@@ -329,6 +336,38 @@ impl Showcase {
             self.renderer.last_cull_ms(),
             self.renderer.draw_calls_last_frame(),
             self.renderer.triangles_last_frame()
+        );
+
+        // The submission profile, on its own line. This is what Milestone 17 exists to move:
+        // how many driver calls a frame makes, how many of them changed nothing, and where
+        // the present stage's time actually goes.
+        log::info!(
+            "  submission: {} binding calls | PSO {}+{} redundant | material changes {} | \
+             mesh changes {} | root CBV {}+{} redundant | VB {}+{} | IB {}+{} | \
+             redundant {:.1}% | present {} | fence signal {:.3} ms | \
+             fence stalls {:.1}% of frames, {:.3} ms mean",
+            commands.binding_calls(),
+            commands.pipeline_changes,
+            commands.redundant_pipeline_binds,
+            commands.material_changes,
+            commands.mesh_changes,
+            commands.root_cbv_binds,
+            commands.redundant_root_cbv_binds,
+            commands.vertex_buffer_binds,
+            commands.redundant_vertex_buffer_binds,
+            commands.index_buffer_binds,
+            commands.redundant_index_buffer_binds,
+            commands.redundant_bind_ratio() * 100.0,
+            match self.renderer.present_stats() {
+                Some(present) => format!(
+                    "mean {:.3} p50 {:.3} p99 {:.3} max {:.3} ms",
+                    present.mean_ms, present.p50_ms, present.p99_ms, present.max_ms
+                ),
+                None => "N/A".to_owned(),
+            },
+            self.renderer.last_fence_signal_ms(),
+            sync.stall_ratio() * 100.0,
+            sync.mean_stall_ms(),
         );
     }
 }

@@ -53,6 +53,20 @@ use crate::resource::TrackedResource;
 /// once so the recording path never does.
 const MAX_PENDING_BARRIERS: usize = 16;
 
+/// Root slots whose bound address is tracked for the statistics.
+///
+/// Three, matching the mesh root signature. A slot beyond this is counted as a bind but not
+/// as a redundancy, which is the safe direction: it under-reports the opportunity rather
+/// than inventing one.
+const MAX_TRACKED_ROOT_SLOTS: usize = 3;
+
+/// Root slot whose changes are reported as material changes.
+///
+/// `crate::scene::ROOT_MATERIAL_CBV`, not re-derived: the two must agree, and the
+/// regression test in `tests/root_signature_mapping.rs` is what keeps the whole mapping
+/// honest.
+const MATERIAL_ROOT_SLOT: usize = crate::scene::ROOT_MATERIAL_CBV as usize;
+
 /// What one frame's recording cost, counted where it happened.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct CommandStats {
@@ -68,6 +82,33 @@ pub struct CommandStats {
     pub pipeline_changes: u32,
     /// Pipeline binds skipped because the state was already bound.
     pub redundant_pipeline_binds: u32,
+    /// Root constant-buffer views bound, across every root slot.
+    pub root_cbv_binds: u32,
+    /// Root CBV binds whose address was already in that slot.
+    ///
+    /// Counted rather than skipped: how many binds *could* be avoided is the question
+    /// Milestone 17 exists to answer, and answering it by changing the behaviour first
+    /// would measure the change instead of the opportunity.
+    pub redundant_root_cbv_binds: u32,
+    /// Root CBV binds to the material slot whose address differed from the previous one.
+    ///
+    /// The material-change count. With one draw per object and no ordering guarantee this
+    /// is close to the draw count; sorting is supposed to collapse it towards the number of
+    /// distinct materials.
+    pub material_changes: u32,
+    /// Vertex-buffer binds whose view differed from the previous one.
+    ///
+    /// The mesh-change count, near enough: a mesh is a vertex buffer and an index buffer
+    /// bound together, so the two move as one.
+    pub mesh_changes: u32,
+    /// Vertex-buffer binds issued.
+    pub vertex_buffer_binds: u32,
+    /// Vertex-buffer binds whose view was already bound.
+    pub redundant_vertex_buffer_binds: u32,
+    /// Index-buffer binds issued.
+    pub index_buffer_binds: u32,
+    /// Index-buffer binds whose view was already bound.
+    pub redundant_index_buffer_binds: u32,
     /// Resource barriers submitted.
     pub barriers: u32,
     /// `ResourceBarrier` calls made. Fewer than `barriers` means batching worked.
@@ -88,6 +129,41 @@ impl CommandStats {
             f64::from(self.barriers) / f64::from(self.barrier_flushes)
         }
     }
+
+    /// Driver calls the recording loop made, excluding barriers.
+    ///
+    /// The number a state-sorting milestone is trying to move. Each of these is a call
+    /// across the D3D12 boundary with a fixed cost that no amount of doing less *work*
+    /// avoids — only doing fewer *calls* does.
+    #[must_use]
+    pub fn binding_calls(&self) -> u64 {
+        u64::from(self.pipeline_changes)
+            + u64::from(self.root_cbv_binds)
+            + u64::from(self.vertex_buffer_binds)
+            + u64::from(self.index_buffer_binds)
+            + u64::from(self.draw_calls)
+    }
+
+    /// Binds that were already in effect, as a fraction of those issued.
+    ///
+    /// The headroom a sort has to work with. Zero means every bind changed something and
+    /// sorting cannot help; a high ratio means the recording loop is repeating itself.
+    #[must_use]
+    pub fn redundant_bind_ratio(&self) -> f64 {
+        let issued = u64::from(self.root_cbv_binds)
+            + u64::from(self.vertex_buffer_binds)
+            + u64::from(self.index_buffer_binds)
+            + u64::from(self.pipeline_changes)
+            + u64::from(self.redundant_pipeline_binds);
+        if issued == 0 {
+            return 0.0;
+        }
+        let redundant = u64::from(self.redundant_root_cbv_binds)
+            + u64::from(self.redundant_vertex_buffer_binds)
+            + u64::from(self.redundant_index_buffer_binds)
+            + u64::from(self.redundant_pipeline_binds);
+        redundant as f64 / issued as f64
+    }
 }
 
 /// The pipeline objects currently bound, by identity.
@@ -102,6 +178,16 @@ struct BindingState {
     /// The topology constant's value. Zero is `UNDEFINED`, which a reset list has, so the
     /// default doubles as "nothing bound".
     topology: usize,
+    /// GPU address most recently bound to each root slot. Zero is not a valid address, so
+    /// the default doubles as "nothing bound".
+    ///
+    /// Tracked for counting only: the binds are still issued. Milestone 17 wants to know
+    /// how many of them a sort could remove before deciding whether to remove any.
+    root_cbv: [u64; MAX_TRACKED_ROOT_SLOTS],
+    /// GPU address of the most recently bound vertex-buffer view.
+    vertex_buffer: u64,
+    /// GPU address of the most recently bound index-buffer view.
+    index_buffer: u64,
 }
 
 impl BindingState {
@@ -341,7 +427,20 @@ impl CommandContext {
     }
 
     /// Binds one vertex buffer view to `slot`.
+    ///
+    /// The bind is always issued. Whether it *changed* anything is counted, because a
+    /// vertex buffer rebound to the address it already holds is a driver call that does
+    /// nothing, and how many of those a frame makes is what says whether sorting is worth
+    /// doing.
     pub fn set_vertex_buffer(&mut self, slot: u32, view: D3D12_VERTEX_BUFFER_VIEW) {
+        self.stats.vertex_buffer_binds += 1;
+        if self.bound.vertex_buffer == view.BufferLocation {
+            self.stats.redundant_vertex_buffer_binds += 1;
+        } else {
+            self.bound.vertex_buffer = view.BufferLocation;
+            self.stats.mesh_changes += 1;
+        }
+
         // SAFETY: FFI call on the open list. The view refers to a buffer the caller keeps
         // alive, and the array lives for the duration of the call.
         unsafe { self.list.IASetVertexBuffers(slot, Some(&[view])) };
@@ -373,6 +472,18 @@ impl CommandContext {
     /// which is the cheapest binding D3D12 offers and is why the mesh root signature is
     /// built from root CBVs while nothing samples a texture.
     pub fn set_root_cbv(&mut self, slot: u32, address: u64) {
+        self.stats.root_cbv_binds += 1;
+        if let Some(tracked) = self.bound.root_cbv.get_mut(slot as usize) {
+            if *tracked == address {
+                self.stats.redundant_root_cbv_binds += 1;
+            } else {
+                *tracked = address;
+                if slot as usize == MATERIAL_ROOT_SLOT {
+                    self.stats.material_changes += 1;
+                }
+            }
+        }
+
         // SAFETY: FFI call on the open list. The address comes from a live buffer the
         // caller keeps alive for the frame, and the slot is a parameter index of the bound
         // root signature.
@@ -381,6 +492,13 @@ impl CommandContext {
 
     /// Binds an index buffer.
     pub fn set_index_buffer(&mut self, view: D3D12_INDEX_BUFFER_VIEW) {
+        self.stats.index_buffer_binds += 1;
+        if self.bound.index_buffer == view.BufferLocation {
+            self.stats.redundant_index_buffer_binds += 1;
+        } else {
+            self.bound.index_buffer = view.BufferLocation;
+        }
+
         // SAFETY: FFI call on the open list. The view refers to a buffer the caller keeps
         // alive, and it lives for the duration of the call.
         unsafe { self.list.IASetIndexBuffer(Some(&view)) };
@@ -577,6 +695,63 @@ mod tests {
         let stats = CommandStats::default();
         assert_eq!(stats.draw_calls, 0);
         assert_eq!(stats.barriers_per_flush(), 0.0);
+    }
+
+    #[test]
+    fn binding_calls_counts_every_driver_call_the_recording_loop_makes() {
+        // The number a state-sorting milestone is trying to move. Barriers are excluded:
+        // they are per-frame rather than per-object, and batching already handles them.
+        let stats = CommandStats {
+            draw_calls: 100,
+            pipeline_changes: 2,
+            root_cbv_binds: 201,
+            vertex_buffer_binds: 100,
+            index_buffer_binds: 100,
+            barriers: 4,
+            barrier_flushes: 2,
+            ..CommandStats::default()
+        };
+        assert_eq!(stats.binding_calls(), 503);
+    }
+
+    #[test]
+    fn the_redundant_ratio_is_the_headroom_a_sort_would_have() {
+        // Zero means every bind changed something and sorting cannot help.
+        let none_redundant = CommandStats {
+            root_cbv_binds: 100,
+            vertex_buffer_binds: 50,
+            index_buffer_binds: 50,
+            ..CommandStats::default()
+        };
+        assert_eq!(none_redundant.redundant_bind_ratio(), 0.0);
+
+        let half = CommandStats {
+            root_cbv_binds: 100,
+            redundant_root_cbv_binds: 50,
+            vertex_buffer_binds: 50,
+            redundant_vertex_buffer_binds: 25,
+            index_buffer_binds: 50,
+            redundant_index_buffer_binds: 25,
+            ..CommandStats::default()
+        };
+        assert!((half.redundant_bind_ratio() - 0.5).abs() < 1e-12);
+
+        assert_eq!(
+            CommandStats::default().redundant_bind_ratio(),
+            0.0,
+            "a frame that bound nothing has no headroom rather than a division by zero"
+        );
+    }
+
+    #[test]
+    fn the_material_slot_the_counter_watches_is_the_one_the_signature_binds() {
+        // `material_changes` counts binds to this slot. If the root parameter order changed
+        // without this following it, the overlay would report mesh changes as material
+        // changes and the sorting experiment would be measuring the wrong thing.
+        assert_eq!(MATERIAL_ROOT_SLOT, crate::scene::ROOT_MATERIAL_CBV as usize);
+        // A slot past the tracked range would be counted as a bind and never as a change,
+        // so the material-change column would silently read zero.
+        const { assert!(MATERIAL_ROOT_SLOT < MAX_TRACKED_ROOT_SLOTS) };
     }
 
     #[test]

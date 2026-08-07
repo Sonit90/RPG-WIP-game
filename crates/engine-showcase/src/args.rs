@@ -20,6 +20,9 @@ options:
                        builds; it costs several times the frame time)
   --preset <1-5>       object count to start with: 1=10, 2=100, 3=1000, 4=10000,
                        5=100000 (default 4). F3-F7 switch at runtime
+  --frames-in-flight <n>  frames the CPU may run ahead of the GPU, 1 to 3 (default 3).
+                       One serializes CPU and GPU, which moves any back-pressure wait
+                       from Present to the frame fence where it can be attributed
   --no-culling         start with frustum culling off, so an automated run can measure
                        the same scene with and without it (F8 toggles it at runtime)
   --frames <count>     exit after this many frames, for automated measurement
@@ -43,6 +46,8 @@ pub struct Args {
     pub preset: usize,
     /// Whether frustum culling starts switched off.
     pub culling: bool,
+    /// Frames the CPU may run ahead of the GPU.
+    pub frames_in_flight: usize,
     /// Optional frame budget after which the showcase exits on its own.
     pub frames: Option<u64>,
     /// Seconds between frame-time log lines. Zero disables them.
@@ -63,6 +68,7 @@ impl Default for Args {
             // the counters in the overlay exist to show.
             preset: 3,
             culling: true,
+            frames_in_flight: engine_renderer::DEFAULT_FRAMES_IN_FLIGHT,
             frames: None,
             report_interval_secs: 2.0,
             help: false,
@@ -122,6 +128,16 @@ where
             "--vsync" => args.vsync = true,
             "--validation" => args.validation = true,
             "--no-culling" => args.culling = false,
+            "--frames-in-flight" => {
+                let value: usize = next_value(&mut iter, "--frames-in-flight")?;
+                if !(1..=engine_renderer::MAX_FRAMES_IN_FLIGHT).contains(&value) {
+                    return Err(ArgsError::InvalidValue {
+                        option: "--frames-in-flight",
+                        value: value.to_string(),
+                    });
+                }
+                args.frames_in_flight = value;
+            }
             "--frames" => args.frames = Some(next_value(&mut iter, "--frames")?),
             "--report" => args.report_interval_secs = next_value(&mut iter, "--report")?,
             "--preset" => {

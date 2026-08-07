@@ -36,8 +36,15 @@ use crate::swapchain::SwapChain;
 use crate::upload::UploadRing;
 use crate::{AdapterInfo, RendererConfig};
 use engine_core::math::Frustum;
+use engine_core::time::{FrameStats, FrameStatsWindow};
 use engine_render_data::Camera;
 use engine_render_data::{Lighting, MaterialHandle, MeshHandle, RenderWorld};
+
+/// Frames of `Present` history kept for its distribution.
+///
+/// The same window the engine's frame metrics use, so the two describe the same span of
+/// time and a present percentile can be read against a frame percentile.
+const PRESENT_WINDOW: usize = engine_core::metrics::DEFAULT_HISTORY;
 
 /// Debug overlay state owned by the renderer.
 #[cfg(feature = "debug-overlay")]
@@ -112,6 +119,16 @@ pub struct Renderer {
     cull_view_projection: Option<engine_core::math::Mat4>,
     /// Milliseconds the most recent cull pass took, measured on the CPU.
     last_cull_ms: f64,
+    /// Milliseconds the most recent `Present` call took.
+    last_present_ms: f64,
+    /// Milliseconds the most recent post-present fence signal took.
+    last_fence_signal_ms: f64,
+    /// A window of `Present` durations.
+    ///
+    /// A single frame's present time is not a number worth reading: it varies by more than
+    /// a factor of two frame to frame, because whether `Present` blocks depends on where
+    /// the GPU happens to be. The distribution is the answer; one sample is an anecdote.
+    present_window: FrameStatsWindow,
     /// The geometry currently being drawn.
     scene: VertexStream,
     /// Scratch buffer for regenerating scene geometry without allocating each time.
@@ -219,6 +236,9 @@ impl Renderer {
             culling_enabled: true,
             cull_view_projection: None,
             last_cull_ms: 0.0,
+            last_present_ms: 0.0,
+            last_fence_signal_ms: 0.0,
+            present_window: FrameStatsWindow::new(PRESENT_WINDOW),
             scene,
             scene_scratch,
             #[cfg(feature = "debug-overlay")]
@@ -850,12 +870,61 @@ impl Renderer {
             "the swap chain advanced between render and present"
         );
 
+        // Split, because the engine's "present" stage has never been attributed and at
+        // 100,000 objects it is 1.11 ms of a 4.17 ms frame. Two Instant reads per frame is
+        // roughly 40 ns against a millisecond being explained, which is a trade worth
+        // making permanently rather than behind a flag.
+        let present_start = std::time::Instant::now();
         self.swap_chain.present()?;
+        self.last_present_ms = present_start.elapsed().as_secs_f64() * 1e3;
+        self.present_window.record_ms(self.last_present_ms);
+
         // Signalled after Present, so the slot's fence value covers the whole submission;
         // this also advances the ring to the next slot.
+        let signal_start = std::time::Instant::now();
         self.frames.end_frame(self.context.queue(), slot)?;
+        self.last_fence_signal_ms = signal_start.elapsed().as_secs_f64() * 1e3;
+
         self.frames_presented += 1;
         Ok(())
+    }
+
+    /// Milliseconds the most recent `IDXGISwapChain::Present` call took.
+    ///
+    /// With vsync off and tearing allowed, `Present(0, ALLOW_TEARING)` is documented to
+    /// return without waiting for a vertical blank — but it still blocks once every back
+    /// buffer is spoken for, and that is a queue the engine has never measured. The frame
+    /// ring's stall counter does not see it: that measures the *fence* wait at the top of
+    /// the next frame, which is a different queue entirely.
+    #[must_use]
+    pub fn last_present_ms(&self) -> f64 {
+        self.last_present_ms
+    }
+
+    /// Distribution of `Present` durations over the recent window.
+    ///
+    /// `None` before the first frame. Sorting costs O(n log n) in the window size, so read
+    /// this on a reporting interval rather than per frame.
+    pub fn present_stats(&mut self) -> Option<FrameStats> {
+        self.present_window.stats()
+    }
+
+    /// Forgets the recorded `Present` durations.
+    ///
+    /// Called when the workload changes: the previous scene's present times describe a
+    /// different amount of GPU work to wait for.
+    pub fn reset_present_stats(&mut self) {
+        self.present_window.clear();
+    }
+
+    /// Milliseconds the most recent fence signal after `Present` took.
+    ///
+    /// Separated from `Present` itself so a slow present stage cannot be blamed on the
+    /// signal, or the other way round. This should be a fraction of a microsecond; if it is
+    /// not, the queue is doing something unexpected.
+    #[must_use]
+    pub fn last_fence_signal_ms(&self) -> f64 {
+        self.last_fence_signal_ms
     }
 
     /// How often, and for how long, the CPU has waited for the GPU.
