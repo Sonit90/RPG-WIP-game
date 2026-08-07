@@ -644,3 +644,35 @@ paying submission overhead for no gain, which is the whole reason the threshold 
 The per-object cull cost also rose from 3.7 ns (Milestone 15) to 6.0 ns, measured by
 `cpu_bench`. That is not a regression: since Milestone 16 the pass also gathers each
 survivor into the render list, which is work the recording loop used to do.
+
+## Phase 2 final baseline
+
+Defaults as shipped: instancing on, parallel culling on, vsync off, release, 1920×1080.
+Both columns, per the rule above.
+
+| Objects | Visible | Draws | Windowed CPU | Windowed FPS | Fullscreen CPU | Fullscreen FPS |
+| --- | --- | --- | --- | --- | --- | --- |
+| 10 | 10 | 11 | 0.163 ms | 6135 | 0.514 ms | 1946 |
+| 1,000 | 252 | 26 | 0.196 ms | 5102 | 0.502 ms | 1992 |
+| 10,000 | 1,772 | 26 | 0.401 ms | 2494 | 0.516 ms | 1938 |
+| 100,000 | 17,298 | 26 | 0.888 ms | 1126 | 0.692 ms | 1445 |
+
+Read these against the ~2000 FPS fullscreen and ~1200 windowed swap-chain ceilings, not as
+engine measurements: everything except the 100,000-object row is sitting on one. The
+windowed column beating the fullscreen one at low object counts is the same artefact from
+the other side — a tiny frame spends proportionally more of itself waiting in `Present`, and
+the two modes wait differently.
+
+**The only row that measures the renderer is the last one**, and it is 1445–1460 FPS against
+a 480 FPS stretch target.
+
+Against the Phase 2 frame budgets:
+
+| Goal | Budget | 100,000 objects, fullscreen | Headroom |
+| --- | --- | --- | --- |
+| Minimum, 240 FPS | 4.17 ms | 0.69 ms | 6.0× |
+| Target, 360 FPS | 2.78 ms | 0.69 ms | 4.0× |
+| Stretch, 480 FPS | 2.08 ms | 0.69 ms | 3.0× |
+
+And against the architectural target of "CPU renderer overhead < 1 ms, GPU < 1 ms for a
+simple scene": 0.69 ms CPU and 0.49 ms GPU, for a scene that is not simple.

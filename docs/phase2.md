@@ -1,5 +1,9 @@
 # Phase 2 — High-performance D3D12 renderer foundation
 
+**Phase 2 is complete.** Every milestone below is implemented, measured and tested. The
+headline result, at 100,000 objects with 17,298 visible, 1920x1080 fullscreen: **1460 FPS**
+against a 480 FPS stretch target, 26 draw calls and 131 driver calls per frame.
+
 Phase 2 turns the Phase 0 spike into a renderer: resource management, synchronization,
 descriptors, camera, culling, batching, instancing, depth and one directional light — all
 measured against frame-time budgets rather than average FPS.
@@ -38,9 +42,8 @@ Milestone status:
 | 15 | Frustum culling | done |
 | — | Checkpoint: audit, and the `engine-render-data` split | done |
 | 16 | Render list | done |
-| 17 | Render submission profiling, parallel culling | partial |
-| 17b | Instanced rendering | todo |
-| 18 | Batching | todo |
+| 17 | Submission profiling, sorting, instancing, parallel culling | done |
+| 18 | Batching | done — folded into 17; see that section for why |
 
 ---
 
@@ -2258,3 +2261,221 @@ each pass, so the statistic and the list cannot drift apart without the suite no
 * `RenderListEntry` gathers a whole entry for tests and diagnostics. Nothing on the frame
   path uses it, and nothing should: the arrays exist because the common operations read one
   field across many entries.
+
+---
+
+# Milestone 17 — Render submission profiling, sorting, instancing, parallel culling
+
+Milestones 17 and 18 of the original plan turned out to be one piece of work, and it started
+somewhere the plan did not: with measuring where the frame actually goes. The plan assumed
+sorting would help and reserved twelve key bits for pipeline ordering. Profiling first said
+otherwise, and the milestone was reordered around what it found.
+
+## What was built
+
+* **Submission counters.** Every driver call the recording loop makes, and how many of them
+  changed nothing: root CBV binds, vertex and index buffer binds, material changes, mesh
+  changes, with redundant counts for each.
+* **`Present` attribution.** Timed as a distribution rather than a sample, with the
+  post-present fence signal separated, plus `--frames-in-flight` so CPU/GPU serialization
+  can be varied deliberately.
+* **`JobSystem::map_chunks`** in `engine-core`, and `Culler::cull_parallel` on top of it.
+* **`RenderList::group_by_material_and_mesh`** — a counting sort producing an order
+  permutation and a batch list.
+* **Redundant-bind skipping** in `CommandContext`.
+* **`InstancedMeshPipeline`** and `mesh_instanced.hlsl` — one `DrawIndexedInstanced` per
+  batch, with the model matrix arriving as four per-instance vertex elements.
+
+Instancing and parallel culling are **on by default**. `--no-instancing` and `--serial-cull`
+switch them off, because a measurement needs both sides.
+
+## Profiling first, and what it changed
+
+The submission profile at 100,000 objects, 17,298 visible:
+
+| Counter | Value |
+| --- | --- |
+| Binding calls | 86,495 |
+| PSO changes | 2 |
+| Material changes | 16,273 |
+| Mesh changes | 12,606 |
+| Root CBV binds | 34,597 (1,025 redundant) |
+| Redundant overall | 15.0% |
+
+**PSO changes were already 2, not 17,299.** One mesh pipeline, and the command context has
+eliminated redundant pipeline binds since Milestone 3. §13's sort key reserves twelve bits
+for pipeline ordering; at the current material model that field can remove nothing, so it
+was left out. Depth was left out for the same kind of reason: front-to-back pays for itself
+through early-Z, and this renderer is not pixel-bound — 1920×1080 to 480×270 changes GPU
+time by nothing measurable.
+
+The key is `(material, mesh)` and nothing else, both measured rather than assumed.
+
+## `Present` was never the renderer
+
+The engine's present stage was 1.11 ms of a 4.17 ms frame and had never been attributed.
+Three experiments said what it is not:
+
+* Not proportional to draw calls. 100,001 draws present *faster* (0.752 ms) than 17,299
+  (1.233 ms), because the slower CPU frame gives the GPU time to drain.
+* Not proportional to resolution. 1920×1080 to 480×270 changes it by nothing.
+* Not the frame-fence back-pressure. 1, 2 and 3 frames in flight all present in 0.56–0.61 ms
+  while the fence stall behaves exactly as designed — 0% at 2 and 3, and 15% at 10,000
+  objects and 81% at 100,000 with 1.
+
+It collapses in borderless fullscreen, which is what identifies it: windowed, DWM composites
+the swap chain, ignores `ALLOW_TEARING`, and contends for the GPU — inflating our own GPU
+timestamps 3.4× at 100,000 objects. See `docs/performance.md` for the full comparison and
+the two-column rule that came out of it. The frame ring's stall counter cannot see any of
+this, because it measures the fence at the top of the *next* frame — a different queue.
+**The Milestone 15 audit's "CPU-bound everywhere, 0.1% stalls" was read off the wrong one.**
+
+There is also a swap-chain frame-rate ceiling — about 2000 FPS fullscreen, 1200 windowed —
+enforced by `Present` regardless of workload. Well clear of the 480 FPS target, but any
+result near it is measuring the swap chain.
+
+## Parallel culling
+
+`JobSystem::map_chunks` is the chunked-work primitive `docs/threading.md` has described
+since Phase 1: one job per chunk, each writing its own output slot, never one job per item.
+It exists because `submit` requires `'static` and a cull job must read a borrowed
+`&RenderWorld` and write a borrowed output. Disjointness is the borrow checker's — `iter_mut`
+hands each closure a distinct `&mut T` — so the only thing needing an unsafe assertion is
+the lifetime, laundered in one expression and justified by a wait no path can skip.
+
+Chunks are at least 4,096 slots. The job break-even is ~12 µs and a cull-and-gather pass
+measures ~6 ns per object, so a few thousand objects is the smallest chunk worth handing to
+a worker; below that it stays serial. Serial and parallel share `cull_range`, so they cannot
+drift apart.
+
+**The merged list is identical to the serial one** — same entries, same order, asserted at
+1, 2, 4, 8 and 16 workers. Chunk order is world order. A parallel cull that quietly reordered
+the scene would be a rendering change dressed as an optimization.
+
+## Grouping is a counting sort
+
+The key is `(material, mesh)` and both are indices into arrays the renderer owns, so the
+number of distinct keys is known before the pass starts: a histogram, a prefix sum and a
+scatter. Nine materials and four meshes is 36 buckets, and the pass costs 0.041 ms.
+
+That choice is the difference between a win and a wash. A comparison sort of 17,000 entries
+is a few hundred thousand comparisons — the same order as the driver calls the grouping
+exists to remove. It would have spent the win on the sort.
+
+The entries do not move. Grouping fills an order array and a batch list while the 64-byte
+payload stays in gather order, because permuting it would cost a second full copy of the
+list to serve a loop that reads two handles per *batch*. Within a batch the order is stable,
+so two runs produce the same frame.
+
+Skipping redundant binds is what turns fewer state *changes* into fewer *calls*, and it
+needed one piece of care: D3D12 invalidates every root argument when the root signature
+changes, so the context forgets what it believes is bound at that point.
+
+## Instancing, and two invisible traps
+
+Grouping left the frame with 17,299 draws and 17,299 object-constant binds. Instancing
+removes both: the model matrix arrives as four `float4` rows in a per-instance vertex stream
+instead of from a constant buffer, so a batch is one `DrawIndexedInstanced`.
+
+Transforms are composed straight into the upload ring. That is the revisit Milestone 16
+predicted in writing: composing the matrix in the recording loop used to hide under the
+per-draw calls, and with those gone there is nothing to hide it behind, so it moves to where
+the data is written — a memcpy that was happening anyway.
+
+Both traps cost real debugging time and both are now pinned by tests, because both leave
+every counter reading correct:
+
+* **`INSTANCE_MODEL0`..`INSTANCE_MODEL3` is one semantic** named `INSTANCE_MODEL` with
+  indices 0 to 3. HLSL parses trailing digits as the semantic index. A layout spelling out
+  four distinct names matches nothing and fails pipeline creation with a bare `E_INVALIDARG`
+  naming neither the element nor the reason.
+* **`float4x4(a, b, c, d)` fills rows** while `Mat4` supplies columns and is memcpy'd in
+  untransposed, so the shader holds the transpose and must multiply vector-first:
+  `mul(v, M)` is `Mtrue * v`. Writing `mul(M, v)` renders every object sheared and enormous,
+  which looks nothing like a matrix-convention bug.
+
+## Measured cost
+
+1920×1080, release, vsync off, 100,000 objects, 17,298 visible. Fullscreen, because that is
+the renderer's cost rather than the desktop compositor's.
+
+| Step | Binding calls | Draws | Cull | CPU frame | FPS |
+| --- | --- | --- | --- | --- | --- |
+| Milestone 16 baseline | 86,495 | 17,299 | 1.203 ms | 3.101 ms | 322 |
+| + parallel culling | 86,495 | 17,299 | 0.209 ms | 2.108 ms | 474 |
+| + skip redundant binds | 86,495 | 17,299 | 0.21 ms | 2.095 ms | 477 |
+| + grouping | 34,676 | 17,299 | 0.20 ms | 1.479 ms | 676 |
+| + instancing | **131** | **26** | 0.20 ms | **0.685 ms** | **1460** |
+
+State changes across the whole milestone: material 16,273 → **9**, mesh 12,606 → **26**,
+PSO 2 throughout.
+
+**4.5× overall, 322 to 1460 FPS, 86,495 driver calls to 131.**
+
+At 10,000 objects the same changes are worth 0.514 to 0.478 ms — nothing, because the frame
+was already against the swap chain's present ceiling. That is not a disappointment; it is
+the ceiling being where it is.
+
+Skipping redundant binds *alone* was worth nothing measurable (2.108 to 2.095 ms). Only 15%
+of binds were redundant in spawn order. It is the enabler, not the win, and measuring the
+two steps separately is what makes that visible rather than letting grouping take credit
+for both.
+
+## Tests
+
+| Test | Asserts |
+| --- | --- |
+| `map_chunks_lends_borrowed_data_to_its_jobs` | the primitive's reason for existing |
+| `map_chunks_matches_the_sequential_result_at_every_worker_count` | 0, 1, 4 and 8 workers agree |
+| `a_panicking_chunk_is_reported_and_the_rest_still_finish` | the wait the lifetime laundering depends on |
+| `the_parallel_list_is_identical_to_the_serial_one` | same entries, same order, 1 to 16 workers |
+| `a_shrinking_scene_does_not_merge_last_frames_chunks` | reused scratch cannot leak stale objects |
+| `grouping_draws_every_entry_exactly_once` | a permutation, not a filter |
+| `entries_sharing_a_mesh_and_material_end_up_in_one_batch` | 4 meshes x 9 materials is 36 batches |
+| `grouping_is_stable_and_deterministic` | two runs produce the same frame |
+| `grouping_falls_back_rather_than_allocating_an_impossible_histogram` | a huge handle space still draws |
+| `the_instance_stream_is_the_matrix_untransposed` | the convention the shader depends on |
+| `the_instance_semantic_carries_no_trailing_digit` | the `E_INVALIDARG` trap |
+| `tests/instanced_scene_equivalence.rs` (5 tests) | **the instanced and per-object images are pixel-identical** |
+
+The equivalence tests are the ones that matter. They render the same scene both ways
+offscreen and compare every pixel — one object, twelve instances in a batch, several
+batches, overlapping depth, and a sheared non-uniform scale. Zero differing pixels in all
+five. Both traps above would have been caught automatically by these, and neither would have
+been caught by any counter.
+
+## Acceptance criteria
+
+| Criterion | Result |
+| --- | --- |
+| Submission cost attributed before optimizing | pass — profile above |
+| Present stage attributed | pass — it is a display-pipeline wait, not the renderer |
+| Sort key justified by measurement | pass — pipeline and depth excluded, with evidence |
+| Sorting does not cost more than it saves | pass — counting sort, 0.041 ms |
+| State changes reduced | pass — material 16,273 to 9, mesh 12,606 to 26 |
+| Draw calls reduced | pass — 17,299 to 26 |
+| Instanced output identical to individual | pass — pixel-compared offscreen, 5 tests |
+| Culling parallelized | pass — 5.5x, identical list |
+| Parallel result identical to serial | pass — asserted at five worker counts |
+| No per-frame allocation introduced | pass — chunk lists and histogram reused |
+| Frame budget met | pass — 1460 FPS at 100,000 objects against a 480 FPS stretch target |
+
+## Known limitations
+
+* **Instancing has no per-instance material.** A batch is one mesh and one material, so two
+  objects differing only in colour are two batches. Per-instance material data would make
+  the scene one batch per mesh; it needs either a material index in the instance stream and
+  a material array in a structured buffer, or bindless.
+* **The batch count is bounded by distinct (mesh, material) pairs**, not by object count. A
+  scene with a thousand unique materials gets a thousand batches and instancing buys little.
+  That is the case textures will create, and it is what bindless exists for.
+* **`engine-app` does not use any of this.** The game binary still draws the Phase 0 stress
+  scene through `Renderer::render`; only the showcase drives `render_world`. Wiring it is
+  Phase 3's business, when there is a game world to render.
+* **Grouping is single-threaded.** At 0.041 ms it is not worth chunking, and the histogram
+  would need per-chunk merging.
+* **Sorting by depth is absent**, on the evidence that the renderer is not pixel-bound. That
+  evidence is specific to the current scene and shader; a heavier pixel shader would change
+  it, and the key has room.
+* The swap chain caps the frame rate near 2000 FPS fullscreen. Above roughly 1500 FPS the
+  measurements describe `Present`, not the engine.

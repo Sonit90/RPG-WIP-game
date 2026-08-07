@@ -136,6 +136,10 @@ pub struct Renderer {
     /// The same, with wireframe fill.
     instanced_pipeline_wireframe: InstancedMeshPipeline,
     /// Whether each batch is drawn as one instanced call.
+    ///
+    /// On by default. Milestone 17 measured it at 2.2x the frame rate at 100,000 objects
+    /// with an image proven pixel-identical to the per-object path, so the per-object path
+    /// is now the fallback rather than the norm — it stays for A/B measurement.
     instancing: bool,
     /// Per-batch instance data, staged here before the memcpy into the upload ring.
     instance_scratch: Vec<InstanceTransform>,
@@ -262,7 +266,7 @@ impl Renderer {
             last_group_ms: 0.0,
             instanced_pipeline,
             instanced_pipeline_wireframe,
-            instancing: false,
+            instancing: true,
             instance_scratch: Vec::new(),
             last_present_ms: 0.0,
             last_fence_signal_ms: 0.0,

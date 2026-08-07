@@ -33,7 +33,7 @@ use crate::device::RenderDevice;
 use crate::error::RendererError;
 use crate::material::{Material, MaterialDesc};
 use crate::mesh::{GpuMesh, MeshData, VertexStream};
-use crate::mesh_pipeline::MeshPipeline;
+use crate::mesh_pipeline::{InstanceTransform, InstancedMeshPipeline, MeshPipeline};
 use crate::pipeline::{ScenePipeline, TRIANGLE_VERTICES, Vertex};
 use crate::scene::{
     FrameConstants, ObjectConstants, ROOT_FRAME_CBV, ROOT_MATERIAL_CBV, ROOT_OBJECT_CBV,
@@ -190,6 +190,105 @@ pub fn render_scene(
                 list.IASetIndexBuffer(Some(meshes[index].index_view()));
                 list.DrawIndexedInstanced(meshes[index].index_count(), 1, 0, 0, 0);
             }
+        }
+
+        Ok(Box::new((pipeline, ring, meshes, materials)) as Box<dyn std::any::Any>)
+    })
+}
+
+/// Renders the same scene as [`render_scene`], one instanced draw per run of objects
+/// sharing a mesh and a material.
+///
+/// Exists so the two submission paths can be compared pixel for pixel. Milestone 17's
+/// instanced pipeline reconstructs the model matrix from four per-instance vertex elements
+/// rather than reading it from a constant buffer, and both the semantic indexing and the
+/// multiply order are conventions that are invisible on the CPU and catastrophic on the
+/// GPU — a wrong one renders every object sheared and enormous while every counter still
+/// reads correct.
+///
+/// Objects are grouped by `(material index, mesh index)` in the order given, matching what
+/// `RenderList` does, so a run here is a batch there.
+///
+/// # Errors
+///
+/// Returns [`RendererError`] if any D3D12 call fails.
+pub fn render_scene_instanced(
+    width: u32,
+    height: u32,
+    clear_color: [f32; 4],
+    objects: &[SceneObject<'_>],
+    camera: &Camera,
+    lighting: Lighting,
+) -> Result<CapturedImage, RendererError> {
+    render_with(width, height, clear_color, |context, list, _| {
+        let pipeline = InstancedMeshPipeline::new(context.device())?;
+        let mut ring = UploadRing::new(context, 1 << 16, 1)?;
+        ring.begin_frame(0);
+
+        let mut meshes = Vec::with_capacity(objects.len());
+        let mut materials = Vec::with_capacity(objects.len());
+        for object in objects {
+            meshes.push(GpuMesh::upload(context, object.mesh)?);
+            materials.push(Material::new(context, object.material)?);
+        }
+
+        let frame = FrameConstants::new(camera.view_projection(), camera.position(), lighting);
+        let frame_allocation = ring.write_constants(0, &frame)?;
+
+        // SAFETY: FFI calls recording into the open list. Every referenced object is
+        // returned below and kept alive until the submission completes.
+        unsafe {
+            list.SetGraphicsRootSignature(pipeline.root_signature());
+            list.SetPipelineState(pipeline.pipeline_state());
+            list.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+            list.SetGraphicsRootConstantBufferView(ROOT_FRAME_CBV, frame_allocation.gpu_address());
+        }
+
+        // Consecutive objects sharing a mesh and a material form one batch, which is what
+        // grouping produces in the real path.
+        let mut start = 0;
+        while start < objects.len() {
+            let mut end = start + 1;
+            while end < objects.len()
+                && std::ptr::eq(objects[end].mesh, objects[start].mesh)
+                && objects[end].material == objects[start].material
+            {
+                end += 1;
+            }
+
+            let instances: Vec<InstanceTransform> = objects[start..end]
+                .iter()
+                .map(|object| InstanceTransform::new(object.transform.matrix()))
+                .collect();
+            let allocation = ring.write(0, &instances, size_of::<InstanceTransform>())?;
+
+            // SAFETY: as above.
+            unsafe {
+                list.SetGraphicsRootConstantBufferView(
+                    ROOT_MATERIAL_CBV,
+                    materials[start].gpu_address(),
+                );
+                list.IASetVertexBuffers(0, Some(&[*meshes[start].vertex_view()]));
+                list.IASetVertexBuffers(
+                    1,
+                    Some(&[
+                        windows::Win32::Graphics::Direct3D12::D3D12_VERTEX_BUFFER_VIEW {
+                            BufferLocation: allocation.gpu_address(),
+                            SizeInBytes: std::mem::size_of_val(instances.as_slice()) as u32,
+                            StrideInBytes: size_of::<InstanceTransform>() as u32,
+                        },
+                    ]),
+                );
+                list.IASetIndexBuffer(Some(meshes[start].index_view()));
+                list.DrawIndexedInstanced(
+                    meshes[start].index_count(),
+                    (end - start) as u32,
+                    0,
+                    0,
+                    0,
+                );
+            }
+            start = end;
         }
 
         Ok(Box::new((pipeline, ring, meshes, materials)) as Box<dyn std::any::Any>)
