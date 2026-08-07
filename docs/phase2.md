@@ -36,7 +36,8 @@ Milestone status:
 | 13 | 3D scene | done |
 | 14 | Basic lighting | done |
 | 15 | Frustum culling | done |
-| 16 | Render list | todo |
+| — | Checkpoint: audit, and the `engine-render-data` split | done |
+| 16 | Render list | done |
 | 17 | Instanced rendering | todo |
 | 18 | Batching | todo |
 
@@ -1974,3 +1975,285 @@ frame would pass every correctness test and quietly allocate 480 times a second.
 * The culler runs on the main thread, as measured above.
 * Culling is per camera, and there is one camera. Shadow-map culling in a later phase would
   want a second frustum, which is a second `Culler` rather than a change here.
+
+---
+
+# Checkpoint — audit, and the `engine-render-data` split
+
+Between Milestones 15 and 16 the whole of Phase 2 so far was audited against the code
+rather than against this document, measured, and corrected where the audit found something
+worth correcting. Nothing was implemented ahead of schedule.
+
+## What the audit found
+
+Every milestone from 1 to 15 verified as behaving, not merely existing. Two were downgraded
+from "done" to "built but not wired", which is a distinction this document had not been
+making:
+
+* **Milestone 4, descriptors.** `GpuDescriptorHeap` — the shader-visible heap with a
+  persistent region and a bump region per frame slot — is created by no production code
+  path. Nothing samples a texture, so the mesh root signature binds three root CBVs, which
+  is cheaper than any descriptor table. Only the RTV and DSV heaps are live.
+* **Milestone 5, resources.** `DeferredReleaseQueue::collect` runs every frame but
+  `release` is called only from tests. Every destruction the renderer performs — replacing
+  the stress scene, resizing the swap chain — happens behind an explicit `wait_for_idle`.
+
+Both are correct, tested, and deliberately staged; both now say so in their module
+documentation, because dead code that looks alive invites the assumption that the
+capability is there. `InstancedPipeline` and the unwired `render_list.rs` draft were
+labelled the same way.
+
+The audit's architecture decisions — continue with a CPU-driven renderer, no render graph,
+no bindless, no ECS, no GPU-driven rendering yet — each came with the evidence for them.
+The measurement baseline it established is what Milestone 16 was compared against.
+
+## The `engine-render-data` split
+
+The one structural problem worth fixing before Milestone 16. `RenderWorld` is pure data —
+transforms, handles, bounds, a visibility flag — but it lived in `engine-renderer` next to
+`MeshPipeline`, so anything that wanted to *build* a world had to link D3D12. Including the
+Phase 3 gameplay simulation, which must not.
+
+```text
+engine-core
+    ^        ^
+    |        |
+engine-render-data <- engine-renderer
+    ^
+    |
+(future) gameplay
+```
+
+Moved: `RenderWorld`, `RenderEntity`/`Desc`, the handle types, `world_bounds`, `Lighting`,
+`Camera` and `Projection`. `Camera` moved because a camera *controller* is gameplay-shaped
+code and has to be able to name the type it drives — the showcase's free-fly camera now
+imports nothing from `engine-renderer`, which is what the Phase 3 player camera will need.
+It required an error type that carries no `HRESULT`, so `RenderDataError` exists and
+converts into `EngineError`.
+
+Deliberately not moved: `Culler`, because visibility is the renderer's policy rather than
+data the game authors; `FrameConstants` and `ObjectConstants`, because they mirror an HLSL
+`cbuffer` and shader ABI belongs beside the shader; `MeshData` and `MaterialDesc`, because
+they are asset-authoring data and belong in a future asset crate.
+
+`engine-renderer` re-exports everything that moved, so `use engine_renderer::RenderWorld`
+still compiles. This was a boundary change, not an API one. The absence of `windows` in the
+new crate's dependency tree is the property that matters and it is checkable with
+`cargo tree`.
+
+## The other corrections
+
+* **A root-signature regression test.** The mesh root parameters are ordered by update
+  frequency and the HLSL registers by declaration, so the mapping is `[b0, b2, b1]`. Nothing
+  validated it: `SetGraphicsRootConstantBufferView` takes a slot and an address and checks
+  neither against the shader, so binding the material where the model matrix belongs
+  produces no validation message and no `HRESULT` — just every object collapsed to the
+  origin and scaled by a colour. The mapping now lives in one constant the signature is
+  built from, and a test reads the registers back out of `mesh.hlsl` with `include_str!` and
+  asserts them against it. Mutation-checked in both directions.
+* **Five frustum edge-case tests.** The existing ones all placed the camera at the origin
+  looking down −Z, which is exactly the configuration where the view matrix is the identity
+  — so a bug in how the view participates in plane extraction could not show. Added: the
+  vertical planes, the far plane from both sides, a translated camera, a rotated camera, and
+  a non-square aspect ratio. All five passed on the first run; what was missing was the
+  evidence, not the correctness.
+* **`cull_bench`.** A benchmark that measures culling with no device and no draws, across
+  three scenarios, counting its own heap allocations with a counting global allocator.
+* **`package.ps1`** could not complete under Windows PowerShell 5.1 — with
+  `$ErrorActionPreference = 'Stop'`, a native command's stderr becomes a terminating error
+  even on exit 0, and cargo writes its progress there, so the verification never ran. Fixed,
+  and taught about the `showcase` and `cull_bench` binaries.
+* **p50** added to the showcase's report and overlay; the audit could not fill in that
+  column.
+
+---
+
+# Milestone 16 — Render list
+
+## What was built
+
+```text
+RenderWorld  ->  Culler  ->  RenderList  ->  command recording  ->  D3D12
+ (the world)   (visibility)  (this frame)
+```
+
+`RenderList` in `engine-renderer/src/render_list.rs`: four parallel arrays holding a compact
+copy of what one frame draws.
+
+```rust
+pub struct RenderList {
+    entities:   Vec<RenderEntity>,    //  8 B
+    transforms: Vec<Transform>,       // 40 B
+    meshes:     Vec<MeshHandle>,      //  8 B
+    materials:  Vec<MaterialHandle>,  //  8 B
+}                                     // 64 B per entry
+```
+
+`Renderer::render_world` became `build_render_list` followed by `draw_render_list`. The
+first is pure CPU and touches no D3D12 object; the second reads the list and the GPU
+resources it names, and never looks at the `RenderWorld`.
+
+## A copy, not indices
+
+Three shapes were possible and the compact copy was chosen.
+
+Handles back into `RenderWorld` keep the list to four bytes an entry, and every consumer
+then dereferences into five separate arrays in whatever order the list happens to be in.
+That is tolerable exactly while the order matches the world's, and stops being tolerable at
+Milestone 17: a sorted index array turns every recorded draw into a random access across
+the whole world.
+
+An array of structs keeps one object's fields together, which sounds right until you notice
+that no consumer reads all of them at once. A sort would move whole 64-byte elements;
+instancing wants the transforms contiguous and would get them interleaved with handles it
+does not care about.
+
+Parallel arrays cost one sequential copy per visible object at build time and give every
+consumer afterwards a dense linear read of exactly the field it wants.
+
+This deviates from §13 of the proposal, which described a `DrawItem { key, entity }` — the
+handles shape. The reason is the one above, and it was reached from the audit's scaling
+analysis rather than by discovering a problem in code.
+
+## Only what the frame consumes
+
+`RenderWorld` also stores world-space bounds, a visibility flag and generations. None
+reaches recording: bounds are read by the culler straight out of the world, the visibility
+flag has already been answered — an entry existing *is* the answer — and a generation
+detects a stale handle, which a list built and consumed inside one frame cannot hold.
+
+And nothing from gameplay. No health, no AI state, no ability state, no network identity.
+That costs nothing to honour, because the list is built from `RenderWorld`, which has never
+had any of it.
+
+## The test and the copy are one pass
+
+The culler no longer writes slot indices into a buffer of its own for the recording loop to
+walk. The survivor is gathered as it is found: the frustum test has just touched that slot's
+bounds, so the object's other fields are in cache at the cheapest possible moment to copy
+them — and an object that fails never pulls them through at all, which at a 90% cull ratio
+is most of them.
+
+`Culler` therefore holds no buffer. The list *is* the visible set, and two representations
+of one answer was the thing worth removing. `cull_stats().visible` and `render_list().len()`
+agree by construction; the integration tests assert it on every pass they perform.
+
+## The transform, not the matrix — measured, not reasoned
+
+The obvious design stores the composed `Mat4`: 64 bytes, exactly what a constant buffer
+wants, and a contiguous array instancing could upload in one memcpy. It was built that way
+first and cost 14% of the frame.
+
+| Variant | CPU mean, ms (6 runs, sorted) | Median |
+| --- | --- | --- |
+| Before M16 | 0.698 0.715 0.723 0.730 0.734 0.758 | 0.727 |
+| `Mat4` | 0.779 0.814 0.814 0.846 0.854 0.867 | 0.830 |
+| `Transform` | 0.715 0.716 0.719 0.729 0.757 0.759 | 0.724 |
+
+The matrix is composed once per visible object per frame either way; what changed is where.
+In the recording loop it sits between five latency-bound driver calls and disappears into
+their shadow. Hoisted into a tight gather loop it has nothing to hide behind. The cull-stage
+timer showed it directly — 0.032 ms to 0.093 ms — while the render stage did not drop to
+match.
+
+So the list carries the 40-byte `Transform` and recording composes the matrix where it
+always did. The list is also smaller, which makes a future sort cheaper, and `translation`
+is a better depth key than digging a matrix column out.
+
+**This wants revisiting at Milestone 17.** Instancing removes the per-draw calls the
+composition is currently hiding under, and composing a run of transforms straight into the
+upload ring becomes the right shape. It is a change to one loop, not to this structure.
+
+## Capacity is reused, and that is asserted
+
+`clear()` keeps every allocation. After the first few frames each array has reached the
+scene's high-water mark and the build path allocates nothing at all. Two tests pin it — one
+in the module, one in the integration suite — because a list rebuilt each frame would pass
+every correctness test and quietly allocate four vectors 240 times a second.
+
+## Measured cost
+
+1920×1080, release, vsync off, 4,000 frames, window n=1024. Runs alternated between the two
+binaries on the same machine, because the first attempt at this measurement showed GPU time
+rising in lockstep with CPU time across consecutive runs — thermal drift, not code.
+
+| Scene | Before, median | After, median | Verdict |
+| --- | --- | --- | --- |
+| 10,000 objects | 0.727 ms | 0.756 ms | no meaningful change |
+| 100,000 objects | 3.828 ms | 3.882 ms | no meaningful change |
+
+Ranges overlap fully at both scales; the medians differ by less than the spread within a
+single variant. That is the correct outcome for an architectural milestone, and it is said
+plainly rather than dressed up.
+
+Steady-state heap allocations during the build pass, from `cull_bench`'s counting allocator:
+
+| Scenario | 10,000 | 100,000 |
+| --- | --- | --- |
+| all visible | 0 | 0 |
+| 99% outside | 0 | 0 |
+| 50% visible | 0 | 0 |
+| `accept_all` | 0 | 0 |
+
+The isolated cull numbers rose — 4.45 to 9.59 ns per object at 100,000 all-visible, and
+`accept_all` from 0.50 to 6.56 — because the pass now includes the gather that used to live
+in the recording loop. Work moved; the frame measurement is what says it was not added.
+
+## Tests
+
+Nine unit tests on the list, ten integration tests on the pipeline, one on `entity_at`.
+
+| Test | Asserts |
+| --- | --- |
+| `an_empty_world_produces_an_empty_render_list` | 0 objects, 0 entries |
+| `a_fully_visible_world_produces_one_entry_per_object` | N visible, N entries |
+| `a_fully_culled_world_produces_an_empty_render_list` | N invisible, 0 entries |
+| `mixed_visibility_produces_exactly_the_visible_entries` | interleaved, so a run-copy bug shows |
+| `an_entry_carries_the_data_its_entity_was_spawned_with` | entity, transform, mesh, material |
+| `a_hidden_entity_never_reaches_the_render_list` | hidden is still not culled |
+| `rebuilding_leaves_no_trace_of_the_previous_frame` | no stale entries through any accessor |
+| `repeated_frames_stop_allocating` | capacity reused |
+| `moving_the_camera_changes_what_the_list_holds` | translation and rotation both re-select |
+| `accepting_everything_bypasses_the_test_but_fills_the_same_list` | the F8 path has the same shape |
+| `a_stored_transform_still_composes_the_matrix_recording_needs` | the copy round-trips |
+| `an_entry_is_the_size_the_layout_reasoning_assumes` | 64 bytes, so the costing stays honest |
+| `every_array_stays_the_same_length` | index `i` means one object in all four |
+
+The helper every integration test funnels through asserts `stats().visible == list.len()` on
+each pass, so the statistic and the list cannot drift apart without the suite noticing.
+
+## Acceptance criteria
+
+| Criterion | Result |
+| --- | --- |
+| Compact SoA render list | pass — four arrays, 64 B per entry |
+| Only renderer-relevant fields copied | pass — bounds, flags and generations excluded, with reasons |
+| Owned by the renderer, not `engine-render-data` | pass |
+| No D3D12 or `windows` types in the list | pass |
+| Per-frame transient, storage reused | pass — `clear()` keeps capacity |
+| No per-object heap allocation | pass — 0 allocations at 10k and 100k |
+| Culling feeds the list; invisible objects never reach recording | pass |
+| Visibility and recording separated | pass — `build_render_list` / `draw_render_list` |
+| Statistics real, not duplicated | pass — overlay shows `VISIBLE == RENDERLIST` |
+| No sorting | correct — out of scope |
+| No batching or instancing | correct — out of scope |
+| Single-threaded | correct — out of scope |
+| Visual behaviour unchanged | pass — captured and compared |
+| No meaningful performance change | pass — table above |
+
+## Known limitations
+
+* **The gather is real work with no payoff yet.** About 113 KB per frame at 10,000 objects
+  and 1.1 MB at 100,000. It currently pays for itself by removing the scattered reads it
+  replaced, which is why the frame is flat. Milestones 17 and 18 are what make it
+  profitable; if they do not, the copy deserves re-examining rather than defending.
+* **Storing `Transform` is right today and probably wrong after instancing**, for the reason
+  above.
+* The list is unsorted, so runs of identical mesh and material are contiguous only by
+  accident of spawn order.
+* One list, one camera, one thread. A second camera — shadow mapping — wants a second list,
+  which is a second `RenderList` rather than a change here, exactly as a second frustum is a
+  second `Culler`.
+* `RenderListEntry` gathers a whole entry for tests and diagnostics. Nothing on the frame
+  path uses it, and nothing should: the arrays exist because the common operations read one
+  field across many entries.
