@@ -13,7 +13,9 @@
 
 use engine_core::math::{Frustum, Mat4, Sphere, Vec3};
 use engine_core::transform::Transform;
-use engine_render_data::{MaterialHandle, MeshHandle, RenderEntityDesc, RenderWorld};
+use engine_render_data::{
+    InstanceStyle, MaterialHandle, MeshHandle, RenderEntityDesc, RenderWorld,
+};
 use engine_renderer::{Culler, RenderList};
 
 /// A camera at the origin looking down −Z, 90° vertical, square aspect, far plane at 100.
@@ -35,6 +37,7 @@ fn desc(position: Vec3, mesh: u32, material: u32) -> RenderEntityDesc {
         material: MaterialHandle::new(material, 1),
         bounds: Sphere::new(Vec3::ZERO, 1.0),
         visible: true,
+        style: InstanceStyle::NEUTRAL,
     }
 }
 
@@ -145,6 +148,7 @@ fn an_entry_carries_the_data_its_entity_was_spawned_with() {
         material: MaterialHandle::new(5, 1),
         bounds: Sphere::new(Vec3::ZERO, 1.0),
         visible: true,
+        style: InstanceStyle::NEUTRAL,
     });
 
     let mut list = RenderList::new();

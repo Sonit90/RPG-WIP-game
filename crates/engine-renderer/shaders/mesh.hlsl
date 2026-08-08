@@ -27,6 +27,12 @@ cbuffer Frame : register(b0)
 cbuffer Object : register(b1)
 {
     column_major float4x4 model;
+    // Per-object visual state, the constant-buffer mirror of the instanced pipeline's
+    // per-instance stream. The two shaders must shade identically or an instanced frame and
+    // a non-instanced frame are different images.
+    float4 instance_tint;
+    float instance_emissive;
+    float3 object_padding;
 };
 
 cbuffer Material : register(b2)
@@ -76,7 +82,10 @@ float4 PSMain(PixelInput input) : SV_TARGET
     float3 to_light = normalize(-light_direction);
     float lambert = saturate(dot(normal, to_light));
 
-    float3 diffuse = base_color.rgb * light_color * (light_intensity * lambert);
-    float3 ambient = base_color.rgb * ambient_color * ambient_intensity;
-    return float4(diffuse + ambient + emissive, base_color.a);
+    // Identical to mesh_instanced.hlsl, including the tint and the emissive add.
+    float3 tinted = base_color.rgb * instance_tint.rgb;
+    float3 diffuse = tinted * light_color * (light_intensity * lambert);
+    float3 ambient = tinted * ambient_color * ambient_intensity;
+    float3 glow = emissive + tinted * instance_emissive;
+    return float4(diffuse + ambient + glow, base_color.a * instance_tint.a);
 }

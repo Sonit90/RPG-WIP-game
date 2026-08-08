@@ -18,8 +18,12 @@ pub mod depth;
 pub mod descriptor;
 pub mod device;
 pub mod error;
-#[cfg(feature = "debug-overlay")]
+// Not behind `debug-overlay`. The font is a bit-pattern table and the atlas is 8 KiB of
+// texels; both are what *game* UI draws text with, and a shipping build that dropped them
+// would have no way to write a health percentage. The developer statistics overlay stays
+// gated — see `overlay` below.
 pub mod font;
+pub mod font_atlas;
 pub mod frame;
 pub mod gpu_timer;
 pub mod instancing;
@@ -38,6 +42,7 @@ pub mod shader;
 pub mod stress;
 pub mod swapchain;
 pub mod sync;
+pub mod ui_pipeline;
 pub mod upload;
 
 pub use adapter::{AdapterInfo, select_adapter};
@@ -45,6 +50,7 @@ pub use bench::{BenchHarness, BenchResult, DrawMode};
 pub use culling::{CullStats, Culler};
 pub use device::BACKEND;
 pub use error::RendererError;
+pub use font_atlas::{FontAtlas, GlyphUv};
 pub use frame::{DEFAULT_FRAMES_IN_FLIGHT, MAX_FRAMES_IN_FLIGHT, SyncStats};
 pub use instancing::{InstanceData, UNIT_TRIANGLE};
 pub use material::{Material, MaterialConstants, MaterialDesc};
@@ -56,14 +62,16 @@ pub use pipeline::{TRIANGLE_VERTICES, Vertex};
 pub use render_list::{RenderList, RenderListEntry};
 pub use renderer::Renderer;
 pub use scene::{FrameConstants, ObjectConstants};
+pub use ui_pipeline::{UiBatchStats, UiBatcher, UiFrameConstants, UiPipeline, UiVertex};
 
 // Re-exported from `engine-render-data`, where these types moved at the Milestone 15
 // checkpoint so a gameplay crate can build a `RenderWorld` without linking D3D12. Kept
 // visible here because `use engine_renderer::RenderWorld` is what every existing caller,
 // test and benchmark writes, and the split was a boundary change rather than an API one.
 pub use engine_render_data::{
-    Camera, DEFAULT_FAR, DEFAULT_FOV_Y, DEFAULT_NEAR, Lighting, MaterialHandle, MeshHandle,
-    Projection, RenderEntity, RenderEntityDesc, RenderWorld,
+    Camera, DEFAULT_FAR, DEFAULT_FOV_Y, DEFAULT_NEAR, InstanceStyle, Lighting, MaterialHandle,
+    MeshHandle, Projection, RenderEntity, RenderEntityDesc, RenderWorld, TextAlign, UiColor,
+    UiCommand, UiDrawList, UiRect,
 };
 pub use stress::STRESS_LEVELS;
 pub use swapchain::{BACK_BUFFER_FORMAT, FRAME_COUNT};

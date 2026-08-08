@@ -196,6 +196,123 @@ pub fn render_scene(
     })
 }
 
+/// Renders a [`UiDrawList`] over a cleared target and reads the pixels back.
+///
+/// The only way to prove alpha blending actually blends. A draw-call count and a silent
+/// validation layer say a quad was submitted; they cannot distinguish a translucent panel
+/// from an opaque one, and the difference is the whole point of the pass.
+///
+/// # Errors
+///
+/// Returns [`RendererError`] if any D3D12 call fails.
+pub fn render_ui(
+    width: u32,
+    height: u32,
+    clear_color: [f32; 4],
+    list_to_draw: &engine_render_data::UiDrawList,
+) -> Result<CapturedImage, RendererError> {
+    use windows::Win32::Graphics::Direct3D12::{
+        D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+        D3D12_SHADER_RESOURCE_VIEW_DESC, D3D12_SHADER_RESOURCE_VIEW_DESC_0,
+        D3D12_SRV_DIMENSION_TEXTURE2D, D3D12_TEX2D_SRV, D3D12_VERTEX_BUFFER_VIEW,
+    };
+    use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_R8_UNORM;
+
+    use crate::descriptor::GpuDescriptorHeap;
+    use crate::font_atlas::FontAtlas;
+    use crate::resource::{GpuTexture, TrackedResource};
+    use crate::ui_pipeline::{
+        ROOT_UI_ATLAS_TABLE, ROOT_UI_FRAME_CBV, UiBatcher, UiFrameConstants, UiPipeline, UiVertex,
+    };
+    use crate::upload::StagingUploader;
+
+    render_with(width, height, clear_color, |context, list, _| {
+        let pipeline = UiPipeline::new(context.device())?;
+
+        let atlas_pixels = FontAtlas::new();
+        let atlas = GpuTexture::new(
+            context,
+            atlas_pixels.width(),
+            atlas_pixels.height(),
+            DXGI_FORMAT_R8_UNORM,
+            D3D12_RESOURCE_STATE_COPY_DEST,
+        )?;
+        let mut uploader = StagingUploader::new(context)?;
+        uploader.queue_texture(
+            context,
+            &atlas,
+            atlas_pixels.texels(),
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+        )?;
+        uploader.flush(context)?;
+
+        let mut heap = GpuDescriptorHeap::new(context, 1, 0, 1)?;
+        let descriptor = heap.allocate_persistent()?;
+        let srv = D3D12_SHADER_RESOURCE_VIEW_DESC {
+            Format: DXGI_FORMAT_R8_UNORM,
+            ViewDimension: D3D12_SRV_DIMENSION_TEXTURE2D,
+            Shader4ComponentMapping: 0x1688,
+            Anonymous: D3D12_SHADER_RESOURCE_VIEW_DESC_0 {
+                Texture2D: D3D12_TEX2D_SRV {
+                    MostDetailedMip: 0,
+                    MipLevels: 1,
+                    PlaneSlice: 0,
+                    ResourceMinLODClamp: 0.0,
+                },
+            },
+        };
+        // SAFETY: FFI call. The texture and heap are returned below and outlive the
+        // submission; the handle addresses a slot this heap just allocated.
+        unsafe {
+            context.device().CreateShaderResourceView(
+                Some(TrackedResource::resource(&atlas)),
+                Some(&srv),
+                descriptor.cpu,
+            );
+        }
+
+        let mut batcher = UiBatcher::new(1 << 16);
+        let vertices = batcher.build(list_to_draw).to_vec();
+        let mut ring = UploadRing::new(context, 1 << 20, 1)?;
+        ring.begin_frame(0);
+
+        let table = descriptor.gpu.ok_or_else(|| RendererError::InvalidConfig {
+            reason: "the offscreen atlas descriptor is not shader visible".to_owned(),
+        })?;
+        let constants = UiFrameConstants::for_viewport(width, height);
+        let constant_allocation = ring.write_constants(0, &constants)?;
+
+        if !vertices.is_empty() {
+            let bytes = std::mem::size_of_val(vertices.as_slice());
+            let allocation = ring.write(0, &vertices, 16)?;
+            // SAFETY: FFI calls recording into the open list. Every referenced object is
+            // returned below and kept alive until the submission completes.
+            unsafe {
+                list.SetGraphicsRootSignature(pipeline.root_signature());
+                list.SetPipelineState(pipeline.state());
+                list.SetDescriptorHeaps(&[Some(heap.heap().clone())]);
+                list.SetGraphicsRootConstantBufferView(
+                    ROOT_UI_FRAME_CBV,
+                    constant_allocation.gpu_address(),
+                );
+                list.SetGraphicsRootDescriptorTable(ROOT_UI_ATLAS_TABLE, table);
+                list.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+                list.IASetVertexBuffers(
+                    0,
+                    Some(&[D3D12_VERTEX_BUFFER_VIEW {
+                        BufferLocation: allocation.gpu_address(),
+                        SizeInBytes: bytes as u32,
+                        StrideInBytes: size_of::<UiVertex>() as u32,
+                    }]),
+                );
+                list.DrawInstanced(vertices.len() as u32, 1, 0, 0);
+            }
+        }
+
+        Ok(Box::new((pipeline, ring, atlas, heap, uploader)) as Box<dyn std::any::Any>)
+    })
+}
+
 /// Renders the same scene as [`render_scene`], one instanced draw per run of objects
 /// sharing a mesh and a material.
 ///
@@ -260,7 +377,9 @@ pub fn render_scene_instanced(
                 .iter()
                 .map(|object| InstanceTransform::new(object.transform.matrix()))
                 .collect();
-            let allocation = ring.write(0, &instances, size_of::<InstanceTransform>())?;
+            // Sixteen, not the record size: every element in the stream is a `float4` or
+            // smaller, and the aligner requires a power of two — which 96 is not.
+            let allocation = ring.write(0, &instances, 16)?;
 
             // SAFETY: as above.
             unsafe {

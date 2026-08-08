@@ -306,6 +306,7 @@ fn benchmark_culling() {
                 material: MaterialHandle::INVALID,
                 bounds: Sphere::new(Vec3::ZERO, 1.0),
                 visible: true,
+                style: engine_render_data::InstanceStyle::NEUTRAL,
             });
         }
 

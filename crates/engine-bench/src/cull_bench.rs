@@ -284,6 +284,7 @@ fn build_world(objects: usize, visible_fraction: f64) -> RenderWorld {
             material: MaterialHandle::INVALID,
             bounds: Sphere::new(Vec3::ZERO, 0.5),
             visible: true,
+            style: engine_render_data::InstanceStyle::NEUTRAL,
         });
     }
     world

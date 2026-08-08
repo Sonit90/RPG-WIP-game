@@ -45,11 +45,14 @@
 pub mod camera;
 pub mod error;
 pub mod lighting;
+pub mod ui;
 pub mod world;
 
 pub use camera::{Camera, DEFAULT_FAR, DEFAULT_FOV_Y, DEFAULT_NEAR, Projection};
 pub use error::RenderDataError;
 pub use lighting::Lighting;
+pub use ui::{TextAlign, TextRange, UiColor, UiCommand, UiDrawList, UiRect};
 pub use world::{
-    Handle, MaterialHandle, MeshHandle, RenderEntity, RenderEntityDesc, RenderWorld, world_bounds,
+    Handle, InstanceStyle, MaterialHandle, MeshHandle, RenderEntity, RenderEntityDesc, RenderWorld,
+    world_bounds,
 };

@@ -117,6 +117,7 @@ impl Culler {
         let transforms = world.transforms();
         let meshes = world.meshes();
         let materials = world.materials();
+        let styles = world.styles();
 
         for (slot, visible) in world.visible_flags().iter().enumerate() {
             if *visible {
@@ -125,6 +126,7 @@ impl Culler {
                     transforms[slot],
                     meshes[slot],
                     materials[slot],
+                    styles[slot],
                 );
             }
         }
@@ -255,6 +257,7 @@ fn cull_range(
     let transforms = world.transforms();
     let meshes = world.meshes();
     let materials = world.materials();
+    let styles = world.styles();
     let flags = world.visible_flags();
 
     for slot in range {
@@ -267,6 +270,7 @@ fn cull_range(
                 transforms[slot],
                 meshes[slot],
                 materials[slot],
+                styles[slot],
             );
         }
     }
@@ -283,7 +287,7 @@ mod tests {
     use super::*;
     use engine_core::math::{Mat4, Vec3};
     use engine_core::transform::Transform;
-    use engine_render_data::{MaterialHandle, MeshHandle, RenderEntityDesc};
+    use engine_render_data::{InstanceStyle, MaterialHandle, MeshHandle, RenderEntityDesc};
 
     fn frustum() -> Frustum {
         let projection = Mat4::perspective(std::f32::consts::FRAC_PI_2, 1.0, 1.0, 100.0);
@@ -298,6 +302,7 @@ mod tests {
             material: MaterialHandle::new(0, 1),
             bounds: Sphere::new(Vec3::ZERO, 1.0),
             visible: true,
+            style: InstanceStyle::NEUTRAL,
         }
     }
 

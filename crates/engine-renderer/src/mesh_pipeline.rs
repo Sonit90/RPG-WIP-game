@@ -16,8 +16,8 @@ use windows::Win32::Graphics::Direct3D12::{
     D3D12SerializeRootSignature, ID3D12Device, ID3D12PipelineState, ID3D12RootSignature,
 };
 use windows::Win32::Graphics::Dxgi::Common::{
-    DXGI_FORMAT_R32G32_FLOAT, DXGI_FORMAT_R32G32B32_FLOAT, DXGI_FORMAT_R32G32B32A32_FLOAT,
-    DXGI_SAMPLE_DESC,
+    DXGI_FORMAT_R32_FLOAT, DXGI_FORMAT_R32G32_FLOAT, DXGI_FORMAT_R32G32B32_FLOAT,
+    DXGI_FORMAT_R32G32B32A32_FLOAT, DXGI_SAMPLE_DESC,
 };
 use windows::core::s;
 
@@ -215,17 +215,40 @@ pub(crate) fn root_parameters() -> [D3D12_ROOT_PARAMETER; ROOT_PARAMETER_REGISTE
 pub struct InstanceTransform {
     /// The matrix, row-major, sixteen floats.
     pub model: [f32; 16],
+    /// Multiplied with the material's base colour.
+    ///
+    /// Per instance rather than per material, which is the whole point: two dummies with
+    /// different tints still share one batch and one draw. A material change would split
+    /// them.
+    pub tint: [f32; 4],
+    /// Added to the material's emissive term.
+    pub emissive: f32,
+    /// Padding to a 16-byte boundary, so the element offsets the input layout declares are
+    /// the ones the struct actually has.
+    pub padding: [f32; 3],
 }
 
 impl InstanceTransform {
-    /// Builds the per-instance data for a world transform.
+    /// Builds the per-instance data for a world transform and an unstyled surface.
     #[must_use]
     pub fn new(model: engine_core::math::Mat4) -> Self {
+        Self::styled(model, engine_render_data::InstanceStyle::NEUTRAL)
+    }
+
+    /// Builds the per-instance data for a world transform and a visual state.
+    #[must_use]
+    pub fn styled(
+        model: engine_core::math::Mat4,
+        style: engine_render_data::InstanceStyle,
+    ) -> Self {
         // `to_cols_array` is the column-major layout; the shader declares `row_major` and
         // assembles the four elements back into a matrix, so the two cancel and no
         // transpose instruction is emitted anywhere.
         Self {
             model: model.to_cols_array(),
+            tint: style.tint,
+            emissive: style.emissive,
+            padding: [0.0; 3],
         }
     }
 }
@@ -271,7 +294,7 @@ impl InstancedMeshPipeline {
         // path and one set of `ROOT_*` constants to keep correct.
         let root_signature = create_root_signature(device)?;
 
-        let mut input_elements = Vec::with_capacity(7);
+        let mut input_elements = Vec::with_capacity(9);
         input_elements.extend_from_slice(&mesh_vertex_elements());
         // Slot 1, stepped once per instance: four float4 rows of the model matrix.
         for (row, offset) in [0_u32, 16, 32, 48].into_iter().enumerate() {
@@ -292,6 +315,27 @@ impl InstancedMeshPipeline {
                 InstanceDataStepRate: 1,
             });
         }
+        // Per-instance visual state, in the same stream after the matrix: a colour multiply
+        // and an emissive add. Two more elements rather than a second vertex buffer, so a
+        // styled batch binds exactly what an unstyled one does.
+        input_elements.push(D3D12_INPUT_ELEMENT_DESC {
+            SemanticName: INSTANCE_TINT_SEMANTIC,
+            SemanticIndex: 0,
+            Format: DXGI_FORMAT_R32G32B32A32_FLOAT,
+            InputSlot: 1,
+            AlignedByteOffset: 64,
+            InputSlotClass: D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA,
+            InstanceDataStepRate: 1,
+        });
+        input_elements.push(D3D12_INPUT_ELEMENT_DESC {
+            SemanticName: INSTANCE_EMISSIVE_SEMANTIC,
+            SemanticIndex: 0,
+            Format: DXGI_FORMAT_R32_FLOAT,
+            InputSlot: 1,
+            AlignedByteOffset: 80,
+            InputSlotClass: D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA,
+            InstanceDataStepRate: 1,
+        });
 
         let mut desc = D3D12_GRAPHICS_PIPELINE_STATE_DESC {
             InputLayout: D3D12_INPUT_LAYOUT_DESC {
@@ -319,8 +363,9 @@ impl InstancedMeshPipeline {
         desc.RTVFormats[0] = BACK_BUFFER_FORMAT;
         debug_assert_eq!(
             size_of::<InstanceTransform>(),
-            64,
-            "the instance element offsets above describe a 64-byte matrix"
+            96,
+            "the instance element offsets above describe a 64-byte matrix followed by a \
+             16-byte tint and a 4-byte emissive"
         );
 
         // SAFETY: FFI call with a fully initialized descriptor whose referenced bytecode
@@ -355,6 +400,12 @@ impl InstancedMeshPipeline {
 /// `INSTANCE_MODEL3`, and HLSL reads those trailing digits as the semantic index rather
 /// than as part of the name.
 const INSTANCE_MODEL_SEMANTIC: windows::core::PCSTR = s!("INSTANCE_MODEL");
+
+/// Semantic for the per-instance colour multiply.
+const INSTANCE_TINT_SEMANTIC: windows::core::PCSTR = s!("INSTANCE_TINT");
+
+/// Semantic for the per-instance emissive add.
+const INSTANCE_EMISSIVE_SEMANTIC: windows::core::PCSTR = s!("INSTANCE_EMISSIVE");
 
 /// The per-vertex input elements both mesh pipelines consume.
 ///
@@ -404,10 +455,31 @@ mod tests {
 
     #[test]
     fn an_instance_is_the_size_the_input_layout_describes() {
-        // The four elements sit at 0, 16, 32 and 48. A different size means they read
-        // across each other's rows and every object renders sheared.
-        assert_eq!(size_of::<InstanceTransform>(), 64);
+        // The matrix rows sit at 0, 16, 32 and 48, the tint at 64 and the emissive at 80.
+        // A different size or offset means the elements read across each other and every
+        // object renders sheared or mistinted.
+        assert_eq!(size_of::<InstanceTransform>(), 96);
         assert_eq!(align_of::<InstanceTransform>(), 4);
+        assert_eq!(std::mem::offset_of!(InstanceTransform, model), 0);
+        assert_eq!(std::mem::offset_of!(InstanceTransform, tint), 64);
+        assert_eq!(std::mem::offset_of!(InstanceTransform, emissive), 80);
+    }
+
+    #[test]
+    fn an_unstyled_instance_carries_the_neutral_style() {
+        // `new` is the "no visual state" constructor and must not leave the tint at zero,
+        // which would render every object black.
+        let instance = InstanceTransform::new(Mat4::IDENTITY);
+        assert_eq!(instance.tint, [1.0, 1.0, 1.0, 1.0]);
+        assert_eq!(instance.emissive, 0.0);
+    }
+
+    #[test]
+    fn a_styled_instance_carries_the_style_it_was_given() {
+        let style = engine_render_data::InstanceStyle::tinted(0.5, 0.4, 0.3).with_emissive(0.8);
+        let instance = InstanceTransform::styled(Mat4::IDENTITY, style);
+        assert_eq!(instance.tint, [0.5, 0.4, 0.3, 1.0]);
+        assert_eq!(instance.emissive, 0.8);
     }
 
     #[test]

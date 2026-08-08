@@ -81,6 +81,72 @@ declare_handle!(MeshHandle, "an uploaded mesh");
 declare_handle!(MaterialHandle, "an uploaded material");
 declare_handle!(RenderEntity, "one drawable in a `RenderWorld`");
 
+/// Per-entity visual state that changes without touching the entity.
+///
+/// A material describes a *surface* — what a dummy is made of — and is shared by every
+/// dummy in the arena. This describes what is happening to **one** of them right now: it is
+/// selected, it was just hit, it is nearly dead. Phase 3 had nowhere to put that, so the
+/// extractor expressed "this one died" by despawning the render entity and respawning it
+/// with a different material handle, which churned a slot for a colour change.
+///
+/// Deliberately small: five floats, sixteen of a 96-byte instance record. It is not a
+/// second material system and must not become one — no textures, no shader selection, no
+/// parameters the lighting model does not already read.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct InstanceStyle {
+    /// Multiplied with the material's base colour. `[1, 1, 1, 1]` changes nothing.
+    ///
+    /// A multiply rather than a replacement, so a tint darkens or warms the surface the
+    /// artist authored instead of discarding it.
+    pub tint: [f32; 4],
+    /// Added to the material's emissive term. Zero changes nothing.
+    ///
+    /// What a hit flash and a selection glow are made of: a surface that briefly ignores
+    /// the lighting, without a second material or a second draw.
+    pub emissive: f32,
+}
+
+impl Default for InstanceStyle {
+    fn default() -> Self {
+        Self::NEUTRAL
+    }
+}
+
+impl InstanceStyle {
+    /// The style that changes nothing about how a material looks.
+    pub const NEUTRAL: Self = Self {
+        tint: [1.0, 1.0, 1.0, 1.0],
+        emissive: 0.0,
+    };
+
+    /// A style that multiplies the surface by `tint`.
+    #[must_use]
+    pub fn tinted(red: f32, green: f32, blue: f32) -> Self {
+        Self {
+            tint: [red, green, blue, 1.0],
+            ..Self::NEUTRAL
+        }
+    }
+
+    /// The same style with an emissive term.
+    #[must_use]
+    pub fn with_emissive(self, emissive: f32) -> Self {
+        Self {
+            emissive: emissive.max(0.0),
+            ..self
+        }
+    }
+
+    /// Whether this style leaves the material untouched.
+    ///
+    /// Lets a caller count how many entities are actually styled, which is what makes "the
+    /// tint is free when nothing is tinted" checkable rather than assumed.
+    #[must_use]
+    pub fn is_neutral(self) -> bool {
+        self == Self::NEUTRAL
+    }
+}
+
 /// What a `RenderWorld` slot holds, in parallel arrays.
 ///
 /// Structure-of-arrays because culling reads `bounds` and `visible` and nothing else:
@@ -91,6 +157,8 @@ pub struct RenderWorld {
     transforms: Vec<Transform>,
     meshes: Vec<MeshHandle>,
     materials: Vec<MaterialHandle>,
+    /// Per-entity visual state. Written every frame by extraction; costs no slot churn.
+    styles: Vec<InstanceStyle>,
     /// World-space bounding spheres, refreshed whenever a transform changes.
     bounds: Vec<Sphere>,
     visible: Vec<bool>,
@@ -113,6 +181,21 @@ pub struct RenderEntityDesc {
     pub bounds: Sphere,
     /// Whether it should be drawn at all.
     pub visible: bool,
+    /// Per-entity visual state. [`InstanceStyle::NEUTRAL`] for an ordinary object.
+    pub style: InstanceStyle,
+}
+
+impl Default for RenderEntityDesc {
+    fn default() -> Self {
+        Self {
+            transform: Transform::IDENTITY,
+            mesh: MeshHandle::INVALID,
+            material: MaterialHandle::INVALID,
+            bounds: Sphere::new(engine_core::math::Vec3::ZERO, 1.0),
+            visible: true,
+            style: InstanceStyle::NEUTRAL,
+        }
+    }
 }
 
 impl RenderWorld {
@@ -129,6 +212,7 @@ impl RenderWorld {
             transforms: Vec::with_capacity(capacity),
             meshes: Vec::with_capacity(capacity),
             materials: Vec::with_capacity(capacity),
+            styles: Vec::with_capacity(capacity),
             bounds: Vec::with_capacity(capacity),
             visible: Vec::with_capacity(capacity),
             generations: Vec::with_capacity(capacity),
@@ -147,6 +231,7 @@ impl RenderWorld {
             self.transforms[slot] = desc.transform;
             self.meshes[slot] = desc.mesh;
             self.materials[slot] = desc.material;
+            self.styles[slot] = desc.style;
             self.bounds[slot] = world_bounds;
             self.visible[slot] = desc.visible;
             return RenderEntity::new(index, self.generations[slot]);
@@ -156,6 +241,7 @@ impl RenderWorld {
         self.transforms.push(desc.transform);
         self.meshes.push(desc.mesh);
         self.materials.push(desc.material);
+        self.styles.push(desc.style);
         self.bounds.push(world_bounds);
         self.visible.push(desc.visible);
         // Generation 1, not 0: a default-constructed handle has generation 0 and must not
@@ -206,6 +292,32 @@ impl RenderWorld {
         true
     }
 
+    /// Replaces an entity's per-entity visual state.
+    ///
+    /// The point of the whole mechanism: a dummy that is hit, selected or nearly dead keeps
+    /// its render entity, its slot and its place in the culler's ordering. Nothing is
+    /// despawned and nothing is respawned.
+    pub fn set_style(&mut self, entity: RenderEntity, style: InstanceStyle) -> bool {
+        if !self.contains(entity) {
+            return false;
+        }
+        self.styles[entity.index()] = style;
+        true
+    }
+
+    /// Replaces an entity's material.
+    ///
+    /// Also no longer a respawn. A material change does move the entity into a different
+    /// batch, which is a per-frame grouping decision and costs nothing across frames — the
+    /// slot, the handle and every outstanding reference stay valid.
+    pub fn set_material(&mut self, entity: RenderEntity, material: MaterialHandle) -> bool {
+        if !self.contains(entity) {
+            return false;
+        }
+        self.materials[entity.index()] = material;
+        true
+    }
+
     /// Shows or hides an entity.
     pub fn set_visible(&mut self, entity: RenderEntity, visible: bool) -> bool {
         if !self.contains(entity) {
@@ -251,6 +363,12 @@ impl RenderWorld {
         &self.materials
     }
 
+    /// The per-entity visual states, indexed by slot.
+    #[must_use]
+    pub fn styles(&self) -> &[InstanceStyle] {
+        &self.styles
+    }
+
     /// The world-space bounding spheres, indexed by slot.
     #[must_use]
     pub fn bounds(&self) -> &[Sphere] {
@@ -293,6 +411,7 @@ impl RenderWorld {
         self.transforms.clear();
         self.meshes.clear();
         self.materials.clear();
+        self.styles.clear();
         self.bounds.clear();
         self.visible.clear();
         self.generations.clear();
@@ -326,6 +445,7 @@ mod tests {
             material: MaterialHandle::new(material, 1),
             bounds: Sphere::new(Vec3::ZERO, 1.0),
             visible: true,
+            style: InstanceStyle::NEUTRAL,
         }
     }
 
@@ -427,6 +547,62 @@ mod tests {
         assert!(world.contains(entity), "hidden is not despawned");
         assert!(!world.is_drawable(entity.index()));
         assert_eq!(world.len(), 1);
+    }
+
+    #[test]
+    fn styling_an_entity_keeps_its_handle_its_slot_and_its_material() {
+        // Milestone 7's whole point: a visual change is a store, not a respawn.
+        let mut world = RenderWorld::new();
+        let entity = world.spawn(desc(0, 0));
+        let slots = world.slot_count();
+
+        assert!(world.set_style(entity, InstanceStyle::tinted(0.5, 0.5, 0.5)));
+        assert!(world.contains(entity), "styling is not despawning");
+        assert_eq!(world.slot_count(), slots, "no slot was consumed");
+        assert_eq!(world.len(), 1);
+        assert_eq!(world.styles()[entity.index()].tint, [0.5, 0.5, 0.5, 1.0]);
+        assert_eq!(world.materials()[entity.index()], MaterialHandle::new(0, 1));
+    }
+
+    #[test]
+    fn changing_a_material_is_no_longer_a_respawn() {
+        let mut world = RenderWorld::new();
+        let entity = world.spawn(desc(0, 0));
+        let slots = world.slot_count();
+
+        assert!(world.set_material(entity, MaterialHandle::new(7, 1)));
+        assert!(world.contains(entity));
+        assert_eq!(world.slot_count(), slots);
+        assert_eq!(world.materials()[entity.index()], MaterialHandle::new(7, 1));
+    }
+
+    #[test]
+    fn a_stale_handle_cannot_style_the_entity_that_replaced_it() {
+        let mut world = RenderWorld::new();
+        let first = world.spawn(desc(0, 0));
+        world.despawn(first);
+        let second = world.spawn(desc(1, 1));
+
+        assert!(!world.set_style(first, InstanceStyle::tinted(0.0, 0.0, 0.0)));
+        assert!(!world.set_material(first, MaterialHandle::new(9, 1)));
+        assert!(world.styles()[second.index()].is_neutral());
+    }
+
+    #[test]
+    fn a_spawned_entity_starts_unstyled() {
+        // A default of zero would render everything black; neutral is a multiply by one.
+        let mut world = RenderWorld::new();
+        let entity = world.spawn(desc(0, 0));
+        assert!(world.styles()[entity.index()].is_neutral());
+        assert_eq!(InstanceStyle::default(), InstanceStyle::NEUTRAL);
+        assert_eq!(InstanceStyle::NEUTRAL.tint, [1.0, 1.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn a_negative_emissive_is_clamped_rather_than_darkening_the_surface() {
+        // Emissive is added to the shader's output; a negative one would subtract light.
+        let style = InstanceStyle::NEUTRAL.with_emissive(-5.0);
+        assert_eq!(style.emissive, 0.0);
     }
 
     #[test]

@@ -16,8 +16,10 @@ use windows::core::Interface;
 use crate::command::{CommandContext, CommandStats};
 use crate::culling::{CullStats, Culler};
 use crate::depth::{DEPTH_CLEAR, DepthBuffer};
+use crate::descriptor::GpuDescriptorHeap;
 use crate::device::{BACKEND, RenderDevice, feature_level_name};
 use crate::error::RendererError;
+use crate::font_atlas::FontAtlas;
 use crate::frame::{FrameRing, SyncStats};
 use crate::gpu_timer::GpuTimer;
 use crate::material::{Material, MaterialDesc};
@@ -33,7 +35,11 @@ use crate::scene::{
 };
 use crate::stress;
 use crate::swapchain::SwapChain;
-use crate::upload::UploadRing;
+use crate::ui_pipeline::{
+    ROOT_UI_ATLAS_TABLE, ROOT_UI_FRAME_CBV, UiBatchStats, UiBatcher, UiFrameConstants, UiPipeline,
+    UiVertex,
+};
+use crate::upload::{StagingUploader, UploadRing};
 use crate::{AdapterInfo, RendererConfig};
 use engine_core::math::Frustum;
 use engine_core::time::{FrameStats, FrameStatsWindow};
@@ -49,9 +55,64 @@ const PRESENT_WINDOW: usize = engine_core::metrics::DEFAULT_HISTORY;
 /// Alignment for a per-instance vertex stream in the upload ring.
 ///
 /// A vertex buffer view has no 256-byte requirement the way a constant buffer view does;
-/// what it needs is that the address is a multiple of the element stride so the input
-/// assembler indexes it correctly. The stride here is 64 bytes.
-const INSTANCE_ALIGNMENT: usize = size_of::<InstanceTransform>();
+/// what it needs is an address aligned to its largest element, so the input assembler's
+/// fetches do not straddle a boundary. Every element in the stream is a `float4` or
+/// smaller, so sixteen bytes is enough.
+///
+/// It is deliberately **not** `size_of::<InstanceTransform>()`, which is what it used to
+/// be: the record grew to 96 bytes when it gained a tint, and 96 is not a power of two —
+/// which the ring's aligner requires and which turned an alignment constant into a panic.
+const INSTANCE_ALIGNMENT: usize = 16;
+
+/// Alignment for the UI vertex stream in the upload ring.
+///
+/// The stride, for the same reason as [`INSTANCE_ALIGNMENT`]: a vertex buffer view has no
+/// 256-byte requirement, it needs an address the input assembler can index by stride.
+const UI_VERTEX_ALIGNMENT: usize = size_of::<UiVertex>();
+
+/// Most quads one frame of UI may emit.
+///
+/// 65,536 quads is 12 MB of vertices, well past anything the HUD produces — twenty
+/// nameplates plus the full combat HUD is a few thousand. It exists so a runaway UI drops
+/// work visibly rather than allocating without bound inside the frame path.
+const MAX_UI_QUADS: usize = 65_536;
+
+/// The batched game-UI pass.
+///
+/// One pipeline, one texture, one draw call. Everything the player sees that is not
+/// geometry goes through here.
+struct UiState {
+    pipeline: UiPipeline,
+    /// Turns a `UiDrawList` into vertices. Owns its scratch across frames.
+    batcher: UiBatcher,
+    /// The font atlas on the GPU. Uploaded once at creation and never touched again.
+    ///
+    /// Held, not read: the shader resource view below points into this texture, so dropping
+    /// it would leave the descriptor addressing a released resource. Ownership *is* its
+    /// purpose.
+    #[allow(
+        dead_code,
+        reason = "keeps the texture the atlas descriptor points at alive"
+    )]
+    atlas: crate::resource::GpuTexture,
+    /// A one-descriptor shader-visible heap holding the atlas's SRV.
+    ///
+    /// Its own heap rather than a slice of a shared one: this is the only shader-visible
+    /// descriptor the renderer uses, and giving it a heap of its own means the UI pass
+    /// binds and forgets rather than coordinating an allocation with a subsystem that does
+    /// not exist yet.
+    heap: GpuDescriptorHeap,
+    /// Where in that heap the SRV lives.
+    atlas_descriptor: crate::descriptor::DescriptorHandle,
+    /// This frame's list, replaced by the application each frame.
+    list: engine_render_data::UiDrawList,
+    /// What the last batch produced.
+    stats: UiBatchStats,
+    /// Milliseconds the last batch build took, measured on the CPU.
+    build_ms: f64,
+    /// Whether the UI pass draws at all.
+    enabled: bool,
+}
 
 /// Debug overlay state owned by the renderer.
 #[cfg(feature = "debug-overlay")]
@@ -171,6 +232,9 @@ pub struct Renderer {
     /// build without the `debug-overlay` feature.
     #[cfg(feature = "debug-overlay")]
     overlay: OverlayState,
+    /// The batched game-UI pass. **Not** behind `debug-overlay`: this is what the player's
+    /// health bar is drawn with, and a shipping build needs it.
+    ui: UiState,
     frames_presented: u64,
     /// Draw calls recorded by the most recent frame.
     draw_calls_last_frame: u32,
@@ -242,6 +306,8 @@ impl Renderer {
         stress::build_grid(1, &mut scene_scratch);
         let scene = VertexStream::upload(&context, &scene_scratch)?;
 
+        let ui = Self::create_ui_state(&context)?;
+
         #[cfg(feature = "debug-overlay")]
         let overlay = OverlayState {
             dynamic: OverlayGeometry::new(),
@@ -287,6 +353,7 @@ impl Renderer {
             scene_scratch,
             #[cfg(feature = "debug-overlay")]
             overlay,
+            ui,
             frames_presented: 0,
             draw_calls_last_frame: 0,
             triangles_last_frame: 0,
@@ -790,8 +857,10 @@ impl Renderer {
             let first = batch.first as usize;
             let last = first + batch.count as usize;
             for &entry in &self.visible.order()[first..last] {
-                let object =
-                    ObjectConstants::new(self.visible.transforms()[entry as usize].matrix());
+                let object = ObjectConstants::styled(
+                    self.visible.transforms()[entry as usize].matrix(),
+                    self.visible.styles()[entry as usize],
+                );
                 let allocation = self.uploads.write_constants(slot, &object)?;
                 self.commands
                     .set_root_cbv(ROOT_OBJECT_CBV, allocation.gpu_address());
@@ -855,8 +924,9 @@ impl Renderer {
             self.instance_scratch.clear();
             self.instance_scratch.reserve(count);
             for &entry in &self.visible.order()[first..first + count] {
-                self.instance_scratch.push(InstanceTransform::new(
+                self.instance_scratch.push(InstanceTransform::styled(
                     self.visible.transforms()[entry as usize].matrix(),
+                    self.visible.styles()[entry as usize],
                 ));
             }
             allocation.write(&self.instance_scratch)?;
@@ -910,6 +980,183 @@ impl Renderer {
         let index = self.meshes.len() as u32;
         self.meshes.push(mesh);
         Ok(MeshHandle::new(index, 1))
+    }
+
+    /// Creates the UI pipeline and uploads the font atlas.
+    ///
+    /// The atlas is 8 KiB and is uploaded exactly once, at renderer creation, through the
+    /// same staging path meshes use. Nothing about it changes per frame.
+    fn create_ui_state(context: &RenderDevice) -> Result<UiState, RendererError> {
+        use windows::Win32::Graphics::Direct3D12::{
+            D3D12_RESOURCE_STATE_COPY_DEST, D3D12_SHADER_RESOURCE_VIEW_DESC,
+            D3D12_SHADER_RESOURCE_VIEW_DESC_0, D3D12_SRV_DIMENSION_TEXTURE2D, D3D12_TEX2D_SRV,
+        };
+        use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_R8_UNORM;
+
+        let pipeline = UiPipeline::new(context.device())?;
+        let atlas_pixels = FontAtlas::new();
+        let atlas = crate::resource::GpuTexture::new(
+            context,
+            atlas_pixels.width(),
+            atlas_pixels.height(),
+            DXGI_FORMAT_R8_UNORM,
+            D3D12_RESOURCE_STATE_COPY_DEST,
+        )?;
+
+        let mut uploader = StagingUploader::new(context)?;
+        uploader.queue_texture(
+            context,
+            &atlas,
+            atlas_pixels.texels(),
+            windows::Win32::Graphics::Direct3D12::D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+        )?;
+        uploader.flush(context)?;
+
+        // One persistent descriptor, one per-frame slot that nothing uses: the UI binds a
+        // single SRV that never changes, so the per-frame region is sized to zero rather
+        // than reserving space for a feature this pass does not have.
+        let mut heap = GpuDescriptorHeap::new(context, 1, 0, 1)?;
+        let atlas_descriptor = heap.allocate_persistent()?;
+
+        let desc = D3D12_SHADER_RESOURCE_VIEW_DESC {
+            Format: DXGI_FORMAT_R8_UNORM,
+            ViewDimension: D3D12_SRV_DIMENSION_TEXTURE2D,
+            // The default component mapping, spelled out: an R8 texture read through
+            // `Texture2D<float>` returns red, and leaving this zero is an invalid encoding
+            // the debug layer rejects.
+            Shader4ComponentMapping: 0x1688,
+            Anonymous: D3D12_SHADER_RESOURCE_VIEW_DESC_0 {
+                Texture2D: D3D12_TEX2D_SRV {
+                    MostDetailedMip: 0,
+                    MipLevels: 1,
+                    PlaneSlice: 0,
+                    ResourceMinLODClamp: 0.0,
+                },
+            },
+        };
+        // SAFETY: FFI call. The texture and the descriptor heap outlive the renderer, and
+        // the CPU handle addresses a slot this heap just allocated.
+        unsafe {
+            context.device().CreateShaderResourceView(
+                Some(crate::resource::TrackedResource::resource(&atlas)),
+                Some(&desc),
+                atlas_descriptor.cpu,
+            );
+        }
+
+        Ok(UiState {
+            pipeline,
+            batcher: UiBatcher::new(MAX_UI_QUADS),
+            atlas,
+            heap,
+            atlas_descriptor,
+            list: engine_render_data::UiDrawList::with_capacity(1024, 4096),
+            stats: UiBatchStats::default(),
+            build_ms: 0.0,
+            enabled: true,
+        })
+    }
+
+    /// Replaces the UI to draw this frame and batches it into vertices.
+    ///
+    /// Batching happens here rather than during recording so its cost is attributable and
+    /// so `render` stays a function of data that is already prepared.
+    pub fn set_ui(&mut self, list: &engine_render_data::UiDrawList) {
+        let started = std::time::Instant::now();
+        self.ui.list.clear();
+        self.ui.list.append(list);
+        self.ui.batcher.build(&self.ui.list);
+        self.ui.stats = self.ui.batcher.stats();
+        self.ui.build_ms = started.elapsed().as_secs_f64() * 1e3;
+    }
+
+    /// The list the renderer will draw, for a caller that wants to build into it directly.
+    ///
+    /// Building in place avoids the copy `set_ui` performs. The caller must call
+    /// [`Renderer::batch_ui`] afterwards.
+    pub fn ui_list_mut(&mut self) -> &mut engine_render_data::UiDrawList {
+        &mut self.ui.list
+    }
+
+    /// Batches whatever is currently in the UI list.
+    pub fn batch_ui(&mut self) {
+        let started = std::time::Instant::now();
+        self.ui.batcher.build(&self.ui.list);
+        self.ui.stats = self.ui.batcher.stats();
+        self.ui.build_ms = started.elapsed().as_secs_f64() * 1e3;
+    }
+
+    /// What the last UI batch produced.
+    #[must_use]
+    pub fn ui_stats(&self) -> UiBatchStats {
+        self.ui.stats
+    }
+
+    /// Milliseconds the last UI batch build took.
+    #[must_use]
+    pub fn ui_build_ms(&self) -> f64 {
+        self.ui.build_ms
+    }
+
+    /// Shows or hides the whole UI pass.
+    pub fn set_ui_enabled(&mut self, enabled: bool) {
+        self.ui.enabled = enabled;
+    }
+
+    /// Whether the UI pass draws.
+    #[must_use]
+    pub fn ui_enabled(&self) -> bool {
+        self.ui.enabled
+    }
+
+    /// Records the UI as one draw call, if there is anything to draw.
+    ///
+    /// Returns the vertices submitted. The whole interface is one vertex buffer against one
+    /// texture through one pipeline state, so this is a single `DrawInstanced` regardless of
+    /// how many elements the HUD contains.
+    fn draw_ui(&mut self, slot: usize) -> Result<u32, RendererError> {
+        if !self.ui.enabled {
+            return Ok(0);
+        }
+        let vertices = self.ui.batcher.vertices();
+        if vertices.is_empty() {
+            return Ok(0);
+        }
+
+        let bytes = std::mem::size_of_val(vertices);
+        let allocation = self.uploads.allocate(slot, bytes, UI_VERTEX_ALIGNMENT)?;
+        allocation.write(vertices)?;
+
+        let (width, height) = self.swap_chain.size();
+        let constants = UiFrameConstants::for_viewport(width, height);
+        let constant_allocation = self.uploads.write_constants(slot, &constants)?;
+
+        self.commands
+            .set_pipeline(self.ui.pipeline.root_signature(), self.ui.pipeline.state());
+        self.commands
+            .set_descriptor_heaps(&[Some(self.ui.heap.heap().clone())]);
+        self.commands
+            .set_root_cbv(ROOT_UI_FRAME_CBV, constant_allocation.gpu_address());
+        let Some(table) = self.ui.atlas_descriptor.gpu else {
+            return Err(RendererError::InvalidConfig {
+                reason: "the font atlas descriptor is not shader visible".to_owned(),
+            });
+        };
+        self.commands
+            .set_root_descriptor_table(ROOT_UI_ATLAS_TABLE, table);
+        self.commands
+            .set_topology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        self.commands.set_vertex_buffer(
+            0,
+            windows::Win32::Graphics::Direct3D12::D3D12_VERTEX_BUFFER_VIEW {
+                BufferLocation: allocation.gpu_address(),
+                SizeInBytes: bytes as u32,
+                StrideInBytes: size_of::<UiVertex>() as u32,
+            },
+        );
+        let count = vertices.len() as u32;
+        self.commands.draw(count, 1);
+        Ok(count)
     }
 
     /// Uploads a material and returns a handle to it.
@@ -1052,7 +1299,6 @@ impl Renderer {
 
     /// Closes a frame: draws the overlay, returns the back buffer to `PRESENT`, and submits.
     fn finish_recording(&mut self, slot: usize, back_buffer: usize) -> Result<(), RendererError> {
-        let buffer = self.swap_chain.buffer(back_buffer);
         #[cfg(feature = "debug-overlay")]
         let index = slot;
 
@@ -1111,6 +1357,14 @@ impl Renderer {
             }
         }
 
+        // Last, and on top of everything: the UI blends, so it must see the finished scene
+        // beneath it. One draw call for the whole interface.
+        self.draw_ui(slot)?;
+
+        // Re-borrowed after `draw_ui`, which needs `&mut self`. The buffer is the same
+        // resource either way; holding the earlier borrow across the call would only be a
+        // borrow-checker argument, not a correctness one.
+        let buffer = self.swap_chain.buffer(back_buffer);
         self.commands
             .transition_to(buffer, D3D12_RESOURCE_STATE_PRESENT);
 

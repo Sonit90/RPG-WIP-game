@@ -33,11 +33,12 @@ use std::mem::ManuallyDrop;
 use windows::Win32::Foundation::RECT;
 use windows::Win32::Graphics::Direct3D::D3D_PRIMITIVE_TOPOLOGY;
 use windows::Win32::Graphics::Direct3D12::{
-    D3D12_CLEAR_FLAG_DEPTH, D3D12_CPU_DESCRIPTOR_HANDLE, D3D12_INDEX_BUFFER_VIEW,
-    D3D12_RESOURCE_BARRIER, D3D12_RESOURCE_BARRIER_0, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,
-    D3D12_RESOURCE_BARRIER_FLAG_NONE, D3D12_RESOURCE_BARRIER_TYPE_TRANSITION,
-    D3D12_RESOURCE_STATES, D3D12_RESOURCE_TRANSITION_BARRIER, D3D12_VERTEX_BUFFER_VIEW,
-    D3D12_VIEWPORT, ID3D12CommandAllocator, ID3D12GraphicsCommandList, ID3D12PipelineState,
+    D3D12_CLEAR_FLAG_DEPTH, D3D12_CPU_DESCRIPTOR_HANDLE, D3D12_GPU_DESCRIPTOR_HANDLE,
+    D3D12_INDEX_BUFFER_VIEW, D3D12_RESOURCE_BARRIER, D3D12_RESOURCE_BARRIER_0,
+    D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES, D3D12_RESOURCE_BARRIER_FLAG_NONE,
+    D3D12_RESOURCE_BARRIER_TYPE_TRANSITION, D3D12_RESOURCE_STATES,
+    D3D12_RESOURCE_TRANSITION_BARRIER, D3D12_VERTEX_BUFFER_VIEW, D3D12_VIEWPORT,
+    ID3D12CommandAllocator, ID3D12DescriptorHeap, ID3D12GraphicsCommandList, ID3D12PipelineState,
     ID3D12Resource, ID3D12RootSignature,
 };
 use windows::core::Interface;
@@ -496,6 +497,25 @@ impl CommandContext {
         // caller keeps alive for the frame, and the slot is a parameter index of the bound
         // root signature.
         unsafe { self.list.SetGraphicsRootConstantBufferView(slot, address) };
+    }
+
+    /// Binds the shader-visible descriptor heaps for the draws that follow.
+    ///
+    /// D3D12 allows one CBV/SRV/UAV heap and one sampler heap bound at a time, and changing
+    /// either can be expensive on some drivers — so this is called once per frame, not per
+    /// draw. It is not tracked for redundancy because there is exactly one caller.
+    pub fn set_descriptor_heaps(&mut self, heaps: &[Option<ID3D12DescriptorHeap>]) {
+        // SAFETY: FFI call on the open list. The heaps outlive the submission — the
+        // renderer owns them for its whole lifetime.
+        unsafe { self.list.SetDescriptorHeaps(heaps) };
+    }
+
+    /// Binds a descriptor table to a root parameter.
+    pub fn set_root_descriptor_table(&mut self, slot: u32, handle: D3D12_GPU_DESCRIPTOR_HANDLE) {
+        // SAFETY: FFI call on the open list. The handle addresses a descriptor in a heap
+        // bound by `set_descriptor_heaps` and owned by the renderer, and the slot is a
+        // parameter index of the bound root signature.
+        unsafe { self.list.SetGraphicsRootDescriptorTable(slot, handle) };
     }
 
     /// Binds an index buffer.

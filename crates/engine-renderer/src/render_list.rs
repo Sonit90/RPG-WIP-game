@@ -80,7 +80,7 @@
 //! is asserted by a test rather than assumed, and measured by `cull_bench`.
 
 use engine_core::transform::Transform;
-use engine_render_data::{MaterialHandle, MeshHandle, RenderEntity};
+use engine_render_data::{InstanceStyle, MaterialHandle, MeshHandle, RenderEntity};
 
 /// A run of entries sharing one mesh and one material.
 ///
@@ -121,6 +121,8 @@ pub struct RenderListEntry {
     pub mesh: MeshHandle,
     /// How it looks.
     pub material: MaterialHandle,
+    /// Per-entity visual state, carried alongside the material rather than baked into it.
+    pub style: InstanceStyle,
 }
 
 /// What one frame draws, as parallel arrays.
@@ -134,6 +136,7 @@ pub struct RenderList {
     transforms: Vec<Transform>,
     meshes: Vec<MeshHandle>,
     materials: Vec<MaterialHandle>,
+    styles: Vec<InstanceStyle>,
     /// The order recording walks, filled by `group_by_material_and_mesh`.
     order: Vec<u32>,
     /// Runs of entries sharing a mesh and a material.
@@ -157,6 +160,7 @@ impl RenderList {
             transforms: Vec::with_capacity(capacity),
             meshes: Vec::with_capacity(capacity),
             materials: Vec::with_capacity(capacity),
+            styles: Vec::with_capacity(capacity),
             order: Vec::with_capacity(capacity),
             batches: Vec::new(),
             counts: Vec::new(),
@@ -172,6 +176,7 @@ impl RenderList {
         self.transforms.clear();
         self.meshes.clear();
         self.materials.clear();
+        self.styles.clear();
         self.order.clear();
         self.batches.clear();
     }
@@ -186,11 +191,13 @@ impl RenderList {
         transform: Transform,
         mesh: MeshHandle,
         material: MaterialHandle,
+        style: InstanceStyle,
     ) {
         self.entities.push(entity);
         self.transforms.push(transform);
         self.meshes.push(mesh);
         self.materials.push(material);
+        self.styles.push(style);
     }
 
     /// Entries in the list.
@@ -238,6 +245,16 @@ impl RenderList {
         &self.materials
     }
 
+    /// The per-entity visual state of each entry.
+    ///
+    /// A parallel array rather than part of the material, because it is the one field that
+    /// changes every frame while the other three do not — and because it must **not**
+    /// participate in grouping: two entities with different tints still share a batch.
+    #[must_use]
+    pub fn styles(&self) -> &[InstanceStyle] {
+        &self.styles
+    }
+
     /// Appends every entry of `other`, leaving it untouched.
     ///
     /// The merge step of a chunked cull: each worker fills its own list, and the chunks are
@@ -254,6 +271,7 @@ impl RenderList {
         self.transforms.extend_from_slice(&other.transforms);
         self.meshes.extend_from_slice(&other.meshes);
         self.materials.extend_from_slice(&other.materials);
+        self.styles.extend_from_slice(&other.styles);
     }
 
     /// Reserves room for `additional` more entries in every array.
@@ -265,6 +283,7 @@ impl RenderList {
         self.transforms.reserve(additional);
         self.meshes.reserve(additional);
         self.materials.reserve(additional);
+        self.styles.reserve(additional);
     }
 
     /// Groups the list so entries sharing a material and a mesh are adjacent.
@@ -419,6 +438,7 @@ impl RenderList {
             transform: *self.transforms.get(index)?,
             mesh: *self.meshes.get(index)?,
             material: *self.materials.get(index)?,
+            style: *self.styles.get(index)?,
         })
     }
 }
@@ -443,7 +463,7 @@ mod tests {
         let mut list = RenderList::new();
         for index in 0..count {
             let (entity, transform, mesh, material) = entry(index);
-            list.push(entity, transform, mesh, material);
+            list.push(entity, transform, mesh, material, InstanceStyle::NEUTRAL);
         }
         list
     }
@@ -500,6 +520,7 @@ mod tests {
             transform,
             MeshHandle::new(0, 1),
             MaterialHandle::new(0, 1),
+            InstanceStyle::NEUTRAL,
         );
 
         let Some(read) = list.entry(0) else {
@@ -545,7 +566,7 @@ mod tests {
         list.clear();
         for index in 100..105_u32 {
             let (entity, transform, mesh, material) = entry(index);
-            list.push(entity, transform, mesh, material);
+            list.push(entity, transform, mesh, material, InstanceStyle::NEUTRAL);
         }
 
         assert_eq!(list.len(), 5, "the first twenty must not survive");
@@ -562,7 +583,7 @@ mod tests {
         let mut list = RenderList::new();
         for _ in 0..64 {
             let (entity, transform, mesh, material) = entry(0);
-            list.push(entity, transform, mesh, material);
+            list.push(entity, transform, mesh, material, InstanceStyle::NEUTRAL);
         }
         let capacity = list.capacity();
         assert!(capacity >= 64);
@@ -571,7 +592,7 @@ mod tests {
             list.clear();
             for index in 0..64 {
                 let (entity, transform, mesh, material) = entry(index);
-                list.push(entity, transform, mesh, material);
+                list.push(entity, transform, mesh, material, InstanceStyle::NEUTRAL);
             }
         }
         assert_eq!(

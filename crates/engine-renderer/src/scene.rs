@@ -100,14 +100,33 @@ impl FrameConstants {
 pub struct ObjectConstants {
     /// The local-to-world matrix, column-major.
     pub model: [f32; 16],
+    /// Multiplied with the material's base colour.
+    ///
+    /// The per-object mirror of the instanced path's `INSTANCE_TINT`. Both pipelines have
+    /// to shade identically — `tests/instanced_equivalence.rs` asserts they produce the
+    /// same image — so a field added to one is a field added to the other.
+    pub tint: [f32; 4],
+    /// Added to the material's emissive term.
+    pub emissive: f32,
+    /// Padding to the 16-byte constant-buffer row.
+    pub padding: [f32; 3],
 }
 
 impl ObjectConstants {
-    /// Builds the constants for a world transform.
+    /// Builds the constants for a world transform and an unstyled surface.
     #[must_use]
     pub fn new(model: Mat4) -> Self {
+        Self::styled(model, engine_render_data::InstanceStyle::NEUTRAL)
+    }
+
+    /// Builds the constants for a world transform and a visual state.
+    #[must_use]
+    pub fn styled(model: Mat4, style: engine_render_data::InstanceStyle) -> Self {
         Self {
             model: model.to_cols_array(),
+            tint: style.tint,
+            emissive: style.emissive,
+            padding: [0.0; 3],
         }
     }
 }
@@ -123,7 +142,12 @@ mod tests {
         assert_eq!(std::mem::offset_of!(FrameConstants, light_direction), 80);
         assert_eq!(std::mem::offset_of!(FrameConstants, light_color), 96);
         assert_eq!(std::mem::offset_of!(FrameConstants, ambient_color), 112);
-        assert_eq!(size_of::<ObjectConstants>(), 64);
+        // 96, not 64: the matrix plus the per-object tint and emissive that mirror the
+        // instanced pipeline's per-instance stream. The offsets are what the HLSL `Object`
+        // constant buffer declares.
+        assert_eq!(size_of::<ObjectConstants>(), 96);
+        assert_eq!(std::mem::offset_of!(ObjectConstants, tint), 64);
+        assert_eq!(std::mem::offset_of!(ObjectConstants, emissive), 80);
     }
 
     #[test]

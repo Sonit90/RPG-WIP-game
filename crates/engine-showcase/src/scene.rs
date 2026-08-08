@@ -243,6 +243,7 @@ impl Scene {
             // pre-transforming them here would apply the transform twice.
             bounds: self.ground_bounds,
             visible: true,
+            style: engine_renderer::InstanceStyle::NEUTRAL,
         });
         self.scene_triangles += u64::from(self.ground_triangles);
 
@@ -284,6 +285,7 @@ impl Scene {
             material,
             bounds: local_bounds,
             visible: true,
+            style: engine_renderer::InstanceStyle::NEUTRAL,
         });
         self.scene_triangles += u64::from(triangles);
 

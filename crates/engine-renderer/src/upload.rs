@@ -27,15 +27,25 @@
 //! so loading twenty meshes costs one synchronization rather than twenty.
 
 use windows::Win32::Graphics::Direct3D12::{
-    D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATES, ID3D12CommandList,
+    D3D12_PLACED_SUBRESOURCE_FOOTPRINT, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATES,
+    D3D12_SUBRESOURCE_FOOTPRINT, D3D12_TEXTURE_COPY_LOCATION, D3D12_TEXTURE_COPY_LOCATION_0,
+    D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT, D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
+    ID3D12CommandList,
 };
 use windows::core::Interface;
 
 use crate::command::CommandContext;
 use crate::device::RenderDevice;
 use crate::error::RendererError;
-use crate::resource::{GpuBuffer, TrackedResource};
+use crate::resource::{GpuBuffer, GpuTexture, TrackedResource};
 use crate::sync::GpuFence;
+
+/// Alignment D3D12 requires for the row pitch of a texture upload.
+///
+/// `D3D12_TEXTURE_DATA_PITCH_ALIGNMENT`. A staging buffer whose rows are not padded to this
+/// produces a sheared texture rather than an error, which is why the padding happens in one
+/// place rather than at each call site.
+pub const TEXTURE_ROW_PITCH_ALIGNMENT: usize = 256;
 
 /// Alignment D3D12 requires for a constant-buffer view's start address.
 pub const CONSTANT_BUFFER_ALIGNMENT: usize = 256;
@@ -431,6 +441,115 @@ impl StagingUploader {
                 0,
                 bytes as u64,
             );
+        }
+
+        self.context.transition_to(destination, final_state);
+
+        self.staging.push(staging);
+        self.queued += 1;
+        Ok(())
+    }
+
+    /// Queues a copy of 8-bit texel `data` into a 2D texture, leaving it in `final_state`.
+    ///
+    /// Only single-byte formats are accepted, which is what the font atlas is. A wider
+    /// format would need the caller's bytes-per-texel, and there is no second caller yet;
+    /// guessing one from the `DXGI_FORMAT` would be a table to keep in step with nothing.
+    ///
+    /// The source rows are copied into a staging buffer whose row pitch is padded up to
+    /// D3D12's 256-byte requirement. The font atlas is already 256 texels wide, so in
+    /// practice this is a straight `memcpy`; the padding path exists so a future atlas of
+    /// another width cannot silently produce a sheared texture.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RendererError::InvalidConfig`] if the data does not describe the texture,
+    /// or [`RendererError::Api`] if a staging buffer cannot be created.
+    pub fn queue_texture(
+        &mut self,
+        device: &RenderDevice,
+        destination: &GpuTexture,
+        data: &[u8],
+        final_state: D3D12_RESOURCE_STATES,
+    ) -> Result<(), RendererError> {
+        let (width, height) = destination.size();
+        let expected = width as usize * height as usize;
+        if data.len() != expected {
+            return Err(RendererError::InvalidConfig {
+                reason: format!(
+                    "{} texels supplied for a {width}x{height} single-byte texture, which needs \
+                     {expected}",
+                    data.len()
+                ),
+            });
+        }
+
+        let source_pitch = width as usize;
+        let padded_pitch = source_pitch.next_multiple_of(TEXTURE_ROW_PITCH_ALIGNMENT);
+        let staging_size = padded_pitch * height as usize;
+
+        if self.queued == 0 {
+            // SAFETY: the previous flush waited for the GPU, so no submission from this
+            // allocator is still executing — which is Reset's precondition.
+            unsafe { self.allocator.Reset() }
+                .map_err(|error| RendererError::api("ID3D12CommandAllocator::Reset", error))?;
+            self.context.begin(&self.allocator)?;
+        }
+
+        let staging = GpuBuffer::new_upload(device, staging_size)?;
+        if padded_pitch == source_pitch {
+            staging.write(data)?;
+        } else {
+            let mut padded = vec![0u8; staging_size];
+            for row in 0..height as usize {
+                let from = row * source_pitch;
+                let to = row * padded_pitch;
+                padded[to..to + source_pitch].copy_from_slice(&data[from..from + source_pitch]);
+            }
+            staging.write(&padded)?;
+        }
+
+        self.context
+            .transition_to(destination, D3D12_RESOURCE_STATE_COPY_DEST);
+        self.context.flush_barriers();
+
+        let source = D3D12_TEXTURE_COPY_LOCATION {
+            // SAFETY: reinterprets the COM smart pointer as the raw interface pointer the
+            // copy location expects, without changing the reference count. The staging
+            // buffer is moved into `self.staging` below and released only after the flush
+            // has waited for the GPU, so it outlives the submission.
+            pResource: unsafe { std::mem::transmute_copy(staging.resource()) },
+            Type: D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT,
+            Anonymous: D3D12_TEXTURE_COPY_LOCATION_0 {
+                PlacedFootprint: D3D12_PLACED_SUBRESOURCE_FOOTPRINT {
+                    Offset: 0,
+                    Footprint: D3D12_SUBRESOURCE_FOOTPRINT {
+                        Format: destination.format(),
+                        Width: width,
+                        Height: height,
+                        Depth: 1,
+                        RowPitch: padded_pitch as u32,
+                    },
+                },
+            },
+        };
+        let target = D3D12_TEXTURE_COPY_LOCATION {
+            // SAFETY: as above. The destination texture is owned by the caller, which holds
+            // it for the renderer's lifetime.
+            pResource: unsafe { std::mem::transmute_copy(destination.resource()) },
+            Type: D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
+            Anonymous: D3D12_TEXTURE_COPY_LOCATION_0 {
+                SubresourceIndex: 0,
+            },
+        };
+
+        // SAFETY: FFI call on the open list. Both copy locations borrow resources that
+        // outlive the submission — the staging buffer is held in `self.staging` until the
+        // flush completes, and the destination is owned by the caller.
+        unsafe {
+            self.context
+                .list()
+                .CopyTextureRegion(&target, 0, 0, 0, &source, None);
         }
 
         self.context.transition_to(destination, final_state);
