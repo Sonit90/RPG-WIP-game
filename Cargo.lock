@@ -20,6 +20,7 @@ version = "0.1.0"
 dependencies = [
  "engine-core",
  "engine-game",
+ "engine-platform",
  "engine-presentation",
  "engine-render-data",
  "engine-renderer",

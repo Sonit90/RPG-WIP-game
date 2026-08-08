@@ -32,10 +32,20 @@ path = "src/cull_bench.rs"
 name = "game_bench"
 path = "src/game_bench.rs"
 
+# The user interface on its own: layout, batching and drawing. Separate from the gameplay
+# benchmark because "is the UI fast enough?" is a question about a different pass, and the
+# Phase 3 audit showed it is the one that moves the frame's tail.
+[[bin]]
+name = "ui_bench"
+path = "src/ui_bench.rs"
+
 [dependencies]
 engine-core = { workspace = true }
 engine-game = { workspace = true }
 engine-presentation = { workspace = true }
+# Only to open the hidden window the GPU phase renders into. No message pump beyond
+# creation, and the CPU phase needs none of it.
+engine-platform = { workspace = true }
 engine-render-data = { workspace = true }
 engine-renderer = { workspace = true, default-features = false }
 # Only for the descriptor-heap type constants the benchmark passes through to the
