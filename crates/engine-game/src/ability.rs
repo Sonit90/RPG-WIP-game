@@ -157,6 +157,12 @@ pub struct AbilityDef {
     pub name: &'static str,
     /// Seconds before it can be used again.
     pub cooldown: f32,
+    /// Seconds the caster must channel before the effect lands.
+    ///
+    /// Zero is instant, which is what every Phase 3 ability was and what most of them still
+    /// are. A non-zero cast is a *commitment*: it can be interrupted, and that is the whole
+    /// reason a cast bar is worth drawing.
+    pub cast_time: f32,
     /// Resource points it costs.
     pub cost: f32,
     /// Metres the target may be away. Ignored by self-centred abilities.
@@ -261,6 +267,7 @@ pub fn default_loadout() -> [AbilityDef; ABILITY_SLOTS] {
             id: id(0),
             name: "FIREBALL",
             cooldown: 1.5,
+            cast_time: 0.0,
             cost: 12.0,
             range: 30.0,
             targeting: Targeting::SingleTarget,
@@ -272,6 +279,7 @@ pub fn default_loadout() -> [AbilityDef; ABILITY_SLOTS] {
             id: id(1),
             name: "IGNITE",
             cooldown: 6.0,
+            cast_time: 0.0,
             cost: 18.0,
             range: 30.0,
             targeting: Targeting::SingleTarget,
@@ -288,6 +296,7 @@ pub fn default_loadout() -> [AbilityDef; ABILITY_SLOTS] {
             id: id(2),
             name: "DETONATE",
             cooldown: 8.0,
+            cast_time: 0.0,
             cost: 25.0,
             range: 30.0,
             targeting: Targeting::AreaAroundTarget {
@@ -304,13 +313,78 @@ pub fn default_loadout() -> [AbilityDef; ABILITY_SLOTS] {
             damage_type: DamageType::Fire,
             placeholder: false,
         },
-        placeholder(id(3), "STRIKE", 2.0, 8.0, 6.0, 30.0, DamageType::Physical),
-        placeholder(id(4), "CLEAVE", 5.0, 15.0, 6.0, 22.0, DamageType::Physical),
-        placeholder(id(5), "SHOCK", 4.0, 14.0, 30.0, 35.0, DamageType::Arcane),
-        placeholder(id(6), "LANCE", 3.0, 11.0, 30.0, 28.0, DamageType::Arcane),
-        placeholder(id(7), "QUAKE", 12.0, 30.0, 6.0, 55.0, DamageType::Physical),
-        placeholder(id(8), "NOVA", 15.0, 35.0, 6.0, 60.0, DamageType::Arcane),
-        placeholder(id(9), "SMITE", 20.0, 40.0, 30.0, 120.0, DamageType::Arcane),
+        placeholder(
+            id(3),
+            "STRIKE",
+            2.0,
+            8.0,
+            6.0,
+            30.0,
+            DamageType::Physical,
+            0.0,
+        ),
+        placeholder(
+            id(4),
+            "CLEAVE",
+            5.0,
+            15.0,
+            6.0,
+            22.0,
+            DamageType::Physical,
+            0.0,
+        ),
+        placeholder(
+            id(5),
+            "SHOCK",
+            4.0,
+            14.0,
+            30.0,
+            35.0,
+            DamageType::Arcane,
+            0.0,
+        ),
+        // A short cast: enough to see the bar fill without making the slot feel broken.
+        placeholder(
+            id(6),
+            "LANCE",
+            3.0,
+            11.0,
+            30.0,
+            28.0,
+            DamageType::Arcane,
+            1.2,
+        ),
+        placeholder(
+            id(7),
+            "QUAKE",
+            12.0,
+            30.0,
+            6.0,
+            55.0,
+            DamageType::Physical,
+            0.0,
+        ),
+        placeholder(
+            id(8),
+            "NOVA",
+            15.0,
+            35.0,
+            6.0,
+            60.0,
+            DamageType::Arcane,
+            0.0,
+        ),
+        // The heaviest hit in the book, and the longest commitment to land it.
+        placeholder(
+            id(9),
+            "SMITE",
+            20.0,
+            40.0,
+            30.0,
+            120.0,
+            DamageType::Arcane,
+            2.5,
+        ),
     ]
 }
 
@@ -318,6 +392,10 @@ pub fn default_loadout() -> [AbilityDef; ABILITY_SLOTS] {
 ///
 /// A range of six metres means self-centred, which is how the two melee-shaped placeholders
 /// are expressed without a separate concept.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "a table row: every column is one field of the definition it builds"
+)]
 const fn placeholder(
     id: AbilityId,
     name: &'static str,
@@ -326,11 +404,13 @@ const fn placeholder(
     range: f32,
     damage: f32,
     damage_type: DamageType,
+    cast_time: f32,
 ) -> AbilityDef {
     AbilityDef {
         id,
         name,
         cooldown,
+        cast_time,
         cost,
         range,
         targeting: if range <= 6.0 {

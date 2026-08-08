@@ -239,6 +239,29 @@ fn describe(event: &CombatEvent) -> String {
             killer,
             tick,
         } => format!("death {} by {} at {tick}", entity.index(), killer.index()),
+        // Cast events are part of the ordered stream a replay has to reproduce: a cast that
+        // started on a different tick, or was cancelled for a different reason, is a
+        // different run even if the health totals agree.
+        CombatEvent::CastStarted {
+            source,
+            ability,
+            duration,
+            tick,
+        } => format!(
+            "cast-start {} {} for {duration} at {tick}",
+            source.index(),
+            ability.slot()
+        ),
+        CombatEvent::CastEnded {
+            source,
+            ability,
+            end,
+            tick,
+        } => format!(
+            "cast-end {} {} {end:?} at {tick}",
+            source.index(),
+            ability.slot()
+        ),
     }
 }
 

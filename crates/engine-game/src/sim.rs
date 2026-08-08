@@ -92,10 +92,66 @@ pub struct Player {
     pub resource: Resource,
     /// The currently selected hostile, if any.
     pub target: Option<EntityId>,
+    /// The cast in progress, if any.
+    ///
+    /// A cast is a *commitment*: while one is running the character is channelling, and
+    /// anything that breaks the channel cancels it. That is the whole reason it is worth
+    /// drawing a bar for.
+    pub cast: Option<ActiveCast>,
     /// Why the last ability attempt failed, for the overlay. Cleared by a success.
     pub last_error: Option<AbilityError>,
     /// The last ability that was successfully used.
     pub last_ability: Option<AbilityId>,
+}
+
+/// A cast in progress.
+///
+/// Cooldown and cost are paid when the cast *starts*, not when it lands — so a cancelled
+/// cast is a real loss, which is what makes interruption matter. That is the convention the
+/// genre uses and it is the one a player will expect.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ActiveCast {
+    /// Which ability is being cast.
+    pub ability: AbilityId,
+    /// Simulated seconds spent so far.
+    pub elapsed: f32,
+    /// Simulated seconds the cast takes.
+    pub duration: f32,
+    /// The target the cast was started against.
+    ///
+    /// Held so a cast that lands after its target died fails cleanly rather than hitting
+    /// whatever the player selected in the meantime.
+    pub target: Option<EntityId>,
+}
+
+impl ActiveCast {
+    /// Progress in [0, 1].
+    #[must_use]
+    pub fn fraction(&self) -> f32 {
+        if self.duration <= 0.0 {
+            return 1.0;
+        }
+        (self.elapsed / self.duration).clamp(0.0, 1.0)
+    }
+
+    /// Simulated seconds left.
+    #[must_use]
+    pub fn remaining(&self) -> f32 {
+        (self.duration - self.elapsed).max(0.0)
+    }
+}
+
+/// Why a cast ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CastEnd {
+    /// It finished and its effect landed.
+    Completed,
+    /// The caster moved.
+    Moved,
+    /// The caster started another ability.
+    Replaced,
+    /// The caster died.
+    CasterDied,
 }
 
 /// Where the simulation spent its time, and how much of it there was.
@@ -196,6 +252,7 @@ impl Simulation {
                 abilities: AbilityBook::default(),
                 resource,
                 target: None,
+                cast: None,
                 last_error: None,
                 last_ability: None,
             },
@@ -231,6 +288,15 @@ impl Simulation {
     #[must_use]
     pub fn player(&self) -> &Player {
         &self.player
+    }
+
+    /// The player, mutably.
+    ///
+    /// The counterpart to [`Simulation::world_mut`], and used for the same reasons: a test
+    /// or a scenario setting up a state the ordinary command path would take seconds of
+    /// simulated time to reach. Ordinary gameplay goes through commands.
+    pub fn player_mut(&mut self) -> &mut Player {
+        &mut self.player
     }
 
     /// Names the entity the player controls.
@@ -418,6 +484,11 @@ impl Simulation {
         self.tick += 1;
         self.time += f64::from(step);
 
+        // Before anything moves: record where every body is, so presentation can draw
+        // between this tick and the next instead of snapping between them. Nothing in
+        // gameplay reads the result.
+        self.world.begin_tick();
+
         self.apply_pending_commands();
 
         let movement_started = Instant::now();
@@ -427,6 +498,10 @@ impl Simulation {
         let ability_started = Instant::now();
         self.player.abilities.tick(step);
         self.player.resource.regenerate(step);
+        // After the frame's commands have been applied — an instant ability used this tick
+        // has already interrupted any cast — and before statuses, so a cast that lands this
+        // tick applies its damage before this tick's burns.
+        self.tick_cast(step);
         self.retarget_if_needed();
         stats.abilities += ability_started.elapsed();
 
@@ -569,6 +644,71 @@ impl Simulation {
         }
     }
 
+    /// Advances the cast in progress, completing it when it finishes.
+    ///
+    /// Ordered after movement within the tick, so a cast started and moved out of in the
+    /// same tick is cancelled by that movement rather than landing first.
+    fn tick_cast(&mut self, step: f32) {
+        let Some(mut cast) = self.player.cast else {
+            return;
+        };
+
+        if !self.world.is_alive(self.player.entity) {
+            self.end_cast(CastEnd::CasterDied);
+            return;
+        }
+        // Moving breaks a channel. Read from the body's own movement state rather than from
+        // the command, so a body still sliding to a stop is still moving.
+        if self
+            .world
+            .body(self.player.entity)
+            .is_some_and(|body| body.state != crate::movement::MovementState::Idle)
+        {
+            self.end_cast(CastEnd::Moved);
+            return;
+        }
+
+        cast.elapsed += step;
+        if cast.elapsed + crate::TIME_EPSILON < cast.duration {
+            self.player.cast = Some(cast);
+            return;
+        }
+
+        // Finished. The effect lands now, against the target the cast was started on.
+        self.player.cast = None;
+        let ability = cast.ability;
+        self.events.push(CombatEvent::CastEnded {
+            source: self.player.entity,
+            ability,
+            end: CastEnd::Completed,
+            tick: self.tick,
+        });
+        let restore = self.player.target;
+        self.player.target = cast.target;
+        // Cooldown and cost were paid when the cast started, so the landing skips both.
+        self.apply_ability(ability);
+        self.player.target = restore;
+    }
+
+    /// Cancels the cast in progress and announces why.
+    fn end_cast(&mut self, end: CastEnd) {
+        let Some(cast) = self.player.cast.take() else {
+            return;
+        };
+        self.events.push(CombatEvent::CastEnded {
+            source: self.player.entity,
+            ability: cast.ability,
+            end,
+            tick: self.tick,
+        });
+    }
+
+    /// Whether a cast is in progress.
+    #[must_use]
+    pub fn casting(&self) -> Option<&ActiveCast> {
+        self.player.cast.as_ref()
+    }
+
     /// Uses an ability, or says why it could not be used.
     ///
     /// Validation order is deliberate: the cheapest and most actionable refusals come
@@ -604,6 +744,39 @@ impl Simulation {
             return Err(AbilityError::NotEnoughResource);
         }
 
+        // A cast ability commits here and lands later. Targeting is validated *now* — a cast
+        // that could not have been started should be refused with the reason it was refused
+        // for, not begun and then silently dropped two seconds later.
+        if definition.cast_time > 0.0 {
+            self.targets
+                .resolve(&self.world, caster, self.player.target, &definition)?;
+            self.player.resource.pay(definition.cost);
+            self.player.abilities.start_cooldown(id);
+            // Starting a cast replaces any cast already running.
+            if self.player.cast.is_some() {
+                self.end_cast(CastEnd::Replaced);
+            }
+            self.player.cast = Some(ActiveCast {
+                ability: id,
+                elapsed: 0.0,
+                duration: definition.cast_time,
+                target: self.player.target,
+            });
+            self.events.push(CombatEvent::CastStarted {
+                source: caster,
+                ability: id,
+                duration: definition.cast_time,
+                tick: self.tick,
+            });
+            return Ok(0);
+        }
+
+        // An instant ability interrupts a cast in progress: the player asked for something
+        // else, and leaving both running would have two abilities in flight at once.
+        if self.player.cast.is_some() {
+            self.end_cast(CastEnd::Replaced);
+        }
+
         // Resolved into the reusable scratch, then copied out: applying the effect needs
         // `&mut self.world`, which the resolved slice borrows.
         let resolved =
@@ -614,7 +787,38 @@ impl Simulation {
 
         self.player.resource.pay(definition.cost);
         self.player.abilities.start_cooldown(id);
+        Ok(self.apply_resolved(id))
+    }
 
+    /// Applies an ability whose cost and cooldown have already been paid.
+    ///
+    /// The landing half of a cast: resolves targets afresh — a cast that took two seconds
+    /// may have watched its target die — then applies the effect. Returns how many entities
+    /// it affected, zero being a legitimate miss rather than an error.
+    fn apply_ability(&mut self, id: AbilityId) -> u32 {
+        let Some(definition) = self.player.abilities.get(id).copied() else {
+            return 0;
+        };
+        let caster = self.player.entity;
+        let Ok(resolved) =
+            self.targets
+                .resolve(&self.world, caster, self.player.target, &definition)
+        else {
+            // The target died or walked out of range while the cast ran. The cast is over
+            // and the cost is spent; that is what committing to a cast means.
+            return 0;
+        };
+        self.hits.clear();
+        self.hits.extend_from_slice(resolved);
+        self.apply_resolved(id)
+    }
+
+    /// Applies `id`'s effect to whatever is currently in the hit list.
+    fn apply_resolved(&mut self, id: AbilityId) -> u32 {
+        let Some(definition) = self.player.abilities.get(id).copied() else {
+            return 0;
+        };
+        let caster = self.player.entity;
         let tick = self.tick;
         let count = self.hits.len() as u32;
         self.events.push(CombatEvent::AbilityUsed {
@@ -680,7 +884,7 @@ impl Simulation {
             }
         }
 
-        Ok(count)
+        count
     }
 
     /// Applies damage and emits the events it produces.
@@ -757,6 +961,9 @@ impl Simulation {
         }
         self.player.abilities.reset_cooldowns();
         self.player.resource.restore();
+        // A cast in progress is part of the state R exists to clear: the point of the
+        // control is to try a rotation again from a known start, and "mid-cast" is not it.
+        self.player.cast = None;
         self.player.last_error = None;
         self.meter.reset(self.time);
         self.retarget_if_needed();
@@ -774,6 +981,198 @@ impl Simulation {
     #[must_use]
     pub fn player_position(&self) -> Vec3 {
         self.player_body().map_or(Vec3::ZERO, |body| body.position)
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, reason = "cast tests assert on known-good values")]
+mod cast_tests {
+    use super::*;
+    use crate::arena::{self, ArenaConfig};
+
+    /// Slot 7 (`LANCE`) is the short cast; slot 10 (`SMITE`) is the long one.
+    const LANCE: usize = 6;
+
+    fn sim() -> Simulation {
+        let mut simulation = arena::training_arena(&ArenaConfig::default());
+        simulation.step_once();
+        simulation
+    }
+
+    fn lance() -> AbilityId {
+        AbilityId::from_slot(LANCE).expect("slot 7 exists")
+    }
+
+    #[test]
+    fn an_instant_ability_still_lands_on_the_tick_it_is_used() {
+        // The regression that matters most: adding casts must not have made every ability
+        // one.
+        let mut simulation = sim();
+        let before = simulation.meter().total_damage();
+        simulation.push_command(PlayerCommand::UseAbility(
+            AbilityId::from_slot(0).expect("fireball"),
+        ));
+        simulation.step_once();
+        assert!(simulation.meter().total_damage() > before);
+        assert!(simulation.casting().is_none(), "fireball is instant");
+    }
+
+    #[test]
+    fn a_cast_ability_starts_a_cast_and_lands_when_it_finishes() {
+        let mut simulation = sim();
+        simulation.push_command(PlayerCommand::UseAbility(lance()));
+        simulation.step_once();
+
+        let cast = *simulation.casting().expect("a cast is running");
+        assert_eq!(cast.ability, lance());
+        assert!(cast.duration > 0.0);
+        assert_eq!(simulation.meter().total_damage(), 0.0, "nothing landed yet");
+
+        // Run past the cast time; the damage arrives with it.
+        simulation.step_many(120);
+        assert!(simulation.casting().is_none(), "the cast finished");
+        assert!(
+            simulation.meter().total_damage() > 0.0,
+            "the effect should have landed"
+        );
+    }
+
+    #[test]
+    fn a_cast_progresses_on_simulation_time() {
+        let mut simulation = sim();
+        simulation.push_command(PlayerCommand::UseAbility(lance()));
+        simulation.step_once();
+        let first = simulation.casting().expect("casting").elapsed;
+        simulation.step_many(10);
+        let later = simulation.casting().expect("still casting").elapsed;
+        assert!(later > first);
+        assert!(simulation.casting().expect("casting").fraction() > 0.0);
+        assert!(simulation.casting().expect("casting").remaining() > 0.0);
+    }
+
+    #[test]
+    fn moving_cancels_a_cast_and_the_effect_never_lands() {
+        // What makes a cast a commitment rather than a delay.
+        let mut simulation = sim();
+        simulation.push_command(PlayerCommand::UseAbility(lance()));
+        simulation.step_once();
+        assert!(simulation.casting().is_some());
+
+        simulation.push_command(PlayerCommand::Move {
+            forward: 1.0,
+            right: 0.0,
+            yaw: 0.0,
+        });
+        simulation.step_many(3);
+        assert!(simulation.casting().is_none(), "moving broke the channel");
+
+        simulation.step_many(240);
+        assert_eq!(
+            simulation.meter().total_damage(),
+            0.0,
+            "a cancelled cast must not land later"
+        );
+    }
+
+    #[test]
+    fn a_cancelled_cast_keeps_its_cost_and_its_cooldown() {
+        // The convention the genre uses: cancelling wastes the resource. Refunding it would
+        // make starting a cast free and interruption meaningless.
+        let mut simulation = sim();
+        let full = simulation.player().resource.current();
+        simulation.push_command(PlayerCommand::UseAbility(lance()));
+        simulation.step_once();
+        let spent = simulation.player().resource.current();
+        assert!(spent < full, "the cast paid up front");
+
+        simulation.push_command(PlayerCommand::Move {
+            forward: 1.0,
+            right: 0.0,
+            yaw: 0.0,
+        });
+        simulation.step_many(3);
+        assert!(
+            !simulation.player().abilities.is_ready(lance()),
+            "the cooldown is still running"
+        );
+    }
+
+    #[test]
+    fn starting_another_ability_replaces_the_cast() {
+        let mut simulation = sim();
+        simulation.push_command(PlayerCommand::UseAbility(lance()));
+        simulation.step_once();
+        assert!(simulation.casting().is_some());
+
+        simulation.push_command(PlayerCommand::UseAbility(
+            AbilityId::from_slot(0).expect("fireball"),
+        ));
+        simulation.step_once();
+        assert!(
+            simulation.casting().is_none(),
+            "an instant ability interrupts the channel"
+        );
+        assert!(simulation.meter().total_damage() > 0.0, "fireball landed");
+    }
+
+    #[test]
+    fn a_cast_that_cannot_be_started_is_refused_with_its_reason() {
+        // Validated when it starts, not two seconds later: a cast begun against nothing and
+        // silently dropped on landing would look like the ability was broken.
+        let mut simulation = sim();
+        simulation.player_mut().target = None;
+        let error = simulation.use_ability(lance()).expect_err("no target");
+        assert_eq!(error, AbilityError::NoTarget);
+        assert!(simulation.casting().is_none());
+    }
+
+    #[test]
+    fn a_cast_whose_target_dies_ends_without_landing() {
+        let mut simulation = sim();
+        simulation.push_command(PlayerCommand::UseAbility(lance()));
+        simulation.step_once();
+        let target = simulation.player().target.expect("a target");
+        simulation.world_mut().damage(target, 1_000_000.0);
+
+        simulation.step_many(120);
+        assert!(simulation.casting().is_none());
+        // The dummy died to the direct damage above, which the meter does not see; the cast
+        // itself must have added nothing.
+        assert_eq!(simulation.meter().total_damage(), 0.0);
+    }
+
+    #[test]
+    fn the_cast_stream_announces_both_ends() {
+        let mut simulation = sim();
+        simulation.push_command(PlayerCommand::UseAbility(lance()));
+        simulation.step_once();
+        assert!(
+            simulation
+                .events()
+                .iter()
+                .any(|event| matches!(event, CombatEvent::CastStarted { .. })),
+            "starting a cast is announced"
+        );
+
+        simulation.step_many(120);
+        assert!(
+            simulation.event_stream().total_recorded() > 0,
+            "the stream recorded the cast"
+        );
+    }
+
+    #[test]
+    fn a_reset_clears_a_cast_in_progress() {
+        let mut simulation = sim();
+        simulation.push_command(PlayerCommand::UseAbility(lance()));
+        simulation.step_once();
+        assert!(simulation.casting().is_some());
+
+        simulation.reset_dummies();
+        assert!(
+            simulation.casting().is_none(),
+            "R returns the arena to a known state, which includes not casting"
+        );
     }
 }
 

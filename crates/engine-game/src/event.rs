@@ -23,6 +23,7 @@
 use crate::ability::AbilityId;
 use crate::combat::DamageType;
 use crate::entity::EntityId;
+use crate::sim::CastEnd;
 use crate::status::{StatusEnd, StatusKind};
 
 /// One instance of damage landing.
@@ -102,6 +103,31 @@ pub enum CombatEvent {
         /// The simulation tick it happened on.
         tick: u64,
     },
+    /// A cast started. Its effect lands when `CastEnded { end: Completed }` follows.
+    ///
+    /// Announced rather than exposed as state so a cast bar, a future animation selector and
+    /// a network client all read the same stream everything else does.
+    CastStarted {
+        /// Who is casting.
+        source: EntityId,
+        /// Which ability.
+        ability: AbilityId,
+        /// How long the cast takes, seconds.
+        duration: f32,
+        /// The simulation tick it happened on.
+        tick: u64,
+    },
+    /// A cast ended, whether or not it landed.
+    CastEnded {
+        /// Who was casting.
+        source: EntityId,
+        /// Which ability.
+        ability: AbilityId,
+        /// Why it ended.
+        end: CastEnd,
+        /// The simulation tick it happened on.
+        tick: u64,
+    },
     /// An entity's health reached zero.
     Death {
         /// Who died.
@@ -122,6 +148,8 @@ impl CombatEvent {
             | Self::Healing { tick, .. }
             | Self::StatusApplied { tick, .. }
             | Self::StatusRemoved { tick, .. }
+            | Self::CastStarted { tick, .. }
+            | Self::CastEnded { tick, .. }
             | Self::Death { tick, .. } => tick,
             Self::Damage(damage) => damage.tick,
         }

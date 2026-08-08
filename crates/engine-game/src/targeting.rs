@@ -441,6 +441,7 @@ mod tests {
         let player = world.spawn(EntityDesc::player(Vec3::ZERO));
         let mut query = TargetQuery::new();
         let nova = AbilityDef {
+            cast_time: 0.0,
             id: AbilityId::from_slot(8).expect("slot 8 exists"),
             name: "NOVA",
             cooldown: 1.0,
