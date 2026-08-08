@@ -119,9 +119,59 @@ pub fn training_arena(config: &ArenaConfig) -> Simulation {
         ..SimConfig::default()
     });
     let arena = populate(simulation.world_mut(), config);
+    build_collision(simulation.collision_world_mut(), config);
     simulation.set_player_entity(arena.player);
     simulation.select_nearest_target();
     simulation
+}
+
+/// Height of the arena's boundary wall, in metres.
+///
+/// Taller than a jump, so the wall is a wall rather than a hurdle.
+const WALL_HEIGHT: f32 = 4.0;
+
+/// Thickness of the arena's boundary wall, in metres.
+const WALL_THICKNESS: f32 = 1.0;
+
+/// Gives the arena its floor and its four boundary walls.
+///
+/// The floor was previously a number (`ground_height`) and the walls were a clamp on X and
+/// Z. They are now geometry, which is what makes the boundary behave like a boundary:
+/// running into it at an angle slides along it instead of stopping dead on one axis.
+///
+/// The clamp is still there behind this, in [`crate::movement::step_collided`]. It costs
+/// four comparisons and it is what guarantees a 1,000-dummy benchmark scenario stays inside
+/// the arena it was measured in.
+pub fn build_collision(world: &mut engine_collision::world::CollisionWorld, config: &ArenaConfig) {
+    world.clear();
+    world.add_ground(0.0, "ARENA FLOOR");
+
+    let limit = config.arena_half_extent;
+    let outer = limit + WALL_THICKNESS;
+    let top = WALL_HEIGHT;
+    // Each wall spans the full outer square, so the four of them overlap at the corners
+    // rather than leaving a gap the width of a wall at each one.
+    world.add_box(
+        Vec3::new(limit, 0.0, -outer),
+        Vec3::new(outer, top, outer),
+        "ARENA WALL +X",
+    );
+    world.add_box(
+        Vec3::new(-outer, 0.0, -outer),
+        Vec3::new(-limit, top, outer),
+        "ARENA WALL -X",
+    );
+    world.add_box(
+        Vec3::new(-outer, 0.0, limit),
+        Vec3::new(outer, top, outer),
+        "ARENA WALL +Z",
+    );
+    world.add_box(
+        Vec3::new(-outer, 0.0, -outer),
+        Vec3::new(outer, top, -limit),
+        "ARENA WALL -Z",
+    );
+    world.rebuild_broad_phase();
 }
 
 /// Fills an existing world with the arena and returns what it spawned.

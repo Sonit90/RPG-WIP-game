@@ -53,6 +53,7 @@
 //! | [`command`] | What the player asked for |
 //! | [`input_map`] | Keys to commands — the only module that knows a key |
 //! | [`arena`] | The training arena |
+//! | [`demo`] | The collision demo scene: geometry, no combat |
 //! | [`sim`] | The tick, and everything that owns state across one |
 
 /// Seconds below which a countdown is treated as finished.
@@ -69,6 +70,7 @@ pub mod ability;
 pub mod arena;
 pub mod combat;
 pub mod command;
+pub mod demo;
 pub mod entity;
 pub mod event;
 pub mod input_map;
@@ -83,6 +85,7 @@ pub use ability::{ABILITY_SLOTS, AbilityDef, AbilityError, AbilityId};
 pub use arena::{Arena, ArenaConfig, training_arena};
 pub use combat::{DamageType, Faction, Health, Resource};
 pub use command::{CommandBuffer, PlayerCommand};
+pub use demo::{DemoScene, Station, collision_demo};
 pub use entity::EntityId;
 pub use event::{CombatEvent, DamageEvent};
 pub use input_map::Bindings;

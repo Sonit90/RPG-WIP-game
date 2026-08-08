@@ -78,20 +78,8 @@ impl Bindings {
         camera_yaw: f32,
         out: &mut Vec<PlayerCommand>,
     ) {
-        let axis = |positive: KeyCode, negative: KeyCode| -> f32 {
-            f32::from(u8::from(input.is_key_down(positive)))
-                - f32::from(u8::from(input.is_key_down(negative)))
-        };
+        self.write_movement_commands(input, camera_yaw, out);
 
-        out.push(PlayerCommand::Move {
-            forward: axis(self.forward, self.back),
-            right: axis(self.right, self.left),
-            yaw: camera_yaw,
-        });
-
-        if input.was_key_pressed(self.jump) {
-            out.push(PlayerCommand::Jump);
-        }
         if input.was_key_pressed(self.cycle_target) {
             out.push(PlayerCommand::CycleTarget);
         }
@@ -107,6 +95,34 @@ impl Bindings {
             if input.was_key_pressed(key) {
                 out.push(PlayerCommand::UseAbility(ability));
             }
+        }
+    }
+
+    /// Appends only this frame's movement and jump.
+    ///
+    /// What the collision demo scene uses. That scene has no abilities, no targets and no
+    /// dummies, and its number keys stand the character at a test station instead — so
+    /// issuing `UseAbility` there would be issuing commands nothing can act on and taking
+    /// the digits away from the thing that needs them.
+    pub fn write_movement_commands(
+        &self,
+        input: &InputState,
+        camera_yaw: f32,
+        out: &mut Vec<PlayerCommand>,
+    ) {
+        let axis = |positive: KeyCode, negative: KeyCode| -> f32 {
+            f32::from(u8::from(input.is_key_down(positive)))
+                - f32::from(u8::from(input.is_key_down(negative)))
+        };
+
+        out.push(PlayerCommand::Move {
+            forward: axis(self.forward, self.back),
+            right: axis(self.right, self.left),
+            yaw: camera_yaw,
+        });
+
+        if input.was_key_pressed(self.jump) {
+            out.push(PlayerCommand::Jump);
         }
     }
 }
@@ -280,6 +296,33 @@ mod tests {
         frame(&mut input, &[], &[]);
         let held = commands(&input, 0.0);
         assert!(!held.contains(&PlayerCommand::ResetDummies));
+    }
+
+    #[test]
+    fn the_movement_only_mapping_issues_nothing_the_collision_scene_cannot_act_on() {
+        let mut input = InputState::new();
+        frame(
+            &mut input,
+            &[KeyCode::W, KeyCode::Space, KeyCode::Digit1, KeyCode::Tab],
+            &[],
+        );
+
+        let mut out = Vec::new();
+        Bindings::default().write_movement_commands(&input, 0.0, &mut out);
+        assert!(out.contains(&PlayerCommand::Jump));
+        assert_eq!(
+            movement(&out),
+            Some(PlayerCommand::Move {
+                forward: 1.0,
+                right: 0.0,
+                yaw: 0.0,
+            })
+        );
+        assert_eq!(
+            out.len(),
+            2,
+            "an ability and a target cycle leaked in: {out:?}"
+        );
     }
 
     #[test]

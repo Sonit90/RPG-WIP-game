@@ -36,6 +36,8 @@
 
 use std::time::{Duration, Instant};
 
+use engine_collision::controller::{CharacterConfig, CharacterState, MoveResult};
+use engine_collision::world::{CollisionWorld, QueryBuffers};
 use engine_core::math::Vec3;
 use engine_core::time::FixedTimestep;
 
@@ -57,6 +59,12 @@ pub struct SimConfig {
     pub tick_hz: u32,
     /// How the player's body moves.
     pub movement: MovementConfig,
+    /// The player's collision shape and what it can climb.
+    ///
+    /// Separate from [`SimConfig::movement`] because it is a different kind of number:
+    /// `movement` is how fast the character wants to go, `character` is what shape is
+    /// trying to go there. The capsule here has nothing to do with the player's mesh.
+    pub character: CharacterConfig,
     /// The player's resource pool.
     pub resource_max: f32,
     /// Resource regenerated per second.
@@ -68,6 +76,7 @@ impl Default for SimConfig {
         Self {
             tick_hz: engine_core::time::DEFAULT_TICK_HZ,
             movement: MovementConfig::default(),
+            character: CharacterConfig::default(),
             resource_max: 100.0,
             // Fireball costs 12 and comes off cooldown every 1.5 s, which is 8 a second:
             // the filler is sustainable and the expensive abilities are not.
@@ -203,6 +212,16 @@ impl SimStats {
 #[derive(Debug)]
 pub struct Simulation {
     world: GameWorld,
+    /// The static geometry the player collides with.
+    ///
+    /// Owned by the simulation because collision is a simulation fact: the same world has
+    /// to be there for a headless test, a replay and a future server, none of which have a
+    /// renderer to ask.
+    collision: CollisionWorld,
+    /// Scratch space for collision queries. Reused; never freed.
+    collision_buffers: QueryBuffers,
+    /// What the player's last collided move did, for a developer readout.
+    last_move: MoveResult,
     player: Player,
     config: SimConfig,
     timestep: FixedTimestep,
@@ -247,6 +266,11 @@ impl Simulation {
         let resource = Resource::new(config.resource_max, config.resource_regeneration);
         Self {
             world: GameWorld::new(),
+            collision: CollisionWorld::with_capacity(64),
+            // Sized for the worst corner in a level: a character standing where a floor,
+            // two walls and a ramp meet. Past the first tick this never grows again.
+            collision_buffers: QueryBuffers::with_capacity(16),
+            last_move: MoveResult::default(),
             player: Player {
                 entity: EntityId::INVALID,
                 abilities: AbilityBook::default(),
@@ -282,6 +306,31 @@ impl Simulation {
     /// The world, for a scenario builder. Gameplay systems go through the simulation.
     pub fn world_mut(&mut self) -> &mut GameWorld {
         &mut self.world
+    }
+
+    /// The static collision geometry.
+    #[must_use]
+    pub fn collision_world(&self) -> &CollisionWorld {
+        &self.collision
+    }
+
+    /// The static collision geometry, for a scenario builder.
+    ///
+    /// The counterpart to [`Simulation::world_mut`]: a scene adds its floor, walls and
+    /// ramps here and calls
+    /// [`CollisionWorld::rebuild_broad_phase`](engine_collision::world::CollisionWorld::rebuild_broad_phase)
+    /// when it is done.
+    pub fn collision_world_mut(&mut self) -> &mut CollisionWorld {
+        &mut self.collision
+    }
+
+    /// What the player's most recent collided move did.
+    ///
+    /// A developer readout — how many candidates the broad phase offered, how many exact
+    /// tests ran, whether a step was taken. Nothing in gameplay reads it.
+    #[must_use]
+    pub fn last_move(&self) -> MoveResult {
+        self.last_move
     }
 
     /// The player.
@@ -546,6 +595,7 @@ impl Simulation {
                             .next_hostile(&self.world, self.player.entity, current);
                 }
                 PlayerCommand::ResetDummies => self.reset_dummies(),
+                PlayerCommand::Teleport { position } => self.teleport_player(position),
                 PlayerCommand::Move { .. } => {}
             }
         }
@@ -555,31 +605,84 @@ impl Simulation {
 
     /// Integrates every body.
     ///
-    /// Dummies get the same integration as the player with an empty intent: they are on the
-    /// ground and stay there, but running one code path means a dummy that is ever pushed,
-    /// dropped or knocked back behaves like the player rather than like a special case.
+    /// The player is moved through the collision world; everything else is integrated with
+    /// the plain rules and an empty intent. That split is deliberate and is the decision
+    /// recorded in `collision.md`: a training dummy is a target, not an obstacle, and one
+    /// the player can get wedged against is a target that ruins a fight. Dummies stand
+    /// still on a flat floor, so a collision query per dummy per tick would buy nothing at
+    /// 1,000 of them.
     fn integrate_bodies(&mut self, step: f32) {
         let player = self.player.entity;
         let intent = self.intent;
         let config = self.config.movement;
+        let character = self.config.character;
 
         for slot in 0..self.world.slot_count() {
             let Some(id) = self.world.id_at(slot) else {
                 continue;
             };
-            let body_intent = if id == player {
-                intent
-            } else {
-                MoveIntent::NONE
-            };
+            if id == player {
+                continue;
+            }
             if let Some(body) = self.world.body_mut(id) {
-                movement::step(body, body_intent, &config, step);
+                movement::step(body, MoveIntent::NONE, &config, step);
+            }
+        }
+
+        // The player last, and out of the loop, because it is the one body that needs the
+        // collision world and the query buffers — both of which are borrowed from `self`.
+        if let Some(body) = self.world.body_mut(player) {
+            let mut moved = *body;
+            self.last_move = movement::step_collided(
+                &mut moved,
+                intent,
+                &config,
+                &character,
+                &self.collision,
+                &mut self.collision_buffers,
+                step,
+            );
+            if let Some(body) = self.world.body_mut(player) {
+                *body = moved;
             }
         }
 
         // Consumed, not held: a jump lasts one tick, and the next tick's intent comes from
         // the next frame's input.
         self.intent.jump = false;
+    }
+
+    /// Puts the player down at `position`, at rest and clear of geometry.
+    ///
+    /// A developer control. Velocity is cleared and the interpolation history is reset, so
+    /// a teleport is a teleport rather than a very fast slide across the level.
+    fn teleport_player(&mut self, position: Vec3) {
+        let player = self.player.entity;
+        let character = self.config.character;
+        let Some(body) = self.world.body_mut(player) else {
+            return;
+        };
+        let mut state = CharacterState::at(position);
+        // Claimed grounded so the zero-length move below runs its ground probe: a station
+        // written as "a tenth of a metre above the floor" should put the character *on* the
+        // floor, not leave it falling for two ticks. A station genuinely in mid-air — the
+        // high-speed drop — finds nothing within the probe distance and stays where it is.
+        state.grounded = true;
+        *body = Body::at(position);
+
+        engine_collision::controller::move_character(
+            &self.collision,
+            &character,
+            &mut state,
+            Vec3::ZERO,
+            &mut self.collision_buffers,
+        );
+        if let Some(body) = self.world.body_mut(player) {
+            body.position = state.position;
+            body.grounded = state.grounded;
+            body.ground_normal = state.ground_normal;
+        }
+        self.world.reset_history(player);
     }
 
     /// Keeps the nearest hostile selected when nothing valid is.

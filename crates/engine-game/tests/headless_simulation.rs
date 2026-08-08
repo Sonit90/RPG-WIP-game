@@ -127,7 +127,15 @@ fn movement_and_jumping_run_headlessly() {
     let body = simulation.player_body().expect("the player exists");
     assert!(body.position.z < start.z - 3.0, "{start:?} -> {body:?}");
     assert!(body.grounded, "the character never landed");
-    assert_eq!(body.position.y, 0.0);
+    // Not exactly zero any more. Collision resolution keeps the capsule a skin width
+    // outside every surface it rests on, because a character that settles *exactly* on a
+    // face alternates between touching it and being one ulp inside it — which is a visible
+    // shudder. Five millimetres is that skin.
+    assert!(
+        body.position.y >= 0.0 && body.position.y < 0.02,
+        "landed at {}",
+        body.position.y
+    );
 }
 
 #[test]

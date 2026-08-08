@@ -1,19 +1,32 @@
 //! The character controller: acceleration, gravity, ground contact and jumping.
 //!
-//! This is not a physics engine and does not want to become one. There are no rigid bodies,
-//! no contact manifolds and no solver — there is a capsule-shaped intention moving over a
-//! flat arena floor, which is exactly what a third-person combat prototype needs to be
-//! playable. Everything it does is one function over one [`Body`], so it is deterministic,
-//! testable without a world, and cheap enough that a thousand of them cost nothing.
+//! This is not a physics engine and does not want to become one. There are no rigid bodies
+//! and no solver — there is a capsule-shaped intention, and the rules that turn a key press
+//! into a velocity. Everything it does is one function over one [`Body`], so it is
+//! deterministic, testable without a world, and cheap enough that a thousand of them cost
+//! nothing.
+//!
+//! There are two of those functions, and the difference between them is the whole of what
+//! collision changed:
 //!
 //! ```text
-//! MoveIntent -> accelerate horizontally -> jump -> gravity -> integrate -> ground contact
+//! step           .. -> gravity -> integrate -> y <= 0 -> clamp x,z to the arena
+//! step_collided  .. -> gravity -> engine_collision::move_character -> arena
+//!                                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+//!                                 walls, corners, slopes, steps, ledges
 //! ```
+//!
+//! [`step`] is kept for bodies that have no reason to collide with anything — the training
+//! dummies, which stand still on a flat floor — and because a movement rule is easier to
+//! reason about when it can be tested without building a level. The player goes through
+//! [`step_collided`].
 //!
 //! Position is the **feet**, not the centre. Ground contact is then `y <= 0` rather than
 //! `y <= half_height`, which is one fewer number to get wrong, and the presentation layer
 //! is the only place that needs to know how tall the body's mesh is.
 
+use engine_collision::controller::{self, CharacterConfig, CharacterState, MoveResult};
+use engine_collision::world::{CollisionWorld, QueryBuffers};
 use engine_core::math::Vec3;
 
 /// What a body is doing, for animation and for the developer overlay.
@@ -153,6 +166,12 @@ pub struct Body {
     pub velocity: Vec3,
     /// Whether the feet are in contact with the floor.
     pub grounded: bool,
+    /// The normal of the surface under the feet. `+Y` when airborne or on flat ground.
+    ///
+    /// Carried on the body rather than recomputed by whoever wants it, because it is an
+    /// output of the one place that resolved the move and re-deriving it anywhere else
+    /// would be a second opinion about which way is up.
+    pub ground_normal: Vec3,
     /// Which way the body faces, radians about +Y. Zero faces −Z.
     pub facing_yaw: f32,
     /// What the body is doing, derived every step.
@@ -173,6 +192,7 @@ impl Body {
             position,
             velocity: Vec3::ZERO,
             grounded: true,
+            ground_normal: Vec3::Y,
             facing_yaw: 0.0,
             state: MovementState::Idle,
         }
@@ -182,6 +202,15 @@ impl Body {
     #[must_use]
     pub fn horizontal_speed(&self) -> f32 {
         self.velocity.x.hypot(self.velocity.z)
+    }
+
+    /// The angle of the surface under the feet, in radians. Zero when airborne.
+    #[must_use]
+    pub fn slope_angle(&self) -> f32 {
+        if !self.grounded {
+            return 0.0;
+        }
+        self.ground_normal.dot(Vec3::Y).clamp(-1.0, 1.0).acos()
     }
 }
 
@@ -222,6 +251,70 @@ pub fn step(body: &mut Body, intent: MoveIntent, config: &MovementConfig, second
     confine_to_arena(body, config);
     face_movement(body);
     body.state = classify(body);
+}
+
+/// Advances one body by one fixed simulation step, against real collision geometry.
+///
+/// The same rules as [`step`] — the same acceleration, the same jump, the same gravity —
+/// with the integrate-and-clamp replaced by a swept move through a
+/// [`CollisionWorld`]. Everything about *how* the body wants to move stays here in
+/// gameplay; everything about what stops it lives in `engine-collision`.
+///
+/// ```text
+/// intent -> accelerate -> jump -> gravity -> move_character -> arena -> facing -> state
+///                                            ^^^^^^^^^^^^^^
+///                                            walls, slopes, steps, ground
+/// ```
+///
+/// `buffers` is the caller's scratch space, reused across ticks: this function does not
+/// allocate, and neither does anything it calls.
+///
+/// Returns what the move did, for a developer readout. Gameplay ignores it.
+pub fn step_collided(
+    body: &mut Body,
+    intent: MoveIntent,
+    config: &MovementConfig,
+    character: &CharacterConfig,
+    world: &CollisionWorld,
+    buffers: &mut QueryBuffers,
+    seconds: f32,
+) -> MoveResult {
+    if seconds <= 0.0 {
+        return MoveResult::default();
+    }
+
+    accelerate_horizontally(body, intent, config, seconds);
+
+    if intent.jump && body.grounded {
+        body.velocity.y = config.jump_speed;
+        body.grounded = false;
+    }
+
+    // Gravity always, not only when airborne. A character standing on a slope needs a
+    // downward push to stay pressed against it, and the resolution removes whatever part of
+    // it points into the ground — so a body at rest on flat floor still ends the tick with
+    // zero vertical velocity.
+    body.velocity.y = (body.velocity.y - config.gravity * seconds).max(-config.terminal_velocity);
+
+    let mut state = CharacterState {
+        position: body.position,
+        velocity: body.velocity,
+        grounded: body.grounded,
+        ground_normal: body.ground_normal,
+        ground_id: None,
+    };
+    let displacement = state.velocity * seconds;
+    let result = controller::move_character(world, character, &mut state, displacement, buffers);
+
+    body.position = state.position;
+    body.velocity = state.velocity;
+    body.grounded = state.grounded;
+    body.ground_normal = state.ground_normal;
+
+    confine_to_arena(body, config);
+    face_movement(body);
+    body.state = classify(body);
+    result
 }
 
 /// Moves the horizontal velocity towards what the intent asks for.

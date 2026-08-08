@@ -405,6 +405,19 @@ impl GameWorld {
         true
     }
 
+    /// Forgets where an entity was last tick, so it is drawn where it is now.
+    ///
+    /// For a teleport. Without it the presentation layer interpolates between the old
+    /// position and the new one, and a character sent across the level slides there over a
+    /// frame instead of arriving.
+    pub fn reset_history(&mut self, id: EntityId) {
+        if !self.contains(id) {
+            return;
+        }
+        let slot = id.index();
+        self.previous_bodies[slot] = self.bodies[slot];
+    }
+
     /// Removes every entity, keeping the allocated capacity.
     pub fn clear(&mut self) {
         for statuses in &mut self.statuses {

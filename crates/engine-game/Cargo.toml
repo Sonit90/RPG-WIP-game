@@ -5,11 +5,15 @@ edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 
-# Deliberately only engine-core. This crate must never gain `windows`, `engine-platform`,
-# `engine-renderer` or even `engine-render-data`: the simulation does not know that
-# rendering exists, and the absence of those dependencies is what makes the seam real. It
-# is checkable with `cargo tree -p engine-game`.
+# Deliberately only engine-core and engine-collision. This crate must never gain
+# `windows`, `engine-platform`, `engine-renderer` or even `engine-render-data`: the
+# simulation does not know that rendering exists, and the absence of those dependencies is
+# what makes the seam real. It is checkable with `cargo tree -p engine-game`.
+#
+# engine-collision is allowed because it is the same kind of thing: simulation-side
+# geometry that itself depends on engine-core alone.
 [dependencies]
+engine-collision = { workspace = true }
 engine-core = { workspace = true }
 log = { workspace = true }
 

@@ -43,6 +43,15 @@ pub enum PlayerCommand {
     CycleTarget,
     /// Restore every dummy and clear the combat session. A developer control.
     ResetDummies,
+    /// Put the character down at a position, at rest. A developer control.
+    ///
+    /// A command rather than a direct write to the world, so a teleport is part of the
+    /// same ordered stream as everything else: the collision demo's numbered test stations
+    /// are reproducible for the same reason a replay is.
+    Teleport {
+        /// Where the character's feet should end up.
+        position: Vec3,
+    },
 }
 
 impl PlayerCommand {
