@@ -6,8 +6,52 @@
 //! truth. Parsing produces settings; the engine and its subsystems read only those.
 
 use std::fmt;
+use std::str::FromStr;
 
 use engine_core::config::{DisplayMode, EngineSettings};
+
+/// Which scenario the executable loads.
+///
+/// Two independently launchable scenes, not one scene with a debug mode: a collision bug
+/// has to be reproducible without abilities, dummies and a damage meter in the way, and
+/// test geometry in the combat arena would be geometry a player trips over during a fight.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Scene {
+    /// The training arena: player, dummies, abilities, combat, the game UI.
+    #[default]
+    Combat,
+    /// The collision test course: geometry, a character, and nothing else.
+    Collision,
+}
+
+impl Scene {
+    /// Short uppercase name, for a log line and the developer overlay.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Combat => "COMBAT",
+            Self::Collision => "COLLISION",
+        }
+    }
+
+    /// Whether this is the collision demo.
+    #[must_use]
+    pub fn is_collision(self) -> bool {
+        matches!(self, Self::Collision)
+    }
+}
+
+impl FromStr for Scene {
+    type Err = ();
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "combat" | "arena" | "COMBAT" => Ok(Self::Combat),
+            "collision" | "demo" | "COLLISION" => Ok(Self::Collision),
+            _ => Err(()),
+        }
+    }
+}
 
 /// Usage text printed for `--help` and on a parse error.
 pub const USAGE: &str = "\
@@ -27,7 +71,11 @@ options:
   --overlay              start with the debug overlay visible (F5 toggles it at any
                          time; hidden by default because it costs frame time)
   --dummies <count>      training dummies in the group, on top of the single dummy
-                         (default 4)
+                         (default 4, combat scene only)
+  --scene <name>         which scenario to load: combat (default) or collision. The
+                         collision scene is a dedicated test course - floor, walls, a
+                         corner, steps, ramps, thin barriers, a ledge - with no combat
+                         in it at all. Keys 1 to 7 stand at a test station, R resets
   --no-ui                do not draw the game UI. A measurement control: it makes the
                          interface's cost the difference between two runs of the same
                          binary rather than of two builds
@@ -50,6 +98,8 @@ pub struct Args {
     pub overlay: bool,
     /// Training dummies in the group, on top of the single dummy.
     pub dummies: usize,
+    /// Which scenario to load.
+    pub scene: Scene,
     /// Whether the game UI is drawn.
     ///
     /// A measurement control rather than a game option: with it, the interface's cost is
@@ -76,6 +126,7 @@ impl Default for Args {
             report_interval_secs: 1.0,
             overlay: false,
             dummies: 4,
+            scene: Scene::Combat,
             ui: true,
             fullscreen: false,
             validation: None,
@@ -105,7 +156,10 @@ impl Args {
             renderer_validation: self.validation.unwrap_or(defaults.renderer_validation),
             frame_budget: self.frames,
             report_interval_seconds: self.report_interval_secs,
-            title: "myGame — phase 3 training arena".to_owned(),
+            title: match self.scene {
+                Scene::Combat => "myGame — training arena".to_owned(),
+                Scene::Collision => "myGame — collision demo".to_owned(),
+            },
         }
     }
 }
@@ -165,6 +219,14 @@ where
             "--validation" => args.validation = Some(true),
             "--overlay" => args.overlay = true,
             "--dummies" => args.dummies = next_value(&mut iter, "--dummies")?,
+            "--scene" => {
+                let raw = iter.next().ok_or(ArgsError::MissingValue("--scene"))?;
+                let raw = raw.as_ref();
+                args.scene = raw.parse().map_err(|()| ArgsError::InvalidValue {
+                    option: "--scene",
+                    value: raw.to_owned(),
+                })?;
+            }
             "--no-ui" => args.ui = false,
             "-h" | "--help" => args.help = true,
             other => return Err(ArgsError::Unknown(other.to_owned())),
@@ -282,6 +344,47 @@ mod tests {
                 .dummies,
             500
         );
+    }
+
+    #[test]
+    fn the_scene_defaults_to_combat_and_can_be_switched() {
+        assert_eq!(
+            parse::<[&str; 0], &str>([]).expect("empty is valid").scene,
+            Scene::Combat
+        );
+        assert_eq!(
+            parse(["--scene", "collision"])
+                .expect("--scene collision is valid")
+                .scene,
+            Scene::Collision
+        );
+        assert!(Scene::Collision.is_collision());
+        assert!(!Scene::Combat.is_collision());
+        assert_eq!(Scene::Collision.as_str(), "COLLISION");
+    }
+
+    #[test]
+    fn the_scene_name_is_in_the_window_title_so_a_screenshot_says_which_one_it_is() {
+        let combat = parse::<[&str; 0], &str>([])
+            .expect("empty is valid")
+            .to_settings();
+        let collision = parse(["--scene", "collision"])
+            .expect("valid")
+            .to_settings();
+        assert_ne!(combat.title, collision.title);
+        assert!(collision.title.contains("collision"), "{}", collision.title);
+    }
+
+    #[test]
+    fn an_unknown_scene_is_rejected_by_name() {
+        assert_eq!(
+            parse(["--scene", "racing"]),
+            Err(ArgsError::InvalidValue {
+                option: "--scene",
+                value: "racing".to_owned(),
+            })
+        );
+        assert_eq!(parse(["--scene"]), Err(ArgsError::MissingValue("--scene")));
     }
 
     #[test]

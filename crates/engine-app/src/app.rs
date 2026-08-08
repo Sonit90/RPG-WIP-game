@@ -30,12 +30,17 @@ use engine_core::math::Vec3;
 use engine_game::ability::AbilityId;
 use engine_game::arena::{self, ArenaConfig};
 use engine_game::command::PlayerCommand;
+use engine_game::demo::{self, DemoScene, Station};
 use engine_game::input_map::Bindings;
 use engine_game::sim::Simulation;
 #[cfg(feature = "debug-overlay")]
 use engine_game::telemetry::{AbilityTotals, TargetTotals};
 use engine_platform::{Window, WindowConfig, WindowEvent};
 use engine_presentation::camera::ThirdPersonCamera;
+#[cfg(feature = "debug-overlay")]
+use engine_presentation::collision_debug::{CollisionDebug, DebugBindings};
+#[cfg(feature = "debug-overlay")]
+use engine_presentation::collision_hud::{self, CollisionHudModel};
 use engine_presentation::damage_numbers::FloatingNumbers;
 use engine_presentation::extract::{RenderExtractor, VisualBindings};
 use engine_presentation::game_ui::GameUi;
@@ -46,10 +51,10 @@ use engine_presentation::snapshot::UiSnapshot;
 use engine_renderer::mesh::MeshData;
 use engine_renderer::{
     Camera, Lighting, MaterialDesc, MaterialHandle, MeshHandle, Projection, Renderer,
-    RendererConfig,
+    RendererConfig, UiDrawList,
 };
 
-use crate::args::Args;
+use crate::args::{Args, Scene};
 
 /// Clear colour of the back buffer: a dark blue-grey that reads as sky.
 const CLEAR_COLOR: [f32; 4] = [0.07, 0.09, 0.13, 1.0];
@@ -63,6 +68,13 @@ const GROUND_HALF_EXTENT: f32 = 120.0;
 /// Function key that toggles the developer overlay.
 #[cfg(feature = "debug-overlay")]
 const OVERLAY_TOGGLE_KEY: KeyCode = KeyCode::F5;
+
+/// Function key that toggles the collision debug drawing.
+///
+/// F3 by the project's existing convention of putting developer toggles on the function
+/// row beside F5 (overlay) and F9 (wireframe).
+#[cfg(feature = "debug-overlay")]
+const COLLISION_DEBUG_KEY: KeyCode = KeyCode::F3;
 
 /// Glyph scale the game UI draws text at.
 ///
@@ -91,6 +103,18 @@ pub struct App {
     camera: Camera,
     lighting: Lighting,
     bindings: Bindings,
+    /// Which scenario is loaded. Chosen once, at startup, by `--scene`.
+    scene: Scene,
+    /// The collision demo's stations and labels. `None` in the combat scene.
+    demo: Option<DemoScene>,
+    /// The test station the character was last put at, for the readout.
+    station: Option<Station>,
+    /// The collision demo's world-space labels. Its own draw list, because the demo scene
+    /// draws none of the combat interface.
+    collision_ui: UiDrawList,
+    /// The collision world, drawn. Developer-only, and off in the combat scene.
+    #[cfg(feature = "debug-overlay")]
+    collision_debug: CollisionDebug,
     /// Commands built from this frame's input. Reused; never freed.
     commands: Vec<PlayerCommand>,
     /// Whether the mouse is captured and drives the camera.
@@ -153,11 +177,39 @@ impl App {
         renderer.set_ui_enabled(args.ui);
 
         let visuals = upload_visuals(&mut renderer)?;
+        #[cfg(feature = "debug-overlay")]
+        let debug_visuals = upload_debug_visuals(&mut renderer)?;
 
-        let arena_config = ArenaConfig::with_group(args.dummies);
-        let simulation = arena::training_arena(&arena_config);
+        let (simulation, demo) = match args.scene {
+            Scene::Combat => (
+                arena::training_arena(&ArenaConfig::with_group(args.dummies)),
+                None,
+            ),
+            Scene::Collision => {
+                let (simulation, scene) = demo::collision_demo();
+                (simulation, Some(scene))
+            }
+        };
         let mut extractor = RenderExtractor::new(visuals, GROUND_HALF_EXTENT * 2.0);
+        if args.scene.is_collision() {
+            // The demo course brings its own floor: a slab whose top face is at y = 0. The
+            // extractor's floor plane is at y = 0 too, and two coplanar surfaces are a
+            // depth-buffer tie — which reads as the whole floor flickering. Dropped to the
+            // course's catch floor, where it is the thing a long fall lands on instead.
+            extractor.set_ground_height(demo::VOID_Y);
+        }
         extractor.extract(&simulation);
+
+        // The collision course is only visible through the debug view, so in that scene the
+        // view starts on: it *is* the scene's picture, not an overlay on top of one. F3
+        // still turns it off, which is how a developer checks that turning it off works.
+        #[cfg(feature = "debug-overlay")]
+        let mut collision_debug = CollisionDebug::new(debug_visuals);
+        #[cfg(feature = "debug-overlay")]
+        if args.scene.is_collision() {
+            collision_debug.set_enabled(extractor.render_world_mut(), true);
+            collision_debug.rebuild(extractor.render_world_mut(), &simulation);
+        }
 
         let controller = ThirdPersonCamera::following(simulation.player_position());
         let mut camera = Camera::new(Projection::perspective(aspect_of(width, height)))?;
@@ -180,7 +232,7 @@ impl App {
             .reports_enabled()
             .then(|| Duration::from_secs_f64(settings.report_interval_seconds));
 
-        log_controls(args.dummies);
+        log_controls(args, demo.as_ref());
 
         Ok(Self {
             window,
@@ -191,6 +243,12 @@ impl App {
             camera,
             lighting,
             bindings: Bindings::default(),
+            scene: args.scene,
+            station: demo.as_ref().map(|_| demo::STATIONS[0]),
+            demo,
+            collision_ui: UiDrawList::with_capacity(64, 1_024),
+            #[cfg(feature = "debug-overlay")]
+            collision_debug,
             commands: Vec::with_capacity(16),
             mouse_captured: false,
             extract_ms: 0.0,
@@ -235,8 +293,55 @@ impl App {
                 self.renderer.set_wireframe(enabled);
                 log::info!("wireframe {}", if enabled { "on" } else { "off" });
             }
-            other => log::trace!("key pressed: {other:?}"),
+            #[cfg(feature = "debug-overlay")]
+            COLLISION_DEBUG_KEY => {
+                let enabled = !self.collision_debug.enabled();
+                self.collision_debug
+                    .set_enabled(self.extractor.render_world_mut(), enabled);
+                log::info!("collision debug {}", if enabled { "on" } else { "off" });
+            }
+            other => {
+                if !self.handle_station_key(other) {
+                    log::trace!("key pressed: {other:?}");
+                }
+            }
         }
+    }
+
+    /// Puts the character at a numbered test station, or back at the start.
+    ///
+    /// Collision scene only. In the combat scene the digits are the ability bar and `R`
+    /// resets the dummies, and both are handled by [`Bindings`] rather than here.
+    ///
+    /// Returns whether the key meant anything.
+    fn handle_station_key(&mut self, key: KeyCode) -> bool {
+        let Some(scene) = self.demo.as_ref() else {
+            return false;
+        };
+        let station = match key {
+            KeyCode::R => scene.stations.first().copied(),
+            // The digit that was pressed names the station directly: 3 is the steps. Only
+            // 1 to 9 are searched, because a station key is a digit and 0 is not one of
+            // them in this scene.
+            other => (1..=9)
+                .find(|number| KeyCode::digit_key(*number) == Some(other))
+                .and_then(|number| scene.station(number)),
+        };
+        let Some(station) = station else {
+            return false;
+        };
+
+        self.station = Some(station);
+        self.simulation.push_command(PlayerCommand::Teleport {
+            position: station.spawn,
+        });
+        log::info!(
+            "station {} {}: {}",
+            station.key,
+            station.name,
+            station.instruction
+        );
+        true
     }
 
     /// Captures or releases the mouse for camera control.
@@ -300,6 +405,12 @@ impl App {
             return;
         }
         let started = Instant::now();
+        if self.scene.is_collision() {
+            self.build_collision_ui();
+            self.ui_ms = started.elapsed().as_secs_f64() * 1e3;
+            self.renderer.set_ui(&self.collision_ui);
+            return;
+        }
         let config = NameplateConfig {
             cell_pixels: UI_TEXT_SCALE,
             glyph_advance_pixels: engine_renderer::font::GLYPH_ADVANCE as f32 * UI_TEXT_SCALE,
@@ -325,6 +436,30 @@ impl App {
         );
         self.ui_ms = started.elapsed().as_secs_f64() * 1e3;
         self.renderer.set_ui(self.game_ui.list());
+    }
+
+    /// Builds the collision demo's interface: labels over the test geometry, nothing else.
+    ///
+    /// No health bars, no ability bar, no cast bar, no nameplates. The demo scene has no
+    /// combat to report and the whole point of it is that nothing unrelated is in the way.
+    fn build_collision_ui(&mut self) {
+        self.collision_ui.clear();
+        let Some(scene) = self.demo.as_ref() else {
+            return;
+        };
+        #[cfg(feature = "debug-overlay")]
+        collision_hud::push_markers(
+            &mut self.collision_ui,
+            &scene.markers,
+            &self.camera.view_projection(),
+            self.renderer.size(),
+            self.controller.eye(),
+            UI_TEXT_SCALE,
+        );
+        // Without the developer feature there is nothing to label: the geometry is not
+        // drawn either, so a marker would point at empty space.
+        #[cfg(not(feature = "debug-overlay"))]
+        let _ = scene;
     }
 
     /// Logs a combat and performance line if the reporting interval has elapsed.
@@ -389,6 +524,28 @@ impl App {
             return;
         }
         self.last_overlay_update = Instant::now();
+
+        if let Some(scene) = self.demo.as_ref() {
+            collision_hud::write_lines(
+                &mut self.overlay_lines,
+                &CollisionHudModel {
+                    simulation: &self.simulation,
+                    scene,
+                    station: self.station,
+                    debug_entities: self.collision_debug.drawn(),
+                },
+            );
+            self.renderer.set_overlay_text(&self.overlay_lines);
+            let columns = self
+                .overlay_lines
+                .iter()
+                .map(|line| line.chars().count())
+                .max()
+                .unwrap_or(0);
+            self.renderer
+                .push_overlay_backdrop(self.overlay_lines.len(), columns);
+            return;
+        }
 
         let cull = self.renderer.cull_stats();
         let model = HudModel {
@@ -536,8 +693,18 @@ impl Application for App {
                 self.controller.zoom(wheel);
             }
             self.commands.clear();
-            self.bindings
-                .write_commands(ctx.input(), self.controller.yaw, &mut self.commands);
+            // The collision scene issues movement and jump only: it has no abilities and no
+            // targets, and its digits stand the character at a test station instead.
+            if self.scene.is_collision() {
+                self.bindings.write_movement_commands(
+                    ctx.input(),
+                    self.controller.yaw,
+                    &mut self.commands,
+                );
+            } else {
+                self.bindings
+                    .write_commands(ctx.input(), self.controller.yaw, &mut self.commands);
+            }
             self.simulation.push_commands(self.commands.iter().copied());
         }
 
@@ -571,6 +738,12 @@ impl Application for App {
             });
             self.numbers.retire(time);
             self.extractor.extract(&self.simulation);
+            // After extraction, because it spawns into the same `RenderWorld` and would
+            // otherwise be drawing last frame's collision state beside this frame's
+            // character.
+            #[cfg(feature = "debug-overlay")]
+            self.collision_debug
+                .rebuild(self.extractor.render_world_mut(), &self.simulation);
             self.extract_ms = started.elapsed().as_secs_f64() * 1e3;
         }
 
@@ -695,18 +868,87 @@ fn aspect_of(width: u32, height: u32) -> f32 {
 }
 
 /// Prints the controls once at startup, so they are discoverable without the README.
-fn log_controls(dummies: usize) {
-    log::info!("training arena: 1 dummy plus a group of {dummies}");
+fn log_controls(args: &Args, demo: Option<&DemoScene>) {
+    log::info!("scene: {}", args.scene.as_str());
+    match demo {
+        Some(scene) => {
+            log::info!(
+                "collision demo: {} test stations, no combat",
+                scene.stations.len()
+            );
+            for station in &scene.stations {
+                log::info!(
+                    "  {}  {:<12} {}",
+                    station.key,
+                    station.name,
+                    station.instruction
+                );
+            }
+        }
+        None => log::info!("training arena: 1 dummy plus a group of {}", args.dummies),
+    }
+
     log::info!("controls:");
     log::info!("  W A S D          move, relative to the camera");
     log::info!("  SPACE            jump");
-    log::info!("  1 2 3            fireball, ignite, detonate (4-0 are placeholders)");
-    log::info!("  TAB              cycle target");
-    log::info!("  R                reset the dummies and the combat meter");
+    if demo.is_some() {
+        log::info!("  1 - 7            stand at a test station");
+        log::info!("  R                back to the first station");
+    } else {
+        log::info!("  1 2 3            fireball, ignite, detonate (4-0 are placeholders)");
+        log::info!("  TAB              cycle target");
+        log::info!("  R                reset the dummies and the combat meter");
+    }
     log::info!("  LEFT CLICK       capture the mouse for camera control, ESC releases it");
     log::info!("  MOUSE WHEEL      camera distance");
+    log::info!("  F3               collision debug drawing on/off");
     log::info!("  F5               developer overlay on/off");
     log::info!("  F9               wireframe on/off");
+}
+
+/// Uploads the meshes and materials the collision debug view draws with.
+///
+/// A cube and a sphere, and three unlit-looking materials. Separate from
+/// [`upload_visuals`] and behind the developer feature, so a shipping build uploads
+/// neither the sphere nor the materials.
+#[cfg(feature = "debug-overlay")]
+fn upload_debug_visuals(renderer: &mut Renderer) -> Result<DebugBindings, EngineError> {
+    let cube = MeshData::cube(1.0);
+    // 16 segments and 8 rings: a capsule cap, not a planet. It is drawn twice.
+    let sphere = MeshData::uv_sphere(1.0, 16, 8);
+    let box_bounds = cube.bounds();
+    let sphere_bounds = sphere.bounds();
+
+    let box_mesh = renderer.create_mesh(&cube)?;
+    let sphere_mesh = renderer.create_mesh(&sphere)?;
+
+    // Emissive, because a debug shape has to read the same whichever way the sun is
+    // pointing: a collision box lit like the world would be hard to tell from the world.
+    let shape_material = renderer.create_material(
+        MaterialDesc::colored(0.30, 0.75, 1.00)
+            .with_roughness(0.8)
+            .with_emissive(Vec3::new(0.06, 0.16, 0.22)),
+    )?;
+    let capsule_material = renderer.create_material(
+        MaterialDesc::colored(0.40, 1.00, 0.55)
+            .with_roughness(0.6)
+            .with_emissive(Vec3::new(0.10, 0.25, 0.12)),
+    )?;
+    let contact_material = renderer.create_material(
+        MaterialDesc::colored(1.00, 0.85, 0.30)
+            .with_roughness(0.4)
+            .with_emissive(Vec3::new(0.45, 0.35, 0.10)),
+    )?;
+
+    Ok(DebugBindings {
+        box_mesh,
+        box_bounds,
+        sphere_mesh,
+        sphere_bounds,
+        shape_material,
+        capsule_material,
+        contact_material,
+    })
 }
 
 #[cfg(test)]

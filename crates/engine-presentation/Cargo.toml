@@ -9,6 +9,9 @@ publish.workspace = true
 # It still links no D3D12, because engine-render-data does not — so extraction, the camera
 # controller and the HUD text are all testable without a device.
 [dependencies]
+# Collision, so the developer view can draw the geometry the simulation actually collides
+# against rather than a second description of it that can drift.
+engine-collision = { workspace = true }
 engine-core = { workspace = true }
 engine-game = { workspace = true }
 engine-render-data = { workspace = true }

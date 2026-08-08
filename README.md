@@ -110,15 +110,19 @@ crates/
   engine-platform/    Win32 window, message pump, input translation (no GPU types)
   engine-render-data/ what the game hands the renderer: RenderWorld, camera, lighting,
                       handles. Pure data — no windows, no D3D12
+  engine-collision/   collision shapes, the static collision world, the broad and narrow
+                      phases and the character controller. engine-core only
   engine-game/        the gameplay simulation: entities, movement, combat, abilities,
-                      statuses, events, telemetry. engine-core only — no D3D12, no windows
+                      statuses, events, telemetry, the collision demo scene. engine-core
+                      and engine-collision only — no D3D12, no windows
   engine-presentation/ gameplay to rendering: extraction, third-person camera, HUD text
   engine-renderer/    DXGI/D3D12 device, swap chain, command recording (no gameplay)
   engine-app/         the game executable (bin: mygame)
   engine-bench/       benchmarks (bins: performance_test, cpu_bench, cull_bench,
-                      game_bench, ui_bench) — never shipped
+                      game_bench, ui_bench, collision_bench) — never shipped
   engine-showcase/    visual test bed for the renderer (bin: showcase) — never shipped
 docs/                 architecture, phase logs, testing, performance, memory, threading
+collision.md          the collision phase: design, decisions, benchmarks, limitations
 tools/                package.ps1 — builds and verifies a clean release distribution
 ```
 

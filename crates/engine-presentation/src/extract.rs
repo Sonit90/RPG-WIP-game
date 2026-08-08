@@ -102,6 +102,8 @@ pub struct RenderExtractor {
     /// Gameplay slot to render entity. Grows with the world and is never freed.
     mapped: Vec<Option<Mapped>>,
     ground: RenderEntity,
+    /// How wide the drawn floor is, so it can be moved without being re-measured.
+    ground_size: f32,
     marker: RenderEntity,
     stats: VisualStats,
     /// Half the height of the target marker, so it sits on the floor rather than in it.
@@ -225,6 +227,7 @@ impl RenderExtractor {
             bindings,
             mapped: Vec::with_capacity(64),
             ground,
+            ground_size,
             marker,
             stats: VisualStats::default(),
             marker_height: MARKER_HEIGHT,
@@ -236,6 +239,31 @@ impl RenderExtractor {
     #[must_use]
     pub fn render_world(&self) -> &RenderWorld {
         &self.world
+    }
+
+    /// Moves the drawn floor to height `y`.
+    ///
+    /// The floor is a visual, not a collision surface — the simulation's floor is whatever
+    /// is in its [`engine_collision::world::CollisionWorld`]. A scene whose own geometry
+    /// provides the ground has to be able to move this one out of the way, because two
+    /// coplanar surfaces at the same height are a depth-buffer tie and a tie flickers.
+    pub fn set_ground_height(&mut self, y: f32) {
+        let transform = Transform::from_translation(Vec3::new(0.0, y, 0.0)).with_scale(Vec3::new(
+            self.ground_size,
+            1.0,
+            self.ground_size,
+        ));
+        self.world
+            .set_transform(self.ground, transform, self.bindings.ground_bounds);
+    }
+
+    /// The world the renderer draws, for something that adds to it.
+    ///
+    /// The developer collision view spawns its own entities here rather than being given a
+    /// second `RenderWorld` to draw: two worlds would be two culls, two instance buffers
+    /// and two draw passes for something that is a handful of boxes.
+    pub fn render_world_mut(&mut self) -> &mut RenderWorld {
+        &mut self.world
     }
 
     /// The floor's render entity.
@@ -575,8 +603,11 @@ mod tests {
         let body = simulation.player_body().expect("the player exists");
         let height = simulation.world().height(player);
 
+        // Within the controller's skin width of standing on the floor. Collision keeps the
+        // capsule a few millimetres clear of every surface it rests on, and the mesh is
+        // drawn where the capsule is rather than where the floor is.
         assert!(
-            (transform.translation.y - height * 0.5).abs() < 1e-4,
+            (transform.translation.y - height * 0.5).abs() < 0.02,
             "the mesh is not standing on the floor: {transform:?}"
         );
         assert!((transform.scale.y - height).abs() < 1e-4);
@@ -915,9 +946,16 @@ mod tests {
         let world = simulation.world();
         let previous = world.previous_body(player).expect("history").position;
         let current = world.body(player).expect("the player").position;
-        assert_eq!(previous, current);
+        // "Still" is now still to within an ulp rather than exactly. A grounded character
+        // is pushed a skin width out of the floor every tick, and the arithmetic that does
+        // it lands on one of two adjacent `f32` values — twenty nanometres apart, which is
+        // four orders of magnitude below anything a pixel can show.
+        assert!(
+            (previous - current).length() < 1e-6,
+            "{previous:?} {current:?}"
+        );
         for alpha in [0.0, 0.25, 0.5, 0.99] {
-            assert_eq!(lerp_position(previous, current, alpha), current);
+            assert!((lerp_position(previous, current, alpha) - current).length() < 1e-6);
         }
     }
 
@@ -987,6 +1025,34 @@ mod tests {
             interpolated_player_position(&simulation)
         };
         assert_eq!(build(), build());
+    }
+
+    #[test]
+    fn the_drawn_floor_can_be_moved_out_of_a_scene_that_brings_its_own() {
+        // A scene whose geometry has a face at y = 0 must be able to move this plane away
+        // from y = 0. Two coplanar surfaces are a depth-buffer tie, and a tie flickers.
+        let mut extractor = extractor();
+        let ground = extractor.ground();
+        assert_eq!(
+            extractor.render_world().transforms()[ground.index()].translation,
+            Vec3::ZERO
+        );
+
+        extractor.set_ground_height(-15.0);
+        let moved = extractor.render_world().transforms()[ground.index()];
+        assert_eq!(moved.translation, Vec3::new(0.0, -15.0, 0.0));
+        assert_eq!(
+            moved.scale,
+            Vec3::new(200.0, 1.0, 200.0),
+            "moving the floor must not resize it"
+        );
+
+        // And extraction, which rewrites every entity it owns, leaves it where it was put.
+        extractor.extract(&arena_sim());
+        assert_eq!(
+            extractor.render_world().transforms()[ground.index()].translation,
+            Vec3::new(0.0, -15.0, 0.0)
+        );
     }
 
     #[test]

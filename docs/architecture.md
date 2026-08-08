@@ -34,7 +34,8 @@ schedule and, eventually, to be driven by a network authority.
 | `engine-renderer` | DXGI/D3D12 device, swap chain, pipelines, GPU timing. | M2 |
 | `engine-render-data` | What the game hands the renderer. Pure data, no `windows`. | M15 |
 | `engine-showcase` | Development-only visual test bed. Nothing depends on it. | M15 |
-| `engine-game` | The gameplay simulation. `engine-core` only — no renderer, no `windows`, not even render data. | Phase 3 |
+| `engine-collision` | Collision shapes, the static collision world and the character controller. `engine-core` only. | Phase 5 |
+| `engine-game` | The gameplay simulation. `engine-core` and `engine-collision` only — no renderer, no `windows`, not even render data. | Phase 3 |
 | `engine-presentation` | Gameplay to rendering: extraction, the third-person camera, HUD text. | Phase 3 |
 
 `engine-platform` hands the renderer an opaque window handle and a client size.

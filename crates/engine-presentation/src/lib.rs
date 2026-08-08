@@ -24,6 +24,8 @@
 //! tested without a device, a window or an adapter.
 
 pub mod camera;
+pub mod collision_debug;
+pub mod collision_hud;
 pub mod damage_numbers;
 pub mod extract;
 pub mod game_ui;
@@ -32,6 +34,8 @@ pub mod nameplate;
 pub mod snapshot;
 
 pub use camera::ThirdPersonCamera;
+pub use collision_debug::{CollisionDebug, DebugBindings};
+pub use collision_hud::CollisionHudModel;
 pub use damage_numbers::{FloatingNumber, FloatingNumbers, MAX_FLOATING_NUMBERS};
 pub use extract::{
     RenderExtractor, VisualBindings, VisualStats, interpolated_player_position, lerp_angle,

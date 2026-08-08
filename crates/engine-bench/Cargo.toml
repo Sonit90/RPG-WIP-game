@@ -39,7 +39,15 @@ path = "src/game_bench.rs"
 name = "ui_bench"
 path = "src/ui_bench.rs"
 
+# Collision on its own: the broad phase, the narrow phase and the character controller,
+# with no simulation and no device around them. Separate from game_bench because "is
+# collision fast enough?" is a question about a different pass over different arrays.
+[[bin]]
+name = "collision_bench"
+path = "src/collision_bench.rs"
+
 [dependencies]
+engine-collision = { workspace = true }
 engine-core = { workspace = true }
 engine-game = { workspace = true }
 engine-presentation = { workspace = true }
