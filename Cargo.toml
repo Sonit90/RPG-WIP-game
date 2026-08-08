@@ -5,6 +5,9 @@ members = [
     "crates/engine-platform",
     "crates/engine-render-data",
     "crates/engine-renderer",
+    # Collision and character movement. Simulation-side geometry: depends on engine-core
+    # alone, so a headless test can resolve a character move with no device.
+    "crates/engine-collision",
     # Gameplay. Depends on engine-core alone; see its lib docs for why that is the point.
     "crates/engine-game",
     # Gameplay to rendering: extraction, the third-person camera, the developer overlay.
@@ -31,6 +34,8 @@ engine-render-data = { path = "crates/engine-render-data" }
 # default-features is off here so each consumer opts in; engine-app re-exports the
 # `debug-overlay` feature so a shipping build can drop it with --no-default-features.
 engine-renderer = { path = "crates/engine-renderer", default-features = false }
+# Collision and character movement. Same rule as engine-game: engine-core and nothing else.
+engine-collision = { path = "crates/engine-collision" }
 # The gameplay simulation. Must never gain a `windows`, renderer or render-data dependency.
 engine-game = { path = "crates/engine-game" }
 engine-presentation = { path = "crates/engine-presentation" }

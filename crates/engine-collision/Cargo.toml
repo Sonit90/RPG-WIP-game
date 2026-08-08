@@ -1,0 +1,16 @@
+[package]
+name = "engine-collision"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+# Deliberately only engine-core. Collision is simulation-side geometry: it must never gain
+# `windows`, `engine-platform`, `engine-renderer` or `engine-render-data`. A headless test
+# and a future dedicated server both need to resolve a character move with no device, and
+# the absence of those dependencies is what makes that true rather than aspirational.
+[dependencies]
+engine-core = { workspace = true }
+
+[lints]
+workspace = true
