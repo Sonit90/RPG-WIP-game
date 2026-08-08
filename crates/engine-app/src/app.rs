@@ -36,11 +36,13 @@ use engine_game::sim::Simulation;
 use engine_game::telemetry::{AbilityTotals, TargetTotals};
 use engine_platform::{Window, WindowConfig, WindowEvent};
 use engine_presentation::camera::ThirdPersonCamera;
+use engine_presentation::damage_numbers::FloatingNumbers;
 use engine_presentation::extract::{RenderExtractor, VisualBindings};
+use engine_presentation::game_ui::GameUi;
 #[cfg(feature = "debug-overlay")]
 use engine_presentation::hud::{self, HudModel};
-#[cfg(feature = "debug-overlay")]
 use engine_presentation::nameplate::{NameplateConfig, NameplateSet};
+use engine_presentation::snapshot::UiSnapshot;
 use engine_renderer::mesh::MeshData;
 use engine_renderer::{
     Camera, Lighting, MaterialDesc, MaterialHandle, MeshHandle, Projection, Renderer,
@@ -62,40 +64,11 @@ const GROUND_HALF_EXTENT: f32 = 120.0;
 #[cfg(feature = "debug-overlay")]
 const OVERLAY_TOGGLE_KEY: KeyCode = KeyCode::F5;
 
-/// Colour of a nameplate's panel: dark enough that white text reads over the arena.
+/// Glyph scale the game UI draws text at.
 ///
-/// Opaque, because the overlay pipeline has blending switched off. A translucent plate
-/// would be nicer and is not worth a second blend state for a prototype.
-#[cfg(feature = "debug-overlay")]
-const PLATE_PANEL_COLOR: [f32; 4] = [0.06, 0.07, 0.09, 1.0];
-
-/// Colour of a nameplate's name and health text.
-#[cfg(feature = "debug-overlay")]
-const PLATE_TEXT_COLOR: [f32; 4] = [0.95, 0.95, 0.85, 1.0];
-
-/// Colour of the status line, so a debuff is distinguishable from the name at a glance.
-#[cfg(feature = "debug-overlay")]
-const PLATE_STATUS_COLOR: [f32; 4] = [0.95, 0.62, 0.25, 1.0];
-
-/// Colour of the outline around the current target's plate.
-#[cfg(feature = "debug-overlay")]
-const PLATE_TARGET_OUTLINE_COLOR: [f32; 4] = [1.0, 1.0, 1.0, 1.0];
-
-/// Thickness of that outline, in pixels.
-#[cfg(feature = "debug-overlay")]
-const PLATE_OUTLINE_PIXELS: f32 = 2.0;
-
-/// Depth added to a plate's own depth for its outline and panel.
-///
-/// Both are behind the text and in front of nothing else. The steps are far smaller than
-/// the gap distance puts between two plates, so a plate's own parts never interleave with
-/// another plate's.
-#[cfg(feature = "debug-overlay")]
-const PLATE_OUTLINE_DEPTH_STEP: f32 = 0.0004;
-
-/// Depth added to a plate's own depth for its panel.
-#[cfg(feature = "debug-overlay")]
-const PLATE_PANEL_DEPTH_STEP: f32 = 0.0008;
+/// The font is a 5x7 bitmap; 2.0 gives a 10x14 pixel cell, which is what the Phase 3
+/// overlay used and is legible at 1080p without being a magnified blur.
+const UI_TEXT_SCALE: f32 = 2.0;
 
 /// How often the overlay text is rebuilt.
 ///
@@ -124,14 +97,19 @@ pub struct App {
     mouse_captured: bool,
     /// Milliseconds the last render extraction took.
     extract_ms: f64,
+    /// Milliseconds the last UI *layout* took: nameplates, snapshot and draw-list build.
+    ///
+    /// The renderer measures the batching that follows it separately, so the two together
+    /// are the whole CPU cost of the interface.
+    ui_ms: f64,
     /// This frame's nameplates. Reused; never freed.
-    #[cfg(feature = "debug-overlay")]
     nameplates: NameplateSet,
-    /// Scratch for a plate's title and status lines, so drawing one allocates nothing.
-    #[cfg(feature = "debug-overlay")]
-    plate_title: String,
-    #[cfg(feature = "debug-overlay")]
-    plate_statuses: String,
+    /// What the UI is allowed to know about the simulation, rebuilt each frame.
+    snapshot: UiSnapshot,
+    /// The game UI's layout. Owns its draw list across frames.
+    game_ui: GameUi,
+    /// Floating damage numbers in flight. Fixed capacity; never freed.
+    numbers: FloatingNumbers,
     report_interval: Option<Duration>,
     last_report: Instant,
     #[cfg(feature = "debug-overlay")]
@@ -172,6 +150,8 @@ impl App {
         #[cfg(feature = "debug-overlay")]
         renderer.set_overlay_enabled(settings.debug_overlay);
 
+        renderer.set_ui_enabled(args.ui);
+
         let visuals = upload_visuals(&mut renderer)?;
 
         let arena_config = ArenaConfig::with_group(args.dummies);
@@ -193,6 +173,9 @@ impl App {
             ambient_intensity: 0.28,
         };
 
+        // Built before the first frame so the UI never sees a default-constructed snapshot.
+        let snapshot = UiSnapshot::build(&simulation);
+
         let report_interval = settings
             .reports_enabled()
             .then(|| Duration::from_secs_f64(settings.report_interval_seconds));
@@ -211,12 +194,11 @@ impl App {
             commands: Vec::with_capacity(16),
             mouse_captured: false,
             extract_ms: 0.0,
-            #[cfg(feature = "debug-overlay")]
+            ui_ms: 0.0,
             nameplates: NameplateSet::with_capacity(32),
-            #[cfg(feature = "debug-overlay")]
-            plate_title: String::with_capacity(32),
-            #[cfg(feature = "debug-overlay")]
-            plate_statuses: String::with_capacity(64),
+            snapshot,
+            game_ui: GameUi::new(),
+            numbers: FloatingNumbers::new(),
             report_interval,
             last_report: Instant::now(),
             #[cfg(feature = "debug-overlay")]
@@ -302,23 +284,27 @@ impl App {
         }
     }
 
-    /// Rebuilds and draws the nameplates for every nearby enemy.
+    /// Rebuilds the whole game UI and hands it to the renderer.
     ///
-    /// Every frame, not on the overlay's update interval: a plate is anchored to a
+    /// Every frame, not on the overlay's update interval: a nameplate is anchored to a
     /// projected world position, so it is wrong the moment the camera turns.
     ///
-    /// Drawn independently of the developer overlay's F5 toggle — a nameplate is game UI,
-    /// and F5 hides the statistics readout. It does depend on the `debug-overlay` *feature*,
-    /// because the overlay is the only text renderer the engine has; see the known
-    /// limitations in `docs/phase3.md`.
-    #[cfg(feature = "debug-overlay")]
-    fn draw_nameplates(&mut self) {
-        let metrics = self.renderer.overlay_metrics();
+    /// **Not** behind the `debug-overlay` feature. This is what the player sees, and it goes
+    /// through the batched UI pass rather than the developer overlay's per-glyph geometry —
+    /// which is what makes it affordable. The Phase 3 limitation that a
+    /// `--no-default-features` build had no nameplates is gone.
+    fn build_ui(&mut self) {
+        if !self.renderer.ui_enabled() {
+            // Skip the layout too, not just the draw. Measuring "the UI off" has to mean
+            // the whole interface costs nothing, including the projection and the strings.
+            return;
+        }
+        let started = Instant::now();
         let config = NameplateConfig {
-            cell_pixels: metrics.cell_pixels,
-            glyph_advance_pixels: metrics.glyph_advance_pixels,
-            line_advance_pixels: metrics.line_advance_pixels,
-            glyph_height_pixels: metrics.glyph_height_pixels,
+            cell_pixels: UI_TEXT_SCALE,
+            glyph_advance_pixels: engine_renderer::font::GLYPH_ADVANCE as f32 * UI_TEXT_SCALE,
+            line_advance_pixels: engine_renderer::font::LINE_ADVANCE as f32 * UI_TEXT_SCALE,
+            glyph_height_pixels: engine_renderer::font::GLYPH_HEIGHT as f32 * UI_TEXT_SCALE,
             ..NameplateConfig::default()
         };
 
@@ -327,46 +313,18 @@ impl App {
         self.nameplates
             .build(&self.simulation, &view_projection, viewport, &config);
 
-        self.renderer.begin_dynamic_overlay();
-        for index in 0..self.nameplates.plates().len() {
-            let plate = self.nameplates.plates()[index];
-            let rect = (plate.origin.0, plate.origin.1, plate.size.0, plate.size.1);
-
-            self.renderer.push_overlay_rect(
-                rect,
-                PLATE_PANEL_COLOR,
-                plate.depth + PLATE_PANEL_DEPTH_STEP,
-            );
-            // The outline is what says "this is what your abilities will hit", so it is the
-            // target's and nothing else's.
-            if plate.is_target {
-                self.renderer.push_overlay_outline(
-                    rect,
-                    PLATE_OUTLINE_PIXELS,
-                    PLATE_TARGET_OUTLINE_COLOR,
-                    plate.depth + PLATE_OUTLINE_DEPTH_STEP,
-                );
-            }
-
-            plate.write_title(&mut self.plate_title);
-            let text_x = plate.origin.0 + config.padding_pixels;
-            let text_y = plate.origin.1 + config.padding_pixels;
-            self.renderer.push_overlay_text_at(
-                (text_x, text_y),
-                &self.plate_title,
-                PLATE_TEXT_COLOR,
-                plate.depth,
-            );
-
-            if plate.write_statuses(&mut self.plate_statuses) {
-                self.renderer.push_overlay_text_at(
-                    (text_x, text_y + config.line_advance_pixels),
-                    &self.plate_statuses,
-                    PLATE_STATUS_COLOR,
-                    plate.depth,
-                );
-            }
-        }
+        self.snapshot.refresh(&self.simulation);
+        self.game_ui
+            .build(&self.snapshot, self.nameplates.plates(), &config, viewport);
+        // Last, so numbers float over the HUD rather than under it.
+        self.game_ui.push_damage_numbers(
+            &self.numbers,
+            &view_projection,
+            viewport,
+            self.simulation.time() as f32,
+        );
+        self.ui_ms = started.elapsed().as_secs_f64() * 1e3;
+        self.renderer.set_ui(self.game_ui.list());
     }
 
     /// Logs a combat and performance line if the reporting interval has elapsed.
@@ -390,9 +348,11 @@ impl App {
         let stats = self.simulation.last_tick_stats();
         let meter = self.simulation.meter();
         let cull = self.renderer.cull_stats();
+        let ui = self.renderer.ui_stats();
         log::info!(
             "CPU mean {:.3} ms ({:.0} FPS) p99 {:.3} | GPU {} | sim {:.3} ms ({} ticks) | \
-             extract {:.3} ms | cull {:.3} ms | visible {} | draws {}",
+             extract {:.3} ms | cull {:.3} ms | ui {:.3} ms ({} quads, {} cmds) | visible {} | \
+             draws {}",
             summary.cpu.mean_ms,
             summary.cpu.mean_fps(),
             summary.cpu.p99_ms,
@@ -404,6 +364,9 @@ impl App {
             stats.ticks,
             self.extract_ms,
             self.renderer.last_cull_ms(),
+            self.ui_ms + self.renderer.ui_build_ms(),
+            ui.quads,
+            ui.commands,
             cull.visible,
             self.renderer.draw_calls_last_frame(),
         );
@@ -485,19 +448,26 @@ impl App {
         let Some(summary) = ctx.metrics().summary() else {
             return;
         };
+        // p50 as well as the tail: a mean hides a spike that a p50/p99 pair makes obvious,
+        // and Phase 4's budgets are stated against p99 rather than the mean.
         log::info!(
-            "final CPU window: mean {:.3} ms | p95 {:.3} ms | p99 {:.3} ms | n={}",
+            "final CPU window: mean {:.3} | p50 {:.3} | p95 {:.3} | p99 {:.3} | max {:.3} ms | n={}",
             summary.cpu.mean_ms,
+            summary.cpu.p50_ms,
             summary.cpu.p95_ms,
             summary.cpu.p99_ms,
+            summary.cpu.max_ms,
             summary.cpu.count
         );
         if let Some(gpu) = summary.gpu {
             log::info!(
-                "final GPU window: mean {:.3} ms | p95 {:.3} ms | p99 {:.3} ms | n={}",
+                "final GPU window: mean {:.3} | p50 {:.3} | p95 {:.3} | p99 {:.3} | max {:.3} ms \
+                 | n={}",
                 gpu.mean_ms,
+                gpu.p50_ms,
                 gpu.p95_ms,
                 gpu.p99_ms,
+                gpu.max_ms,
                 gpu.count
             );
         }
@@ -581,6 +551,25 @@ impl Application for App {
         {
             engine_core::profile_scope!(profiler, "Extraction");
             let started = Instant::now();
+            // Damage becomes a hit flash by *observing* the event stream, exactly as the
+            // damage meter does. Nothing in the ability system knows a flash exists, and
+            // gameplay is not asked to remember that something was hit.
+            let time = self.simulation.time() as f32;
+            for event in self.simulation.events() {
+                if let engine_game::event::CombatEvent::Damage(damage) = event {
+                    self.extractor.note_hit(damage.target, time);
+                }
+            }
+            // Damage numbers read the same slice. Both are observers; neither is a hook the
+            // ability system calls, which is what keeps gameplay unaware of either.
+            let world = self.simulation.world();
+            self.numbers.observe(self.simulation.events(), time, |id| {
+                world.position(id).map(|position| {
+                    // Chest height, so a number starts on the body rather than at its feet.
+                    position + Vec3::new(0.0, world.height(id) * 0.7, 0.0)
+                })
+            });
+            self.numbers.retire(time);
             self.extractor.extract(&self.simulation);
             self.extract_ms = started.elapsed().as_secs_f64() * 1e3;
         }
@@ -590,8 +579,11 @@ impl Application for App {
             // The render delta, not the simulation step: the camera is presentation and is
             // expected to move every frame, which is what stops a 60 Hz simulation from
             // looking like 60 FPS.
+            // The *interpolated* position, so the camera and the character it watches
+            // agree about where the character is. Following the raw simulation position
+            // would step the camera at 60 Hz behind a character moving smoothly.
             self.controller.follow(
-                self.simulation.player_position(),
+                engine_presentation::extract::interpolated_player_position(&self.simulation),
                 ctx.time().real_delta().as_secs_f32(),
             );
             let (width, height) = self.renderer.size();
@@ -601,12 +593,11 @@ impl Application for App {
             }
         }
 
-        // After the camera, because a plate is a projection through it: building plates
-        // from last frame's camera lags them a frame behind the enemies they label.
-        #[cfg(feature = "debug-overlay")]
+        // After the camera, because a nameplate is a projection through it: building the UI
+        // from last frame's camera lags it a frame behind the enemies it labels.
         {
-            engine_core::profile_scope!(profiler, "Nameplates");
-            self.draw_nameplates();
+            engine_core::profile_scope!(profiler, "UI");
+            self.build_ui();
         }
 
         Ok(())

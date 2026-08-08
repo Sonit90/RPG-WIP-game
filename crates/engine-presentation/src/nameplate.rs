@@ -134,8 +134,19 @@ impl Nameplate {
         // The name is truncated rather than allowed to push the percentage off its edge:
         // the right-hand column is the number a player reads at a glance.
         let room = NAMEPLATE_COLUMNS.saturating_sub(5);
-        let name: String = self.name.chars().take(room).collect();
-        let _ = write!(out, "{name:<room$} {percent:>3}%");
+        // Written character by character rather than through a temporary `String`. A
+        // `collect()` here allocated once per plate per frame — twenty plates at 1,400 FPS
+        // is 28,000 allocations a second for a name that never changes, which the combat
+        // benchmark in Milestone 21 is what caught.
+        let mut written = 0;
+        for character in self.name.chars().take(room) {
+            out.push(character);
+            written += 1;
+        }
+        for _ in written..room {
+            out.push(' ');
+        }
+        let _ = write!(out, " {percent:>3}%");
     }
 
     /// Writes the status line, or nothing if there is no status.
@@ -156,10 +167,12 @@ impl Nameplate {
         }
         // Truncated on a character boundary; the font is ASCII, but the plate width is a
         // layout rule rather than a byte count.
-        if out.chars().count() > NAMEPLATE_COLUMNS {
-            let truncated: String = out.chars().take(NAMEPLATE_COLUMNS).collect();
-            out.clear();
-            out.push_str(&truncated);
+        // Truncated in place: taking the prefix through a temporary `String` allocated once
+        // per plate per frame.
+        if out.chars().count() > NAMEPLATE_COLUMNS
+            && let Some((offset, _)) = out.char_indices().nth(NAMEPLATE_COLUMNS)
+        {
+            out.truncate(offset);
         }
         true
     }
@@ -355,7 +368,11 @@ impl NameplateSet {
 
         // Nearest first, then bounded: which enemies lose their plate has to be a rule
         // ("the twenty nearest") rather than an accident of iteration order.
-        self.plates.sort_by(|a, b| {
+        // `sort_unstable_by`, not `sort_by`: the stable sort allocates a merge buffer once
+        // the candidate list passes about twenty entries, which is one allocation per frame
+        // in any scene with more than twenty enemies in range. The tie-break on entity id
+        // already makes the order total, so stability buys nothing here.
+        self.plates.sort_unstable_by(|a, b| {
             a.distance
                 .total_cmp(&b.distance)
                 .then_with(|| a.entity.cmp(&b.entity))

@@ -5,9 +5,14 @@
 //! ------------           -------------------           ------------------
 //! Simulation      -->    RenderExtractor        -->    RenderWorld
 //! player body     -->    ThirdPersonCamera      -->    Camera
+//! Simulation      -->    UiSnapshot             -->    game UI (plain data)
 //! meter, stats    -->    hud::write_lines       -->    [String]
 //! enemies, camera -->    NameplateSet           -->    screen-space plates
 //! ```
+//!
+//! The game UI reads a [`snapshot::UiSnapshot`] rather than the simulation. The developer
+//! overlay in [`hud`] still borrows `&Simulation` directly, which is what a debug readout
+//! is allowed to do; nothing the player sees does.
 //!
 //! This crate exists because the two things it joins must not know about each other.
 //! `engine-game` cannot name a `MeshHandle`; `engine-render-data` cannot name a `Health`.
@@ -19,14 +24,26 @@
 //! tested without a device, a window or an adapter.
 
 pub mod camera;
+pub mod damage_numbers;
 pub mod extract;
+pub mod game_ui;
 pub mod hud;
 pub mod nameplate;
+pub mod snapshot;
 
 pub use camera::ThirdPersonCamera;
-pub use extract::{RenderExtractor, VisualBindings, VisualStats};
+pub use damage_numbers::{FloatingNumber, FloatingNumbers, MAX_FLOATING_NUMBERS};
+pub use extract::{
+    RenderExtractor, VisualBindings, VisualStats, interpolated_player_position, lerp_angle,
+    lerp_position,
+};
+pub use game_ui::{GameUi, UiTheme};
 pub use hud::{HudModel, write_lines};
 pub use nameplate::{
     MAX_NAMEPLATES, NAMEPLATE_MAX_DISTANCE, Nameplate, NameplateConfig, NameplateSet,
     NameplateStatus, project,
+};
+pub use snapshot::{
+    AbilitySlotView, CastView, CombatView, NotificationView, PlayerView, SlotAvailability,
+    StatusList, StatusView, TargetView, UiSnapshot,
 };

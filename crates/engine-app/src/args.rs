@@ -28,6 +28,9 @@ options:
                          time; hidden by default because it costs frame time)
   --dummies <count>      training dummies in the group, on top of the single dummy
                          (default 4)
+  --no-ui                do not draw the game UI. A measurement control: it makes the
+                         interface's cost the difference between two runs of the same
+                         binary rather than of two builds
   -h, --help             print this help and exit";
 
 /// Parsed command line.
@@ -47,6 +50,12 @@ pub struct Args {
     pub overlay: bool,
     /// Training dummies in the group, on top of the single dummy.
     pub dummies: usize,
+    /// Whether the game UI is drawn.
+    ///
+    /// A measurement control rather than a game option: with it, the interface's cost is
+    /// the difference between two runs of one binary instead of two separately compiled
+    /// builds, which is what made the Phase 3 nameplate numbers hard to trust.
+    pub ui: bool,
     /// Whether to open a borderless fullscreen window.
     pub fullscreen: bool,
     /// Whether the renderer's validation layer was explicitly requested.
@@ -67,6 +76,7 @@ impl Default for Args {
             report_interval_secs: 1.0,
             overlay: false,
             dummies: 4,
+            ui: true,
             fullscreen: false,
             validation: None,
             help: false,
@@ -155,6 +165,7 @@ where
             "--validation" => args.validation = Some(true),
             "--overlay" => args.overlay = true,
             "--dummies" => args.dummies = next_value(&mut iter, "--dummies")?,
+            "--no-ui" => args.ui = false,
             "-h" | "--help" => args.help = true,
             other => return Err(ArgsError::Unknown(other.to_owned())),
         }
