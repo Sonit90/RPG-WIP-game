@@ -163,6 +163,48 @@ Two seams that exist for what comes after Phase 3:
   reads a slice of them; nothing in the ability system mentions telemetry. VFX, a combat log
   and replication are further readers of the same slice.
 
+## The user interface (Phase 4)
+
+```text
+Simulation --> UiSnapshot --> GameUi --> UiDrawList --> UiBatcher --> one draw call
+              (plain data)   (layout)   (commands)     (vertices)
+```
+
+Four rules, each a boundary rather than a convention:
+
+* **The UI reads a `UiSnapshot`, never `&Simulation`.** A snapshot is taken once per frame at
+  a defined point; a borrow would let two parts of the layout read different answers, and it
+  would disagree with interpolated geometry about where things are. A future network client
+  has no `Simulation` to borrow — it has a stream of state, which is this shape.
+* **The layout emits commands, not vertices.** `UiDrawList` lives in `engine-render-data`, so
+  `engine-presentation` builds the entire HUD without linking D3D12. Expanding a string into
+  glyph quads needs the font atlas, which lives beside the texture it is uploaded into, so a
+  command list is what keeps the shader ABI on the renderer's side of the seam.
+* **Everything is one batch.** Text and solid shapes sample the same font atlas — glyphs
+  their own cell, rectangles one opaque texel — so the whole interface is one vertex buffer
+  through one pipeline state. Measured: 20,990 quads, one `DrawInstanced`.
+* **Painter's order, not depth.** The UI pass neither tests nor writes depth. A depth test and
+  alpha blending cannot coexist: a blended fragment that fails the test vanishes, and one that
+  passes writes depth that occludes whatever should have blended over it.
+
+The developer *statistics* overlay is not part of this and still uses the Phase 3 per-glyph
+path. It is a debug readout behind the `debug-overlay` feature; the game UI ships either way.
+
+### Interpolation
+
+`GameWorld` records every body as it was at the start of the current tick. Presentation blends
+the two by `FixedTimestep::alpha`, so a 60 Hz simulation draws smoothly at any frame rate.
+Recording where something *was* is a simulation fact; blending is presentation's job, and the
+simulation is never itself interpolated. The result lags the simulation by up to one tick,
+which is deliberate — extrapolating would overshoot and snap back on every direction change.
+
+### Per-instance visual state
+
+A material describes a *surface* and is shared between entities; `InstanceStyle` — a colour
+multiply and an emissive add — describes what is happening to **one** entity right now. It
+rides in the per-instance vertex stream, so two entities with different tints still share a
+batch, and changing one is a store rather than a render-entity respawn.
+
 ### What gameplay must never put in `RenderWorld`
 
 Health, cooldowns, statuses, resources, factions, targets. `RenderWorld` carries transforms,

@@ -3,10 +3,13 @@
 Custom Rust + Direct3D 12 engine for a future third-person PvE combat game.
 Windows 10/11 only, MSVC toolchain, `windows-rs` bindings, no third-party game engine.
 
-**Current state: Phase 3 complete — a playable local prototype.** A character in a training
-arena that moves, jumps, targets, casts ten abilities with cooldowns and costs, damages
-training dummies with single-target, damage-over-time and area synergy mechanics, and
-reports it in a developer combat meter. No networking.
+**Current state: Phase 4 complete — a playable prototype with a real combat interface.** A
+character in a training arena that moves, jumps, targets, casts ten abilities with cooldowns,
+costs and cast times, and damages training dummies with single-target, damage-over-time and
+area synergy mechanics — all of it visible through a combat HUD: player health and resource
+bars, a target frame, world-space enemy health bars, an ability bar with cooldown wipes, a
+cast bar and floating damage numbers. The whole interface is **one draw call** and allocates
+nothing per frame. No networking, no character models.
 
 ## Requirements
 
@@ -41,8 +44,8 @@ Controls:
 | --- | --- |
 | W A S D | move, relative to the camera |
 | SPACE | jump |
-| 1 / 2 / 3 | Fireball / Ignite / Detonate |
-| 4 – 0 | placeholder abilities |
+| 1 / 2 / 3 | Fireball / Ignite / Detonate (instant) |
+| 4 – 0 | placeholder abilities; 7 and 0 have cast times |
 | TAB | cycle target |
 | R | reset the dummies and the combat meter |
 | LEFT CLICK / ESC | capture / release the mouse for camera control |
@@ -50,17 +53,18 @@ Controls:
 | F5 | show or hide the developer overlay |
 | F9 | wireframe on/off |
 
-The developer overlay shows FPS, CPU and GPU frame time, simulation and extraction timing,
-the damage meter (total, DPS, by ability, by target) and the ability bar with cooldowns.
+The combat HUD is always on: player health and resource bars, a target frame, an ability bar
+with cooldown wipes, a cast bar, world-space health bars and nameplates above nearby enemies,
+and floating damage numbers. It is drawn through a batched UI pass — one vertex buffer, one
+texture, **one draw call** — and costs about 12 microseconds of CPU and zero allocations per
+frame.
 
-Enemies within 40 metres carry a nameplate — name, health percentage and active debuffs —
-with a white outline on the current target. Nameplates are game UI and stay visible when the
-statistics overlay is hidden with F5. It ships
-in release builds, starts hidden, and is toggled with **F5**. Its cost is below the noise
-floor of measurement (see `docs/performance.md`).
+The *developer statistics* overlay is separate and hidden by default: FPS, CPU and GPU frame
+time, simulation and extraction timing, and the damage meter broken down by ability and by
+target. Toggle it with **F5**.
 
-It can still be removed from the binary entirely, which is what the `debug-overlay` Cargo
-feature is for:
+Only the statistics overlay can be removed from the binary, which is what the `debug-overlay`
+Cargo feature is for. The game UI ships either way:
 
 ```powershell
 cargo build --release --no-default-features
@@ -78,13 +82,16 @@ cargo run --release --bin mygame -- --frames 60000 --report 1
 cargo run --release --bin performance_test
 cargo run --release --bin performance_test -- --instances 1000 --frames 500
 cargo run --release --bin game_bench
+cargo run --release --bin ui_bench
 ```
 
 `performance_test` compares one draw call per object against a single instanced draw,
 rendering offscreen so the numbers measure the renderer rather than the compositor.
 `game_bench` measures the gameplay pipeline — simulation, combat, extraction, culling — with
-no device at all, and counts every allocation while it does. Both live in their own crate,
-so neither is ever part of the game executable.
+no device at all, and counts every allocation while it does. `ui_bench` measures the
+interface: a CPU phase with no device, a GPU phase against a hidden window, and the real
+combat HUD over an arena that has been fought in. All three live in their own crate, so none
+is ever part of the game executable.
 
 ## Checks
 
@@ -109,7 +116,7 @@ crates/
   engine-renderer/    DXGI/D3D12 device, swap chain, command recording (no gameplay)
   engine-app/         the game executable (bin: mygame)
   engine-bench/       benchmarks (bins: performance_test, cpu_bench, cull_bench,
-                      game_bench) — never shipped
+                      game_bench, ui_bench) — never shipped
   engine-showcase/    visual test bed for the renderer (bin: showcase) — never shipped
 docs/                 architecture, phase logs, testing, performance, memory, threading
 tools/                package.ps1 — builds and verifies a clean release distribution
@@ -122,6 +129,7 @@ tools/                package.ps1 — builds and verifies a clean release distri
 * [docs/phase1.md](docs/phase1.md) — Phase 1 log: engine core
 * [docs/phase2.md](docs/phase2.md) — Phase 2 log: the D3D12 renderer
 * [docs/phase3.md](docs/phase3.md) — Phase 3 log: gameplay, combat and the prototype
+* [docs/phase4.md](docs/phase4.md) — Phase 4 log: batched UI, the combat HUD and feedback
 * [docs/testing.md](docs/testing.md) — test categories and how to run them
 * [docs/manual-tests.md](docs/manual-tests.md) — manual verification checklist
 * [docs/performance.md](docs/performance.md) — measurement methodology and results
