@@ -292,10 +292,21 @@ impl Window {
         unsafe { GetClientRect(self.hwnd, &mut rect) }
             .map_err(|error| PlatformError::win32("GetClientRect", error))?;
 
-        let mut point = POINT {
-            x: (rect.left + rect.right) / 2,
-            y: (rect.top + rect.bottom) / 2,
-        };
+        self.set_cursor_position((rect.left + rect.right) / 2, (rect.top + rect.bottom) / 2)
+    }
+
+    /// Warps the cursor to a position in the client area, in client pixels.
+    ///
+    /// The counterpart of [`Window::center_cursor`]: mouse-look warps the cursor to the
+    /// centre while it is held, and puts it back where the player pressed the button when
+    /// they let go, so the pointer does not drift towards the middle of the screen every
+    /// time the camera is turned.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PlatformError::Win32`] if the cursor cannot be moved.
+    pub fn set_cursor_position(&self, x: i32, y: i32) -> Result<(), PlatformError> {
+        let mut point = POINT { x, y };
         // SAFETY: `hwnd` is live and `point` is a valid in/out parameter. The BOOL result
         // only fails for an invalid window, which the next call reports anyway.
         let _ = unsafe { ClientToScreen(self.hwnd, &mut point) };

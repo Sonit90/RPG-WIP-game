@@ -24,8 +24,16 @@ use engine_core::math::{Quat, Vec3};
 use engine_render_data::error::RenderDataError;
 use engine_render_data::{Camera, DEFAULT_FAR, DEFAULT_FOV_Y, DEFAULT_NEAR, Projection};
 
-/// Radians of rotation per pixel of mouse movement.
-const MOUSE_SENSITIVITY: f32 = 0.0028;
+/// Radians of rotation per pixel of mouse movement, before the player's setting.
+///
+/// Half of the 0.0028 the camera shipped with: at that rate a hand-sized mouse movement
+/// spun the camera further than a player could follow. Both axes use it, so a turn and a
+/// tilt of the same size on the desk are the same size on screen.
+///
+/// The tuned rate, not the rate in use: what the camera actually turns at is this times
+/// [`ThirdPersonCamera::sensitivity`], which the settings screen drives. A sensitivity of
+/// one means exactly this, which is why the default settings file changes nothing.
+pub const BASE_MOUSE_SENSITIVITY: f32 = 0.0014;
 
 /// Lowest the camera may look from, in radians. Negative looks down at the character.
 const MIN_PITCH: f32 = -1.2;
@@ -69,6 +77,11 @@ pub struct ThirdPersonCamera {
     pub distance: f32,
     /// Vertical field of view, radians.
     pub fov_y: f32,
+    /// How fast the mouse turns the camera, as a multiple of [`BASE_MOUSE_SENSITIVITY`].
+    ///
+    /// The player's setting, handed in rather than read: this crate does not know that a
+    /// settings file exists, and the camera is not the authority on what the value is.
+    sensitivity: f32,
     /// The smoothed point the camera looks at.
     focus: Vec3,
 }
@@ -86,6 +99,7 @@ impl ThirdPersonCamera {
         pitch: -0.22,
         distance: 8.0,
         fov_y: DEFAULT_FOV_Y,
+        sensitivity: 1.0,
         focus: Vec3::ZERO,
     };
 
@@ -95,6 +109,24 @@ impl ThirdPersonCamera {
         let mut camera = Self::START;
         camera.snap_to(position);
         camera
+    }
+
+    /// How fast the mouse turns the camera, as a multiple of the tuned rate.
+    #[must_use]
+    pub fn sensitivity(&self) -> f32 {
+        self.sensitivity
+    }
+
+    /// Sets the turn rate multiplier.
+    ///
+    /// Applies from the next mouse movement: there is no state to rebuild and nothing to
+    /// restart, which is what makes dragging the settings slider change the camera while
+    /// the slider is still being dragged. A value that is not a positive, finite number is
+    /// ignored rather than freezing or inverting the camera.
+    pub fn set_sensitivity(&mut self, sensitivity: f32) {
+        if sensitivity.is_finite() && sensitivity > 0.0 {
+            self.sensitivity = sensitivity;
+        }
     }
 
     /// The point the camera is looking at.
@@ -122,8 +154,9 @@ impl ThirdPersonCamera {
     ///
     /// Screen Y grows downward, so moving the mouse down lowers the pitch.
     pub fn rotate(&mut self, delta_x: f32, delta_y: f32) {
-        self.yaw = (self.yaw - delta_x * MOUSE_SENSITIVITY).rem_euclid(std::f32::consts::TAU);
-        self.pitch = (self.pitch - delta_y * MOUSE_SENSITIVITY).clamp(MIN_PITCH, MAX_PITCH);
+        let rate = BASE_MOUSE_SENSITIVITY * self.sensitivity;
+        self.yaw = (self.yaw - delta_x * rate).rem_euclid(std::f32::consts::TAU);
+        self.pitch = (self.pitch - delta_y * rate).clamp(MIN_PITCH, MAX_PITCH);
     }
 
     /// Applies wheel notches as an orbit distance change.
@@ -232,6 +265,99 @@ mod tests {
             "the orbit radius changed"
         );
         assert!((controller.eye() - before).length() > 0.5, "nothing moved");
+    }
+
+    #[test]
+    fn the_mouse_sensitivity_is_half_what_it_used_to_be() {
+        /// What the camera turned at before it was halved.
+        const PREVIOUS: f32 = 0.0028;
+        assert!(
+            (BASE_MOUSE_SENSITIVITY - PREVIOUS * 0.5).abs() < f32::EPSILON,
+            "{BASE_MOUSE_SENSITIVITY} is not half of {PREVIOUS}"
+        );
+    }
+
+    #[test]
+    fn the_sensitivity_setting_scales_the_tuned_rate() {
+        // A setting of one must leave the camera exactly as it was tuned, or every existing
+        // measurement of how the camera feels stops meaning anything. Driven with a negative
+        // delta so yaw grows from zero and never wraps around.
+        let mut tuned = ThirdPersonCamera::START;
+        assert_eq!(tuned.sensitivity(), 1.0);
+        tuned.rotate(-100.0, 0.0);
+        assert!(
+            (tuned.yaw - 100.0 * BASE_MOUSE_SENSITIVITY).abs() < EPSILON,
+            "{}",
+            tuned.yaw
+        );
+
+        let mut doubled = ThirdPersonCamera::START;
+        doubled.set_sensitivity(2.0);
+        doubled.rotate(-100.0, 0.0);
+        assert!(
+            (doubled.yaw - 2.0 * tuned.yaw).abs() < EPSILON,
+            "twice the sensitivity turned {} rather than {}",
+            doubled.yaw,
+            2.0 * tuned.yaw
+        );
+
+        // Vertically too: one setting drives both axes.
+        let mut halved = ThirdPersonCamera::START;
+        halved.set_sensitivity(0.5);
+        halved.rotate(0.0, -100.0);
+        let expected = ThirdPersonCamera::START.pitch + 100.0 * BASE_MOUSE_SENSITIVITY * 0.5;
+        assert!(
+            (halved.pitch - expected).abs() < EPSILON,
+            "{}",
+            halved.pitch
+        );
+    }
+
+    #[test]
+    fn a_new_sensitivity_applies_to_the_very_next_movement() {
+        // What "the setting applies without restarting" means in code: no rebuild, no
+        // restart, the next mouse movement already turns at the new rate.
+        let mut controller = ThirdPersonCamera::START;
+        controller.rotate(-50.0, 0.0);
+        let first = controller.yaw;
+
+        controller.set_sensitivity(4.0);
+        controller.rotate(-50.0, 0.0);
+        let second = controller.yaw - first;
+        assert!(
+            (second - 4.0 * first).abs() < EPSILON,
+            "the second turn was {second}, not four times {first}"
+        );
+    }
+
+    #[test]
+    fn a_meaningless_sensitivity_is_refused_rather_than_freezing_the_camera() {
+        let mut controller = ThirdPersonCamera::START;
+        for bad in [0.0, -1.0, f32::NAN, f32::INFINITY] {
+            controller.set_sensitivity(bad);
+            assert_eq!(controller.sensitivity(), 1.0, "{bad} was accepted");
+        }
+    }
+
+    #[test]
+    fn both_axes_turn_at_the_reduced_sensitivity() {
+        // The rate itself, not only the constant: a rotation that scaled one axis
+        // differently would pass the constant's test and still turn at the old speed.
+        let mut controller = ThirdPersonCamera::START;
+        controller.rotate(100.0, 100.0);
+        assert!(
+            (controller.yaw - (ThirdPersonCamera::START.yaw - 100.0 * 0.0014))
+                .rem_euclid(std::f32::consts::TAU)
+                .abs()
+                < EPSILON,
+            "yaw turned at {}",
+            controller.yaw
+        );
+        assert!(
+            (controller.pitch - (ThirdPersonCamera::START.pitch - 100.0 * 0.0014)).abs() < EPSILON,
+            "pitch turned at {}",
+            controller.pitch
+        );
     }
 
     #[test]
