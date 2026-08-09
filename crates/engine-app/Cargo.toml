@@ -22,6 +22,8 @@ engine-renderer = { workspace = true }
 # the only place all three meet; neither of them links D3D12.
 engine-game = { workspace = true }
 engine-presentation = { workspace = true }
+# The player's settings and the file they live in.
+engine-settings = { workspace = true }
 # `release_max_level_info` compiles trace! and debug! out of release builds entirely:
 # no branch, no argument evaluation, nothing left in the binary. The feature is enabled
 # here, in the binary crate, because it is a process-wide decision — a library enabling it

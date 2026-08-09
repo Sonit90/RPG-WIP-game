@@ -219,6 +219,15 @@ impl GameUi {
         &self.list
     }
 
+    /// The list, for a caller appending its own commands after the HUD.
+    ///
+    /// How the menu is composed onto the frame: it is pushed into the list the HUD already
+    /// built, so the whole interface stays one batch and one draw call rather than becoming
+    /// a second pass that has to be blended in the right order.
+    pub fn list_mut(&mut self) -> &mut UiDrawList {
+        &mut self.list
+    }
+
     /// Starts a new frame, discarding the previous one's commands.
     pub fn begin(&mut self) {
         self.list.clear();

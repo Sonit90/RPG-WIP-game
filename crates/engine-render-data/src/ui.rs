@@ -76,6 +76,16 @@ impl UiRect {
         self.y + self.height
     }
 
+    /// Whether a point in the same coordinate space is inside this rectangle.
+    ///
+    /// Half-open: the left and top edges are inside, the right and bottom are not, so two
+    /// rectangles that share an edge never both claim the same pixel — which is what stops
+    /// two adjacent buttons from lighting up together.
+    #[must_use]
+    pub fn contains(self, x: f32, y: f32) -> bool {
+        x >= self.x && x < self.right() && y >= self.y && y < self.bottom()
+    }
+
     /// The same rectangle inset by `amount` on every side.
     ///
     /// Clamped at zero rather than inverting: an inset larger than the rectangle produces
@@ -420,6 +430,23 @@ mod tests {
         let mut list = UiDrawList::new();
         list.bar(UiRect::new(0.0, 0.0, 50.0, 8.0), -1.0, BLACK, WHITE);
         assert_eq!(list.len(), 1);
+    }
+
+    #[test]
+    fn a_rectangle_claims_its_top_left_edges_and_not_its_bottom_right() {
+        let rect = UiRect::new(10.0, 20.0, 100.0, 30.0);
+        assert!(rect.contains(10.0, 20.0), "the top-left corner is inside");
+        assert!(rect.contains(109.9, 49.9));
+        assert!(!rect.contains(110.0, 30.0), "the right edge is outside");
+        assert!(!rect.contains(50.0, 50.0), "the bottom edge is outside");
+        assert!(!rect.contains(9.9, 30.0));
+
+        // Two adjacent rectangles never both claim a point, which is what makes the rule
+        // worth stating: hovering the seam lights exactly one of them.
+        let next = UiRect::new(rect.right(), rect.y, 100.0, 30.0);
+        for x in [109.0, 110.0, 111.0] {
+            assert!(rect.contains(x, 25.0) ^ next.contains(x, 25.0), "{x}");
+        }
     }
 
     #[test]

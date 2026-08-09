@@ -1,0 +1,17 @@
+[package]
+name = "engine-settings"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+# Player-facing settings and the file they live in. Deliberately depends on no engine crate:
+# a setting is a value with bounds, and loading one must be testable without a window, a
+# device or a simulation.
+[dependencies]
+log = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+
+[lints]
+workspace = true

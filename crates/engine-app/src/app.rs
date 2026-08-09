@@ -24,35 +24,34 @@ use std::time::{Duration, Instant};
 use engine_core::application::{Application, EngineContext};
 use engine_core::config::EngineSettings;
 use engine_core::error::EngineError;
-use engine_core::input::{InputEvent, KeyCode, MouseButton};
+use engine_core::input::{InputEvent, KeyCode};
 use engine_core::math::Vec3;
-#[cfg(feature = "debug-overlay")]
-use engine_game::ability::AbilityId;
 use engine_game::arena::{self, ArenaConfig};
 use engine_game::command::PlayerCommand;
-use engine_game::demo::{self, DemoScene, Station};
+use engine_game::demo::{self, DemoScene};
 use engine_game::input_map::Bindings;
 use engine_game::sim::Simulation;
-#[cfg(feature = "debug-overlay")]
-use engine_game::telemetry::{AbilityTotals, TargetTotals};
 use engine_platform::{Window, WindowConfig, WindowEvent};
 use engine_presentation::camera::ThirdPersonCamera;
 #[cfg(feature = "debug-overlay")]
 use engine_presentation::collision_debug::{CollisionDebug, DebugBindings};
 #[cfg(feature = "debug-overlay")]
-use engine_presentation::collision_hud::{self, CollisionHudModel};
+use engine_presentation::collision_hud;
 use engine_presentation::damage_numbers::FloatingNumbers;
 use engine_presentation::extract::{RenderExtractor, VisualBindings};
 use engine_presentation::game_ui::GameUi;
 #[cfg(feature = "debug-overlay")]
 use engine_presentation::hud::{self, HudModel};
+use engine_presentation::mouse_look::{LookChange, MouseLook, RelativeMotion};
 use engine_presentation::nameplate::{NameplateConfig, NameplateSet};
 use engine_presentation::snapshot::UiSnapshot;
+use engine_presentation::ui::{MenuAction, MenuScratch, MenuSystem, MenuTheme, UiInput};
 use engine_renderer::mesh::MeshData;
 use engine_renderer::{
     Camera, Lighting, MaterialDesc, MaterialHandle, MeshHandle, Projection, Renderer,
     RendererConfig, UiDrawList,
 };
+use engine_settings::SettingsManager;
 
 use crate::args::{Args, Scene};
 
@@ -107,8 +106,6 @@ pub struct App {
     scene: Scene,
     /// The collision demo's stations and labels. `None` in the combat scene.
     demo: Option<DemoScene>,
-    /// The test station the character was last put at, for the readout.
-    station: Option<Station>,
     /// The collision demo's world-space labels. Its own draw list, because the demo scene
     /// draws none of the combat interface.
     collision_ui: UiDrawList,
@@ -117,8 +114,26 @@ pub struct App {
     collision_debug: CollisionDebug,
     /// Commands built from this frame's input. Reused; never freed.
     commands: Vec<PlayerCommand>,
-    /// Whether the mouse is captured and drives the camera.
-    mouse_captured: bool,
+    /// The pause and settings menus. Owns no gameplay and no file: it emits actions.
+    menu: MenuSystem,
+    /// This frame's menu actions, copied out of the menu so they can be applied to `self`.
+    /// Reused; never freed.
+    menu_actions: Vec<MenuAction>,
+    /// How the menus are coloured and sized.
+    menu_theme: MenuTheme,
+    /// Scratch the menu formats its numbers into. Reused; never freed.
+    menu_scratch: MenuScratch,
+    /// The player's settings and the file they live in.
+    settings: SettingsManager,
+    /// Whether the right button is held and the mouse is turning the camera.
+    mouse_look: MouseLook,
+    /// Mouse movement to rotate by, with the engine's own re-centring taken back out.
+    motion: RelativeMotion,
+    /// Where the cursor was when mouse-look began, in client pixels.
+    ///
+    /// Put back when the button is released, so turning the camera does not walk the
+    /// pointer to the middle of the screen.
+    cursor_before_look: (i32, i32),
     /// Milliseconds the last render extraction took.
     extract_ms: f64,
     /// Milliseconds the last UI *layout* took: nameplates, snapshot and draw-list build.
@@ -138,10 +153,6 @@ pub struct App {
     last_report: Instant,
     #[cfg(feature = "debug-overlay")]
     overlay_lines: Vec<String>,
-    #[cfg(feature = "debug-overlay")]
-    overlay_abilities: Vec<(AbilityId, AbilityTotals)>,
-    #[cfg(feature = "debug-overlay")]
-    overlay_targets: Vec<TargetTotals>,
     #[cfg(feature = "debug-overlay")]
     last_overlay_update: Instant,
 }
@@ -211,7 +222,19 @@ impl App {
             collision_debug.rebuild(extractor.render_world_mut(), &simulation);
         }
 
-        let controller = ThirdPersonCamera::following(simulation.player_position());
+        // Settings first: the camera is built with the sensitivity the player last chose,
+        // so the first mouse movement of the session already uses it.
+        // `settings` here is the engine's; this is the player's, which is a different thing
+        // with a different lifetime: it changes while the game runs and it is written back.
+        let game_settings = SettingsManager::load_from_game_directory();
+        log::info!(
+            "settings: {} (camera sensitivity {:.2})",
+            game_settings.path().display(),
+            game_settings.settings().camera_sensitivity
+        );
+
+        let mut controller = ThirdPersonCamera::following(simulation.player_position());
+        controller.set_sensitivity(game_settings.settings().camera_sensitivity);
         let mut camera = Camera::new(Projection::perspective(aspect_of(width, height)))?;
         controller.apply(&mut camera, aspect_of(width, height))?;
 
@@ -244,13 +267,19 @@ impl App {
             lighting,
             bindings: Bindings::default(),
             scene: args.scene,
-            station: demo.as_ref().map(|_| demo::STATIONS[0]),
             demo,
             collision_ui: UiDrawList::with_capacity(64, 1_024),
             #[cfg(feature = "debug-overlay")]
             collision_debug,
             commands: Vec::with_capacity(16),
-            mouse_captured: false,
+            menu: MenuSystem::new(game_settings.settings(), env!("CARGO_PKG_VERSION")),
+            menu_actions: Vec::with_capacity(4),
+            menu_theme: MenuTheme::default(),
+            menu_scratch: MenuScratch::new(),
+            settings: game_settings,
+            mouse_look: MouseLook::new(),
+            motion: RelativeMotion::new(),
+            cursor_before_look: (0, 0),
             extract_ms: 0.0,
             ui_ms: 0.0,
             nameplates: NameplateSet::with_capacity(32),
@@ -261,10 +290,6 @@ impl App {
             last_report: Instant::now(),
             #[cfg(feature = "debug-overlay")]
             overlay_lines: Vec::with_capacity(32),
-            #[cfg(feature = "debug-overlay")]
-            overlay_abilities: Vec::with_capacity(engine_game::ABILITY_SLOTS),
-            #[cfg(feature = "debug-overlay")]
-            overlay_targets: Vec::with_capacity(32),
             #[cfg(feature = "debug-overlay")]
             last_overlay_update: Instant::now(),
         })
@@ -277,7 +302,6 @@ impl App {
     /// a replay can supply the same commands without a keyboard.
     fn handle_key(&mut self, key: KeyCode) {
         match key {
-            KeyCode::Escape => self.set_mouse_captured(false),
             #[cfg(feature = "debug-overlay")]
             OVERLAY_TOGGLE_KEY => {
                 let enabled = !self.renderer.overlay_enabled();
@@ -331,7 +355,6 @@ impl App {
             return false;
         };
 
-        self.station = Some(station);
         self.simulation.push_command(PlayerCommand::Teleport {
             position: station.spawn,
         });
@@ -344,49 +367,140 @@ impl App {
         true
     }
 
-    /// Captures or releases the mouse for camera control.
+    /// Hides the cursor and parks it at the centre while the camera is being turned.
     ///
-    /// While captured the cursor is hidden and re-centred every frame, so it can never reach
-    /// a screen edge and stop producing movement.
-    fn set_mouse_captured(&mut self, captured: bool) {
-        if captured == self.mouse_captured {
-            return;
-        }
-        self.mouse_captured = captured;
-        self.window.set_cursor_visible(!captured);
-        if captured && let Err(error) = self.window.center_cursor() {
-            log::warn!("could not centre the cursor: {error}");
-        }
-        log::info!(
-            "mouse {}",
-            if captured {
-                "captured (ESC releases it)"
-            } else {
-                "released"
-            }
-        );
+    /// The position it was at is remembered, not the centre: the cursor goes back where the
+    /// player pressed the button, so holding the right button to look around leaves the
+    /// pointer where they left it.
+    fn begin_mouse_look(&mut self, cursor: (i32, i32)) {
+        self.cursor_before_look = cursor;
+        // Movement is measured from here on. Where the cursor happens to be is the origin,
+        // never a rotation.
+        self.motion.start_at(cursor);
+        self.window.set_cursor_visible(false);
+        self.recenter_cursor();
     }
 
-    /// Turns this frame's cursor position into a camera rotation.
+    /// Warps the cursor to the client centre and records that the warp is not movement.
     ///
-    /// The offset from the client centre is used rather than the input layer's per-frame
-    /// delta, because re-centring the cursor generates a movement of its own: measuring
-    /// against a fixed point makes the warp invisible instead of cancelling out the
-    /// player's own movement.
+    /// Skipped while a previous warp has not been seen yet: warping twice would leave the
+    /// first one unmatched, and it would be counted as a rotation when its message arrived.
+    fn recenter_cursor(&mut self) {
+        if self.motion.warp_pending() || self.motion.cursor() == self.window.client_center() {
+            return;
+        }
+        match self.window.center_cursor() {
+            Ok(()) => self.motion.note_warp(self.window.client_center()),
+            Err(error) => log::warn!("could not centre the cursor: {error}"),
+        }
+    }
+
+    /// Shows the cursor again and puts it back where mouse-look started.
+    fn end_mouse_look(&mut self) {
+        self.window.set_cursor_visible(true);
+        let (x, y) = self.cursor_before_look;
+        if let Err(error) = self.window.set_cursor_position(x, y) {
+            log::warn!("could not restore the cursor: {error}");
+        }
+    }
+
+    /// Ends mouse-look if it is running. For focus loss and shutdown.
+    fn cancel_mouse_look(&mut self) {
+        if self.mouse_look.cancel().is_some() {
+            self.end_mouse_look();
+        }
+    }
+
+    /// Runs the menus for this frame and carries out what they asked for.
+    ///
+    /// The menu never performs an action itself: it returns [`MenuAction`]s and this is the
+    /// only place that turns one into a quit, a saved file or a camera change. That is what
+    /// keeps a check for which screen is open out of the renderer and the simulation.
+    fn update_menu(&mut self, ctx: &mut EngineContext) {
+        self.menu.layout(self.renderer.size());
+
+        let ui_input = UiInput::from_input(ctx.input());
+        // Copied out: applying an action needs `&mut self`, and the slice borrows the menu.
+        self.menu_actions.clear();
+        self.menu_actions
+            .extend_from_slice(self.menu.update(&ui_input));
+
+        for index in 0..self.menu_actions.len() {
+            match self.menu_actions[index] {
+                MenuAction::Opened => {
+                    // The cursor has to come back so the player can click a button with it.
+                    // The game itself keeps running: this is a multiplayer world, and it
+                    // does not stop because one player opened a menu.
+                    self.cancel_mouse_look();
+                    self.menu.apply_settings(self.settings.settings());
+                    log::info!("menu opened");
+                }
+                MenuAction::Closed => log::info!("menu closed"),
+                MenuAction::OpenedSettings => {
+                    // The screen shows what is in the settings, not what it last showed.
+                    self.menu.apply_settings(self.settings.settings());
+                }
+                MenuAction::ClosedSettings => {}
+                MenuAction::QuitRequested => {
+                    log::info!("quit requested from the menu");
+                    // Through the engine's own lifecycle: the loop finishes this frame,
+                    // `shutdown` runs, the renderer drains its frames in flight and the
+                    // window closes. Nothing here terminates the process itself.
+                    ctx.request_exit();
+                }
+                MenuAction::SensitivityChanged(value) => self.apply_sensitivity(value, false),
+                MenuAction::SensitivityCommitted(value) => self.apply_sensitivity(value, true),
+            }
+        }
+    }
+
+    /// Applies a camera sensitivity, and writes it to disk if the interaction has finished.
+    ///
+    /// The value goes to the settings first and reaches the camera from there, so what the
+    /// camera turns at is always what would be written to the file, snapping included.
+    fn apply_sensitivity(&mut self, value: f32, persist: bool) {
+        self.settings.set_camera_sensitivity(value);
+        self.controller
+            .set_sensitivity(self.settings.settings().camera_sensitivity);
+        if persist && self.settings.save_if_dirty() {
+            log::info!(
+                "settings: camera sensitivity {:.2} saved",
+                self.settings.settings().camera_sensitivity
+            );
+        }
+    }
+
+    /// Turns this frame's mouse *movement* into a camera rotation, while the look button is
+    /// held.
+    ///
+    /// Movement only: the cursor's position never enters the rotation, so where the player
+    /// happened to be pointing when they pressed the button does not turn the camera. The
+    /// engine's own re-centring — which keeps the cursor away from the screen edge, where
+    /// it would stop producing movement — is cancelled by [`RelativeMotion`] rather than
+    /// measured around, so a warp whose message arrives a frame late costs nothing either.
+    ///
+    /// The button's *state* drives this, not its press and release events, so the camera
+    /// cannot be left rotating after a release: [`MouseLook`] reads what is held now.
     fn apply_mouse_look(&mut self, ctx: &EngineContext) {
-        if !self.mouse_captured {
+        match self.mouse_look.update(ctx.input()) {
+            Some(LookChange::Began) => {
+                self.begin_mouse_look(ctx.input().mouse_position());
+                return;
+            }
+            Some(LookChange::Ended) => {
+                self.end_mouse_look();
+                return;
+            }
+            None => {}
+        }
+        if !self.mouse_look.is_active() {
             return;
         }
-        let (center_x, center_y) = self.window.client_center();
-        let (x, y) = ctx.input().mouse_position();
-        let (offset_x, offset_y) = (x - center_x, y - center_y);
-        if offset_x == 0 && offset_y == 0 {
-            return;
+        let (delta_x, delta_y) = self.motion.take();
+        if delta_x != 0 || delta_y != 0 {
+            self.controller.rotate(delta_x as f32, delta_y as f32);
         }
-        self.controller.rotate(offset_x as f32, offset_y as f32);
-        if let Err(error) = self.window.center_cursor() {
-            log::warn!("could not centre the cursor: {error}");
-        }
+        self.recenter_cursor();
     }
 
     /// Rebuilds the whole game UI and hands it to the renderer.
@@ -405,8 +519,16 @@ impl App {
             return;
         }
         let started = Instant::now();
+        let viewport = self.renderer.size();
         if self.scene.is_collision() {
             self.build_collision_ui();
+            engine_presentation::ui::push_menu(
+                &mut self.collision_ui,
+                &self.menu,
+                &self.menu_theme,
+                &mut self.menu_scratch,
+                viewport,
+            );
             self.ui_ms = started.elapsed().as_secs_f64() * 1e3;
             self.renderer.set_ui(&self.collision_ui);
             return;
@@ -420,7 +542,6 @@ impl App {
         };
 
         let view_projection = self.camera.view_projection();
-        let viewport = self.renderer.size();
         self.nameplates
             .build(&self.simulation, &view_projection, viewport, &config);
 
@@ -433,6 +554,15 @@ impl App {
             &view_projection,
             viewport,
             self.simulation.time() as f32,
+        );
+        // Last of all, into the same list: painter's order puts the menu over the HUD, and
+        // sharing the list keeps the whole interface one batch and one draw call.
+        engine_presentation::ui::push_menu(
+            self.game_ui.list_mut(),
+            &self.menu,
+            &self.menu_theme,
+            &mut self.menu_scratch,
+            viewport,
         );
         self.ui_ms = started.elapsed().as_secs_f64() * 1e3;
         self.renderer.set_ui(self.game_ui.list());
@@ -525,47 +655,19 @@ impl App {
         }
         self.last_overlay_update = Instant::now();
 
-        if let Some(scene) = self.demo.as_ref() {
-            collision_hud::write_lines(
-                &mut self.overlay_lines,
-                &CollisionHudModel {
-                    simulation: &self.simulation,
-                    scene,
-                    station: self.station,
-                    debug_entities: self.collision_debug.drawn(),
-                },
-            );
-            self.renderer.set_overlay_text(&self.overlay_lines);
-            let columns = self
-                .overlay_lines
-                .iter()
-                .map(|line| line.chars().count())
-                .max()
-                .unwrap_or(0);
-            self.renderer
-                .push_overlay_backdrop(self.overlay_lines.len(), columns);
-            return;
-        }
-
-        let cull = self.renderer.cull_stats();
+        // The same readout in both scenes: it reports the frame rate, and the frame rate
+        // does not depend on which scene is loaded. Everything scene-specific — collision
+        // state, the combat meter, cull and draw counts — is still measured and still
+        // reported by the periodic log line and by `engine-bench`; it is simply not drawn
+        // over the game any more.
         let model = HudModel {
-            simulation: &self.simulation,
             summary: ctx.metrics().summary(),
             sim: self.simulation.last_tick_stats(),
             ticks_this_frame: self.simulation.stats().ticks,
-            extract_ms: self.extract_ms,
-            cull_ms: self.renderer.last_cull_ms(),
-            visible: cull.visible,
-            culled: cull.culled,
-            draw_calls: self.renderer.draw_calls_last_frame(),
-            resolution: self.renderer.size(),
+            tick_hz: self.simulation.timestep().hz(),
+            memory: Some(ctx.frame_allocator().stats()),
         };
-        hud::write_lines(
-            &mut self.overlay_lines,
-            &model,
-            &mut self.overlay_abilities,
-            &mut self.overlay_targets,
-        );
+        hud::write_lines(&mut self.overlay_lines, &model);
         self.renderer.set_overlay_text(&self.overlay_lines);
         // Appends to the geometry `set_overlay_text` rebuilt, so it comes after it. The
         // backdrop is sized from the text it has to cover.
@@ -656,14 +758,17 @@ impl Application for App {
                         self.camera.set_viewport(width, height)?;
                     }
                 }
+                // Movement is accumulated from the messages, not from a position compared
+                // against the centre once a frame: the re-centring warp produces a message
+                // of its own, and only here can it be told apart from the player's hand.
+                WindowEvent::Input(InputEvent::MouseMoved { x, y }) => {
+                    self.motion.moved((x, y));
+                }
                 WindowEvent::Input(InputEvent::FocusChanged { focused: false }) => {
                     // The cursor's hidden state is process-wide; leaving it hidden while
                     // another window has focus takes the pointer away from the desktop.
-                    self.set_mouse_captured(false);
+                    self.cancel_mouse_look();
                 }
-                WindowEvent::Input(InputEvent::MouseButtonDown {
-                    button: MouseButton::Left,
-                }) => self.set_mouse_captured(true),
                 // Physical presses only: auto-repeat must not re-trigger a toggle.
                 WindowEvent::Input(InputEvent::KeyDown { key, repeat: false }) => {
                     self.handle_key(key);
@@ -687,6 +792,11 @@ impl Application for App {
 
         {
             engine_core::profile_scope!(profiler, "Input");
+            // The menu sees the frame's input first, and then gameplay sees it too: the
+            // world is shared, so a player with a settings screen open is still standing in
+            // it and still has to be able to move out of the way.
+            self.update_menu(ctx);
+
             self.apply_mouse_look(ctx);
             let wheel = ctx.input().wheel_delta();
             if wheel != 0.0 {
@@ -710,8 +820,10 @@ impl Application for App {
 
         {
             engine_core::profile_scope!(profiler, "Simulation");
-            // The *real* delta: the fixed timestep is what decouples gameplay from the frame
-            // rate, and feeding it a scaled or clamped delta would do that job twice.
+            // The *real* delta, always: the fixed timestep is what decouples gameplay from
+            // the frame rate, and feeding it a scaled or clamped delta would do that job
+            // twice. There is no menu case here — a shared world does not stop because one
+            // player opened a settings screen.
             self.simulation.advance(ctx.time().real_delta());
         }
 
@@ -808,7 +920,12 @@ impl Application for App {
     }
 
     fn shutdown(&mut self, ctx: &mut EngineContext) {
-        self.set_mouse_captured(false);
+        self.cancel_mouse_look();
+        // A value changed by the keyboard and never released, or a write that failed
+        // earlier: the session's last chance to get it on disk.
+        if self.settings.save_if_dirty() {
+            log::info!("settings: saved on shutdown");
+        }
         self.report_final(ctx);
     }
 }
@@ -899,7 +1016,8 @@ fn log_controls(args: &Args, demo: Option<&DemoScene>) {
         log::info!("  TAB              cycle target");
         log::info!("  R                reset the dummies and the combat meter");
     }
-    log::info!("  LEFT CLICK       capture the mouse for camera control, ESC releases it");
+    log::info!("  ESC              menu: settings, quit, resume (the game keeps running)");
+    log::info!("  RIGHT MOUSE      hold to turn the camera; release to stop");
     log::info!("  MOUSE WHEEL      camera distance");
     log::info!("  F3               collision debug drawing on/off");
     log::info!("  F5               developer overlay on/off");

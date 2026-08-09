@@ -10,6 +10,8 @@ members = [
     "crates/engine-collision",
     # Gameplay. Depends on engine-core alone; see its lib docs for why that is the point.
     "crates/engine-game",
+    # Player-facing settings and their file. Depends on no engine crate at all.
+    "crates/engine-settings",
     # Gameplay to rendering: extraction, the third-person camera, the developer overlay.
     "crates/engine-presentation",
     "crates/engine-app",
@@ -39,8 +41,14 @@ engine-collision = { path = "crates/engine-collision" }
 # The gameplay simulation. Must never gain a `windows`, renderer or render-data dependency.
 engine-game = { path = "crates/engine-game" }
 engine-presentation = { path = "crates/engine-presentation" }
+# Settings the player changes and the game reloads next launch. No engine dependency.
+engine-settings = { path = "crates/engine-settings" }
 log = "0.4"
 windows = "0.62"
+# The settings file is JSON. A hand-written parser is exactly the sort of thing that turns a
+# malformed config into a crash, so the format is left to the ecosystem's standard pair.
+serde = { version = "1", default-features = false, features = ["std"] }
+serde_json = "1"
 
 [workspace.lints.rust]
 missing_docs = "warn"

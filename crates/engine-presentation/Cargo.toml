@@ -15,6 +15,9 @@ engine-collision = { workspace = true }
 engine-core = { workspace = true }
 engine-game = { workspace = true }
 engine-render-data = { workspace = true }
+# The settings a menu shows: their bounds, their defaults and their type. The UI reads them;
+# it never loads or writes the file.
+engine-settings = { workspace = true }
 log = { workspace = true }
 
 [lints]

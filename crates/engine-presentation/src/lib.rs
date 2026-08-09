@@ -6,13 +6,14 @@
 //! Simulation      -->    RenderExtractor        -->    RenderWorld
 //! player body     -->    ThirdPersonCamera      -->    Camera
 //! Simulation      -->    UiSnapshot             -->    game UI (plain data)
-//! meter, stats    -->    hud::write_lines       -->    [String]
+//! frame metrics   -->    hud::write_lines       -->    [String]
 //! enemies, camera -->    NameplateSet           -->    screen-space plates
 //! ```
 //!
 //! The game UI reads a [`snapshot::UiSnapshot`] rather than the simulation. The developer
-//! overlay in [`hud`] still borrows `&Simulation` directly, which is what a debug readout
-//! is allowed to do; nothing the player sees does.
+//! overlay in [`hud`] reads measurements only — frame times, tick timings, arena usage —
+//! and the collision readout in [`collision_hud`] still borrows `&Simulation` directly,
+//! which is what a debug readout is allowed to do; nothing the player sees does.
 //!
 //! This crate exists because the two things it joins must not know about each other.
 //! `engine-game` cannot name a `MeshHandle`; `engine-render-data` cannot name a `Health`.
@@ -30,8 +31,11 @@ pub mod damage_numbers;
 pub mod extract;
 pub mod game_ui;
 pub mod hud;
+pub mod mouse_look;
 pub mod nameplate;
 pub mod snapshot;
+/// The reusable UI framework and the game's menus.
+pub mod ui;
 
 pub use camera::ThirdPersonCamera;
 pub use collision_debug::{CollisionDebug, DebugBindings};
@@ -43,6 +47,7 @@ pub use extract::{
 };
 pub use game_ui::{GameUi, UiTheme};
 pub use hud::{HudModel, write_lines};
+pub use mouse_look::{LOOK_BUTTON, LookChange, MouseLook, RelativeMotion};
 pub use nameplate::{
     MAX_NAMEPLATES, NAMEPLATE_MAX_DISTANCE, Nameplate, NameplateConfig, NameplateSet,
     NameplateStatus, project,
@@ -50,4 +55,8 @@ pub use nameplate::{
 pub use snapshot::{
     AbilitySlotView, CastView, CombatView, NotificationView, PlayerView, SlotAvailability,
     StatusList, StatusView, TargetView, UiSnapshot,
+};
+pub use ui::{
+    MenuAction, MenuScreen, MenuSystem, MenuTheme, Nav, PauseItem, SettingsItem, UiInput, UiScreen,
+    Widget, WidgetEvent, WidgetState,
 };
