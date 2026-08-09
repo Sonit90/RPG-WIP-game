@@ -4,10 +4,10 @@
 //! InputState
 //!     |
 //!     v
-//! UiInput          one struct: a pointer with edges, and an optional navigation intent
+//! UiInput          one struct: a pointer with edges, plus escape
 //!     |
 //!     v
-//! UiScreen<T>      a list of tagged widgets, one focus, hit-testing
+//! UiScreen<T>      a list of tagged widgets, hit-testing
 //!     |
 //!     v
 //! Widget           Button / Checkbox / Slider: state, a rule, and a value
@@ -23,8 +23,13 @@
 //!
 //! Widgets exist between frames and hold their own state. An immediate-mode UI would rebuild
 //! the whole tree every frame, which is exactly the per-frame allocation this engine spends
-//! its time avoiding, and it would make "which widget has the focus" a thing to rediscover
-//! sixty times a second rather than a field.
+//! its time avoiding.
+//!
+//! ## Pointer only
+//!
+//! The menu answers the mouse, and escape to back out. It has no focus and no keyboard
+//! navigation: the game keeps running while a menu is open, so every key the interface could
+//! have claimed is one the player is still using to play.
 //!
 //! ## What this module does not do
 //!
@@ -45,7 +50,7 @@ pub mod paint;
 pub mod screen;
 pub mod widget;
 
-pub use input::{Nav, UiInput};
+pub use input::UiInput;
 pub use menu::{MenuAction, MenuScreen, MenuSystem, PauseItem, SettingsItem};
 pub use paint::{MenuScratch, MenuTheme, push_menu};
 pub use screen::UiScreen;

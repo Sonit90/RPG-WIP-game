@@ -27,7 +27,7 @@ use engine_settings::{
     CAMERA_SENSITIVITY_MAX, CAMERA_SENSITIVITY_MIN, CAMERA_SENSITIVITY_STEP, GameSettings,
 };
 
-use super::input::{Nav, UiInput};
+use super::input::UiInput;
 use super::screen::UiScreen;
 use super::widget::{Button, Slider, Widget, WidgetEvent};
 
@@ -228,7 +228,6 @@ impl MenuSystem {
         }
         self.screen = MenuScreen::Pause;
         self.pause.reset();
-        self.pause.focus_first();
         self.actions.push(MenuAction::Opened);
     }
 
@@ -352,7 +351,7 @@ impl MenuSystem {
         self.actions.clear();
         match self.screen {
             MenuScreen::None => {
-                if input.nav == Some(Nav::Cancel) {
+                if input.cancel {
                     self.open_pause();
                 }
             }
@@ -365,7 +364,7 @@ impl MenuSystem {
     fn update_pause(&mut self, input: &UiInput) {
         // Escape closes the menu, exactly as RESUME does: the key that opened it is the key
         // that closes it, and the button is there for a player using the mouse.
-        if input.nav == Some(Nav::Cancel) {
+        if input.cancel {
             self.close();
             return;
         }
@@ -387,13 +386,12 @@ impl MenuSystem {
             self.screen = MenuScreen::Settings;
             self.pause.reset();
             self.settings.reset();
-            self.settings.focus_first();
             self.actions.push(MenuAction::OpenedSettings);
         }
     }
 
     fn update_settings(&mut self, input: &UiInput) {
-        if input.nav == Some(Nav::Cancel) {
+        if input.cancel {
             self.back_to_pause();
             return;
         }
@@ -429,7 +427,6 @@ impl MenuSystem {
         self.screen = MenuScreen::Pause;
         self.settings.reset();
         self.pause.reset();
-        self.pause.focus_first();
         self.actions.push(MenuAction::ClosedSettings);
     }
 }
@@ -468,9 +465,10 @@ mod tests {
         }
     }
 
-    fn nav(nav: Nav) -> UiInput {
+    /// Escape: the only key the menu reads.
+    fn escape() -> UiInput {
         UiInput {
-            nav: Some(nav),
+            cancel: true,
             ..UiInput::new()
         }
     }
@@ -519,7 +517,7 @@ mod tests {
         assert!(!menu.is_open());
         assert_eq!(menu.screen(), MenuScreen::None);
 
-        let actions = menu.update(&nav(Nav::Cancel)).to_vec();
+        let actions = menu.update(&escape()).to_vec();
         assert_eq!(actions, [MenuAction::Opened]);
         assert_eq!(menu.screen(), MenuScreen::Pause);
         assert!(menu.is_open());
@@ -528,8 +526,8 @@ mod tests {
     #[test]
     fn escape_closes_the_pause_menu_again() {
         let mut menu = menu();
-        menu.update(&nav(Nav::Cancel));
-        let actions = menu.update(&nav(Nav::Cancel)).to_vec();
+        menu.update(&escape());
+        let actions = menu.update(&escape()).to_vec();
         assert_eq!(actions, [MenuAction::Closed]);
         assert_eq!(menu.screen(), MenuScreen::None);
     }
@@ -573,7 +571,7 @@ mod tests {
         menu.open_pause();
         click_pause(&mut menu, PauseItem::Settings);
 
-        let actions = menu.update(&nav(Nav::Cancel)).to_vec();
+        let actions = menu.update(&escape()).to_vec();
         assert_eq!(actions, [MenuAction::ClosedSettings]);
         assert_eq!(menu.screen(), MenuScreen::Pause);
         assert!(menu.is_open(), "escape from settings closed the whole menu");
@@ -583,7 +581,7 @@ mod tests {
     fn the_whole_journey_ends_back_in_gameplay() {
         // Gameplay -> pause -> settings -> pause -> gameplay, the flow from the brief.
         let mut menu = menu();
-        menu.update(&nav(Nav::Cancel));
+        menu.update(&escape());
         click_pause(&mut menu, PauseItem::Settings);
         click_settings(&mut menu, SettingsItem::Back);
         click_pause(&mut menu, PauseItem::Resume);
@@ -744,34 +742,28 @@ mod tests {
     }
 
     #[test]
-    fn the_menu_can_be_driven_entirely_from_the_keyboard() {
+    fn the_menu_answers_the_pointer_and_escape_and_nothing_else() {
+        // Every other key belongs to the game, which is still being played behind the menu:
+        // a menu that claimed space or tab would take jumping and targeting away mid-fight.
         let mut menu = menu();
-        menu.update(&nav(Nav::Cancel));
-        assert_eq!(menu.pause_screen().focused(), Some(PauseItem::Settings));
+        menu.open_pause();
 
-        // Enter on SETTINGS opens it, and the slider takes the focus.
-        let opened = menu.update(&nav(Nav::Activate)).to_vec();
-        assert_eq!(opened, [MenuAction::OpenedSettings]);
+        assert!(menu.update(&UiInput::new()).is_empty());
+        assert!(menu.update(&at(0.0, 0.0)).is_empty());
         assert_eq!(
-            menu.settings_screen().focused(),
-            Some(SettingsItem::CameraSensitivity)
+            menu.screen(),
+            MenuScreen::Pause,
+            "an idle frame changed the screen"
         );
 
-        // Right arrow nudges it by exactly one step and commits.
-        let before = menu.sensitivity_slider().expect("a slider").value();
-        let nudged = menu.update(&nav(Nav::Increase)).to_vec();
+        // The pointer works.
         assert_eq!(
-            nudged,
-            [MenuAction::SensitivityCommitted(
-                before + CAMERA_SENSITIVITY_STEP
-            )]
+            click_pause(&mut menu, PauseItem::Settings),
+            [MenuAction::OpenedSettings]
         );
-
-        // Tab to BACK, activate, and the pause menu is showing again.
-        menu.update(&nav(Nav::Next));
-        assert_eq!(menu.settings_screen().focused(), Some(SettingsItem::Back));
+        // Escape works.
         assert_eq!(
-            menu.update(&nav(Nav::Activate)).to_vec(),
+            menu.update(&escape()).to_vec(),
             [MenuAction::ClosedSettings]
         );
     }
@@ -793,13 +785,7 @@ mod tests {
     #[test]
     fn a_closed_menu_ignores_everything_except_the_intent_that_opens_it() {
         let mut menu = menu();
-        for input in [
-            press(100.0, 100.0),
-            release(100.0, 100.0),
-            nav(Nav::Activate),
-            nav(Nav::Next),
-            nav(Nav::Increase),
-        ] {
+        for input in [press(100.0, 100.0), release(100.0, 100.0), at(50.0, 50.0)] {
             assert!(menu.update(&input).is_empty(), "{input:?} did something");
             assert!(!menu.is_open());
         }
@@ -809,9 +795,9 @@ mod tests {
     fn opening_and_closing_repeatedly_leaves_no_state_behind() {
         let mut menu = menu();
         for round in 0..25 {
-            menu.update(&nav(Nav::Cancel));
+            menu.update(&escape());
             assert!(menu.is_open(), "round {round} did not open");
-            menu.update(&nav(Nav::Cancel));
+            menu.update(&escape());
             assert!(!menu.is_open(), "round {round} did not close");
             assert_eq!(menu.pause_screen().hovered(), None);
         }

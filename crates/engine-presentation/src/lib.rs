@@ -57,6 +57,6 @@ pub use snapshot::{
     StatusList, StatusView, TargetView, UiSnapshot,
 };
 pub use ui::{
-    MenuAction, MenuScreen, MenuSystem, MenuTheme, Nav, PauseItem, SettingsItem, UiInput, UiScreen,
+    MenuAction, MenuScreen, MenuSystem, MenuTheme, PauseItem, SettingsItem, UiInput, UiScreen,
     Widget, WidgetEvent, WidgetState,
 };

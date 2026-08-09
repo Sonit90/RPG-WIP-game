@@ -36,8 +36,6 @@ pub struct MenuTheme {
     pub button_pressed: UiColor,
     /// A button that cannot be used.
     pub button_disabled: UiColor,
-    /// The outline around the focused widget.
-    pub focus_outline: UiColor,
     /// Ordinary text.
     pub text: UiColor,
     /// Text on a disabled widget.
@@ -76,7 +74,6 @@ impl Default for MenuTheme {
             button_hovered: [0.22, 0.30, 0.42, 1.0],
             button_pressed: [0.32, 0.44, 0.62, 1.0],
             button_disabled: [0.10, 0.11, 0.13, 1.0],
-            focus_outline: [0.85, 0.78, 0.35, 1.0],
             text: [0.92, 0.94, 0.98, 1.0],
             text_disabled: [0.45, 0.47, 0.52, 1.0],
             title: [0.98, 0.86, 0.45, 1.0],
@@ -252,9 +249,6 @@ fn push_labelled_box(
     checked: Option<bool>,
 ) {
     list.rect(rect, theme.fill(state));
-    if state.focused {
-        list.outline(rect, theme.border_pixels, theme.focus_outline);
-    }
 
     match checked {
         Some(checked) => {
@@ -304,9 +298,6 @@ fn push_track(list: &mut UiDrawList, slider: &Slider, theme: &MenuTheme) {
 
     let handle = handle_rect(slider, theme);
     list.rect(handle, theme.handle);
-    if slider.state.focused {
-        list.outline(track, theme.border_pixels, theme.focus_outline);
-    }
 }
 
 /// A slider with everything the player needs to read it: name, bounds, handle and value.
@@ -404,7 +395,7 @@ pub fn write_hundredths(out: &mut String, value: f32) {
 )]
 mod tests {
     use super::*;
-    use crate::ui::input::{Nav, UiInput};
+    use crate::ui::input::UiInput;
     use crate::ui::menu::MenuSystem;
     use engine_render_data::ui::UiCommand;
     use engine_settings::{CAMERA_SENSITIVITY_MAX, CAMERA_SENSITIVITY_MIN, GameSettings};
@@ -413,6 +404,27 @@ mod tests {
         let mut menu = MenuSystem::new(GameSettings::default(), "0.1.0");
         menu.layout((1280, 720));
         menu
+    }
+
+    /// Clicks SETTINGS, the only way into the settings screen.
+    fn open_settings(menu: &mut MenuSystem) {
+        let rect = menu
+            .pause_screen()
+            .widget(PauseItem::Settings)
+            .expect("SETTINGS exists")
+            .rect();
+        let (x, y) = (rect.x + rect.width * 0.5, rect.y + rect.height * 0.5);
+        menu.update(&UiInput {
+            pointer: (x, y),
+            pointer_down: true,
+            pointer_pressed: true,
+            ..UiInput::new()
+        });
+        menu.update(&UiInput {
+            pointer: (x, y),
+            pointer_released: true,
+            ..UiInput::new()
+        });
     }
 
     fn render(menu: &MenuSystem) -> UiDrawList {
@@ -478,10 +490,7 @@ mod tests {
     fn the_settings_screen_shows_the_name_the_bounds_and_the_current_value() {
         let mut menu = menu();
         menu.open_pause();
-        menu.update(&UiInput {
-            nav: Some(Nav::Activate),
-            ..UiInput::new()
-        });
+        open_settings(&mut menu);
         menu.apply_settings(GameSettings {
             camera_sensitivity: 1.25,
         });
@@ -512,10 +521,7 @@ mod tests {
     fn the_handle_stays_on_its_track_at_both_ends() {
         let mut menu = menu();
         menu.open_pause();
-        menu.update(&UiInput {
-            nav: Some(Nav::Activate),
-            ..UiInput::new()
-        });
+        open_settings(&mut menu);
         let theme = MenuTheme::default();
 
         for value in [CAMERA_SENSITIVITY_MIN, 1.0, CAMERA_SENSITIVITY_MAX] {
@@ -562,17 +568,18 @@ mod tests {
     }
 
     #[test]
-    fn the_focused_widget_is_outlined() {
+    fn the_only_outline_on_the_menu_is_its_panel_border() {
+        // Nothing is focused, because there is no focus: hover is the only state a button
+        // shows, and it shows it by its fill.
         let mut menu = menu();
         menu.open_pause();
-        let outlines = |list: &UiDrawList| {
-            list.commands()
-                .iter()
-                .filter(|command| matches!(command, UiCommand::Outline { .. }))
-                .count()
-        };
-        // The panel border, plus one outline for the focused button.
-        assert_eq!(outlines(&render(&menu)), 2);
+        let list = render(&menu);
+        let outlines = list
+            .commands()
+            .iter()
+            .filter(|command| matches!(command, UiCommand::Outline { .. }))
+            .count();
+        assert_eq!(outlines, 1, "something other than the panel is outlined");
     }
 
     #[test]
@@ -592,10 +599,7 @@ mod tests {
     fn drawing_the_menu_repeatedly_allocates_nothing_after_the_first_frame() {
         let mut menu = menu();
         menu.open_pause();
-        menu.update(&UiInput {
-            nav: Some(Nav::Activate),
-            ..UiInput::new()
-        });
+        open_settings(&mut menu);
 
         let mut list = UiDrawList::with_capacity(64, 512);
         let mut scratch = MenuScratch::new();
@@ -637,10 +641,7 @@ mod tests {
         menu.open_pause();
         for screen in 0..2 {
             if screen == 1 {
-                menu.update(&UiInput {
-                    nav: Some(Nav::Activate),
-                    ..UiInput::new()
-                });
+                open_settings(&mut menu);
             }
             for line in texts(&render(&menu)) {
                 for character in line.chars() {

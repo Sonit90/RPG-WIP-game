@@ -79,15 +79,16 @@ device.
 | `Checkbox` | + checked / unchecked | `Toggled(bool)` |
 | `Slider` | + dragging | `ValueChanged(f32)` per drag frame, `ValueCommitted(f32)` on release |
 
-`WidgetState` is four independent flags (`hovered`, `pressed`, `focused`, `enabled`) rather
-than one enum, because a widget can be focused *and* hovered *and* pressed at once.
+`WidgetState` is three independent flags (`hovered`, `pressed`, `enabled`) rather than one
+enum, because a widget can be hovered *and* pressed at once. There is no focus flag: with no
+keyboard navigation there is nothing for a focus to mean.
 
 Rules worth stating:
 
 - activation is press **and** release on the same widget; releasing elsewhere does nothing
 - a release on a widget that was never pressed does nothing - the tail of a drag started
   elsewhere must not click whatever it happens to end on
-- a disabled widget takes no input, emits nothing, and cannot hold the focus
+- a disabled widget takes no input and emits nothing
 - a slider clamps and snaps every value it produces; it can never report outside `[min, max]`
 - a slider being dragged keeps the handle even when the pointer leaves the track
 - a degenerate slider range (reversed, non-finite) collapses to an immovable slider instead
@@ -102,34 +103,35 @@ whose effect is a toggle - so the two can never disagree about what a click is.
 
 - `pointer: (f32, f32)` in client pixels
 - `pointer_down` / `pointer_pressed` / `pointer_released` - level plus both edges
-- `nav: Option<Nav>` - `Prev`, `Next`, `Decrease`, `Increase`, `Activate`, `Cancel`
+- `cancel: bool` - the player asked to back out this frame
 
-`UiInput::from_input` is the only place in the UI where a key code appears:
+`UiInput::from_input` is the only place in the UI where a key code appears, and it reads
+exactly two devices:
 
-| device | intent |
+| device | meaning |
 | --- | --- |
-| left mouse button | pointer |
-| tab, down / up | `Next`, `Prev` |
-| left / right | `Decrease`, `Increase` |
-| enter, space | `Activate` |
-| escape | `Cancel` |
+| left mouse button | pointer, with both edges |
+| escape | back out |
 
-Intents come from key *presses*, not holds, so a leaned-on arrow key cannot run a slider end
-to end in three frames.
+**The menu is a pointer interface.** There is no keyboard navigation, no focus to move, and
+no key that activates whatever a focus happens to be sitting on. Because the game keeps
+running behind the menu, every key the interface could have claimed is one the player is
+still using to play - space jumps, tab cycles targets - and a menu answering them too would
+take input out of the player's hands mid-fight. Escape is the exception and is not
+navigation: it is the key that opens the menu, so it is also the key that closes it. It is
+read as a press, so holding it does not toggle the menu sixty times a second.
 
-This is the seam a gamepad arrives through: a new source fills the same struct, and not one
-widget changes.
+This is still the seam another device would arrive through: a new source fills the same
+struct, and no widget changes.
 
 ## 4. Screen system
 
-`UiScreen<T>` holds `(tag, widget)` pairs, one focus, and a reused event buffer. Events come
-back tagged (`(PauseItem::Quit, Activated)`), never indexed, so reordering the layout cannot
-silently change what a button does.
+`UiScreen<T>` holds `(tag, widget)` pairs and a reused event buffer. Events come back tagged
+(`(PauseItem::Quit, Activated)`), never indexed, so reordering the layout cannot silently
+change what a button does.
 
 - hover: whichever widget the pointer is over, exactly one at a time
 - pressed: whichever widget the pointer went down on
-- focus: exactly one widget; moved by `Prev`/`Next` with wrapping, skipping disabled widgets,
-  and also moved by a click so keyboard and mouse agree about where the player is
 - `reset()` on close, so a hovered button does not light up before the player moves the mouse
 
 `MenuSystem` owns both screens, the current `MenuScreen`, and the action buffer. It is the
@@ -273,11 +275,11 @@ suites, following the project's existing test architecture.
 
 | area | file | count | covers |
 | --- | --- | --- | --- |
-| input routing | `ui/input.rs` | 4 | pointer edges, key-to-intent table, no auto-repeat, idle frame |
-| widgets | `ui/widget.rs` | 21 | button normal/hover/press/activate/disabled, release-off, release-without-press, keyboard activation; checkbox toggle/set/disabled; slider min/max/midpoint/clamp/step/drag/commit/keyboard/disabled/degenerate range/NaN |
-| screens | `ui/screen.rs` | 12 | hover, press, tagged events, focus wrap, focus skips disabled, one focus flag, click moves focus, keyboard activation, reset, no per-frame allocation, empty screen |
-| menus | `ui/menu.rs` | 18 | ESC opens/closes, resume, quit request, settings open/back, ESC from settings, full journey, no way to stop the game, version title, layout hierarchy, widgets inside panel, slider drag/commit, range never exceeded, applied settings, keyboard-only journey, hover reset, closed menu ignores input, repeated open/close, no allocation |
-| drawing | `ui/paint.rs` | 10 | closed menu draws nothing, menu contents + scrim + version title (no PAUSED), settings shows name/min/max/value/back, printed bounds, handle stays on track, hover changes pixels, focus outline, group rules, no allocation after first frame, every glyph exists, checkbox drawing |
+| input routing | `ui/input.rs` | 4 | pointer edges, escape is the only key read, no escape repeat, idle frame |
+| widgets | `ui/widget.rs` | 20 | button normal/hover/press/activate/disabled, release-off, release-without-press, pointer-only; checkbox toggle/set/disabled; slider min/max/midpoint/clamp/step/drag/commit/pointer-only/disabled/degenerate range/NaN |
+| screens | `ui/screen.rs` | 7 | hover, one hover at a time, tagged events, disabled widgets take no part, reset, no per-frame allocation, empty screen |
+| menus | `ui/menu.rs` | 18 | ESC opens/closes, resume, quit request, settings open/back, ESC from settings, full journey, no way to stop the game, version title, layout hierarchy, widgets inside panel, slider drag/commit, range never exceeded, applied settings, pointer-and-escape only, hover reset, closed menu ignores input, repeated open/close, no allocation |
+| drawing | `ui/paint.rs` | 10 | closed menu draws nothing, menu contents + scrim + version title (no PAUSED), settings shows name/min/max/value/back, printed bounds, handle stays on track, hover changes pixels, only the panel is outlined, group rules, no allocation after first frame, every glyph exists, checkbox drawing |
 | camera | `camera.rs` | 4 new | sensitivity scales the tuned rate on both axes, applies immediately, rejects nonsense, base rate is half the original |
 | settings | `engine-settings/src/lib.rs` | 19 | defaults, JSON round trip, missing file, valid file, missing field, wrong type, below min, above max, non-finite, malformed, unknown fields, empty file, in-memory-then-save, restart persistence, snapping, NaN snap, invalid update, pretty output, game directory |
 | hit-testing | `engine-render-data/src/ui.rs` | 1 new | half-open rectangles: adjacent widgets never both claim a point |
@@ -324,7 +326,9 @@ step (client area, 1280x720).
 
 | check | result |
 | --- | --- |
-| ESC in gameplay | menu appears over a dimmed world, version as the title, SETTINGS focused |
+| ESC in gameplay | menu appears over a dimmed world, version as the title |
+| enter / space / tab / arrows with the menu open | nothing changes: 0.06% of pixels, within noise |
+| arrows / enter on the settings screen | the slider does not move: 0.00% of pixels |
 | holding W with the menu open | the character keeps moving; the world keeps ticking |
 | SETTINGS button | settings screen appears |
 | slider legibility | `CAMERA SENSITIVITY`, `0.10` at the left, `5.00` at the right, current value under the handle |
@@ -358,11 +362,11 @@ clean shutdown
   at integer scales); a UI scale setting is the obvious future fix.
 - **No mouse-wheel handling in the UI.** Nothing scrolls yet, so a settings screen taller than
   the panel would need a scroll container.
-- **The menu and gameplay share the keyboard.** Because the game does not stop, keys reach
-  both: space jumps *and* activates the focused widget, tab cycles targets *and* moves the
-  focus. The pointer is unambiguous, and arrow keys plus enter drive the menu without touching
-  gameplay, but a proper input-focus policy (menu swallows what it uses) is the obvious next
-  step and is the one thing here that key rebinding will want to settle.
+- **The menu cannot be operated without a mouse.** Keyboard navigation was removed rather
+  than shared with gameplay: a menu over a live world that claimed space, tab or the arrows
+  would take jumping and targeting away mid-fight. If a keyboard or gamepad path is wanted
+  later it needs an input-focus policy first - the menu swallowing what it uses - not a second
+  set of bindings competing with the game's.
 - **`engine-core`'s `Time::pause` still exists.** It is a Phase 1 clock feature, unused by the
   game and untouched by this phase; the pause that was removed is the gameplay one.
 - **The settings screen has no explicit "reset to defaults".** `GameSettings::default()` exists
@@ -404,6 +408,24 @@ Worked examples:
   "camera_sensitivity": 1.0
 }
 ```
+
+## Revision - pointer-only menu
+
+Keyboard navigation was removed after the menu stopped pausing the game. The two decisions
+are the same decision: if the world keeps running, the menu cannot also own the keys the
+player is using to play it.
+
+- `Nav` and `UiInput::nav` are gone, replaced by a single `cancel: bool` fed by escape.
+- `WidgetState::focused` is gone, and with it `UiScreen`'s focus, `focus()`, `focus_first()`,
+  focus traversal and wrapping, and the click-moves-focus rule.
+- `Button` no longer activates from a key; `Slider` lost its arrow-key nudge.
+- `MenuTheme::focus_outline` is gone; the only outline on the menu is the panel border.
+- Tests that drove the menu from the keyboard were replaced by tests asserting it answers the
+  pointer and escape and nothing else.
+
+Verified in the running game: with the menu open, enter, space, tab and all four arrows
+change nothing (0.06% of pixels, noise); on the settings screen the arrows and enter leave
+the slider untouched (0.00%); the pointer opens SETTINGS, and escape backs out and closes.
 
 ## Revision - multiplayer: no pausing
 

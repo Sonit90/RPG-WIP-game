@@ -1,4 +1,4 @@
-//! A screen: a list of widgets, a focus, and the events they produced.
+//! A screen: a list of widgets and the events they produced.
 //!
 //! ```text
 //! UiInput -> UiScreen<T> -> [(T, WidgetEvent)]
@@ -9,28 +9,25 @@
 //! is what keeps a screen's layout order and its meaning independent: reordering the buttons
 //! cannot silently change what they do.
 //!
-//! Focus, hover and pressed live here as one rule each:
+//! Hover and pressed live here as one rule each:
 //!
 //! - **hover** is whichever widget the pointer is over; the widgets work it out themselves
 //! - **pressed** is whichever widget the pointer went down on
-//! - **focus** is exactly one widget, moved by [`Nav::Prev`]/[`Nav::Next`], and also moved
-//!   by the pointer so that clicking something and then pressing an arrow key continues
-//!   from where the player was looking
+//!
+//! There is no focus, because there is no keyboard navigation to need one.
 
 use engine_render_data::ui::UiRect;
 
-use super::input::{Nav, UiInput};
+use super::input::UiInput;
 use super::widget::{Widget, WidgetEvent};
 
-/// A list of tagged widgets with a focus.
+/// A list of tagged widgets.
 ///
 /// Allocates when it is built and never again: the widget vector and the event vector are
 /// both reused, so a menu open for a minute allocates nothing after its first frame.
 #[derive(Debug, Clone, Default)]
 pub struct UiScreen<T> {
     widgets: Vec<(T, Widget)>,
-    /// Index of the focused widget, if any.
-    focus: Option<usize>,
     /// This frame's events. Cleared at the top of every update, never freed.
     events: Vec<(T, WidgetEvent)>,
 }
@@ -41,7 +38,6 @@ impl<T: Copy + PartialEq> UiScreen<T> {
     pub fn new() -> Self {
         Self {
             widgets: Vec::new(),
-            focus: None,
             events: Vec::new(),
         }
     }
@@ -96,12 +92,6 @@ impl<T: Copy + PartialEq> UiScreen<T> {
         }
     }
 
-    /// Which widget has the focus, if any.
-    #[must_use]
-    pub fn focused(&self) -> Option<T> {
-        self.focus.map(|index| self.widgets[index].0)
-    }
-
     /// Which widget the pointer is over, if any.
     #[must_use]
     pub fn hovered(&self) -> Option<T> {
@@ -120,61 +110,19 @@ impl<T: Copy + PartialEq> UiScreen<T> {
             .map(|(tag, _)| *tag)
     }
 
-    /// Puts the focus on `tag`, if it names an enabled widget.
-    pub fn focus(&mut self, tag: T) {
-        let index = self
-            .widgets
-            .iter()
-            .position(|(candidate, widget)| *candidate == tag && widget.is_enabled());
-        if index.is_some() {
-            self.set_focus(index);
-        }
-    }
-
-    /// Puts the focus on the first enabled widget, or nowhere if there is none.
-    ///
-    /// Called when a screen opens, so a player who never touches the mouse has somewhere to
-    /// start.
-    pub fn focus_first(&mut self) {
-        let index = self.widgets.iter().position(|(_, w)| w.is_enabled());
-        self.set_focus(index);
-    }
-
-    /// Drops the focus and forgets every hover and press.
+    /// Forgets every hover and press.
     ///
     /// Called when a screen closes: a button left hovered would light up the moment the
     /// screen came back, before the player had moved the mouse.
     pub fn reset(&mut self) {
-        self.set_focus(None);
         for (_, widget) in &mut self.widgets {
             widget.state_mut().clear_interaction();
         }
     }
 
     /// Applies one frame of input and returns what happened, in layout order.
-    ///
-    /// The focus moves *before* the widgets update, so a `Tab` that lands on a button and an
-    /// `Enter` in the same frame cannot both apply to it — one intent, one effect.
     pub fn update(&mut self, input: &UiInput) -> &[(T, WidgetEvent)] {
         self.events.clear();
-
-        match input.nav {
-            Some(Nav::Next) => self.move_focus(1),
-            Some(Nav::Prev) => self.move_focus(-1),
-            _ => {}
-        }
-
-        // A press moves the focus to whatever was pressed, so keyboard and mouse agree
-        // about where the player is.
-        if input.pointer_pressed {
-            let hit = self.widgets.iter().position(|(_, widget)| {
-                widget.is_enabled() && widget.rect().contains(input.pointer.0, input.pointer.1)
-            });
-            if hit.is_some() {
-                self.set_focus(hit);
-            }
-        }
-
         for index in 0..self.widgets.len() {
             let (tag, widget) = &mut self.widgets[index];
             if let Some(event) = widget.update(input) {
@@ -188,44 +136,6 @@ impl<T: Copy + PartialEq> UiScreen<T> {
     #[must_use]
     pub fn events(&self) -> &[(T, WidgetEvent)] {
         &self.events
-    }
-
-    /// Moves the focus `delta` enabled widgets along, wrapping at both ends.
-    ///
-    /// Wrapping rather than stopping: a menu is a short ring, and a player holding `Tab`
-    /// expects to come back round rather than to get stuck on the last item.
-    fn move_focus(&mut self, delta: isize) {
-        let count = self.widgets.len();
-        if count == 0 {
-            return;
-        }
-        let start = match self.focus {
-            Some(index) => index as isize,
-            // Coming from nowhere, `Next` should land on the first widget rather than the
-            // second, so start one before it.
-            None => {
-                if delta > 0 {
-                    -1
-                } else {
-                    0
-                }
-            }
-        };
-        for offset in 1..=count as isize {
-            let index = (start + delta * offset).rem_euclid(count as isize) as usize;
-            if self.widgets[index].1.is_enabled() {
-                self.set_focus(Some(index));
-                return;
-            }
-        }
-    }
-
-    /// Sets the focus flag on exactly one widget.
-    fn set_focus(&mut self, index: Option<usize>) {
-        self.focus = index;
-        for (position, (_, widget)) in self.widgets.iter_mut().enumerate() {
-            widget.state_mut().focused = Some(position) == index;
-        }
     }
 }
 
@@ -284,13 +194,6 @@ mod tests {
         }
     }
 
-    fn nav(nav: Nav) -> UiInput {
-        UiInput {
-            nav: Some(nav),
-            ..UiInput::new()
-        }
-    }
-
     #[test]
     fn a_screen_reports_which_widget_is_hovered_and_which_is_pressed() {
         let mut screen = screen();
@@ -323,122 +226,33 @@ mod tests {
     }
 
     #[test]
-    fn navigation_moves_the_focus_and_wraps_around() {
-        let mut screen = screen();
-        assert_eq!(screen.focused(), None);
-
-        screen.update(&nav(Nav::Next));
-        assert_eq!(
-            screen.focused(),
-            Some(Item::Play),
-            "next started at the second"
-        );
-        screen.update(&nav(Nav::Next));
-        assert_eq!(screen.focused(), Some(Item::Volume));
-
-        for _ in 0..2 {
-            screen.update(&nav(Nav::Next));
-        }
-        assert_eq!(screen.focused(), Some(Item::Quit));
-        screen.update(&nav(Nav::Next));
-        assert_eq!(screen.focused(), Some(Item::Play), "the focus did not wrap");
-
-        screen.update(&nav(Nav::Prev));
-        assert_eq!(screen.focused(), Some(Item::Quit), "backwards did not wrap");
-    }
-
-    #[test]
-    fn exactly_one_widget_carries_the_focus_flag() {
-        let mut screen = screen();
-        screen.update(&nav(Nav::Next));
-        screen.update(&nav(Nav::Next));
-        let focused: Vec<Item> = screen
-            .widgets()
-            .filter(|(_, widget)| widget.state().focused)
-            .map(|(tag, _)| tag)
-            .collect();
-        assert_eq!(focused, [Item::Volume]);
-    }
-
-    #[test]
-    fn the_focus_skips_disabled_widgets() {
-        let mut screen = UiScreen::new();
-        screen.push(Item::Play, Button::new("PLAY").disabled());
-        screen.push(Item::Quit, Button::new("QUIT"));
-
-        screen.update(&nav(Nav::Next));
-        assert_eq!(screen.focused(), Some(Item::Quit));
-        screen.update(&nav(Nav::Next));
-        assert_eq!(
-            screen.focused(),
-            Some(Item::Quit),
-            "a disabled widget took focus"
-        );
-
-        screen.focus(Item::Play);
-        assert_eq!(
-            screen.focused(),
-            Some(Item::Quit),
-            "focus() ignored disabled"
-        );
-    }
-
-    #[test]
-    fn a_screen_with_nothing_enabled_simply_has_no_focus() {
-        let mut screen: UiScreen<Item> = UiScreen::new();
-        screen.push(Item::Play, Button::new("PLAY").disabled());
-        screen.focus_first();
-        assert_eq!(screen.focused(), None);
-        screen.update(&nav(Nav::Next));
-        assert_eq!(screen.focused(), None);
-    }
-
-    #[test]
-    fn clicking_a_widget_moves_the_focus_to_it() {
-        // So that clicking a slider and then pressing an arrow key adjusts *that* slider.
-        let mut screen = screen();
-        screen.focus_first();
-        assert_eq!(screen.focused(), Some(Item::Play));
-
-        screen.update(&press(150.0, 160.0));
-        assert_eq!(screen.focused(), Some(Item::Volume));
-
-        // Clicking the background leaves the focus where it was rather than dropping it.
-        screen.update(&press(5.0, 5.0));
-        assert_eq!(screen.focused(), Some(Item::Volume));
-    }
-
-    #[test]
-    fn keyboard_activation_applies_to_the_focused_widget_only() {
-        let mut screen = screen();
-        screen.focus(Item::Quit);
-        let events = screen.update(&nav(Nav::Activate));
-        assert_eq!(events, [(Item::Quit, WidgetEvent::Activated)]);
-    }
-
-    #[test]
-    fn arrow_keys_adjust_the_focused_slider_and_nothing_else() {
-        let mut screen = screen();
-        screen.focus(Item::Volume);
-        let events = screen.update(&nav(Nav::Increase)).to_vec();
-        assert_eq!(events.len(), 1, "{events:?}");
-        assert_eq!(events[0].0, Item::Volume);
-        assert!(matches!(events[0].1, WidgetEvent::ValueCommitted(_)));
-
-        screen.focus(Item::Play);
-        assert!(screen.update(&nav(Nav::Increase)).is_empty());
-    }
-
-    #[test]
-    fn resetting_clears_the_focus_and_every_hover() {
+    fn resetting_clears_every_hover_and_press() {
         let mut screen = screen();
         screen.update(&press(150.0, 110.0));
         assert!(screen.hovered().is_some() && screen.pressed().is_some());
 
         screen.reset();
-        assert_eq!(screen.focused(), None);
         assert_eq!(screen.hovered(), None);
         assert_eq!(screen.pressed(), None);
+    }
+
+    #[test]
+    fn a_disabled_widget_takes_no_part_in_anything() {
+        let mut screen: UiScreen<Item> = UiScreen::new();
+        screen.push(Item::Play, Button::new("PLAY").disabled());
+        screen.push(Item::Quit, Button::new("QUIT"));
+        screen.set_rect(Item::Play, rect(100.0));
+        screen.set_rect(Item::Quit, rect(150.0));
+
+        screen.update(&press(150.0, 110.0));
+        assert_eq!(screen.hovered(), None, "a disabled widget lit up");
+        assert!(screen.update(&release(150.0, 110.0)).is_empty());
+
+        screen.update(&press(150.0, 160.0));
+        assert_eq!(
+            screen.update(&release(150.0, 160.0)),
+            [(Item::Quit, WidgetEvent::Activated)]
+        );
     }
 
     #[test]
@@ -459,13 +273,7 @@ mod tests {
     #[test]
     fn an_empty_screen_handles_every_input_without_panicking() {
         let mut screen: UiScreen<Item> = UiScreen::new();
-        screen.focus_first();
-        for input in [
-            at(1.0, 1.0),
-            press(1.0, 1.0),
-            release(1.0, 1.0),
-            nav(Nav::Next),
-        ] {
+        for input in [at(1.0, 1.0), press(1.0, 1.0), release(1.0, 1.0)] {
             assert!(screen.update(&input).is_empty());
         }
         assert!(screen.is_empty());

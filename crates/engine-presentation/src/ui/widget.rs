@@ -18,21 +18,21 @@
 
 use engine_render_data::ui::UiRect;
 
-use super::input::{Nav, UiInput};
+use super::input::UiInput;
 
 /// How a widget currently looks and whether it takes input.
 ///
-/// Four independent flags rather than one enum: a widget can be focused *and* hovered *and*
-/// pressed at once, and a state machine that had to name every combination would grow with
-/// the square of the flags.
+/// Independent flags rather than one enum: a widget can be hovered *and* pressed at once, and
+/// a state machine that had to name every combination would grow with the square of them.
+///
+/// There is no focus. The menu is driven by the pointer alone - see [`super::input`] for why -
+/// so there is nothing for a focus to mean.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WidgetState {
     /// The pointer is over the widget.
     pub hovered: bool,
     /// The pointer went down on the widget and has not been released.
     pub pressed: bool,
-    /// Keyboard and gamepad navigation is currently on this widget.
-    pub focused: bool,
     /// Whether the widget takes input at all.
     pub enabled: bool,
 }
@@ -42,7 +42,6 @@ impl Default for WidgetState {
         Self {
             hovered: false,
             pressed: false,
-            focused: false,
             enabled: true,
         }
     }
@@ -59,7 +58,7 @@ impl WidgetState {
 /// What a widget did this frame.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum WidgetEvent {
-    /// A button was clicked, or the focused widget was activated.
+    /// A button was clicked.
     Activated,
     /// A checkbox changed to this value.
     Toggled(bool),
@@ -123,7 +122,7 @@ impl Button {
             false
         };
 
-        if clicked || (self.state.focused && input.nav == Some(Nav::Activate)) {
+        if clicked {
             return Some(WidgetEvent::Activated);
         }
         None
@@ -332,8 +331,7 @@ impl Slider {
     /// Applies one frame of input.
     ///
     /// Clicking the track jumps the handle there and starts a drag, which is what every
-    /// slider a player has used does. Arrow keys move one step and commit immediately: a
-    /// keypress is a finished interaction, so there is nothing to wait for.
+    /// slider a player has used does.
     pub fn update(&mut self, input: &UiInput) -> Option<WidgetEvent> {
         if !self.state.enabled {
             self.state.clear_interaction();
@@ -364,34 +362,7 @@ impl Slider {
             }
             return None;
         }
-
-        if self.state.focused {
-            let nudge = match input.nav {
-                Some(Nav::Decrease) => -self.nudge(),
-                Some(Nav::Increase) => self.nudge(),
-                _ => 0.0,
-            };
-            if nudge != 0.0 {
-                let value = self.snap(self.value + nudge);
-                if value != self.value {
-                    self.value = value;
-                    return Some(WidgetEvent::ValueCommitted(value));
-                }
-            }
-        }
         None
-    }
-
-    /// How far one arrow key moves the value.
-    ///
-    /// The step, or a hundredth of the range for a continuous slider — otherwise a keyboard
-    /// could not move a continuous slider at all.
-    fn nudge(&self) -> f32 {
-        if self.step > 0.0 {
-            self.step
-        } else {
-            (self.maximum - self.minimum) * 0.01
-        }
     }
 }
 
@@ -524,13 +495,6 @@ mod tests {
         }
     }
 
-    fn nav(nav: Nav) -> UiInput {
-        UiInput {
-            nav: Some(nav),
-            ..UiInput::new()
-        }
-    }
-
     fn button() -> Button {
         let mut button = Button::new("SETTINGS");
         button.rect = RECT;
@@ -589,29 +553,21 @@ mod tests {
         assert_eq!(button.update(&release(150.0, 120.0)), None);
         assert!(!button.state.hovered, "a disabled button lit up");
         assert!(!button.state.pressed);
-
-        button.state.focused = true;
-        assert_eq!(button.update(&nav(Nav::Activate)), None);
     }
 
     #[test]
-    fn a_focused_button_activates_from_the_keyboard() {
+    fn a_button_answers_the_pointer_and_nothing_else() {
+        // No keyboard activation: the keys that would have done it belong to the game, which
+        // is still being played behind the menu.
         let mut button = button();
+        assert_eq!(button.update(&UiInput::new()), None);
         assert_eq!(
-            button.update(&nav(Nav::Activate)),
+            button.update(&UiInput {
+                cancel: true,
+                ..UiInput::new()
+            }),
             None,
-            "nothing is focused"
-        );
-
-        button.state.focused = true;
-        assert_eq!(
-            button.update(&nav(Nav::Activate)),
-            Some(WidgetEvent::Activated)
-        );
-        assert_eq!(
-            button.update(&nav(Nav::Next)),
-            None,
-            "the wrong intent fired"
+            "escape activated a button"
         );
     }
 
@@ -779,45 +735,31 @@ mod tests {
     }
 
     #[test]
-    fn arrow_keys_move_the_focused_slider_one_step_and_commit() {
+    fn a_slider_only_moves_for_the_pointer() {
+        // No keyboard adjustment: the keys it would have claimed belong to the game, which
+        // is still being played behind the menu.
         let mut slider = slider();
-        slider.state.focused = true;
         let before = slider.value();
-
-        assert_eq!(
-            slider.update(&nav(Nav::Increase)),
-            Some(WidgetEvent::ValueCommitted(before + slider.step()))
-        );
-        assert_eq!(
-            slider.update(&nav(Nav::Decrease)),
-            Some(WidgetEvent::ValueCommitted(before))
-        );
-
-        // At the end of the range there is nowhere to go and nothing to report.
-        slider.set_value(slider.maximum());
-        assert_eq!(slider.update(&nav(Nav::Increase)), None);
+        for input in [
+            UiInput::new(),
+            UiInput {
+                cancel: true,
+                ..UiInput::new()
+            },
+        ] {
+            assert_eq!(slider.update(&input), None);
+            assert_eq!(slider.value(), before);
+        }
     }
 
     #[test]
-    fn an_unfocused_slider_ignores_arrow_keys() {
-        let mut slider = slider();
-        let before = slider.value();
-        assert_eq!(slider.update(&nav(Nav::Increase)), None);
-        assert_eq!(slider.value(), before);
-    }
-
-    #[test]
-    fn a_disabled_slider_cannot_be_dragged_or_nudged() {
+    fn a_disabled_slider_cannot_be_dragged() {
         let mut slider = slider().disabled();
         let before = slider.value();
         slider.update(&press(299.0, 105.0));
         slider.update(&hold(299.0, 105.0));
         assert_eq!(slider.value(), before);
         assert!(!slider.dragging);
-
-        slider.state.focused = true;
-        assert_eq!(slider.update(&nav(Nav::Increase)), None);
-        assert_eq!(slider.value(), before);
     }
 
     #[test]
@@ -870,18 +812,11 @@ mod tests {
     }
 
     #[test]
-    fn a_continuous_slider_still_moves_from_the_keyboard() {
+    fn a_continuous_slider_takes_any_value_the_pointer_selects() {
         let mut slider = Slider::new("VOLUME", 0.0, 1.0, 0.0, 0.5);
-        slider.state.focused = true;
-        assert!(matches!(
-            slider.update(&nav(Nav::Increase)),
-            Some(WidgetEvent::ValueCommitted(_))
-        ));
-        assert!(
-            slider.value() > 0.5 && slider.value() <= 1.0,
-            "{}",
-            slider.value()
-        );
+        slider.rect = UiRect::new(100.0, 100.0, 200.0, 20.0);
+        slider.update(&press(100.0 + 200.0 * 0.37, 105.0));
+        assert!((slider.value() - 0.37).abs() < 0.01, "{}", slider.value());
     }
 
     #[test]
@@ -895,8 +830,8 @@ mod tests {
             widget.set_rect(RECT);
             assert_eq!(widget.rect(), RECT);
             assert!(widget.is_enabled());
-            widget.state_mut().focused = true;
-            assert!(widget.state().focused);
+            widget.state_mut().hovered = true;
+            assert!(widget.state().hovered);
         }
 
         widgets[0].update(&press(150.0, 120.0));
