@@ -290,17 +290,21 @@ pub enum UiCommand {
         /// What colour.
         color: UiColor,
     },
-    /// A radial sector, measured clockwise from twelve o'clock.
+    /// A radial sweep, measured clockwise from twelve o'clock, filling `rect`.
     ///
     /// What a cooldown looks like in this genre. Expressed as a command rather than as a
     /// pile of triangles the layout code would have to build, so the sweep is two numbers
-    /// the interface hands over and the renderer decides how finely to tessellate it.
+    /// the interface hands over and the renderer decides how to tessellate it.
+    ///
+    /// The sweep runs to the edges of `rect`, corners included — it is not a circle
+    /// inscribed in it. A full sweep therefore covers `rect` exactly, and covers nothing
+    /// outside it.
     RadialFill {
-        /// The square the sector is inscribed in.
+        /// The rectangle the sweep fills.
         rect: UiRect,
-        /// Where the sector begins, in turns clockwise from twelve o'clock.
+        /// Where the sweep begins, in turns clockwise from twelve o'clock.
         start: f32,
-        /// How much of the circle it covers, in `0.0..=1.0`.
+        /// How much of the turn it covers, in `0.0..=1.0`.
         fraction: f32,
         /// What colour.
         color: UiColor,
@@ -431,7 +435,7 @@ impl UiDrawList {
         self.commands.push(UiCommand::Icon { rect, icon, tint });
     }
 
-    /// Appends a radial sector covering `fraction` of the circle inside `rect`.
+    /// Appends a radial sweep covering `fraction` of a turn, filling `rect`.
     ///
     /// A fraction at or below zero draws nothing, which is the ordinary case for an ability
     /// that is ready: a cooldown overlay that is not cooling down should cost nothing.
@@ -439,11 +443,12 @@ impl UiDrawList {
         self.radial_from(rect, 0.0, fraction, color);
     }
 
-    /// Appends a radial sector that begins `start` turns clockwise from twelve o'clock.
+    /// Appends a radial sweep that begins `start` turns clockwise from twelve o'clock.
     ///
-    /// What a cooldown wipe needs: the covered part of the circle shrinks by its *leading*
-    /// edge sweeping clockwise, so the uncovered part grows from twelve o'clock the way
-    /// every cooldown in the genre does.
+    /// What a cooldown wipe needs: the covered part shrinks by its *leading* edge sweeping
+    /// clockwise, so the uncovered part grows from twelve o'clock the way every cooldown in
+    /// the genre does. A full sweep covers the whole of `rect`, so an ability that has just
+    /// been cast is entirely dimmed rather than dimmed with four bright corners.
     pub fn radial_from(&mut self, rect: UiRect, start: f32, fraction: f32, color: UiColor) {
         if !rect.is_visible() || fraction <= 0.0 {
             return;

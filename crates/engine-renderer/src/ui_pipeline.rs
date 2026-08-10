@@ -68,11 +68,31 @@ pub const SAMPLER_GLYPH: u32 = 0;
 /// Register of the linear sampler the icon band is read through.
 pub const SAMPLER_ICON: u32 = 1;
 
-/// Segments in a full radial sweep.
+/// Angles a single radial sweep can turn at: its two ends, plus the four corners.
+const MAX_SWEEP_ANGLES: usize = 6;
+
+/// The four corners of a rectangle, as angles clockwise from twelve o'clock, in `0..TAU`.
 ///
-/// Sixteen is smooth enough for a 48-pixel button and cheap enough that a bar of ten cooling
-/// abilities costs a hundred and sixty triangles.
-const SECTOR_SEGMENTS: usize = 16;
+/// Where a radial sweep has to put a vertex, because they are the only places the border
+/// changes direction. Returned in no particular order — the caller sorts whichever of them
+/// land inside the sweep.
+fn corner_angles(half_width: f32, half_height: f32) -> [f32; 4] {
+    // `atan2(dx, -dy)` puts zero straight up and grows clockwise, matching the sweep.
+    let angle = |dx: f32, dy: f32| {
+        let raw = f32::atan2(dx, -dy);
+        if raw < 0.0 {
+            raw + std::f32::consts::TAU
+        } else {
+            raw
+        }
+    };
+    [
+        angle(half_width, -half_height),
+        angle(half_width, half_height),
+        angle(-half_width, half_height),
+        angle(-half_width, -half_height),
+    ]
+}
 
 /// Vertices per quad: two triangles, no index buffer.
 ///
@@ -311,11 +331,27 @@ impl UiBatcher {
         self.push_quad(rect, UiAtlas::solid_uv(), color, stats);
     }
 
-    /// Appends a radial sector as a triangle fan from the centre.
+    /// Appends a radial sweep as a triangle fan from the centre, filling `rect`.
     ///
     /// Swept clockwise from twelve o'clock, which is the direction every cooldown in the
-    /// genre runs. One triangle per segment, and each triangle is emitted as a degenerate
-    /// quad so the whole pass stays one buffer and one draw call.
+    /// genre runs. Each triangle is emitted as a degenerate quad so the whole pass stays one
+    /// buffer and one draw call.
+    ///
+    /// ## The sweep reaches the edges, not a radius
+    ///
+    /// This was a circle inscribed in `rect`, which on a square ability slot left the four
+    /// corners uncovered: a cooling ability kept a bright triangle of art in each corner, and
+    /// a full sweep never darkened the whole button. A radius large enough to reach the
+    /// corners would instead bulge a tenth of the slot past every edge and spill into the
+    /// neighbouring one, because this pass has no clipping.
+    ///
+    /// So the sweep follows the **rectangle's own border**: every ray runs to wherever it
+    /// leaves `rect`. A full sweep covers `rect` exactly, with nothing outside it.
+    ///
+    /// That also makes it cheaper. The border is four straight lines, so the only vertices
+    /// that matter are the two ends of the sweep and whichever corners fall between them —
+    /// at most six, against the sixteen segments the arc used to be approximated with. There
+    /// is no arc left to be smooth, so there is nothing to trade off.
     fn push_radial(
         &mut self,
         rect: UiRect,
@@ -328,41 +364,63 @@ impl UiBatcher {
             return;
         }
         let fraction = fraction.min(1.0);
-        // Enough segments that the arc reads as round at a 48-pixel button, few enough that
-        // a full bar of cooling abilities is still a couple of hundred triangles.
-        let segments = (SECTOR_SEGMENTS as f32 * fraction).ceil().max(1.0) as usize;
         let centre = (rect.x + rect.width * 0.5, rect.y + rect.height * 0.5);
-        let radius = rect.width.max(rect.height) * 0.5;
-        let uv = UiAtlas::solid_uv();
+        let (half_width, half_height) = (rect.width * 0.5, rect.height * 0.5);
         let sweep = fraction * std::f32::consts::TAU;
         let origin = start * std::f32::consts::TAU;
 
-        for segment in 0..segments {
+        // Where the ray at `angle` leaves the rectangle. Zero is straight up and the sweep
+        // runs clockwise, so the direction is `(sin, -cos)` — screen y grows downward.
+        let edge = |angle: f32| {
+            let (dx, dy) = (angle.sin(), -angle.cos());
+            // How far along the ray the left/right edges are, and how far the top/bottom
+            // ones are; the nearer is the edge actually crossed. A zero component never
+            // limits, and dividing by it would produce the infinity that says exactly that.
+            let to_side = half_width / dx.abs();
+            let to_cap = half_height / dy.abs();
+            let distance = to_side.min(to_cap);
+            (centre.0 + dx * distance, centre.1 + dy * distance)
+        };
+
+        // The sweep's two ends, plus every corner strictly between them. A fixed array
+        // rather than a `Vec`: four corners and two ends is the most there can ever be, and
+        // this runs once per cooling ability per frame.
+        let mut angles = [origin; MAX_SWEEP_ANGLES];
+        let mut count = 1;
+        for corner in corner_angles(half_width, half_height) {
+            // Lift the corner into the turn the sweep is in. A corner exactly at the start
+            // is skipped: it is already the first vertex.
+            let mut angle =
+                corner + (origin / std::f32::consts::TAU).floor() * std::f32::consts::TAU;
+            while angle <= origin {
+                angle += std::f32::consts::TAU;
+            }
+            if angle < origin + sweep {
+                angles[count] = angle;
+                count += 1;
+            }
+        }
+        angles[1..count].sort_by(f32::total_cmp);
+        angles[count] = origin + sweep;
+        count += 1;
+
+        let uv = UiAtlas::solid_uv();
+        let vertex = |position: (f32, f32)| UiVertex {
+            position: [position.0, position.1],
+            uv: [uv.u0, uv.v0],
+            color,
+        };
+        let hub = vertex(centre);
+
+        for pair in angles[..count].windows(2) {
             if stats.quads >= self.max_quads {
                 stats.dropped += 1;
                 return;
             }
-            let from = origin + sweep * (segment as f32 / segments as f32);
-            let to = origin + sweep * ((segment + 1) as f32 / segments as f32);
-            let point = |angle: f32| {
-                // Zero is straight up and the sweep runs clockwise.
-                (
-                    centre.0 + angle.sin() * radius,
-                    centre.1 - angle.cos() * radius,
-                )
-            };
-            let (ax, ay) = point(from);
-            let (bx, by) = point(to);
-            let vertex = |position: (f32, f32)| UiVertex {
-                position: [position.0, position.1],
-                uv: [uv.u0, uv.v0],
-                color,
-            };
-            let a = vertex(centre);
-            let b = vertex((ax, ay));
-            let c = vertex((bx, by));
-            // Six vertices per segment, like a quad, so the buffer stays uniform.
-            self.vertices.extend_from_slice(&[a, b, c, a, b, c]);
+            let b = vertex(edge(pair[0]));
+            let c = vertex(edge(pair[1]));
+            // Six vertices per triangle, like a quad, so the buffer stays uniform.
+            self.vertices.extend_from_slice(&[hub, b, c, hub, b, c]);
             stats.quads += 1;
         }
     }
@@ -804,6 +862,95 @@ mod tests {
         assert_eq!(vertices[0].uv, [solid.u0, solid.v0]);
         let glyph = UiAtlas::glyph_uv('H');
         assert_eq!(vertices[2 * VERTICES_PER_QUAD].uv, [glyph.u0, glyph.v0]);
+    }
+
+    #[test]
+    fn a_full_radial_sweep_covers_its_whole_cell_including_the_corners() {
+        // The bug this replaced: the sweep was a circle inscribed in the slot, so a cooling
+        // ability kept a bright triangle of art in each corner and a full cooldown never
+        // dimmed the whole button.
+        let mut batcher = batcher();
+        let mut list = UiDrawList::new();
+        let rect = UiRect::new(10.0, 20.0, 48.0, 48.0);
+        list.radial(rect, 1.0, WHITE);
+        let vertices = batcher.build(&list).to_vec();
+
+        // Every corner of the cell is a vertex of the fan, so the geometry reaches them
+        // rather than cutting across.
+        for corner in [
+            [rect.x, rect.y],
+            [rect.right(), rect.y],
+            [rect.x, rect.bottom()],
+            [rect.right(), rect.bottom()],
+        ] {
+            assert!(
+                vertices.iter().any(|vertex| {
+                    (vertex.position[0] - corner[0]).abs() < 0.01
+                        && (vertex.position[1] - corner[1]).abs() < 0.01
+                }),
+                "{corner:?} is not covered by the sweep"
+            );
+        }
+    }
+
+    #[test]
+    fn a_radial_sweep_never_reaches_outside_its_cell() {
+        // The other half of the same property. Reaching the corners with a circle would mean
+        // a radius that bulges a tenth of the slot past every edge, and this pass has no
+        // clipping — it would spill onto the neighbouring ability.
+        let mut batcher = batcher();
+        let mut list = UiDrawList::new();
+        // A non-square cell too: the sweep follows the border, not a radius.
+        for rect in [
+            UiRect::new(10.0, 20.0, 48.0, 48.0),
+            UiRect::new(0.0, 0.0, 200.0, 40.0),
+        ] {
+            for start in [0.0, 0.1, 0.375, 0.6, 0.9] {
+                list.clear();
+                list.radial_from(rect, start, 1.0 - start, WHITE);
+                for vertex in batcher.build(&list) {
+                    let [x, y] = vertex.position;
+                    assert!(
+                        x >= rect.x - 0.01 && x <= rect.right() + 0.01,
+                        "{x} escapes {rect:?} horizontally at start {start}"
+                    );
+                    assert!(
+                        y >= rect.y - 0.01 && y <= rect.bottom() + 0.01,
+                        "{y} escapes {rect:?} vertically at start {start}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_radial_sweep_costs_a_triangle_per_corner_it_crosses_and_no_more() {
+        // The border is four straight lines, so there is no arc to approximate and nothing
+        // to gain from more geometry. A full turn crosses all four corners: five triangles.
+        let mut batcher = batcher();
+        let mut list = UiDrawList::new();
+        let rect = UiRect::new(0.0, 0.0, 48.0, 48.0);
+
+        list.radial(rect, 1.0, WHITE);
+        batcher.build(&list);
+        assert_eq!(batcher.stats().quads, 5, "a full sweep");
+
+        // An eighth of a turn from twelve o'clock reaches the first corner exactly, so it is
+        // a single triangle.
+        list.clear();
+        list.radial(rect, 0.125, WHITE);
+        batcher.build(&list);
+        assert_eq!(
+            batcher.stats().quads,
+            1,
+            "twelve o'clock to the first corner"
+        );
+
+        // And a sweep that stops short of any corner is still one triangle.
+        list.clear();
+        list.radial(rect, 0.05, WHITE);
+        batcher.build(&list);
+        assert_eq!(batcher.stats().quads, 1, "a sliver");
     }
 
     #[test]
