@@ -155,6 +155,16 @@ impl TargetMode {
     pub fn is_ground_targeted(self) -> bool {
         matches!(self, Self::Ground)
     }
+
+    /// Whether the player aims this ability with the mouse before it is cast.
+    ///
+    /// A placed ability picks a position and a cone picks a direction, but both show a
+    /// preview and both wait for a click - so both must be kept off the key that would
+    /// otherwise cast them outright.
+    #[must_use]
+    pub fn is_aimed(self) -> bool {
+        matches!(self, Self::Ground | Self::Cone)
+    }
 }
 
 /// One ability, entirely as data.

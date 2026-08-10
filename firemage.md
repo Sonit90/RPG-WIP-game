@@ -100,6 +100,12 @@ global cooldown that cast began has long expired.
   starts the moment it lands, and is re-validated then because its target may have died.
 - **One slot, not a list.** Mashing four keys means "then that one".
 - **Only moving and Escape cancel**, and cancelling takes the queue with it.
+- **A cancelled cast is refunded.** The charge comes back, and so does the Ultimate's energy:
+  a cast that never landed costs the time it wasted and nothing else. A completed one keeps
+  its cooldown, because something happened.
+- **An ability with no charge, or held by the global cooldown, cannot be selected at all.**
+  Its key and its button do nothing rather than opening a preview for a cast that would be
+  refused on the click.
 
 ## Talents
 
@@ -136,10 +142,15 @@ refuse it, and a tooltip is generated from the ability's own row.
   ability's own radius, red when the placement is out of range and refused before the click.
   Enemies the shape covers are ringed on screen.
 
+  The indicator is a **fixed size**: it shows the area the ability covers, so anything that
+  animated its scale would be lying about it.
+
   The **shape** comes from the ability, not from the targeting code: `TargetShape` covers
-  `Circle`, `Cone`, `Rectangle` and `Line`, with containment tested for all four. Only the
-  circle has a mesh today, because it is the only shape a current ability asks for; a
-  rectangle ability is a variant, a mesh, and no change to placing it.
+  `Circle`, `Cone`, `Rectangle` and `Line`, with containment tested for all four. Circles and
+  cones have meshes; a circle is placed under the cursor and a **cone is anchored on the
+  caster and aimed** - the cursor picks a direction, so a cone is never out of range, and the
+  wedge shown is the wedge that will be caught. Rectangle and line are defined and tested,
+  and get a mesh when an ability asks for one.
 - **Talent menu**: the button in the top-right corner, all 25 nodes by tier with costs,
   descriptions and state.
 

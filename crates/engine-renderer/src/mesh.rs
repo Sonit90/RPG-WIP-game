@@ -281,6 +281,41 @@ impl MeshData {
         }
     }
 
+    /// A flat sector lying face up: a slice of a disc of `radius`, `half_angle` either side
+    /// of -Z, which is the direction a character with zero yaw faces.
+    ///
+    /// The footprint of a cone ability, so the player can see what a cone will actually
+    /// catch before committing to it.
+    #[must_use]
+    pub fn sector(radius: f32, half_angle: f32, segments: u32) -> Self {
+        let segments = segments.max(3);
+        let mut vertices = Vec::with_capacity(segments as usize + 2);
+        vertices.push(MeshVertex::new(Vec3::ZERO, Vec3::Y, Vec2::new(0.5, 0.5)));
+        for segment in 0..=segments {
+            // Zero faces -Z; the sweep runs from one edge of the cone to the other.
+            let angle = -std::f32::consts::FRAC_PI_2 - half_angle
+                + (segment as f32 / segments as f32) * half_angle * 2.0;
+            let (sin, cos) = angle.sin_cos();
+            vertices.push(MeshVertex::new(
+                Vec3::new(cos * radius, 0.0, sin * radius),
+                Vec3::Y,
+                Vec2::new(cos * 0.5 + 0.5, sin * 0.5 + 0.5),
+            ));
+        }
+
+        let mut indices = Vec::with_capacity(segments as usize * 3);
+        for segment in 0..segments {
+            // Wound to face up, like the disc and the ring.
+            indices.extend_from_slice(&[0, segment + 2, segment + 1]);
+        }
+
+        Self {
+            bounds: Sphere::around(vertices.iter().map(|vertex| vertex.position)),
+            vertices,
+            indices,
+        }
+    }
+
     /// A UV sphere with `segments` around and `rings` from pole to pole.
     ///
     /// Exists because a lit sphere is the only shape whose shading is obviously right or

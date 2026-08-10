@@ -126,6 +126,10 @@ pub struct GroundTarget {
     pub ability: FireAbility,
     /// What footprint it covers.
     pub shape: TargetShape,
+    /// Which way it points, radians about +Y. Only the directional shapes use it.
+    pub facing: f32,
+    /// Where the shape is anchored: the caster for a cone, the cursor for a circle.
+    pub anchor: Vec3,
     /// Where the indicator currently sits, in world space.
     pub position: Vec3,
     /// How big it is, in metres. The circle's radius, or the shape's extent.
@@ -186,6 +190,8 @@ impl GroundTargeting {
         self.active = Some(GroundTarget {
             ability,
             shape,
+            facing: 0.0,
+            anchor: Vec3::ZERO,
             position: Vec3::ZERO,
             radius: shape.extent(),
             range: definition.range,
@@ -220,9 +226,25 @@ impl GroundTargeting {
 
         if let Some(position) = ground_under_cursor(input.pointer, view_projection, viewport) {
             let flat = Vec3::new(position.x, GROUND_HEIGHT, position.z);
-            let distance = horizontal_distance(caster, flat);
             target.position = flat;
-            target.valid = distance <= target.range;
+            match target.shape {
+                // A cone is anchored on the caster and *aimed*: the cursor picks a
+                // direction, not a place, so it is always a legal cast.
+                TargetShape::Cone { .. } | TargetShape::Line { .. } => {
+                    let dx = flat.x - caster.x;
+                    let dz = flat.z - caster.z;
+                    target.anchor = Vec3::new(caster.x, GROUND_HEIGHT, caster.z);
+                    if dx.abs() > 1e-4 || dz.abs() > 1e-4 {
+                        // Zero yaw faces -Z, which is what the executor and the mesh agree on.
+                        target.facing = (-dx).atan2(-dz);
+                    }
+                    target.valid = true;
+                }
+                _ => {
+                    target.anchor = flat;
+                    target.valid = horizontal_distance(caster, flat) <= target.range;
+                }
+            }
         }
         self.active = Some(target);
 

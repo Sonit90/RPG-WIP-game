@@ -196,6 +196,20 @@ impl Simulation {
         true
     }
 
+    /// Hands back what a cast that never landed had paid.
+    ///
+    /// A cancelled cast costs the time it wasted and nothing else: putting the ability on
+    /// cooldown for something that never happened punishes the player twice, and makes
+    /// backing out of a mis-click worse than finishing it.
+    pub(super) fn refund_cast(&mut self, cast: &ActiveCast) {
+        let effects = *self.mage.effects();
+        self.mage.abilities.grant_charge(cast.ability, &effects);
+        let definition = cast.ability.definition();
+        if definition.energy_cost > 0.0 {
+            self.mage.energy.gain(definition.energy_cost);
+        }
+    }
+
     /// Checks that an ability has something to be cast at.
     fn validate_aim(&self, ability: FireAbility, aim: CastAim) -> Result<(), AbilityError> {
         let definition = ability.definition();
@@ -225,6 +239,8 @@ impl Simulation {
                 }
                 Ok(())
             }
+            // A cone is aimed rather than placed: any direction is a legal one.
+            TargetMode::Cone => Ok(()),
             TargetMode::Ground => {
                 let CastAim::Ground(position) = aim else {
                     return Err(AbilityError::NeedsGroundTarget);
@@ -235,10 +251,7 @@ impl Simulation {
                 }
                 Ok(())
             }
-            TargetMode::Cone
-            | TargetMode::PointBlank
-            | TargetMode::SelfCast
-            | TargetMode::Movement => Ok(()),
+            TargetMode::PointBlank | TargetMode::SelfCast | TargetMode::Movement => Ok(()),
         }
     }
 
@@ -630,10 +643,25 @@ impl Simulation {
                 }
             }
             TargetMode::Cone => {
-                let yaw = self
-                    .world
-                    .body(self.player.entity)
-                    .map_or(0.0, |body| body.facing_yaw);
+                // Aimed at where the player pointed, if they pointed: a cone is placed by
+                // direction rather than by position, and falls back to where the character
+                // faces when it is cast without one.
+                let yaw = match aim {
+                    CastAim::Ground(position) => {
+                        let (dx, dz) = (position.x - origin.x, position.z - origin.z);
+                        if dx.abs() > 1e-4 || dz.abs() > 1e-4 {
+                            (-dx).atan2(-dz)
+                        } else {
+                            self.world
+                                .body(self.player.entity)
+                                .map_or(0.0, |body| body.facing_yaw)
+                        }
+                    }
+                    CastAim::Target => self
+                        .world
+                        .body(self.player.entity)
+                        .map_or(0.0, |body| body.facing_yaw),
+                };
                 self.collect_in_cone(origin, yaw, definition.range);
             }
             TargetMode::Ground => {
@@ -1593,6 +1621,72 @@ mod tests {
             simulation.casting().map(|cast| cast.ability),
             Some(FireAbility::Firebolt),
             "the queued cast never started"
+        );
+    }
+
+    #[test]
+    fn a_cone_is_aimed_at_where_the_player_pointed() {
+        // Flame Wave is chosen by direction: the point the player clicked decides which way
+        // the wedge faces, not which way the character happens to be standing.
+        let mut simulation = arena();
+        let dummy = target(&simulation);
+        let towards = simulation.world().position(dummy).expect("a position");
+
+        // Face the character the other way, so only the aim can explain a hit.
+        let player = simulation.player().entity;
+        if let Some(body) = simulation.world_mut().body_mut(player) {
+            body.facing_yaw = std::f32::consts::PI;
+        }
+        let before = health(&simulation, dummy);
+
+        simulation
+            .cast_at(FireAbility::FlameWave, towards)
+            .expect("a cone is always a legal direction");
+        for _ in 0..120 {
+            if simulation.casting().is_none() {
+                break;
+            }
+            simulation.step_once();
+        }
+        assert!(
+            health(&simulation, dummy) < before,
+            "the cone did not follow the aim"
+        );
+    }
+
+    #[test]
+    fn a_cone_is_never_refused_for_being_out_of_range() {
+        let mut simulation = arena();
+        let far = Vec3::new(1_000.0, 0.0, 1_000.0);
+        assert!(
+            simulation.cast_at(FireAbility::FlameWave, far).is_ok(),
+            "an aimed ability was refused a direction"
+        );
+    }
+
+    #[test]
+    fn a_cancelled_cast_refunds_its_charge_but_a_landed_one_does_not() {
+        let mut simulation = arena();
+        simulation.cast(FireAbility::Pyroblast).expect("in range");
+        assert!(simulation.cancel_cast());
+        assert!(
+            simulation.mage().abilities.is_ready(FireAbility::Pyroblast),
+            "escape did not refund the charge"
+        );
+
+        // And the ultimate gets its energy back, which is the expensive case.
+        let dummy = target(&simulation);
+        let position = simulation.world().position(dummy).expect("a position");
+        simulation.mage_mut().gain_energy(100.0);
+        simulation.step_many(35);
+        simulation
+            .cast_at(FireAbility::Cataclysm, position)
+            .expect("a full bar");
+        assert!(simulation.mage().energy.value() < 100.0);
+        assert!(simulation.cancel_cast());
+        assert!(
+            simulation.mage().energy.is_full(),
+            "the cancelled ultimate kept the energy"
         );
     }
 }

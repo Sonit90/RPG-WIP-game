@@ -88,11 +88,11 @@ const DECAL_HEIGHT: f32 = 0.03;
 /// How far above the fill the indicator's ring sits, in metres.
 const DECAL_RING_LIFT: f32 = 0.02;
 
-/// How fast the indicator's ring breathes, in radians per second.
-const DECAL_PULSE_RATE: f32 = 3.0;
-
-/// How much the ring grows and shrinks as it breathes, as a fraction of its radius.
-const DECAL_PULSE_DEPTH: f32 = 0.02;
+/// How much larger the bright edge is drawn than the fill it outlines.
+///
+/// The rim that shows past the fill *is* the outline: the world pass is opaque, so an
+/// outline has to be geometry rather than a stroke.
+const DECAL_EDGE_SCALE: f32 = 1.06;
 
 /// Size of the ring drawn over an enemy inside the targeting circle, in pixels.
 const AFFECTED_MARK_SIZE: f32 = 46.0;
@@ -166,10 +166,7 @@ pub struct App {
     /// lie *on the floor*, or the player cannot tell what it will cover. The fill is the
     /// shaded footprint and the ring is its bright edge, which is what makes the shape
     /// readable over grass, stone or a corpse.
-    targeting_decal: Option<(
-        engine_render_data::RenderEntity,
-        engine_render_data::RenderEntity,
-    )>,
+    targeting_decal: Option<TargetingDecal>,
     /// The meshes and materials the indicator is drawn with.
     decal_visuals: DecalVisuals,
     /// Enemies inside the circle this frame. Reused; never freed.
@@ -546,7 +543,7 @@ impl App {
         // A key press starts a ground-targeted ability too: the key opens the circle rather
         // than casting, which is why the input map does not send a command for those.
         for (slot, view) in self.snapshot.abilities.iter().enumerate() {
-            if !view.ground_targeted {
+            if !view.ability.definition().target.is_aimed() {
                 continue;
             }
             let Some(key) = engine_game::input_map::Bindings::ability_key(slot) else {
@@ -565,10 +562,21 @@ impl App {
         }
     }
 
-    /// Casts an ability, or opens the targeting circle if it is placed with the mouse.
+    /// Casts an ability, or opens the targeting indicator if it is aimed with the mouse.
+    ///
+    /// An ability with no charge left, or one the global cooldown is still holding, is not
+    /// selectable at all: opening a targeting circle for something that would be refused on
+    /// the click wastes the player's attention and hides the reason.
     fn cast_or_target(&mut self, ability: FireAbility) {
-        if ability.definition().target.is_ground_targeted() {
-            // Mouse-look would fight the circle for the cursor, so it ends here.
+        let mage = self.simulation.mage();
+        if !mage.abilities.is_ready(ability) || !mage.off_global_cooldown() {
+            return;
+        }
+        if ability.definition().energy_cost > 0.0 && !mage.energy.is_full() {
+            return;
+        }
+        if ability.definition().target.is_aimed() {
+            // Mouse-look would fight the indicator for the cursor, so it ends here.
             self.cancel_mouse_look();
             self.targeting.begin(ability);
             return;
@@ -791,11 +799,11 @@ impl App {
     /// for its edge, both scaled to the ability's own radius so what is shown is exactly
     /// what will be hit. The ring breathes slowly, which is what makes it read as a live
     /// indicator rather than as a decal somebody left on the floor.
-    fn update_targeting_decal(&mut self, elapsed: f32) {
+    fn update_targeting_decal(&mut self) {
         let Some(target) = self.targeting.active() else {
-            if let Some((fill, ring)) = self.targeting_decal.take() {
-                self.extractor.render_world_mut().despawn(fill);
-                self.extractor.render_world_mut().despawn(ring);
+            if let Some(decal) = self.targeting_decal.take() {
+                self.extractor.render_world_mut().despawn(decal.fill);
+                self.extractor.render_world_mut().despawn(decal.edge);
             }
             self.affected.clear();
             return;
@@ -808,26 +816,55 @@ impl App {
             (visuals.fill_invalid, visuals.ring_invalid)
         };
 
-        // A slow breath, and the ring sits a hair above the fill so the two never fight
-        // over the same depth.
-        let pulse = 1.0 + (elapsed * DECAL_PULSE_RATE).sin() * DECAL_PULSE_DEPTH;
-        let radius = target.radius;
+        // A cone is a wedge anchored on the caster and rotated to where the player is
+        // pointing; everything else is a circle under the cursor. Both are a fixed size:
+        // an indicator that breathed would be lying about the area it covers.
+        let is_cone = matches!(
+            target.shape,
+            engine_presentation::ui::targeting::TargetShape::Cone { .. }
+        );
+        let (fill_mesh, ring_mesh) = if is_cone {
+            (visuals.cone_mesh, visuals.cone_edge_mesh)
+        } else {
+            (visuals.fill_mesh, visuals.ring_mesh)
+        };
+        let rotation = if is_cone {
+            engine_core::math::Quat::from_yaw_pitch_roll(target.facing, 0.0, 0.0)
+        } else {
+            engine_core::math::Quat::IDENTITY
+        };
+        let anchor = target.anchor;
+        let scale = if is_cone {
+            target.radius
+        } else {
+            target.radius * 2.0
+        };
         let flat = |scale: f32, height: f32| engine_core::transform::Transform {
-            translation: Vec3::new(target.position.x, height, target.position.z),
-            rotation: engine_core::math::Quat::IDENTITY,
+            translation: Vec3::new(anchor.x, height, anchor.z),
+            rotation,
             scale: Vec3::new(scale, 1.0, scale),
         };
-        let fill_transform = flat(radius * 2.0, DECAL_HEIGHT);
-        let ring_transform = flat(radius * 2.0 * pulse, DECAL_HEIGHT + DECAL_RING_LIFT);
+        // The bright shape is drawn slightly larger and *below* the fill, so its rim shows
+        // as an outline; the world pass is opaque, so an outline has to be geometry.
+        let fill_transform = flat(scale, DECAL_HEIGHT + DECAL_RING_LIFT);
+        let ring_transform = flat(scale * DECAL_EDGE_SCALE, DECAL_HEIGHT);
         let bounds = engine_core::math::Sphere::new(Vec3::ZERO, 0.75);
 
         let world = self.extractor.render_world_mut();
+        // A shape change means different geometry, and geometry is fixed at spawn.
+        if let Some(decal) = self.targeting_decal
+            && decal.is_cone != is_cone
+        {
+            world.despawn(decal.fill);
+            world.despawn(decal.edge);
+            self.targeting_decal = None;
+        }
         match self.targeting_decal {
-            Some((fill, ring)) => {
-                world.set_transform(fill, fill_transform, bounds);
-                world.set_material(fill, fill_material);
-                world.set_transform(ring, ring_transform, bounds);
-                world.set_material(ring, ring_material);
+            Some(decal) => {
+                world.set_transform(decal.fill, fill_transform, bounds);
+                world.set_material(decal.fill, fill_material);
+                world.set_transform(decal.edge, ring_transform, bounds);
+                world.set_material(decal.edge, ring_material);
             }
             None => {
                 let mut spawn = |mesh, material, transform| {
@@ -840,20 +877,19 @@ impl App {
                         style: engine_render_data::InstanceStyle::NEUTRAL,
                     })
                 };
-                let fill = spawn(visuals.fill_mesh, fill_material, fill_transform);
-                let ring = spawn(visuals.ring_mesh, ring_material, ring_transform);
-                self.targeting_decal = Some((fill, ring));
+                let fill = spawn(fill_mesh, fill_material, fill_transform);
+                let edge = spawn(ring_mesh, ring_material, ring_transform);
+                self.targeting_decal = Some(TargetingDecal {
+                    fill,
+                    edge,
+                    is_cone,
+                });
             }
         }
 
         // Everything the shape currently covers, so the interface can mark it. The shape
         // decides, not the app: a future cone marks what a cone covers with no change here.
         self.affected.clear();
-        let facing = self
-            .simulation
-            .world()
-            .body(self.simulation.player().entity)
-            .map_or(0.0, |body| body.facing_yaw);
         let world = self.simulation.world();
         for slot in 0..world.slot_count() {
             let Some(id) = world.id_at(slot) else {
@@ -865,7 +901,10 @@ impl App {
             let Some(position) = world.position(id) else {
                 continue;
             };
-            if target.shape.contains(target.position, facing, position) {
+            if target
+                .shape
+                .contains(target.anchor, target.facing, position)
+            {
                 self.affected.push(id);
             }
         }
@@ -1133,7 +1172,7 @@ impl Application for App {
             if !self.menu.is_open() {
                 self.update_firemage_ui(ctx);
             }
-            self.update_targeting_decal(ctx.elapsed().as_secs_f32());
+            self.update_targeting_decal();
 
             if !self.targeting.is_active() && !self.talent_menu.is_open() {
                 self.apply_mouse_look(ctx);
@@ -1315,6 +1354,21 @@ fn upload_visuals(renderer: &mut Renderer) -> Result<VisualBindings, EngineError
     })
 }
 
+/// The two entities the ground indicator is drawn with, and which shape they were built for.
+///
+/// The render world has no way to change an entity's mesh, so switching between a circle and
+/// a cone respawns the pair rather than mutating them - which happens once per targeting
+/// press, not per frame.
+#[derive(Debug, Clone, Copy)]
+struct TargetingDecal {
+    /// The shaded footprint.
+    fill: engine_render_data::RenderEntity,
+    /// Its brighter edge.
+    edge: engine_render_data::RenderEntity,
+    /// Whether it was built as a cone.
+    is_cone: bool,
+}
+
 /// The meshes and materials the ground indicator is drawn with.
 #[derive(Debug, Clone, Copy)]
 struct DecalVisuals {
@@ -1322,6 +1376,10 @@ struct DecalVisuals {
     fill_mesh: MeshHandle,
     /// A unit ring, scaled the same way.
     ring_mesh: MeshHandle,
+    /// A unit cone wedge, for an ability aimed rather than placed.
+    cone_mesh: MeshHandle,
+    /// The same wedge, drawn larger and behind to give it an edge.
+    cone_edge_mesh: MeshHandle,
     /// The footprint of a valid placement.
     fill_valid: MaterialHandle,
     /// Its edge.
@@ -1341,6 +1399,10 @@ fn upload_decal_visuals(renderer: &mut Renderer) -> Result<DecalVisuals, EngineE
     // Unit shapes: the transform scales them to whatever radius the ability has.
     let fill_mesh = renderer.create_mesh(&MeshData::disc(0.5, 48))?;
     let ring_mesh = renderer.create_mesh(&MeshData::ring(0.5, 0.035, 48))?;
+    // A unit-radius wedge with the cone's own half-angle, so the preview is the footprint.
+    let cone_half_angle = engine_game::sim::CONE_HALF_ANGLE;
+    let cone_mesh = renderer.create_mesh(&MeshData::sector(1.0, cone_half_angle, 32))?;
+    let cone_edge_mesh = renderer.create_mesh(&MeshData::sector(1.0, cone_half_angle, 32))?;
 
     let fill_valid = renderer.create_material(
         MaterialDesc::colored(0.35, 0.16, 0.05)
@@ -1366,6 +1428,8 @@ fn upload_decal_visuals(renderer: &mut Renderer) -> Result<DecalVisuals, EngineE
     Ok(DecalVisuals {
         fill_mesh,
         ring_mesh,
+        cone_mesh,
+        cone_edge_mesh,
         fill_valid,
         ring_valid,
         fill_invalid,

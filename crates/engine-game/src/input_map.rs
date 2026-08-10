@@ -90,16 +90,16 @@ impl Bindings {
             out.push(PlayerCommand::ResetDummies);
         }
 
-        // The bar. A ground-targeted ability is deliberately *not* cast from here: its key
-        // opens the targeting circle, and the application sends the placed command when the
-        // player clicks.
+        // The bar. An *aimed* ability - one placed on the ground, or a cone pointed with the
+        // mouse - is deliberately not cast from here: its key shows the preview, and the
+        // application sends the command when the player clicks.
         for slot in 0..ABILITY_SLOTS {
             let (Some(key), Some(ability)) =
                 (Self::ability_key(slot), FireAbility::from_slot(slot))
             else {
                 continue;
             };
-            if input.was_key_pressed(key) && !ability.definition().target.is_ground_targeted() {
+            if input.was_key_pressed(key) && !ability.definition().target.is_aimed() {
                 out.push(PlayerCommand::UseAbility(slot));
             }
         }
@@ -274,9 +274,9 @@ mod tests {
     fn every_ability_key_produces_its_own_slot() {
         for slot in 0..ABILITY_SLOTS {
             let ability = FireAbility::from_slot(slot).expect("every slot has an ability");
-            // A ground-targeted ability opens its circle instead of casting from the key;
-            // the application sends the placed command when the player clicks.
-            if ability.definition().target.is_ground_targeted() {
+            // An aimed ability shows its preview instead of casting from the key; the
+            // application sends the command when the player clicks.
+            if ability.definition().target.is_aimed() {
                 continue;
             }
             let key = Bindings::ability_key(slot).expect("every slot has a key");

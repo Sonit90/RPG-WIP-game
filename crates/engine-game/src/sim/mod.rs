@@ -56,7 +56,7 @@ use crate::world::{EntityKind, GameWorld};
 /// How the simulation is configured.
 mod firemage_exec;
 
-pub use firemage_exec::{CastAim, horizontal_distance};
+pub use firemage_exec::{CONE_HALF_ANGLE, CastAim, horizontal_distance};
 
 /// How a simulation is configured: the tick rate, the character, and the random seed.
 #[derive(Debug, Clone, PartialEq)]
@@ -857,6 +857,11 @@ impl Simulation {
         let Some(cast) = self.player.cast.take() else {
             return;
         };
+        // A cast that never landed gives its charge back. Only a completed one has been
+        // paid for by something happening.
+        if !matches!(end, CastEnd::Completed) {
+            self.refund_cast(&cast);
+        }
         self.events.push(CombatEvent::CastEnded {
             source: self.player.entity,
             ability: AbilityId::from_fire(cast.ability),
@@ -1129,8 +1134,9 @@ mod tests {
     }
 
     #[test]
-    fn a_cancelled_cast_keeps_its_cooldown() {
-        // A cast is a commitment: the charge is spent when it starts.
+    fn a_cancelled_cast_gives_its_charge_back() {
+        // A cast that never landed costs the time it wasted and nothing else. Putting the
+        // ability on cooldown for something that did not happen punishes the player twice.
         let mut simulation = arena();
         simulation.cast(FireAbility::Pyroblast).expect("in range");
         assert!(!simulation.mage().abilities.is_ready(FireAbility::Pyroblast));
@@ -1141,9 +1147,23 @@ mod tests {
             yaw: 0.0,
         });
         simulation.step_many(4);
+        assert!(simulation.casting().is_none(), "movement did not break it");
+        assert!(
+            simulation.mage().abilities.is_ready(FireAbility::Pyroblast),
+            "the charge was not refunded"
+        );
+    }
+
+    #[test]
+    fn a_completed_cast_keeps_its_cooldown() {
+        // The other half of the rule: what actually happened is paid for.
+        let mut simulation = arena();
+        simulation.cast(FireAbility::Pyroblast).expect("in range");
+        simulation.step_many(200);
+        assert!(simulation.casting().is_none(), "the cast never finished");
         assert!(
             !simulation.mage().abilities.is_ready(FireAbility::Pyroblast),
-            "the cooldown was refunded"
+            "a landed cast was refunded"
         );
     }
 
