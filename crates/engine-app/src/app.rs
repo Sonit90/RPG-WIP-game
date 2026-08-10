@@ -956,10 +956,15 @@ impl App {
             let Some(position) = world.position(id) else {
                 continue;
             };
-            if target
-                .shape
-                .contains(target.anchor, target.facing, position)
-            {
+            // Edge-corrected with the body's own radius, exactly as the executor collects
+            // its hits: the ring on screen and the enemies the ability catches have to be
+            // the same set, or the interface is lying while the player aims.
+            if target.shape.contains_body(
+                target.anchor,
+                target.facing,
+                position,
+                world.radius(id),
+            ) {
                 self.affected.push(id);
             }
         }

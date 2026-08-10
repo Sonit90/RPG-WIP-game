@@ -15,7 +15,7 @@
 //! valid *before* the click - a refusal after the fact is a wasted cooldown.
 
 use engine_core::math::{Mat4, Vec3};
-use engine_game::firemage::FireAbility;
+use engine_game::firemage::{FireAbility, ZoneShape};
 
 use super::input::UiInput;
 
@@ -101,17 +101,42 @@ impl TargetShape {
         }
     }
 
-    /// Whether a point on the ground is inside the shape placed at `centre`.
+    /// Whether a point on the ground is inside the shape placed at `anchor`.
     ///
-    /// `facing` is where the caster looks, which only the directional shapes use.
+    /// `facing` is where the caster looks, which the directional shapes use.
+    ///
+    /// A circle and a line answer through [`engine_game::firemage::ZoneShape`] - the same
+    /// containment test the *burn* uses. That matters: this function decides which enemies
+    /// the interface rings while the player is aiming, and an interface that highlighted a
+    /// different set from the one the ability hits would be lying at the exact moment the
+    /// player is deciding. There is one implementation, and it lives in gameplay.
     #[must_use]
-    pub fn contains(self, centre: Vec3, facing: f32, point: Vec3) -> bool {
-        let offset = Vec3::new(point.x - centre.x, 0.0, point.z - centre.z);
-        let distance = (offset.x * offset.x + offset.z * offset.z).sqrt();
+    pub fn contains(self, anchor: Vec3, facing: f32, point: Vec3) -> bool {
+        self.contains_body(anchor, facing, point, 0.0)
+    }
+
+    /// The same test for a body of `body_radius` standing at `point`.
+    ///
+    /// The executor is edge-corrected - an enemy whose centre is just outside the shape but
+    /// whose body is inside it is hit - so the highlight has to be too. Without this the
+    /// ring and the fire disagree by half a metre on every enemy at the edge, which is the
+    /// half a metre a player is actually aiming with.
+    #[must_use]
+    pub fn contains_body(self, anchor: Vec3, facing: f32, point: Vec3, body_radius: f32) -> bool {
         match self {
-            Self::Circle { radius } => distance <= radius,
+            Self::Circle { radius } => {
+                ZoneShape::Circle { radius }.contains(anchor, point, body_radius)
+            }
+            Self::Line { width, length } => ZoneShape::Line {
+                yaw: facing,
+                length,
+                width,
+            }
+            .contains(anchor, point, body_radius),
             Self::Cone { range, half_angle } => {
-                if distance > range {
+                let offset = Vec3::new(point.x - anchor.x, 0.0, point.z - anchor.z);
+                let distance = (offset.x * offset.x + offset.z * offset.z).sqrt();
+                if distance > range + body_radius {
                     return false;
                 }
                 if distance <= f32::EPSILON {
@@ -121,8 +146,14 @@ impl TargetShape {
                 let cosine = (offset.x * forward.x + offset.z * forward.z) / distance;
                 cosine >= half_angle.cos()
             }
-            Self::Rectangle { width, length } | Self::Line { width, length } => {
-                offset.x.abs() <= width * 0.5 && offset.z.abs() <= length * 0.5
+            // Centred on its anchor and turned to face, unlike a line, which starts at one.
+            Self::Rectangle { width, length } => {
+                let offset = Vec3::new(point.x - anchor.x, 0.0, point.z - anchor.z);
+                let (sin, cos) = (-facing.sin(), -facing.cos());
+                let along = offset.x * sin + offset.z * cos;
+                let across = offset.x * -cos + offset.z * sin;
+                along.abs() <= length * 0.5 + body_radius
+                    && across.abs() <= width * 0.5 + body_radius
             }
         }
     }
@@ -528,6 +559,88 @@ mod tests {
     }
 
     #[test]
+    fn a_line_highlights_exactly_what_it_will_burn() {
+        // The bug this replaces: the line's containment ignored `facing` and treated the
+        // strip as *centred* on the caster, so the ring appeared on enemies behind the
+        // player and missed the ones the fire would actually reach.
+        let firestorm = FireAbility::Firestorm.definition();
+        let shape = TargetShape::of(FireAbility::Firestorm);
+        let caster = Vec3::ZERO;
+
+        // Aimed down -Z, which is what a facing of zero means everywhere in the project.
+        assert!(shape.contains(caster, 0.0, Vec3::new(0.0, 0.0, -10.0)), "ahead");
+        assert!(
+            shape.contains(caster, 0.0, Vec3::new(4.9, 0.0, -19.0)),
+            "inside the far corner of a twenty by ten strip"
+        );
+        assert!(
+            !shape.contains(caster, 0.0, Vec3::new(0.0, 0.0, 10.0)),
+            "behind the caster"
+        );
+        assert!(
+            !shape.contains(caster, 0.0, Vec3::new(0.0, 0.0, -21.0)),
+            "past the end"
+        );
+        assert!(
+            !shape.contains(caster, 0.0, Vec3::new(6.0, 0.0, -10.0)),
+            "beside it"
+        );
+
+        // Turned a quarter circle: what was ahead is now beside, and what was beside is
+        // ahead. A containment test that ignored the facing would pass none of this.
+        let quarter = std::f32::consts::FRAC_PI_2;
+        assert!(!shape.contains(caster, quarter, Vec3::new(0.0, 0.0, -10.0)));
+        assert!(shape.contains(caster, quarter, Vec3::new(-10.0, 0.0, 0.0)));
+
+        // And it is the gameplay shape's own answer, not a second implementation of it.
+        for point in [
+            Vec3::new(0.0, 0.0, -5.0),
+            Vec3::new(3.0, 0.0, -18.0),
+            Vec3::new(0.0, 0.0, 3.0),
+            Vec3::new(9.0, 0.0, -2.0),
+        ] {
+            let burn = ZoneShape::Line {
+                yaw: 0.4,
+                length: firestorm.range,
+                width: firestorm.width,
+            };
+            assert_eq!(
+                shape.contains(caster, 0.4, point),
+                burn.contains(caster, point, 0.0),
+                "the ring and the fire disagree about {point:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_body_at_the_edge_is_highlighted_because_it_is_hit() {
+        // The executor collects `distance <= radius + body_radius`; a highlight that used
+        // centres alone would leave a ringed-out enemy taking the damage anyway.
+        let shape = TargetShape::Circle { radius: 5.0 };
+        let just_out = Vec3::new(5.4, 0.0, 0.0);
+        assert!(!shape.contains(Vec3::ZERO, 0.0, just_out), "by its centre");
+        assert!(
+            shape.contains_body(Vec3::ZERO, 0.0, just_out, 0.5),
+            "but its body is inside"
+        );
+
+        let line = TargetShape::of(FireAbility::Firestorm);
+        let beside = Vec3::new(5.3, 0.0, -10.0);
+        assert!(!line.contains(Vec3::ZERO, 0.0, beside));
+        assert!(line.contains_body(Vec3::ZERO, 0.0, beside, 0.5));
+    }
+
+    #[test]
+    fn a_circle_highlights_what_a_placed_ability_covers() {
+        let shape = TargetShape::of(FireAbility::Meteor);
+        let centre = Vec3::new(4.0, 0.0, -7.0);
+        let radius = FireAbility::Meteor.definition().radius;
+        assert!(shape.contains(centre, 0.0, centre));
+        assert!(shape.contains(centre, 0.0, Vec3::new(centre.x + radius - 0.1, 0.0, centre.z)));
+        assert!(!shape.contains(centre, 0.0, Vec3::new(centre.x + radius + 0.5, 0.0, centre.z)));
+    }
+
+    #[test]
     fn a_shape_comes_from_the_ability_rather_than_from_the_targeting_code() {
         // Placed circles ask for a circle, the line asks for a line, and the cone asks for
         // a wedge - all read from the same table the executor hits with.
@@ -596,12 +709,15 @@ mod tests {
         assert!(rectangle.contains(Vec3::ZERO, 0.0, Vec3::new(1.5, 0.0, 4.0)));
         assert!(!rectangle.contains(Vec3::ZERO, 0.0, Vec3::new(3.0, 0.0, 0.0)));
 
+        // A line is anchored at the caster and runs *forwards*, along -Z at a facing of
+        // zero. It is not centred, and it is not axis-aligned to the world.
         let line = TargetShape::Line {
             width: 2.0,
             length: 20.0,
         };
-        assert!(line.contains(Vec3::ZERO, 0.0, Vec3::new(0.5, 0.0, 9.0)));
-        assert!(!line.contains(Vec3::ZERO, 0.0, Vec3::new(2.0, 0.0, 0.0)));
+        assert!(line.contains(Vec3::ZERO, 0.0, Vec3::new(0.5, 0.0, -9.0)), "ahead");
+        assert!(!line.contains(Vec3::ZERO, 0.0, Vec3::new(0.5, 0.0, 9.0)), "behind");
+        assert!(!line.contains(Vec3::ZERO, 0.0, Vec3::new(2.0, 0.0, -9.0)), "beside");
     }
 
     #[test]
