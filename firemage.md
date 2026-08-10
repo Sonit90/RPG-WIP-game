@@ -140,8 +140,11 @@ refuse it, and a tooltip is generated from the ability's own row.
 - **The global cooldown is drawn on every slot**, in a lighter wash than a real cooldown,
   because starting one ability locks all of them. A slot already showing its own cooldown
   draws only that: the two washes would darken the overlap twice.
-- **The ability being cast is framed in white**, doubled outward, so which one is going off
-  wins against ten other frames.
+- **The ability you are in the middle of is framed in white**, doubled outward, so it wins
+  against ten other frames. That is the one being cast *or* the one whose area is being
+  placed: aiming a Meteor and casting a Pyroblast are the same answer to "what am I doing",
+  and without it the only sign a placement is open is the circle on the ground, which is
+  where the player is not looking.
 - **A cooldown prints the seconds left** - whole ones until the last, then tenths, rounded up
   so it never reads zero while the ability still refuses. The global cooldown prints nothing:
   half a second in tenths on eleven buttons at once is noise.

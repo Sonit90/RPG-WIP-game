@@ -474,7 +474,8 @@ impl App {
     fn update_firemage_ui(&mut self, ctx: &mut EngineContext) {
         let viewport = self.renderer.size();
         let ui_input = UiInput::from_input(ctx.input());
-        self.snapshot.refresh(&self.simulation);
+        self.snapshot
+            .refresh(&self.simulation, self.aiming_ability());
 
         // The talent menu, which covers everything while it is up.
         if self.talent_menu.is_open() {
@@ -559,6 +560,15 @@ impl App {
         if let Some(ability) = pressed {
             self.cast_or_target(ability);
         }
+    }
+
+    /// The ability whose area is being placed, if the player is placing one.
+    ///
+    /// The one thing on the ability bar the simulation cannot answer: an unconfirmed
+    /// placement has changed nothing, so it lives here beside the targeting circle it
+    /// belongs to and reaches the interface through the snapshot like everything else.
+    fn aiming_ability(&self) -> Option<FireAbility> {
+        self.targeting.active().map(|target| target.ability)
     }
 
     /// Casts an ability, or opens the targeting indicator if it is aimed with the mouse.
@@ -777,7 +787,8 @@ impl App {
         self.nameplates
             .build(&self.simulation, &view_projection, viewport, &config);
 
-        self.snapshot.refresh(&self.simulation);
+        self.snapshot
+            .refresh(&self.simulation, self.aiming_ability());
         self.game_ui
             .build(&self.snapshot, self.nameplates.plates(), &config, viewport);
         // Last, so numbers float over the HUD rather than under it.

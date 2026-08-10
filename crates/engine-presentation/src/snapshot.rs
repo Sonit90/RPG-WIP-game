@@ -220,6 +220,13 @@ pub struct AbilitySlotView {
     pub global_cooldown_fraction: f32,
     /// Whether this is the ability currently being cast.
     pub casting: bool,
+    /// Whether this is the ability whose area the player is placing.
+    ///
+    /// Unlike everything else on this view, aiming is not a fact about the simulation — a
+    /// placement that has not been confirmed has changed nothing and costs nothing. It is
+    /// carried here anyway, because a button that has to be told separately what it is
+    /// showing is a button that can be told wrong.
+    pub aiming: bool,
     /// Whether the player has to place it with the mouse.
     pub ground_targeted: bool,
 }
@@ -241,6 +248,16 @@ impl AbilitySlotView {
     #[must_use]
     pub fn is_on_global_cooldown(&self) -> bool {
         self.global_cooldown_fraction < 1.0
+    }
+
+    /// Whether the button should be framed as the one the player is in the middle of.
+    ///
+    /// Casting it, or choosing where to put it. Both are "this is the ability happening
+    /// right now", and the player has no reason to tell the two states apart on the bar:
+    /// aiming a Meteor and casting a Pyroblast are the same answer to "what am I doing".
+    #[must_use]
+    pub fn shows_active_frame(&self) -> bool {
+        self.casting || self.aiming
     }
 
     /// Whether the button should draw the global cooldown's sweep.
@@ -351,6 +368,12 @@ impl UiSnapshot {
     /// Reads the simulation.
     #[must_use]
     pub fn build(simulation: &Simulation) -> Self {
+        Self::build_aiming(simulation, None)
+    }
+
+    /// Reads the simulation, with `aiming` naming the ability whose area is being placed.
+    #[must_use]
+    pub fn build_aiming(simulation: &Simulation, aiming: Option<FireAbility>) -> Self {
         let mut snapshot = Self {
             player: PlayerView {
                 health: 0.0,
@@ -364,8 +387,8 @@ impl UiSnapshot {
                 statuses: StatusList::default(),
             },
             target: None,
-            abilities: [ability_view(simulation, FireAbility::Firebolt); ABILITY_SLOTS],
-            ultimate: ability_view(simulation, FireAbility::Cataclysm),
+            abilities: [ability_view(simulation, FireAbility::Firebolt, aiming); ABILITY_SLOTS],
+            ultimate: ability_view(simulation, FireAbility::Cataclysm, aiming),
             cast: None,
             combat: CombatView::default(),
             notification: NotificationView::default(),
@@ -373,12 +396,17 @@ impl UiSnapshot {
             talents: Vec::with_capacity(TALENTS.len()),
             ignite_max: 5,
         };
-        snapshot.refresh(simulation);
+        snapshot.refresh(simulation, aiming);
         snapshot
     }
 
     /// Rebuilds in place, keeping every allocation.
-    pub fn refresh(&mut self, simulation: &Simulation) {
+    ///
+    /// `aiming` is the ability whose area the player is currently placing, which is the one
+    /// piece of this the simulation cannot answer: an unconfirmed placement has changed
+    /// nothing. It is a parameter rather than a field the caller sets afterwards, so it
+    /// cannot be left behind from the frame before.
+    pub fn refresh(&mut self, simulation: &Simulation, aiming: Option<FireAbility>) {
         let mage = simulation.mage();
         let player = simulation.player();
         let world = simulation.world();
@@ -418,9 +446,9 @@ impl UiSnapshot {
         });
 
         for (slot, ability) in FireAbility::BAR.into_iter().enumerate() {
-            self.abilities[slot] = ability_view(simulation, ability);
+            self.abilities[slot] = ability_view(simulation, ability, aiming);
         }
-        self.ultimate = ability_view(simulation, FireAbility::Cataclysm);
+        self.ultimate = ability_view(simulation, FireAbility::Cataclysm, aiming);
 
         self.cast = simulation.casting().map(|cast| CastView {
             ability: cast.ability,
@@ -458,7 +486,11 @@ impl UiSnapshot {
 }
 
 /// One ability's button state, worked out once here rather than in the widget.
-fn ability_view(simulation: &Simulation, ability: FireAbility) -> AbilitySlotView {
+fn ability_view(
+    simulation: &Simulation,
+    ability: FireAbility,
+    aiming: Option<FireAbility>,
+) -> AbilitySlotView {
     let mage = simulation.mage();
     let definition = ability.definition();
     let effects = mage.effects();
@@ -508,6 +540,7 @@ fn ability_view(simulation: &Simulation, ability: FireAbility) -> AbilitySlotVie
         casting: simulation
             .casting()
             .is_some_and(|cast| cast.ability == ability),
+        aiming: aiming == Some(ability),
         ground_targeted: definition.target.is_ground_targeted(),
     }
 }
@@ -724,7 +757,7 @@ mod tests {
         let mut snapshot = UiSnapshot::build(&simulation);
         let capacity = snapshot.talents.capacity();
         for _ in 0..100 {
-            snapshot.refresh(&simulation);
+            snapshot.refresh(&simulation, None);
         }
         assert_eq!(snapshot.talents.capacity(), capacity, "the snapshot grew");
         assert_eq!(snapshot.talents.len(), TALENTS.len());

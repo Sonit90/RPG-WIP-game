@@ -827,17 +827,19 @@ impl GameUi {
             }
         }
 
-        // After the art, so the frame is never painted over by it. The ability being cast
-        // takes a white frame instead of its availability colour: while a cast is running,
-        // which one it is matters more than whether the others could be afforded.
-        let border = if view.casting {
+        // After the art, so the frame is never painted over by it. The ability the player is
+        // in the middle of — casting it, or choosing where to put it — takes a white frame
+        // instead of its availability colour: while one is happening, which one it is
+        // matters more than whether the others could be afforded.
+        let active = view.shows_active_frame();
+        let border = if active {
             self.theme.slot_casting
         } else {
             self.theme.slot_color(view.availability)
         };
         let outline = self.metrics.scale.px(self.theme.outline_pixels);
         self.list.outline(rect, outline, border);
-        if view.casting {
+        if active {
             // Doubled outward as well, so the slot reads at a glance rather than on
             // inspection — the same trick the ready Ultimate uses.
             self.list.outline(rect.inset(-outline), outline, border);
@@ -1906,6 +1908,63 @@ mod tests {
                 "slot {other} is framed as though it were casting"
             );
         }
+    }
+
+    #[test]
+    fn the_ability_whose_area_is_being_placed_is_framed_like_one_being_cast() {
+        // Aiming a Meteor and casting a Pyroblast are the same answer to "what am I doing",
+        // so the bar gives them the same frame. Without it the only sign that a placement is
+        // open is the circle on the ground, which is where the player is not looking.
+        let simulation = sim();
+        let aimed = FireAbility::Meteor;
+        let snapshot = UiSnapshot::build_aiming(&simulation, Some(aimed));
+
+        let slot = FireAbility::BAR
+            .iter()
+            .position(|ability| *ability == aimed)
+            .expect("Meteor is on the bar");
+        assert!(snapshot.abilities[slot].aiming);
+        assert!(snapshot.abilities[slot].shows_active_frame());
+        assert!(
+            !snapshot.abilities[slot].casting,
+            "an unconfirmed placement is not a cast"
+        );
+
+        // Exactly one slot, and it is that one.
+        let framed = snapshot
+            .abilities
+            .iter()
+            .filter(|view| view.shows_active_frame())
+            .count();
+        assert_eq!(framed, 1, "{framed} slots claim to be active");
+        assert!(!snapshot.ultimate.shows_active_frame());
+
+        // And it reaches the drawn frame, not just the view.
+        let (set, config) = plates(&simulation);
+        let mut ui = GameUi::new();
+        ui.build(&snapshot, set.plates(), &config, VIEWPORT);
+        let white = UiTheme::default().slot_casting;
+        let rect = ui.slot_rect(slot, VIEWPORT);
+        assert!(
+            ui.list().commands().iter().any(|command| matches!(
+                command,
+                UiCommand::Outline { rect: drawn, color, .. }
+                    if *drawn == rect && *color == white
+            )),
+            "the aimed slot has no white frame"
+        );
+    }
+
+    #[test]
+    fn nothing_is_framed_when_the_player_is_neither_casting_nor_aiming() {
+        let snapshot = UiSnapshot::build(&sim());
+        assert!(
+            snapshot
+                .abilities
+                .iter()
+                .all(|view| !view.shows_active_frame()),
+            "a slot is framed with nothing happening"
+        );
     }
 
     #[test]

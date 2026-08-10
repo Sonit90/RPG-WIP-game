@@ -256,7 +256,7 @@ fn measure_combat(dummies: usize, iterations: usize) {
     let mut batcher = UiBatcher::new(1 << 20);
     for _ in 0..WARMUP_ITERATIONS {
         plates.build(&simulation, &view_projection, (WIDTH, HEIGHT), &config);
-        snapshot.refresh(&simulation);
+        snapshot.refresh(&simulation, None);
         ui.build(&snapshot, plates.plates(), &config, (WIDTH, HEIGHT));
         ui.push_damage_numbers(&numbers, &view_projection, (WIDTH, HEIGHT), now);
         batcher.build(ui.list());
@@ -267,7 +267,7 @@ fn measure_combat(dummies: usize, iterations: usize) {
     for _ in 0..iterations {
         let started = Instant::now();
         plates.build(&simulation, &view_projection, (WIDTH, HEIGHT), &config);
-        snapshot.refresh(&simulation);
+        snapshot.refresh(&simulation, None);
         ui.build(&snapshot, plates.plates(), &config, (WIDTH, HEIGHT));
         ui.push_damage_numbers(&numbers, &view_projection, (WIDTH, HEIGHT), now);
         batcher.build(ui.list());

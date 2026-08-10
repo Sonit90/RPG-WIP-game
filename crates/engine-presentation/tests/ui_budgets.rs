@@ -156,7 +156,7 @@ fn a_steady_hud_allocates_nothing_after_the_first_frame() {
 
     for _ in 0..50 {
         plates.build(&simulation, &view_projection, VIEWPORT, &config);
-        snapshot.refresh(&simulation);
+        snapshot.refresh(&simulation, None);
         ui.build(&snapshot, plates.plates(), &config, VIEWPORT);
         ui.push_damage_numbers(&numbers, &view_projection, VIEWPORT, now);
     }
@@ -165,7 +165,7 @@ fn a_steady_hud_allocates_nothing_after_the_first_frame() {
 
     for _ in 0..1_000 {
         plates.build(&simulation, &view_projection, VIEWPORT, &config);
-        snapshot.refresh(&simulation);
+        snapshot.refresh(&simulation, None);
         ui.build(&snapshot, plates.plates(), &config, VIEWPORT);
         ui.push_damage_numbers(&numbers, &view_projection, VIEWPORT, now);
     }
