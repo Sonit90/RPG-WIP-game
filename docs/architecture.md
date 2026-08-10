@@ -179,11 +179,26 @@ Four rules, each a boundary rather than a convention:
   has no `Simulation` to borrow — it has a stream of state, which is this shape.
 * **The layout emits commands, not vertices.** `UiDrawList` lives in `engine-render-data`, so
   `engine-presentation` builds the entire HUD without linking D3D12. Expanding a string into
-  glyph quads needs the font atlas, which lives beside the texture it is uploaded into, so a
-  command list is what keeps the shader ABI on the renderer's side of the seam.
-* **Everything is one batch.** Text and solid shapes sample the same font atlas — glyphs
-  their own cell, rectangles one opaque texel — so the whole interface is one vertex buffer
-  through one pipeline state. Measured: 20,990 quads, one `DrawInstanced`.
+  glyph quads needs the UI atlas, which lives beside the texture it is uploaded into, so a
+  command list is what keeps the shader ABI on the renderer's side of the seam. An icon is
+  named (`UiIcon::Meteor`) rather than described, for the same reason.
+* **Everything is one batch.** Text, icons and solid shapes sample the same UI atlas — glyphs
+  their own cell, icons theirs, rectangles one opaque texel — so the whole interface is one
+  vertex buffer through one pipeline state. Measured: 20,990 quads, one `DrawInstanced`.
+  The atlas is RGBA8 in bands: the font on top, then one band per icon size. The pixel shader
+  picks a point or a linear sampler by comparing `v` against the font/icon boundary, so the
+  two kinds of art get the filtering each needs without a per-vertex flag or a second draw.
+* **The interface is laid out in logical pixels.** Every layout constant is the size the UI
+  was designed at; a `UiScale` from the player's settings converts it to physical pixels once
+  per scale change, into a `HudMetrics`/`MenuMetrics`/`TalentMetrics`. Nothing multiplies at
+  a use site, so a measurement cannot be scaled twice or forgotten, and the hit test reads
+  the same metrics the draw did. Glyph scales snap to whole numbers, because the font is a
+  bitmap that is only crisp at integer sizes.
+* **Icons are rasterized at build time, at every size they can be drawn.** `build.rs` renders
+  each SVG at 132 and 66 texels; the batcher picks the cell nearest the rectangle it is
+  filling, so an icon is always minified and never magnified. That is what a mip chain would
+  have done, except a mip chain of an atlas would blend glyphs into icons — so the selection
+  happens on the CPU, where the draw size is already known, and the texture needs no mips.
 * **Painter's order, not depth.** The UI pass neither tests nor writes depth. A depth test and
   alpha blending cannot coexist: a blended fragment that fails the test vanishes, and one that
   passes writes depth that occludes whatever should have blended over it.

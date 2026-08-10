@@ -49,7 +49,7 @@ use engine_presentation::snapshot::UiSnapshot;
 use engine_presentation::ui::talent_menu::{TalentMenu, TalentMenuOutcome, TalentTheme};
 use engine_presentation::ui::targeting::{GroundTargeting, TargetingOutcome};
 use engine_presentation::ui::{MenuAction, MenuScratch, MenuSystem, MenuTheme, UiInput};
-use engine_render_data::ui::UiRect;
+use engine_render_data::ui::{UiRect, UiScale};
 use engine_renderer::mesh::MeshData;
 use engine_renderer::{
     Camera, Lighting, MaterialDesc, MaterialHandle, MeshHandle, Projection, Renderer,
@@ -272,10 +272,12 @@ impl App {
         // with a different lifetime: it changes while the game runs and it is written back.
         let game_settings = SettingsManager::load_from_game_directory();
         log::info!(
-            "settings: {} (camera sensitivity {:.2})",
+            "settings: {} (camera sensitivity {:.2}, interface size {:.2})",
             game_settings.path().display(),
-            game_settings.settings().camera_sensitivity
+            game_settings.settings().camera_sensitivity,
+            game_settings.settings().ui_scale
         );
+        let ui_scale = UiScale::new(game_settings.settings().ui_scale);
 
         let mut controller = ThirdPersonCamera::following(simulation.player_position());
         controller.set_sensitivity(game_settings.settings().camera_sensitivity);
@@ -322,7 +324,7 @@ impl App {
             menu_scratch: MenuScratch::new(),
             settings: game_settings,
             targeting: GroundTargeting::new(),
-            talent_menu: TalentMenu::new(),
+            talent_menu: TalentMenu::with_scale(ui_scale),
             talent_theme: TalentTheme::default(),
             talent_scratch: String::with_capacity(32),
             hovered_ability: None,
@@ -336,7 +338,7 @@ impl App {
             ui_ms: 0.0,
             nameplates: NameplateSet::with_capacity(32),
             snapshot,
-            game_ui: GameUi::new(),
+            game_ui: GameUi::with_scale(ui_scale),
             numbers: FloatingNumbers::new(),
             report_interval,
             last_report: Instant::now(),
@@ -487,7 +489,7 @@ impl App {
         }
 
         // The talent button, in the top-right corner.
-        let talent_button = GameUi::talent_button_rect(viewport);
+        let talent_button = self.game_ui.talent_button_rect(viewport);
         if ui_input.pointer_pressed
             && talent_button.contains(ui_input.pointer.0, ui_input.pointer.1)
         {
@@ -521,7 +523,7 @@ impl App {
         self.hovered_ability = None;
         let mut pressed = None;
         for (slot, view) in self.snapshot.abilities.iter().enumerate() {
-            let rect = GameUi::slot_rect(slot, viewport);
+            let rect = self.game_ui.slot_rect(slot, viewport);
             if rect.contains(ui_input.pointer.0, ui_input.pointer.1) {
                 self.hovered_ability = Some(view.ability);
                 if ui_input.pointer_pressed {
@@ -529,7 +531,7 @@ impl App {
                 }
             }
         }
-        let ultimate = GameUi::ultimate_rect(viewport);
+        let ultimate = self.game_ui.ultimate_rect(viewport);
         if ultimate.contains(ui_input.pointer.0, ui_input.pointer.1) {
             self.hovered_ability = Some(self.snapshot.ultimate.ability);
             if ui_input.pointer_pressed {
@@ -648,6 +650,8 @@ impl App {
                 }
                 MenuAction::SensitivityChanged(value) => self.apply_sensitivity(value, false),
                 MenuAction::SensitivityCommitted(value) => self.apply_sensitivity(value, true),
+                MenuAction::UiScaleChanged(value) => self.apply_ui_scale(value, false),
+                MenuAction::UiScaleCommitted(value) => self.apply_ui_scale(value, true),
             }
         }
     }
@@ -664,6 +668,30 @@ impl App {
             log::info!(
                 "settings: camera sensitivity {:.2} saved",
                 self.settings.settings().camera_sensitivity
+            );
+        }
+    }
+
+    /// Applies an interface size, and writes it to disk if the interaction has finished.
+    ///
+    /// The value goes to the settings first and reaches the interface from there, so what is
+    /// drawn is always what would be written to the file, snapping included.
+    ///
+    /// Every screen is told, not only the HUD: a menu laid out at one scale and a HUD at
+    /// another would disagree about where things are, and the menu is itself the screen the
+    /// slider lives on — so the player watches the change happen to the thing they are
+    /// dragging. Nothing is rebuilt beyond the measurements, so this is a few dozen
+    /// multiplies rather than anything that could be felt.
+    fn apply_ui_scale(&mut self, value: f32, persist: bool) {
+        self.settings.set_ui_scale(value);
+        let scale = UiScale::new(self.settings.settings().ui_scale);
+        self.game_ui.set_scale(scale);
+        self.menu.set_scale(scale);
+        self.talent_menu.set_scale(scale);
+        if persist && self.settings.save_if_dirty() {
+            log::info!(
+                "settings: interface size {:.2} saved",
+                self.settings.settings().ui_scale
             );
         }
     }
@@ -731,11 +759,17 @@ impl App {
             self.renderer.set_ui(&self.collision_ui);
             return;
         }
+        // The plate's box is measured from the same glyph scale the text inside it is drawn
+        // at, which is what keeps the two the same size at every UI scale. Reading the scale
+        // off the HUD rather than the settings means there is one answer, not two.
+        let scale = self.game_ui.scale();
+        let text = scale.text(UI_TEXT_SCALE);
         let config = NameplateConfig {
-            cell_pixels: UI_TEXT_SCALE,
-            glyph_advance_pixels: engine_renderer::font::GLYPH_ADVANCE as f32 * UI_TEXT_SCALE,
-            line_advance_pixels: engine_renderer::font::LINE_ADVANCE as f32 * UI_TEXT_SCALE,
-            glyph_height_pixels: engine_renderer::font::GLYPH_HEIGHT as f32 * UI_TEXT_SCALE,
+            cell_pixels: text,
+            glyph_advance_pixels: engine_renderer::font::GLYPH_ADVANCE as f32 * text,
+            line_advance_pixels: engine_renderer::font::LINE_ADVANCE as f32 * text,
+            glyph_height_pixels: engine_renderer::font::GLYPH_HEIGHT as f32 * text,
+            padding_pixels: scale.px(NameplateConfig::default().padding_pixels),
             ..NameplateConfig::default()
         };
 
@@ -758,10 +792,10 @@ impl App {
         if let Some(ability) = self.hovered_ability {
             let (rect, view) = match ability.bar_slot() {
                 Some(slot) => (
-                    GameUi::slot_rect(slot, viewport),
+                    self.game_ui.slot_rect(slot, viewport),
                     self.snapshot.abilities[slot],
                 ),
-                None => (GameUi::ultimate_rect(viewport), self.snapshot.ultimate),
+                None => (self.game_ui.ultimate_rect(viewport), self.snapshot.ultimate),
             };
             let ignite_max = self.snapshot.ignite_max;
             self.game_ui
@@ -930,11 +964,12 @@ impl App {
             ) else {
                 continue;
             };
-            let size = AFFECTED_MARK_SIZE;
+            let scale = self.game_ui.scale();
+            let size = scale.px(AFFECTED_MARK_SIZE);
             let rect = UiRect::new(screen.0 - size * 0.5, screen.1 - size * 0.5, size, size);
             self.game_ui
                 .list_mut()
-                .outline(rect, 3.0, [1.0, 0.72, 0.20, 0.95]);
+                .outline(rect, scale.px(3.0), [1.0, 0.72, 0.20, 0.95]);
         }
     }
 
@@ -954,7 +989,7 @@ impl App {
             &self.camera.view_projection(),
             self.renderer.size(),
             self.controller.eye(),
-            UI_TEXT_SCALE,
+            self.game_ui.scale().text(UI_TEXT_SCALE),
         );
         // Without the developer feature there is nothing to label: the geometry is not
         // drawn either, so a marker would point at empty space.

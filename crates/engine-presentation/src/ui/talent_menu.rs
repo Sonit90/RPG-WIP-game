@@ -9,7 +9,7 @@
 //! are left - and it emits a purchase for the application to apply. Buying is a command like
 //! any other, so the same click is reproducible in a replay.
 
-use engine_render_data::ui::{TextAlign, UiColor, UiDrawList, UiRect};
+use engine_render_data::ui::{TextAlign, UiColor, UiDrawList, UiRect, UiScale};
 
 use engine_game::firemage::{TALENT_TIERS, TalentId};
 
@@ -39,6 +39,56 @@ mod layout {
     pub const TIER_LABEL: f32 = 74.0;
 }
 
+/// Every talent-menu measurement, converted from its design size to physical pixels once.
+///
+/// The same arrangement as [`crate::game_ui::HudMetrics`]; see it for why the conversion
+/// happens in one place rather than at each use.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TalentMetrics {
+    /// The scale these were derived with.
+    pub scale: UiScale,
+    /// `layout::PANEL_WIDTH` in physical pixels.
+    pub panel_width: f32,
+    /// `layout::PANEL_HEIGHT` in physical pixels.
+    pub panel_height: f32,
+    /// `layout::PADDING` in physical pixels.
+    pub padding: f32,
+    /// `layout::HEADER` in physical pixels.
+    pub header: f32,
+    /// `layout::NODE_WIDTH` in physical pixels.
+    pub node_width: f32,
+    /// `layout::NODE_HEIGHT` in physical pixels.
+    pub node_height: f32,
+    /// `layout::NODE_GAP` in physical pixels.
+    pub node_gap: f32,
+    /// `layout::TIER_LABEL` in physical pixels.
+    pub tier_label: f32,
+}
+
+impl TalentMetrics {
+    /// The talent menu's measurements at `scale`.
+    #[must_use]
+    pub fn new(scale: UiScale) -> Self {
+        Self {
+            scale,
+            panel_width: scale.px(layout::PANEL_WIDTH),
+            panel_height: scale.px(layout::PANEL_HEIGHT),
+            padding: scale.px(layout::PADDING),
+            header: scale.px(layout::HEADER),
+            node_width: scale.px(layout::NODE_WIDTH),
+            node_height: scale.px(layout::NODE_HEIGHT),
+            node_gap: scale.px(layout::NODE_GAP),
+            tier_label: scale.px(layout::TIER_LABEL),
+        }
+    }
+}
+
+impl Default for TalentMetrics {
+    fn default() -> Self {
+        Self::new(UiScale::default())
+    }
+}
+
 /// What the menu decided this frame.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum TalentMenuOutcome {
@@ -55,16 +105,45 @@ pub enum TalentMenuOutcome {
 pub struct TalentMenu {
     open: bool,
     hovered: Option<TalentId>,
+    /// Every measurement, already converted to physical pixels for the current UI scale.
+    metrics: TalentMetrics,
 }
 
 impl TalentMenu {
     /// Closed.
     #[must_use]
-    pub const fn new() -> Self {
+    pub fn new() -> Self {
+        Self::with_scale(UiScale::default())
+    }
+
+    /// Closed, laid out at `scale`.
+    #[must_use]
+    pub fn with_scale(scale: UiScale) -> Self {
         Self {
             open: false,
             hovered: None,
+            metrics: TalentMetrics::new(scale),
         }
+    }
+
+    /// Lays the menu out at a new scale from here on.
+    pub fn set_scale(&mut self, scale: UiScale) {
+        self.metrics = TalentMetrics::new(scale);
+    }
+
+    /// The scale the menu is laid out at.
+    #[must_use]
+    pub fn scale(&self) -> UiScale {
+        self.metrics.scale
+    }
+
+    /// The menu's measurements in physical pixels.
+    ///
+    /// Public so the painter positions text with the same numbers the node rectangles
+    /// were built from.
+    #[must_use]
+    pub fn metrics(&self) -> &TalentMetrics {
+        &self.metrics
     }
 
     /// Whether the menu is on screen.
@@ -118,7 +197,7 @@ impl TalentMenu {
         self.hovered = None;
         let mut clicked = None;
         for (index, talent) in snapshot.talents.iter().enumerate() {
-            let rect = Self::node_rect(index, snapshot, viewport);
+            let rect = self.node_rect(index, snapshot, viewport);
             if rect.contains(input.pointer.0, input.pointer.1) {
                 self.hovered = Some(talent.id);
                 if input.pointer_pressed {
@@ -128,7 +207,7 @@ impl TalentMenu {
         }
 
         // The close button, and clicking outside the panel.
-        let panel = Self::panel_rect(viewport);
+        let panel = self.panel_rect(viewport);
         if input.pointer_pressed && !panel.contains(input.pointer.0, input.pointer.1) {
             self.close();
             return TalentMenuOutcome::Closed;
@@ -142,13 +221,13 @@ impl TalentMenu {
 
     /// The panel the menu draws in.
     #[must_use]
-    pub fn panel_rect(viewport: (u32, u32)) -> UiRect {
+    pub fn panel_rect(&self, viewport: (u32, u32)) -> UiRect {
         let (width, height) = (viewport.0 as f32, viewport.1 as f32);
         UiRect::new(
-            ((width - layout::PANEL_WIDTH) * 0.5).max(0.0),
-            ((height - layout::PANEL_HEIGHT) * 0.5).max(0.0),
-            layout::PANEL_WIDTH,
-            layout::PANEL_HEIGHT,
+            ((width - self.metrics.panel_width) * 0.5).max(0.0),
+            ((height - self.metrics.panel_height) * 0.5).max(0.0),
+            self.metrics.panel_width,
+            self.metrics.panel_height,
         )
     }
 
@@ -157,11 +236,11 @@ impl TalentMenu {
     /// Laid out by tier: one row per tier, nodes across it in table order. The grid is
     /// derived from the talent data, so adding a talent moves nothing by hand.
     #[must_use]
-    pub fn node_rect(index: usize, snapshot: &UiSnapshot, viewport: (u32, u32)) -> UiRect {
+    pub fn node_rect(&self, index: usize, snapshot: &UiSnapshot, viewport: (u32, u32)) -> UiRect {
         let Some(talent) = snapshot.talents.get(index) else {
             return UiRect::new(0.0, 0.0, 0.0, 0.0);
         };
-        let panel = Self::panel_rect(viewport);
+        let panel = self.panel_rect(viewport);
         // Where this node sits inside its own tier, and how many rows the tiers above it
         // needed. Both are counted from the data, so a tier that grows simply wraps.
         let within_tier = snapshot
@@ -176,14 +255,14 @@ impl TalentMenu {
         let row = rows_above + within_tier / layout::COLUMNS;
 
         let x = panel.x
-            + layout::PADDING
-            + layout::TIER_LABEL
-            + column as f32 * (layout::NODE_WIDTH + layout::NODE_GAP);
+            + self.metrics.padding
+            + self.metrics.tier_label
+            + column as f32 * (self.metrics.node_width + self.metrics.node_gap);
         let y = panel.y
-            + layout::PADDING
-            + layout::HEADER
-            + row as f32 * (layout::NODE_HEIGHT + layout::NODE_GAP);
-        UiRect::new(x, y, layout::NODE_WIDTH, layout::NODE_HEIGHT)
+            + self.metrics.padding
+            + self.metrics.header
+            + row as f32 * (self.metrics.node_height + self.metrics.node_gap);
+        UiRect::new(x, y, self.metrics.node_width, self.metrics.node_height)
     }
 }
 
@@ -254,29 +333,31 @@ pub fn push_talent_menu(
     if !menu.is_open() {
         return;
     }
-    let panel = TalentMenu::panel_rect(viewport);
+    let metrics = menu.metrics();
+    let scale = metrics.scale;
+    let panel = menu.panel_rect(viewport);
     list.rect(
         UiRect::new(0.0, 0.0, viewport.0 as f32, viewport.1 as f32),
         theme.scrim,
     );
     list.rect(panel, theme.panel);
-    list.outline(panel, 2.0, theme.border);
+    list.outline(panel, scale.px(2.0), theme.border);
 
     list.text_at(
-        (panel.x + layout::PADDING, panel.y + 16.0),
+        (panel.x + metrics.padding, panel.y + scale.px(16.0)),
         "TALENTS",
         theme.title,
-        3.0,
+        scale.text(3.0),
     );
 
     scratch.clear();
     scratch.push_str("POINTS ");
     push_integer(scratch, snapshot.talent_points);
     list.text_aligned(
-        (panel.right() - layout::PADDING, panel.y + 22.0),
+        (panel.right() - metrics.padding, panel.y + scale.px(22.0)),
         scratch,
         theme.title,
-        2.0,
+        scale.text(2.0),
         TextAlign::Right,
     );
 
@@ -284,19 +365,24 @@ pub fn push_talent_menu(
     for tier in 1..=TALENT_TIERS {
         let rows_above: usize = (1..tier).map(|above| tier_rows(snapshot, above)).sum();
         let y = panel.y
-            + layout::PADDING
-            + layout::HEADER
-            + rows_above as f32 * (layout::NODE_HEIGHT + layout::NODE_GAP)
-            + layout::NODE_HEIGHT * 0.5
-            - 7.0;
+            + metrics.padding
+            + metrics.header
+            + rows_above as f32 * (metrics.node_height + metrics.node_gap)
+            + metrics.node_height * 0.5
+            - scale.px(7.0);
         scratch.clear();
         scratch.push_str("TIER ");
         push_integer(scratch, u32::from(tier));
-        list.text_at((panel.x + layout::PADDING, y), scratch, theme.text_dim, 1.0);
+        list.text_at(
+            (panel.x + metrics.padding, y),
+            scratch,
+            theme.text_dim,
+            scale.text(1.0),
+        );
     }
 
     for (index, talent) in snapshot.talents.iter().enumerate() {
-        let rect = TalentMenu::node_rect(index, snapshot, viewport);
+        let rect = menu.node_rect(index, snapshot, viewport);
         push_node(
             list,
             rect,
@@ -304,14 +390,15 @@ pub fn push_talent_menu(
             menu.hovered() == Some(talent.id),
             theme,
             scratch,
+            scale,
         );
     }
 
     list.text_at(
-        (panel.x + layout::PADDING, panel.bottom() - 26.0),
+        (panel.x + metrics.padding, panel.bottom() - scale.px(26.0)),
         "CLICK A TALENT TO LEARN IT. ESCAPE CLOSES.",
         theme.text_dim,
-        1.0,
+        scale.text(1.0),
     );
 }
 
@@ -323,6 +410,7 @@ fn push_node(
     hovered: bool,
     theme: &TalentTheme,
     scratch: &mut String,
+    scale: UiScale,
 ) {
     let fill = if talent.purchased {
         theme.purchased
@@ -333,9 +421,9 @@ fn push_node(
     };
     list.rect(rect, fill);
     if hovered {
-        list.outline(rect, 2.0, theme.hover);
+        list.outline(rect, scale.px(2.0), theme.hover);
     } else {
-        list.outline(rect, 1.0, theme.border);
+        list.outline(rect, scale.px(1.0), theme.border);
     }
 
     let text = if talent.purchased || talent.affordable {
@@ -343,7 +431,12 @@ fn push_node(
     } else {
         theme.text_dim
     };
-    list.text_at((rect.x + 6.0, rect.y + 6.0), talent.name, text, 1.5);
+    list.text_at(
+        (rect.x + scale.px(6.0), rect.y + scale.px(6.0)),
+        talent.name,
+        text,
+        scale.text(1.5),
+    );
 
     scratch.clear();
     if talent.purchased {
@@ -353,10 +446,10 @@ fn push_node(
         push_integer(scratch, talent.cost);
     }
     list.text_aligned(
-        (rect.right() - 6.0, rect.y + 6.0),
+        (rect.right() - scale.px(6.0), rect.y + scale.px(6.0)),
         scratch,
         if talent.purchased { theme.hover } else { text },
-        1.0,
+        scale.text(1.0),
         TextAlign::Right,
     );
 
@@ -369,7 +462,10 @@ fn push_node(
         scratch.clear();
         scratch.extend(characters[start..end].iter());
         list.text_at(
-            (rect.x + 6.0, rect.y + 26.0 + line as f32 * 11.0),
+            (
+                rect.x + scale.px(6.0),
+                rect.y + scale.px(26.0) + line as f32 * scale.px(11.0),
+            ),
             scratch,
             theme.text_dim,
             1.0,
@@ -480,9 +576,10 @@ mod tests {
     #[test]
     fn every_node_sits_inside_the_panel() {
         let snapshot = snapshot();
-        let panel = TalentMenu::panel_rect(VIEWPORT);
+        let menu = TalentMenu::new();
+        let panel = menu.panel_rect(VIEWPORT);
         for index in 0..snapshot.talents.len() {
-            let rect = TalentMenu::node_rect(index, &snapshot, VIEWPORT);
+            let rect = menu.node_rect(index, &snapshot, VIEWPORT);
             assert!(rect.x >= panel.x, "node {index} escaped left");
             assert!(
                 rect.right() <= panel.right() + 0.01,
@@ -501,7 +598,7 @@ mod tests {
         menu.open();
         let snapshot = snapshot();
 
-        let rect = TalentMenu::node_rect(0, &snapshot, VIEWPORT);
+        let rect = menu.node_rect(0, &snapshot, VIEWPORT);
         let outcome = menu.update(&click(rect.x + 10.0, rect.y + 10.0), &snapshot, VIEWPORT);
         assert_eq!(outcome, TalentMenuOutcome::Purchase(snapshot.talents[0].id));
         assert!(menu.is_open(), "buying closed the menu");
@@ -512,7 +609,7 @@ mod tests {
         let mut menu = TalentMenu::new();
         menu.open();
         let snapshot = snapshot();
-        let rect = TalentMenu::node_rect(3, &snapshot, VIEWPORT);
+        let rect = menu.node_rect(3, &snapshot, VIEWPORT);
 
         menu.update(
             &UiInput::new().with_pointer(rect.x + 5.0, rect.y + 5.0),

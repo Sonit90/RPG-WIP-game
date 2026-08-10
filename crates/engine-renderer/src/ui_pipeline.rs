@@ -5,10 +5,11 @@
 //!  (commands)     (this file)     one buffer
 //! ```
 //!
-//! Every UI element — a panel, a health bar, an outline, a glyph — is a textured, tinted
-//! quad. Glyphs sample their cell in the font atlas; solid shapes sample the one opaque
-//! texel in the same atlas. Because they share a texture and a pipeline state, they share a
-//! **batch**, and the entire user interface is submitted as a single draw.
+//! Every UI element — a panel, a health bar, an outline, a glyph, an ability icon — is a
+//! textured, tinted quad. Glyphs sample their cell in the UI atlas; icons sample theirs;
+//! solid shapes sample the one opaque texel in the same atlas. Because they share a texture
+//! and a pipeline state, they share a **batch**, and the entire user interface is submitted
+//! as a single draw.
 //!
 //! ## What this replaces
 //!
@@ -30,11 +31,12 @@ use windows::Win32::Graphics::Direct3D12::{
     D3D12_BLEND_OP_ADD, D3D12_BLEND_SRC_ALPHA, D3D12_COLOR_WRITE_ENABLE_ALL,
     D3D12_COMPARISON_FUNC_ALWAYS, D3D12_CULL_MODE_NONE, D3D12_DEPTH_STENCIL_DESC,
     D3D12_DEPTH_WRITE_MASK_ZERO, D3D12_DESCRIPTOR_RANGE, D3D12_DESCRIPTOR_RANGE_TYPE_SRV,
-    D3D12_FILL_MODE_SOLID, D3D12_FILTER_MIN_MAG_MIP_POINT, D3D12_GRAPHICS_PIPELINE_STATE_DESC,
-    D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, D3D12_INPUT_ELEMENT_DESC, D3D12_INPUT_LAYOUT_DESC,
-    D3D12_LOGIC_OP_NOOP, D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE, D3D12_RASTERIZER_DESC,
-    D3D12_RENDER_TARGET_BLEND_DESC, D3D12_ROOT_DESCRIPTOR, D3D12_ROOT_DESCRIPTOR_TABLE,
-    D3D12_ROOT_PARAMETER, D3D12_ROOT_PARAMETER_0, D3D12_ROOT_PARAMETER_TYPE_CBV,
+    D3D12_FILL_MODE_SOLID, D3D12_FILTER_MIN_MAG_MIP_LINEAR, D3D12_FILTER_MIN_MAG_MIP_POINT,
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,
+    D3D12_INPUT_ELEMENT_DESC, D3D12_INPUT_LAYOUT_DESC, D3D12_LOGIC_OP_NOOP,
+    D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE, D3D12_RASTERIZER_DESC, D3D12_RENDER_TARGET_BLEND_DESC,
+    D3D12_ROOT_DESCRIPTOR, D3D12_ROOT_DESCRIPTOR_TABLE, D3D12_ROOT_PARAMETER,
+    D3D12_ROOT_PARAMETER_0, D3D12_ROOT_PARAMETER_TYPE_CBV,
     D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE, D3D12_ROOT_SIGNATURE_DESC,
     D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT, D3D12_SHADER_VISIBILITY_ALL,
     D3D12_SHADER_VISIBILITY_PIXEL, D3D12_STATIC_BORDER_COLOR_TRANSPARENT_BLACK,
@@ -50,15 +52,21 @@ use engine_render_data::ui::{TextAlign, UiCommand, UiDrawList, UiRect};
 
 use crate::error::RendererError;
 use crate::font::{GLYPH_ADVANCE, GLYPH_HEIGHT, GLYPH_WIDTH};
-use crate::font_atlas::{FontAtlas, GlyphUv};
 use crate::shader::{UI_PS, UI_VS, bytecode};
 use crate::swapchain::BACK_BUFFER_FORMAT;
+use crate::ui_atlas::{AtlasUv, UiAtlas};
 
 /// Root parameter holding the pixels-to-clip constant buffer.
 pub const ROOT_UI_FRAME_CBV: u32 = 0;
 
-/// Root parameter holding the font-atlas descriptor table.
+/// Root parameter holding the UI-atlas descriptor table.
 pub const ROOT_UI_ATLAS_TABLE: u32 = 1;
+
+/// Register of the point sampler the font band is read through.
+pub const SAMPLER_GLYPH: u32 = 0;
+
+/// Register of the linear sampler the icon band is read through.
+pub const SAMPLER_ICON: u32 = 1;
 
 /// Segments in a full radial sweep.
 ///
@@ -82,24 +90,30 @@ pub const VERTICES_PER_QUAD: usize = 6;
 pub struct UiVertex {
     /// Position in pixels, origin at the client area's top-left.
     pub position: [f32; 2],
-    /// Where to sample the font atlas.
+    /// Where to sample the UI atlas.
     pub uv: [f32; 2],
     /// Linear RGBA tint. Alpha is honoured.
     pub color: [f32; 4],
 }
 
-/// The constant buffer the UI vertex shader reads.
+/// The constant buffer the UI shaders read.
 ///
-/// Just the multiply that takes pixels to normalized device coordinates. Computing it once
-/// per frame on the CPU means the shader does no divide, and a resize changes two floats
-/// rather than every vertex.
+/// The multiply that takes pixels to normalized device coordinates, and where the atlas's
+/// icon band begins. Computing the first once per frame on the CPU means the shader does no
+/// divide, and a resize changes two floats rather than every vertex.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct UiFrameConstants {
     /// `2 / width` and `-2 / height`.
     pub pixel_to_clip: [f32; 2],
+    /// The `v` at or below which the atlas is the font band. See [`UiAtlas::icon_band_v`].
+    ///
+    /// The pixel shader picks its sampler by comparing against this rather than by reading a
+    /// per-vertex flag, which is what keeps [`UiVertex`] at 32 bytes. It travels in what was
+    /// already padding, so it costs nothing at all.
+    pub icon_band_v: f32,
     /// Padding to the 16-byte constant-buffer row.
-    pub padding: [f32; 2],
+    pub padding: f32,
 }
 
 impl UiFrameConstants {
@@ -117,7 +131,8 @@ impl UiFrameConstants {
         };
         Self {
             pixel_to_clip: [x, y],
-            padding: [0.0; 2],
+            icon_band_v: UiAtlas::icon_band_v(),
+            padding: 0.0,
         }
     }
 }
@@ -133,6 +148,8 @@ pub struct UiBatchStats {
     pub vertices: usize,
     /// Glyphs emitted, of which spaces produce none.
     pub glyphs: usize,
+    /// Icons emitted.
+    pub icons: usize,
     /// Quads dropped because the vertex budget was reached.
     pub dropped: usize,
 }
@@ -238,6 +255,17 @@ impl UiBatcher {
                         &mut stats,
                     );
                 }
+                UiCommand::Icon { rect, icon, tint } => {
+                    // One quad, like a glyph. What makes it an icon rather than a letter is
+                    // only where in the atlas it reads from, which is also what tells the
+                    // pixel shader to filter it smoothly.
+                    //
+                    // The rectangle's own width is the size the icon is about to occupy, so
+                    // the atlas can pick the size variant nearest it. Nothing upstream has
+                    // to know that variants exist — the layout asks for an icon in a box.
+                    self.push_quad(rect, UiAtlas::icon_uv(icon, rect.width), tint, &mut stats);
+                    stats.icons += 1;
+                }
                 UiCommand::Text {
                     origin,
                     range,
@@ -254,14 +282,14 @@ impl UiBatcher {
                     };
                     let mut pen = x;
                     for character in text.chars() {
-                        if !FontAtlas::is_blank(character) {
+                        if !UiAtlas::is_blank(character) {
                             let rect = UiRect::new(
                                 pen,
                                 origin.1,
                                 GLYPH_WIDTH as f32 * scale,
                                 GLYPH_HEIGHT as f32 * scale,
                             );
-                            self.push_quad(rect, FontAtlas::glyph_uv(character), color, &mut stats);
+                            self.push_quad(rect, UiAtlas::glyph_uv(character), color, &mut stats);
                             stats.glyphs += 1;
                         }
                         pen += GLYPH_ADVANCE as f32 * scale;
@@ -280,7 +308,7 @@ impl UiBatcher {
         if !rect.is_visible() {
             return;
         }
-        self.push_quad(rect, FontAtlas::solid_uv(), color, stats);
+        self.push_quad(rect, UiAtlas::solid_uv(), color, stats);
     }
 
     /// Appends a radial sector as a triangle fan from the centre.
@@ -305,7 +333,7 @@ impl UiBatcher {
         let segments = (SECTOR_SEGMENTS as f32 * fraction).ceil().max(1.0) as usize;
         let centre = (rect.x + rect.width * 0.5, rect.y + rect.height * 0.5);
         let radius = rect.width.max(rect.height) * 0.5;
-        let uv = FontAtlas::solid_uv();
+        let uv = UiAtlas::solid_uv();
         let sweep = fraction * std::f32::consts::TAU;
         let origin = start * std::f32::consts::TAU;
 
@@ -340,7 +368,7 @@ impl UiBatcher {
     }
 
     /// Appends one quad as two triangles.
-    fn push_quad(&mut self, rect: UiRect, uv: GlyphUv, color: [f32; 4], stats: &mut UiBatchStats) {
+    fn push_quad(&mut self, rect: UiRect, uv: AtlasUv, color: [f32; 4], stats: &mut UiBatchStats) {
         if stats.quads >= self.max_quads {
             stats.dropped += 1;
             return;
@@ -549,12 +577,19 @@ fn ui_depth_stencil_desc() -> D3D12_DEPTH_STENCIL_DESC {
     }
 }
 
-/// Two root parameters and one static sampler.
+/// Two root parameters and two static samplers.
 ///
-/// The sampler is **static** rather than a descriptor: it never changes, and a static
-/// sampler costs no descriptor heap space and no bind. Point filtering, because the atlas is
-/// a crisp 1-bit bitmap and bilinear sampling of one would produce grey fringes around
-/// letters that were designed to have none.
+/// Both samplers are **static** rather than descriptors: neither ever changes, and a static
+/// sampler costs no descriptor heap space and no bind.
+///
+/// There are two because the atlas holds two kinds of picture. `s0` is **point** filtering
+/// for the font band: the glyphs are a crisp 1-bit bitmap magnified to integer scales, and
+/// bilinear sampling of one produces grey fringes around letters designed to have none.
+/// `s1` is **linear** for the icon band: an icon is rasterized at 88 texels and drawn at 44,
+/// and point sampling a minification like that drops every other texel into aliasing.
+///
+/// The shader chooses between them from the texture coordinate, so nothing on the vertex or
+/// in the pipeline has to say which is which.
 fn create_root_signature(device: &ID3D12Device) -> Result<ID3D12RootSignature, RendererError> {
     let range = D3D12_DESCRIPTOR_RANGE {
         RangeType: D3D12_DESCRIPTOR_RANGE_TYPE_SRV,
@@ -586,8 +621,8 @@ fn create_root_signature(device: &ID3D12Device) -> Result<ID3D12RootSignature, R
         },
     ];
 
-    let sampler = D3D12_STATIC_SAMPLER_DESC {
-        Filter: D3D12_FILTER_MIN_MAG_MIP_POINT,
+    let sampler = |filter, register| D3D12_STATIC_SAMPLER_DESC {
+        Filter: filter,
         AddressU: D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
         AddressV: D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
         AddressW: D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
@@ -597,16 +632,20 @@ fn create_root_signature(device: &ID3D12Device) -> Result<ID3D12RootSignature, R
         BorderColor: D3D12_STATIC_BORDER_COLOR_TRANSPARENT_BLACK,
         MinLOD: 0.0,
         MaxLOD: 0.0,
-        ShaderRegister: 0,
+        ShaderRegister: register,
         RegisterSpace: 0,
         ShaderVisibility: D3D12_SHADER_VISIBILITY_PIXEL,
     };
+    let samplers = [
+        sampler(D3D12_FILTER_MIN_MAG_MIP_POINT, SAMPLER_GLYPH),
+        sampler(D3D12_FILTER_MIN_MAG_MIP_LINEAR, SAMPLER_ICON),
+    ];
 
     let desc = D3D12_ROOT_SIGNATURE_DESC {
         NumParameters: parameters.len() as u32,
         pParameters: parameters.as_ptr(),
-        NumStaticSamplers: 1,
-        pStaticSamplers: &sampler,
+        NumStaticSamplers: samplers.len() as u32,
+        pStaticSamplers: samplers.as_ptr(),
         Flags: D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT,
     };
 
@@ -653,7 +692,7 @@ fn create_root_signature(device: &ID3D12Device) -> Result<ID3D12RootSignature, R
 )]
 mod tests {
     use super::*;
-    use engine_render_data::ui::UiDrawList;
+    use engine_render_data::ui::{UiDrawList, UiIcon};
 
     const WHITE: [f32; 4] = [1.0, 1.0, 1.0, 1.0];
 
@@ -761,10 +800,84 @@ mod tests {
         assert_eq!(vertices.len(), 4 * VERTICES_PER_QUAD);
 
         // The solid quads sample a point; the glyphs sample a region. One texture, one draw.
-        let solid = FontAtlas::solid_uv();
+        let solid = UiAtlas::solid_uv();
         assert_eq!(vertices[0].uv, [solid.u0, solid.v0]);
-        let glyph = FontAtlas::glyph_uv('H');
+        let glyph = UiAtlas::glyph_uv('H');
         assert_eq!(vertices[2 * VERTICES_PER_QUAD].uv, [glyph.u0, glyph.v0]);
+    }
+
+    #[test]
+    fn an_icon_is_one_quad_that_shares_the_batch_with_text_and_rectangles() {
+        // The point of putting icons in the font's atlas: art on the ability bar does not
+        // cost a second texture, a second pipeline state or a second draw.
+        let mut batcher = batcher();
+        let mut list = UiDrawList::new();
+        let rect = UiRect::new(10.0, 20.0, 44.0, 44.0);
+        list.rect(rect, WHITE);
+        list.icon(rect, UiIcon::Meteor, WHITE);
+        list.text_at((0.0, 0.0), "M", WHITE, 1.0);
+
+        let vertices = batcher.build(&list).to_vec();
+        assert_eq!(batcher.stats().quads, 3);
+        assert_eq!(batcher.stats().icons, 1);
+        assert_eq!(vertices.len(), 3 * VERTICES_PER_QUAD);
+
+        // The icon quad spans the rectangle exactly and reads the cell for the size it is
+        // actually drawn at — the rectangle's own width, which is what selects the variant.
+        let icon = &vertices[VERTICES_PER_QUAD..VERTICES_PER_QUAD * 2];
+        assert_eq!(icon[0].position, [10.0, 20.0]);
+        let uv = UiAtlas::icon_uv(UiIcon::Meteor, rect.width);
+        assert_eq!(icon[0].uv, [uv.u0, uv.v0]);
+    }
+
+    #[test]
+    fn the_same_icon_drawn_larger_reads_a_different_cell() {
+        // Variant selection is invisible above the batcher: the layout asks for an icon in
+        // a box, and the size of the box is what decides which rasterization is sampled.
+        let mut batcher = batcher();
+        let mut list = UiDrawList::new();
+        list.icon(UiRect::new(0.0, 0.0, 40.0, 40.0), UiIcon::Firebolt, WHITE);
+        let small = batcher.build(&list)[0].uv;
+
+        list.clear();
+        list.icon(UiRect::new(0.0, 0.0, 130.0, 130.0), UiIcon::Firebolt, WHITE);
+        let large = batcher.build(&list)[0].uv;
+
+        assert_ne!(small, large, "both sizes read the same cell");
+    }
+
+    #[test]
+    fn an_icon_reads_below_the_band_boundary_and_a_glyph_reads_above_it() {
+        // The pixel shader picks its sampler by comparing `v` against the boundary in the
+        // frame constants. If a batched quad ever landed on the wrong side of it, an icon
+        // would be point-sampled or a glyph would be blurred, with nothing failing.
+        let mut batcher = batcher();
+        let mut list = UiDrawList::new();
+        list.text_at((0.0, 0.0), "AZ09", WHITE, 2.0);
+        list.rect(UiRect::new(0.0, 0.0, 10.0, 10.0), WHITE);
+        let glyphs_and_rects = batcher.build(&list).to_vec();
+
+        let boundary = UiFrameConstants::for_viewport(1280, 720).icon_band_v;
+        assert!(boundary > 0.0 && boundary < 1.0, "{boundary}");
+        for vertex in &glyphs_and_rects {
+            assert!(
+                vertex.uv[1] < boundary,
+                "a glyph or rectangle reads from the icon band: {:?}",
+                vertex.uv
+            );
+        }
+
+        list.clear();
+        for icon in UiIcon::ALL {
+            list.icon(UiRect::new(0.0, 0.0, 44.0, 44.0), icon, WHITE);
+        }
+        for vertex in batcher.build(&list) {
+            assert!(
+                vertex.uv[1] >= boundary,
+                "an icon reads from the font band: {:?}",
+                vertex.uv
+            );
+        }
     }
 
     #[test]

@@ -19,7 +19,6 @@ use crate::depth::{DEPTH_CLEAR, DepthBuffer};
 use crate::descriptor::GpuDescriptorHeap;
 use crate::device::{BACKEND, RenderDevice, feature_level_name};
 use crate::error::RendererError;
-use crate::font_atlas::FontAtlas;
 use crate::frame::{FrameRing, SyncStats};
 use crate::gpu_timer::GpuTimer;
 use crate::material::{Material, MaterialDesc};
@@ -35,6 +34,7 @@ use crate::scene::{
 };
 use crate::stress;
 use crate::swapchain::SwapChain;
+use crate::ui_atlas::UiAtlas;
 use crate::ui_pipeline::{
     ROOT_UI_ATLAS_TABLE, ROOT_UI_FRAME_CBV, UiBatchStats, UiBatcher, UiFrameConstants, UiPipeline,
     UiVertex,
@@ -982,24 +982,25 @@ impl Renderer {
         Ok(MeshHandle::new(index, 1))
     }
 
-    /// Creates the UI pipeline and uploads the font atlas.
+    /// Creates the UI pipeline and uploads the UI atlas.
     ///
-    /// The atlas is 8 KiB and is uploaded exactly once, at renderer creation, through the
-    /// same staging path meshes use. Nothing about it changes per frame.
+    /// The atlas holds the font and every ability icon, and is uploaded exactly once, at
+    /// renderer creation, through the same staging path meshes use. Nothing about it changes
+    /// per frame.
     fn create_ui_state(context: &RenderDevice) -> Result<UiState, RendererError> {
         use windows::Win32::Graphics::Direct3D12::{
             D3D12_RESOURCE_STATE_COPY_DEST, D3D12_SHADER_RESOURCE_VIEW_DESC,
             D3D12_SHADER_RESOURCE_VIEW_DESC_0, D3D12_SRV_DIMENSION_TEXTURE2D, D3D12_TEX2D_SRV,
         };
-        use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_R8_UNORM;
+        use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_R8G8B8A8_UNORM;
 
         let pipeline = UiPipeline::new(context.device())?;
-        let atlas_pixels = FontAtlas::new();
+        let atlas_pixels = UiAtlas::new();
         let atlas = crate::resource::GpuTexture::new(
             context,
             atlas_pixels.width(),
             atlas_pixels.height(),
-            DXGI_FORMAT_R8_UNORM,
+            DXGI_FORMAT_R8G8B8A8_UNORM,
             D3D12_RESOURCE_STATE_COPY_DEST,
         )?;
 
@@ -1019,11 +1020,11 @@ impl Renderer {
         let atlas_descriptor = heap.allocate_persistent()?;
 
         let desc = D3D12_SHADER_RESOURCE_VIEW_DESC {
-            Format: DXGI_FORMAT_R8_UNORM,
+            Format: DXGI_FORMAT_R8G8B8A8_UNORM,
             ViewDimension: D3D12_SRV_DIMENSION_TEXTURE2D,
-            // The default component mapping, spelled out: an R8 texture read through
-            // `Texture2D<float>` returns red, and leaving this zero is an invalid encoding
-            // the debug layer rejects.
+            // The default component mapping, spelled out: the four channels arrive in the
+            // order they were written, and leaving this zero is an invalid encoding the
+            // debug layer rejects.
             Shader4ComponentMapping: 0x1688,
             Anonymous: D3D12_SHADER_RESOURCE_VIEW_DESC_0 {
                 Texture2D: D3D12_TEX2D_SRV {

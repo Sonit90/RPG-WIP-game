@@ -189,9 +189,13 @@ fn the_whole_interface_is_one_batchable_unit() {
 
     for command in ui.list().commands() {
         match command {
+            // An icon belongs here for the same reason text does: it is a region of the one
+            // atlas every other command already samples, so it changes neither the texture
+            // nor the pipeline state and the batch survives it.
             UiCommand::Rect { .. }
             | UiCommand::Outline { .. }
             | UiCommand::RadialFill { .. }
+            | UiCommand::Icon { .. }
             | UiCommand::Text { .. } => {}
         }
     }

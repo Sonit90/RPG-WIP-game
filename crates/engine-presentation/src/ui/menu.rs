@@ -22,9 +22,10 @@
 //! a [`MenuAction`] for the application to carry out, which is what keeps the UI from
 //! holding a mutable borrow of the world it is drawn over.
 
-use engine_render_data::ui::UiRect;
+use engine_render_data::ui::{UiRect, UiScale};
 use engine_settings::{
     CAMERA_SENSITIVITY_MAX, CAMERA_SENSITIVITY_MIN, CAMERA_SENSITIVITY_STEP, GameSettings,
+    UI_SCALE_MAX, UI_SCALE_MIN, UI_SCALE_STEP,
 };
 
 use super::input::UiInput;
@@ -67,6 +68,8 @@ pub enum PauseItem {
 pub enum SettingsItem {
     /// How fast the camera turns.
     CameraSensitivity,
+    /// How big the interface is drawn.
+    UiScale,
     /// Returns to the pause menu.
     Back,
 }
@@ -88,6 +91,13 @@ pub enum MenuAction {
     SensitivityChanged(f32),
     /// Camera sensitivity settled on this value. Apply it and persist it.
     SensitivityCommitted(f32),
+    /// Interface size is being dragged and now reads this. Apply it; do not save it.
+    ///
+    /// Applied while dragging on purpose: the menu itself is drawn at this scale, so the
+    /// player sees the size they are choosing rather than a number describing it.
+    UiScaleChanged(f32),
+    /// Interface size settled on this value. Apply it and persist it.
+    UiScaleCommitted(f32),
 }
 
 /// Layout constants, in pixels. The menu is a fixed size and centred, like the HUD.
@@ -114,6 +124,72 @@ mod layout {
     pub const BOUND_WIDTH: f32 = 62.0;
 }
 
+/// The sliders on the settings screen, in the order they are stacked.
+///
+/// One list, read by both the layout and the panel that has to be tall enough to hold them,
+/// so adding a setting cannot leave the panel the wrong size for its contents.
+const SLIDERS: [SettingsItem; 2] = [SettingsItem::CameraSensitivity, SettingsItem::UiScale];
+
+/// How many sliders the settings panel must make room for.
+const SLIDER_COUNT: f32 = SLIDERS.len() as f32;
+
+/// Every menu measurement, converted from its design size to physical pixels once.
+///
+/// The same arrangement as [`crate::game_ui::HudMetrics`], and for the same reasons: the
+/// constants above are logical pixels, this is what the layout actually positions with, and
+/// converting in one place is what stops a measurement being scaled twice or not at all.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MenuMetrics {
+    /// The scale these were derived with.
+    pub scale: UiScale,
+    /// `layout::PANEL_WIDTH` in physical pixels.
+    pub panel_width: f32,
+    /// `layout::BUTTON_HEIGHT` in physical pixels.
+    pub button_height: f32,
+    /// `layout::BUTTON_GAP` in physical pixels.
+    pub button_gap: f32,
+    /// `layout::GROUP_GAP` in physical pixels.
+    pub group_gap: f32,
+    /// `layout::PADDING` in physical pixels.
+    pub padding: f32,
+    /// `layout::TITLE_HEIGHT` in physical pixels.
+    pub title_height: f32,
+    /// `layout::TRACK_HEIGHT` in physical pixels.
+    pub track_height: f32,
+    /// `layout::SLIDER_LABEL_HEIGHT` in physical pixels.
+    pub slider_label_height: f32,
+    /// `layout::SLIDER_VALUE_HEIGHT` in physical pixels.
+    pub slider_value_height: f32,
+    /// `layout::BOUND_WIDTH` in physical pixels.
+    pub bound_width: f32,
+}
+
+impl MenuMetrics {
+    /// The menu's measurements at `scale`.
+    #[must_use]
+    pub fn new(scale: UiScale) -> Self {
+        Self {
+            scale,
+            panel_width: scale.px(layout::PANEL_WIDTH),
+            button_height: scale.px(layout::BUTTON_HEIGHT),
+            button_gap: scale.px(layout::BUTTON_GAP),
+            group_gap: scale.px(layout::GROUP_GAP),
+            padding: scale.px(layout::PADDING),
+            title_height: scale.px(layout::TITLE_HEIGHT),
+            track_height: scale.px(layout::TRACK_HEIGHT),
+            slider_label_height: scale.px(layout::SLIDER_LABEL_HEIGHT),
+            slider_value_height: scale.px(layout::SLIDER_VALUE_HEIGHT),
+            bound_width: scale.px(layout::BOUND_WIDTH),
+        }
+    }
+}
+
+impl Default for MenuMetrics {
+    fn default() -> Self {
+        Self::new(UiScale::default())
+    }
+}
+
 /// The menus and which one is showing.
 ///
 /// Both screens are built once, at construction, and kept: opening the settings screen
@@ -130,6 +206,8 @@ pub struct MenuSystem {
     actions: Vec<MenuAction>,
     /// The viewport the current layout was computed for.
     viewport: (u32, u32),
+    /// Every measurement, already converted to physical pixels for the current UI scale.
+    metrics: MenuMetrics,
 }
 
 impl MenuSystem {
@@ -156,6 +234,16 @@ impl MenuSystem {
                 settings.camera_sensitivity,
             ),
         );
+        settings_screen.push(
+            SettingsItem::UiScale,
+            Slider::new(
+                "INTERFACE SIZE",
+                UI_SCALE_MIN,
+                UI_SCALE_MAX,
+                UI_SCALE_STEP,
+                settings.ui_scale,
+            ),
+        );
         settings_screen.push(SettingsItem::Back, Button::new("BACK"));
 
         let mut system = Self {
@@ -165,6 +253,7 @@ impl MenuSystem {
             settings: settings_screen,
             actions: Vec::with_capacity(4),
             viewport: (0, 0),
+            metrics: MenuMetrics::new(UiScale::new(settings.ui_scale)),
         };
         system.layout((1920, 1080));
         system
@@ -219,6 +308,46 @@ impl MenuSystem {
         {
             slider.set_value(settings.camera_sensitivity);
         }
+        if let Some(Widget::Slider(slider)) = self.settings.widget_mut(SettingsItem::UiScale) {
+            slider.set_value(settings.ui_scale);
+        }
+        self.set_scale(UiScale::new(settings.ui_scale));
+    }
+
+    /// Lays the menu out at a new scale from here on.
+    ///
+    /// Forces the next [`MenuSystem::layout`] to run even at an unchanged viewport: the
+    /// widget rectangles depend on the scale as well as on the window, and skipping the
+    /// recompute would leave the menu drawn at one size and clickable at another.
+    pub fn set_scale(&mut self, scale: UiScale) {
+        if scale == self.metrics.scale {
+            return;
+        }
+        self.metrics = MenuMetrics::new(scale);
+        let viewport = self.viewport;
+        self.viewport = (0, 0);
+        self.layout(viewport);
+    }
+
+    /// The scale the menu is laid out at.
+    #[must_use]
+    pub fn scale(&self) -> UiScale {
+        self.metrics.scale
+    }
+
+    /// The menu's measurements in physical pixels.
+    #[must_use]
+    pub fn metrics(&self) -> &MenuMetrics {
+        &self.metrics
+    }
+
+    /// The interface-size slider, for a caller that wants to draw it fully.
+    #[must_use]
+    pub fn ui_scale_slider(&self) -> Option<&Slider> {
+        match self.settings.widget(SettingsItem::UiScale) {
+            Some(Widget::Slider(slider)) => Some(slider),
+            _ => None,
+        }
     }
 
     /// Opens the main menu, if no menu is open. Does not stop the game.
@@ -259,32 +388,33 @@ impl MenuSystem {
     #[must_use]
     pub fn pause_panel(&self) -> UiRect {
         // Two groups of one button, then a separated RESUME.
-        let content = layout::TITLE_HEIGHT
-            + layout::BUTTON_HEIGHT * 3.0
-            + layout::BUTTON_GAP
-            + layout::GROUP_GAP * 2.0;
-        Self::centred_panel(self.viewport, content + layout::PADDING * 2.0)
+        let content = self.metrics.title_height
+            + self.metrics.button_height * 3.0
+            + self.metrics.button_gap
+            + self.metrics.group_gap * 2.0;
+        self.centred_panel(self.viewport, content + self.metrics.padding * 2.0)
     }
 
     /// The panel the settings screen draws in.
     #[must_use]
     pub fn settings_panel(&self) -> UiRect {
-        let content = layout::TITLE_HEIGHT
-            + layout::SLIDER_LABEL_HEIGHT
-            + layout::TRACK_HEIGHT
-            + layout::SLIDER_VALUE_HEIGHT
-            + layout::GROUP_GAP
-            + layout::BUTTON_HEIGHT;
-        Self::centred_panel(self.viewport, content + layout::PADDING * 2.0)
+        let slider = self.metrics.slider_label_height
+            + self.metrics.track_height
+            + self.metrics.slider_value_height;
+        let content = self.metrics.title_height
+            + slider * SLIDER_COUNT
+            + self.metrics.group_gap
+            + self.metrics.button_height;
+        self.centred_panel(self.viewport, content + self.metrics.padding * 2.0)
     }
 
     /// A panel of a given height, centred in the viewport.
-    fn centred_panel(viewport: (u32, u32), height: f32) -> UiRect {
+    fn centred_panel(&self, viewport: (u32, u32), height: f32) -> UiRect {
         let (width, view_height) = (viewport.0 as f32, viewport.1 as f32);
         UiRect::new(
-            ((width - layout::PANEL_WIDTH) * 0.5).max(0.0),
+            ((width - self.metrics.panel_width) * 0.5).max(0.0),
             ((view_height - height) * 0.5).max(0.0),
-            layout::PANEL_WIDTH,
+            self.metrics.panel_width,
             height,
         )
     }
@@ -292,54 +422,61 @@ impl MenuSystem {
     fn layout_pause(&mut self, viewport: (u32, u32)) {
         self.viewport = viewport;
         let panel = self.pause_panel();
-        let x = panel.x + layout::PADDING;
-        let width = panel.width - layout::PADDING * 2.0;
-        let mut y = panel.y + layout::PADDING + layout::TITLE_HEIGHT;
+        let x = panel.x + self.metrics.padding;
+        let width = panel.width - self.metrics.padding * 2.0;
+        let mut y = panel.y + self.metrics.padding + self.metrics.title_height;
 
         // Group one: settings and anything a future build puts beside it.
         self.pause.set_rect(
             PauseItem::Settings,
-            UiRect::new(x, y, width, layout::BUTTON_HEIGHT),
+            UiRect::new(x, y, width, self.metrics.button_height),
         );
-        y += layout::BUTTON_HEIGHT + layout::GROUP_GAP;
+        y += self.metrics.button_height + self.metrics.group_gap;
 
         // Group two: leaving the game.
         self.pause.set_rect(
             PauseItem::Quit,
-            UiRect::new(x, y, width, layout::BUTTON_HEIGHT),
+            UiRect::new(x, y, width, self.metrics.button_height),
         );
-        y += layout::BUTTON_HEIGHT + layout::GROUP_GAP;
+        y += self.metrics.button_height + self.metrics.group_gap;
 
         // Group three: the way back into the game, separated from everything above it.
         self.pause.set_rect(
             PauseItem::Resume,
-            UiRect::new(x, y, width, layout::BUTTON_HEIGHT),
+            UiRect::new(x, y, width, self.metrics.button_height),
         );
     }
 
     fn layout_settings(&mut self, viewport: (u32, u32)) {
         self.viewport = viewport;
         let panel = self.settings_panel();
-        let x = panel.x + layout::PADDING;
-        let width = panel.width - layout::PADDING * 2.0;
-        let y = panel.y + layout::PADDING + layout::TITLE_HEIGHT + layout::SLIDER_LABEL_HEIGHT;
+        let x = panel.x + self.metrics.padding;
+        let width = panel.width - self.metrics.padding * 2.0;
+        let mut y = panel.y + self.metrics.padding + self.metrics.title_height;
 
-        // The track sits between its printed minimum and maximum, so the numbers at either
-        // end are the ends of the thing they label.
-        self.settings.set_rect(
-            SettingsItem::CameraSensitivity,
-            UiRect::new(
-                x + layout::BOUND_WIDTH,
-                y,
-                (width - layout::BOUND_WIDTH * 2.0).max(0.0),
-                layout::TRACK_HEIGHT,
-            ),
+        // One row per slider, stacked in the order they are listed. The track sits between
+        // its printed minimum and maximum, so the numbers at either end are the ends of the
+        // thing they label.
+        let track = UiRect::new(
+            x + self.metrics.bound_width,
+            0.0,
+            (width - self.metrics.bound_width * 2.0).max(0.0),
+            self.metrics.track_height,
         );
+        for item in SLIDERS {
+            y += self.metrics.slider_label_height;
+            self.settings.set_rect(item, UiRect { y, ..track });
+            y += self.metrics.track_height + self.metrics.slider_value_height;
+        }
 
-        let back_y = y + layout::TRACK_HEIGHT + layout::SLIDER_VALUE_HEIGHT + layout::GROUP_GAP;
         self.settings.set_rect(
             SettingsItem::Back,
-            UiRect::new(x, back_y, width, layout::BUTTON_HEIGHT),
+            UiRect::new(
+                x,
+                y + self.metrics.group_gap,
+                width,
+                self.metrics.button_height,
+            ),
         );
     }
 
@@ -398,25 +535,37 @@ impl MenuSystem {
         let mut back = false;
         // Collected first: the borrow of the screen's event buffer ends here, and the
         // actions below are pushed onto this system's own.
-        let mut changed = None;
-        let mut committed = None;
+        let mut sensitivity = (None, None);
+        let mut ui_scale = (None, None);
         for (item, event) in self.settings.update(input) {
             match (item, event) {
                 (SettingsItem::Back, WidgetEvent::Activated) => back = true,
                 (SettingsItem::CameraSensitivity, WidgetEvent::ValueChanged(value)) => {
-                    changed = Some(*value);
+                    sensitivity.0 = Some(*value);
                 }
                 (SettingsItem::CameraSensitivity, WidgetEvent::ValueCommitted(value)) => {
-                    committed = Some(*value);
+                    sensitivity.1 = Some(*value);
+                }
+                (SettingsItem::UiScale, WidgetEvent::ValueChanged(value)) => {
+                    ui_scale.0 = Some(*value);
+                }
+                (SettingsItem::UiScale, WidgetEvent::ValueCommitted(value)) => {
+                    ui_scale.1 = Some(*value);
                 }
                 _ => {}
             }
         }
-        if let Some(value) = changed {
+        if let Some(value) = sensitivity.0 {
             self.actions.push(MenuAction::SensitivityChanged(value));
         }
-        if let Some(value) = committed {
+        if let Some(value) = sensitivity.1 {
             self.actions.push(MenuAction::SensitivityCommitted(value));
+        }
+        if let Some(value) = ui_scale.0 {
+            self.actions.push(MenuAction::UiScaleChanged(value));
+        }
+        if let Some(value) = ui_scale.1 {
+            self.actions.push(MenuAction::UiScaleCommitted(value));
         }
         if back {
             self.back_to_pause();
@@ -720,10 +869,112 @@ mod tests {
     }
 
     #[test]
+    fn the_settings_screen_stacks_both_sliders_inside_its_panel_without_overlapping() {
+        let mut menu = menu();
+        menu.open_pause();
+        click_pause(&mut menu, PauseItem::Settings);
+        let panel = menu.settings_panel();
+
+        let mut previous: Option<UiRect> = None;
+        for item in SLIDERS {
+            let rect = menu
+                .settings_screen()
+                .widget(item)
+                .expect("every slider is on the screen")
+                .rect();
+            assert!(rect.y >= panel.y, "{item:?} escaped the top of the panel");
+            assert!(
+                rect.bottom() <= panel.bottom(),
+                "{item:?} escaped the bottom of the panel"
+            );
+            if let Some(above) = previous {
+                assert!(
+                    rect.y > above.bottom(),
+                    "{item:?} overlaps the slider above it"
+                );
+            }
+            previous = Some(rect);
+        }
+
+        // BACK still sits below both of them, inside the panel.
+        let back = menu
+            .settings_screen()
+            .widget(SettingsItem::Back)
+            .expect("BACK exists")
+            .rect();
+        assert!(back.y > previous.expect("a slider").bottom());
+        assert!(back.bottom() <= panel.bottom());
+    }
+
+    #[test]
+    fn changing_the_interface_size_relays_out_the_menu_that_is_showing_it() {
+        // The slider is on the screen it resizes, so the layout has to follow the value
+        // even though the window has not changed — the case a viewport-only check misses.
+        let mut menu = menu();
+        menu.open_pause();
+        click_pause(&mut menu, PauseItem::Settings);
+        let before = menu.settings_panel();
+
+        menu.set_scale(UiScale::new(2.0));
+        let after = menu.settings_panel();
+        assert!(
+            after.height > before.height,
+            "the panel did not grow: {before:?} then {after:?}"
+        );
+
+        // And the widgets moved with it, rather than staying where they were drawn.
+        let rect = menu
+            .settings_screen()
+            .widget(SettingsItem::Back)
+            .expect("BACK exists")
+            .rect();
+        assert!(rect.bottom() <= after.bottom());
+        assert!(rect.height > 0.0);
+    }
+
+    #[test]
+    fn dragging_the_interface_size_reports_its_own_action_and_not_the_sensitivity() {
+        // Two sliders on one screen: each must report as itself, or changing the size would
+        // silently turn the camera.
+        let mut menu = menu();
+        menu.open_pause();
+        click_pause(&mut menu, PauseItem::Settings);
+        let track = menu
+            .settings_screen()
+            .widget(SettingsItem::UiScale)
+            .expect("the interface slider exists")
+            .rect();
+        let (x, y) = (track.x + track.width * 0.5, track.y + track.height * 0.5);
+
+        let actions = menu.update(&press(x, y)).to_vec();
+        assert!(
+            actions
+                .iter()
+                .any(|action| matches!(action, MenuAction::UiScaleChanged(_))),
+            "{actions:?}"
+        );
+        assert!(
+            !actions
+                .iter()
+                .any(|action| matches!(action, MenuAction::SensitivityChanged(_))),
+            "the other slider moved too: {actions:?}"
+        );
+
+        let actions = menu.update(&release(x, y)).to_vec();
+        assert!(
+            actions
+                .iter()
+                .any(|action| matches!(action, MenuAction::UiScaleCommitted(_))),
+            "{actions:?}"
+        );
+    }
+
+    #[test]
     fn loaded_settings_reach_the_slider_without_reporting_a_change() {
         let mut menu = menu();
         menu.apply_settings(GameSettings {
             camera_sensitivity: 2.5,
+            ..GameSettings::default()
         });
         assert_eq!(menu.sensitivity_slider().expect("a slider").value(), 2.5);
         assert!(

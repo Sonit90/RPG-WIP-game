@@ -33,6 +33,105 @@
 //! The command vector and the text arena are cleared, never freed. After the first frame
 //! that reaches a given size, building a list writes into storage that already exists.
 
+/// How much bigger than its design size the interface is drawn.
+///
+/// ## Logical pixels and physical pixels
+///
+/// Every size in the layout is a **logical pixel**: the size the interface was designed at,
+/// which is what a constant like `SLOT_SIZE = 48.0` means. Multiplying by a `UiScale` turns
+/// it into a **physical pixel**, which is what a [`UiRect`] holds and what the renderer
+/// draws. A layout therefore reads the same at every scale, and "the ability bar is 48 tall"
+/// stays true in the only units a designer thinks in.
+///
+/// The process is per-monitor DPI aware, so physical pixels really are device pixels — a
+/// 4K display gets four times as many of them as 1080p across the same panel, which is
+/// exactly why this type exists. Nothing here reads the monitor: the scale is a **player
+/// setting**, because how big a HUD should be is a preference, not a measurement.
+///
+/// ## Why a type and not an `f32`
+///
+/// So that "logical" and "physical" cannot be mixed up silently. A bare multiply is easy to
+/// forget or to apply twice, and both mistakes render something that merely looks wrong.
+/// [`UiScale::px`] is the only conversion, and it is named after what it produces.
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
+pub struct UiScale(f32);
+
+impl Default for UiScale {
+    fn default() -> Self {
+        Self(1.0)
+    }
+}
+
+impl UiScale {
+    /// The smallest scale the renderer is built to draw correctly.
+    ///
+    /// Wider than the range the settings slider offers, deliberately: this is what the atlas
+    /// and the layout can *support*, and a bound the player can reach should sit inside it
+    /// rather than exactly on it. `engine-presentation` has a test that the offered range
+    /// fits within this one.
+    pub const MIN: f32 = 0.50;
+
+    /// The largest scale the renderer is built to draw correctly.
+    ///
+    /// This is what sizes the icon art: an icon is rasterized large enough to be minified at
+    /// every scale up to this one, and never magnified. Raising it means re-rasterizing.
+    pub const MAX: f32 = 2.00;
+
+    /// The scale the interface was designed at, where a logical pixel is a physical one.
+    pub const DEFAULT: f32 = 1.00;
+
+    /// A scale from a raw factor, clamped into `MIN..=MAX`.
+    ///
+    /// A non-finite factor becomes [`UiScale::DEFAULT`] rather than propagating: a NaN here
+    /// would turn every position in the frame into a NaN, and the draw would silently vanish.
+    #[must_use]
+    pub fn new(factor: f32) -> Self {
+        if !factor.is_finite() {
+            return Self(Self::DEFAULT);
+        }
+        Self(factor.clamp(Self::MIN, Self::MAX))
+    }
+
+    /// The raw multiplier.
+    #[must_use]
+    pub fn factor(self) -> f32 {
+        self.0
+    }
+
+    /// Converts a logical size to physical pixels.
+    ///
+    /// Rounded to a whole pixel. A HUD is axis-aligned rectangles, and a rectangle on a half
+    /// pixel is a rectangle with a grey edge on two sides — the one artefact that makes a
+    /// scaled interface look broken rather than merely bigger.
+    #[must_use]
+    pub fn px(self, logical: f32) -> f32 {
+        (logical * self.0).round()
+    }
+
+    /// Converts a logical glyph scale to the scale the font is actually drawn at.
+    ///
+    /// **Snapped to a whole number, and never below one.** The font is a 5x7 bitmap sampled
+    /// with a point filter, so it is crisp at integer scales and uneven at every other one —
+    /// at 2.5x, two thirds of the rows are two pixels tall and the rest are three. Rounding
+    /// means text stays sharp at every UI scale, at the cost of growing in steps rather than
+    /// continuously, which is the right trade for a bitmap font.
+    #[must_use]
+    pub fn text(self, logical: f32) -> f32 {
+        (logical * self.0).round().max(1.0)
+    }
+}
+
+/// The largest physical size, in pixels, that any icon is ever drawn at.
+///
+/// The Ultimate button is the biggest thing that carries an icon at 66 logical pixels, and
+/// [`UiScale::MAX`] is the most it can be multiplied by: `66 * 2 = 132`.
+///
+/// This is the number the icon art is rasterized to, so that every icon at every UI scale is
+/// *minified* and never magnified — a picture scaled down stays sharp, one scaled up does
+/// not. `engine-renderer` checks its rasterized size against this at compile time, and
+/// `engine-presentation` has a test that no icon it lays out exceeds it.
+pub const MAX_ICON_PIXELS: u32 = 132;
+
 /// A rectangle in pixels, measured from the top-left of the client area.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct UiRect {
@@ -116,6 +215,39 @@ impl UiRect {
 /// Linear RGBA. Alpha is honoured — the UI pass blends.
 pub type UiColor = [f32; 4];
 
+/// A picture the renderer can draw, named rather than described.
+///
+/// The art itself is an SVG under `engine-renderer/assets/icons`, rasterized into the UI
+/// atlas at build time. This crate names the icons and nothing more: a layout crate can ask
+/// for [`UiIcon::Meteor`] without knowing there is a texture, which is the same seam that
+/// keeps [`UiCommand`] free of vertices.
+///
+/// Adding one means adding a variant here, a file under `assets/icons`, and a line in that
+/// crate's `build.rs`. Two of those three fail to compile if the third is missing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum UiIcon {
+    /// The filler bolt.
+    Firebolt,
+    /// The ground-targeted rock.
+    Meteor,
+    /// The cone that spreads Ignite.
+    FlameCone,
+}
+
+impl UiIcon {
+    /// Every icon, in atlas order.
+    pub const ALL: [Self; 3] = [Self::Firebolt, Self::Meteor, Self::FlameCone];
+
+    /// How many icons there are.
+    pub const COUNT: usize = Self::ALL.len();
+
+    /// Dense index into the atlas's icon grid.
+    #[must_use]
+    pub fn index(self) -> usize {
+        self as usize
+    }
+}
+
 /// Where a run of text sits in a [`UiDrawList`]'s arena.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TextRange {
@@ -172,6 +304,16 @@ pub enum UiCommand {
         fraction: f32,
         /// What colour.
         color: UiColor,
+    },
+    /// A picture from the UI atlas, stretched to fill `rect`.
+    Icon {
+        /// Where.
+        rect: UiRect,
+        /// Which picture.
+        icon: UiIcon,
+        /// What to multiply it by. White draws the art untouched; a dimmer colour is how a
+        /// slot that cannot be used says so without needing a second copy of the art.
+        tint: UiColor,
     },
     /// A run of text from the list's arena.
     Text {
@@ -277,6 +419,16 @@ impl UiDrawList {
             thickness,
             color,
         });
+    }
+
+    /// Appends an icon filling `rect`, multiplied by `tint`.
+    ///
+    /// Pass an opaque white tint to draw the art as it was authored.
+    pub fn icon(&mut self, rect: UiRect, icon: UiIcon, tint: UiColor) {
+        if !rect.is_visible() {
+            return;
+        }
+        self.commands.push(UiCommand::Icon { rect, icon, tint });
     }
 
     /// Appends a radial sector covering `fraction` of the circle inside `rect`.
@@ -413,6 +565,43 @@ mod tests {
         };
         assert_eq!(list.text_of(first), "DUMMY");
         assert_eq!(list.text_of(second), "100%");
+    }
+
+    #[test]
+    fn an_icon_records_which_picture_it_wants_and_nothing_about_a_texture() {
+        // The seam: a layout crate names an icon, and the renderer is the only thing that
+        // knows one is a region of an atlas.
+        let mut list = UiDrawList::new();
+        let rect = UiRect::new(10.0, 20.0, 44.0, 44.0);
+        list.icon(rect, UiIcon::Meteor, WHITE);
+
+        assert_eq!(list.len(), 1);
+        let UiCommand::Icon {
+            rect: drawn,
+            icon,
+            tint,
+        } = list.commands()[0]
+        else {
+            panic!("an icon was pushed");
+        };
+        assert_eq!(drawn, rect);
+        assert_eq!(icon, UiIcon::Meteor);
+        assert_eq!(tint, WHITE);
+
+        // A rectangle with no area is dropped, like every other command.
+        list.clear();
+        list.icon(UiRect::new(0.0, 0.0, 0.0, 44.0), UiIcon::Meteor, WHITE);
+        assert!(list.is_empty());
+    }
+
+    #[test]
+    fn every_icon_has_a_distinct_index_that_matches_its_place_in_all() {
+        // The atlas lays icons out by this index; two icons sharing one would put two
+        // pictures in the same cell.
+        for (position, icon) in UiIcon::ALL.into_iter().enumerate() {
+            assert_eq!(icon.index(), position, "{icon:?}");
+        }
+        assert_eq!(UiIcon::COUNT, UiIcon::ALL.len());
     }
 
     #[test]

@@ -473,18 +473,26 @@ impl StagingUploader {
         final_state: D3D12_RESOURCE_STATES,
     ) -> Result<(), RendererError> {
         let (width, height) = destination.size();
-        let expected = width as usize * height as usize;
+        let Some(bytes_per_texel) = destination.bytes_per_texel() else {
+            return Err(RendererError::InvalidConfig {
+                reason: format!(
+                    "no texel size is known for format {:?}, so its row pitch cannot be computed",
+                    destination.format()
+                ),
+            });
+        };
+        let expected = width as usize * height as usize * bytes_per_texel;
         if data.len() != expected {
             return Err(RendererError::InvalidConfig {
                 reason: format!(
-                    "{} texels supplied for a {width}x{height} single-byte texture, which needs \
-                     {expected}",
+                    "{} bytes supplied for a {width}x{height} texture at {bytes_per_texel} bytes a \
+                     texel, which needs {expected}",
                     data.len()
                 ),
             });
         }
 
-        let source_pitch = width as usize;
+        let source_pitch = width as usize * bytes_per_texel;
         let padded_pitch = source_pitch.next_multiple_of(TEXTURE_ROW_PITCH_ALIGNMENT);
         let staging_size = padded_pitch * height as usize;
 

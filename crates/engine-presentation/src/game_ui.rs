@@ -12,7 +12,7 @@
 //! Commands are pushed in paint order: world-space elements first, screen-space HUD on top.
 
 use engine_core::math::{Mat4, Vec3};
-use engine_render_data::ui::{TextAlign, UiColor, UiDrawList, UiRect};
+use engine_render_data::ui::{TextAlign, UiColor, UiDrawList, UiIcon, UiRect, UiScale};
 
 use crate::damage_numbers::FloatingNumbers;
 use crate::nameplate::{Nameplate, NameplateConfig, project};
@@ -80,6 +80,117 @@ mod layout {
     pub const TOOLTIP_LINE: f32 = 16.0;
 }
 
+/// Every HUD measurement, converted from its design size to physical pixels once.
+///
+/// The constants in [`layout`] are **logical** pixels — the size the HUD was drawn at, which
+/// is the only unit worth writing a layout in. This is the same set after multiplying by the
+/// player's [`UiScale`], which is what the rest of the file actually positions things with.
+///
+/// A struct rather than a scale applied at each use site, for two reasons. Converting in one
+/// place means a measurement cannot be scaled twice or forgotten — the two mistakes that
+/// produce a HUD that is subtly wrong rather than obviously broken. And it means the
+/// conversion happens once per scale change rather than once per constant per frame, so a
+/// scaled HUD costs the same to lay out as an unscaled one.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct HudMetrics {
+    /// The scale these were derived with.
+    pub scale: UiScale,
+    /// `layout::MARGIN` in physical pixels.
+    pub margin: f32,
+    /// `layout::PLAYER_BAR_WIDTH` in physical pixels.
+    pub player_bar_width: f32,
+    /// `layout::BAR_HEIGHT` in physical pixels.
+    pub bar_height: f32,
+    /// `layout::BAR_GAP` in physical pixels.
+    pub bar_gap: f32,
+    /// `layout::TARGET_FRAME_WIDTH` in physical pixels.
+    pub target_frame_width: f32,
+    /// `layout::TARGET_FRAME_HEIGHT` in physical pixels.
+    pub target_frame_height: f32,
+    /// `layout::TARGET_FRAME_TOP` in physical pixels.
+    pub target_frame_top: f32,
+    /// `layout::SLOT_SIZE` in physical pixels.
+    pub slot_size: f32,
+    /// `layout::SLOT_GAP` in physical pixels.
+    pub slot_gap: f32,
+    /// `layout::ABILITY_BAR_BOTTOM` in physical pixels.
+    pub ability_bar_bottom: f32,
+    /// `layout::CAST_BAR_WIDTH` in physical pixels.
+    pub cast_bar_width: f32,
+    /// `layout::CAST_BAR_HEIGHT` in physical pixels.
+    pub cast_bar_height: f32,
+    /// `layout::CAST_BAR_LIFT` in physical pixels.
+    pub cast_bar_lift: f32,
+    /// `layout::PADDING` in physical pixels.
+    pub padding: f32,
+    /// `layout::WORLD_BAR_HEIGHT` in physical pixels.
+    pub world_bar_height: f32,
+    /// `layout::WORLD_BAR_WIDTH` in physical pixels.
+    pub world_bar_width: f32,
+    /// `layout::ULTIMATE_SIZE` in physical pixels.
+    pub ultimate_size: f32,
+    /// `layout::ULTIMATE_GAP` in physical pixels.
+    pub ultimate_gap: f32,
+    /// `layout::RESOURCE_BAR_WIDTH` in physical pixels.
+    pub resource_bar_width: f32,
+    /// `layout::RESOURCE_BAR_HEIGHT` in physical pixels.
+    pub resource_bar_height: f32,
+    /// `layout::RESOURCE_LIFT` in physical pixels.
+    pub resource_lift: f32,
+    /// `layout::TALENT_BUTTON_SIZE` in physical pixels.
+    pub talent_button_size: f32,
+    /// `layout::IGNITE_PIP` in physical pixels.
+    pub ignite_pip: f32,
+    /// `layout::IGNITE_PIP_GAP` in physical pixels.
+    pub ignite_pip_gap: f32,
+    /// `layout::TOOLTIP_WIDTH` in physical pixels.
+    pub tooltip_width: f32,
+    /// `layout::TOOLTIP_LINE` in physical pixels.
+    pub tooltip_line: f32,
+}
+
+impl HudMetrics {
+    /// The HUD's measurements at `scale`.
+    #[must_use]
+    pub fn new(scale: UiScale) -> Self {
+        Self {
+            scale,
+            margin: scale.px(layout::MARGIN),
+            player_bar_width: scale.px(layout::PLAYER_BAR_WIDTH),
+            bar_height: scale.px(layout::BAR_HEIGHT),
+            bar_gap: scale.px(layout::BAR_GAP),
+            target_frame_width: scale.px(layout::TARGET_FRAME_WIDTH),
+            target_frame_height: scale.px(layout::TARGET_FRAME_HEIGHT),
+            target_frame_top: scale.px(layout::TARGET_FRAME_TOP),
+            slot_size: scale.px(layout::SLOT_SIZE),
+            slot_gap: scale.px(layout::SLOT_GAP),
+            ability_bar_bottom: scale.px(layout::ABILITY_BAR_BOTTOM),
+            cast_bar_width: scale.px(layout::CAST_BAR_WIDTH),
+            cast_bar_height: scale.px(layout::CAST_BAR_HEIGHT),
+            cast_bar_lift: scale.px(layout::CAST_BAR_LIFT),
+            padding: scale.px(layout::PADDING),
+            world_bar_height: scale.px(layout::WORLD_BAR_HEIGHT),
+            world_bar_width: scale.px(layout::WORLD_BAR_WIDTH),
+            ultimate_size: scale.px(layout::ULTIMATE_SIZE),
+            ultimate_gap: scale.px(layout::ULTIMATE_GAP),
+            resource_bar_width: scale.px(layout::RESOURCE_BAR_WIDTH),
+            resource_bar_height: scale.px(layout::RESOURCE_BAR_HEIGHT),
+            resource_lift: scale.px(layout::RESOURCE_LIFT),
+            talent_button_size: scale.px(layout::TALENT_BUTTON_SIZE),
+            ignite_pip: scale.px(layout::IGNITE_PIP),
+            ignite_pip_gap: scale.px(layout::IGNITE_PIP_GAP),
+            tooltip_width: scale.px(layout::TOOLTIP_WIDTH),
+            tooltip_line: scale.px(layout::TOOLTIP_LINE),
+        }
+    }
+}
+
+impl Default for HudMetrics {
+    fn default() -> Self {
+        Self::new(UiScale::default())
+    }
+}
+
 /// How the interface is coloured and sized.
 ///
 /// A struct rather than constants so a test can drive an unusual layout, and so a future
@@ -144,6 +255,10 @@ pub struct UiTheme {
     pub slot_invalid: UiColor,
     /// An ability that is ready and worth pressing right now.
     pub slot_empowered: UiColor,
+    /// What an ability icon is multiplied by normally. White draws the art untouched.
+    pub icon: UiColor,
+    /// What an ability icon is multiplied by when it cannot be used.
+    pub icon_unavailable: UiColor,
     /// The radial sweep drawn over a cooling ability.
     pub cooldown_radial: UiColor,
     /// An Ignite stack that is present.
@@ -194,6 +309,9 @@ impl Default for UiTheme {
             slot_no_resource: [0.70, 0.18, 0.18, 1.0],
             slot_invalid: [0.60, 0.15, 0.15, 1.0],
             slot_empowered: [1.0, 0.75, 0.20, 1.0],
+            icon: [1.0, 1.0, 1.0, 1.0],
+            // Dimmed and slightly desaturated by the tint alone; no second copy of the art.
+            icon_unavailable: [0.42, 0.40, 0.44, 1.0],
             cooldown_radial: [0.02, 0.03, 0.05, 0.72],
             ignite_pip: [1.0, 0.45, 0.12, 1.0],
             ignite_pip_empty: [0.22, 0.20, 0.20, 1.0],
@@ -212,6 +330,20 @@ impl UiTheme {
             self.player_health_low
         } else {
             self.player_health
+        }
+    }
+
+    /// What an ability icon is multiplied by for a given availability.
+    ///
+    /// White draws the art as it was painted. An ability that cannot be paid for or has the
+    /// wrong target is dimmed, which is the convention the genre uses and costs nothing —
+    /// the tint is already travelling with every quad. Cooling is *not* dimmed: the radial
+    /// sweep over the slot already says so, and doing both would say it twice.
+    #[must_use]
+    pub fn icon_tint(&self, availability: SlotAvailability) -> UiColor {
+        match availability {
+            SlotAvailability::NoResource | SlotAvailability::InvalidTarget => self.icon_unavailable,
+            _ => self.icon,
         }
     }
 
@@ -249,6 +381,8 @@ impl UiTheme {
 pub struct GameUi {
     list: UiDrawList,
     theme: UiTheme,
+    /// Every measurement, already converted to physical pixels for the current UI scale.
+    metrics: HudMetrics,
     /// Scratch for a plate's title line.
     title: String,
     /// Scratch for a plate's status line.
@@ -261,13 +395,45 @@ impl GameUi {
     /// Creates a builder with room for a typical frame.
     #[must_use]
     pub fn new() -> Self {
+        Self::with_scale(UiScale::default())
+    }
+
+    /// Creates a builder that lays the HUD out at `scale`.
+    #[must_use]
+    pub fn with_scale(scale: UiScale) -> Self {
         Self {
             list: UiDrawList::with_capacity(512, 4096),
             theme: UiTheme::default(),
+            metrics: HudMetrics::new(scale),
             title: String::with_capacity(32),
             statuses: String::with_capacity(64),
             tooltip_lines: Vec::with_capacity(8),
         }
+    }
+
+    /// Lays the HUD out at a new scale from here on.
+    ///
+    /// Recomputing the metrics is the whole of the work, so applying a slider drag costs a
+    /// couple of dozen multiplies rather than anything per-frame. Nothing is cached against
+    /// the old scale, which is what makes the change take effect on the very next frame.
+    pub fn set_scale(&mut self, scale: UiScale) {
+        self.metrics = HudMetrics::new(scale);
+    }
+
+    /// The scale the HUD is being laid out at.
+    #[must_use]
+    pub fn scale(&self) -> UiScale {
+        self.metrics.scale
+    }
+
+    /// The HUD's measurements in physical pixels.
+    ///
+    /// Public so that the code deciding what the pointer is over measures the same way the
+    /// code that drew it did — a hit test and a rectangle that disagree is the classic way
+    /// a scaled interface becomes unclickable.
+    #[must_use]
+    pub fn metrics(&self) -> &HudMetrics {
+        &self.metrics
     }
 
     /// The theme, for a caller that wants to change it.
@@ -312,8 +478,11 @@ impl GameUi {
             let rect = UiRect::new(plate.origin.0, plate.origin.1, plate.size.0, plate.size.1);
             self.list.rect(rect, self.theme.panel);
             if plate.is_target {
-                self.list
-                    .outline(rect, self.theme.outline_pixels, self.theme.target_outline);
+                self.list.outline(
+                    rect,
+                    self.metrics.scale.px(self.theme.outline_pixels),
+                    self.theme.target_outline,
+                );
             }
 
             let text_x = plate.origin.0 + config.padding_pixels;
@@ -324,7 +493,7 @@ impl GameUi {
                 (text_x, text_y),
                 &self.title,
                 self.theme.text,
-                self.theme.plate_text_scale,
+                self.metrics.scale.text(self.theme.plate_text_scale),
             );
 
             if plate.write_statuses(&mut self.statuses) {
@@ -332,7 +501,7 @@ impl GameUi {
                     (text_x, text_y + config.line_advance_pixels),
                     &self.statuses,
                     self.theme.status,
-                    self.theme.plate_text_scale,
+                    self.metrics.scale.text(self.theme.plate_text_scale),
                 );
             }
         }
@@ -375,19 +544,25 @@ impl GameUi {
         };
         let width = viewport.0 as f32;
         let frame = UiRect::new(
-            (width - layout::TARGET_FRAME_WIDTH) * 0.5,
-            layout::TARGET_FRAME_TOP,
-            layout::TARGET_FRAME_WIDTH,
-            layout::TARGET_FRAME_HEIGHT,
+            (width - self.metrics.target_frame_width) * 0.5,
+            self.metrics.target_frame_top,
+            self.metrics.target_frame_width,
+            self.metrics.target_frame_height,
         );
         self.list.rect(frame, self.theme.panel);
         if target.ignite_at_maximum {
             // A full burn is the thing the player is waiting for; the frame says so.
-            self.list
-                .outline(frame, self.theme.outline_pixels, self.theme.slot_empowered);
+            self.list.outline(
+                frame,
+                self.metrics.scale.px(self.theme.outline_pixels),
+                self.theme.slot_empowered,
+            );
         } else {
-            self.list
-                .outline(frame, self.theme.outline_pixels, self.theme.target_outline);
+            self.list.outline(
+                frame,
+                self.metrics.scale.px(self.theme.outline_pixels),
+                self.theme.target_outline,
+            );
         }
 
         self.title.clear();
@@ -396,17 +571,20 @@ impl GameUi {
         write_integer(&mut self.title, i64::from(target.health_percent()));
         self.title.push('%');
         self.list.text_at(
-            (frame.x + layout::PADDING, frame.y + layout::PADDING),
+            (
+                frame.x + self.metrics.padding,
+                frame.y + self.metrics.padding,
+            ),
             &self.title,
             self.theme.text,
-            self.theme.hud_text_scale,
+            self.metrics.scale.text(self.theme.hud_text_scale),
         );
 
         let bar = UiRect::new(
-            frame.x + layout::PADDING,
-            frame.y + layout::PADDING + 18.0,
-            frame.width - layout::PADDING * 2.0,
-            layout::BAR_HEIGHT,
+            frame.x + self.metrics.padding,
+            frame.y + self.metrics.padding + 18.0,
+            frame.width - self.metrics.padding * 2.0,
+            self.metrics.bar_height,
         );
         let fill = self.theme.enemy_health_color(target.health_fraction());
         self.list.bar(
@@ -418,8 +596,8 @@ impl GameUi {
 
         // Ignite stacks, drawn against the *current* maximum rather than a hardcoded five.
         self.push_ignite_stacks(
-            frame.x + layout::PADDING,
-            bar.bottom() + 5.0,
+            frame.x + self.metrics.padding,
+            bar.bottom() + self.metrics.scale.px(5.0),
             target.ignite_stacks,
             snapshot.ignite_max,
         );
@@ -432,10 +610,10 @@ impl GameUi {
     pub fn push_ignite_stacks(&mut self, x: f32, y: f32, stacks: u8, maximum: u8) {
         for index in 0..maximum {
             let pip = UiRect::new(
-                x + f32::from(index) * (layout::IGNITE_PIP + layout::IGNITE_PIP_GAP),
+                x + f32::from(index) * (self.metrics.ignite_pip + self.metrics.ignite_pip_gap),
                 y,
-                layout::IGNITE_PIP,
-                layout::IGNITE_PIP,
+                self.metrics.ignite_pip,
+                self.metrics.ignite_pip,
             );
             let colour = if index < stacks {
                 self.theme.ignite_pip
@@ -449,10 +627,10 @@ impl GameUi {
     /// The player's health, Heat and Ultimate Energy.
     pub fn push_player_bars(&mut self, snapshot: &UiSnapshot, viewport: (u32, u32)) {
         let height = viewport.1 as f32;
-        let x = layout::MARGIN;
-        let mut y = height - layout::MARGIN - layout::BAR_HEIGHT;
+        let x = self.metrics.margin;
+        let mut y = height - self.metrics.margin - self.metrics.bar_height;
 
-        let bar = UiRect::new(x, y, layout::PLAYER_BAR_WIDTH, layout::BAR_HEIGHT);
+        let bar = UiRect::new(x, y, self.metrics.player_bar_width, self.metrics.bar_height);
         let fraction = snapshot.player.health_fraction();
         self.list.bar(
             bar,
@@ -464,15 +642,18 @@ impl GameUi {
         self.title.push_str("HP ");
         write_integer(&mut self.title, snapshot.player.health as i64);
         self.list.text_at(
-            (bar.x + 4.0, bar.y + 3.0),
+            (
+                bar.x + self.metrics.scale.px(4.0),
+                bar.y + self.metrics.scale.px(3.0),
+            ),
             &self.title,
             self.theme.text,
-            1.0,
+            self.metrics.scale.text(1.0),
         );
 
         // Flame Shield and haste are worth a word: both change how the fight is going.
         if snapshot.player.shielded || snapshot.player.hasted {
-            y -= layout::BAR_HEIGHT + layout::BAR_GAP;
+            y -= self.metrics.bar_height + self.metrics.bar_gap;
             self.title.clear();
             if snapshot.player.shielded {
                 self.title.push_str("SHIELDED ");
@@ -481,10 +662,10 @@ impl GameUi {
                 self.title.push_str("HASTE");
             }
             self.list.text_at(
-                (x, y + 4.0),
+                (x, y + self.metrics.scale.px(4.0)),
                 &self.title,
                 self.theme.slot_empowered,
-                self.theme.hud_text_scale * 0.5,
+                self.metrics.scale.text(self.theme.hud_text_scale * 0.5),
             );
         }
     }
@@ -492,15 +673,15 @@ impl GameUi {
     /// The Heat and Ultimate Energy bars, above the ability bar.
     pub fn push_resource_bars(&mut self, snapshot: &UiSnapshot, viewport: (u32, u32)) {
         let (width, height) = (viewport.0 as f32, viewport.1 as f32);
-        let x = (width - layout::RESOURCE_BAR_WIDTH) * 0.5;
-        let bottom = height - layout::ABILITY_BAR_BOTTOM - layout::SLOT_SIZE;
+        let x = (width - self.metrics.resource_bar_width) * 0.5;
+        let bottom = height - self.metrics.ability_bar_bottom - self.metrics.slot_size;
 
         // Heat: neutral when cold, orange when hot, and obviously different at the cap.
         let heat_rect = UiRect::new(
             x,
-            bottom - layout::RESOURCE_LIFT,
-            layout::RESOURCE_BAR_WIDTH,
-            layout::RESOURCE_BAR_HEIGHT,
+            bottom - self.metrics.resource_lift,
+            self.metrics.resource_bar_width,
+            self.metrics.resource_bar_height,
         );
         let heat_colour = if snapshot.player.overheated {
             self.theme.heat_overheated
@@ -521,9 +702,10 @@ impl GameUi {
         }
         // The Overheat threshold, marked on the bar so the range is readable at a glance.
         let threshold = UiRect::new(
-            heat_rect.x + heat_rect.width * (HEAT_HIGH_THRESHOLD / HEAT_MAXIMUM) - 1.0,
+            heat_rect.x + heat_rect.width * (HEAT_HIGH_THRESHOLD / HEAT_MAXIMUM)
+                - self.metrics.scale.px(1.0),
             heat_rect.y,
-            2.0,
+            self.metrics.scale.px(2.0),
             heat_rect.height,
         );
         self.list.rect(threshold, self.theme.text);
@@ -536,18 +718,18 @@ impl GameUi {
             self.title.push_str("  OVERHEAT");
         }
         self.list.text_at(
-            (heat_rect.x, heat_rect.y - 14.0),
+            (heat_rect.x, heat_rect.y - self.metrics.scale.px(14.0)),
             &self.title,
             self.theme.text,
-            1.0,
+            self.metrics.scale.text(1.0),
         );
 
         // Ultimate Energy.
         let energy_rect = UiRect::new(
             x,
             heat_rect.bottom() + 20.0,
-            layout::RESOURCE_BAR_WIDTH,
-            layout::RESOURCE_BAR_HEIGHT,
+            self.metrics.resource_bar_width,
+            self.metrics.resource_bar_height,
         );
         let energy_colour = if snapshot.player.ultimate_ready {
             self.theme.energy_full
@@ -571,44 +753,75 @@ impl GameUi {
             self.title.push_str("  READY");
         }
         self.list.text_at(
-            (energy_rect.x, energy_rect.y - 14.0),
+            (energy_rect.x, energy_rect.y - self.metrics.scale.px(14.0)),
             &self.title,
             self.theme.text,
-            1.0,
+            self.metrics.scale.text(1.0),
         );
     }
 
     /// The ten-slot ability bar, and the Ultimate beside it.
     pub fn push_ability_bar(&mut self, snapshot: &UiSnapshot, viewport: (u32, u32)) {
         for (slot, view) in snapshot.abilities.iter().enumerate() {
-            let rect = Self::slot_rect(slot, viewport);
-            self.push_ability_button(rect, view, self.theme.hud_text_scale * 0.5);
+            let rect = self.slot_rect(slot, viewport);
+            self.push_ability_button(
+                rect,
+                view,
+                self.metrics.scale.text(self.theme.hud_text_scale * 0.5),
+            );
         }
 
-        let rect = Self::ultimate_rect(viewport);
-        self.push_ability_button(rect, &snapshot.ultimate, self.theme.hud_text_scale * 0.5);
+        let rect = self.ultimate_rect(viewport);
+        self.push_ability_button(
+            rect,
+            &snapshot.ultimate,
+            self.metrics.scale.text(self.theme.hud_text_scale * 0.5),
+        );
         if snapshot.player.ultimate_ready {
             // The Ultimate glows when it can be used: it is the one button worth finding
             // without looking for it.
-            self.list
-                .outline(rect.inset(-3.0), 3.0, self.theme.energy_full);
+            self.list.outline(
+                rect.inset(-self.metrics.scale.px(3.0)),
+                self.metrics.scale.px(3.0),
+                self.theme.energy_full,
+            );
         }
     }
 
     /// One ability button: icon plate, state colour, cooldown sweep, charges and key.
     pub fn push_ability_button(&mut self, rect: UiRect, view: &AbilitySlotView, scale: f32) {
         self.list.rect(rect, self.theme.panel);
-        let border = self.theme.slot_color(view.availability);
-        self.list.outline(rect, self.theme.outline_pixels, border);
 
-        // The name, abbreviated to what fits the plate.
-        self.title.clear();
-        for character in view.name.chars().take(ABILITY_ABBREVIATION) {
-            self.title.push(character);
+        // Art if the ability has any, its abbreviated name if it does not. Not both: the
+        // 5x7 font over a painted flame is unreadable, and a slot with a picture on it does
+        // not need to be labelled — which is the whole reason the picture is there.
+        //
+        // Inset by the outline so the art meets the frame rather than running under it.
+        match icon_for(view.ability) {
+            Some(icon) => self.list.icon(
+                rect.inset(self.metrics.scale.px(self.theme.outline_pixels)),
+                icon,
+                self.theme.icon_tint(view.availability),
+            ),
+            None => {
+                self.title.clear();
+                for character in view.name.chars().take(ABILITY_ABBREVIATION) {
+                    self.title.push(character);
+                }
+                let (origin, align) =
+                    centered(rect.x + rect.width * 0.5, rect.y + rect.height * 0.5 - 4.0);
+                self.list
+                    .text_aligned(origin, &self.title, self.theme.text, scale, align);
+            }
         }
-        let (origin, align) = centered(rect.x + rect.width * 0.5, rect.y + rect.height * 0.5 - 4.0);
-        self.list
-            .text_aligned(origin, &self.title, self.theme.text, scale, align);
+
+        // After the art, so the frame is never painted over by it.
+        let border = self.theme.slot_color(view.availability);
+        self.list.outline(
+            rect,
+            self.metrics.scale.px(self.theme.outline_pixels),
+            border,
+        );
 
         // The cooldown, as a radial sweep over what is left.
         if view.is_cooling() {
@@ -643,7 +856,10 @@ impl GameUi {
 
         // The key that casts it.
         self.list.text_at(
-            (rect.x + 3.0, rect.y + 3.0),
+            (
+                rect.x + self.metrics.scale.px(3.0),
+                rect.y + self.metrics.scale.px(3.0),
+            ),
             view.key,
             self.theme.text,
             scale,
@@ -652,55 +868,59 @@ impl GameUi {
 
     /// Where bar slot `slot` sits.
     #[must_use]
-    pub fn slot_rect(slot: usize, viewport: (u32, u32)) -> UiRect {
+    pub fn slot_rect(&self, slot: usize, viewport: (u32, u32)) -> UiRect {
         let (width, height) = (viewport.0 as f32, viewport.1 as f32);
         let count = ABILITY_SLOTS as f32;
-        let total = count * layout::SLOT_SIZE + (count - 1.0) * layout::SLOT_GAP;
+        let total = count * self.metrics.slot_size + (count - 1.0) * self.metrics.slot_gap;
         // The bar is centred, and the Ultimate hangs off its right-hand end.
-        let start = (width - total - layout::ULTIMATE_GAP - layout::ULTIMATE_SIZE) * 0.5;
+        let start = (width - total - self.metrics.ultimate_gap - self.metrics.ultimate_size) * 0.5;
         UiRect::new(
-            start + slot as f32 * (layout::SLOT_SIZE + layout::SLOT_GAP),
-            height - layout::ABILITY_BAR_BOTTOM - layout::SLOT_SIZE,
-            layout::SLOT_SIZE,
-            layout::SLOT_SIZE,
+            start + slot as f32 * (self.metrics.slot_size + self.metrics.slot_gap),
+            height - self.metrics.ability_bar_bottom - self.metrics.slot_size,
+            self.metrics.slot_size,
+            self.metrics.slot_size,
         )
     }
 
     /// Where the Ultimate button sits: larger, and separated from the bar.
     #[must_use]
-    pub fn ultimate_rect(viewport: (u32, u32)) -> UiRect {
-        let last = Self::slot_rect(ABILITY_SLOTS - 1, viewport);
+    pub fn ultimate_rect(&self, viewport: (u32, u32)) -> UiRect {
+        let last = self.slot_rect(ABILITY_SLOTS - 1, viewport);
         let height = viewport.1 as f32;
         UiRect::new(
-            last.right() + layout::ULTIMATE_GAP,
-            height - layout::ABILITY_BAR_BOTTOM - layout::ULTIMATE_SIZE,
-            layout::ULTIMATE_SIZE,
-            layout::ULTIMATE_SIZE,
+            last.right() + self.metrics.ultimate_gap,
+            height - self.metrics.ability_bar_bottom - self.metrics.ultimate_size,
+            self.metrics.ultimate_size,
+            self.metrics.ultimate_size,
         )
     }
 
     /// Where the talent button sits: the top-right corner.
     #[must_use]
-    pub fn talent_button_rect(viewport: (u32, u32)) -> UiRect {
+    pub fn talent_button_rect(&self, viewport: (u32, u32)) -> UiRect {
         let width = viewport.0 as f32;
         UiRect::new(
-            width - layout::MARGIN - layout::TALENT_BUTTON_SIZE,
-            layout::MARGIN,
-            layout::TALENT_BUTTON_SIZE,
-            layout::TALENT_BUTTON_SIZE,
+            width - self.metrics.margin - self.metrics.talent_button_size,
+            self.metrics.margin,
+            self.metrics.talent_button_size,
+            self.metrics.talent_button_size,
         )
     }
 
     /// The talent button, with the points waiting to be spent.
     pub fn push_talent_button(&mut self, snapshot: &UiSnapshot, viewport: (u32, u32)) {
-        let rect = Self::talent_button_rect(viewport);
+        let rect = self.talent_button_rect(viewport);
         self.list.rect(rect, self.theme.panel);
         let border = if snapshot.talent_points > 0 {
             self.theme.slot_empowered
         } else {
             self.theme.target_outline
         };
-        self.list.outline(rect, self.theme.outline_pixels, border);
+        self.list.outline(
+            rect,
+            self.metrics.scale.px(self.theme.outline_pixels),
+            border,
+        );
 
         let (origin, align) = centered(rect.x + rect.width * 0.5, rect.y + 8.0);
         self.list
@@ -720,10 +940,13 @@ impl GameUi {
         };
         let (width, height) = (viewport.0 as f32, viewport.1 as f32);
         let rect = UiRect::new(
-            (width - layout::CAST_BAR_WIDTH) * 0.5,
-            height - layout::ABILITY_BAR_BOTTOM - layout::SLOT_SIZE - layout::CAST_BAR_LIFT,
-            layout::CAST_BAR_WIDTH,
-            layout::CAST_BAR_HEIGHT,
+            (width - self.metrics.cast_bar_width) * 0.5,
+            height
+                - self.metrics.ability_bar_bottom
+                - self.metrics.slot_size
+                - self.metrics.cast_bar_lift,
+            self.metrics.cast_bar_width,
+            self.metrics.cast_bar_height,
         );
         self.list.bar(
             rect,
@@ -751,14 +974,17 @@ impl GameUi {
         let (width, height) = (viewport.0 as f32, viewport.1 as f32);
         // Above the resource bars, where nothing else is drawn: a refusal that overlapped
         // the energy readout would be two messages fighting for one line.
-        let y =
-            height - layout::ABILITY_BAR_BOTTOM - layout::SLOT_SIZE - layout::RESOURCE_LIFT - 34.0;
+        let y = height
+            - self.metrics.ability_bar_bottom
+            - self.metrics.slot_size
+            - self.metrics.resource_lift
+            - 34.0;
         let (origin, align) = centered(width * 0.5, y);
         self.list.text_aligned(
             origin,
             error.as_str(),
             self.theme.slot_invalid,
-            self.theme.hud_text_scale * 0.75,
+            self.metrics.scale.text(self.theme.hud_text_scale * 0.75),
             align,
         );
     }
@@ -865,31 +1091,43 @@ impl GameUi {
             self.tooltip_lines.push(line);
         }
 
-        let height = layout::TOOLTIP_LINE * (self.tooltip_lines.len() as f32 + 1.0) + 10.0;
-        let width = layout::TOOLTIP_WIDTH;
-        let x = (anchor.x + anchor.width * 0.5 - width * 0.5)
-            .clamp(4.0, (viewport.0 as f32 - width - 4.0).max(4.0));
-        let y = (anchor.y - height - 8.0).max(4.0);
+        let height = self.metrics.tooltip_line * (self.tooltip_lines.len() as f32 + 1.0)
+            + self.metrics.scale.px(10.0);
+        let width = self.metrics.tooltip_width;
+        let x = (anchor.x + anchor.width * 0.5 - width * 0.5).clamp(
+            self.metrics.scale.px(4.0),
+            (viewport.0 as f32 - width - self.metrics.scale.px(4.0))
+                .max(self.metrics.scale.px(4.0)),
+        );
+        let y = (anchor.y - height - self.metrics.scale.px(8.0)).max(self.metrics.scale.px(4.0));
         let panel = UiRect::new(x, y, width, height);
 
         self.list.rect(panel, self.theme.tooltip_panel);
-        self.list
-            .outline(panel, self.theme.outline_pixels, self.theme.target_outline);
+        self.list.outline(
+            panel,
+            self.metrics.scale.px(self.theme.outline_pixels),
+            self.theme.target_outline,
+        );
         self.list.text_at(
-            (panel.x + 8.0, panel.y + 6.0),
+            (
+                panel.x + self.metrics.scale.px(8.0),
+                panel.y + self.metrics.scale.px(6.0),
+            ),
             view.name,
             self.theme.tooltip_title,
-            1.5,
+            self.metrics.scale.text(1.5),
         );
         for (index, line) in self.tooltip_lines.iter().enumerate() {
             self.list.text_at(
                 (
-                    panel.x + 8.0,
-                    panel.y + 6.0 + layout::TOOLTIP_LINE * (index as f32 + 1.4),
+                    panel.x + self.metrics.scale.px(8.0),
+                    panel.y
+                        + self.metrics.scale.px(6.0)
+                        + self.metrics.tooltip_line * (index as f32 + 1.4),
                 ),
                 line,
                 self.theme.tooltip_text,
-                1.0,
+                self.metrics.scale.text(1.0),
             );
         }
     }
@@ -898,10 +1136,10 @@ impl GameUi {
     pub fn push_world_health_bars(&mut self, plates: &[Nameplate]) {
         for plate in plates {
             let bar = UiRect::new(
-                plate.origin.0 + (plate.size.0 - layout::WORLD_BAR_WIDTH) * 0.5,
-                plate.origin.1 - layout::WORLD_BAR_HEIGHT - 3.0,
-                layout::WORLD_BAR_WIDTH,
-                layout::WORLD_BAR_HEIGHT,
+                plate.origin.0 + (plate.size.0 - self.metrics.world_bar_width) * 0.5,
+                plate.origin.1 - self.metrics.world_bar_height - 3.0,
+                self.metrics.world_bar_width,
+                self.metrics.world_bar_height,
             );
             self.list.bar(
                 bar,
@@ -946,9 +1184,9 @@ impl GameUi {
             // A killing blow is bigger as well as differently coloured, so it reads without
             // the player having to distinguish two shades mid-fight.
             let scale = if number.killed {
-                self.theme.damage_text_scale * 1.4
+                self.metrics.scale.text(self.theme.damage_text_scale * 1.4)
             } else {
-                self.theme.damage_text_scale
+                self.metrics.scale.text(self.theme.damage_text_scale)
             };
             self.list
                 .text_aligned((x, y), &self.title, color, scale, TextAlign::Center);
@@ -959,8 +1197,29 @@ impl GameUi {
 /// Characters of an ability's name shown in its slot.
 ///
 /// Four fits a 48-pixel slot at half scale and is enough to tell one placeholder from
-/// another. Replaced by an icon when there are textures; the layout does not change.
+/// another. Used only by the abilities that have no icon yet; the layout does not change
+/// when one gains art, because the icon fills the same plate the letters sat on.
 const ABILITY_ABBREVIATION: usize = 4;
+
+/// The picture that stands for an ability, if one has been drawn.
+///
+/// The map lives here, in the layer that decides what the HUD *looks* like, rather than on
+/// [`FireAbility`] itself: `engine-game` must never learn that a picture exists, and it is
+/// the same rule that keeps a colour out of the simulation.
+///
+/// `None` is the ordinary answer for most of the bar today. Those slots fall back to their
+/// abbreviated name, so an ability without art is legible rather than blank.
+#[must_use]
+fn icon_for(ability: FireAbility) -> Option<UiIcon> {
+    match ability {
+        FireAbility::Firebolt => Some(UiIcon::Firebolt),
+        FireAbility::Meteor => Some(UiIcon::Meteor),
+        // The cone that spreads Ignite; the art is named for the shape, the ability for
+        // what it does.
+        FireAbility::FlameWave => Some(UiIcon::FlameCone),
+        _ => None,
+    }
+}
 
 /// Writes an integer into `out` without allocating.
 ///
@@ -998,7 +1257,8 @@ mod tests {
     use engine_core::math::Mat4;
     use engine_game::arena::{self, ArenaConfig};
     use engine_game::sim::Simulation;
-    use engine_render_data::ui::UiCommand;
+    use engine_render_data::ui::{MAX_ICON_PIXELS, UiCommand};
+    use engine_settings::{UI_SCALE_MAX, UI_SCALE_MIN, UI_SCALE_STEP};
 
     const VIEWPORT: (u32, u32) = (1920, 1080);
 
@@ -1137,6 +1397,18 @@ mod tests {
             .iter()
             .filter_map(|command| match command {
                 UiCommand::Rect { rect, .. } => Some(*rect),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Every icon in the built list, with the rectangle it fills.
+    fn icons(ui: &GameUi) -> Vec<(UiIcon, UiRect)> {
+        ui.list()
+            .commands()
+            .iter()
+            .filter_map(|command| match command {
+                UiCommand::Icon { rect, icon, .. } => Some((*icon, *rect)),
                 _ => None,
             })
             .collect()
@@ -1308,7 +1580,204 @@ mod tests {
                 "slot {digit} is missing: {found:?}"
             );
         }
-        assert!(found.iter().any(|text| text == "FIRE"), "{found:?}");
+        // An ability with no art yet still says what it is.
+        assert!(found.iter().any(|text| text == "BLIN"), "{found:?}");
+    }
+
+    #[test]
+    fn the_three_abilities_that_have_art_draw_it_in_their_own_slot() {
+        let ui = built(&sim());
+        let drawn = icons(&ui);
+
+        // Each icon appears exactly once, in the slot the bar order puts it in, filling the
+        // plate inside its frame.
+        let outline = ui.scale().px(UiTheme::default().outline_pixels);
+        for (ability, expected) in [
+            (FireAbility::Firebolt, UiIcon::Firebolt),
+            (FireAbility::Meteor, UiIcon::Meteor),
+            (FireAbility::FlameWave, UiIcon::FlameCone),
+        ] {
+            let slot = FireAbility::BAR
+                .iter()
+                .position(|candidate| *candidate == ability)
+                .expect("the ability is on the bar");
+            let matched: Vec<_> = drawn.iter().filter(|(icon, _)| *icon == expected).collect();
+            assert_eq!(
+                matched.len(),
+                1,
+                "{expected:?} was drawn {} times",
+                matched.len()
+            );
+            assert_eq!(
+                matched[0].1,
+                ui.slot_rect(slot, VIEWPORT).inset(outline),
+                "{expected:?} is not in slot {slot}"
+            );
+        }
+        assert_eq!(drawn.len(), 3, "something drew an icon nobody asked for");
+    }
+
+    #[test]
+    fn a_slot_with_art_shows_the_art_instead_of_its_name() {
+        // Both would be unreadable: a 5x7 bitmap font over a painted flame. Checked by
+        // position rather than by string, because several abilities abbreviate to "FIRE"
+        // and only one of them has art.
+        let ui = built(&sim());
+        let names: Vec<(f32, f32)> = ui
+            .list()
+            .commands()
+            .iter()
+            .filter_map(|command| match command {
+                UiCommand::Text {
+                    origin,
+                    align: TextAlign::Center,
+                    ..
+                } => Some(*origin),
+                _ => None,
+            })
+            .collect();
+
+        for (slot, ability) in FireAbility::BAR.iter().enumerate() {
+            let rect = ui.slot_rect(slot, VIEWPORT);
+            // Where `push_ability_button` centres a name.
+            let centre = (rect.x + rect.width * 0.5, rect.y + rect.height * 0.5 - 4.0);
+            let labelled = names.contains(&centre);
+            assert_eq!(
+                labelled,
+                icon_for(*ability).is_none(),
+                "slot {slot} ({ability:?}) draws both a name and an icon, or neither"
+            );
+        }
+    }
+
+    #[test]
+    fn no_icon_is_ever_drawn_larger_than_the_art_was_rasterized_for() {
+        // The check that keeps `MAX_ICON_PIXELS` honest. `engine-renderer` rasterizes its
+        // icons to exactly that size and asserts it at compile time; this is the other half,
+        // that nothing here lays one out bigger. Without it, growing a slot or raising the
+        // maximum UI scale would quietly start magnifying the art.
+        let simulation = sim();
+        for factor in [UI_SCALE_MIN, 1.0, UI_SCALE_MAX] {
+            let scale = UiScale::new(factor);
+            let (set, config) = plates(&simulation);
+            let mut ui = GameUi::with_scale(scale);
+            let snapshot = UiSnapshot::build(&simulation);
+            ui.build(&snapshot, set.plates(), &config, VIEWPORT);
+
+            for (icon, rect) in icons(&ui) {
+                let largest = rect.width.max(rect.height);
+                assert!(
+                    largest <= MAX_ICON_PIXELS as f32,
+                    "{icon:?} is {largest} pixels at scale {factor}, past the {MAX_ICON_PIXELS} \
+                     the art is rasterized for"
+                );
+            }
+        }
+
+        // The Ultimate is the biggest plate that can carry one, so it is what the constant
+        // has to cover. Checked directly as well, in case no icon is on it yet.
+        let ui = GameUi::with_scale(UiScale::new(UI_SCALE_MAX));
+        let ultimate = ui.ultimate_rect(VIEWPORT);
+        assert!(
+            ultimate.width.max(ultimate.height) <= MAX_ICON_PIXELS as f32,
+            "the Ultimate button is bigger than the icon art allows for"
+        );
+    }
+
+    #[test]
+    fn the_scale_the_player_can_choose_is_one_the_renderer_can_draw() {
+        // Two ranges, deliberately: what the slider offers, and what the layout and the
+        // atlas are built to support. The first must sit inside the second, and this is the
+        // only place that can see both.
+        const { assert!(UI_SCALE_MIN >= UiScale::MIN, "the slider goes below MIN") };
+        const { assert!(UI_SCALE_MAX <= UiScale::MAX, "the slider goes above MAX") };
+        const { assert!(UI_SCALE_MIN < UI_SCALE_MAX) };
+
+        // And a value from the slider survives the trip into a scale unchanged, so what is
+        // saved is what is drawn.
+        for factor in [UI_SCALE_MIN, 1.0, 1.25, UI_SCALE_MAX] {
+            assert_eq!(
+                UiScale::new(factor).factor(),
+                factor,
+                "{factor} was clamped"
+            );
+        }
+    }
+
+    #[test]
+    fn every_measurement_grows_with_the_scale_and_the_layout_keeps_its_shape() {
+        let small = HudMetrics::new(UiScale::new(1.0));
+        let large = HudMetrics::new(UiScale::new(2.0));
+
+        assert_eq!(large.slot_size, small.slot_size * 2.0);
+        assert_eq!(large.ultimate_size, small.ultimate_size * 2.0);
+        assert_eq!(large.margin, small.margin * 2.0);
+
+        // The bar stays centred and stays a bar: bigger slots, same arrangement.
+        let wide = GameUi::with_scale(UiScale::new(2.0));
+        let narrow = GameUi::with_scale(UiScale::new(1.0));
+        for slot in 1..ABILITY_SLOTS {
+            let step =
+                |ui: &GameUi| ui.slot_rect(slot, VIEWPORT).x - ui.slot_rect(slot - 1, VIEWPORT).x;
+            assert!(
+                (step(&wide) - step(&narrow) * 2.0).abs() < 1.0,
+                "slot {slot} is not twice as far along at twice the scale"
+            );
+        }
+    }
+
+    #[test]
+    fn what_the_hud_draws_and_what_a_click_is_tested_against_are_the_same_rectangle() {
+        // The bug a scaled interface invites: the draw uses one scale and the hit test uses
+        // another, and buttons stop working somewhere other than where they look.
+        let simulation = sim();
+        let scale = UiScale::new(1.5);
+        let (set, config) = plates(&simulation);
+        let mut ui = GameUi::with_scale(scale);
+        let snapshot = UiSnapshot::build(&simulation);
+        ui.build(&snapshot, set.plates(), &config, VIEWPORT);
+
+        // Every slot the bar drew has a background rectangle at exactly the rectangle the
+        // hit test would use.
+        let drawn = rects(&ui);
+        for slot in 0..ABILITY_SLOTS {
+            let rect = ui.slot_rect(slot, VIEWPORT);
+            assert!(
+                drawn.contains(&rect),
+                "slot {slot} is hit-tested at {rect:?}, which nothing drew"
+            );
+        }
+    }
+
+    #[test]
+    fn text_stays_at_a_whole_glyph_scale_however_the_interface_is_sized() {
+        // The font is a bitmap sampled with a point filter: a fractional scale makes some
+        // rows of a letter a pixel taller than others. Every scale the slider can produce
+        // must still come out whole.
+        let mut factor = UI_SCALE_MIN;
+        while factor <= UI_SCALE_MAX {
+            let scale = UiScale::new(factor);
+            for logical in [1.0, 1.5, 2.0, 3.0] {
+                let drawn = scale.text(logical);
+                assert_eq!(drawn, drawn.round(), "{logical} at {factor} is fractional");
+                assert!(drawn >= 1.0, "{logical} at {factor} vanished");
+            }
+            factor += UI_SCALE_STEP;
+        }
+    }
+
+    #[test]
+    fn an_icon_is_dimmed_when_its_ability_cannot_be_used_but_not_while_it_cools() {
+        // The cooldown already has a radial sweep over it; dimming as well would say the
+        // same thing twice, and would make "cooling" and "cannot afford" look alike.
+        let theme = UiTheme::default();
+        assert_eq!(theme.icon_tint(SlotAvailability::Ready), theme.icon);
+        assert_eq!(theme.icon_tint(SlotAvailability::Cooling), theme.icon);
+        assert_eq!(
+            theme.icon_tint(SlotAvailability::NoResource),
+            theme.icon_unavailable
+        );
+        assert_ne!(theme.icon, theme.icon_unavailable);
     }
 
     #[test]
@@ -1469,7 +1938,10 @@ mod tests {
         let slot_left = |ui: &GameUi| {
             rects(ui)
                 .into_iter()
-                .filter(|rect| rect.width == layout::SLOT_SIZE && rect.height == layout::SLOT_SIZE)
+                .filter(|rect| {
+                    let slot = ui.metrics().slot_size;
+                    rect.width == slot && rect.height == slot
+                })
                 .map(|rect| rect.x)
                 .fold(f32::MAX, f32::min)
         };
@@ -1483,7 +1955,7 @@ mod tests {
         let player_bar = |ui: &GameUi| {
             rects(ui)
                 .into_iter()
-                .find(|rect| rect.width == layout::PLAYER_BAR_WIDTH)
+                .find(|rect| rect.width == ui.metrics().player_bar_width)
                 .expect("the player health bar is present")
         };
         assert!(player_bar(&large).y > player_bar(&small).y);

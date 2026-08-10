@@ -216,11 +216,11 @@ pub fn render_ui(
         D3D12_SHADER_RESOURCE_VIEW_DESC, D3D12_SHADER_RESOURCE_VIEW_DESC_0,
         D3D12_SRV_DIMENSION_TEXTURE2D, D3D12_TEX2D_SRV, D3D12_VERTEX_BUFFER_VIEW,
     };
-    use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_R8_UNORM;
+    use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_R8G8B8A8_UNORM;
 
     use crate::descriptor::GpuDescriptorHeap;
-    use crate::font_atlas::FontAtlas;
     use crate::resource::{GpuTexture, TrackedResource};
+    use crate::ui_atlas::UiAtlas;
     use crate::ui_pipeline::{
         ROOT_UI_ATLAS_TABLE, ROOT_UI_FRAME_CBV, UiBatcher, UiFrameConstants, UiPipeline, UiVertex,
     };
@@ -229,12 +229,12 @@ pub fn render_ui(
     render_with(width, height, clear_color, |context, list, _| {
         let pipeline = UiPipeline::new(context.device())?;
 
-        let atlas_pixels = FontAtlas::new();
+        let atlas_pixels = UiAtlas::new();
         let atlas = GpuTexture::new(
             context,
             atlas_pixels.width(),
             atlas_pixels.height(),
-            DXGI_FORMAT_R8_UNORM,
+            DXGI_FORMAT_R8G8B8A8_UNORM,
             D3D12_RESOURCE_STATE_COPY_DEST,
         )?;
         let mut uploader = StagingUploader::new(context)?;
@@ -249,7 +249,7 @@ pub fn render_ui(
         let mut heap = GpuDescriptorHeap::new(context, 1, 0, 1)?;
         let descriptor = heap.allocate_persistent()?;
         let srv = D3D12_SHADER_RESOURCE_VIEW_DESC {
-            Format: DXGI_FORMAT_R8_UNORM,
+            Format: DXGI_FORMAT_R8G8B8A8_UNORM,
             ViewDimension: D3D12_SRV_DIMENSION_TEXTURE2D,
             Shader4ComponentMapping: 0x1688,
             Anonymous: D3D12_SHADER_RESOURCE_VIEW_DESC_0 {

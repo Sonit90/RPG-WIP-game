@@ -391,6 +391,24 @@ impl GpuTexture {
     pub fn format(&self) -> DXGI_FORMAT {
         self.format
     }
+
+    /// Bytes one texel occupies, or `None` for a format nothing uploads through.
+    ///
+    /// Only the formats the engine actually stages data into are listed. A format reaching
+    /// here that is not one of them means an upload is about to compute the wrong row pitch
+    /// and copy garbage, so it returns `None` and the caller reports it rather than guessing
+    /// a size from a format it does not understand.
+    #[must_use]
+    pub fn bytes_per_texel(&self) -> Option<usize> {
+        use windows::Win32::Graphics::Dxgi::Common::{
+            DXGI_FORMAT_R8_UNORM, DXGI_FORMAT_R8G8B8A8_UNORM,
+        };
+        match self.format {
+            DXGI_FORMAT_R8_UNORM => Some(1),
+            DXGI_FORMAT_R8G8B8A8_UNORM => Some(4),
+            _ => None,
+        }
+    }
 }
 
 impl TrackedResource for GpuTexture {

@@ -60,6 +60,32 @@ pub const CAMERA_SENSITIVITY_DEFAULT: f32 = 1.00;
 /// player can read and return to.
 pub const CAMERA_SENSITIVITY_STEP: f32 = 0.05;
 
+/// Smallest interface the slider offers, as a multiple of its design size.
+///
+/// Three quarters is as small as the 5x7 font stays legible: below it the glyph scale rounds
+/// down to one and a nameplate becomes unreadable rather than merely small.
+pub const UI_SCALE_MIN: f32 = 0.75;
+
+/// Largest interface the slider offers.
+///
+/// Twice the design size, which is what a 4K display wants at a normal viewing distance —
+/// the HUD is laid out in physical pixels, so without this it is half the size there that it
+/// is at 1080p. It is also the largest scale the icon art is rasterized for; raising it
+/// means rasterizing bigger icons, not just changing this number.
+pub const UI_SCALE_MAX: f32 = 2.00;
+
+/// The interface size a fresh install runs at.
+///
+/// One means "exactly the size the interface was designed at", so the default settings file
+/// changes nothing about how the game already looks.
+pub const UI_SCALE_DEFAULT: f32 = 1.00;
+
+/// Granularity of the interface size slider.
+///
+/// A twentieth, so the slider stops on the round numbers a player names — 0.75, 1.0, 1.25,
+/// 1.5, 2.0 — rather than between them.
+pub const UI_SCALE_STEP: f32 = 0.05;
+
 /// Everything the player can change.
 ///
 /// Every field is a plain value with a default; nothing here knows about a widget, a file or
@@ -70,6 +96,8 @@ pub const CAMERA_SENSITIVITY_STEP: f32 = 0.05;
 pub struct GameSettings {
     /// How fast the camera turns, as a multiple of its tuned rate.
     pub camera_sensitivity: f32,
+    /// How big the interface is drawn, as a multiple of its design size.
+    pub ui_scale: f32,
 }
 
 impl Default for GameSettings {
@@ -77,6 +105,7 @@ impl Default for GameSettings {
     fn default() -> Self {
         Self {
             camera_sensitivity: CAMERA_SENSITIVITY_DEFAULT,
+            ui_scale: UI_SCALE_DEFAULT,
         }
     }
 }
@@ -102,6 +131,14 @@ impl GameSettings {
             );
             settings.camera_sensitivity = CAMERA_SENSITIVITY_DEFAULT;
         }
+        if !is_in_range(settings.ui_scale, UI_SCALE_MIN, UI_SCALE_MAX) {
+            log::warn!(
+                "settings: ui_scale {} is outside {UI_SCALE_MIN}..{UI_SCALE_MAX}; using the \
+                 default {UI_SCALE_DEFAULT}",
+                settings.ui_scale
+            );
+            settings.ui_scale = UI_SCALE_DEFAULT;
+        }
         settings
     }
 
@@ -122,6 +159,19 @@ impl GameSettings {
         let steps = ((value - CAMERA_SENSITIVITY_MIN) / CAMERA_SENSITIVITY_STEP).round();
         let snapped = CAMERA_SENSITIVITY_MIN + steps * CAMERA_SENSITIVITY_STEP;
         snapped.clamp(CAMERA_SENSITIVITY_MIN, CAMERA_SENSITIVITY_MAX)
+    }
+
+    /// This value clamped into the interface-size range and snapped to the step.
+    ///
+    /// What the slider produces; kept here so the widget does not own the rule.
+    #[must_use]
+    pub fn snap_ui_scale(value: f32) -> f32 {
+        if !value.is_finite() {
+            return UI_SCALE_DEFAULT;
+        }
+        let steps = ((value - UI_SCALE_MIN) / UI_SCALE_STEP).round();
+        let snapped = UI_SCALE_MIN + steps * UI_SCALE_STEP;
+        snapped.clamp(UI_SCALE_MIN, UI_SCALE_MAX)
     }
 }
 
@@ -251,9 +301,23 @@ impl SettingsManager {
     }
 
     /// Sets the camera sensitivity, snapping it to the slider's step and range.
+    ///
+    /// Every other setting is carried over rather than rebuilt. Spelling out the whole
+    /// struct here would silently reset any field this setter does not name, which is a bug
+    /// that only appears once a second setting exists — so it is written the safe way from
+    /// the start.
     pub fn set_camera_sensitivity(&mut self, value: f32) {
         self.update(GameSettings {
             camera_sensitivity: GameSettings::snap_camera_sensitivity(value),
+            ..self.settings
+        });
+    }
+
+    /// Sets the interface size, snapping it to the slider's step and range.
+    pub fn set_ui_scale(&mut self, value: f32) {
+        self.update(GameSettings {
+            ui_scale: GameSettings::snap_ui_scale(value),
+            ..self.settings
         });
     }
 
@@ -364,6 +428,7 @@ mod tests {
     fn settings_round_trip_through_json() {
         let settings = GameSettings {
             camera_sensitivity: 2.35,
+            ui_scale: 1.25,
         };
         let text = serde_json::to_string(&settings).expect("settings serialize");
         let parsed: GameSettings = serde_json::from_str(&text).expect("settings parse");
@@ -450,6 +515,7 @@ mod tests {
         // JSON has no NaN literal, so this is the path a value can only reach in memory.
         let settings = GameSettings {
             camera_sensitivity: f32::NAN,
+            ..GameSettings::default()
         };
         assert_eq!(
             settings.validated().camera_sensitivity,
@@ -457,7 +523,8 @@ mod tests {
         );
         assert_eq!(
             GameSettings {
-                camera_sensitivity: f32::INFINITY
+                camera_sensitivity: f32::INFINITY,
+                ..GameSettings::default()
             }
             .validated()
             .camera_sensitivity,
@@ -581,11 +648,78 @@ mod tests {
     }
 
     #[test]
+    fn the_interface_size_has_a_sane_range_around_its_default() {
+        const { assert!(UI_SCALE_MIN < UI_SCALE_DEFAULT) };
+        const { assert!(UI_SCALE_DEFAULT < UI_SCALE_MAX) };
+        assert_eq!(
+            UI_SCALE_DEFAULT, 1.0,
+            "the default must change nothing about how the game already looks"
+        );
+    }
+
+    #[test]
+    fn an_out_of_range_or_meaningless_interface_size_falls_back_to_the_default() {
+        for bad in [0.0, -1.0, 100.0, f32::NAN, f32::INFINITY] {
+            let settings = GameSettings {
+                ui_scale: bad,
+                ..GameSettings::default()
+            };
+            assert_eq!(settings.validated().ui_scale, UI_SCALE_DEFAULT, "{bad}");
+        }
+    }
+
+    #[test]
+    fn the_interface_size_snaps_to_its_step_and_clamps_to_its_range() {
+        assert_eq!(GameSettings::snap_ui_scale(1.26), 1.25);
+        assert_eq!(GameSettings::snap_ui_scale(-5.0), UI_SCALE_MIN);
+        assert_eq!(GameSettings::snap_ui_scale(99.0), UI_SCALE_MAX);
+        assert_eq!(GameSettings::snap_ui_scale(f32::NAN), UI_SCALE_DEFAULT);
+
+        // Every snapped value is one the loader will accept, or a dragged slider could
+        // write a file that the next launch throws away.
+        let mut value = UI_SCALE_MIN;
+        while value <= UI_SCALE_MAX {
+            let snapped = GameSettings::snap_ui_scale(value);
+            let settings = GameSettings {
+                ui_scale: snapped,
+                ..GameSettings::default()
+            };
+            assert!(settings.is_valid(), "{snapped} would not survive a reload");
+            value += UI_SCALE_STEP;
+        }
+    }
+
+    #[test]
+    fn setting_one_value_leaves_every_other_setting_alone() {
+        // The bug a second setting makes possible: a setter that rebuilds the whole struct
+        // resets everything it does not name, and the player loses an unrelated preference.
+        let mut manager = SettingsManager::with_settings(
+            "does-not-need-to-exist",
+            GameSettings {
+                camera_sensitivity: 3.0,
+                ui_scale: 1.5,
+            },
+        );
+
+        manager.set_camera_sensitivity(2.0);
+        assert_eq!(manager.settings().ui_scale, 1.5, "the interface size reset");
+
+        manager.set_ui_scale(1.25);
+        assert_eq!(
+            manager.settings().camera_sensitivity,
+            2.0,
+            "the sensitivity reset"
+        );
+        assert_eq!(manager.settings().ui_scale, 1.25);
+    }
+
+    #[test]
     fn updating_with_an_invalid_value_stores_the_default_instead() {
         let mut manager =
             SettingsManager::with_settings("does-not-need-to-exist", GameSettings::default());
         manager.update(GameSettings {
             camera_sensitivity: -1.0,
+            ..GameSettings::default()
         });
         assert_eq!(
             manager.settings().camera_sensitivity,

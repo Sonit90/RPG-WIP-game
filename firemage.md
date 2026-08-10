@@ -191,8 +191,14 @@ talent window -> targeting circle -> cast in progress -> pause menu
   why nameplates read it directly.
 - **Zones do not read the collision world.** A Firestorm on a ledge burns a circle on the flat,
   not the geometry.
-- **No icons.** Ability buttons show four letters of the name; the layout does not change when
-  textures arrive.
+- **Only three abilities have icons.** Firebolt, Meteor and Flame Wave draw art from
+  `engine-renderer/assets/icons`, rasterized into the UI atlas at build time at every size the
+  interface can draw them. The other eight still show four letters of the name, and the
+  layout is the same either way — an ability gains art by adding an SVG, a `UiIcon` variant
+  and a line in `icon_for`.
+- **The interface scales.** `INTERFACE SIZE` in the settings screen runs from 0.75 to 2.0 and
+  is saved to `settings.cfg`. Every HUD, menu and talent-screen measurement is a logical pixel
+  multiplied by it; text snaps to whole glyph scales, because the font is a bitmap.
 - **The area indicator's fill is opaque, not translucent.** The world mesh pass has blending
   disabled, so alpha would be ignored; the fill is a dark shade the ground reads through
   tonally and the bright ring carries the shape. A real translucent fill needs a blended

@@ -17,6 +17,18 @@ engine-core = { workspace = true }
 engine-render-data = { workspace = true }
 log = { workspace = true }
 
+# Build-time only: the icons under assets/icons are SVG, and the atlas they go into holds
+# texels. Rasterizing at build time keeps the SVG as the source of truth — editing an icon
+# and rebuilding is the whole workflow — while the binary still contains nothing but the
+# finished texels and does no decoding at startup. Same rule as the shaders: the asset is a
+# build input, and a broken one is a build error.
+#
+# default-features is off deliberately. resvg's default features pull fontdb, rustybuzz and
+# a system font enumerator to shape <text> elements; none of the icons contain any, and the
+# check in build.rs fails the build if one ever does.
+[build-dependencies]
+resvg = { version = "0.48", default-features = false }
+
 [dependencies.windows]
 workspace = true
 features = [

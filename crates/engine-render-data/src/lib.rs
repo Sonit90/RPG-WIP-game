@@ -51,7 +51,9 @@ pub mod world;
 pub use camera::{Camera, DEFAULT_FAR, DEFAULT_FOV_Y, DEFAULT_NEAR, Projection};
 pub use error::RenderDataError;
 pub use lighting::Lighting;
-pub use ui::{TextAlign, TextRange, UiColor, UiCommand, UiDrawList, UiRect};
+pub use ui::{
+    MAX_ICON_PIXELS, TextAlign, TextRange, UiColor, UiCommand, UiDrawList, UiIcon, UiRect, UiScale,
+};
 pub use world::{
     Handle, InstanceStyle, MaterialHandle, MeshHandle, RenderEntity, RenderEntityDesc, RenderWorld,
     world_bounds,
