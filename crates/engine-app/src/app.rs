@@ -97,9 +97,6 @@ const DECAL_EDGE_SCALE: f32 = 1.06;
 /// Size of the ring drawn over an enemy inside the targeting circle, in pixels.
 const AFFECTED_MARK_SIZE: f32 = 46.0;
 
-/// The key that casts the Ultimate. It is not on the bar, so it has a key of its own.
-const ULTIMATE_KEY: KeyCode = KeyCode::R;
-
 /// Glyph scale the game UI draws text at.
 ///
 /// The font is a 5x7 bitmap; 2.0 gives a 10x14 pixel cell, which is what the Phase 3
@@ -553,7 +550,7 @@ impl App {
                 pressed = Some(view.ability);
             }
         }
-        if ctx.input().was_key_pressed(ULTIMATE_KEY) {
+        if ctx.input().was_key_pressed(self.bindings.ultimate) {
             pressed = Some(FireAbility::Cataclysm);
         }
 
@@ -1169,7 +1166,9 @@ impl Application for App {
             // world is shared, so a player with a settings screen open is still standing in
             // it and still has to be able to move out of the way.
             self.update_menu(ctx);
-            if !self.menu.is_open() {
+            // The collision demo has no combat, no targets and no resources; running the
+            // class's interface there would take its digits away from the test stations.
+            if !self.menu.is_open() && !self.scene.is_collision() {
                 self.update_firemage_ui(ctx);
             }
             self.update_targeting_decal();
@@ -1478,9 +1477,9 @@ fn log_controls(args: &Args, demo: Option<&DemoScene>) {
         log::info!("                   firestorm, pyroblast, inferno, fire detonation,");
         log::info!("                   flame shield, blink");
         log::info!("  R                cataclysm, the ultimate");
+        log::info!("  BACKSPACE        reset the dummies and the combat meter");
         log::info!("  4 5 R            place with the mouse: left click confirms, right cancels");
         log::info!("  TAB              cycle target");
-        log::info!("  R                reset the dummies and the combat meter");
     }
     log::info!("  ESC              menu: settings, quit, resume (the game keeps running)");
     log::info!("  RIGHT MOUSE      hold to turn the camera; release to stop");

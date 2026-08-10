@@ -34,7 +34,14 @@ pub struct Bindings {
     pub jump: KeyCode,
     /// Select the next hostile target.
     pub cycle_target: KeyCode,
-    /// Restore the dummies and clear the combat session.
+    /// Aim the Ultimate. It is not on the bar, so it has a key of its own.
+    ///
+    /// Kept here beside the rest even though the application is what acts on it: a key that
+    /// lived somewhere else is a key nothing can check for a collision - which is exactly
+    /// how it ended up sharing `R` with the developer reset and silently wiping the energy
+    /// bar every time the Ultimate was pressed.
+    pub ultimate: KeyCode,
+    /// Restore the dummies and clear the combat session. A developer control.
     pub reset_dummies: KeyCode,
 }
 
@@ -47,12 +54,34 @@ impl Default for Bindings {
             right: KeyCode::D,
             jump: KeyCode::Space,
             cycle_target: KeyCode::Tab,
-            reset_dummies: KeyCode::R,
+            ultimate: KeyCode::R,
+            // Not `R`: that is the Ultimate. A developer control has no business taking a
+            // key the class needs.
+            reset_dummies: KeyCode::Backspace,
         }
     }
 }
 
 impl Bindings {
+    /// Every key this binding set claims, for a collision check.
+    ///
+    /// The ability bar's digits are added by [`Bindings::ability_key`]; these are the named
+    /// ones. A test walks the whole list, which is what stops two actions from quietly
+    /// sharing a key again.
+    #[must_use]
+    pub fn named_keys(&self) -> [KeyCode; 8] {
+        [
+            self.forward,
+            self.back,
+            self.left,
+            self.right,
+            self.jump,
+            self.cycle_target,
+            self.ultimate,
+            self.reset_dummies,
+        ]
+    }
+
     /// The key that triggers ability `slot`.
     ///
     /// Slots 0 to 8 are the digits 1 to 9 and slot 9 is `0`, which is the layout every
@@ -271,6 +300,25 @@ mod tests {
     }
 
     #[test]
+    fn no_two_actions_share_a_key() {
+        // The Ultimate and the developer reset both used to be `R`, so pressing the Ultimate
+        // reset the arena - which cleared the energy bar and left the cast refused.
+        let bindings = Bindings::default();
+        let mut claimed: Vec<KeyCode> = bindings.named_keys().to_vec();
+        for slot in 0..ABILITY_SLOTS {
+            if let Some(key) = Bindings::ability_key(slot) {
+                claimed.push(key);
+            }
+        }
+        for (index, key) in claimed.iter().enumerate() {
+            assert!(
+                !claimed[index + 1..].contains(key),
+                "{key:?} is bound to two different actions"
+            );
+        }
+    }
+
+    #[test]
     fn every_ability_key_produces_its_own_slot() {
         for slot in 0..ABILITY_SLOTS {
             let ability = FireAbility::from_slot(slot).expect("every slot has an ability");
@@ -300,7 +348,7 @@ mod tests {
     #[test]
     fn the_developer_keys_are_edge_triggered_too() {
         let mut input = InputState::new();
-        frame(&mut input, &[KeyCode::Tab, KeyCode::R], &[]);
+        frame(&mut input, &[KeyCode::Tab, KeyCode::Backspace], &[]);
         let issued = commands(&input, 0.0);
         assert!(issued.contains(&PlayerCommand::CycleTarget));
         assert!(issued.contains(&PlayerCommand::ResetDummies));
