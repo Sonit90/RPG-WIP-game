@@ -172,6 +172,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "engine-sim"
+version = "0.1.0"
+dependencies = [
+ "engine-core",
+ "engine-game",
+]
+
+[[package]]
 name = "euclid"
 version = "0.22.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"

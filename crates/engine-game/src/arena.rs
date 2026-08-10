@@ -267,7 +267,7 @@ mod tests {
         let config = ArenaConfig::default();
         let mut world = GameWorld::new();
         let arena = populate(&mut world, &config);
-        let radius = crate::firemage::FireAbility::FlameWave.definition().range;
+        let radius = crate::firemage::FireAbility::FlameCone.definition().range;
 
         let centre = world
             .position(arena.group[0])

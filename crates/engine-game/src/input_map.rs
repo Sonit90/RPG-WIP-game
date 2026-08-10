@@ -11,7 +11,7 @@
 //!
 //! Nothing here mutates gameplay state. It reads input and appends commands.
 
-use engine_core::input::{InputState, KeyCode};
+use engine_core::input::{InputState, KeyCode, MouseButton};
 
 use crate::command::PlayerCommand;
 use crate::firemage::{ABILITY_SLOTS, FireAbility};
@@ -43,6 +43,8 @@ pub struct Bindings {
     pub ultimate: KeyCode,
     /// Restore the dummies and clear the combat session. A developer control.
     pub reset_dummies: KeyCode,
+    /// The mouse button held to turn the camera, which also turns the character.
+    pub look: MouseButton,
 }
 
 impl Default for Bindings {
@@ -58,6 +60,7 @@ impl Default for Bindings {
             // Not `R`: that is the Ultimate. A developer control has no business taking a
             // key the class needs.
             reset_dummies: KeyCode::Backspace,
+            look: MouseButton::Right,
         }
     }
 }
@@ -155,6 +158,10 @@ impl Bindings {
             forward: axis(self.forward, self.back),
             right: axis(self.right, self.left),
             yaw: camera_yaw,
+            // Held right button: the camera is steering, so the character faces the camera
+            // rather than its own feet. Read here rather than passed in, because which
+            // button steers is a binding and bindings live in this module.
+            face_camera: input.is_mouse_button_down(self.look),
         });
 
         if input.was_key_pressed(self.jump) {
@@ -216,6 +223,7 @@ mod tests {
                 forward: 1.0,
                 right: 1.0,
                 yaw: 0.0,
+                face_camera: false
             })
         );
     }
@@ -246,6 +254,7 @@ mod tests {
                 forward: 0.0,
                 right: 0.0,
                 yaw: 1.0,
+                face_camera: false
             })
         );
     }
@@ -376,6 +385,7 @@ mod tests {
                 forward: 1.0,
                 right: 0.0,
                 yaw: 0.0,
+                face_camera: false
             })
         );
         assert_eq!(

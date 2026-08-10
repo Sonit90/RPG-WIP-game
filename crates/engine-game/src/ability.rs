@@ -106,8 +106,13 @@ mod tests {
         // It is not on the bar, but its damage still has to reach the meter.
         let id = AbilityId::from_fire(FireAbility::Cataclysm);
         assert!(id.is_valid());
-        assert_eq!(id.slot(), ABILITY_SLOTS - 1);
+        assert_eq!(id.slot(), FireAbility::Cataclysm.index());
         assert_eq!(id.key_hint(), "R");
+
+        // And so does Ignite, which is nobody's button but is the class's largest row.
+        let burn = AbilityId::from_fire(FireAbility::Ignite);
+        assert!(burn.is_valid());
+        assert_eq!(burn.name(), "IGNITE");
     }
 
     #[test]

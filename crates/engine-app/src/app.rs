@@ -809,8 +809,9 @@ impl App {
                 None => (self.game_ui.ultimate_rect(viewport), self.snapshot.ultimate),
             };
             let ignite_max = self.snapshot.ignite_max;
+            let mastery = self.snapshot.player.mastery;
             self.game_ui
-                .push_ability_tooltip(rect, &view, ignite_max, viewport);
+                .push_ability_tooltip(rect, &view, ignite_max, mastery, viewport);
         }
         self.push_affected_highlights(viewport);
         engine_presentation::ui::talent_menu::push_talent_menu(
@@ -858,44 +859,56 @@ impl App {
             (visuals.fill_invalid, visuals.ring_invalid)
         };
 
-        // A cone is a wedge anchored on the caster and rotated to where the player is
-        // pointing; everything else is a circle under the cursor. Both are a fixed size:
-        // an indicator that breathed would be lying about the area it covers.
-        let is_cone = matches!(
-            target.shape,
-            engine_presentation::ui::targeting::TargetShape::Cone { .. }
-        );
-        let (fill_mesh, ring_mesh) = if is_cone {
-            (visuals.cone_mesh, visuals.cone_edge_mesh)
-        } else {
-            (visuals.fill_mesh, visuals.ring_mesh)
+        // Three shapes, one system. A circle sits under the cursor; a cone and a line are
+        // anchored on the caster and rotated to where the player is pointing. All of them
+        // are a fixed size: an indicator that breathed would be lying about the area it
+        // covers.
+        use engine_presentation::ui::targeting::TargetShape;
+        let kind = DecalShape::of(target.shape);
+        let (fill_mesh, ring_mesh) = match kind {
+            DecalShape::Circle => (visuals.fill_mesh, visuals.ring_mesh),
+            DecalShape::Cone => (visuals.cone_mesh, visuals.cone_edge_mesh),
+            DecalShape::Line => (visuals.strip_mesh, visuals.strip_mesh),
         };
-        let rotation = if is_cone {
-            engine_core::math::Quat::from_yaw_pitch_roll(target.facing, 0.0, 0.0)
-        } else {
-            engine_core::math::Quat::IDENTITY
+        let rotation = match kind {
+            DecalShape::Circle => engine_core::math::Quat::IDENTITY,
+            DecalShape::Cone | DecalShape::Line => {
+                engine_core::math::Quat::from_yaw_pitch_roll(target.facing, 0.0, 0.0)
+            }
         };
         let anchor = target.anchor;
-        let scale = if is_cone {
-            target.radius
-        } else {
-            target.radius * 2.0
+        // A line is the one shape whose two axes differ: it is as wide as the ability is
+        // wide and as long as it reaches.
+        let extent = match target.shape {
+            TargetShape::Line { width, length } => Vec3::new(width, 1.0, length),
+            TargetShape::Cone { range, .. } => Vec3::new(range, 1.0, range),
+            _ => Vec3::new(target.radius * 2.0, 1.0, target.radius * 2.0),
         };
-        let flat = |scale: f32, height: f32| engine_core::transform::Transform {
+        let flat = |grow: f32, height: f32| engine_core::transform::Transform {
             translation: Vec3::new(anchor.x, height, anchor.z),
             rotation,
-            scale: Vec3::new(scale, 1.0, scale),
+            scale: Vec3::new(extent.x * grow, 1.0, extent.z * grow),
         };
         // The bright shape is drawn slightly larger and *below* the fill, so its rim shows
         // as an outline; the world pass is opaque, so an outline has to be geometry.
-        let fill_transform = flat(scale, DECAL_HEIGHT + DECAL_RING_LIFT);
-        let ring_transform = flat(scale * DECAL_EDGE_SCALE, DECAL_HEIGHT);
-        let bounds = engine_core::math::Sphere::new(Vec3::ZERO, 0.75);
+        let fill_transform = flat(1.0, DECAL_HEIGHT + DECAL_RING_LIFT);
+        let ring_transform = flat(DECAL_EDGE_SCALE, DECAL_HEIGHT);
+        // Local bounds, scaled by the transform's largest axis before they are culled
+        // against. A circle and a cone are centred on their anchor; a strip is *anchored at
+        // one end* and runs a whole length forwards, so a sphere around the anchor would
+        // stop short of the far end and cull the indicator from exactly the angle the
+        // player is looking down it.
+        let bounds = match kind {
+            DecalShape::Line => engine_core::math::Sphere::new(Vec3::new(0.0, 0.0, -0.5), 0.9),
+            DecalShape::Circle | DecalShape::Cone => {
+                engine_core::math::Sphere::new(Vec3::ZERO, 0.75)
+            }
+        };
 
         let world = self.extractor.render_world_mut();
         // A shape change means different geometry, and geometry is fixed at spawn.
         if let Some(decal) = self.targeting_decal
-            && decal.is_cone != is_cone
+            && decal.shape != kind
         {
             world.despawn(decal.fill);
             world.despawn(decal.edge);
@@ -924,7 +937,7 @@ impl App {
                 self.targeting_decal = Some(TargetingDecal {
                     fill,
                     edge,
-                    is_cone,
+                    shape: kind,
                 });
             }
         }
@@ -1410,8 +1423,34 @@ struct TargetingDecal {
     fill: engine_render_data::RenderEntity,
     /// Its brighter edge.
     edge: engine_render_data::RenderEntity,
-    /// Whether it was built as a cone.
-    is_cone: bool,
+    /// Which shape it was built for.
+    shape: DecalShape,
+}
+
+/// Which geometry the ground indicator is currently made of.
+///
+/// The render world cannot change an entity's mesh, so this is what decides when the pair
+/// has to be respawned - once per targeting press, never per frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DecalShape {
+    /// A disc under the cursor.
+    Circle,
+    /// A wedge anchored on the caster.
+    Cone,
+    /// A strip anchored on the caster: a linear zone.
+    Line,
+}
+
+impl DecalShape {
+    /// Which geometry a targeting shape asks for.
+    fn of(shape: engine_presentation::ui::targeting::TargetShape) -> Self {
+        use engine_presentation::ui::targeting::TargetShape;
+        match shape {
+            TargetShape::Cone { .. } => Self::Cone,
+            TargetShape::Line { .. } | TargetShape::Rectangle { .. } => Self::Line,
+            TargetShape::Circle { .. } => Self::Circle,
+        }
+    }
 }
 
 /// The meshes and materials the ground indicator is drawn with.
@@ -1425,6 +1464,8 @@ struct DecalVisuals {
     cone_mesh: MeshHandle,
     /// The same wedge, drawn larger and behind to give it an edge.
     cone_edge_mesh: MeshHandle,
+    /// A unit strip, scaled to a linear zone's width and length.
+    strip_mesh: MeshHandle,
     /// The footprint of a valid placement.
     fill_valid: MaterialHandle,
     /// Its edge.
@@ -1448,6 +1489,9 @@ fn upload_decal_visuals(renderer: &mut Renderer) -> Result<DecalVisuals, EngineE
     let cone_half_angle = engine_game::sim::CONE_HALF_ANGLE;
     let cone_mesh = renderer.create_mesh(&MeshData::sector(1.0, cone_half_angle, 32))?;
     let cone_edge_mesh = renderer.create_mesh(&MeshData::sector(1.0, cone_half_angle, 32))?;
+    // A unit strip: one metre across, one metre long, running from the origin along -Z.
+    // Firestorm's line scales it to twenty by ten.
+    let strip_mesh = renderer.create_mesh(&MeshData::strip())?;
 
     let fill_valid = renderer.create_material(
         MaterialDesc::colored(0.35, 0.16, 0.05)
@@ -1475,6 +1519,7 @@ fn upload_decal_visuals(renderer: &mut Renderer) -> Result<DecalVisuals, EngineE
         ring_mesh,
         cone_mesh,
         cone_edge_mesh,
+        strip_mesh,
         fill_valid,
         ring_valid,
         fill_invalid,
@@ -1592,5 +1637,28 @@ mod tests {
     fn a_zero_sized_viewport_does_not_produce_an_infinite_aspect_ratio() {
         assert_eq!(aspect_of(1920, 1080), 1920.0 / 1080.0);
         assert_eq!(aspect_of(1920, 0), 1.0);
+    }
+
+    #[test]
+    fn every_aimed_ability_asks_for_geometry_the_indicator_can_draw() {
+        // Firestorm's linear zone is a third shape, and the decal has to know it exists:
+        // an ability whose shape fell through to a circle of radius zero would open a
+        // targeting state and draw nothing, which is exactly what a missing indicator
+        // looks like.
+        use engine_presentation::ui::targeting::TargetShape;
+
+        for ability in FireAbility::BAR {
+            if !ability.definition().target.is_aimed() {
+                continue;
+            }
+            let shape = TargetShape::of(ability);
+            assert!(shape.extent() > 0.0, "{ability:?} has nothing to draw");
+            let kind = DecalShape::of(shape);
+            match ability {
+                FireAbility::Firestorm => assert_eq!(kind, DecalShape::Line),
+                FireAbility::FlameCone => assert_eq!(kind, DecalShape::Cone),
+                _ => assert_eq!(kind, DecalShape::Circle, "{ability:?}"),
+            }
+        }
     }
 }

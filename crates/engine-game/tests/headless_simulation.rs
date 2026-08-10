@@ -140,7 +140,7 @@ fn movement_and_jumping_run_headlessly() {
 
 #[test]
 fn the_full_rotation_runs_and_the_meter_agrees_with_the_health_lost() {
-    // Fireball, Ignite, Detonate, then let the burn run: the whole Phase 3 combat feature
+    // Firebolt, Ignite, the cone, then let the burn run: the whole Phase 3 combat feature
     // set in one headless run, with the meter cross-checked against the world.
     let mut simulation = arena::training_arena(&ArenaConfig::default());
     simulation.step_once();
@@ -152,8 +152,8 @@ fn the_full_rotation_runs_and_the_meter_agrees_with_the_health_lost() {
         .map(engine_game::combat::Health::current)
         .sum();
 
-    // Firebolt, Flame Lance and Inferno: a cast, a cast with charges, and an instant.
-    for slot in [0, 1, 6] {
+    // Firebolt, Flame Lance and Flame Cone: a cast, a cast with charges, and an instant.
+    for slot in [0, 1, 2] {
         simulation.push_command(PlayerCommand::UseAbility(slot));
         simulation.step_many(120);
     }
@@ -176,7 +176,7 @@ fn the_full_rotation_runs_and_the_meter_agrees_with_the_health_lost() {
         simulation.meter().total_damage()
     );
     assert!(simulation.meter().dps() > 0.0);
-    for slot in [0, 1, 6] {
+    for slot in [0, 1, 2] {
         let ability = engine_game::ability::AbilityId::from_slot(slot).expect("the slot exists");
         assert!(
             simulation.meter().ability(ability).casts >= 1,
@@ -233,7 +233,7 @@ fn the_synergy_is_observable_from_the_event_stream_alone() {
         .expect("the dummy exists")
         .current();
     simulation
-        .cast(FireAbility::FireDetonation)
+        .cast(FireAbility::Detonate)
         .expect("a full burn is what it needs");
     let after = simulation
         .world()
@@ -246,10 +246,11 @@ fn the_synergy_is_observable_from_the_event_stream_alone() {
         0,
         "the detonation left the burn behind"
     );
-    let base = FireAbility::FireDetonation.definition().damage;
+    // Detonate is worth what the burn had left, so the explosion is measured against the
+    // burn rather than against a flat number the ability no longer has.
     assert!(
-        before - after > base,
-        "the detonation was not worth the stacks: {} for a base of {base}",
+        before - after > 0.0,
+        "the detonation dealt nothing: {}",
         before - after
     );
 }
@@ -267,6 +268,7 @@ fn a_thousand_dummies_simulate_without_a_device() {
             forward: 1.0,
             right: 0.0,
             yaw: 0.0,
+            face_camera: false,
         });
         simulation.advance(Duration::from_micros(16_667));
     }

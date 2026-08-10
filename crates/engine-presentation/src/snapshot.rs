@@ -16,8 +16,8 @@
 use engine_game::EntityId;
 use engine_game::ability::AbilityId;
 use engine_game::firemage::{
-    ABILITY_SLOTS, AbilityError, ENERGY_MAXIMUM, FireAbility, HEAT_HIGH_THRESHOLD, HEAT_MAXIMUM,
-    TALENTS, TalentId,
+    ABILITY_SLOTS, AbilityError, ENERGY_MAXIMUM, FireAbility, FireMastery, HEAT_HOT_THRESHOLD,
+    HEAT_MAXIMUM, HEAT_WARM_THRESHOLD, HeatTier, TALENTS, TalentId, ULTIMATE_ENABLED,
 };
 use engine_game::sim::Simulation;
 use engine_game::status::StatusKind;
@@ -78,16 +78,22 @@ pub struct PlayerView {
     pub max_health: f32,
     /// Current Heat.
     pub heat: f32,
-    /// Whether Heat has boiled over.
-    pub overheated: bool,
+    /// Which band Heat is in, which is what the bar colours itself from.
+    pub heat_tier: HeatTier,
+    /// Seconds of Inferno State left. Zero when it is not running.
+    pub inferno_remaining: f32,
     /// Current Ultimate Energy.
     pub energy: f32,
     /// Whether the Ultimate can be cast.
     pub ultimate_ready: bool,
     /// Whether Flame Shield is up.
     pub shielded: bool,
-    /// Whether the class is hasted.
+    /// Whether the class is hasted above its base.
     pub hasted: bool,
+    /// Which stat Fire Mastery specialises into.
+    pub mastery: FireMastery,
+    /// Whether Fire Mastery's active is running.
+    pub mastery_active: bool,
     /// Statuses on the player.
     pub statuses: StatusList,
 }
@@ -108,10 +114,27 @@ impl PlayerView {
         (self.heat / HEAT_MAXIMUM).clamp(0.0, 1.0)
     }
 
-    /// Whether Heat is high enough for the bar to read as dangerous.
+    /// Whether Heat has reached the second band, where it hands over a stat.
     #[must_use]
     pub fn heat_is_high(&self) -> bool {
-        self.heat >= HEAT_HIGH_THRESHOLD
+        self.heat >= HEAT_HOT_THRESHOLD
+    }
+
+    /// Whether the Inferno State is running.
+    #[must_use]
+    pub fn in_inferno(&self) -> bool {
+        matches!(self.heat_tier, HeatTier::Inferno)
+    }
+
+    /// Where the two band markers sit on the bar, as fractions of its width.
+    ///
+    /// Computed here so the bar cannot draw a threshold the simulation does not have.
+    #[must_use]
+    pub fn heat_thresholds(&self) -> [f32; 2] {
+        [
+            HEAT_WARM_THRESHOLD / HEAT_MAXIMUM,
+            HEAT_HOT_THRESHOLD / HEAT_MAXIMUM,
+        ]
     }
 
     /// Ultimate Energy as a fraction, for a bar.
@@ -140,7 +163,7 @@ pub struct TargetView {
     pub ignite_stacks: u8,
     /// Seconds of Ignite left.
     pub ignite_remaining: f32,
-    /// Whether it is at the current maximum - the Fire Detonation requirement.
+    /// Whether it is at the current maximum - the Detonate requirement.
     pub ignite_at_maximum: bool,
     /// Statuses on it.
     pub statuses: StatusList,
@@ -177,8 +200,10 @@ pub enum SlotAvailability {
     NoResource,
     /// The target cannot be hit, or is not there.
     InvalidTarget,
-    /// Ready *and* worth pressing right now: Fire Detonation on a full burn.
+    /// Ready *and* worth pressing right now: Detonate on a full burn.
     Empowered,
+    /// Switched off entirely: the Ultimate, which has no design yet.
+    Disabled,
 }
 
 impl SlotAvailability {
@@ -229,6 +254,20 @@ pub struct AbilitySlotView {
     pub aiming: bool,
     /// Whether the player has to place it with the mouse.
     pub ground_targeted: bool,
+    /// What the cast takes right now, haste included. Zero for an instant.
+    pub cast_time: f32,
+    /// What it hits for right now, before Heat, critical strikes and Ignite scaling.
+    ///
+    /// Computed from the ability's coefficient and the mage's current spell power, so a
+    /// tooltip prints a number the ability will actually deal rather than a percentage the
+    /// player has to do arithmetic on.
+    pub damage: f32,
+    /// Extra damage per Ignite stack on the target, as a fraction. Zero if it has none.
+    pub ignite_scaling: f32,
+    /// Ignite stacks it applies to everything it hits.
+    pub ignite_stacks: u8,
+    /// Chance those stacks land, for the abilities that roll for it.
+    pub ignite_chance: f32,
 }
 
 impl AbilitySlotView {
@@ -360,6 +399,12 @@ pub struct UiSnapshot {
     pub talent_points: u32,
     /// The whole talent grid.
     pub talents: Vec<TalentView>,
+    /// The mage's current spell power, which every tooltip number is a percentage of.
+    pub spell_power: f32,
+    /// Current haste, as a fraction.
+    pub haste: f32,
+    /// Current critical strike chance, as a fraction.
+    pub crit_chance: f32,
     /// The current maximum Ignite stacks. Read by every tooltip that mentions it.
     pub ignite_max: u8,
 }
@@ -379,11 +424,14 @@ impl UiSnapshot {
                 health: 0.0,
                 max_health: 0.0,
                 heat: 0.0,
-                overheated: false,
+                heat_tier: HeatTier::Cold,
+                inferno_remaining: 0.0,
                 energy: 0.0,
                 ultimate_ready: false,
                 shielded: false,
                 hasted: false,
+                mastery: FireMastery::Haste,
+                mastery_active: false,
                 statuses: StatusList::default(),
             },
             target: None,
@@ -394,6 +442,9 @@ impl UiSnapshot {
             notification: NotificationView::default(),
             talent_points: 0,
             talents: Vec::with_capacity(TALENTS.len()),
+            spell_power: 0.0,
+            haste: 0.0,
+            crit_chance: 0.0,
             ignite_max: 5,
         };
         snapshot.refresh(simulation, aiming);
@@ -416,11 +467,14 @@ impl UiSnapshot {
             health: health.map_or(0.0, |health| health.current()),
             max_health: health.map_or(0.0, |health| health.max()),
             heat: mage.heat.value(),
-            overheated: mage.heat.is_overheated(),
+            heat_tier: mage.heat.tier(),
+            inferno_remaining: mage.heat.inferno_remaining(),
             energy: mage.energy.value(),
-            ultimate_ready: mage.energy.is_full(),
+            ultimate_ready: mage.energy.is_full() && ULTIMATE_ENABLED,
             shielded: mage.flame_shield.is_active(),
-            hasted: mage.haste() > 0.0,
+            hasted: mage.haste() > engine_game::firemage::BASE_HASTE,
+            mastery: mage.mastery,
+            mastery_active: mage.mastery_buff.is_active(),
             statuses: statuses_of(simulation, player.entity),
         };
 
@@ -481,6 +535,10 @@ impl UiSnapshot {
                 affordable: mage.talents.can_purchase(talent.id),
             });
         }
+        let stats = mage.stats();
+        self.spell_power = stats.spell_power;
+        self.haste = stats.haste;
+        self.crit_chance = stats.crit();
         self.ignite_max = mage.ignite_max();
     }
 }
@@ -494,6 +552,7 @@ fn ability_view(
     let mage = simulation.mage();
     let definition = ability.definition();
     let effects = mage.effects();
+    let stats = mage.stats();
     let charges = mage.abilities.charges(ability);
     let max_charges = definition.charges_with(effects);
 
@@ -505,7 +564,11 @@ fn ability_view(
             .distance_between(simulation.player().entity, id)
     });
 
-    let availability = if definition.energy_cost > 0.0 && !mage.energy.is_full() {
+    let availability = if ability.is_ultimate() && !ULTIMATE_ENABLED {
+        // The Ultimate has no gameplay concept yet. The button stays where it is and says
+        // so, rather than disappearing and taking its architecture with it.
+        SlotAvailability::Disabled
+    } else if definition.energy_cost > 0.0 && !mage.energy.is_full() {
         SlotAvailability::NoResource
     } else if charges == 0 {
         SlotAvailability::Cooling
@@ -513,7 +576,7 @@ fn ability_view(
         && (!target_alive || in_range.is_some_and(|distance| distance > definition.range))
     {
         SlotAvailability::InvalidTarget
-    } else if ability == FireAbility::FireDetonation {
+    } else if ability == FireAbility::Detonate {
         // The one ability whose readiness is about the *target*: a full burn is what it is
         // for, and the bar says so rather than making the player count stacks.
         match target {
@@ -542,6 +605,15 @@ fn ability_view(
             .is_some_and(|cast| cast.ability == ability),
         aiming: aiming == Some(ability),
         ground_targeted: definition.target.is_ground_targeted(),
+        cast_time: definition.cast_time_with(&stats),
+        damage: if definition.coefficient > 0.0 {
+            definition.base_damage(&stats)
+        } else {
+            definition.base_tick_damage(&stats)
+        },
+        ignite_scaling: definition.ignite_bonus_per_stack,
+        ignite_stacks: definition.ignite_stacks,
+        ignite_chance: definition.ignite_chance,
     }
 }
 
@@ -585,12 +657,12 @@ mod tests {
             [
                 "FIREBOLT",
                 "FLAME LANCE",
-                "FLAME WAVE",
+                "FLAME CONE",
                 "METEOR",
-                "FIRESTORM",
                 "PYROBLAST",
-                "INFERNO",
-                "FIRE DETONATION",
+                "FIRESTORM",
+                "DETONATE",
+                "FIRE MASTERY",
                 "FLAME SHIELD",
                 "BLINK",
             ]
@@ -631,11 +703,11 @@ mod tests {
     }
 
     #[test]
-    fn fire_detonation_lights_up_only_against_a_full_burn() {
+    fn detonate_lights_up_only_against_a_full_burn() {
         let mut simulation = arena();
         let snapshot = UiSnapshot::build(&simulation);
         assert_eq!(
-            snapshot.abilities[7].availability,
+            snapshot.abilities[6].availability,
             SlotAvailability::InvalidTarget,
             "it offered itself against a cold target"
         );
@@ -650,39 +722,62 @@ mod tests {
 
         let snapshot = UiSnapshot::build(&simulation);
         assert_eq!(
-            snapshot.abilities[7].availability,
+            snapshot.abilities[6].availability,
             SlotAvailability::Empowered
         );
-        assert!(snapshot.abilities[7].availability.is_ready());
+        assert!(snapshot.abilities[6].availability.is_ready());
         assert!(snapshot.target.expect("a target").ignite_at_maximum);
     }
 
     #[test]
-    fn the_ultimate_is_locked_until_the_bar_is_full() {
+    fn the_ultimate_reports_its_energy_while_it_is_switched_off() {
         let mut simulation = arena();
         let snapshot = UiSnapshot::build(&simulation);
-        assert_eq!(snapshot.ultimate.availability, SlotAvailability::NoResource);
+        assert_eq!(snapshot.ultimate.availability, SlotAvailability::Disabled);
         assert!(!snapshot.player.ultimate_ready);
 
         simulation.mage_mut().gain_energy(100.0);
         let snapshot = UiSnapshot::build(&simulation);
-        assert!(snapshot.player.ultimate_ready);
-        assert!(snapshot.ultimate.availability.is_ready());
         assert!((snapshot.player.energy_fraction() - 1.0).abs() < 1e-6);
     }
 
     #[test]
-    fn the_heat_bar_reports_its_range_and_its_overheat() {
+    fn the_heat_bar_reports_its_bands_and_the_inferno_state() {
         let mut simulation = arena();
-        simulation.mage_mut().gain_heat(80.0);
+        simulation.mage_mut().gain_heat(40.0);
         let snapshot = UiSnapshot::build(&simulation);
-        assert!(snapshot.player.heat_is_high());
-        assert!(!snapshot.player.overheated);
-        assert!((snapshot.player.heat_fraction() - 0.8).abs() < 1e-6);
+        assert_eq!(snapshot.player.heat_tier, HeatTier::Warm);
+        assert!(!snapshot.player.heat_is_high());
+        assert!((snapshot.player.heat_fraction() - 0.4).abs() < 1e-6);
 
+        simulation.mage_mut().gain_heat(40.0);
+        let snapshot = UiSnapshot::build(&simulation);
+        assert_eq!(snapshot.player.heat_tier, HeatTier::Hot);
+        assert!(snapshot.player.heat_is_high());
+
+        // The top of the bar spends it: the bar then reports the state, not the value.
         simulation.mage_mut().gain_heat(20.0);
         let snapshot = UiSnapshot::build(&simulation);
-        assert!(snapshot.player.overheated);
+        assert!(snapshot.player.in_inferno());
+        assert_eq!(snapshot.player.heat, 0.0);
+        assert!(snapshot.player.inferno_remaining > 0.0);
+
+        // Both band markers are on the bar, in order, and neither is at an end of it.
+        let [warm, hot] = snapshot.player.heat_thresholds();
+        assert!(0.0 < warm && warm < hot && hot < 1.0);
+    }
+
+    #[test]
+    fn the_ultimate_button_is_present_and_switched_off() {
+        // The design keeps the architecture and takes away the button's use, so the slot
+        // must still exist and must never read as ready.
+        let mut simulation = arena();
+        simulation.mage_mut().gain_energy(100.0);
+        let snapshot = UiSnapshot::build(&simulation);
+        assert_eq!(snapshot.ultimate.ability, FireAbility::Cataclysm);
+        assert_eq!(snapshot.ultimate.availability, SlotAvailability::Disabled);
+        assert!(!snapshot.ultimate.availability.is_ready());
+        assert!(!snapshot.player.ultimate_ready);
     }
 
     #[test]
@@ -743,7 +838,7 @@ mod tests {
     #[test]
     fn a_refusal_reaches_the_interface() {
         let mut simulation = arena();
-        let _ = simulation.cast(FireAbility::FireDetonation);
+        let _ = simulation.cast(FireAbility::Detonate);
         let snapshot = UiSnapshot::build(&simulation);
         assert_eq!(
             snapshot.notification.error,

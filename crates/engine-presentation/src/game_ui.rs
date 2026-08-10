@@ -17,7 +17,7 @@ use engine_render_data::ui::{TextAlign, UiColor, UiDrawList, UiIcon, UiRect, UiS
 use crate::damage_numbers::FloatingNumbers;
 use crate::nameplate::{Nameplate, NameplateConfig, project};
 use crate::snapshot::{AbilitySlotView, SlotAvailability, UiSnapshot};
-use engine_game::firemage::{ABILITY_SLOTS, FireAbility, HEAT_HIGH_THRESHOLD, HEAT_MAXIMUM};
+use engine_game::firemage::{ABILITY_SLOTS, FireAbility, HeatTier, INFERNO_DURATION};
 
 /// Layout constants for the combat HUD, in pixels at any resolution.
 ///
@@ -239,18 +239,22 @@ pub struct UiTheme {
     pub hud_text_scale: f32,
     /// Glyph scale for a damage number.
     pub damage_text_scale: f32,
-    /// The Heat bar at rest.
+    /// The Heat bar in the first band, where it grants nothing.
     pub heat_low: UiColor,
-    /// The Heat bar when it is running hot.
+    /// The Heat bar in the second band, where it grants +15% damage.
+    pub heat_warm: UiColor,
+    /// The Heat bar in the third band, where it grants +30% and a stat.
     pub heat_high: UiColor,
-    /// The Heat bar while Overheat is running.
-    pub heat_overheated: UiColor,
+    /// The Heat bar while the Inferno State runs.
+    pub heat_inferno: UiColor,
     /// The Ultimate Energy bar.
     pub energy: UiColor,
     /// The Ultimate Energy bar once it is full.
     pub energy_full: UiColor,
     /// An ability that cannot be paid for.
     pub slot_no_resource: UiColor,
+    /// An ability that is switched off entirely.
+    pub slot_disabled: UiColor,
     /// An ability whose target is wrong.
     pub slot_invalid: UiColor,
     /// An ability that is ready and worth pressing right now.
@@ -310,10 +314,12 @@ impl Default for UiTheme {
             hud_text_scale: 2.0,
             damage_text_scale: 2.0,
             heat_low: [0.55, 0.55, 0.60, 1.0],
+            heat_warm: [0.92, 0.72, 0.22, 1.0],
             heat_high: [0.95, 0.55, 0.15, 1.0],
-            heat_overheated: [1.0, 0.35, 0.12, 1.0],
+            heat_inferno: [1.0, 0.30, 0.10, 1.0],
             energy: [0.35, 0.55, 0.95, 1.0],
             energy_full: [0.65, 0.85, 1.0, 1.0],
+            slot_disabled: [0.25, 0.25, 0.28, 1.0],
             slot_no_resource: [0.70, 0.18, 0.18, 1.0],
             slot_invalid: [0.60, 0.15, 0.15, 1.0],
             slot_empowered: [1.0, 0.75, 0.20, 1.0],
@@ -354,7 +360,9 @@ impl UiTheme {
     #[must_use]
     pub fn icon_tint(&self, availability: SlotAvailability) -> UiColor {
         match availability {
-            SlotAvailability::NoResource | SlotAvailability::InvalidTarget => self.icon_unavailable,
+            SlotAvailability::NoResource
+            | SlotAvailability::InvalidTarget
+            | SlotAvailability::Disabled => self.icon_unavailable,
             _ => self.icon,
         }
     }
@@ -368,6 +376,21 @@ impl UiTheme {
             SlotAvailability::NoResource => self.slot_no_resource,
             SlotAvailability::InvalidTarget => self.slot_invalid,
             SlotAvailability::Empowered => self.slot_empowered,
+            SlotAvailability::Disabled => self.slot_disabled,
+        }
+    }
+
+    /// The colour the Heat bar takes in a given band.
+    ///
+    /// One colour per band, because the bands *are* the mechanic: a player has to be able to
+    /// see which multiplier they are on without reading the number.
+    #[must_use]
+    pub fn heat_color(&self, tier: HeatTier) -> UiColor {
+        match tier {
+            HeatTier::Cold => self.heat_low,
+            HeatTier::Warm => self.heat_warm,
+            HeatTier::Hot => self.heat_high,
+            HeatTier::Inferno => self.heat_inferno,
         }
     }
 
@@ -613,6 +636,37 @@ impl GameUi {
             target.ignite_stacks,
             snapshot.ignite_max,
         );
+
+        // ...and the same thing in words, because counting pips at a glance is not a thing
+        // a player should have to do to know whether Detonate is available. The maximum is
+        // the configuration's, never a literal five.
+        self.title.clear();
+        if target.ignite_at_maximum {
+            self.title.push_str("MAX IGNITE");
+        } else {
+            self.title.push_str("IGNITE ");
+            write_integer(&mut self.title, i64::from(target.ignite_stacks));
+            self.title.push_str(" / ");
+            write_integer(&mut self.title, i64::from(snapshot.ignite_max));
+        }
+        let colour = if target.ignite_at_maximum {
+            self.theme.slot_empowered
+        } else {
+            self.theme.text
+        };
+        self.list.text_at(
+            (
+                frame.x
+                    + self.metrics.padding
+                    + f32::from(snapshot.ignite_max)
+                        * (self.metrics.ignite_pip + self.metrics.ignite_pip_gap)
+                    + self.metrics.scale.px(6.0),
+                bar.bottom() + self.metrics.scale.px(3.0),
+            ),
+            &self.title,
+            colour,
+            self.metrics.scale.text(self.theme.hud_text_scale * 0.75),
+        );
     }
 
     /// One pip per possible Ignite stack, filled up to what is on the target.
@@ -695,39 +749,41 @@ impl GameUi {
             self.metrics.resource_bar_width,
             self.metrics.resource_bar_height,
         );
-        let heat_colour = if snapshot.player.overheated {
-            self.theme.heat_overheated
-        } else if snapshot.player.heat_is_high() {
-            self.theme.heat_high
+        let heat_colour = self.theme.heat_color(snapshot.player.heat_tier);
+        // The Inferno State has spent the bar, so the bar it is drawn on is the *state's*
+        // remaining time: a full bar draining is what the player has to read, not a Heat
+        // value that is sitting at zero.
+        let fill = if snapshot.player.in_inferno() {
+            (snapshot.player.inferno_remaining / INFERNO_DURATION).clamp(0.0, 1.0)
         } else {
-            self.theme.heat_low
+            snapshot.player.heat_fraction()
         };
-        self.list.bar(
-            heat_rect,
-            snapshot.player.heat_fraction(),
-            self.theme.bar_background,
-            heat_colour,
-        );
-        if snapshot.player.overheated {
-            self.list
-                .outline(heat_rect, 2.0, self.theme.heat_overheated);
+        self.list
+            .bar(heat_rect, fill, self.theme.bar_background, heat_colour);
+        if snapshot.player.in_inferno() {
+            self.list.outline(heat_rect, 3.0, self.theme.heat_inferno);
         }
-        // The Overheat threshold, marked on the bar so the range is readable at a glance.
-        let threshold = UiRect::new(
-            heat_rect.x + heat_rect.width * (HEAT_HIGH_THRESHOLD / HEAT_MAXIMUM)
-                - self.metrics.scale.px(1.0),
-            heat_rect.y,
-            self.metrics.scale.px(2.0),
-            heat_rect.height,
-        );
-        self.list.rect(threshold, self.theme.text);
+        // The two band thresholds, marked so the ranges are readable at a glance.
+        for threshold in snapshot.player.heat_thresholds() {
+            let marker = UiRect::new(
+                heat_rect.x + heat_rect.width * threshold - self.metrics.scale.px(1.0),
+                heat_rect.y,
+                self.metrics.scale.px(2.0),
+                heat_rect.height,
+            );
+            self.list.rect(marker, self.theme.text);
+        }
 
         self.title.clear();
-        self.title.push_str("HEAT ");
-        write_integer(&mut self.title, snapshot.player.heat as i64);
-        self.title.push_str(" / 100");
-        if snapshot.player.overheated {
-            self.title.push_str("  OVERHEAT");
+        if snapshot.player.in_inferno() {
+            self.title.push_str("INFERNO ");
+            write_tenths(&mut self.title, snapshot.player.inferno_remaining);
+            self.title.push_str(" S");
+        } else {
+            self.title.push_str("HEAT ");
+            write_integer(&mut self.title, snapshot.player.heat as i64);
+            self.title.push_str(" / 100  ");
+            self.title.push_str(snapshot.player.heat_tier.as_str());
         }
         self.list.text_at(
             (heat_rect.x, heat_rect.y - self.metrics.scale.px(14.0)),
@@ -1043,6 +1099,7 @@ impl GameUi {
         anchor: UiRect,
         view: &AbilitySlotView,
         ignite_max: u8,
+        mastery: engine_game::firemage::FireMastery,
         viewport: (u32, u32),
     ) {
         let definition = view.ability.definition();
@@ -1054,8 +1111,11 @@ impl GameUi {
 
         let mut line = String::new();
         if definition.cast_time > 0.0 {
+            // The *current* cast time, haste included: a tooltip that printed the table's
+            // three seconds while Fire Mastery was running would be telling the player
+            // something the game has stopped believing.
             line.push_str("CAST ");
-            write_tenths(&mut line, definition.cast_time);
+            write_tenths(&mut line, view.cast_time);
             line.push_str(" S  ");
         } else {
             line.push_str("INSTANT  ");
@@ -1118,21 +1178,63 @@ impl GameUi {
             self.tooltip_lines.push(line);
         }
 
-        if definition.ignite_stacks > 0 {
+        if view.damage > 0.0 {
             let mut line = String::new();
-            line.push_str("APPLIES ");
-            write_integer(&mut line, i64::from(definition.ignite_stacks));
-            line.push_str(" IGNITE");
+            line.push_str("DAMAGE ");
+            write_integer(&mut line, view.damage as i64);
+            if definition.tick_coefficient > 0.0 && definition.coefficient <= 0.0 {
+                line.push_str(" PER TICK");
+            }
             self.tooltip_lines.push(line);
         }
 
-        if view.ability == FireAbility::FireDetonation {
+        if view.ignite_scaling > 0.0 {
+            let mut line = String::new();
+            line.push('+');
+            write_integer(&mut line, (view.ignite_scaling * 100.0).round() as i64);
+            line.push_str("% PER IGNITE STACK ON THE TARGET");
+            self.tooltip_lines.push(line);
+        }
+
+        if view.ignite_stacks > 0 {
+            let mut line = String::new();
+            line.push_str("APPLIES ");
+            write_integer(&mut line, i64::from(view.ignite_stacks));
+            line.push_str(" IGNITE");
+            if view.ignite_chance < 1.0 {
+                line.push_str(", ");
+                write_integer(&mut line, (view.ignite_chance * 100.0).round() as i64);
+                line.push_str("% CHANCE");
+            }
+            self.tooltip_lines.push(line);
+        }
+
+        if view.ability == FireAbility::Detonate {
             // The requirement, stated in the numbers that are true right now.
             let mut line = String::new();
             line.push_str("REQUIRES ");
             write_integer(&mut line, i64::from(ignite_max));
             line.push_str(" IGNITE STACKS");
             self.tooltip_lines.push(line);
+            // Generated from the constant the explosion actually uses, so the tooltip
+            // cannot survive a balance pass while the number moves.
+            let mut line = String::new();
+            line.push_str("DEALS ");
+            write_integer(
+                &mut line,
+                (engine_game::sim::DETONATE_FRACTION * 100.0).round() as i64,
+            );
+            line.push_str("% OF THE BURN'S REMAINING DAMAGE, AT ONCE");
+            self.tooltip_lines.push(line);
+        }
+
+        if view.ability == FireAbility::FireMastery {
+            self.tooltip_lines.push(match mastery {
+                engine_game::firemage::FireMastery::Haste => "+15% HASTE FOR 20 S".to_owned(),
+                engine_game::firemage::FireMastery::Crit => {
+                    "+15% CRITICAL STRIKE FOR 20 S".to_owned()
+                }
+            });
         }
 
         let height = self.metrics.tooltip_line * (self.tooltip_lines.len() as f32 + 1.0)
@@ -1260,7 +1362,7 @@ fn icon_for(ability: FireAbility) -> Option<UiIcon> {
         FireAbility::Meteor => Some(UiIcon::Meteor),
         // The cone that spreads Ignite; the art is named for the shape, the ability for
         // what it does.
-        FireAbility::FlameWave => Some(UiIcon::FlameCone),
+        FireAbility::FlameCone => Some(UiIcon::FlameCone),
         _ => None,
     }
 }
@@ -1657,7 +1759,7 @@ mod tests {
         for (ability, expected) in [
             (FireAbility::Firebolt, UiIcon::Firebolt),
             (FireAbility::Meteor, UiIcon::Meteor),
-            (FireAbility::FlameWave, UiIcon::FlameCone),
+            (FireAbility::FlameCone, UiIcon::FlameCone),
         ] {
             let slot = FireAbility::BAR
                 .iter()

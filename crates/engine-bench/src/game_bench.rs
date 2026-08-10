@@ -320,6 +320,7 @@ fn drive(simulation: &mut Simulation, tick: usize) {
         forward: angle.cos(),
         right: angle.sin(),
         yaw: angle * 0.25,
+        face_camera: false,
     });
 
     // A rotation that keeps every ability busy: fireball on its cooldown, ignite and

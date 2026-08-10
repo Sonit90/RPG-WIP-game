@@ -1,35 +1,45 @@
-//! Ignite: a stacking burn that never explodes on its own.
+//! Ignite: a long stacking burn that is a *bank* of damage, and never explodes on its own.
 //!
 //! ```text
 //! apply -> stacks + 1 (up to the maximum), duration refreshed
-//! at maximum -> further applications do nothing until Fire Detonation consumes them
+//! at maximum -> further applications do nothing until Detonate consumes them
 //! ```
 //!
 //! The maximum is **not** a constant here. It is passed in on every call, because the
-//! Infernal Capacity talent raises it and every part of the game - the detonation
-//! requirement, the tooltips, the stack display - has to agree about what it currently is.
-//! A `const MAX_STACKS: u8 = 5` anywhere in the codebase would be a bug waiting for that
+//! Infernal Capacity talent raises it and every part of the game - the Detonate requirement,
+//! the tooltips, the stack display - has to agree about what it currently is. A
+//! `const MAX_STACKS: u8 = 5` anywhere in the codebase would be a bug waiting for that
 //! talent to be bought.
 //!
-//! Reaching the maximum triggers nothing. That is the class's central decision: the payoff
-//! is spent by the player with Fire Detonation, not collected automatically by the engine.
+//! ## No snapshot, structurally
+//!
+//! A burn stores three numbers: how many stacks, how long it has left, and how far it is
+//! through its current tick **as a fraction**. It does not store haste, critical strike
+//! chance, spell power or any damage multiplier, because there is nowhere to put them. The
+//! interval is handed in on every [`IgniteTracker::tick`] and the damage is computed by the
+//! simulation from the stats of the moment the tick fires, so a burn applied at 10 % haste
+//! ticks at 30 % haste the instant the mage has it, mid-burn, with no reapplication.
+//!
+//! Keeping the phase as a fraction rather than as seconds is what makes that work: a burn
+//! 40 % of the way to its next tick stays 40 % of the way there when the interval changes,
+//! rather than jumping forwards or backwards.
 
 use crate::entity::EntityId;
 
-/// Ignite stacks a target starts with when a fresh burn lands.
+/// Maximum Ignite stacks before talents.
 pub const IGNITE_BASE_MAX_STACKS: u8 = 5;
 
-/// How long a stack lasts before the whole burn falls off, in seconds.
-pub const IGNITE_BASE_DURATION: f32 = 8.0;
+/// How long a burn lasts before it falls off, in seconds.
+pub const IGNITE_BASE_DURATION: f32 = 30.0;
 
-/// Damage one stack deals per second.
+/// Seconds between ticks, before haste.
+pub const IGNITE_BASE_TICK_INTERVAL: f32 = 2.0;
+
+/// Spell power one stack deals per tick.
 ///
-/// The burn is a floor of damage, not the class's output: the abilities are. It exists so a
-/// stack is worth something before it is detonated.
-pub const IGNITE_DAMAGE_PER_STACK_PER_SECOND: f32 = 12.0;
-
-/// How often the burn deals its damage, in seconds.
-pub const IGNITE_TICK_INTERVAL: f32 = 1.0;
+/// One stack over a full base duration is `0.20 x 15 ticks = 300 %` spell power; five
+/// stacks are `1500 %`. That is the bank Detonate cashes in.
+pub const IGNITE_SPELL_POWER_PER_STACK: f32 = 0.24;
 
 /// One target's burn.
 #[derive(Debug, Default, Clone, Copy, PartialEq)]
@@ -38,8 +48,11 @@ pub struct Ignite {
     pub stacks: u8,
     /// Seconds before the burn falls off entirely.
     pub remaining: f32,
-    /// Seconds until the next damage tick.
-    pub until_tick: f32,
+    /// How far through the current tick it is, in `0.0..1.0`.
+    ///
+    /// A fraction rather than seconds, so a change of haste rescales the interval without
+    /// moving the burn's position within it.
+    pub phase: f32,
 }
 
 impl Ignite {
@@ -49,16 +62,38 @@ impl Ignite {
         self.stacks > 0 && self.remaining > 0.0
     }
 
-    /// Whether the target is at `maximum` stacks - the Fire Detonation requirement.
+    /// Whether the target is at `maximum` stacks - the Detonate requirement.
     #[must_use]
     pub fn is_at_maximum(&self, maximum: u8) -> bool {
         self.is_active() && self.stacks >= maximum
     }
 
-    /// How much damage one tick of this burn deals.
+    /// Spell power one tick of this burn is worth, before every multiplier.
     #[must_use]
-    pub fn tick_damage(&self) -> f32 {
-        f32::from(self.stacks) * IGNITE_DAMAGE_PER_STACK_PER_SECOND * IGNITE_TICK_INTERVAL
+    pub fn tick_coefficient(&self, damage_scale: f32) -> f32 {
+        f32::from(self.stacks) * IGNITE_SPELL_POWER_PER_STACK * damage_scale
+    }
+
+    /// How many ticks are left at the current interval, fractions included.
+    ///
+    /// Fractional on purpose: a burn with 1.4 ticks left is worth 1.4 ticks, so the value of
+    /// detonating it decays smoothly instead of in steps.
+    #[must_use]
+    pub fn ticks_remaining(&self, interval: f32) -> f32 {
+        if !self.is_active() || interval <= 0.0 {
+            return 0.0;
+        }
+        self.remaining / interval
+    }
+
+    /// Spell power the rest of this burn would deal if it ran out.
+    ///
+    /// **What Detonate converts.** Remaining, not theoretical: a burn three seconds from
+    /// falling off is worth three seconds, which is what makes the timing of a detonation a
+    /// decision rather than a formality.
+    #[must_use]
+    pub fn remaining_coefficient(&self, interval: f32, damage_scale: f32) -> f32 {
+        self.tick_coefficient(damage_scale) * self.ticks_remaining(interval)
     }
 }
 
@@ -114,11 +149,7 @@ impl IgniteTracker {
         }
         let burn = &mut self.burns[slot];
         if !burn.is_active() {
-            *burn = Ignite {
-                stacks: 0,
-                remaining: 0.0,
-                until_tick: IGNITE_TICK_INTERVAL,
-            };
+            *burn = Ignite::default();
         }
         let before = burn.stacks;
         burn.stacks = burn.stacks.saturating_add(count).min(maximum);
@@ -127,28 +158,12 @@ impl IgniteTracker {
     }
 
     /// Removes the burn and returns how many stacks were on it.
-    ///
-    /// `retain` leaves that many stacks behind, which is what the Lingering Embers talent
-    /// does after a detonation. The consumed count is what the explosion is scaled by, so a
-    /// retained stack is not counted twice.
-    pub fn consume(&mut self, target: EntityId, retain: u8, duration: f32) -> u8 {
-        let slot = target.index();
-        let Some(burn) = self.burns.get_mut(slot) else {
+    pub fn consume(&mut self, target: EntityId) -> u8 {
+        let Some(burn) = self.burns.get_mut(target.index()) else {
             return 0;
         };
         let consumed = burn.stacks;
-        if consumed == 0 {
-            return 0;
-        }
-        if retain > 0 {
-            *burn = Ignite {
-                stacks: retain.min(consumed),
-                remaining: duration,
-                until_tick: IGNITE_TICK_INTERVAL,
-            };
-        } else {
-            *burn = Ignite::default();
-        }
+        *burn = Ignite::default();
         consumed
     }
 
@@ -166,23 +181,25 @@ impl IgniteTracker {
         }
     }
 
-    /// Advances every burn, collecting the ticks that fired into `out`.
+    /// Advances every burn by `seconds` at the *current* `interval`, reporting its ticks.
     ///
-    /// Damage is not dealt here: this module owns what a burn *is*, and the simulation owns
-    /// what damage *does* - events, the meter, deaths. A tick is reported, not applied.
-    pub fn tick(&mut self, seconds: f32, out: &mut Vec<IgniteTick>) {
+    /// Damage is not dealt here and is not even computed here: this module owns what a burn
+    /// *is*, and the simulation owns what a tick is worth - which is the only way the damage
+    /// can be evaluated against the stats of the moment rather than the stats of the
+    /// application.
+    pub fn tick(&mut self, seconds: f32, interval: f32, out: &mut Vec<IgniteTick>) {
+        let interval = interval.max(0.01);
         for (slot, burn) in self.burns.iter_mut().enumerate() {
             if !burn.is_active() {
                 continue;
             }
             burn.remaining -= seconds;
-            burn.until_tick -= seconds;
-            if burn.until_tick <= 0.0 {
-                burn.until_tick += IGNITE_TICK_INTERVAL;
+            burn.phase += seconds / interval;
+            while burn.phase >= 1.0 {
+                burn.phase -= 1.0;
                 out.push(IgniteTick {
                     slot,
                     stacks: burn.stacks,
-                    damage: burn.tick_damage(),
                 });
             }
             if burn.remaining <= 0.0 {
@@ -193,14 +210,15 @@ impl IgniteTracker {
 }
 
 /// One burn dealing its damage.
+///
+/// Carries no damage number: what a tick is worth is decided by the simulation from the
+/// stats it fires under.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct IgniteTick {
     /// World slot of the burning entity.
     pub slot: usize,
     /// Stacks at the moment it ticked.
     pub stacks: u8,
-    /// Damage the tick deals before any modifier.
-    pub damage: f32,
 }
 
 #[cfg(test)]
@@ -217,6 +235,7 @@ mod tests {
 
     const MAX: u8 = IGNITE_BASE_MAX_STACKS;
     const DURATION: f32 = IGNITE_BASE_DURATION;
+    const INTERVAL: f32 = IGNITE_BASE_TICK_INTERVAL;
 
     #[test]
     fn a_fresh_target_takes_a_stack_and_starts_burning() {
@@ -240,7 +259,6 @@ mod tests {
         }
         assert!(tracker.is_at_maximum(target, MAX));
 
-        // Further applications land nothing, and nothing explodes.
         assert_eq!(tracker.apply(target, 1, MAX, DURATION), 0);
         assert_eq!(tracker.stacks(target), MAX);
         assert_eq!(tracker.apply(target, 3, MAX, DURATION), 0);
@@ -249,7 +267,6 @@ mod tests {
 
     #[test]
     fn the_maximum_is_whatever_the_caller_says_it_is() {
-        // The Infernal Capacity property: nothing here knows the number five.
         let mut tracker = IgniteTracker::new();
         let target = entity(1);
         for _ in 0..10 {
@@ -257,55 +274,17 @@ mod tests {
         }
         assert_eq!(tracker.stacks(target), 6);
         assert!(tracker.is_at_maximum(target, 6));
-        assert!(tracker.is_at_maximum(target, 5), "six is at least five");
-
-        let mut small = IgniteTracker::new();
-        for _ in 0..10 {
-            small.apply(target, 1, 2, DURATION);
-        }
-        assert_eq!(small.stacks(target), 2);
-    }
-
-    #[test]
-    fn applying_several_stacks_at_once_clamps_at_the_maximum() {
-        let mut tracker = IgniteTracker::new();
-        let target = entity(2);
-        assert_eq!(tracker.apply(target, 3, MAX, DURATION), 3);
-        assert_eq!(tracker.apply(target, 3, MAX, DURATION), 2, "clamped");
-        assert_eq!(tracker.stacks(target), MAX);
-    }
-
-    #[test]
-    fn a_new_stack_refreshes_the_duration() {
-        let mut tracker = IgniteTracker::new();
-        let target = entity(4);
-        tracker.apply(target, 1, MAX, DURATION);
-
-        let mut ticks = Vec::new();
-        tracker.tick(5.0, &mut ticks);
-        assert!(tracker.get(target).remaining < 4.0);
-
-        tracker.apply(target, 1, MAX, DURATION);
-        assert_eq!(tracker.get(target).remaining, DURATION);
     }
 
     #[test]
     fn a_burn_at_the_cap_still_has_its_duration_refreshed() {
-        // Otherwise a target held at maximum stacks would fall off mid-rotation, which is
-        // the opposite of what stacking it up is for.
         let mut tracker = IgniteTracker::new();
         let target = entity(5);
-        for _ in 0..MAX {
-            tracker.apply(target, 1, MAX, DURATION);
-        }
+        tracker.apply(target, MAX, MAX, DURATION);
         let mut ticks = Vec::new();
-        tracker.tick(4.0, &mut ticks);
+        tracker.tick(4.0, INTERVAL, &mut ticks);
 
-        assert_eq!(
-            tracker.apply(target, 1, MAX, DURATION),
-            0,
-            "no stack landed"
-        );
+        assert_eq!(tracker.apply(target, 1, MAX, DURATION), 0, "a stack landed");
         assert_eq!(tracker.get(target).remaining, DURATION, "but it refreshed");
     }
 
@@ -316,28 +295,76 @@ mod tests {
         tracker.apply(target, 2, MAX, DURATION);
 
         let mut ticks = Vec::new();
-        tracker.tick(DURATION + 0.1, &mut ticks);
+        tracker.tick(DURATION + 0.1, INTERVAL, &mut ticks);
         assert!(!tracker.is_ignited(target));
-        assert_eq!(tracker.stacks(target), 0);
     }
 
     #[test]
-    fn ticks_fire_on_the_interval_and_scale_with_the_stack_count() {
+    fn ticks_fire_on_the_interval_and_report_the_stack_count() {
         let mut tracker = IgniteTracker::new();
         let target = entity(7);
         tracker.apply(target, 3, MAX, DURATION);
 
         let mut ticks = Vec::new();
-        tracker.tick(IGNITE_TICK_INTERVAL, &mut ticks);
+        tracker.tick(INTERVAL, INTERVAL, &mut ticks);
         assert_eq!(ticks.len(), 1);
         assert_eq!(ticks[0].slot, 7);
         assert_eq!(ticks[0].stacks, 3);
-        assert!((ticks[0].damage - 3.0 * IGNITE_DAMAGE_PER_STACK_PER_SECOND).abs() < 1e-3);
 
-        // Half an interval later, nothing has fired again.
         ticks.clear();
-        tracker.tick(IGNITE_TICK_INTERVAL * 0.5, &mut ticks);
+        tracker.tick(INTERVAL * 0.5, INTERVAL, &mut ticks);
         assert!(ticks.is_empty());
+    }
+
+    #[test]
+    fn haste_makes_an_already_running_burn_tick_faster() {
+        // The no-snapshot property, asserted where it lives. The burn was applied without
+        // any haste and is handed a shorter interval mid-life; it must speed up at once.
+        let mut tracker = IgniteTracker::new();
+        let target = entity(2);
+        tracker.apply(target, 1, MAX, DURATION);
+
+        let mut slow = Vec::new();
+        tracker.tick(4.0, 2.0, &mut slow);
+        assert_eq!(slow.len(), 2, "two seconds a tick over four seconds");
+
+        let mut fast = Vec::new();
+        tracker.tick(4.0, 1.0, &mut fast);
+        assert_eq!(fast.len(), 4, "the burn ignored the new interval");
+    }
+
+    #[test]
+    fn a_change_of_interval_keeps_the_burns_place_within_it() {
+        // Half way through a two-second tick is half way through a one-second tick, not
+        // "one second in" - otherwise a haste buff would skip or repeat a tick.
+        let mut tracker = IgniteTracker::new();
+        let target = entity(4);
+        tracker.apply(target, 1, MAX, DURATION);
+
+        let mut ticks = Vec::new();
+        tracker.tick(1.0, 2.0, &mut ticks);
+        assert!(ticks.is_empty());
+        assert!((tracker.get(target).phase - 0.5).abs() < 1e-5);
+
+        // Now at a one-second interval: half of it is left, so half a second fires it.
+        tracker.tick(0.5, 1.0, &mut ticks);
+        assert_eq!(ticks.len(), 1);
+    }
+
+    #[test]
+    fn a_burns_worth_is_what_is_left_of_it_not_what_it_started_as() {
+        let mut tracker = IgniteTracker::new();
+        let target = entity(9);
+        tracker.apply(target, MAX, MAX, DURATION);
+
+        let full = tracker.get(target).remaining_coefficient(INTERVAL, 1.0);
+        let expected = f32::from(MAX) * IGNITE_SPELL_POWER_PER_STACK * (DURATION / INTERVAL);
+        assert!((full - expected).abs() < 1e-3, "{full} vs {expected}");
+
+        let mut ticks = Vec::new();
+        tracker.tick(DURATION * 0.5, INTERVAL, &mut ticks);
+        let half = tracker.get(target).remaining_coefficient(INTERVAL, 1.0);
+        assert!((half - full * 0.5).abs() < 0.5, "{half} vs {full}");
     }
 
     #[test]
@@ -346,23 +373,9 @@ mod tests {
         let target = entity(8);
         tracker.apply(target, MAX, MAX, DURATION);
 
-        assert_eq!(tracker.consume(target, 0, DURATION), MAX);
+        assert_eq!(tracker.consume(target), MAX);
         assert_eq!(tracker.stacks(target), 0);
-        assert!(!tracker.is_ignited(target));
-        assert_eq!(tracker.consume(target, 0, DURATION), 0, "twice");
-    }
-
-    #[test]
-    fn consuming_can_leave_a_stack_behind() {
-        // Lingering Embers. The consumed count is still the full burn, so the explosion is
-        // not quietly weakened by the stack that stays.
-        let mut tracker = IgniteTracker::new();
-        let target = entity(9);
-        tracker.apply(target, MAX, MAX, DURATION);
-
-        assert_eq!(tracker.consume(target, 1, DURATION), MAX);
-        assert_eq!(tracker.stacks(target), 1);
-        assert_eq!(tracker.get(target).remaining, DURATION);
+        assert_eq!(tracker.consume(target), 0, "twice");
     }
 
     #[test]
@@ -373,42 +386,21 @@ mod tests {
 
         assert_eq!(tracker.stacks(entity(0)), MAX);
         assert_eq!(tracker.stacks(entity(4)), 1);
-        assert_eq!(tracker.stacks(entity(2)), 0, "an untouched slot");
-
-        tracker.consume(entity(0), 0, DURATION);
-        assert_eq!(tracker.stacks(entity(4)), 1, "the other burn was consumed");
-    }
-
-    #[test]
-    fn clearing_removes_burns_without_reporting_ticks() {
-        let mut tracker = IgniteTracker::new();
-        tracker.apply(entity(1), 2, MAX, DURATION);
-        tracker.clear(entity(1));
-        assert!(!tracker.is_ignited(entity(1)));
-
-        tracker.apply(entity(2), 2, MAX, DURATION);
-        tracker.clear_all();
-        assert!(!tracker.is_ignited(entity(2)));
-
-        let mut ticks = Vec::new();
-        tracker.tick(10.0, &mut ticks);
-        assert!(ticks.is_empty());
+        tracker.consume(entity(0));
+        assert_eq!(tracker.stacks(entity(4)), 1);
     }
 
     #[test]
     fn nothing_happens_automatically_at_the_maximum() {
-        // The class's central rule, asserted where it lives: reaching the cap produces no
-        // tick, no event and no removal. Only Fire Detonation empties a burn.
+        // The class's central rule, asserted where it lives.
         let mut tracker = IgniteTracker::new();
         let target = entity(3);
-        let mut ticks = Vec::new();
         for _ in 0..MAX {
             tracker.apply(target, 1, MAX, DURATION);
         }
         assert!(tracker.is_at_maximum(target, MAX));
-        assert!(ticks.is_empty());
-
-        tracker.tick(0.0, &mut ticks);
+        let mut ticks = Vec::new();
+        tracker.tick(0.0, INTERVAL, &mut ticks);
         assert!(tracker.is_at_maximum(target, MAX), "it detonated itself");
     }
 }

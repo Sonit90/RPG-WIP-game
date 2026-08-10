@@ -56,7 +56,9 @@ use crate::world::{EntityKind, GameWorld};
 /// How the simulation is configured.
 mod firemage_exec;
 
-pub use firemage_exec::{CONE_HALF_ANGLE, CastAim, horizontal_distance};
+pub use firemage_exec::{
+    CONE_HALF_ANGLE, CastAim, DETONATE_FRACTION, FireCounters, horizontal_distance,
+};
 
 /// How a simulation is configured: the tick rate, the character, and the random seed.
 #[derive(Debug, Clone, PartialEq)]
@@ -257,6 +259,10 @@ pub struct Simulation {
     pending: CommandBuffer,
     /// The class: abilities, Ignite, Heat, Ultimate Energy, talents and ground fire.
     mage: FireMage,
+    /// What the class did this fight, for the combat simulator's report.
+    ///
+    /// Counts only. Nothing in gameplay reads them, and they are cleared with the dummies.
+    fire: FireCounters,
     /// Ignite ticks produced this step. Reused; never freed.
     ignite_ticks: Vec<IgniteTick>,
     /// Zone ticks produced this step. Reused; never freed.
@@ -318,6 +324,7 @@ impl Simulation {
             intent: MoveIntent::NONE,
             pending: CommandBuffer::with_capacity(16),
             mage: FireMage::new(seed),
+            fire: FireCounters::default(),
             ignite_ticks: Vec::with_capacity(32),
             zone_ticks: Vec::with_capacity(16),
             impacts: Vec::with_capacity(8),
@@ -477,6 +484,7 @@ impl Simulation {
                 // Held, not queued: the newest movement intent replaces the previous one,
                 // so a frame that produced three of them does not move three times.
                 self.intent.direction = command.move_direction();
+                self.intent.facing = command.facing_lock();
             }
             other => self.pending.push(other),
         }
@@ -607,7 +615,43 @@ impl Simulation {
 
         let telemetry_started = Instant::now();
         self.flush_observations();
+        self.sample_fire_counters(step);
         stats.telemetry += telemetry_started.elapsed();
+    }
+
+    /// Records what Heat and Ignite looked like this tick.
+    ///
+    /// Sampled once a tick rather than derived from events afterwards: "average Heat" and
+    /// "seconds spent above seventy" are properties of the timeline, and an event stream
+    /// does not have one.
+    fn sample_fire_counters(&mut self, step: f32) {
+        let step = f64::from(step);
+        let heat = self.mage.heat.value();
+        self.fire.heat_sum += f64::from(heat);
+        self.fire.heat_samples += 1;
+        if self.mage.heat.is_inferno() {
+            self.fire.seconds_inferno += step;
+            self.fire.seconds_hot += step;
+            self.fire.seconds_warm += step;
+        } else {
+            if heat >= crate::firemage::HEAT_WARM_THRESHOLD {
+                self.fire.seconds_warm += step;
+            }
+            if heat >= crate::firemage::HEAT_HOT_THRESHOLD {
+                self.fire.seconds_hot += step;
+            }
+        }
+
+        for slot in 0..self.world.slot_count() {
+            let Some(id) = self.world.id_at(slot) else {
+                continue;
+            };
+            let stacks = self.mage.ignite.stacks(id);
+            if stacks > 0 {
+                self.fire.ignite_stack_sum += f64::from(stacks);
+                self.fire.ignite_stack_samples += 1;
+            }
+        }
     }
 
     /// Applies the discrete commands that arrived since the last tick.
@@ -837,6 +881,7 @@ impl Simulation {
 
         // Finished. The effect lands now, against the target the cast was started on.
         self.player.cast = None;
+        self.fire.casts_completed += 1;
         let ability = cast.ability;
         self.events.push(CombatEvent::CastEnded {
             source: self.player.entity,
@@ -873,6 +918,9 @@ impl Simulation {
         let Some(cast) = self.player.cast.take() else {
             return;
         };
+        if !matches!(end, CastEnd::Completed) {
+            self.fire.casts_interrupted += 1;
+        }
         self.events.push(CombatEvent::CastEnded {
             source: self.player.entity,
             ability: AbilityId::from_fire(cast.ability),
@@ -940,7 +988,10 @@ impl Simulation {
 
         self.ignite_ticks.clear();
         let mut ignite_ticks = std::mem::take(&mut self.ignite_ticks);
-        self.mage.ignite.tick(step, &mut ignite_ticks);
+        // The interval is handed in from the stats of *this* tick, which is what lets a
+        // burn applied without haste speed up the moment the mage gains some.
+        let interval = self.mage.ignite_interval();
+        self.mage.ignite.tick(step, interval, &mut ignite_ticks);
         for tick in &ignite_ticks {
             self.resolve_ignite_tick(*tick);
         }
@@ -992,6 +1043,9 @@ impl Simulation {
         if result.applied <= 0.0 && !result.killed {
             return;
         }
+        // Dealing damage is what "in combat" means for Heat: the bar holds while a fight is
+        // running and only drains once one is over.
+        self.mage.note_combat();
 
         let tick = self.tick;
         self.events.push(CombatEvent::Damage(DamageEvent {
@@ -1006,8 +1060,14 @@ impl Simulation {
         }));
 
         if result.killed {
-            // A corpse does not burn. Reported rather than silently dropped, so a status
-            // bar that is watching sees it end.
+            // A corpse does not burn: the burn, its ticks and the fire vulnerability go
+            // with the target, which is what makes detonating a nearly dead pack a real
+            // decision rather than a free one.
+            self.mage.ignite.clear(target);
+            self.mage.vulnerability.clear(target);
+
+            // Reported rather than silently dropped, so a status bar that is watching sees
+            // it end.
             self.outcomes.clear();
             let mut ended = std::mem::take(&mut self.outcomes);
             if let Some(statuses) = self.world.statuses_mut(target) {
@@ -1041,6 +1101,7 @@ impl Simulation {
     /// known state, and waiting eight seconds for Detonate is not part of that state.
     pub fn reset_dummies(&mut self) {
         self.mage.reset();
+        self.fire = FireCounters::default();
         for slot in 0..self.world.slot_count() {
             let Some(id) = self.world.id_at(slot) else {
                 continue;
@@ -1111,9 +1172,7 @@ mod tests {
             .ignite
             .apply(target, maximum, maximum, duration);
 
-        simulation
-            .cast(FireAbility::FireDetonation)
-            .expect("a full burn");
+        simulation.cast(FireAbility::Detonate).expect("a full burn");
         assert!(dummy_health(&simulation, target) < before, "nothing landed");
         assert!(simulation.casting().is_none(), "an instant started a cast");
     }
@@ -1147,6 +1206,7 @@ mod tests {
             forward: 1.0,
             right: 0.0,
             yaw: 0.0,
+            face_camera: false,
         });
         simulation.step_many(10);
 
@@ -1170,6 +1230,7 @@ mod tests {
             forward: 1.0,
             right: 0.0,
             yaw: 0.0,
+            face_camera: false,
         });
         simulation.step_many(4);
         assert!(simulation.casting().is_none(), "movement did not break it");
@@ -1204,9 +1265,7 @@ mod tests {
             .ignite
             .apply(target, maximum, maximum, duration);
 
-        simulation
-            .cast(FireAbility::FireDetonation)
-            .expect("a full burn");
+        simulation.cast(FireAbility::Detonate).expect("a full burn");
         assert!(simulation.casting().is_none(), "an instant started a cast");
 
         // An unrelated, ready, free ability is held by the shared timer and by nothing else.
@@ -1245,6 +1304,7 @@ mod tests {
             forward: 1.0,
             right: 0.0,
             yaw: 0.0,
+            face_camera: false,
         });
         simulation.step_many(4);
 
@@ -1268,9 +1328,7 @@ mod tests {
             .ignite
             .apply(target, maximum, maximum, duration);
 
-        simulation
-            .cast(FireAbility::FireDetonation)
-            .expect("a full burn");
+        simulation.cast(FireAbility::Detonate).expect("a full burn");
         assert!(
             !simulation.mage().off_global_cooldown(),
             "an instant that landed did not lock the bar"
@@ -1320,6 +1378,7 @@ mod tests {
             forward: 1.0,
             right: 0.0,
             yaw: 0.0,
+            face_camera: false,
         });
         simulation.step_many(30);
         assert!(

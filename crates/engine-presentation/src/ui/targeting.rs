@@ -75,6 +75,13 @@ impl TargetShape {
                 // The executor's own spread, so the wedge shown is the wedge that is hit.
                 half_angle: engine_game::sim::CONE_HALF_ANGLE,
             },
+            // Firestorm: a rectangle from the caster along the direction the mouse picks,
+            // with the executor's own length and width so the strip shown is the strip
+            // that burns.
+            engine_game::firemage::TargetMode::Line => Self::Line {
+                width: definition.width,
+                length: definition.range,
+            },
             _ => Self::Circle {
                 radius: definition.radius,
             },
@@ -87,9 +94,10 @@ impl TargetShape {
         match self {
             Self::Circle { radius } => radius,
             Self::Cone { range, .. } => range,
-            Self::Rectangle { width, length } | Self::Line { width, length } => {
-                (width.max(length)) * 0.5
-            }
+            // A line is anchored on the caster and runs forwards, so how far it reaches is
+            // its length - the same answer a cone gives, for the same reason.
+            Self::Line { length, .. } => length,
+            Self::Rectangle { width, length } => (width.max(length)) * 0.5,
         }
     }
 
@@ -352,17 +360,31 @@ mod tests {
 
     #[test]
     fn every_placed_ability_shares_the_one_system_and_brings_its_own_numbers() {
-        // The brief's requirement: one targeting implementation, three abilities.
+        // The brief's requirement: one targeting implementation, several shapes, and every
+        // number read from the ability rather than from the targeting code.
         for ability in [
             FireAbility::Meteor,
             FireAbility::Firestorm,
+            FireAbility::FlameCone,
             FireAbility::Cataclysm,
         ] {
             let mut targeting = GroundTargeting::new();
             targeting.begin(ability);
             let active = targeting.active().expect("placing");
-            assert_eq!(active.radius, ability.definition().radius, "{ability:?}");
-            assert!(active.radius > 0.0, "{ability:?} has no circle to draw");
+            assert!(active.radius > 0.0, "{ability:?} has no shape to draw");
+            match active.shape {
+                TargetShape::Circle { radius } => {
+                    assert_eq!(radius, ability.definition().radius, "{ability:?}");
+                }
+                TargetShape::Cone { range, .. } => {
+                    assert_eq!(range, ability.definition().range, "{ability:?}");
+                }
+                TargetShape::Line { width, length } => {
+                    assert_eq!(width, ability.definition().width, "{ability:?}");
+                    assert_eq!(length, ability.definition().range, "{ability:?}");
+                }
+                TargetShape::Rectangle { .. } => panic!("{ability:?} asked for a rectangle"),
+            }
         }
     }
 
@@ -507,11 +529,9 @@ mod tests {
 
     #[test]
     fn a_shape_comes_from_the_ability_rather_than_from_the_targeting_code() {
-        for ability in [
-            FireAbility::Meteor,
-            FireAbility::Firestorm,
-            FireAbility::Cataclysm,
-        ] {
+        // Placed circles ask for a circle, the line asks for a line, and the cone asks for
+        // a wedge - all read from the same table the executor hits with.
+        for ability in [FireAbility::Meteor, FireAbility::Cataclysm] {
             let shape = TargetShape::of(ability);
             assert_eq!(
                 shape,
@@ -522,6 +542,21 @@ mod tests {
             );
             assert_eq!(shape.extent(), ability.definition().radius);
         }
+
+        let firestorm = FireAbility::Firestorm.definition();
+        assert_eq!(
+            TargetShape::of(FireAbility::Firestorm),
+            TargetShape::Line {
+                width: firestorm.width,
+                length: firestorm.range,
+            }
+        );
+        // The designed linear zone: twenty metres ahead, ten across.
+        assert_eq!((firestorm.range, firestorm.width), (20.0, 10.0));
+        assert_eq!(
+            TargetShape::of(FireAbility::Firestorm).extent(),
+            firestorm.range
+        );
     }
 
     #[test]

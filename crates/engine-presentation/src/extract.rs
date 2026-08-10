@@ -589,6 +589,7 @@ mod tests {
             forward: 1.0,
             right: 0.0,
             yaw: 0.0,
+            face_camera: false,
         });
         simulation.step_many(30);
 
@@ -914,6 +915,7 @@ mod tests {
             forward: 1.0,
             right: 0.0,
             yaw: 0.0,
+            face_camera: false,
         });
         simulation.step_many(30);
 
@@ -966,6 +968,7 @@ mod tests {
             forward: 1.0,
             right: 0.0,
             yaw: 0.0,
+            face_camera: false,
         });
         simulation.step_many(30);
         // Advance a partial tick so alpha is non-zero without a tick running.
@@ -1018,6 +1021,7 @@ mod tests {
                     forward: 1.0,
                     right: 0.4,
                     yaw: 0.3,
+                    face_camera: false,
                 });
                 simulation.step_once();
             }
@@ -1145,6 +1149,7 @@ mod tests {
                 forward: 1.0,
                 right: 0.3,
                 yaw: 0.2,
+                face_camera: false,
             });
             simulation.step_once();
             extractor.extract(&simulation);

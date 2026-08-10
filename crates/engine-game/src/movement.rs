@@ -136,6 +136,11 @@ pub struct MoveIntent {
     pub direction: Vec3,
     /// Whether a jump was requested this step.
     pub jump: bool,
+    /// Yaw to face regardless of where the body is going, if the camera is steering.
+    ///
+    /// `None` is the ordinary case: the character turns to face its own velocity. `Some`
+    /// pins it, so walking backwards walks backwards instead of turning round.
+    pub facing: Option<f32>,
 }
 
 impl MoveIntent {
@@ -143,6 +148,7 @@ impl MoveIntent {
     pub const NONE: Self = Self {
         direction: Vec3::ZERO,
         jump: false,
+        facing: None,
     };
 
     /// An intent to move in `direction`.
@@ -151,6 +157,17 @@ impl MoveIntent {
         Self {
             direction,
             jump: false,
+            facing: None,
+        }
+    }
+
+    /// An intent to move in `direction` while facing `yaw`, whatever the direction is.
+    #[must_use]
+    pub fn steered(direction: Vec3, yaw: f32) -> Self {
+        Self {
+            direction,
+            jump: false,
+            facing: Some(yaw),
         }
     }
 }
@@ -249,7 +266,7 @@ pub fn step(body: &mut Body, intent: MoveIntent, config: &MovementConfig, second
 
     resolve_ground(body, config);
     confine_to_arena(body, config);
-    face_movement(body);
+    face_movement(body, intent);
     body.state = classify(body);
 }
 
@@ -312,7 +329,7 @@ pub fn step_collided(
     body.ground_normal = state.ground_normal;
 
     confine_to_arena(body, config);
-    face_movement(body);
+    face_movement(body, intent);
     body.state = classify(body);
     result
 }
@@ -390,8 +407,16 @@ fn confine_to_arena(body: &mut Body, config: &MovementConfig) {
     }
 }
 
-/// Turns the body to face the way it is moving.
-fn face_movement(body: &mut Body) {
+/// Turns the body to face the way it is moving, unless the intent pins the facing.
+///
+/// A pinned facing is the camera steering: the character keeps looking where the player is
+/// looking, so strafing strafes and backpedalling walks backwards rather than turning
+/// round to run away.
+fn face_movement(body: &mut Body, intent: MoveIntent) {
+    if let Some(yaw) = intent.facing {
+        body.facing_yaw = yaw;
+        return;
+    }
     // Below walking pace the direction is numerical noise, and turning to face it makes a
     // standing character spin.
     if body.horizontal_speed() > 0.1 {
@@ -652,5 +677,37 @@ mod tests {
         let before = body;
         step(&mut body, MoveIntent::moving(Vec3::X), &config, 0.0);
         assert_eq!(body, before, "the first frame has a zero delta");
+    }
+    #[test]
+    fn a_steered_body_faces_the_camera_while_it_walks_backwards() {
+        // Holding the look button: retreating from something keeps it in front, which is
+        // what makes backing away different from turning your back.
+        let config = MovementConfig::default();
+        let mut body = Body::at(Vec3::ZERO);
+        // Facing -Z, walking +Z: away from whatever is in front.
+        let intent = MoveIntent::steered(Vec3::Z, 0.0);
+        for _ in 0..30 {
+            step(&mut body, intent, &config, 1.0 / 60.0);
+        }
+
+        assert!(body.position.z > 0.5, "the body did not back away");
+        assert!(
+            body.facing_yaw.abs() < 1e-4,
+            "the body turned round: {}",
+            body.facing_yaw
+        );
+
+        // Without the lock the same movement turns it about, which is the old behaviour and
+        // still the right one when the camera is not steering.
+        let mut free = Body::at(Vec3::ZERO);
+        let intent = MoveIntent::moving(Vec3::Z);
+        for _ in 0..30 {
+            step(&mut free, intent, &config, 1.0 / 60.0);
+        }
+        assert!(
+            (free.facing_yaw.abs() - std::f32::consts::PI).abs() < 1e-2,
+            "{}",
+            free.facing_yaw
+        );
     }
 }

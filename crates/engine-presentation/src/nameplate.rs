@@ -903,6 +903,7 @@ mod tests {
                 forward: 1.0,
                 right: 0.2,
                 yaw: 0.1,
+                face_camera: false,
             });
             simulation.step_once();
             set.build(&simulation, &camera.view_projection(), VIEWPORT, &config());

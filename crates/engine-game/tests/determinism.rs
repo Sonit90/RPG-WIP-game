@@ -28,6 +28,7 @@ fn script() -> Vec<(u32, PlayerCommand)> {
                 forward: 1.0,
                 right: 0.0,
                 yaw: 0.0,
+                face_camera: false,
             },
         ),
         (
@@ -36,6 +37,7 @@ fn script() -> Vec<(u32, PlayerCommand)> {
                 forward: 0.5,
                 right: 1.0,
                 yaw: 0.7,
+                face_camera: false,
             },
         ),
         (30, PlayerCommand::Jump),
@@ -48,6 +50,7 @@ fn script() -> Vec<(u32, PlayerCommand)> {
                 forward: 0.0,
                 right: 0.0,
                 yaw: 0.7,
+                face_camera: false,
             },
         ),
     ]

@@ -16,6 +16,9 @@ members = [
     "crates/engine-presentation",
     "crates/engine-app",
     "crates/engine-bench",
+    # The FireMage combat simulator. Headless: it drives engine-game's own simulation, so
+    # the numbers it balances are the numbers the game uses.
+    "crates/engine-sim",
     # Development-only: a visual test bed for the renderer. Nothing depends on it, and the
     # shipped game never links it.
     "crates/engine-showcase",

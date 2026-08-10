@@ -32,6 +32,13 @@ pub enum PlayerCommand {
         right: f32,
         /// Where the camera is looking, radians about +Y.
         yaw: f32,
+        /// Whether the camera is steering the character.
+        ///
+        /// True while the look button is held. The character then faces where the *camera*
+        /// looks instead of where it is walking, which is what makes strafing and
+        /// backpedalling keep the enemy in front - and it is the difference between
+        /// retreating from something and turning your back on it.
+        face_camera: bool,
     },
     /// Jump, if the character is on the ground. Edge-triggered.
     Jump,
@@ -72,6 +79,21 @@ pub enum PlayerCommand {
 }
 
 impl PlayerCommand {
+    /// The yaw a [`PlayerCommand::Move`] locks the character's facing to, if it locks it.
+    ///
+    /// `None` means "face the way you are going", which is the ordinary case.
+    #[must_use]
+    pub fn facing_lock(self) -> Option<f32> {
+        match self {
+            Self::Move {
+                yaw,
+                face_camera: true,
+                ..
+            } => Some(yaw),
+            _ => None,
+        }
+    }
+
     /// The world-space direction a [`PlayerCommand::Move`] asks for.
     ///
     /// Camera-relative, which is what makes W mean "away from the camera" rather than
@@ -85,6 +107,7 @@ impl PlayerCommand {
             forward,
             right,
             yaw,
+            ..
         } = self
         else {
             return Vec3::ZERO;
@@ -193,6 +216,7 @@ mod tests {
             forward: 1.0,
             right: 0.0,
             yaw: 0.0,
+            face_camera: false,
         }
         .move_direction();
         assert!(close(direction, -Vec3::Z), "{direction:?}");
@@ -205,6 +229,7 @@ mod tests {
             forward: 1.0,
             right: 0.0,
             yaw: std::f32::consts::FRAC_PI_2,
+            face_camera: false,
         }
         .move_direction();
         // A quarter turn about +Y sends −Z to −X.
@@ -217,6 +242,7 @@ mod tests {
             forward: 0.0,
             right: 1.0,
             yaw: 0.0,
+            face_camera: false,
         }
         .move_direction();
         assert!(close(direction, Vec3::X), "{direction:?}");
@@ -229,6 +255,7 @@ mod tests {
                 forward: 0.0,
                 right: 0.0,
                 yaw: 1.2,
+                face_camera: false,
             }
             .move_direction(),
             Vec3::ZERO
@@ -242,7 +269,8 @@ mod tests {
             !PlayerCommand::Move {
                 forward: 1.0,
                 right: 0.0,
-                yaw: 0.0
+                yaw: 0.0,
+                face_camera: false,
             }
             .is_discrete()
         );

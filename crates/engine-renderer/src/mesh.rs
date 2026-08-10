@@ -281,6 +281,33 @@ impl MeshData {
         }
     }
 
+    /// A flat unit rectangle lying face up, one metre across and one metre long, running
+    /// from the origin along -Z.
+    ///
+    /// The footprint of a *linear* zone - Firestorm's line of fire. Anchored at one end
+    /// rather than centred, because a line ability starts at the caster and runs forwards,
+    /// and yaw zero faces -Z everywhere else in the project. The transform scales it to the
+    /// ability's own width and length, so the strip drawn is the strip that burns.
+    #[must_use]
+    pub fn strip() -> Self {
+        let vertices = vec![
+            MeshVertex::new(Vec3::new(-0.5, 0.0, 0.0), Vec3::Y, Vec2::new(0.0, 0.0)),
+            MeshVertex::new(Vec3::new(0.5, 0.0, 0.0), Vec3::Y, Vec2::new(1.0, 0.0)),
+            MeshVertex::new(Vec3::new(0.5, 0.0, -1.0), Vec3::Y, Vec2::new(1.0, 1.0)),
+            MeshVertex::new(Vec3::new(-0.5, 0.0, -1.0), Vec3::Y, Vec2::new(0.0, 1.0)),
+        ];
+        // Wound to face up, like the disc, the ring and the sector: the first triangle's
+        // cross product has to point along +Y or the world pass backface-culls the whole
+        // strip and the indicator is simply not there.
+        let indices = vec![0, 1, 2, 0, 2, 3];
+
+        Self {
+            bounds: Sphere::around(vertices.iter().map(|vertex| vertex.position)),
+            vertices,
+            indices,
+        }
+    }
+
     /// A flat sector lying face up: a slice of a disc of `radius`, `half_angle` either side
     /// of -Z, which is the direction a character with zero yaw faces.
     ///
@@ -640,6 +667,50 @@ mod tests {
     use super::*;
 
     const EPSILON: f32 = 1e-4;
+
+    #[test]
+    fn every_ground_shape_is_wound_the_same_way_up() {
+        // The bug this test exists for: a strip wound the other way is silently
+        // backface-culled, and a targeting indicator that is simply not drawn looks like a
+        // targeting system that never opened.
+        fn faces_up(mesh: &MeshData) -> bool {
+            mesh.indices().chunks_exact(3).all(|triangle| {
+                let a = mesh.vertices()[triangle[0] as usize].position;
+                let b = mesh.vertices()[triangle[1] as usize].position;
+                let c = mesh.vertices()[triangle[2] as usize].position;
+                let (u, v) = (b - a, c - a);
+                // The +Y component of u x v. Positive means the triangle faces the sky.
+                u.z * v.x - u.x * v.z > 0.0
+            })
+        }
+
+        assert!(faces_up(&MeshData::disc(0.5, 16)), "disc");
+        assert!(faces_up(&MeshData::ring(0.5, 0.05, 16)), "ring");
+        assert!(faces_up(&MeshData::sector(1.0, 0.5, 8)), "sector");
+        assert!(faces_up(&MeshData::strip()), "strip");
+    }
+
+    #[test]
+    fn a_strip_is_a_unit_rectangle_anchored_at_one_end() {
+        // Anchored rather than centred: a linear zone starts at the caster and runs
+        // forwards, and yaw zero faces -Z everywhere else in the project.
+        let strip = MeshData::strip();
+        assert_eq!(strip.triangle_count(), 2);
+        assert!(
+            strip
+                .vertices()
+                .iter()
+                .all(|vertex| vertex.position.x.abs() <= 0.5 + EPSILON
+                    && (-1.0 - EPSILON..=EPSILON).contains(&vertex.position.z))
+        );
+        assert!(
+            strip
+                .vertices()
+                .iter()
+                .any(|vertex| (vertex.position.z + 1.0).abs() < EPSILON),
+            "the strip does not reach its far end"
+        );
+    }
 
     #[test]
     fn a_mesh_rejects_an_index_past_its_vertices() {
