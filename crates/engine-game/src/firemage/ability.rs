@@ -494,6 +494,8 @@ pub enum AbilityError {
     CasterDead,
     /// Every charge is spent.
     OnCooldown,
+    /// Another ability was started less than a global cooldown ago.
+    GlobalCooldown,
     /// Not enough Ultimate Energy.
     NotEnoughEnergy,
     /// It needs a target and none is selected.
@@ -517,6 +519,7 @@ impl AbilityError {
         match self {
             Self::CasterDead => "YOU ARE DEAD",
             Self::OnCooldown => "NOT READY",
+            Self::GlobalCooldown => "TOO SOON",
             Self::NotEnoughEnergy => "NOT ENOUGH ENERGY",
             Self::NoTarget => "NO TARGET",
             Self::TargetInvalid => "TARGET IS GONE",

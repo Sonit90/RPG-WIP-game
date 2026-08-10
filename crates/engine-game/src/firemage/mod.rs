@@ -55,6 +55,14 @@ pub use talent::{
 };
 pub use zone::{PendingImpact, Zone, ZoneField, ZoneKind, ZoneTick};
 
+/// The global cooldown: how long after starting any ability before another may be started.
+///
+/// Half a second, the genre's standard. It is what stops two instants from going off in the
+/// same frame, and it is deliberately *shorter than most cast times* - a one-second Firebolt
+/// outlasts it, so the next cast can begin the moment the last one lands and the rotation is
+/// limited by casting rather than by a timer.
+pub const GLOBAL_COOLDOWN: f32 = 0.5;
+
 /// Damage reduction while Flame Shield is up.
 pub const FLAME_SHIELD_REDUCTION: f32 = 0.30;
 
@@ -165,6 +173,8 @@ pub struct FireMage {
     effects: TalentEffects,
     /// The random source every chance in the class rolls against.
     pub rng: Rng,
+    /// The global cooldown, started by any ability.
+    pub global_cooldown: Timer,
     /// Flame Shield's damage reduction.
     pub flame_shield: Timer,
     /// Inferno's critical strike bonus.
@@ -212,6 +222,7 @@ impl FireMage {
             talents,
             effects,
             rng: Rng::new(seed),
+            global_cooldown: Timer::idle(),
             flame_shield: Timer::idle(),
             inferno_crit: Timer::idle(),
             haste_buff: Timer::idle(),
@@ -275,6 +286,37 @@ impl FireMage {
                 self.abilities.grant_charge(ability, &self.effects);
             }
         }
+    }
+
+    /// Whether an ability may be started right now.
+    #[must_use]
+    pub fn off_global_cooldown(&self) -> bool {
+        !self.global_cooldown.is_active()
+    }
+
+    /// How far through the global cooldown we are, in `0.0..=1.0`. One means ready.
+    ///
+    /// What the bar draws its sweep from, computed here so the interface cannot disagree
+    /// with the rule that refuses the cast.
+    #[must_use]
+    pub fn global_cooldown_fraction(&self) -> f32 {
+        let total = self.global_cooldown_duration();
+        if total <= 0.0 || !self.global_cooldown.is_active() {
+            return 1.0;
+        }
+        (1.0 - self.global_cooldown.remaining() / total).clamp(0.0, 1.0)
+    }
+
+    /// How long the global cooldown lasts right now, haste included.
+    #[must_use]
+    pub fn global_cooldown_duration(&self) -> f32 {
+        GLOBAL_COOLDOWN / (1.0 + self.haste())
+    }
+
+    /// Starts the global cooldown. Called when an ability is started, not when it lands.
+    pub fn start_global_cooldown(&mut self) {
+        let duration = self.global_cooldown_duration();
+        self.global_cooldown.start(duration);
     }
 
     /// The current haste, which shortens casts and cooldowns.
@@ -381,6 +423,7 @@ impl FireMage {
         self.abilities.tick(seconds, haste, &self.effects);
         self.heat.tick(seconds);
         self.energy.tick(seconds);
+        self.global_cooldown.tick(seconds);
         self.flame_shield.tick(seconds);
         self.haste_buff.tick(seconds);
         self.invulnerable.tick(seconds);
@@ -410,6 +453,7 @@ impl FireMage {
         self.energy.clear();
         self.ignite.clear_all();
         self.zones.clear();
+        self.global_cooldown.clear();
         self.flame_shield.clear();
         self.inferno_crit.clear();
         self.haste_buff.clear();
@@ -608,6 +652,32 @@ mod tests {
         assert!(mage.abilities.is_ready(FireAbility::Meteor));
         assert!(!mage.flame_shield.is_active());
         assert_eq!(mage.ignite_max(), 6, "the talent was refunded");
+    }
+
+    #[test]
+    fn the_global_cooldown_runs_for_half_a_second_and_is_shortened_by_haste() {
+        let mut mage = FireMage::new(1);
+        assert!(mage.off_global_cooldown());
+        assert_eq!(mage.global_cooldown_fraction(), 1.0);
+
+        mage.start_global_cooldown();
+        assert!(!mage.off_global_cooldown());
+        assert!(mage.global_cooldown_fraction() < 0.01);
+
+        mage.tick(GLOBAL_COOLDOWN * 0.5);
+        let half = mage.global_cooldown_fraction();
+        assert!((half - 0.5).abs() < 0.05, "{half}");
+
+        mage.tick(GLOBAL_COOLDOWN);
+        assert!(mage.off_global_cooldown());
+        assert_eq!(mage.global_cooldown_fraction(), 1.0);
+
+        // Haste shortens it, like every other timer the class has.
+        mage.purchase_talent(TalentId::LivingInferno)
+            .expect("testing mode pays");
+        mage.gain_heat(100.0);
+        assert!(mage.haste() > 0.0);
+        assert!(mage.global_cooldown_duration() < GLOBAL_COOLDOWN);
     }
 
     #[test]

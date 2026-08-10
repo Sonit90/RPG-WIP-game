@@ -240,6 +240,47 @@ impl MeshData {
         }
     }
 
+    /// A flat ring lying face up: the outline of a disc, `thickness` wide.
+    ///
+    /// The bright edge of an area indicator. Drawn as geometry rather than as a line so it
+    /// has a real width on the ground and stays readable at any distance and any angle.
+    #[must_use]
+    pub fn ring(radius: f32, thickness: f32, segments: u32) -> Self {
+        let segments = segments.max(3);
+        let inner = (radius - thickness).max(0.0);
+        let mut vertices = Vec::with_capacity(segments as usize * 2);
+        for segment in 0..segments {
+            let angle = segment as f32 / segments as f32 * std::f32::consts::TAU;
+            let (sin, cos) = angle.sin_cos();
+            vertices.push(MeshVertex::new(
+                Vec3::new(cos * inner, 0.0, sin * inner),
+                Vec3::Y,
+                Vec2::new(0.0, 0.0),
+            ));
+            vertices.push(MeshVertex::new(
+                Vec3::new(cos * radius, 0.0, sin * radius),
+                Vec3::Y,
+                Vec2::new(1.0, 0.0),
+            ));
+        }
+
+        let mut indices = Vec::with_capacity(segments as usize * 6);
+        for segment in 0..segments {
+            let a = segment * 2;
+            let b = a + 1;
+            let c = (segment + 1) % segments * 2;
+            let d = c + 1;
+            // Wound to face up, like the disc it outlines.
+            indices.extend_from_slice(&[a, c, b, b, c, d]);
+        }
+
+        Self {
+            bounds: Sphere::around(vertices.iter().map(|vertex| vertex.position)),
+            vertices,
+            indices,
+        }
+    }
+
     /// A UV sphere with `segments` around and `rings` from pole to pole.
     ///
     /// Exists because a lit sphere is the only shape whose shading is obviously right or

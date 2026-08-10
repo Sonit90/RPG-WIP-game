@@ -25,14 +25,110 @@ use super::input::UiInput;
 /// instead; the seam is this one function.
 pub const GROUND_HEIGHT: f32 = 0.0;
 
+/// The footprint an ability covers, independent of which ability it is.
+///
+/// The targeting system handles the cursor, the validation, the confirmation and the
+/// cancellation; the *ability* supplies one of these and the range it may be placed within.
+/// That split is what makes the system reusable: a future rectangle ability adds a variant
+/// and a mesh, and nothing about placing it changes.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum TargetShape {
+    /// A circle of `radius` metres. What every current ground ability uses.
+    Circle {
+        /// Metres from the centre.
+        radius: f32,
+    },
+    /// A cone of `range` metres and `half_angle` radians either side of centre.
+    Cone {
+        /// How far it reaches.
+        range: f32,
+        /// Half the opening angle, radians.
+        half_angle: f32,
+    },
+    /// An axis-aligned rectangle, in metres.
+    Rectangle {
+        /// Across.
+        width: f32,
+        /// Along.
+        length: f32,
+    },
+    /// A line of `width` metres running `length` metres from the caster.
+    Line {
+        /// Across.
+        width: f32,
+        /// Along.
+        length: f32,
+    },
+}
+
+impl TargetShape {
+    /// The shape an ability's own definition asks for.
+    ///
+    /// Read from the ability table, so an ability's footprint and the circle the player
+    /// places are the same number by construction.
+    #[must_use]
+    pub fn of(ability: FireAbility) -> Self {
+        let definition = ability.definition();
+        match definition.target {
+            engine_game::firemage::TargetMode::Cone => Self::Cone {
+                range: definition.range,
+                half_angle: std::f32::consts::FRAC_PI_3,
+            },
+            _ => Self::Circle {
+                radius: definition.radius,
+            },
+        }
+    }
+
+    /// How far the shape reaches from its centre, for a bounding test and for the mesh.
+    #[must_use]
+    pub fn extent(self) -> f32 {
+        match self {
+            Self::Circle { radius } => radius,
+            Self::Cone { range, .. } => range,
+            Self::Rectangle { width, length } | Self::Line { width, length } => {
+                (width.max(length)) * 0.5
+            }
+        }
+    }
+
+    /// Whether a point on the ground is inside the shape placed at `centre`.
+    ///
+    /// `facing` is where the caster looks, which only the directional shapes use.
+    #[must_use]
+    pub fn contains(self, centre: Vec3, facing: f32, point: Vec3) -> bool {
+        let offset = Vec3::new(point.x - centre.x, 0.0, point.z - centre.z);
+        let distance = (offset.x * offset.x + offset.z * offset.z).sqrt();
+        match self {
+            Self::Circle { radius } => distance <= radius,
+            Self::Cone { range, half_angle } => {
+                if distance > range {
+                    return false;
+                }
+                if distance <= f32::EPSILON {
+                    return true;
+                }
+                let forward = Vec3::new(-facing.sin(), 0.0, -facing.cos());
+                let cosine = (offset.x * forward.x + offset.z * forward.z) / distance;
+                cosine >= half_angle.cos()
+            }
+            Self::Rectangle { width, length } | Self::Line { width, length } => {
+                offset.x.abs() <= width * 0.5 && offset.z.abs() <= length * 0.5
+            }
+        }
+    }
+}
+
 /// What the player is currently placing.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct GroundTarget {
     /// Which ability is waiting to be placed.
     pub ability: FireAbility,
-    /// Where the circle currently sits, in world space.
+    /// What footprint it covers.
+    pub shape: TargetShape,
+    /// Where the indicator currently sits, in world space.
     pub position: Vec3,
-    /// How big it is, in metres.
+    /// How big it is, in metres. The circle's radius, or the shape's extent.
     pub radius: f32,
     /// How far from the caster it may be placed.
     pub range: f32,
@@ -86,10 +182,12 @@ impl GroundTargeting {
     /// Enters targeting mode for `ability`, reading its radius and range from its definition.
     pub fn begin(&mut self, ability: FireAbility) {
         let definition = ability.definition();
+        let shape = TargetShape::of(ability);
         self.active = Some(GroundTarget {
             ability,
+            shape,
             position: Vec3::ZERO,
-            radius: definition.radius,
+            radius: shape.extent(),
             range: definition.range,
             valid: false,
         });
@@ -382,6 +480,70 @@ mod tests {
             "the circle left the ground: {after:?}"
         );
         let _ = grounded;
+    }
+
+    #[test]
+    fn a_shape_comes_from_the_ability_rather_than_from_the_targeting_code() {
+        for ability in [
+            FireAbility::Meteor,
+            FireAbility::Firestorm,
+            FireAbility::Cataclysm,
+        ] {
+            let shape = TargetShape::of(ability);
+            assert_eq!(
+                shape,
+                TargetShape::Circle {
+                    radius: ability.definition().radius
+                },
+                "{ability:?}"
+            );
+            assert_eq!(shape.extent(), ability.definition().radius);
+        }
+    }
+
+    #[test]
+    fn a_circle_contains_what_is_inside_it_and_nothing_else() {
+        let shape = TargetShape::Circle { radius: 5.0 };
+        assert!(shape.contains(Vec3::ZERO, 0.0, Vec3::new(3.0, 0.0, 3.0)));
+        assert!(!shape.contains(Vec3::ZERO, 0.0, Vec3::new(6.0, 0.0, 0.0)));
+        // Height is ignored: an area on the floor covers what stands on a step in it.
+        assert!(shape.contains(Vec3::ZERO, 0.0, Vec3::new(0.0, 40.0, 0.0)));
+    }
+
+    #[test]
+    fn the_other_shapes_are_ready_for_the_abilities_that_will_want_them() {
+        // Defined and tested now so a rectangle ability is a variant and a mesh rather than
+        // a second targeting system.
+        let cone = TargetShape::Cone {
+            range: 10.0,
+            half_angle: std::f32::consts::FRAC_PI_4,
+        };
+        assert!(
+            cone.contains(Vec3::ZERO, 0.0, Vec3::new(0.0, 0.0, -5.0)),
+            "in front"
+        );
+        assert!(
+            !cone.contains(Vec3::ZERO, 0.0, Vec3::new(0.0, 0.0, 5.0)),
+            "behind"
+        );
+        assert!(
+            !cone.contains(Vec3::ZERO, 0.0, Vec3::new(0.0, 0.0, -50.0)),
+            "too far"
+        );
+
+        let rectangle = TargetShape::Rectangle {
+            width: 4.0,
+            length: 10.0,
+        };
+        assert!(rectangle.contains(Vec3::ZERO, 0.0, Vec3::new(1.5, 0.0, 4.0)));
+        assert!(!rectangle.contains(Vec3::ZERO, 0.0, Vec3::new(3.0, 0.0, 0.0)));
+
+        let line = TargetShape::Line {
+            width: 2.0,
+            length: 20.0,
+        };
+        assert!(line.contains(Vec3::ZERO, 0.0, Vec3::new(0.5, 0.0, 9.0)));
+        assert!(!line.contains(Vec3::ZERO, 0.0, Vec3::new(2.0, 0.0, 0.0)));
     }
 
     #[test]

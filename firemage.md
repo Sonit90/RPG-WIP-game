@@ -90,6 +90,12 @@ Cataclysm can be cast, and casting it empties the bar.
 
 A cast is a commitment: the charge is spent when it starts.
 
+**Global cooldown: 0.5 s**, started by any ability and shortened by haste. It is deliberately
+shorter than most cast times - a 1 s Firebolt outlasts it, so back-to-back casting is limited
+by the cast and never by the timer, while two instants cannot go off in the same frame. A
+press during a cast still queues: the queue starts when the cast lands, by which time the
+global cooldown that cast began has long expired.
+
 - **Pressing another ability queues it.** The running cast is not disturbed; the queued one
   starts the moment it lands, and is re-validated then because its target may have died.
 - **One slot, not a list.** Mashing four keys means "then that one".
@@ -122,10 +128,18 @@ refuse it, and a tooltip is generated from the ability's own row.
 - **Resource bars**: Heat with its Overheat threshold marked, Ultimate Energy with a ready
   state.
 - **Ignite pips**: one per possible stack, so the count of pips *is* the current maximum.
-- **Ground targeting**: one system for Meteor, Firestorm and Cataclysm. The circle is a flat
-  decal on the floor, 3 cm up so it beats the depth test without floating, scaled to the
-  ability's own radius; enemies inside it are ringed. Left click confirms, right click or
-  Escape cancels, and an out-of-range placement is refused before the click rather than after.
+- **Ground targeting**: one system for Meteor, Firestorm and Cataclysm, in the shape of the
+  genre's. Activating an ability enters a targeting state rather than casting; a world-space
+  indicator follows the cursor across the ground every frame; left click confirms, right click
+  or Escape cancels. The indicator is two flat meshes 3 cm up - a shaded fill for the
+  footprint and a brighter ring for its edge, the ring breathing slowly - scaled to the
+  ability's own radius, red when the placement is out of range and refused before the click.
+  Enemies the shape covers are ringed on screen.
+
+  The **shape** comes from the ability, not from the targeting code: `TargetShape` covers
+  `Circle`, `Cone`, `Rectangle` and `Line`, with containment tested for all four. Only the
+  circle has a mesh today, because it is the only shape a current ability asks for; a
+  rectangle ability is a variant, a mesh, and no change to placing it.
 - **Talent menu**: the button in the top-right corner, all 25 nodes by tier with costs,
   descriptions and state.
 
@@ -159,3 +173,10 @@ talent window -> targeting circle -> cast in progress -> pause menu
   not the geometry.
 - **No icons.** Ability buttons show four letters of the name; the layout does not change when
   textures arrive.
+- **The area indicator's fill is opaque, not translucent.** The world mesh pass has blending
+  disabled, so alpha would be ignored; the fill is a dark shade the ground reads through
+  tonally and the bright ring carries the shape. A real translucent fill needs a blended
+  pipeline, instance sorting and a second draw - worth doing, and deliberately not smuggled
+  into this change.
+- **Cone, rectangle and line targeting have no mesh yet.** The shapes exist and are tested;
+  nothing asks to place one.

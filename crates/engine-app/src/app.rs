@@ -85,6 +85,15 @@ const COLLISION_DEBUG_KEY: KeyCode = KeyCode::F3;
 /// reads as painted on the ground rather than hovering over it.
 const DECAL_HEIGHT: f32 = 0.03;
 
+/// How far above the fill the indicator's ring sits, in metres.
+const DECAL_RING_LIFT: f32 = 0.02;
+
+/// How fast the indicator's ring breathes, in radians per second.
+const DECAL_PULSE_RATE: f32 = 3.0;
+
+/// How much the ring grows and shrinks as it breathes, as a fraction of its radius.
+const DECAL_PULSE_DEPTH: f32 = 0.02;
+
 /// Size of the ring drawn over an enemy inside the targeting circle, in pixels.
 const AFFECTED_MARK_SIZE: f32 = 46.0;
 
@@ -151,13 +160,18 @@ pub struct App {
     talent_scratch: String,
     /// Which ability button the pointer is over, for the tooltip.
     hovered_ability: Option<FireAbility>,
-    /// The flat disc drawn on the ground while an ability is being placed.
+    /// The area indicator drawn on the ground while an ability is being placed.
     ///
-    /// A render entity rather than a screen-space circle: an area on the floor has to lie
-    /// *on the floor*, or the player cannot tell what it will cover.
-    targeting_decal: Option<engine_render_data::RenderEntity>,
-    /// The mesh and material the decal is drawn with.
-    decal_visuals: (MeshHandle, MaterialHandle, MaterialHandle),
+    /// Two render entities rather than a screen-space circle: an area on the floor has to
+    /// lie *on the floor*, or the player cannot tell what it will cover. The fill is the
+    /// shaded footprint and the ring is its bright edge, which is what makes the shape
+    /// readable over grass, stone or a corpse.
+    targeting_decal: Option<(
+        engine_render_data::RenderEntity,
+        engine_render_data::RenderEntity,
+    )>,
+    /// The meshes and materials the indicator is drawn with.
+    decal_visuals: DecalVisuals,
     /// Enemies inside the circle this frame. Reused; never freed.
     affected: Vec<engine_game::EntityId>,
     /// Whether the right button is held and the mouse is turning the camera.
@@ -223,20 +237,7 @@ impl App {
         renderer.set_ui_enabled(args.ui);
 
         let visuals = upload_visuals(&mut renderer)?;
-        // The targeting decal: a unit plane, laid flat, in a valid and an invalid colour.
-        // A unit disc: the transform scales it to whatever radius the ability has.
-        let decal_mesh = renderer.create_mesh(&MeshData::disc(0.5, 32))?;
-        let decal_valid = renderer.create_material(
-            MaterialDesc::colored(0.95, 0.45, 0.12)
-                .with_roughness(1.0)
-                .with_emissive(Vec3::new(0.55, 0.20, 0.03)),
-        )?;
-        let decal_invalid = renderer.create_material(
-            MaterialDesc::colored(0.80, 0.12, 0.12)
-                .with_roughness(1.0)
-                .with_emissive(Vec3::new(0.45, 0.03, 0.03)),
-        )?;
-        let decal_visuals = (decal_mesh, decal_valid, decal_invalid);
+        let decal_visuals = upload_decal_visuals(&mut renderer)?;
         #[cfg(feature = "debug-overlay")]
         let debug_visuals = upload_debug_visuals(&mut renderer)?;
 
@@ -784,57 +785,75 @@ impl App {
         self.renderer.set_ui(self.game_ui.list());
     }
 
-    /// Puts the flat targeting disc on the ground, or takes it away.
+    /// Puts the area indicator on the ground, or takes it away.
     ///
-    /// Drawn in the world rather than over it: the disc lies on the floor a few centimetres
-    /// up - high enough to beat the floor in the depth test, low enough to read as painted
-    /// on it - and is scaled to the ability's own radius, so what is highlighted is exactly
-    /// what will be hit.
-    fn update_targeting_decal(&mut self) {
+    /// Two flat meshes a few centimetres up: a dim fill for the footprint and a bright ring
+    /// for its edge, both scaled to the ability's own radius so what is shown is exactly
+    /// what will be hit. The ring breathes slowly, which is what makes it read as a live
+    /// indicator rather than as a decal somebody left on the floor.
+    fn update_targeting_decal(&mut self, elapsed: f32) {
         let Some(target) = self.targeting.active() else {
-            if let Some(entity) = self.targeting_decal.take() {
-                self.extractor.render_world_mut().despawn(entity);
+            if let Some((fill, ring)) = self.targeting_decal.take() {
+                self.extractor.render_world_mut().despawn(fill);
+                self.extractor.render_world_mut().despawn(ring);
             }
             self.affected.clear();
             return;
         };
 
-        let (mesh, valid, invalid) = self.decal_visuals;
-        let material = if target.valid { valid } else { invalid };
-        // A hair above the floor: coplanar with it would flicker, and any higher would
-        // float.
-        let position = Vec3::new(target.position.x, DECAL_HEIGHT, target.position.z);
-        let transform = engine_core::transform::Transform {
-            translation: position,
-            rotation: engine_core::math::Quat::IDENTITY,
-            scale: Vec3::new(target.radius * 2.0, 1.0, target.radius * 2.0),
+        let visuals = self.decal_visuals;
+        let (fill_material, ring_material) = if target.valid {
+            (visuals.fill_valid, visuals.ring_valid)
+        } else {
+            (visuals.fill_invalid, visuals.ring_invalid)
         };
+
+        // A slow breath, and the ring sits a hair above the fill so the two never fight
+        // over the same depth.
+        let pulse = 1.0 + (elapsed * DECAL_PULSE_RATE).sin() * DECAL_PULSE_DEPTH;
+        let radius = target.radius;
+        let flat = |scale: f32, height: f32| engine_core::transform::Transform {
+            translation: Vec3::new(target.position.x, height, target.position.z),
+            rotation: engine_core::math::Quat::IDENTITY,
+            scale: Vec3::new(scale, 1.0, scale),
+        };
+        let fill_transform = flat(radius * 2.0, DECAL_HEIGHT);
+        let ring_transform = flat(radius * 2.0 * pulse, DECAL_HEIGHT + DECAL_RING_LIFT);
+        let bounds = engine_core::math::Sphere::new(Vec3::ZERO, 0.75);
 
         let world = self.extractor.render_world_mut();
         match self.targeting_decal {
-            Some(entity) => {
-                world.set_transform(
-                    entity,
-                    transform,
-                    engine_core::math::Sphere::new(Vec3::ZERO, 0.75),
-                );
-                world.set_material(entity, material);
+            Some((fill, ring)) => {
+                world.set_transform(fill, fill_transform, bounds);
+                world.set_material(fill, fill_material);
+                world.set_transform(ring, ring_transform, bounds);
+                world.set_material(ring, ring_material);
             }
             None => {
-                let entity = world.spawn(engine_render_data::RenderEntityDesc {
-                    transform,
-                    mesh,
-                    material,
-                    bounds: engine_core::math::Sphere::new(Vec3::ZERO, 0.75),
-                    visible: true,
-                    style: engine_render_data::InstanceStyle::NEUTRAL,
-                });
-                self.targeting_decal = Some(entity);
+                let mut spawn = |mesh, material, transform| {
+                    world.spawn(engine_render_data::RenderEntityDesc {
+                        transform,
+                        mesh,
+                        material,
+                        bounds,
+                        visible: true,
+                        style: engine_render_data::InstanceStyle::NEUTRAL,
+                    })
+                };
+                let fill = spawn(visuals.fill_mesh, fill_material, fill_transform);
+                let ring = spawn(visuals.ring_mesh, ring_material, ring_transform);
+                self.targeting_decal = Some((fill, ring));
             }
         }
 
-        // Everything the circle currently covers, so the interface can mark it.
+        // Everything the shape currently covers, so the interface can mark it. The shape
+        // decides, not the app: a future cone marks what a cone covers with no change here.
         self.affected.clear();
+        let facing = self
+            .simulation
+            .world()
+            .body(self.simulation.player().entity)
+            .map_or(0.0, |body| body.facing_yaw);
         let world = self.simulation.world();
         for slot in 0..world.slot_count() {
             let Some(id) = world.id_at(slot) else {
@@ -846,9 +865,7 @@ impl App {
             let Some(position) = world.position(id) else {
                 continue;
             };
-            let dx = position.x - target.position.x;
-            let dz = position.z - target.position.z;
-            if (dx * dx + dz * dz).sqrt() <= target.radius + world.radius(id) {
+            if target.shape.contains(target.position, facing, position) {
                 self.affected.push(id);
             }
         }
@@ -1116,7 +1133,7 @@ impl Application for App {
             if !self.menu.is_open() {
                 self.update_firemage_ui(ctx);
             }
-            self.update_targeting_decal();
+            self.update_targeting_decal(ctx.elapsed().as_secs_f32());
 
             if !self.targeting.is_active() && !self.talent_menu.is_open() {
                 self.apply_mouse_look(ctx);
@@ -1295,6 +1312,64 @@ fn upload_visuals(renderer: &mut Renderer) -> Result<VisualBindings, EngineError
         marker_mesh: cube_mesh,
         marker_bounds: cube_bounds,
         marker_material,
+    })
+}
+
+/// The meshes and materials the ground indicator is drawn with.
+#[derive(Debug, Clone, Copy)]
+struct DecalVisuals {
+    /// A unit disc, scaled to the ability's radius.
+    fill_mesh: MeshHandle,
+    /// A unit ring, scaled the same way.
+    ring_mesh: MeshHandle,
+    /// The footprint of a valid placement.
+    fill_valid: MaterialHandle,
+    /// Its edge.
+    ring_valid: MaterialHandle,
+    /// The footprint of a placement that would be refused.
+    fill_invalid: MaterialHandle,
+    /// Its edge.
+    ring_invalid: MaterialHandle,
+}
+
+/// Uploads the ground indicator's geometry and colours.
+///
+/// The fill is deliberately dark and the ring deliberately bright. The world pass is opaque,
+/// so "translucent" has to be expressed as a shade the ground reads through rather than as an
+/// alpha the renderer would ignore; the bright edge is what carries the shape.
+fn upload_decal_visuals(renderer: &mut Renderer) -> Result<DecalVisuals, EngineError> {
+    // Unit shapes: the transform scales them to whatever radius the ability has.
+    let fill_mesh = renderer.create_mesh(&MeshData::disc(0.5, 48))?;
+    let ring_mesh = renderer.create_mesh(&MeshData::ring(0.5, 0.035, 48))?;
+
+    let fill_valid = renderer.create_material(
+        MaterialDesc::colored(0.35, 0.16, 0.05)
+            .with_roughness(1.0)
+            .with_emissive(Vec3::new(0.16, 0.06, 0.01)),
+    )?;
+    let ring_valid = renderer.create_material(
+        MaterialDesc::colored(1.0, 0.62, 0.18)
+            .with_roughness(0.4)
+            .with_emissive(Vec3::new(0.95, 0.45, 0.10)),
+    )?;
+    let fill_invalid = renderer.create_material(
+        MaterialDesc::colored(0.32, 0.06, 0.06)
+            .with_roughness(1.0)
+            .with_emissive(Vec3::new(0.16, 0.02, 0.02)),
+    )?;
+    let ring_invalid = renderer.create_material(
+        MaterialDesc::colored(0.95, 0.20, 0.18)
+            .with_roughness(0.4)
+            .with_emissive(Vec3::new(0.80, 0.08, 0.06)),
+    )?;
+
+    Ok(DecalVisuals {
+        fill_mesh,
+        ring_mesh,
+        fill_valid,
+        ring_valid,
+        fill_invalid,
+        ring_invalid,
     })
 }
 

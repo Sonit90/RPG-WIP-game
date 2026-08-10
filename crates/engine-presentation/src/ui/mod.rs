@@ -57,5 +57,5 @@ pub use menu::{MenuAction, MenuScreen, MenuSystem, PauseItem, SettingsItem};
 pub use paint::{MenuScratch, MenuTheme, push_menu};
 pub use screen::UiScreen;
 pub use talent_menu::{TalentMenu, TalentMenuOutcome, TalentTheme, push_talent_menu};
-pub use targeting::{GroundTarget, GroundTargeting, TargetingOutcome};
+pub use targeting::{GroundTarget, GroundTargeting, TargetShape, TargetingOutcome};
 pub use widget::{Button, Checkbox, Slider, Widget, WidgetEvent, WidgetState};

@@ -121,6 +121,12 @@ impl Simulation {
         if !self.mage.abilities.is_ready(ability) {
             return Err(AbilityError::OnCooldown);
         }
+        // The global cooldown. Checked after the queue above, so pressing something during a
+        // cast still queues it - the queued cast starts when the cast lands, by which time a
+        // cast longer than half a second has already outlasted this.
+        if !self.mage.off_global_cooldown() {
+            return Err(AbilityError::GlobalCooldown);
+        }
         if definition.energy_cost > 0.0 && !self.mage.energy.is_full() {
             return Err(AbilityError::NotEnoughEnergy);
         }
@@ -130,6 +136,7 @@ impl Simulation {
         // cast a real loss rather than a free look at the target's health bar.
         let effects = *self.mage.effects();
         self.mage.abilities.spend(ability, &effects);
+        self.mage.start_global_cooldown();
         if definition.energy_cost > 0.0 {
             self.mage.energy.spend_all();
             // Arcane Pressure is paid out of the same bar, so spending it resets the bonus.
@@ -1516,6 +1523,76 @@ mod tests {
         assert!(
             simulation.mage().abilities.is_ready(FireAbility::Blink),
             "the queued instant was cast immediately"
+        );
+    }
+
+    #[test]
+    fn two_instants_cannot_go_off_in_the_same_moment() {
+        // The global cooldown's whole job.
+        let mut simulation = arena();
+        simulation.cast(FireAbility::Blink).expect("instant");
+        assert_eq!(
+            simulation.cast(FireAbility::FlameShield),
+            Err(AbilityError::GlobalCooldown),
+            "a second instant went off immediately"
+        );
+        assert!(
+            simulation
+                .mage()
+                .abilities
+                .is_ready(FireAbility::FlameShield),
+            "the refusal spent a charge"
+        );
+
+        // Half a second later it is allowed.
+        simulation.step_many(35);
+        assert!(simulation.cast(FireAbility::FlameShield).is_ok());
+    }
+
+    #[test]
+    fn a_cast_outlasts_the_global_cooldown_so_the_next_one_starts_at_once() {
+        // Firebolt casts for a second and the global cooldown is half of that, so a player
+        // casting it back to back is limited by the cast and never by the timer.
+        let mut simulation = arena();
+        cast_through(&mut simulation, FireAbility::Firebolt);
+        assert!(
+            simulation.mage().off_global_cooldown(),
+            "the global cooldown outlived the cast"
+        );
+        assert!(
+            simulation.cast(FireAbility::Firebolt).is_ok(),
+            "the next firebolt was refused"
+        );
+    }
+
+    #[test]
+    fn the_global_cooldown_does_not_stop_a_press_from_queueing() {
+        // Pressing during a cast queues, and the queue is started when the cast lands - by
+        // which time the global cooldown started with that cast has long expired.
+        let mut simulation = arena();
+        simulation.cast(FireAbility::Pyroblast).expect("in range");
+        assert!(
+            simulation.cast(FireAbility::Firebolt).is_ok(),
+            "queueing was refused"
+        );
+        assert_eq!(
+            simulation.player().queued.map(|queued| queued.ability),
+            Some(FireAbility::Firebolt)
+        );
+
+        for _ in 0..260 {
+            simulation.step_once();
+            if simulation
+                .casting()
+                .is_some_and(|cast| cast.ability == FireAbility::Firebolt)
+            {
+                break;
+            }
+        }
+        assert_eq!(
+            simulation.casting().map(|cast| cast.ability),
+            Some(FireAbility::Firebolt),
+            "the queued cast never started"
         );
     }
 }
