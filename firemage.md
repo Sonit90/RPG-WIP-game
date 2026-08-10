@@ -106,6 +106,15 @@ global cooldown that cast began has long expired.
 - **An ability with no charge, or held by the global cooldown, cannot be selected at all.**
   Its key and its button do nothing rather than opening a preview for a cast that would be
   refused on the click.
+- **Nothing is spent until the cast lands.** Requirements - charges, the global cooldown,
+  energy, target, range, facing, the Ignite maximum - are all checked before it starts, with
+  the reason; the charge and the Ultimate's energy buy what actually happened.
+- **Spells are thrown forwards.** A *targeted* ability needs its target inside the frontal
+  half-circle, ninety degrees either side of where the character faces, and refuses with
+  YOU ARE FACING THE WRONG DIRECTION otherwise. An *aimed* ability - a placed circle or a
+  cone - has no wrong direction: choosing where it goes turns the character to face it.
+- **A refusal is shown for five seconds** and then stops being reported. The simulation owns
+  that, so the interface cannot keep a message alive longer than the rule that produced it.
 
 ## Talents
 

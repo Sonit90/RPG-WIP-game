@@ -98,7 +98,10 @@ impl Simulation {
                 self.player.last_error = None;
                 self.player.last_ability = Some(AbilityId::from_fire(ability));
             }
-            Err(error) => self.player.last_error = Some(error),
+            Err(error) => {
+                self.player.last_error = Some(error);
+                self.player.last_error_at = self.time;
+            }
         }
         result
     }
@@ -138,6 +141,14 @@ impl Simulation {
             return Err(AbilityError::NotEnoughEnergy);
         }
         self.validate_aim(ability, aim)?;
+
+        // An area ability turns the character to where it was aimed. Choosing a direction is
+        // how a player says which way they are pointing, so making them turn first as well
+        // would be asking the same question twice. A *targeted* ability does not do this:
+        // there the facing rule is the point, and snapping to the target would remove it.
+        if let CastAim::Ground(position) = aim {
+            self.face_towards(position);
+        }
 
         // Requirements are checked *before* the cast starts - a cast that could not have
         // been paid for is refused now, with the reason - but nothing is actually spent
@@ -221,6 +232,20 @@ impl Simulation {
         cosine >= CAST_FACING_HALF_ANGLE.cos()
     }
 
+    /// Turns the character to face `point`, if it is anywhere but underfoot.
+    pub(super) fn face_towards(&mut self, point: Vec3) {
+        let entity = self.player.entity;
+        let Some(body) = self.world.body_mut(entity) else {
+            return;
+        };
+        let (dx, dz) = (point.x - body.position.x, point.z - body.position.z);
+        if dx.abs() < 1e-4 && dz.abs() < 1e-4 {
+            return;
+        }
+        // Zero yaw faces -Z, which is what the cone mesh and the executor agree on.
+        body.facing_yaw = (-dx).atan2(-dz);
+    }
+
     /// Checks that an ability has something to be cast at.
     fn validate_aim(&self, ability: FireAbility, aim: CastAim) -> Result<(), AbilityError> {
         let definition = ability.definition();
@@ -257,13 +282,9 @@ impl Simulation {
                 }
                 Ok(())
             }
-            // A cone is aimed rather than placed, but it is still thrown forwards.
-            TargetMode::Cone => match aim {
-                CastAim::Ground(position) if !self.is_facing(position) => {
-                    Err(AbilityError::FacingWrongWay)
-                }
-                _ => Ok(()),
-            },
+            // An aimed ability turns the character towards where it was aimed, so there is
+            // no wrong direction to be facing: choosing the direction *is* facing it.
+            TargetMode::Cone => Ok(()),
             TargetMode::Ground => {
                 let CastAim::Ground(position) = aim else {
                     return Err(AbilityError::NeedsGroundTarget);
@@ -271,9 +292,6 @@ impl Simulation {
                 let origin = self.world.position(caster).unwrap_or(Vec3::ZERO);
                 if horizontal_distance(origin, position) > definition.range {
                     return Err(AbilityError::GroundOutOfRange);
-                }
-                if !self.is_facing(position) {
-                    return Err(AbilityError::FacingWrongWay);
                 }
                 Ok(())
             }
@@ -1728,13 +1746,15 @@ mod tests {
             Err(AbilityError::FacingWrongWay),
             "a spell was thrown backwards"
         );
-        assert_eq!(
-            simulation.cast_at(FireAbility::Meteor, towards),
-            Err(AbilityError::FacingWrongWay)
+        // An area ability is allowed from any facing: aiming it *is* choosing a direction,
+        // and casting it turns the character that way.
+        assert!(
+            simulation.cast_at(FireAbility::Meteor, towards).is_ok(),
+            "an aimed ability was refused for facing"
         );
-        assert_eq!(
-            simulation.cast_at(FireAbility::FlameWave, towards),
-            Err(AbilityError::FacingWrongWay)
+        assert!(
+            simulation.is_facing(towards),
+            "the cast did not turn the character"
         );
 
         // Turning back is all it takes.
@@ -1819,6 +1839,72 @@ mod tests {
         assert!(
             simulation.mage().energy.is_full(),
             "a cancelled ultimate spent the bar"
+        );
+    }
+
+    #[test]
+    fn aiming_an_area_ability_turns_the_character_towards_it() {
+        // Choosing a direction is how the player says which way they are pointing, so being
+        // made to turn first would be asking the same question twice.
+        let mut simulation = arena();
+        let dummy = target(&simulation);
+        let towards = simulation.world().position(dummy).expect("a position");
+        let player = simulation.player().entity;
+        if let Some(body) = simulation.world_mut().body_mut(player) {
+            body.facing_yaw = 0.0;
+        }
+
+        simulation
+            .cast_at(FireAbility::FlameWave, towards)
+            .expect("an aimed ability is allowed from any facing");
+        assert!(
+            simulation.is_facing(towards),
+            "the cone did not turn the character to its own aim"
+        );
+    }
+
+    #[test]
+    fn a_targeted_ability_never_turns_the_character_for_you() {
+        // The facing rule is the point of a targeted cast; snapping to the target would
+        // remove it.
+        let mut simulation = arena();
+        let dummy = target(&simulation);
+        let towards = simulation.world().position(dummy).expect("a position");
+        let origin = simulation.player_position();
+        let straight_at = (-(towards.x - origin.x)).atan2(-(towards.z - origin.z));
+        let player = simulation.player().entity;
+        if let Some(body) = simulation.world_mut().body_mut(player) {
+            body.facing_yaw = straight_at + std::f32::consts::PI;
+        }
+
+        assert_eq!(
+            simulation.cast(FireAbility::Firebolt),
+            Err(AbilityError::FacingWrongWay)
+        );
+        assert!(
+            !simulation.is_facing(towards),
+            "the refused cast turned the character anyway"
+        );
+    }
+
+    #[test]
+    fn a_refusal_stops_being_shown_after_five_seconds() {
+        let mut simulation = arena();
+        let _ = simulation.cast(FireAbility::FireDetonation);
+        assert_eq!(
+            simulation.recent_error(),
+            Some(AbilityError::NotEnoughIgnite),
+            "the refusal was not reported at all"
+        );
+
+        simulation.step_many(60 * 4);
+        assert!(simulation.recent_error().is_some(), "it expired early");
+
+        simulation.step_many(60 * 2);
+        assert_eq!(simulation.recent_error(), None, "it never expired");
+        assert!(
+            simulation.player().last_error.is_some(),
+            "the reason itself should still be readable"
         );
     }
 }

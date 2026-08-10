@@ -408,8 +408,9 @@ impl UiSnapshot {
             dps: meter.dps() as f32,
             seconds: meter.combat_seconds() as f32,
         };
+        // The simulation decides how long a refusal is worth showing, not the interface.
         self.notification = NotificationView {
-            error: player.last_error,
+            error: simulation.recent_error(),
         };
 
         self.talent_points = mage.talents.available_points();

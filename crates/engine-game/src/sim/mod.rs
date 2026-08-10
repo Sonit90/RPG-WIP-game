@@ -86,6 +86,9 @@ impl Default for SimConfig {
     }
 }
 
+/// How long a refusal stays on screen, in seconds.
+pub const NOTIFICATION_SECONDS: f64 = 5.0;
+
 /// The player's gameplay state that is not shared with every other entity.
 ///
 /// The body — position, velocity, grounded, movement state — lives in the world beside
@@ -110,8 +113,13 @@ pub struct Player {
     /// mashing four keys means "then that one", and a queue of four would play out a
     /// rotation they stopped wanting three seconds ago.
     pub queued: Option<QueuedCast>,
-    /// Why the last ability attempt failed, for the overlay. Cleared by a success.
+    /// Why the last ability attempt failed, for the interface. Cleared by a success.
     pub last_error: Option<AbilityError>,
+    /// When that refusal happened, in simulation seconds.
+    ///
+    /// A message about a mis-click three minutes ago is furniture. The time is kept beside
+    /// the reason so the interface can stop showing it without a timer of its own.
+    pub last_error_at: f64,
     /// The last ability that was successfully used.
     pub last_ability: Option<AbilityId>,
 }
@@ -301,6 +309,7 @@ impl Simulation {
                 target: None,
                 cast: None,
                 queued: None,
+                last_error_at: 0.0,
                 last_error: None,
                 last_ability: None,
             },
@@ -863,6 +872,20 @@ impl Simulation {
             end,
             tick: self.tick,
         });
+    }
+
+    /// The last refusal, if it is recent enough to still be worth showing.
+    ///
+    /// The simulation owns how long a message lives, so the interface cannot decide to keep
+    /// one for longer than the rule that produced it.
+    #[must_use]
+    pub fn recent_error(&self) -> Option<AbilityError> {
+        let error = self.player.last_error?;
+        if self.time - self.player.last_error_at <= NOTIFICATION_SECONDS {
+            Some(error)
+        } else {
+            None
+        }
     }
 
     /// Whether a cast is in progress.
