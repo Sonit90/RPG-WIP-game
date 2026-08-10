@@ -1,478 +1,498 @@
-//! The UI's view of the world: everything a combat HUD needs and nothing else.
+//! What the interface is allowed to know about the fight.
 //!
 //! ```text
-//! Simulation  --UiSnapshot::build-->  UiSnapshot  -->  UI layout  -->  UiDrawList
-//!  (gameplay)        (this module)     (plain data)      (hud.rs)      (renderer)
+//! Simulation --> UiSnapshot --> game_ui / ability bar / tooltips / talent menu
 //! ```
 //!
-//! ## Why a snapshot rather than `&Simulation`
+//! The UI reads this and never the simulation. That is the rule the whole interface is built
+//! on: a widget cannot decide that an ability is ready, cannot recompute a cooldown, and
+//! cannot invent a number the game does not have. Everything it draws was measured here,
+//! once, from the one system that owns the answer.
 //!
-//! Phase 3's developer overlay borrows the simulation and reads whatever it likes. That is
-//! acceptable for a debug readout and wrong for game UI, for three reasons that all become
-//! real in this phase:
-//!
-//! * **Interpolation.** Once extraction interpolates between ticks (Milestone 9), the
-//!   geometry on screen is *between* two simulation states. UI that reads the simulation
-//!   directly would disagree with the geometry beside it about where a health bar goes.
-//! * **A layout pass must not be able to mutate or re-query.** A snapshot is taken once per
-//!   frame at a defined point; a borrow invites the UI to read a different answer in two
-//!   places in the same frame.
-//! * **A future network client has no `Simulation` to borrow.** It has a stream of state,
-//!   and this is the shape that state arrives in.
-//!
-//! ## Allocation
-//!
-//! Every field is a fixed-size array or a scalar; there is no `Vec` anywhere in the
-//! snapshot. Building one writes into storage that already exists, so a snapshot per frame
-//! costs no allocation at all — asserted by `building_repeatedly_allocates_nothing`.
+//! Rebuilt in place every frame. Nothing here allocates after the first one: the vectors are
+//! cleared and refilled, so a snapshot is a copy of a few hundred bytes rather than a fresh
+//! object graph.
 
-use engine_core::math::Vec3;
-use engine_game::ability::{ABILITY_SLOTS, AbilityError, AbilityId};
-use engine_game::entity::EntityId;
-use engine_game::movement::MovementState;
+use engine_game::EntityId;
+use engine_game::ability::AbilityId;
+use engine_game::firemage::{
+    ABILITY_SLOTS, AbilityError, ENERGY_MAXIMUM, FireAbility, HEAT_HIGH_THRESHOLD, HEAT_MAXIMUM,
+    TALENTS, TalentId,
+};
 use engine_game::sim::Simulation;
 use engine_game::status::StatusKind;
-use engine_game::world::{EntityKind, horizontal_distance};
+use engine_game::world::EntityKind;
 
-/// Statuses carried per entity in a snapshot.
-///
-/// Four is what a nameplate has room for and more than the one status kind the game
-/// currently has. A fifth would be dropped rather than grow the snapshot.
-pub const MAX_SNAPSHOT_STATUSES: usize = 4;
-
-/// One active status, as the UI needs it.
+/// One status on an entity, as the UI sees it.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct StatusView {
-    /// Which status this is.
+    /// Which status.
     pub kind: StatusKind,
-    /// Seconds left before it expires.
+    /// Seconds left.
     pub remaining: f32,
-    /// How much of its original duration is left, in [0, 1].
+    /// How much of its duration is left, in `0.0..=1.0`.
     pub fraction: f32,
 }
 
-/// The statuses on one entity, without a heap allocation.
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
+/// A fixed-capacity list of statuses.
+#[derive(Debug, Default, Clone, Copy, PartialEq)]
 pub struct StatusList {
-    entries: [Option<StatusView>; MAX_SNAPSHOT_STATUSES],
-    count: usize,
+    entries: [Option<StatusView>; Self::CAPACITY],
 }
 
 impl StatusList {
-    /// Appends a status, ignoring it once the list is full.
-    fn push(&mut self, view: StatusView) {
-        if self.count < MAX_SNAPSHOT_STATUSES {
-            self.entries[self.count] = Some(view);
-            self.count += 1;
-        }
-    }
+    /// How many statuses one entity can show.
+    pub const CAPACITY: usize = 4;
 
-    /// The statuses present, in the order they were collected.
+    /// The statuses, in the order they were added.
     pub fn iter(&self) -> impl Iterator<Item = StatusView> + '_ {
-        self.entries[..self.count].iter().filter_map(|entry| *entry)
+        self.entries.iter().filter_map(|entry| *entry)
     }
 
-    /// How many statuses are listed.
+    /// How many there are.
     #[must_use]
     pub fn len(&self) -> usize {
-        self.count
+        self.entries.iter().filter(|entry| entry.is_some()).count()
     }
 
-    /// Whether nothing is listed.
+    /// Whether there are none.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.count == 0
+        self.len() == 0
+    }
+
+    /// Adds one, if there is room.
+    fn push(&mut self, view: StatusView) {
+        if let Some(slot) = self.entries.iter_mut().find(|entry| entry.is_none()) {
+            *slot = Some(view);
+        }
     }
 }
 
-/// The local player, as the HUD needs it.
+/// The player's own state.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PlayerView {
-    /// Which entity this describes.
-    pub entity: EntityId,
     /// Current health.
     pub health: f32,
     /// Maximum health.
     pub max_health: f32,
-    /// Current resource pool.
-    pub resource: f32,
-    /// Maximum resource pool.
-    pub max_resource: f32,
-    /// Where the character's feet are.
-    pub position: Vec3,
-    /// Which way the character faces, in radians about +Y.
-    pub facing_yaw: f32,
-    /// What the character is doing, for a future animation selector.
-    pub movement: MovementState,
-    /// Whether the character is alive.
-    pub alive: bool,
+    /// Current Heat.
+    pub heat: f32,
+    /// Whether Heat has boiled over.
+    pub overheated: bool,
+    /// Current Ultimate Energy.
+    pub energy: f32,
+    /// Whether the Ultimate can be cast.
+    pub ultimate_ready: bool,
+    /// Whether Flame Shield is up.
+    pub shielded: bool,
+    /// Whether the class is hasted.
+    pub hasted: bool,
     /// Statuses on the player.
     pub statuses: StatusList,
 }
 
 impl PlayerView {
-    /// Health as a fraction in [0, 1]. Zero maximum reads as zero rather than dividing.
+    /// Health as a fraction, for a bar.
     #[must_use]
     pub fn health_fraction(&self) -> f32 {
-        safe_fraction(self.health, self.max_health)
+        if self.max_health <= 0.0 {
+            return 0.0;
+        }
+        (self.health / self.max_health).clamp(0.0, 1.0)
     }
 
-    /// Resource as a fraction in [0, 1].
+    /// Heat as a fraction, for a bar.
     #[must_use]
-    pub fn resource_fraction(&self) -> f32 {
-        safe_fraction(self.resource, self.max_resource)
+    pub fn heat_fraction(&self) -> f32 {
+        (self.heat / HEAT_MAXIMUM).clamp(0.0, 1.0)
+    }
+
+    /// Whether Heat is high enough for the bar to read as dangerous.
+    #[must_use]
+    pub fn heat_is_high(&self) -> bool {
+        self.heat >= HEAT_HIGH_THRESHOLD
+    }
+
+    /// Ultimate Energy as a fraction, for a bar.
+    #[must_use]
+    pub fn energy_fraction(&self) -> f32 {
+        (self.energy / ENERGY_MAXIMUM).clamp(0.0, 1.0)
     }
 }
 
-/// The selected target, as the HUD needs it.
+/// The selected enemy.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TargetView {
-    /// Which entity is targeted.
+    /// Which entity.
     pub entity: EntityId,
-    /// Display name.
-    pub name: &'static str,
+    /// What it is.
+    pub kind: EntityKind,
     /// Current health.
     pub health: f32,
     /// Maximum health.
     pub max_health: f32,
-    /// Where the target's feet are.
-    pub position: Vec3,
-    /// How tall it is, so a world-space plate can sit above it.
-    pub height: f32,
-    /// Horizontal distance from the player, in metres.
+    /// Metres away.
     pub distance: f32,
-    /// Whether the target is alive.
+    /// Whether it is alive.
     pub alive: bool,
-    /// Whether the target is a valid subject for a hostile ability.
-    ///
-    /// False for a corpse or an ally: what makes the target frame say "you cannot cast at
-    /// this" without the UI re-deriving the rule the simulation already owns.
-    pub valid: bool,
-    /// Statuses on the target.
+    /// Ignite stacks on it.
+    pub ignite_stacks: u8,
+    /// Seconds of Ignite left.
+    pub ignite_remaining: f32,
+    /// Whether it is at the current maximum - the Fire Detonation requirement.
+    pub ignite_at_maximum: bool,
+    /// Statuses on it.
     pub statuses: StatusList,
 }
 
 impl TargetView {
-    /// Health as a fraction in [0, 1].
+    /// Health as a fraction, for a bar.
     #[must_use]
     pub fn health_fraction(&self) -> f32 {
-        safe_fraction(self.health, self.max_health)
+        if self.max_health <= 0.0 {
+            return 0.0;
+        }
+        (self.health / self.max_health).clamp(0.0, 1.0)
     }
 
-    /// Health as a whole percentage that never reads zero while the target lives.
-    ///
-    /// A dummy on its last point of health reading `0%` looks dead when it is not, which is
-    /// the one thing a health readout must never say.
+    /// Health as a whole percentage, for a readout.
     #[must_use]
     pub fn health_percent(&self) -> u32 {
-        health_percent(self.health, self.max_health, self.alive)
+        (self.health_fraction() * 100.0).round() as u32
     }
 }
 
-/// Why an ability cannot be used right now.
+/// Why an ability button looks the way it does.
 ///
-/// A reason rather than a boolean, because the ability bar shows a different thing for
-/// "cooling down" than for "you cannot afford it".
+/// The UI picks a colour from this and never works it out itself, which is what stops a
+/// button from claiming an ability is ready when the simulation would refuse it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SlotAvailability {
-    /// Usable now.
+    /// Ready to cast.
     Ready,
-    /// Still cooling down.
-    OnCooldown,
-    /// Cooled down, but the resource cost cannot be paid.
+    /// Cooling down, or out of charges.
+    Cooling,
+    /// Not enough Ultimate Energy.
     NoResource,
-    /// Cooled down and affordable, but nothing valid is targeted.
-    NoTarget,
+    /// The target cannot be hit, or is not there.
+    InvalidTarget,
+    /// Ready *and* worth pressing right now: Fire Detonation on a full burn.
+    Empowered,
 }
 
 impl SlotAvailability {
-    /// Whether the ability can be used right now.
+    /// Whether the ability can be cast right now.
     #[must_use]
     pub fn is_ready(self) -> bool {
-        matches!(self, Self::Ready)
+        matches!(self, Self::Ready | Self::Empowered)
     }
 }
 
-/// One ability slot, as the ability bar needs it.
+/// One ability button's state.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct AbilitySlotView {
-    /// Which ability sits in this slot.
+    /// Which ability.
+    pub ability: FireAbility,
+    /// Its identity in the event stream.
     pub id: AbilityId,
-    /// Its display name.
+    /// Its name.
     pub name: &'static str,
-    /// The digit that triggers it.
-    pub hotkey: u8,
-    /// Seconds of cooldown left, or zero.
-    pub cooldown_remaining: f32,
-    /// The slot's full cooldown, so a sweep knows what fraction to draw.
-    pub cooldown_total: f32,
-    /// What this costs to use.
-    pub cost: f32,
-    /// Why it is or is not usable.
+    /// The key that casts it.
+    pub key: &'static str,
+    /// Why it looks the way it does.
     pub availability: SlotAvailability,
-    /// Whether this slot holds a working placeholder rather than a designed ability.
-    pub placeholder: bool,
+    /// Charges ready now.
+    pub charges: u8,
+    /// Charges it holds when full.
+    pub max_charges: u8,
+    /// Seconds until the next charge.
+    pub cooldown_remaining: f32,
+    /// How far through the recharge it is, in `0.0..=1.0`. One is ready.
+    pub cooldown_fraction: f32,
+    /// Whether the player has to place it with the mouse.
+    pub ground_targeted: bool,
 }
 
 impl AbilitySlotView {
-    /// How much of the cooldown is still to run, in [0, 1].
-    ///
-    /// 1.0 the instant the ability is used, falling to 0.0 when it is ready. A cooldown
-    /// sweep draws exactly this much of the slot.
+    /// Whether the button should show a charge counter.
     #[must_use]
-    pub fn cooldown_fraction(&self) -> f32 {
-        safe_fraction(self.cooldown_remaining, self.cooldown_total)
+    pub fn shows_charges(&self) -> bool {
+        self.max_charges > 1
+    }
+
+    /// Whether a radial cooldown should be drawn over it.
+    #[must_use]
+    pub fn is_cooling(&self) -> bool {
+        self.cooldown_remaining > 0.0 && self.charges < self.max_charges
     }
 }
 
-/// What the player is casting.
+/// The cast in progress.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CastView {
-    /// Which ability is being cast.
-    pub id: AbilityId,
-    /// Its display name.
+    /// Which ability.
+    pub ability: FireAbility,
+    /// Its name.
     pub name: &'static str,
-    /// Seconds spent casting so far.
+    /// Seconds spent.
     pub elapsed: f32,
-    /// Seconds the cast takes in total.
+    /// Seconds it takes.
     pub duration: f32,
 }
 
 impl CastView {
-    /// Cast progress in [0, 1].
+    /// How far through it is, in `0.0..=1.0`.
     #[must_use]
     pub fn fraction(&self) -> f32 {
-        safe_fraction(self.elapsed, self.duration)
+        if self.duration <= 0.0 {
+            return 1.0;
+        }
+        (self.elapsed / self.duration).clamp(0.0, 1.0)
     }
 
-    /// Seconds left before the cast completes.
+    /// Seconds left.
     #[must_use]
     pub fn remaining(&self) -> f32 {
         (self.duration - self.elapsed).max(0.0)
     }
 }
 
-/// The combat session, as the meter readout needs it.
-///
-/// `f64` because the meter accumulates in `f64`: a long session's total is a running sum,
-/// and narrowing it here would make the HUD disagree with the meter it is reporting.
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
+/// The fight so far.
+#[derive(Debug, Default, Clone, Copy, PartialEq)]
 pub struct CombatView {
-    /// Damage dealt this session.
-    pub total_damage: f64,
-    /// Damage per second of simulated combat.
-    pub dps: f64,
-    /// Seconds of combat the session covers.
-    pub seconds: f64,
-    /// Enemies killed this session.
-    pub deaths: u32,
+    /// Damage dealt.
+    pub damage: f32,
+    /// Damage per second.
+    pub dps: f32,
+    /// Seconds in combat.
+    pub seconds: f32,
 }
 
-/// Transient messages for the player.
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
+/// Something the interface should say.
+#[derive(Debug, Default, Clone, Copy, PartialEq)]
 pub struct NotificationView {
-    /// Why the last ability attempt was refused, if it was.
-    pub last_error: Option<AbilityError>,
+    /// The last refusal, if there was one.
+    pub error: Option<AbilityError>,
 }
 
-/// Everything the UI is allowed to know.
+/// The talent grid, as the menu sees it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TalentView {
+    /// Which talent.
+    pub id: TalentId,
+    /// Its name.
+    pub name: &'static str,
+    /// Which tier it sits in.
+    pub tier: u8,
+    /// What it costs.
+    pub cost: u32,
+    /// What it does.
+    pub description: &'static str,
+    /// Whether it is owned.
+    pub purchased: bool,
+    /// Whether it could be bought right now.
+    pub affordable: bool,
+}
+
+/// Everything the interface may read, rebuilt every frame.
 #[derive(Debug, Clone)]
 pub struct UiSnapshot {
-    /// The local player.
+    /// The player.
     pub player: PlayerView,
-    /// The selected target, if there is one.
+    /// The selected enemy, if any.
     pub target: Option<TargetView>,
-    /// The ten ability slots, in slot order.
+    /// The ability bar, in bar order.
     pub abilities: [AbilitySlotView; ABILITY_SLOTS],
-    /// The cast in progress, if any.
+    /// The Ultimate, which is not on the bar.
+    pub ultimate: AbilitySlotView,
+    /// The cast in progress.
     pub cast: Option<CastView>,
-    /// The combat session.
+    /// The fight so far.
     pub combat: CombatView,
-    /// Transient messages.
-    pub notifications: NotificationView,
-    /// Simulated seconds since the world was created.
-    ///
-    /// Every animated piece of UI is driven from this rather than from a frame counter, so
-    /// a fade or a sweep runs at the same rate at 60 and 1,400 FPS.
-    pub time: f32,
+    /// Anything the interface should say.
+    pub notification: NotificationView,
+    /// Talent points left to spend.
+    pub talent_points: u32,
+    /// The whole talent grid.
+    pub talents: Vec<TalentView>,
+    /// The current maximum Ignite stacks. Read by every tooltip that mentions it.
+    pub ignite_max: u8,
 }
 
 impl UiSnapshot {
-    /// Builds a snapshot from the simulation's current state.
-    ///
-    /// Allocation: none. Every field is a fixed-size array or a scalar.
+    /// Reads the simulation.
     #[must_use]
     pub fn build(simulation: &Simulation) -> Self {
-        let world = simulation.world();
-        let player = simulation.player();
-        let entity = player.entity;
+        let mut snapshot = Self {
+            player: PlayerView {
+                health: 0.0,
+                max_health: 0.0,
+                heat: 0.0,
+                overheated: false,
+                energy: 0.0,
+                ultimate_ready: false,
+                shielded: false,
+                hasted: false,
+                statuses: StatusList::default(),
+            },
+            target: None,
+            abilities: [ability_view(simulation, FireAbility::Firebolt); ABILITY_SLOTS],
+            ultimate: ability_view(simulation, FireAbility::Cataclysm),
+            cast: None,
+            combat: CombatView::default(),
+            notification: NotificationView::default(),
+            talent_points: 0,
+            talents: Vec::with_capacity(TALENTS.len()),
+            ignite_max: 5,
+        };
+        snapshot.refresh(simulation);
+        snapshot
+    }
 
-        let player_view = PlayerView {
-            entity,
-            health: world.health(entity).map_or(0.0, |health| health.current()),
-            max_health: world.health(entity).map_or(0.0, |health| health.max()),
-            resource: player.resource.current(),
-            max_resource: player.resource.max(),
-            position: world.position(entity).unwrap_or(Vec3::ZERO),
-            facing_yaw: world.body(entity).map_or(0.0, |body| body.facing_yaw),
-            movement: world
-                .body(entity)
-                .map_or(MovementState::Idle, |body| body.state),
-            alive: world.is_alive(entity),
-            statuses: status_list(simulation, entity),
+    /// Rebuilds in place, keeping every allocation.
+    pub fn refresh(&mut self, simulation: &Simulation) {
+        let mage = simulation.mage();
+        let player = simulation.player();
+        let world = simulation.world();
+
+        let health = world.health(player.entity);
+        self.player = PlayerView {
+            health: health.map_or(0.0, |health| health.current()),
+            max_health: health.map_or(0.0, |health| health.max()),
+            heat: mage.heat.value(),
+            overheated: mage.heat.is_overheated(),
+            energy: mage.energy.value(),
+            ultimate_ready: mage.energy.is_full(),
+            shielded: mage.flame_shield.is_active(),
+            hasted: mage.haste() > 0.0,
+            statuses: statuses_of(simulation, player.entity),
         };
 
-        let target = player.target.and_then(|id| target_view(simulation, id));
+        self.target = player.target.and_then(|entity| {
+            let health = world.health(entity)?;
+            let burn = mage.ignite.get(entity);
+            Some(TargetView {
+                entity,
+                kind: world.kind(entity)?,
+                health: health.current(),
+                max_health: health.max(),
+                // No distance means the target is gone; a large number reads as "out of
+                // range" everywhere it is used rather than as "right next to you".
+                distance: world
+                    .distance_between(player.entity, entity)
+                    .unwrap_or(f32::MAX),
+                alive: world.is_alive(entity),
+                ignite_stacks: burn.stacks,
+                ignite_remaining: burn.remaining,
+                ignite_at_maximum: burn.is_at_maximum(mage.ignite_max()),
+                statuses: statuses_of(simulation, entity),
+            })
+        });
 
-        let mut abilities = [ability_slot_view(simulation, 0); ABILITY_SLOTS];
-        for (slot, view) in abilities.iter_mut().enumerate() {
-            *view = ability_slot_view(simulation, slot);
+        for (slot, ability) in FireAbility::BAR.into_iter().enumerate() {
+            self.abilities[slot] = ability_view(simulation, ability);
         }
+        self.ultimate = ability_view(simulation, FireAbility::Cataclysm);
+
+        self.cast = simulation.casting().map(|cast| CastView {
+            ability: cast.ability,
+            name: cast.ability.definition().name,
+            elapsed: cast.elapsed,
+            duration: cast.duration,
+        });
 
         let meter = simulation.meter();
-
-        Self {
-            player: player_view,
-            target,
-            abilities,
-            cast: player.cast.map(|cast| CastView {
-                id: cast.ability,
-                name: player
-                    .abilities
-                    .get(cast.ability)
-                    .map_or("", |definition| definition.name),
-                elapsed: cast.elapsed,
-                duration: cast.duration,
-            }),
-            combat: CombatView {
-                total_damage: meter.total_damage(),
-                dps: meter.dps(),
-                seconds: meter.combat_seconds(),
-                deaths: meter.deaths(),
-            },
-            notifications: NotificationView {
-                last_error: player.last_error,
-            },
-            time: simulation.time() as f32,
-        }
-    }
-
-    /// Rewrites this snapshot in place from the simulation.
-    ///
-    /// Equivalent to [`UiSnapshot::build`] but reuses the existing value, which is what the
-    /// per-frame path calls.
-    pub fn refresh(&mut self, simulation: &Simulation) {
-        *self = Self::build(simulation);
-    }
-}
-
-/// The statuses on one entity, capped at [`MAX_SNAPSHOT_STATUSES`].
-fn status_list(simulation: &Simulation, id: EntityId) -> StatusList {
-    let mut list = StatusList::default();
-    let Some(statuses) = simulation.world().statuses(id) else {
-        return list;
-    };
-    for status in statuses.iter() {
-        list.push(StatusView {
-            kind: status.kind,
-            remaining: status.remaining,
-            fraction: status.fraction(),
-        });
-    }
-    list
-}
-
-/// One target's view, or `None` if the entity has gone away entirely.
-fn target_view(simulation: &Simulation, id: EntityId) -> Option<TargetView> {
-    let world = simulation.world();
-    if !world.contains(id) {
-        return None;
-    }
-    let player = simulation.player().entity;
-    let alive = world.is_alive(id);
-    let hostile = world
-        .faction(player)
-        .zip(world.faction(id))
-        .is_some_and(|(mine, theirs)| mine.is_hostile_to(theirs));
-    let position = world.position(id).unwrap_or(Vec3::ZERO);
-    let player_position = world.position(player).unwrap_or(Vec3::ZERO);
-
-    Some(TargetView {
-        entity: id,
-        name: world.kind(id).map_or("UNKNOWN", EntityKind::as_str),
-        health: world.health(id).map_or(0.0, |health| health.current()),
-        max_health: world.health(id).map_or(0.0, |health| health.max()),
-        position,
-        height: world.height(id),
-        distance: horizontal_distance(player_position, position),
-        alive,
-        valid: alive && hostile,
-        statuses: status_list(simulation, id),
-    })
-}
-
-/// One ability slot's view.
-fn ability_slot_view(simulation: &Simulation, slot: usize) -> AbilitySlotView {
-    let player = simulation.player();
-    let id = AbilityId::from_slot(slot).unwrap_or(AbilityId::NONE);
-    let book = &player.abilities;
-    let Some(definition) = book.get(id) else {
-        return AbilitySlotView {
-            id,
-            name: "",
-            hotkey: 0,
-            cooldown_remaining: 0.0,
-            cooldown_total: 0.0,
-            cost: 0.0,
-            availability: SlotAvailability::OnCooldown,
-            placeholder: true,
+        self.combat = CombatView {
+            damage: meter.total_damage() as f32,
+            dps: meter.dps() as f32,
+            seconds: meter.combat_seconds() as f32,
         };
-    };
+        self.notification = NotificationView {
+            error: player.last_error,
+        };
 
-    // The order matches the simulation's own validation order in `use_ability`, so the bar
-    // shows the same reason the cast would report. Any other order would put the bar and
-    // the error message out of step with each other.
-    let remaining = book.cooldown_remaining(id);
-    let availability = if remaining > 0.0 {
-        SlotAvailability::OnCooldown
-    } else if !player.resource.can_pay(definition.cost) {
+        self.talent_points = mage.talents.available_points();
+        self.talents.clear();
+        for talent in &TALENTS {
+            self.talents.push(TalentView {
+                id: talent.id,
+                name: talent.name,
+                tier: talent.tier,
+                cost: talent.cost,
+                description: talent.description,
+                purchased: mage.talents.has(talent.id),
+                affordable: mage.talents.can_purchase(talent.id),
+            });
+        }
+        self.ignite_max = mage.ignite_max();
+    }
+}
+
+/// One ability's button state, worked out once here rather than in the widget.
+fn ability_view(simulation: &Simulation, ability: FireAbility) -> AbilitySlotView {
+    let mage = simulation.mage();
+    let definition = ability.definition();
+    let effects = mage.effects();
+    let charges = mage.abilities.charges(ability);
+    let max_charges = definition.charges_with(effects);
+
+    let target = simulation.player().target;
+    let target_alive = target.is_some_and(|id| simulation.world().is_alive(id));
+    let in_range = target.and_then(|id| {
+        simulation
+            .world()
+            .distance_between(simulation.player().entity, id)
+    });
+
+    let availability = if definition.energy_cost > 0.0 && !mage.energy.is_full() {
         SlotAvailability::NoResource
-    } else if definition.targeting.needs_target()
-        && !simulation
-            .player()
-            .target
-            .is_some_and(|target| simulation.world().is_alive(target))
+    } else if charges == 0 {
+        SlotAvailability::Cooling
+    } else if definition.target.needs_target()
+        && (!target_alive || in_range.is_some_and(|distance| distance > definition.range))
     {
-        SlotAvailability::NoTarget
+        SlotAvailability::InvalidTarget
+    } else if ability == FireAbility::FireDetonation {
+        // The one ability whose readiness is about the *target*: a full burn is what it is
+        // for, and the bar says so rather than making the player count stacks.
+        match target {
+            Some(id) if mage.ignite.is_at_maximum(id, mage.ignite_max()) => {
+                SlotAvailability::Empowered
+            }
+            _ => SlotAvailability::InvalidTarget,
+        }
     } else {
         SlotAvailability::Ready
     };
 
     AbilitySlotView {
-        id,
+        ability,
+        id: AbilityId::from_fire(ability),
         name: definition.name,
-        hotkey: id.hotkey_digit(),
-        cooldown_remaining: remaining,
-        cooldown_total: definition.cooldown,
-        cost: definition.cost,
+        key: ability.key_hint(),
         availability,
-        placeholder: definition.placeholder,
+        charges,
+        max_charges,
+        cooldown_remaining: mage.abilities.recharge_remaining(ability),
+        cooldown_fraction: mage.abilities.recharge_fraction(ability, effects),
+        ground_targeted: definition.target.is_ground_targeted(),
     }
 }
 
-/// `value / max` clamped to [0, 1], with a zero maximum reading zero rather than dividing.
-fn safe_fraction(value: f32, max: f32) -> f32 {
-    if max <= 0.0 || !max.is_finite() {
-        return 0.0;
+/// The statuses on one entity, capped at what a plate can show.
+fn statuses_of(simulation: &Simulation, entity: EntityId) -> StatusList {
+    let mut list = StatusList::default();
+    if let Some(statuses) = simulation.world().statuses(entity) {
+        for status in statuses.iter() {
+            list.push(StatusView {
+                kind: status.kind,
+                remaining: status.remaining,
+                fraction: status.fraction(),
+            });
+        }
     }
-    (value / max).clamp(0.0, 1.0)
-}
-
-/// A whole percentage that never reads zero while the subject is alive.
-fn health_percent(current: f32, max: f32, alive: bool) -> u32 {
-    let fraction = safe_fraction(current, max);
-    let percent = (fraction * 100.0).round() as u32;
-    if alive { percent.max(1) } else { percent }
+    list
 }
 
 #[cfg(test)]
@@ -483,226 +503,198 @@ fn health_percent(current: f32, max: f32, alive: bool) -> u32 {
 mod tests {
     use super::*;
     use engine_game::arena::{self, ArenaConfig};
-    use engine_game::command::PlayerCommand;
 
-    fn sim() -> Simulation {
+    fn arena() -> Simulation {
         let mut simulation = arena::training_arena(&ArenaConfig::default());
         simulation.step_once();
+        simulation.select_nearest_target();
         simulation
     }
 
     #[test]
-    fn the_snapshot_reports_the_player_the_ui_would_draw() {
-        let simulation = sim();
-        let snapshot = UiSnapshot::build(&simulation);
-
-        assert_eq!(snapshot.player.entity, simulation.player().entity);
-        assert!(snapshot.player.alive);
-        assert!(snapshot.player.max_health > 0.0);
-        assert!((snapshot.player.health_fraction() - 1.0).abs() < 1e-4);
-        assert!((snapshot.player.resource_fraction() - 1.0).abs() < 1e-4);
-    }
-
-    #[test]
-    fn the_nearest_dummy_is_the_target_and_carries_its_health() {
-        let simulation = sim();
-        let snapshot = UiSnapshot::build(&simulation);
-        let target = snapshot.target.expect("the arena starts with a target");
-
-        assert_eq!(target.name, "DUMMY");
-        assert!(target.valid, "a live hostile is a valid target");
-        assert!(target.distance > 0.0);
-        assert_eq!(target.health_percent(), 100);
-    }
-
-    #[test]
-    fn a_health_readout_never_says_zero_while_the_target_lives() {
-        // The one thing a health bar must not do: report a living enemy as dead.
-        let mut simulation = sim();
-        let target = simulation.player().target.expect("a dummy is targeted");
-        let max = simulation
-            .world()
-            .health(target)
-            .expect("the dummy has health")
-            .max();
-        simulation.world_mut().damage(target, max - 0.5);
-
-        let snapshot = UiSnapshot::build(&simulation);
-        let view = snapshot.target.expect("still targeted");
-        assert!(view.alive);
-        assert_eq!(view.health_percent(), 1, "0% would read as dead");
-        assert!(view.health_fraction() > 0.0);
-    }
-
-    #[test]
-    fn a_dead_target_is_reported_as_invalid_rather_than_dropped() {
-        // Dropping it would make the target frame vanish the instant something dies, which
-        // is exactly when the player wants to see that it died.
-        let mut simulation = sim();
-        let target = simulation.player().target.expect("a dummy is targeted");
-        simulation.world_mut().damage(target, 1_000_000.0);
-
-        let snapshot = UiSnapshot::build(&simulation);
-        let view = snapshot.target.expect("the corpse is still described");
-        assert!(!view.alive);
-        assert!(!view.valid);
-        assert_eq!(view.health_percent(), 0);
-    }
-
-    #[test]
-    fn every_ability_slot_is_described_with_its_hotkey() {
-        let simulation = sim();
-        let snapshot = UiSnapshot::build(&simulation);
-
-        assert_eq!(snapshot.abilities.len(), ABILITY_SLOTS);
-        for (slot, view) in snapshot.abilities.iter().enumerate() {
-            assert!(!view.name.is_empty(), "slot {slot} has no name");
-            assert_eq!(view.hotkey, ((slot + 1) % 10) as u8);
-            assert!(view.cooldown_total > 0.0);
-        }
-        assert_eq!(snapshot.abilities[0].name, "FIREBALL");
-        assert_eq!(snapshot.abilities[0].availability, SlotAvailability::Ready);
-    }
-
-    #[test]
-    fn a_used_ability_reports_its_cooldown_as_a_fraction_that_falls_to_zero() {
-        let mut simulation = sim();
-        simulation.push_command(PlayerCommand::UseAbility(
-            AbilityId::from_slot(0).expect("slot 0"),
-        ));
-        simulation.step_once();
-
-        let fresh = UiSnapshot::build(&simulation);
-        let slot = fresh.abilities[0];
-        assert_eq!(slot.availability, SlotAvailability::OnCooldown);
-        assert!(slot.cooldown_remaining > 0.0);
+    fn the_bar_is_the_ten_designed_abilities_and_the_ultimate_is_separate() {
+        let snapshot = UiSnapshot::build(&arena());
+        let names: Vec<&str> = snapshot.abilities.iter().map(|slot| slot.name).collect();
+        assert_eq!(
+            names,
+            [
+                "FIREBOLT",
+                "FLAME LANCE",
+                "FLAME WAVE",
+                "METEOR",
+                "FIRESTORM",
+                "PYROBLAST",
+                "INFERNO",
+                "FIRE DETONATION",
+                "FLAME SHIELD",
+                "BLINK",
+            ]
+        );
+        assert_eq!(snapshot.ultimate.name, "CATACLYSM");
         assert!(
-            slot.cooldown_fraction() > 0.9,
-            "a just-used ability is nearly a full sweep: {}",
-            slot.cooldown_fraction()
+            !names.contains(&"CATACLYSM"),
+            "the ultimate is on the regular bar"
+        );
+    }
+
+    #[test]
+    fn charges_are_reported_only_where_there_are_several() {
+        let snapshot = UiSnapshot::build(&arena());
+        let lance = snapshot.abilities[1];
+        assert_eq!((lance.charges, lance.max_charges), (2, 2));
+        assert!(lance.shows_charges());
+
+        let firebolt = snapshot.abilities[0];
+        assert!(!firebolt.shows_charges(), "firebolt has one charge");
+    }
+
+    #[test]
+    fn a_spent_ability_reports_its_cooldown_for_the_overlay() {
+        let mut simulation = arena();
+        simulation
+            .cast(FireAbility::Blink)
+            .expect("blink is instant");
+        simulation.step_many(60);
+
+        let snapshot = UiSnapshot::build(&simulation);
+        let blink = snapshot.abilities[9];
+        assert_eq!(blink.charges, 0);
+        assert!(blink.is_cooling());
+        assert!(blink.cooldown_remaining > 0.0);
+        assert!((0.0..1.0).contains(&blink.cooldown_fraction));
+        assert_eq!(blink.availability, SlotAvailability::Cooling);
+    }
+
+    #[test]
+    fn fire_detonation_lights_up_only_against_a_full_burn() {
+        let mut simulation = arena();
+        let snapshot = UiSnapshot::build(&simulation);
+        assert_eq!(
+            snapshot.abilities[7].availability,
+            SlotAvailability::InvalidTarget,
+            "it offered itself against a cold target"
         );
 
-        // Run past the cooldown; the sweep must stop at zero rather than going negative.
-        simulation.step_many(240);
-        let later = UiSnapshot::build(&simulation);
-        assert_eq!(later.abilities[0].availability, SlotAvailability::Ready);
-        assert_eq!(later.abilities[0].cooldown_fraction(), 0.0);
-    }
-
-    #[test]
-    fn an_unaffordable_ability_is_distinguished_from_a_cooling_one() {
-        // The bar draws these differently, so the snapshot has to tell them apart.
-        let mut simulation = sim();
-        let expensive = AbilityId::from_slot(2).expect("slot 3 is detonate");
-        let cost = simulation
-            .player()
-            .abilities
-            .get(expensive)
-            .expect("slot 3 is filled")
-            .cost;
-        let pool = simulation.player().resource.current();
-        assert!(
-            simulation.player_mut().resource.pay(pool - (cost - 1.0)),
-            "draining the pool to just under the cost must succeed"
-        );
+        let target = simulation.player().target.expect("a dummy");
+        let maximum = simulation.mage().ignite_max();
+        let duration = simulation.mage().ignite_duration();
+        simulation
+            .mage_mut()
+            .ignite
+            .apply(target, maximum, maximum, duration);
 
         let snapshot = UiSnapshot::build(&simulation);
         assert_eq!(
-            snapshot.abilities[2].availability,
-            SlotAvailability::NoResource
+            snapshot.abilities[7].availability,
+            SlotAvailability::Empowered
         );
+        assert!(snapshot.abilities[7].availability.is_ready());
+        assert!(snapshot.target.expect("a target").ignite_at_maximum);
     }
 
     #[test]
-    fn statuses_reach_the_snapshot_with_their_remaining_time() {
-        let mut simulation = sim();
-        simulation.push_command(PlayerCommand::UseAbility(
-            AbilityId::from_slot(1).expect("slot 2 is ignite"),
-        ));
-        simulation.step_once();
+    fn the_ultimate_is_locked_until_the_bar_is_full() {
+        let mut simulation = arena();
+        let snapshot = UiSnapshot::build(&simulation);
+        assert_eq!(snapshot.ultimate.availability, SlotAvailability::NoResource);
+        assert!(!snapshot.player.ultimate_ready);
+
+        simulation.mage_mut().gain_energy(100.0);
+        let snapshot = UiSnapshot::build(&simulation);
+        assert!(snapshot.player.ultimate_ready);
+        assert!(snapshot.ultimate.availability.is_ready());
+        assert!((snapshot.player.energy_fraction() - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn the_heat_bar_reports_its_range_and_its_overheat() {
+        let mut simulation = arena();
+        simulation.mage_mut().gain_heat(80.0);
+        let snapshot = UiSnapshot::build(&simulation);
+        assert!(snapshot.player.heat_is_high());
+        assert!(!snapshot.player.overheated);
+        assert!((snapshot.player.heat_fraction() - 0.8).abs() < 1e-6);
+
+        simulation.mage_mut().gain_heat(20.0);
+        let snapshot = UiSnapshot::build(&simulation);
+        assert!(snapshot.player.overheated);
+    }
+
+    #[test]
+    fn the_target_view_carries_the_ignite_stacks_and_the_current_maximum() {
+        let mut simulation = arena();
+        let target = simulation.player().target.expect("a dummy");
+        let duration = simulation.mage().ignite_duration();
+        simulation.mage_mut().ignite.apply(target, 3, 5, duration);
 
         let snapshot = UiSnapshot::build(&simulation);
-        let target = snapshot.target.expect("still targeted");
-        let burning = target
-            .statuses
-            .iter()
-            .find(|status| status.kind == StatusKind::Burning)
-            .expect("ignite applies burning");
-        assert!(burning.remaining > 0.0);
-        assert!(burning.fraction > 0.0 && burning.fraction <= 1.0);
+        let view = snapshot.target.expect("a target");
+        assert_eq!(view.ignite_stacks, 3);
+        assert!(!view.ignite_at_maximum);
+        assert_eq!(snapshot.ignite_max, 5);
+
+        // And the maximum follows the talent, which is what the tooltips print.
+        simulation
+            .mage_mut()
+            .purchase_talent(engine_game::firemage::TalentId::InfernalCapacity)
+            .expect("testing mode pays");
+        let snapshot = UiSnapshot::build(&simulation);
+        assert_eq!(snapshot.ignite_max, 6);
     }
 
     #[test]
-    fn the_status_list_is_bounded_rather_than_growing() {
-        let mut list = StatusList::default();
-        for _ in 0..MAX_SNAPSHOT_STATUSES + 3 {
-            list.push(StatusView {
-                kind: StatusKind::Burning,
-                remaining: 1.0,
-                fraction: 1.0,
-            });
-        }
-        assert_eq!(list.len(), MAX_SNAPSHOT_STATUSES);
-        assert_eq!(list.iter().count(), MAX_SNAPSHOT_STATUSES);
+    fn the_talent_grid_reports_what_is_owned_and_what_can_be_bought() {
+        let mut simulation = arena();
+        let snapshot = UiSnapshot::build(&simulation);
+        assert_eq!(snapshot.talents.len(), TALENTS.len());
+        assert!(snapshot.talents.iter().all(|talent| !talent.purchased));
+        assert_eq!(
+            snapshot.talent_points,
+            simulation.mage().talents.available_points()
+        );
+
+        let first = snapshot.talents[0].id;
+        simulation
+            .mage_mut()
+            .purchase_talent(first)
+            .expect("affordable");
+        let snapshot = UiSnapshot::build(&simulation);
+        assert!(snapshot.talents[0].purchased);
     }
 
     #[test]
-    fn the_combat_session_reaches_the_snapshot() {
-        let mut simulation = sim();
-        simulation.push_command(PlayerCommand::UseAbility(
-            AbilityId::from_slot(0).expect("slot 1"),
-        ));
-        simulation.step_once();
+    fn a_cast_in_progress_is_reported_with_its_progress() {
+        let mut simulation = arena();
+        simulation.cast(FireAbility::Firebolt).expect("in range");
+        simulation.step_many(30);
 
         let snapshot = UiSnapshot::build(&simulation);
-        assert!(snapshot.combat.total_damage > 0.0);
-        assert_eq!(snapshot.combat.deaths, 0);
-        assert!(snapshot.time > 0.0);
+        let cast = snapshot.cast.expect("a cast is running");
+        assert_eq!(cast.name, "FIREBOLT");
+        assert!(cast.fraction() > 0.0 && cast.fraction() < 1.0);
+        assert!(cast.remaining() > 0.0);
     }
 
     #[test]
-    fn a_refused_cast_reaches_the_notifications() {
-        let mut simulation = sim();
-        let fireball = AbilityId::from_slot(0).expect("slot 1");
-        simulation.push_command(PlayerCommand::UseAbility(fireball));
-        simulation.step_once();
-        simulation.push_command(PlayerCommand::UseAbility(fireball));
-        simulation.step_once();
-
+    fn a_refusal_reaches_the_interface() {
+        let mut simulation = arena();
+        let _ = simulation.cast(FireAbility::FireDetonation);
         let snapshot = UiSnapshot::build(&simulation);
         assert_eq!(
-            snapshot.notifications.last_error,
-            Some(AbilityError::OnCooldown)
+            snapshot.notification.error,
+            Some(AbilityError::NotEnoughIgnite)
         );
     }
 
     #[test]
-    fn building_repeatedly_allocates_nothing() {
-        // The snapshot is fixed-size by construction: no Vec, no String, no Box. This test
-        // asserts the property that makes a per-frame snapshot free.
-        let mut simulation = sim();
+    fn refreshing_reuses_the_snapshot_rather_than_rebuilding_it() {
+        let simulation = arena();
         let mut snapshot = UiSnapshot::build(&simulation);
-        for _ in 0..1_000 {
-            simulation.step_once();
+        let capacity = snapshot.talents.capacity();
+        for _ in 0..100 {
             snapshot.refresh(&simulation);
         }
-        assert_eq!(snapshot.abilities.len(), ABILITY_SLOTS);
-        assert_eq!(
-            std::mem::size_of::<UiSnapshot>(),
-            std::mem::size_of_val(&snapshot),
-            "the snapshot is a value, not a handle to heap storage"
-        );
-    }
-
-    #[test]
-    fn a_snapshot_of_a_world_without_a_player_does_not_panic() {
-        // A stale player entity is what a reset or a future respawn produces mid-frame.
-        let mut simulation = sim();
-        let player = simulation.player().entity;
-        simulation.world_mut().despawn(player);
-
-        let snapshot = UiSnapshot::build(&simulation);
-        assert!(!snapshot.player.alive);
-        assert_eq!(snapshot.player.health_fraction(), 0.0);
+        assert_eq!(snapshot.talents.capacity(), capacity, "the snapshot grew");
+        assert_eq!(snapshot.talents.len(), TALENTS.len());
     }
 }

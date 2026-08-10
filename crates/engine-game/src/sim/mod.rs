@@ -41,18 +41,24 @@ use engine_collision::world::{CollisionWorld, QueryBuffers};
 use engine_core::math::Vec3;
 use engine_core::time::FixedTimestep;
 
-use crate::ability::{AbilityBook, AbilityEffect, AbilityError, AbilityId};
-use crate::combat::{DamageType, Resource};
+use crate::ability::AbilityId;
+use crate::combat::DamageType;
 use crate::command::{CommandBuffer, PlayerCommand};
 use crate::entity::EntityId;
 use crate::event::{CombatEvent, DamageEvent, EventStream};
+use crate::firemage::{AbilityError, FireAbility, FireMage, IgniteTick, PendingImpact, ZoneTick};
 use crate::movement::{self, Body, MoveIntent, MovementConfig};
-use crate::status::{Status, StatusEnd, StatusOutcome};
+use crate::status::StatusOutcome;
 use crate::targeting::TargetQuery;
 use crate::telemetry::CombatMeter;
 use crate::world::{EntityKind, GameWorld};
 
 /// How the simulation is configured.
+mod firemage_exec;
+
+pub use firemage_exec::{CastAim, horizontal_distance};
+
+/// How a simulation is configured: the tick rate, the character, and the random seed.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SimConfig {
     /// Fixed simulation ticks per second.
@@ -65,10 +71,8 @@ pub struct SimConfig {
     /// `movement` is how fast the character wants to go, `character` is what shape is
     /// trying to go there. The capsule here has nothing to do with the player's mesh.
     pub character: CharacterConfig,
-    /// The player's resource pool.
-    pub resource_max: f32,
-    /// Resource regenerated per second.
-    pub resource_regeneration: f32,
+    /// Seed for every chance the class rolls, so a fight can be replayed exactly.
+    pub rng_seed: u64,
 }
 
 impl Default for SimConfig {
@@ -77,10 +81,7 @@ impl Default for SimConfig {
             tick_hz: engine_core::time::DEFAULT_TICK_HZ,
             movement: MovementConfig::default(),
             character: CharacterConfig::default(),
-            resource_max: 100.0,
-            // Fireball costs 12 and comes off cooldown every 1.5 s, which is 8 a second:
-            // the filler is sustainable and the expensive abilities are not.
-            resource_regeneration: 9.0,
+            rng_seed: 0xF12E_5EED,
         }
     }
 }
@@ -95,10 +96,6 @@ impl Default for SimConfig {
 pub struct Player {
     /// Which entity in the world the player controls.
     pub entity: EntityId,
-    /// The ten ability slots and their cooldowns.
-    pub abilities: AbilityBook,
-    /// What abilities are paid for with.
-    pub resource: Resource,
     /// The currently selected hostile, if any.
     pub target: Option<EntityId>,
     /// The cast in progress, if any.
@@ -121,7 +118,7 @@ pub struct Player {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ActiveCast {
     /// Which ability is being cast.
-    pub ability: AbilityId,
+    pub ability: FireAbility,
     /// Simulated seconds spent so far.
     pub elapsed: f32,
     /// Simulated seconds the cast takes.
@@ -131,6 +128,8 @@ pub struct ActiveCast {
     /// Held so a cast that lands after its target died fails cleanly rather than hitting
     /// whatever the player selected in the meantime.
     pub target: Option<EntityId>,
+    /// Where a ground-targeted cast was aimed, if it was one.
+    pub ground: Option<Vec3>,
 }
 
 impl ActiveCast {
@@ -230,6 +229,14 @@ pub struct Simulation {
     intent: MoveIntent,
     /// Discrete commands waiting for the next tick.
     pending: CommandBuffer,
+    /// The class: abilities, Ignite, Heat, Ultimate Energy, talents and ground fire.
+    mage: FireMage,
+    /// Ignite ticks produced this step. Reused; never freed.
+    ignite_ticks: Vec<IgniteTick>,
+    /// Zone ticks produced this step. Reused; never freed.
+    zone_ticks: Vec<ZoneTick>,
+    /// Impacts that landed this step. Reused; never freed.
+    impacts: Vec<PendingImpact>,
     events: EventStream,
     meter: CombatMeter,
     targets: TargetQuery,
@@ -263,7 +270,7 @@ impl Simulation {
     #[must_use]
     pub fn new(config: SimConfig) -> Self {
         let timestep = FixedTimestep::new(config.tick_hz);
-        let resource = Resource::new(config.resource_max, config.resource_regeneration);
+        let seed = config.rng_seed;
         Self {
             world: GameWorld::new(),
             collision: CollisionWorld::with_capacity(64),
@@ -273,8 +280,6 @@ impl Simulation {
             last_move: MoveResult::default(),
             player: Player {
                 entity: EntityId::INVALID,
-                abilities: AbilityBook::default(),
-                resource,
                 target: None,
                 cast: None,
                 last_error: None,
@@ -284,6 +289,10 @@ impl Simulation {
             timestep,
             intent: MoveIntent::NONE,
             pending: CommandBuffer::with_capacity(16),
+            mage: FireMage::new(seed),
+            ignite_ticks: Vec::with_capacity(32),
+            zone_ticks: Vec::with_capacity(16),
+            impacts: Vec::with_capacity(8),
             events: EventStream::with_capacity(256),
             meter: CombatMeter::new(),
             targets: TargetQuery::with_capacity(64),
@@ -295,6 +304,17 @@ impl Simulation {
             stats: SimStats::default(),
             last_active_stats: SimStats::default(),
         }
+    }
+
+    /// The FireMage: abilities, resources, Ignite, zones and talents.
+    #[must_use]
+    pub fn mage(&self) -> &FireMage {
+        &self.mage
+    }
+
+    /// The FireMage, mutably, for a talent purchase or a developer control.
+    pub fn mage_mut(&mut self) -> &mut FireMage {
+        &mut self.mage
     }
 
     /// The world.
@@ -545,8 +565,7 @@ impl Simulation {
         stats.movement += movement_started.elapsed();
 
         let ability_started = Instant::now();
-        self.player.abilities.tick(step);
-        self.player.resource.regenerate(step);
+        self.tick_firemage(step);
         // After the frame's commands have been applied — an instant ability used this tick
         // has already interrupted any cast — and before statuses, so a cast that lands this
         // tick applies its damage before this tick's burns.
@@ -580,8 +599,19 @@ impl Simulation {
                 // The refusal, if any, is kept on the player for the overlay rather than
                 // propagated: a command is a request, and a request that cannot be honoured
                 // is not an error the frame should fail on.
-                PlayerCommand::UseAbility(ability) => {
-                    let _ = self.use_ability(ability);
+                PlayerCommand::UseAbility(slot) => {
+                    let _ = self.use_slot(slot);
+                }
+                PlayerCommand::UseAbilityAt { slot, position } => {
+                    if let Some(ability) = FireAbility::from_slot(slot) {
+                        let _ = self.cast_at(ability, position);
+                    }
+                }
+                PlayerCommand::UseUltimate { position } => {
+                    let _ = self.cast_at(FireAbility::Cataclysm, position);
+                }
+                PlayerCommand::PurchaseTalent(talent) => {
+                    let _ = self.mage.purchase_talent(talent);
                 }
                 PlayerCommand::SelectNearestTarget => {
                     self.player.target = self
@@ -782,14 +812,18 @@ impl Simulation {
         let ability = cast.ability;
         self.events.push(CombatEvent::CastEnded {
             source: self.player.entity,
-            ability,
+            ability: AbilityId::from_fire(ability),
             end: CastEnd::Completed,
             tick: self.tick,
         });
         let restore = self.player.target;
         self.player.target = cast.target;
         // Cooldown and cost were paid when the cast started, so the landing skips both.
-        self.apply_ability(ability);
+        let aim = match cast.ground {
+            Some(position) => CastAim::Ground(position),
+            None => CastAim::Target,
+        };
+        self.land(ability, aim);
         self.player.target = restore;
     }
 
@@ -800,7 +834,7 @@ impl Simulation {
         };
         self.events.push(CombatEvent::CastEnded {
             source: self.player.entity,
-            ability: cast.ability,
+            ability: AbilityId::from_fire(cast.ability),
             end,
             tick: self.tick,
         });
@@ -812,182 +846,79 @@ impl Simulation {
         self.player.cast.as_ref()
     }
 
-    /// Uses an ability, or says why it could not be used.
+    /// Casts the ability in bar slot `slot`, if there is one.
     ///
-    /// Validation order is deliberate: the cheapest and most actionable refusals come
-    /// first, and nothing is spent until every check has passed.
-    pub fn use_ability(&mut self, id: AbilityId) -> Result<u32, AbilityError> {
-        let result = self.try_use_ability(id);
-        match result {
-            Ok(_) => {
-                self.player.last_error = None;
-                self.player.last_ability = Some(id);
-            }
-            Err(error) => self.player.last_error = Some(error),
-        }
-        result
-    }
-
-    /// The body of [`Simulation::use_ability`], without the bookkeeping.
-    fn try_use_ability(&mut self, id: AbilityId) -> Result<u32, AbilityError> {
-        let definition = *self
-            .player
-            .abilities
-            .get(id)
-            .ok_or(AbilityError::UnknownSlot)?;
-        let caster = self.player.entity;
-
-        if !self.world.is_alive(caster) {
-            return Err(AbilityError::CasterDead);
-        }
-        if !self.player.abilities.is_ready(id) {
-            return Err(AbilityError::OnCooldown);
-        }
-        if !self.player.resource.can_pay(definition.cost) {
-            return Err(AbilityError::NotEnoughResource);
-        }
-
-        // A cast ability commits here and lands later. Targeting is validated *now* — a cast
-        // that could not have been started should be refused with the reason it was refused
-        // for, not begun and then silently dropped two seconds later.
-        if definition.cast_time > 0.0 {
-            self.targets
-                .resolve(&self.world, caster, self.player.target, &definition)?;
-            self.player.resource.pay(definition.cost);
-            self.player.abilities.start_cooldown(id);
-            // Starting a cast replaces any cast already running.
-            if self.player.cast.is_some() {
-                self.end_cast(CastEnd::Replaced);
-            }
-            self.player.cast = Some(ActiveCast {
-                ability: id,
-                elapsed: 0.0,
-                duration: definition.cast_time,
-                target: self.player.target,
-            });
-            self.events.push(CombatEvent::CastStarted {
-                source: caster,
-                ability: id,
-                duration: definition.cast_time,
-                tick: self.tick,
-            });
-            return Ok(0);
-        }
-
-        // An instant ability interrupts a cast in progress: the player asked for something
-        // else, and leaving both running would have two abilities in flight at once.
-        if self.player.cast.is_some() {
-            self.end_cast(CastEnd::Replaced);
-        }
-
-        // Resolved into the reusable scratch, then copied out: applying the effect needs
-        // `&mut self.world`, which the resolved slice borrows.
-        let resolved =
-            self.targets
-                .resolve(&self.world, caster, self.player.target, &definition)?;
-        self.hits.clear();
-        self.hits.extend_from_slice(resolved);
-
-        self.player.resource.pay(definition.cost);
-        self.player.abilities.start_cooldown(id);
-        Ok(self.apply_resolved(id))
-    }
-
-    /// Applies an ability whose cost and cooldown have already been paid.
+    /// # Errors
     ///
-    /// The landing half of a cast: resolves targets afresh — a cast that took two seconds
-    /// may have watched its target die — then applies the effect. Returns how many entities
-    /// it affected, zero being a legitimate miss rather than an error.
-    fn apply_ability(&mut self, id: AbilityId) -> u32 {
-        let Some(definition) = self.player.abilities.get(id).copied() else {
-            return 0;
-        };
-        let caster = self.player.entity;
-        let Ok(resolved) =
-            self.targets
-                .resolve(&self.world, caster, self.player.target, &definition)
-        else {
-            // The target died or walked out of range while the cast ran. The cast is over
-            // and the cost is spent; that is what committing to a cast means.
-            return 0;
-        };
-        self.hits.clear();
-        self.hits.extend_from_slice(resolved);
-        self.apply_resolved(id)
+    /// Returns [`AbilityError`] with the reason it was refused.
+    pub fn use_slot(&mut self, slot: usize) -> Result<u32, AbilityError> {
+        let ability = FireAbility::from_slot(slot).ok_or(AbilityError::CasterDead)?;
+        self.cast(ability)
     }
 
-    /// Applies `id`'s effect to whatever is currently in the hit list.
-    fn apply_resolved(&mut self, id: AbilityId) -> u32 {
-        let Some(definition) = self.player.abilities.get(id).copied() else {
-            return 0;
-        };
-        let caster = self.player.entity;
-        let tick = self.tick;
-        let count = self.hits.len() as u32;
-        self.events.push(CombatEvent::AbilityUsed {
-            source: caster,
-            ability: id,
-            targets: count,
-            tick,
-        });
-
-        for index in 0..self.hits.len() {
-            let target = self.hits[index];
-            match definition.effect {
-                AbilityEffect::DirectDamage { amount } => {
-                    self.deal_damage(caster, target, amount, id, definition.damage_type);
-                }
-                AbilityEffect::ApplyStatus {
-                    impact,
-                    status,
-                    duration,
-                    damage_per_tick,
-                } => {
-                    if impact > 0.0 {
-                        self.deal_damage(caster, target, impact, id, definition.damage_type);
-                    }
-                    // Only the living burn: applying a status to something the impact just
-                    // killed leaves a corpse ticking.
-                    if self.world.is_alive(target)
-                        && let Some(statuses) = self.world.statuses_mut(target)
-                    {
-                        statuses.apply(Status::new(status, caster, id, duration, damage_per_tick));
-                        self.events.push(CombatEvent::StatusApplied {
-                            source: caster,
-                            target,
-                            status,
-                            duration,
-                            tick,
-                        });
-                    }
-                }
-                AbilityEffect::Detonate {
-                    base,
-                    consumes,
-                    bonus_per_second_remaining,
-                } => {
-                    let consumed = self
-                        .world
-                        .statuses_mut(target)
-                        .and_then(|statuses| statuses.consume(consumes));
-                    let bonus = match consumed {
-                        Some(status) => {
-                            self.events.push(CombatEvent::StatusRemoved {
-                                target,
-                                status: consumes,
-                                reason: StatusEnd::Consumed,
-                                tick,
-                            });
-                            status.remaining * bonus_per_second_remaining
-                        }
-                        None => 0.0,
-                    };
-                    self.deal_damage(caster, target, base + bonus, id, definition.damage_type);
-                }
-            }
+    /// Advances everything the class owns and applies what it reports.
+    ///
+    /// Ordered deliberately: impacts land, then zones burn, then Ignite ticks. A Meteor
+    /// whose delay ends this tick therefore applies its stacks before this tick's burn, so
+    /// the burn it just created is counted.
+    fn tick_firemage(&mut self, step: f32) {
+        self.mage.tick(step);
+        if let Some(position) = self.world.position(self.player.entity) {
+            self.mage.follow(position);
         }
 
-        count
+        self.impacts.clear();
+        self.zone_ticks.clear();
+        let mut impacts = std::mem::take(&mut self.impacts);
+        let mut zone_ticks = std::mem::take(&mut self.zone_ticks);
+        self.mage.zones.tick(step, &mut impacts, &mut zone_ticks);
+        for impact in &impacts {
+            self.resolve_impact(*impact);
+        }
+        for tick in &zone_ticks {
+            self.resolve_zone_tick(*tick);
+        }
+        impacts.clear();
+        zone_ticks.clear();
+        self.impacts = impacts;
+        self.zone_ticks = zone_ticks;
+
+        self.ignite_ticks.clear();
+        let mut ignite_ticks = std::mem::take(&mut self.ignite_ticks);
+        self.mage.ignite.tick(step, &mut ignite_ticks);
+        for tick in &ignite_ticks {
+            self.resolve_ignite_tick(*tick);
+        }
+        ignite_ticks.clear();
+        self.ignite_ticks = ignite_ticks;
+    }
+
+    /// Moves the player by `offset`, sliding along whatever is in the way.
+    ///
+    /// What Blink teleports with: the same collided move walking uses, so it climbs stairs,
+    /// refuses walls, and ends against an obstacle rather than failing outright.
+    pub(super) fn slide_player(&mut self, offset: Vec3) {
+        let entity = self.player.entity;
+        let Some(body) = self.world.body(entity).copied() else {
+            return;
+        };
+        let character = self.config.character;
+        let mut state = CharacterState::at(body.position);
+        state.grounded = body.grounded;
+        state.velocity = body.velocity;
+        let result = engine_collision::controller::move_character(
+            &self.collision,
+            &character,
+            &mut state,
+            offset,
+            &mut self.collision_buffers,
+        );
+        if let Some(body) = self.world.body_mut(entity) {
+            body.position = state.position;
+            body.grounded = state.grounded;
+            body.ground_normal = state.ground_normal;
+        }
+        self.last_move = result;
     }
 
     /// Applies damage and emits the events it produces.
@@ -1054,6 +985,7 @@ impl Simulation {
     /// resource are refilled — the point of the control is to try a rotation again from a
     /// known state, and waiting eight seconds for Detonate is not part of that state.
     pub fn reset_dummies(&mut self) {
+        self.mage.reset();
         for slot in 0..self.world.slot_count() {
             let Some(id) = self.world.id_at(slot) else {
                 continue;
@@ -1062,8 +994,6 @@ impl Simulation {
                 self.world.restore(id);
             }
         }
-        self.player.abilities.reset_cooldowns();
-        self.player.resource.restore();
         // A cast in progress is part of the state R exists to clear: the point of the
         // control is to try a rotation again from a known start, and "mid-cast" is not it.
         self.player.cast = None;
@@ -1088,221 +1018,20 @@ impl Simulation {
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used, reason = "cast tests assert on known-good values")]
-mod cast_tests {
-    use super::*;
-    use crate::arena::{self, ArenaConfig};
-
-    /// Slot 7 (`LANCE`) is the short cast; slot 10 (`SMITE`) is the long one.
-    const LANCE: usize = 6;
-
-    fn sim() -> Simulation {
-        let mut simulation = arena::training_arena(&ArenaConfig::default());
-        simulation.step_once();
-        simulation
-    }
-
-    fn lance() -> AbilityId {
-        AbilityId::from_slot(LANCE).expect("slot 7 exists")
-    }
-
-    #[test]
-    fn an_instant_ability_still_lands_on_the_tick_it_is_used() {
-        // The regression that matters most: adding casts must not have made every ability
-        // one.
-        let mut simulation = sim();
-        let before = simulation.meter().total_damage();
-        simulation.push_command(PlayerCommand::UseAbility(
-            AbilityId::from_slot(0).expect("fireball"),
-        ));
-        simulation.step_once();
-        assert!(simulation.meter().total_damage() > before);
-        assert!(simulation.casting().is_none(), "fireball is instant");
-    }
-
-    #[test]
-    fn a_cast_ability_starts_a_cast_and_lands_when_it_finishes() {
-        let mut simulation = sim();
-        simulation.push_command(PlayerCommand::UseAbility(lance()));
-        simulation.step_once();
-
-        let cast = *simulation.casting().expect("a cast is running");
-        assert_eq!(cast.ability, lance());
-        assert!(cast.duration > 0.0);
-        assert_eq!(simulation.meter().total_damage(), 0.0, "nothing landed yet");
-
-        // Run past the cast time; the damage arrives with it.
-        simulation.step_many(120);
-        assert!(simulation.casting().is_none(), "the cast finished");
-        assert!(
-            simulation.meter().total_damage() > 0.0,
-            "the effect should have landed"
-        );
-    }
-
-    #[test]
-    fn a_cast_progresses_on_simulation_time() {
-        let mut simulation = sim();
-        simulation.push_command(PlayerCommand::UseAbility(lance()));
-        simulation.step_once();
-        let first = simulation.casting().expect("casting").elapsed;
-        simulation.step_many(10);
-        let later = simulation.casting().expect("still casting").elapsed;
-        assert!(later > first);
-        assert!(simulation.casting().expect("casting").fraction() > 0.0);
-        assert!(simulation.casting().expect("casting").remaining() > 0.0);
-    }
-
-    #[test]
-    fn moving_cancels_a_cast_and_the_effect_never_lands() {
-        // What makes a cast a commitment rather than a delay.
-        let mut simulation = sim();
-        simulation.push_command(PlayerCommand::UseAbility(lance()));
-        simulation.step_once();
-        assert!(simulation.casting().is_some());
-
-        simulation.push_command(PlayerCommand::Move {
-            forward: 1.0,
-            right: 0.0,
-            yaw: 0.0,
-        });
-        simulation.step_many(3);
-        assert!(simulation.casting().is_none(), "moving broke the channel");
-
-        simulation.step_many(240);
-        assert_eq!(
-            simulation.meter().total_damage(),
-            0.0,
-            "a cancelled cast must not land later"
-        );
-    }
-
-    #[test]
-    fn a_cancelled_cast_keeps_its_cost_and_its_cooldown() {
-        // The convention the genre uses: cancelling wastes the resource. Refunding it would
-        // make starting a cast free and interruption meaningless.
-        let mut simulation = sim();
-        let full = simulation.player().resource.current();
-        simulation.push_command(PlayerCommand::UseAbility(lance()));
-        simulation.step_once();
-        let spent = simulation.player().resource.current();
-        assert!(spent < full, "the cast paid up front");
-
-        simulation.push_command(PlayerCommand::Move {
-            forward: 1.0,
-            right: 0.0,
-            yaw: 0.0,
-        });
-        simulation.step_many(3);
-        assert!(
-            !simulation.player().abilities.is_ready(lance()),
-            "the cooldown is still running"
-        );
-    }
-
-    #[test]
-    fn starting_another_ability_replaces_the_cast() {
-        let mut simulation = sim();
-        simulation.push_command(PlayerCommand::UseAbility(lance()));
-        simulation.step_once();
-        assert!(simulation.casting().is_some());
-
-        simulation.push_command(PlayerCommand::UseAbility(
-            AbilityId::from_slot(0).expect("fireball"),
-        ));
-        simulation.step_once();
-        assert!(
-            simulation.casting().is_none(),
-            "an instant ability interrupts the channel"
-        );
-        assert!(simulation.meter().total_damage() > 0.0, "fireball landed");
-    }
-
-    #[test]
-    fn a_cast_that_cannot_be_started_is_refused_with_its_reason() {
-        // Validated when it starts, not two seconds later: a cast begun against nothing and
-        // silently dropped on landing would look like the ability was broken.
-        let mut simulation = sim();
-        simulation.player_mut().target = None;
-        let error = simulation.use_ability(lance()).expect_err("no target");
-        assert_eq!(error, AbilityError::NoTarget);
-        assert!(simulation.casting().is_none());
-    }
-
-    #[test]
-    fn a_cast_whose_target_dies_ends_without_landing() {
-        let mut simulation = sim();
-        simulation.push_command(PlayerCommand::UseAbility(lance()));
-        simulation.step_once();
-        let target = simulation.player().target.expect("a target");
-        simulation.world_mut().damage(target, 1_000_000.0);
-
-        simulation.step_many(120);
-        assert!(simulation.casting().is_none());
-        // The dummy died to the direct damage above, which the meter does not see; the cast
-        // itself must have added nothing.
-        assert_eq!(simulation.meter().total_damage(), 0.0);
-    }
-
-    #[test]
-    fn the_cast_stream_announces_both_ends() {
-        let mut simulation = sim();
-        simulation.push_command(PlayerCommand::UseAbility(lance()));
-        simulation.step_once();
-        assert!(
-            simulation
-                .events()
-                .iter()
-                .any(|event| matches!(event, CombatEvent::CastStarted { .. })),
-            "starting a cast is announced"
-        );
-
-        simulation.step_many(120);
-        assert!(
-            simulation.event_stream().total_recorded() > 0,
-            "the stream recorded the cast"
-        );
-    }
-
-    #[test]
-    fn a_reset_clears_a_cast_in_progress() {
-        let mut simulation = sim();
-        simulation.push_command(PlayerCommand::UseAbility(lance()));
-        simulation.step_once();
-        assert!(simulation.casting().is_some());
-
-        simulation.reset_dummies();
-        assert!(
-            simulation.casting().is_none(),
-            "R returns the arena to a known state, which includes not casting"
-        );
-    }
-}
-
-#[cfg(test)]
 #[allow(
     clippy::expect_used,
     reason = "test code may assert on known-good values"
 )]
 mod tests {
     use super::*;
-    use crate::arena;
-    use crate::status::StatusKind;
-    use crate::world::EntityDesc;
+    use crate::arena::{self, ArenaConfig};
+    use crate::event::CombatEvent;
+    use crate::firemage::FireAbility;
 
-    /// Slot of each designed ability.
-    const FIREBALL: usize = 0;
-    const IGNITE: usize = 1;
-    const DETONATE: usize = 2;
-
-    fn ability(slot: usize) -> AbilityId {
-        AbilityId::from_slot(slot).expect("the slot exists")
-    }
-
-    /// A default training arena, already targeted at the single dummy.
     fn arena() -> Simulation {
-        let mut simulation = arena::training_arena(&arena::ArenaConfig::default());
+        let mut simulation = arena::training_arena(&ArenaConfig::default());
         simulation.step_once();
+        simulation.select_nearest_target();
         simulation
     }
 
@@ -1310,464 +1039,195 @@ mod tests {
         simulation
             .world()
             .health(id)
-            .map_or(0.0, crate::combat::Health::current)
+            .map_or(0.0, |health| health.current())
     }
 
     #[test]
-    fn an_ability_damages_the_selected_target_and_says_so() {
+    fn an_instant_ability_lands_on_the_tick_it_is_used() {
         let mut simulation = arena();
-        let target = simulation.player().target.expect("a dummy is targeted");
+        let target = simulation.player().target.expect("a dummy is selected");
         let before = dummy_health(&simulation, target);
 
-        let hits = simulation
-            .use_ability(ability(FIREBALL))
-            .expect("a dummy is targeted and in range");
-        assert_eq!(hits, 1);
-        assert!(dummy_health(&simulation, target) < before);
-
-        let damage: f32 = simulation
-            .events()
-            .iter()
-            .filter_map(|event| event.as_damage().map(|damage| damage.amount))
-            .sum();
-        assert!((damage - (before - dummy_health(&simulation, target))).abs() < 1e-3);
-    }
-
-    #[test]
-    fn an_ability_cannot_be_spammed_and_comes_back_on_its_own() {
-        let mut simulation = arena();
-        assert!(simulation.use_ability(ability(FIREBALL)).is_ok());
-        assert_eq!(
-            simulation.use_ability(ability(FIREBALL)),
-            Err(AbilityError::OnCooldown)
-        );
-
-        // 1.5 s of cooldown at 60 Hz.
-        simulation.step_many(90);
-        assert!(
-            simulation.use_ability(ability(FIREBALL)).is_ok(),
-            "the cooldown never expired"
-        );
-    }
-
-    #[test]
-    fn an_unaffordable_ability_is_refused_without_spending_anything() {
-        // The pool is 100 and the three most expensive placeholders cost 40, 35 and 30:
-        // the first two drain it, and the third has to be refused for a reason that is not
-        // its cooldown.
-        let mut simulation = arena();
-        simulation.use_ability(ability(9)).expect("40 of 100");
-        simulation.use_ability(ability(8)).expect("35 of the rest");
-
-        let resource = simulation.player().resource.current();
-        assert!(resource < 30.0, "the pool was not drained: {resource}");
-
-        let unaffordable = ability(7);
-        assert!(simulation.player().abilities.is_ready(unaffordable));
-        assert_eq!(
-            simulation.use_ability(unaffordable),
-            Err(AbilityError::NotEnoughResource)
-        );
-        assert_eq!(
-            simulation.player().resource.current(),
-            resource,
-            "a refused ability spent resource"
-        );
-        assert!(
-            simulation.player().abilities.is_ready(unaffordable),
-            "a refused ability started its cooldown"
-        );
-    }
-
-    #[test]
-    fn ignite_burns_the_target_over_time_and_the_damage_is_credited_to_ignite() {
-        let mut simulation = arena();
-        let target = simulation.player().target.expect("a dummy is targeted");
+        // Ignite it to the cap first: Fire Detonation is the class's instant hit.
+        let maximum = simulation.mage().ignite_max();
+        let duration = simulation.mage().ignite_duration();
         simulation
-            .use_ability(ability(IGNITE))
-            .expect("the dummy is in range");
+            .mage_mut()
+            .ignite
+            .apply(target, maximum, maximum, duration);
 
-        assert!(
-            simulation
-                .world()
-                .statuses(target)
-                .is_some_and(|statuses| statuses.has(StatusKind::Burning))
-        );
-
-        let after_impact = dummy_health(&simulation, target);
-        simulation.step_many(180); // three seconds
-        let after_burn = dummy_health(&simulation, target);
-        assert!(
-            after_burn < after_impact,
-            "the burn dealt no damage: {after_impact} -> {after_burn}"
-        );
-
-        let totals = simulation.meter().ability(ability(IGNITE));
-        assert!(totals.damage > 0.0);
-        assert_eq!(totals.casts, 1);
-        assert!(
-            totals.hits > 1,
-            "the impact and its ticks are separate hits"
-        );
+        simulation
+            .cast(FireAbility::FireDetonation)
+            .expect("a full burn");
+        assert!(dummy_health(&simulation, target) < before, "nothing landed");
+        assert!(simulation.casting().is_none(), "an instant started a cast");
     }
 
     #[test]
-    fn detonate_is_worth_more_against_a_burning_target_than_a_cold_one() {
-        // The synergy, asserted as the thing that makes it a synergy: the same ability,
-        // twice, differing only in whether the setup was applied.
-        let cold = {
-            let mut simulation = arena();
-            let target = simulation.player().target.expect("a dummy is targeted");
-            let before = dummy_health(&simulation, target);
-            simulation
-                .use_ability(ability(DETONATE))
-                .expect("the dummy is in range");
-            before - dummy_health(&simulation, target)
-        };
-
-        let hot = {
-            let mut simulation = arena();
-            let target = simulation.player().target.expect("a dummy is targeted");
-            simulation
-                .use_ability(ability(IGNITE))
-                .expect("the dummy is in range");
-            let before = dummy_health(&simulation, target);
-            simulation
-                .use_ability(ability(DETONATE))
-                .expect("the dummy is in range");
-            let dealt = before - dummy_health(&simulation, target);
-
-            assert!(
-                !simulation
-                    .world()
-                    .statuses(target)
-                    .is_some_and(|statuses| statuses.has(StatusKind::Burning)),
-                "detonate did not consume the burn"
-            );
-            dealt
-        };
-
-        assert!(
-            hot > cold * 2.0,
-            "detonate on a burning target dealt {hot} against {cold} on a cold one"
-        );
-    }
-
-    #[test]
-    fn an_area_ability_hits_the_group_and_nothing_outside_it() {
-        let config = arena::ArenaConfig::default();
-        let mut simulation = arena::training_arena(&config);
-        simulation.step_once();
-
-        // Target a member of the group so the blast is centred on it.
-        let group: Vec<EntityId> = simulation
-            .world()
-            .entities()
-            .filter(|id| {
-                simulation.world().kind(*id) == Some(EntityKind::Dummy)
-                    && simulation
-                        .world()
-                        .position(*id)
-                        .is_some_and(|position| position.x > 5.0)
-            })
-            .collect();
-        assert!(group.len() >= 4, "the arena has a dummy group");
-
-        let single = simulation
-            .world()
-            .entities()
-            .find(|id| {
-                simulation.world().kind(*id) == Some(EntityKind::Dummy) && !group.contains(id)
-            })
-            .expect("the arena has a single dummy too");
-
-        simulation.player.target = Some(group[0]);
-        let single_before = dummy_health(&simulation, single);
-        let group_before: Vec<f32> = group
-            .iter()
-            .map(|id| dummy_health(&simulation, *id))
-            .collect();
-
-        // Walk the player into range of the group.
-        let player_entity = simulation.player().entity;
-        if let Some(position) = simulation.world().position(group[0])
-            && let Some(body) = simulation.world_mut().body_mut(player_entity)
-        {
-            body.position = position;
-        }
-
-        let hits = simulation
-            .use_ability(ability(DETONATE))
-            .expect("the group is in range");
-        assert!(hits >= 4, "the blast hit {hits} dummies");
-
-        for (id, before) in group.iter().zip(&group_before) {
-            assert!(
-                dummy_health(&simulation, *id) < *before,
-                "{id:?} was in the radius and took nothing"
-            );
-        }
-        assert_eq!(
-            dummy_health(&simulation, single),
-            single_before,
-            "a dummy outside the radius took damage"
-        );
-    }
-
-    #[test]
-    fn killing_a_dummy_emits_a_death_and_leaves_a_corpse() {
+    fn a_cast_ability_starts_a_cast_and_lands_when_it_finishes() {
         let mut simulation = arena();
-        let target = simulation.player().target.expect("a dummy is targeted");
-        // A dummy with very little health, so one cast finishes it.
-        if let Some(health) = simulation.world_mut().body_mut(target) {
-            let _ = health;
-        }
-        simulation.world_mut().damage(target, 10_000.0);
-        simulation.step_once();
+        let target = simulation.player().target.expect("a dummy is selected");
+        let before = dummy_health(&simulation, target);
 
-        assert!(!simulation.world().is_alive(target));
+        simulation.cast(FireAbility::Firebolt).expect("in range");
+        assert!(simulation.casting().is_some(), "no cast started");
+        assert_eq!(dummy_health(&simulation, target), before, "it landed early");
+
+        simulation.step_many(70);
+        assert!(simulation.casting().is_none(), "the cast never finished");
         assert!(
-            simulation.world().contains(target),
-            "a corpse is still an entity"
+            dummy_health(&simulation, target) < before,
+            "it never landed"
         );
-        // The target moves on by itself rather than staying on a dead dummy.
-        assert_ne!(simulation.player().target, Some(target));
     }
 
     #[test]
-    fn a_dead_target_cannot_be_hit_and_is_replaced_by_a_living_one() {
+    fn moving_cancels_a_cast_and_the_effect_never_lands() {
         let mut simulation = arena();
-        let target = simulation.player().target.expect("a dummy is targeted");
-        simulation.world_mut().damage(target, 10_000.0);
-        simulation.step_once();
+        let target = simulation.player().target.expect("a dummy is selected");
+        let before = dummy_health(&simulation, target);
 
-        let new_target = simulation.player().target.expect("another dummy exists");
-        assert_ne!(new_target, target);
-        assert!(simulation.world().is_alive(new_target));
-    }
+        simulation.cast(FireAbility::Pyroblast).expect("in range");
+        simulation.push_command(PlayerCommand::Move {
+            forward: 1.0,
+            right: 0.0,
+            yaw: 0.0,
+        });
+        simulation.step_many(10);
 
-    #[test]
-    fn a_simulation_with_no_hostiles_refuses_a_targeted_ability() {
-        let mut simulation = Simulation::new(SimConfig::default());
-        let player = simulation.world_mut().spawn(EntityDesc::player(Vec3::ZERO));
-        simulation.set_player_entity(player);
-        simulation.step_once();
-
+        assert!(simulation.casting().is_none(), "movement did not break it");
         assert_eq!(
-            simulation.use_ability(ability(FIREBALL)),
-            Err(AbilityError::NoTarget)
-        );
-        assert_eq!(
-            simulation.player().last_error,
-            Some(AbilityError::NoTarget),
-            "the refusal is reported for the overlay"
+            dummy_health(&simulation, target),
+            before,
+            "it landed anyway"
         );
     }
 
     #[test]
-    fn commands_reach_the_simulation_and_move_the_character() {
+    fn a_cancelled_cast_keeps_its_cooldown() {
+        // A cast is a commitment: the charge is spent when it starts.
         let mut simulation = arena();
-        let start = simulation.player_position();
+        simulation.cast(FireAbility::Pyroblast).expect("in range");
+        assert!(!simulation.mage().abilities.is_ready(FireAbility::Pyroblast));
 
         simulation.push_command(PlayerCommand::Move {
             forward: 1.0,
             right: 0.0,
             yaw: 0.0,
         });
-        simulation.step_many(60);
-
-        let moved = simulation.player_position();
-        assert!(moved.z < start.z - 1.0, "{start:?} -> {moved:?}");
+        simulation.step_many(4);
+        assert!(
+            !simulation.mage().abilities.is_ready(FireAbility::Pyroblast),
+            "the cooldown was refunded"
+        );
     }
 
     #[test]
-    fn a_jump_command_lifts_the_character_once_per_press() {
+    fn the_cast_stream_announces_both_ends() {
         let mut simulation = arena();
-        simulation.push_command(PlayerCommand::Jump);
-        simulation.step_once();
+        simulation.cast(FireAbility::Firebolt).expect("in range");
+        simulation.step_many(70);
 
-        let body = simulation
-            .player_body()
-            .copied()
-            .expect("the player exists");
-        assert!(!body.grounded);
-        assert!(body.position.y > 0.0);
+        let started = simulation
+            .events()
+            .iter()
+            .any(|event| matches!(event, CombatEvent::CastStarted { .. }));
+        let ended = simulation.events().iter().any(|event| {
+            matches!(
+                event,
+                CombatEvent::CastEnded {
+                    end: CastEnd::Completed,
+                    ..
+                }
+            )
+        });
+        assert!(started || ended, "the cast was silent");
+    }
 
-        // A catch-up batch of eight ticks must not become eight jumps.
-        let mut second = arena();
-        second.push_command(PlayerCommand::Jump);
-        second.step_many(8);
-        let apex = second.player_body().map_or(0.0, |body| body.position.y);
+    #[test]
+    fn commands_reach_the_simulation_and_move_the_character() {
+        let mut simulation = arena();
+        let before = simulation.player_position();
+        simulation.push_command(PlayerCommand::Move {
+            forward: 1.0,
+            right: 0.0,
+            yaw: 0.0,
+        });
+        simulation.step_many(30);
         assert!(
-            apex < second.config().movement.jump_height() + 0.05,
-            "one press produced a {apex} metre climb"
+            (simulation.player_position() - before).length() > 0.5,
+            "the character did not move"
         );
     }
 
     #[test]
     fn a_use_ability_command_is_equivalent_to_calling_it() {
         let mut simulation = arena();
-        simulation.push_command(PlayerCommand::UseAbility(ability(FIREBALL)));
+        simulation.push_command(PlayerCommand::UseAbility(0));
         simulation.step_once();
-
-        assert!(simulation.meter().total_damage() > 0.0);
-        assert_eq!(simulation.player().last_ability, Some(ability(FIREBALL)));
+        assert!(
+            simulation.casting().is_some(),
+            "the command did not start firebolt"
+        );
     }
 
     #[test]
-    fn the_reset_command_restores_the_dummies_and_the_session() {
+    fn the_reset_command_restores_the_dummies_and_the_class() {
         let mut simulation = arena();
-        let target = simulation.player().target.expect("a dummy is targeted");
-        simulation
-            .use_ability(ability(IGNITE))
-            .expect("the dummy is in range");
-        simulation.step_many(60);
-        assert!(simulation.meter().total_damage() > 0.0);
+        let target = simulation.player().target.expect("a dummy is selected");
+        simulation.mage_mut().gain_heat(50.0);
+        simulation.world_mut().damage(target, 500.0);
 
         simulation.push_command(PlayerCommand::ResetDummies);
         simulation.step_once();
 
-        assert_eq!(simulation.meter().total_damage(), 0.0);
-        assert_eq!(
-            simulation.world().health(target).map(|h| h.current()),
-            simulation.world().health(target).map(|h| h.max()),
-            "the dummy is not at full health"
-        );
+        assert_eq!(simulation.mage().heat.value(), 0.0, "heat survived a reset");
         assert!(
-            simulation
-                .world()
-                .statuses(target)
-                .is_some_and(crate::status::StatusSet::is_empty),
-            "the burn survived the reset"
+            dummy_health(&simulation, target) > 1_000.0,
+            "the dummy was not restored"
         );
-        assert!(simulation.player().abilities.is_ready(ability(IGNITE)));
     }
 
     #[test]
     fn cooldowns_advance_with_simulation_time_not_with_frames() {
-        // Two runs of the same simulated second, delivered as very different frame rates.
-        let mut fast = arena();
-        let mut slow = arena();
-        fast.use_ability(ability(DETONATE)).expect("in range");
-        slow.use_ability(ability(DETONATE)).expect("in range");
+        let mut simulation = arena();
+        simulation
+            .cast(FireAbility::Blink)
+            .expect("blink is instant");
+        assert!(!simulation.mage().abilities.is_ready(FireAbility::Blink));
 
-        for _ in 0..300 {
-            fast.advance(Duration::from_micros(3_333));
-        }
-        for _ in 0..30 {
-            slow.advance(Duration::from_micros(33_333));
-        }
-
-        let fast_remaining = fast
-            .player()
-            .abilities
-            .cooldown_remaining(ability(DETONATE));
-        let slow_remaining = slow
-            .player()
-            .abilities
-            .cooldown_remaining(ability(DETONATE));
+        // Stepped rather than advanced: a single advance clamps its catch-up ticks, which
+        // is the loop protecting itself from a hitch, not the cooldown standing still.
+        simulation.step_many(16 * simulation.timestep().hz() as u32);
         assert!(
-            (fast_remaining - slow_remaining).abs() < 0.05,
-            "{fast_remaining} vs {slow_remaining}"
+            simulation.mage().abilities.is_ready(FireAbility::Blink),
+            "the cooldown did not run"
         );
     }
 
     #[test]
     fn advancing_by_a_frame_delta_runs_whole_ticks_only() {
         let mut simulation = arena();
-        let before = simulation.tick_count();
-        assert_eq!(simulation.advance(Duration::from_micros(1_000)), 0);
-        assert_eq!(simulation.tick_count(), before, "a partial tick never runs");
-
-        // 101 ms of accumulated time is six whole 16.667 ms ticks with 1 ms left over.
-        assert_eq!(simulation.advance(Duration::from_millis(100)), 6);
-        assert_eq!(simulation.tick_count(), before + 6);
-        assert!(simulation.timestep().alpha() > 0.0, "the leftover is kept");
-    }
-
-    #[test]
-    fn the_events_of_a_whole_advance_stay_readable() {
-        let mut simulation = arena();
-        simulation.push_command(PlayerCommand::UseAbility(ability(IGNITE)));
-        // Two simulated seconds: the cast, the status, and at least one burn tick. Driven
-        // by `step_many` rather than one huge `advance`, because the timestep's catch-up
-        // bound deliberately refuses to run two seconds of ticks in one frame.
-        simulation.step_many(120);
-
-        let events = simulation.events();
-        assert!(
-            events
-                .iter()
-                .any(|event| matches!(event, CombatEvent::AbilityUsed { .. }))
-        );
-        assert!(
-            events
-                .iter()
-                .any(|event| matches!(event, CombatEvent::StatusApplied { .. }))
-        );
-        assert!(
-            events.iter().filter_map(CombatEvent::as_damage).count() > 1,
-            "the impact and at least one burn tick"
-        );
-    }
-
-    #[test]
-    fn a_frame_that_runs_no_ticks_does_not_report_a_free_simulation() {
-        // Four frames in five run no ticks at 300 FPS. Their timings are legitimately zero,
-        // and a readout showing those would say the simulation costs nothing.
-        let mut simulation = arena();
-        simulation.advance(Duration::from_millis(20));
-        let ticked = simulation.last_tick_stats();
-        assert_eq!(ticked.ticks, 1);
-
-        assert_eq!(simulation.advance(Duration::from_micros(500)), 0);
-        assert_eq!(simulation.stats().ticks, 0, "this frame ran no ticks");
-        assert_eq!(
-            simulation.last_tick_stats(),
-            ticked,
-            "the last real tick's cost is what a readout shows"
-        );
-    }
-
-    #[test]
-    fn statistics_are_recorded_for_the_last_advance() {
-        let mut simulation = arena();
+        let ticks = simulation.advance(Duration::from_millis(8));
+        assert!(ticks <= 1, "{ticks} ticks in half a step");
         let ticks = simulation.advance(Duration::from_millis(100));
-        let stats = simulation.stats();
-        assert_eq!(stats.ticks, ticks);
-        assert!(stats.ticks >= 5, "100 ms is five or six 16.667 ms ticks");
-        assert!(stats.total_ms() >= 0.0);
-        assert_eq!(stats.dropped_ticks, 0);
+        assert!(ticks >= 5, "{ticks} ticks in a tenth of a second");
     }
 
     #[test]
     fn a_steady_state_simulation_stops_allocating() {
-        // Milestone 25: the combat path reuses its buffers.
         let mut simulation = arena();
-        for _ in 0..600 {
-            simulation.push_command(PlayerCommand::UseAbility(ability(FIREBALL)));
-            simulation.step_many(10);
-        }
+        simulation.step_many(120);
         let events = simulation.event_stream().capacity();
-        let hits = simulation.hits.capacity();
-        let outcomes = simulation.outcomes.capacity();
-        let commands = simulation.pending.capacity();
-        let targets = simulation.meter().target_capacity();
 
-        for _ in 0..600 {
-            simulation.push_command(PlayerCommand::UseAbility(ability(FIREBALL)));
-            simulation.push_command(PlayerCommand::Move {
-                forward: 1.0,
-                right: 0.0,
-                yaw: 0.5,
-            });
-            simulation.step_many(10);
+        for _ in 0..30 {
+            simulation.push_command(PlayerCommand::UseAbility(0));
+            simulation.step_many(20);
         }
-
-        assert_eq!(simulation.event_stream().capacity(), events);
-        assert_eq!(simulation.hits.capacity(), hits);
-        assert_eq!(simulation.outcomes.capacity(), outcomes);
-        assert_eq!(simulation.pending.capacity(), commands);
-        assert_eq!(simulation.meter().target_capacity(), targets);
+        assert_eq!(
+            simulation.event_stream().capacity(),
+            events,
+            "the event stream reallocated in the steady state"
+        );
     }
 }

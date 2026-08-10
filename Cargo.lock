@@ -10,6 +10,7 @@ dependencies = [
  "engine-game",
  "engine-platform",
  "engine-presentation",
+ "engine-render-data",
  "engine-renderer",
  "engine-settings",
  "log",

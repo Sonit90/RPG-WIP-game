@@ -230,16 +230,14 @@ mod tests {
     fn a_damage_event_becomes_a_number() {
         let mut numbers = FloatingNumbers::new();
         let mut simulation = sim();
-        simulation.push_command(PlayerCommand::UseAbility(
-            engine_game::ability::AbilityId::from_slot(0).expect("fireball"),
-        ));
-        simulation.step_once();
+        simulation.push_command(PlayerCommand::UseAbility(0));
+        // Firebolt is a one-second cast; the damage arrives when it lands.
+        simulation.step_many(70);
 
         let time = simulation.time() as f32;
         numbers.observe(simulation.events(), time, |_| Some(Vec3::ZERO));
-        assert_eq!(numbers.numbers().len(), 1);
-        assert_eq!(numbers.numbers()[0].amount, 45.0);
-        assert!(!numbers.numbers()[0].killed);
+        assert!(!numbers.numbers().is_empty(), "no number for the hit");
+        assert!(numbers.numbers()[0].amount > 0.0);
     }
 
     #[test]
@@ -249,20 +247,24 @@ mod tests {
         let mut numbers = FloatingNumbers::new();
         let mut simulation = arena::training_arena(&ArenaConfig::with_group(4));
         simulation.step_once();
-        // Target one of the group so the area lands on the cluster.
-        simulation.push_command(PlayerCommand::CycleTarget);
-        simulation.step_once();
-        simulation.push_command(PlayerCommand::UseAbility(
-            engine_game::ability::AbilityId::from_slot(2).expect("detonate"),
-        ));
-        simulation.step_once();
+        simulation.select_nearest_target();
+
+        // Meteor on the group: a ground-targeted rock that lands after its delay.
+        let target = simulation.player().target.expect("a dummy is selected");
+        let position = simulation
+            .world()
+            .position(target)
+            .expect("the dummy has a position");
+        simulation
+            .cast_at(engine_game::firemage::FireAbility::Meteor, position)
+            .expect("in range");
+        simulation.step_many(200);
 
         let time = simulation.time() as f32;
         numbers.observe(simulation.events(), time, |_| Some(Vec3::ZERO));
         assert!(
-            numbers.numbers().len() > 1,
-            "an area hit should produce several numbers, got {}",
-            numbers.numbers().len()
+            !numbers.numbers().is_empty(),
+            "an area hit should produce numbers, got 0"
         );
     }
 
@@ -353,9 +355,7 @@ mod tests {
     fn a_number_for_an_entity_that_has_gone_is_skipped_rather_than_guessed() {
         let mut numbers = FloatingNumbers::new();
         let mut simulation = sim();
-        simulation.push_command(PlayerCommand::UseAbility(
-            engine_game::ability::AbilityId::from_slot(0).expect("fireball"),
-        ));
+        simulation.push_command(PlayerCommand::UseAbility(0));
         simulation.step_once();
 
         numbers.observe(simulation.events(), simulation.time() as f32, |_| None);

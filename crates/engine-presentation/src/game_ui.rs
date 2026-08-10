@@ -17,6 +17,7 @@ use engine_render_data::ui::{TextAlign, UiColor, UiDrawList, UiRect};
 use crate::damage_numbers::FloatingNumbers;
 use crate::nameplate::{Nameplate, NameplateConfig, project};
 use crate::snapshot::{AbilitySlotView, SlotAvailability, UiSnapshot};
+use engine_game::firemage::{ABILITY_SLOTS, FireAbility, HEAT_HIGH_THRESHOLD, HEAT_MAXIMUM};
 
 /// Layout constants for the combat HUD, in pixels at any resolution.
 ///
@@ -57,6 +58,26 @@ mod layout {
     pub const WORLD_BAR_HEIGHT: f32 = 6.0;
     /// Width of a world-space health bar above an enemy.
     pub const WORLD_BAR_WIDTH: f32 = 56.0;
+    /// Size of the Ultimate button, which is deliberately larger than a bar slot.
+    pub const ULTIMATE_SIZE: f32 = 66.0;
+    /// Gap between the bar and the Ultimate button, which separates them visually.
+    pub const ULTIMATE_GAP: f32 = 28.0;
+    /// Width of the Heat and Ultimate Energy bars.
+    pub const RESOURCE_BAR_WIDTH: f32 = 320.0;
+    /// Height of a resource bar.
+    pub const RESOURCE_BAR_HEIGHT: f32 = 16.0;
+    /// How far above the ability bar the resource bars sit.
+    pub const RESOURCE_LIFT: f32 = 84.0;
+    /// Size of the talent button in the top-right corner.
+    pub const TALENT_BUTTON_SIZE: f32 = 44.0;
+    /// Size of one Ignite stack pip.
+    pub const IGNITE_PIP: f32 = 10.0;
+    /// Gap between Ignite pips.
+    pub const IGNITE_PIP_GAP: f32 = 3.0;
+    /// Width of an ability tooltip.
+    pub const TOOLTIP_WIDTH: f32 = 300.0;
+    /// Height of one tooltip line.
+    pub const TOOLTIP_LINE: f32 = 16.0;
 }
 
 /// How the interface is coloured and sized.
@@ -107,6 +128,34 @@ pub struct UiTheme {
     pub hud_text_scale: f32,
     /// Glyph scale for a damage number.
     pub damage_text_scale: f32,
+    /// The Heat bar at rest.
+    pub heat_low: UiColor,
+    /// The Heat bar when it is running hot.
+    pub heat_high: UiColor,
+    /// The Heat bar while Overheat is running.
+    pub heat_overheated: UiColor,
+    /// The Ultimate Energy bar.
+    pub energy: UiColor,
+    /// The Ultimate Energy bar once it is full.
+    pub energy_full: UiColor,
+    /// An ability that cannot be paid for.
+    pub slot_no_resource: UiColor,
+    /// An ability whose target is wrong.
+    pub slot_invalid: UiColor,
+    /// An ability that is ready and worth pressing right now.
+    pub slot_empowered: UiColor,
+    /// The radial sweep drawn over a cooling ability.
+    pub cooldown_radial: UiColor,
+    /// An Ignite stack that is present.
+    pub ignite_pip: UiColor,
+    /// An Ignite stack that is not there yet.
+    pub ignite_pip_empty: UiColor,
+    /// The tooltip panel.
+    pub tooltip_panel: UiColor,
+    /// A tooltip's heading.
+    pub tooltip_title: UiColor,
+    /// A tooltip's body text.
+    pub tooltip_text: UiColor,
 }
 
 impl Default for UiTheme {
@@ -137,6 +186,20 @@ impl Default for UiTheme {
             killing_number: [1.0, 0.45, 0.30, 1.0],
             hud_text_scale: 2.0,
             damage_text_scale: 2.0,
+            heat_low: [0.55, 0.55, 0.60, 1.0],
+            heat_high: [0.95, 0.55, 0.15, 1.0],
+            heat_overheated: [1.0, 0.35, 0.12, 1.0],
+            energy: [0.35, 0.55, 0.95, 1.0],
+            energy_full: [0.65, 0.85, 1.0, 1.0],
+            slot_no_resource: [0.70, 0.18, 0.18, 1.0],
+            slot_invalid: [0.60, 0.15, 0.15, 1.0],
+            slot_empowered: [1.0, 0.75, 0.20, 1.0],
+            cooldown_radial: [0.02, 0.03, 0.05, 0.72],
+            ignite_pip: [1.0, 0.45, 0.12, 1.0],
+            ignite_pip_empty: [0.22, 0.20, 0.20, 1.0],
+            tooltip_panel: [0.05, 0.06, 0.09, 0.96],
+            tooltip_title: [1.0, 0.80, 0.35, 1.0],
+            tooltip_text: [0.88, 0.90, 0.94, 1.0],
         }
     }
 }
@@ -157,8 +220,10 @@ impl UiTheme {
     pub fn slot_color(&self, availability: SlotAvailability) -> UiColor {
         match availability {
             SlotAvailability::Ready => self.slot_ready,
-            SlotAvailability::OnCooldown => self.slot_cooling,
-            SlotAvailability::NoResource | SlotAvailability::NoTarget => self.slot_unavailable,
+            SlotAvailability::Cooling => self.slot_cooling,
+            SlotAvailability::NoResource => self.slot_no_resource,
+            SlotAvailability::InvalidTarget => self.slot_invalid,
+            SlotAvailability::Empowered => self.slot_empowered,
         }
     }
 
@@ -188,6 +253,8 @@ pub struct GameUi {
     title: String,
     /// Scratch for a plate's status line.
     statuses: String,
+    /// Scratch for a tooltip's lines. Reused; never freed.
+    tooltip_lines: Vec<String>,
 }
 
 impl GameUi {
@@ -199,6 +266,7 @@ impl GameUi {
             theme: UiTheme::default(),
             title: String::with_capacity(32),
             statuses: String::with_capacity(64),
+            tooltip_lines: Vec::with_capacity(8),
         }
     }
 
@@ -288,7 +356,9 @@ impl GameUi {
         self.push_nameplates(plates, config);
         self.push_target_frame(snapshot, viewport);
         self.push_player_bars(snapshot, viewport);
+        self.push_resource_bars(snapshot, viewport);
         self.push_ability_bar(snapshot, viewport);
+        self.push_talent_button(snapshot, viewport);
         self.push_cast_bar(snapshot, viewport);
         &self.list
     }
@@ -310,272 +380,494 @@ impl GameUi {
             layout::TARGET_FRAME_HEIGHT,
         );
         self.list.rect(frame, self.theme.panel);
-        // A dead or invalid target keeps its frame but loses its outline: the player still
-        // needs to see what they were fighting, and the missing outline is what says the
-        // abilities will refuse.
-        if target.valid {
+        if target.ignite_at_maximum {
+            // A full burn is the thing the player is waiting for; the frame says so.
+            self.list
+                .outline(frame, self.theme.outline_pixels, self.theme.slot_empowered);
+        } else {
             self.list
                 .outline(frame, self.theme.outline_pixels, self.theme.target_outline);
         }
 
-        let text_x = frame.x + layout::PADDING;
-        let text_y = frame.y + layout::PADDING;
-        let scale = self.theme.hud_text_scale;
-
         self.title.clear();
-        self.title.push_str(target.name);
-        if !target.alive {
-            self.title.push_str(" DEAD");
-        }
-        self.list
-            .text_at((text_x, text_y), &self.title, self.theme.text, scale);
-
-        self.statuses.clear();
-        write_integer(&mut self.statuses, target.distance.round() as i64);
-        self.statuses.push('M');
-        self.list.text_aligned(
-            (frame.right() - layout::PADDING, text_y),
-            &self.statuses,
+        self.title.push_str(target.kind.as_str());
+        self.title.push_str("  ");
+        write_integer(&mut self.title, i64::from(target.health_percent()));
+        self.title.push('%');
+        self.list.text_at(
+            (frame.x + layout::PADDING, frame.y + layout::PADDING),
+            &self.title,
             self.theme.text,
-            scale,
-            TextAlign::Right,
+            self.theme.hud_text_scale,
         );
 
         let bar = UiRect::new(
-            text_x,
-            text_y + 20.0,
-            layout::TARGET_FRAME_WIDTH - layout::PADDING * 2.0,
+            frame.x + layout::PADDING,
+            frame.y + layout::PADDING + 18.0,
+            frame.width - layout::PADDING * 2.0,
             layout::BAR_HEIGHT,
         );
-        let fraction = target.health_fraction();
+        let fill = self.theme.enemy_health_color(target.health_fraction());
+        self.list.bar(
+            bar,
+            target.health_fraction(),
+            self.theme.bar_background,
+            fill,
+        );
+
+        // Ignite stacks, drawn against the *current* maximum rather than a hardcoded five.
+        self.push_ignite_stacks(
+            frame.x + layout::PADDING,
+            bar.bottom() + 5.0,
+            target.ignite_stacks,
+            snapshot.ignite_max,
+        );
+    }
+
+    /// One pip per possible Ignite stack, filled up to what is on the target.
+    ///
+    /// The number of pips is the maximum the game currently allows, so buying Infernal
+    /// Capacity adds a sixth pip with no change here.
+    pub fn push_ignite_stacks(&mut self, x: f32, y: f32, stacks: u8, maximum: u8) {
+        for index in 0..maximum {
+            let pip = UiRect::new(
+                x + f32::from(index) * (layout::IGNITE_PIP + layout::IGNITE_PIP_GAP),
+                y,
+                layout::IGNITE_PIP,
+                layout::IGNITE_PIP,
+            );
+            let colour = if index < stacks {
+                self.theme.ignite_pip
+            } else {
+                self.theme.ignite_pip_empty
+            };
+            self.list.rect(pip, colour);
+        }
+    }
+
+    /// The player's health, Heat and Ultimate Energy.
+    pub fn push_player_bars(&mut self, snapshot: &UiSnapshot, viewport: (u32, u32)) {
+        let height = viewport.1 as f32;
+        let x = layout::MARGIN;
+        let mut y = height - layout::MARGIN - layout::BAR_HEIGHT;
+
+        let bar = UiRect::new(x, y, layout::PLAYER_BAR_WIDTH, layout::BAR_HEIGHT);
+        let fraction = snapshot.player.health_fraction();
         self.list.bar(
             bar,
             fraction,
             self.theme.bar_background,
-            self.theme.enemy_health_color(fraction),
+            self.theme.player_health_color(fraction),
         );
-
-        // The numbers on the bar, not beside it: a bar says "how much is left" at a glance
-        // and a number says "how much exactly", and they belong to one reading.
         self.title.clear();
-        write_integer(&mut self.title, target.health.round() as i64);
-        self.title.push('/');
-        write_integer(&mut self.title, target.max_health.round() as i64);
+        self.title.push_str("HP ");
+        write_integer(&mut self.title, snapshot.player.health as i64);
         self.list.text_at(
-            (bar.x + 4.0, bar.y + 4.0),
+            (bar.x + 4.0, bar.y + 3.0),
             &self.title,
             self.theme.text,
-            scale * 0.5,
+            1.0,
         );
 
-        self.statuses.clear();
-        write_integer(&mut self.statuses, i64::from(target.health_percent()));
-        self.statuses.push('%');
-        self.list.text_aligned(
-            (bar.right() - 4.0, bar.y + 4.0),
-            &self.statuses,
-            self.theme.text,
-            scale * 0.5,
-            TextAlign::Right,
-        );
-    }
-
-    /// The player's health and resource bars, bottom left.
-    pub fn push_player_bars(&mut self, snapshot: &UiSnapshot, viewport: (u32, u32)) {
-        let height = viewport.1 as f32;
-        let scale = self.theme.hud_text_scale * 0.5;
-        let bottom = height - layout::MARGIN;
-        let resource_top = bottom - layout::BAR_HEIGHT;
-        let health_top = resource_top - layout::BAR_HEIGHT - layout::BAR_GAP;
-
-        let health_fraction = snapshot.player.health_fraction();
-        let health = UiRect::new(
-            layout::MARGIN,
-            health_top,
-            layout::PLAYER_BAR_WIDTH,
-            layout::BAR_HEIGHT,
-        );
-        self.list.bar(
-            health,
-            health_fraction,
-            self.theme.bar_background,
-            self.theme.player_health_color(health_fraction),
-        );
-        self.push_bar_label(
-            health,
-            "HP",
-            snapshot.player.health,
-            snapshot.player.max_health,
-            scale,
-        );
-
-        let resource_fraction = snapshot.player.resource_fraction();
-        let resource = UiRect::new(
-            layout::MARGIN,
-            resource_top,
-            layout::PLAYER_BAR_WIDTH,
-            layout::BAR_HEIGHT,
-        );
-        self.list.bar(
-            resource,
-            resource_fraction,
-            self.theme.bar_background,
-            self.theme.resource,
-        );
-        self.push_bar_label(
-            resource,
-            "MP",
-            snapshot.player.resource,
-            snapshot.player.max_resource,
-            scale,
-        );
-    }
-
-    /// A bar's label on the left and its `current/max` on the right.
-    fn push_bar_label(&mut self, bar: UiRect, label: &str, current: f32, max: f32, scale: f32) {
-        self.list
-            .text_at((bar.x + 4.0, bar.y + 4.0), label, self.theme.text, scale);
-        self.title.clear();
-        write_integer(&mut self.title, current.round() as i64);
-        self.title.push('/');
-        write_integer(&mut self.title, max.round() as i64);
-        self.list.text_aligned(
-            (bar.right() - 4.0, bar.y + 4.0),
-            &self.title,
-            self.theme.text,
-            scale,
-            TextAlign::Right,
-        );
-    }
-
-    /// The ability bar: ten slots, centred at the bottom.
-    ///
-    /// Each slot is a frame, its hotkey, an abbreviated name and a cooldown wipe. The
-    /// "icon" is the frame's colour until there are textures to put in it — the layout does
-    /// not change when they arrive, which is the point of building it this way now.
-    pub fn push_ability_bar(&mut self, snapshot: &UiSnapshot, viewport: (u32, u32)) {
-        let slots = snapshot.abilities.len();
-        let total =
-            slots as f32 * layout::SLOT_SIZE + (slots.saturating_sub(1)) as f32 * layout::SLOT_GAP;
-        let left = (viewport.0 as f32 - total) * 0.5;
-        let top = viewport.1 as f32 - layout::ABILITY_BAR_BOTTOM - layout::SLOT_SIZE;
-        let scale = self.theme.hud_text_scale * 0.5;
-
-        for (index, ability) in snapshot.abilities.iter().enumerate() {
-            let slot = UiRect::new(
-                left + index as f32 * (layout::SLOT_SIZE + layout::SLOT_GAP),
-                top,
-                layout::SLOT_SIZE,
-                layout::SLOT_SIZE,
-            );
-            self.list.rect(slot, self.theme.panel);
-            self.list
-                .outline(slot, 2.0, self.theme.slot_color(ability.availability));
-
-            // The hotkey, top-left, where every action bar in the genre puts it.
+        // Flame Shield and haste are worth a word: both change how the fight is going.
+        if snapshot.player.shielded || snapshot.player.hasted {
+            y -= layout::BAR_HEIGHT + layout::BAR_GAP;
             self.title.clear();
-            write_integer(&mut self.title, i64::from(ability.hotkey));
+            if snapshot.player.shielded {
+                self.title.push_str("SHIELDED ");
+            }
+            if snapshot.player.hasted {
+                self.title.push_str("HASTE");
+            }
             self.list.text_at(
-                (slot.x + 5.0, slot.y + 5.0),
+                (x, y + 4.0),
+                &self.title,
+                self.theme.slot_empowered,
+                self.theme.hud_text_scale * 0.5,
+            );
+        }
+    }
+
+    /// The Heat and Ultimate Energy bars, above the ability bar.
+    pub fn push_resource_bars(&mut self, snapshot: &UiSnapshot, viewport: (u32, u32)) {
+        let (width, height) = (viewport.0 as f32, viewport.1 as f32);
+        let x = (width - layout::RESOURCE_BAR_WIDTH) * 0.5;
+        let bottom = height - layout::ABILITY_BAR_BOTTOM - layout::SLOT_SIZE;
+
+        // Heat: neutral when cold, orange when hot, and obviously different at the cap.
+        let heat_rect = UiRect::new(
+            x,
+            bottom - layout::RESOURCE_LIFT,
+            layout::RESOURCE_BAR_WIDTH,
+            layout::RESOURCE_BAR_HEIGHT,
+        );
+        let heat_colour = if snapshot.player.overheated {
+            self.theme.heat_overheated
+        } else if snapshot.player.heat_is_high() {
+            self.theme.heat_high
+        } else {
+            self.theme.heat_low
+        };
+        self.list.bar(
+            heat_rect,
+            snapshot.player.heat_fraction(),
+            self.theme.bar_background,
+            heat_colour,
+        );
+        if snapshot.player.overheated {
+            self.list
+                .outline(heat_rect, 2.0, self.theme.heat_overheated);
+        }
+        // The Overheat threshold, marked on the bar so the range is readable at a glance.
+        let threshold = UiRect::new(
+            heat_rect.x + heat_rect.width * (HEAT_HIGH_THRESHOLD / HEAT_MAXIMUM) - 1.0,
+            heat_rect.y,
+            2.0,
+            heat_rect.height,
+        );
+        self.list.rect(threshold, self.theme.text);
+
+        self.title.clear();
+        self.title.push_str("HEAT ");
+        write_integer(&mut self.title, snapshot.player.heat as i64);
+        self.title.push_str(" / 100");
+        if snapshot.player.overheated {
+            self.title.push_str("  OVERHEAT");
+        }
+        self.list.text_at(
+            (heat_rect.x, heat_rect.y - 14.0),
+            &self.title,
+            self.theme.text,
+            1.0,
+        );
+
+        // Ultimate Energy.
+        let energy_rect = UiRect::new(
+            x,
+            heat_rect.bottom() + 20.0,
+            layout::RESOURCE_BAR_WIDTH,
+            layout::RESOURCE_BAR_HEIGHT,
+        );
+        let energy_colour = if snapshot.player.ultimate_ready {
+            self.theme.energy_full
+        } else {
+            self.theme.energy
+        };
+        self.list.bar(
+            energy_rect,
+            snapshot.player.energy_fraction(),
+            self.theme.bar_background,
+            energy_colour,
+        );
+        if snapshot.player.ultimate_ready {
+            self.list.outline(energy_rect, 2.0, self.theme.energy_full);
+        }
+        self.title.clear();
+        self.title.push_str("ULTIMATE ENERGY ");
+        write_integer(&mut self.title, snapshot.player.energy as i64);
+        self.title.push_str(" / 100");
+        if snapshot.player.ultimate_ready {
+            self.title.push_str("  READY");
+        }
+        self.list.text_at(
+            (energy_rect.x, energy_rect.y - 14.0),
+            &self.title,
+            self.theme.text,
+            1.0,
+        );
+    }
+
+    /// The ten-slot ability bar, and the Ultimate beside it.
+    pub fn push_ability_bar(&mut self, snapshot: &UiSnapshot, viewport: (u32, u32)) {
+        for (slot, view) in snapshot.abilities.iter().enumerate() {
+            let rect = Self::slot_rect(slot, viewport);
+            self.push_ability_button(rect, view, self.theme.hud_text_scale * 0.5);
+        }
+
+        let rect = Self::ultimate_rect(viewport);
+        self.push_ability_button(rect, &snapshot.ultimate, self.theme.hud_text_scale * 0.5);
+        if snapshot.player.ultimate_ready {
+            // The Ultimate glows when it can be used: it is the one button worth finding
+            // without looking for it.
+            self.list
+                .outline(rect.inset(-3.0), 3.0, self.theme.energy_full);
+        }
+    }
+
+    /// One ability button: icon plate, state colour, cooldown sweep, charges and key.
+    pub fn push_ability_button(&mut self, rect: UiRect, view: &AbilitySlotView, scale: f32) {
+        self.list.rect(rect, self.theme.panel);
+        let border = self.theme.slot_color(view.availability);
+        self.list.outline(rect, self.theme.outline_pixels, border);
+
+        // The name, abbreviated to what fits the plate.
+        self.title.clear();
+        for character in view.name.chars().take(ABILITY_ABBREVIATION) {
+            self.title.push(character);
+        }
+        let (origin, align) = centered(rect.x + rect.width * 0.5, rect.y + rect.height * 0.5 - 4.0);
+        self.list
+            .text_aligned(origin, &self.title, self.theme.text, scale, align);
+
+        // The cooldown, as a radial sweep over what is left.
+        if view.is_cooling() {
+            self.list.radial(
+                rect,
+                1.0 - view.cooldown_fraction,
+                self.theme.cooldown_radial,
+            );
+            self.title.clear();
+            write_tenths(&mut self.title, view.cooldown_remaining);
+            let (origin, align) = centered(rect.x + rect.width * 0.5, rect.y + rect.height - 14.0);
+            self.list
+                .text_aligned(origin, &self.title, self.theme.text, scale, align);
+        }
+
+        // Charges, only where there is more than one.
+        if view.shows_charges() {
+            self.title.clear();
+            write_integer(&mut self.title, i64::from(view.charges));
+            self.title.push('/');
+            write_integer(&mut self.title, i64::from(view.max_charges));
+            self.list.text_at(
+                (rect.x + 3.0, rect.bottom() - 10.0),
                 &self.title,
                 self.theme.text,
                 scale,
             );
-
-            // An abbreviated name, so a slot is identifiable before it has an icon.
-            self.statuses.clear();
-            self.statuses
-                .extend(ability.name.chars().take(ABILITY_ABBREVIATION));
-            self.list.text_aligned(
-                (slot.x + slot.width * 0.5, slot.y + slot.height * 0.5 - 3.0),
-                &self.statuses,
-                self.theme.text,
-                scale,
-                TextAlign::Center,
-            );
-
-            self.push_cooldown(slot, *ability, scale);
-        }
-    }
-
-    /// The cooldown wipe and its remaining time, over one slot.
-    ///
-    /// A **bottom-up wipe** rather than a radial sweep: a radial needs either a mask texture
-    /// or a fan of triangles per slot, and a wipe is one rectangle whose height is the
-    /// fraction. It reads the same way — the slot fills back up as the ability returns.
-    fn push_cooldown(&mut self, slot: UiRect, ability: AbilitySlotView, scale: f32) {
-        let fraction = ability.cooldown_fraction();
-        if fraction <= 0.0 {
-            return;
         }
 
-        let covered = slot.height * fraction;
-        self.list.rect(
-            UiRect::new(slot.x, slot.y + slot.height - covered, slot.width, covered),
-            self.theme.cooldown_sweep,
-        );
-
-        // The number as well as the wipe: a wipe says "soon", a number says "0.4".
-        self.title.clear();
-        write_tenths(&mut self.title, ability.cooldown_remaining);
-        self.list.text_aligned(
-            (slot.x + slot.width * 0.5, slot.bottom() - 13.0),
-            &self.title,
+        // The key that casts it.
+        self.list.text_at(
+            (rect.x + 3.0, rect.y + 3.0),
+            view.key,
             self.theme.text,
             scale,
-            TextAlign::Center,
         );
+    }
+
+    /// Where bar slot `slot` sits.
+    #[must_use]
+    pub fn slot_rect(slot: usize, viewport: (u32, u32)) -> UiRect {
+        let (width, height) = (viewport.0 as f32, viewport.1 as f32);
+        let count = ABILITY_SLOTS as f32;
+        let total = count * layout::SLOT_SIZE + (count - 1.0) * layout::SLOT_GAP;
+        // The bar is centred, and the Ultimate hangs off its right-hand end.
+        let start = (width - total - layout::ULTIMATE_GAP - layout::ULTIMATE_SIZE) * 0.5;
+        UiRect::new(
+            start + slot as f32 * (layout::SLOT_SIZE + layout::SLOT_GAP),
+            height - layout::ABILITY_BAR_BOTTOM - layout::SLOT_SIZE,
+            layout::SLOT_SIZE,
+            layout::SLOT_SIZE,
+        )
+    }
+
+    /// Where the Ultimate button sits: larger, and separated from the bar.
+    #[must_use]
+    pub fn ultimate_rect(viewport: (u32, u32)) -> UiRect {
+        let last = Self::slot_rect(ABILITY_SLOTS - 1, viewport);
+        let height = viewport.1 as f32;
+        UiRect::new(
+            last.right() + layout::ULTIMATE_GAP,
+            height - layout::ABILITY_BAR_BOTTOM - layout::ULTIMATE_SIZE,
+            layout::ULTIMATE_SIZE,
+            layout::ULTIMATE_SIZE,
+        )
+    }
+
+    /// Where the talent button sits: the top-right corner.
+    #[must_use]
+    pub fn talent_button_rect(viewport: (u32, u32)) -> UiRect {
+        let width = viewport.0 as f32;
+        UiRect::new(
+            width - layout::MARGIN - layout::TALENT_BUTTON_SIZE,
+            layout::MARGIN,
+            layout::TALENT_BUTTON_SIZE,
+            layout::TALENT_BUTTON_SIZE,
+        )
+    }
+
+    /// The talent button, with the points waiting to be spent.
+    pub fn push_talent_button(&mut self, snapshot: &UiSnapshot, viewport: (u32, u32)) {
+        let rect = Self::talent_button_rect(viewport);
+        self.list.rect(rect, self.theme.panel);
+        let border = if snapshot.talent_points > 0 {
+            self.theme.slot_empowered
+        } else {
+            self.theme.target_outline
+        };
+        self.list.outline(rect, self.theme.outline_pixels, border);
+
+        let (origin, align) = centered(rect.x + rect.width * 0.5, rect.y + 8.0);
+        self.list
+            .text_aligned(origin, "TAL", self.theme.text, 1.5, align);
+
+        self.title.clear();
+        write_integer(&mut self.title, i64::from(snapshot.talent_points));
+        let (origin, align) = centered(rect.x + rect.width * 0.5, rect.bottom() - 16.0);
+        self.list
+            .text_aligned(origin, &self.title, border, 1.5, align);
     }
 
     /// The cast bar, above the ability bar.
-    ///
-    /// Absent when nothing is being cast. Its presence *is* the "you are casting" signal, so
-    /// an always-visible empty bar would be worse than none.
     pub fn push_cast_bar(&mut self, snapshot: &UiSnapshot, viewport: (u32, u32)) {
         let Some(cast) = snapshot.cast else {
             return;
         };
-        let width = viewport.0 as f32;
-        let top = viewport.1 as f32
-            - layout::ABILITY_BAR_BOTTOM
-            - layout::SLOT_SIZE
-            - layout::CAST_BAR_LIFT;
-        let bar = UiRect::new(
+        let (width, height) = (viewport.0 as f32, viewport.1 as f32);
+        let rect = UiRect::new(
             (width - layout::CAST_BAR_WIDTH) * 0.5,
-            top,
+            height - layout::ABILITY_BAR_BOTTOM - layout::SLOT_SIZE - layout::CAST_BAR_LIFT,
             layout::CAST_BAR_WIDTH,
             layout::CAST_BAR_HEIGHT,
         );
         self.list.bar(
-            bar,
+            rect,
             cast.fraction(),
             self.theme.bar_background,
             self.theme.cast_fill,
         );
-
-        let scale = self.theme.hud_text_scale * 0.5;
-        self.list.text_at(
-            (bar.x + 4.0, bar.y + 5.0),
-            cast.name,
-            self.theme.text,
-            scale,
-        );
         self.title.clear();
+        self.title.push_str(cast.name);
+        self.title.push(' ');
         write_tenths(&mut self.title, cast.remaining());
-        self.title.push('S');
-        self.list.text_aligned(
-            (bar.right() - 4.0, bar.y + 5.0),
-            &self.title,
-            self.theme.text,
-            scale,
-            TextAlign::Right,
-        );
+        let (origin, align) = centered(rect.x + rect.width * 0.5, rect.y + 3.0);
+        self.list
+            .text_aligned(origin, &self.title, self.theme.text, 1.0, align);
     }
 
-    /// World-space health bars above every nearby enemy.
+    /// An ability tooltip, anchored above `anchor`.
     ///
-    /// Anchored to the plate the nameplate system already placed, so the two cannot disagree
-    /// about where an enemy is on screen and the projection happens once rather than twice.
+    /// Every line is generated from the ability's own definition and from the *current*
+    /// Ignite maximum, so a tooltip cannot drift from what the ability does and Fire
+    /// Detonation's requirement follows Infernal Capacity without a second string.
+    pub fn push_ability_tooltip(
+        &mut self,
+        anchor: UiRect,
+        view: &AbilitySlotView,
+        ignite_max: u8,
+        viewport: (u32, u32),
+    ) {
+        let definition = view.ability.definition();
+        self.tooltip_lines.clear();
+
+        let mut line = String::new();
+        line.push_str(definition.description);
+        self.tooltip_lines.push(line);
+
+        let mut line = String::new();
+        if definition.cast_time > 0.0 {
+            line.push_str("CAST ");
+            write_tenths(&mut line, definition.cast_time);
+            line.push_str(" S  ");
+        } else {
+            line.push_str("INSTANT  ");
+        }
+        if definition.cooldown > 0.0 {
+            line.push_str("CD ");
+            write_tenths(&mut line, definition.cooldown);
+            line.push_str(" S");
+        }
+        self.tooltip_lines.push(line);
+
+        let mut line = String::new();
+        if definition.range > 0.0 {
+            line.push_str("RANGE ");
+            write_integer(&mut line, definition.range as i64);
+            line.push_str(" M  ");
+        }
+        if definition.radius > 0.0 {
+            line.push_str("RADIUS ");
+            write_integer(&mut line, definition.radius as i64);
+            line.push_str(" M");
+        }
+        if !line.is_empty() {
+            self.tooltip_lines.push(line);
+        }
+
+        if view.max_charges > 1 {
+            let mut line = String::new();
+            line.push_str("CHARGES ");
+            write_integer(&mut line, i64::from(view.charges));
+            line.push('/');
+            write_integer(&mut line, i64::from(view.max_charges));
+            self.tooltip_lines.push(line);
+        }
+
+        if definition.duration > 0.0 {
+            let mut line = String::new();
+            line.push_str("DURATION ");
+            write_tenths(&mut line, definition.duration);
+            line.push_str(" S");
+            self.tooltip_lines.push(line);
+        }
+
+        let mut line = String::new();
+        if definition.heat > 0.0 {
+            line.push_str("HEAT +");
+            write_integer(&mut line, definition.heat as i64);
+            line.push_str("  ");
+        }
+        if definition.energy > 0.0 {
+            line.push_str("ENERGY +");
+            write_integer(&mut line, definition.energy as i64);
+        }
+        if definition.energy_cost > 0.0 {
+            line.push_str("COSTS ");
+            write_integer(&mut line, definition.energy_cost as i64);
+            line.push_str(" ENERGY");
+        }
+        if !line.is_empty() {
+            self.tooltip_lines.push(line);
+        }
+
+        if definition.ignite_stacks > 0 {
+            let mut line = String::new();
+            line.push_str("APPLIES ");
+            write_integer(&mut line, i64::from(definition.ignite_stacks));
+            line.push_str(" IGNITE");
+            self.tooltip_lines.push(line);
+        }
+
+        if view.ability == FireAbility::FireDetonation {
+            // The requirement, stated in the numbers that are true right now.
+            let mut line = String::new();
+            line.push_str("REQUIRES ");
+            write_integer(&mut line, i64::from(ignite_max));
+            line.push_str(" IGNITE STACKS");
+            self.tooltip_lines.push(line);
+        }
+
+        let height = layout::TOOLTIP_LINE * (self.tooltip_lines.len() as f32 + 1.0) + 10.0;
+        let width = layout::TOOLTIP_WIDTH;
+        let x = (anchor.x + anchor.width * 0.5 - width * 0.5)
+            .clamp(4.0, (viewport.0 as f32 - width - 4.0).max(4.0));
+        let y = (anchor.y - height - 8.0).max(4.0);
+        let panel = UiRect::new(x, y, width, height);
+
+        self.list.rect(panel, self.theme.tooltip_panel);
+        self.list
+            .outline(panel, self.theme.outline_pixels, self.theme.target_outline);
+        self.list.text_at(
+            (panel.x + 8.0, panel.y + 6.0),
+            view.name,
+            self.theme.tooltip_title,
+            1.5,
+        );
+        for (index, line) in self.tooltip_lines.iter().enumerate() {
+            self.list.text_at(
+                (
+                    panel.x + 8.0,
+                    panel.y + 6.0 + layout::TOOLTIP_LINE * (index as f32 + 1.4),
+                ),
+                line,
+                self.theme.tooltip_text,
+                1.0,
+            );
+        }
+    }
+
+    /// A small health bar over every enemy that has a plate.
     pub fn push_world_health_bars(&mut self, plates: &[Nameplate]) {
         for plate in plates {
             let bar = UiRect::new(
@@ -844,13 +1136,25 @@ mod tests {
     }
 
     #[test]
-    fn the_player_gets_a_health_bar_and_a_resource_bar() {
+    fn the_player_gets_a_health_bar_and_both_resource_bars() {
+        // Health, Heat and Ultimate Energy: the three bars the class is played off.
         let ui = built(&sim());
         let found = texts(&ui);
-        assert!(found.iter().any(|text| text == "HP"), "{found:?}");
-        assert!(found.iter().any(|text| text == "MP"), "{found:?}");
+        assert!(found.iter().any(|text| text.starts_with("HP")), "{found:?}");
+        assert!(
+            found.iter().any(|text| text.starts_with("HEAT")),
+            "no heat bar: {found:?}"
+        );
+        assert!(
+            found.iter().any(|text| text.starts_with("ULTIMATE ENERGY")),
+            "no ultimate bar: {found:?}"
+        );
+        assert!(
+            found.iter().any(|text| text.contains("/ 100")),
+            "the bars do not state their range: {found:?}"
+        );
         // Each bar is a background plus a fill.
-        assert!(rects(&ui).len() >= 4);
+        assert!(rects(&ui).len() >= 6);
     }
 
     #[test]
@@ -893,7 +1197,10 @@ mod tests {
         let player = simulation.player().entity;
         simulation.world_mut().damage(player, 1_000_000.0);
         let ui = built(&simulation);
-        assert!(texts(&ui).iter().any(|text| text == "HP"));
+        assert!(
+            texts(&ui).iter().any(|text| text.starts_with("HP")),
+            "the health bar disappeared with the player"
+        );
     }
 
     #[test]
@@ -901,7 +1208,7 @@ mod tests {
         let ui = built(&sim());
         let found = texts(&ui);
         assert!(
-            found.iter().any(|text| text == "DUMMY"),
+            found.iter().any(|text| text.starts_with("DUMMY")),
             "the target frame names it: {found:?}"
         );
         assert!(
@@ -930,42 +1237,37 @@ mod tests {
 
     #[test]
     fn a_dead_target_keeps_its_frame_and_loses_its_outline() {
-        // The player still needs to see what they were fighting; the missing outline is what
-        // says the abilities will now refuse.
+        // The player still needs to see what they were fighting, and the bar going empty is
+        // what says the abilities will now refuse.
         let mut simulation = sim();
-        let alive = built(&simulation);
-        let outlines_alive = alive
-            .list()
-            .commands()
-            .iter()
-            .filter(|command| matches!(command, UiCommand::Outline { .. }))
-            .count();
-
         let target = simulation.player().target.expect("a target");
         simulation.world_mut().damage(target, 1_000_000.0);
-        let dead = built(&simulation);
-        let outlines_dead = dead
-            .list()
-            .commands()
-            .iter()
-            .filter(|command| matches!(command, UiCommand::Outline { .. }))
-            .count();
 
-        assert!(texts(&dead).iter().any(|text| text.contains("DEAD")));
+        let dead = built(&simulation);
+        let found = texts(&dead);
         assert!(
-            outlines_dead < outlines_alive,
-            "the target outline should be gone"
+            found.iter().any(|text| text.starts_with("DUMMY")),
+            "the frame vanished with the target: {found:?}"
         );
+        let snapshot = UiSnapshot::build(&simulation);
+        let view = snapshot.target.expect("a target view");
+        assert!(!view.alive);
+        assert_eq!(view.health_fraction(), 0.0);
     }
 
     #[test]
     fn nothing_targeted_draws_no_target_frame() {
-        let mut simulation = sim();
+        // Nameplates still name every dummy, so the frame is counted rather than searched
+        // for: with nothing selected there is one less panel on screen.
+        let simulation = sim();
+        let with_target = built(&simulation).list().len();
+
+        let mut simulation = simulation;
         simulation.player_mut().target = None;
-        let ui = built(&simulation);
+        let without = built(&simulation).list().len();
         assert!(
-            !texts(&ui).iter().any(|text| text.ends_with('M')),
-            "an empty frame is noise"
+            without < with_target,
+            "an empty frame is noise: {without} vs {with_target}"
         );
     }
 
@@ -985,9 +1287,7 @@ mod tests {
     #[test]
     fn a_cooling_ability_draws_a_wipe_and_its_remaining_time() {
         let mut simulation = sim();
-        simulation.push_command(engine_game::command::PlayerCommand::UseAbility(
-            engine_game::ability::AbilityId::from_slot(0).expect("fireball"),
-        ));
+        simulation.push_command(engine_game::command::PlayerCommand::UseAbility(0));
         simulation.step_once();
 
         let ui = built(&simulation);
@@ -1008,12 +1308,12 @@ mod tests {
         // different things to a player deciding what to press.
         let theme = UiTheme::default();
         assert_ne!(
-            theme.slot_color(SlotAvailability::OnCooldown),
+            theme.slot_color(SlotAvailability::Cooling),
             theme.slot_color(SlotAvailability::NoResource)
         );
         assert_ne!(
             theme.slot_color(SlotAvailability::Ready),
-            theme.slot_color(SlotAvailability::OnCooldown)
+            theme.slot_color(SlotAvailability::Cooling)
         );
     }
 
@@ -1023,24 +1323,20 @@ mod tests {
         assert!(
             !texts(&built(&simulation))
                 .iter()
-                .any(|text| text == "LANCE"),
+                .any(|text| text.starts_with("PYROBLAST")),
             "no cast bar when not casting"
         );
 
-        simulation.push_command(engine_game::command::PlayerCommand::UseAbility(
-            engine_game::ability::AbilityId::from_slot(6).expect("lance"),
-        ));
+        simulation
+            .cast(engine_game::firemage::FireAbility::Pyroblast)
+            .expect("in range");
         simulation.step_many(20);
 
         let ui = built(&simulation);
         let found = texts(&ui);
         assert!(
-            found.iter().any(|text| text == "LANCE"),
-            "the cast bar names the ability: {found:?}"
-        );
-        assert!(
-            found.iter().any(|text| text.ends_with('S')),
-            "and its remaining time: {found:?}"
+            found.iter().any(|text| text.starts_with("PYROBLAST")),
+            "the cast bar names the ability and its remaining time: {found:?}"
         );
     }
 

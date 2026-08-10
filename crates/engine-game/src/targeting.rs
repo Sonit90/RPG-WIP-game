@@ -15,7 +15,6 @@
 //! Every query gathers into a buffer the caller owns and reuses, so resolving an ability's
 //! targets allocates nothing after the first few frames.
 
-use crate::ability::{AbilityDef, AbilityError, Targeting};
 use crate::entity::EntityId;
 use crate::world::{GameWorld, horizontal_distance};
 
@@ -145,70 +144,8 @@ impl TargetQuery {
         }
     }
 
-    /// Resolves everything an ability affects, or says why it cannot be used.
-    ///
-    /// Validation order matters and is deliberate: "no target" is reported before "out of
-    /// range", so a player with nothing selected is told the useful thing.
-    ///
-    /// An area ability that finds nobody resolves to an empty slice rather than an error.
-    /// It was still cast — the cooldown and the cost are spent — because that is what
-    /// missing with an area effect means.
-    pub fn resolve(
-        &mut self,
-        world: &GameWorld,
-        caster: EntityId,
-        target: Option<EntityId>,
-        ability: &AbilityDef,
-    ) -> Result<&[EntityId], AbilityError> {
-        if !world.is_alive(caster) {
-            return Err(AbilityError::CasterDead);
-        }
-
-        if ability.targeting.needs_target() {
-            let target = target.ok_or(AbilityError::NoTarget)?;
-            if !world.is_alive(target) {
-                return Err(AbilityError::TargetInvalid);
-            }
-            if !world
-                .faction(caster)
-                .zip(world.faction(target))
-                .is_some_and(|(mine, theirs)| mine.is_hostile_to(theirs))
-            {
-                return Err(AbilityError::TargetInvalid);
-            }
-            let distance = world
-                .distance_between(caster, target)
-                .ok_or(AbilityError::TargetInvalid)?;
-            if distance > ability.range {
-                return Err(AbilityError::OutOfRange);
-            }
-        }
-
-        match ability.targeting {
-            Targeting::SingleTarget => {
-                self.scratch.clear();
-                // Checked above; the `else` is unreachable rather than defensive.
-                if let Some(target) = target {
-                    self.scratch.push(target);
-                }
-                Ok(&self.scratch)
-            }
-            Targeting::AreaAroundTarget { radius } => {
-                let centre = target.and_then(|id| world.position(id));
-                match centre {
-                    Some(centre) => Ok(self.gather_around(world, caster, centre, radius)),
-                    None => Err(AbilityError::TargetInvalid),
-                }
-            }
-            Targeting::SelfCentered { radius } => {
-                let centre = world.position(caster).ok_or(AbilityError::CasterDead)?;
-                Ok(self.gather_around(world, caster, centre, radius))
-            }
-        }
-    }
-
     /// Gathers every living hostile whose edge is within `radius` of `centre`.
-    fn gather_around(
+    pub fn gather_around(
         &mut self,
         world: &GameWorld,
         caster: EntityId,
@@ -262,238 +199,77 @@ fn is_further(distance_a: f32, entity_a: EntityId, distance_b: f32, entity_b: En
 )]
 mod tests {
     use super::*;
-    use crate::ability::{AbilityId, default_loadout};
-    use crate::combat::{DamageType, Faction};
-    use crate::world::{EntityDesc, EntityKind};
+    use crate::combat::Faction;
+    use crate::world::EntityDesc;
     use engine_core::math::Vec3;
 
-    /// A player at the origin and dummies at the given positions.
-    fn arena(positions: &[Vec3]) -> (GameWorld, EntityId, Vec<EntityId>) {
+    /// A player and three dummies in a line, two metres apart.
+    fn world() -> (GameWorld, EntityId, Vec<EntityId>) {
         let mut world = GameWorld::new();
         let player = world.spawn(EntityDesc::player(Vec3::ZERO));
-        let dummies = positions
-            .iter()
-            .map(|position| world.spawn(EntityDesc::dummy(*position, 100.0)))
+        let dummies = (1..=3)
+            .map(|step| {
+                world.spawn(EntityDesc::dummy(
+                    Vec3::new(0.0, 0.0, -2.0 * step as f32),
+                    100.0,
+                ))
+            })
             .collect();
         (world, player, dummies)
     }
 
-    fn fireball() -> AbilityDef {
-        default_loadout()[0]
+    #[test]
+    fn the_nearest_hostile_is_the_closest_living_one() {
+        let (mut world, player, dummies) = world();
+        let mut query = TargetQuery::with_capacity(8);
+        assert_eq!(query.nearest_hostile(&world, player), Some(dummies[0]));
+
+        world.damage(dummies[0], 1_000.0);
+        assert_eq!(
+            query.nearest_hostile(&world, player),
+            Some(dummies[1]),
+            "a corpse was selected"
+        );
     }
 
-    fn detonate() -> AbilityDef {
-        default_loadout()[2]
-    }
-
-    fn ally(position: Vec3) -> EntityDesc {
-        EntityDesc {
-            kind: EntityKind::Dummy,
-            faction: Faction::Player,
-            position,
-            ..EntityDesc::default()
+    #[test]
+    fn cycling_walks_outwards_and_comes_back_round() {
+        let (world, player, dummies) = world();
+        let mut query = TargetQuery::with_capacity(8);
+        let mut current = None;
+        for expected in &dummies {
+            current = query.next_hostile(&world, player, current);
+            assert_eq!(current, Some(*expected));
         }
-    }
-
-    #[test]
-    fn hostiles_come_back_nearest_first() {
-        let (world, player, dummies) = arena(&[
-            Vec3::new(0.0, 0.0, -30.0),
-            Vec3::new(0.0, 0.0, -5.0),
-            Vec3::new(0.0, 0.0, -15.0),
-        ]);
-        let mut query = TargetQuery::new();
         assert_eq!(
-            query.hostiles_by_distance(&world, player),
-            [dummies[1], dummies[2], dummies[0]]
+            query.next_hostile(&world, player, current),
+            Some(dummies[0])
         );
-        assert_eq!(query.nearest_hostile(&world, player), Some(dummies[1]));
     }
 
     #[test]
-    fn only_hostile_living_entities_are_targets() {
+    fn gathering_is_edge_corrected_and_skips_the_caster() {
+        // A dummy whose centre is just outside the circle but whose body is inside it is
+        // hit; the caster never hits itself.
+        let (world, player, dummies) = world();
+        let mut query = TargetQuery::with_capacity(8);
+        let hit = query.gather_around(&world, player, Vec3::ZERO, 2.5);
+        assert!(hit.contains(&dummies[0]));
+        assert!(!hit.contains(&player), "the caster hit itself");
+        assert!(!hit.contains(&dummies[2]), "something far away was hit");
+    }
+
+    #[test]
+    fn nothing_hostile_gathers_nothing_rather_than_failing() {
         let mut world = GameWorld::new();
         let player = world.spawn(EntityDesc::player(Vec3::ZERO));
-        let friend = world.spawn(ally(Vec3::new(0.0, 0.0, -2.0)));
-        let corpse = world.spawn(EntityDesc::dummy(Vec3::new(0.0, 0.0, -3.0), 10.0));
-        let alive = world.spawn(EntityDesc::dummy(Vec3::new(0.0, 0.0, -20.0), 10.0));
-        world.damage(corpse, 100.0);
-
-        let mut query = TargetQuery::new();
-        let hostiles = query.hostiles_by_distance(&world, player).to_vec();
-        assert_eq!(hostiles, vec![alive]);
-        assert!(!hostiles.contains(&friend), "an ally is not a target");
-        assert!(!hostiles.contains(&corpse), "a corpse is not a target");
-    }
-
-    #[test]
-    fn cycling_walks_the_list_and_wraps() {
-        let (world, player, dummies) = arena(&[
-            Vec3::new(0.0, 0.0, -5.0),
-            Vec3::new(0.0, 0.0, -10.0),
-            Vec3::new(0.0, 0.0, -15.0),
-        ]);
-        let mut query = TargetQuery::new();
-
-        let first = query.next_hostile(&world, player, None);
-        assert_eq!(first, Some(dummies[0]));
-        let second = query.next_hostile(&world, player, first);
-        assert_eq!(second, Some(dummies[1]));
-        let third = query.next_hostile(&world, player, second);
-        assert_eq!(third, Some(dummies[2]));
-        assert_eq!(
-            query.next_hostile(&world, player, third),
-            Some(dummies[0]),
-            "the cycle wraps"
-        );
-    }
-
-    #[test]
-    fn cycling_from_a_dead_target_starts_over_rather_than_failing() {
-        let (mut world, player, dummies) =
-            arena(&[Vec3::new(0.0, 0.0, -5.0), Vec3::new(0.0, 0.0, -10.0)]);
-        world.damage(dummies[0], 1000.0);
-
-        let mut query = TargetQuery::new();
-        assert_eq!(
-            query.next_hostile(&world, player, Some(dummies[0])),
-            Some(dummies[1])
-        );
-    }
-
-    #[test]
-    fn a_single_target_ability_resolves_to_exactly_that_target() {
-        let (world, player, dummies) = arena(&[Vec3::new(0.0, 0.0, -10.0)]);
-        let mut query = TargetQuery::new();
-        let resolved = query
-            .resolve(&world, player, Some(dummies[0]), &fireball())
-            .expect("a living hostile in range is a valid target");
-        assert_eq!(resolved, [dummies[0]]);
-    }
-
-    #[test]
-    fn every_way_a_single_target_cast_can_be_refused_is_named() {
-        let (mut world, player, dummies) =
-            arena(&[Vec3::new(0.0, 0.0, -10.0), Vec3::new(0.0, 0.0, -200.0)]);
-        let friend = world.spawn(ally(Vec3::new(0.0, 0.0, -3.0)));
-        let mut query = TargetQuery::new();
-        let fireball = fireball();
-
-        assert_eq!(
-            query.resolve(&world, player, None, &fireball),
-            Err(AbilityError::NoTarget)
-        );
-        assert_eq!(
-            query.resolve(&world, player, Some(dummies[1]), &fireball),
-            Err(AbilityError::OutOfRange),
-            "200 metres against a 30 metre range"
-        );
-        assert_eq!(
-            query.resolve(&world, player, Some(friend), &fireball),
-            Err(AbilityError::TargetInvalid),
-            "an ally is not a valid hostile target"
-        );
-
-        world.damage(dummies[0], 1000.0);
-        assert_eq!(
-            query.resolve(&world, player, Some(dummies[0]), &fireball),
-            Err(AbilityError::TargetInvalid),
-            "a corpse is not a valid target"
-        );
-
-        world.damage(player, 10_000.0);
-        assert_eq!(
-            query.resolve(&world, player, Some(dummies[1]), &fireball),
-            Err(AbilityError::CasterDead)
-        );
-    }
-
-    #[test]
-    fn an_area_ability_hits_the_group_and_misses_what_is_outside_it() {
-        // The Milestone 15 property, asserted directly: four dummies in a cluster, one far
-        // enough away that the blast must not reach it.
-        let (world, player, dummies) = arena(&[
-            Vec3::new(0.0, 0.0, -20.0),
-            Vec3::new(3.0, 0.0, -21.0),
-            Vec3::new(-3.0, 0.0, -22.0),
-            Vec3::new(1.0, 0.0, -24.0),
-            Vec3::new(30.0, 0.0, -20.0),
-        ]);
-        let mut query = TargetQuery::new();
-        let hit = query
-            .resolve(&world, player, Some(dummies[0]), &detonate())
-            .expect("the cluster is in range")
-            .to_vec();
-
-        assert_eq!(hit.len(), 4, "the whole cluster: {hit:?}");
-        for dummy in &dummies[..4] {
-            assert!(hit.contains(dummy), "{dummy:?} was in the radius");
-        }
-        assert!(
-            !hit.contains(&dummies[4]),
-            "a dummy 30 metres away took the blast"
-        );
-    }
-
-    #[test]
-    fn an_area_ability_that_finds_nobody_is_a_miss_rather_than_an_error() {
-        let mut world = GameWorld::new();
-        let player = world.spawn(EntityDesc::player(Vec3::ZERO));
-        let mut query = TargetQuery::new();
-        let nova = AbilityDef {
-            cast_time: 0.0,
-            id: AbilityId::from_slot(8).expect("slot 8 exists"),
-            name: "NOVA",
-            cooldown: 1.0,
-            cost: 0.0,
-            range: 6.0,
-            targeting: Targeting::SelfCentered { radius: 6.0 },
-            effect: crate::ability::AbilityEffect::DirectDamage { amount: 10.0 },
-            damage_type: DamageType::Arcane,
-            placeholder: true,
-        };
-
-        let resolved = query
-            .resolve(&world, player, None, &nova)
-            .expect("a self-centred ability needs no target");
-        assert!(resolved.is_empty());
-    }
-
-    #[test]
-    fn a_wide_target_is_reachable_from_its_edge() {
-        let mut world = GameWorld::new();
-        let player = world.spawn(EntityDesc::player(Vec3::ZERO));
-        let wide = world.spawn(EntityDesc {
-            radius: 25.0,
-            ..EntityDesc::dummy(Vec3::new(0.0, 0.0, -50.0), 100.0)
-        });
-
-        // Centre 50 metres away, edge 24.5 away, against a 30 metre range.
-        let mut query = TargetQuery::new();
+        let mut query = TargetQuery::with_capacity(8);
         assert!(
             query
-                .resolve(&world, player, Some(wide), &fireball())
-                .is_ok()
+                .gather_around(&world, player, Vec3::ZERO, 50.0)
+                .is_empty()
         );
-    }
-
-    #[test]
-    fn resolving_repeatedly_reuses_the_buffer() {
-        let positions: Vec<Vec3> = (0..64)
-            .map(|index| Vec3::new(index as f32 * 0.1, 0.0, -20.0))
-            .collect();
-        let (world, player, dummies) = arena(&positions);
-        let mut query = TargetQuery::new();
-
-        query
-            .resolve(&world, player, Some(dummies[0]), &detonate())
-            .expect("the cluster is in range");
-        let capacity = query.capacity();
-        for _ in 0..100 {
-            query
-                .resolve(&world, player, Some(dummies[0]), &detonate())
-                .expect("the cluster is in range");
-        }
-        assert_eq!(query.capacity(), capacity, "target resolution reallocated");
+        assert_eq!(query.nearest_hostile(&world, player), None);
+        assert!(!Faction::Player.is_hostile_to(Faction::Player));
     }
 }

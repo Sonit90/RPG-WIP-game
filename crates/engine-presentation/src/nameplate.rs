@@ -59,6 +59,8 @@ pub const MAX_NAMEPLATE_STATUSES: usize = 4;
 /// One status shown on a plate.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct NameplateStatus {
+    /// How many stacks, for a stacking debuff like Ignite. Zero for anything else.
+    pub stacks: u8,
     /// Which status.
     pub kind: StatusKind,
     /// Seconds left on it.
@@ -163,7 +165,11 @@ impl Nameplate {
             if !out.is_empty() {
                 out.push(' ');
             }
-            let _ = write!(out, "{} {:.1}", status.kind.as_str(), status.remaining);
+            if status.stacks > 0 {
+                let _ = write!(out, "IGNITE {} {:.1}", status.stacks, status.remaining);
+            } else {
+                let _ = write!(out, "{} {:.1}", status.kind.as_str(), status.remaining);
+            }
         }
         // Truncated on a character boundary; the font is ASCII, but the plate width is a
         // layout rule rather than a byte count.
@@ -330,13 +336,27 @@ impl NameplateSet {
             let mut statuses = [NameplateStatus {
                 kind: StatusKind::Burning,
                 remaining: 0.0,
+                stacks: 0,
             }; MAX_NAMEPLATE_STATUSES];
             let mut status_count = 0;
+            // Ignite is the class's whole readable state on an enemy, and it lives in its
+            // own tracker rather than in the generic status set: the plate reads it there so
+            // "how close is this to a detonation" is visible without selecting the target.
+            let burn = simulation.mage().ignite.get(entity);
+            if burn.is_active() {
+                statuses[status_count] = NameplateStatus {
+                    kind: StatusKind::Burning,
+                    remaining: burn.remaining,
+                    stacks: burn.stacks,
+                };
+                status_count += 1;
+            }
             if let Some(active) = world.statuses(entity) {
-                for status in active.iter().take(MAX_NAMEPLATE_STATUSES) {
+                for status in active.iter().take(MAX_NAMEPLATE_STATUSES - status_count) {
                     statuses[status_count] = NameplateStatus {
                         kind: status.kind,
                         remaining: status.remaining,
+                        stacks: 0,
                     };
                     status_count += 1;
                 }
@@ -467,7 +487,6 @@ pub fn project_clip(clip: Vec4, viewport: (u32, u32)) -> Option<(f32, f32)> {
 mod tests {
     use super::*;
     use crate::camera::ThirdPersonCamera;
-    use engine_game::ability::AbilityId;
     use engine_game::arena::{self, ArenaConfig};
     use engine_game::command::PlayerCommand;
     use engine_render_data::{Camera, Projection};
@@ -761,11 +780,15 @@ mod tests {
     #[test]
     fn statuses_are_listed_with_the_time_left() {
         let (mut simulation, camera) = scene();
-        simulation.push_command(PlayerCommand::UseAbility(
-            AbilityId::from_slot(1).expect("ignite"),
-        ));
-        simulation.step_once();
         let burning = simulation.player().target.expect("a dummy is targeted");
+        // Ignite is the class's burn: it lives in its own tracker, not the status set.
+        let maximum = simulation.mage().ignite_max();
+        let duration = simulation.mage().ignite_duration();
+        simulation
+            .mage_mut()
+            .ignite
+            .apply(burning, 2, maximum, duration);
+        simulation.step_once();
 
         let mut set = NameplateSet::new();
         let plates = build(&simulation, &camera, &mut set);
@@ -781,7 +804,7 @@ mod tests {
 
         let mut line = String::new();
         assert!(plate.write_statuses(&mut line));
-        assert!(line.starts_with("BURNING"), "{line:?}");
+        assert!(line.starts_with("IGNITE"), "{line:?}");
         assert!(line.chars().count() <= NAMEPLATE_COLUMNS, "{line:?}");
 
         // An unaffected dummy has no status line at all, so its plate is one line tall.
@@ -801,9 +824,7 @@ mod tests {
         // hollow box.
         const ALLOWED: &str = " 0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ.,:-+/()%=_";
         let (mut simulation, camera) = scene();
-        simulation.push_command(PlayerCommand::UseAbility(
-            AbilityId::from_slot(1).expect("ignite"),
-        ));
+        simulation.push_command(PlayerCommand::UseAbility(1));
         simulation.step_once();
 
         let mut set = NameplateSet::new();

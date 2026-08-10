@@ -53,10 +53,7 @@ fn fought_in_arena(dummies: usize) -> Simulation {
             simulation.push_command(PlayerCommand::CycleTarget);
         }
         if tick % 9 == 0 {
-            simulation.push_command(PlayerCommand::UseAbility(
-                engine_game::ability::AbilityId::from_slot(tick / 9 % 3)
-                    .unwrap_or(engine_game::ability::AbilityId::NONE),
-            ));
+            simulation.push_command(PlayerCommand::UseAbility(tick / 9 % 3));
         }
         simulation.step_once();
     }
@@ -192,7 +189,10 @@ fn the_whole_interface_is_one_batchable_unit() {
 
     for command in ui.list().commands() {
         match command {
-            UiCommand::Rect { .. } | UiCommand::Outline { .. } | UiCommand::Text { .. } => {}
+            UiCommand::Rect { .. }
+            | UiCommand::Outline { .. }
+            | UiCommand::RadialFill { .. }
+            | UiCommand::Text { .. } => {}
         }
     }
     assert_eq!(DRAW_CALLS, 1, "the interface is submitted once");

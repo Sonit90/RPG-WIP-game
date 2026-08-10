@@ -13,8 +13,8 @@
 
 use engine_core::input::{InputState, KeyCode};
 
-use crate::ability::{ABILITY_SLOTS, AbilityId};
 use crate::command::PlayerCommand;
+use crate::firemage::{ABILITY_SLOTS, FireAbility};
 
 /// Which key does what.
 ///
@@ -59,8 +59,11 @@ impl Bindings {
     /// action bar in the genre uses.
     #[must_use]
     pub fn ability_key(slot: usize) -> Option<KeyCode> {
-        let id = AbilityId::from_slot(slot)?;
-        KeyCode::digit_key(id.hotkey_digit())
+        if slot >= ABILITY_SLOTS {
+            return None;
+        }
+        // Slot 9 is the `0` key, which is where every action bar in the genre puts it.
+        KeyCode::digit_key(((slot as u8) + 1) % 10)
     }
 
     /// Appends this frame's commands to `out`.
@@ -87,13 +90,17 @@ impl Bindings {
             out.push(PlayerCommand::ResetDummies);
         }
 
+        // The bar. A ground-targeted ability is deliberately *not* cast from here: its key
+        // opens the targeting circle, and the application sends the placed command when the
+        // player clicks.
         for slot in 0..ABILITY_SLOTS {
-            let (Some(key), Some(ability)) = (Self::ability_key(slot), AbilityId::from_slot(slot))
+            let (Some(key), Some(ability)) =
+                (Self::ability_key(slot), FireAbility::from_slot(slot))
             else {
                 continue;
             };
-            if input.was_key_pressed(key) {
-                out.push(PlayerCommand::UseAbility(ability));
+            if input.was_key_pressed(key) && !ability.definition().target.is_ground_targeted() {
+                out.push(PlayerCommand::UseAbility(slot));
             }
         }
     }
@@ -239,12 +246,12 @@ mod tests {
     #[test]
     fn holding_an_ability_key_casts_once() {
         let mut input = InputState::new();
-        let fireball = PlayerCommand::UseAbility(AbilityId::from_slot(0).expect("slot 0 exists"));
+        let firebolt = PlayerCommand::UseAbility(0);
 
         frame(&mut input, &[KeyCode::Digit1], &[]);
-        assert!(commands(&input, 0.0).contains(&fireball));
+        assert!(commands(&input, 0.0).contains(&firebolt));
         frame(&mut input, &[], &[]);
-        assert!(!commands(&input, 0.0).contains(&fireball));
+        assert!(!commands(&input, 0.0).contains(&firebolt));
     }
 
     #[test]
@@ -266,12 +273,17 @@ mod tests {
     #[test]
     fn every_ability_key_produces_its_own_slot() {
         for slot in 0..ABILITY_SLOTS {
+            let ability = FireAbility::from_slot(slot).expect("every slot has an ability");
+            // A ground-targeted ability opens its circle instead of casting from the key;
+            // the application sends the placed command when the player clicks.
+            if ability.definition().target.is_ground_targeted() {
+                continue;
+            }
             let key = Bindings::ability_key(slot).expect("every slot has a key");
             let mut input = InputState::new();
             frame(&mut input, &[key], &[]);
 
-            let expected =
-                PlayerCommand::UseAbility(AbilityId::from_slot(slot).expect("the slot exists"));
+            let expected = PlayerCommand::UseAbility(slot);
             let issued = commands(&input, 0.0);
             assert!(issued.contains(&expected), "slot {slot} did not fire");
             assert_eq!(

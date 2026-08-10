@@ -29,6 +29,7 @@ use engine_core::math::Vec3;
 use engine_game::arena::{self, ArenaConfig};
 use engine_game::command::PlayerCommand;
 use engine_game::demo::{self, DemoScene};
+use engine_game::firemage::FireAbility;
 use engine_game::input_map::Bindings;
 use engine_game::sim::Simulation;
 use engine_platform::{Window, WindowConfig, WindowEvent};
@@ -45,7 +46,10 @@ use engine_presentation::hud::{self, HudModel};
 use engine_presentation::mouse_look::{LookChange, MouseLook, RelativeMotion};
 use engine_presentation::nameplate::{NameplateConfig, NameplateSet};
 use engine_presentation::snapshot::UiSnapshot;
+use engine_presentation::ui::talent_menu::{TalentMenu, TalentMenuOutcome, TalentTheme};
+use engine_presentation::ui::targeting::{GroundTargeting, TargetingOutcome};
 use engine_presentation::ui::{MenuAction, MenuScratch, MenuSystem, MenuTheme, UiInput};
+use engine_render_data::ui::UiRect;
 use engine_renderer::mesh::MeshData;
 use engine_renderer::{
     Camera, Lighting, MaterialDesc, MaterialHandle, MeshHandle, Projection, Renderer,
@@ -74,6 +78,9 @@ const OVERLAY_TOGGLE_KEY: KeyCode = KeyCode::F5;
 /// row beside F5 (overlay) and F9 (wireframe).
 #[cfg(feature = "debug-overlay")]
 const COLLISION_DEBUG_KEY: KeyCode = KeyCode::F3;
+
+/// The key that casts the Ultimate. It is not on the bar, so it has a key of its own.
+const ULTIMATE_KEY: KeyCode = KeyCode::R;
 
 /// Glyph scale the game UI draws text at.
 ///
@@ -125,6 +132,16 @@ pub struct App {
     menu_scratch: MenuScratch,
     /// The player's settings and the file they live in.
     settings: SettingsManager,
+    /// The one ground-targeting circle, shared by Meteor, Firestorm and Cataclysm.
+    targeting: GroundTargeting,
+    /// The talent menu, opened from the button in the top-right corner.
+    talent_menu: TalentMenu,
+    /// How the talent menu is coloured.
+    talent_theme: TalentTheme,
+    /// Scratch the talent menu formats its numbers into. Reused; never freed.
+    talent_scratch: String,
+    /// Which ability button the pointer is over, for the tooltip.
+    hovered_ability: Option<FireAbility>,
     /// Whether the right button is held and the mouse is turning the camera.
     mouse_look: MouseLook,
     /// Mouse movement to rotate by, with the engine's own re-centring taken back out.
@@ -277,6 +294,11 @@ impl App {
             menu_theme: MenuTheme::default(),
             menu_scratch: MenuScratch::new(),
             settings: game_settings,
+            targeting: GroundTargeting::new(),
+            talent_menu: TalentMenu::new(),
+            talent_theme: TalentTheme::default(),
+            talent_scratch: String::with_capacity(32),
+            hovered_ability: None,
             mouse_look: MouseLook::new(),
             motion: RelativeMotion::new(),
             cursor_before_look: (0, 0),
@@ -408,6 +430,122 @@ impl App {
     fn cancel_mouse_look(&mut self) {
         if self.mouse_look.cancel().is_some() {
             self.end_mouse_look();
+        }
+    }
+
+    /// Runs the class's interface for this frame: buttons, tooltips, targeting, talents.
+    ///
+    /// The order matters. The talent menu is on top, so it eats the click first; the
+    /// targeting circle is next, because a click while placing is a placement and not a
+    /// button press; the bar is last. Every outcome leaves as a command, so what the mouse
+    /// did is in the same ordered stream as what the keyboard did.
+    fn update_firemage_ui(&mut self, ctx: &mut EngineContext) {
+        let viewport = self.renderer.size();
+        let ui_input = UiInput::from_input(ctx.input());
+        self.snapshot.refresh(&self.simulation);
+
+        // The talent menu, which covers everything while it is up.
+        if self.talent_menu.is_open() {
+            match self.talent_menu.update(&ui_input, &self.snapshot, viewport) {
+                TalentMenuOutcome::Purchase(talent) => {
+                    self.simulation
+                        .push_command(PlayerCommand::PurchaseTalent(talent));
+                }
+                TalentMenuOutcome::Idle | TalentMenuOutcome::Closed => {}
+            }
+            return;
+        }
+
+        // The talent button, in the top-right corner.
+        let talent_button = GameUi::talent_button_rect(viewport);
+        if ui_input.pointer_pressed
+            && talent_button.contains(ui_input.pointer.0, ui_input.pointer.1)
+        {
+            self.talent_menu.open();
+            return;
+        }
+
+        // Placing a ground-targeted ability.
+        if self.targeting.is_active() {
+            let caster = self.simulation.player_position();
+            let view_projection = self.camera.view_projection();
+            match self
+                .targeting
+                .update(&ui_input, &view_projection, viewport, caster)
+            {
+                TargetingOutcome::Confirmed { ability, position } => {
+                    let command = match ability.bar_slot() {
+                        Some(slot) => PlayerCommand::UseAbilityAt { slot, position },
+                        None => PlayerCommand::UseUltimate { position },
+                    };
+                    self.simulation.push_command(command);
+                }
+                TargetingOutcome::Cancelled
+                | TargetingOutcome::Choosing
+                | TargetingOutcome::Idle => {}
+            }
+            return;
+        }
+
+        // The bar: what the pointer is over, and what it clicked.
+        self.hovered_ability = None;
+        let mut pressed = None;
+        for (slot, view) in self.snapshot.abilities.iter().enumerate() {
+            let rect = GameUi::slot_rect(slot, viewport);
+            if rect.contains(ui_input.pointer.0, ui_input.pointer.1) {
+                self.hovered_ability = Some(view.ability);
+                if ui_input.pointer_pressed {
+                    pressed = Some(view.ability);
+                }
+            }
+        }
+        let ultimate = GameUi::ultimate_rect(viewport);
+        if ultimate.contains(ui_input.pointer.0, ui_input.pointer.1) {
+            self.hovered_ability = Some(self.snapshot.ultimate.ability);
+            if ui_input.pointer_pressed {
+                pressed = Some(self.snapshot.ultimate.ability);
+            }
+        }
+
+        // A key press starts a ground-targeted ability too: the key opens the circle rather
+        // than casting, which is why the input map does not send a command for those.
+        for (slot, view) in self.snapshot.abilities.iter().enumerate() {
+            if !view.ground_targeted {
+                continue;
+            }
+            let Some(key) = engine_game::input_map::Bindings::ability_key(slot) else {
+                continue;
+            };
+            if ctx.input().was_key_pressed(key) {
+                pressed = Some(view.ability);
+            }
+        }
+        if ctx.input().was_key_pressed(ULTIMATE_KEY) {
+            pressed = Some(FireAbility::Cataclysm);
+        }
+
+        if let Some(ability) = pressed {
+            self.cast_or_target(ability);
+        }
+    }
+
+    /// Casts an ability, or opens the targeting circle if it is placed with the mouse.
+    fn cast_or_target(&mut self, ability: FireAbility) {
+        if ability.definition().target.is_ground_targeted() {
+            // Mouse-look would fight the circle for the cursor, so it ends here.
+            self.cancel_mouse_look();
+            self.targeting.begin(ability);
+            return;
+        }
+        match ability.bar_slot() {
+            Some(slot) => self
+                .simulation
+                .push_command(PlayerCommand::UseAbility(slot)),
+            None => {
+                // The Ultimate is not on the bar and has no slot; it is placed, so this is
+                // only reached if a future Ultimate stops being ground-targeted.
+                self.targeting.begin(ability);
+            }
         }
     }
 
@@ -555,6 +693,32 @@ impl App {
             viewport,
             self.simulation.time() as f32,
         );
+        // The tooltip for whatever the pointer is over, then the talent menu, then the
+        // pause menu: painter's order is the whole sort.
+        if let Some(ability) = self.hovered_ability {
+            let (rect, view) = match ability.bar_slot() {
+                Some(slot) => (
+                    GameUi::slot_rect(slot, viewport),
+                    self.snapshot.abilities[slot],
+                ),
+                None => (GameUi::ultimate_rect(viewport), self.snapshot.ultimate),
+            };
+            let ignite_max = self.snapshot.ignite_max;
+            self.game_ui
+                .push_ability_tooltip(rect, &view, ignite_max, viewport);
+        }
+        if let Some(target) = self.targeting.active() {
+            self.push_targeting_indicator(target, viewport);
+        }
+        engine_presentation::ui::talent_menu::push_talent_menu(
+            self.game_ui.list_mut(),
+            &self.talent_menu,
+            &self.snapshot,
+            &self.talent_theme,
+            &mut self.talent_scratch,
+            viewport,
+        );
+
         // Last of all, into the same list: painter's order puts the menu over the HUD, and
         // sharing the list keeps the whole interface one batch and one draw call.
         engine_presentation::ui::push_menu(
@@ -566,6 +730,52 @@ impl App {
         );
         self.ui_ms = started.elapsed().as_secs_f64() * 1e3;
         self.renderer.set_ui(self.game_ui.list());
+    }
+
+    /// Draws the ground-targeting circle where the player is pointing.
+    ///
+    /// Projected from the world position rather than drawn at the mouse, so the circle sits
+    /// on the ground the ability will actually land on - including the size it will land
+    /// with, which is what makes a ten-metre Cataclysm read differently from a five-metre
+    /// Meteor.
+    fn push_targeting_indicator(
+        &mut self,
+        target: engine_presentation::ui::targeting::GroundTarget,
+        viewport: (u32, u32),
+    ) {
+        let view_projection = self.camera.view_projection();
+        let Some(centre) =
+            engine_presentation::nameplate::project(target.position, &view_projection, viewport)
+        else {
+            return;
+        };
+        // A point on the rim, projected too: the difference is the radius in pixels, so the
+        // circle shrinks with distance exactly as the world does.
+        let rim = target.position + Vec3::new(target.radius, 0.0, 0.0);
+        let radius = engine_presentation::nameplate::project(rim, &view_projection, viewport)
+            .map_or(24.0, |edge| (edge.0 - centre.0).abs().max(8.0));
+
+        let colour = if target.valid {
+            [1.0, 0.55, 0.15, 0.35]
+        } else {
+            [0.85, 0.15, 0.15, 0.35]
+        };
+        let rect = UiRect::new(
+            centre.0 - radius,
+            centre.1 - radius * 0.5,
+            radius * 2.0,
+            radius,
+        );
+        // A radial fill is a disc when it covers the whole circle, which is exactly what an
+        // area indicator is.
+        // A disc, and nothing else: a rectangle around it would read as a second, square
+        // area of effect that the ability does not have.
+        self.game_ui.list_mut().radial(rect, 1.0, colour);
+
+        let label = target.ability.definition().name;
+        self.game_ui
+            .list_mut()
+            .text_at((rect.x, rect.y - 16.0), label, [1.0, 1.0, 1.0, 1.0], 1.0);
     }
 
     /// Builds the collision demo's interface: labels over the test geometry, nothing else.
@@ -796,8 +1006,13 @@ impl Application for App {
             // world is shared, so a player with a settings screen open is still standing in
             // it and still has to be able to move out of the way.
             self.update_menu(ctx);
+            if !self.menu.is_open() {
+                self.update_firemage_ui(ctx);
+            }
 
-            self.apply_mouse_look(ctx);
+            if !self.targeting.is_active() && !self.talent_menu.is_open() {
+                self.apply_mouse_look(ctx);
+            }
             let wheel = ctx.input().wheel_delta();
             if wheel != 0.0 {
                 self.controller.zoom(wheel);
@@ -1012,7 +1227,11 @@ fn log_controls(args: &Args, demo: Option<&DemoScene>) {
         log::info!("  1 - 7            stand at a test station");
         log::info!("  R                back to the first station");
     } else {
-        log::info!("  1 2 3            fireball, ignite, detonate (4-0 are placeholders)");
+        log::info!("  1 - 0            firebolt, flame lance, flame wave, meteor,");
+        log::info!("                   firestorm, pyroblast, inferno, fire detonation,");
+        log::info!("                   flame shield, blink");
+        log::info!("  R                cataclysm, the ultimate");
+        log::info!("  4 5 R            place with the mouse: left click confirms, right cancels");
         log::info!("  TAB              cycle target");
         log::info!("  R                reset the dummies and the combat meter");
     }

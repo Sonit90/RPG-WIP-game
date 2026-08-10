@@ -17,6 +17,7 @@ debug-overlay = ["engine-renderer/debug-overlay"]
 [dependencies]
 engine-core = { workspace = true }
 engine-platform = { workspace = true }
+engine-render-data = { workspace = true }
 engine-renderer = { workspace = true }
 # The gameplay simulation and the layer that turns it into rendering data. This binary is
 # the only place all three meet; neither of them links D3D12.

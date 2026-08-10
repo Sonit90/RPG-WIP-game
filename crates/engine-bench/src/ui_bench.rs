@@ -229,10 +229,7 @@ fn measure_combat(dummies: usize, iterations: usize) {
             simulation.push_command(PlayerCommand::CycleTarget);
         }
         if tick % 9 == 0 {
-            simulation.push_command(PlayerCommand::UseAbility(
-                engine_game::ability::AbilityId::from_slot(tick / 9 % 3)
-                    .unwrap_or(engine_game::ability::AbilityId::NONE),
-            ));
+            simulation.push_command(PlayerCommand::UseAbility(tick / 9 % 3));
         }
         simulation.step_once();
     }

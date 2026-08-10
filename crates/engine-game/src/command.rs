@@ -16,7 +16,7 @@
 
 use engine_core::math::{Quat, Vec3};
 
-use crate::ability::AbilityId;
+use crate::firemage::TalentId;
 
 /// One thing the player wants to happen.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -35,8 +35,25 @@ pub enum PlayerCommand {
     },
     /// Jump, if the character is on the ground. Edge-triggered.
     Jump,
-    /// Use the ability in a slot. Edge-triggered.
-    UseAbility(AbilityId),
+    /// Use the ability in a bar slot. Edge-triggered.
+    UseAbility(usize),
+    /// Use a ground-targeted bar ability at a chosen point. Edge-triggered.
+    ///
+    /// The placement is part of the command rather than read from the mouse when it lands,
+    /// so a replay of the same commands puts the same Meteor in the same place.
+    UseAbilityAt {
+        /// Which bar slot.
+        slot: usize,
+        /// Where the player put the circle.
+        position: Vec3,
+    },
+    /// Cast Cataclysm at a chosen point. Edge-triggered.
+    UseUltimate {
+        /// Where the player put the circle.
+        position: Vec3,
+    },
+    /// Buy a talent. A menu action, in the command stream so it is ordered with the fight.
+    PurchaseTalent(TalentId),
     /// Target the nearest living hostile.
     SelectNearestTarget,
     /// Move to the next living hostile, by distance.
@@ -231,7 +248,7 @@ mod tests {
         );
         for command in [
             PlayerCommand::Jump,
-            PlayerCommand::UseAbility(AbilityId::from_slot(0).expect("slot 0 exists")),
+            PlayerCommand::UseAbility(0),
             PlayerCommand::SelectNearestTarget,
             PlayerCommand::CycleTarget,
             PlayerCommand::ResetDummies,

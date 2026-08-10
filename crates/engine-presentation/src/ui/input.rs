@@ -38,6 +38,12 @@ pub struct UiInput {
     pub pointer_released: bool,
     /// Whether the player asked to back out this frame: escape.
     pub cancel: bool,
+    /// Whether the secondary pointer button went down this frame.
+    ///
+    /// Only the ground-targeting system reads it, and only to cancel a placement - the same
+    /// right click the genre uses for exactly that. Everywhere else the right button belongs
+    /// to the camera.
+    pub secondary_pressed: bool,
 }
 
 impl UiInput {
@@ -50,6 +56,7 @@ impl UiInput {
             pointer_pressed: false,
             pointer_released: false,
             cancel: false,
+            secondary_pressed: false,
         }
     }
 
@@ -67,6 +74,7 @@ impl UiInput {
             pointer_pressed: input.was_mouse_button_pressed(MouseButton::Left),
             pointer_released: input.was_mouse_button_released(MouseButton::Left),
             cancel: input.was_key_pressed(KeyCode::Escape),
+            secondary_pressed: input.was_mouse_button_pressed(MouseButton::Right),
         }
     }
 

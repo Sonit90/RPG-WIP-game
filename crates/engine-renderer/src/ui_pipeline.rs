@@ -60,6 +60,12 @@ pub const ROOT_UI_FRAME_CBV: u32 = 0;
 /// Root parameter holding the font-atlas descriptor table.
 pub const ROOT_UI_ATLAS_TABLE: u32 = 1;
 
+/// Segments in a full radial sweep.
+///
+/// Sixteen is smooth enough for a 48-pixel button and cheap enough that a bar of ten cooling
+/// abilities costs a hundred and sixty triangles.
+const SECTOR_SEGMENTS: usize = 16;
+
 /// Vertices per quad: two triangles, no index buffer.
 ///
 /// An index buffer would save a third of the vertex bytes and cost a second buffer to
@@ -188,6 +194,13 @@ impl UiBatcher {
                 UiCommand::Rect { rect, color } => {
                     self.push_solid(rect, color, &mut stats);
                 }
+                UiCommand::RadialFill {
+                    rect,
+                    fraction,
+                    color,
+                } => {
+                    self.push_radial(rect, fraction, color, &mut stats);
+                }
                 UiCommand::Outline {
                     rect,
                     thickness,
@@ -267,6 +280,60 @@ impl UiBatcher {
             return;
         }
         self.push_quad(rect, FontAtlas::solid_uv(), color, stats);
+    }
+
+    /// Appends a radial sector as a triangle fan from the centre.
+    ///
+    /// Swept clockwise from twelve o'clock, which is the direction every cooldown in the
+    /// genre runs. One triangle per segment, and each triangle is emitted as a degenerate
+    /// quad so the whole pass stays one buffer and one draw call.
+    fn push_radial(
+        &mut self,
+        rect: UiRect,
+        fraction: f32,
+        color: [f32; 4],
+        stats: &mut UiBatchStats,
+    ) {
+        if !rect.is_visible() || fraction <= 0.0 {
+            return;
+        }
+        let fraction = fraction.min(1.0);
+        // Enough segments that the arc reads as round at a 48-pixel button, few enough that
+        // a full bar of cooling abilities is still a couple of hundred triangles.
+        let segments = (SECTOR_SEGMENTS as f32 * fraction).ceil().max(1.0) as usize;
+        let centre = (rect.x + rect.width * 0.5, rect.y + rect.height * 0.5);
+        let radius = rect.width.max(rect.height) * 0.5;
+        let uv = FontAtlas::solid_uv();
+        let sweep = fraction * std::f32::consts::TAU;
+
+        for segment in 0..segments {
+            if stats.quads >= self.max_quads {
+                stats.dropped += 1;
+                return;
+            }
+            let from = sweep * (segment as f32 / segments as f32);
+            let to = sweep * ((segment + 1) as f32 / segments as f32);
+            let point = |angle: f32| {
+                // Zero is straight up and the sweep runs clockwise.
+                (
+                    centre.0 + angle.sin() * radius,
+                    centre.1 - angle.cos() * radius,
+                )
+            };
+            let (ax, ay) = point(from);
+            let (bx, by) = point(to);
+            let vertex = |position: (f32, f32)| UiVertex {
+                position: [position.0, position.1],
+                uv: [uv.u0, uv.v0],
+                color,
+            };
+            let a = vertex(centre);
+            let b = vertex((ax, ay));
+            let c = vertex((bx, by));
+            // Six vertices per segment, like a quad, so the buffer stays uniform.
+            self.vertices.extend_from_slice(&[a, b, c, a, b, c]);
+            stats.quads += 1;
+        }
     }
 
     /// Appends one quad as two triangles.

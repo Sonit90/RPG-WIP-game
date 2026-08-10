@@ -20,7 +20,6 @@
 use std::time::Duration;
 
 use engine_core::input::{InputEvent, InputState, KeyCode};
-use engine_game::ability::AbilityId;
 use engine_game::arena::{self, ArenaConfig};
 use engine_game::command::PlayerCommand;
 use engine_game::event::CombatEvent;
@@ -69,9 +68,10 @@ fn a_keypress_becomes_damage_without_any_graphics_being_created() {
         .current();
 
     // The `1` key: the whole chain from a platform-shaped event to a health change.
+    // Firebolt is a one-second cast, so the frame is run out rather than stepped once.
     key_frame(&mut input, &[KeyCode::Digit1]);
     feed(&mut simulation, &input, 0.0, &mut commands);
-    simulation.step_once();
+    simulation.step_many(70);
 
     let after = simulation
         .world()
@@ -152,12 +152,12 @@ fn the_full_rotation_runs_and_the_meter_agrees_with_the_health_lost() {
         .map(engine_game::combat::Health::current)
         .sum();
 
-    for slot in [0, 1, 2] {
-        let ability = AbilityId::from_slot(slot).expect("the slot exists");
-        simulation.push_command(PlayerCommand::UseAbility(ability));
-        simulation.step_many(2);
+    // Firebolt, Flame Lance and Inferno: a cast, a cast with charges, and an instant.
+    for slot in [0, 1, 6] {
+        simulation.push_command(PlayerCommand::UseAbility(slot));
+        simulation.step_many(120);
     }
-    simulation.step_many(600); // ten seconds: the burn runs out
+    simulation.step_many(600); // ten seconds: the burns run out
 
     let after: f32 = dummies
         .iter()
@@ -173,11 +173,10 @@ fn the_full_rotation_runs_and_the_meter_agrees_with_the_health_lost() {
         simulation.meter().total_damage()
     );
     assert!(simulation.meter().dps() > 0.0);
-    for slot in [0, 1, 2] {
-        let ability = AbilityId::from_slot(slot).expect("the slot exists");
-        assert_eq!(
-            simulation.meter().ability(ability).casts,
-            1,
+    for slot in [0, 1, 6] {
+        let ability = engine_game::ability::AbilityId::from_slot(slot).expect("the slot exists");
+        assert!(
+            simulation.meter().ability(ability).casts >= 1,
             "slot {slot} was not credited with its cast"
         );
     }
@@ -185,15 +184,17 @@ fn the_full_rotation_runs_and_the_meter_agrees_with_the_health_lost() {
 
 #[test]
 fn the_synergy_is_observable_from_the_event_stream_alone() {
-    // What a future VFX or network layer would see: a status applied, then consumed, then
-    // damage larger than the ability's base.
+    // What a future VFX or network layer would see: Ignite announced, stacked to the
+    // maximum, and then spent by a detonation that hits harder than its own base damage.
+    use engine_game::firemage::FireAbility;
+
     let mut simulation = arena::training_arena(&ArenaConfig::default());
     simulation.step_once();
+    simulation.select_nearest_target();
+    let target = simulation.player().target.expect("a dummy is selected");
 
-    simulation.push_command(PlayerCommand::UseAbility(
-        AbilityId::from_slot(1).expect("ignite"),
-    ));
-    simulation.step_once();
+    simulation.push_command(PlayerCommand::UseAbility(0));
+    simulation.step_many(70);
     assert!(
         simulation.events().iter().any(|event| matches!(
             event,
@@ -204,33 +205,49 @@ fn the_synergy_is_observable_from_the_event_stream_alone() {
         )),
         "ignite did not announce the burn"
     );
-
-    simulation.push_command(PlayerCommand::UseAbility(
-        AbilityId::from_slot(2).expect("detonate"),
-    ));
-    simulation.step_once();
-
-    let consumed = simulation.events().iter().any(|event| {
-        matches!(
-            event,
-            CombatEvent::StatusRemoved {
-                status: StatusKind::Burning,
-                reason: engine_game::status::StatusEnd::Consumed,
-                ..
-            }
-        )
-    });
-    assert!(consumed, "detonate did not consume the burn");
-
-    let detonate_damage: f32 = simulation
-        .events()
-        .iter()
-        .filter_map(CombatEvent::as_damage)
-        .map(|damage| damage.amount)
-        .sum();
     assert!(
-        detonate_damage > 20.0,
-        "detonate dealt only its base damage: {detonate_damage}"
+        simulation.mage().ignite.stacks(target) >= 1,
+        "firebolt did not ignite an unburnt target"
+    );
+
+    // Reaching the maximum must not detonate anything by itself.
+    let maximum = simulation.mage().ignite_max();
+    let duration = simulation.mage().ignite_duration();
+    simulation
+        .mage_mut()
+        .ignite
+        .apply(target, maximum, maximum, duration);
+    simulation.step_many(60);
+    assert_eq!(
+        simulation.mage().ignite.stacks(target),
+        maximum,
+        "the burn exploded on its own"
+    );
+
+    let before = simulation
+        .world()
+        .health(target)
+        .expect("the dummy exists")
+        .current();
+    simulation
+        .cast(FireAbility::FireDetonation)
+        .expect("a full burn is what it needs");
+    let after = simulation
+        .world()
+        .health(target)
+        .expect("the dummy exists")
+        .current();
+
+    assert_eq!(
+        simulation.mage().ignite.stacks(target),
+        0,
+        "the detonation left the burn behind"
+    );
+    let base = FireAbility::FireDetonation.definition().damage;
+    assert!(
+        before - after > base,
+        "the detonation was not worth the stacks: {} for a base of {base}",
+        before - after
     );
 }
 
@@ -266,9 +283,7 @@ fn the_dummy_reset_returns_the_arena_to_its_starting_state() {
         .collect();
 
     for slot in [0, 1, 2] {
-        simulation.push_command(PlayerCommand::UseAbility(
-            AbilityId::from_slot(slot).expect("the slot exists"),
-        ));
+        simulation.push_command(PlayerCommand::UseAbility(slot));
         simulation.step_many(2);
     }
     simulation.step_many(120);

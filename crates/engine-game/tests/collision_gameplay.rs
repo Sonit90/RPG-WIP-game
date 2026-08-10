@@ -142,7 +142,7 @@ fn combat_still_works_with_collision_in_the_way() {
 
     for slot in 0..3 {
         if let Some(ability) = engine_game::ability::AbilityId::from_slot(slot) {
-            simulation.push_command(PlayerCommand::UseAbility(ability));
+            simulation.push_command(PlayerCommand::UseAbility(ability.slot()));
         }
         simulation.step_many(120);
     }

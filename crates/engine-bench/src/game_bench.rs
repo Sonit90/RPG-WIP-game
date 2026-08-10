@@ -335,7 +335,7 @@ fn drive(simulation: &mut Simulation, tick: usize) {
     if let Some(slot) = cast
         && let Some(ability) = AbilityId::from_slot(slot)
     {
-        simulation.push_command(PlayerCommand::UseAbility(ability));
+        simulation.push_command(PlayerCommand::UseAbility(ability.slot()));
     }
 
     // Cycling the target spreads damage across the group rather than deleting one dummy.

@@ -48,10 +48,14 @@ pub mod input;
 pub mod menu;
 pub mod paint;
 pub mod screen;
+pub mod talent_menu;
+pub mod targeting;
 pub mod widget;
 
 pub use input::UiInput;
 pub use menu::{MenuAction, MenuScreen, MenuSystem, PauseItem, SettingsItem};
 pub use paint::{MenuScratch, MenuTheme, push_menu};
 pub use screen::UiScreen;
+pub use talent_menu::{TalentMenu, TalentMenuOutcome, TalentTheme, push_talent_menu};
+pub use targeting::{GroundTarget, GroundTargeting, TargetingOutcome};
 pub use widget::{Button, Checkbox, Slider, Widget, WidgetEvent, WidgetState};

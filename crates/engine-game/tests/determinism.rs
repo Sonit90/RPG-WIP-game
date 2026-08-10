@@ -13,7 +13,6 @@
 
 use std::time::Duration;
 
-use engine_game::ability::AbilityId;
 use engine_game::arena::{self, ArenaConfig};
 use engine_game::command::PlayerCommand;
 use engine_game::event::CombatEvent;
@@ -21,9 +20,7 @@ use engine_game::sim::Simulation;
 
 /// The sequence the milestone asks for: move, move, jump, then the three abilities.
 fn script() -> Vec<(u32, PlayerCommand)> {
-    let ability = |slot: usize| {
-        PlayerCommand::UseAbility(AbilityId::from_slot(slot).expect("the slot exists"))
-    };
+    let ability = |slot: usize| PlayerCommand::UseAbility(slot);
     vec![
         (
             10,
@@ -65,7 +62,8 @@ struct Snapshot {
     velocity: (i64, i64, i64),
     grounded: bool,
     state: &'static str,
-    resource: i64,
+    heat: i64,
+    energy: i64,
     cooldowns: Vec<i64>,
     health: Vec<i64>,
     burning: Vec<i64>,
@@ -99,18 +97,18 @@ fn snapshot(simulation: &Simulation) -> Snapshot {
         ),
         grounded: body.grounded,
         state: body.state.as_str(),
-        resource: fixed(simulation.player().resource.current()),
-        cooldowns: (0..engine_game::ABILITY_SLOTS)
-            .filter_map(AbilityId::from_slot)
-            .map(|id| fixed(simulation.player().abilities.cooldown_remaining(id)))
+        heat: fixed(simulation.mage().heat.value()),
+        energy: fixed(simulation.mage().energy.value()),
+        cooldowns: engine_game::firemage::FireAbility::ALL
+            .into_iter()
+            .map(|ability| fixed(simulation.mage().abilities.recharge_remaining(ability)))
             .collect(),
         health: arena::dummies(world)
             .filter_map(|id| world.health(id))
             .map(|health| fixed(health.current()))
             .collect(),
         burning: arena::dummies(world)
-            .filter_map(|id| world.statuses(id))
-            .map(|statuses| fixed(statuses.remaining(engine_game::StatusKind::Burning)))
+            .map(|id| i64::from(simulation.mage().ignite.stacks(id)))
             .collect(),
         total_damage: (simulation.meter().total_damage() * 1e4).round() as i64,
         dps: (simulation.meter().dps() * 1e4).round() as i64,
@@ -272,7 +270,7 @@ fn the_frame_rate_does_not_change_the_outcome() {
     let mut fast = arena::training_arena(&ArenaConfig::default());
     let mut slow = arena::training_arena(&ArenaConfig::default());
 
-    let cast = PlayerCommand::UseAbility(AbilityId::from_slot(1).expect("ignite"));
+    let cast = PlayerCommand::UseAbility(1);
     fast.push_command(cast);
     slow.push_command(cast);
 
@@ -308,9 +306,7 @@ fn a_reset_returns_to_a_state_a_fresh_arena_would_have() {
     simulation.step_once();
 
     for slot in [0, 1, 2] {
-        simulation.push_command(PlayerCommand::UseAbility(
-            AbilityId::from_slot(slot).expect("the slot exists"),
-        ));
+        simulation.push_command(PlayerCommand::UseAbility(slot));
         simulation.step_many(4);
     }
     simulation.step_many(300);
@@ -325,6 +321,7 @@ fn a_reset_returns_to_a_state_a_fresh_arena_would_have() {
     assert_eq!(after.health, expected.health);
     assert_eq!(after.burning, expected.burning);
     assert_eq!(after.cooldowns, expected.cooldowns);
-    assert_eq!(after.resource, expected.resource);
+    assert_eq!(after.heat, expected.heat);
+    assert_eq!(after.energy, expected.energy);
     assert_eq!(after.total_damage, 0);
 }
