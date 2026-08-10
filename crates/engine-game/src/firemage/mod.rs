@@ -313,10 +313,26 @@ impl FireMage {
         GLOBAL_COOLDOWN / (1.0 + self.haste())
     }
 
+    /// Seconds until the global cooldown ends. Zero when it is not running.
+    #[must_use]
+    pub fn global_cooldown_remaining(&self) -> f32 {
+        self.global_cooldown.remaining()
+    }
+
     /// Starts the global cooldown. Called when an ability is started, not when it lands.
     pub fn start_global_cooldown(&mut self) {
         let duration = self.global_cooldown_duration();
         self.global_cooldown.start(duration);
+    }
+
+    /// Ends the global cooldown early.
+    ///
+    /// What a cast that did not complete gives back. The timer is started when a cast
+    /// *begins*, so a cancelled cast would otherwise leave the whole bar locked for the
+    /// remainder of a cooldown that no ability ever paid for — the same reasoning that
+    /// refunds the charge and the Ultimate's energy.
+    pub fn clear_global_cooldown(&mut self) {
+        self.global_cooldown.clear();
     }
 
     /// The current haste, which shortens casts and cooldowns.

@@ -261,6 +261,14 @@ pub struct UiTheme {
     pub icon_unavailable: UiColor,
     /// The radial sweep drawn over a cooling ability.
     pub cooldown_radial: UiColor,
+    /// The radial sweep drawn over every ability while the global cooldown runs.
+    ///
+    /// Lighter than [`UiTheme::cooldown_radial`]. Half a second is not information the
+    /// player has to read — it is the pulse the bar beats at — so it registers as movement
+    /// without hiding the art or competing with a real cooldown two slots away.
+    pub global_cooldown_radial: UiColor,
+    /// The frame around the ability currently being cast.
+    pub slot_casting: UiColor,
     /// An Ignite stack that is present.
     pub ignite_pip: UiColor,
     /// An Ignite stack that is not there yet.
@@ -313,6 +321,10 @@ impl Default for UiTheme {
             // Dimmed and slightly desaturated by the tint alone; no second copy of the art.
             icon_unavailable: [0.42, 0.40, 0.44, 1.0],
             cooldown_radial: [0.02, 0.03, 0.05, 0.72],
+            global_cooldown_radial: [0.02, 0.03, 0.05, 0.34],
+            // White, and brighter than any availability colour, because "this is the one
+            // going off right now" has to win against ten other frames.
+            slot_casting: [1.0, 1.0, 1.0, 1.0],
             ignite_pip: [1.0, 0.45, 0.12, 1.0],
             ignite_pip_empty: [0.22, 0.20, 0.20, 1.0],
             tooltip_panel: [0.05, 0.06, 0.09, 0.96],
@@ -815,15 +827,37 @@ impl GameUi {
             }
         }
 
-        // After the art, so the frame is never painted over by it.
-        let border = self.theme.slot_color(view.availability);
-        self.list.outline(
-            rect,
-            self.metrics.scale.px(self.theme.outline_pixels),
-            border,
-        );
+        // After the art, so the frame is never painted over by it. The ability being cast
+        // takes a white frame instead of its availability colour: while a cast is running,
+        // which one it is matters more than whether the others could be afforded.
+        let border = if view.casting {
+            self.theme.slot_casting
+        } else {
+            self.theme.slot_color(view.availability)
+        };
+        let outline = self.metrics.scale.px(self.theme.outline_pixels);
+        self.list.outline(rect, outline, border);
+        if view.casting {
+            // Doubled outward as well, so the slot reads at a glance rather than on
+            // inspection — the same trick the ready Ultimate uses.
+            self.list.outline(rect.inset(-outline), outline, border);
+        }
 
-        // The cooldown, as a radial sweep over what is left.
+        // The global cooldown, as a lighter sweep. Starting any ability locks every slot, so
+        // every slot says so — a bar where only the pressed button reacts reads as though
+        // the others were still available.
+        if view.shows_global_cooldown() {
+            self.list.radial_from(
+                rect,
+                view.global_cooldown_fraction,
+                1.0 - view.global_cooldown_fraction,
+                self.theme.global_cooldown_radial,
+            );
+        }
+
+        // The ability's own cooldown, as a radial sweep over what is left, with the seconds
+        // until it is back. The global cooldown gets no number: half a second counted down
+        // in tenths on eleven buttons at once is noise, and it is over before it is read.
         if view.is_cooling() {
             // The dark part starts where the elapsed part ended, so its leading edge sweeps
             // clockwise from twelve o'clock as the cooldown runs down.
@@ -834,10 +868,18 @@ impl GameUi {
                 self.theme.cooldown_radial,
             );
             self.title.clear();
-            write_tenths(&mut self.title, view.cooldown_remaining);
-            let (origin, align) = centered(rect.x + rect.width * 0.5, rect.y + rect.height - 14.0);
-            self.list
-                .text_aligned(origin, &self.title, self.theme.text, scale, align);
+            write_seconds(&mut self.title, view.cooldown_remaining);
+            let (origin, align) = centered(
+                rect.x + rect.width * 0.5,
+                rect.y + rect.height * 0.5 - self.metrics.scale.px(4.0),
+            );
+            self.list.text_aligned(
+                origin,
+                &self.title,
+                self.theme.text,
+                self.metrics.scale.text(self.theme.hud_text_scale * 0.75),
+                align,
+            );
         }
 
         // Charges, only where there is more than one.
@@ -1236,6 +1278,24 @@ pub fn write_integer(out: &mut String, value: i64) {
 pub fn write_tenths(out: &mut String, value: f32) {
     use std::fmt::Write;
     let _ = write!(out, "{value:.1}");
+}
+
+/// Writes a countdown into `out`: whole seconds while there is more than one, tenths below.
+///
+/// A cooldown is read at a glance in the middle of a fight, and "18" is read faster than
+/// "18.0" — four characters across a 48-pixel button is already most of its width. Under a
+/// second the tenth is the only part carrying any information, so that is when it appears.
+///
+/// Rounded *up*, so the number never reads zero while the ability is still refusing. A
+/// button showing "0" that cannot be pressed is a bug report.
+pub fn write_seconds(out: &mut String, value: f32) {
+    use std::fmt::Write;
+    let value = value.max(0.0);
+    if value >= 1.0 {
+        let _ = write!(out, "{}", value.ceil() as i64);
+    } else {
+        let _ = write!(out, "{:.1}", (value * 10.0).ceil() / 10.0);
+    }
 }
 
 /// Centres a line of text horizontally on `x`, in the same units the list uses.
@@ -1764,6 +1824,135 @@ mod tests {
             }
             factor += UI_SCALE_STEP;
         }
+    }
+
+    #[test]
+    fn every_slot_shows_the_global_cooldown_while_it_runs() {
+        // The point of the change: starting one ability locks the whole bar, so the whole
+        // bar has to say so. A bar where only the pressed button reacts reads as though the
+        // others were still available.
+        // Blink: instant, so it lands and takes its own fifteen-second cooldown while the
+        // shared half-second one runs on everything else.
+        let mut simulation = sim();
+        simulation.cast(FireAbility::Blink).expect("Blink is ready");
+
+        let snapshot = UiSnapshot::build(&simulation);
+        assert!(
+            snapshot
+                .abilities
+                .iter()
+                .all(|view| view.is_on_global_cooldown()),
+            "the global cooldown did not reach every slot"
+        );
+        assert!(
+            snapshot.ultimate.is_on_global_cooldown(),
+            "the Ultimate is on the same shared timer"
+        );
+
+        // The slot that is merely waiting draws the shared sweep; the one that is also on
+        // its own cooldown draws that instead, so the wash is never doubled.
+        let cooling: Vec<_> = snapshot
+            .abilities
+            .iter()
+            .filter(|view| view.is_cooling())
+            .collect();
+        assert!(!cooling.is_empty(), "nothing went on its own cooldown");
+        for view in cooling {
+            assert!(
+                !view.shows_global_cooldown(),
+                "{:?} draws both",
+                view.ability
+            );
+        }
+    }
+
+    #[test]
+    fn the_ability_being_cast_is_framed_in_white_and_no_other_is() {
+        let mut simulation = sim();
+        // Pyroblast: the longest cast in the class, so it is still running next frame.
+        simulation.cast(FireAbility::Pyroblast).expect("in range");
+        simulation.step_once();
+
+        let ui = built(&simulation);
+        let casting = FireAbility::BAR
+            .iter()
+            .position(|ability| *ability == FireAbility::Pyroblast)
+            .expect("Pyroblast is on the bar");
+        let slot = ui.slot_rect(casting, VIEWPORT);
+        let white = UiTheme::default().slot_casting;
+
+        let framed: Vec<UiRect> = ui
+            .list()
+            .commands()
+            .iter()
+            .filter_map(|command| match command {
+                UiCommand::Outline { rect, color, .. } if *color == white => Some(*rect),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            framed.contains(&slot),
+            "the casting slot has no white frame: {framed:?}"
+        );
+
+        // No other slot took one.
+        for other in 0..ABILITY_SLOTS {
+            if other == casting {
+                continue;
+            }
+            let rect = ui.slot_rect(other, VIEWPORT);
+            assert!(
+                !framed.contains(&rect),
+                "slot {other} is framed as though it were casting"
+            );
+        }
+    }
+
+    #[test]
+    fn a_cooling_slot_prints_the_seconds_left_and_a_global_cooldown_prints_nothing() {
+        let mut simulation = sim();
+        simulation.cast(FireAbility::Blink).expect("Blink is ready");
+        let ui = built(&simulation);
+        let printed = texts(&ui);
+
+        // Blink's own cooldown is fifteen seconds, printed as whole ones.
+        assert!(
+            printed.iter().any(|text| text == "15"),
+            "no countdown on the cooling slot: {printed:?}"
+        );
+
+        // Every other slot is held only by the shared half-second timer, and half a second
+        // counted in tenths on eleven buttons at once is the noise this avoids.
+        assert!(
+            !printed.iter().any(|text| text.starts_with("0.")),
+            "the global cooldown printed a number: {printed:?}"
+        );
+    }
+
+    #[test]
+    fn a_countdown_reads_in_whole_seconds_until_the_last_one() {
+        // Four characters across a 48-pixel button is most of its width, and "18" is read
+        // faster than "18.0" in the middle of a fight.
+        let mut out = String::new();
+        for (value, expected) in [
+            (18.0, "18"),
+            (17.4, "18"),
+            (1.0, "1"),
+            (0.95, "1.0"),
+            (0.44, "0.5"),
+            (0.04, "0.1"),
+            (0.0, "0.0"),
+        ] {
+            out.clear();
+            write_seconds(&mut out, value);
+            assert_eq!(out, expected, "{value}");
+        }
+
+        // Never zero while the ability is still refusing: a button showing "0" that cannot
+        // be pressed is a bug report.
+        out.clear();
+        write_seconds(&mut out, 0.001);
+        assert_ne!(out, "0.0");
     }
 
     #[test]

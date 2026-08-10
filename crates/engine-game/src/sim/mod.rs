@@ -860,8 +860,15 @@ impl Simulation {
     fn end_cast(&mut self, end: CastEnd) {
         // A cancelled cast takes the queue with it. The player asked to stop, and starting
         // whatever they pressed two seconds ago instead would be the opposite of stopping.
+        //
+        // It also gives back the global cooldown. That timer is started when a cast *begins*,
+        // so without this a cast cancelled in its first frame would lock the whole bar for
+        // the rest of half a second while nothing had happened — the same rule that refunds
+        // the charge and the Ultimate's energy, applied to the one resource every ability
+        // shares. A completed cast keeps it, because something did happen.
         if !matches!(end, CastEnd::Completed) {
             self.player.queued = None;
+            self.mage.clear_global_cooldown();
         }
         let Some(cast) = self.player.cast.take() else {
             return;
@@ -1169,6 +1176,104 @@ mod tests {
         assert!(
             simulation.mage().abilities.is_ready(FireAbility::Pyroblast),
             "a cast that never landed cost a charge"
+        );
+    }
+
+    #[test]
+    fn starting_any_cast_puts_the_whole_bar_on_the_global_cooldown() {
+        // What "global" means: it is not a property of the ability that was pressed.
+        let mut simulation = arena();
+        assert!(simulation.mage().off_global_cooldown());
+
+        simulation.cast(FireAbility::Pyroblast).expect("in range");
+        assert!(!simulation.mage().off_global_cooldown());
+        assert!(simulation.mage().global_cooldown_fraction() < 1.0);
+        assert!(simulation.mage().global_cooldown_remaining() > 0.0);
+    }
+
+    #[test]
+    fn the_global_cooldown_refuses_every_other_ability_while_it_runs() {
+        // Checked after an *instant*, because pressing something during a cast queues it
+        // rather than being refused — the queue is tested on its own elsewhere.
+        let mut simulation = arena();
+        let target = simulation.player().target.expect("a dummy is selected");
+        let maximum = simulation.mage().ignite_max();
+        let duration = simulation.mage().ignite_duration();
+        simulation
+            .mage_mut()
+            .ignite
+            .apply(target, maximum, maximum, duration);
+
+        simulation
+            .cast(FireAbility::FireDetonation)
+            .expect("a full burn");
+        assert!(simulation.casting().is_none(), "an instant started a cast");
+
+        // An unrelated, ready, free ability is held by the shared timer and by nothing else.
+        assert!(simulation.mage().abilities.is_ready(FireAbility::Blink));
+        assert_eq!(
+            simulation.cast(FireAbility::Blink),
+            Err(AbilityError::GlobalCooldown)
+        );
+    }
+
+    #[test]
+    fn a_cancelled_cast_gives_the_global_cooldown_back() {
+        // The timer starts when a cast begins, so without releasing it a cast cancelled in
+        // its first frame would lock the bar for half a second while nothing happened.
+        let mut simulation = arena();
+        simulation.cast(FireAbility::Pyroblast).expect("in range");
+        assert!(!simulation.mage().off_global_cooldown());
+
+        assert!(simulation.cancel_cast(), "there was a cast to cancel");
+        assert!(
+            simulation.mage().off_global_cooldown(),
+            "the bar is still locked by a cast that never happened"
+        );
+        assert_eq!(simulation.mage().global_cooldown_fraction(), 1.0);
+
+        // And the bar really is usable again, not merely reporting that it is.
+        assert!(simulation.cast(FireAbility::Blink).is_ok());
+    }
+
+    #[test]
+    fn moving_out_of_a_cast_also_gives_the_global_cooldown_back() {
+        // Moving is a cancel the player did not type. It costs the same: nothing.
+        let mut simulation = arena();
+        simulation.cast(FireAbility::Pyroblast).expect("in range");
+        simulation.push_command(PlayerCommand::Move {
+            forward: 1.0,
+            right: 0.0,
+            yaw: 0.0,
+        });
+        simulation.step_many(4);
+
+        assert!(simulation.casting().is_none(), "movement did not break it");
+        assert!(
+            simulation.mage().off_global_cooldown(),
+            "the bar stayed locked after the cast was broken"
+        );
+    }
+
+    #[test]
+    fn a_completed_cast_keeps_its_global_cooldown() {
+        // The other half of the rule. An instant lands immediately and still locks the bar,
+        // which is the whole reason the timer exists.
+        let mut simulation = arena();
+        let target = simulation.player().target.expect("a dummy is selected");
+        let maximum = simulation.mage().ignite_max();
+        let duration = simulation.mage().ignite_duration();
+        simulation
+            .mage_mut()
+            .ignite
+            .apply(target, maximum, maximum, duration);
+
+        simulation
+            .cast(FireAbility::FireDetonation)
+            .expect("a full burn");
+        assert!(
+            !simulation.mage().off_global_cooldown(),
+            "an instant that landed did not lock the bar"
         );
     }
 

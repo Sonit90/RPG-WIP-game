@@ -100,9 +100,9 @@ global cooldown that cast began has long expired.
   starts the moment it lands, and is re-validated then because its target may have died.
 - **One slot, not a list.** Mashing four keys means "then that one".
 - **Only moving and Escape cancel**, and cancelling takes the queue with it.
-- **A cancelled cast is refunded.** The charge comes back, and so does the Ultimate's energy:
-  a cast that never landed costs the time it wasted and nothing else. A completed one keeps
-  its cooldown, because something happened.
+- **A cancelled cast is refunded.** The charge comes back, the Ultimate's energy comes back,
+  and so does the global cooldown: a cast that never landed costs the time it wasted and
+  nothing else. A completed one keeps all three, because something happened.
 - **An ability with no charge, or held by the global cooldown, cannot be selected at all.**
   Its key and its button do nothing rather than opening a preview for a cast that would be
   refused on the click.
@@ -137,6 +137,14 @@ refuse it, and a tooltip is generated from the ability's own row.
 - **Ability bar**: ten slots with keys, names, charge counters (only where there is more than
   one), radial cooldowns and five state colours - ready, cooling, no resource, invalid target,
   and *empowered* for Fire Detonation against a full burn.
+- **The global cooldown is drawn on every slot**, in a lighter wash than a real cooldown,
+  because starting one ability locks all of them. A slot already showing its own cooldown
+  draws only that: the two washes would darken the overlap twice.
+- **The ability being cast is framed in white**, doubled outward, so which one is going off
+  wins against ten other frames.
+- **A cooldown prints the seconds left** - whole ones until the last, then tenths, rounded up
+  so it never reads zero while the ability still refuses. The global cooldown prints nothing:
+  half a second in tenths on eleven buttons at once is noise.
 - **Cooldowns** are a `RadialFill` command the renderer tessellates into the existing batch.
   The dark wedge's leading edge sweeps **clockwise from twelve o'clock**.
 - **Ultimate button**: larger, separated from the bar, glowing at 100 Energy.

@@ -210,6 +210,16 @@ pub struct AbilitySlotView {
     pub cooldown_remaining: f32,
     /// How far through the recharge it is, in `0.0..=1.0`. One is ready.
     pub cooldown_fraction: f32,
+    /// How far through the global cooldown we are, in `0.0..=1.0`. One means it is not
+    /// running.
+    ///
+    /// The same value on every slot, because the global cooldown *is* the same on every
+    /// slot: starting any ability locks the whole bar. It is carried per-slot rather than
+    /// once on the snapshot so that a button has everything it needs to draw itself, which
+    /// is the rule the rest of this view already follows.
+    pub global_cooldown_fraction: f32,
+    /// Whether this is the ability currently being cast.
+    pub casting: bool,
     /// Whether the player has to place it with the mouse.
     pub ground_targeted: bool,
 }
@@ -225,6 +235,23 @@ impl AbilitySlotView {
     #[must_use]
     pub fn is_cooling(&self) -> bool {
         self.cooldown_remaining > 0.0 && self.charges < self.max_charges
+    }
+
+    /// Whether the global cooldown is running.
+    #[must_use]
+    pub fn is_on_global_cooldown(&self) -> bool {
+        self.global_cooldown_fraction < 1.0
+    }
+
+    /// Whether the button should draw the global cooldown's sweep.
+    ///
+    /// Only when its own cooldown is not already being drawn. Both are a translucent wash
+    /// over the same button, so drawing them together would darken the overlap twice and
+    /// make a slot that is merely waiting look different from its neighbours for no reason.
+    /// The longer sweep is the one that matters, and it is the one that survives.
+    #[must_use]
+    pub fn shows_global_cooldown(&self) -> bool {
+        self.is_on_global_cooldown() && !self.is_cooling()
     }
 }
 
@@ -477,6 +504,10 @@ fn ability_view(simulation: &Simulation, ability: FireAbility) -> AbilitySlotVie
         max_charges,
         cooldown_remaining: mage.abilities.recharge_remaining(ability),
         cooldown_fraction: mage.abilities.recharge_fraction(ability, effects),
+        global_cooldown_fraction: mage.global_cooldown_fraction(),
+        casting: simulation
+            .casting()
+            .is_some_and(|cast| cast.ability == ability),
         ground_targeted: definition.target.is_ground_targeted(),
     }
 }
