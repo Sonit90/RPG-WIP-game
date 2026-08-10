@@ -1,0 +1,161 @@
+# FireMage
+
+The first playable class: ten abilities, a separate Ultimate, two resources, a stacking burn
+that never explodes on its own, and a twenty-five talent grid that changes what all of it
+means.
+
+## The rule the class is built on
+
+**Reaching maximum Ignite does nothing.** No automatic combustion, no hidden timer. The
+payoff belongs to the player, who spends it with Fire Detonation when it is worth spending,
+and the ability refuses until the burn is full. Every ability that applies Ignite - Firebolt,
+Flame Wave, Meteor, Firestorm, Inferno, Cataclysm - stops at the cap and waits.
+
+**Nothing hardcodes five.** The maximum is `TalentEffects::ignite_max_stacks`, read where it
+is needed. Infernal Capacity moves the cap, the detonation requirement, the stack pips and the
+tooltip text together, because they all ask the same field.
+
+## Architecture
+
+```text
+engine-game/src/firemage/
+    ability   the table: cast, cooldown, charges, range, radius, heat, energy, damage
+    ignite    stacks, refresh, consumption. Reports ticks; deals no damage
+    resource  Heat with its Overheat, Ultimate Energy with its trickle
+    talent    data -> TalentGrid (what is bought) -> TalentEffects (what it means)
+    zone      ground fire, and the impacts still falling towards it
+    rng       seeded, part of simulation state, so a fight replays exactly
+
+engine-game/src/sim/firemage_exec.rs
+    validation, target collection, crit rolls, damage, Ignite, Heat/Energy, Blink
+
+engine-presentation/src/
+    snapshot.rs           what the UI is allowed to know, rebuilt every frame
+    game_ui.rs            ability bar, resource bars, Ultimate, tooltips, Ignite pips
+    ui/targeting.rs       one ground-targeting system for three abilities
+    ui/talent_menu.rs     the talent grid, four tiers of nodes
+```
+
+Every module under `firemage/` is state and rules with no side effects. An Ignite tracker
+reports that a burn ticked; the simulation turns that into damage, events and deaths. That is
+what keeps one function responsible for every point of damage in the game, and it is what
+makes all of it testable without a world.
+
+## Abilities
+
+| # | ability | cast | cooldown | charges | range | radius | heat | energy |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | Firebolt | 1.0 s | - | 1 | 35 m | - | +5 | +1 |
+| 2 | Flame Lance | 1.5 s | 8 s | 2 | 35 m | - | +10 | +2 |
+| 3 | Flame Wave | 1.2 s | 10 s | 1 | 12 m cone | - | +3/target, max 15 | +2 |
+| 4 | Meteor | 1.0 s | 18 s | 1 | 35 m | 5 m | +15 | +5 |
+| 5 | Firestorm | 0.8 s | 24 s | 1 | 35 m | 6 m | +3/tick, max 30 | +8 |
+| 6 | Pyroblast | 3.0 s | 30 s | 1 | 35 m | - | +25 | +10 |
+| 7 | Inferno | instant | 45 s | 1 | self | 8 m | +20 | +10 |
+| 8 | Fire Detonation | instant | 8 s | 1 | 35 m | 10 m | +15 | +3 |
+| 9 | Flame Shield | instant | 30 s | 1 | self | - | - | - |
+| 0 | Blink | instant | 15 s | 1 | 10 m | - | - | - |
+| R | **Cataclysm** | 1.0 s | - | 1 | 35 m | 10 m | - | costs 100 |
+
+Damage numbers are in the same table: Firebolt 120, Flame Lance 260 (+40% into a burn),
+Flame Wave 180, Meteor 420, Firestorm 60/tick, Pyroblast 800 (+10% per stack, guaranteed crit
+at the cap), Inferno 140/tick, Fire Detonation 300 + 120 per stack consumed, Cataclysm 1200
+on impact and 150/s afterwards. Base crit 15%, crit multiplier 2.0.
+
+### Ignite
+
+8 seconds, 5 stacks by default. Applying refreshes the duration even at the cap - a target
+held at maximum must not fall off mid-rotation. 12 damage per stack per second, so a stack is
+worth something before it is spent.
+
+Firebolt's asymmetry is deliberate: **100% to apply on an unburnt target, 50% on a burning
+one**, and never past the maximum.
+
+### Fire Detonation
+
+Requires the target at the current maximum. Consumes the whole burn, deals its scaled damage,
+and splashes 60% of it to everything within 10 m, applying a stack to each. Refused with
+`NotEnoughIgnite` below the cap, and a refusal spends no charge.
+
+## Resources
+
+**Heat**, 0-100. Nothing spends it; it fills as the class plays. At 100 it Overheats: +15%
+fire damage while it drains at 12/s. 80 is the "running hot" threshold the bar marks and two
+talents read.
+
+**Ultimate Energy**, 0-100. +1 every two seconds, plus what abilities generate. At 100
+Cataclysm can be cast, and casting it empties the bar.
+
+## Casting
+
+A cast is a commitment: the charge is spent when it starts.
+
+- **Pressing another ability queues it.** The running cast is not disturbed; the queued one
+  starts the moment it lands, and is re-validated then because its target may have died.
+- **One slot, not a list.** Mashing four keys means "then that one".
+- **Only moving and Escape cancel**, and cancelling takes the queue with it.
+
+## Talents
+
+25 talents in 4 tiers, bought in any order - the tiers group power, they are not a
+prerequisite chain. Three layers: `TALENTS` (a table a designer edits), `TalentGrid` (what is
+bought), `TalentEffects` (the numbers gameplay reads). Combat code reads a field, never
+`if has_talent(..)`, so a talent that changes an existing number is one line in
+`TalentEffects::from_grid` and no change where the number is used.
+
+`TESTING_MODE = true` grants exactly `total_talent_cost()` points - **derived from the table,
+never written down**, so a new talent raises the testing budget automatically. With it off the
+class starts at zero and earns them.
+
+## Interface
+
+The UI observes; it never computes. `UiSnapshot` is rebuilt from the simulation each frame and
+every widget reads it, so a button cannot claim an ability is ready when the simulation would
+refuse it, and a tooltip is generated from the ability's own row.
+
+- **Ability bar**: ten slots with keys, names, charge counters (only where there is more than
+  one), radial cooldowns and five state colours - ready, cooling, no resource, invalid target,
+  and *empowered* for Fire Detonation against a full burn.
+- **Cooldowns** are a `RadialFill` command the renderer tessellates into the existing batch.
+  The dark wedge's leading edge sweeps **clockwise from twelve o'clock**.
+- **Ultimate button**: larger, separated from the bar, glowing at 100 Energy.
+- **Resource bars**: Heat with its Overheat threshold marked, Ultimate Energy with a ready
+  state.
+- **Ignite pips**: one per possible stack, so the count of pips *is* the current maximum.
+- **Ground targeting**: one system for Meteor, Firestorm and Cataclysm. The circle is a flat
+  decal on the floor, 3 cm up so it beats the depth test without floating, scaled to the
+  ability's own radius; enemies inside it are ringed. Left click confirms, right click or
+  Escape cancels, and an out-of-range placement is refused before the click rather than after.
+- **Talent menu**: the button in the top-right corner, all 25 nodes by tier with costs,
+  descriptions and state.
+
+### Escape
+
+One press backs out of exactly one thing, most local first:
+
+```text
+talent window -> targeting circle -> cast in progress -> pause menu
+```
+
+## Testing
+
+- `firemage/*`: the data layers, unit tested with no world - stacks, cap, refresh, Heat's
+  boil-over edge, energy, charge buckets, talent effects, zone ticks, seeded rolls.
+- `sim/firemage_exec.rs`: the mechanics against a real arena - Firebolt's guaranteed ignite,
+  the cap never leaking, nothing detonating by itself, the detonation requirement and its
+  splash, Flame Lance's bonus, Pyroblast's guaranteed crit, Meteor's delay, zones burning and
+  expiring, Blink's distance, resources, the Ultimate's cost, cast queueing and cancelling.
+- `snapshot.rs`, `game_ui.rs`, `ui/*`: what the interface shows, including that the Ultimate
+  is not on the bar and that Fire Detonation only lights up against a full burn.
+
+## Known limitations
+
+- **Damage numbers are unvalidated by play.** They are tuned against 200,000 HP dummies and are
+  one table edit away from anything else.
+- **The talent purchase click is covered by unit tests but not by a live click-through.**
+- **Ignite has no relationship to the generic `StatusSet`.** It has its own tracker, which is
+  why nameplates read it directly.
+- **Zones do not read the collision world.** A Firestorm on a ledge burns a circle on the flat,
+  not the geometry.
+- **No icons.** Ability buttons show four letters of the name; the layout does not change when
+  textures arrive.

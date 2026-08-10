@@ -611,8 +611,11 @@ impl GameUi {
 
         // The cooldown, as a radial sweep over what is left.
         if view.is_cooling() {
-            self.list.radial(
+            // The dark part starts where the elapsed part ended, so its leading edge sweeps
+            // clockwise from twelve o'clock as the cooldown runs down.
+            self.list.radial_from(
                 rect,
+                view.cooldown_fraction,
                 1.0 - view.cooldown_fraction,
                 self.theme.cooldown_radial,
             );

@@ -158,15 +158,17 @@ pub enum UiCommand {
         /// What colour.
         color: UiColor,
     },
-    /// A radial sector, swept clockwise from twelve o'clock.
+    /// A radial sector, measured clockwise from twelve o'clock.
     ///
     /// What a cooldown looks like in this genre. Expressed as a command rather than as a
-    /// pile of triangles the layout code would have to build, so the sweep is one number
-    /// the interface can hand over and the renderer decides how finely to tessellate it.
+    /// pile of triangles the layout code would have to build, so the sweep is two numbers
+    /// the interface hands over and the renderer decides how finely to tessellate it.
     RadialFill {
         /// The square the sector is inscribed in.
         rect: UiRect,
-        /// How much of the circle is covered, in `0.0..=1.0`.
+        /// Where the sector begins, in turns clockwise from twelve o'clock.
+        start: f32,
+        /// How much of the circle it covers, in `0.0..=1.0`.
         fraction: f32,
         /// What colour.
         color: UiColor,
@@ -282,11 +284,21 @@ impl UiDrawList {
     /// A fraction at or below zero draws nothing, which is the ordinary case for an ability
     /// that is ready: a cooldown overlay that is not cooling down should cost nothing.
     pub fn radial(&mut self, rect: UiRect, fraction: f32, color: UiColor) {
+        self.radial_from(rect, 0.0, fraction, color);
+    }
+
+    /// Appends a radial sector that begins `start` turns clockwise from twelve o'clock.
+    ///
+    /// What a cooldown wipe needs: the covered part of the circle shrinks by its *leading*
+    /// edge sweeping clockwise, so the uncovered part grows from twelve o'clock the way
+    /// every cooldown in the genre does.
+    pub fn radial_from(&mut self, rect: UiRect, start: f32, fraction: f32, color: UiColor) {
         if !rect.is_visible() || fraction <= 0.0 {
             return;
         }
         self.commands.push(UiCommand::RadialFill {
             rect,
+            start,
             fraction: fraction.min(1.0),
             color,
         });

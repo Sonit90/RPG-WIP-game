@@ -673,7 +673,7 @@ mod tests {
             bindings().dummy_material
         );
 
-        simulation.world_mut().damage(target, 100_000.0);
+        simulation.world_mut().damage(target, 1_000_000.0);
         simulation.step_once();
         extractor.extract(&simulation);
 

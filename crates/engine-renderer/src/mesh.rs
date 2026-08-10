@@ -205,6 +205,41 @@ impl MeshData {
         }
     }
 
+    /// A flat disc of `radius`, facing up, as a fan of `segments` triangles.
+    ///
+    /// What an area-of-effect indicator is: a circle painted on the floor. A quad with a
+    /// round texture would do the same job once there are textures; until then the shape
+    /// has to be in the geometry, because a square decal says the ability hits a square.
+    #[must_use]
+    pub fn disc(radius: f32, segments: u32) -> Self {
+        let segments = segments.max(3);
+        let mut vertices = Vec::with_capacity(segments as usize + 1);
+        vertices.push(MeshVertex::new(Vec3::ZERO, Vec3::Y, Vec2::new(0.5, 0.5)));
+        for segment in 0..segments {
+            let angle = segment as f32 / segments as f32 * std::f32::consts::TAU;
+            let (sin, cos) = angle.sin_cos();
+            vertices.push(MeshVertex::new(
+                Vec3::new(cos * radius, 0.0, sin * radius),
+                Vec3::Y,
+                Vec2::new(cos * 0.5 + 0.5, sin * 0.5 + 0.5),
+            ));
+        }
+
+        let mut indices = Vec::with_capacity(segments as usize * 3);
+        for segment in 0..segments {
+            let next = segment % segments + 1;
+            let following = (segment + 1) % segments + 1;
+            // Wound so the disc faces up, which is the way the floor is lit from.
+            indices.extend_from_slice(&[0, following, next]);
+        }
+
+        Self {
+            bounds: Sphere::around(vertices.iter().map(|vertex| vertex.position)),
+            vertices,
+            indices,
+        }
+    }
+
     /// A UV sphere with `segments` around and `rings` from pole to pole.
     ///
     /// Exists because a lit sphere is the only shape whose shading is obviously right or

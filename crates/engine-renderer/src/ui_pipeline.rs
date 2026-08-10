@@ -196,10 +196,11 @@ impl UiBatcher {
                 }
                 UiCommand::RadialFill {
                     rect,
+                    start,
                     fraction,
                     color,
                 } => {
-                    self.push_radial(rect, fraction, color, &mut stats);
+                    self.push_radial(rect, start, fraction, color, &mut stats);
                 }
                 UiCommand::Outline {
                     rect,
@@ -290,6 +291,7 @@ impl UiBatcher {
     fn push_radial(
         &mut self,
         rect: UiRect,
+        start: f32,
         fraction: f32,
         color: [f32; 4],
         stats: &mut UiBatchStats,
@@ -305,14 +307,15 @@ impl UiBatcher {
         let radius = rect.width.max(rect.height) * 0.5;
         let uv = FontAtlas::solid_uv();
         let sweep = fraction * std::f32::consts::TAU;
+        let origin = start * std::f32::consts::TAU;
 
         for segment in 0..segments {
             if stats.quads >= self.max_quads {
                 stats.dropped += 1;
                 return;
             }
-            let from = sweep * (segment as f32 / segments as f32);
-            let to = sweep * ((segment + 1) as f32 / segments as f32);
+            let from = origin + sweep * (segment as f32 / segments as f32);
+            let to = origin + sweep * ((segment + 1) as f32 / segments as f32);
             let point = |angle: f32| {
                 // Zero is straight up and the sweep runs clockwise.
                 (

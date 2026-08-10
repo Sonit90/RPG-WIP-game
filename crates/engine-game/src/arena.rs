@@ -54,7 +54,7 @@ impl Default for ArenaConfig {
             group_center: Vec3::new(14.0, 0.0, -18.0),
             group_count: 4,
             group_spacing: 3.0,
-            dummy_health: 2_000.0,
+            dummy_health: 200_000.0,
             arena_half_extent: 40.0,
         }
     }

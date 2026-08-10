@@ -100,14 +100,29 @@ pub struct Player {
     pub target: Option<EntityId>,
     /// The cast in progress, if any.
     ///
-    /// A cast is a *commitment*: while one is running the character is channelling, and
-    /// anything that breaks the channel cancels it. That is the whole reason it is worth
-    /// drawing a bar for.
+    /// A cast is a *commitment*: while one is running the character is channelling, and only
+    /// moving or backing out breaks it. Pressing another ability does not - it queues.
     pub cast: Option<ActiveCast>,
+    /// What the player asked for while a cast was running.
+    ///
+    /// Pressing an ability mid-cast is an instruction for what to do *next*, not an
+    /// instruction to throw away the cast in progress. One slot, not a list: a player
+    /// mashing four keys means "then that one", and a queue of four would play out a
+    /// rotation they stopped wanting three seconds ago.
+    pub queued: Option<QueuedCast>,
     /// Why the last ability attempt failed, for the overlay. Cleared by a success.
     pub last_error: Option<AbilityError>,
     /// The last ability that was successfully used.
     pub last_ability: Option<AbilityId>,
+}
+
+/// An ability the player asked for while another cast was running.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct QueuedCast {
+    /// Which ability.
+    pub ability: FireAbility,
+    /// Where it was aimed, if it was placed with the mouse.
+    pub ground: Option<Vec3>,
 }
 
 /// A cast in progress.
@@ -156,8 +171,11 @@ pub enum CastEnd {
     Completed,
     /// The caster moved.
     Moved,
-    /// The caster started another ability.
-    Replaced,
+    /// The player backed out of it.
+    ///
+    /// Pressing another ability is *not* this: that queues. Only escape and moving stop a
+    /// cast, which is what makes a long cast safe to commit to.
+    Cancelled,
     /// The caster died.
     CasterDied,
 }
@@ -282,6 +300,7 @@ impl Simulation {
                 entity: EntityId::INVALID,
                 target: None,
                 cast: None,
+                queued: None,
                 last_error: None,
                 last_ability: None,
             },
@@ -825,10 +844,16 @@ impl Simulation {
         };
         self.land(ability, aim);
         self.player.target = restore;
+        self.start_queued_cast();
     }
 
     /// Cancels the cast in progress and announces why.
     fn end_cast(&mut self, end: CastEnd) {
+        // A cancelled cast takes the queue with it. The player asked to stop, and starting
+        // whatever they pressed two seconds ago instead would be the opposite of stopping.
+        if !matches!(end, CastEnd::Completed) {
+            self.player.queued = None;
+        }
         let Some(cast) = self.player.cast.take() else {
             return;
         };

@@ -79,6 +79,15 @@ const OVERLAY_TOGGLE_KEY: KeyCode = KeyCode::F5;
 #[cfg(feature = "debug-overlay")]
 const COLLISION_DEBUG_KEY: KeyCode = KeyCode::F3;
 
+/// How far above the floor the targeting disc sits, in metres.
+///
+/// Coplanar with the floor would be a depth-buffer tie and would flicker; a few centimetres
+/// reads as painted on the ground rather than hovering over it.
+const DECAL_HEIGHT: f32 = 0.03;
+
+/// Size of the ring drawn over an enemy inside the targeting circle, in pixels.
+const AFFECTED_MARK_SIZE: f32 = 46.0;
+
 /// The key that casts the Ultimate. It is not on the bar, so it has a key of its own.
 const ULTIMATE_KEY: KeyCode = KeyCode::R;
 
@@ -142,6 +151,15 @@ pub struct App {
     talent_scratch: String,
     /// Which ability button the pointer is over, for the tooltip.
     hovered_ability: Option<FireAbility>,
+    /// The flat disc drawn on the ground while an ability is being placed.
+    ///
+    /// A render entity rather than a screen-space circle: an area on the floor has to lie
+    /// *on the floor*, or the player cannot tell what it will cover.
+    targeting_decal: Option<engine_render_data::RenderEntity>,
+    /// The mesh and material the decal is drawn with.
+    decal_visuals: (MeshHandle, MaterialHandle, MaterialHandle),
+    /// Enemies inside the circle this frame. Reused; never freed.
+    affected: Vec<engine_game::EntityId>,
     /// Whether the right button is held and the mouse is turning the camera.
     mouse_look: MouseLook,
     /// Mouse movement to rotate by, with the engine's own re-centring taken back out.
@@ -205,6 +223,20 @@ impl App {
         renderer.set_ui_enabled(args.ui);
 
         let visuals = upload_visuals(&mut renderer)?;
+        // The targeting decal: a unit plane, laid flat, in a valid and an invalid colour.
+        // A unit disc: the transform scales it to whatever radius the ability has.
+        let decal_mesh = renderer.create_mesh(&MeshData::disc(0.5, 32))?;
+        let decal_valid = renderer.create_material(
+            MaterialDesc::colored(0.95, 0.45, 0.12)
+                .with_roughness(1.0)
+                .with_emissive(Vec3::new(0.55, 0.20, 0.03)),
+        )?;
+        let decal_invalid = renderer.create_material(
+            MaterialDesc::colored(0.80, 0.12, 0.12)
+                .with_roughness(1.0)
+                .with_emissive(Vec3::new(0.45, 0.03, 0.03)),
+        )?;
+        let decal_visuals = (decal_mesh, decal_valid, decal_invalid);
         #[cfg(feature = "debug-overlay")]
         let debug_visuals = upload_debug_visuals(&mut renderer)?;
 
@@ -299,6 +331,9 @@ impl App {
             talent_theme: TalentTheme::default(),
             talent_scratch: String::with_capacity(32),
             hovered_ability: None,
+            targeting_decal: None,
+            decal_visuals,
+            affected: Vec::with_capacity(32),
             mouse_look: MouseLook::new(),
             motion: RelativeMotion::new(),
             cursor_before_look: (0, 0),
@@ -558,6 +593,25 @@ impl App {
         self.menu.layout(self.renderer.size());
 
         let ui_input = UiInput::from_input(ctx.input());
+
+        // Escape has a chain of meanings, most local first: close the talent window, then
+        // cancel a placement, then stop a cast, and only then open the pause menu. Each
+        // press backs out of exactly one thing, which is what makes pressing it twice from
+        // the talent window land on the menu.
+        if ui_input.cancel {
+            if self.talent_menu.is_open() {
+                self.talent_menu.close();
+                return;
+            }
+            if self.targeting.is_active() {
+                self.targeting.cancel();
+                return;
+            }
+            if self.simulation.cancel_cast() {
+                log::debug!("cast cancelled");
+                return;
+            }
+        }
         // Copied out: applying an action needs `&mut self`, and the slice borrows the menu.
         self.menu_actions.clear();
         self.menu_actions
@@ -707,9 +761,7 @@ impl App {
             self.game_ui
                 .push_ability_tooltip(rect, &view, ignite_max, viewport);
         }
-        if let Some(target) = self.targeting.active() {
-            self.push_targeting_indicator(target, viewport);
-        }
+        self.push_affected_highlights(viewport);
         engine_presentation::ui::talent_menu::push_talent_menu(
             self.game_ui.list_mut(),
             &self.talent_menu,
@@ -732,50 +784,105 @@ impl App {
         self.renderer.set_ui(self.game_ui.list());
     }
 
-    /// Draws the ground-targeting circle where the player is pointing.
+    /// Puts the flat targeting disc on the ground, or takes it away.
     ///
-    /// Projected from the world position rather than drawn at the mouse, so the circle sits
-    /// on the ground the ability will actually land on - including the size it will land
-    /// with, which is what makes a ten-metre Cataclysm read differently from a five-metre
-    /// Meteor.
-    fn push_targeting_indicator(
-        &mut self,
-        target: engine_presentation::ui::targeting::GroundTarget,
-        viewport: (u32, u32),
-    ) {
-        let view_projection = self.camera.view_projection();
-        let Some(centre) =
-            engine_presentation::nameplate::project(target.position, &view_projection, viewport)
-        else {
+    /// Drawn in the world rather than over it: the disc lies on the floor a few centimetres
+    /// up - high enough to beat the floor in the depth test, low enough to read as painted
+    /// on it - and is scaled to the ability's own radius, so what is highlighted is exactly
+    /// what will be hit.
+    fn update_targeting_decal(&mut self) {
+        let Some(target) = self.targeting.active() else {
+            if let Some(entity) = self.targeting_decal.take() {
+                self.extractor.render_world_mut().despawn(entity);
+            }
+            self.affected.clear();
             return;
         };
-        // A point on the rim, projected too: the difference is the radius in pixels, so the
-        // circle shrinks with distance exactly as the world does.
-        let rim = target.position + Vec3::new(target.radius, 0.0, 0.0);
-        let radius = engine_presentation::nameplate::project(rim, &view_projection, viewport)
-            .map_or(24.0, |edge| (edge.0 - centre.0).abs().max(8.0));
 
-        let colour = if target.valid {
-            [1.0, 0.55, 0.15, 0.35]
-        } else {
-            [0.85, 0.15, 0.15, 0.35]
+        let (mesh, valid, invalid) = self.decal_visuals;
+        let material = if target.valid { valid } else { invalid };
+        // A hair above the floor: coplanar with it would flicker, and any higher would
+        // float.
+        let position = Vec3::new(target.position.x, DECAL_HEIGHT, target.position.z);
+        let transform = engine_core::transform::Transform {
+            translation: position,
+            rotation: engine_core::math::Quat::IDENTITY,
+            scale: Vec3::new(target.radius * 2.0, 1.0, target.radius * 2.0),
         };
-        let rect = UiRect::new(
-            centre.0 - radius,
-            centre.1 - radius * 0.5,
-            radius * 2.0,
-            radius,
-        );
-        // A radial fill is a disc when it covers the whole circle, which is exactly what an
-        // area indicator is.
-        // A disc, and nothing else: a rectangle around it would read as a second, square
-        // area of effect that the ability does not have.
-        self.game_ui.list_mut().radial(rect, 1.0, colour);
 
-        let label = target.ability.definition().name;
-        self.game_ui
-            .list_mut()
-            .text_at((rect.x, rect.y - 16.0), label, [1.0, 1.0, 1.0, 1.0], 1.0);
+        let world = self.extractor.render_world_mut();
+        match self.targeting_decal {
+            Some(entity) => {
+                world.set_transform(
+                    entity,
+                    transform,
+                    engine_core::math::Sphere::new(Vec3::ZERO, 0.75),
+                );
+                world.set_material(entity, material);
+            }
+            None => {
+                let entity = world.spawn(engine_render_data::RenderEntityDesc {
+                    transform,
+                    mesh,
+                    material,
+                    bounds: engine_core::math::Sphere::new(Vec3::ZERO, 0.75),
+                    visible: true,
+                    style: engine_render_data::InstanceStyle::NEUTRAL,
+                });
+                self.targeting_decal = Some(entity);
+            }
+        }
+
+        // Everything the circle currently covers, so the interface can mark it.
+        self.affected.clear();
+        let world = self.simulation.world();
+        for slot in 0..world.slot_count() {
+            let Some(id) = world.id_at(slot) else {
+                continue;
+            };
+            if id == self.simulation.player().entity || !world.is_alive(id) {
+                continue;
+            }
+            let Some(position) = world.position(id) else {
+                continue;
+            };
+            let dx = position.x - target.position.x;
+            let dz = position.z - target.position.z;
+            if (dx * dx + dz * dz).sqrt() <= target.radius + world.radius(id) {
+                self.affected.push(id);
+            }
+        }
+    }
+
+    /// Rings whatever the targeting circle is currently covering.
+    ///
+    /// Drawn over the enemies themselves rather than only on the ground: a player placing a
+    /// Meteor is choosing *who* it hits, and the answer should not have to be inferred from
+    /// where a disc happens to overlap.
+    fn push_affected_highlights(&mut self, viewport: (u32, u32)) {
+        if self.affected.is_empty() {
+            return;
+        }
+        let view_projection = self.camera.view_projection();
+        for index in 0..self.affected.len() {
+            let entity = self.affected[index];
+            let Some(position) = self.simulation.world().position(entity) else {
+                continue;
+            };
+            let height = self.simulation.world().height(entity);
+            let Some(screen) = engine_presentation::nameplate::project(
+                position + Vec3::new(0.0, height * 0.5, 0.0),
+                &view_projection,
+                viewport,
+            ) else {
+                continue;
+            };
+            let size = AFFECTED_MARK_SIZE;
+            let rect = UiRect::new(screen.0 - size * 0.5, screen.1 - size * 0.5, size, size);
+            self.game_ui
+                .list_mut()
+                .outline(rect, 3.0, [1.0, 0.72, 0.20, 0.95]);
+        }
     }
 
     /// Builds the collision demo's interface: labels over the test geometry, nothing else.
@@ -1009,6 +1116,7 @@ impl Application for App {
             if !self.menu.is_open() {
                 self.update_firemage_ui(ctx);
             }
+            self.update_targeting_decal();
 
             if !self.targeting.is_active() && !self.talent_menu.is_open() {
                 self.apply_mouse_look(ctx);

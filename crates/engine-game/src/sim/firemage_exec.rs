@@ -97,12 +97,26 @@ impl Simulation {
     }
 
     /// The body of a cast: validate, pay, then either start a cast bar or land at once.
+    ///
+    /// A cast already in progress is *not* interrupted. The request is queued and started
+    /// the moment the running cast lands, because pressing a second ability means "then
+    /// this one" - the only things that cancel a cast are moving and backing out.
     fn try_cast(&mut self, ability: FireAbility, aim: CastAim) -> Result<u32, AbilityError> {
         let definition = *ability.definition();
         let caster = self.player.entity;
 
         if !self.world.is_alive(caster) {
             return Err(AbilityError::CasterDead);
+        }
+        if self.player.cast.is_some() {
+            self.player.queued = Some(super::QueuedCast {
+                ability,
+                ground: match aim {
+                    CastAim::Ground(position) => Some(position),
+                    CastAim::Target => None,
+                },
+            });
+            return Ok(0);
         }
         if !self.mage.abilities.is_ready(ability) {
             return Err(AbilityError::OnCooldown);
@@ -123,9 +137,6 @@ impl Simulation {
 
         let cast_time = definition.cast_time_with(&effects, self.mage.haste());
         if cast_time > 0.0 {
-            if self.player.cast.is_some() {
-                self.end_cast(CastEnd::Replaced);
-            }
             let ground = match aim {
                 CastAim::Ground(position) => Some(position),
                 CastAim::Target => None,
@@ -147,11 +158,35 @@ impl Simulation {
             return Ok(0);
         }
 
-        // An instant ability interrupts a cast: the player asked for something else.
-        if self.player.cast.is_some() {
-            self.end_cast(CastEnd::Replaced);
-        }
         Ok(self.land(ability, aim))
+    }
+
+    /// Starts whatever the player queued while the last cast was running.
+    ///
+    /// The queued request is validated afresh: two seconds passed, and the target it was
+    /// meant for may be dead. A refusal is reported the same way a fresh press would be.
+    pub(super) fn start_queued_cast(&mut self) {
+        let Some(queued) = self.player.queued.take() else {
+            return;
+        };
+        let aim = match queued.ground {
+            Some(position) => CastAim::Ground(position),
+            None => CastAim::Target,
+        };
+        let _ = self.cast_aimed(queued.ability, aim);
+    }
+
+    /// Cancels the cast in progress, if there is one. What escape does.
+    ///
+    /// Returns whether anything was cancelled, so the caller can decide what escape means
+    /// when there was no cast to stop.
+    pub fn cancel_cast(&mut self) -> bool {
+        if self.player.cast.is_none() {
+            self.player.queued = None;
+            return false;
+        }
+        self.end_cast(CastEnd::Cancelled);
+        true
     }
 
     /// Checks that an ability has something to be cast at.
@@ -1322,7 +1357,7 @@ mod tests {
         let mut simulation = arena();
         let dummy = target(&simulation);
         ignite(&mut simulation, dummy, 5);
-        simulation.world_mut().damage(dummy, 10_000.0);
+        simulation.world_mut().damage(dummy, 1_000_000.0);
         simulation.step_many(120);
         assert_eq!(simulation.mage().ignite.stacks(dummy), 0);
     }
@@ -1334,7 +1369,7 @@ mod tests {
         // nothing.
         let mut simulation = arena();
         let dummy = target(&simulation);
-        simulation.world_mut().damage(dummy, 10_000.0);
+        simulation.world_mut().damage(dummy, 1_000_000.0);
 
         for ability in FireAbility::BAR {
             if !ability.definition().target.needs_target() {
@@ -1383,5 +1418,104 @@ mod tests {
             simulation.meter().total_damage()
         };
         assert!((run() - run()).abs() < 1e-3);
+    }
+
+    #[test]
+    fn pressing_another_ability_queues_it_instead_of_cancelling_the_cast() {
+        // The whole point: a long cast is safe to commit to. Only moving and backing out
+        // stop it, and what was pressed meanwhile happens next.
+        let mut simulation = arena();
+        simulation.cast(FireAbility::Pyroblast).expect("in range");
+        let started = simulation.casting().map(|cast| cast.ability);
+        assert_eq!(started, Some(FireAbility::Pyroblast));
+
+        simulation.cast(FireAbility::Firebolt).expect("queued");
+        assert_eq!(
+            simulation.casting().map(|cast| cast.ability),
+            Some(FireAbility::Pyroblast),
+            "the second press threw away the first cast"
+        );
+        assert_eq!(
+            simulation.player().queued.map(|queued| queued.ability),
+            Some(FireAbility::Firebolt)
+        );
+
+        // When Pyroblast lands, Firebolt starts on its own.
+        for _ in 0..200 {
+            simulation.step_once();
+            if simulation
+                .casting()
+                .is_some_and(|cast| cast.ability == FireAbility::Firebolt)
+            {
+                break;
+            }
+        }
+        assert_eq!(
+            simulation.casting().map(|cast| cast.ability),
+            Some(FireAbility::Firebolt),
+            "the queued ability never started"
+        );
+    }
+
+    #[test]
+    fn only_the_newest_request_is_queued() {
+        // Mashing four keys means "then that one", not a rotation the player stopped
+        // wanting three seconds ago.
+        let mut simulation = arena();
+        simulation.cast(FireAbility::Pyroblast).expect("in range");
+        simulation.cast(FireAbility::Firebolt).expect("queued");
+        simulation.cast(FireAbility::FlameLance).expect("queued");
+        assert_eq!(
+            simulation.player().queued.map(|queued| queued.ability),
+            Some(FireAbility::FlameLance)
+        );
+    }
+
+    #[test]
+    fn escape_cancels_the_cast_and_the_queue_with_it() {
+        let mut simulation = arena();
+        simulation.cast(FireAbility::Pyroblast).expect("in range");
+        simulation.cast(FireAbility::Firebolt).expect("queued");
+
+        assert!(simulation.cancel_cast(), "there was nothing to cancel");
+        assert!(simulation.casting().is_none());
+        assert!(
+            simulation.player().queued.is_none(),
+            "backing out left the queue behind"
+        );
+        assert!(!simulation.cancel_cast(), "it cancelled twice");
+    }
+
+    #[test]
+    fn moving_cancels_the_cast_and_the_queue_with_it() {
+        let mut simulation = arena();
+        simulation.cast(FireAbility::Pyroblast).expect("in range");
+        simulation.cast(FireAbility::Firebolt).expect("queued");
+
+        simulation.push_command(crate::command::PlayerCommand::Move {
+            forward: 1.0,
+            right: 0.0,
+            yaw: 0.0,
+        });
+        simulation.step_many(10);
+        assert!(simulation.casting().is_none(), "movement did not break it");
+        assert!(simulation.player().queued.is_none());
+    }
+
+    #[test]
+    fn an_instant_ability_does_not_disturb_a_cast_either() {
+        // Blink mid-Pyroblast is a queue, not an interrupt: nothing but movement and escape
+        // takes a cast away.
+        let mut simulation = arena();
+        simulation.cast(FireAbility::Pyroblast).expect("in range");
+        simulation.cast(FireAbility::Blink).expect("queued");
+        assert_eq!(
+            simulation.casting().map(|cast| cast.ability),
+            Some(FireAbility::Pyroblast)
+        );
+        assert!(
+            simulation.mage().abilities.is_ready(FireAbility::Blink),
+            "the queued instant was cast immediately"
+        );
     }
 }

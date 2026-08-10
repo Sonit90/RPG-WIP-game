@@ -167,8 +167,11 @@ fn the_full_rotation_runs_and_the_meter_agrees_with_the_health_lost() {
     let lost = f64::from(before - after);
 
     assert!(lost > 0.0, "the rotation dealt nothing");
+    // A relative tolerance, not an absolute one: dummies hold 200,000 health and an f32
+    // that large resolves to about a hundredth, so summing their bars cannot agree with the
+    // meter's f64 total to the last decimal.
     assert!(
-        (simulation.meter().total_damage() - lost).abs() < 1e-2,
+        (simulation.meter().total_damage() - lost).abs() <= lost * 1e-4 + 1e-2,
         "the meter says {} and the dummies lost {lost}",
         simulation.meter().total_damage()
     );
