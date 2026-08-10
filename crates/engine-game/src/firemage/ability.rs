@@ -514,6 +514,12 @@ pub enum AbilityError {
     TargetInvalid,
     /// The target is further away than it reaches.
     OutOfRange,
+    /// The target is behind the caster.
+    ///
+    /// A spell is thrown forwards. The frontal half-circle is generous - a player only has
+    /// to be pointing roughly the right way - but casting into your own back is not a thing
+    /// the class does.
+    FacingWrongWay,
     /// Fire Detonation without a full burn on the target.
     NotEnoughIgnite,
     /// A ground-targeted ability was cast without a placement.
@@ -534,6 +540,7 @@ impl AbilityError {
             Self::NoTarget => "NO TARGET",
             Self::TargetInvalid => "TARGET IS GONE",
             Self::OutOfRange => "OUT OF RANGE",
+            Self::FacingWrongWay => "YOU ARE FACING THE WRONG DIRECTION.",
             Self::NotEnoughIgnite => "NEEDS MAXIMUM IGNITE",
             Self::NeedsGroundTarget => "CHOOSE A LOCATION",
             Self::GroundOutOfRange => "TOO FAR AWAY",

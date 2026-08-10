@@ -72,7 +72,8 @@ impl TargetShape {
         match definition.target {
             engine_game::firemage::TargetMode::Cone => Self::Cone {
                 range: definition.range,
-                half_angle: std::f32::consts::FRAC_PI_3,
+                // The executor's own spread, so the wedge shown is the wedge that is hit.
+                half_angle: engine_game::sim::CONE_HALF_ANGLE,
             },
             _ => Self::Circle {
                 radius: definition.radius,

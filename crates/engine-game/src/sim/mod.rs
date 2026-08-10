@@ -857,11 +857,6 @@ impl Simulation {
         let Some(cast) = self.player.cast.take() else {
             return;
         };
-        // A cast that never landed gives its charge back. Only a completed one has been
-        // paid for by something happening.
-        if !matches!(end, CastEnd::Completed) {
-            self.refund_cast(&cast);
-        }
         self.events.push(CombatEvent::CastEnded {
             source: self.player.entity,
             ability: AbilityId::from_fire(cast.ability),
@@ -1134,12 +1129,12 @@ mod tests {
     }
 
     #[test]
-    fn a_cancelled_cast_gives_its_charge_back() {
-        // A cast that never landed costs the time it wasted and nothing else. Putting the
-        // ability on cooldown for something that did not happen punishes the player twice.
+    fn a_cancelled_cast_costs_nothing_at_all() {
+        // Nothing is spent until a cast lands, so backing out of one leaves the ability
+        // exactly as it was.
         let mut simulation = arena();
         simulation.cast(FireAbility::Pyroblast).expect("in range");
-        assert!(!simulation.mage().abilities.is_ready(FireAbility::Pyroblast));
+        assert!(simulation.mage().abilities.is_ready(FireAbility::Pyroblast));
 
         simulation.push_command(PlayerCommand::Move {
             forward: 1.0,
@@ -1150,7 +1145,7 @@ mod tests {
         assert!(simulation.casting().is_none(), "movement did not break it");
         assert!(
             simulation.mage().abilities.is_ready(FireAbility::Pyroblast),
-            "the charge was not refunded"
+            "a cast that never landed cost a charge"
         );
     }
 

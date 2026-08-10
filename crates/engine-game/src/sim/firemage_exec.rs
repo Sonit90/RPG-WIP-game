@@ -31,8 +31,15 @@ use crate::sim::CastEnd;
 
 use super::{ActiveCast, Simulation};
 
-/// Half-angle of a cone ability, in radians. 60 degrees either side of where you face.
-pub const CONE_HALF_ANGLE: f32 = std::f32::consts::FRAC_PI_3;
+/// Half-angle of a cone ability, in radians: a sixty-degree spread, thirty either side.
+pub const CONE_HALF_ANGLE: f32 = std::f32::consts::FRAC_PI_6;
+
+/// How far off dead ahead a cast may be aimed, in radians.
+///
+/// A right angle either side: the frontal half-circle. Generous on purpose - the requirement
+/// is "face roughly that way", not "line the character up" - but a spell is thrown forwards,
+/// and casting into your own back is not something the class does.
+pub const CAST_FACING_HALF_ANGLE: f32 = std::f32::consts::FRAC_PI_2;
 
 /// How much of a detonation's damage its splash deals to secondary targets.
 pub const DETONATION_SPLASH_FRACTION: f32 = 0.6;
@@ -132,15 +139,11 @@ impl Simulation {
         }
         self.validate_aim(ability, aim)?;
 
-        // Everything is paid at the start of the cast, which is what makes an interrupted
-        // cast a real loss rather than a free look at the target's health bar.
+        // Requirements are checked *before* the cast starts - a cast that could not have
+        // been paid for is refused now, with the reason - but nothing is actually spent
+        // until it lands. A cast that never happened costs nothing but the time.
         let effects = *self.mage.effects();
-        self.mage.abilities.spend(ability, &effects);
         self.mage.start_global_cooldown();
-        if definition.energy_cost > 0.0 {
-            self.mage.energy.spend_all();
-            // Arcane Pressure is paid out of the same bar, so spending it resets the bonus.
-        }
 
         let cast_time = definition.cast_time_with(&effects, self.mage.haste());
         if cast_time > 0.0 {
@@ -196,18 +199,26 @@ impl Simulation {
         true
     }
 
-    /// Hands back what a cast that never landed had paid.
+    /// Whether `point` lies in the caster's frontal half-circle.
     ///
-    /// A cancelled cast costs the time it wasted and nothing else: putting the ability on
-    /// cooldown for something that never happened punishes the player twice, and makes
-    /// backing out of a mis-click worse than finishing it.
-    pub(super) fn refund_cast(&mut self, cast: &ActiveCast) {
-        let effects = *self.mage.effects();
-        self.mage.abilities.grant_charge(cast.ability, &effects);
-        let definition = cast.ability.definition();
-        if definition.energy_cost > 0.0 {
-            self.mage.energy.gain(definition.energy_cost);
+    /// Measured against the body's own facing rather than the camera's, so what the
+    /// character is pointing at is what decides - and a player who turns to face their
+    /// target has done everything the rule asks for.
+    #[must_use]
+    pub fn is_facing(&self, point: Vec3) -> bool {
+        let caster = self.player.entity;
+        let Some(body) = self.world.body(caster) else {
+            return false;
+        };
+        let offset = Vec3::new(point.x - body.position.x, 0.0, point.z - body.position.z);
+        let distance = (offset.x * offset.x + offset.z * offset.z).sqrt();
+        if distance <= 1e-3 {
+            // Standing on top of it: there is no direction to be wrong about.
+            return true;
         }
+        let forward = Vec3::new(-body.facing_yaw.sin(), 0.0, -body.facing_yaw.cos());
+        let cosine = (offset.x * forward.x + offset.z * forward.z) / distance;
+        cosine >= CAST_FACING_HALF_ANGLE.cos()
     }
 
     /// Checks that an ability has something to be cast at.
@@ -227,6 +238,13 @@ impl Simulation {
                 if distance > definition.range {
                     return Err(AbilityError::OutOfRange);
                 }
+                let position = self
+                    .world
+                    .position(target)
+                    .ok_or(AbilityError::TargetInvalid)?;
+                if !self.is_facing(position) {
+                    return Err(AbilityError::FacingWrongWay);
+                }
                 // The one requirement that is a *mechanic* rather than a check: Fire
                 // Detonation exists to be held until the burn is full.
                 if ability == FireAbility::FireDetonation
@@ -239,8 +257,13 @@ impl Simulation {
                 }
                 Ok(())
             }
-            // A cone is aimed rather than placed: any direction is a legal one.
-            TargetMode::Cone => Ok(()),
+            // A cone is aimed rather than placed, but it is still thrown forwards.
+            TargetMode::Cone => match aim {
+                CastAim::Ground(position) if !self.is_facing(position) => {
+                    Err(AbilityError::FacingWrongWay)
+                }
+                _ => Ok(()),
+            },
             TargetMode::Ground => {
                 let CastAim::Ground(position) = aim else {
                     return Err(AbilityError::NeedsGroundTarget);
@@ -248,6 +271,9 @@ impl Simulation {
                 let origin = self.world.position(caster).unwrap_or(Vec3::ZERO);
                 if horizontal_distance(origin, position) > definition.range {
                     return Err(AbilityError::GroundOutOfRange);
+                }
+                if !self.is_facing(position) {
+                    return Err(AbilityError::FacingWrongWay);
                 }
                 Ok(())
             }
@@ -263,6 +289,14 @@ impl Simulation {
     pub(super) fn land(&mut self, ability: FireAbility, aim: CastAim) -> u32 {
         let definition = *ability.definition();
         let caster = self.player.entity;
+        // Paid here, not when the cast started: the charge and the energy buy what actually
+        // happened. A cast that was cancelled or interrupted spent neither.
+        let effects = *self.mage.effects();
+        self.mage.abilities.spend(ability, &effects);
+        if definition.energy_cost > 0.0 {
+            // Arcane Pressure is paid out of the same bar, so spending it resets the bonus.
+            self.mage.energy.spend_all();
+        }
         let origin = self.world.position(caster).unwrap_or(Vec3::ZERO);
         let tick = self.tick;
 
@@ -1329,6 +1363,8 @@ mod tests {
 
         simulation.mage_mut().gain_energy(100.0);
         assert!(simulation.cast_at(FireAbility::Cataclysm, position).is_ok());
+        // Paid when it lands, so the cast has to run out first.
+        simulation.step_many(80);
         assert!(
             simulation.mage().energy.value() < 100.0,
             "the bar was not spent"
@@ -1627,21 +1663,24 @@ mod tests {
     #[test]
     fn a_cone_is_aimed_at_where_the_player_pointed() {
         // Flame Wave is chosen by direction: the point the player clicked decides which way
-        // the wedge faces, not which way the character happens to be standing.
+        // the wedge faces, not exactly which way the character is standing. The character is
+        // turned well off the dummy - but still within the frontal half-circle, which is all
+        // the facing rule asks for.
         let mut simulation = arena();
         let dummy = target(&simulation);
         let towards = simulation.world().position(dummy).expect("a position");
+        let origin = simulation.player_position();
+        let straight_at = (-(towards.x - origin.x)).atan2(-(towards.z - origin.z));
 
-        // Face the character the other way, so only the aim can explain a hit.
         let player = simulation.player().entity;
         if let Some(body) = simulation.world_mut().body_mut(player) {
-            body.facing_yaw = std::f32::consts::PI;
+            body.facing_yaw = straight_at + std::f32::consts::FRAC_PI_3;
         }
         let before = health(&simulation, dummy);
 
         simulation
             .cast_at(FireAbility::FlameWave, towards)
-            .expect("a cone is always a legal direction");
+            .expect("aimed inside the frontal half-circle");
         for _ in 0..120 {
             if simulation.casting().is_none() {
                 break;
@@ -1656,8 +1695,14 @@ mod tests {
 
     #[test]
     fn a_cone_is_never_refused_for_being_out_of_range() {
+        // A direction always exists, however far away the player clicked.
         let mut simulation = arena();
-        let far = Vec3::new(1_000.0, 0.0, 1_000.0);
+        let origin = simulation.player_position();
+        let facing = simulation
+            .world()
+            .body(simulation.player().entity)
+            .map_or(0.0, |body| body.facing_yaw);
+        let far = origin + Vec3::new(-facing.sin(), 0.0, -facing.cos()) * 1_000.0;
         assert!(
             simulation.cast_at(FireAbility::FlameWave, far).is_ok(),
             "an aimed ability was refused a direction"
@@ -1665,28 +1710,115 @@ mod tests {
     }
 
     #[test]
-    fn a_cancelled_cast_refunds_its_charge_but_a_landed_one_does_not() {
+    fn a_cast_cannot_be_aimed_behind_the_character() {
+        let mut simulation = arena();
+        let dummy = target(&simulation);
+        let towards = simulation.world().position(dummy).expect("a position");
+        let origin = simulation.player_position();
+        let straight_at = (-(towards.x - origin.x)).atan2(-(towards.z - origin.z));
+
+        // Turned right around.
+        let player = simulation.player().entity;
+        if let Some(body) = simulation.world_mut().body_mut(player) {
+            body.facing_yaw = straight_at + std::f32::consts::PI;
+        }
+
+        assert_eq!(
+            simulation.cast(FireAbility::Firebolt),
+            Err(AbilityError::FacingWrongWay),
+            "a spell was thrown backwards"
+        );
+        assert_eq!(
+            simulation.cast_at(FireAbility::Meteor, towards),
+            Err(AbilityError::FacingWrongWay)
+        );
+        assert_eq!(
+            simulation.cast_at(FireAbility::FlameWave, towards),
+            Err(AbilityError::FacingWrongWay)
+        );
+
+        // Turning back is all it takes.
+        if let Some(body) = simulation.world_mut().body_mut(player) {
+            body.facing_yaw = straight_at;
+        }
+        assert!(simulation.cast(FireAbility::Firebolt).is_ok());
+    }
+
+    #[test]
+    fn the_frontal_half_circle_is_generous() {
+        // Ninety degrees either side: a player pointing roughly the right way can cast.
+        let mut simulation = arena();
+        let dummy = target(&simulation);
+        let towards = simulation.world().position(dummy).expect("a position");
+        let origin = simulation.player_position();
+        let straight_at = (-(towards.x - origin.x)).atan2(-(towards.z - origin.z));
+        let player = simulation.player().entity;
+
+        for offset in [0.0, 0.7, -0.7, 1.4, -1.4] {
+            if let Some(body) = simulation.world_mut().body_mut(player) {
+                body.facing_yaw = straight_at + offset;
+            }
+            assert!(
+                simulation.is_facing(towards),
+                "{offset} radians off was refused"
+            );
+        }
+        for offset in [2.0, -2.0, std::f32::consts::PI] {
+            if let Some(body) = simulation.world_mut().body_mut(player) {
+                body.facing_yaw = straight_at + offset;
+            }
+            assert!(
+                !simulation.is_facing(towards),
+                "{offset} radians off was allowed"
+            );
+        }
+    }
+
+    #[test]
+    fn nothing_is_spent_until_a_cast_lands() {
+        // Requirements are checked before the cast starts; the charge and the energy buy
+        // what actually happened.
         let mut simulation = arena();
         simulation.cast(FireAbility::Pyroblast).expect("in range");
+        assert!(
+            simulation.mage().abilities.is_ready(FireAbility::Pyroblast),
+            "the charge was spent before the cast landed"
+        );
+
         assert!(simulation.cancel_cast());
         assert!(
             simulation.mage().abilities.is_ready(FireAbility::Pyroblast),
-            "escape did not refund the charge"
+            "a cancelled cast cost a charge"
         );
 
-        // And the ultimate gets its energy back, which is the expensive case.
+        // Let one land, and it is paid for.
+        simulation.step_many(40);
+        cast_through(&mut simulation, FireAbility::Pyroblast);
+        assert!(
+            !simulation.mage().abilities.is_ready(FireAbility::Pyroblast),
+            "a landed cast was free"
+        );
+    }
+
+    #[test]
+    fn the_ultimate_pays_its_energy_when_it_lands_and_not_before() {
+        let mut simulation = arena();
         let dummy = target(&simulation);
         let position = simulation.world().position(dummy).expect("a position");
         simulation.mage_mut().gain_energy(100.0);
-        simulation.step_many(35);
+
         simulation
             .cast_at(FireAbility::Cataclysm, position)
             .expect("a full bar");
-        assert!(simulation.mage().energy.value() < 100.0);
+        assert!(
+            simulation.mage().energy.is_full(),
+            "the energy went before the cast did"
+        );
+
         assert!(simulation.cancel_cast());
         assert!(
             simulation.mage().energy.is_full(),
-            "the cancelled ultimate kept the energy"
+            "a cancelled ultimate spent the bar"
         );
     }
 }

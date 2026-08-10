@@ -360,6 +360,7 @@ impl GameUi {
         self.push_ability_bar(snapshot, viewport);
         self.push_talent_button(snapshot, viewport);
         self.push_cast_bar(snapshot, viewport);
+        self.push_notification(snapshot, viewport);
         &self.list
     }
 
@@ -737,6 +738,29 @@ impl GameUi {
         let (origin, align) = centered(rect.x + rect.width * 0.5, rect.y + 3.0);
         self.list
             .text_aligned(origin, &self.title, self.theme.text, 1.0, align);
+    }
+
+    /// Why the last ability was refused, above the cast bar.
+    ///
+    /// The refusal comes from the simulation, in its own words: a message the interface
+    /// composed could disagree with the rule that produced it.
+    pub fn push_notification(&mut self, snapshot: &UiSnapshot, viewport: (u32, u32)) {
+        let Some(error) = snapshot.notification.error else {
+            return;
+        };
+        let (width, height) = (viewport.0 as f32, viewport.1 as f32);
+        // Above the resource bars, where nothing else is drawn: a refusal that overlapped
+        // the energy readout would be two messages fighting for one line.
+        let y =
+            height - layout::ABILITY_BAR_BOTTOM - layout::SLOT_SIZE - layout::RESOURCE_LIFT - 34.0;
+        let (origin, align) = centered(width * 0.5, y);
+        self.list.text_aligned(
+            origin,
+            error.as_str(),
+            self.theme.slot_invalid,
+            self.theme.hud_text_scale * 0.75,
+            align,
+        );
     }
 
     /// An ability tooltip, anchored above `anchor`.
