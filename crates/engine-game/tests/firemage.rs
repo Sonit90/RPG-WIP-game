@@ -625,5 +625,8 @@ fn blinking_arrives_rather_than_travelling() {
         .world()
         .previous_body(player)
         .expect("the player has a history");
-    assert_eq!(previous.position, after, "the mage slid instead of arriving");
+    assert_eq!(
+        previous.position, after,
+        "the mage slid instead of arriving"
+    );
 }

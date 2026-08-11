@@ -12,9 +12,10 @@ use engine_core::config::{DisplayMode, EngineSettings};
 
 /// Which scenario the executable loads.
 ///
-/// Two independently launchable scenes, not one scene with a debug mode: a collision bug
-/// has to be reproducible without abilities, dummies and a damage meter in the way, and
-/// test geometry in the combat arena would be geometry a player trips over during a fight.
+/// Independently launchable scenes, not one scene with debug modes: a collision bug has to
+/// be reproducible without abilities, dummies and a damage meter in the way, test geometry
+/// in the combat arena would be geometry a player trips over during a fight, and judging a
+/// walk cycle should not require winning a fight to get a clear view of the character.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Scene {
     /// The training arena: player, dummies, abilities, combat, the game UI.
@@ -22,6 +23,9 @@ pub enum Scene {
     Combat,
     /// The collision test course: geometry, a character, and nothing else.
     Collision,
+    /// The character and model test bed: the FireMage, one dummy, a floor, and keys that
+    /// hold the character in one animation so it can be judged without playing the game.
+    Character,
 }
 
 impl Scene {
@@ -31,7 +35,14 @@ impl Scene {
         match self {
             Self::Combat => "COMBAT",
             Self::Collision => "COLLISION",
+            Self::Character => "CHARACTER",
         }
+    }
+
+    /// Whether this is the character and model test bed.
+    #[must_use]
+    pub fn is_character(self) -> bool {
+        matches!(self, Self::Character)
     }
 
     /// Whether this is the collision demo.
@@ -48,6 +59,7 @@ impl FromStr for Scene {
         match value {
             "combat" | "arena" | "COMBAT" => Ok(Self::Combat),
             "collision" | "demo" | "COLLISION" => Ok(Self::Collision),
+            "character" | "model" | "CHARACTER" => Ok(Self::Character),
             _ => Err(()),
         }
     }
@@ -72,7 +84,11 @@ options:
                          time; hidden by default because it costs frame time)
   --dummies <count>      training dummies in the group, on top of the single dummy
                          (default 4, combat scene only)
-  --scene <name>         which scenario to load: combat (default) or collision. The
+  --scene <name>         which scenario to load: combat (default), collision or
+                         character. The character scene is the model test bed - the
+                         FireMage, one dummy, a floor and nothing else. Keys 1 to 6 hold
+                         the character in one animation, 0 releases it back to gameplay.
+                         The
                          collision scene is a dedicated test course - floor, walls, a
                          corner, steps, ramps, thin barriers, a ledge - with no combat
                          in it at all. Keys 1 to 7 stand at a test station, R resets
@@ -159,6 +175,7 @@ impl Args {
             title: match self.scene {
                 Scene::Combat => "myGame — training arena".to_owned(),
                 Scene::Collision => "myGame — collision demo".to_owned(),
+                Scene::Character => "myGame — character test".to_owned(),
             },
         }
     }
@@ -358,9 +375,18 @@ mod tests {
                 .scene,
             Scene::Collision
         );
+        assert_eq!(
+            parse(["--scene", "character"])
+                .expect("--scene character is valid")
+                .scene,
+            Scene::Character
+        );
         assert!(Scene::Collision.is_collision());
         assert!(!Scene::Combat.is_collision());
+        assert!(Scene::Character.is_character());
+        assert!(!Scene::Character.is_collision());
         assert_eq!(Scene::Collision.as_str(), "COLLISION");
+        assert_eq!(Scene::Character.as_str(), "CHARACTER");
     }
 
     #[test]

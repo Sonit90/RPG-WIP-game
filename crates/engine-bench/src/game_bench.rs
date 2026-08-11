@@ -27,14 +27,15 @@ use std::process::ExitCode;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
-use engine_core::math::{Frustum, Sphere, Vec3};
+use engine_assets::procedural::{DummyVariant, training_dummy};
+use engine_core::math::Frustum;
 use engine_game::ability::AbilityId;
 use engine_game::arena::{self, ArenaConfig};
 use engine_game::command::PlayerCommand;
 use engine_game::sim::Simulation;
 use engine_presentation::camera::ThirdPersonCamera;
 use engine_presentation::extract::{RenderExtractor, VisualBindings};
-use engine_render_data::{Camera, MaterialHandle, MeshHandle, Projection};
+use engine_render_data::{Camera, Projection};
 use engine_renderer::Culler;
 use engine_renderer::render_list::RenderList;
 
@@ -94,6 +95,9 @@ struct Measurement {
     combat: Stats,
     extraction: Stats,
     culling: Stats,
+    /// Render entities in the world — no longer one per gameplay entity, since a model is
+    /// drawn as one render entity per submesh of its selected level of detail.
+    drawables: usize,
     visible: u32,
     draw_batches: usize,
     allocations: usize,
@@ -299,6 +303,7 @@ fn measure(dummies: usize, ticks: usize) -> Result<Measurement, String> {
         combat: Stats::of(&mut combat_samples),
         extraction: Stats::of(&mut extraction_samples),
         culling: Stats::of(&mut culling_samples),
+        drawables: extractor.render_world().len(),
         visible: culler.stats().visible,
         draw_batches: list.batches().len(),
         allocations,
@@ -355,9 +360,7 @@ fn drive(simulation: &mut Simulation, tick: usize) {
 fn report(result: &Measurement, ticks: usize) {
     println!(
         "Scenario: {} dummies ({} gameplay entities, {} drawable)",
-        result.dummies,
-        result.entities,
-        result.entities + 2
+        result.dummies, result.entities, result.drawables
     );
     for (name, stats) in [
         ("simulation tick", &result.simulation),
@@ -372,9 +375,7 @@ fn report(result: &Measurement, ticks: usize) {
     }
     println!(
         "  visible {} of {}, {} draw batches",
-        result.visible,
-        result.entities + 2,
-        result.draw_batches
+        result.visible, result.drawables, result.draw_batches
     );
     println!(
         "  allocations over {ticks} measured ticks: {} ({:.4} per tick)",
@@ -391,22 +392,12 @@ fn report(result: &Measurement, ticks: usize) {
 /// Fabricated handles: this benchmark has no device, and extraction only copies them.
 ///
 /// The handles never reach a renderer, so they name nothing and that is fine — what is
-/// being measured is the transform arithmetic and the writes into the `RenderWorld`.
+/// being measured is the transform arithmetic and the writes into the `RenderWorld`. The
+/// *models* are the real ones, so the number of render entities a dummy costs is the number
+/// the game pays.
 fn bindings() -> VisualBindings {
-    let unit = Sphere::new(Vec3::ZERO, 0.87);
-    VisualBindings {
-        player_mesh: MeshHandle::new(0, 1),
-        player_bounds: unit,
-        player_material: MaterialHandle::new(0, 1),
-        dummy_mesh: MeshHandle::new(0, 1),
-        dummy_bounds: unit,
-        dummy_material: MaterialHandle::new(1, 1),
-        dead_material: MaterialHandle::new(2, 1),
-        ground_mesh: MeshHandle::new(1, 1),
-        ground_bounds: Sphere::new(Vec3::ZERO, 1.0),
-        ground_material: MaterialHandle::new(3, 1),
-        marker_mesh: MeshHandle::new(0, 1),
-        marker_bounds: unit,
-        marker_material: MaterialHandle::new(4, 1),
-    }
+    VisualBindings::unbound(
+        &training_dummy(DummyVariant::Single),
+        &training_dummy(DummyVariant::Group),
+    )
 }

@@ -32,19 +32,102 @@ use crate::depth::{DEPTH_CLEAR, DepthBuffer};
 use crate::device::RenderDevice;
 use crate::error::RendererError;
 use crate::material::{Material, MaterialDesc};
-use crate::mesh::{GpuMesh, MeshData, VertexStream};
-use crate::mesh_pipeline::{InstanceTransform, InstancedMeshPipeline, MeshPipeline};
+use crate::mesh::{GpuMesh, MeshData, SkinnedMeshData, VertexStream};
+use crate::mesh_pipeline::{
+    InstanceTransform, InstancedMeshPipeline, MeshPipeline, SkinnedMeshPipeline,
+};
 use crate::pipeline::{ScenePipeline, TRIANGLE_VERTICES, Vertex};
 use crate::scene::{
-    FrameConstants, ObjectConstants, ROOT_FRAME_CBV, ROOT_MATERIAL_CBV, ROOT_OBJECT_CBV,
+    FrameConstants, ObjectConstants, ROOT_FRAME_CBV, ROOT_MATERIAL_CBV, ROOT_MATERIAL_TABLE,
+    ROOT_OBJECT_CBV, ROOT_SKIN_CBV,
 };
 use crate::swapchain::BACK_BUFFER_FORMAT;
 use crate::upload::UploadRing;
 use engine_render_data::Camera;
-use engine_render_data::Lighting;
+use engine_render_data::{Lighting, MAX_PALETTE_BONES};
 
 /// Bytes per pixel of [`BACK_BUFFER_FORMAT`].
 pub const BYTES_PER_PIXEL: usize = 4;
+
+/// The 1×1 white base colour map both scene paths bind, and the heap holding its view.
+///
+/// Every mesh material samples a base colour map, and an unbound descriptor table is not a
+/// validation error — it is a sample from whatever the heap happens to contain, which is why
+/// forgetting it here showed up as the two paths disagreeing about a thousand pixels rather
+/// than as a failure.
+///
+/// The heap and texture are returned so the caller can keep them alive until the submission
+/// completes; the handle is what gets bound.
+struct WhiteMap {
+    heap: crate::descriptor::GpuDescriptorHeap,
+    /// Held, not read: the descriptor points into it, so dropping it would leave a
+    /// shader-visible SRV addressing released memory.
+    #[allow(dead_code, reason = "keeps the texture the descriptor points at alive")]
+    texture: crate::resource::GpuTexture,
+    table: windows::Win32::Graphics::Direct3D12::D3D12_GPU_DESCRIPTOR_HANDLE,
+}
+
+/// Creates the shared white map for one offscreen submission.
+fn white_map(context: &RenderDevice) -> Result<WhiteMap, RendererError> {
+    use crate::descriptor::GpuDescriptorHeap;
+    use crate::resource::{GpuTexture, TrackedResource};
+    use crate::upload::StagingUploader;
+    use windows::Win32::Graphics::Direct3D12::{
+        D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_SHADER_RESOURCE_VIEW_DESC,
+        D3D12_SHADER_RESOURCE_VIEW_DESC_0, D3D12_SRV_DIMENSION_TEXTURE2D, D3D12_TEX2D_SRV,
+    };
+    use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
+
+    let texture = GpuTexture::new(
+        context,
+        1,
+        1,
+        DXGI_FORMAT_R8G8B8A8_UNORM_SRGB,
+        D3D12_RESOURCE_STATE_COPY_DEST,
+    )?;
+    let mut uploader = StagingUploader::new(context)?;
+    uploader.queue_texture(
+        context,
+        &texture,
+        &[255, 255, 255, 255],
+        D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+    )?;
+    uploader.flush(context)?;
+
+    let mut heap = GpuDescriptorHeap::new(context, 1, 0, 1)?;
+    let descriptor = heap.allocate_persistent()?;
+    let desc = D3D12_SHADER_RESOURCE_VIEW_DESC {
+        Format: DXGI_FORMAT_R8G8B8A8_UNORM_SRGB,
+        ViewDimension: D3D12_SRV_DIMENSION_TEXTURE2D,
+        Shader4ComponentMapping: 0x1688,
+        Anonymous: D3D12_SHADER_RESOURCE_VIEW_DESC_0 {
+            Texture2D: D3D12_TEX2D_SRV {
+                MostDetailedMip: 0,
+                MipLevels: 1,
+                PlaneSlice: 0,
+                ResourceMinLODClamp: 0.0,
+            },
+        },
+    };
+    // SAFETY: FFI call. The texture outlives the submission, and the CPU handle addresses a
+    // slot this heap just allocated.
+    unsafe {
+        context.device().CreateShaderResourceView(
+            Some(TrackedResource::resource(&texture)),
+            Some(&desc),
+            descriptor.cpu,
+        );
+    }
+
+    let table = descriptor.gpu.ok_or_else(|| RendererError::InvalidConfig {
+        reason: "the offscreen white map descriptor is not shader visible".to_owned(),
+    })?;
+    Ok(WhiteMap {
+        heap,
+        texture,
+        table,
+    })
+}
 
 /// A rendered image read back to system memory.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -134,6 +217,110 @@ pub struct SceneObject<'a> {
     pub transform: Transform,
 }
 
+/// One skinned object in an offscreen scene.
+pub struct SkinnedObject<'a> {
+    /// Its geometry, in bind pose.
+    pub mesh: &'a SkinnedMeshData,
+    /// Its surface.
+    pub material: MaterialDesc,
+    /// Where the character is in the world.
+    pub transform: Transform,
+    /// The bone palette its vertices index. Shorter than the shader's array is fine — the
+    /// remainder is filled with the identity.
+    pub palette: &'a [engine_core::math::Mat4],
+}
+
+/// Renders skinned geometry offscreen and reads the result back.
+///
+/// The offscreen equivalent of the renderer's skinned pass: same pipeline state, same root
+/// signature, same padded palette in a constant buffer. It exists so "the character is
+/// actually drawn, and posing it actually moves it" can be *asserted* rather than looked at
+/// — which is the only kind of visual verification that survives into a regression suite.
+///
+/// # Errors
+///
+/// Returns [`RendererError`] if any D3D12 call fails, a material is invalid, or a palette is
+/// longer than the shader's array.
+pub fn render_skinned_scene(
+    width: u32,
+    height: u32,
+    clear_color: [f32; 4],
+    objects: &[SkinnedObject<'_>],
+    camera: &Camera,
+    lighting: Lighting,
+) -> Result<CapturedImage, RendererError> {
+    render_with(width, height, clear_color, |context, list, _| {
+        let pipeline = SkinnedMeshPipeline::new(context.device())?;
+        // Room for one palette and one set of constants per object.
+        let mut ring = UploadRing::new(context, 1 << 20, 1)?;
+        ring.begin_frame(0);
+
+        let mut meshes = Vec::with_capacity(objects.len());
+        let mut materials = Vec::with_capacity(objects.len());
+        for object in objects {
+            meshes.push(GpuMesh::upload_skinned(context, object.mesh)?);
+            materials.push(Material::new(context, object.material)?);
+        }
+
+        let white = white_map(context)?;
+        let frame = FrameConstants::new(camera.view_projection(), camera.position(), lighting);
+        let frame_allocation = ring.write_constants(0, &frame)?;
+
+        // SAFETY: FFI calls recording into the open list. Every referenced object is
+        // returned below and kept alive until the submission completes.
+        unsafe {
+            list.SetGraphicsRootSignature(pipeline.root_signature());
+            list.SetPipelineState(pipeline.pipeline_state());
+            list.SetDescriptorHeaps(&[Some(white.heap.heap().clone())]);
+            list.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+            list.SetGraphicsRootConstantBufferView(ROOT_FRAME_CBV, frame_allocation.gpu_address());
+            list.SetGraphicsRootDescriptorTable(ROOT_MATERIAL_TABLE, white.table);
+        }
+
+        let mut palette = Vec::with_capacity(MAX_PALETTE_BONES);
+        for (index, object) in objects.iter().enumerate() {
+            if object.palette.len() > MAX_PALETTE_BONES {
+                return Err(RendererError::InvalidConfig {
+                    reason: format!(
+                        "a palette of {} bones does not fit the shader's array of {}",
+                        object.palette.len(),
+                        MAX_PALETTE_BONES
+                    ),
+                });
+            }
+            palette.clear();
+            palette.extend(
+                object
+                    .palette
+                    .iter()
+                    .map(engine_core::math::Mat4::to_cols_array),
+            );
+            palette.resize(
+                MAX_PALETTE_BONES,
+                engine_core::math::Mat4::IDENTITY.to_cols_array(),
+            );
+            let skin = ring.write(0, &palette, crate::upload::CONSTANT_BUFFER_ALIGNMENT)?;
+
+            let constants = ObjectConstants::new(object.transform.matrix());
+            let allocation = ring.write_constants(0, &constants)?;
+            // SAFETY: as above.
+            unsafe {
+                list.SetGraphicsRootConstantBufferView(
+                    ROOT_MATERIAL_CBV,
+                    materials[index].gpu_address(),
+                );
+                list.SetGraphicsRootConstantBufferView(ROOT_OBJECT_CBV, allocation.gpu_address());
+                list.SetGraphicsRootConstantBufferView(ROOT_SKIN_CBV, skin.gpu_address());
+                list.IASetVertexBuffers(0, Some(&[*meshes[index].vertex_view()]));
+                list.IASetIndexBuffer(Some(meshes[index].index_view()));
+                list.DrawIndexedInstanced(meshes[index].index_count(), 1, 0, 0, 0);
+            }
+        }
+
+        Ok(Box::new((pipeline, ring, meshes, materials, white)) as Box<dyn std::any::Any>)
+    })
+}
+
 /// Renders a set of transformed, shaded meshes through a camera and reads the result back.
 ///
 /// This is the offscreen equivalent of [`crate::Renderer::render_world`] — same pipeline,
@@ -164,6 +351,7 @@ pub fn render_scene(
             materials.push(Material::new(context, object.material)?);
         }
 
+        let white = white_map(context)?;
         let frame = FrameConstants::new(camera.view_projection(), camera.position(), lighting);
         let frame_allocation = ring.write_constants(0, &frame)?;
 
@@ -172,8 +360,10 @@ pub fn render_scene(
         unsafe {
             list.SetGraphicsRootSignature(pipeline.root_signature());
             list.SetPipelineState(pipeline.pipeline_state());
+            list.SetDescriptorHeaps(&[Some(white.heap.heap().clone())]);
             list.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
             list.SetGraphicsRootConstantBufferView(ROOT_FRAME_CBV, frame_allocation.gpu_address());
+            list.SetGraphicsRootDescriptorTable(ROOT_MATERIAL_TABLE, white.table);
         }
 
         for (index, object) in objects.iter().enumerate() {
@@ -192,7 +382,7 @@ pub fn render_scene(
             }
         }
 
-        Ok(Box::new((pipeline, ring, meshes, materials)) as Box<dyn std::any::Any>)
+        Ok(Box::new((pipeline, ring, meshes, materials, white)) as Box<dyn std::any::Any>)
     })
 }
 
@@ -349,6 +539,7 @@ pub fn render_scene_instanced(
             materials.push(Material::new(context, object.material)?);
         }
 
+        let white = white_map(context)?;
         let frame = FrameConstants::new(camera.view_projection(), camera.position(), lighting);
         let frame_allocation = ring.write_constants(0, &frame)?;
 
@@ -357,8 +548,10 @@ pub fn render_scene_instanced(
         unsafe {
             list.SetGraphicsRootSignature(pipeline.root_signature());
             list.SetPipelineState(pipeline.pipeline_state());
+            list.SetDescriptorHeaps(&[Some(white.heap.heap().clone())]);
             list.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
             list.SetGraphicsRootConstantBufferView(ROOT_FRAME_CBV, frame_allocation.gpu_address());
+            list.SetGraphicsRootDescriptorTable(ROOT_MATERIAL_TABLE, white.table);
         }
 
         // Consecutive objects sharing a mesh and a material form one batch, which is what
@@ -410,7 +603,7 @@ pub fn render_scene_instanced(
             start = end;
         }
 
-        Ok(Box::new((pipeline, ring, meshes, materials)) as Box<dyn std::any::Any>)
+        Ok(Box::new((pipeline, ring, meshes, materials, white)) as Box<dyn std::any::Any>)
     })
 }
 

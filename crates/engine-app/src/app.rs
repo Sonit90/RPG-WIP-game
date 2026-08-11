@@ -21,6 +21,7 @@
 
 use std::time::{Duration, Instant};
 
+use engine_assets::procedural::{DummyVariant, fire_mage, fire_mage_character, training_dummy};
 use engine_core::application::{Application, EngineContext};
 use engine_core::config::EngineSettings;
 use engine_core::error::EngineError;
@@ -34,12 +35,13 @@ use engine_game::input_map::Bindings;
 use engine_game::sim::Simulation;
 use engine_platform::{Window, WindowConfig, WindowEvent};
 use engine_presentation::camera::ThirdPersonCamera;
+use engine_presentation::character::CharacterVisual;
 #[cfg(feature = "debug-overlay")]
 use engine_presentation::collision_debug::{CollisionDebug, DebugBindings};
 #[cfg(feature = "debug-overlay")]
 use engine_presentation::collision_hud;
 use engine_presentation::damage_numbers::FloatingNumbers;
-use engine_presentation::extract::{RenderExtractor, VisualBindings};
+use engine_presentation::extract::{RenderExtractor, ViewParams, VisualBindings};
 use engine_presentation::game_ui::GameUi;
 #[cfg(feature = "debug-overlay")]
 use engine_presentation::hud::{self, HudModel};
@@ -67,6 +69,13 @@ const CLEAR_COLOR: [f32; 4] = [0.07, 0.09, 0.13, 1.0];
 /// Larger than the arena the character is confined to, so the world does not end at the
 /// wall the player runs into.
 const GROUND_HALF_EXTENT: f32 = 120.0;
+
+/// How aggressively levels of detail are dropped.
+///
+/// 1.0 is the thresholds the models were authored with. A quality setting would move this;
+/// nothing exposes it yet, and it is a named constant rather than a literal at the call site
+/// so the knob is findable when something does.
+const LOD_BIAS: f32 = 1.0;
 
 /// Function key that toggles the developer overlay.
 #[cfg(feature = "debug-overlay")]
@@ -240,12 +249,21 @@ impl App {
                 arena::training_arena(&ArenaConfig::with_group(args.dummies)),
                 None,
             ),
+            // The character test bed is the arena with the fight taken out: one dummy to
+            // judge scale against, and no group to clutter the view. It is deliberately the
+            // same simulation rather than a bespoke one, so the character being inspected is
+            // the character the game runs.
+            Scene::Character => (arena::training_arena(&ArenaConfig::with_group(0)), None),
             Scene::Collision => {
                 let (simulation, scene) = demo::collision_demo();
                 (simulation, Some(scene))
             }
         };
         let mut extractor = RenderExtractor::new(visuals, GROUND_HALF_EXTENT * 2.0);
+        // The player's model, skeleton and clips. Every scene gets one, including the
+        // collision course — a character test needs a character, and a capsule that walks is
+        // easier to judge when it has legs.
+        extractor.set_player_visual(build_player_visual(&mut renderer)?);
         if args.scene.is_collision() {
             // The demo course brings its own floor: a slab whose top face is at y = 0. The
             // extractor's floor plane is at y = 0 too, and two coplanar surfaces are a
@@ -842,6 +860,36 @@ impl App {
     /// for its edge, both scaled to the ability's own radius so what is shown is exactly
     /// what will be hit. The ring breathes slowly, which is what makes it read as a live
     /// indicator rather than as a decal somebody left on the floor.
+    /// Character test scene only: keys 1 to 6 hold the character in one animation.
+    ///
+    /// The point of the scene. Judging a run cycle by running means chasing the character
+    /// with the camera while it covers ground; holding it in the run animation on the spot
+    /// means looking at the thing being judged. `0` releases the override and the character
+    /// goes back to reflecting gameplay, which is what proves the override is an override.
+    fn update_animation_override(&mut self, ctx: &mut EngineContext) {
+        use engine_assets::AnimationSlot;
+
+        const BINDINGS: [(KeyCode, Option<AnimationSlot>); 8] = [
+            (KeyCode::Digit1, Some(AnimationSlot::Idle)),
+            (KeyCode::Digit2, Some(AnimationSlot::Walk)),
+            (KeyCode::Digit3, Some(AnimationSlot::Run)),
+            (KeyCode::Digit4, Some(AnimationSlot::Jump)),
+            (KeyCode::Digit5, Some(AnimationSlot::Cast)),
+            (KeyCode::Digit6, Some(AnimationSlot::CastHeavy)),
+            (KeyCode::Digit7, Some(AnimationSlot::Fall)),
+            (KeyCode::Digit0, None),
+        ];
+
+        let Some(visual) = self.extractor.player_visual_mut() else {
+            return;
+        };
+        for (key, slot) in BINDINGS {
+            if ctx.input().was_key_pressed(key) {
+                visual.force_slot(slot);
+            }
+        }
+    }
+
     fn update_targeting_decal(&mut self) {
         let Some(target) = self.targeting.active() else {
             if let Some(decal) = self.targeting_decal.take() {
@@ -959,12 +1007,10 @@ impl App {
             // Edge-corrected with the body's own radius, exactly as the executor collects
             // its hits: the ring on screen and the enemies the ability catches have to be
             // the same set, or the interface is lying while the player aims.
-            if target.shape.contains_body(
-                target.anchor,
-                target.facing,
-                position,
-                world.radius(id),
-            ) {
+            if target
+                .shape
+                .contains_body(target.anchor, target.facing, position, world.radius(id))
+            {
                 self.affected.push(id);
             }
         }
@@ -1051,7 +1097,7 @@ impl App {
         log::info!(
             "CPU mean {:.3} ms ({:.0} FPS) p99 {:.3} | GPU {} | sim {:.3} ms ({} ticks) | \
              extract {:.3} ms | cull {:.3} ms | ui {:.3} ms ({} quads, {} cmds) | visible {} | \
-             draws {}",
+             draws {} ({} skinned) | tris {}",
             summary.cpu.mean_ms,
             summary.cpu.mean_fps(),
             summary.cpu.p99_ms,
@@ -1068,6 +1114,8 @@ impl App {
             ui.commands,
             cull.visible,
             self.renderer.draw_calls_last_frame(),
+            self.renderer.skinned_draws_last_frame(),
+            self.renderer.triangles_last_frame(),
         );
         log::info!(
             "  combat: {:.0} damage | {:.0} DPS over {:.1} s | {} deaths | {} events",
@@ -1236,6 +1284,9 @@ impl Application for App {
                 self.update_firemage_ui(ctx);
             }
             self.update_targeting_decal();
+            if self.scene.is_character() {
+                self.update_animation_override(ctx);
+            }
 
             if !self.targeting.is_active() && !self.talent_menu.is_open() {
                 self.apply_mouse_look(ctx);
@@ -1291,6 +1342,15 @@ impl Application for App {
                 })
             });
             self.numbers.retire(time);
+            // What the extractor needs that the simulation does not have: where the camera
+            // is, for level-of-detail selection, and how much *real* time passed, for
+            // animation. Real rather than simulated, so a character animates at the frame
+            // rate while the simulation keeps its fixed tick.
+            self.extractor.set_view(ViewParams {
+                camera_position: self.camera.position(),
+                delta_seconds: ctx.time().real_delta().as_secs_f32(),
+                lod_bias: LOD_BIAS,
+            });
             self.extractor.extract(&self.simulation);
             // After extraction, because it spawns into the same `RenderWorld` and would
             // otherwise be drawing last frame's collision state beside this frame's
@@ -1392,13 +1452,7 @@ fn upload_visuals(renderer: &mut Renderer) -> Result<VisualBindings, EngineError
     let cube_mesh: MeshHandle = renderer.create_mesh(&unit_cube)?;
     let ground_mesh: MeshHandle = renderer.create_mesh(&ground)?;
 
-    let player_material: MaterialHandle =
-        renderer.create_material(MaterialDesc::colored(0.30, 0.62, 0.90).with_roughness(0.45))?;
-    let dummy_material =
-        renderer.create_material(MaterialDesc::colored(0.86, 0.34, 0.26).with_roughness(0.60))?;
-    let dead_material =
-        renderer.create_material(MaterialDesc::colored(0.28, 0.24, 0.22).with_roughness(0.90))?;
-    let ground_material =
+    let ground_material: MaterialHandle =
         renderer.create_material(MaterialDesc::colored(0.16, 0.20, 0.17).with_roughness(0.95))?;
     let marker_material = renderer.create_material(
         MaterialDesc::colored(0.98, 0.86, 0.25)
@@ -1406,14 +1460,15 @@ fn upload_visuals(renderer: &mut Renderer) -> Result<VisualBindings, EngineError
             .with_emissive(Vec3::new(0.5, 0.42, 0.05)),
     )?;
 
+    // The two dummy models. `create_model` validates before it uploads, so a malformed
+    // model fails here with the name of the model and the place inside it rather than
+    // drawing something wrong.
+    let dummy = renderer.create_model(&training_dummy(DummyVariant::Single))?;
+    let dummy_group = renderer.create_model(&training_dummy(DummyVariant::Group))?;
+
     Ok(VisualBindings {
-        player_mesh: cube_mesh,
-        player_bounds: cube_bounds,
-        player_material,
-        dummy_mesh: cube_mesh,
-        dummy_bounds: cube_bounds,
-        dummy_material,
-        dead_material,
+        dummy,
+        dummy_group,
         ground_mesh,
         ground_bounds,
         ground_material,
@@ -1421,6 +1476,21 @@ fn upload_visuals(renderer: &mut Renderer) -> Result<VisualBindings, EngineError
         marker_bounds: cube_bounds,
         marker_material,
     })
+}
+
+/// Uploads the FireMage and builds the player's visual controller.
+///
+/// **This is the whole of "which character the player is", and it is four lines.** The model
+/// comes from a function today and will come from a `.glb` tomorrow; the definition says
+/// which clips fill which roles; the controller joins them. Gameplay is not involved, and
+/// adding a second playable character means calling this with a different pair.
+fn build_player_visual(renderer: &mut Renderer) -> Result<CharacterVisual, EngineError> {
+    let model = fire_mage()
+        .map_err(|error| EngineError::unsupported("build the FireMage").with_source(error))?;
+    let binding = renderer.create_model(&model)?;
+    CharacterVisual::new(fire_mage_character(), std::sync::Arc::new(model), binding).map_err(
+        |error| EngineError::unsupported("bind the FireMage's animations").with_source(error),
+    )
 }
 
 /// The two entities the ground indicator is drawn with, and which shape they were built for.

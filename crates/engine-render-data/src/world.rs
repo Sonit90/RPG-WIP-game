@@ -16,8 +16,10 @@ use engine_core::transform::Transform;
 /// comparison instead of silently addressing someone else's object.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Handle {
-    index: u32,
-    generation: u32,
+    /// `pub(crate)` rather than private so [`declare_handle`] can be invoked from another
+    /// module in this crate. Still not public: outside the crate a handle stays opaque.
+    pub(crate) index: u32,
+    pub(crate) generation: u32,
 }
 
 impl Handle {
@@ -35,6 +37,9 @@ impl Handle {
 }
 
 /// Declares a distinct handle type, so one kind cannot be passed where another belongs.
+///
+/// `pub(crate)`-exported below so `skinning.rs` can declare its own handle with the same
+/// generation semantics rather than writing a second, subtly different one.
 macro_rules! declare_handle {
     ($name:ident, $what:literal) => {
         #[doc = concat!("A handle to ", $what, ".")]
@@ -76,6 +81,8 @@ macro_rules! declare_handle {
         }
     };
 }
+
+pub(crate) use declare_handle;
 
 declare_handle!(MeshHandle, "an uploaded mesh");
 declare_handle!(MaterialHandle, "an uploaded material");
@@ -166,6 +173,9 @@ pub struct RenderWorld {
     /// Slots whose entity was despawned, most recent first.
     free_slots: Vec<u32>,
     live: usize,
+    /// This frame's skinned draws. Rebuilt every frame rather than slot-managed — see
+    /// [`crate::skinning`] for why the two kinds of drawable are stored differently.
+    skinned: crate::skinning::SkinnedDrawList,
 }
 
 /// What a caller must supply to add something drawable.
@@ -218,6 +228,7 @@ impl RenderWorld {
             generations: Vec::with_capacity(capacity),
             free_slots: Vec::new(),
             live: 0,
+            skinned: crate::skinning::SkinnedDrawList::new(),
         }
     }
 
@@ -406,8 +417,21 @@ impl RenderWorld {
         self.visible.get(slot).copied().unwrap_or(false)
     }
 
+    /// This frame's skinned draws.
+    #[must_use]
+    pub fn skinned(&self) -> &crate::skinning::SkinnedDrawList {
+        &self.skinned
+    }
+
+    /// This frame's skinned draws, for the extractor to refill.
+    #[must_use]
+    pub fn skinned_mut(&mut self) -> &mut crate::skinning::SkinnedDrawList {
+        &mut self.skinned
+    }
+
     /// Removes every entity, keeping the allocated capacity.
     pub fn clear(&mut self) {
+        self.skinned.clear();
         self.transforms.clear();
         self.meshes.clear();
         self.materials.clear();

@@ -35,6 +35,19 @@ pub const ROOT_FRAME_CBV: u32 = 0;
 pub const ROOT_MATERIAL_CBV: u32 = 1;
 /// Per-object constants, `b1` in the shader.
 pub const ROOT_OBJECT_CBV: u32 = 2;
+/// The material's base colour map, a one-descriptor table at `t0`.
+///
+/// A table rather than a root SRV: a root descriptor cannot address a texture, only a buffer.
+/// `material.rs` predicted this slot before there was anything to put in it — *"when a
+/// material gains a texture, this becomes a table into the persistent descriptor region"* —
+/// and this is that.
+pub const ROOT_MATERIAL_TABLE: u32 = 3;
+/// The bone palette, `b3` in `mesh_skinned.hlsl`.
+///
+/// Unused by the rigid pipelines, which share this root signature. An unused root parameter
+/// costs two DWORDs of the 64 available and buys one signature, one material bind path and
+/// one set of `ROOT_*` constants across all three pipelines.
+pub const ROOT_SKIN_CBV: u32 = 4;
 
 /// Shader register each root parameter binds, indexed by root parameter slot.
 ///

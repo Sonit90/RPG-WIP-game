@@ -66,6 +66,18 @@ const SHADERS: &[ShaderEntry] = &[
         constant: "MESH_INSTANCED_PS",
     },
     ShaderEntry {
+        file: "mesh_skinned.hlsl",
+        entry: "VSMain",
+        profile: "vs_6_0",
+        constant: "MESH_SKINNED_VS",
+    },
+    ShaderEntry {
+        file: "mesh_skinned.hlsl",
+        entry: "PSMain",
+        profile: "ps_6_0",
+        constant: "MESH_SKINNED_PS",
+    },
+    ShaderEntry {
         file: "ui.hlsl",
         entry: "VSMain",
         profile: "vs_6_0",

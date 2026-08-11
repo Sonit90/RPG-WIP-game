@@ -22,15 +22,18 @@ use crate::error::RendererError;
 use crate::frame::{FrameRing, SyncStats};
 use crate::gpu_timer::GpuTimer;
 use crate::material::{Material, MaterialDesc};
-use crate::mesh::{GpuMesh, MeshData, VertexStream};
-use crate::mesh_pipeline::{InstanceTransform, InstancedMeshPipeline, MeshPipeline};
+use crate::mesh::{GpuMesh, MeshData, MeshVertex, SkinnedMeshData, SkinnedVertex, VertexStream};
+use crate::mesh_pipeline::{
+    InstanceTransform, InstancedMeshPipeline, MeshPipeline, SkinnedMeshPipeline,
+};
 #[cfg(feature = "debug-overlay")]
 use crate::overlay::{OverlayBuffers, OverlayGeometry, OverlayMetrics};
 use crate::pipeline::{ScenePipeline, Vertex};
 use crate::render_list::RenderList;
 use crate::resource::DeferredReleaseQueue;
 use crate::scene::{
-    FrameConstants, ObjectConstants, ROOT_FRAME_CBV, ROOT_MATERIAL_CBV, ROOT_OBJECT_CBV,
+    FrameConstants, ObjectConstants, ROOT_FRAME_CBV, ROOT_MATERIAL_CBV, ROOT_MATERIAL_TABLE,
+    ROOT_OBJECT_CBV, ROOT_SKIN_CBV,
 };
 use crate::stress;
 use crate::swapchain::SwapChain;
@@ -39,12 +42,49 @@ use crate::ui_pipeline::{
     ROOT_UI_ATLAS_TABLE, ROOT_UI_FRAME_CBV, UiBatchStats, UiBatcher, UiFrameConstants, UiPipeline,
     UiVertex,
 };
-use crate::upload::{StagingUploader, UploadRing};
+use crate::upload::{CONSTANT_BUFFER_ALIGNMENT, StagingUploader, UploadRing};
 use crate::{AdapterInfo, RendererConfig};
 use engine_core::math::Frustum;
 use engine_core::time::{FrameStats, FrameStatsWindow};
 use engine_render_data::Camera;
-use engine_render_data::{Lighting, MaterialHandle, MeshHandle, RenderWorld};
+use engine_render_data::{
+    Lighting, MAX_PALETTE_BONES, MaterialHandle, MeshHandle, ModelBinding, ModelLodBinding,
+    ModelPart, PartGeometry, RenderWorld, SkinnedMeshHandle,
+};
+
+/// How many shader-visible SRVs the renderer's one descriptor heap holds.
+///
+/// One for the UI atlas, one per material texture. A thousand is roughly a hundred
+/// characters' worth of maps at ten each; the heap is a few tens of kilobytes and running
+/// out of it is a named error rather than corruption, so the number is generous on purpose.
+const MAX_TEXTURE_DESCRIPTORS: u32 = 1024;
+
+/// The height of a model's LOD0 geometry, in metres.
+///
+/// Measured rather than declared, so a [`ModelBinding`] can always be scaled to a gameplay
+/// height. A model with no geometry reports one metre rather than zero — the caller divides
+/// by this.
+fn measured_height(model: &engine_assets::ModelAsset) -> f32 {
+    let Some(lod) = model.lod0() else {
+        return 1.0;
+    };
+    let mut lowest = f32::MAX;
+    let mut highest = f32::MIN;
+    for position in lod
+        .submeshes
+        .iter()
+        .flat_map(|submesh| submesh.geometry.positions())
+    {
+        lowest = lowest.min(position.y);
+        highest = highest.max(position.y);
+    }
+    let height = highest - lowest;
+    if height.is_finite() && height > 1e-3 {
+        height
+    } else {
+        1.0
+    }
+}
 
 /// Frames of `Present` history kept for its distribution.
 ///
@@ -77,6 +117,53 @@ const UI_VERTEX_ALIGNMENT: usize = size_of::<UiVertex>();
 /// work visibly rather than allocating without bound inside the frame path.
 const MAX_UI_QUADS: usize = 65_536;
 
+/// A texture uploaded through [`Renderer::create_texture`].
+///
+/// A plain index. Textures are created while a scene is assembled and never released, so
+/// there is no freed slot for a stale handle to address.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct TextureHandle(u32);
+
+impl TextureHandle {
+    /// The slot this handle names.
+    #[must_use]
+    pub fn index(self) -> usize {
+        self.0 as usize
+    }
+}
+
+/// An image to upload: dimensions, colour space, and straight RGBA8 texels.
+///
+/// Borrowed rather than owned, because the caller already has the texels in an
+/// `engine_assets::TextureAsset` and copying them to hand them over would double the peak
+/// memory of a scene load for no reason.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TextureImage<'a> {
+    /// Width in texels.
+    pub width: u32,
+    /// Height in texels.
+    pub height: u32,
+    /// Whether the hardware should linearize on read.
+    ///
+    /// True for base colour, false for normal maps and packed data. Getting this backwards
+    /// is the classic washed-out or muddy import, and it has no other symptom.
+    pub srgb: bool,
+    /// Row-major RGBA8 texels.
+    pub texels: &'a [u8],
+}
+
+/// A texture and the descriptor that addresses it.
+///
+/// One struct rather than two parallel arrays, because the two have exactly the same
+/// lifetime: the descriptor points into the texture, so releasing either alone is the bug.
+struct UploadedTexture {
+    /// Held, not read: the descriptor below points into this texture, so dropping it would
+    /// leave a shader-visible SRV addressing released memory. Ownership *is* its purpose.
+    #[allow(dead_code, reason = "keeps the texture the descriptor points at alive")]
+    texture: crate::resource::GpuTexture,
+    descriptor: crate::descriptor::DescriptorHandle,
+}
+
 /// The batched game-UI pass.
 ///
 /// One pipeline, one texture, one draw call. Everything the player sees that is not
@@ -95,14 +182,14 @@ struct UiState {
         reason = "keeps the texture the atlas descriptor points at alive"
     )]
     atlas: crate::resource::GpuTexture,
-    /// A one-descriptor shader-visible heap holding the atlas's SRV.
+    /// Where in the renderer's shared descriptor heap the atlas's SRV lives.
     ///
-    /// Its own heap rather than a slice of a shared one: this is the only shader-visible
-    /// descriptor the renderer uses, and giving it a heap of its own means the UI pass
-    /// binds and forgets rather than coordinating an allocation with a subsystem that does
-    /// not exist yet.
-    heap: GpuDescriptorHeap,
-    /// Where in that heap the SRV lives.
+    /// It used to have a heap of its own, on the grounds that it was the renderer's only
+    /// shader-visible descriptor and the subsystem it would share with did not exist. Phase 5
+    /// is that subsystem: materials now carry base colour maps, and only one CBV/SRV/UAV heap
+    /// can be bound at a time. Two heaps would mean a `SetDescriptorHeaps` between the mesh
+    /// pass and the UI pass on every frame, which drivers document as expensive; one heap
+    /// means it is bound once, in `begin_recording`, and never changed.
     atlas_descriptor: crate::descriptor::DescriptorHandle,
     /// This frame's list, replaced by the application each frame.
     list: engine_render_data::UiDrawList,
@@ -176,10 +263,39 @@ pub struct Renderer {
     mesh_pipeline_wireframe: MeshPipeline,
     /// Whether `render_world` draws through the wireframe pipeline.
     wireframe: bool,
+    /// Root signature and pipeline state for skinned geometry.
+    skinned_pipeline: SkinnedMeshPipeline,
+    /// The same, with wireframe fill.
+    skinned_pipeline_wireframe: SkinnedMeshPipeline,
     /// Meshes created through [`Renderer::create_mesh`], indexed by handle.
     meshes: Vec<GpuMesh>,
+    /// Skinned meshes created through [`Renderer::create_skinned_mesh`], indexed by handle.
+    ///
+    /// A second table rather than a flag on `meshes`: the two are read by different pipeline
+    /// states with different input layouts, and a handle that could name either would put
+    /// the branch in the recording loop.
+    skinned_meshes: Vec<GpuMesh>,
+    /// Textures created through [`Renderer::create_texture`], indexed by handle.
+    ///
+    /// Held for ownership: each one's SRV lives in [`Renderer::descriptors`] and would
+    /// address a released resource if the texture were dropped.
+    textures: Vec<UploadedTexture>,
+    /// The shader-visible CBV/SRV/UAV heap every SRV lives in — material maps and the UI
+    /// atlas alike. Bound once per frame in `begin_recording`.
+    descriptors: GpuDescriptorHeap,
+    /// The 1×1 opaque white texture an untextured material samples.
+    ///
+    /// One texture fetch that returns 1, instead of a second pipeline state, a second pair
+    /// of shaders and the branch that would choose between them.
+    white_texture: TextureHandle,
     /// Materials created through [`Renderer::create_material`], indexed by handle.
     materials: Vec<Material>,
+    /// Which texture each material samples, parallel to [`Renderer::materials`].
+    ///
+    /// Parallel rather than a field on `Material`: a material's constants are a device
+    /// buffer it owns, and its texture is a descriptor the renderer owns. Keeping them apart
+    /// is what let the texture path be added without changing `Material`'s upload at all.
+    material_textures: Vec<TextureHandle>,
     /// Frustum culling: the visibility policy and what the last pass counted.
     culler: Culler,
     /// This frame's render list — what culling selected, in the compact form recording
@@ -214,6 +330,16 @@ pub struct Renderer {
     instancing: bool,
     /// Per-batch instance data, staged here before the memcpy into the upload ring.
     instance_scratch: Vec<InstanceTransform>,
+    /// This frame's visible skinned draws, filtered out of the world by `collect_skinned`.
+    ///
+    /// Kept across frames so it stops allocating once the scene reaches its high-water mark,
+    /// exactly like the render list.
+    skinned: engine_render_data::SkinnedDrawList,
+    /// One character's bone palette, padded to the shader's array, staged here before the
+    /// memcpy into the upload ring.
+    palette_scratch: Vec<[f32; 16]>,
+    /// Skinned draws recorded by the most recent frame.
+    skinned_draws_last_frame: u32,
     /// Milliseconds the most recent `Present` call took.
     last_present_ms: f64,
     /// Milliseconds the most recent post-present fence signal took.
@@ -306,7 +432,14 @@ impl Renderer {
         stress::build_grid(1, &mut scene_scratch);
         let scene = VertexStream::upload(&context, &scene_scratch)?;
 
-        let ui = Self::create_ui_state(&context)?;
+        let skinned_pipeline = SkinnedMeshPipeline::new(context.device())?;
+        let skinned_pipeline_wireframe = SkinnedMeshPipeline::wireframe(context.device())?;
+
+        // One heap for every shader-visible SRV in the renderer: the UI atlas and one per
+        // material texture. Bound once per frame; never switched.
+        let mut descriptors =
+            GpuDescriptorHeap::new(&context, MAX_TEXTURE_DESCRIPTORS, 0, frames_in_flight)?;
+        let ui = Self::create_ui_state(&context, &mut descriptors)?;
 
         #[cfg(feature = "debug-overlay")]
         let overlay = OverlayState {
@@ -333,8 +466,17 @@ impl Renderer {
             mesh_pipeline,
             mesh_pipeline_wireframe,
             wireframe: false,
+            skinned_pipeline,
+            skinned_pipeline_wireframe,
             meshes: Vec::new(),
+            skinned_meshes: Vec::new(),
+            textures: Vec::new(),
+            descriptors,
+            // Replaced immediately below, once there is a `self` to upload through. The
+            // placeholder names slot 0, which is exactly what the white texture becomes.
+            white_texture: TextureHandle(0),
             materials: Vec::new(),
+            material_textures: Vec::new(),
             culler: Culler::new(),
             visible: RenderList::new(),
             culling_enabled: true,
@@ -346,6 +488,9 @@ impl Renderer {
             instanced_pipeline_wireframe,
             instancing: true,
             instance_scratch: Vec::new(),
+            skinned: engine_render_data::SkinnedDrawList::new(),
+            palette_scratch: Vec::new(),
+            skinned_draws_last_frame: 0,
             last_present_ms: 0.0,
             last_fence_signal_ms: 0.0,
             present_window: FrameStatsWindow::new(PRESENT_WINDOW),
@@ -363,6 +508,20 @@ impl Renderer {
             recorded_back_buffer: 0,
             context,
         };
+        let mut renderer = renderer;
+        // The first texture, so an untextured material has something to sample. Created here
+        // rather than in the struct literal because uploading needs a `self`.
+        renderer.white_texture = renderer.create_texture(&TextureImage {
+            width: 1,
+            height: 1,
+            srgb: true,
+            texels: &[255, 255, 255, 255],
+        })?;
+        debug_assert_eq!(
+            renderer.white_texture.index(),
+            0,
+            "the white texture is the placeholder the struct literal assumed"
+        );
         renderer.log_startup_info();
         Ok(renderer)
     }
@@ -777,6 +936,34 @@ impl Renderer {
         self.visible
             .group_by_material_and_mesh(self.materials.len(), self.meshes.len());
         self.last_group_ms = grouping.elapsed().as_secs_f64() * 1e3;
+
+        self.collect_skinned(world, &frustum);
+    }
+
+    /// Copies the world's skinned draws into the renderer, keeping the visible ones.
+    ///
+    /// Done here rather than during recording for the same reason the render list is: this
+    /// is CPU-only visibility work, and recording should only have to record. The palette is
+    /// copied wholesale — it is a few kilobytes and shared between an instance's submeshes,
+    /// so filtering it would cost more index arithmetic than it saves memcpy.
+    ///
+    /// Culled with the same frustum the rigid entities use, so a character and the ground it
+    /// stands on cannot disagree about whether they are on screen.
+    fn collect_skinned(&mut self, world: &RenderWorld, frustum: &Frustum) {
+        self.skinned.clear();
+        let source = world.skinned();
+        if source.is_empty() {
+            return;
+        }
+        for instance in source.instances() {
+            if self.culling_enabled && !frustum.intersects_sphere(&instance.bounds) {
+                continue;
+            }
+            self.skinned.push(*instance);
+        }
+        // The palette is only meaningful with the ranges the instances name, so it is taken
+        // as one block rather than compacted alongside the filter.
+        self.skinned.set_palette(source.palette());
     }
 
     /// Milliseconds the most recent grouping pass took.
@@ -849,8 +1036,19 @@ impl Renderer {
                 });
             };
 
+            let Some(table) = self.material_table(batch.material) else {
+                return Err(RendererError::InvalidConfig {
+                    reason: format!(
+                        "material {} has no shader-visible base colour map",
+                        batch.material.index()
+                    ),
+                });
+            };
+
             self.commands
                 .set_root_cbv(ROOT_MATERIAL_CBV, material.gpu_address());
+            self.commands
+                .set_root_descriptor_table(ROOT_MATERIAL_TABLE, table);
             self.commands.set_vertex_buffer(0, *mesh.vertex_view());
             self.commands.set_index_buffer(*mesh.index_view());
 
@@ -868,6 +1066,7 @@ impl Renderer {
             }
         }
 
+        self.draw_skinned(slot)?;
         self.finish_recording(slot, back_buffer)
     }
 
@@ -931,8 +1130,19 @@ impl Renderer {
             }
             allocation.write(&self.instance_scratch)?;
 
+            let Some(table) = self.material_table(batch.material) else {
+                return Err(RendererError::InvalidConfig {
+                    reason: format!(
+                        "material {} has no shader-visible base colour map",
+                        batch.material.index()
+                    ),
+                });
+            };
+
             self.commands
                 .set_root_cbv(ROOT_MATERIAL_CBV, material.gpu_address());
+            self.commands
+                .set_root_descriptor_table(ROOT_MATERIAL_TABLE, table);
             self.commands.set_vertex_buffer(0, *mesh.vertex_view());
             self.commands.set_vertex_buffer(
                 1,
@@ -947,7 +1157,143 @@ impl Renderer {
                 .draw_indexed(mesh.index_count(), batch.count, 0);
         }
 
+        self.draw_skinned(slot)?;
         self.finish_recording(slot, back_buffer)
+    }
+
+    /// Records this frame's skinned characters, one draw per submesh.
+    ///
+    /// Runs after the rigid batches and before the frame is closed, so it inherits the frame
+    /// constants already bound and only has to change what differs: the pipeline state, the
+    /// palette, and the per-draw object constants.
+    ///
+    /// **One draw per submesh, no instancing.** Every instance would need its own palette,
+    /// which means a structured buffer and a second indirection in the vertex shader — real
+    /// work, worth doing when there are enough characters to pay for it. There is one, and
+    /// the hundred dummies that *do* need instancing are rigid.
+    ///
+    /// The palette is written into this frame's upload ring padded to the shader's array
+    /// size. Padding rather than writing only the bones in use, because the shader's
+    /// `cbuffer` is a fixed-size array and a root CBV shorter than the declared buffer lets
+    /// the GPU read past the allocation into whatever the ring hands out next.
+    fn draw_skinned(&mut self, slot: usize) -> Result<u32, RendererError> {
+        if self.skinned.is_empty() {
+            return Ok(0);
+        }
+
+        let pipeline = if self.wireframe {
+            &self.skinned_pipeline_wireframe
+        } else {
+            &self.skinned_pipeline
+        };
+        self.commands
+            .set_pipeline(pipeline.root_signature(), pipeline.pipeline_state());
+        self.commands
+            .set_topology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+
+        let mut drawn = 0;
+        // Consecutive submeshes of one character name the same palette range, so the upload
+        // is skipped for all but the first of them.
+        let mut bound_palette: Option<(u32, u32)> = None;
+
+        for index in 0..self.skinned.len() {
+            let Some(instance) = self.skinned.instances().get(index).copied() else {
+                break;
+            };
+            let Some(mesh) = self.skinned_meshes.get(instance.mesh.index()) else {
+                return Err(RendererError::InvalidConfig {
+                    reason: format!(
+                        "a skinned draw names skinned mesh {} which does not exist",
+                        instance.mesh.index()
+                    ),
+                });
+            };
+            let index_count = mesh.index_count();
+            let vertex_view = *mesh.vertex_view();
+            let index_view = *mesh.index_view();
+
+            let Some(material) = self.materials.get(instance.material.index()) else {
+                return Err(RendererError::InvalidConfig {
+                    reason: format!(
+                        "a skinned draw names material {} which does not exist",
+                        instance.material.index()
+                    ),
+                });
+            };
+            let material_address = material.gpu_address();
+            let Some(table) = self.material_table(instance.material) else {
+                return Err(RendererError::InvalidConfig {
+                    reason: format!(
+                        "material {} has no shader-visible base colour map",
+                        instance.material.index()
+                    ),
+                });
+            };
+
+            let range = (instance.palette_start, instance.palette_len);
+            if bound_palette != Some(range) {
+                let Some(palette) = self.skinned.palette_of(index) else {
+                    return Err(RendererError::InvalidConfig {
+                        reason: format!(
+                            "a skinned draw names bones {}..{} of a {}-matrix palette",
+                            instance.palette_start,
+                            instance.palette_start + instance.palette_len,
+                            self.skinned.palette().len()
+                        ),
+                    });
+                };
+                self.palette_scratch.clear();
+                self.palette_scratch
+                    .extend(palette.iter().map(engine_core::math::Mat4::to_cols_array));
+                // The identity for the bones the character does not have. Zeroes would
+                // collapse any vertex that reached them to the origin; the identity leaves
+                // it in bind pose, which is wrong in a way that is visible and bounded.
+                self.palette_scratch.resize(
+                    MAX_PALETTE_BONES,
+                    engine_core::math::Mat4::IDENTITY.to_cols_array(),
+                );
+
+                let allocation = self.uploads.allocate(
+                    slot,
+                    MAX_PALETTE_BONES * size_of::<[f32; 16]>(),
+                    CONSTANT_BUFFER_ALIGNMENT,
+                )?;
+                allocation.write(&self.palette_scratch)?;
+                self.commands
+                    .set_root_cbv(ROOT_SKIN_CBV, allocation.gpu_address());
+                bound_palette = Some(range);
+            }
+
+            let object = ObjectConstants::styled(instance.transform.matrix(), instance.style);
+            let allocation = self.uploads.write_constants(slot, &object)?;
+
+            self.commands
+                .set_root_cbv(ROOT_MATERIAL_CBV, material_address);
+            self.commands
+                .set_root_descriptor_table(ROOT_MATERIAL_TABLE, table);
+            self.commands
+                .set_root_cbv(ROOT_OBJECT_CBV, allocation.gpu_address());
+            self.commands.set_vertex_buffer(0, vertex_view);
+            self.commands.set_index_buffer(index_view);
+            self.commands.draw_indexed(index_count, 1, 0);
+
+            drawn += 1;
+        }
+
+        // Draw and triangle counts are not accumulated here: `CommandContext` already counts
+        // every `draw_indexed` recorded through it, and a second tally would either
+        // double-count or drift.
+        self.skinned_draws_last_frame = drawn;
+        Ok(drawn)
+    }
+
+    /// Skinned submeshes drawn by the most recent frame.
+    ///
+    /// Reported separately from `draw_calls_last_frame` so the cost of the character pass is
+    /// attributable rather than folded into the arena's.
+    #[must_use]
+    pub fn skinned_draws_last_frame(&self) -> u32 {
+        self.skinned_draws_last_frame
     }
 
     /// Draws each batch as one instanced call rather than one call per object.
@@ -982,12 +1328,240 @@ impl Renderer {
         Ok(MeshHandle::new(index, 1))
     }
 
+    /// Uploads a skinned mesh and returns a handle to it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RendererError::Api`] if a D3D12 call fails.
+    pub fn create_skinned_mesh(
+        &mut self,
+        data: &SkinnedMeshData,
+    ) -> Result<SkinnedMeshHandle, RendererError> {
+        let mesh = GpuMesh::upload_skinned(&self.context, data)?;
+        let index = self.skinned_meshes.len() as u32;
+        self.skinned_meshes.push(mesh);
+        Ok(SkinnedMeshHandle::new(index, 1))
+    }
+
+    /// Uploads a texture, creates its shader resource view, and returns a handle.
+    ///
+    /// The SRV goes into the renderer's one shared descriptor heap, in the persistent region
+    /// — the heap is bound once per frame and never changed, so a material bind is a table
+    /// offset rather than a heap switch.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RendererError::InvalidConfig`] if the texel buffer does not match the
+    /// dimensions, or [`RendererError::Api`] if a D3D12 call fails.
+    pub fn create_texture(
+        &mut self,
+        image: &TextureImage<'_>,
+    ) -> Result<TextureHandle, RendererError> {
+        use windows::Win32::Graphics::Direct3D12::{
+            D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+            D3D12_SHADER_RESOURCE_VIEW_DESC, D3D12_SHADER_RESOURCE_VIEW_DESC_0,
+            D3D12_SRV_DIMENSION_TEXTURE2D, D3D12_TEX2D_SRV,
+        };
+        use windows::Win32::Graphics::Dxgi::Common::{
+            DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_R8G8B8A8_UNORM_SRGB,
+        };
+
+        let expected = image.width as usize * image.height as usize * 4;
+        if image.width == 0 || image.height == 0 || image.texels.len() != expected {
+            return Err(RendererError::InvalidConfig {
+                reason: format!(
+                    "a {}x{} RGBA texture needs {expected} bytes, got {}",
+                    image.width,
+                    image.height,
+                    image.texels.len()
+                ),
+            });
+        }
+
+        // The *view* format carries the colour space, not the resource format: the texels
+        // are the same bytes either way, and it is the read that linearizes.
+        let format = if image.srgb {
+            DXGI_FORMAT_R8G8B8A8_UNORM_SRGB
+        } else {
+            DXGI_FORMAT_R8G8B8A8_UNORM
+        };
+
+        let texture = crate::resource::GpuTexture::new(
+            &self.context,
+            image.width,
+            image.height,
+            format,
+            D3D12_RESOURCE_STATE_COPY_DEST,
+        )?;
+        let mut uploader = StagingUploader::new(&self.context)?;
+        uploader.queue_texture(
+            &self.context,
+            &texture,
+            image.texels,
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+        )?;
+        uploader.flush(&self.context)?;
+
+        let descriptor = self.descriptors.allocate_persistent()?;
+        let desc = D3D12_SHADER_RESOURCE_VIEW_DESC {
+            Format: format,
+            ViewDimension: D3D12_SRV_DIMENSION_TEXTURE2D,
+            // The default component mapping, spelled out: leaving it zero is an invalid
+            // encoding the debug layer rejects.
+            Shader4ComponentMapping: 0x1688,
+            Anonymous: D3D12_SHADER_RESOURCE_VIEW_DESC_0 {
+                Texture2D: D3D12_TEX2D_SRV {
+                    MostDetailedMip: 0,
+                    MipLevels: 1,
+                    PlaneSlice: 0,
+                    ResourceMinLODClamp: 0.0,
+                },
+            },
+        };
+        // SAFETY: FFI call. The texture outlives the renderer, and the CPU handle addresses
+        // a slot this heap just allocated.
+        unsafe {
+            self.context.device().CreateShaderResourceView(
+                Some(crate::resource::TrackedResource::resource(&texture)),
+                Some(&desc),
+                descriptor.cpu,
+            );
+        }
+
+        let index = self.textures.len() as u32;
+        self.textures.push(UploadedTexture {
+            texture,
+            descriptor,
+        });
+        Ok(TextureHandle(index))
+    }
+
+    /// Uploads an [`engine_assets::ModelAsset`] and reports what it became.
+    ///
+    /// Every level of detail's every submesh becomes one mesh and one material, and the
+    /// returned [`ModelBinding`] is the description extraction reads — which is why it is a
+    /// `engine-render-data` type rather than one of the renderer's: presentation must be able
+    /// to place a model without linking D3D12.
+    ///
+    /// The model is validated first. A model that fails is **not** uploaded, and the error
+    /// names the model and the place inside it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RendererError::InvalidConfig`] carrying the validation failure, or
+    /// [`RendererError::Api`] if a D3D12 call fails.
+    pub fn create_model(
+        &mut self,
+        model: &engine_assets::ModelAsset,
+    ) -> Result<ModelBinding, RendererError> {
+        use engine_assets::mesh::Geometry;
+
+        engine_assets::validate_model(model, &engine_assets::ValidationLimits::default()).map_err(
+            |error| RendererError::InvalidConfig {
+                reason: error.to_string(),
+            },
+        )?;
+
+        // Textures first, then materials that name them, then geometry that names materials.
+        let mut textures = Vec::with_capacity(model.textures.len());
+        for texture in &model.textures {
+            textures.push(self.create_texture(&TextureImage {
+                width: texture.width,
+                height: texture.height,
+                srgb: texture.format.is_srgb(),
+                texels: &texture.texels,
+            })?);
+        }
+
+        let mut materials = Vec::with_capacity(model.materials.len());
+        for material in &model.materials {
+            let desc = MaterialDesc {
+                base_color: material.base_color,
+                roughness: material.roughness,
+                metallic: material.metallic,
+                emissive: material.emissive,
+            };
+            let texture = material
+                .base_color_texture
+                .and_then(|index| textures.get(index).copied());
+            materials.push(self.create_material_textured(desc, texture)?);
+        }
+
+        let mut lods = Vec::with_capacity(model.lods.len());
+        for lod in &model.lods {
+            let mut parts = Vec::with_capacity(lod.submeshes.len());
+            for submesh in &lod.submeshes {
+                let geometry = match &submesh.geometry {
+                    Geometry::Static(vertices) => {
+                        let vertices = vertices
+                            .iter()
+                            .map(|vertex| {
+                                MeshVertex::new(vertex.position, vertex.normal, vertex.uv)
+                            })
+                            .collect();
+                        let data = MeshData::new(vertices, submesh.indices.clone())?;
+                        PartGeometry::Rigid(self.create_mesh(&data)?)
+                    }
+                    Geometry::Skinned(vertices) => {
+                        let vertices = vertices
+                            .iter()
+                            .map(|vertex| {
+                                SkinnedVertex::new(
+                                    vertex.position,
+                                    vertex.normal,
+                                    vertex.uv,
+                                    vertex.joints,
+                                    vertex.weights,
+                                )
+                            })
+                            .collect();
+                        let data = SkinnedMeshData::new(vertices, submesh.indices.clone())?;
+                        PartGeometry::Skinned(self.create_skinned_mesh(&data)?)
+                    }
+                };
+                let Some(material) = materials.get(submesh.material).copied() else {
+                    return Err(RendererError::InvalidConfig {
+                        reason: format!(
+                            "'{}' submesh '{}' names material {}, and validation should have \
+                             caught that",
+                            model.name, submesh.name, submesh.material
+                        ),
+                    });
+                };
+                parts.push(ModelPart {
+                    geometry,
+                    material,
+                    bounds: submesh.bounds,
+                });
+            }
+            lods.push(ModelLodBinding {
+                parts,
+                min_distance: lod.min_distance,
+                bounds: lod.bounds(),
+            });
+        }
+
+        Ok(ModelBinding {
+            lods,
+            skinned: model.is_skinned(),
+            // Measured from LOD0's own vertices, so a binding is scalable even for a model
+            // whose author never said how tall it is. A *character* uses its
+            // `CharacterDef::model_height` instead, which is the authored figure — the
+            // FireMage's staff reaches 2.22 m and the mage is 1.80, and it is the mage that
+            // has to match the capsule.
+            model_height: measured_height(model),
+        })
+    }
+
     /// Creates the UI pipeline and uploads the UI atlas.
     ///
     /// The atlas holds the font and every ability icon, and is uploaded exactly once, at
     /// renderer creation, through the same staging path meshes use. Nothing about it changes
     /// per frame.
-    fn create_ui_state(context: &RenderDevice) -> Result<UiState, RendererError> {
+    fn create_ui_state(
+        context: &RenderDevice,
+        descriptors: &mut GpuDescriptorHeap,
+    ) -> Result<UiState, RendererError> {
         use windows::Win32::Graphics::Direct3D12::{
             D3D12_RESOURCE_STATE_COPY_DEST, D3D12_SHADER_RESOURCE_VIEW_DESC,
             D3D12_SHADER_RESOURCE_VIEW_DESC_0, D3D12_SRV_DIMENSION_TEXTURE2D, D3D12_TEX2D_SRV,
@@ -1013,11 +1587,9 @@ impl Renderer {
         )?;
         uploader.flush(context)?;
 
-        // One persistent descriptor, one per-frame slot that nothing uses: the UI binds a
-        // single SRV that never changes, so the per-frame region is sized to zero rather
-        // than reserving space for a feature this pass does not have.
-        let mut heap = GpuDescriptorHeap::new(context, 1, 0, 1)?;
-        let atlas_descriptor = heap.allocate_persistent()?;
+        // One slot out of the renderer's shared heap. The UI binds a single SRV that never
+        // changes; what changed in Phase 5 is that it is no longer the only one.
+        let atlas_descriptor = descriptors.allocate_persistent()?;
 
         let desc = D3D12_SHADER_RESOURCE_VIEW_DESC {
             Format: DXGI_FORMAT_R8G8B8A8_UNORM,
@@ -1049,7 +1621,6 @@ impl Renderer {
             pipeline,
             batcher: UiBatcher::new(MAX_UI_QUADS),
             atlas,
-            heap,
             atlas_descriptor,
             list: engine_render_data::UiDrawList::with_capacity(1024, 4096),
             stats: UiBatchStats::default(),
@@ -1135,8 +1706,6 @@ impl Renderer {
         self.commands
             .set_pipeline(self.ui.pipeline.root_signature(), self.ui.pipeline.state());
         self.commands
-            .set_descriptor_heaps(&[Some(self.ui.heap.heap().clone())]);
-        self.commands
             .set_root_cbv(ROOT_UI_FRAME_CBV, constant_allocation.gpu_address());
         let Some(table) = self.ui.atlas_descriptor.gpu else {
             return Err(RendererError::InvalidConfig {
@@ -1167,10 +1736,53 @@ impl Renderer {
     /// Returns [`RendererError::InvalidConfig`] for out-of-range parameters, or
     /// [`RendererError::Api`] if a D3D12 call fails.
     pub fn create_material(&mut self, desc: MaterialDesc) -> Result<MaterialHandle, RendererError> {
+        self.create_material_textured(desc, None)
+    }
+
+    /// Uploads a material that samples `texture` for its base colour.
+    ///
+    /// `None` binds the shared 1×1 white texture, so every material takes one code path and
+    /// the shader needs no branch. The map *multiplies* the material's base colour rather
+    /// than replacing it, which is what lets one texture serve several tinted materials.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RendererError::InvalidConfig`] for out-of-range parameters or a texture
+    /// handle that names nothing, or [`RendererError::Api`] if a D3D12 call fails.
+    pub fn create_material_textured(
+        &mut self,
+        desc: MaterialDesc,
+        texture: Option<TextureHandle>,
+    ) -> Result<MaterialHandle, RendererError> {
+        let texture = texture.unwrap_or(self.white_texture);
+        if texture.index() >= self.textures.len() {
+            return Err(RendererError::InvalidConfig {
+                reason: format!(
+                    "material names texture {}, and {} exist",
+                    texture.index(),
+                    self.textures.len()
+                ),
+            });
+        }
         let material = Material::new(&self.context, desc)?;
         let index = self.materials.len() as u32;
         self.materials.push(material);
+        self.material_textures.push(texture);
         Ok(MaterialHandle::new(index, 1))
+    }
+
+    /// The descriptor table to bind for `material`'s base colour map.
+    ///
+    /// Returns `None` for a material that was never created, or whose texture's descriptor
+    /// is somehow not shader visible — both of which are recording bugs rather than content
+    /// ones, and both of which the caller turns into a named error rather than a wrong
+    /// picture.
+    fn material_table(
+        &self,
+        material: MaterialHandle,
+    ) -> Option<windows::Win32::Graphics::Direct3D12::D3D12_GPU_DESCRIPTOR_HANDLE> {
+        let texture = self.material_textures.get(material.index())?;
+        self.textures.get(texture.index())?.descriptor.gpu
     }
 
     /// What the most recent `render_world` cull pass did.
@@ -1273,6 +1885,12 @@ impl Renderer {
         // the previous frame), which is what Reset requires, and the allocator was just
         // reset by the ring after proving the GPU was done with it.
         self.commands.begin(self.frames.allocator(slot))?;
+
+        // The one shader-visible descriptor heap, bound once for the whole frame. Every pass
+        // that samples anything — the mesh passes' base colour maps, the UI atlas — reads
+        // out of it, so it is never switched mid-list.
+        self.commands
+            .set_descriptor_heaps(&[Some(self.descriptors.heap().clone())]);
 
         self.gpu_timer.begin_frame(self.commands.list(), slot);
 

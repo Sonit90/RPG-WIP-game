@@ -401,11 +401,13 @@ impl GpuTexture {
     #[must_use]
     pub fn bytes_per_texel(&self) -> Option<usize> {
         use windows::Win32::Graphics::Dxgi::Common::{
-            DXGI_FORMAT_R8_UNORM, DXGI_FORMAT_R8G8B8A8_UNORM,
+            DXGI_FORMAT_R8_UNORM, DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_R8G8B8A8_UNORM_SRGB,
         };
         match self.format {
             DXGI_FORMAT_R8_UNORM => Some(1),
-            DXGI_FORMAT_R8G8B8A8_UNORM => Some(4),
+            // sRGB is the same four bytes; the colour space is in how the *view* reads them,
+            // not in how many bytes a row occupies.
+            DXGI_FORMAT_R8G8B8A8_UNORM | DXGI_FORMAT_R8G8B8A8_UNORM_SRGB => Some(4),
             _ => None,
         }
     }

@@ -25,6 +25,8 @@
 //! tested without a device, a window or an adapter.
 
 pub mod camera;
+/// The character visual controller: gameplay state in, a posed and placed character out.
+pub mod character;
 pub mod collision_debug;
 pub mod collision_hud;
 pub mod damage_numbers;

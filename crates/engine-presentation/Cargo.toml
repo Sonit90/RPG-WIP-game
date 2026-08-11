@@ -13,6 +13,9 @@ publish.workspace = true
 # against rather than a second description of it that can drift.
 engine-collision = { workspace = true }
 engine-core = { workspace = true }
+# Models, skeletons and animation clips. Presentation is where a character's gameplay state
+# becomes an animation state, so this is the crate that owns an `AnimationPlayer`.
+engine-assets = { workspace = true }
 engine-game = { workspace = true }
 engine-render-data = { workspace = true }
 # The settings a menu shows: their bounds, their defaults and their type. The UI reads them;

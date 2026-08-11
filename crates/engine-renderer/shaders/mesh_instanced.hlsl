@@ -34,6 +34,11 @@ cbuffer Material : register(b2)
     float3 material_padding;
 };
 
+// The same base colour map and static sampler mesh.hlsl declares, at the same registers,
+// because both pipelines share one root signature.
+Texture2D base_color_map : register(t0);
+SamplerState base_color_sampler : register(s0);
+
 struct VertexInput
 {
     // Per-vertex, input slot 0 — the same MeshVertex layout mesh.hlsl consumes.
@@ -105,13 +110,15 @@ float4 PSMain(PixelInput input) : SV_TARGET
     float3 to_light = normalize(-light_direction);
     float lambert = saturate(dot(normal, to_light));
 
+    float4 albedo = base_color * base_color_map.Sample(base_color_sampler, input.uv);
+
     // The per-instance tint multiplies the authored surface rather than replacing it, so a
     // tinted dummy is still recognisably the same material.
-    float3 tinted = base_color.rgb * input.tint.rgb;
+    float3 tinted = albedo.rgb * input.tint.rgb;
     float3 diffuse = tinted * light_color * (light_intensity * lambert);
     float3 ambient = tinted * ambient_color * ambient_intensity;
     // The instance's emissive is added to the material's, so a flash brightens a surface
     // that already glows rather than overriding it.
     float3 glow = emissive + tinted * input.emissive_scale;
-    return float4(diffuse + ambient + glow, base_color.a * input.tint.a);
+    return float4(diffuse + ambient + glow, albedo.a * input.tint.a);
 }

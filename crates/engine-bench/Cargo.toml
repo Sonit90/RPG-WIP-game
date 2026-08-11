@@ -48,6 +48,7 @@ path = "src/collision_bench.rs"
 
 [dependencies]
 engine-collision = { workspace = true }
+engine-assets = { workspace = true }
 engine-core = { workspace = true }
 engine-game = { workspace = true }
 engine-presentation = { workspace = true }

@@ -384,6 +384,52 @@ impl Quat {
         Self::new(-self.x, -self.y, -self.z, self.w)
     }
 
+    /// The four-component dot product.
+    ///
+    /// Its sign is what says whether two rotations are on the same side of the hypersphere.
+    /// `q` and `-q` are the same rotation, so an interpolator that ignores the sign takes
+    /// the long way round for half of all input pairs — which on a character looks like a
+    /// bone snapping the wrong way through the body.
+    #[must_use]
+    pub fn dot(self, other: Self) -> f32 {
+        self.x * other.x + self.y * other.y + self.z * other.z + self.w * other.w
+    }
+
+    /// The same rotation with every component negated.
+    #[must_use]
+    pub fn negated(self) -> Self {
+        Self::new(-self.x, -self.y, -self.z, -self.w)
+    }
+
+    /// Interpolates towards `other` along the shortest arc.
+    ///
+    /// Normalized linear interpolation, not a true spherical one: `nlerp` is a lerp plus a
+    /// normalize, it is commutative and torque-minimal like `slerp`, and it differs only in
+    /// how evenly it distributes angle across `t`. At the sub-frame steps an animation
+    /// player takes between two keys the difference is invisible, and this costs a
+    /// reciprocal square root instead of two trigonometric calls per bone per frame.
+    ///
+    /// `t` outside `0..=1` is clamped: an animation sampler that ran past the end of a track
+    /// should hold the last key rather than extrapolate a rotation nobody authored.
+    #[must_use]
+    pub fn nlerp(self, other: Self, t: f32) -> Self {
+        let t = t.clamp(0.0, 1.0);
+        // Flip when the pair is more than a quarter-turn apart in four dimensions, so the
+        // interpolation crosses the short arc.
+        let end = if self.dot(other) < 0.0 {
+            other.negated()
+        } else {
+            other
+        };
+        Self::new(
+            self.x + (end.x - self.x) * t,
+            self.y + (end.y - self.y) * t,
+            self.z + (end.z - self.z) * t,
+            self.w + (end.w - self.w) * t,
+        )
+        .normalize()
+    }
+
     /// Rotates a vector.
     #[must_use]
     pub fn rotate(self, vector: Vec3) -> Vec3 {
@@ -1156,6 +1202,56 @@ mod tests {
         assert!(vec_close(
             (yaw * pitch).rotate(point),
             yaw.rotate(pitch.rotate(point))
+        ));
+    }
+
+    #[test]
+    fn interpolating_a_rotation_stays_a_rotation_and_reaches_both_ends() {
+        let start = Quat::from_axis_angle(Vec3::Y, 0.2);
+        let end = Quat::from_axis_angle(Vec3::Y, 1.4);
+
+        assert!(vec_close(
+            start.nlerp(end, 0.0).rotate(Vec3::Z),
+            start.rotate(Vec3::Z)
+        ));
+        assert!(vec_close(
+            start.nlerp(end, 1.0).rotate(Vec3::Z),
+            end.rotate(Vec3::Z)
+        ));
+        // Unit length throughout, which is what makes the result a rotation rather than a
+        // rotation plus a scale.
+        for step in 0..=8 {
+            let blended = start.nlerp(end, step as f32 / 8.0);
+            assert!((blended.length() - 1.0).abs() < 1e-5, "{blended:?}");
+        }
+    }
+
+    #[test]
+    fn interpolation_takes_the_short_arc_even_when_the_signs_disagree() {
+        // `q` and `-q` are the same rotation. Without the sign flip, half of all pairs
+        // interpolate the long way round — which on a character looks like a limb snapping
+        // through the body rather than like a bug.
+        let start = Quat::from_axis_angle(Vec3::Y, 0.1);
+        let end = Quat::from_axis_angle(Vec3::Y, 0.3).negated();
+
+        let halfway = start.nlerp(end, 0.5).rotate(Vec3::Z);
+        let expected = Quat::from_axis_angle(Vec3::Y, 0.2).rotate(Vec3::Z);
+        assert!(vec_close(halfway, expected), "{halfway:?} vs {expected:?}");
+    }
+
+    #[test]
+    fn interpolation_clamps_rather_than_extrapolating() {
+        // A sampler that ran past the end of a track should hold the last key, not invent a
+        // rotation nobody authored.
+        let start = Quat::IDENTITY;
+        let end = Quat::from_axis_angle(Vec3::Y, 1.0);
+        assert!(vec_close(
+            start.nlerp(end, 5.0).rotate(Vec3::Z),
+            end.rotate(Vec3::Z)
+        ));
+        assert!(vec_close(
+            start.nlerp(end, -5.0).rotate(Vec3::Z),
+            start.rotate(Vec3::Z)
         ));
     }
 

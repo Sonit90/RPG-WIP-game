@@ -1,0 +1,21 @@
+[package]
+name = "engine-assets"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+engine-core.workspace = true
+log.workspace = true
+# glTF is the artist-facing interchange format. Parsed into the runtime model
+# representation at load, never touched by a frame. Default features are off because the
+# `import` feature drags in an image decoder and a filesystem walker for a job this crate
+# does itself.
+gltf = { version = "1", default-features = false, features = ["utils", "names"] }
+# The only texture container the importer accepts. See `texture.rs` for why the runtime
+# format is uncompressed RGBA and the container is only ever a delivery mechanism.
+png = "0.17"
+
+[lints]
+workspace = true

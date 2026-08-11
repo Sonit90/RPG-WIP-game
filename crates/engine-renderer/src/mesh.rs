@@ -52,6 +52,130 @@ impl MeshVertex {
     }
 }
 
+/// One vertex of a skinned mesh: a rigid vertex plus what moves it.
+///
+/// 56 bytes, `repr(C)`, and the exact memory the skinned input layout describes. The layout
+/// mirrors `engine_assets::SkinVertex` field for field, so the conversion at upload is a copy
+/// rather than a repack.
+///
+/// Joints are `R16G16B16A16_UINT` and weights are `R32G32B32A32_FLOAT`. Packing them to
+/// `R8G8B8A8_UINT` and `R8G8B8A8_UNORM` would make the vertex 40 bytes and is the obvious
+/// later optimization; at one character of a few hundred vertices there is nothing yet to
+/// measure, and `MAX_BONES` would have to come down to 256 first.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct SkinnedVertex {
+    /// Position in the mesh's bind pose, local space.
+    pub position: Vec3,
+    /// Unit normal in the bind pose.
+    pub normal: Vec3,
+    /// Texture coordinate.
+    pub uv: Vec2,
+    /// Indices into the bone palette.
+    pub joints: [u16; 4],
+    /// How much each joint contributes. Sums to one.
+    pub weights: [f32; 4],
+}
+
+impl SkinnedVertex {
+    /// Builds a skinned vertex.
+    #[must_use]
+    pub const fn new(
+        position: Vec3,
+        normal: Vec3,
+        uv: Vec2,
+        joints: [u16; 4],
+        weights: [f32; 4],
+    ) -> Self {
+        Self {
+            position,
+            normal,
+            uv,
+            joints,
+            weights,
+        }
+    }
+}
+
+/// A skinned mesh on the CPU.
+///
+/// Separate from [`MeshData`] rather than a variant of it, because the two feed different
+/// pipeline states with different input layouts, and a single type would push the branch
+/// into every consumer.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SkinnedMeshData {
+    vertices: Vec<SkinnedVertex>,
+    indices: Vec<Index>,
+    bounds: Sphere,
+}
+
+impl SkinnedMeshData {
+    /// Builds skinned mesh data, computing its bind-pose bounding sphere.
+    ///
+    /// # Errors
+    ///
+    /// The same checks as [`MeshData::new`], for the same reason: D3D12 does not
+    /// bounds-check an index buffer.
+    pub fn new(vertices: Vec<SkinnedVertex>, indices: Vec<Index>) -> Result<Self, RendererError> {
+        if vertices.is_empty() || indices.is_empty() {
+            return Err(RendererError::InvalidConfig {
+                reason: "a skinned mesh needs at least one vertex and one index".to_owned(),
+            });
+        }
+        if indices.len() % 3 != 0 {
+            return Err(RendererError::InvalidConfig {
+                reason: format!(
+                    "a triangle list needs a multiple of three indices, got {}",
+                    indices.len()
+                ),
+            });
+        }
+        if let Some(bad) = indices
+            .iter()
+            .find(|index| **index as usize >= vertices.len())
+        {
+            return Err(RendererError::InvalidConfig {
+                reason: format!("index {bad} is past the end of {} vertices", vertices.len()),
+            });
+        }
+
+        let bounds = Sphere::around(vertices.iter().map(|vertex| vertex.position));
+        Ok(Self {
+            vertices,
+            indices,
+            bounds,
+        })
+    }
+
+    /// The vertices.
+    #[must_use]
+    pub fn vertices(&self) -> &[SkinnedVertex] {
+        &self.vertices
+    }
+
+    /// The indices.
+    #[must_use]
+    pub fn indices(&self) -> &[Index] {
+        &self.indices
+    }
+
+    /// The bind-pose bounding sphere.
+    ///
+    /// **Bind pose, not animated pose.** An animated character reaches outside it — an arm
+    /// raised overhead is half a metre past the bounds the T-pose implies — so a caller that
+    /// culls with this must pad it. `engine-presentation` does, and says why.
+    #[must_use]
+    pub fn bounds(&self) -> Sphere {
+        self.bounds
+    }
+
+    /// Triangles, assuming a triangle list.
+    #[must_use]
+    pub fn triangle_count(&self) -> usize {
+        self.indices.len() / 3
+    }
+}
+
 /// The index type. 32-bit throughout.
 ///
 /// 16-bit indices halve index bandwidth and cap a mesh at 65,536 vertices. The cap is the
@@ -435,15 +559,58 @@ impl GpuMesh {
         Ok(uploaded)
     }
 
+    /// Uploads a skinned mesh and waits for the copy to finish.
+    ///
+    /// The result is an ordinary [`GpuMesh`] with a 56-byte stride: a vertex buffer is a
+    /// vertex buffer, and only the input layout the pipeline was created with decides how it
+    /// is read.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RendererError::Api`] if any D3D12 call fails.
+    pub fn upload_skinned(
+        device: &RenderDevice,
+        data: &SkinnedMeshData,
+    ) -> Result<Self, RendererError> {
+        let mut uploader = StagingUploader::new(device)?;
+        let mesh = Self::queue_typed(
+            device,
+            &mut uploader,
+            data.vertices(),
+            data.indices(),
+            data.bounds(),
+        )?;
+        uploader.flush(device)?;
+        Ok(mesh)
+    }
+
     /// Creates both buffers and queues their copies, without flushing.
     fn queue(
         device: &RenderDevice,
         uploader: &mut StagingUploader,
         data: &MeshData,
     ) -> Result<Self, RendererError> {
-        let vertices = data.vertices();
-        let indices = data.indices();
+        Self::queue_typed(
+            device,
+            uploader,
+            data.vertices(),
+            data.indices(),
+            data.bounds(),
+        )
+    }
 
+    /// The upload itself, over whichever vertex type the caller has.
+    ///
+    /// Generic rather than duplicated: the rigid and skinned paths differ in the stride
+    /// recorded in the view and in nothing else, and two copies of a buffer upload would
+    /// eventually differ in something that matters.
+    fn queue_typed<V: Copy>(
+        device: &RenderDevice,
+        uploader: &mut StagingUploader,
+        vertices: &[V],
+        indices: &[Index],
+        bounds: Sphere,
+    ) -> Result<Self, RendererError> {
         let vertex_buffer = GpuBuffer::new_default(device, std::mem::size_of_val(vertices))?;
         uploader.queue_buffer(
             device,
@@ -463,7 +630,7 @@ impl GpuMesh {
         let vertex_view = D3D12_VERTEX_BUFFER_VIEW {
             BufferLocation: vertex_buffer.gpu_address(),
             SizeInBytes: std::mem::size_of_val(vertices) as u32,
-            StrideInBytes: size_of::<MeshVertex>() as u32,
+            StrideInBytes: size_of::<V>() as u32,
         };
         let index_view = D3D12_INDEX_BUFFER_VIEW {
             BufferLocation: index_buffer.gpu_address(),
@@ -478,7 +645,7 @@ impl GpuMesh {
             index_view,
             vertex_count: vertices.len() as u32,
             index_count: indices.len() as u32,
-            bounds: data.bounds(),
+            bounds,
         })
     }
 

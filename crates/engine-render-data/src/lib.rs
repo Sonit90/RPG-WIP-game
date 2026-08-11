@@ -45,12 +45,17 @@
 pub mod camera;
 pub mod error;
 pub mod lighting;
+pub mod skinning;
 pub mod ui;
 pub mod world;
 
 pub use camera::{Camera, DEFAULT_FAR, DEFAULT_FOV_Y, DEFAULT_NEAR, Projection};
 pub use error::RenderDataError;
 pub use lighting::Lighting;
+pub use skinning::{
+    MAX_PALETTE_BONES, ModelBinding, ModelLodBinding, ModelPart, PartGeometry, SkinnedDrawList,
+    SkinnedInstance, SkinnedMeshHandle,
+};
 pub use ui::{
     MAX_ICON_PIXELS, TextAlign, TextRange, UiColor, UiCommand, UiDrawList, UiIcon, UiRect, UiScale,
 };

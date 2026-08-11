@@ -44,6 +44,16 @@ cbuffer Material : register(b2)
     float3 material_padding;
 };
 
+// The material's base colour map, bound as a one-descriptor table at root parameter 3, and
+// the sampler that reads it — a static sampler in the root signature, so there is no
+// descriptor to allocate and nothing per-material to bind for it.
+//
+// Every material has a map. An untextured one points at a shared 1x1 white texel, which
+// costs one texture fetch that returns 1 and saves a second pipeline state, a second shader
+// and the branch that would choose between them.
+Texture2D base_color_map : register(t0);
+SamplerState base_color_sampler : register(s0);
+
 struct VertexInput
 {
     float3 position : POSITION;
@@ -82,10 +92,14 @@ float4 PSMain(PixelInput input) : SV_TARGET
     float3 to_light = normalize(-light_direction);
     float lambert = saturate(dot(normal, to_light));
 
-    // Identical to mesh_instanced.hlsl, including the tint and the emissive add.
-    float3 tinted = base_color.rgb * instance_tint.rgb;
+    // Identical to mesh_instanced.hlsl, including the texture fetch, the tint and the
+    // emissive add. The map multiplies the material's constant rather than replacing it, so
+    // a colour authored on the material still tints a textured surface.
+    float4 albedo = base_color * base_color_map.Sample(base_color_sampler, input.uv);
+
+    float3 tinted = albedo.rgb * instance_tint.rgb;
     float3 diffuse = tinted * light_color * (light_intensity * lambert);
     float3 ambient = tinted * ambient_color * ambient_intensity;
     float3 glow = emissive + tinted * instance_emissive;
-    return float4(diffuse + ambient + glow, base_color.a * instance_tint.a);
+    return float4(diffuse + ambient + glow, albedo.a * instance_tint.a);
 }

@@ -568,7 +568,10 @@ mod tests {
         let caster = Vec3::ZERO;
 
         // Aimed down -Z, which is what a facing of zero means everywhere in the project.
-        assert!(shape.contains(caster, 0.0, Vec3::new(0.0, 0.0, -10.0)), "ahead");
+        assert!(
+            shape.contains(caster, 0.0, Vec3::new(0.0, 0.0, -10.0)),
+            "ahead"
+        );
         assert!(
             shape.contains(caster, 0.0, Vec3::new(4.9, 0.0, -19.0)),
             "inside the far corner of a twenty by ten strip"
@@ -636,8 +639,16 @@ mod tests {
         let centre = Vec3::new(4.0, 0.0, -7.0);
         let radius = FireAbility::Meteor.definition().radius;
         assert!(shape.contains(centre, 0.0, centre));
-        assert!(shape.contains(centre, 0.0, Vec3::new(centre.x + radius - 0.1, 0.0, centre.z)));
-        assert!(!shape.contains(centre, 0.0, Vec3::new(centre.x + radius + 0.5, 0.0, centre.z)));
+        assert!(shape.contains(
+            centre,
+            0.0,
+            Vec3::new(centre.x + radius - 0.1, 0.0, centre.z)
+        ));
+        assert!(!shape.contains(
+            centre,
+            0.0,
+            Vec3::new(centre.x + radius + 0.5, 0.0, centre.z)
+        ));
     }
 
     #[test]
@@ -715,9 +726,18 @@ mod tests {
             width: 2.0,
             length: 20.0,
         };
-        assert!(line.contains(Vec3::ZERO, 0.0, Vec3::new(0.5, 0.0, -9.0)), "ahead");
-        assert!(!line.contains(Vec3::ZERO, 0.0, Vec3::new(0.5, 0.0, 9.0)), "behind");
-        assert!(!line.contains(Vec3::ZERO, 0.0, Vec3::new(2.0, 0.0, -9.0)), "beside");
+        assert!(
+            line.contains(Vec3::ZERO, 0.0, Vec3::new(0.5, 0.0, -9.0)),
+            "ahead"
+        );
+        assert!(
+            !line.contains(Vec3::ZERO, 0.0, Vec3::new(0.5, 0.0, 9.0)),
+            "behind"
+        );
+        assert!(
+            !line.contains(Vec3::ZERO, 0.0, Vec3::new(2.0, 0.0, -9.0)),
+            "beside"
+        );
     }
 
     #[test]

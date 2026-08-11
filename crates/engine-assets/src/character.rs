@@ -1,0 +1,359 @@
+//! What makes a character a *character*: which model, how big, and which clip plays when.
+//!
+//! ```text
+//! CharacterDef ─── model: ModelId ──────────► ModelLibrary ──► ModelAsset
+//!              ├── height / scale
+//!              ├── locomotion speeds
+//!              └── clips: AnimationSlot → clip name
+//!                              │
+//!                    resolved once at load
+//!                              ▼
+//!                        ClipBindings: AnimationSlot → clip index
+//! ```
+//!
+//! # This is the file that replaces `if entity == fire_mage`
+//!
+//! Everything specific to one character lives in a value of this type. Adding a second
+//! playable character is adding a second [`CharacterDef`] and registering its model — no
+//! gameplay code, no presentation code, no renderer code changes, because nothing downstream
+//! reads a character's *name* to decide anything.
+//!
+//! # Why slots and not clip names at the call site
+//!
+//! The visual controller knows "this character is running". It must not know that this
+//! particular character's run animation is called `"run_cycle_02"`. [`AnimationSlot`] is the
+//! vocabulary the controller speaks; the mapping to a name is per character, and the mapping
+//! from a name to an index is resolved once into [`ClipBindings`] so the per-frame path is an
+//! array index.
+
+use crate::error::AssetError;
+use crate::library::ModelId;
+use crate::model::ModelAsset;
+
+/// A role an animation plays, independent of what any particular character calls it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum AnimationSlot {
+    /// Standing still on the ground.
+    Idle,
+    /// Moving slowly on the ground.
+    Walk,
+    /// Moving quickly on the ground.
+    Run,
+    /// Leaving the ground.
+    Jump,
+    /// Airborne and descending.
+    Fall,
+    /// The moment after touching down.
+    Land,
+    /// Casting an ordinary ability.
+    Cast,
+    /// Casting something big — the variation the phase asks to *prepare*, not to fill in for
+    /// all ten abilities.
+    CastHeavy,
+}
+
+impl AnimationSlot {
+    /// Every slot, in a stable order. The array [`ClipBindings`] is indexed by.
+    pub const ALL: [Self; 8] = [
+        Self::Idle,
+        Self::Walk,
+        Self::Run,
+        Self::Jump,
+        Self::Fall,
+        Self::Land,
+        Self::Cast,
+        Self::CastHeavy,
+    ];
+
+    /// This slot's position in [`AnimationSlot::ALL`].
+    #[must_use]
+    pub fn index(self) -> usize {
+        match self {
+            Self::Idle => 0,
+            Self::Walk => 1,
+            Self::Run => 2,
+            Self::Jump => 3,
+            Self::Fall => 4,
+            Self::Land => 5,
+            Self::Cast => 6,
+            Self::CastHeavy => 7,
+        }
+    }
+
+    /// Short uppercase name, for the developer overlay.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Idle => "IDLE",
+            Self::Walk => "WALK",
+            Self::Run => "RUN",
+            Self::Jump => "JUMP",
+            Self::Fall => "FALL",
+            Self::Land => "LAND",
+            Self::Cast => "CAST",
+            Self::CastHeavy => "CAST+",
+        }
+    }
+
+    /// Whether a clip in this slot should repeat.
+    ///
+    /// A property of the *role*, not of the clip: every character's idle loops and every
+    /// character's landing does not, so this is one rule rather than a flag each character
+    /// could get wrong.
+    #[must_use]
+    pub fn loops(self) -> bool {
+        matches!(self, Self::Idle | Self::Walk | Self::Run | Self::Fall)
+    }
+}
+
+/// Which clip index fills each slot, for one character.
+///
+/// An array rather than a map: eight slots, resolved once, read every frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ClipBindings {
+    clips: [Option<usize>; AnimationSlot::ALL.len()],
+}
+
+impl ClipBindings {
+    /// The clip filling `slot`, if the character has one.
+    #[must_use]
+    pub fn get(&self, slot: AnimationSlot) -> Option<usize> {
+        self.clips[slot.index()]
+    }
+
+    /// The clip filling `slot`, falling back to `fallback`'s.
+    ///
+    /// How a character that has no walk animation still moves believably: the controller
+    /// asks for `Walk` and gets `Run`, rather than the character sliding in its idle pose.
+    /// Deliberately one level deep, so a missing clip is visible rather than silently
+    /// resolving through a chain to something unrelated.
+    #[must_use]
+    pub fn get_or(&self, slot: AnimationSlot, fallback: AnimationSlot) -> Option<usize> {
+        self.get(slot).or_else(|| self.get(fallback))
+    }
+
+    /// Binds `slot` to a clip index.
+    pub fn set(&mut self, slot: AnimationSlot, clip: usize) {
+        self.clips[slot.index()] = Some(clip);
+    }
+
+    /// How many slots are filled.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.clips.iter().filter(|clip| clip.is_some()).count()
+    }
+
+    /// Whether no slot is filled.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
+/// Everything the visual layer needs to know about one kind of character.
+///
+/// Plain data. It names a model rather than holding one, so a definition can be written
+/// before the model exists and can be pointed at a different model without being rebuilt.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CharacterDef {
+    /// What this character is called, for diagnostics.
+    pub name: String,
+    /// Which model to draw.
+    pub model: ModelId,
+    /// How tall the model is authored, in metres.
+    ///
+    /// The visual layer scales by `gameplay_height / model_height`, so a model authored at
+    /// any size lines up with the capsule the simulation actually collides with. Gameplay
+    /// stays authoritative about how tall the character is; the model just has to say what
+    /// it was drawn at.
+    pub model_height: f32,
+    /// Horizontal speed, m/s, at or below which the walk animation plays.
+    pub walk_speed: f32,
+    /// Horizontal speed, m/s, at or above which the run animation plays.
+    pub run_speed: f32,
+    /// How long the landing animation holds before locomotion resumes, seconds.
+    pub land_time: f32,
+    /// Which clip fills each slot, by name.
+    pub clips: Vec<(AnimationSlot, String)>,
+}
+
+impl CharacterDef {
+    /// A definition with no clips bound.
+    #[must_use]
+    pub fn new(name: impl Into<String>, model: ModelId, model_height: f32) -> Self {
+        Self {
+            name: name.into(),
+            model,
+            model_height,
+            walk_speed: 1.6,
+            run_speed: 5.0,
+            land_time: 0.18,
+            clips: Vec::new(),
+        }
+    }
+
+    /// The same definition with `slot` bound to the clip called `clip`.
+    #[must_use]
+    pub fn with_clip(mut self, slot: AnimationSlot, clip: impl Into<String>) -> Self {
+        self.clips.push((slot, clip.into()));
+        self
+    }
+
+    /// The same definition with its locomotion speeds replaced.
+    #[must_use]
+    pub fn with_speeds(mut self, walk: f32, run: f32) -> Self {
+        self.walk_speed = walk.max(0.0);
+        self.run_speed = run.max(self.walk_speed);
+        self
+    }
+
+    /// Resolves every clip name against `model`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AssetError::Invalid`] naming the first clip the model does not contain. A
+    /// mistyped clip name would otherwise be a character that silently never runs, which is
+    /// exactly the class of bug that survives to a build.
+    pub fn resolve(&self, model: &ModelAsset) -> Result<ClipBindings, AssetError> {
+        let mut bindings = ClipBindings::default();
+        for (slot, name) in &self.clips {
+            let Some(index) = model.clip_index(name) else {
+                return Err(AssetError::invalid(
+                    &self.name,
+                    format!("{} clip", slot.as_str()),
+                    format!("the model has no animation called '{name}'"),
+                ));
+            };
+            bindings.set(*slot, index);
+        }
+        Ok(bindings)
+    }
+
+    /// The uniform scale that makes this character `height` metres tall.
+    ///
+    /// A model with no authored height is drawn at 1:1 rather than at infinity.
+    #[must_use]
+    pub fn scale_for_height(&self, height: f32) -> f32 {
+        if self.model_height > 1e-3 {
+            height / self.model_height
+        } else {
+            1.0
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::animation::AnimationClip;
+    use crate::material::MaterialAsset;
+    use crate::mesh::{Geometry, MeshVertex, SubMesh};
+    use engine_core::math::{Vec2, Vec3};
+
+    fn model_with_clips(names: &[&str]) -> ModelAsset {
+        let vertices = vec![
+            MeshVertex::new(Vec3::ZERO, Vec3::Y, Vec2::ZERO),
+            MeshVertex::new(Vec3::X, Vec3::Y, Vec2::ZERO),
+            MeshVertex::new(Vec3::Y, Vec3::Y, Vec2::ZERO),
+        ];
+        let mut model = ModelAsset::rigid(
+            "test",
+            vec![SubMesh::new(
+                "tri",
+                Geometry::Static(vertices),
+                vec![0, 1, 2],
+                0,
+            )],
+            vec![MaterialAsset::default()],
+            vec![],
+        );
+        model.clips = names
+            .iter()
+            .map(|name| AnimationClip::new(*name, true, vec![]))
+            .collect();
+        model
+    }
+
+    #[test]
+    fn every_slot_has_a_distinct_index_inside_the_array() {
+        let mut seen = vec![];
+        for slot in AnimationSlot::ALL {
+            assert!(slot.index() < AnimationSlot::ALL.len());
+            assert!(!seen.contains(&slot.index()), "{slot:?} collides");
+            seen.push(slot.index());
+        }
+        assert_eq!(seen.len(), AnimationSlot::ALL.len());
+    }
+
+    #[test]
+    fn looping_is_a_property_of_the_role_not_of_the_character() {
+        assert!(AnimationSlot::Idle.loops());
+        assert!(AnimationSlot::Run.loops());
+        assert!(!AnimationSlot::Land.loops());
+        assert!(!AnimationSlot::Jump.loops());
+        assert!(!AnimationSlot::Cast.loops());
+    }
+
+    #[test]
+    fn a_mistyped_clip_name_fails_at_load_rather_than_never_playing() {
+        let model = model_with_clips(&["idle", "run"]);
+        let def = CharacterDef::new("mage", ModelId::new("m"), 1.8)
+            .with_clip(AnimationSlot::Idle, "idle")
+            .with_clip(AnimationSlot::Run, "runn");
+        let Err(error) = def.resolve(&model) else {
+            panic!("a clip the model does not have must be reported");
+        };
+        assert!(error.to_string().contains("runn"), "{error}");
+    }
+
+    #[test]
+    fn resolved_bindings_are_indices_into_the_model() {
+        let model = model_with_clips(&["idle", "walk", "run"]);
+        let def = CharacterDef::new("mage", ModelId::new("m"), 1.8)
+            .with_clip(AnimationSlot::Idle, "idle")
+            .with_clip(AnimationSlot::Run, "run");
+        let Ok(bindings) = def.resolve(&model) else {
+            panic!("every named clip exists");
+        };
+        assert_eq!(bindings.get(AnimationSlot::Idle), Some(0));
+        assert_eq!(bindings.get(AnimationSlot::Run), Some(2));
+        assert_eq!(bindings.get(AnimationSlot::Walk), None);
+        assert_eq!(bindings.len(), 2);
+    }
+
+    #[test]
+    fn a_missing_slot_falls_back_one_level_and_no_further() {
+        let model = model_with_clips(&["idle", "run"]);
+        let def =
+            CharacterDef::new("mage", ModelId::new("m"), 1.8).with_clip(AnimationSlot::Run, "run");
+        let Ok(bindings) = def.resolve(&model) else {
+            panic!("every named clip exists");
+        };
+        assert_eq!(
+            bindings.get_or(AnimationSlot::Walk, AnimationSlot::Run),
+            Some(1)
+        );
+        // Jump falls back to Fall, which is also unbound: the answer is None, not a search.
+        assert_eq!(
+            bindings.get_or(AnimationSlot::Jump, AnimationSlot::Fall),
+            None
+        );
+    }
+
+    #[test]
+    fn a_model_is_scaled_to_the_height_gameplay_says_the_character_is() {
+        let def = CharacterDef::new("mage", ModelId::new("m"), 1.8);
+        assert!((def.scale_for_height(0.9) - 0.5).abs() < 1e-6);
+
+        // A model that forgot to say how tall it is must not scale to infinity.
+        let unmeasured = CharacterDef::new("mage", ModelId::new("m"), 0.0);
+        assert_eq!(unmeasured.scale_for_height(2.0), 1.0);
+    }
+
+    #[test]
+    fn run_speed_cannot_be_below_walk_speed() {
+        let def = CharacterDef::new("mage", ModelId::new("m"), 1.8).with_speeds(3.0, 1.0);
+        assert_eq!(def.walk_speed, 3.0);
+        assert_eq!(def.run_speed, 3.0);
+    }
+}

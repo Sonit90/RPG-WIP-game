@@ -135,7 +135,8 @@ is visible on screen rather than only in a test.
 
 **Steps**
 
-1. `.	argetelease\mygame.exe --overlay`
+1. `.	arget
+elease\mygame.exe --overlay`
 2. Left-click to capture the mouse, then move it: the camera orbits the character.
 3. Hold W, A, S and D; the character runs in the direction the camera faces.
 4. Press SPACE while running.
@@ -299,7 +300,8 @@ line does not grow. Closing at the end is still clean.
 
 **Steps**
 
-1. `.	argetelease\mygame.exe --overlay`
+1. `.	arget
+elease\mygame.exe --overlay`
 2. Note DAMAGE DONE, then cast 1 once and note it again.
 3. Watch the SIM line while standing still, then while running.
 4. Watch a cooldown on the ability bar after casting.
@@ -311,3 +313,48 @@ non-zero. The SIM line shows a sub-millisecond figure, `TICKS 0` or `1` most fra
 the ability becomes usable again. R zeroes the meter and every cooldown.
 
 ---
+
+## MT-016 — Character test scene and animation
+
+**Purpose** — the FireMage looks right, is the right size, and every animation reads. Most
+of this is asserted in pixels by `crates/engine-renderer/tests/character_render.rs`; what a
+human is still needed for is whether the motion *reads*, which no assertion covers.
+
+**Steps**
+
+1. `.	argetelease\mygame.exe --scene character`
+2. Look at the character beside the training dummy.
+3. Walk forwards, then hold shift-free full speed; watch the feet.
+4. Jump, and watch the take-off, the fall and the landing.
+5. Press 1 through 7 in turn, then 0.
+6. Hold the right mouse button and orbit the character while an animation is held.
+7. Run 40 metres away from the dummy and back.
+
+**Expected** — a hooded figure with a staff, about the same height as the dummy beside it,
+standing on the floor rather than in or above it. Walking and running move the feet at the
+speed the character travels, with no sliding. A jump compresses, extends, falls with the
+legs trailing and compresses again on landing. Keys 1 to 7 hold the character in one
+animation regardless of what it is doing; 0 releases it and the character immediately
+reflects gameplay again. Orbiting shows no geometry inside out and no surface lit from the
+wrong side. At distance the dummy visibly loses its crossbar and wrap and keeps its
+silhouette — a level-of-detail switch, not a pop out of existence.
+
+---
+
+## MT-017 — Combat still works with models
+
+**Purpose** — replacing the placeholder cubes changed no combat behaviour.
+
+**Steps**
+
+1. `.	argetelease\mygame.exe --dummies 8`
+2. Tab to a target, cast 1, and watch the dummy.
+3. Cast an area ability into the group.
+4. Kill one dummy.
+5. Press BACKSPACE.
+
+**Expected** — the targeted dummy glows, flashes white on each hit, darkens as its health
+drops, and the target marker floats above it. Damage numbers rise from chest height. An
+area ability marks and hits the same set the indicator showed. A killed dummy tints to a
+lifeless grey and falls over on the floor rather than through it. BACKSPACE restores every
+dummy upright and undamaged.

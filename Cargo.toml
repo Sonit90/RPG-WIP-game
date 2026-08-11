@@ -4,6 +4,10 @@ members = [
     "crates/engine-core",
     "crates/engine-platform",
     "crates/engine-render-data",
+    # Character and prop assets: the runtime model representation, the procedural authors,
+    # and the glTF importer. No device, no `windows` — a model is built and validated in a
+    # unit test with no adapter present.
+    "crates/engine-assets",
     "crates/engine-renderer",
     # Collision and character movement. Simulation-side geometry: depends on engine-core
     # alone, so a headless test can resolve a character move with no device.
@@ -38,6 +42,9 @@ engine-platform = { path = "crates/engine-platform" }
 engine-render-data = { path = "crates/engine-render-data" }
 # default-features is off here so each consumer opts in; engine-app re-exports the
 # `debug-overlay` feature so a shipping build can drop it with --no-default-features.
+# Models, skeletons, animation clips and their two producers. Between render-data and the
+# renderer in the graph: it describes what to draw without knowing how anything is drawn.
+engine-assets = { path = "crates/engine-assets" }
 engine-renderer = { path = "crates/engine-renderer", default-features = false }
 # Collision and character movement. Same rule as engine-game: engine-core and nothing else.
 engine-collision = { path = "crates/engine-collision" }
