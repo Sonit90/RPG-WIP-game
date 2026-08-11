@@ -736,7 +736,12 @@ impl App {
     /// The button's *state* drives this, not its press and release events, so the camera
     /// cannot be left rotating after a release: [`MouseLook`] reads what is held now.
     fn apply_mouse_look(&mut self, ctx: &EngineContext) {
-        match self.mouse_look.update(ctx.input()) {
+        // The left button orbits only while the interface is not using it — here, that means
+        // the pause menu, whose buttons it clicks. Aiming and the talent window are handled
+        // by the caller, which does not reach this at all. The right button is not gated: it
+        // does nothing in a menu.
+        let orbit_allowed = !self.menu.is_open();
+        match self.mouse_look.update(ctx.input(), orbit_allowed) {
             Some(LookChange::Began) => {
                 self.begin_mouse_look(ctx.input().mouse_position());
                 return;
@@ -1288,7 +1293,14 @@ impl Application for App {
                 self.update_animation_override(ctx);
             }
 
-            if !self.targeting.is_active() && !self.talent_menu.is_open() {
+            // While a spell is being aimed both buttons are spoken for — left confirms
+            // where it lands, right cancels — and the talent window owns the pointer too.
+            // Cancelled rather than skipped: skipping also skips the *end* of a look, which
+            // would leave the cursor hidden if a button came up on the frame one of these
+            // opened.
+            if self.targeting.is_active() || self.talent_menu.is_open() {
+                self.cancel_mouse_look();
+            } else {
                 self.apply_mouse_look(ctx);
             }
             let wheel = ctx.input().wheel_delta();
@@ -1654,7 +1666,8 @@ fn log_controls(args: &Args, demo: Option<&DemoScene>) {
         log::info!("  TAB              cycle target");
     }
     log::info!("  ESC              menu: settings, quit, resume (the game keeps running)");
-    log::info!("  RIGHT MOUSE      hold to turn the camera; release to stop");
+    log::info!("  LEFT MOUSE       hold to orbit the camera; the character keeps facing");
+    log::info!("  RIGHT MOUSE      hold to turn the camera and steer the character");
     log::info!("  MOUSE WHEEL      camera distance");
     log::info!("  F3               collision debug drawing on/off");
     log::info!("  F5               developer overlay on/off");

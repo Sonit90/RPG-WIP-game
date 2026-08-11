@@ -1,25 +1,43 @@
-//! When the mouse turns the camera: hold the right button.
+//! When the mouse turns the camera: hold a button.
 //!
 //! ```text
-//! RMB down  ->  Began  ->  cursor hidden, movement rotates the camera
-//! RMB up    ->  Ended  ->  cursor restored, movement does nothing
+//! LMB down  ->  Began  ->  cursor hidden, movement orbits the camera
+//! RMB down  ->  Began  ->  cursor hidden, movement orbits the camera *and* steers
+//! both up   ->  Ended  ->  cursor restored, movement does nothing
 //! ```
 //!
-//! The World of Warcraft convention, and the one this project follows: the right button is
-//! *held* to look around and the left button is left free for the world. There is no mode
-//! to leave, so no key cancels one — Escape included.
+//! The World of Warcraft convention, and the one this project follows: **both** buttons are
+//! *held* to look, and they differ in what else they do. The left orbits the camera around a
+//! character that keeps facing where it was; the right orbits and turns the character to
+//! match, so the camera is steering. There is no mode to leave, so no key cancels one —
+//! Escape included.
+//!
+//! Steering is not decided here. `engine_game::InputMap` reads the right button directly for
+//! the `face_camera` flag on a movement command, because which button steers is a binding
+//! and bindings live there. This module's only job is "is the mouse turning the camera".
+//!
+//! # Why the left button needs permission and the right one does not
+//!
+//! The left button also belongs to the interface: it clicks a menu, and it confirms where a
+//! ground-targeted spell lands. Starting an orbit on a press meant for one of those would
+//! take the cursor away mid-click. So [`MouseLook::update`] is told each frame whether the
+//! left button is free, and the caller answers with "no menu is open and nothing is being
+//! aimed". The right button does nothing in the interface and needs no such gate.
 //!
 //! A state machine rather than a pair of event handlers in the application, because "held"
 //! is the whole rule and it is the part that can go wrong: an implementation that toggled
 //! on a press can be left rotating after a release the window never delivered. This one is
-//! driven by the button's *current* state every frame, so it cannot disagree with the
+//! driven by the buttons' *current* state every frame, so it cannot disagree with the
 //! hardware for longer than a frame — including after a focus loss, which releases every
 //! button at once and ends the look with it.
 
 use engine_core::input::{InputState, MouseButton};
 
-/// The button held to turn the camera.
+/// The button held to turn the camera *and* steer the character with it.
 pub const LOOK_BUTTON: MouseButton = MouseButton::Right;
+
+/// The button held to orbit the camera around a character that keeps facing where it was.
+pub const ORBIT_BUTTON: MouseButton = MouseButton::Left;
 
 /// A change in whether the mouse is turning the camera.
 ///
@@ -33,31 +51,62 @@ pub enum LookChange {
     Ended,
 }
 
-/// Whether the mouse is currently turning the camera.
+/// What a held button is doing to the camera.
+///
+/// Reported so the developer overlay and a future binding screen can say which of the two
+/// is running. Nothing in the frame path branches on it: steering is `face_camera` on a
+/// movement command, and that is read from the button itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LookMode {
+    /// Left button: the camera moves around the character, the character does not turn.
+    Orbit,
+    /// Right button: the camera moves and the character turns to face where it looks.
+    Steer,
+}
+
+/// Whether the mouse is currently turning the camera, and how.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct MouseLook {
-    active: bool,
+    active: Option<LookMode>,
 }
 
 impl MouseLook {
     /// Not rotating.
     #[must_use]
     pub const fn new() -> Self {
-        Self { active: false }
+        Self { active: None }
     }
 
     /// Whether mouse movement should rotate the camera right now.
     #[must_use]
     pub fn is_active(&self) -> bool {
+        self.active.is_some()
+    }
+
+    /// Which of the two is running, if either.
+    #[must_use]
+    pub fn mode(&self) -> Option<LookMode> {
         self.active
     }
 
     /// Reads this frame's input and reports a transition, if there was one.
     ///
-    /// Only [`LOOK_BUTTON`] is consulted. The left button is deliberately not: it belongs
-    /// to the world, and clicking in it must never take the cursor away.
-    pub fn update(&mut self, input: &InputState) -> Option<LookChange> {
-        self.set(input.is_mouse_button_down(LOOK_BUTTON))
+    /// `orbit_allowed` is the caller's answer to "is the left button free this frame" — no
+    /// menu open, nothing being aimed. It gates [`ORBIT_BUTTON`] only; [`LOOK_BUTTON`] is
+    /// always honoured, because it does nothing in the interface.
+    ///
+    /// **The right button wins.** A player who starts orbiting and then presses the right
+    /// button as well is asking to steer, and the look continues without a transition —
+    /// which is what stops the cursor flickering back and forth in the middle of a turn.
+    pub fn update(&mut self, input: &InputState, orbit_allowed: bool) -> Option<LookChange> {
+        let mode = if input.is_mouse_button_down(LOOK_BUTTON) {
+            Some(LookMode::Steer)
+        } else if orbit_allowed && input.is_mouse_button_down(ORBIT_BUTTON) {
+            Some(LookMode::Orbit)
+        } else {
+            None
+        };
+        self.set(mode)
     }
 
     /// Ends rotation regardless of the button, reporting the transition if there was one.
@@ -65,15 +114,22 @@ impl MouseLook {
     /// For the window losing focus: the release message goes to whichever window has focus
     /// now, so waiting for one would leave the cursor hidden on the desktop.
     pub fn cancel(&mut self) -> Option<LookChange> {
-        self.set(false)
+        self.set(None)
     }
 
-    fn set(&mut self, active: bool) -> Option<LookChange> {
-        if active == self.active {
+    /// Applies a new mode, reporting only a change in *whether* the camera is turning.
+    ///
+    /// Switching between the two modes mid-turn is not a transition: the cursor is already
+    /// hidden and already warped, and reporting one would restore it and take it away again
+    /// in the same frame.
+    fn set(&mut self, mode: Option<LookMode>) -> Option<LookChange> {
+        let was_active = self.active.is_some();
+        let is_active = mode.is_some();
+        self.active = mode;
+        if was_active == is_active {
             return None;
         }
-        self.active = active;
-        Some(if active {
+        Some(if is_active {
             LookChange::Began
         } else {
             LookChange::Ended
@@ -192,17 +248,104 @@ mod tests {
     }
 
     #[test]
-    fn the_left_button_does_not_turn_the_camera() {
+    fn holding_the_left_button_orbits_the_camera() {
         let mut input = InputState::new();
         let mut look = MouseLook::new();
 
         frame(&mut input, &[button(MouseButton::Left, true)]);
-        assert_eq!(look.update(&input), None);
-        assert!(!look.is_active(), "the left button started a rotation");
+        assert_eq!(look.update(&input, true), Some(LookChange::Began));
+        assert_eq!(look.mode(), Some(LookMode::Orbit));
+
+        // Held across frames: still orbiting, and no second transition to act on.
+        for _ in 0..5 {
+            frame(&mut input, &[]);
+            assert_eq!(look.update(&input, true), None);
+            assert!(look.is_active());
+        }
+
+        frame(&mut input, &[button(MouseButton::Left, false)]);
+        assert_eq!(look.update(&input, true), Some(LookChange::Ended));
+        assert_eq!(look.mode(), None);
+    }
+
+    #[test]
+    fn the_left_button_does_not_orbit_when_the_interface_wants_it() {
+        // Clicking a menu button or confirming where a spell lands must not take the cursor
+        // away. The right button is unaffected, because it does nothing in the interface.
+        let mut input = InputState::new();
+        let mut look = MouseLook::new();
+
+        frame(&mut input, &[button(MouseButton::Left, true)]);
+        assert_eq!(look.update(&input, false), None);
+        assert!(
+            !look.is_active(),
+            "a click on the interface started an orbit"
+        );
+
+        frame(&mut input, &[button(MouseButton::Right, true)]);
+        assert_eq!(look.update(&input, false), Some(LookChange::Began));
+        assert_eq!(look.mode(), Some(LookMode::Steer));
+    }
+
+    #[test]
+    fn an_orbit_that_is_no_longer_permitted_ends_rather_than_continuing() {
+        // The player holds the left button and something opens a menu. The look has to stop
+        // on the same frame the cursor is needed again.
+        let mut input = InputState::new();
+        let mut look = MouseLook::new();
+
+        frame(&mut input, &[button(MouseButton::Left, true)]);
+        assert_eq!(look.update(&input, true), Some(LookChange::Began));
 
         frame(&mut input, &[]);
-        assert_eq!(look.update(&input), None);
-        assert!(!look.is_active(), "holding it started one later");
+        assert_eq!(look.update(&input, false), Some(LookChange::Ended));
+        assert!(!look.is_active());
+    }
+
+    #[test]
+    fn adding_the_right_button_mid_orbit_starts_steering_without_a_transition() {
+        // A transition here would restore the cursor and hide it again in the same frame,
+        // which is a visible flicker in the middle of a turn.
+        let mut input = InputState::new();
+        let mut look = MouseLook::new();
+
+        frame(&mut input, &[button(MouseButton::Left, true)]);
+        assert_eq!(look.update(&input, true), Some(LookChange::Began));
+        assert_eq!(look.mode(), Some(LookMode::Orbit));
+
+        frame(&mut input, &[button(MouseButton::Right, true)]);
+        assert_eq!(
+            look.update(&input, true),
+            None,
+            "the cursor must not flicker"
+        );
+        assert_eq!(look.mode(), Some(LookMode::Steer));
+
+        // And releasing the right button hands the turn back to the left one, still without
+        // a transition, because the left button never went up.
+        frame(&mut input, &[button(MouseButton::Right, false)]);
+        assert_eq!(look.update(&input, true), None);
+        assert_eq!(look.mode(), Some(LookMode::Orbit));
+
+        frame(&mut input, &[button(MouseButton::Left, false)]);
+        assert_eq!(look.update(&input, true), Some(LookChange::Ended));
+    }
+
+    #[test]
+    fn the_right_button_wins_while_both_are_held() {
+        // Steering is the more specific request, and the player pressed it deliberately.
+        let mut input = InputState::new();
+        let mut look = MouseLook::new();
+
+        frame(
+            &mut input,
+            &[
+                button(MouseButton::Right, true),
+                button(MouseButton::Left, true),
+            ],
+        );
+        assert_eq!(look.update(&input, true), Some(LookChange::Began));
+        assert_eq!(look.mode(), Some(LookMode::Steer));
     }
 
     #[test]
@@ -211,13 +354,13 @@ mod tests {
         let mut look = MouseLook::new();
 
         frame(&mut input, &[button(MouseButton::Right, true)]);
-        assert_eq!(look.update(&input), Some(LookChange::Began));
+        assert_eq!(look.update(&input, true), Some(LookChange::Began));
         assert!(look.is_active());
 
         // Held across frames: still rotating, and no second transition to act on.
         for _ in 0..5 {
             frame(&mut input, &[]);
-            assert_eq!(look.update(&input), None);
+            assert_eq!(look.update(&input, true), None);
             assert!(look.is_active());
         }
     }
@@ -228,14 +371,14 @@ mod tests {
         let mut look = MouseLook::new();
 
         frame(&mut input, &[button(MouseButton::Right, true)]);
-        look.update(&input);
+        look.update(&input, true);
 
         frame(&mut input, &[button(MouseButton::Right, false)]);
-        assert_eq!(look.update(&input), Some(LookChange::Ended));
+        assert_eq!(look.update(&input, true), Some(LookChange::Ended));
         assert!(!look.is_active());
 
         frame(&mut input, &[]);
-        assert_eq!(look.update(&input), None);
+        assert_eq!(look.update(&input, true), None);
         assert!(!look.is_active(), "rotation resumed on its own");
     }
 
@@ -246,11 +389,11 @@ mod tests {
 
         for round in 0..20 {
             frame(&mut input, &[button(MouseButton::Right, true)]);
-            look.update(&input);
+            look.update(&input, true);
             assert!(look.is_active(), "round {round} did not start");
 
             frame(&mut input, &[button(MouseButton::Right, false)]);
-            look.update(&input);
+            look.update(&input, true);
             assert!(!look.is_active(), "round {round} left the camera rotating");
         }
     }
@@ -261,7 +404,7 @@ mod tests {
         let mut look = MouseLook::new();
 
         frame(&mut input, &[button(MouseButton::Right, true)]);
-        look.update(&input);
+        look.update(&input, true);
 
         // Escape while rotating changes nothing: the button is still held.
         frame(
@@ -271,12 +414,12 @@ mod tests {
                 repeat: false,
             }],
         );
-        assert_eq!(look.update(&input), None);
+        assert_eq!(look.update(&input, true), None);
         assert!(look.is_active(), "escape cancelled the rotation");
 
         // The button alone ends it.
         frame(&mut input, &[button(MouseButton::Right, false)]);
-        assert_eq!(look.update(&input), Some(LookChange::Ended));
+        assert_eq!(look.update(&input, true), Some(LookChange::Ended));
     }
 
     #[test]
@@ -285,11 +428,11 @@ mod tests {
         let mut look = MouseLook::new();
 
         frame(&mut input, &[button(MouseButton::Right, true)]);
-        look.update(&input);
+        look.update(&input, true);
 
         frame(&mut input, &[InputEvent::FocusChanged { focused: false }]);
         assert_eq!(
-            look.update(&input),
+            look.update(&input, true),
             Some(LookChange::Ended),
             "the button was cleared but the camera kept rotating"
         );
@@ -383,7 +526,7 @@ mod tests {
 
         let mut input = InputState::new();
         frame(&mut input, &[button(MouseButton::Right, true)]);
-        look.update(&input);
+        look.update(&input, true);
 
         assert_eq!(look.cancel(), Some(LookChange::Ended));
         assert_eq!(look.cancel(), None);

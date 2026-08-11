@@ -93,6 +93,30 @@ larger-than-client coordinates rather than wrapping to a huge positive number.
 
 ---
 
+## MT-004a — Camera: orbit and steer
+
+**Purpose** — both mouse buttons turn the camera, and they differ in what else they do.
+
+**Steps**
+
+1. `.	argetelease\mygame.exe`
+2. Hold the **left** button and drag left and right, then up and down. Watch the character.
+3. Release, then hold the **right** button and drag the same way. Watch the character.
+4. Hold the left button, and while still holding it press and release the right button.
+5. Press Escape to open the menu, then hold the left button over a menu button and drag.
+6. Press 4 to aim an area spell, then try holding each button.
+7. Alt-tab away while holding either button.
+
+**Expected** — the left button orbits the camera around the character while the character
+keeps facing wherever it was. The right button orbits *and* turns the character to face
+where the camera looks. In step 4 the cursor stays hidden throughout: adding and removing
+the right button changes what the character does without the cursor flickering back. In the
+menu the left button clicks buttons and does not take the cursor away; the right button
+still turns the camera. While aiming, the left button confirms the placement and the right
+cancels it — neither turns the camera. Alt-tab restores the cursor immediately.
+
+---
+
 ## MT-005 — Focus loss releases held input
 
 **Purpose** — a key held while alt-tabbing away does not stay stuck down.
@@ -322,7 +346,8 @@ human is still needed for is whether the motion *reads*, which no assertion cove
 
 **Steps**
 
-1. `.	argetelease\mygame.exe --scene character`
+1. `.	arget
+elease\mygame.exe --scene character`
 2. Look at the character beside the training dummy.
 3. Walk forwards, then hold shift-free full speed; watch the feet.
 4. Jump, and watch the take-off, the fall and the landing.
@@ -347,7 +372,8 @@ silhouette — a level-of-detail switch, not a pop out of existence.
 
 **Steps**
 
-1. `.	argetelease\mygame.exe --dummies 8`
+1. `.	arget
+elease\mygame.exe --dummies 8`
 2. Tab to a target, cast 1, and watch the dummy.
 3. Cast an area ability into the group.
 4. Kill one dummy.
