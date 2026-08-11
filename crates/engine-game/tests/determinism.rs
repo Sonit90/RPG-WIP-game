@@ -240,6 +240,23 @@ fn describe(event: &CombatEvent) -> String {
             killer,
             tick,
         } => format!("death {} by {} at {tick}", entity.index(), killer.index()),
+        // Where a teleport put someone is part of the run: two replays that blinked into
+        // different geometry are different runs however equal their health totals are.
+        CombatEvent::Teleported {
+            entity,
+            from,
+            to,
+            tick,
+        } => format!(
+            "teleport {} from {} {} {} to {} {} {} at {tick}",
+            entity.index(),
+            fixed(from.x),
+            fixed(from.y),
+            fixed(from.z),
+            fixed(to.x),
+            fixed(to.y),
+            fixed(to.z)
+        ),
         // Cast events are part of the ordered stream a replay has to reproduce: a cast that
         // started on a different tick, or was cancelled for a different reason, is a
         // different run even if the health totals agree.

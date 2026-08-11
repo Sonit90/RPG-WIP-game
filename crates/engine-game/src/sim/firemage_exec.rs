@@ -720,7 +720,23 @@ impl Simulation {
         };
         let yaw = body.facing_yaw;
         let forward = Vec3::new(-yaw.sin(), 0.0, -yaw.cos());
+        let from = body.position;
         self.slide_player(forward * distance);
+        let Some(to) = self.world.position(entity) else {
+            return;
+        };
+
+        // The mage arrives; it does not travel. Without forgetting last tick's position the
+        // presentation layer interpolates across the gap and the character slides the whole
+        // way over one frame, which is the one thing a teleport must not look like.
+        self.world.reset_history(entity);
+        let tick = self.tick;
+        self.events.push(CombatEvent::Teleported {
+            entity,
+            from,
+            to,
+            tick,
+        });
     }
 
     /// Places Firestorm's line of fire, anchored on the caster and aimed where it was cast.

@@ -584,3 +584,46 @@ fn the_ultimate_is_switched_off_but_still_exists() {
     assert_eq!(FireAbility::Cataclysm.definition().energy_cost, 100.0);
     assert!(simulation.mage().energy.is_full());
 }
+
+#[test]
+fn blinking_arrives_rather_than_travelling() {
+    let mut simulation = arena();
+    let player = simulation.player().entity;
+    let before = simulation
+        .world()
+        .position(player)
+        .expect("the player has a body");
+
+    simulation.cast(FireAbility::Blink).expect("blink is ready");
+    let after = simulation
+        .world()
+        .position(player)
+        .expect("the player still has a body");
+    assert!(
+        (after - before).length() > 1.0,
+        "the mage did not move: {before:?} -> {after:?}"
+    );
+
+    // Announced, so presentation can tell this apart from a very fast run. Both ends are
+    // carried, because an observer cannot ask the world where the mage used to be.
+    let teleport = simulation
+        .events()
+        .iter()
+        .find_map(|event| match *event {
+            engine_game::event::CombatEvent::Teleported {
+                entity, from, to, ..
+            } if entity == player => Some((from, to)),
+            _ => None,
+        })
+        .expect("a blink emits a teleport");
+    assert_eq!(teleport.0, before);
+    assert_eq!(teleport.1, after);
+
+    // And the history is gone, or the character is interpolated across the gap and slides
+    // the whole distance over one frame instead of arriving.
+    let previous = simulation
+        .world()
+        .previous_body(player)
+        .expect("the player has a history");
+    assert_eq!(previous.position, after, "the mage slid instead of arriving");
+}

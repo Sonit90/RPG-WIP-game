@@ -24,6 +24,7 @@
 use engine_core::math::{Quat, Sphere, Vec3};
 use engine_core::transform::Transform;
 use engine_game::entity::EntityId;
+use engine_game::event::CombatEvent;
 use engine_game::sim::Simulation;
 use engine_game::world::EntityKind;
 use engine_render_data::{
@@ -185,6 +186,24 @@ pub fn interpolated_player_position(simulation: &Simulation) -> Vec3 {
         body.position,
         simulation.timestep().alpha(),
     )
+}
+
+/// Whether the player was teleported during the frame just simulated.
+///
+/// The camera smooths its way to the character, which is what makes running read as
+/// momentum and is exactly wrong for Blink: at the follow rate the camera spends a quarter
+/// of a second travelling ground the mage never crossed. A frame this returns `true` for is
+/// one the camera snaps on instead.
+///
+/// Answered from the event stream rather than by measuring how far the player moved: a
+/// large step between two ticks is also what a fast run, a knockback or a dropped frame
+/// look like, and only the simulation knows which of them happened.
+#[must_use]
+pub fn player_teleported(simulation: &Simulation) -> bool {
+    let player = simulation.player().entity;
+    simulation.events().iter().any(|event| {
+        matches!(event, CombatEvent::Teleported { entity, .. } if *entity == player)
+    })
 }
 
 /// When an entity was last damaged, for the hit flash.
@@ -568,6 +587,31 @@ mod tests {
         let mut simulation = arena::training_arena(&ArenaConfig::default());
         simulation.step_once();
         simulation
+    }
+
+    #[test]
+    fn a_blink_is_reported_as_a_teleport_and_running_is_not() {
+        // The distinction the camera turns on: both move the mage several metres between two
+        // ticks, and only one of them is somewhere they never travelled.
+        let mut simulation = arena_sim();
+        simulation.push_command(PlayerCommand::Move {
+            forward: 1.0,
+            right: 0.0,
+            yaw: 0.0,
+            face_camera: false,
+        });
+        simulation.step_many(30);
+        assert!(!player_teleported(&simulation), "running is not a teleport");
+
+        simulation
+            .cast(engine_game::firemage::FireAbility::Blink)
+            .expect("blink is ready");
+        assert!(player_teleported(&simulation));
+
+        // And it is over once the frame it happened on is: the stream is cleared per
+        // advance, so the camera snaps once rather than for as long as it keeps looking.
+        simulation.step_once();
+        assert!(!player_teleported(&simulation));
     }
 
     #[test]

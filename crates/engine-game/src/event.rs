@@ -20,6 +20,8 @@
 //! observer that mutated the world from there would make the order of two abilities in one
 //! tick depend on who registered first.
 
+use engine_core::math::Vec3;
+
 use crate::ability::AbilityId;
 use crate::combat::DamageType;
 use crate::entity::EntityId;
@@ -128,6 +130,22 @@ pub enum CombatEvent {
         /// The simulation tick it happened on.
         tick: u64,
     },
+    /// An entity was moved somewhere it did not travel to.
+    ///
+    /// Blink is the one that emits it today. It exists because presentation cannot tell a
+    /// teleport from a very fast run by watching positions: both are a large change between
+    /// two ticks, and the camera has to lag one and not the other. Carrying both ends means
+    /// an observer can measure the jump without having kept last tick's world.
+    Teleported {
+        /// Who moved.
+        entity: EntityId,
+        /// Where they were.
+        from: Vec3,
+        /// Where they are now, after the geometry had its say.
+        to: Vec3,
+        /// The simulation tick it happened on.
+        tick: u64,
+    },
     /// An entity's health reached zero.
     Death {
         /// Who died.
@@ -150,6 +168,7 @@ impl CombatEvent {
             | Self::StatusRemoved { tick, .. }
             | Self::CastStarted { tick, .. }
             | Self::CastEnded { tick, .. }
+            | Self::Teleported { tick, .. }
             | Self::Death { tick, .. } => tick,
             Self::Damage(damage) => damage.tick,
         }

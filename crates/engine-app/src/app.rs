@@ -1309,10 +1309,16 @@ impl Application for App {
             // The *interpolated* position, so the camera and the character it watches
             // agree about where the character is. Following the raw simulation position
             // would step the camera at 60 Hz behind a character moving smoothly.
-            self.controller.follow(
-                engine_presentation::extract::interpolated_player_position(&self.simulation),
-                ctx.time().real_delta().as_secs_f32(),
-            );
+            let position =
+                engine_presentation::extract::interpolated_player_position(&self.simulation);
+            // A teleport is not movement, so it is not smoothed: the camera arrives with the
+            // character instead of chasing it across the gap at the follow rate.
+            if engine_presentation::extract::player_teleported(&self.simulation) {
+                self.controller.snap_to(position);
+            } else {
+                self.controller
+                    .follow(position, ctx.time().real_delta().as_secs_f32());
+            }
             let (width, height) = self.renderer.size();
             if width > 0 && height > 0 {
                 self.controller

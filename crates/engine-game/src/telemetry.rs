@@ -134,10 +134,12 @@ impl CombatMeter {
                 // Statuses and casts move no damage number. A cast that lands emits its own
                 // `AbilityUsed` and `Damage` when it does, so counting the cast as well
                 // would report every cast ability twice.
+                // A teleport moves nobody's health either; it is here for the camera.
                 CombatEvent::StatusApplied { .. }
                 | CombatEvent::StatusRemoved { .. }
                 | CombatEvent::CastStarted { .. }
-                | CombatEvent::CastEnded { .. } => {}
+                | CombatEvent::CastEnded { .. }
+                | CombatEvent::Teleported { .. } => {}
             }
         }
     }

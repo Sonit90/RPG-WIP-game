@@ -1,27 +1,32 @@
 <svg version="1.1" xmlns="http://www.w3.org/2000/svg" style="display: block;" viewBox="0 189.333 682.667 762.667" width="682.667" height="762.667" preserveAspectRatio="none">
 <defs>
 	<linearGradient id="blink_panel" gradientUnits="userSpaceOnUse" x1="23.848" y1="789.072" x2="653.072" y2="323.171">
-		<stop offset="0" stop-opacity="1" stop-color="rgb(48,6,0)"></stop>
-		<stop offset="1" stop-opacity="1" stop-color="rgb(18,10,10)"></stop>
+		<stop offset="0" stop-opacity="1" stop-color="rgb(6,16,44)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(10,10,22)"></stop>
 	</linearGradient>
-	<radialGradient id="blink_forge" gradientUnits="userSpaceOnUse" cx="420" cy="560" r="330">
-		<stop offset="0" stop-opacity="0.55" stop-color="rgb(171,20,2)"></stop>
-		<stop offset="0.55" stop-opacity="0.22" stop-color="rgb(117,15,9)"></stop>
-		<stop offset="1" stop-opacity="0" stop-color="rgb(48,6,0)"></stop>
+	<radialGradient id="blink_forge" gradientUnits="userSpaceOnUse" cx="400" cy="560" r="340">
+		<stop offset="0" stop-opacity="0.6" stop-color="rgb(24,86,178)"></stop>
+		<stop offset="0.55" stop-opacity="0.24" stop-color="rgb(14,44,104)"></stop>
+		<stop offset="1" stop-opacity="0" stop-color="rgb(6,16,44)"></stop>
 	</radialGradient>
-	<linearGradient id="blink_arrow" gradientUnits="userSpaceOnUse" x1="180" y1="640" x2="600" y2="480">
-		<stop offset="0" stop-opacity="1" stop-color="rgb(217,47,1)"></stop>
-		<stop offset="0.5" stop-opacity="1" stop-color="rgb(249,134,8)"></stop>
-		<stop offset="1" stop-opacity="1" stop-color="rgb(254,224,61)"></stop>
+	<linearGradient id="blink_gate" gradientUnits="userSpaceOnUse" x1="430" y1="780" x2="470" y2="330">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(21,74,166)"></stop>
+		<stop offset="0.5" stop-opacity="1" stop-color="rgb(54,150,238)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(158,226,255)"></stop>
 	</linearGradient>
-	<linearGradient id="blink_echo" gradientUnits="userSpaceOnUse" x1="120" y1="660" x2="420" y2="540">
-		<stop offset="0" stop-opacity="1" stop-color="rgb(94,13,6)"></stop>
-		<stop offset="1" stop-opacity="1" stop-color="rgb(217,47,1)"></stop>
+	<radialGradient id="blink_mouth" gradientUnits="userSpaceOnUse" cx="452" cy="556" r="150">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(226,247,255)"></stop>
+		<stop offset="0.4" stop-opacity="1" stop-color="rgb(96,190,250)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(20,66,158)"></stop>
+	</radialGradient>
+	<linearGradient id="blink_echo" gradientUnits="userSpaceOnUse" x1="90" y1="700" x2="380" y2="440">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(12,32,86)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(46,124,214)"></stop>
 	</linearGradient>
-	<radialGradient id="blink_glow" gradientUnits="userSpaceOnUse" cx="0" cy="0" r="1" gradientTransform="matrix(300,-90,60,200,400,570)">
-		<stop offset="0" stop-opacity="0.45" stop-color="rgb(252,191,12)"></stop>
-		<stop offset="0.5" stop-opacity="0.18" stop-color="rgb(241,87,3)"></stop>
-		<stop offset="1" stop-opacity="0" stop-color="rgb(94,13,6)"></stop>
+	<radialGradient id="blink_glow" gradientUnits="userSpaceOnUse" cx="0" cy="0" r="1" gradientTransform="matrix(310,-70,50,220,420,560)">
+		<stop offset="0" stop-opacity="0.5" stop-color="rgb(120,205,255)"></stop>
+		<stop offset="0.5" stop-opacity="0.2" stop-color="rgb(36,110,210)"></stop>
+		<stop offset="1" stop-opacity="0" stop-color="rgb(12,32,86)"></stop>
 	</radialGradient>
 	<clipPath id="blink_tile">
 		<path d="M 17.7 340 C 17.7 279.2 66.9 230 127.7 230 L 549.4 230 C 610.2 230 659.4 279.2 659.4 340 L 659.4 801 C 659.4 861.8 610.2 911 549.4 911 L 127.7 911 C 66.9 911 17.7 861.8 17.7 801 Z"></path>
@@ -32,24 +37,33 @@
 	<path fill="url(#blink_forge)" d="M 17.7 230 L 659.4 230 L 659.4 911 L 17.7 911 Z"></path>
 	<path fill="url(#blink_glow)" d="M 17.7 230 L 659.4 230 L 659.4 911 L 17.7 911 Z"></path>
 
-	<!-- The two places the mage was, left behind as afterimages. Blink is a jump, so the
-	     picture is three positions of one thing, not one thing moving. -->
-	<path fill="url(#blink_echo)" fill-opacity="0.45" d="M 130 668 L 250 668 L 250 606 L 306 606 L 190 500 L 74 606 L 130 606 z"></path>
-	<path fill="url(#blink_echo)" fill-opacity="0.75" d="M 236 690 L 356 690 L 356 620 L 418 620 L 296 500 L 174 620 L 236 620 z"></path>
+	<!-- Blink is the one thing on this bar that is not fire, and it is drawn cold so the
+	     player can find it without reading: everything warm on the bar burns something. -->
 
-	<!-- The arrival: a chevron of fire, the only part of the jump that is fully here. -->
-	<path fill="url(#blink_arrow)" d="M 348 716 L 486 716 L 486 632 L 560 632 L 417 486 L 274 632 L 348 632 z"></path>
-	<path fill="rgb(254,224,61)" fill-opacity="0.9" d="M 386 678 L 448 678 L 448 610 L 486 610 L 417 542 L 348 610 L 386 610 z"></path>
+	<!-- Where the mage left from, and the two shapes they were on the way. Fading forward,
+	     so the picture is read left to right, in the direction of travel. -->
+	<path fill="url(#blink_echo)" fill-opacity="0.5" d="M 96 700 C 96 630 120 574 152 574 C 184 574 208 630 208 700 C 190 690 172 684 152 684 C 132 684 114 690 96 700 z"></path>
+	<path fill="rgb(120,205,255)" fill-opacity="0.45" d="M 152 486 C 176 486 196 508 196 536 C 196 564 176 586 152 586 C 128 586 108 564 108 536 C 108 508 128 486 152 486 z"></path>
+	<path fill="rgb(158,226,255)" fill-opacity="0.4" d="M 186 582 C 202 606 210 646 210 700 C 202 696 194 692 186 690 C 186 646 186 610 186 582 z"></path>
+	<path fill="url(#blink_echo)" fill-opacity="0.8" d="M 232 716 C 232 640 258 580 292 580 C 326 580 352 640 352 716 C 332 706 312 700 292 700 C 272 700 252 706 232 716 z"></path>
+	<path fill="rgb(158,226,255)" fill-opacity="0.65" d="M 292 476 C 318 476 340 500 340 530 C 340 560 318 584 292 584 C 266 584 244 560 244 530 C 244 500 266 476 292 476 z"></path>
+	<path fill="rgb(226,247,255)" fill-opacity="0.55" d="M 326 588 C 344 616 352 658 352 716 C 344 710 336 706 328 704 C 328 656 328 616 326 588 z"></path>
 
-	<!-- Embers strung along the line the mage did not travel. -->
-	<path fill="rgb(252,191,12)" d="M 150 470 C 158 476 162 486 160 496 C 150 490 144 480 144 470 z"></path>
-	<path fill="rgb(249,134,8)" d="M 236 430 C 244 434 248 442 246 452 C 236 446 230 438 230 430 z"></path>
-	<path fill="rgb(254,224,61)" d="M 500 408 C 508 414 512 422 510 432 C 500 426 494 418 494 408 z"></path>
-	<path fill="rgb(253,120,2)" d="M 118 760 C 126 764 130 772 128 780 C 120 776 114 768 114 760 z"></path>
-	<path fill="rgb(252,191,12)" d="M 560 772 C 568 776 572 784 570 792 C 562 788 556 780 556 772 z"></path>
+	<!-- The gate the mage steps out of: a vertical tear in the air, brightest at its mouth. -->
+	<path fill="url(#blink_gate)" fill-opacity="0.5" d="M 452 288 C 512 372 542 464 542 556 C 542 648 512 740 452 824 C 392 740 362 648 362 556 C 362 464 392 372 452 288 z"></path>
+	<path fill="url(#blink_mouth)" d="M 452 352 C 496 424 518 492 518 556 C 518 620 496 688 452 760 C 408 688 386 620 386 556 C 386 492 408 424 452 352 z"></path>
+	<path fill="rgb(226,247,255)" fill-opacity="0.95" d="M 452 424 C 478 476 490 518 490 556 C 490 594 478 636 452 688 C 426 636 414 594 414 556 C 414 518 426 476 452 424 z"></path>
 
-	<!-- Fire trailing off the arrival, blown back toward where the jump started. -->
-	<path fill="rgb(241,87,3)" fill-opacity="0.85" d="M 342 726 C 306 748 274 772 250 802 C 280 786 310 774 342 766 C 326 786 316 806 312 826 C 336 800 366 780 400 766 C 418 758 428 746 428 730 z"></path>
-	<path fill="rgb(252,149,6)" fill-opacity="0.7" d="M 446 726 C 486 744 522 766 550 794 C 518 780 486 770 452 764 C 470 784 482 802 488 820 C 462 796 430 778 394 766 C 400 748 418 734 446 726 z"></path>
+	<!-- Arriving: the mage is stepping through, so the gate is broken where they come out. -->
+	<path fill="rgb(158,226,255)" fill-opacity="0.85" d="M 500 500 C 546 508 586 528 618 560 C 580 552 546 550 516 554 C 508 536 504 518 500 500 z"></path>
+	<path fill="rgb(96,190,250)" fill-opacity="0.7" d="M 512 604 C 556 606 596 620 630 646 C 592 642 558 644 528 652 C 522 636 516 620 512 604 z"></path>
+
+	<!-- Motes shed along a path nobody walked. -->
+	<path fill="rgb(158,226,255)" d="M 214 430 C 224 430 232 438 232 448 C 232 458 224 466 214 466 C 204 466 196 458 196 448 C 196 438 204 430 214 430 z"></path>
+	<path fill="rgb(120,205,255)" d="M 350 396 C 358 396 364 402 364 410 C 364 418 358 424 350 424 C 342 424 336 418 336 410 C 336 402 342 396 350 396 z"></path>
+	<path fill="rgb(226,247,255)" d="M 574 400 C 582 400 588 406 588 414 C 588 422 582 428 574 428 C 566 428 560 422 560 414 C 560 406 566 400 574 400 z"></path>
+	<path fill="rgb(96,190,250)" d="M 128 790 C 136 790 142 796 142 804 C 142 812 136 818 128 818 C 120 818 114 812 114 804 C 114 796 120 790 128 790 z"></path>
+	<path fill="rgb(158,226,255)" d="M 596 786 C 604 786 610 792 610 800 C 610 808 604 814 596 814 C 588 814 582 808 582 800 C 582 792 588 786 596 786 z"></path>
+	<path fill="rgb(120,205,255)" d="M 396 848 C 404 848 410 854 410 862 C 410 870 404 876 396 876 C 388 876 382 870 382 862 C 382 854 388 848 396 848 z"></path>
 </g>
 </svg>
