@@ -1425,7 +1425,7 @@ mod tests {
 
         // Stepped rather than advanced: a single advance clamps its catch-up ticks, which
         // is the loop protecting itself from a hitch, not the cooldown standing still.
-        simulation.step_many(16 * simulation.timestep().hz() as u32);
+        simulation.step_many(21 * simulation.timestep().hz() as u32);
         assert!(
             simulation.mage().abilities.is_ready(FireAbility::Blink),
             "the cooldown did not run"

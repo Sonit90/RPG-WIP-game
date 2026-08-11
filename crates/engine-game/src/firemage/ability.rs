@@ -317,7 +317,7 @@ pub static ABILITIES: [AbilityDef; ABILITY_COUNT] = [
     AbilityDef {
         id: FireAbility::FlameLance,
         name: "FLAME LANCE",
-        description: "APPLIES 2 IGNITE. A CRITICAL STRIKE HURRIES PYROBLAST ALONG",
+        description: "APPLIES 2 IGNITE. A CRITICAL STRIKE REDUCES COOLDOWN OF PYROBLAST BY 2 SECONDS",
         target: TargetMode::Single,
         cast_time: 1.5,
         cooldown: 8.0,
@@ -440,7 +440,7 @@ pub static ABILITIES: [AbilityDef; ABILITY_COUNT] = [
         description: "CONSUMES A FULL BURN FOR 60% OF ITS REMAINING DAMAGE, AT ONCE",
         target: TargetMode::Single,
         cast_time: 0.0,
-        cooldown: 8.0,
+        cooldown: 0.0,
         charges: 1,
         range: 35.0,
         radius: 10.0,
@@ -453,7 +453,7 @@ pub static ABILITIES: [AbilityDef; ABILITY_COUNT] = [
         ignite_bonus_per_stack: 0.0,
         ignite_stacks: 0,
         ignite_chance: 0.0,
-        heat: 7.0,
+        heat: 0.0,
         energy: 3.0,
         cooldown_hasted: false,
         energy_cost: 0.0,
@@ -509,10 +509,10 @@ pub static ABILITIES: [AbilityDef; ABILITY_COUNT] = [
     AbilityDef {
         id: FireAbility::Blink,
         name: "BLINK",
-        description: "TELEPORT 10 M FORWARD. STOPS AT WALLS RATHER THAN FAILING",
+        description: "TELEPORT 10 M FORWARD",
         target: TargetMode::Movement,
         cast_time: 0.0,
-        cooldown: 15.0,
+        cooldown: 20.0,
         charges: 1,
         range: 10.0,
         radius: 0.0,
@@ -935,7 +935,7 @@ mod tests {
         );
 
         let detonate = FireAbility::Detonate.definition();
-        assert_eq!((detonate.cooldown, detonate.radius), (8.0, 10.0));
+        assert_eq!((detonate.cooldown, detonate.radius), (0.0, 10.0));
         assert_eq!(detonate.cast_time, 0.0, "detonate is instant");
         assert!(
             !detonate.cooldown_hasted,

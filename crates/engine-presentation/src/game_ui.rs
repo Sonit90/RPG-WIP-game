@@ -2096,9 +2096,9 @@ mod tests {
         let ui = built(&simulation);
         let printed = texts(&ui);
 
-        // Blink's own cooldown is fifteen seconds, printed as whole ones.
+        // Blink's own cooldown is twenty seconds, printed as whole ones.
         assert!(
-            printed.iter().any(|text| text == "15"),
+            printed.iter().any(|text| text == "20"),
             "no countdown on the cooling slot: {printed:?}"
         );
 
