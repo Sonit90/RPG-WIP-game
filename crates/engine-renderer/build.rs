@@ -108,6 +108,34 @@ const ICONS: &[IconEntry] = &[
         file: "flame_cone.svg",
         constant: "FLAME_CONE",
     },
+    IconEntry {
+        file: "flame_lance.svg",
+        constant: "FLAME_LANCE",
+    },
+    IconEntry {
+        file: "pyroblast.svg",
+        constant: "PYROBLAST",
+    },
+    IconEntry {
+        file: "firestorm.svg",
+        constant: "FIRESTORM",
+    },
+    IconEntry {
+        file: "detonate.svg",
+        constant: "DETONATE",
+    },
+    IconEntry {
+        file: "fire_mastery.svg",
+        constant: "FIRE_MASTERY",
+    },
+    IconEntry {
+        file: "flame_shield.svg",
+        constant: "FLAME_SHIELD",
+    },
+    IconEntry {
+        file: "blink.svg",
+        constant: "BLINK",
+    },
 ];
 
 /// One icon: a file under `assets/icons/` and the constant its texels are bound to.

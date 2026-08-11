@@ -232,11 +232,36 @@ pub enum UiIcon {
     Meteor,
     /// The cone that spreads Ignite.
     FlameCone,
+    /// The spear thrown at one target.
+    FlameLance,
+    /// The big cast a full burn pays for.
+    Pyroblast,
+    /// The line of fire left burning on the ground.
+    Firestorm,
+    /// The payoff that spends the banked burn at once.
+    Detonate,
+    /// The specialisation cooldown.
+    FireMastery,
+    /// The defensive cooldown.
+    FlameShield,
+    /// The short teleport.
+    Blink,
 }
 
 impl UiIcon {
     /// Every icon, in atlas order.
-    pub const ALL: [Self; 3] = [Self::Firebolt, Self::Meteor, Self::FlameCone];
+    pub const ALL: [Self; 10] = [
+        Self::Firebolt,
+        Self::Meteor,
+        Self::FlameCone,
+        Self::FlameLance,
+        Self::Pyroblast,
+        Self::Firestorm,
+        Self::Detonate,
+        Self::FireMastery,
+        Self::FlameShield,
+        Self::Blink,
+    ];
 
     /// How many icons there are.
     pub const COUNT: usize = Self::ALL.len();

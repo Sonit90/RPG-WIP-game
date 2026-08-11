@@ -1,0 +1,68 @@
+<svg version="1.1" xmlns="http://www.w3.org/2000/svg" style="display: block;" viewBox="0 189.333 682.667 762.667" width="682.667" height="762.667" preserveAspectRatio="none">
+<defs>
+	<linearGradient id="firestorm_panel" gradientUnits="userSpaceOnUse" x1="23.848" y1="789.072" x2="653.072" y2="323.171">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(48,6,0)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(18,10,10)"></stop>
+	</linearGradient>
+	<radialGradient id="firestorm_forge" gradientUnits="userSpaceOnUse" cx="338" cy="700" r="340">
+		<stop offset="0" stop-opacity="0.55" stop-color="rgb(171,20,2)"></stop>
+		<stop offset="0.55" stop-opacity="0.22" stop-color="rgb(117,15,9)"></stop>
+		<stop offset="1" stop-opacity="0" stop-color="rgb(48,6,0)"></stop>
+	</radialGradient>
+	<linearGradient id="firestorm_wall" gradientUnits="userSpaceOnUse" x1="338" y1="760" x2="338" y2="300">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(133,15,4)"></stop>
+		<stop offset="0.35" stop-opacity="1" stop-color="rgb(217,47,1)"></stop>
+		<stop offset="0.75" stop-opacity="1" stop-color="rgb(249,134,8)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(252,191,12)"></stop>
+	</linearGradient>
+	<linearGradient id="firestorm_wall_core" gradientUnits="userSpaceOnUse" x1="338" y1="770" x2="338" y2="420">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(241,87,3)"></stop>
+		<stop offset="0.6" stop-opacity="1" stop-color="rgb(252,191,12)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(254,224,61)"></stop>
+	</linearGradient>
+	<linearGradient id="firestorm_ground" gradientUnits="userSpaceOnUse" x1="60" y1="800" x2="620" y2="800">
+		<stop offset="0" stop-opacity="0" stop-color="rgb(171,20,2)"></stop>
+		<stop offset="0.2" stop-opacity="1" stop-color="rgb(241,87,3)"></stop>
+		<stop offset="0.5" stop-opacity="1" stop-color="rgb(252,191,12)"></stop>
+		<stop offset="0.8" stop-opacity="1" stop-color="rgb(241,87,3)"></stop>
+		<stop offset="1" stop-opacity="0" stop-color="rgb(171,20,2)"></stop>
+	</linearGradient>
+	<radialGradient id="firestorm_glow" gradientUnits="userSpaceOnUse" cx="0" cy="0" r="1" gradientTransform="matrix(300,0,0,190,338,720)">
+		<stop offset="0" stop-opacity="0.5" stop-color="rgb(249,134,8)"></stop>
+		<stop offset="0.55" stop-opacity="0.2" stop-color="rgb(217,47,1)"></stop>
+		<stop offset="1" stop-opacity="0" stop-color="rgb(94,13,6)"></stop>
+	</radialGradient>
+	<clipPath id="firestorm_tile">
+		<path d="M 17.7 340 C 17.7 279.2 66.9 230 127.7 230 L 549.4 230 C 610.2 230 659.4 279.2 659.4 340 L 659.4 801 C 659.4 861.8 610.2 911 549.4 911 L 127.7 911 C 66.9 911 17.7 861.8 17.7 801 Z"></path>
+	</clipPath>
+</defs>
+<g clip-path="url(#firestorm_tile)">
+	<path fill="url(#firestorm_panel)" d="M 17.7 340 C 17.7 279.2 66.9 230 127.7 230 L 549.4 230 C 610.2 230 659.4 279.2 659.4 340 L 659.4 801 C 659.4 861.8 610.2 911 549.4 911 L 127.7 911 C 66.9 911 17.7 861.8 17.7 801 Z"></path>
+	<path fill="url(#firestorm_forge)" d="M 17.7 230 L 659.4 230 L 659.4 911 L 17.7 911 Z"></path>
+
+	<!-- The line burns for six seconds, so it is drawn standing on ground it has already
+	     charred rather than hanging in the air. -->
+	<path fill="url(#firestorm_glow)" d="M 17.7 230 L 659.4 230 L 659.4 911 L 17.7 911 Z"></path>
+	<path fill="rgb(60,8,3)" fill-opacity="0.9" d="M 70 838 C 160 818 240 810 338 810 C 436 810 516 818 606 838 C 516 858 436 866 338 866 C 240 866 160 858 70 838 z"></path>
+
+	<!-- Back rank of flame: lower, dimmer, standing behind the front. -->
+	<path fill="rgb(133,15,4)" fill-opacity="0.85" d="M 74 800 C 84 690 118 610 174 558 C 160 622 166 668 192 700 C 204 606 240 534 300 480 C 282 566 294 620 330 656 C 336 552 376 470 448 412 C 428 512 440 574 478 618 C 490 542 522 486 574 452 C 556 526 566 578 596 622 C 620 656 634 706 638 800 z"></path>
+
+	<!-- Front rank: the tongues that carry the damage, tallest in the middle. -->
+	<path fill="url(#firestorm_wall)" d="M 106 812 C 112 706 148 630 214 578 C 194 640 202 686 232 716 C 230 606 272 522 350 462 C 322 562 336 626 384 668 C 396 566 442 490 526 436 C 502 528 516 594 556 640 C 588 676 604 736 610 812 z"></path>
+
+	<!-- Hot core inside the front rank, where the tongues are fed. -->
+	<path fill="url(#firestorm_wall_core)" d="M 180 812 C 184 738 210 686 258 652 C 244 694 250 726 272 748 C 270 668 300 606 356 562 C 338 634 348 678 380 708 C 388 634 420 580 476 546 C 460 614 470 658 500 690 C 522 714 532 758 534 812 z"></path>
+	<path fill="rgb(255,236,150)" fill-opacity="0.85" d="M 288 812 C 288 748 310 696 356 654 C 342 706 348 742 372 770 C 384 784 390 798 390 812 z"></path>
+
+	<!-- The strip of ground the line is actually laid on: the ability is an area, not a shape. -->
+	<path fill="url(#firestorm_ground)" d="M 84 812 C 176 794 254 786 338 786 C 422 786 500 794 592 812 C 500 830 422 838 338 838 C 254 838 176 830 84 812 z"></path>
+
+	<!-- Embers lifting off the line. -->
+	<path fill="rgb(252,191,12)" d="M 214 560 C 222 566 226 576 224 586 C 214 580 208 570 208 560 z"></path>
+	<path fill="rgb(254,224,61)" d="M 372 480 C 380 486 384 496 382 506 C 372 500 366 490 366 480 z"></path>
+	<path fill="rgb(252,191,12)" d="M 496 516 C 504 522 508 530 506 540 C 496 534 490 526 490 516 z"></path>
+	<path fill="rgb(253,120,2)" d="M 288 448 C 294 452 298 460 296 468 C 288 464 284 456 284 448 z"></path>
+	<path fill="rgb(252,191,12)" d="M 440 412 C 446 416 450 424 448 432 C 440 428 436 420 436 412 z"></path>
+</g>
+</svg>

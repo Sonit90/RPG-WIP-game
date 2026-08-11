@@ -466,6 +466,13 @@ fn icon_texels(icon: UiIcon) -> [&'static [u8]; ICON_VARIANTS] {
         UiIcon::Firebolt => raster::FIREBOLT,
         UiIcon::Meteor => raster::METEOR,
         UiIcon::FlameCone => raster::FLAME_CONE,
+        UiIcon::FlameLance => raster::FLAME_LANCE,
+        UiIcon::Pyroblast => raster::PYROBLAST,
+        UiIcon::Firestorm => raster::FIRESTORM,
+        UiIcon::Detonate => raster::DETONATE,
+        UiIcon::FireMastery => raster::FIRE_MASTERY,
+        UiIcon::FlameShield => raster::FLAME_SHIELD,
+        UiIcon::Blink => raster::BLINK,
     }
 }
 

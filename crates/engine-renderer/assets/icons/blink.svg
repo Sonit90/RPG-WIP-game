@@ -1,0 +1,55 @@
+<svg version="1.1" xmlns="http://www.w3.org/2000/svg" style="display: block;" viewBox="0 189.333 682.667 762.667" width="682.667" height="762.667" preserveAspectRatio="none">
+<defs>
+	<linearGradient id="blink_panel" gradientUnits="userSpaceOnUse" x1="23.848" y1="789.072" x2="653.072" y2="323.171">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(48,6,0)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(18,10,10)"></stop>
+	</linearGradient>
+	<radialGradient id="blink_forge" gradientUnits="userSpaceOnUse" cx="420" cy="560" r="330">
+		<stop offset="0" stop-opacity="0.55" stop-color="rgb(171,20,2)"></stop>
+		<stop offset="0.55" stop-opacity="0.22" stop-color="rgb(117,15,9)"></stop>
+		<stop offset="1" stop-opacity="0" stop-color="rgb(48,6,0)"></stop>
+	</radialGradient>
+	<linearGradient id="blink_arrow" gradientUnits="userSpaceOnUse" x1="180" y1="640" x2="600" y2="480">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(217,47,1)"></stop>
+		<stop offset="0.5" stop-opacity="1" stop-color="rgb(249,134,8)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(254,224,61)"></stop>
+	</linearGradient>
+	<linearGradient id="blink_echo" gradientUnits="userSpaceOnUse" x1="120" y1="660" x2="420" y2="540">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(94,13,6)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(217,47,1)"></stop>
+	</linearGradient>
+	<radialGradient id="blink_glow" gradientUnits="userSpaceOnUse" cx="0" cy="0" r="1" gradientTransform="matrix(300,-90,60,200,400,570)">
+		<stop offset="0" stop-opacity="0.45" stop-color="rgb(252,191,12)"></stop>
+		<stop offset="0.5" stop-opacity="0.18" stop-color="rgb(241,87,3)"></stop>
+		<stop offset="1" stop-opacity="0" stop-color="rgb(94,13,6)"></stop>
+	</radialGradient>
+	<clipPath id="blink_tile">
+		<path d="M 17.7 340 C 17.7 279.2 66.9 230 127.7 230 L 549.4 230 C 610.2 230 659.4 279.2 659.4 340 L 659.4 801 C 659.4 861.8 610.2 911 549.4 911 L 127.7 911 C 66.9 911 17.7 861.8 17.7 801 Z"></path>
+	</clipPath>
+</defs>
+<g clip-path="url(#blink_tile)">
+	<path fill="url(#blink_panel)" d="M 17.7 340 C 17.7 279.2 66.9 230 127.7 230 L 549.4 230 C 610.2 230 659.4 279.2 659.4 340 L 659.4 801 C 659.4 861.8 610.2 911 549.4 911 L 127.7 911 C 66.9 911 17.7 861.8 17.7 801 Z"></path>
+	<path fill="url(#blink_forge)" d="M 17.7 230 L 659.4 230 L 659.4 911 L 17.7 911 Z"></path>
+	<path fill="url(#blink_glow)" d="M 17.7 230 L 659.4 230 L 659.4 911 L 17.7 911 Z"></path>
+
+	<!-- The two places the mage was, left behind as afterimages. Blink is a jump, so the
+	     picture is three positions of one thing, not one thing moving. -->
+	<path fill="url(#blink_echo)" fill-opacity="0.45" d="M 130 668 L 250 668 L 250 606 L 306 606 L 190 500 L 74 606 L 130 606 z"></path>
+	<path fill="url(#blink_echo)" fill-opacity="0.75" d="M 236 690 L 356 690 L 356 620 L 418 620 L 296 500 L 174 620 L 236 620 z"></path>
+
+	<!-- The arrival: a chevron of fire, the only part of the jump that is fully here. -->
+	<path fill="url(#blink_arrow)" d="M 348 716 L 486 716 L 486 632 L 560 632 L 417 486 L 274 632 L 348 632 z"></path>
+	<path fill="rgb(254,224,61)" fill-opacity="0.9" d="M 386 678 L 448 678 L 448 610 L 486 610 L 417 542 L 348 610 L 386 610 z"></path>
+
+	<!-- Embers strung along the line the mage did not travel. -->
+	<path fill="rgb(252,191,12)" d="M 150 470 C 158 476 162 486 160 496 C 150 490 144 480 144 470 z"></path>
+	<path fill="rgb(249,134,8)" d="M 236 430 C 244 434 248 442 246 452 C 236 446 230 438 230 430 z"></path>
+	<path fill="rgb(254,224,61)" d="M 500 408 C 508 414 512 422 510 432 C 500 426 494 418 494 408 z"></path>
+	<path fill="rgb(253,120,2)" d="M 118 760 C 126 764 130 772 128 780 C 120 776 114 768 114 760 z"></path>
+	<path fill="rgb(252,191,12)" d="M 560 772 C 568 776 572 784 570 792 C 562 788 556 780 556 772 z"></path>
+
+	<!-- Fire trailing off the arrival, blown back toward where the jump started. -->
+	<path fill="rgb(241,87,3)" fill-opacity="0.85" d="M 342 726 C 306 748 274 772 250 802 C 280 786 310 774 342 766 C 326 786 316 806 312 826 C 336 800 366 780 400 766 C 418 758 428 746 428 730 z"></path>
+	<path fill="rgb(252,149,6)" fill-opacity="0.7" d="M 446 726 C 486 744 522 766 550 794 C 518 780 486 770 452 764 C 470 784 482 802 488 820 C 462 796 430 778 394 766 C 400 748 418 734 446 726 z"></path>
+</g>
+</svg>

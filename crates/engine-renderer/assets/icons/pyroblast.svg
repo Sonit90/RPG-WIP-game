@@ -1,0 +1,79 @@
+<svg version="1.1" xmlns="http://www.w3.org/2000/svg" style="display: block;" viewBox="0 189.333 682.667 762.667" width="682.667" height="762.667" preserveAspectRatio="none">
+<defs>
+	<linearGradient id="pyroblast_panel" gradientUnits="userSpaceOnUse" x1="23.848" y1="789.072" x2="653.072" y2="323.171">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(48,6,0)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(18,10,10)"></stop>
+	</linearGradient>
+	<radialGradient id="pyroblast_forge" gradientUnits="userSpaceOnUse" cx="400" cy="520" r="360">
+		<stop offset="0" stop-opacity="0.6" stop-color="rgb(171,20,2)"></stop>
+		<stop offset="0.55" stop-opacity="0.24" stop-color="rgb(117,15,9)"></stop>
+		<stop offset="1" stop-opacity="0" stop-color="rgb(48,6,0)"></stop>
+	</radialGradient>
+	<radialGradient id="pyroblast_mantle" gradientUnits="userSpaceOnUse" cx="404" cy="530" r="185">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(249,134,8)"></stop>
+		<stop offset="0.62" stop-opacity="1" stop-color="rgb(225,57,2)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(133,15,4)"></stop>
+	</radialGradient>
+	<radialGradient id="pyroblast_core" gradientUnits="userSpaceOnUse" cx="392" cy="512" r="118">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(254,224,61)"></stop>
+		<stop offset="0.5" stop-opacity="1" stop-color="rgb(252,149,6)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(241,87,3)"></stop>
+	</radialGradient>
+	<linearGradient id="pyroblast_trail" gradientUnits="userSpaceOnUse" x1="404" y1="560" x2="120" y2="900">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(251,133,3)"></stop>
+		<stop offset="0.5" stop-opacity="1" stop-color="rgb(217,47,1)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(94,13,6)"></stop>
+	</linearGradient>
+	<radialGradient id="pyroblast_glow" gradientUnits="userSpaceOnUse" cx="400" cy="520" r="300">
+		<stop offset="0" stop-opacity="0.5" stop-color="rgb(252,191,12)"></stop>
+		<stop offset="0.45" stop-opacity="0.2" stop-color="rgb(241,87,3)"></stop>
+		<stop offset="1" stop-opacity="0" stop-color="rgb(171,20,2)"></stop>
+	</radialGradient>
+	<clipPath id="pyroblast_tile">
+		<path d="M 17.7 340 C 17.7 279.2 66.9 230 127.7 230 L 549.4 230 C 610.2 230 659.4 279.2 659.4 340 L 659.4 801 C 659.4 861.8 610.2 911 549.4 911 L 127.7 911 C 66.9 911 17.7 861.8 17.7 801 Z"></path>
+	</clipPath>
+</defs>
+<g clip-path="url(#pyroblast_tile)">
+	<path fill="url(#pyroblast_panel)" d="M 17.7 340 C 17.7 279.2 66.9 230 127.7 230 L 549.4 230 C 610.2 230 659.4 279.2 659.4 340 L 659.4 801 C 659.4 861.8 610.2 911 549.4 911 L 127.7 911 C 66.9 911 17.7 861.8 17.7 801 Z"></path>
+	<path fill="url(#pyroblast_forge)" d="M 17.7 230 L 659.4 230 L 659.4 911 L 17.7 911 Z"></path>
+
+	<!-- Scorched air behind the ball, dragged back the way it came. -->
+	<path fill="rgb(90,9,4)" fill-opacity="0.85" d="M 330 640 C 268 700 200 770 140 860 C 213 806 285 748 352 686 C 372 668 373 656 330 640 z"></path>
+	<path fill="rgb(132,15,6)" fill-opacity="0.7" d="M 286 592 C 224 650 160 722 106 806 C 176 754 246 700 310 642 C 328 626 328 612 286 592 z"></path>
+
+	<!-- The ball is heavy enough to light the whole tile, not just its own outline. -->
+	<path fill="url(#pyroblast_glow)" d="M 17.7 230 L 659.4 230 L 659.4 911 L 17.7 911 Z"></path>
+
+	<!-- Fire torn off the back of the ball. Pyroblast is slow, so the trail is wide. -->
+	<path fill="url(#pyroblast_trail)" d="M 330 626 C 288 660 238 706 196 762 C 168 800 150 838 142 878 C 166 840 196 806 230 776 C 214 812 206 846 208 878 C 224 838 250 802 284 770 C 320 736 348 700 358 662 z"></path>
+	<path fill="rgb(249,124,3)" fill-opacity="0.9" d="M 316 668 C 284 694 252 726 228 762 C 250 744 274 728 300 716 C 288 740 282 762 282 782 C 298 750 322 722 350 700 C 366 688 372 678 370 664 z"></path>
+
+	<!-- Mantle: the outer body of fire. Round, because Pyroblast is a thrown mass and not a
+	     shape; the raggedness is put on it by the tongues below rather than by its outline. -->
+	<path fill="url(#pyroblast_mantle)" d="M 404 348 C 512 348 596 434 596 542 C 596 650 512 736 404 736 C 296 736 212 650 212 542 C 212 434 296 348 404 348 z"></path>
+
+	<!-- Fire dragged around the mantle by its own passage: heavier on the leading face,
+	     stripped back into the trail on the other. -->
+	<path fill="rgb(252,149,6)" fill-opacity="0.9" d="M 476 380 C 520 344 546 302 552 254 C 578 306 574 366 540 418 C 522 402 500 390 476 380 z"></path>
+	<path fill="rgb(241,87,3)" fill-opacity="0.85" d="M 552 448 C 596 434 632 408 656 370 C 654 428 626 476 578 508 C 572 486 564 466 552 448 z"></path>
+	<path fill="rgb(252,191,12)" fill-opacity="0.9" d="M 396 344 C 410 300 410 260 394 222 C 442 258 464 312 452 372 C 434 358 416 348 396 344 z"></path>
+	<path fill="rgb(217,47,1)" fill-opacity="0.85" d="M 320 372 C 292 342 274 306 268 264 C 238 310 240 366 274 414 C 288 398 302 384 320 372 z"></path>
+	<path fill="rgb(225,57,2)" fill-opacity="0.8" d="M 552 640 C 592 650 630 646 664 626 C 634 674 586 700 528 698 C 538 680 546 660 552 640 z"></path>
+
+	<!-- Core: what actually lands. Pushed ahead of centre, in the direction of travel. -->
+	<path fill="url(#pyroblast_core)" d="M 412 380 C 512 380 578 450 578 542 C 578 634 508 706 410 706 C 312 706 244 634 244 546 C 244 490 268 444 312 414 C 340 458 366 478 396 480 C 380 448 380 414 412 380 z"></path>
+
+	<!-- Fire crossing the face of the ball, so the core is not a disc inside a ring. -->
+	<path fill="rgb(252,191,12)" fill-opacity="0.85" d="M 300 470 C 344 520 396 552 460 570 C 400 578 344 566 296 536 C 288 512 290 490 300 470 z"></path>
+	<path fill="rgb(249,134,8)" fill-opacity="0.8" d="M 528 640 C 470 660 412 660 356 640 C 414 690 484 692 542 656 z"></path>
+
+	<path fill="rgb(254,224,61)" fill-opacity="0.95" d="M 428 452 C 494 462 534 504 534 552 C 534 610 480 650 414 650 C 356 650 314 622 302 578 C 344 596 388 596 424 578 C 456 562 464 522 428 452 z"></path>
+	<path fill="rgb(255,244,196)" fill-opacity="0.9" d="M 448 508 C 490 512 512 534 512 560 C 512 592 478 614 434 614 C 400 614 374 602 362 582 C 400 590 434 584 452 566 C 468 550 464 530 448 508 z"></path>
+
+	<!-- Sparks shed forward, ahead of the ball. -->
+	<path fill="rgb(252,191,12)" d="M 566 300 C 574 310 578 322 578 334 C 566 324 558 312 554 298 C 558 298 562 298 566 300 z"></path>
+	<path fill="rgb(254,224,61)" d="M 604 402 C 612 406 616 414 616 422 C 608 418 602 412 600 404 z"></path>
+	<path fill="rgb(252,191,12)" d="M 252 302 C 258 310 260 318 258 326 C 250 320 246 312 246 304 z"></path>
+	<path fill="rgb(253,120,2)" d="M 178 826 C 184 830 188 836 186 842 C 180 840 176 834 174 828 z"></path>
+</g>
+</svg>

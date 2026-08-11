@@ -1363,6 +1363,13 @@ fn icon_for(ability: FireAbility) -> Option<UiIcon> {
         // The cone that spreads Ignite; the art is named for the shape, the ability for
         // what it does.
         FireAbility::FlameCone => Some(UiIcon::FlameCone),
+        FireAbility::FlameLance => Some(UiIcon::FlameLance),
+        FireAbility::Pyroblast => Some(UiIcon::Pyroblast),
+        FireAbility::Firestorm => Some(UiIcon::Firestorm),
+        FireAbility::Detonate => Some(UiIcon::Detonate),
+        FireAbility::FireMastery => Some(UiIcon::FireMastery),
+        FireAbility::FlameShield => Some(UiIcon::FlameShield),
+        FireAbility::Blink => Some(UiIcon::Blink),
         _ => None,
     }
 }
@@ -1678,10 +1685,10 @@ mod tests {
             found.iter().any(|text| text.contains('%')),
             "and reports a percentage: {found:?}"
         );
-        assert!(
-            found.iter().any(|text| text.ends_with('M')),
-            "and a distance: {found:?}"
-        );
+        // The frame carries no distance: it never wrote one, and the assertion that claimed
+        // it did was matching an ability slot's abbreviated name ("FLAM") instead. Now that
+        // every slot draws art there is nothing left to match, so the claim is gone rather
+        // than restated against a different accident.
     }
 
     #[test]
@@ -1744,23 +1751,32 @@ mod tests {
                 "slot {digit} is missing: {found:?}"
             );
         }
-        // An ability with no art yet still says what it is.
-        assert!(found.iter().any(|text| text == "BLIN"), "{found:?}");
+        // Every ability on the bar has art now, so no slot falls back to its abbreviated
+        // name. The fallback is covered by the test that pairs art against names, which
+        // reads `icon_for` rather than assuming which abilities are drawn.
     }
 
     #[test]
-    fn the_three_abilities_that_have_art_draw_it_in_their_own_slot() {
+    fn the_abilities_that_have_art_draw_it_in_their_own_slot() {
         let ui = built(&sim());
         let drawn = icons(&ui);
 
         // Each icon appears exactly once, in the slot the bar order puts it in, filling the
         // plate inside its frame.
         let outline = ui.scale().px(UiTheme::default().outline_pixels);
-        for (ability, expected) in [
+        let art = [
             (FireAbility::Firebolt, UiIcon::Firebolt),
             (FireAbility::Meteor, UiIcon::Meteor),
             (FireAbility::FlameCone, UiIcon::FlameCone),
-        ] {
+            (FireAbility::FlameLance, UiIcon::FlameLance),
+            (FireAbility::Pyroblast, UiIcon::Pyroblast),
+            (FireAbility::Firestorm, UiIcon::Firestorm),
+            (FireAbility::Detonate, UiIcon::Detonate),
+            (FireAbility::FireMastery, UiIcon::FireMastery),
+            (FireAbility::FlameShield, UiIcon::FlameShield),
+            (FireAbility::Blink, UiIcon::Blink),
+        ];
+        for (ability, expected) in art {
             let slot = FireAbility::BAR
                 .iter()
                 .position(|candidate| *candidate == ability)
@@ -1778,7 +1794,11 @@ mod tests {
                 "{expected:?} is not in slot {slot}"
             );
         }
-        assert_eq!(drawn.len(), 3, "something drew an icon nobody asked for");
+        assert_eq!(
+            drawn.len(),
+            art.len(),
+            "something drew an icon nobody asked for"
+        );
     }
 
     #[test]
