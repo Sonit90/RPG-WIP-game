@@ -21,6 +21,9 @@ members = [
     # Effects as data and the runtime that plays them. engine-core and engine-render-data
     # only: no gameplay, no device, so the whole VFX runtime is tested without either.
     "crates/engine-vfx",
+    # Sound as data and the runtime that mixes it. engine-core only: no gameplay, no device,
+    # so the catalogue, the voices, the mixer and the mix itself are tested without either.
+    "crates/engine-audio",
     # Player-facing settings and their file. Depends on no engine crate at all.
     "crates/engine-settings",
     # Gameplay to rendering: extraction, the third-person camera, the developer overlay.
@@ -64,6 +67,9 @@ engine-presentation = { path = "crates/engine-presentation" }
 # Effects as data and their runtime. Must never gain `windows`, `engine-renderer`,
 # `engine-game` or `engine-assets` — see its lib docs for why each absence is load-bearing.
 engine-vfx = { path = "crates/engine-vfx" }
+# Sound as data and its runtime. Must never gain `windows`, `cpal`, `engine-game` or
+# `engine-renderer` — see its lib docs for why each absence is load-bearing.
+engine-audio = { path = "crates/engine-audio" }
 # Settings the player changes and the game reloads next launch. No engine dependency.
 engine-settings = { path = "crates/engine-settings" }
 log = "0.4"

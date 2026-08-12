@@ -66,19 +66,19 @@ const GROUND_LIFT: f32 = 0.06;
 /// Fast enough that the visual never lags the damage by long — the hit has already been
 /// applied when the bolt leaves — and slow enough to read as a thrown object. At 35 m, the
 /// class's single-target range, this is just under half a second.
-const BOLT_SPEED: f32 = 80.0;
+pub const BOLT_SPEED: f32 = 80.0;
 
 /// The longest a cosmetic bolt may take, in seconds.
 ///
 /// A cap rather than a pure distance-over-speed, because the damage number is already on
 /// screen: a bolt that took a second to catch up would read as a second, unrelated hit.
-const BOLT_MAX_FLIGHT: f32 = 0.45;
+pub const BOLT_MAX_FLIGHT: f32 = 0.45;
 
 /// The shortest, so a point-blank cast still shows something leaving the caster.
-const BOLT_MIN_FLIGHT: f32 = 0.06;
+pub const BOLT_MIN_FLIGHT: f32 = 0.06;
 
 /// How high above its feet a character's effects are centred, as a fraction of its height.
-const CHEST_FRACTION: f32 = 0.6;
+pub const CHEST_FRACTION: f32 = 0.6;
 
 /// Radius of the effect that plays when a character lands, in metres.
 const LANDING_RADIUS: f32 = 0.9;
@@ -86,7 +86,7 @@ const LANDING_RADIUS: f32 = 0.9;
 /// Falling speed above which a landing shows dust, in metres per second.
 ///
 /// Walking off a step is not an impact. This is about a metre of drop.
-const LANDING_SPEED: f32 = 4.5;
+pub const LANDING_SPEED: f32 = 4.5;
 
 /// Colour of dust, which is the one effect in the class that is not fire.
 const DUST_TINT: [f32; 4] = [0.55, 0.50, 0.44, 0.7];

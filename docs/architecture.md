@@ -253,6 +253,54 @@ colour is per instance (`InstanceStyle`), so one material serves every effect.
 would leave a game that plays identically with nothing to look at. Every cap in the system —
 128 instances, 16,384 particles — degrades by dropping visuals and counting the drop.
 
+## Combat audio (Phase 4, audio)
+
+```text
+Simulation ─ CombatEvent ─▶ AudioDirector ─▶ AudioSystem ─▶ stereo frames ─▶ cpal ─▶ WASAPI
+                (observe)     (decides)      (voices, mixer, listener)
+```
+
+The same three layers as the effects, deliberately in the same shape:
+
+* **`engine-game`** announces what happened and is unchanged by this phase. Not one gameplay
+  file mentions a sound, and no event was added for audio: the stream that already carried a
+  bolt's line, an impact's radius and delay, an area's shape and a hit's crit flag carries
+  everything a sound needs, position included.
+* **`engine-audio`** owns what a sound *is*: a static catalogue of 39 sounds, the bank of PCM
+  behind them, a fixed pool of 64 voices with generation-checked handles, the listener model
+  (inverse-distance attenuation, constant-power panning), the mixer's four volumes, the
+  per-sound limits and the priority model. It depends on `engine-core` and **must never gain
+  `engine-game`, `engine-renderer`, `cpal` or `windows`** — the first absence stops a sound
+  reaching into the simulation, the rest keep the whole runtime, mix included, testable with
+  no audio hardware.
+* **`engine-presentation`** is the only layer allowed to say "Detonate sounds like an
+  explosion", exactly as it is the only layer allowed to say what one looks like.
+
+The device is `cpal` in `engine-app`, and it is a device wrapper rather than an engine: it
+opens a stream and asks for blocks of samples, and the mix that fills them is ours. The
+runtime lives behind one mutex — the game thread holds it for the frame's cues, the callback
+for the mix.
+
+**Sounds are authored in code**, like every other asset here. One synthesiser (filtered noise
++ a swept sine + sparse impulses, times an envelope) and a table of parameters produce the
+whole bank at load: 8.5 MiB in ~100 ms at 48 kHz. A WAV dropped into `assets/audio/<folder>/`
+replaces any sound without a code change.
+
+**Gameplay is authoritative and the dependency graph enforces it.** Deleting `engine-audio`
+would leave a game that plays identically in silence. A machine with no sound card, a
+malformed WAV and an empty bank all resolve the same way: cues are counted, nothing is
+played, and the fight is unaffected. Every cap — 64 voices, per-sound caps, minimum intervals
+— degrades by dropping sound and counting the drop.
+
+Three rules the audio layer keeps that are worth stating separately:
+
+* **One listener, and it is the camera.** `AudioDirector::set_listener` copies the gameplay
+  camera's position and basis every frame. There is no second camera to drift.
+* **Timing follows the picture, not the other way round.** A bolt's impact plays when the
+  *cosmetic* bolt lands, using the same three constants `VfxDirector` flies it with.
+* **A burn is not fifty hits.** Damage credited to Ignite plays no impact at all, and the
+  burning bed is capped at four voices however many targets are alight.
+
 ## The user interface (Phase 4)
 
 ```text

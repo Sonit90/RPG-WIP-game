@@ -25,7 +25,7 @@
 use engine_render_data::ui::{UiRect, UiScale};
 use engine_settings::{
     CAMERA_SENSITIVITY_MAX, CAMERA_SENSITIVITY_MIN, CAMERA_SENSITIVITY_STEP, GameSettings,
-    UI_SCALE_MAX, UI_SCALE_MIN, UI_SCALE_STEP,
+    UI_SCALE_MAX, UI_SCALE_MIN, UI_SCALE_STEP, VOLUME_MAX, VOLUME_MIN, VOLUME_STEP,
 };
 
 use super::input::UiInput;
@@ -70,8 +70,46 @@ pub enum SettingsItem {
     CameraSensitivity,
     /// How big the interface is drawn.
     UiScale,
+    /// How loud everything is.
+    MasterVolume,
+    /// How loud the world is.
+    SfxVolume,
+    /// How loud the interface is.
+    UiVolume,
+    /// How loud the environment bed is.
+    AmbientVolume,
     /// Returns to the pause menu.
     Back,
+}
+
+/// Which volume a [`MenuAction::VolumeChanged`] is about.
+///
+/// One action carrying a channel rather than four near-identical actions: the four sliders
+/// behave identically, and the application's handling of them is one `match` arm that ends
+/// in a different setter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VolumeChannel {
+    /// Everything, before any category volume.
+    Master,
+    /// Abilities, impacts, footsteps.
+    Sfx,
+    /// The interface.
+    Ui,
+    /// The environment bed.
+    Ambient,
+}
+
+impl VolumeChannel {
+    /// The label its slider prints.
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Master => "MASTER VOLUME",
+            Self::Sfx => "EFFECTS VOLUME",
+            Self::Ui => "INTERFACE VOLUME",
+            Self::Ambient => "AMBIENCE VOLUME",
+        }
+    }
 }
 
 /// Something the application should do about what the player did in a menu.
@@ -98,6 +136,28 @@ pub enum MenuAction {
     UiScaleChanged(f32),
     /// Interface size settled on this value. Apply it and persist it.
     UiScaleCommitted(f32),
+    /// A volume is being dragged and now reads this. Apply it; do not save it.
+    ///
+    /// Applied while dragging for the same reason the interface size is: the player is
+    /// listening to the thing they are setting, and a volume that only took effect on release
+    /// would have to be set blind.
+    VolumeChanged(VolumeChannel, f32),
+    /// A volume settled on this value. Apply it and persist it.
+    VolumeCommitted(VolumeChannel, f32),
+}
+
+/// The value one volume channel currently has.
+///
+/// The one place the mapping from a channel to a field lives; every read of a volume in this
+/// module goes through it.
+#[must_use]
+pub fn volume_of(settings: GameSettings, channel: VolumeChannel) -> f32 {
+    match channel {
+        VolumeChannel::Master => settings.master_volume,
+        VolumeChannel::Sfx => settings.sfx_volume,
+        VolumeChannel::Ui => settings.ui_volume,
+        VolumeChannel::Ambient => settings.ambient_volume,
+    }
 }
 
 /// Layout constants, in pixels. The menu is a fixed size and centred, like the HUD.
@@ -128,7 +188,25 @@ mod layout {
 ///
 /// One list, read by both the layout and the panel that has to be tall enough to hold them,
 /// so adding a setting cannot leave the panel the wrong size for its contents.
-const SLIDERS: [SettingsItem; 2] = [SettingsItem::CameraSensitivity, SettingsItem::UiScale];
+const SLIDERS: [SettingsItem; 6] = [
+    SettingsItem::CameraSensitivity,
+    SettingsItem::UiScale,
+    SettingsItem::MasterVolume,
+    SettingsItem::SfxVolume,
+    SettingsItem::UiVolume,
+    SettingsItem::AmbientVolume,
+];
+
+/// Which volume each volume slider is, and which field of [`GameSettings`] it shows.
+///
+/// One table, read by construction, by `apply_settings` and by the update loop, so a fifth
+/// volume would be one row here rather than three edits that can disagree.
+const VOLUME_SLIDERS: [(SettingsItem, VolumeChannel); 4] = [
+    (SettingsItem::MasterVolume, VolumeChannel::Master),
+    (SettingsItem::SfxVolume, VolumeChannel::Sfx),
+    (SettingsItem::UiVolume, VolumeChannel::Ui),
+    (SettingsItem::AmbientVolume, VolumeChannel::Ambient),
+];
 
 /// How many sliders the settings panel must make room for.
 const SLIDER_COUNT: f32 = SLIDERS.len() as f32;
@@ -244,6 +322,18 @@ impl MenuSystem {
                 settings.ui_scale,
             ),
         );
+        for (item, channel) in VOLUME_SLIDERS {
+            settings_screen.push(
+                item,
+                Slider::new(
+                    channel.label(),
+                    VOLUME_MIN,
+                    VOLUME_MAX,
+                    VOLUME_STEP,
+                    volume_of(settings, channel),
+                ),
+            );
+        }
         settings_screen.push(SettingsItem::Back, Button::new("BACK"));
 
         let mut system = Self {
@@ -310,6 +400,11 @@ impl MenuSystem {
         }
         if let Some(Widget::Slider(slider)) = self.settings.widget_mut(SettingsItem::UiScale) {
             slider.set_value(settings.ui_scale);
+        }
+        for (item, channel) in VOLUME_SLIDERS {
+            if let Some(Widget::Slider(slider)) = self.settings.widget_mut(item) {
+                slider.set_value(volume_of(settings, channel));
+            }
         }
         self.set_scale(UiScale::new(settings.ui_scale));
     }
@@ -537,6 +632,7 @@ impl MenuSystem {
         // actions below are pushed onto this system's own.
         let mut sensitivity = (None, None);
         let mut ui_scale = (None, None);
+        let mut volumes: Vec<(VolumeChannel, f32, bool)> = Vec::new();
         for (item, event) in self.settings.update(input) {
             match (item, event) {
                 (SettingsItem::Back, WidgetEvent::Activated) => back = true,
@@ -552,8 +648,31 @@ impl MenuSystem {
                 (SettingsItem::UiScale, WidgetEvent::ValueCommitted(value)) => {
                     ui_scale.1 = Some(*value);
                 }
-                _ => {}
+                (item, event) => {
+                    // The four volumes behave identically, so they are handled as a group:
+                    // which one it was is data, not a branch.
+                    if let Some((_, channel)) =
+                        VOLUME_SLIDERS.iter().find(|(slider, _)| slider == item)
+                    {
+                        match event {
+                            WidgetEvent::ValueChanged(value) => {
+                                volumes.push((*channel, *value, false));
+                            }
+                            WidgetEvent::ValueCommitted(value) => {
+                                volumes.push((*channel, *value, true));
+                            }
+                            WidgetEvent::Activated | WidgetEvent::Toggled(_) => {}
+                        }
+                    }
+                }
             }
+        }
+        for (channel, value, committed) in volumes {
+            self.actions.push(if committed {
+                MenuAction::VolumeCommitted(channel, value)
+            } else {
+                MenuAction::VolumeChanged(channel, value)
+            });
         }
         if let Some(value) = sensitivity.0 {
             self.actions.push(MenuAction::SensitivityChanged(value));

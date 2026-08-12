@@ -58,6 +58,13 @@ path = "src/env_bench.rs"
 # to extraction, culling and batching. Separate from game_bench because "what does the fight
 # cost?" and "what do its effects cost?" are different questions, and the scenarios that
 # answer the second run the first one twice — once with effects and once without.
+# Combat's audio on its own: event observation, the director's update, and the mix itself,
+# with no device. Separate from vfx_bench because the two answer different questions and the
+# audio one is the only benchmark in the workspace that measures a second thread's work.
+[[bin]]
+name = "audio_bench"
+path = "src/audio_bench.rs"
+
 [[bin]]
 name = "vfx_bench"
 path = "src/vfx_bench.rs"
@@ -74,6 +81,10 @@ engine-presentation = { workspace = true }
 engine-platform = { workspace = true }
 engine-render-data = { workspace = true }
 engine-vfx = { workspace = true }
+# The audio runtime the benchmark mixes with. No device: the benchmark asks for the block a
+# device would have asked for, which is what makes the mix measurable on a machine with no
+# speakers and inside CI.
+engine-audio = { workspace = true }
 engine-renderer = { workspace = true, default-features = false }
 # Only for the descriptor-heap type constants the benchmark passes through to the
 # renderer's API. No D3D12 calls are made here.

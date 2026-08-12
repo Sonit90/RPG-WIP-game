@@ -34,6 +34,7 @@ use engine_game::firemage::FireAbility;
 use engine_game::input_map::Bindings;
 use engine_game::sim::Simulation;
 use engine_platform::{Window, WindowConfig, WindowEvent};
+use engine_presentation::AudioDirector;
 use engine_presentation::camera::ThirdPersonCamera;
 use engine_presentation::character::CharacterVisual;
 #[cfg(feature = "debug-overlay")]
@@ -50,7 +51,9 @@ use engine_presentation::nameplate::{NameplateConfig, NameplateSet};
 use engine_presentation::snapshot::UiSnapshot;
 use engine_presentation::ui::talent_menu::{TalentMenu, TalentMenuOutcome, TalentTheme};
 use engine_presentation::ui::targeting::{GroundTargeting, TargetingOutcome};
-use engine_presentation::ui::{MenuAction, MenuScratch, MenuSystem, MenuTheme, UiInput};
+use engine_presentation::ui::{
+    MenuAction, MenuScratch, MenuSystem, MenuTheme, UiInput, VolumeChannel,
+};
 use engine_presentation::vfx::{VfxDirector, VfxVisuals};
 use engine_render_data::ui::{UiRect, UiScale};
 use engine_renderer::mesh::MeshData;
@@ -61,6 +64,7 @@ use engine_renderer::{
 use engine_settings::SettingsManager;
 
 use crate::args::{Args, Scene};
+use crate::audio_device::AudioHost;
 
 /// Clear colour of the back buffer: a dark blue-grey that reads as sky.
 const CLEAR_COLOR: [f32; 4] = [0.07, 0.09, 0.13, 1.0];
@@ -80,6 +84,16 @@ const LOD_BIAS: f32 = 1.0;
 
 /// Dummies the VFX test bed spawns, to aim effects at and to judge their scale against.
 const VFX_SCENE_DUMMIES: usize = 3;
+
+/// Dummies the audio test bed spawns. The same three, for the same reason: a sound at a
+/// place is only judgeable against something that is visibly at that place.
+const AUDIO_SCENE_DUMMIES: usize = 3;
+
+/// How far in front of the player the audio test bed drops a sound, in metres.
+///
+/// Far enough that walking towards and away from it is what changes its level — which is
+/// the whole point of dropping it at a place instead of playing it on the player.
+const AUDIO_DEMO_DISTANCE: f32 = 8.0;
 
 /// How far in front of the player the VFX test bed plays an effect, in metres.
 const VFX_DEMO_DISTANCE: f32 = 6.0;
@@ -232,6 +246,18 @@ pub struct App {
     numbers: FloatingNumbers,
     /// Combat, drawn. Observes the same event stream the numbers and the meter read.
     vfx: VfxDirector,
+    /// The audio device and the runtime it mixes. Silent on a machine with no sound card,
+    /// and silent on purpose with `--no-audio`.
+    audio: AudioHost,
+    /// Combat turned into sound: the audio twin of `vfx`, observing the same events.
+    audio_director: AudioDirector,
+    /// What this frame's cues and listener update cost, in milliseconds.
+    ///
+    /// The *game thread's* share only. Mixing happens on the device's own thread and is
+    /// measured by `engine-bench`, because a frame does not wait for it.
+    audio_ms: f64,
+    /// Which sound the audio test bed has selected. Zero in every other scene.
+    audio_demo_selection: usize,
     /// Effects a second the stress driver plays, or zero when it is off.
     vfx_stress: f32,
     /// Effects the stress driver owes, carried between frames.
@@ -329,6 +355,13 @@ impl App {
             // against, and no environment in the way of looking at an explosion.
             Scene::Vfx => (
                 arena::training_arena(&ArenaConfig::with_group(VFX_SCENE_DUMMIES)),
+                None,
+            ),
+            // The audio test bed: the same floor and dummies the VFX bed uses. Sound is
+            // judged by walking around it, so what the scene needs is room to walk and
+            // something to stand next to for a sense of distance.
+            Scene::Audio => (
+                arena::training_arena(&ArenaConfig::with_group(AUDIO_SCENE_DUMMIES)),
                 None,
             ),
             Scene::Collision => {
@@ -446,6 +479,33 @@ impl App {
             ),
         };
 
+        // The device, and the runtime it will mix. Opened before the first frame so the
+        // synthesis cost — a few million samples of arithmetic — is paid at load rather than
+        // on the frame the first spell is cast.
+        //
+        // `--no-audio` builds the same runtime with no device and no samples, which is the
+        // control the performance audit compares against: cues are still made, limited and
+        // counted, so the difference between the two runs is the mix and the hardware.
+        let audio = if args.audio {
+            AudioHost::open()
+        } else {
+            log::info!("audio: --no-audio; no device will be opened");
+            AudioHost::silent(crate::audio_device::FALLBACK_SAMPLE_RATE)
+        };
+        let audio_director = AudioDirector::new();
+        apply_volumes(&audio, game_settings.settings());
+        let settings_now = game_settings.settings();
+        log::info!(
+            "audio: {} at {} Hz, {} channel(s) | master {:.2}, sfx {:.2}, ui {:.2}, ambient {:.2}",
+            if audio.is_open() { "playing" } else { "silent" },
+            audio.sample_rate(),
+            audio.channels(),
+            settings_now.master_volume,
+            settings_now.sfx_volume,
+            settings_now.ui_volume,
+            settings_now.ambient_volume,
+        );
+
         // Built before the first frame so the UI never sees a default-constructed snapshot.
         let snapshot = UiSnapshot::build(&simulation);
 
@@ -497,6 +557,10 @@ impl App {
             game_ui: GameUi::with_scale(ui_scale),
             numbers: FloatingNumbers::new(),
             vfx: VfxDirector::new(vfx_visuals),
+            audio,
+            audio_director,
+            audio_ms: 0.0,
+            audio_demo_selection: 0,
             vfx_stress: args.vfx_stress.max(0.0),
             vfx_stress_debt: 0.0,
             vfx_stress_next: 0,
@@ -527,6 +591,17 @@ impl App {
                     self.last_overlay_update = Instant::now() - OVERLAY_UPDATE_INTERVAL;
                 }
                 log::info!("overlay {}", if enabled { "shown" } else { "hidden" });
+            }
+            // Audio off and on, as a *developer* switch rather than a mute: it stops the
+            // work, not just the sound, which is what makes "with audio" and "without audio"
+            // two measurable states of one build.
+            KeyCode::F8 => {
+                let enabled = !self.audio_director.enabled();
+                if let Ok(mut audio) = self.audio.system().lock() {
+                    self.audio_director.set_enabled(enabled, &mut audio);
+                    audio.set_enabled(enabled);
+                }
+                log::info!("audio {}", if enabled { "on" } else { "off" });
             }
             KeyCode::F9 => {
                 let enabled = !self.renderer.wireframe();
@@ -800,6 +875,7 @@ impl App {
         for index in 0..self.menu_actions.len() {
             match self.menu_actions[index] {
                 MenuAction::Opened => {
+                    self.play_ui_sound(engine_audio::SoundId::UiSelect);
                     // The cursor has to come back so the player can click a button with it.
                     // The game itself keeps running: this is a multiplayer world, and it
                     // does not stop because one player opened a menu.
@@ -807,12 +883,18 @@ impl App {
                     self.menu.apply_settings(self.settings.settings());
                     log::info!("menu opened");
                 }
-                MenuAction::Closed => log::info!("menu closed"),
+                MenuAction::Closed => {
+                    self.play_ui_sound(engine_audio::SoundId::UiCancel);
+                    log::info!("menu closed");
+                }
                 MenuAction::OpenedSettings => {
+                    self.play_ui_sound(engine_audio::SoundId::UiClick);
                     // The screen shows what is in the settings, not what it last showed.
                     self.menu.apply_settings(self.settings.settings());
                 }
-                MenuAction::ClosedSettings => {}
+                MenuAction::ClosedSettings => {
+                    self.play_ui_sound(engine_audio::SoundId::UiCancel);
+                }
                 MenuAction::QuitRequested => {
                     log::info!("quit requested from the menu");
                     // Through the engine's own lifecycle: the loop finishes this frame,
@@ -824,6 +906,12 @@ impl App {
                 MenuAction::SensitivityCommitted(value) => self.apply_sensitivity(value, true),
                 MenuAction::UiScaleChanged(value) => self.apply_ui_scale(value, false),
                 MenuAction::UiScaleCommitted(value) => self.apply_ui_scale(value, true),
+                MenuAction::VolumeChanged(channel, value) => {
+                    self.apply_volume(channel, value, false);
+                }
+                MenuAction::VolumeCommitted(channel, value) => {
+                    self.apply_volume(channel, value, true);
+                }
             }
         }
     }
@@ -864,6 +952,42 @@ impl App {
             log::info!(
                 "settings: interface size {:.2} saved",
                 self.settings.settings().ui_scale
+            );
+        }
+    }
+
+    /// Plays one interface sound.
+    ///
+    /// The interface is the one thing that makes a sound without the simulation announcing
+    /// anything, because pressing a button is not something that happens in the world.
+    fn play_ui_sound(&mut self, sound: engine_audio::SoundId) {
+        if let Ok(mut audio) = self.audio.system().lock() {
+            self.audio_director.play_ui(sound, &mut audio);
+        }
+    }
+
+    /// Applies a volume, and writes it to disk if the interaction has finished.
+    ///
+    /// The value goes to the settings first and reaches the mixer from there, so what the
+    /// player hears while dragging is exactly what the file would be written with — snapping
+    /// included. Applied on every change rather than only on release because the slider is
+    /// the one control whose effect is the thing the player is listening to.
+    fn apply_volume(&mut self, channel: VolumeChannel, value: f32, persist: bool) {
+        match channel {
+            VolumeChannel::Master => self.settings.set_master_volume(value),
+            VolumeChannel::Sfx => self.settings.set_sfx_volume(value),
+            VolumeChannel::Ui => self.settings.set_ui_volume(value),
+            VolumeChannel::Ambient => self.settings.set_ambient_volume(value),
+        }
+        apply_volumes(&self.audio, self.settings.settings());
+        if persist && self.settings.save_if_dirty() {
+            let settings = self.settings.settings();
+            log::info!(
+                "settings: volumes saved (master {:.2}, sfx {:.2}, ui {:.2}, ambient {:.2})",
+                settings.master_volume,
+                settings.sfx_volume,
+                settings.ui_volume,
+                settings.ambient_volume,
             );
         }
     }
@@ -1149,6 +1273,96 @@ impl App {
         }
     }
 
+    /// The audio test bed's controls.
+    ///
+    /// Walking is the instrument: a sound is *dropped at a place* and judged by walking
+    /// towards it, away from it and around it, which is the only way to hear attenuation and
+    /// panning for what they are. Playing everything on the player would test the mixer and
+    /// nothing else.
+    ///
+    /// ```text
+    /// Z / X     previous / next sound in the catalogue
+    /// C         drop the selected sound in front of you
+    /// V         play it on you, with no place at all (what UI sounds do)
+    /// B         stop everything that is playing
+    /// N         eight at once, to hear the limiter and the priority model decide
+    /// 1 - 0     jump straight to one of the first ten sounds
+    /// ```
+    fn update_audio_demo(&mut self, ctx: &mut EngineContext) {
+        use engine_audio::{SoundCue, SoundId};
+
+        let body = self.simulation.player_body().copied();
+        let Some(body) = body else {
+            return;
+        };
+        let yaw = body.facing_yaw;
+        let forward = Vec3::new(-yaw.sin(), 0.0, -yaw.cos());
+        let anchor = body.position + forward * AUDIO_DEMO_DISTANCE + Vec3::new(0.0, 1.0, 0.0);
+
+        // The first ten sounds get a digit each; everything past them is reached by
+        // stepping. Thirty-nine keys would be a keyboard map nobody could remember.
+        let mut selection = self.audio_demo_selection;
+        for number in 0..10 {
+            let Some(key) = KeyCode::digit_key((number + 1) % 10) else {
+                continue;
+            };
+            if ctx.input().was_key_pressed(key) {
+                selection = number as usize;
+            }
+        }
+        if ctx.input().was_key_pressed(KeyCode::Z) {
+            selection = (selection + engine_audio::SOUND_COUNT - 1) % engine_audio::SOUND_COUNT;
+        }
+        if ctx.input().was_key_pressed(KeyCode::X) {
+            selection = (selection + 1) % engine_audio::SOUND_COUNT;
+        }
+        let sound = SoundId::ALL
+            .get(selection)
+            .copied()
+            .unwrap_or(SoundId::UiClick);
+        self.audio_demo_selection = selection;
+
+        let Ok(mut audio) = self.audio.system().lock() else {
+            return;
+        };
+        if ctx.input().was_key_pressed(KeyCode::C) {
+            audio.play(SoundCue::at(sound, anchor));
+            log::info!(
+                "audio demo: {} at {:.0} m, {} priority {}",
+                sound.name(),
+                AUDIO_DEMO_DISTANCE,
+                sound.desc().category.as_str(),
+                sound.desc().priority,
+            );
+        }
+        if ctx.input().was_key_pressed(KeyCode::V) {
+            audio.play(SoundCue::ui(sound));
+            log::info!("audio demo: {} with no position", sound.name());
+        }
+        if ctx.input().was_key_pressed(KeyCode::B) {
+            audio.stop_all();
+            log::info!("audio demo: everything stopped");
+        }
+        if ctx.input().was_key_pressed(KeyCode::N) {
+            // Eight of the same thing at once, spread around the player: what the per-sound
+            // cap and the minimum interval do is audible here and nowhere else.
+            for step in 0..8 {
+                let angle = step as f32 / 8.0 * std::f32::consts::TAU;
+                let around = body.position
+                    + Vec3::new(angle.cos(), 0.0, angle.sin()) * AUDIO_DEMO_DISTANCE
+                    + Vec3::new(0.0, 1.0, 0.0);
+                audio.play(SoundCue::at(sound, around));
+            }
+            let stats = audio.stats();
+            log::info!(
+                "audio demo: eight {} → {} playing, {} refused",
+                sound.name(),
+                audio.playing(sound),
+                stats.suppressed_interval + stats.suppressed_limit + stats.dropped,
+            );
+        }
+    }
+
     fn update_targeting_decal(&mut self) {
         let Some(target) = self.targeting.active() else {
             if let Some(decal) = self.targeting_decal.take() {
@@ -1355,7 +1569,7 @@ impl App {
         let ui = self.renderer.ui_stats();
         log::info!(
             "CPU mean {:.3} ms ({:.0} FPS) p99 {:.3} | GPU {} | sim {:.3} ms ({} ticks) | \
-             extract {:.3} ms | vfx {:.3} ms | cull {:.3} ms | ui {:.3} ms ({} quads, {} cmds) | visible {} | \
+             extract {:.3} ms | vfx {:.3} ms | audio {:.3} ms | cull {:.3} ms | ui {:.3} ms ({} quads, {} cmds) | visible {} | \
              draws {} ({} skinned) | tris {}",
             summary.cpu.mean_ms,
             summary.cpu.mean_fps(),
@@ -1368,6 +1582,7 @@ impl App {
             stats.ticks,
             self.extract_ms,
             self.vfx_ms,
+            self.audio_ms,
             self.renderer.last_cull_ms(),
             self.ui_ms + self.renderer.ui_build_ms(),
             ui.quads,
@@ -1389,6 +1604,31 @@ impl App {
             vfx.system.dropped_particles,
             self.renderer.particles_last_frame(),
         );
+        // Audio, with every refusal counted: what is playing, what was thinned by the
+        // limiter, and what the pool had no room for. A wall of identical sounds shows up
+        // here as a large `thinned` and a steady `voices`, which is the system working.
+        if let Ok(audio) = self.audio.system().lock() {
+            let stats = self.audio_director.stats(&audio);
+            log::info!(
+                "  audio: {} voices (peak {} of {}) | started {} | thinned {} | dropped {} | stolen {} | missing {} | limited {} | {} loops, {} bolts | device {}",
+                stats.system.active,
+                stats.system.peak_active,
+                stats.system.capacity,
+                stats.system.started,
+                stats.system.suppressed_interval + stats.system.suppressed_limit,
+                stats.system.dropped,
+                stats.system.stolen,
+                stats.system.missing,
+                stats.system.limited,
+                stats.loops,
+                stats.bolts,
+                if self.audio.is_open() {
+                    "open"
+                } else {
+                    "silent"
+                },
+            );
+        }
         if let Some(scene) = self.environment.as_ref() {
             let environment = self.placer.stats();
             log::info!(
@@ -1563,7 +1803,11 @@ impl Application for App {
             self.update_menu(ctx);
             // The collision demo has no combat, no targets and no resources; running the
             // class's interface there would take its digits away from the test stations.
-            if !self.menu.is_open() && !self.scene.is_collision() && !self.scene.is_vfx() {
+            if !self.menu.is_open()
+                && !self.scene.is_collision()
+                && !self.scene.is_vfx()
+                && !self.scene.is_audio()
+            {
                 self.update_firemage_ui(ctx);
             }
             self.update_targeting_decal();
@@ -1572,6 +1816,9 @@ impl Application for App {
             }
             if self.scene.is_vfx() {
                 self.update_vfx_demo(ctx);
+            }
+            if self.scene.is_audio() {
+                self.update_audio_demo(ctx);
             }
 
             // While a spell is being aimed both buttons are spoken for — left confirms
@@ -1695,6 +1942,30 @@ impl Application for App {
                 self.controller
                     .apply(&mut self.camera, aspect_of(width, height))?;
             }
+        }
+
+        {
+            engine_core::profile_scope!(profiler, "Audio");
+            let started = Instant::now();
+            // After the camera, because the listener *is* the camera: reading it here means
+            // a sound is placed against the view the player is about to be shown rather
+            // than against last frame's.
+            //
+            // One lock for the whole stage. The device's callback takes the same one for the
+            // length of a mix; both are short, and the arrangement is documented in
+            // `crate::audio_device`.
+            if let Ok(mut audio) = self.audio.system().lock() {
+                self.audio_director.set_listener(&self.camera, &mut audio);
+                // The same event slice the numbers, the flash and the effects just read.
+                // Nothing in the simulation knows any of the four exist.
+                self.audio_director.observe(&self.simulation, &mut audio);
+                self.audio_director.update(
+                    &self.simulation,
+                    ctx.time().real_delta().as_secs_f32(),
+                    &mut audio,
+                );
+            }
+            self.audio_ms = started.elapsed().as_secs_f64() * 1e3;
         }
 
         // After the camera, because it is a distance from the camera, and before the frame
@@ -2054,6 +2325,12 @@ fn log_controls(args: &Args, demo: Option<&DemoScene>) {
                 log::info!("  {key}  {}", effect.name());
             }
         }
+        None if args.scene.is_audio() => {
+            log::info!(
+                "audio demo: {AUDIO_SCENE_DUMMIES} dummies, one key per sound, {} sounds in the catalogue",
+                engine_audio::SOUND_COUNT
+            );
+        }
         None if args.scene.is_environment() => {
             log::info!("environment demo: the combat arena plus one of every asset, and no fight")
         }
@@ -2068,6 +2345,13 @@ fn log_controls(args: &Args, demo: Option<&DemoScene>) {
         log::info!("  R                back to the first station");
     } else if args.scene.is_vfx() {
         log::info!("  1 - 0 Z X C      play one effect from the catalogue, in front of you");
+    } else if args.scene.is_audio() {
+        log::info!("  1 - 0            select one of the first ten sounds");
+        log::info!("  Z / X            previous / next sound in the catalogue");
+        log::info!("  C                drop it 8 m in front of you; walk to hear it fall off");
+        log::info!("  V                play it with no position at all");
+        log::info!("  B                stop everything");
+        log::info!("  N                eight at once, to hear the limiter decide");
     } else {
         log::info!("  1 - 0            firebolt, flame lance, flame wave, meteor,");
         log::info!("                   firestorm, pyroblast, inferno, fire detonation,");
@@ -2083,7 +2367,27 @@ fn log_controls(args: &Args, demo: Option<&DemoScene>) {
     log::info!("  MOUSE WHEEL      camera distance");
     log::info!("  F3               collision debug drawing on/off");
     log::info!("  F5               developer overlay on/off");
+    log::info!("  F8               audio on/off");
     log::info!("  F9               wireframe on/off");
+}
+
+/// Pushes the player's four volumes into the mixer.
+///
+/// The settings are authoritative and the mixer is a view of them: every path that changes a
+/// volume — loading the file, dragging a slider — ends here, so there is one place where a
+/// number in `settings.cfg` becomes a number the mix multiplies by.
+fn apply_volumes(audio: &AudioHost, settings: engine_settings::GameSettings) {
+    let Ok(mut system) = audio.system().lock() else {
+        return;
+    };
+    let mixer = system.mixer_mut();
+    mixer.set_master(settings.master_volume);
+    mixer.set_category(engine_audio::AudioCategory::Sfx, settings.sfx_volume);
+    mixer.set_category(engine_audio::AudioCategory::Ui, settings.ui_volume);
+    mixer.set_category(
+        engine_audio::AudioCategory::Ambient,
+        settings.ambient_volume,
+    );
 }
 
 /// Uploads the meshes and materials the collision debug view draws with.

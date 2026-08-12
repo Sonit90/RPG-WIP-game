@@ -244,6 +244,31 @@ a per-instance one was meant) all produce a healthy CPU state and a black frame.
 asserts that each produces an effect, that an area is drawn at the radius it hits, that a
 rapid rotation never exhausts the pools, and that effects survive their targets dying.
 
+## Audio tests (Phase 4, audio)
+
+Audio is tested at four levels and **none of them needs an audio device**, which is the point
+of the split described in `docs/architecture.md`: the mix is a function from voices to
+samples, and samples are something a test can assert on.
+
+| Level | Where | Needs hardware |
+| --- | --- | --- |
+| The synthesiser, the WAV reader, the catalogue and the bank | `engine-audio` unit tests | no |
+| Voices, limits, priority, panning, attenuation and the mix | `engine-audio` unit tests | no |
+| Volumes, their bounds and their file | `engine-settings` unit tests | no |
+| The device wrapper's channel mapping | `engine-app` unit tests | no |
+| The director, and every ability | `engine-presentation/tests/ability_audio.rs` | no |
+
+`engine-presentation/tests/ability_audio.rs` casts every ability on the bar in a real fight
+and asserts that each one produces a sound; that Firebolt's chain is cast, flight and impact
+in that order and leaves nothing playing; that fifty burning targets are at most four burning
+beds; that a rapid rotation never exhausts the voice pool; that the same fight is measurably
+quieter from 45 m away than from nothing; and that an **empty bank** — the state a failed
+load leaves — costs the fight nothing at all.
+
+The last of those is the phase's stated failure mode, tested rather than asserted in prose: a
+game whose audio did not load keeps running, keeps dealing damage, counts every missed cue,
+and says so once per sound in the log.
+
 ## Manual verification
 
 Some behaviour cannot be asserted automatically: that a window actually appears, that

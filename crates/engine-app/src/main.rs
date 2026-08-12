@@ -5,6 +5,7 @@
 
 mod app;
 mod args;
+mod audio_device;
 
 use std::process::ExitCode;
 

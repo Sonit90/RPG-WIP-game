@@ -26,6 +26,10 @@ engine-render-data = { workspace = true }
 # gameplay thing looks like a particular effect, so this dependency lives here and nowhere
 # else in the graph.
 engine-vfx = { workspace = true }
+# Sound as data and its runtime. Here for the same reason engine-vfx is: this crate is where
+# a gameplay event becomes a presentation decision, and "Detonate sounds like an explosion"
+# is exactly that kind of decision. engine-audio itself never learns what an ability is.
+engine-audio = { workspace = true }
 # The settings a menu shows: their bounds, their defaults and their type. The UI reads them;
 # it never loads or writes the file.
 engine-settings = { workspace = true }

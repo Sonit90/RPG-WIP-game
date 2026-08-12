@@ -86,6 +86,34 @@ pub const UI_SCALE_DEFAULT: f32 = 1.00;
 /// 1.5, 2.0 — rather than between them.
 pub const UI_SCALE_STEP: f32 = 0.05;
 
+/// Quietest a volume slider goes: silence.
+pub const VOLUME_MIN: f32 = 0.00;
+
+/// Loudest. One is "as loud as the mix was authored"; above it would be amplification, and
+/// amplification belongs to a limiter rather than to a slider.
+pub const VOLUME_MAX: f32 = 1.00;
+
+/// Granularity of a volume slider.
+///
+/// A twentieth, so the handle stops on the round numbers a player names and can return to.
+pub const VOLUME_STEP: f32 = 0.05;
+
+/// How loud a fresh install is overall.
+///
+/// Not 1.0: a game that opens at full output on a machine whose system volume is already up
+/// is the first impression nobody wants, and 0.8 leaves room to turn *up*.
+pub const MASTER_VOLUME_DEFAULT: f32 = 0.80;
+
+/// How loud combat is, relative to the master.
+pub const SFX_VOLUME_DEFAULT: f32 = 1.00;
+
+/// How loud the interface is. Below the world, because a button press is confirmation and
+/// not an event.
+pub const UI_VOLUME_DEFAULT: f32 = 0.70;
+
+/// How loud the bed under the arena is. Well below everything, because it never stops.
+pub const AMBIENT_VOLUME_DEFAULT: f32 = 0.50;
+
 /// Everything the player can change.
 ///
 /// Every field is a plain value with a default; nothing here knows about a widget, a file or
@@ -98,6 +126,14 @@ pub struct GameSettings {
     pub camera_sensitivity: f32,
     /// How big the interface is drawn, as a multiple of its design size.
     pub ui_scale: f32,
+    /// How loud everything is, before any category volume.
+    pub master_volume: f32,
+    /// How loud the world is: abilities, impacts, footsteps.
+    pub sfx_volume: f32,
+    /// How loud the interface is.
+    pub ui_volume: f32,
+    /// How loud the environment bed is.
+    pub ambient_volume: f32,
 }
 
 impl Default for GameSettings {
@@ -106,6 +142,10 @@ impl Default for GameSettings {
         Self {
             camera_sensitivity: CAMERA_SENSITIVITY_DEFAULT,
             ui_scale: UI_SCALE_DEFAULT,
+            master_volume: MASTER_VOLUME_DEFAULT,
+            sfx_volume: SFX_VOLUME_DEFAULT,
+            ui_volume: UI_VOLUME_DEFAULT,
+            ambient_volume: AMBIENT_VOLUME_DEFAULT,
         }
     }
 }
@@ -139,6 +179,31 @@ impl GameSettings {
             );
             settings.ui_scale = UI_SCALE_DEFAULT;
         }
+        // The four volumes share one rule, so they share one loop rather than four copies of
+        // the same three lines: a volume is a finite number between silence and full, and a
+        // value that is not becomes the default for *that* volume.
+        for (name, value, default) in [
+            (
+                "master_volume",
+                &mut settings.master_volume,
+                MASTER_VOLUME_DEFAULT,
+            ),
+            ("sfx_volume", &mut settings.sfx_volume, SFX_VOLUME_DEFAULT),
+            ("ui_volume", &mut settings.ui_volume, UI_VOLUME_DEFAULT),
+            (
+                "ambient_volume",
+                &mut settings.ambient_volume,
+                AMBIENT_VOLUME_DEFAULT,
+            ),
+        ] {
+            if !is_in_range(*value, VOLUME_MIN, VOLUME_MAX) {
+                log::warn!(
+                    "settings: {name} {} is outside {VOLUME_MIN}..{VOLUME_MAX}; using the                      default {default}",
+                    *value
+                );
+                *value = default;
+            }
+        }
         settings
     }
 
@@ -159,6 +224,19 @@ impl GameSettings {
         let steps = ((value - CAMERA_SENSITIVITY_MIN) / CAMERA_SENSITIVITY_STEP).round();
         let snapped = CAMERA_SENSITIVITY_MIN + steps * CAMERA_SENSITIVITY_STEP;
         snapped.clamp(CAMERA_SENSITIVITY_MIN, CAMERA_SENSITIVITY_MAX)
+    }
+
+    /// This value clamped into the volume range and snapped to the step.
+    ///
+    /// What every volume slider produces; kept here so no widget owns the rule.
+    #[must_use]
+    pub fn snap_volume(value: f32) -> f32 {
+        if !value.is_finite() {
+            return VOLUME_MAX;
+        }
+        let steps = ((value - VOLUME_MIN) / VOLUME_STEP).round();
+        let snapped = VOLUME_MIN + steps * VOLUME_STEP;
+        snapped.clamp(VOLUME_MIN, VOLUME_MAX)
     }
 
     /// This value clamped into the interface-size range and snapped to the step.
@@ -313,6 +391,38 @@ impl SettingsManager {
         });
     }
 
+    /// Sets the master volume, snapping it to the slider's step and range.
+    pub fn set_master_volume(&mut self, value: f32) {
+        self.update(GameSettings {
+            master_volume: GameSettings::snap_volume(value),
+            ..self.settings
+        });
+    }
+
+    /// Sets the world volume, snapping it to the slider's step and range.
+    pub fn set_sfx_volume(&mut self, value: f32) {
+        self.update(GameSettings {
+            sfx_volume: GameSettings::snap_volume(value),
+            ..self.settings
+        });
+    }
+
+    /// Sets the interface volume, snapping it to the slider's step and range.
+    pub fn set_ui_volume(&mut self, value: f32) {
+        self.update(GameSettings {
+            ui_volume: GameSettings::snap_volume(value),
+            ..self.settings
+        });
+    }
+
+    /// Sets the ambience volume, snapping it to the slider's step and range.
+    pub fn set_ambient_volume(&mut self, value: f32) {
+        self.update(GameSettings {
+            ambient_volume: GameSettings::snap_volume(value),
+            ..self.settings
+        });
+    }
+
     /// Sets the interface size, snapping it to the slider's step and range.
     pub fn set_ui_scale(&mut self, value: f32) {
         self.update(GameSettings {
@@ -429,11 +539,16 @@ mod tests {
         let settings = GameSettings {
             camera_sensitivity: 2.35,
             ui_scale: 1.25,
+            master_volume: 0.55,
+            sfx_volume: 0.9,
+            ui_volume: 0.35,
+            ambient_volume: 0.0,
         };
         let text = serde_json::to_string(&settings).expect("settings serialize");
         let parsed: GameSettings = serde_json::from_str(&text).expect("settings parse");
         assert_eq!(parsed, settings);
         assert!(text.contains("camera_sensitivity"), "{text}");
+        assert!(text.contains("master_volume"), "{text}");
     }
 
     #[test]
@@ -698,6 +813,7 @@ mod tests {
             GameSettings {
                 camera_sensitivity: 3.0,
                 ui_scale: 1.5,
+                ..GameSettings::default()
             },
         );
 

@@ -29,6 +29,14 @@ engine-presentation = { workspace = true }
 # The effect catalogue, so the VFX test bed can name an effect to play. The director that
 # plays them in ordinary combat lives in engine-presentation and needs nothing from here.
 engine-vfx = { workspace = true }
+# The sound catalogue, so the audio test bed can name a sound to play, and the runtime the
+# device callback mixes. The director that plays them in ordinary combat lives in
+# engine-presentation and needs nothing from here.
+engine-audio = { workspace = true }
+# The audio backend, and the only crate in the workspace that talks to sound hardware. It is
+# a device wrapper, not an engine: the mixing is ours, in engine-audio, where it is testable
+# without a machine having speakers. See phase_audio.md, Milestone 2.
+cpal = "0.18"
 # The player's settings and the file they live in.
 engine-settings = { workspace = true }
 # `release_max_level_info` compiles trace! and debug! out of release builds entirely:

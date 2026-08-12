@@ -24,6 +24,8 @@
 //! character's mesh ends up, how the camera follows it, and what the overlay prints is unit
 //! tested without a device, a window or an adapter.
 
+/// Combat heard: the layer that decides what an ability sounds like.
+pub mod audio;
 pub mod camera;
 /// The character visual controller: gameplay state in, a posed and placed character out.
 pub mod character;
@@ -42,6 +44,7 @@ pub mod ui;
 /// Combat drawn: the layer that decides what an ability looks like.
 pub mod vfx;
 
+pub use audio::{AudioDirector, AudioDirectorStats, HEAVY_DAMAGE, STRIDE};
 pub use camera::ThirdPersonCamera;
 pub use collision_debug::{CollisionDebug, DebugBindings};
 pub use collision_hud::CollisionHudModel;
@@ -64,6 +67,6 @@ pub use snapshot::{
 };
 pub use ui::{
     MenuAction, MenuScreen, MenuSystem, MenuTheme, PauseItem, SettingsItem, UiInput, UiScreen,
-    Widget, WidgetEvent, WidgetState,
+    VolumeChannel, Widget, WidgetEvent, WidgetState, volume_of,
 };
 pub use vfx::{ShapeBinding, VfxDirector, VfxDirectorStats, VfxVisuals};

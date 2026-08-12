@@ -909,3 +909,75 @@ Under artificial stress (120+ effects a second) the system sits at its 128-insta
 and refuses effects, while the particle pool never drops one (peak 12,112 of 16,384). Real
 combat peaks at 24 instances. The caps are left as they are: raising one to make a synthetic
 scenario look better is how a budget stops describing the game.
+
+# Phase 4 — audio
+
+Ryzen 5800X, 1920x1080, vsync off. Audio measurements come from `audio_bench` (1,200 measured
+frames per scenario, 300 warm-up, 48 kHz, no device) and from the game's own report line.
+
+## What audio costs the game thread
+
+The game thread's share is observing the frame's events, resolving anchors and updating the
+listener. The mix is **not** on it: it happens on the device's callback thread.
+
+| Scenario | sim us | observe us | director us | game thread total | p99 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| idle, no audio | 0.8 | — | — | 0.8 | 1.2 |
+| idle | 0.7 | 0.0 | 0.1 | 0.8 | 1.2 |
+| 1 target, no audio | 0.5 | — | — | 0.6 | 0.8 |
+| 1 target | 0.6 | 0.0 | 0.3 | 0.9 | 2.3 |
+| 10 targets | 0.7 | 0.0 | 0.3 | 1.1 | 1.9 |
+| 50 targets | 1.5 | 0.0 | 0.3 | 1.8 | 3.0 |
+| 100 targets | 2.5 | 0.0 | 0.3 | 2.8 | 4.5 |
+| aoe-heavy, 50, no audio | 1.4 | — | — | 1.5 | 2.0 |
+| aoe-heavy, 50 | 1.5 | 0.0 | 0.3 | 1.9 | 3.3 |
+| worst case, 100 | 2.5 | 0.0 | 0.3 | 2.8 | 4.7 |
+
+**Audio costs the game thread 0.3-0.4 us a frame**, measured as the difference between paired
+runs of the same fight in the same binary. Against a 240 FPS budget of 4,170 us that is under
+0.01 %. Event observation does not appear at all above the timer's resolution: it is one pass
+over a slice of a few dozen events.
+
+## What the mix costs the audio thread
+
+One callback is 512 frames at 48 kHz — 10.7 ms of sound, asked for roughly every 2.5 game
+frames at 240 FPS.
+
+| Scenario | voices (mean) | voices (peak) | mix per callback | share of the callback's own budget |
+| --- | ---: | ---: | ---: | ---: |
+| idle (wind only) | 1.0 | 1 | 2.7 us | 0.03 % |
+| 1-100 targets, single-target rotation | 6.4-6.7 | 12 | 14.6-16.1 us | 0.15 % |
+| aoe-heavy, 50 | 6.6 | 13 | 15.2 us | 0.14 % |
+| worst case, 100 | 6.6 | 13 | 15.3 us | 0.14 % |
+
+The mix is flat in the number of *targets* and linear in the number of *voices*, which is the
+whole point of the limiter: a hundred targets and one target produce the same handful of
+voices. The pool is 64 and combat peaks at 13.
+
+## In the game
+
+`mygame --scene combat --dummies 50 --frames 20000 --report 1`, with and without `--no-audio`:
+
+| Configuration | CPU mean | FPS | GPU mean | audio stage |
+| --- | ---: | ---: | ---: | ---: |
+| Audio on | 0.432 ms | 2,315 | 0.070 ms | 0.000 ms |
+| `--no-audio` | 0.426 ms | 2,347 | 0.070 ms | 0.000 ms |
+
+The difference is inside the run-to-run noise of a sub-millisecond frame; the reported audio
+stage is below the 1 us the line prints to.
+
+## Memory and allocation
+
+* **Bank**: 8.5 MiB, 39 sounds and 64 variations, synthesised at load in ~100 ms at 48 kHz.
+  Mono `f32` PCM, shared between voices behind an `Arc` — a voice holds a cursor, not a copy.
+* **Voices**: 64, allocated once at construction and never again.
+* **Allocation**: `audio_bench` counts **zero** allocations across the measured frames in
+  every scenario, audio on or off. The device callback allocates nothing either: its scratch
+  buffer is grown once to the largest block the device asks for.
+
+## The bounds that are reached, and by design
+
+The area rotation on 50-100 targets refuses 79-115 cues over 1,200 frames — all of them to
+the per-sound minimum interval and the per-sound cap, none of them to the voice pool
+(`dropped` is 0 in every scenario). That is the limiter working: fifty simultaneous hits are
+one hit sound, and fifty burning targets are four burning beds.

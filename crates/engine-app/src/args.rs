@@ -42,6 +42,14 @@ pub enum Scene {
     /// as it takes — not winning a fight to get one. It brings no environment, so nothing
     /// but the effect is in the picture.
     Vfx,
+    /// The audio test bed: a flat floor, a few dummies, and one key per sound in the
+    /// catalogue.
+    ///
+    /// Separate from the VFX scene for the same reason that one is separate from combat:
+    /// judging whether an explosion *reads* means playing it on demand, from a chosen
+    /// distance, as often as it takes — and judging whether it reads with a picture on top
+    /// of it is a different question, asked later, in the combat scene.
+    Audio,
 }
 
 impl Scene {
@@ -54,6 +62,7 @@ impl Scene {
             Self::Character => "CHARACTER",
             Self::Environment => "ENVIRONMENT",
             Self::Vfx => "VFX",
+            Self::Audio => "AUDIO",
         }
     }
 
@@ -89,6 +98,12 @@ impl Scene {
     pub fn is_vfx(self) -> bool {
         matches!(self, Self::Vfx)
     }
+
+    /// Whether this is the audio test bed.
+    #[must_use]
+    pub fn is_audio(self) -> bool {
+        matches!(self, Self::Audio)
+    }
 }
 
 impl FromStr for Scene {
@@ -101,6 +116,7 @@ impl FromStr for Scene {
             "character" | "model" | "CHARACTER" => Ok(Self::Character),
             "environment" | "env" | "level" | "ENVIRONMENT" => Ok(Self::Environment),
             "vfx" | "effects" | "VFX" => Ok(Self::Vfx),
+            "audio" | "sound" | "AUDIO" => Ok(Self::Audio),
             _ => Err(()),
         }
     }
@@ -126,7 +142,10 @@ options:
   --dummies <count>      training dummies in the group, on top of the single dummy
                          (default 4, combat scene only)
   --scene <name>         which scenario to load: combat (default), collision,
-                         character, environment or vfx. The vfx scene is the effect
+                         character, environment, vfx or audio. The audio scene is the
+                         sound test bed: a floor, a few dummies, and one key per sound
+                         in the catalogue, so a sound can be judged on its own and from
+                         a chosen distance. The vfx scene is the effect
                          test bed: a floor, a few dummies, and one key per effect in
                          the catalogue, so an explosion can be played on demand from a
                          chosen angle instead of being waited for in a fight. The environment scene is the arena
@@ -146,6 +165,9 @@ options:
   --vfx-stress <rate>    play <rate> catalogue effects a second around the player, for
                          measurement. Presentation only: it starts no ability and deals
                          no damage, so what it measures is what effects cost to draw
+  --no-audio             open no audio device. A measurement control, exactly as --no-ui
+                         is: the runtime still runs, still limits and still counts, so
+                         the difference between two runs is the mix and the device
   --no-ui                do not draw the game UI. A measurement control: it makes the
                          interface's cost the difference between two runs of the same
                          binary rather than of two builds
@@ -176,6 +198,12 @@ pub struct Args {
     /// the difference between two runs of one binary instead of two separately compiled
     /// builds, which is what made the Phase 3 nameplate numbers hard to trust.
     pub ui: bool,
+    /// Whether an audio device is opened.
+    ///
+    /// A measurement control, exactly as [`Args::ui`] is: the audio runtime runs either
+    /// way, so what the flag removes is the device and the mix, and the difference between
+    /// two runs is what audio actually costs.
+    pub audio: bool,
     /// Whether to open a borderless fullscreen window.
     pub fullscreen: bool,
     /// Whether the renderer's validation layer was explicitly requested.
@@ -216,6 +244,7 @@ impl Default for Args {
             validation: None,
             env_density: 1.0,
             vfx_stress: 0.0,
+            audio: true,
             help: false,
         }
     }
@@ -248,6 +277,7 @@ impl Args {
                 Scene::Character => "myGame — character test".to_owned(),
                 Scene::Environment => "myGame — environment demo".to_owned(),
                 Scene::Vfx => "myGame — VFX demo".to_owned(),
+                Scene::Audio => "myGame — audio demo".to_owned(),
             },
         }
     }
@@ -318,6 +348,7 @@ where
             }
             "--env-density" => args.env_density = next_value(&mut iter, "--env-density")?,
             "--vfx-stress" => args.vfx_stress = next_value(&mut iter, "--vfx-stress")?,
+            "--no-audio" => args.audio = false,
             "--no-ui" => args.ui = false,
             "-h" | "--help" => args.help = true,
             other => return Err(ArgsError::Unknown(other.to_owned())),

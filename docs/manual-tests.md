@@ -443,12 +443,14 @@ in the F5 overlay stays well above the target.
 
 **Steps**
 
-1. `.	argetelease\mygame.exe --scene vfx`
+1. `.	arget
+elease\mygame.exe --scene vfx`
 2. Press 1 through 0, then Z, X and C, watching each effect from a few metres back.
 3. Press 9 (SHIELD) and 8 (IGNITED) and walk around while they play.
 4. Orbit the camera during an explosion (7) and during the ultimate (C).
 5. Press C and, while the pillar is up, walk behind it and look at the dummies.
-6. `.	argetelease\mygame.exe --scene vfx --vfx-stress 120` and watch the F5 overlay.
+6. `.	arget
+elease\mygame.exe --scene vfx --vfx-stress 120` and watch the F5 overlay.
 
 **Expected** — thirteen distinct effects, each starting where the character is facing, each
 ending on its own without leaving anything behind. The shield and the burn ride the character
@@ -467,7 +469,8 @@ feedback, and gameplay stays authoritative.
 
 **Steps**
 
-1. `.	argetelease\mygame.exe`
+1. `.	arget
+elease\mygame.exe`
 2. Select a dummy and cast Firebolt (1). Watch the character, the space between you and the
    dummy, and the dummy.
 3. Cast Flame Lance (2) and Pyroblast (5) and compare the size of the bolts.
@@ -487,3 +490,62 @@ damage. Detonate explodes on the target. The shield is visible for its whole dur
 gone the instant it ends; blinking shows a departure and an arrival at both ends of the jump.
 Critical strikes are orange and larger, killing blows red and larger still. Cancelling a cast
 takes its effect with it on the same frame.
+
+---
+
+## MT-022 — The audio test bed
+
+**Purpose** — every sound in the catalogue can be played on demand, from a chosen distance,
+and judged on its own.
+
+**Steps**
+
+1. `.\target\release\mygame.exe --scene audio`
+2. Step through the catalogue with Z and X, pressing C for each one. Read the log line to
+   see which sound is selected.
+3. Press C, then walk away from where you dropped it, then back towards it, then past it.
+4. Press C, then orbit the camera all the way around with the left mouse button held.
+5. Press V for the same sound and compare it with C.
+6. Press N (eight at once) on `hit_normal`, then on `ignite_loop`, and read the log line.
+7. Open the menu with Escape and drag each of the four volume sliders while a loop plays.
+8. Press F8 twice.
+
+**Expected** — 39 distinct sounds, none of them a click, none of them clipped. A dropped
+sound gets quieter with distance and is silent well before the far side of the arena;
+walking past it moves it from one speaker to the other; orbiting the camera swings it across
+the stereo field, and a sound directly behind is still audible. V plays the same sound dead
+centre at full level however far away you stand. Eight at once produces a handful of voices
+and a log line reporting the rest as refused — **not** eight copies, and never a wall.
+Dragging MASTER, EFFECTS, INTERFACE and AMBIENCE changes only what each names, live, with no
+step or click, and the values survive a restart. F8 silences everything and brings it back.
+
+---
+
+## MT-023 — Combat is heard
+
+**Purpose** — the phase's actual goal: an ability press produces a readable chain of sound
+that agrees with the picture, and gameplay stays authoritative.
+
+**Steps**
+
+1. `.\target\release\mygame.exe --dummies 8`
+2. Select a dummy and cast Firebolt (1). Listen for the cast, the flight and the impact.
+3. Cast Flame Lance (2) and Pyroblast (5); listen through the cast and to where it ends.
+4. Place a Meteor (4) on the group; listen while it falls and when it lands.
+5. Cast Flame Cone (3) and Firestorm (6) at the group, then walk over the burning ground and
+   away from it.
+6. Build a full burn and press Detonate (7).
+7. Press Flame Shield (9), then Blink (0) while it is up. Jump, and jump off something high.
+8. Run in a straight line across the arena.
+9. Cast Pyroblast and press Escape mid-cast.
+10. Pull the whole group, let everything burn at once, and listen for a wall of noise.
+
+**Expected** — the cast, the bolt and the impact are three distinct moments, and the impact
+lands on the same frame as the flash. Heavier spells are lower and longer. The Meteor whistles
+from where it is going to land and stops the instant it lands. The line of fire is a bed you
+can hear yourself walk into and out of, and it stops when the fire does. Detonate is heard on
+the target, not on the caster. The shield hums for exactly its duration; Blink is two sounds
+at two places; a jump and a hard landing are different sounds. Footsteps keep time with the
+legs and stop when you do. Cancelling a cast takes its gather away and replaces it with a
+fizzle on the same frame. With the whole pack burning, the fire is *one* fire and individual
+hits are still audible over it — critical strikes especially.
