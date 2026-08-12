@@ -54,6 +54,8 @@
 //! | [`input_map`] | Keys to commands — the only module that knows a key |
 //! | [`arena`] | The training arena |
 //! | [`demo`] | The collision demo scene: geometry, no combat |
+//! | [`enemy`] | Enemy archetypes, their attacks, their threat and their state machine |
+//! | [`encounter`] | A fight: who is in it, whether it is running, how to reset it |
 //! | [`sim`] | The tick, and everything that owns state across one |
 
 /// Seconds below which a countdown is treated as finished.
@@ -71,6 +73,10 @@ pub mod arena;
 pub mod combat;
 pub mod command;
 pub mod demo;
+/// A fight as an object: members, lifecycle and reset.
+pub mod encounter;
+/// What an enemy is, what it wants, and who it is angry at.
+pub mod enemy;
 pub mod entity;
 pub mod event;
 pub mod firemage;
@@ -87,6 +93,9 @@ pub use arena::{Arena, ArenaConfig, training_arena};
 pub use combat::{DamageType, Faction, Health, Resource};
 pub use command::{CommandBuffer, PlayerCommand};
 pub use demo::{DemoScene, Station, collision_demo};
+pub use encounter::{Encounter, EncounterState, EnemySpawn};
+pub use enemy::brain::{AiState, EnemyBrain};
+pub use enemy::{EnemyAbility, EnemyKind, TelegraphShape};
 pub use entity::EntityId;
 pub use event::{CombatEvent, DamageEvent};
 pub use firemage::{AbilityError, FireAbility, FireMage, TalentId};

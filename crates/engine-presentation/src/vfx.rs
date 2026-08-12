@@ -44,6 +44,7 @@
 
 use engine_core::math::{Sphere, Vec3};
 use engine_core::transform::Transform;
+use engine_game::enemy::TelegraphShape;
 use engine_game::entity::EntityId;
 use engine_game::event::CombatEvent;
 use engine_game::firemage::{FireAbility, ZoneShape};
@@ -216,6 +217,13 @@ pub struct VfxDirector {
     ignited: Vec<Option<(u32, VfxHandle)>>,
     /// The area playing for each live zone, by the gameplay id the event carried.
     areas: Vec<(u32, VfxHandle)>,
+    /// The shape on the floor for each enemy attack that is coming, by telegraph id.
+    ///
+    /// The shape is kept beside the handle so that when the attack lands, the explosion is
+    /// drawn at the size the telegraph promised rather than at a size picked here.
+    telegraphs: Vec<(u32, VfxHandle, TelegraphShape)>,
+    /// The gathering effect on each enemy that is casting, by entity slot.
+    enemy_casts: Vec<(u32, VfxHandle)>,
     /// The mage's defensive shell, while Flame Shield is up.
     shield: Option<VfxHandle>,
     /// The Fire Mastery aura, while it is up.
@@ -238,6 +246,8 @@ impl VfxDirector {
             bolts: Vec::with_capacity(32),
             ignited: Vec::with_capacity(64),
             areas: Vec::with_capacity(16),
+            telegraphs: Vec::with_capacity(16),
+            enemy_casts: Vec::with_capacity(16),
             shield: None,
             mastery: None,
             cast: None,
@@ -256,6 +266,8 @@ impl VfxDirector {
             self.system.clear();
             self.bolts.clear();
             self.areas.clear();
+            self.telegraphs.clear();
+            self.enemy_casts.clear();
             self.ignited.clear();
             self.shield = None;
             self.mastery = None;
@@ -297,6 +309,8 @@ impl VfxDirector {
         self.system.clear();
         self.bolts.clear();
         self.areas.clear();
+        self.telegraphs.clear();
+        self.enemy_casts.clear();
         self.ignited.clear();
         self.shield = None;
         self.mastery = None;
@@ -431,12 +445,88 @@ impl VfxDirector {
                     );
                 }
             }
+            // An enemy attack that is coming: the floor says where and the clock says when.
+            // Its lifetime is the cast's own, so the shape closes exactly as the attack
+            // lands - the timing is gameplay's, not a guess made here.
+            CombatEvent::TelegraphStarted {
+                anchor,
+                shape,
+                delay,
+                id,
+                ..
+            } => {
+                let spawn = match shape {
+                    TelegraphShape::Circle { radius } => Some(
+                        VfxSpawn::at(VfxId::Telegraph, anchor)
+                            .with_radius(radius.max(0.5))
+                            .lasting(delay.max(0.05)),
+                    ),
+                    TelegraphShape::Cone {
+                        yaw,
+                        range,
+                        half_angle: _,
+                    } => Some(
+                        VfxSpawn::at(VfxId::ConeWave, anchor)
+                            .facing(yaw)
+                            .with_radius(range.max(0.5))
+                            .lasting(delay.max(0.05))
+                            .raised(0.35),
+                    ),
+                    // A single-target attack covers no ground; there is nothing to draw and
+                    // the cast bar is what says it is coming.
+                    TelegraphShape::Single => None,
+                };
+                if let Some(handle) = spawn.and_then(|spawn| self.spawn(spawn)) {
+                    self.telegraphs.push((id, handle, shape));
+                }
+            }
+            // It landed, or it did not. Either way the shape comes off the floor; only a
+            // landing gets an explosion, and it is drawn at the size that was promised.
+            CombatEvent::TelegraphEnded {
+                id,
+                anchor,
+                resolved,
+                ..
+            } => {
+                let Some(index) = self
+                    .telegraphs
+                    .iter()
+                    .position(|(telegraph, _, _)| *telegraph == id)
+                else {
+                    return;
+                };
+                let (_, handle, shape) = self.telegraphs.swap_remove(index);
+                self.system.stop_and_clear(handle);
+                if resolved {
+                    let radius = match shape {
+                        TelegraphShape::Circle { radius } => radius,
+                        TelegraphShape::Cone { range, .. } => range * 0.5,
+                        TelegraphShape::Single => 1.0,
+                    };
+                    self.spawn(VfxSpawn::at(VfxId::Explosion, anchor).with_radius(radius.max(1.0)));
+                }
+            }
+            // An enemy gathering. The player's own cast tell is synchronised from state
+            // instead, because the player's cast is a thing this director can ask about.
+            CombatEvent::CastStarted {
+                source,
+                ability,
+                duration,
+                ..
+            } => {
+                if ability.is_enemy() {
+                    self.begin_enemy_cast(source, duration, simulation);
+                }
+            }
+            CombatEvent::CastEnded {
+                source, ability, ..
+            } => {
+                if ability.is_enemy() {
+                    self.end_enemy_cast(source);
+                }
+            }
             // Everything else is either a state the frame synchronises, or moves no picture.
-            CombatEvent::Damage(_)
-            | CombatEvent::Healing { .. }
-            | CombatEvent::CastStarted { .. }
-            | CombatEvent::CastEnded { .. }
-            | CombatEvent::Jumped { .. } => {}
+            CombatEvent::Damage(_) | CombatEvent::Healing { .. } | CombatEvent::Jumped { .. } => {}
         }
     }
 
@@ -480,6 +570,35 @@ impl VfxDirector {
                 );
             }
             _ => {}
+        }
+    }
+
+    /// Puts a gathering effect on an enemy that has started casting.
+    fn begin_enemy_cast(&mut self, source: EntityId, duration: f32, simulation: &Simulation) {
+        self.end_enemy_cast(source);
+        let slot = source.index() as u32;
+        let height = simulation.world().height(source).max(1.0);
+        if let Some(handle) = self.spawn(
+            VfxSpawn::at(VfxId::CastCharge, Vec3::ZERO)
+                .with_radius(height * 0.4)
+                .raised(height * CHEST_FRACTION)
+                .lasting(duration.max(0.05))
+                .attached_to(slot),
+        ) {
+            self.enemy_casts.push((slot, handle));
+        }
+    }
+
+    /// Takes it off again, however the cast ended.
+    fn end_enemy_cast(&mut self, source: EntityId) {
+        let slot = source.index() as u32;
+        if let Some(index) = self
+            .enemy_casts
+            .iter()
+            .position(|(entity, _)| *entity == slot)
+        {
+            let (_, handle) = self.enemy_casts.swap_remove(index);
+            self.system.stop_and_clear(handle);
         }
     }
 
@@ -591,6 +710,10 @@ impl VfxDirector {
             }
         }
         self.areas
+            .retain(|(_, handle)| self.system.contains(*handle));
+        self.telegraphs
+            .retain(|(_, handle, _)| self.system.contains(*handle));
+        self.enemy_casts
             .retain(|(_, handle)| self.system.contains(*handle));
     }
 

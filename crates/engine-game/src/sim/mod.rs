@@ -44,6 +44,8 @@ use engine_core::time::FixedTimestep;
 use crate::ability::AbilityId;
 use crate::combat::DamageType;
 use crate::command::{CommandBuffer, PlayerCommand};
+use crate::enemy::EnemyKind;
+use crate::enemy::brain::EnemyBrain;
 use crate::entity::EntityId;
 use crate::event::{CombatEvent, DamageEvent, EventStream};
 use crate::firemage::{AbilityError, FireAbility, FireMage, IgniteTick, PendingImpact, ZoneTick};
@@ -54,6 +56,8 @@ use crate::telemetry::CombatMeter;
 use crate::world::{EntityKind, GameWorld};
 
 /// How the simulation is configured.
+/// Enemy brains, their attacks and their telegraphs: the combat half of the AI.
+pub mod enemy_exec;
 mod firemage_exec;
 
 pub use firemage_exec::{
@@ -188,6 +192,12 @@ pub enum CastEnd {
     Cancelled,
     /// The caster died.
     CasterDied,
+    /// Something interrupted it.
+    ///
+    /// Only enemy casts can reach this today, because the player has nothing that interrupts
+    /// them. The reason still belongs on the shared enum rather than on a second one: a cast
+    /// bar that has to know whose cast it is watching is a cast bar with two code paths.
+    Interrupted,
 }
 
 /// Where the simulation spent its time, and how much of it there was.
@@ -208,6 +218,8 @@ pub struct SimStats {
     pub statuses: Duration,
     /// Of which: telemetry observing the tick's events.
     pub telemetry: Duration,
+    /// Of which: every enemy's brain, and the attacks they asked for.
+    pub ai: Duration,
     /// Ticks the timestep discarded because the catch-up bound was reached.
     pub dropped_ticks: u64,
 }
@@ -271,6 +283,15 @@ pub struct Simulation {
     impacts: Vec<PendingImpact>,
     /// Zones that burned out this step, with their identities. Reused; never freed.
     expired_zones: Vec<(u32, crate::firemage::Zone)>,
+    /// Every enemy's brain, indexed by entity slot. `None` where the slot is not an enemy.
+    ///
+    /// A parallel array like every other per-entity store in this crate: an enemy is an
+    /// entity that happens to have a mind, not a different kind of object.
+    enemies: Vec<Option<enemy_exec::EnemyRuntime>>,
+    /// The fight the enemies belong to, if the scene built one.
+    encounter: Option<crate::encounter::Encounter>,
+    /// Identities for telegraphs, so an end can be matched to its start.
+    next_telegraph: u32,
     events: EventStream,
     meter: CombatMeter,
     targets: TargetQuery,
@@ -331,6 +352,9 @@ impl Simulation {
             zone_ticks: Vec::with_capacity(16),
             impacts: Vec::with_capacity(8),
             expired_zones: Vec::with_capacity(8),
+            enemies: Vec::new(),
+            encounter: None,
+            next_telegraph: 0,
             events: EventStream::with_capacity(256),
             meter: CombatMeter::new(),
             targets: TargetQuery::with_capacity(64),
@@ -409,6 +433,10 @@ impl Simulation {
     /// Names the entity the player controls.
     pub fn set_player_entity(&mut self, entity: EntityId) {
         self.player.entity = entity;
+        // The meter counts *this* actor's damage. Before anything could fight back every
+        // damage event in the world was the player's own and the owner did not matter; with
+        // enemies, a hit taken would otherwise be reported as damage dealt.
+        self.meter.set_owner(entity);
     }
 
     /// The player's body: position, velocity, ground contact and movement state.
@@ -599,6 +627,13 @@ impl Simulation {
 
         self.apply_pending_commands();
 
+        // Before movement, so an intent decided this tick is walked this tick. AI is its own
+        // stage in the timings because "what does thinking cost" is the question the stress
+        // test asks, and burying it in `abilities` would answer a different one.
+        let ai_started = Instant::now();
+        self.tick_ai(step);
+        stats.ai += ai_started.elapsed();
+
         let movement_started = Instant::now();
         self.integrate_bodies(step);
         stats.movement += movement_started.elapsed();
@@ -729,10 +764,45 @@ impl Simulation {
             if id == player {
                 continue;
             }
-            if let Some(body) = self.world.body_mut(id) {
+            // An enemy walks with the intent its brain decided; everything else stands
+            // still and is only integrated so gravity and friction still apply to it.
+            let intent = self
+                .enemies
+                .get(slot)
+                .and_then(|runtime| runtime.as_ref())
+                .filter(|_| self.world.is_alive(id))
+                .map_or(MoveIntent::NONE, |runtime| runtime.intent);
+            if intent.direction.length() > 0.0 || intent.facing.is_some() {
+                // The same collided step the player takes: an enemy that walked through a
+                // wall would be an enemy the arena could not contain.
+                if let Some(body) = self.world.body(id).copied() {
+                    let mut moved = body;
+                    movement::step_collided(
+                        &mut moved,
+                        intent,
+                        &config,
+                        &character,
+                        &self.collision,
+                        &mut self.collision_buffers,
+                        step,
+                    );
+                    if let Some(body) = self.world.body_mut(id) {
+                        *body = moved;
+                    }
+                }
+            } else if let Some(body) = self.world.body_mut(id) {
                 movement::step(body, MoveIntent::NONE, &config, step);
             }
         }
+
+        // A dead player is a body, not a character: it keeps falling and sliding to a stop
+        // under the same controller, and it stops steering. Refusing abilities is
+        // `try_cast`'s job and was already true before anything could kill anybody.
+        let intent = if self.world.is_alive(player) {
+            intent
+        } else {
+            MoveIntent::NONE
+        };
 
         // The player last, and out of the loop, because it is the one body that needs the
         // collision world and the query buffers — both of which are borrowed from `self`.
@@ -1069,6 +1139,129 @@ impl Simulation {
         self.last_move = result;
     }
 
+    /// Spawns an enemy of `kind` at `position`, facing `yaw`.
+    ///
+    /// The one way an enemy comes into the world. It is an ordinary entity — the same
+    /// spawn, the same body, the same health — that additionally gets a brain, which is
+    /// what "an enemy is an entity that happens to have a mind" means in practice.
+    pub fn spawn_enemy(&mut self, kind: EnemyKind, position: Vec3, yaw: f32) -> EntityId {
+        let entity = self.world.spawn(crate::world::enemy_desc(kind, position));
+        if let Some(body) = self.world.body_mut(entity) {
+            body.facing_yaw = yaw;
+        }
+        let slot = entity.index();
+        if self.enemies.len() <= slot {
+            self.enemies.resize(slot + 1, None);
+        }
+        self.enemies[slot] = Some(enemy_exec::EnemyRuntime::new(kind, position, yaw));
+        entity
+    }
+
+    /// One enemy's brain, if that entity is an enemy.
+    #[must_use]
+    pub fn brain(&self, entity: EntityId) -> Option<&EnemyBrain> {
+        self.enemies
+            .get(entity.index())
+            .and_then(|slot| slot.as_ref())
+            .filter(|_| self.world.contains(entity))
+            .map(|runtime| &runtime.brain)
+    }
+
+    /// Every enemy in the world, with its brain.
+    pub fn enemies(&self) -> impl Iterator<Item = (EntityId, &EnemyBrain)> + '_ {
+        self.enemies
+            .iter()
+            .enumerate()
+            .filter_map(|(slot, runtime)| {
+                let runtime = runtime.as_ref()?;
+                let entity = self.world.id_at(slot)?;
+                Some((entity, &runtime.brain))
+            })
+    }
+
+    /// How many enemies exist, alive or dead.
+    #[must_use]
+    pub fn enemy_count(&self) -> usize {
+        self.enemies().count()
+    }
+
+    /// The fight the scene built, if it built one.
+    #[must_use]
+    pub fn encounter(&self) -> Option<&crate::encounter::Encounter> {
+        self.encounter.as_ref()
+    }
+
+    /// Installs an encounter and spawns every enemy it names.
+    ///
+    /// The encounter owns the *membership*; the simulation owns the entities. Nothing else
+    /// spawns enemies, so "who is in this fight" has one answer.
+    pub fn set_encounter(&mut self, mut encounter: crate::encounter::Encounter) {
+        let mut members = Vec::with_capacity(encounter.spawns().len());
+        for spawn in encounter.spawns().to_vec() {
+            members.push(self.spawn_enemy(spawn.kind, spawn.position, spawn.facing_yaw));
+        }
+        encounter.set_members(members);
+        self.encounter = Some(encounter);
+    }
+
+    /// Puts the fight back: every enemy alive, home, idle and forgetful, and the player
+    /// whole.
+    ///
+    /// The development reset, and the same call the encounter's own `Resetting` state ends
+    /// in. It restores rather than respawns, so entity ids stay valid and nothing that is
+    /// holding one — a nameplate, a floating number, an effect — is left pointing at a
+    /// slot that has moved on.
+    pub fn reset_encounter(&mut self) {
+        for slot in 0..self.enemies.len() {
+            let Some(runtime) = self.enemies[slot].as_mut() else {
+                continue;
+            };
+            runtime.brain.reset();
+            runtime.intent = MoveIntent::NONE;
+            runtime.telegraph = None;
+            let home = runtime.brain.home();
+            let Some(entity) = self.world.id_at(slot) else {
+                continue;
+            };
+            self.world.restore(entity);
+            if let Some(body) = self.world.body_mut(entity) {
+                *body = crate::movement::Body::at(home);
+            }
+        }
+        self.revive_player();
+        if let Some(encounter) = self.encounter.as_mut() {
+            encounter.finish_reset();
+        }
+        self.meter.reset(self.time);
+        log::info!("encounter reset");
+    }
+
+    /// Whether the player is alive.
+    ///
+    /// The one question every "can I act" check asks. It is on the simulation rather than
+    /// read off the world at each call site so that a future ghost or downed state changes
+    /// one function.
+    #[must_use]
+    pub fn player_alive(&self) -> bool {
+        self.world.is_alive(self.player.entity)
+    }
+
+    /// Brings the player back to full health where they stand, and clears their state.
+    pub fn revive_player(&mut self) {
+        let player = self.player.entity;
+        if !self.world.contains(player) {
+            return;
+        }
+        self.world.restore(player);
+        self.player.cast = None;
+        self.player.queued = None;
+        self.player.target = None;
+        self.intent = MoveIntent::NONE;
+        if let Some(statuses) = self.world.statuses_mut(player) {
+            statuses.clear();
+        }
+    }
+
     /// Applies damage and emits the events it produces.
     ///
     /// The single place health goes down as a result of combat, which is what makes "every
@@ -1108,6 +1301,15 @@ impl Simulation {
             tick,
         }));
 
+        // Being hit is what makes an enemy angry, and it is the only thing that does.
+        // Threat is fed here, in the one place damage lands, so no ability can deal damage
+        // without generating threat and none can generate threat without dealing damage.
+        if let Some(Some(runtime)) = self.enemies.get_mut(target.index())
+            && self.world.contains(target)
+        {
+            runtime.brain.add_threat(source, result.applied);
+        }
+
         if result.killed {
             // A corpse does not burn: the burn, its ticks and the fire vulnerability go
             // with the target, which is what makes detonating a nearly dead pack a real
@@ -1134,6 +1336,30 @@ impl Simulation {
             }
             ended.clear();
             self.outcomes = ended;
+
+            // A dead enemy stops thinking, stops casting and stops being angry. Its cast
+            // bar comes down through the event, exactly as a living caster's would.
+            if let Some(Some(runtime)) = self.enemies.get_mut(target.index()) {
+                let cast = runtime.brain.die();
+                let telegraph = runtime.telegraph.take();
+                runtime.intent = MoveIntent::NONE;
+                if let Some(cast) = cast {
+                    if let Some(id) = telegraph {
+                        self.events.push(CombatEvent::TelegraphEnded {
+                            id,
+                            anchor: cast.anchor,
+                            resolved: false,
+                            tick,
+                        });
+                    }
+                    self.events.push(CombatEvent::CastEnded {
+                        source: target,
+                        ability: AbilityId::from_enemy(cast.ability),
+                        end: CastEnd::CasterDied,
+                        tick,
+                    });
+                }
+            }
 
             self.events.push(CombatEvent::Death {
                 entity: target,
@@ -1163,6 +1389,13 @@ impl Simulation {
         // control is to try a rotation again from a known start, and "mid-cast" is not it.
         self.player.cast = None;
         self.player.last_error = None;
+        // The same key puts the *fight* back where there is one: an encounter is what the
+        // dummies are in a scene that has enemies, and a player who has just died pressing
+        // the reset key means "again", not "restore the dummies I was not fighting".
+        if self.encounter.is_some() || !self.enemies.is_empty() {
+            self.reset_encounter();
+            return;
+        }
         self.meter.reset(self.time);
         self.retarget_if_needed();
         log::debug!("dummies reset at simulation time {:.2} s", self.time);

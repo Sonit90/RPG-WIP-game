@@ -704,13 +704,23 @@ impl RenderExtractor {
 
         let mut style = InstanceStyle::NEUTRAL;
 
+        // An enemy is tinted towards its own colour so a fight is legible at a glance: the
+        // things that hit back do not look like the things that stand there. It is a tint
+        // on the shared dummy material rather than a second model, which costs no upload,
+        // no binding and no draw call - the same trick the health shade uses.
+        let hostile = simulation.world().kind(id) == Some(EntityKind::Enemy);
+
         // Wounded enemies darken towards their material's own colour rather than towards
         // black: a health tint that reached zero would make a nearly-dead dummy invisible
         // against the arena floor.
         if let Some(health) = simulation.world().health(id) {
             let fraction = health.fraction().clamp(0.0, 1.0);
             let shade = HEALTH_TINT_FLOOR + (1.0 - HEALTH_TINT_FLOOR) * fraction;
-            style.tint = [shade, shade * 0.94, shade * 0.90, 1.0];
+            style.tint = if hostile {
+                [shade, shade * 0.45, shade * 0.38, 1.0]
+            } else {
+                [shade, shade * 0.94, shade * 0.90, 1.0]
+            };
         }
 
         // The current target glows. This is what replaces "the marker is the only thing that

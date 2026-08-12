@@ -41,8 +41,10 @@ use crate::status::StatusSet;
 pub enum EntityKind {
     /// The character the local player controls.
     Player,
-    /// A training dummy.
+    /// A training dummy: hostile, and deliberately inert.
     Dummy,
+    /// Something that fights back.
+    Enemy,
 }
 
 impl EntityKind {
@@ -52,6 +54,7 @@ impl EntityKind {
         match self {
             Self::Player => "PLAYER",
             Self::Dummy => "DUMMY",
+            Self::Enemy => "ENEMY",
         }
     }
 }
@@ -113,6 +116,23 @@ impl EntityDesc {
             radius: 0.7,
             height: 2.2,
         }
+    }
+}
+
+/// An enemy of `kind` at `position`, for [`GameWorld::spawn`].
+///
+/// Its numbers come from the archetype table, so "how much health does a Brute have" is
+/// answered in exactly one place.
+#[must_use]
+pub fn enemy_desc(kind: crate::enemy::EnemyKind, position: Vec3) -> EntityDesc {
+    let archetype = kind.archetype();
+    EntityDesc {
+        kind: EntityKind::Enemy,
+        faction: Faction::Hostile,
+        position,
+        max_health: archetype.max_health,
+        radius: archetype.radius,
+        height: archetype.height,
     }
 }
 

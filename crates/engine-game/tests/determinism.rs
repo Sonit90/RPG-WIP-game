@@ -367,6 +367,32 @@ fn describe(event: &CombatEvent) -> String {
             fixed(position.y),
             fixed(position.z)
         ),
+        CombatEvent::TelegraphStarted {
+            id,
+            source,
+            ability,
+            anchor,
+            shape,
+            delay,
+            tick,
+        } => format!(
+            "telegraph {id} by {} ability {} at {} {} shape {shape:?} delay {} on {tick}",
+            source.index(),
+            ability.slot(),
+            fixed(anchor.x),
+            fixed(anchor.z),
+            fixed(delay)
+        ),
+        CombatEvent::TelegraphEnded {
+            id,
+            anchor,
+            resolved,
+            tick,
+        } => format!(
+            "telegraph {id} ended resolved {resolved} at {} {} on {tick}",
+            fixed(anchor.x),
+            fixed(anchor.z)
+        ),
         CombatEvent::Landed {
             entity,
             position,

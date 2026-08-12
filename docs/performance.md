@@ -981,3 +981,59 @@ The area rotation on 50-100 targets refuses 79-115 cues over 1,200 frames — al
 the per-sound minimum interval and the per-sound cap, none of them to the voice pool
 (`dropped` is 0 in every scenario). That is the limiter working: fifty simultaneous hits are
 one hit sound, and fifty burning targets are four burning beds.
+
+# Phase 6 — enemy AI
+
+Ryzen 5800X, 1920x1080, vsync off. Figures from `ai_bench` (1,200 measured frames per
+scenario, 300 warm-up, no device) and from the game's own report line.
+
+## What a fight costs
+
+The player is teleported into the middle of the pack and kept alive by the harness, so every
+scenario measures a fight *in progress* rather than the moment before everything is dead.
+
+| Scenario | AI us | sim us | extract us | cull us | total us | p99 | fighting | allocs/1200 frames |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 enemy | 0.1 | 0.7 | 0.2 | 0.1 | 1.2 | 1.9 | 1 | 7 |
+| 10 enemies | 0.9 | 1.9 | 0.9 | 0.4 | 4.1 | 6.8 | 4 | 43 |
+| 50 enemies | 8.4 | 8.2 | 4.2 | 1.5 | 22.4 | 37.2 | 33 | 161 |
+| 100 enemies | 25.1 | 15.9 | 7.7 | 2.6 | 51.5 | 77.9 | 46 | 236 |
+| 10, full frame | 0.9 | 1.9 | 0.9 | 0.5 | 11.5 | 29.2 | 4 | 53 |
+| 50, full frame | 8.6 | 8.4 | 4.2 | 2.0 | 53.0 | 103.9 | 33 | 163 |
+| 100, full frame | 25.4 | 16.2 | 7.6 | 3.3 | 94.1 | 167.4 | 46 | 235 |
+
+"Full frame" adds the VFX director, the audio director and a mix on the device's own
+schedule — the whole presentation stack observing the same fight.
+
+**Against the 240 FPS budget of 4,170 us**, the worst case measured — a hundred enemies,
+forty-six of them actively fighting, with effects and audio — uses **2.3 % of the frame**.
+A ten-enemy fight, which is what the game will actually contain, uses 0.3 %.
+
+## Where the time goes, and how it scales
+
+* **AI is 0.09 us per enemy at 10, 0.17 at 50, 0.25 at 100.** It is superlinear because
+  perception asks the targeting query for the nearest hostile, which is a scan: at 100
+  enemies each of them walks a 101-entity world. That is a known cost with a known fix
+  (a spatial index, or a shared per-tick nearest-hostile pass), deliberately not taken yet —
+  25 us at a hundred enemies is not the frame's problem, and optimising before measuring is
+  how a budget stops describing the game.
+* **Presentation adds 7.4 / 30.6 / 42.6 us** at 10 / 50 / 100 enemies, almost all of it the
+  VFX director: telegraphs are effects, and a hundred enemies produce a lot of them.
+* **Allocation is ~0.2 per frame at 100 enemies** — threat rows appearing for a new attacker
+  and the world's own restore path. Everything per-tick reuses its buffers.
+
+## In the game
+
+`mygame --scene encounter --frames 8000 --report 2`, two enemies, idle:
+
+| Configuration | CPU mean | FPS | GPU mean | sim |
+| --- | ---: | ---: | ---: | ---: |
+| Encounter scene, 2 enemies | 0.353 ms | 2,835 | 0.045 ms | 0.003 ms |
+| Combat scene, 4 dummies (control) | 0.410 ms | 2,436 | 0.064 ms | 0.004 ms |
+| Character scene (control) | 0.458 ms | 2,182 | 0.056 ms | 0.005 ms |
+
+No regression: the encounter scene is *faster* than the scenes it sits beside, because it
+draws fewer objects. Nothing in this phase changed the cost of a frame that has no enemies in
+it — the AI stage costs nothing when `enemies` is empty, which is the case in every existing
+scene.
+

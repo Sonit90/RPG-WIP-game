@@ -231,6 +231,13 @@ pub struct UiTheme {
     pub cooldown_sweep: UiColor,
     /// The cast bar's fill.
     pub cast_fill: UiColor,
+    /// Fill of an enemy's cast bar.
+    ///
+    /// A different colour from the player's own: two bars that meant different things and
+    /// looked the same would be one bar the player had to read twice.
+    pub enemy_cast_fill: UiColor,
+    /// Colour of the death notice.
+    pub death_text: UiColor,
     /// An ordinary damage number.
     pub damage_number: UiColor,
     /// A killing blow's damage number.
@@ -314,6 +321,8 @@ impl Default for UiTheme {
             // hiding it, so a cooling ability is still recognisable as itself.
             cooldown_sweep: [0.02, 0.02, 0.03, 0.72],
             cast_fill: [0.92, 0.78, 0.32, 1.0],
+            enemy_cast_fill: [0.86, 0.30, 0.24, 1.0],
+            death_text: [0.92, 0.34, 0.30, 1.0],
             damage_number: [1.0, 0.92, 0.55, 1.0],
             killing_number: [1.0, 0.45, 0.30, 1.0],
             critical_number: [1.0, 0.72, 0.16, 1.0],
@@ -570,7 +579,9 @@ impl GameUi {
         self.push_ability_bar(snapshot, viewport);
         self.push_talent_button(snapshot, viewport);
         self.push_cast_bar(snapshot, viewport);
+        self.push_enemy_cast_bar(snapshot, viewport);
         self.push_notification(snapshot, viewport);
+        self.push_death_notice(snapshot, viewport);
         &self.list
     }
 
@@ -1067,6 +1078,69 @@ impl GameUi {
         let (origin, align) = centered(rect.x + rect.width * 0.5, rect.y + 3.0);
         self.list
             .text_aligned(origin, &self.title, self.theme.text, 1.0, align);
+    }
+
+    /// The target's cast bar, under the target frame.
+    ///
+    /// The same widget as the player's own, drawn at the top of the screen instead of the
+    /// bottom, because it answers the same question about somebody else: *what is being
+    /// cast, and how long have I got*. An interruptible cast says so, which is what makes
+    /// the interrupt foundation visible to a player rather than only to a test.
+    pub fn push_enemy_cast_bar(&mut self, snapshot: &UiSnapshot, viewport: (u32, u32)) {
+        let Some(cast) = snapshot.target.and_then(|target| target.casting) else {
+            return;
+        };
+        let width = viewport.0 as f32;
+        let rect = UiRect::new(
+            (width - self.metrics.cast_bar_width) * 0.5,
+            self.metrics.target_frame_top + self.metrics.target_frame_height + 6.0,
+            self.metrics.cast_bar_width,
+            self.metrics.cast_bar_height,
+        );
+        self.list.bar(
+            rect,
+            cast.fraction(),
+            self.theme.bar_background,
+            self.theme.enemy_cast_fill,
+        );
+        self.title.clear();
+        self.title.push_str(cast.name);
+        self.title.push(' ');
+        write_tenths(&mut self.title, cast.remaining());
+        if cast.interruptible {
+            self.title.push_str(" !");
+        }
+        let (origin, align) = centered(rect.x + rect.width * 0.5, rect.y + 3.0);
+        self.list
+            .text_aligned(origin, &self.title, self.theme.text, 1.0, align);
+    }
+
+    /// The death notice, across the middle of the screen.
+    ///
+    /// Deliberately plain: a line of text and nothing that has to be dismissed. The state it
+    /// reports is the simulation's, so it appears and disappears with the thing it describes
+    /// rather than with a timer of its own.
+    pub fn push_death_notice(&mut self, snapshot: &UiSnapshot, viewport: (u32, u32)) {
+        if snapshot.player.alive {
+            return;
+        }
+        let (width, height) = (viewport.0 as f32, viewport.1 as f32);
+        let (origin, align) = centered(width * 0.5, height * 0.42);
+        self.list.text_aligned(
+            origin,
+            "YOU DIED",
+            self.theme.death_text,
+            self.metrics.scale.text(self.theme.hud_text_scale * 2.0),
+            align,
+        );
+        let (origin, align) = centered(width * 0.5, height * 0.42 + self.metrics.bar_height * 2.0);
+        self.list.text_aligned(
+            origin,
+            "PRESS BACKSPACE TO RESET THE ENCOUNTER",
+            self.theme.text,
+            self.metrics.scale.text(self.theme.hud_text_scale * 0.8),
+            align,
+        );
     }
 
     /// Why the last ability was refused, above the cast bar.

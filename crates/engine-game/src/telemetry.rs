@@ -73,6 +73,14 @@ pub struct CombatMeter {
     total_damage: f64,
     total_healing: f64,
     total_overkill: f64,
+    /// Damage the owner took, which is a different question from the damage it dealt.
+    total_damage_taken: f64,
+    /// Whose meter this is.
+    ///
+    /// [`EntityId::INVALID`] until a fight names an owner, which is what every existing
+    /// caller does implicitly by never having had an enemy: with no owner the meter counts
+    /// every damage event, exactly as it did before enemies existed.
+    owner: EntityId,
     deaths: u32,
     first_damage_at: Option<f64>,
     last_damage_at: f64,
@@ -95,6 +103,28 @@ impl CombatMeter {
     pub fn observe(&mut self, events: &[CombatEvent], now: f64) {
         self.now = now;
         for event in events {
+            // Damage *to* the owner is never damage *by* the owner. Before enemies existed
+            // nothing could hit the player and every damage event was the player's own;
+            // with something fighting back, counting a hit taken as damage dealt would make
+            // the meter report a DPS the player never did.
+            if let CombatEvent::Damage(damage) = *event
+                && self.owner.is_valid()
+                && damage.target == self.owner
+            {
+                self.total_damage_taken += f64::from(damage.amount);
+                let index = self.target_index(damage.target);
+                let target = &mut self.targets[index];
+                target.damage += f64::from(damage.amount);
+                target.hits += 1;
+                continue;
+            }
+            if self.owner.is_valid()
+                && let CombatEvent::Damage(damage) = *event
+                && damage.source != self.owner
+            {
+                // Somebody else's damage on somebody else: not this meter's business.
+                continue;
+            }
             match *event {
                 CombatEvent::AbilityUsed { ability, .. } => {
                     if let Some(totals) = self.ability_mut(ability) {
@@ -149,6 +179,10 @@ impl CombatMeter {
                 | CombatEvent::AreaEffectStarted { .. }
                 | CombatEvent::AreaEffectEnded { .. }
                 | CombatEvent::Jumped { .. }
+                // A telegraph is an announcement. Its damage arrives as `Damage` when it
+                // lands, and a telegraph that was interrupted moved no health at all.
+                | CombatEvent::TelegraphStarted { .. }
+                | CombatEvent::TelegraphEnded { .. }
                 | CombatEvent::Landed { .. } => {}
             }
         }
@@ -158,6 +192,26 @@ impl CombatMeter {
     #[must_use]
     pub fn total_damage(&self) -> f64 {
         self.total_damage
+    }
+
+    /// Total damage the owner took this session.
+    #[must_use]
+    pub fn total_damage_taken(&self) -> f64 {
+        self.total_damage_taken
+    }
+
+    /// Whose damage this meter counts.
+    #[must_use]
+    pub fn owner(&self) -> EntityId {
+        self.owner
+    }
+
+    /// Names whose meter this is.
+    ///
+    /// Called once, when the arena spawns the player. Without it the meter counts every
+    /// damage event in the world, which is what it did before anything could fight back.
+    pub fn set_owner(&mut self, owner: EntityId) {
+        self.owner = owner;
     }
 
     /// Total healing done this session.
@@ -279,6 +333,7 @@ impl CombatMeter {
         self.total_damage = 0.0;
         self.total_healing = 0.0;
         self.total_overkill = 0.0;
+        self.total_damage_taken = 0.0;
         self.deaths = 0;
         self.first_damage_at = None;
         self.last_damage_at = now;

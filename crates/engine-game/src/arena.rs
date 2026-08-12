@@ -316,6 +316,77 @@ pub fn environment_arena(
 ///
 /// Separate from [`training_arena`] so a benchmark can rebuild the world of a simulation it
 /// already owns, and so a test can build a world with no simulation at all.
+/// An arena with an encounter in it instead of a group of dummies.
+///
+/// The same floor, the same player, the same collision - and a fight. Built here rather than
+/// in the application for the same reason `training_arena` is: a scene is gameplay data, and
+/// a headless test has to be able to build the identical one.
+#[must_use]
+pub fn encounter_arena(config: &ArenaConfig, encounter: crate::encounter::Encounter) -> Simulation {
+    let mut simulation = Simulation::new(SimConfig {
+        movement: config.movement(),
+        ..SimConfig::default()
+    });
+    let arena = populate(simulation.world_mut(), config);
+    simulation.set_player_entity(arena.player);
+    build_collision(simulation.collision_world_mut(), config);
+    simulation.set_encounter(encounter);
+    simulation
+}
+
+/// The encounter the demo scene and the tests use: one melee enemy and one caster.
+///
+/// Placed so that walking forward pulls the brute first and the caster second, which is what
+/// makes the two behaviours legible side by side rather than at once.
+#[must_use]
+pub fn demo_encounter(config: &ArenaConfig) -> crate::encounter::Encounter {
+    use crate::encounter::{Encounter, EnemySpawn};
+    use crate::enemy::EnemyKind;
+
+    let origin = config.player_spawn;
+    Encounter::with_spawns(
+        "SKIRMISH",
+        vec![
+            EnemySpawn::new(EnemyKind::Melee, origin + Vec3::new(-3.0, 0.0, -16.0)),
+            EnemySpawn::new(EnemyKind::Caster, origin + Vec3::new(6.0, 0.0, -24.0)),
+        ],
+    )
+}
+
+/// A pack, for the stress scenarios: `count` enemies alternating melee and caster.
+///
+/// Laid out on a grid behind the same spacing the dummy group uses, so a hundred enemies
+/// stand in a block the player can see all of rather than a line to the horizon.
+#[must_use]
+pub fn pack_encounter(config: &ArenaConfig, count: usize) -> crate::encounter::Encounter {
+    use crate::encounter::{Encounter, EnemySpawn};
+    use crate::enemy::EnemyKind;
+
+    let columns = grid_columns(count);
+    let spacing = config.group_spacing.max(2.5);
+    let mut spawns = Vec::with_capacity(count);
+    for index in 0..count {
+        let column = index % columns;
+        let row = index / columns;
+        let offset = Vec3::new(
+            (column as f32 - (columns as f32 - 1.0) * 0.5) * spacing,
+            0.0,
+            -18.0 - row as f32 * spacing,
+        );
+        let kind = if index % 2 == 0 {
+            EnemyKind::Melee
+        } else {
+            EnemyKind::Caster
+        };
+        spawns.push(EnemySpawn::new(kind, config.player_spawn + offset));
+    }
+    Encounter::with_spawns("PACK", spawns)
+}
+
+/// Fills an existing world with the arena and returns what it spawned.
+///
+/// Separate from [`training_arena`] so a benchmark can rebuild the world of a simulation it
+/// already owns, and so a test can build a world with no simulation at all.
 pub fn populate(world: &mut GameWorld, config: &ArenaConfig) -> Arena {
     world.clear();
 

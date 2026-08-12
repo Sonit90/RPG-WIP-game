@@ -24,6 +24,7 @@ use engine_core::math::Vec3;
 
 use crate::ability::AbilityId;
 use crate::combat::DamageType;
+use crate::enemy::TelegraphShape;
 use crate::entity::EntityId;
 use crate::firemage::ZoneShape;
 use crate::sim::CastEnd;
@@ -263,6 +264,43 @@ pub enum CombatEvent {
         /// The simulation tick it happened on.
         tick: u64,
     },
+    /// An attack has been announced and will land on a known shape after a known delay.
+    ///
+    /// **The shape is the gameplay one.** The same [`TelegraphShape`] travels here and into
+    /// the hit test that resolves the attack, so what is drawn on the floor and what takes
+    /// damage cannot drift apart - there is one value, not two.
+    ///
+    /// Distinct from [`CombatEvent::ImpactScheduled`], which is the player's own Meteor: that
+    /// one is always a circle and carries a radius, and rewriting it would change an event
+    /// three observers already read.
+    TelegraphStarted {
+        /// Names this telegraph, so its end can be matched to its start.
+        id: u32,
+        /// Who is casting it.
+        source: EntityId,
+        /// Which ability.
+        ability: AbilityId,
+        /// Where the shape is anchored: a circle's centre, a cone's apex.
+        anchor: Vec3,
+        /// The ground it will cover.
+        shape: TelegraphShape,
+        /// Seconds until it lands.
+        delay: f32,
+        /// The simulation tick it happened on.
+        tick: u64,
+    },
+    /// A telegraphed attack stopped being pending, whether or not it landed.
+    TelegraphEnded {
+        /// Which telegraph, matching an earlier [`CombatEvent::TelegraphStarted`].
+        id: u32,
+        /// Where it was anchored.
+        anchor: Vec3,
+        /// Whether the attack actually went off. `false` means it was interrupted, lost its
+        /// target, or its caster died.
+        resolved: bool,
+        /// The simulation tick it happened on.
+        tick: u64,
+    },
     /// A character touched the ground again.
     Landed {
         /// Who landed.
@@ -295,6 +333,8 @@ impl CombatEvent {
             | Self::AreaEffectStarted { tick, .. }
             | Self::AreaEffectEnded { tick, .. }
             | Self::Jumped { tick, .. }
+            | Self::TelegraphStarted { tick, .. }
+            | Self::TelegraphEnded { tick, .. }
             | Self::Landed { tick, .. } => tick,
             Self::Damage(damage) => damage.tick,
         }

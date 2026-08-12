@@ -549,3 +549,37 @@ at two places; a jump and a hard landing are different sounds. Footsteps keep ti
 legs and stop when you do. Cancelling a cast takes its gather away and replaces it with a
 fizzle on the same frame. With the whole pack burning, the fire is *one* fire and individual
 hits are still audible over it — critical strikes especially.
+
+---
+
+## MT-024 — The encounter test bed
+
+**Purpose** — enemies notice, fight, telegraph, die and reset; the player can die too.
+
+**Steps**
+
+1. `.\target\release\mygame.exe --scene encounter`
+2. Stand still. Watch both enemies for ten seconds.
+3. Walk slowly towards the brute until it reacts. Watch it, not the ground.
+4. Let it reach you. Watch the cast bar under the target frame and the floor in front of it.
+5. Walk out of the cone while it is being cast.
+6. Pull the caster from a distance with Firebolt (1) and watch where its circle appears.
+7. Stand in the circle once. Then walk out of it once.
+8. Press G while it is casting (developer interrupt) and watch the bar and the floor.
+9. Kill both. Watch the encounter line in the log.
+10. Let them kill you: stand still and do nothing.
+11. Press BACKSPACE.
+12. Run 25 m away mid-fight and keep running.
+13. `.\target\release\mygame.exe --scene encounter --enemies 20` and pull the lot.
+
+**Expected** — idle enemies stand still and face the way they spawned. The brute notices at
+about 14 m, pauses visibly, then closes and stops at arm's length rather than walking through
+you. Its cleave draws a cone on the floor for its whole cast; walking out of it takes no
+damage, standing in it does. The caster keeps its distance and draws a circle *where you are
+standing*, not where you will be — walking out of it is always possible. G removes both the
+cast bar and the shape on the floor, and no damage lands. Killing them completes the
+encounter (in the log) and the corpses do nothing. Dying prints YOU DIED, stops your
+abilities, and leaves the world running. BACKSPACE puts everybody back: enemies home, idle
+and whole, you alive and at full health. Running away long enough sends them home; they walk,
+they do not teleport, and they forget you. Twenty enemies all fight, all telegraph, and the
+frame rate stays far above the target.

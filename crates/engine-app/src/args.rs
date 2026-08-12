@@ -50,6 +50,12 @@ pub enum Scene {
     /// distance, as often as it takes — and judging whether it reads with a picture on top
     /// of it is a different question, asked later, in the combat scene.
     Audio,
+    /// The encounter test bed: a fight against enemies that fight back.
+    ///
+    /// Separate from the combat scene because a training dummy and an enemy answer
+    /// different questions: the dummy scene is where a rotation is practised against a
+    /// target that never moves, and this is where the fight is tested.
+    Encounter,
 }
 
 impl Scene {
@@ -63,6 +69,7 @@ impl Scene {
             Self::Environment => "ENVIRONMENT",
             Self::Vfx => "VFX",
             Self::Audio => "AUDIO",
+            Self::Encounter => "ENCOUNTER",
         }
     }
 
@@ -104,6 +111,12 @@ impl Scene {
     pub fn is_audio(self) -> bool {
         matches!(self, Self::Audio)
     }
+
+    /// Whether this is the encounter test bed.
+    #[must_use]
+    pub fn is_encounter(self) -> bool {
+        matches!(self, Self::Encounter)
+    }
 }
 
 impl FromStr for Scene {
@@ -117,6 +130,7 @@ impl FromStr for Scene {
             "environment" | "env" | "level" | "ENVIRONMENT" => Ok(Self::Environment),
             "vfx" | "effects" | "VFX" => Ok(Self::Vfx),
             "audio" | "sound" | "AUDIO" => Ok(Self::Audio),
+            "encounter" | "ai" | "enemies" | "ENCOUNTER" => Ok(Self::Encounter),
             _ => Err(()),
         }
     }
@@ -142,7 +156,10 @@ options:
   --dummies <count>      training dummies in the group, on top of the single dummy
                          (default 4, combat scene only)
   --scene <name>         which scenario to load: combat (default), collision,
-                         character, environment, vfx or audio. The audio scene is the
+                         character, environment, vfx, audio or encounter. The encounter
+                         scene is the enemy test bed: enemies that notice you, chase you,
+                         telegraph their attacks and can kill you, with BACKSPACE to put
+                         the fight back. The audio scene is the
                          sound test bed: a floor, a few dummies, and one key per sound
                          in the catalogue, so a sound can be judged on its own and from
                          a chosen distance. The vfx scene is the effect
@@ -165,6 +182,9 @@ options:
   --vfx-stress <rate>    play <rate> catalogue effects a second around the player, for
                          measurement. Presentation only: it starts no ability and deals
                          no damage, so what it measures is what effects cost to draw
+  --enemies <count>      enemies in the encounter scene (default: its own two, a melee
+                         enemy and a caster). Any other number builds a pack of that
+                         many, alternating the two kinds, for the stress scenarios
   --no-audio             open no audio device. A measurement control, exactly as --no-ui
                          is: the runtime still runs, still limits and still counts, so
                          the difference between two runs is the mix and the device
@@ -198,6 +218,12 @@ pub struct Args {
     /// the difference between two runs of one binary instead of two separately compiled
     /// builds, which is what made the Phase 3 nameplate numbers hard to trust.
     pub ui: bool,
+    /// How many enemies the encounter scene spawns.
+    ///
+    /// Zero means the scene's own two: one melee enemy and one caster. Anything else builds
+    /// a pack of that many, alternating the two kinds, which is what the stress scenarios
+    /// use.
+    pub enemies: usize,
     /// Whether an audio device is opened.
     ///
     /// A measurement control, exactly as [`Args::ui`] is: the audio runtime runs either
@@ -244,6 +270,7 @@ impl Default for Args {
             validation: None,
             env_density: 1.0,
             vfx_stress: 0.0,
+            enemies: 0,
             audio: true,
             help: false,
         }
@@ -278,6 +305,7 @@ impl Args {
                 Scene::Environment => "myGame — environment demo".to_owned(),
                 Scene::Vfx => "myGame — VFX demo".to_owned(),
                 Scene::Audio => "myGame — audio demo".to_owned(),
+                Scene::Encounter => "myGame — encounter demo".to_owned(),
             },
         }
     }
@@ -348,6 +376,7 @@ where
             }
             "--env-density" => args.env_density = next_value(&mut iter, "--env-density")?,
             "--vfx-stress" => args.vfx_stress = next_value(&mut iter, "--vfx-stress")?,
+            "--enemies" => args.enemies = next_value(&mut iter, "--enemies")?,
             "--no-audio" => args.audio = false,
             "--no-ui" => args.ui = false,
             "-h" | "--help" => args.help = true,

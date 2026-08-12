@@ -364,6 +364,23 @@ impl App {
                 arena::training_arena(&ArenaConfig::with_group(AUDIO_SCENE_DUMMIES)),
                 None,
             ),
+            // The encounter test bed: the training arena's floor, with a fight standing on
+            // it instead of a group of dummies. The same arena builder, because a scene is
+            // gameplay data and a headless test has to be able to build the identical one.
+            Scene::Encounter => {
+                let config = ArenaConfig::with_group(0);
+                let encounter = if args.enemies == 0 {
+                    arena::demo_encounter(&config)
+                } else {
+                    arena::pack_encounter(&config, args.enemies)
+                };
+                log::info!(
+                    "encounter '{}': {} enemies",
+                    encounter.name(),
+                    encounter.spawns().len()
+                );
+                (arena::encounter_arena(&config, encounter), None)
+            }
             Scene::Collision => {
                 let (simulation, scene) = demo::collision_demo();
                 (simulation, Some(scene))
@@ -595,6 +612,19 @@ impl App {
             // Audio off and on, as a *developer* switch rather than a mute: it stops the
             // work, not just the sound, which is what makes "with audio" and "without audio"
             // two measurable states of one build.
+            // Interrupts the target's cast. A *developer* control: the class has no
+            // interrupt ability, and inventing one would be a new player ability this phase
+            // is explicitly not adding. The mechanism it drives is the shipping one.
+            KeyCode::G => {
+                let Some(target) = self.simulation.player().target else {
+                    return;
+                };
+                if self.simulation.interrupt(target) {
+                    log::info!("interrupted {}", target.index());
+                } else {
+                    log::info!("nothing to interrupt on {}", target.index());
+                }
+            }
             KeyCode::F8 => {
                 let enabled = !self.audio_director.enabled();
                 if let Ok(mut audio) = self.audio.system().lock() {
@@ -1629,6 +1659,51 @@ impl App {
                 },
             );
         }
+        // The fight, if there is one: what every enemy is doing, who it is doing it to and
+        // how angry it is. Developer-only, and in the log rather than over the game, exactly
+        // as the audio readout is.
+        if self.simulation.enemy_count() > 0 {
+            let encounter = self.simulation.encounter();
+            log::info!(
+                "  encounter: {} | {} enemies | player {:.0} hp, took {:.0}",
+                encounter.map_or("-", |encounter| encounter.state().as_str()),
+                self.simulation.enemy_count(),
+                self.simulation
+                    .world()
+                    .health(self.simulation.player().entity)
+                    .map_or(0.0, engine_game::Health::current),
+                self.simulation.meter().total_damage_taken(),
+            );
+            for (entity, brain) in self.simulation.enemies() {
+                let position = self
+                    .simulation
+                    .world()
+                    .position(entity)
+                    .unwrap_or(Vec3::ZERO);
+                let target = brain.target();
+                let distance = target
+                    .and_then(|target| self.simulation.world().position(target))
+                    .map(|other| engine_game::world::horizontal_distance(position, other));
+                log::info!(
+                    "    {} {:<7} {:>3.0} hp | target {} at {} m | threat {} | {}{}",
+                    brain.archetype().name,
+                    brain.state().as_str(),
+                    self.simulation
+                        .world()
+                        .health(entity)
+                        .map_or(0.0, engine_game::Health::current),
+                    target.map_or(-1, |target| target.index() as i64),
+                    distance.map_or("-".to_owned(), |metres| format!("{metres:.1}")),
+                    brain.threat().len(),
+                    brain.cast().map_or("-".to_owned(), |cast| format!(
+                        "{} {:.1}s",
+                        cast.ability.name(),
+                        cast.remaining()
+                    )),
+                    if brain.threat().is_empty() { "" } else { " *" },
+                );
+            }
+        }
         if let Some(scene) = self.environment.as_ref() {
             let environment = self.placer.stats();
             log::info!(
@@ -2325,6 +2400,9 @@ fn log_controls(args: &Args, demo: Option<&DemoScene>) {
                 log::info!("  {key}  {}", effect.name());
             }
         }
+        None if args.scene.is_encounter() => {
+            log::info!("encounter demo: walk forward to be noticed; BACKSPACE resets the fight");
+        }
         None if args.scene.is_audio() => {
             log::info!(
                 "audio demo: {AUDIO_SCENE_DUMMIES} dummies, one key per sound, {} sounds in the catalogue",
@@ -2367,6 +2445,10 @@ fn log_controls(args: &Args, demo: Option<&DemoScene>) {
     log::info!("  MOUSE WHEEL      camera distance");
     log::info!("  F3               collision debug drawing on/off");
     log::info!("  F5               developer overlay on/off");
+    if args.scene.is_encounter() {
+        log::info!("  BACKSPACE        put the fight back: enemies home and whole, you alive");
+        log::info!("  G                interrupt the target's cast (developer control)");
+    }
     log::info!("  F8               audio on/off");
     log::info!("  F9               wireframe on/off");
 }

@@ -269,6 +269,35 @@ The last of those is the phase's stated failure mode, tested rather than asserte
 game whose audio did not load keeps running, keeps dealing damage, counts every missed cue,
 and says so once per sound in the log.
 
+## Enemy AI tests (Phase 6, enemy AI)
+
+Four levels, none of which needs a device:
+
+| Level | Where | Needs a GPU |
+| --- | --- | --- |
+| The state machine, in isolation | `engine-game/src/enemy/brain.rs` unit tests | no |
+| Threat rules | `engine-game/src/enemy/threat.rs` unit tests | no |
+| Shapes: what a circle and a cone catch | `engine-game/src/enemy/mod.rs` unit tests | no |
+| The encounter lifecycle | `engine-game/src/encounter.rs` unit tests | no |
+| A real fight, end to end | `engine-game/tests/encounter.rs` | no |
+
+The brain is testable *alone* because it consumes an `AiPercept` and returns an `AiDecision`:
+a test supplies a percept with a target 10 m away and asserts the enemy chases, with no
+world, no arena and no collision. That is the same trick that makes the mixer testable
+without speakers, applied to AI.
+
+`engine-game/tests/encounter.rs` runs the real simulation and asserts the *rules*: an enemy
+notices, chases, stops in range and lands damage; a caster telegraphs before it hits and
+everything it damages was inside the shape it drew; every telegraph is matched by exactly one
+ending; an interrupt costs the cast and is announced; damage generates threat and threat
+picks the target; a leashed enemy goes home, forgets, and can be pulled again; a dead enemy
+stops fighting and completes the encounter; a dead player cannot cast and a reset restores
+everybody; a pack of five all fight and all die; the damage meter counts what the player
+dealt and *not* what it took; and two runs of the same fight produce identical events.
+
+That last one is Milestone 22's determinism claim at the scale that matters. The AI uses no
+randomness at all, so the comparison is exact rather than statistical.
+
 ## Manual verification
 
 Some behaviour cannot be asserted automatically: that a window actually appears, that

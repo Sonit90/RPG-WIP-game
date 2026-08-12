@@ -15,6 +15,8 @@
 
 use engine_game::EntityId;
 use engine_game::ability::AbilityId;
+use engine_game::enemy::EnemyAbility;
+use engine_game::enemy::brain::AiState;
 use engine_game::firemage::{
     ABILITY_SLOTS, AbilityError, ENERGY_MAXIMUM, FireAbility, FireMastery, HEAT_HOT_THRESHOLD,
     HEAT_MAXIMUM, HEAT_WARM_THRESHOLD, HeatTier, TALENTS, TalentId, ULTIMATE_ENABLED,
@@ -96,6 +98,14 @@ pub struct PlayerView {
     pub mastery_active: bool,
     /// Statuses on the player.
     pub statuses: StatusList,
+    /// Whether the player is alive.
+    ///
+    /// Its own field rather than `health > 0`: what "dead" means is the simulation's to
+    /// decide, and a future downed-but-not-out state would be a change there and nowhere in
+    /// the interface.
+    pub alive: bool,
+    /// Damage taken this fight, which is a different number from the damage dealt.
+    pub damage_taken: f32,
 }
 
 impl PlayerView {
@@ -167,6 +177,45 @@ pub struct TargetView {
     pub ignite_at_maximum: bool,
     /// Statuses on it.
     pub statuses: StatusList,
+    /// What it is casting, if it is an enemy and it is casting.
+    ///
+    /// The player's cast bar and this one are the same shape, because they are the same
+    /// question asked about two actors.
+    pub casting: Option<EnemyCastView>,
+    /// What its AI is doing, for the developer readout. `None` if it has no brain.
+    pub ai_state: Option<AiState>,
+}
+
+/// An enemy's cast, for its cast bar.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct EnemyCastView {
+    /// Which attack.
+    pub ability: EnemyAbility,
+    /// Its name.
+    pub name: &'static str,
+    /// Seconds spent.
+    pub elapsed: f32,
+    /// Seconds it takes.
+    pub duration: f32,
+    /// Whether the player could interrupt it.
+    pub interruptible: bool,
+}
+
+impl EnemyCastView {
+    /// How far through it is, in `0.0..=1.0`.
+    #[must_use]
+    pub fn fraction(&self) -> f32 {
+        if self.duration <= 0.0 {
+            return 1.0;
+        }
+        (self.elapsed / self.duration).clamp(0.0, 1.0)
+    }
+
+    /// Seconds left.
+    #[must_use]
+    pub fn remaining(&self) -> f32 {
+        (self.duration - self.elapsed).max(0.0)
+    }
 }
 
 impl TargetView {
@@ -433,6 +482,8 @@ impl UiSnapshot {
                 mastery: FireMastery::Haste,
                 mastery_active: false,
                 statuses: StatusList::default(),
+                alive: true,
+                damage_taken: 0.0,
             },
             target: None,
             abilities: [ability_view(simulation, FireAbility::Firebolt, aiming); ABILITY_SLOTS],
@@ -476,6 +527,8 @@ impl UiSnapshot {
             mastery: mage.mastery,
             mastery_active: mage.mastery_buff.is_active(),
             statuses: statuses_of(simulation, player.entity),
+            alive: simulation.player_alive(),
+            damage_taken: simulation.meter().total_damage_taken() as f32,
         };
 
         self.target = player.target.and_then(|entity| {
@@ -496,6 +549,16 @@ impl UiSnapshot {
                 ignite_remaining: burn.remaining,
                 ignite_at_maximum: burn.is_at_maximum(mage.ignite_max()),
                 statuses: statuses_of(simulation, entity),
+                casting: simulation.brain(entity).and_then(|brain| {
+                    brain.cast().map(|cast| EnemyCastView {
+                        ability: cast.ability,
+                        name: cast.ability.name(),
+                        elapsed: cast.elapsed,
+                        duration: cast.duration,
+                        interruptible: cast.interruptible,
+                    })
+                }),
+                ai_state: simulation.brain(entity).map(|brain| brain.state()),
             })
         });
 

@@ -7,10 +7,14 @@
 //! Keeping the two apart is what lets telemetry hold a fixed array instead of a map, and what
 //! would let a second class exist without the event stream learning a second ability enum.
 
+use crate::enemy::{ENEMY_ABILITY_COUNT, EnemyAbility};
 use crate::firemage::ability::{ABILITY_COUNT, FireAbility};
 
 /// How many distinct abilities can be named. The ten-slot bar plus the Ultimate.
 pub const ABILITY_SLOTS: usize = ABILITY_COUNT;
+
+/// How many identities exist in total: the player's, then every enemy attack.
+pub const TOTAL_ABILITY_SLOTS: usize = ABILITY_SLOTS + ENEMY_ABILITY_COUNT;
 
 /// Which ability an event came from.
 ///
@@ -46,6 +50,34 @@ impl AbilityId {
         FireAbility::ALL.get(self.slot()).copied()
     }
 
+    /// The identity of an enemy attack.
+    ///
+    /// Enemy abilities live *above* the player's bar in the same index space, so one
+    /// `AbilityId` still names everything an event can come from. Telemetry buckets with
+    /// `.get()` and simply finds nothing there, which is correct: an enemy's swing is not a
+    /// row in the player's damage breakdown.
+    #[must_use]
+    pub fn from_enemy(ability: EnemyAbility) -> Self {
+        // The cast cannot truncate: both counts are single digits.
+        Self((ABILITY_SLOTS + ability.index()) as u8)
+    }
+
+    /// Which enemy attack this names, if it names one.
+    #[must_use]
+    pub fn enemy(self) -> Option<EnemyAbility> {
+        let slot = self.slot();
+        if slot < ABILITY_SLOTS {
+            return None;
+        }
+        EnemyAbility::ALL.get(slot - ABILITY_SLOTS).copied()
+    }
+
+    /// Whether this names an enemy attack.
+    #[must_use]
+    pub fn is_enemy(self) -> bool {
+        self.enemy().is_some()
+    }
+
     /// The index this id names.
     #[must_use]
     pub const fn slot(self) -> usize {
@@ -61,8 +93,11 @@ impl AbilityId {
     /// The name of the ability, or `UNKNOWN` for [`AbilityId::NONE`].
     #[must_use]
     pub fn name(self) -> &'static str {
-        match self.fire() {
-            Some(ability) => ability.definition().name,
+        if let Some(ability) = self.fire() {
+            return ability.definition().name;
+        }
+        match self.enemy() {
+            Some(ability) => ability.name(),
             None => "UNKNOWN",
         }
     }

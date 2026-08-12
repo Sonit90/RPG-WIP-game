@@ -253,6 +253,52 @@ colour is per instance (`InstanceStyle`), so one material serves every effect.
 would leave a game that plays identically with nothing to look at. Every cap in the system —
 128 instances, 16,384 particles — degrades by dropping visuals and counting the drop.
 
+## Enemies and encounters (Phase 6, enemy AI)
+
+```text
+Encounter ──▶ Enemy (an entity with a brain)
+                 │
+             AI  │  perceive ─▶ think ─▶ AiDecision { intent, request }
+                 ▼
+            Simulation ── movement, the ability, the telegraph, the damage
+                 │
+            CombatEvent ──▶ VFX · audio · UI · the damage meter
+```
+
+The layering is the phase's whole point, and it is enforced by where the code lives:
+
+* **`engine-game/src/enemy/brain.rs`** decides *what an enemy wants*. It is handed an
+  `AiPercept` — its own position, whether it is alive, its target and the nearest hostile —
+  and returns an `AiDecision`. It cannot see the world, move a body, deal damage or emit an
+  event, and it has no randomness in it at all.
+* **`engine-game/src/sim/enemy_exec.rs`** decides *what happens*. It perceives, calls the
+  brain, parks the movement intent for the character controller, and validates and executes
+  what was asked for — through the same `Simulation::deal_damage` every player ability goes
+  through. **An enemy has no privileged path to anybody's health.**
+* **`engine-presentation`** decides *how it looks and sounds*, by observing the same event
+  stream everything else observes. No AI code names a particle, a voice or a widget.
+
+Four things are data rather than code, which is what makes a new enemy or a new attack a
+table row:
+
+| Table | Where | What a new row buys |
+| --- | --- | --- |
+| `ARCHETYPES` | `enemy/mod.rs` | a new enemy type: health, size, speed, aggro, leash, preferred range, and its ability list |
+| `ENEMY_ABILITIES` | `enemy/mod.rs` | a new attack: range, cast time, cooldown, damage, shape, aim, interruptibility, recovery |
+| `TelegraphShape` | `enemy/mod.rs` | the *hit test*, which is also what the telegraph draws |
+| `EnemySpawn` | `encounter.rs` | who is in a fight and where they stand |
+
+**The telegraph and the damage are one value.** `TelegraphShape` is resolved once, when a
+cast starts — including the cone's yaw — stored on the cast, carried by the
+`TelegraphStarted` event, and used again by the hit test when the cast lands. There is no
+second shape to drift, and `engine-game/tests/encounter.rs` asserts that every hit lands
+inside the shape that was announced.
+
+**Threat is a table, not a field.** Each enemy holds up to eight rows; damage adds threat in
+the one place damage is applied; the target is the highest-threat row the *world* still
+accepts as a victim. With one player it always names the player — and with a pet, a second
+player or a taunt it will not have to be rewritten.
+
 ## Combat audio (Phase 4, audio)
 
 ```text

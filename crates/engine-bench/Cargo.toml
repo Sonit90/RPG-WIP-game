@@ -61,6 +61,14 @@ path = "src/env_bench.rs"
 # Combat's audio on its own: event observation, the director's update, and the mix itself,
 # with no device. Separate from vfx_bench because the two answer different questions and the
 # audio one is the only benchmark in the workspace that measures a second thread's work.
+# A fight on its own: every enemy's brain, the simulation around it, and - in the paired
+# runs - the extraction, culling, effects and audio a real frame does on top. Separate from
+# game_bench because "what does the class cost" and "what does the fight cost" are different
+# questions, and the second one scales with something the first one does not have.
+[[bin]]
+name = "ai_bench"
+path = "src/ai_bench.rs"
+
 [[bin]]
 name = "audio_bench"
 path = "src/audio_bench.rs"

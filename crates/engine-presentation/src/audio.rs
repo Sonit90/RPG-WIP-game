@@ -42,6 +42,7 @@
 
 use engine_audio::{AudioStats, AudioSystem, Listener, SoundCue, SoundId, VoiceHandle};
 use engine_core::math::Vec3;
+use engine_game::enemy::{EnemyAbility, TelegraphShape};
 use engine_game::entity::EntityId;
 use engine_game::event::CombatEvent;
 use engine_game::firemage::FireAbility;
@@ -112,6 +113,10 @@ pub struct AudioDirector {
     areas: Vec<Held<u32>>,
     /// The whistle of each rock on its way down, by where it will land.
     incoming: Vec<Held<u32>>,
+    /// The rising sound under each enemy attack that is coming, by telegraph id.
+    telegraphs: Vec<Held<u32>>,
+    /// The gathering sound on each enemy that is casting, by entity slot.
+    enemy_casts: Vec<Held<u32>>,
     /// The mage's defensive shell, while Flame Shield is up.
     shield: Option<VoiceHandle>,
     /// The Fire Mastery aura, while it is up.
@@ -139,6 +144,8 @@ impl AudioDirector {
             ignited: Vec::with_capacity(64),
             areas: Vec::with_capacity(8),
             incoming: Vec::with_capacity(8),
+            telegraphs: Vec::with_capacity(8),
+            enemy_casts: Vec::with_capacity(8),
             enabled: true,
             ambience_enabled: true,
             ..Self::default()
@@ -178,6 +185,8 @@ impl AudioDirector {
         self.ignited.clear();
         self.areas.clear();
         self.incoming.clear();
+        self.telegraphs.clear();
+        self.enemy_casts.clear();
         self.shield = None;
         self.mastery = None;
         self.cast = None;
@@ -193,6 +202,8 @@ impl AudioDirector {
             system: audio.stats(),
             bolts: self.bolts.len(),
             loops: self.areas.len()
+                + self.telegraphs.len()
+                + self.enemy_casts.len()
                 + self.incoming.len()
                 + self.ignited.iter().filter(|slot| slot.is_some()).count()
                 + usize::from(self.shield.is_some())
@@ -273,11 +284,43 @@ impl AudioDirector {
                     self.request(SoundCue::at(SoundId::DetonateExplosion, centre), audio);
                 }
             }
+            // An enemy attack that is coming. The sound rises where the attack will land,
+            // not where the caster is: what the player needs to hear is *where not to be*.
+            CombatEvent::TelegraphStarted {
+                id, anchor, shape, ..
+            } => {
+                let sound = match shape {
+                    TelegraphShape::Cone { .. } => SoundId::FlameLanceCast,
+                    _ => SoundId::MeteorIncoming,
+                };
+                if let Some(handle) = self.request(SoundCue::at(sound, anchor).looped(true), audio)
+                {
+                    self.telegraphs.push(Held { key: id, handle });
+                }
+            }
+            CombatEvent::TelegraphEnded {
+                id,
+                anchor,
+                resolved,
+                ..
+            } => {
+                if let Some(index) = self.telegraphs.iter().position(|held| held.key == id) {
+                    let held = self.telegraphs.swap_remove(index);
+                    audio.stop(held.handle);
+                }
+                if resolved {
+                    self.request(SoundCue::at(SoundId::DetonateExplosion, anchor), audio);
+                }
+            }
             // A cast started: the gathering bed runs for exactly as long as the cast does,
             // because it is stopped by the event that ends it.
             CombatEvent::CastStarted {
                 source, ability, ..
             } => {
+                if let Some(enemy) = ability.enemy() {
+                    self.begin_enemy_cast(source, enemy, simulation, audio);
+                    return;
+                }
                 let Some(sound) = ability.fire().and_then(charge_sound) else {
                     return;
                 };
@@ -289,6 +332,18 @@ impl AudioDirector {
             }
             // A cast ended. A cast that did not land says so: the gather stops and a short
             // fizzle takes its place, which is the feedback for "that did not happen".
+            CombatEvent::CastEnded {
+                source,
+                ability,
+                end,
+                ..
+            } if ability.is_enemy() => {
+                self.end_enemy_cast(source, audio);
+                if end != CastEnd::Completed {
+                    let origin = self.chest_of(source, simulation);
+                    self.request(SoundCue::at(SoundId::CastFizzle, origin), audio);
+                }
+            }
             CombatEvent::CastEnded { source, end, .. } => {
                 if let Some(handle) = self.cast.take() {
                     audio.stop(handle);
@@ -435,6 +490,41 @@ impl AudioDirector {
             game.position(id)
                 .map(|position| position + Vec3::new(0.0, game.height(id) * CHEST_FRACTION, 0.0))
         });
+    }
+
+    /// Starts the gathering sound on an enemy that has begun a cast.
+    fn begin_enemy_cast(
+        &mut self,
+        source: EntityId,
+        ability: EnemyAbility,
+        simulation: &Simulation,
+        audio: &mut AudioSystem,
+    ) {
+        self.end_enemy_cast(source, audio);
+        // Reused from the player's own casts rather than given sounds of their own: a
+        // gather is a gather, and this phase adds no new audio assets.
+        let sound = match ability {
+            EnemyAbility::GroundBlast => SoundId::PyroblastCast,
+            EnemyAbility::Cleave => SoundId::FlameLanceCast,
+            EnemyAbility::Bolt | EnemyAbility::Swing => SoundId::FireboltCast,
+        };
+        let origin = self.chest_of(source, simulation);
+        let key = source.index() as u32;
+        if let Some(handle) = self.request(
+            SoundCue::at(sound, origin).anchored_to(key).looped(true),
+            audio,
+        ) {
+            self.enemy_casts.push(Held { key, handle });
+        }
+    }
+
+    /// Stops it, however the cast ended.
+    fn end_enemy_cast(&mut self, source: EntityId, audio: &mut AudioSystem) {
+        let key = source.index() as u32;
+        if let Some(index) = self.enemy_casts.iter().position(|held| held.key == key) {
+            let held = self.enemy_casts.swap_remove(index);
+            audio.stop(held.handle);
+        }
     }
 
     /// Starts a bolt, and the impact that will play when it lands.
@@ -615,6 +705,9 @@ impl AudioDirector {
         }
         self.areas.retain(|held| audio.is_playing(held.handle));
         self.incoming.retain(|held| audio.is_playing(held.handle));
+        self.telegraphs.retain(|held| audio.is_playing(held.handle));
+        self.enemy_casts
+            .retain(|held| audio.is_playing(held.handle));
         for held in [&mut self.shield, &mut self.mastery, &mut self.cast] {
             if let Some(handle) = *held
                 && !audio.is_playing(handle)
