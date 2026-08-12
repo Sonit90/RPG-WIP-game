@@ -255,6 +255,13 @@ const HIT_FLASH_STRENGTH: f32 = 0.9;
 /// How much a hit flash lifts the tint towards white at its peak.
 const HIT_FLASH_LIFT: f32 = 0.6;
 
+/// How much longer and brighter a critical strike's flash is.
+///
+/// A crit already has its own colour and size on the damage number. This is the same fact
+/// said on the *target*, because that is where the player is looking when a big hit lands,
+/// and reading it there costs no draw call — it is the emissive term the flash already uses.
+const CRITICAL_FLASH_SCALE: f32 = 1.7;
+
 /// Blends two positions by `alpha`.
 ///
 /// A plain lerp. Positions are metres and a tick is 16.67 ms, so nothing an entity can do in
@@ -351,6 +358,8 @@ struct Hit {
     generation: u32,
     /// Simulation time of the hit.
     at: f32,
+    /// Whether it critically struck, which flashes harder and for longer.
+    critical: bool,
 }
 
 impl RenderExtractor {
@@ -716,9 +725,15 @@ impl RenderExtractor {
             && hit.generation == id.generation()
         {
             let age = (simulation.time() as f32 - hit.at).max(0.0);
-            if age < HIT_FLASH_SECONDS {
-                let strength = 1.0 - age / HIT_FLASH_SECONDS;
-                style.emissive += HIT_FLASH_STRENGTH * strength;
+            let emphasis = if hit.critical {
+                CRITICAL_FLASH_SCALE
+            } else {
+                1.0
+            };
+            let duration = HIT_FLASH_SECONDS * emphasis;
+            if age < duration {
+                let strength = 1.0 - age / duration;
+                style.emissive += HIT_FLASH_STRENGTH * emphasis * strength;
                 let lift = 1.0 + HIT_FLASH_LIFT * strength;
                 style.tint = [
                     (style.tint[0] * lift).min(1.0),
@@ -738,12 +753,29 @@ impl RenderExtractor {
     /// announces damage as an event and presentation observes it, which is the same
     /// arrangement the damage meter uses.
     pub fn note_hit(&mut self, id: EntityId, at: f32) {
+        self.note_damage(id, at, false);
+    }
+
+    /// Records that an entity was damaged, and whether the hit critically struck.
+    ///
+    /// A later ordinary hit does **not** downgrade a critical flash that is still running:
+    /// during a burn every target takes a tick every second, and letting one overwrite the
+    /// flash of the Pyroblast that landed a frame earlier would hide exactly the hit worth
+    /// seeing.
+    pub fn note_damage(&mut self, id: EntityId, at: f32, critical: bool) {
         if self.hits.len() <= id.index() {
             self.hits.resize(id.index() + 1, None);
         }
-        self.hits[id.index()] = Some(Hit {
+        let slot = &mut self.hits[id.index()];
+        let keep_critical = slot.is_some_and(|hit| {
+            hit.critical
+                && hit.generation == id.generation()
+                && at - hit.at < HIT_FLASH_SECONDS * CRITICAL_FLASH_SCALE
+        });
+        *slot = Some(Hit {
             generation: id.generation(),
             at,
+            critical: critical || keep_critical,
         });
     }
 

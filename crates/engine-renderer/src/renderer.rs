@@ -5,7 +5,9 @@
 //! geometry arrives in Milestone 4 through a `RenderWorld`-shaped input.
 
 use windows::Win32::Foundation::HWND;
-use windows::Win32::Graphics::Direct3D::D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
+use windows::Win32::Graphics::Direct3D::{
+    D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST, D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP,
+};
 use windows::Win32::Graphics::Direct3D12::{
     D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_PRESENT,
     D3D12_RESOURCE_STATE_RENDER_TARGET, ID3D12CommandList,
@@ -28,6 +30,7 @@ use crate::mesh_pipeline::{
 };
 #[cfg(feature = "debug-overlay")]
 use crate::overlay::{OverlayBuffers, OverlayGeometry, OverlayMetrics};
+use crate::particle_pipeline::{ParticleConstants, ParticlePipeline, ROOT_PARTICLE_FRAME_CBV};
 use crate::pipeline::{ScenePipeline, Vertex};
 use crate::render_list::RenderList;
 use crate::resource::DeferredReleaseQueue;
@@ -109,6 +112,15 @@ const INSTANCE_ALIGNMENT: usize = 16;
 /// The stride, for the same reason as [`INSTANCE_ALIGNMENT`]: a vertex buffer view has no
 /// 256-byte requirement, it needs an address the input assembler can index by stride.
 const UI_VERTEX_ALIGNMENT: usize = size_of::<UiVertex>();
+
+/// Alignment for the particle instance stream in the upload ring.
+///
+/// Sixteen, deliberately **not** the 36-byte record size: the ring's aligner requires a
+/// power of two, and a vertex buffer needs an address the input assembler can index from
+/// rather than one that is a multiple of the stride. This is the same trap
+/// [`INSTANCE_ALIGNMENT`] documents, met a second time by a record that is also not a power
+/// of two.
+const PARTICLE_ALIGNMENT: usize = 16;
 
 /// Most quads one frame of UI may emit.
 ///
@@ -198,6 +210,26 @@ struct UiState {
     /// Milliseconds the last batch build took, measured on the CPU.
     build_ms: f64,
     /// Whether the UI pass draws at all.
+    enabled: bool,
+}
+
+/// The blended particle pass, owned by the renderer.
+///
+/// The list is held across frames and cleared rather than freed, exactly as the UI's is:
+/// a frame's particles are transient, the memory that holds them is not.
+struct ParticleState {
+    pipeline: ParticlePipeline,
+    list: engine_render_data::ParticleDrawList,
+    /// This frame's camera basis, captured where the camera is in hand.
+    ///
+    /// The pass is recorded from `finish_recording`, which is handed a frame slot and a back
+    /// buffer and deliberately not a camera — so the constants are built in
+    /// `draw_render_list`, beside the scene's own, and read here.
+    constants: ParticleConstants,
+    /// Particles submitted by the most recent frame.
+    drawn: u32,
+    /// Whether the pass draws at all. A developer switch, and what the benchmark's
+    /// particle-free baseline turns off.
     enabled: bool,
 }
 
@@ -361,6 +393,8 @@ pub struct Renderer {
     /// The batched game-UI pass. **Not** behind `debug-overlay`: this is what the player's
     /// health bar is drawn with, and a shipping build needs it.
     ui: UiState,
+    /// The blended particle pass, drawn between the opaque scene and the interface.
+    particles: ParticleState,
     frames_presented: u64,
     /// Draw calls recorded by the most recent frame.
     draw_calls_last_frame: u32,
@@ -440,6 +474,7 @@ impl Renderer {
         let mut descriptors =
             GpuDescriptorHeap::new(&context, MAX_TEXTURE_DESCRIPTORS, 0, frames_in_flight)?;
         let ui = Self::create_ui_state(&context, &mut descriptors)?;
+        let particle_pipeline = ParticlePipeline::new(context.device())?;
 
         #[cfg(feature = "debug-overlay")]
         let overlay = OverlayState {
@@ -499,6 +534,13 @@ impl Renderer {
             #[cfg(feature = "debug-overlay")]
             overlay,
             ui,
+            particles: ParticleState {
+                pipeline: particle_pipeline,
+                list: engine_render_data::ParticleDrawList::default(),
+                constants: ParticleConstants::default(),
+                drawn: 0,
+                enabled: true,
+            },
             frames_presented: 0,
             draw_calls_last_frame: 0,
             triangles_last_frame: 0,
@@ -1006,6 +1048,11 @@ impl Renderer {
         // one frame, reclaimed by the reset in `begin_recording`.
         let frame_constants =
             FrameConstants::new(camera.view_projection(), camera.position(), lighting);
+        // The particle pass is recorded later, from a function with no camera. Its basis is
+        // captured here, from the same camera the scene is drawn with, so a particle cannot
+        // be billboarded against a different frame's view than the one it is drawn into.
+        self.particles.constants =
+            ParticleConstants::new(&camera.view(), &camera.view_projection());
         let allocation = self.uploads.write_constants(slot, &frame_constants)?;
         self.commands
             .set_root_cbv(ROOT_FRAME_CBV, allocation.gpu_address());
@@ -1729,6 +1776,99 @@ impl Renderer {
         Ok(count)
     }
 
+    /// Replaces this frame's particles.
+    ///
+    /// A copy rather than a borrow, for the same reason [`Renderer::set_ui`] copies: the
+    /// caller owns its list across frames and the renderer needs the data to survive until
+    /// recording. Use [`Renderer::particle_list_mut`] to build into the renderer's own list
+    /// and skip the copy.
+    pub fn set_particles(&mut self, list: &engine_render_data::ParticleDrawList) {
+        self.particles.list.clear();
+        for blend in engine_render_data::ParticleBlend::ALL {
+            for particle in list.of(blend) {
+                self.particles.list.push(blend, *particle);
+            }
+        }
+    }
+
+    /// The list the renderer will draw, for a caller that fills it directly.
+    pub fn particle_list_mut(&mut self) -> &mut engine_render_data::ParticleDrawList {
+        &mut self.particles.list
+    }
+
+    /// Particles submitted by the most recent frame.
+    #[must_use]
+    pub fn particles_last_frame(&self) -> u32 {
+        self.particles.drawn
+    }
+
+    /// Turns the whole particle pass on or off.
+    ///
+    /// What a benchmark's particle-free baseline uses, and what answers "how much of this
+    /// frame is fire?" without rebuilding the scene around it.
+    pub fn set_particles_enabled(&mut self, enabled: bool) {
+        self.particles.enabled = enabled;
+    }
+
+    /// Whether the particle pass draws.
+    #[must_use]
+    pub fn particles_enabled(&self) -> bool {
+        self.particles.enabled
+    }
+
+    /// Records the particle pass: one draw per blend mode, whatever the particle count.
+    ///
+    /// Each mode's records are uploaded contiguously into this frame's ring and drawn as
+    /// `DrawInstanced(4, count)` over a triangle strip — the quad's corners come from
+    /// `SV_VertexID`, so there is no vertex buffer of geometry at all and no index buffer.
+    ///
+    /// Returns the particles submitted.
+    fn draw_particles(&mut self, slot: usize) -> Result<u32, RendererError> {
+        self.particles.drawn = 0;
+        if !self.particles.enabled || self.particles.list.is_empty() {
+            return Ok(0);
+        }
+
+        let constants = self.particles.constants;
+        let constant_allocation = self.uploads.write_constants(slot, &constants)?;
+
+        self.commands
+            .set_topology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
+
+        let mut drawn = 0;
+        for blend in engine_render_data::ParticleBlend::ALL {
+            let instances = self.particles.list.of(blend);
+            let count = instances.len();
+            if count == 0 {
+                continue;
+            }
+            let bytes = std::mem::size_of_val(instances);
+            let allocation = self.uploads.allocate(slot, bytes, PARTICLE_ALIGNMENT)?;
+            allocation.write(self.particles.list.of(blend))?;
+
+            self.commands.set_pipeline(
+                self.particles.pipeline.root_signature(),
+                self.particles.pipeline.state(blend),
+            );
+            self.commands
+                .set_root_cbv(ROOT_PARTICLE_FRAME_CBV, constant_allocation.gpu_address());
+            self.commands.set_vertex_buffer(
+                0,
+                windows::Win32::Graphics::Direct3D12::D3D12_VERTEX_BUFFER_VIEW {
+                    BufferLocation: allocation.gpu_address(),
+                    SizeInBytes: bytes as u32,
+                    StrideInBytes: size_of::<engine_render_data::ParticleInstance>() as u32,
+                },
+            );
+            // Four vertices, `count` instances: the whole mode is one draw call.
+            self.commands.draw(4, count as u32);
+            drawn += count as u32;
+        }
+
+        self.particles.drawn = drawn;
+        Ok(drawn)
+    }
+
     /// Uploads a material and returns a handle to it.
     ///
     /// # Errors
@@ -1918,6 +2058,11 @@ impl Renderer {
 
     /// Closes a frame: draws the overlay, returns the back buffer to `PRESENT`, and submits.
     fn finish_recording(&mut self, slot: usize, back_buffer: usize) -> Result<(), RendererError> {
+        // Before the interface and after the scene: a blended particle has to see the opaque
+        // world beneath it, and a health bar under a fireball is a health bar nobody can
+        // read.
+        self.draw_particles(slot)?;
+
         #[cfg(feature = "debug-overlay")]
         let index = slot;
 

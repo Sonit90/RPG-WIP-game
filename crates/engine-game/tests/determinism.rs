@@ -280,6 +280,106 @@ fn describe(event: &CombatEvent) -> String {
             source.index(),
             ability.slot()
         ),
+        // The presentation events are part of the stream a replay has to reproduce for the
+        // same reason the cast events are: a bolt that left from somewhere else, or a patch
+        // of fire that started a tick later, is a different run however equal the health
+        // totals are.
+        CombatEvent::ProjectileLaunched {
+            source,
+            target,
+            from,
+            to,
+            ability,
+            tick,
+        } => format!(
+            "projectile {} from {} at {} {} {} to {} at {} {} {} on {tick}",
+            ability.slot(),
+            source.index(),
+            fixed(from.x),
+            fixed(from.y),
+            fixed(from.z),
+            target.index(),
+            fixed(to.x),
+            fixed(to.y),
+            fixed(to.z)
+        ),
+        CombatEvent::ImpactScheduled {
+            ability,
+            position,
+            radius,
+            delay,
+            tick,
+            ..
+        } => format!(
+            "impact-scheduled {} at {} {} {} radius {} delay {} on {tick}",
+            ability.slot(),
+            fixed(position.x),
+            fixed(position.y),
+            fixed(position.z),
+            fixed(radius),
+            fixed(delay)
+        ),
+        CombatEvent::ImpactLanded {
+            ability,
+            position,
+            radius,
+            targets,
+            tick,
+            ..
+        } => format!(
+            "impact-landed {} at {} {} {} radius {} on {targets} at {tick}",
+            ability.slot(),
+            fixed(position.x),
+            fixed(position.y),
+            fixed(position.z),
+            fixed(radius)
+        ),
+        CombatEvent::AreaEffectStarted {
+            id,
+            ability,
+            position,
+            shape,
+            duration,
+            tick,
+            ..
+        } => format!(
+            "area-start {id} {} at {} {} {} {shape:?} for {} on {tick}",
+            ability.slot(),
+            fixed(position.x),
+            fixed(position.y),
+            fixed(position.z),
+            fixed(duration)
+        ),
+        CombatEvent::AreaEffectEnded { id, position, tick } => format!(
+            "area-end {id} at {} {} {} on {tick}",
+            fixed(position.x),
+            fixed(position.y),
+            fixed(position.z)
+        ),
+        CombatEvent::Jumped {
+            entity,
+            position,
+            tick,
+        } => format!(
+            "jump {} at {} {} {} on {tick}",
+            entity.index(),
+            fixed(position.x),
+            fixed(position.y),
+            fixed(position.z)
+        ),
+        CombatEvent::Landed {
+            entity,
+            position,
+            speed,
+            tick,
+        } => format!(
+            "land {} at {} {} {} speed {} on {tick}",
+            entity.index(),
+            fixed(position.x),
+            fixed(position.y),
+            fixed(position.z),
+            fixed(speed)
+        ),
     }
 }
 

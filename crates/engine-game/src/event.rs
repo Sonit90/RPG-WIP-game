@@ -25,6 +25,7 @@ use engine_core::math::Vec3;
 use crate::ability::AbilityId;
 use crate::combat::DamageType;
 use crate::entity::EntityId;
+use crate::firemage::ZoneShape;
 use crate::sim::CastEnd;
 use crate::status::{StatusEnd, StatusKind};
 
@@ -48,6 +49,18 @@ pub struct DamageEvent {
     pub damage_type: DamageType,
     /// Whether this hit killed the target.
     pub killed: bool,
+    /// Whether it critically struck.
+    ///
+    /// Carried rather than derived: the roll happens inside the executor against the crit
+    /// chance of that moment, and an observer that tried to infer it from the amount would
+    /// have to re-implement every multiplier that produced the number.
+    pub critical: bool,
+    /// Where the target was standing when it landed, at its feet.
+    ///
+    /// On the event rather than looked up afterwards, because an observer reading this may
+    /// be reading it after the target died and its slot was reused — and because a hit is a
+    /// thing that happened at a place, not a thing that happened to a row in a table.
+    pub position: Vec3,
     /// The simulation tick it happened on.
     pub tick: u64,
 }
@@ -155,6 +168,112 @@ pub enum CombatEvent {
         /// The simulation tick it happened on.
         tick: u64,
     },
+    /// A single-target ability reached its victim.
+    ///
+    /// **The damage has already been applied when this is emitted.** Every targeted ability
+    /// in the class is hitscan and stays hitscan — making a bolt a real travelling object
+    /// would change what "in range" means, when a target can dodge and what a dead target
+    /// does to a cast in flight, and all three are gameplay. What this announces is the
+    /// *line the effect travelled along*, so presentation can fly something down it and play
+    /// an impact at the far end. A missing bolt costs a picture, never a hit.
+    ProjectileLaunched {
+        /// Who cast it.
+        source: EntityId,
+        /// Who it hit.
+        target: EntityId,
+        /// Where the caster was standing.
+        from: Vec3,
+        /// Where the target was standing.
+        to: Vec3,
+        /// Which ability.
+        ability: AbilityId,
+        /// The simulation tick it happened on.
+        tick: u64,
+    },
+    /// Something is falling and will land at a known place after a known delay.
+    ///
+    /// Meteor, and the Ultimate when it is enabled. Announced when the cast lands rather
+    /// than when the rock does, which is what lets the interface show an anticipation ring
+    /// for exactly the delay the gameplay is counting down.
+    ImpactScheduled {
+        /// Who cast it.
+        source: EntityId,
+        /// Which ability.
+        ability: AbilityId,
+        /// Where it will land.
+        position: Vec3,
+        /// The radius it will cover, in metres.
+        radius: f32,
+        /// Seconds until it lands.
+        delay: f32,
+        /// The simulation tick it happened on.
+        tick: u64,
+    },
+    /// A scheduled impact arrived.
+    ImpactLanded {
+        /// Who cast it.
+        source: EntityId,
+        /// Which ability.
+        ability: AbilityId,
+        /// Where it landed.
+        position: Vec3,
+        /// The radius it covered, in metres.
+        radius: f32,
+        /// How many entities were inside that radius.
+        targets: u32,
+        /// The simulation tick it happened on.
+        tick: u64,
+    },
+    /// A lasting area of effect started burning.
+    ///
+    /// Carries the *gameplay* shape — the same [`ZoneShape`] the containment test uses — so
+    /// a visual built from it cannot claim a different footprint from the one that deals
+    /// the damage.
+    AreaEffectStarted {
+        /// Names this area, so its end can be matched to its start.
+        id: u32,
+        /// Who created it.
+        source: EntityId,
+        /// Which ability is credited.
+        ability: AbilityId,
+        /// Where it is anchored: a circle's centre, a line's near end.
+        position: Vec3,
+        /// The ground it covers.
+        shape: ZoneShape,
+        /// Seconds it will last.
+        duration: f32,
+        /// The simulation tick it happened on.
+        tick: u64,
+    },
+    /// A lasting area of effect burned out.
+    AreaEffectEnded {
+        /// Which area, matching an earlier [`CombatEvent::AreaEffectStarted`].
+        id: u32,
+        /// Where it was anchored.
+        position: Vec3,
+        /// The simulation tick it happened on.
+        tick: u64,
+    },
+    /// A character left the ground under its own power.
+    Jumped {
+        /// Who jumped.
+        entity: EntityId,
+        /// Where they were standing.
+        position: Vec3,
+        /// The simulation tick it happened on.
+        tick: u64,
+    },
+    /// A character touched the ground again.
+    Landed {
+        /// Who landed.
+        entity: EntityId,
+        /// Where they landed.
+        position: Vec3,
+        /// How fast they were falling, in metres per second. Always positive.
+        speed: f32,
+        /// The simulation tick it happened on.
+        tick: u64,
+    },
 }
 
 impl CombatEvent {
@@ -169,7 +288,14 @@ impl CombatEvent {
             | Self::CastStarted { tick, .. }
             | Self::CastEnded { tick, .. }
             | Self::Teleported { tick, .. }
-            | Self::Death { tick, .. } => tick,
+            | Self::Death { tick, .. }
+            | Self::ProjectileLaunched { tick, .. }
+            | Self::ImpactScheduled { tick, .. }
+            | Self::ImpactLanded { tick, .. }
+            | Self::AreaEffectStarted { tick, .. }
+            | Self::AreaEffectEnded { tick, .. }
+            | Self::Jumped { tick, .. }
+            | Self::Landed { tick, .. } => tick,
             Self::Damage(damage) => damage.tick,
         }
     }
@@ -290,6 +416,8 @@ mod tests {
             ability: AbilityId::from_slot(0).expect("slot 0 exists"),
             damage_type: DamageType::Fire,
             killed: false,
+            critical: false,
+            position: Vec3::ZERO,
             tick,
         })
     }

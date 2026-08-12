@@ -389,6 +389,16 @@ impl Simulation {
                 remaining: definition.impact_delay,
                 total: definition.impact_delay,
             });
+            // Announced when the rock is committed to, not when it arrives: the anticipation
+            // an area indicator shows is exactly the delay gameplay is counting down.
+            self.events.push(CombatEvent::ImpactScheduled {
+                source: caster,
+                ability: AbilityId::from_fire(ability),
+                position,
+                radius: definition.radius,
+                delay: definition.impact_delay,
+                tick,
+            });
             self.events.push(CombatEvent::AbilityUsed {
                 source: caster,
                 ability: AbilityId::from_fire(ability),
@@ -454,6 +464,17 @@ impl Simulation {
         let scaling = 1.0 + f32::from(primary_stacks) * definition.ignite_bonus_per_stack;
         let base = definition.base_damage(&stats) * scaling * effects.meteor_damage_scale;
 
+        let hit_count = self.hits.len() as u32;
+        let tick = self.tick;
+        self.events.push(CombatEvent::ImpactLanded {
+            source: self.player.entity,
+            ability: AbilityId::from_fire(impact.ability),
+            position: impact.position,
+            radius: definition.radius,
+            targets: hit_count,
+            tick,
+        });
+
         let mut critical = false;
         for index in 0..self.hits.len() {
             let target = self.hits[index];
@@ -481,19 +502,29 @@ impl Simulation {
 
         // Molten Meteor: the ground keeps burning whether or not anything stayed in it.
         if impact.ability == FireAbility::Meteor && effects.meteor_ground_duration > 0.0 {
-            self.mage.zones.spawn(Zone {
+            let shape = ZoneShape::Circle {
+                radius: definition.radius,
+            };
+            let id = self.mage.zones.spawn(Zone {
                 kind: ZoneKind::BurningGround,
                 source: FireAbility::Meteor,
                 position: impact.position,
-                shape: ZoneShape::Circle {
-                    radius: definition.radius,
-                },
+                shape,
                 remaining: effects.meteor_ground_duration,
                 until_tick: MOLTEN_GROUND_INTERVAL,
                 interval: MOLTEN_GROUND_INTERVAL,
                 coefficient: MOLTEN_GROUND_TICK_COEFFICIENT,
                 ignite_stacks: 0,
                 ignite_chance: 0.0,
+            });
+            self.events.push(CombatEvent::AreaEffectStarted {
+                id,
+                source: self.player.entity,
+                ability: AbilityId::from_fire(FireAbility::Meteor),
+                position: impact.position,
+                shape,
+                duration: effects.meteor_ground_duration,
+                tick,
             });
         }
     }
@@ -560,12 +591,32 @@ impl Simulation {
         let definition = *ability.definition();
         let effects = *self.mage.effects();
         let stats = self.mage.stats();
+        let caster = self.player.entity;
+        let origin = self.world.position(caster).unwrap_or(Vec3::ZERO);
         let mut affected = 0;
 
         for index in 0..self.hits.len() {
             let target = self.hits[index];
             let burning = self.mage.ignite.is_ignited(target);
             let stacks = self.mage.ignite.stacks(target);
+
+            // The line the spell travelled, for whatever presentation wants to fly down it.
+            // Emitted before the damage, so an observer reading the batch in order sees the
+            // bolt leave before it sees the hit land — even though gameplay resolved both on
+            // this tick.
+            if definition.target == TargetMode::Single
+                && let Some(destination) = self.world.position(target)
+            {
+                let tick = self.tick;
+                self.events.push(CombatEvent::ProjectileLaunched {
+                    source: caster,
+                    target,
+                    from: origin,
+                    to: destination,
+                    ability: AbilityId::from_fire(ability),
+                    tick,
+                });
+            }
 
             let scaling = 1.0 + f32::from(stacks) * definition.ignite_bonus_per_stack;
             let base = definition.base_damage(&stats) * scaling;
@@ -753,21 +804,34 @@ impl Simulation {
             }
             CastAim::Target => self.facing_yaw(),
         };
-        self.mage.zones.spawn(Zone {
+        let shape = ZoneShape::Line {
+            yaw,
+            length: definition.range,
+            width: definition.width,
+        };
+        let id = self.mage.zones.spawn(Zone {
             kind: ZoneKind::Firestorm,
             source: FireAbility::Firestorm,
             position: origin,
-            shape: ZoneShape::Line {
-                yaw,
-                length: definition.range,
-                width: definition.width,
-            },
+            shape,
             remaining: definition.duration,
             until_tick: definition.tick_interval,
             interval: definition.tick_interval,
             coefficient: definition.tick_coefficient,
             ignite_stacks: definition.ignite_stacks,
             ignite_chance: definition.ignite_chance,
+        });
+        // The shape carried is the shape the containment test uses, so a band of fire drawn
+        // from this cannot claim a different footprint from the one that burns.
+        let tick = self.tick;
+        self.events.push(CombatEvent::AreaEffectStarted {
+            id,
+            source: self.player.entity,
+            ability: AbilityId::from_fire(FireAbility::Firestorm),
+            position: origin,
+            shape,
+            duration: definition.duration,
+            tick,
         });
     }
 
@@ -949,6 +1013,7 @@ impl Simulation {
             amount,
             AbilityId::from_fire(ability),
             DamageType::Fire,
+            crit,
         );
         crit
     }

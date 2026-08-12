@@ -221,6 +221,29 @@ These do not replace a person's judgement about whether something looks *good*. 
 the part of a visual check that is a fact — is it there, is it the right size, is it lit,
 is it inside out — and that is the part that regresses silently.
 
+## VFX tests (Phase 3, VFX)
+
+The VFX system is tested at four levels, and only one of them needs a GPU:
+
+| Level | Where | Needs a device |
+| --- | --- | --- |
+| The event layer gameplay emits | `engine-game/tests/presentation_events.rs` | no |
+| The catalogue, instance lifecycle and particle pool | `engine-vfx` unit tests | no |
+| The draw list and the pipeline's state | `engine-render-data`, `engine-renderer` unit tests | no |
+| The pass, in pixels | `engine-renderer/tests/particle_render.rs` | yes, skips without one |
+| The director, and every ability | `engine-presentation` unit tests + `tests/ability_vfx.rs` | no |
+
+The rule the rest of this document states — gameplay tests need no GPU — holds for effects
+too, and for a stronger reason: `engine-vfx` cannot link a device at all, so "the particle
+pool integrates correctly" is a question that is *answerable* without one by construction.
+The seven pixel tests exist because the things they check (a premultiplied blend with the
+wrong factors, a billboard basis taken from the wrong axis, a per-vertex input layout where
+a per-instance one was meant) all produce a healthy CPU state and a black frame.
+
+`engine-presentation/tests/ability_vfx.rs` casts every ability on the bar in a real fight and
+asserts that each produces an effect, that an area is drawn at the radius it hits, that a
+rapid rotation never exhausts the pools, and that effects survive their targets dying.
+
 ## Manual verification
 
 Some behaviour cannot be asserted automatically: that a window actually appears, that

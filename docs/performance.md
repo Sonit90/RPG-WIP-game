@@ -847,3 +847,65 @@ are the Phase 3 damage-meter residue documented above, not environment work.
 frame. With nine materials and four meshes nobody noticed; with the environment's forty of
 each, `env_bench` measured **1.18 allocations per frame**. The cursors now live in a reused
 field, and the empty-arena scenario allocates 0.0003 per frame.
+
+
+# Phase 3 (VFX) — combat feedback
+
+`cargo run --release --bin vfx_bench` measures the CPU side with no device; the shipped
+binary with `--vfx-stress <rate>` measures the whole frame including the GPU. The stress
+driver plays catalogue effects around the player **without touching gameplay**, so the
+difference between two runs is the cost of drawing effects rather than the throughput of the
+ability system.
+
+## What effects cost the CPU
+
+Microseconds per frame, mean over 600 measured frames after 300 of warm-up.
+
+| Fight | without effects | with effects | delta |
+| --- | ---: | ---: | ---: |
+| 1 target | 0.8 | 2.2 | **+1.4** |
+| 50 targets, area rotation | 5.6 | 7.3 | **+1.7** |
+| 100 targets | — | 11.9 | — |
+| Ultimate on 50 (2,100 particles) | — | 19.6 | — |
+
+Event observation does not appear: it is 0.0 us to one decimal in every scenario, being a
+pass over a slice of a few dozen events. The VFX update itself — instances, emitters,
+particle integration, mesh-draw rebuild, render-entity sync — is 1.3-1.6 us in ordinary
+combat and 13.6 us while the ultimate's 2,100 particles are alive.
+
+## The whole frame, on the GPU
+
+1920x1080, vsync off, 6,000 frames per configuration.
+
+| Scenario | CPU mean | GPU mean | FPS | Draw calls | Particles |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Combat, 100 dummies, no effects | 0.350 | 0.173 | 2,861 | 33 | 0 |
+| Combat, 100 dummies, 30 effects/s | 0.230 | 0.155 | 4,349 | 41 | 1,412 |
+| Combat, 100 dummies, 120 effects/s | 0.755 | 0.413 | 1,325 | 41 | 12,047 |
+| VFX scene, 240 effects/s | 0.830 | 0.498 | 1,205 | 19 | 10,756 |
+
+Against a 240 FPS budget of 4.17 ms, the worst case measured uses 18 % of it on the CPU and
+10 % on the GPU. At combat-realistic effect rates the cost is inside the run-to-run noise of
+a sub-millisecond frame; only the deliberate stress moves it measurably.
+
+## Why the particle pass costs so little
+
+The whole pass is **two draw calls**, whatever the particle count: one per blend mode. A
+particle is 36 bytes of per-instance data and the quad's four corners come from
+`SV_VertexID`, so 12,000 particles is 432 KiB of upload and two `DrawInstanced` calls rather
+than 72,000 vertices and a draw per effect.
+
+## Allocation
+
+`vfx_bench` counts every allocation the process makes during the measured frames: **6 to 12
+per 600 frames** in every scenario, effects on or off. The VFX system allocates nothing per
+frame — instances use a free list, particles a fixed-capacity structure-of-arrays pool,
+render entities are pooled per shape and hidden rather than despawned, and every per-frame
+buffer is cleared rather than freed.
+
+## The one bound that is reached
+
+Under artificial stress (120+ effects a second) the system sits at its 128-instance ceiling
+and refuses effects, while the particle pool never drops one (peak 12,112 of 16,384). Real
+combat peaks at 24 instances. The caps are left as they are: raising one to make a synthetic
+scenario look better is how a budget stops describing the game.

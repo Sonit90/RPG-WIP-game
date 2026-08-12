@@ -34,6 +34,14 @@ pub enum Scene {
     /// culling should not require a fight going on in front of them, and a display row in
     /// the combat arena would be scenery a player trips over.
     Environment,
+    /// The VFX test bed: a flat floor, a few dummies, and one key per effect in the
+    /// catalogue.
+    ///
+    /// Separate from the combat scene for the reason every other test bed is: judging
+    /// whether an explosion reads means playing it on demand, from a chosen angle, as often
+    /// as it takes — not winning a fight to get one. It brings no environment, so nothing
+    /// but the effect is in the picture.
+    Vfx,
 }
 
 impl Scene {
@@ -45,6 +53,7 @@ impl Scene {
             Self::Collision => "COLLISION",
             Self::Character => "CHARACTER",
             Self::Environment => "ENVIRONMENT",
+            Self::Vfx => "VFX",
         }
     }
 
@@ -74,6 +83,12 @@ impl Scene {
     pub fn is_collision(self) -> bool {
         matches!(self, Self::Collision)
     }
+
+    /// Whether this is the VFX test bed.
+    #[must_use]
+    pub fn is_vfx(self) -> bool {
+        matches!(self, Self::Vfx)
+    }
 }
 
 impl FromStr for Scene {
@@ -85,6 +100,7 @@ impl FromStr for Scene {
             "collision" | "demo" | "COLLISION" => Ok(Self::Collision),
             "character" | "model" | "CHARACTER" => Ok(Self::Character),
             "environment" | "env" | "level" | "ENVIRONMENT" => Ok(Self::Environment),
+            "vfx" | "effects" | "VFX" => Ok(Self::Vfx),
             _ => Err(()),
         }
     }
@@ -110,7 +126,10 @@ options:
   --dummies <count>      training dummies in the group, on top of the single dummy
                          (default 4, combat scene only)
   --scene <name>         which scenario to load: combat (default), collision,
-                         character or environment. The environment scene is the arena
+                         character, environment or vfx. The vfx scene is the effect
+                         test bed: a floor, a few dummies, and one key per effect in
+                         the catalogue, so an explosion can be played on demand from a
+                         chosen angle instead of being waited for in a fight. The environment scene is the arena
                          with one of every environment asset laid out beside it and no
                          fight going on: terrain, props, materials, lighting, LOD and
                          culling, with nothing in the way of looking at them. The character scene is the model test bed - the
@@ -124,6 +143,9 @@ options:
                          Above 1 loads the stress layout: the same arena boundary with
                          several times the rocks, trees and ground cover, which is the
                          configuration that answers whether the environment scales
+  --vfx-stress <rate>    play <rate> catalogue effects a second around the player, for
+                         measurement. Presentation only: it starts no ability and deals
+                         no damage, so what it measures is what effects cost to draw
   --no-ui                do not draw the game UI. A measurement control: it makes the
                          interface's cost the difference between two runs of the same
                          binary rather than of two builds
@@ -166,6 +188,14 @@ pub struct Args {
     /// boundary and several times the scatter — the configuration that answers "does the
     /// environment scale?" rather than "is the game fast?".
     pub env_density: f32,
+    /// Effects per second the stress driver plays, or zero to leave it off.
+    ///
+    /// A *presentation* stress: it plays catalogue effects around the player without
+    /// touching gameplay, so what it measures is the cost of drawing effects rather than the
+    /// cost of a fight that happens to produce them. Available in every scene, because "what
+    /// do fifty simultaneous explosions cost over the arena" and "over an empty floor" are
+    /// both worth knowing.
+    pub vfx_stress: f32,
     /// Whether `--help` was requested.
     pub help: bool,
 }
@@ -185,6 +215,7 @@ impl Default for Args {
             fullscreen: false,
             validation: None,
             env_density: 1.0,
+            vfx_stress: 0.0,
             help: false,
         }
     }
@@ -216,6 +247,7 @@ impl Args {
                 Scene::Collision => "myGame — collision demo".to_owned(),
                 Scene::Character => "myGame — character test".to_owned(),
                 Scene::Environment => "myGame — environment demo".to_owned(),
+                Scene::Vfx => "myGame — VFX demo".to_owned(),
             },
         }
     }
@@ -285,6 +317,7 @@ where
                 })?;
             }
             "--env-density" => args.env_density = next_value(&mut iter, "--env-density")?,
+            "--vfx-stress" => args.vfx_stress = next_value(&mut iter, "--vfx-stress")?,
             "--no-ui" => args.ui = false,
             "-h" | "--help" => args.help = true,
             other => return Err(ArgsError::Unknown(other.to_owned())),

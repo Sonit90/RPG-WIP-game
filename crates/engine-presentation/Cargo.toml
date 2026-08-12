@@ -22,6 +22,10 @@ engine-assets = { workspace = true }
 engine-environment = { workspace = true }
 engine-game = { workspace = true }
 engine-render-data = { workspace = true }
+# Effects as data and their runtime. Presentation is the only crate allowed to say that a
+# gameplay thing looks like a particular effect, so this dependency lives here and nowhere
+# else in the graph.
+engine-vfx = { workspace = true }
 # The settings a menu shows: their bounds, their defaults and their type. The UI reads them;
 # it never loads or writes the file.
 engine-settings = { workspace = true }

@@ -56,6 +56,12 @@ pub struct FloatingNumber {
     pub amount: f32,
     /// Whether it was a killing blow, which is drawn differently.
     pub killed: bool,
+    /// Whether it critically struck, which is also drawn differently.
+    ///
+    /// Read from the event rather than guessed from the amount: the same number can be a
+    /// critical Firebolt or an ordinary Pyroblast, and a player who cannot tell the two
+    /// apart cannot tell whether the build is working.
+    pub critical: bool,
     /// Simulation time the number was created.
     pub born: f32,
     /// Which way it drifts: −1 or +1.
@@ -151,7 +157,15 @@ impl FloatingNumbers {
     ///
     /// `origin` is where to draw it: the caller supplies it because presentation knows where
     /// an entity is drawn and gameplay only knows where its feet are.
-    pub fn push(&mut self, target: EntityId, origin: Vec3, amount: f32, killed: bool, now: f32) {
+    pub fn push(
+        &mut self,
+        target: EntityId,
+        origin: Vec3,
+        amount: f32,
+        killed: bool,
+        critical: bool,
+        now: f32,
+    ) {
         if amount <= 0.0 {
             // Zero damage is a legitimate outcome — a hit on a corpse, a fully absorbed
             // blow — and drawing "0" for it is noise.
@@ -170,6 +184,7 @@ impl FloatingNumbers {
             origin,
             amount,
             killed,
+            critical,
             born: now,
             drift: self.next_drift,
         });
@@ -193,7 +208,14 @@ impl FloatingNumbers {
             let Some(origin) = position_of(damage.target) else {
                 continue;
             };
-            self.push(damage.target, origin, damage.amount, damage.killed, now);
+            self.push(
+                damage.target,
+                origin,
+                damage.amount,
+                damage.killed,
+                damage.critical,
+                now,
+            );
         }
     }
 
@@ -271,7 +293,7 @@ mod tests {
     #[test]
     fn a_number_rises_and_fades_over_its_lifetime() {
         let mut numbers = FloatingNumbers::new();
-        numbers.push(entity(), Vec3::ZERO, 45.0, false, 0.0);
+        numbers.push(entity(), Vec3::ZERO, 45.0, false, false, 0.0);
         let number = numbers.numbers()[0];
 
         assert_eq!(number.alpha(0.0), 1.0, "fully opaque when it appears");
@@ -288,7 +310,7 @@ mod tests {
         // A number that faded from the instant it appeared would be least readable exactly
         // when the player looks at it.
         let mut numbers = FloatingNumbers::new();
-        numbers.push(entity(), Vec3::ZERO, 45.0, false, 0.0);
+        numbers.push(entity(), Vec3::ZERO, 45.0, false, false, 0.0);
         let number = numbers.numbers()[0];
         assert_eq!(number.alpha(NUMBER_LIFETIME * 0.2), 1.0);
         assert_eq!(number.alpha(NUMBER_LIFETIME * HOLD_FRACTION), 1.0);
@@ -298,8 +320,8 @@ mod tests {
     fn consecutive_numbers_drift_apart() {
         // Two hits on one target in one tick must not stack into an unreadable smear.
         let mut numbers = FloatingNumbers::new();
-        numbers.push(entity(), Vec3::ZERO, 10.0, false, 0.0);
-        numbers.push(entity(), Vec3::ZERO, 10.0, false, 0.0);
+        numbers.push(entity(), Vec3::ZERO, 10.0, false, false, 0.0);
+        numbers.push(entity(), Vec3::ZERO, 10.0, false, false, 0.0);
         let first = numbers.numbers()[0].position(1.0);
         let second = numbers.numbers()[1].position(1.0);
         assert_ne!(first.x, second.x, "they drift to opposite sides");
@@ -309,7 +331,7 @@ mod tests {
     fn finished_numbers_are_retired_and_the_allocation_is_kept() {
         let mut numbers = FloatingNumbers::new();
         for _ in 0..10 {
-            numbers.push(entity(), Vec3::ZERO, 5.0, false, 0.0);
+            numbers.push(entity(), Vec3::ZERO, 5.0, false, false, 0.0);
         }
         let capacity = numbers.numbers.capacity();
 
@@ -326,7 +348,7 @@ mod tests {
         // A thousand-target area hit must degrade, not allocate.
         let mut numbers = FloatingNumbers::new();
         for index in 0..MAX_FLOATING_NUMBERS + 50 {
-            numbers.push(entity(), Vec3::ZERO, index as f32 + 1.0, false, 0.0);
+            numbers.push(entity(), Vec3::ZERO, index as f32 + 1.0, false, false, 0.0);
         }
         assert_eq!(numbers.numbers().len(), MAX_FLOATING_NUMBERS);
         assert_eq!(numbers.dropped(), 50);
@@ -339,15 +361,15 @@ mod tests {
         // A hit on a corpse or a fully absorbed blow is a legitimate zero, and "0" floating
         // up is noise.
         let mut numbers = FloatingNumbers::new();
-        numbers.push(entity(), Vec3::ZERO, 0.0, false, 0.0);
-        numbers.push(entity(), Vec3::ZERO, -5.0, false, 0.0);
+        numbers.push(entity(), Vec3::ZERO, 0.0, false, false, 0.0);
+        numbers.push(entity(), Vec3::ZERO, -5.0, false, false, 0.0);
         assert!(numbers.numbers().is_empty());
     }
 
     #[test]
     fn a_killing_blow_is_marked_so_it_can_be_drawn_differently() {
         let mut numbers = FloatingNumbers::new();
-        numbers.push(entity(), Vec3::ZERO, 999.0, true, 0.0);
+        numbers.push(entity(), Vec3::ZERO, 999.0, true, false, 0.0);
         assert!(numbers.numbers()[0].killed);
     }
 

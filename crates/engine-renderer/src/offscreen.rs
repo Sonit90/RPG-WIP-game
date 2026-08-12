@@ -390,6 +390,78 @@ pub fn render_scene(
     })
 }
 
+/// Renders a [`ParticleDrawList`](engine_render_data::ParticleDrawList) through a camera
+/// and reads the result back.
+///
+/// The offscreen equivalent of the renderer's particle pass: the same pipeline states, the
+/// same premultiplied blending, the same depth state and the same per-instance stream, so a
+/// pixel test here is evidence about the path the window runs rather than about a copy of
+/// it. There is no opaque scene beneath it — the depth buffer is cleared to far, which is
+/// what a particle in open air tests against anyway.
+///
+/// # Errors
+///
+/// Returns [`RendererError`] if any D3D12 call fails.
+pub fn render_particles(
+    width: u32,
+    height: u32,
+    clear_color: [f32; 4],
+    particles: &engine_render_data::ParticleDrawList,
+    camera: &Camera,
+) -> Result<CapturedImage, RendererError> {
+    use crate::particle_pipeline::{ParticleConstants, ParticlePipeline, ROOT_PARTICLE_FRAME_CBV};
+    use windows::Win32::Graphics::Direct3D::D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP;
+    use windows::Win32::Graphics::Direct3D12::D3D12_VERTEX_BUFFER_VIEW;
+
+    render_with(width, height, clear_color, |context, list, _| {
+        let pipeline = ParticlePipeline::new(context.device())?;
+        let mut ring = UploadRing::new(context, 1 << 20, 1)?;
+        ring.begin_frame(0);
+
+        let constants = ParticleConstants::new(&camera.view(), &camera.view_projection());
+        let frame = ring.write_constants(0, &constants)?;
+
+        // Held until the submission completes: the vertex views below address this memory.
+        let mut allocations = Vec::with_capacity(2);
+        for blend in engine_render_data::ParticleBlend::ALL {
+            let instances = particles.of(blend);
+            if instances.is_empty() {
+                continue;
+            }
+            let bytes = std::mem::size_of_val(instances);
+            // Sixteen, not the 36-byte stride: the ring's aligner requires a power of two,
+            // and a vertex buffer needs an indexable address rather than a multiple of its
+            // stride. The renderer's own pass uses the same constant.
+            let allocation = ring.allocate(0, bytes, 16)?;
+            allocation.write(instances)?;
+
+            // SAFETY: FFI calls recording into the open list. Every referenced object is
+            // returned below and kept alive until the submission completes.
+            unsafe {
+                list.SetGraphicsRootSignature(pipeline.root_signature());
+                list.SetPipelineState(pipeline.state(blend));
+                list.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
+                list.SetGraphicsRootConstantBufferView(
+                    ROOT_PARTICLE_FRAME_CBV,
+                    frame.gpu_address(),
+                );
+                list.IASetVertexBuffers(
+                    0,
+                    Some(&[D3D12_VERTEX_BUFFER_VIEW {
+                        BufferLocation: allocation.gpu_address(),
+                        SizeInBytes: bytes as u32,
+                        StrideInBytes: size_of::<engine_render_data::ParticleInstance>() as u32,
+                    }]),
+                );
+                list.DrawInstanced(4, instances.len() as u32, 0, 0);
+            }
+            allocations.push(allocation);
+        }
+
+        Ok(Box::new((pipeline, ring, allocations)) as Box<dyn std::any::Any>)
+    })
+}
+
 /// Renders a [`UiDrawList`] over a cleared target and reads the pixels back.
 ///
 /// The only way to prove alpha blending actually blends. A draw-call count and a silent

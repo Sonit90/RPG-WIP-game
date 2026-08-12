@@ -32,6 +32,7 @@ pub mod mesh_pipeline;
 pub mod offscreen;
 #[cfg(feature = "debug-overlay")]
 pub mod overlay;
+pub mod particle_pipeline;
 pub mod pipeline;
 pub mod render_list;
 pub mod renderer;
@@ -57,6 +58,7 @@ pub use mesh::{GpuMesh, Index, MeshData, MeshVertex, VertexStream};
 pub use mesh_pipeline::MeshPipeline;
 #[cfg(feature = "debug-overlay")]
 pub use overlay::OverlayMetrics;
+pub use particle_pipeline::{ParticleConstants, ParticlePipeline};
 pub use pipeline::{TRIANGLE_VERTICES, Vertex};
 pub use render_list::{RenderList, RenderListEntry};
 pub use renderer::Renderer;
@@ -70,8 +72,9 @@ pub use ui_pipeline::{UiBatchStats, UiBatcher, UiFrameConstants, UiPipeline, UiV
 // test and benchmark writes, and the split was a boundary change rather than an API one.
 pub use engine_render_data::{
     Camera, DEFAULT_FAR, DEFAULT_FOV_Y, DEFAULT_NEAR, InstanceStyle, Lighting, MAX_ICON_PIXELS,
-    MaterialHandle, MeshHandle, Projection, RenderEntity, RenderEntityDesc, RenderWorld, TextAlign,
-    UiColor, UiCommand, UiDrawList, UiIcon, UiRect, UiScale,
+    MaterialHandle, MeshHandle, ParticleBlend, ParticleDrawList, ParticleInstance, Projection,
+    RenderEntity, RenderEntityDesc, RenderWorld, TextAlign, UiColor, UiCommand, UiDrawList, UiIcon,
+    UiRect, UiScale,
 };
 pub use stress::STRESS_LEVELS;
 pub use swapchain::{BACK_BUFFER_FORMAT, FRAME_COUNT};

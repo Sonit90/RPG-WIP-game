@@ -18,6 +18,9 @@ members = [
     "crates/engine-environment",
     # Gameplay. Depends on engine-core alone; see its lib docs for why that is the point.
     "crates/engine-game",
+    # Effects as data and the runtime that plays them. engine-core and engine-render-data
+    # only: no gameplay, no device, so the whole VFX runtime is tested without either.
+    "crates/engine-vfx",
     # Player-facing settings and their file. Depends on no engine crate at all.
     "crates/engine-settings",
     # Gameplay to rendering: extraction, the third-person camera, the developer overlay.
@@ -58,6 +61,9 @@ engine-environment = { path = "crates/engine-environment" }
 # The gameplay simulation. Must never gain a `windows`, renderer or render-data dependency.
 engine-game = { path = "crates/engine-game" }
 engine-presentation = { path = "crates/engine-presentation" }
+# Effects as data and their runtime. Must never gain `windows`, `engine-renderer`,
+# `engine-game` or `engine-assets` — see its lib docs for why each absence is load-bearing.
+engine-vfx = { path = "crates/engine-vfx" }
 # Settings the player changes and the game reloads next launch. No engine dependency.
 engine-settings = { path = "crates/engine-settings" }
 log = "0.4"

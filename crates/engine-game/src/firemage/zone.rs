@@ -171,6 +171,19 @@ pub struct PendingImpact {
 #[derive(Debug, Default, Clone)]
 pub struct ZoneField {
     zones: Vec<Zone>,
+    /// One identity per live zone, parallel to `zones`.
+    ///
+    /// Parallel rather than a field on [`Zone`] so every existing construction site of a
+    /// zone stays a plain struct literal about *fire*, and identity stays a property the
+    /// field hands out. It is the field that knows how many zones have ever existed.
+    ids: Vec<u32>,
+    /// Zones that burned out on the last tick, with the identity they had.
+    ///
+    /// Held rather than returned through [`ZoneField::tick`]'s parameters, because an
+    /// expiry is not a thing the simulation has to act on — only something an observer may
+    /// want to hear about. Drained by the simulation each tick; never freed.
+    expired: Vec<(u32, Zone)>,
+    next_id: u32,
     pending: Vec<PendingImpact>,
 }
 
@@ -180,6 +193,9 @@ impl ZoneField {
     pub fn new() -> Self {
         Self {
             zones: Vec::with_capacity(MAX_ZONES),
+            ids: Vec::with_capacity(MAX_ZONES),
+            expired: Vec::with_capacity(MAX_ZONES),
+            next_id: 1,
             pending: Vec::with_capacity(MAX_PENDING_IMPACTS),
         }
     }
@@ -188,6 +204,19 @@ impl ZoneField {
     #[must_use]
     pub fn zones(&self) -> &[Zone] {
         &self.zones
+    }
+
+    /// The identity of each burning zone, parallel to [`ZoneField::zones`].
+    #[must_use]
+    pub fn ids(&self) -> &[u32] {
+        &self.ids
+    }
+
+    /// The zones that burned out since this was last called, and their identities.
+    ///
+    /// Empties the list, keeping its allocation.
+    pub fn drain_expired(&mut self, out: &mut Vec<(u32, Zone)>) {
+        out.append(&mut self.expired);
     }
 
     /// The impacts still falling.
@@ -202,12 +231,22 @@ impl ZoneField {
         self.zones.iter().any(|zone| zone.kind == kind)
     }
 
-    /// Adds a zone, replacing the oldest if the field is full.
-    pub fn spawn(&mut self, zone: Zone) {
+    /// Adds a zone, replacing the oldest if the field is full, and names it.
+    ///
+    /// The identity is what lets an observer match an area's end to its start; a zone
+    /// pushed out by a fuller field ends exactly as one that burned out does, because from
+    /// outside there is no difference — the fire is gone either way.
+    pub fn spawn(&mut self, zone: Zone) -> u32 {
         if self.zones.len() >= MAX_ZONES {
-            self.zones.remove(0);
+            let evicted = self.zones.remove(0);
+            let id = self.ids.remove(0);
+            self.expired.push((id, evicted));
         }
+        let id = self.next_id;
+        self.next_id = self.next_id.wrapping_add(1).max(1);
         self.zones.push(zone);
+        self.ids.push(id);
+        id
     }
 
     /// Schedules an impact.
@@ -252,14 +291,23 @@ impl ZoneField {
                 });
             }
             if zone.remaining <= 0.0 {
-                self.zones.remove(index);
+                let burnt = self.zones.remove(index);
+                let id = self.ids.remove(index);
+                self.expired.push((id, burnt));
             }
         }
     }
 
     /// Removes everything. For a reset.
+    ///
+    /// The zones that were burning are reported as expired: a reset takes the fire off the
+    /// ground, and an observer holding a picture of it has to be told to take it down too.
     pub fn clear(&mut self) {
-        self.zones.clear();
+        for (index, zone) in self.zones.drain(..).enumerate() {
+            let id = self.ids.get(index).copied().unwrap_or(0);
+            self.expired.push((id, zone));
+        }
+        self.ids.clear();
         self.pending.clear();
     }
 }

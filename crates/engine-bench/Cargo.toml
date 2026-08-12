@@ -54,6 +54,14 @@ path = "src/collision_bench.rs"
 name = "env_bench"
 path = "src/env_bench.rs"
 
+# Combat's effects on their own: event observation, the VFX update, and what the effects add
+# to extraction, culling and batching. Separate from game_bench because "what does the fight
+# cost?" and "what do its effects cost?" are different questions, and the scenarios that
+# answer the second run the first one twice — once with effects and once without.
+[[bin]]
+name = "vfx_bench"
+path = "src/vfx_bench.rs"
+
 [dependencies]
 engine-collision = { workspace = true }
 engine-assets = { workspace = true }
@@ -65,6 +73,7 @@ engine-presentation = { workspace = true }
 # creation, and the CPU phase needs none of it.
 engine-platform = { workspace = true }
 engine-render-data = { workspace = true }
+engine-vfx = { workspace = true }
 engine-renderer = { workspace = true, default-features = false }
 # Only for the descriptor-heap type constants the benchmark passes through to the
 # renderer's API. No D3D12 calls are made here.

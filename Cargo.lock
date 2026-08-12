@@ -84,6 +84,7 @@ dependencies = [
  "engine-render-data",
  "engine-renderer",
  "engine-settings",
+ "engine-vfx",
  "log",
 ]
 
@@ -111,6 +112,7 @@ dependencies = [
  "engine-presentation",
  "engine-render-data",
  "engine-renderer",
+ "engine-vfx",
  "log",
  "windows",
 ]
@@ -166,6 +168,7 @@ dependencies = [
  "engine-game",
  "engine-render-data",
  "engine-settings",
+ "engine-vfx",
  "log",
 ]
 
@@ -216,6 +219,15 @@ version = "0.1.0"
 dependencies = [
  "engine-core",
  "engine-game",
+]
+
+[[package]]
+name = "engine-vfx"
+version = "0.1.0"
+dependencies = [
+ "engine-core",
+ "engine-render-data",
+ "log",
 ]
 
 [[package]]

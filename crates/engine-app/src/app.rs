@@ -51,6 +51,7 @@ use engine_presentation::snapshot::UiSnapshot;
 use engine_presentation::ui::talent_menu::{TalentMenu, TalentMenuOutcome, TalentTheme};
 use engine_presentation::ui::targeting::{GroundTargeting, TargetingOutcome};
 use engine_presentation::ui::{MenuAction, MenuScratch, MenuSystem, MenuTheme, UiInput};
+use engine_presentation::vfx::{VfxDirector, VfxVisuals};
 use engine_render_data::ui::{UiRect, UiScale};
 use engine_renderer::mesh::MeshData;
 use engine_renderer::{
@@ -76,6 +77,18 @@ const GROUND_HALF_EXTENT: f32 = 120.0;
 /// nothing exposes it yet, and it is a named constant rather than a literal at the call site
 /// so the knob is findable when something does.
 const LOD_BIAS: f32 = 1.0;
+
+/// Dummies the VFX test bed spawns, to aim effects at and to judge their scale against.
+const VFX_SCENE_DUMMIES: usize = 3;
+
+/// How far in front of the player the VFX test bed plays an effect, in metres.
+const VFX_DEMO_DISTANCE: f32 = 6.0;
+
+/// Radius the VFX test bed plays area effects at, in metres.
+///
+/// A middling arena radius rather than any one ability's, because the point of the scene is
+/// judging the *effect*, and every ability scales the same effect by its own number.
+const VFX_DEMO_RADIUS: f32 = 5.0;
 
 /// Function key that toggles the developer overlay.
 #[cfg(feature = "debug-overlay")]
@@ -197,7 +210,13 @@ pub struct App {
     /// pointer to the middle of the screen.
     cursor_before_look: (i32, i32),
     /// Milliseconds the last render extraction took.
+    ///
+    /// Extraction alone: the VFX update is timed separately, because "what does the fight
+    /// cost to extract" and "what do its effects cost to advance" are different questions
+    /// and one number for both hides which of them moved.
     extract_ms: f64,
+    /// Milliseconds the last VFX observation and update took.
+    vfx_ms: f64,
     /// Milliseconds the last UI *layout* took: nameplates, snapshot and draw-list build.
     ///
     /// The renderer measures the batching that follows it separately, so the two together
@@ -211,6 +230,17 @@ pub struct App {
     game_ui: GameUi,
     /// Floating damage numbers in flight. Fixed capacity; never freed.
     numbers: FloatingNumbers,
+    /// Combat, drawn. Observes the same event stream the numbers and the meter read.
+    vfx: VfxDirector,
+    /// Effects a second the stress driver plays, or zero when it is off.
+    vfx_stress: f32,
+    /// Effects the stress driver owes, carried between frames.
+    vfx_stress_debt: f32,
+    /// Which catalogue effect it plays next, so the load covers the whole catalogue.
+    vfx_stress_next: usize,
+    /// Which catalogue effect the VFX test bed last played, for its log line.
+    #[cfg(feature = "debug-overlay")]
+    last_effect: Option<engine_vfx::VfxId>,
     report_interval: Option<Duration>,
     last_report: Instant,
     #[cfg(feature = "debug-overlay")]
@@ -251,6 +281,7 @@ impl App {
 
         let visuals = upload_visuals(&mut renderer)?;
         let decal_visuals = upload_decal_visuals(&mut renderer)?;
+        let vfx_visuals = upload_vfx_visuals(&mut renderer)?;
         #[cfg(feature = "debug-overlay")]
         let debug_visuals = upload_debug_visuals(&mut renderer)?;
 
@@ -294,6 +325,12 @@ impl App {
             // same simulation rather than a bespoke one, so the character being inspected is
             // the character the game runs.
             Scene::Character => (arena::training_arena(&ArenaConfig::with_group(0)), None),
+            // The VFX test bed: a floor, three dummies to aim effects at and judge scale
+            // against, and no environment in the way of looking at an explosion.
+            Scene::Vfx => (
+                arena::training_arena(&ArenaConfig::with_group(VFX_SCENE_DUMMIES)),
+                None,
+            ),
             Scene::Collision => {
                 let (simulation, scene) = demo::collision_demo();
                 (simulation, Some(scene))
@@ -453,11 +490,18 @@ impl App {
             motion: RelativeMotion::new(),
             cursor_before_look: (0, 0),
             extract_ms: 0.0,
+            vfx_ms: 0.0,
             ui_ms: 0.0,
             nameplates: NameplateSet::with_capacity(32),
             snapshot,
             game_ui: GameUi::with_scale(ui_scale),
             numbers: FloatingNumbers::new(),
+            vfx: VfxDirector::new(vfx_visuals),
+            vfx_stress: args.vfx_stress.max(0.0),
+            vfx_stress_debt: 0.0,
+            vfx_stress_next: 0,
+            #[cfg(feature = "debug-overlay")]
+            last_effect: None,
             report_interval,
             last_report: Instant::now(),
             #[cfg(feature = "debug-overlay")]
@@ -995,6 +1039,116 @@ impl App {
         }
     }
 
+    /// Plays catalogue effects around the player at a fixed rate, for measurement.
+    ///
+    /// **Presentation only.** It starts no ability, deals no damage and touches no gameplay
+    /// state, so the frame time it moves is the cost of *drawing* effects. That separation
+    /// is the whole point of the control: a stress driver that cast abilities would measure
+    /// the ability system's throughput and call the result a VFX number.
+    fn drive_vfx_stress(&mut self, delta: f32) {
+        use engine_vfx::{VfxId, VfxSpawn};
+
+        if self.vfx_stress <= 0.0 {
+            return;
+        }
+        self.vfx_stress_debt += self.vfx_stress * delta;
+        let owed = self.vfx_stress_debt as u32;
+        self.vfx_stress_debt -= f64::from(owed) as f32;
+
+        let centre = self.simulation.player_position();
+        let player = self.simulation.player().entity.index() as u32;
+        for _ in 0..owed {
+            let index = self.vfx_stress_next % engine_vfx::VfxId::ALL.len();
+            self.vfx_stress_next = self.vfx_stress_next.wrapping_add(1);
+            let effect = engine_vfx::VfxId::ALL[index];
+
+            // Scattered around the player on a ring, so the load is spread across the view
+            // rather than stacked on one pixel — overdraw at one point is a different
+            // question from many effects on screen, and the honest measurement is the
+            // second one.
+            let angle = index as f32 * 2.399_963 + self.simulation.time() as f32;
+            let distance = 4.0 + (index % 5) as f32 * 2.5;
+            let position = centre + Vec3::new(angle.cos() * distance, 0.0, angle.sin() * distance);
+
+            let attached = matches!(effect, VfxId::Ignited | VfxId::Shield | VfxId::CastCharge);
+            let mut spawn = VfxSpawn::at(effect, position)
+                .facing(angle)
+                .with_radius(VFX_DEMO_RADIUS)
+                .with_length(VFX_DEMO_RADIUS * 3.0);
+            if attached {
+                spawn = spawn
+                    .with_radius(1.0)
+                    .raised(1.1)
+                    .attached_to(player)
+                    .lasting(2.0);
+            }
+            self.vfx.system_mut().spawn(spawn);
+        }
+    }
+
+    /// VFX test bed only: one key per effect in the catalogue.
+    ///
+    /// Digits 1 to 0 play the first ten effects and Z, X, C the last three, each in front of
+    /// the character at a middling arena radius. The point of the scene is that judging an
+    /// explosion means playing it on demand from a chosen angle rather than waiting for a
+    /// fight to produce one.
+    fn update_vfx_demo(&mut self, ctx: &mut EngineContext) {
+        use engine_vfx::{VfxId, VfxSpawn};
+
+        const KEYS: [KeyCode; 13] = [
+            KeyCode::Digit1,
+            KeyCode::Digit2,
+            KeyCode::Digit3,
+            KeyCode::Digit4,
+            KeyCode::Digit5,
+            KeyCode::Digit6,
+            KeyCode::Digit7,
+            KeyCode::Digit8,
+            KeyCode::Digit9,
+            KeyCode::Digit0,
+            KeyCode::Z,
+            KeyCode::X,
+            KeyCode::C,
+        ];
+
+        let body = self.simulation.player_body().copied();
+        let Some(body) = body else {
+            return;
+        };
+        let yaw = body.facing_yaw;
+        let forward = Vec3::new(-yaw.sin(), 0.0, -yaw.cos());
+        let anchor = body.position + forward * VFX_DEMO_DISTANCE;
+
+        for (index, key) in KEYS.into_iter().enumerate() {
+            if !ctx.input().was_key_pressed(key) {
+                continue;
+            }
+            let Some(effect) = VfxId::ALL.get(index).copied() else {
+                continue;
+            };
+            // Attached effects are given the player to ride, because an aura played at a
+            // point on the floor is an aura nobody can judge.
+            let attach = matches!(effect, VfxId::Ignited | VfxId::Shield | VfxId::CastCharge);
+            let mut spawn = VfxSpawn::at(effect, if attach { body.position } else { anchor })
+                .facing(yaw)
+                .with_radius(VFX_DEMO_RADIUS)
+                .with_length(VFX_DEMO_RADIUS * 3.0);
+            if attach {
+                spawn = spawn
+                    .with_radius(1.0)
+                    .raised(1.1)
+                    .attached_to(self.simulation.player().entity.index() as u32)
+                    .lasting(6.0);
+            }
+            self.vfx.system_mut().spawn(spawn);
+            #[cfg(feature = "debug-overlay")]
+            {
+                self.last_effect = Some(effect);
+            }
+            log::info!("vfx demo: {}", effect.name());
+        }
+    }
+
     fn update_targeting_decal(&mut self) {
         let Some(target) = self.targeting.active() else {
             if let Some(decal) = self.targeting_decal.take() {
@@ -1201,7 +1355,7 @@ impl App {
         let ui = self.renderer.ui_stats();
         log::info!(
             "CPU mean {:.3} ms ({:.0} FPS) p99 {:.3} | GPU {} | sim {:.3} ms ({} ticks) | \
-             extract {:.3} ms | cull {:.3} ms | ui {:.3} ms ({} quads, {} cmds) | visible {} | \
+             extract {:.3} ms | vfx {:.3} ms | cull {:.3} ms | ui {:.3} ms ({} quads, {} cmds) | visible {} | \
              draws {} ({} skinned) | tris {}",
             summary.cpu.mean_ms,
             summary.cpu.mean_fps(),
@@ -1213,6 +1367,7 @@ impl App {
             stats.total_ms(),
             stats.ticks,
             self.extract_ms,
+            self.vfx_ms,
             self.renderer.last_cull_ms(),
             self.ui_ms + self.renderer.ui_build_ms(),
             ui.quads,
@@ -1221,6 +1376,18 @@ impl App {
             self.renderer.draw_calls_last_frame(),
             self.renderer.skinned_draws_last_frame(),
             self.renderer.triangles_last_frame(),
+        );
+        let vfx = self.vfx.stats();
+        log::info!(
+            "  vfx: {} effects, {} particles (peak {}), {} mesh draws, {} entities |              dropped {} effects / {} particles | drawn {}",
+            vfx.system.instances,
+            vfx.system.particles,
+            vfx.system.peak_particles,
+            vfx.system.mesh_draws,
+            vfx.entities,
+            vfx.system.dropped_instances + vfx.refused,
+            vfx.system.dropped_particles,
+            self.renderer.particles_last_frame(),
         );
         if let Some(scene) = self.environment.as_ref() {
             let environment = self.placer.stats();
@@ -1396,12 +1563,15 @@ impl Application for App {
             self.update_menu(ctx);
             // The collision demo has no combat, no targets and no resources; running the
             // class's interface there would take its digits away from the test stations.
-            if !self.menu.is_open() && !self.scene.is_collision() {
+            if !self.menu.is_open() && !self.scene.is_collision() && !self.scene.is_vfx() {
                 self.update_firemage_ui(ctx);
             }
             self.update_targeting_decal();
             if self.scene.is_character() {
                 self.update_animation_override(ctx);
+            }
+            if self.scene.is_vfx() {
+                self.update_vfx_demo(ctx);
             }
 
             // While a spell is being aimed both buttons are spoken for — left confirms
@@ -1452,7 +1622,8 @@ impl Application for App {
             let time = self.simulation.time() as f32;
             for event in self.simulation.events() {
                 if let engine_game::event::CombatEvent::Damage(damage) = event {
-                    self.extractor.note_hit(damage.target, time);
+                    self.extractor
+                        .note_damage(damage.target, time, damage.critical);
                 }
             }
             // Damage numbers read the same slice. Both are observers; neither is a hook the
@@ -1475,13 +1646,30 @@ impl Application for App {
                 lod_bias: LOD_BIAS,
             });
             self.extractor.extract(&self.simulation);
+            // Effects read the same event slice the numbers and the flash just read, and
+            // then spawn into the same `RenderWorld` the extractor filled — so an explosion
+            // is culled, batched and drawn with everything else rather than beside it.
+            //
+            // Real time, not simulation time: an effect is presentation and is expected to
+            // move every frame, which is what stops a 60 Hz simulation from looking like
+            // 60 FPS.
+            let vfx_started = Instant::now();
+            self.vfx.observe(&self.simulation);
+            self.drive_vfx_stress(ctx.time().real_delta().as_secs_f32());
+            self.vfx.update(
+                &self.simulation,
+                ctx.time().real_delta().as_secs_f32(),
+                self.extractor.render_world_mut(),
+            );
+            self.renderer.set_particles(self.vfx.particles());
+            self.vfx_ms = vfx_started.elapsed().as_secs_f64() * 1e3;
             // After extraction, because it spawns into the same `RenderWorld` and would
             // otherwise be drawing last frame's collision state beside this frame's
             // character.
             #[cfg(feature = "debug-overlay")]
             self.collision_debug
                 .rebuild(self.extractor.render_world_mut(), &self.simulation);
-            self.extract_ms = started.elapsed().as_secs_f64() * 1e3;
+            self.extract_ms = started.elapsed().as_secs_f64() * 1e3 - self.vfx_ms;
         }
 
         {
@@ -1785,6 +1973,46 @@ fn upload_decal_visuals(renderer: &mut Renderer) -> Result<DecalVisuals, EngineE
     })
 }
 
+/// Uploads the six shapes every effect is drawn with, and the one material they share.
+///
+/// **One material for the whole VFX system.** Colour is per instance — `InstanceStyle`'s
+/// tint and emissive — so two effects of different colours still share a batch, and the
+/// render list's grouping collapses every effect in the frame into six draws at most.
+///
+/// The sizes here are the contract `engine_presentation::vfx::VfxVisuals` documents: every
+/// mesh is authored at unit size, so the director's transform is the gameplay number and
+/// nothing else. A wedge is built with the *gameplay* cone's half-angle, so a cone effect
+/// cannot show a different spread from the one the executor collects.
+fn upload_vfx_visuals(renderer: &mut Renderer) -> Result<VfxVisuals, EngineError> {
+    use engine_vfx::VfxShape;
+
+    let material = renderer.create_material(
+        MaterialDesc::colored(1.0, 1.0, 1.0)
+            .with_roughness(1.0)
+            .with_emissive(Vec3::ZERO),
+    )?;
+    let mut visuals = VfxVisuals::new(material);
+
+    let shapes: [(VfxShape, MeshData); 6] = [
+        (VfxShape::Disc, MeshData::disc(1.0, 48)),
+        (VfxShape::Ring, MeshData::ring(1.0, 0.06, 48)),
+        (
+            VfxShape::Cone,
+            MeshData::sector(1.0, engine_game::sim::CONE_HALF_ANGLE, 32),
+        ),
+        (VfxShape::Strip, MeshData::strip()),
+        (VfxShape::Shell, MeshData::uv_sphere(1.0, 16, 12)),
+        (VfxShape::Column, MeshData::cube(1.0)),
+    ];
+    for (shape, data) in shapes {
+        let bounds = data.bounds();
+        let mesh = renderer.create_mesh(&data)?;
+        visuals.bind(shape, mesh, bounds);
+    }
+    log::info!("vfx library: {} shapes, 1 material", visuals.len());
+    Ok(visuals)
+}
+
 /// Width divided by height, guarding the zero a minimized window reports.
 fn aspect_of(width: u32, height: u32) -> f32 {
     if height == 0 {
@@ -1812,6 +2040,20 @@ fn log_controls(args: &Args, demo: Option<&DemoScene>) {
                 );
             }
         }
+        None if args.scene.is_vfx() => {
+            log::info!(
+                "vfx demo: {VFX_SCENE_DUMMIES} dummies and one key per effect in the catalogue"
+            );
+            for (index, effect) in engine_vfx::VfxId::ALL.into_iter().enumerate() {
+                let key = [
+                    "1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "Z", "X", "C",
+                ]
+                .get(index)
+                .copied()
+                .unwrap_or("-");
+                log::info!("  {key}  {}", effect.name());
+            }
+        }
         None if args.scene.is_environment() => {
             log::info!("environment demo: the combat arena plus one of every asset, and no fight")
         }
@@ -1824,6 +2066,8 @@ fn log_controls(args: &Args, demo: Option<&DemoScene>) {
     if demo.is_some() {
         log::info!("  1 - 7            stand at a test station");
         log::info!("  R                back to the first station");
+    } else if args.scene.is_vfx() {
+        log::info!("  1 - 0 Z X C      play one effect from the catalogue, in front of you");
     } else {
         log::info!("  1 - 0            firebolt, flame lance, flame wave, meteor,");
         log::info!("                   firestorm, pyroblast, inferno, fire detonation,");

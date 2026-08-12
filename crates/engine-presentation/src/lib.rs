@@ -39,6 +39,8 @@ pub mod nameplate;
 pub mod snapshot;
 /// The reusable UI framework and the game's menus.
 pub mod ui;
+/// Combat drawn: the layer that decides what an ability looks like.
+pub mod vfx;
 
 pub use camera::ThirdPersonCamera;
 pub use collision_debug::{CollisionDebug, DebugBindings};
@@ -64,3 +66,4 @@ pub use ui::{
     MenuAction, MenuScreen, MenuSystem, MenuTheme, PauseItem, SettingsItem, UiInput, UiScreen,
     Widget, WidgetEvent, WidgetState,
 };
+pub use vfx::{ShapeBinding, VfxDirector, VfxDirectorStats, VfxVisuals};

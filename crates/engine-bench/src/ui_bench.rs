@@ -249,6 +249,7 @@ fn measure_combat(dummies: usize, iterations: usize) {
             Vec3::new((index % 8) as f32, 1.0, -((index / 8) as f32)),
             (index * 7 % 400) as f32 + 1.0,
             index % 20 == 0,
+            index % 3 == 0,
             now,
         );
     }

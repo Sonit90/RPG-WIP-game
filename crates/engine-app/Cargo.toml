@@ -26,6 +26,9 @@ engine-renderer = { workspace = true }
 # the only place all three meet; neither of them links D3D12.
 engine-game = { workspace = true }
 engine-presentation = { workspace = true }
+# The effect catalogue, so the VFX test bed can name an effect to play. The director that
+# plays them in ordinary combat lives in engine-presentation and needs nothing from here.
+engine-vfx = { workspace = true }
 # The player's settings and the file they live in.
 engine-settings = { workspace = true }
 # `release_max_level_info` compiles trace! and debug! out of release builds entirely:

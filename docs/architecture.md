@@ -37,7 +37,8 @@ schedule and, eventually, to be driven by a network authority.
 | `engine-collision` | Collision shapes, the static collision world and the character controller. `engine-core` only. | Phase 5 |
 | `engine-game` | The gameplay simulation. `engine-core` and `engine-collision` only — no renderer, no `windows`, not even render data. | Phase 3 |
 | `engine-environment` | The level as data: placements, collision primitives, lighting, spawn points. `engine-core` only. | Phase 2 (environment) |
-| `engine-presentation` | Gameplay to rendering: extraction, the third-person camera, HUD text. | Phase 3 |
+| `engine-presentation` | Gameplay to rendering: extraction, the third-person camera, HUD text, the VFX director. | Phase 3 |
+| `engine-vfx` | Effects as data and the runtime that plays them: catalogue, instances, particles. `engine-core` and `engine-render-data` only — no gameplay, no device. | Phase 3 (VFX) |
 
 `engine-platform` hands the renderer an opaque window handle and a client size.
 It does not link D3D12; the renderer does not create windows.
@@ -220,6 +221,37 @@ Two seams that exist for what comes after Phase 3:
 * **Events** — every combat state change is announced as a `CombatEvent`. The damage meter
   reads a slice of them; nothing in the ability system mentions telemetry. VFX, a combat log
   and replication are further readers of the same slice.
+
+## Combat feedback (Phase 3, VFX)
+
+```text
+Simulation ─ CombatEvent ─▶ VfxDirector ─▶ VfxSystem ─┬─▶ ParticleDrawList ─▶ particle pass
+                (observe)    (decides)                └─▶ MeshDraw ─▶ RenderWorld entities
+```
+
+Three layers, and the split is the same one the rest of the engine uses:
+
+* **`engine-game`** announces what happened — a bolt's line, an impact's radius and delay, an
+  area's `ZoneShape` and duration, a hit's position and whether it crit. It knows nothing
+  about effects and calls nothing.
+* **`engine-vfx`** owns what an effect *is*: a static catalogue of thirteen effects, an
+  instance lifecycle with generation-checked handles, and a fixed-capacity CPU particle pool.
+  It depends on `engine-core` and `engine-render-data` and **must never gain `engine-game`,
+  `engine-renderer`, `engine-assets` or `windows`** — the first absence is what stops an
+  effect from reaching into the simulation, the rest are what keep the runtime testable with
+  no device.
+* **`engine-presentation`** is the only layer allowed to say "this ability looks like that",
+  exactly as it is the only layer allowed to say "a dummy is a scaled cube in this colour".
+
+Effects reach the screen two ways. Particles go through a dedicated blended pass — one
+`DrawInstanced` per blend mode, a 36-byte record per particle, quads expanded in the vertex
+shader from the camera basis, depth tested and never written. Geometry goes into the same
+`RenderWorld` everything else uses, so it is culled, batched and instanced with the scene;
+colour is per instance (`InstanceStyle`), so one material serves every effect.
+
+**Gameplay is authoritative and the dependency graph enforces it.** Deleting `engine-vfx`
+would leave a game that plays identically with nothing to look at. Every cap in the system —
+128 instances, 16,384 particles — degrades by dropping visuals and counting the drop.
 
 ## The user interface (Phase 4)
 

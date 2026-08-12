@@ -269,6 +269,8 @@ pub struct Simulation {
     zone_ticks: Vec<ZoneTick>,
     /// Impacts that landed this step. Reused; never freed.
     impacts: Vec<PendingImpact>,
+    /// Zones that burned out this step, with their identities. Reused; never freed.
+    expired_zones: Vec<(u32, crate::firemage::Zone)>,
     events: EventStream,
     meter: CombatMeter,
     targets: TargetQuery,
@@ -328,6 +330,7 @@ impl Simulation {
             ignite_ticks: Vec::with_capacity(32),
             zone_ticks: Vec::with_capacity(16),
             impacts: Vec::with_capacity(8),
+            expired_zones: Vec::with_capacity(8),
             events: EventStream::with_capacity(256),
             meter: CombatMeter::new(),
             targets: TargetQuery::with_capacity(64),
@@ -735,6 +738,8 @@ impl Simulation {
         // collision world and the query buffers — both of which are borrowed from `self`.
         if let Some(body) = self.world.body_mut(player) {
             let mut moved = *body;
+            let was_grounded = moved.grounded;
+            let falling = moved.velocity.y;
             self.last_move = movement::step_collided(
                 &mut moved,
                 intent,
@@ -744,6 +749,24 @@ impl Simulation {
                 &mut self.collision_buffers,
                 step,
             );
+            // Leaving and touching the ground, as events rather than as a state presentation
+            // has to diff for itself. A landing carries the speed it arrived at, because how
+            // hard a landing was is the whole difference between a step down and a fall.
+            let tick = self.tick;
+            if was_grounded && !moved.grounded && moved.velocity.y > 0.0 {
+                self.events.push(CombatEvent::Jumped {
+                    entity: player,
+                    position: moved.position,
+                    tick,
+                });
+            } else if !was_grounded && moved.grounded {
+                self.events.push(CombatEvent::Landed {
+                    entity: player,
+                    position: moved.position,
+                    speed: (-falling).max(0.0),
+                    tick,
+                });
+            }
             if let Some(body) = self.world.body_mut(player) {
                 *body = moved;
             }
@@ -833,7 +856,10 @@ impl Simulation {
                         ability,
                         damage,
                     } => {
-                        self.deal_damage(source, id, damage, ability, kind.damage_type());
+                        // A periodic tick does not roll: the roll belongs to the cast that
+                        // applied the status, and rerolling per tick would make a damage
+                        // over time effect a second source of critical strikes.
+                        self.deal_damage(source, id, damage, ability, kind.damage_type(), false);
                     }
                     StatusOutcome::Ended { kind, reason } => {
                         let tick = self.tick;
@@ -986,6 +1012,22 @@ impl Simulation {
         self.impacts = impacts;
         self.zone_ticks = zone_ticks;
 
+        // Fire that burned out. Announced so an observer holding a picture of it knows to
+        // take the picture down; nothing in gameplay reads this.
+        let mut expired = std::mem::take(&mut self.expired_zones);
+        expired.clear();
+        self.mage.zones.drain_expired(&mut expired);
+        let tick = self.tick;
+        for (id, zone) in &expired {
+            self.events.push(CombatEvent::AreaEffectEnded {
+                id: *id,
+                position: zone.position,
+                tick,
+            });
+        }
+        expired.clear();
+        self.expired_zones = expired;
+
         self.ignite_ticks.clear();
         let mut ignite_ticks = std::mem::take(&mut self.ignite_ticks);
         // The interval is handed in from the stats of *this* tick, which is what lets a
@@ -1038,7 +1080,12 @@ impl Simulation {
         amount: f32,
         ability: AbilityId,
         damage_type: DamageType,
+        critical: bool,
     ) {
+        // Read before the damage: a killing blow frees nothing this tick, but a hit is a
+        // thing that happened where the target was standing when it landed, and reading the
+        // position afterwards would be reading it after a death has been processed.
+        let position = self.world.position(target).unwrap_or(Vec3::ZERO);
         let result = self.world.damage(target, amount);
         if result.applied <= 0.0 && !result.killed {
             return;
@@ -1056,6 +1103,8 @@ impl Simulation {
             ability,
             damage_type,
             killed: result.killed,
+            critical,
+            position,
             tick,
         }));
 

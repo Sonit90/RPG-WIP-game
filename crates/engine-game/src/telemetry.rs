@@ -139,7 +139,17 @@ impl CombatMeter {
                 | CombatEvent::StatusRemoved { .. }
                 | CombatEvent::CastStarted { .. }
                 | CombatEvent::CastEnded { .. }
-                | CombatEvent::Teleported { .. } => {}
+                | CombatEvent::Teleported { .. }
+                // Presentation events. A projectile, an impact, an area of fire, a jump and
+                // a landing all move health through `Damage` and nowhere else — counting
+                // them here would report the same damage under two names.
+                | CombatEvent::ProjectileLaunched { .. }
+                | CombatEvent::ImpactScheduled { .. }
+                | CombatEvent::ImpactLanded { .. }
+                | CombatEvent::AreaEffectStarted { .. }
+                | CombatEvent::AreaEffectEnded { .. }
+                | CombatEvent::Jumped { .. }
+                | CombatEvent::Landed { .. } => {}
             }
         }
     }
@@ -350,6 +360,8 @@ mod tests {
             ability: ability(slot),
             damage_type: DamageType::Fire,
             killed: false,
+            critical: false,
+            position: engine_core::math::Vec3::ZERO,
             tick: 0,
         })
     }
@@ -424,6 +436,8 @@ mod tests {
             ability: ability(2),
             damage_type: DamageType::Fire,
             killed: true,
+            critical: false,
+            position: engine_core::math::Vec3::ZERO,
             tick: 1,
         }));
         events.push(CombatEvent::Death {

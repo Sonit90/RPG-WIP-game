@@ -235,6 +235,11 @@ pub struct UiTheme {
     pub damage_number: UiColor,
     /// A killing blow's damage number.
     pub killing_number: UiColor,
+    /// Colour of a critical strike's number.
+    ///
+    /// A third colour rather than a brighter shade of the first: a player mid-fight is
+    /// distinguishing at a glance, and two shades of yellow are not a distinction.
+    pub critical_number: UiColor,
     /// Glyph scale for HUD text.
     pub hud_text_scale: f32,
     /// Glyph scale for a damage number.
@@ -311,6 +316,7 @@ impl Default for UiTheme {
             cast_fill: [0.92, 0.78, 0.32, 1.0],
             damage_number: [1.0, 0.92, 0.55, 1.0],
             killing_number: [1.0, 0.45, 0.30, 1.0],
+            critical_number: [1.0, 0.72, 0.16, 1.0],
             hud_text_scale: 2.0,
             damage_text_scale: 2.0,
             heat_low: [0.55, 0.55, 0.60, 1.0],
@@ -1317,8 +1323,12 @@ impl GameUi {
             if alpha <= 0.0 {
                 continue;
             }
+            // A kill outranks a crit: the last number a target ever shows should read as
+            // "it died", not as "that one was lucky".
             let mut color = if number.killed {
                 self.theme.killing_number
+            } else if number.critical {
+                self.theme.critical_number
             } else {
                 self.theme.damage_number
             };
@@ -1329,11 +1339,19 @@ impl GameUi {
             write_integer(&mut self.title, number.amount.round() as i64);
             // A killing blow is bigger as well as differently coloured, so it reads without
             // the player having to distinguish two shades mid-fight.
-            let scale = if number.killed {
-                self.metrics.scale.text(self.theme.damage_text_scale * 1.4)
+            // Size carries the same information as colour, because size survives the
+            // periphery of the screen and a hue does not.
+            let emphasis = if number.killed {
+                1.4
+            } else if number.critical {
+                1.25
             } else {
-                self.metrics.scale.text(self.theme.damage_text_scale)
+                1.0
             };
+            let scale = self
+                .metrics
+                .scale
+                .text(self.theme.damage_text_scale * emphasis);
             self.list
                 .text_aligned((x, y), &self.title, color, scale, TextAlign::Center);
         }
@@ -2230,6 +2248,7 @@ mod tests {
             engine_core::math::Vec3::new(0.0, 1.0, -12.0),
             45.0,
             false,
+            false,
             0.0,
         );
 
@@ -2276,6 +2295,7 @@ mod tests {
             engine_game::entity::EntityId::new(1, 1),
             engine_core::math::Vec3::new(0.0, 1.0, 400.0),
             45.0,
+            false,
             false,
             0.0,
         );

@@ -99,7 +99,8 @@ larger-than-client coordinates rather than wrapping to a huge positive number.
 
 **Steps**
 
-1. `.	argetelease\mygame.exe`
+1. `.	arget
+elease\mygame.exe`
 2. Hold the **left** button and drag left and right, then up and down. Watch the character.
 3. Release, then hold the **right** button and drag the same way. Watch the character.
 4. Hold the left button, and while still holding it press and release the right button.
@@ -433,3 +434,56 @@ rocks visibly simplify without vanishing. F3 draws the collision boxes: the wall
 brazier and crate exhibits have one each, and the plants have none. At density 8 the treeline
 and the scatter are several times denser, the arena itself is unchanged, and the frame rate
 in the F5 overlay stays well above the target.
+
+---
+
+## MT-020 — The VFX test bed
+
+**Purpose** — every effect in the catalogue can be played on demand and judged on its own.
+
+**Steps**
+
+1. `.	argetelease\mygame.exe --scene vfx`
+2. Press 1 through 0, then Z, X and C, watching each effect from a few metres back.
+3. Press 9 (SHIELD) and 8 (IGNITED) and walk around while they play.
+4. Orbit the camera during an explosion (7) and during the ultimate (C).
+5. Press C and, while the pillar is up, walk behind it and look at the dummies.
+6. `.	argetelease\mygame.exe --scene vfx --vfx-stress 120` and watch the F5 overlay.
+
+**Expected** — thirteen distinct effects, each starting where the character is facing, each
+ending on its own without leaving anything behind. The shield and the burn ride the character
+as they walk, and neither hides them: the shield is a ring at the feet and sparks, not a
+bubble. Nothing is drawn as an opaque wall — during the ultimate the dummies behind the
+pillar stay visible. At a stress of 120 effects a second the frame rate in the overlay stays
+far above the target and the log line reports effects being refused rather than the frame
+degrading.
+
+---
+
+## MT-021 — Combat reads
+
+**Purpose** — the phase's actual goal: an ability press produces a readable chain of
+feedback, and gameplay stays authoritative.
+
+**Steps**
+
+1. `.	argetelease\mygame.exe`
+2. Select a dummy and cast Firebolt (1). Watch the character, the space between you and the
+   dummy, and the dummy.
+3. Cast Flame Lance (2) and Pyroblast (5) and compare the size of the bolts.
+4. Place a Meteor (4) on the group and watch the ring before it lands.
+5. Cast Flame Cone (3) and Firestorm (6) at the group; compare where the fire is with which
+   dummies take damage.
+6. Build a full burn on one dummy and press Detonate (7).
+7. Press Flame Shield (9), then Blink (0) while it is up.
+8. Watch the damage numbers during a rotation, looking for the orange ones.
+9. Press Escape mid-cast and watch the cast effect.
+
+**Expected** — casting shows a gather at the chest for exactly the cast time; a bolt leaves
+the caster and an impact plays where it lands; the dummy flashes and a number floats up.
+Heavier spells throw visibly bigger bolts. The Meteor's ring closes over its delay and the
+explosion lands inside it. The cone and the line of fire cover exactly the dummies that take
+damage. Detonate explodes on the target. The shield is visible for its whole duration and
+gone the instant it ends; blinking shows a departure and an arrival at both ends of the jump.
+Critical strikes are orange and larger, killing blows red and larger still. Cancelling a cast
+takes its effect with it on the same frame.

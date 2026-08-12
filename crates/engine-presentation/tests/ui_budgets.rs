@@ -95,6 +95,7 @@ fn full_numbers(simulation: &Simulation) -> FloatingNumbers {
             Vec3::new((index % 8) as f32, 1.0, -((index / 8) as f32)),
             (index * 7 % 400) as f32 + 1.0,
             index % 20 == 0,
+            index % 3 == 0,
             now,
         );
     }
@@ -215,6 +216,7 @@ fn a_thousand_simultaneous_hits_are_bounded_rather_than_unbounded() {
             Vec3::new(0.0, 1.0, -5.0),
             index as f32 + 1.0,
             false,
+            index % 4 == 0,
             now,
         );
     }
