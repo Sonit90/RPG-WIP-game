@@ -143,6 +143,14 @@ pub struct RenderList {
     batches: Vec<RenderBatch>,
     /// Histogram scratch for the counting sort, reused across frames.
     counts: Vec<u32>,
+    /// Where each bucket started before the scatter, reused across frames.
+    ///
+    /// The scatter consumes `counts` by advancing each bucket's cursor, so the batch pass
+    /// needs the values it had beforehand. This used to be a `to_vec()` inside the pass —
+    /// one heap allocation of `material_count * mesh_count` words **every frame**, which
+    /// went unnoticed while the scene had nine materials and four meshes and showed up the
+    /// moment the environment brought forty of each. `env_bench` counts it.
+    starts: Vec<u32>,
 }
 
 impl RenderList {
@@ -164,6 +172,7 @@ impl RenderList {
             order: Vec::with_capacity(capacity),
             batches: Vec::new(),
             counts: Vec::new(),
+            starts: Vec::new(),
         }
     }
 
@@ -359,7 +368,8 @@ impl RenderList {
 
         // Scatter. Entries land in bucket order, and within a bucket in gather order —
         // so the grouping is stable and two runs of the same build produce the same frame.
-        let starts: Vec<u32> = self.counts[..buckets].to_vec();
+        self.starts.clear();
+        self.starts.extend_from_slice(&self.counts[..buckets]);
         self.order.resize(self.len(), 0);
         for (index, (mesh, material)) in self.meshes.iter().zip(&self.materials).enumerate() {
             let Some(key) = key_of(*mesh, *material) else {
@@ -371,17 +381,18 @@ impl RenderList {
             self.order[slot] = index as u32;
         }
 
-        for (key, start) in starts.iter().enumerate() {
+        for key in 0..buckets {
+            let start = self.starts[key];
             let end = self.counts[key];
-            if end == *start {
+            if end == start {
                 continue;
             }
-            let first_entry = self.order[*start as usize] as usize;
+            let first_entry = self.order[start as usize] as usize;
             self.batches.push(RenderBatch {
                 mesh: self.meshes[first_entry],
                 material: self.materials[first_entry],
-                first: *start,
-                count: end - *start,
+                first: start,
+                count: end - start,
             });
         }
     }

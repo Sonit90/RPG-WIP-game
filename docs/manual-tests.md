@@ -384,3 +384,52 @@ drops, and the target marker floats above it. Damage numbers rise from chest hei
 area ability marks and hits the same set the indicator showed. A killed dummy tints to a
 lifeless grey and falls over on the floor rather than through it. BACKSPACE restores every
 dummy upright and undamaged.
+
+---
+
+## MT-018 — The combat arena reads as a place
+
+**Purpose** — the environment is visually coherent, and it does not get in the way of the
+fight.
+
+**Steps**
+
+1. `.\target\release\mygame.exe`
+2. Stand at the spawn and turn a full circle with the right mouse button.
+3. Walk to each of the four braziers and look back at the middle.
+4. Walk into the gate arch, the kerb, a pillar and a crate.
+5. Walk through a fern and a shrub.
+6. Look up.
+7. Look at the horizon in each direction.
+8. Place an area ability at the edge of the fighting space.
+
+**Expected** — a paved arena inside a chest-high stone kerb, punctuated by pillars, with a
+broken arch over a gap on one side. Four lit braziers mark the corners of the fighting
+space. Past the kerb, a treeline; behind that, distant ridges; above, a sky that grades from
+warm at the horizon to blue overhead, with no seam where the ground ends. The kerb, the
+pillars, the braziers and the crates stop the character; the ferns and shrubs do not, and
+the character walks through them without catching. Nothing stands inside the fighting space,
+so an area indicator lies flat on the paving with nothing clipping through it. The floor
+does not flicker anywhere.
+
+---
+
+## MT-019 — The environment demo scene
+
+**Purpose** — every asset can be inspected on its own, in the light the game runs.
+
+**Steps**
+
+1. `.\target\release\mygame.exe --scene environment`
+2. Walk to the far side of the arena, where two rows of objects stand.
+3. Walk along each row, looking at each object from three sides.
+4. Back away from the rows to the middle of the arena and watch them.
+5. Press F3, then walk into the row again.
+6. `.\target\release\mygame.exe --scene environment --env-density 8`
+
+**Expected** — one of every environment asset, each standing on the floor at the size it is
+used at, each lit and shaded so its form reads. Backing away, the pines, pillars and larger
+rocks visibly simplify without vanishing. F3 draws the collision boxes: the wall, pillar,
+brazier and crate exhibits have one each, and the plants have none. At density 8 the treeline
+and the scatter are several times denser, the arena itself is unchanged, and the frame rate
+in the F5 overlay stays well above the target.

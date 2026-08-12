@@ -12,6 +12,10 @@ members = [
     # Collision and character movement. Simulation-side geometry: depends on engine-core
     # alone, so a headless test can resolve a character move with no device.
     "crates/engine-collision",
+    # The level: what an arena is made of and where each piece stands. Data only — it
+    # depends on engine-core alone, so gameplay, assets and presentation can each read the
+    # same scene without depending on one another.
+    "crates/engine-environment",
     # Gameplay. Depends on engine-core alone; see its lib docs for why that is the point.
     "crates/engine-game",
     # Player-facing settings and their file. Depends on no engine crate at all.
@@ -48,6 +52,9 @@ engine-assets = { path = "crates/engine-assets" }
 engine-renderer = { path = "crates/engine-renderer", default-features = false }
 # Collision and character movement. Same rule as engine-game: engine-core and nothing else.
 engine-collision = { path = "crates/engine-collision" }
+# The level as data: placements, collision descriptions, lighting. engine-core and nothing
+# else, which is what lets gameplay, assets and presentation all read it.
+engine-environment = { path = "crates/engine-environment" }
 # The gameplay simulation. Must never gain a `windows`, renderer or render-data dependency.
 engine-game = { path = "crates/engine-game" }
 engine-presentation = { path = "crates/engine-presentation" }

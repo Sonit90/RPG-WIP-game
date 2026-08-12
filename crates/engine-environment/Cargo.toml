@@ -1,0 +1,18 @@
+[package]
+name = "engine-environment"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+# Deliberately only engine-core. An environment scene is read by three crates that are
+# forbidden from knowing about each other — engine-game may not name a mesh, engine-assets
+# may not name a collision world, engine-presentation must not be where content lives — so
+# the description has to sit below all three. It must never gain `windows`,
+# `engine-renderer`, `engine-render-data`, `engine-assets` or `engine-game`, and that is
+# checkable with `cargo tree -p engine-environment`.
+[dependencies]
+engine-core = { workspace = true }
+
+[lints]
+workspace = true

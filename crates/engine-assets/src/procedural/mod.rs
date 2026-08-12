@@ -21,11 +21,15 @@
 //! difference, and that is the property this module exists to demonstrate.
 
 pub mod dummy;
+pub mod environment;
 pub mod firemage;
 
 use engine_core::math::{Vec2, Vec3};
 
+use crate::mesh::{Geometry, MeshVertex, SubMesh};
+
 pub use dummy::{DummyVariant, training_dummy};
+pub use environment::{environment_library, environment_model};
 pub use firemage::{fire_mage, fire_mage_character};
 
 /// One corner of a generated face.
@@ -207,6 +211,107 @@ impl Prism {
     }
 }
 
+/// Accumulates primitives into the vertices and indices of one submesh.
+///
+/// Every procedural model in this crate builds its geometry the same way: one builder per
+/// *material*, primitives pushed into whichever builder that surface belongs to, and each
+/// builder turned into a [`SubMesh`] at the end. A submesh boundary is a material boundary
+/// and never an artistic one, so the builder is the thing that enforces the mapping.
+///
+/// Positions are absolute in the model's local space — there is no transform stack. A model
+/// whose parts needed to be placed relative to one another would want one; none does, and a
+/// stack that is always empty is a stack that is wrong the first time it is not.
+#[derive(Debug, Default)]
+pub struct MeshBuilder {
+    vertices: Vec<MeshVertex>,
+    indices: Vec<u32>,
+}
+
+impl MeshBuilder {
+    /// An empty builder.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Appends a prism's six faces.
+    pub fn prism(&mut self, prism: &Prism) {
+        let base = self.vertices.len() as u32;
+        let (corners, indices) = prism.build(base);
+        for (position, normal, uv) in corners {
+            self.vertices.push(MeshVertex::new(position, normal, uv));
+        }
+        self.indices.extend(indices);
+    }
+
+    /// Appends one quad, wound so its normal points where `normal` says.
+    ///
+    /// The caller supplies the normal rather than it being derived, because a quad is also
+    /// how a flat ground plane and a hanging cloth are built, and those want a normal that
+    /// is *not* the one their (possibly degenerate, possibly non-planar) corners imply.
+    pub fn quad(&mut self, corners: [Vec3; 4], normal: Vec3, uvs: [Vec2; 4]) {
+        let first = self.vertices.len() as u32;
+        for (position, uv) in corners.into_iter().zip(uvs) {
+            self.vertices.push(MeshVertex::new(position, normal, uv));
+        }
+        self.indices
+            .extend_from_slice(&[first, first + 1, first + 2, first, first + 2, first + 3]);
+    }
+
+    /// Appends a flat horizontal N-gon centred on `(0, y, 0)`, facing up.
+    ///
+    /// A triangle fan from the centre: `segments` triangles, `segments + 1` vertices. UVs are
+    /// planar, scaled so the texture tiles `uv_scale` times across the diameter.
+    pub fn disc(&mut self, radius: f32, segments: u32, y: f32, uv_scale: f32) {
+        let segments = segments.max(3);
+        let center = self.vertices.len() as u32;
+        self.vertices.push(MeshVertex::new(
+            Vec3::new(0.0, y, 0.0),
+            Vec3::Y,
+            Vec2::new(uv_scale * 0.5, uv_scale * 0.5),
+        ));
+        for step in 0..segments {
+            let angle = step as f32 / segments as f32 * std::f32::consts::TAU;
+            let (sin, cos) = angle.sin_cos();
+            self.vertices.push(MeshVertex::new(
+                Vec3::new(cos * radius, y, sin * radius),
+                Vec3::Y,
+                Vec2::new(uv_scale * (cos * 0.5 + 0.5), uv_scale * (sin * 0.5 + 0.5)),
+            ));
+        }
+        for step in 0..segments {
+            let current = center + 1 + step;
+            let next = center + 1 + (step + 1) % segments;
+            // Counter-clockwise seen from +Y, which is what makes the up-facing side the
+            // front face under the renderer's back-face culling.
+            self.indices.extend_from_slice(&[center, next, current]);
+        }
+    }
+
+    /// How many triangles have been pushed.
+    #[must_use]
+    pub fn triangle_count(&self) -> usize {
+        self.indices.len() / 3
+    }
+
+    /// Whether nothing has been pushed.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.vertices.is_empty()
+    }
+
+    /// Turns the accumulated geometry into a submesh drawn with material `material`.
+    #[must_use]
+    pub fn into_submesh(self, name: &str, material: usize) -> SubMesh {
+        SubMesh::new(
+            name,
+            Geometry::Static(self.vertices),
+            self.indices,
+            material,
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -275,6 +380,70 @@ mod tests {
     fn indices_are_based_where_the_caller_says() {
         let (_, indices) = Prism::new(Vec3::ZERO, Vec3::Y, 0.1, 0.1).build(100);
         assert!(indices.iter().all(|index| (100..124).contains(index)));
+    }
+
+    #[test]
+    fn a_builder_accumulates_primitives_into_one_submesh() {
+        let mut builder = MeshBuilder::new();
+        assert!(builder.is_empty());
+        builder.prism(&Prism::new(Vec3::ZERO, Vec3::Y, 0.2, 0.2));
+        builder.disc(1.0, 8, 0.0, 1.0);
+        assert_eq!(builder.triangle_count(), 12 + 8);
+
+        let submesh = builder.into_submesh("test", 3);
+        assert_eq!(submesh.material, 3);
+        assert_eq!(submesh.triangle_count(), 20);
+    }
+
+    #[test]
+    fn a_disc_faces_upwards_and_every_index_names_a_vertex_it_has() {
+        let mut builder = MeshBuilder::new();
+        builder.disc(2.0, 16, 0.5, 4.0);
+        let count = builder.vertices.len() as u32;
+        assert_eq!(count, 17, "a centre and sixteen rim vertices");
+        assert!(builder.indices.iter().all(|index| *index < count));
+        for vertex in &builder.vertices {
+            assert_eq!(vertex.normal, Vec3::Y);
+            assert!((vertex.position.y - 0.5).abs() < 1e-6);
+            assert!(vertex.position.x.hypot(vertex.position.z) <= 2.0 + 1e-4);
+        }
+
+        // Wound counter-clockwise seen from above: the cross product of two edges of the
+        // first triangle has to point along +Y, or the floor is only visible from below.
+        let triangle = [
+            builder.vertices[builder.indices[0] as usize].position,
+            builder.vertices[builder.indices[1] as usize].position,
+            builder.vertices[builder.indices[2] as usize].position,
+        ];
+        let normal = (triangle[1] - triangle[0]).cross(triangle[2] - triangle[1]);
+        assert!(normal.y > 0.0, "the disc is wound face-down: {normal:?}");
+    }
+
+    #[test]
+    fn a_quad_keeps_the_normal_it_was_given() {
+        let mut builder = MeshBuilder::new();
+        builder.quad(
+            [
+                Vec3::new(-1.0, 0.0, -1.0),
+                Vec3::new(1.0, 0.0, -1.0),
+                Vec3::new(1.0, 0.0, 1.0),
+                Vec3::new(-1.0, 0.0, 1.0),
+            ],
+            Vec3::Y,
+            [
+                Vec2::ZERO,
+                Vec2::new(1.0, 0.0),
+                Vec2::new(1.0, 1.0),
+                Vec2::new(0.0, 1.0),
+            ],
+        );
+        assert_eq!(builder.triangle_count(), 2);
+        assert!(
+            builder
+                .vertices
+                .iter()
+                .all(|vertex| vertex.normal == Vec3::Y)
+        );
     }
 
     #[test]

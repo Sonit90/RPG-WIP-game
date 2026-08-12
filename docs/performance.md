@@ -797,3 +797,53 @@ would remove it, and that is a renderer change rather than a nameplate one.
 The plates are a **second overlay layer**, rebuilt every frame and uploaded unconditionally,
 while the developer HUD keeps its per-slot cache. Merging them would re-upload the HUD's tens
 of thousands of quads every frame to move a plate by a pixel.
+
+
+## Phase 2 (environment) — the combat arena
+
+Release, 1920x1080 windowed, no vsync, Ryzen 5800X / RX 6700 XT. Figures from the game's own
+periodic report over 12,000-40,000 frame runs.
+
+| Scenario | CPU mean | CPU p99 | GPU mean | FPS | Draws | Triangles | Visible |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Arena, no dummies | 0.172 ms | 0.31 ms | 0.076 ms | 5,808 | 31 | 2,596 | 85 |
+| + 10 dummies | 0.203 ms | 0.42 ms | 0.092 ms | 4,936 | 33 | 3,316 | 105 |
+| + 50 dummies | 0.299 ms | 0.46 ms | 0.149 ms | 3,341 | 33 | 5,548 | 185 |
+| + 100 dummies | 0.318 ms | 0.71 ms | 0.156 ms | 3,147 | 33 | 7,948 | 272 |
+| Stress x4 (571 objects) | 0.385 ms | 1.24 ms | 0.187 ms | 2,599 | 34 | 10,084 | 400 |
+| Stress x8 (1,071 objects) | 0.416 ms | 1.22 ms | 0.203 ms | 2,402 | 34 | 13,240 | 582 |
+
+The 240 FPS floor is 4.167 ms and the 480 FPS aspiration is 2.083 ms. The worst shipping case
+is 0.318 ms of CPU at a 0.71 ms p99, which meets both with over six times the headroom.
+
+**Draw calls do not scale with object count.** 5.5x the objects costs one extra draw, because
+every placement of an asset shares the mesh and material handles of a single upload and the
+render list's counting sort collapses them into one instanced draw.
+
+### Per-pass cost, headless (`env_bench`, 3,000 frames)
+
+| Scenario | LOD us | Extract us | Cull us | Group us | Total us | Allocs/frame |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Empty arena | 2.39 | 0.03 | 1.17 | 1.56 | 5.15 | 0.0003 |
+| + 100 dummies | 2.43 | 7.09 | 3.19 | 2.07 | 14.77 | 0.229 |
+| Worst view | 2.29 | 5.68 | 3.58 | 2.12 | 13.67 | 0 |
+| Stress x4 | 7.41 | 0.67 | 5.23 | 2.51 | 15.82 | 0 |
+
+The environment's own per-frame cost is **3.6 us** — 2.4 us of level selection plus 1.2 us of
+culling — which is 0.09% of a 240 FPS frame. The residual allocations in the dummy-heavy rows
+are the Phase 3 damage-meter residue documented above, not environment work.
+
+### Memory
+
+| | |
+| --- | --- |
+| Environment textures | 932 KiB (18 uploads of 9 distinct 128^2 and 64^2 images) |
+| Environment geometry | 922 triangles at LOD0 across 16 models |
+| Render entities added | 240 for the combat arena, 1,353 at stress x8 |
+
+### One allocation removed
+
+`RenderList::group_by_material_and_mesh` copied its bucket cursors with `to_vec()` every
+frame. With nine materials and four meshes nobody noticed; with the environment's forty of
+each, `env_bench` measured **1.18 allocations per frame**. The cursors now live in a reused
+field, and the empty-arena scenario allocates 0.0003 per frame.

@@ -30,6 +30,7 @@ pub mod character;
 pub mod collision_debug;
 pub mod collision_hud;
 pub mod damage_numbers;
+pub mod environment;
 pub mod extract;
 pub mod game_ui;
 pub mod hud;
@@ -43,6 +44,7 @@ pub use camera::ThirdPersonCamera;
 pub use collision_debug::{CollisionDebug, DebugBindings};
 pub use collision_hud::CollisionHudModel;
 pub use damage_numbers::{FloatingNumber, FloatingNumbers, MAX_FLOATING_NUMBERS};
+pub use environment::{EnvironmentPlacer, EnvironmentStats, EnvironmentVisuals, scene_lighting};
 pub use extract::{
     RenderExtractor, VisualBindings, VisualStats, interpolated_player_position, lerp_angle,
     lerp_position,

@@ -12,9 +12,14 @@ publish.workspace = true
 #
 # engine-collision is allowed because it is the same kind of thing: simulation-side
 # geometry that itself depends on engine-core alone.
+#
+# engine-environment is allowed for the same reason again: it is level *data* — placements,
+# primitives and spawn points — and it depends on engine-core alone. It carries no mesh, no
+# material and no handle, so gameplay still cannot name a thing that is drawn.
 [dependencies]
 engine-collision = { workspace = true }
 engine-core = { workspace = true }
+engine-environment = { workspace = true }
 log = { workspace = true }
 
 [lints]

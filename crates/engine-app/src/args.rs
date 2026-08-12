@@ -26,6 +26,14 @@ pub enum Scene {
     /// The character and model test bed: the FireMage, one dummy, a floor, and keys that
     /// hold the character in one animation so it can be judged without playing the game.
     Character,
+    /// The environment test bed: the combat arena with one of every library asset laid out
+    /// in a row beside it, and no dummies to fight.
+    ///
+    /// Separate from the combat scene for the same reason the collision course is separate
+    /// from the arena: inspecting terrain, props, materials, lighting, levels of detail and
+    /// culling should not require a fight going on in front of them, and a display row in
+    /// the combat arena would be scenery a player trips over.
+    Environment,
 }
 
 impl Scene {
@@ -36,7 +44,23 @@ impl Scene {
             Self::Combat => "COMBAT",
             Self::Collision => "COLLISION",
             Self::Character => "CHARACTER",
+            Self::Environment => "ENVIRONMENT",
         }
+    }
+
+    /// Whether this is the environment test bed.
+    #[must_use]
+    pub fn is_environment(self) -> bool {
+        matches!(self, Self::Environment)
+    }
+
+    /// Whether this scene is built from an environment scene rather than a bare floor.
+    ///
+    /// The combat arena and the environment demo both are; the collision course brings its
+    /// own geometry and the character test bed deliberately brings none.
+    #[must_use]
+    pub fn has_environment(self) -> bool {
+        matches!(self, Self::Combat | Self::Environment)
     }
 
     /// Whether this is the character and model test bed.
@@ -60,6 +84,7 @@ impl FromStr for Scene {
             "combat" | "arena" | "COMBAT" => Ok(Self::Combat),
             "collision" | "demo" | "COLLISION" => Ok(Self::Collision),
             "character" | "model" | "CHARACTER" => Ok(Self::Character),
+            "environment" | "env" | "level" | "ENVIRONMENT" => Ok(Self::Environment),
             _ => Err(()),
         }
     }
@@ -84,14 +109,21 @@ options:
                          time; hidden by default because it costs frame time)
   --dummies <count>      training dummies in the group, on top of the single dummy
                          (default 4, combat scene only)
-  --scene <name>         which scenario to load: combat (default), collision or
-                         character. The character scene is the model test bed - the
+  --scene <name>         which scenario to load: combat (default), collision,
+                         character or environment. The environment scene is the arena
+                         with one of every environment asset laid out beside it and no
+                         fight going on: terrain, props, materials, lighting, LOD and
+                         culling, with nothing in the way of looking at them. The character scene is the model test bed - the
                          FireMage, one dummy, a floor and nothing else. Keys 1 to 6 hold
                          the character in one animation, 0 releases it back to gameplay.
                          The
                          collision scene is a dedicated test course - floor, walls, a
                          corner, steps, ramps, thin barriers, a ledge - with no combat
                          in it at all. Keys 1 to 7 stand at a test station, R resets
+  --env-density <mult>   scatter multiplier for the environment scene (default 1.0).
+                         Above 1 loads the stress layout: the same arena boundary with
+                         several times the rocks, trees and ground cover, which is the
+                         configuration that answers whether the environment scales
   --no-ui                do not draw the game UI. A measurement control: it makes the
                          interface's cost the difference between two runs of the same
                          binary rather than of two builds
@@ -128,6 +160,12 @@ pub struct Args {
     ///
     /// `None` leaves the build's default in place; `Some(true)` forces it on.
     pub validation: Option<bool>,
+    /// Scatter multiplier for the environment scene.
+    ///
+    /// 1.0 is the shipping arena. Higher loads the stress layout, which has the same
+    /// boundary and several times the scatter — the configuration that answers "does the
+    /// environment scale?" rather than "is the game fast?".
+    pub env_density: f32,
     /// Whether `--help` was requested.
     pub help: bool,
 }
@@ -146,6 +184,7 @@ impl Default for Args {
             ui: true,
             fullscreen: false,
             validation: None,
+            env_density: 1.0,
             help: false,
         }
     }
@@ -176,6 +215,7 @@ impl Args {
                 Scene::Combat => "myGame — training arena".to_owned(),
                 Scene::Collision => "myGame — collision demo".to_owned(),
                 Scene::Character => "myGame — character test".to_owned(),
+                Scene::Environment => "myGame — environment demo".to_owned(),
             },
         }
     }
@@ -244,6 +284,7 @@ where
                     value: raw.to_owned(),
                 })?;
             }
+            "--env-density" => args.env_density = next_value(&mut iter, "--env-density")?,
             "--no-ui" => args.ui = false,
             "-h" | "--help" => args.help = true,
             other => return Err(ArgsError::Unknown(other.to_owned())),
@@ -383,10 +424,26 @@ mod tests {
         );
         assert!(Scene::Collision.is_collision());
         assert!(!Scene::Combat.is_collision());
+        assert_eq!(
+            parse(["--scene", "environment"])
+                .expect("--scene environment is valid")
+                .scene,
+            Scene::Environment
+        );
         assert!(Scene::Character.is_character());
         assert!(!Scene::Character.is_collision());
+        assert!(Scene::Environment.is_environment());
         assert_eq!(Scene::Collision.as_str(), "COLLISION");
         assert_eq!(Scene::Character.as_str(), "CHARACTER");
+        assert_eq!(Scene::Environment.as_str(), "ENVIRONMENT");
+
+        // Which scenes are built from an environment scene, and which bring their own
+        // ground. A collision course with the arena's kerb in it would be a course with
+        // scenery in the way of the tests.
+        assert!(Scene::Combat.has_environment());
+        assert!(Scene::Environment.has_environment());
+        assert!(!Scene::Collision.has_environment());
+        assert!(!Scene::Character.has_environment());
     }
 
     #[test]
@@ -411,6 +468,26 @@ mod tests {
             })
         );
         assert_eq!(parse(["--scene"]), Err(ArgsError::MissingValue("--scene")));
+    }
+
+    #[test]
+    fn the_environment_density_defaults_to_the_shipping_arena_and_can_be_raised() {
+        assert_eq!(
+            parse::<[&str; 0], &str>([])
+                .expect("empty is valid")
+                .env_density,
+            1.0
+        );
+        assert_eq!(
+            parse(["--env-density", "4"])
+                .expect("--env-density is valid")
+                .env_density,
+            4.0
+        );
+        assert_eq!(
+            parse(["--env-density"]),
+            Err(ArgsError::MissingValue("--env-density"))
+        );
     }
 
     #[test]

@@ -61,6 +61,32 @@ impl Default for ArenaConfig {
 }
 
 impl ArenaConfig {
+    /// The configuration an environment scene implies, with `count` dummies in the group.
+    ///
+    /// The seam between the level and the fight. The scene owns the spawn points, because
+    /// the scene is what put a boulder somewhere and therefore what knows where there is
+    /// room; gameplay owns what stands on them. Nothing in this function names a mesh, and
+    /// nothing in the scene names a dummy.
+    ///
+    /// The arena's half-extent comes from the scene too, so the collision wall and the
+    /// drawn kerb cannot disagree about where the arena ends — which they would the first
+    /// time one of the two numbers was changed on its own.
+    #[must_use]
+    pub fn from_environment(scene: &engine_environment::EnvironmentScene, count: usize) -> Self {
+        let base = Self::with_group(count);
+        Self {
+            player_spawn: scene.spawns.player,
+            single_dummy: scene.spawns.featured_dummy,
+            group_center: scene.spawns.group_center,
+            group_spacing: scene.spawns.group_spacing,
+            // The scene's own bound, unless a benchmark asked for more dummies than fit in
+            // it — in which case the group would otherwise be clamped into a heap against
+            // the wall and an area ability would hit all of it.
+            arena_half_extent: base.arena_half_extent.max(scene.half_extent),
+            ..base
+        }
+    }
+
     /// A configuration with `count` dummies in the group.
     ///
     /// The arena grows with the group so a benchmark's dummies are not clamped into a heap
@@ -172,6 +198,118 @@ pub fn build_collision(world: &mut engine_collision::world::CollisionWorld, conf
         "ARENA WALL -Z",
     );
     world.rebuild_broad_phase();
+}
+
+/// Adds every blocking environment object to a collision world.
+///
+/// ```text
+/// EnvironmentObject                        CollisionWorld
+///   collision: Box { centre, half }  ──►   Shape::Aabb   (unrotated placement)
+///   transform: position + yaw + scale ─►   Shape::Obb    (yawed placement)
+///   collision: None                  ──►   nothing at all
+/// ```
+///
+/// # Why the shape is chosen here rather than authored
+///
+/// An axis-aligned box is a cheaper narrow-phase test than an oriented one, and most of the
+/// arena is unrotated. Which of the two a placement needs is a consequence of its transform,
+/// not a decision an author should have to make — so it is made once, here, by comparing the
+/// placement's rotation against an epsilon. A quarter of a degree of yaw is not worth an
+/// oriented box.
+///
+/// # Why the broad phase is not rebuilt
+///
+/// It is left dirty, exactly as [`build_collision`] leaves it: rebuilding after every insert
+/// makes building a level quadratic. The caller rebuilds once when the whole world is
+/// assembled, and forgetting costs speed rather than correctness — a dirty world answers
+/// with a linear scan.
+///
+/// Returns how many shapes were added.
+pub fn add_environment_collision(
+    world: &mut engine_collision::world::CollisionWorld,
+    scene: &engine_environment::EnvironmentScene,
+) -> usize {
+    use engine_collision::shape::{Obb, Shape};
+    use engine_collision::world::StaticDesc;
+
+    /// Below this, a placement's rotation is not worth an oriented box.
+    ///
+    /// The magnitude of a quaternion's vector part is `sin(angle / 2)`, so this is about a
+    /// quarter of a degree of yaw.
+    const YAW_EPSILON: f32 = 2.0e-3;
+
+    let mut added = 0;
+    for object in &scene.objects {
+        let Some(placed) = object.world_collision() else {
+            continue;
+        };
+        // A degenerate box would be a shape every query has to test and no query can ever
+        // touch. It means an author wrote a zero extent, which is worth a line in the log.
+        if placed.half_extents.x <= 0.0
+            || placed.half_extents.y <= 0.0
+            || placed.half_extents.z <= 0.0
+        {
+            log::warn!(
+                "environment object {} has a collision box with no volume: {:?}",
+                object.asset,
+                placed.half_extents
+            );
+            continue;
+        }
+
+        let shape = if placed.rotation_magnitude() < YAW_EPSILON {
+            let (min, max) = placed.min_max();
+            Shape::box_between(min, max)
+        } else {
+            Shape::Obb(Obb::new(
+                placed.center,
+                placed.half_extents,
+                placed.rotation,
+            ))
+        };
+        // The asset's name, so the collision debug view and a contact report say *what* was
+        // hit rather than "a box". `&'static str` because an asset id already is one.
+        world.add_static(StaticDesc::new(shape).labelled(object.asset.name()));
+        added += 1;
+    }
+    added
+}
+
+/// Builds a simulation holding an environment scene and the fight that happens in it.
+///
+/// The whole of "load a level": the scene supplies the layout, the collision and the spawn
+/// points; [`ArenaConfig::from_environment`] turns its spawns into gameplay's; and the
+/// arena's own floor and boundary wall are added underneath. Adding a second arena is
+/// calling this with a different scene — see `phase_environment.md`.
+#[must_use]
+pub fn environment_arena(
+    scene: &engine_environment::EnvironmentScene,
+    group_count: usize,
+) -> Simulation {
+    let config = ArenaConfig::from_environment(scene, group_count);
+    let mut simulation = Simulation::new(SimConfig {
+        movement: config.movement(),
+        ..SimConfig::default()
+    });
+    let arena = populate(simulation.world_mut(), &config);
+
+    let world = simulation.collision_world_mut();
+    // The floor and the four boundary walls first, then everything the scene brought. The
+    // wall is what confines the player; the scene's kerb stands just inside it and is what
+    // the player sees. Two descriptions of the boundary, and they agree because
+    // `ArenaConfig::from_environment` took its half-extent from the same scene.
+    build_collision(world, &config);
+    let statics = add_environment_collision(world, scene);
+    world.rebuild_broad_phase();
+    log::info!(
+        "environment '{}': {} objects, {statics} collision shapes",
+        scene.name,
+        scene.len()
+    );
+
+    simulation.set_player_entity(arena.player);
+    simulation.select_nearest_target();
+    simulation
 }
 
 /// Fills an existing world with the arena and returns what it spawned.
@@ -345,6 +483,184 @@ mod tests {
         let total = points.len();
         points.dedup();
         assert_eq!(points.len(), total, "two dummies share a position");
+    }
+
+    #[test]
+    fn an_environment_scene_becomes_a_playable_arena() {
+        let scene = engine_environment::arena::combat_arena();
+        let simulation = environment_arena(&scene, 4);
+
+        assert_eq!(simulation.world().len(), 2 + 4);
+        assert_eq!(
+            simulation.world().position(simulation.player().entity),
+            Some(scene.spawns.player)
+        );
+        assert!(simulation.player().target.is_some());
+        assert!(
+            !simulation.collision_world().is_dirty(),
+            "a scene must not hand over a world that still has to be rebuilt"
+        );
+    }
+
+    #[test]
+    fn only_the_objects_that_block_become_collision_shapes() {
+        let scene = engine_environment::arena::combat_arena();
+        let mut world = engine_collision::world::CollisionWorld::new();
+        let added = add_environment_collision(&mut world, &scene);
+
+        assert_eq!(added, scene.blocking_count());
+        assert_eq!(world.len(), added);
+        assert!(
+            added < scene.len() / 2,
+            "{added} of {} objects block, which is most of them",
+            scene.len()
+        );
+        // Every shape is named after the asset that produced it, so a contact report says
+        // what was hit.
+        for id in world.statics() {
+            assert!(!world.label(id).is_empty());
+        }
+    }
+
+    #[test]
+    fn a_yawed_placement_becomes_an_oriented_box_and_a_straight_one_does_not() {
+        use engine_collision::shape::Shape;
+        use engine_environment::object::{EnvironmentCollision, EnvironmentObject};
+
+        let mut scene = engine_environment::EnvironmentScene::with_capacity("test", 2);
+        let block = EnvironmentObject::decoration(
+            engine_environment::asset::WALL_SEGMENT,
+            Vec3::new(5.0, 0.0, 0.0),
+        )
+        .with_collision(EnvironmentCollision::standing(4.0, 1.2, 0.5));
+        scene.push(block);
+        scene.push(block.with_yaw(std::f32::consts::FRAC_PI_2));
+
+        let mut world = engine_collision::world::CollisionWorld::new();
+        assert_eq!(add_environment_collision(&mut world, &scene), 2);
+        let shapes: Vec<_> = world
+            .statics()
+            .filter_map(|id| world.shape(id).copied())
+            .collect();
+        assert!(
+            matches!(shapes[0], Shape::Aabb(_)),
+            "an unrotated box should not pay for an oriented test: {:?}",
+            shapes[0]
+        );
+        assert!(
+            matches!(shapes[1], Shape::Obb(_)),
+            "a yawed box has to be oriented or it blocks the wrong ground: {:?}",
+            shapes[1]
+        );
+    }
+
+    #[test]
+    fn a_collision_box_with_no_volume_is_refused_rather_than_added() {
+        use engine_environment::object::{EnvironmentCollision, EnvironmentObject};
+
+        let mut scene = engine_environment::EnvironmentScene::with_capacity("test", 1);
+        scene.push(
+            EnvironmentObject::decoration(engine_environment::asset::PILLAR, Vec3::ZERO)
+                .with_collision(EnvironmentCollision::Box {
+                    center: Vec3::Y,
+                    half_extents: Vec3::new(0.5, 0.0, 0.5),
+                }),
+        );
+        let mut world = engine_collision::world::CollisionWorld::new();
+        assert_eq!(add_environment_collision(&mut world, &scene), 0);
+        assert!(world.is_empty());
+    }
+
+    #[test]
+    fn the_player_spawns_somewhere_the_environment_left_room_for_it() {
+        // The layout rule and the gameplay spawn are in two crates, and this is where they
+        // meet: a spawn point inside a boulder is a character that pops sideways on its
+        // first tick.
+        use engine_collision::CollisionMask;
+        use engine_collision::controller::CharacterConfig;
+        use engine_collision::world::QueryBuffers;
+
+        let scene = engine_environment::arena::combat_arena();
+        let simulation = environment_arena(&scene, 16);
+        let config = CharacterConfig::default();
+        let mut buffers = QueryBuffers::new();
+
+        let mut points = vec![scene.spawns.player, scene.spawns.featured_dummy];
+        points.extend(
+            simulation
+                .world()
+                .entities()
+                .filter_map(|id| simulation.world().position(id)),
+        );
+        for point in points {
+            assert!(
+                !simulation.collision_world().capsule_overlaps(
+                    &config.capsule_at(point + Vec3::new(0.0, 0.05, 0.0)),
+                    CollisionMask::WORLD,
+                    &mut buffers,
+                ),
+                "{point:?} is inside the level"
+            );
+        }
+    }
+
+    #[test]
+    fn the_environments_kerb_stands_inside_the_wall_that_actually_confines_the_player() {
+        // Two descriptions of the boundary. They have to agree, and the way they agree is
+        // that the gameplay config takes its half-extent from the scene.
+        let scene = engine_environment::arena::combat_arena();
+        let config = ArenaConfig::from_environment(&scene, 4);
+        assert_eq!(config.arena_half_extent, scene.half_extent);
+
+        for object in &scene.objects {
+            let Some(placed) = object.world_collision() else {
+                continue;
+            };
+            // The box's eight corners, carried through its own rotation. `min_max` is the
+            // unrotated case only, and half the kerb is turned a quarter turn — using it
+            // here would measure a box that is not the box in the world.
+            let half = placed.half_extents;
+            let mut reach = 0.0_f32;
+            for sx in [-1.0_f32, 1.0] {
+                for sy in [-1.0_f32, 1.0] {
+                    for sz in [-1.0_f32, 1.0] {
+                        let corner = placed.center
+                            + placed.rotation.rotate(Vec3::new(
+                                sx * half.x,
+                                sy * half.y,
+                                sz * half.z,
+                            ));
+                        reach = reach.max(corner.x.abs()).max(corner.z.abs());
+                    }
+                }
+            }
+            assert!(
+                reach <= config.arena_half_extent + 0.01,
+                "{} reaches {reach:.2} m, past the wall at {}",
+                object.asset,
+                config.arena_half_extent
+            );
+        }
+    }
+
+    #[test]
+    fn an_environment_arena_is_built_identically_every_time() {
+        let scene = engine_environment::arena::combat_arena();
+        let describe = || {
+            let simulation = environment_arena(&scene, 8);
+            let world = simulation.collision_world();
+            let shapes: Vec<_> = world
+                .statics()
+                .map(|id| (world.label(id), world.bounds(id)))
+                .collect();
+            let positions: Vec<_> = simulation
+                .world()
+                .entities()
+                .filter_map(|id| simulation.world().position(id))
+                .collect();
+            (shapes, positions)
+        };
+        assert_eq!(describe(), describe());
     }
 
     #[test]

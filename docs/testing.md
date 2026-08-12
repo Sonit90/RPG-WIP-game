@@ -205,6 +205,22 @@ benchmark artefact, no test symbols in the binary, and a two-frame smoke run. Ca
 makes this true by construction, but a future build script, feature or copy step could
 break it silently, so it is checked rather than assumed.
 
+## Visual verification that survives
+
+Some visual facts *can* be asserted, and where they can, they are, rather than being looked
+at once on one afternoon. `engine-renderer/tests/character_render.rs` and
+`environment_render.rs` render offscreen through the same pipeline, root signature and depth
+state the window uses, read the pixels back, and assert on them: that the model reaches the
+screen, that posing moves it, that the arena has a sky above and ground below and they
+differ, that the boundary changes the picture from the middle of the fight, that removing
+the background removes depth, and that every asset in the environment library draws more
+than a couple of hundred lit pixels. Each of them skips itself when no D3D12 adapter is
+present.
+
+These do not replace a person's judgement about whether something looks *good*. They replace
+the part of a visual check that is a fact — is it there, is it the right size, is it lit,
+is it inside out — and that is the part that regresses silently.
+
 ## Manual verification
 
 Some behaviour cannot be asserted automatically: that a window actually appears, that

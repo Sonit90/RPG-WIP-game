@@ -132,6 +132,16 @@ pub struct App {
     /// What the renderer is given: a view and a projection.
     camera: Camera,
     lighting: Lighting,
+    /// What the back buffer is cleared to. The scene's, where there is a scene.
+    clear_color: [f32; 4],
+    /// The environment, spawned into the extractor's `RenderWorld` once and kept at the
+    /// right level of detail. `None` for the two scenes that bring no environment.
+    ///
+    /// It owns render entities in a world the extractor also writes to, and that is
+    /// deliberate: two worlds would be two culls, two instance buffers and two passes for
+    /// objects that share a frustum and half their materials with the fight in front of them.
+    environment: Option<engine_environment::EnvironmentScene>,
+    placer: engine_presentation::EnvironmentPlacer,
     bindings: Bindings,
     /// Which scenario is loaded. Chosen once, at startup, by `--scene`.
     scene: Scene,
@@ -244,9 +254,39 @@ impl App {
         #[cfg(feature = "debug-overlay")]
         let debug_visuals = upload_debug_visuals(&mut renderer)?;
 
+        // The level. Built before the simulation, because the simulation's arena bounds and
+        // spawn points come out of it — the scene owns where there is room to stand, because
+        // the scene is what put a boulder somewhere.
+        let environment = args.scene.has_environment().then(|| {
+            // A density above one is the stress layout: the same boundary, the same spawn
+            // points and several times the scatter. Loading it through the ordinary path
+            // rather than through a separate scene is deliberate — a stress configuration
+            // that goes down a different code path measures the other code path.
+            if args.env_density > 1.0 {
+                engine_environment::arena::stress_arena(args.env_density)
+            } else if args.scene.is_environment() {
+                engine_environment::arena::environment_demo()
+            } else {
+                engine_environment::arena::combat_arena()
+            }
+        });
+
         let (simulation, demo) = match args.scene {
             Scene::Combat => (
-                arena::training_arena(&ArenaConfig::with_group(args.dummies)),
+                match environment.as_ref() {
+                    Some(scene) => arena::environment_arena(scene, args.dummies),
+                    None => arena::training_arena(&ArenaConfig::with_group(args.dummies)),
+                },
+                None,
+            ),
+            // The environment test bed: the arena, with no fight in it. One dummy remains,
+            // because a scene with nothing man-sized in it gives the eye no scale reference
+            // and every judgement about how big a pillar looks is then a guess.
+            Scene::Environment => (
+                match environment.as_ref() {
+                    Some(scene) => arena::environment_arena(scene, 0),
+                    None => arena::training_arena(&ArenaConfig::with_group(0)),
+                },
                 None,
             ),
             // The character test bed is the arena with the fight taken out: one dummy to
@@ -259,6 +299,15 @@ impl App {
                 (simulation, Some(scene))
             }
         };
+        // The environment library, uploaded once: sixteen `create_model` calls, whatever the
+        // scene's object count is. Every placement of an asset then shares the mesh and
+        // material handles that upload returned, which is the whole of the instancing
+        // story — see `engine_presentation::environment`.
+        let mut placer = engine_presentation::EnvironmentPlacer::new(match environment {
+            Some(_) => upload_environment(&mut renderer)?,
+            None => engine_presentation::EnvironmentVisuals::new(),
+        });
+
         let mut extractor = RenderExtractor::new(visuals, GROUND_HALF_EXTENT * 2.0);
         // The player's model, skeleton and clips. Every scene gets one, including the
         // collision course — a character test needs a character, and a capsule that walks is
@@ -270,6 +319,40 @@ impl App {
             // depth-buffer tie — which reads as the whole floor flickering. Dropped to the
             // course's catch floor, where it is the thing a long fall lands on instead.
             extractor.set_ground_height(demo::VOID_Y);
+        }
+        if let Some(scene) = environment.as_ref() {
+            // The scene brings its own ground: a plain out to the horizon and a paved arena
+            // two centimetres above it. The extractor's placeholder plane is at y = 0 too,
+            // and two coplanar surfaces are a depth-buffer tie that reads as the whole floor
+            // flickering — so it is hidden rather than moved. Hidden and not despawned,
+            // because the extractor owns that entity and would keep a stale handle.
+            let ground = extractor.ground();
+            extractor.render_world_mut().set_visible(ground, false);
+            placer.place(
+                extractor.render_world_mut(),
+                scene,
+                controller_eye_guess(scene),
+                LOD_BIAS,
+            );
+            let stats = placer.stats();
+            if stats.unresolved > 0 {
+                // A scene naming an asset the library does not have. Loud, because the
+                // object is simply not drawn and an empty space is indistinguishable from
+                // an object that was never meant to be there.
+                log::error!(
+                    "environment '{}': {} of {} objects name an asset that was not uploaded",
+                    scene.name,
+                    stats.unresolved,
+                    stats.objects
+                );
+            }
+            log::info!(
+                "environment '{}': {} objects, {} render entities, {} models uploaded",
+                scene.name,
+                stats.objects,
+                stats.entities,
+                placer.visuals().len()
+            );
         }
         extractor.extract(&simulation);
 
@@ -302,14 +385,28 @@ impl App {
         let mut camera = Camera::new(Projection::perspective(aspect_of(width, height)))?;
         controller.apply(&mut camera, aspect_of(width, height))?;
 
-        // A sun low enough that vertical and horizontal faces get clearly different amounts
-        // of light, plus enough ambient that an unlit face is dark rather than black.
-        let lighting = Lighting {
-            direction: Vec3::new(-0.45, -0.85, -0.35),
-            color: Vec3::new(1.0, 0.97, 0.90),
-            intensity: 1.15,
-            ambient_color: Vec3::new(0.55, 0.62, 0.80),
-            ambient_intensity: 0.28,
+        // The scene's light, where there is a scene. Lighting is content — a boss arena and
+        // a training yard want different suns — so it lives beside the objects it lights and
+        // reaches the renderer through a five-field copy.
+        //
+        // The fallback is the pre-Phase-2 sun, kept for the two scenes that bring no
+        // environment: a collision course lit for composition rather than for reading
+        // geometry is a course that is harder to test in.
+        let (lighting, clear_color) = match environment.as_ref() {
+            Some(scene) => (
+                engine_presentation::scene_lighting(&scene.lighting),
+                scene.lighting.clear_color(),
+            ),
+            None => (
+                Lighting {
+                    direction: Vec3::new(-0.45, -0.85, -0.35),
+                    color: Vec3::new(1.0, 0.97, 0.90),
+                    intensity: 1.15,
+                    ambient_color: Vec3::new(0.55, 0.62, 0.80),
+                    ambient_intensity: 0.28,
+                },
+                CLEAR_COLOR,
+            ),
         };
 
         // Built before the first frame so the UI never sees a default-constructed snapshot.
@@ -329,6 +426,9 @@ impl App {
             controller,
             camera,
             lighting,
+            clear_color,
+            environment,
+            placer,
             bindings: Bindings::default(),
             scene: args.scene,
             demo,
@@ -1122,6 +1222,17 @@ impl App {
             self.renderer.skinned_draws_last_frame(),
             self.renderer.triangles_last_frame(),
         );
+        if let Some(scene) = self.environment.as_ref() {
+            let environment = self.placer.stats();
+            log::info!(
+                "  environment '{}': {} objects, {} entities, {} models, {} lod changes",
+                scene.name,
+                environment.objects,
+                environment.entities,
+                self.placer.visuals().len(),
+                environment.lod_changes,
+            );
+        }
         log::info!(
             "  combat: {:.0} damage | {:.0} DPS over {:.1} s | {} deaths | {} events",
             meter.total_damage(),
@@ -1398,6 +1509,19 @@ impl Application for App {
             }
         }
 
+        // After the camera, because it is a distance from the camera, and before the frame
+        // is drawn. Nothing happens unless something crossed a threshold: for a still camera
+        // this is one subtract and one compare per object over a few hundred objects, which
+        // is why it is not on an interval.
+        if self.environment.is_some() {
+            engine_core::profile_scope!(profiler, "Environment");
+            self.placer.update_lod(
+                self.extractor.render_world_mut(),
+                self.camera.position(),
+                LOD_BIAS,
+            );
+        }
+
         // After the camera, because a nameplate is a projection through it: building the UI
         // from last frame's camera lags it a frame behind the enemies it labels.
         {
@@ -1413,7 +1537,7 @@ impl Application for App {
             self.extractor.render_world(),
             &self.camera,
             self.lighting,
-            CLEAR_COLOR,
+            self.clear_color,
         )?;
         Ok(())
     }
@@ -1488,6 +1612,47 @@ fn upload_visuals(renderer: &mut Renderer) -> Result<VisualBindings, EngineError
         marker_bounds: cube_bounds,
         marker_material,
     })
+}
+
+/// Uploads every environment asset in the library, once.
+///
+/// **This is the whole of the instancing requirement.** Sixteen `create_model` calls,
+/// whatever the scene's object count is; every placement of an asset then refers to the
+/// `MeshHandle` and `MaterialHandle` this returned, the render list's grouping pass finds
+/// them contiguous, and each `(mesh, material)` pair becomes one `DrawIndexedInstanced`.
+/// Adding a thousand of the same rock adds a thousand transforms and no GPU resources.
+///
+/// `create_model` validates before it uploads, so a malformed asset fails here naming the
+/// asset and the place inside it rather than drawing something wrong.
+fn upload_environment(
+    renderer: &mut Renderer,
+) -> Result<engine_presentation::EnvironmentVisuals, EngineError> {
+    let mut visuals = engine_presentation::EnvironmentVisuals::new();
+    let mut triangles = 0;
+    let mut texture_bytes = 0;
+    for (asset, model) in engine_assets::procedural::environment_library() {
+        triangles += model.triangle_count();
+        texture_bytes += model.texture_bytes();
+        visuals.insert(asset, renderer.create_model(&model)?);
+    }
+    log::info!(
+        "environment library: {} models, {triangles} triangles at LOD0, {:.0} KiB of textures",
+        visuals.len(),
+        texture_bytes as f64 / 1024.0,
+    );
+    Ok(visuals)
+}
+
+/// Where the camera will be on the first frame, near enough for the initial level choice.
+///
+/// The camera controller has not run yet when the environment is placed, so this stands in
+/// for it: a few metres behind and above the player spawn. Being wrong costs one frame of
+/// slightly-off detail and nothing else, because [`EnvironmentPlacer::update_lod`] corrects
+/// it before anything is drawn — but starting the whole level at LOD0 and correcting on the
+/// first frame would mean respawning a few hundred render entities during the first frame,
+/// which is exactly the hitch a loading screen is meant to hide.
+fn controller_eye_guess(scene: &engine_environment::EnvironmentScene) -> Vec3 {
+    scene.spawns.player + Vec3::new(0.0, 4.0, 8.0)
 }
 
 /// Uploads the FireMage and builds the player's visual controller.
@@ -1646,6 +1811,9 @@ fn log_controls(args: &Args, demo: Option<&DemoScene>) {
                     station.instruction
                 );
             }
+        }
+        None if args.scene.is_environment() => {
+            log::info!("environment demo: the combat arena plus one of every asset, and no fight")
         }
         None => log::info!("training arena: 1 dummy plus a group of {}", args.dummies),
     }

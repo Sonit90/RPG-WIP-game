@@ -16,6 +16,8 @@ debug-overlay = ["engine-renderer/debug-overlay"]
 
 [dependencies]
 engine-assets = { workspace = true }
+# The level as data: which arena to load, and what is in it.
+engine-environment = { workspace = true }
 engine-core = { workspace = true }
 engine-platform = { workspace = true }
 engine-render-data = { workspace = true }

@@ -341,7 +341,11 @@ pub fn render_scene(
     render_with(width, height, clear_color, |context, list, _| {
         let pipeline = MeshPipeline::new(context.device())?;
         // One frame slot: this path submits once and waits, so there is nothing to overlap.
-        let mut ring = UploadRing::new(context, 1 << 16, 1)?;
+        // A megabyte, not 64 KiB: one 256-byte object constant per draw, and the
+        // environment tests place a whole arena. Exhausting the ring fails the frame with a
+        // ring-capacity error, which looks nothing like the scene bug it would be mistaken
+        // for. Offscreen only, allocated once per capture.
+        let mut ring = UploadRing::new(context, 1 << 20, 1)?;
         ring.begin_frame(0);
 
         let mut meshes = Vec::with_capacity(objects.len());
@@ -529,7 +533,11 @@ pub fn render_scene_instanced(
 ) -> Result<CapturedImage, RendererError> {
     render_with(width, height, clear_color, |context, list, _| {
         let pipeline = InstancedMeshPipeline::new(context.device())?;
-        let mut ring = UploadRing::new(context, 1 << 16, 1)?;
+        // A megabyte, not 64 KiB: one 256-byte object constant per draw, and the
+        // environment tests place a whole arena. Exhausting the ring fails the frame with a
+        // ring-capacity error, which looks nothing like the scene bug it would be mistaken
+        // for. Offscreen only, allocated once per capture.
+        let mut ring = UploadRing::new(context, 1 << 20, 1)?;
         ring.begin_frame(0);
 
         let mut meshes = Vec::with_capacity(objects.len());

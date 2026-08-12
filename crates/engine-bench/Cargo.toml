@@ -46,10 +46,19 @@ path = "src/ui_bench.rs"
 name = "collision_bench"
 path = "src/collision_bench.rs"
 
+# The environment on its own: placement, level-of-detail selection, culling and batching,
+# plus the draw-call and triangle counts the environment submits. Separate from game_bench
+# because "what does the level cost?" and "what does the fight cost?" are different
+# questions, and the scenarios that answer the first hold the fight constant.
+[[bin]]
+name = "env_bench"
+path = "src/env_bench.rs"
+
 [dependencies]
 engine-collision = { workspace = true }
 engine-assets = { workspace = true }
 engine-core = { workspace = true }
+engine-environment = { workspace = true }
 engine-game = { workspace = true }
 engine-presentation = { workspace = true }
 # Only to open the hidden window the GPU phase renders into. No message pump beyond

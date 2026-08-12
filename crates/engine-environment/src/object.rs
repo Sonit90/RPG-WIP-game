@@ -1,0 +1,284 @@
+//! One placed thing, and what of it a character runs into.
+//!
+//! ```text
+//! EnvironmentObject
+//!  ├ asset       which model to draw
+//!  ├ transform   where, facing which way, how big
+//!  └ collision   a primitive in the model's own space, or nothing at all
+//! ```
+//!
+//! # Collision is not the visual mesh, and this is where that is enforced
+//!
+//! A pillar is 96 triangles of tapered prisms; what a character collides with is one box.
+//! A fern is 40 triangles and collides with nothing. The two descriptions are separate
+//! fields of separate types, so there is no path by which the visual mesh becomes the
+//! collision mesh — a triangle-accurate static world is not something that can be reached by
+//! accident from here, it would have to be written.
+//!
+//! The primitive is expressed in the **model's local space** and carried through the
+//! object's transform when the collision world is built. That is what lets one asset be
+//! placed at four scales and get four correctly-sized boxes from one authored number.
+
+use engine_core::math::Vec3;
+use engine_core::transform::Transform;
+
+use crate::asset::EnvironmentAsset;
+
+/// What a character runs into, in the model's local space.
+///
+/// Deliberately a tiny closed set. A convex hull, a capsule and a triangle mesh are all
+/// things `engine-collision` could grow, and none of them is needed to stop a player walking
+/// through a wall or a boulder — which is the whole job here.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum EnvironmentCollision {
+    /// Nothing. The object is decoration and the character walks through it.
+    ///
+    /// The default for grass, ferns, banners and anything below knee height: a collision
+    /// shape a player can trip on without being able to see why is worse than no shape.
+    None,
+    /// An axis-aligned box in the model's local space.
+    ///
+    /// Becomes an AABB in the collision world when the object has no rotation, and an
+    /// oriented box when it does — chosen at build time rather than authored, because an
+    /// author should not have to know which is cheaper.
+    Box {
+        /// Centre of the box, in the model's local space. Usually half the model's height
+        /// above its origin, because models stand on their origin.
+        center: Vec3,
+        /// Half-width, half-height and half-depth, in the model's local space.
+        half_extents: Vec3,
+    },
+}
+
+impl EnvironmentCollision {
+    /// A box standing on the model's origin: a footprint and a height.
+    ///
+    /// The form nearly every piece of architecture and every boulder is authored in, because
+    /// every model in this project stands on its own origin.
+    #[must_use]
+    pub fn standing(half_width: f32, height: f32, half_depth: f32) -> Self {
+        Self::Box {
+            center: Vec3::new(0.0, height * 0.5, 0.0),
+            half_extents: Vec3::new(half_width, height * 0.5, half_depth),
+        }
+    }
+
+    /// Whether this object blocks anything at all.
+    #[must_use]
+    pub fn blocks(self) -> bool {
+        !matches!(self, Self::None)
+    }
+}
+
+/// One placed environment object.
+///
+/// 44 bytes plus the discriminant: an asset id, a transform and a primitive. The shipping
+/// arena is 141 of these, and a stress scene is a few thousand.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct EnvironmentObject {
+    /// Which model to draw.
+    pub asset: EnvironmentAsset,
+    /// Where it stands, which way it faces, how large it is.
+    pub transform: Transform,
+    /// What of it blocks a character.
+    pub collision: EnvironmentCollision,
+}
+
+impl EnvironmentObject {
+    /// A decorative object at `position`: drawn, walked through.
+    #[must_use]
+    pub fn decoration(asset: EnvironmentAsset, position: Vec3) -> Self {
+        Self {
+            asset,
+            transform: Transform::from_translation(position),
+            collision: EnvironmentCollision::None,
+        }
+    }
+
+    /// The same object, rotated `yaw` radians about +Y.
+    ///
+    /// Yaw only, because everything in the arena stands on the ground. A prop that needed
+    /// pitch or roll would set [`EnvironmentObject::transform`] directly, and nothing does.
+    #[must_use]
+    pub fn with_yaw(mut self, yaw: f32) -> Self {
+        self.transform.rotation = engine_core::math::Quat::from_yaw_pitch_roll(yaw, 0.0, 0.0);
+        self
+    }
+
+    /// The same object, uniformly scaled.
+    ///
+    /// Uniform on purpose: the bounding sphere a cull tests against is scaled by the
+    /// transform's largest axis, so a non-uniform scale over-estimates the bound in two axes
+    /// out of three and draws things that could have been skipped. The one exception in the
+    /// library is the ground plane, which sets its scale directly.
+    #[must_use]
+    pub fn with_scale(mut self, scale: f32) -> Self {
+        self.transform.scale = Vec3::splat(scale);
+        self
+    }
+
+    /// The same object with a collision primitive.
+    #[must_use]
+    pub fn with_collision(mut self, collision: EnvironmentCollision) -> Self {
+        self.collision = collision;
+        self
+    }
+
+    /// Where the object stands.
+    #[must_use]
+    pub fn position(&self) -> Vec3 {
+        self.transform.translation
+    }
+
+    /// The collision box in world space, as a centre, half-extents and a yaw.
+    ///
+    /// `None` for a decoration. The half-extents are scaled by the object's own scale, so an
+    /// asset authored once and placed at 0.7 and at 1.6 gets two correctly-sized boxes
+    /// without either number being written down twice.
+    ///
+    /// Returned as plain numbers rather than as an `engine_collision::Shape`, because this
+    /// crate does not depend on `engine-collision` — the caller that does turns these into a
+    /// shape, and that caller is `engine_game::arena`.
+    #[must_use]
+    pub fn world_collision(&self) -> Option<WorldBox> {
+        let EnvironmentCollision::Box {
+            center,
+            half_extents,
+        } = self.collision
+        else {
+            return None;
+        };
+        Some(WorldBox {
+            center: self.transform.transform_point(center),
+            half_extents: Vec3::new(
+                half_extents.x * self.transform.scale.x,
+                half_extents.y * self.transform.scale.y,
+                half_extents.z * self.transform.scale.z,
+            ),
+            rotation: self.transform.rotation,
+        })
+    }
+}
+
+/// A collision box placed in the world: centre, half-extents, orientation.
+///
+/// The hand-off type between this crate and whoever owns a collision world. Plain math.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct WorldBox {
+    /// Centre in world space.
+    pub center: Vec3,
+    /// Half-extents along the box's own axes, already scaled.
+    pub half_extents: Vec3,
+    /// Orientation. Identity for most of the arena, which is what lets the consumer pick a
+    /// cheap axis-aligned box instead of an oriented one.
+    pub rotation: engine_core::math::Quat,
+}
+
+impl WorldBox {
+    /// How far the orientation is from the identity, as the length of its vector part.
+    ///
+    /// Zero for an unrotated box. The consumer compares this against a small epsilon to
+    /// decide between an AABB and an OBB; a quarter-degree of yaw is not worth an oriented
+    /// box's narrow-phase cost.
+    #[must_use]
+    pub fn rotation_magnitude(&self) -> f32 {
+        let rotation = self.rotation;
+        (rotation.x * rotation.x + rotation.y * rotation.y + rotation.z * rotation.z).sqrt()
+    }
+
+    /// The axis-aligned extents, for the unrotated case.
+    #[must_use]
+    pub fn min_max(&self) -> (Vec3, Vec3) {
+        (
+            self.center - self.half_extents,
+            self.center + self.half_extents,
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::asset::{FERN, PILLAR};
+    use engine_core::math::Quat;
+
+    #[test]
+    fn a_decoration_blocks_nothing_and_has_no_world_box() {
+        let fern = EnvironmentObject::decoration(FERN, Vec3::new(3.0, 0.0, -4.0));
+        assert!(!fern.collision.blocks());
+        assert_eq!(fern.world_collision(), None);
+        assert_eq!(fern.position(), Vec3::new(3.0, 0.0, -4.0));
+    }
+
+    #[test]
+    fn a_standing_box_sits_on_the_models_origin() {
+        let collision = EnvironmentCollision::standing(0.4, 3.0, 0.4);
+        let EnvironmentCollision::Box {
+            center,
+            half_extents,
+        } = collision
+        else {
+            panic!("a standing box is a box");
+        };
+        assert_eq!(center, Vec3::new(0.0, 1.5, 0.0));
+        assert_eq!(half_extents, Vec3::new(0.4, 1.5, 0.4));
+        assert!(collision.blocks());
+    }
+
+    #[test]
+    fn scaling_a_placement_scales_the_box_it_produces() {
+        // The property the whole local-space arrangement exists for: one authored number,
+        // any number of correctly-sized placements.
+        let pillar = EnvironmentObject::decoration(PILLAR, Vec3::new(10.0, 0.0, 0.0))
+            .with_collision(EnvironmentCollision::standing(0.5, 4.0, 0.5))
+            .with_scale(2.0);
+        let Some(world) = pillar.world_collision() else {
+            panic!("a pillar blocks");
+        };
+        assert_eq!(world.half_extents, Vec3::new(1.0, 4.0, 1.0));
+        assert_eq!(world.center, Vec3::new(10.0, 4.0, 0.0));
+        let (min, max) = world.min_max();
+        assert_eq!(min.y, 0.0, "the box still stands on the floor");
+        assert_eq!(max.y, 8.0);
+    }
+
+    #[test]
+    fn a_yawed_placement_reports_its_rotation_and_an_unyawed_one_reports_none() {
+        let straight = EnvironmentObject::decoration(PILLAR, Vec3::ZERO)
+            .with_collision(EnvironmentCollision::standing(1.0, 2.0, 1.0));
+        let Some(world) = straight.world_collision() else {
+            panic!("it blocks");
+        };
+        assert!(world.rotation_magnitude() < 1e-6, "an unrotated box");
+
+        let turned = straight.with_yaw(std::f32::consts::FRAC_PI_4);
+        let Some(world) = turned.world_collision() else {
+            panic!("it blocks");
+        };
+        assert!(world.rotation_magnitude() > 0.3, "a rotated box");
+        assert_eq!(
+            turned.transform.rotation,
+            Quat::from_yaw_pitch_roll(std::f32::consts::FRAC_PI_4, 0.0, 0.0)
+        );
+    }
+
+    #[test]
+    fn a_yawed_box_carries_its_offset_centre_round_with_it() {
+        // A box whose centre is not on the model's origin has to be rotated about the
+        // origin, not about itself, or a wall segment turned to face along Z ends up beside
+        // the wall it is meant to be.
+        let object = EnvironmentObject::decoration(PILLAR, Vec3::ZERO)
+            .with_collision(EnvironmentCollision::Box {
+                center: Vec3::new(0.0, 1.0, -2.0),
+                half_extents: Vec3::new(1.0, 1.0, 0.5),
+            })
+            .with_yaw(std::f32::consts::FRAC_PI_2);
+        let Some(world) = object.world_collision() else {
+            panic!("it blocks");
+        };
+        // A quarter turn about +Y sends -Z to -X.
+        assert!((world.center.x + 2.0).abs() < 1e-4, "{world:?}");
+        assert!(world.center.z.abs() < 1e-4, "{world:?}");
+        assert!((world.center.y - 1.0).abs() < 1e-4, "{world:?}");
+    }
+}

@@ -16,6 +16,10 @@ engine-core = { workspace = true }
 # Models, skeletons and animation clips. Presentation is where a character's gameplay state
 # becomes an animation state, so this is the crate that owns an `AnimationPlayer`.
 engine-assets = { workspace = true }
+# The level as data. Presentation is the crate that turns a placement into render entities,
+# which is exactly the pairing this crate exists for: it is the only one allowed to know
+# both what a scene says and what a `RenderWorld` is.
+engine-environment = { workspace = true }
 engine-game = { workspace = true }
 engine-render-data = { workspace = true }
 # The settings a menu shows: their bounds, their defaults and their type. The UI reads them;

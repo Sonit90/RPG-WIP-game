@@ -36,6 +36,7 @@ schedule and, eventually, to be driven by a network authority.
 | `engine-showcase` | Development-only visual test bed. Nothing depends on it. | M15 |
 | `engine-collision` | Collision shapes, the static collision world and the character controller. `engine-core` only. | Phase 5 |
 | `engine-game` | The gameplay simulation. `engine-core` and `engine-collision` only — no renderer, no `windows`, not even render data. | Phase 3 |
+| `engine-environment` | The level as data: placements, collision primitives, lighting, spawn points. `engine-core` only. | Phase 2 (environment) |
 | `engine-presentation` | Gameplay to rendering: extraction, the third-person camera, HUD text. | Phase 3 |
 
 `engine-platform` hands the renderer an opaque window handle and a client size.
@@ -115,6 +116,62 @@ What stayed in `engine-renderer` and why:
 | `Culler` | Pure CPU, but visibility is the renderer's policy, not data the game authors. |
 | `FrameConstants`, `ObjectConstants` | Plain data, but they are the CPU mirror of an HLSL `cbuffer`. Shader ABI belongs beside the shader. |
 | `MeshData`, `MaterialDesc` | Asset-authoring data, not scene data. Candidates for a future asset crate. |
+
+## The environment (Phase 2, environment)
+
+```text
+                    EnvironmentScene            engine-environment
+                           |                     (engine-core only)
+                           v
+                  Environment Objects
+                           |
+             +-------------+-------------+
+             v             v             v
+           Mesh         Material      Collision
+      (engine-assets, procedural)   (engine-game ->
+             |             |         engine-collision)
+             +------+------+
+                    v
+               RenderWorld slots        engine-presentation
+                    |                   EnvironmentPlacer
+             +------+------+
+             v             v
+          Culling          LOD
+             |             |
+             +------+------+
+                    v
+                 Renderer -> GPU
+```
+
+`engine-environment` depends on **`engine-core` and nothing else**, for the same reason
+`engine-render-data` does and it is checkable the same way. Three crates that are forbidden
+from knowing about each other have to read the same placement list: `engine-game` may not
+name a mesh, `engine-assets` may not name a collision world, and `engine-presentation` must
+not be where content lives. So the description sits below all three.
+
+**It must never gain `windows`, `engine-renderer`, `engine-render-data`, `engine-assets` or
+`engine-game`.** If it does, the level stops being data that three consumers read and becomes
+a fourth thing coupled to all of them.
+
+Four rules the environment follows, each a boundary rather than a convention:
+
+* **Static objects are spawned once and never extracted.** `RenderExtractor::extract` walks
+  gameplay slots and rebuilds them every frame, because a dummy moves and dies. A rock does
+  neither, so it is spawned into the same `RenderWorld` at load and costs the per-frame path
+  nothing but its share of a cull. The only thing that changes is its level of detail.
+* **Instancing is sharing, not a system.** Each asset is uploaded once; every placement refers
+  to the handles that upload returned; the render list's counting sort finds them contiguous;
+  each `(mesh, material)` pair becomes one `DrawIndexedInstanced`. A thousand of the same rock
+  costs a thousand transforms and no GPU resources. Measured: 5.5x the objects, one extra draw.
+* **Collision is chosen, not derived.** An `EnvironmentCollision` is `None` or one box, in the
+  model's local space, carried through the placement's transform. A pillar is 48 triangles and
+  one box; a fern is 60 triangles and nothing. There is no path by which a visual mesh becomes
+  a collision mesh.
+* **Lighting is content.** `EnvironmentLighting` lives with the scene and is copied into
+  `engine_render_data::Lighting` by `engine_presentation::scene_lighting`, which is the only
+  place in the project that knows both types.
+
+See `phase_environment.md` for the layouts, the measurements and the two scalability answers.
 
 ## Gameplay (Phase 3)
 

@@ -7,6 +7,11 @@ publish.workspace = true
 
 [dependencies]
 engine-core.workspace = true
+# The environment asset *names*, so `procedural::environment` resolves the same ids a scene
+# places rather than a second list of strings that can drift from it. An id is a name, not a
+# device: this does not make the crate depend on gameplay, a renderer or a collision world,
+# and `engine-environment` itself depends on `engine-core` alone.
+engine-environment.workspace = true
 log.workspace = true
 # glTF is the artist-facing interchange format. Parsed into the runtime model
 # representation at load, never touched by a frame. Default features are off because the
