@@ -585,6 +585,118 @@ impl GameUi {
         &self.list
     }
 
+    /// Builds a whole frame of UI from an arranged HUD.
+    ///
+    /// The counterpart to [`GameUi::build`] for a game that has a [`HudLayout`]: the fixed
+    /// target frame, the fixed player bars and the one centred ability bar are replaced by
+    /// the movable frames and the eight arranged bars. Everything that is not arrangeable —
+    /// nameplates, the cast bars, the talent button, the notices — is drawn identically,
+    /// because none of it is something the player positions.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "a frame of UI reads from this many independent sources"
+    )]
+    pub fn build_arranged(
+        &mut self,
+        snapshot: &UiSnapshot,
+        plates: &[Nameplate],
+        config: &NameplateConfig,
+        layout: &crate::ui::hud_layout::HudLayout,
+        bars: &crate::ui::action_bar::ActionBarSet,
+        scratch: &mut crate::ui::unit_frame::FrameScratch,
+        viewport: (u32, u32),
+    ) -> &UiDrawList {
+        self.begin();
+        self.push_world_health_bars(plates);
+        self.push_nameplates(plates, config);
+
+        // The arranged HUD. The theme and the scale are copied out first: the frames are
+        // drawn into this list, and the borrow checker is right that reading them off `self`
+        // while lending the list out would be two borrows of one thing.
+        let theme = self.theme;
+        let scale = self.metrics.scale;
+        crate::ui::unit_frame::push_frames(
+            &mut self.list,
+            layout,
+            snapshot,
+            &theme,
+            scratch,
+            scale,
+            viewport,
+        );
+        self.push_action_bars(snapshot, layout, bars, viewport);
+
+        self.push_talent_button(snapshot, viewport);
+        self.push_cast_bar(snapshot, viewport);
+        self.push_enemy_cast_bar(snapshot, viewport);
+        self.push_notification(snapshot, viewport);
+        self.push_death_notice(snapshot, viewport);
+        &self.list
+    }
+
+    /// Every enabled action bar, wherever the layout puts it.
+    ///
+    /// A disabled bar is not drawn and, because the application hit-tests against the same
+    /// `layout`, it is not clickable either — which is what "a disabled bar consumes no
+    /// interaction space" means in practice.
+    ///
+    /// A slot's key comes from the bar, not from the snapshot: the snapshot's `key` is the
+    /// class's fixed digit hint, and the whole point of this system is that the player may
+    /// have changed it.
+    pub fn push_action_bars(
+        &mut self,
+        snapshot: &UiSnapshot,
+        layout: &crate::ui::hud_layout::HudLayout,
+        bars: &crate::ui::action_bar::ActionBarSet,
+        viewport: (u32, u32),
+    ) {
+        use crate::ui::action_bar;
+        use crate::ui::hud_layout::HudElementId;
+
+        let scale = self.metrics.scale;
+        let text = scale.text(self.theme.hud_text_scale * 0.5);
+        let outline = scale.px(self.theme.outline_pixels);
+        for index in 0..engine_settings::hud::ACTION_BARS {
+            let id = HudElementId::ActionBar(index);
+            if !layout.is_enabled(id) {
+                continue;
+            }
+            let Some(bar) = bars.bar(index) else {
+                continue;
+            };
+            let orientation = layout.orientation(index);
+            let rect = layout.rect_of(id, scale, viewport);
+            for (slot_index, slot) in bar.slots().iter().enumerate() {
+                let Some(cell) = action_bar::slot_rect(rect, orientation, slot_index) else {
+                    continue;
+                };
+                let Some(view) = slot
+                    .ability
+                    .and_then(FireAbility::bar_slot)
+                    .and_then(|bar_slot| snapshot.abilities.get(bar_slot))
+                else {
+                    // An empty slot is still drawn. It is where the player drops the next
+                    // spell, and a bar that showed only what was in it would be a bar that
+                    // got harder to fill the emptier it was.
+                    self.list.rect(cell, self.theme.panel);
+                    self.list.outline(cell, outline, self.theme.slot_disabled);
+                    if let Some(key) = slot.key {
+                        self.list.text_at(
+                            (cell.x + scale.px(3.0), cell.y + scale.px(3.0)),
+                            key.label(),
+                            self.theme.text,
+                            text,
+                        );
+                    }
+                    continue;
+                };
+                let mut view = *view;
+                view.key = slot.key.map_or("", engine_core::input::KeyCode::label);
+                self.push_ability_button(cell, &view, text);
+            }
+        }
+    }
+
     /// The target frame: name, health and distance for the current target.
     ///
     /// Centred at the top, which is where the genre puts it and where a player's eye goes
@@ -1448,7 +1560,7 @@ const ABILITY_ABBREVIATION: usize = 4;
 /// `None` is the ordinary answer for most of the bar today. Those slots fall back to their
 /// abbreviated name, so an ability without art is legible rather than blank.
 #[must_use]
-fn icon_for(ability: FireAbility) -> Option<UiIcon> {
+pub fn icon_for(ability: FireAbility) -> Option<UiIcon> {
     match ability {
         FireAbility::Firebolt => Some(UiIcon::Firebolt),
         FireAbility::Meteor => Some(UiIcon::Meteor),

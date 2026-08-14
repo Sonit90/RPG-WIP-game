@@ -427,6 +427,51 @@ pub struct TalentView {
     pub affordable: bool,
 }
 
+/// One party member, as their frame shows them.
+///
+/// Health and nothing invented. There are no character names in the world yet — an entity
+/// has a kind and a body — so a frame prints what the game actually knows rather than a name
+/// the gameplay systems could not supply.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PartyMemberView {
+    /// Which entity.
+    pub entity: EntityId,
+    /// What they are, which is the closest thing to a name the world has.
+    pub kind: EntityKind,
+    /// Current health.
+    pub health: f32,
+    /// Maximum health.
+    pub max_health: f32,
+    /// Whether they are alive.
+    pub alive: bool,
+    /// Whether this is the local player, who is always the first member.
+    pub is_player: bool,
+    /// What is on them.
+    pub statuses: StatusList,
+}
+
+impl PartyMemberView {
+    /// Health as a fraction of maximum, zero when there is no maximum to divide by.
+    #[must_use]
+    pub fn health_fraction(&self) -> f32 {
+        if self.max_health <= 0.0 {
+            0.0
+        } else {
+            (self.health / self.max_health).clamp(0.0, 1.0)
+        }
+    }
+
+    /// The name the frame prints.
+    #[must_use]
+    pub fn name(&self) -> &'static str {
+        if self.is_player {
+            "YOU"
+        } else {
+            self.kind.as_str()
+        }
+    }
+}
+
 /// Everything the interface may read, rebuilt every frame.
 #[derive(Debug, Clone)]
 pub struct UiSnapshot {
@@ -434,6 +479,11 @@ pub struct UiSnapshot {
     pub player: PlayerView,
     /// The selected enemy, if any.
     pub target: Option<TargetView>,
+    /// What the selected enemy is fighting, if anything.
+    pub target_of_target: Option<TargetView>,
+    /// The party, local player first. Rebuilt in place; never reallocated after the first
+    /// frame that needed the capacity.
+    pub party: Vec<PartyMemberView>,
     /// The ability bar, in bar order.
     pub abilities: [AbilitySlotView; ABILITY_SLOTS],
     /// The Ultimate, which is not on the bar.
@@ -486,6 +536,8 @@ impl UiSnapshot {
                 damage_taken: 0.0,
             },
             target: None,
+            target_of_target: None,
+            party: Vec::with_capacity(engine_game::party::MAX_PARTY),
             abilities: [ability_view(simulation, FireAbility::Firebolt, aiming); ABILITY_SLOTS],
             ultimate: ability_view(simulation, FireAbility::Cataclysm, aiming),
             cast: None,
@@ -531,36 +583,33 @@ impl UiSnapshot {
             damage_taken: simulation.meter().total_damage_taken() as f32,
         };
 
-        self.target = player.target.and_then(|entity| {
-            let health = world.health(entity)?;
-            let burn = mage.ignite.get(entity);
-            Some(TargetView {
-                entity,
-                kind: world.kind(entity)?,
+        self.target = player
+            .target
+            .and_then(|entity| target_view(simulation, entity));
+        // The target's target, read from whatever the selected enemy has decided to attack.
+        // Nothing new in gameplay answers this: an enemy brain already knows who it is
+        // fighting, and a chain of two lookups is the whole feature.
+        self.target_of_target = player
+            .target
+            .and_then(|entity| simulation.brain(entity))
+            .and_then(engine_game::enemy::brain::EnemyBrain::target)
+            .and_then(|entity| target_view(simulation, entity));
+
+        self.party.clear();
+        for (index, member) in simulation.party().members().iter().enumerate() {
+            let Some(health) = world.health(*member) else {
+                continue;
+            };
+            self.party.push(PartyMemberView {
+                entity: *member,
+                kind: world.kind(*member).unwrap_or(EntityKind::Player),
                 health: health.current(),
                 max_health: health.max(),
-                // No distance means the target is gone; a large number reads as "out of
-                // range" everywhere it is used rather than as "right next to you".
-                distance: world
-                    .distance_between(player.entity, entity)
-                    .unwrap_or(f32::MAX),
-                alive: world.is_alive(entity),
-                ignite_stacks: burn.stacks,
-                ignite_remaining: burn.remaining,
-                ignite_at_maximum: burn.is_at_maximum(mage.ignite_max()),
-                statuses: statuses_of(simulation, entity),
-                casting: simulation.brain(entity).and_then(|brain| {
-                    brain.cast().map(|cast| EnemyCastView {
-                        ability: cast.ability,
-                        name: cast.ability.name(),
-                        elapsed: cast.elapsed,
-                        duration: cast.duration,
-                        interruptible: cast.interruptible,
-                    })
-                }),
-                ai_state: simulation.brain(entity).map(|brain| brain.state()),
-            })
-        });
+                alive: world.is_alive(*member),
+                is_player: index == 0,
+                statuses: statuses_of(simulation, *member),
+            });
+        }
 
         for (slot, ability) in FireAbility::BAR.into_iter().enumerate() {
             self.abilities[slot] = ability_view(simulation, ability, aiming);
@@ -604,6 +653,45 @@ impl UiSnapshot {
         self.crit_chance = stats.crit();
         self.ignite_max = mage.ignite_max();
     }
+}
+
+/// One entity as a frame shows it: the target, and the target's target.
+///
+/// One function for both, because "the thing the frame is looking at" is the same question
+/// twice. A target that is the player — an enemy fighting back — reads out of the same world
+/// as any other entity, so nothing here needs a special case for it.
+fn target_view(simulation: &Simulation, entity: EntityId) -> Option<TargetView> {
+    let world = simulation.world();
+    let mage = simulation.mage();
+    let player = simulation.player();
+    let health = world.health(entity)?;
+    let burn = mage.ignite.get(entity);
+    Some(TargetView {
+        entity,
+        kind: world.kind(entity)?,
+        health: health.current(),
+        max_health: health.max(),
+        // No distance means the target is gone; a large number reads as "out of range"
+        // everywhere it is used rather than as "right next to you".
+        distance: world
+            .distance_between(player.entity, entity)
+            .unwrap_or(f32::MAX),
+        alive: world.is_alive(entity),
+        ignite_stacks: burn.stacks,
+        ignite_remaining: burn.remaining,
+        ignite_at_maximum: burn.is_at_maximum(mage.ignite_max()),
+        statuses: statuses_of(simulation, entity),
+        casting: simulation.brain(entity).and_then(|brain| {
+            brain.cast().map(|cast| EnemyCastView {
+                ability: cast.ability,
+                name: cast.ability.name(),
+                elapsed: cast.elapsed,
+                duration: cast.duration,
+                interruptible: cast.interruptible,
+            })
+        }),
+        ai_state: simulation.brain(entity).map(|brain| brain.state()),
+    })
 }
 
 /// One ability's button state, worked out once here rather than in the widget.

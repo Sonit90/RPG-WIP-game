@@ -38,6 +38,13 @@ pub struct UiInput {
     pub pointer_released: bool,
     /// Whether the player asked to back out this frame: escape.
     pub cancel: bool,
+    /// A key press the interface deliberately asked to read, and nothing else.
+    ///
+    /// Filled only by [`UiInput::with_captured_key`], and only while something is in key
+    /// capture — the one screen in the game that has to read an arbitrary key. Everywhere
+    /// else it is `None`, which is what keeps the rule above true: the interface answers the
+    /// mouse and escape, and a key the player pressed to play with is not the menu's.
+    pub captured_key: Option<KeyCode>,
     /// Whether the secondary pointer button went down this frame.
     ///
     /// Only the ground-targeting system reads it, and only to cancel a placement - the same
@@ -56,6 +63,7 @@ impl UiInput {
             pointer_pressed: false,
             pointer_released: false,
             cancel: false,
+            captured_key: None,
             secondary_pressed: false,
         }
     }
@@ -74,8 +82,25 @@ impl UiInput {
             pointer_pressed: input.was_mouse_button_pressed(MouseButton::Left),
             pointer_released: input.was_mouse_button_released(MouseButton::Left),
             cancel: input.was_key_pressed(KeyCode::Escape),
+            // Not filled here. Capturing a key is something a screen asks for, and a frame
+            // in which nothing asked must not carry one.
+            captured_key: None,
             secondary_pressed: input.was_mouse_button_pressed(MouseButton::Right),
         }
+    }
+
+    /// The same input carrying the first key pressed this frame, for a screen in capture.
+    ///
+    /// Escape is deliberately not captured: it is how the player backs out of the capture
+    /// itself, and a slot bound to it would be a slot that had taken the way out with it.
+    /// The order is [`KeyCode::ALL`]'s, so two keys in one frame resolve the same way every
+    /// time rather than by whichever the hardware reported first.
+    #[must_use]
+    pub fn with_captured_key(mut self, input: &InputState) -> Self {
+        self.captured_key = KeyCode::ALL
+            .into_iter()
+            .find(|key| *key != KeyCode::Escape && input.was_key_pressed(*key));
+        self
     }
 
     /// The same input with the pointer somewhere else. For tests and for a screen that wants

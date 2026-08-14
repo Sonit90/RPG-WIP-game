@@ -44,20 +44,37 @@
 //! [`menu`]. A new widget kind is a struct with an `update`, a variant in
 //! [`widget::Widget`], and an arm in [`paint`]. Neither touches anything already here.
 
+/// Eight action bars: what is in each slot, which key presses it, and where it is drawn.
+pub mod action_bar;
+/// Edit HUD: the interface made draggable.
+pub mod hud_edit;
+/// Where every arrangeable interface element sits, at any resolution.
+pub mod hud_layout;
 pub mod input;
 pub mod menu;
 pub mod paint;
 pub mod screen;
+/// What a right click on an action bar slot opens.
+pub mod slot_menu;
 pub mod talent_menu;
 pub mod targeting;
+/// The player, target, target-of-target and party frames.
+pub mod unit_frame;
 pub mod widget;
 
+pub use action_bar::{
+    ActionBar, ActionBarSet, ActionBarSlot, KeyConflict, SlotAddress, bar_size, slot_at, slot_rect,
+};
+pub use hud_edit::{EditItem, EditOutcome, HudEditor};
+pub use hud_layout::{HudElementId, HudLayout, MIN_VISIBLE_FRACTION, clamp_on_screen};
 pub use input::UiInput;
 pub use menu::{
     MenuAction, MenuScreen, MenuSystem, PauseItem, SettingsItem, VolumeChannel, volume_of,
 };
 pub use paint::{MenuScratch, MenuTheme, push_menu};
 pub use screen::UiScreen;
+pub use slot_menu::{SlotMenu, SlotMenuMode, SlotMenuOutcome};
 pub use talent_menu::{TalentMenu, TalentMenuOutcome, TalentTheme, push_talent_menu};
 pub use targeting::{GroundTarget, GroundTargeting, TargetShape, TargetingOutcome};
+pub use unit_frame::{FrameScratch, push_frames};
 pub use widget::{Button, Checkbox, Slider, Widget, WidgetEvent, WidgetState};

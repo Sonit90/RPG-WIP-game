@@ -82,6 +82,8 @@ pub mod event;
 pub mod firemage;
 pub mod input_map;
 pub mod movement;
+/// Who the player is grouped with: the roster the party frames read.
+pub mod party;
 pub mod sim;
 pub mod status;
 pub mod targeting;
@@ -101,6 +103,7 @@ pub use event::{CombatEvent, DamageEvent};
 pub use firemage::{AbilityError, FireAbility, FireMage, TalentId};
 pub use input_map::Bindings;
 pub use movement::{Body, MovementState};
+pub use party::{MAX_PARTY, Party};
 pub use sim::{Player, SimConfig, SimStats, Simulation};
 pub use status::{StatusKind, StatusSet};
 pub use telemetry::CombatMeter;

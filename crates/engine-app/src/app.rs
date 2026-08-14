@@ -49,8 +49,13 @@ use engine_presentation::hud::{self, HudModel};
 use engine_presentation::mouse_look::{LookChange, MouseLook, RelativeMotion};
 use engine_presentation::nameplate::{NameplateConfig, NameplateSet};
 use engine_presentation::snapshot::UiSnapshot;
+use engine_presentation::ui::action_bar::{self, ActionBarSet, SlotAddress};
+use engine_presentation::ui::hud_edit::{EditOutcome, HudEditor, push_hud_editor};
+use engine_presentation::ui::hud_layout::{HudElementId, HudLayout};
+use engine_presentation::ui::slot_menu::{SlotMenu, SlotMenuOutcome, push_slot_menu};
 use engine_presentation::ui::talent_menu::{TalentMenu, TalentMenuOutcome, TalentTheme};
 use engine_presentation::ui::targeting::{GroundTargeting, TargetingOutcome};
+use engine_presentation::ui::unit_frame::FrameScratch;
 use engine_presentation::ui::{
     MenuAction, MenuScratch, MenuSystem, MenuTheme, UiInput, VolumeChannel,
 };
@@ -62,6 +67,7 @@ use engine_renderer::{
     RendererConfig, UiDrawList,
 };
 use engine_settings::SettingsManager;
+use engine_settings::hud::HudConfigManager;
 
 use crate::args::{Args, Scene};
 use crate::audio_device::AudioHost;
@@ -193,6 +199,21 @@ pub struct App {
     menu_scratch: MenuScratch,
     /// The player's settings and the file they live in.
     settings: SettingsManager,
+    /// Where every arrangeable interface element sits. The one source of HUD geometry.
+    hud_layout: HudLayout,
+    /// The HUD layout's file. Separate from `settings` on purpose: a dragged element
+    /// rewrites this and has no business rewriting a volume.
+    hud_config: HudConfigManager,
+    /// The eight action bars: what is in each slot and which key presses it.
+    action_bars: ActionBarSet,
+    /// Edit HUD: off unless the player asked for it from the pause menu.
+    hud_editor: HudEditor,
+    /// The menu a right click on an action bar slot opens.
+    slot_menu: SlotMenu,
+    /// Scratch the frames and the slot menu format their text into. Reused; never freed.
+    frame_scratch: FrameScratch,
+    /// Scratch the HUD's own labels are written into. Reused; never freed.
+    hud_scratch: String,
     /// The one ground-targeting circle, shared by Meteor, Firestorm and Cataclysm.
     targeting: GroundTargeting,
     /// The talent menu, opened from the button in the top-right corner.
@@ -467,6 +488,29 @@ impl App {
         );
         let ui_scale = UiScale::new(game_settings.settings().ui_scale);
 
+        // The HUD layout, in its own file. A first launch has no file, and only then is bar
+        // one filled in with the class's abilities and their keys: after that the file *is*
+        // the arrangement, and a bar the player deliberately cleared must come back cleared.
+        let mut hud_config = HudConfigManager::load_from_game_directory();
+        let action_bars = if hud_config.existed() {
+            ActionBarSet::from_config(hud_config.config())
+        } else {
+            let bars = ActionBarSet::with_default_bindings();
+            let mut fresh = hud_config.config().clone();
+            bars.write_config(&mut fresh);
+            hud_config.update(fresh);
+            hud_config.save_if_dirty();
+            bars
+        };
+        let hud_layout = HudLayout::new(hud_config.config().clone());
+        log::info!(
+            "hud: {} ({} bars enabled)",
+            hud_config.path().display(),
+            (0..engine_settings::hud::ACTION_BARS)
+                .filter(|index| hud_layout.is_enabled(HudElementId::ActionBar(*index)))
+                .count()
+        );
+
         let mut controller = ThirdPersonCamera::following(simulation.player_position());
         controller.set_sensitivity(game_settings.settings().camera_sensitivity);
         let mut camera = Camera::new(Projection::perspective(aspect_of(width, height)))?;
@@ -555,6 +599,13 @@ impl App {
             menu_theme: MenuTheme::default(),
             menu_scratch: MenuScratch::new(),
             settings: game_settings,
+            hud_layout,
+            hud_config,
+            action_bars,
+            hud_editor: HudEditor::new(),
+            slot_menu: SlotMenu::new(),
+            frame_scratch: FrameScratch::new(),
+            hud_scratch: String::with_capacity(48),
             targeting: GroundTargeting::new(),
             talent_menu: TalentMenu::with_scale(ui_scale),
             talent_theme: TalentTheme::default(),
@@ -740,9 +791,41 @@ impl App {
     /// did is in the same ordered stream as what the keyboard did.
     fn update_firemage_ui(&mut self, ctx: &mut EngineContext) {
         let viewport = self.renderer.size();
+        let scale = self.game_ui.scale();
         let ui_input = UiInput::from_input(ctx.input());
         self.snapshot
             .refresh(&self.simulation, self.aiming_ability());
+
+        // Edit HUD, which replaces the interface's ordinary behaviour entirely. Nothing
+        // below runs while it is on, which is what makes "a click that moves a bar cannot
+        // also cast what is under the cursor" a property of the control flow rather than a
+        // rule every handler has to remember.
+        if self.hud_editor.is_active() {
+            self.hovered_ability = None;
+            match self
+                .hud_editor
+                .update(&ui_input, &mut self.hud_layout, scale, viewport)
+            {
+                EditOutcome::Changed => self.save_hud_layout(),
+                EditOutcome::Closed => {
+                    self.save_hud_layout();
+                    log::info!("hud: edit mode closed");
+                }
+                EditOutcome::Idle => {}
+            }
+            return;
+        }
+
+        // The slot menu, which covers the bar under it.
+        if self.slot_menu.is_open() {
+            self.hovered_ability = None;
+            let input = ui_input.with_captured_key(ctx.input());
+            let outcome = self
+                .slot_menu
+                .update(&input, &self.action_bars, &self.bindings);
+            self.apply_slot_menu(outcome);
+            return;
+        }
 
         // The talent menu, which covers everything while it is up.
         if self.talent_menu.is_open() {
@@ -787,18 +870,50 @@ impl App {
             return;
         }
 
-        // The bar: what the pointer is over, and what it clicked.
+        // The bars: what the pointer is over, what it clicked, and what it right-clicked.
         self.hovered_ability = None;
         let mut pressed = None;
-        for (slot, view) in self.snapshot.abilities.iter().enumerate() {
-            let rect = self.game_ui.slot_rect(slot, viewport);
-            if rect.contains(ui_input.pointer.0, ui_input.pointer.1) {
-                self.hovered_ability = Some(view.ability);
-                if ui_input.pointer_pressed {
-                    pressed = Some(view.ability);
-                }
+        let mut open_menu = None;
+        for index in 0..engine_settings::hud::ACTION_BARS {
+            let id = HudElementId::ActionBar(index);
+            // A disabled bar is skipped here as well as in the painter, so it takes up no
+            // interaction space at all rather than being an invisible thing to click on.
+            if !self.hud_layout.is_enabled(id) {
+                continue;
+            }
+            let rect = self.hud_layout.rect_of(id, scale, viewport);
+            let orientation = self.hud_layout.orientation(index);
+            let Some(slot_index) =
+                action_bar::slot_at(rect, orientation, ui_input.pointer.0, ui_input.pointer.1)
+            else {
+                continue;
+            };
+            let address = SlotAddress::new(index, slot_index);
+            let Some(slot) = self.action_bars.slot(address) else {
+                continue;
+            };
+            if ui_input.secondary_pressed {
+                open_menu = action_bar::slot_rect(rect, orientation, slot_index)
+                    .map(|cell| (address, cell));
+            }
+            let Some(ability) = slot.ability else {
+                continue;
+            };
+            self.hovered_ability = Some(ability);
+            if ui_input.pointer_pressed {
+                pressed = Some(ability);
             }
         }
+        if let Some((address, cell)) = open_menu {
+            // Right click assigns rather than casts, which is the genre's convention and the
+            // one gesture the bar was not already using.
+            self.cancel_mouse_look();
+            self.slot_menu.set_scale(scale);
+            self.slot_menu.open(address, cell, viewport);
+            self.play_ui_sound(engine_audio::SoundId::UiClick);
+            return;
+        }
+
         let ultimate = self.game_ui.ultimate_rect(viewport);
         if ultimate.contains(ui_input.pointer.0, ui_input.pointer.1) {
             self.hovered_ability = Some(self.snapshot.ultimate.ability);
@@ -807,17 +922,15 @@ impl App {
             }
         }
 
-        // A key press starts a ground-targeted ability too: the key opens the circle rather
-        // than casting, which is why the input map does not send a command for those.
-        for (slot, view) in self.snapshot.abilities.iter().enumerate() {
-            if !view.ability.definition().target.is_aimed() {
-                continue;
-            }
-            let Some(key) = engine_game::input_map::Bindings::ability_key(slot) else {
+        // The keys. Every slot's key is read here rather than in the input map: the bar is
+        // the binding table now, and an aimed ability's key opens its targeting circle
+        // instead of casting, which is a decision only this layer can make.
+        for (_, slot) in self.action_bars.occupied() {
+            let (Some(key), Some(ability)) = (slot.key, slot.ability) else {
                 continue;
             };
             if ctx.input().was_key_pressed(key) {
-                pressed = Some(view.ability);
+                pressed = Some(ability);
             }
         }
         if ctx.input().was_key_pressed(self.bindings.ultimate) {
@@ -826,6 +939,70 @@ impl App {
 
         if let Some(ability) = pressed {
             self.cast_or_target(ability);
+        }
+    }
+
+    /// The rectangle of the slot the pointer is over, if it is over one.
+    ///
+    /// Found again rather than remembered from the interface update: the tooltip is drawn
+    /// from the same layout the click was tested against, so the two cannot disagree about
+    /// where a slot is after a resize between the two calls.
+    fn hovered_slot_rect(&self, viewport: (u32, u32)) -> Option<UiRect> {
+        let ability = self.hovered_ability?;
+        let scale = self.game_ui.scale();
+        for index in 0..engine_settings::hud::ACTION_BARS {
+            let id = HudElementId::ActionBar(index);
+            if !self.hud_layout.is_enabled(id) {
+                continue;
+            }
+            let bar = self.hud_layout.rect_of(id, scale, viewport);
+            let orientation = self.hud_layout.orientation(index);
+            let Some(contents) = self.action_bars.bar(index) else {
+                continue;
+            };
+            for (slot_index, slot) in contents.slots().iter().enumerate() {
+                if slot.ability != Some(ability) {
+                    continue;
+                }
+                if let Some(cell) = action_bar::slot_rect(bar, orientation, slot_index) {
+                    return Some(cell);
+                }
+            }
+        }
+        None
+    }
+
+    /// Carries out what the slot menu asked for, and writes the result to disk.
+    ///
+    /// The menu changes nothing itself; this is the only place a slot's spell or key moves,
+    /// which is what keeps the assignment, the conflict rule and the save in one place.
+    fn apply_slot_menu(&mut self, outcome: SlotMenuOutcome) {
+        let changed = match outcome {
+            SlotMenuOutcome::Idle => return,
+            SlotMenuOutcome::Closed => false,
+            SlotMenuOutcome::AssignSpell(address, ability) => {
+                self.action_bars.assign_spell(address, ability)
+            }
+            SlotMenuOutcome::AssignKey(address, key) => {
+                self.action_bars.assign_key(address, key, &self.bindings)
+            }
+            SlotMenuOutcome::ClearSlot(address) => self.action_bars.clear_slot(address),
+        };
+        if changed {
+            self.save_hud_layout();
+        }
+    }
+
+    /// Writes the arrangement and the bars to `hud.cfg`, if either changed.
+    ///
+    /// Both together, because they share one file and one validation pass: the layout owns
+    /// where a bar is, the bars own what is in it, and the file is the two merged.
+    fn save_hud_layout(&mut self) {
+        let mut config = self.hud_layout.config().clone();
+        self.action_bars.write_config(&mut config);
+        self.hud_config.update(config);
+        if self.hud_config.save_if_dirty() {
+            log::debug!("hud: layout saved");
         }
     }
 
@@ -884,6 +1061,12 @@ impl App {
         // press backs out of exactly one thing, which is what makes pressing it twice from
         // the talent window land on the menu.
         if ui_input.cancel {
+            // Edit mode and the slot menu answer escape themselves, in the interface update
+            // that runs after this one. Backing out of one of them must not also open the
+            // pause menu on the same press.
+            if self.hud_editor.is_active() || self.slot_menu.is_open() {
+                return;
+            }
             if self.talent_menu.is_open() {
                 self.talent_menu.close();
                 return;
@@ -924,6 +1107,15 @@ impl App {
                 }
                 MenuAction::ClosedSettings => {
                     self.play_ui_sound(engine_audio::SoundId::UiCancel);
+                }
+                MenuAction::EditHudRequested => {
+                    self.play_ui_sound(engine_audio::SoundId::UiClick);
+                    // Mouse-look would fight the editor for the cursor, and a slot menu left
+                    // open over the HUD would be a panel the editor could not move.
+                    self.cancel_mouse_look();
+                    self.slot_menu.close();
+                    self.hud_editor.open();
+                    log::info!("hud: edit mode");
                 }
                 MenuAction::QuitRequested => {
                     log::info!("quit requested from the menu");
@@ -978,6 +1170,8 @@ impl App {
         self.game_ui.set_scale(scale);
         self.menu.set_scale(scale);
         self.talent_menu.set_scale(scale);
+        self.slot_menu.set_scale(scale);
+        self.hud_editor.layout(scale, self.renderer.size());
         if persist && self.settings.save_if_dirty() {
             log::info!(
                 "settings: interface size {:.2} saved",
@@ -1110,8 +1304,15 @@ impl App {
 
         self.snapshot
             .refresh(&self.simulation, self.aiming_ability());
-        self.game_ui
-            .build(&self.snapshot, self.nameplates.plates(), &config, viewport);
+        self.game_ui.build_arranged(
+            &self.snapshot,
+            self.nameplates.plates(),
+            &config,
+            &self.hud_layout,
+            &self.action_bars,
+            &mut self.frame_scratch,
+            viewport,
+        );
         // Last, so numbers float over the HUD rather than under it.
         self.game_ui.push_damage_numbers(
             &self.numbers,
@@ -1122,9 +1323,12 @@ impl App {
         // The tooltip for whatever the pointer is over, then the talent menu, then the
         // pause menu: painter's order is the whole sort.
         if let Some(ability) = self.hovered_ability {
+            // The rectangle the tooltip points at is wherever the player put the slot, not
+            // wherever the class's fixed bar used to be.
             let (rect, view) = match ability.bar_slot() {
                 Some(slot) => (
-                    self.game_ui.slot_rect(slot, viewport),
+                    self.hovered_slot_rect(viewport)
+                        .unwrap_or_else(|| self.game_ui.ultimate_rect(viewport)),
                     self.snapshot.abilities[slot],
                 ),
                 None => (self.game_ui.ultimate_rect(viewport), self.snapshot.ultimate),
@@ -1141,6 +1345,29 @@ impl App {
             &self.snapshot,
             &self.talent_theme,
             &mut self.talent_scratch,
+            viewport,
+        );
+
+        // The slot menu over the bar it belongs to, then edit mode over everything the
+        // player is arranging. Both go into the same list for the same reason the pause
+        // menu does: one batch, one draw call.
+        let icon_theme = *self.game_ui.theme();
+        push_slot_menu(
+            self.game_ui.list_mut(),
+            &self.slot_menu,
+            &self.action_bars,
+            &self.menu_theme,
+            &icon_theme,
+            &mut self.hud_scratch,
+            scale,
+        );
+        push_hud_editor(
+            self.game_ui.list_mut(),
+            &self.hud_editor,
+            &self.hud_layout,
+            &self.menu_theme,
+            &mut self.hud_scratch,
+            scale,
             viewport,
         );
 
@@ -1901,7 +2128,14 @@ impl Application for App {
             // Cancelled rather than skipped: skipping also skips the *end* of a look, which
             // would leave the cursor hidden if a button came up on the frame one of these
             // opened.
-            if self.targeting.is_active() || self.talent_menu.is_open() {
+            // Edit mode and the slot menu are pointer interfaces over the whole screen, so
+            // they own the cursor for the same reason: a hidden pointer cannot drag a frame
+            // or pick a spell.
+            if self.targeting.is_active()
+                || self.talent_menu.is_open()
+                || self.hud_editor.is_active()
+                || self.slot_menu.is_open()
+            {
                 self.cancel_mouse_look();
             } else {
                 self.apply_mouse_look(ctx);
@@ -1920,8 +2154,11 @@ impl Application for App {
                     &mut self.commands,
                 );
             } else {
-                self.bindings
-                    .write_commands(ctx.input(), self.controller.yaw, &mut self.commands);
+                self.bindings.write_world_commands(
+                    ctx.input(),
+                    self.controller.yaw,
+                    &mut self.commands,
+                );
             }
             self.simulation.push_commands(self.commands.iter().copied());
         }
@@ -2104,6 +2341,9 @@ impl Application for App {
         if self.settings.save_if_dirty() {
             log::info!("settings: saved on shutdown");
         }
+        // The same last chance for the interface layout: a drag interrupted by a crash-free
+        // quit, or a write that failed earlier.
+        self.save_hud_layout();
         self.report_final(ctx);
     }
 }
@@ -2438,8 +2678,11 @@ fn log_controls(args: &Args, demo: Option<&DemoScene>) {
         log::info!("  BACKSPACE        reset the dummies and the combat meter");
         log::info!("  4 5 R            place with the mouse: left click confirms, right cancels");
         log::info!("  TAB              cycle target");
+        log::info!("  RIGHT CLICK      a slot: change its spell, bind a key, clear it");
     }
-    log::info!("  ESC              menu: settings, quit, resume (the game keeps running)");
+    log::info!(
+        "  ESC              menu: edit hud, settings, quit, resume (the game keeps running)"
+    );
     log::info!("  LEFT MOUSE       hold to orbit the camera; the character keeps facing");
     log::info!("  RIGHT MOUSE      hold to turn the camera and steer the character");
     log::info!("  MOUSE WHEEL      camera distance");

@@ -30,11 +30,20 @@
 //! result. Nothing restates a default anywhere else — that is what makes "change the default
 //! sensitivity" a one-line change rather than a search.
 
+/// The interface layout the player arranged: action bars, unit frames and their file.
+pub mod hud;
+
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+
+pub use hud::{
+    ACTION_BAR_SLOTS, ACTION_BARS, ActionBarConfig, HUD_FILE_NAME, HUD_OFFSET_LIMIT,
+    HUD_SCALE_DEFAULT, HUD_SCALE_MAX, HUD_SCALE_MIN, HUD_SCALE_STEP, HudAnchor, HudConfig,
+    HudConfigManager, HudFrames, HudOrientation, HudPlacement, HudSlotConfig,
+};
 
 /// Name of the settings file. JSON content; the extension is deliberately not `.json`.
 pub const SETTINGS_FILE_NAME: &str = "settings.cfg";

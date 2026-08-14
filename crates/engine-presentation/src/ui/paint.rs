@@ -241,7 +241,10 @@ fn push_backdrop(
 }
 
 /// One widget in whatever state it is in.
-fn push_widget(list: &mut UiDrawList, widget: &Widget, theme: &MenuTheme, scale: UiScale) {
+///
+/// `pub` so the screens that are not the pause menu — the slot menu, the HUD editor — draw
+/// their buttons with exactly the same rules rather than with a second copy of them.
+pub fn push_widget(list: &mut UiDrawList, widget: &Widget, theme: &MenuTheme, scale: UiScale) {
     match widget {
         Widget::Button(button) => push_labelled_box(
             list,

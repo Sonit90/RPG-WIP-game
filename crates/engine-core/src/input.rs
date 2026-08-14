@@ -273,6 +273,141 @@ impl KeyCode {
             None
         }
     }
+
+    /// The 0-9 digit this key types, if it is a digit key.
+    #[must_use]
+    pub fn digit_number(self) -> Option<u8> {
+        if (Self::Digit0..=Self::Digit9).contains(&self) {
+            Some((self.index() - Self::Digit0.index()) as u8)
+        } else {
+            None
+        }
+    }
+
+    /// This key's stable written name: what a configuration file stores.
+    ///
+    /// Stable across builds on purpose. A binding is written to a file the player never sees
+    /// and reloaded next launch, so the stored form cannot be the discriminant — reordering
+    /// this enum would then silently rebind everyone's keys. It is a name, and a name only
+    /// changes when a key is renamed.
+    ///
+    /// [`KeyCode::Unknown`] has no name: a key the engine cannot identify is a key nothing
+    /// can bind, and writing `"UNKNOWN"` to a file would invite reading it back as a binding.
+    #[must_use]
+    pub fn name(self) -> Option<&'static str> {
+        const NAMES: [&str; KeyCode::ALL.len()] = [
+            "A",
+            "B",
+            "C",
+            "D",
+            "E",
+            "F",
+            "G",
+            "H",
+            "I",
+            "J",
+            "K",
+            "L",
+            "M",
+            "N",
+            "O",
+            "P",
+            "Q",
+            "R",
+            "S",
+            "T",
+            "U",
+            "V",
+            "W",
+            "X",
+            "Y",
+            "Z",
+            "DIGIT0",
+            "DIGIT1",
+            "DIGIT2",
+            "DIGIT3",
+            "DIGIT4",
+            "DIGIT5",
+            "DIGIT6",
+            "DIGIT7",
+            "DIGIT8",
+            "DIGIT9",
+            "F1",
+            "F2",
+            "F3",
+            "F4",
+            "F5",
+            "F6",
+            "F7",
+            "F8",
+            "F9",
+            "F10",
+            "F11",
+            "F12",
+            "SPACE",
+            "ESCAPE",
+            "ENTER",
+            "TAB",
+            "BACKSPACE",
+            "ARROWLEFT",
+            "ARROWRIGHT",
+            "ARROWUP",
+            "ARROWDOWN",
+            "LEFTSHIFT",
+            "RIGHTSHIFT",
+            "LEFTCONTROL",
+            "RIGHTCONTROL",
+            "LEFTALT",
+            "RIGHTALT",
+        ];
+        NAMES.get(self.index()).copied()
+    }
+
+    /// The key with this written name, if the engine names one.
+    ///
+    /// The inverse of [`KeyCode::name`], and total: an unrecognised name is `None` rather
+    /// than a guess, so a hand-edited configuration produces an unbound slot instead of a
+    /// key the player did not ask for.
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL
+            .iter()
+            .copied()
+            .find(|key| key.name() == Some(name))
+    }
+
+    /// The short form printed in the corner of an action bar slot.
+    ///
+    /// Display, not storage — unlike [`KeyCode::name`] this may be changed freely, and it is
+    /// abbreviated to fit a 48-pixel slot in a 5x7 font: `DIGIT1` is `1`, `SPACE` is `SPC`.
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        const LABELS: [&str; 15] = [
+            "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "SPC", "ENT", "TAB", "BSP", "ESC",
+        ];
+        if let Some(digit) = self.digit_number() {
+            return LABELS[usize::from(digit)];
+        }
+        match self {
+            Self::Space => LABELS[10],
+            Self::Enter => LABELS[11],
+            Self::Tab => LABELS[12],
+            Self::Backspace => LABELS[13],
+            Self::Escape => LABELS[14],
+            Self::ArrowLeft => "LFT",
+            Self::ArrowRight => "RGT",
+            Self::ArrowUp => "UP",
+            Self::ArrowDown => "DWN",
+            Self::LeftShift => "LSH",
+            Self::RightShift => "RSH",
+            Self::LeftControl => "LCT",
+            Self::RightControl => "RCT",
+            Self::LeftAlt => "LAL",
+            Self::RightAlt => "RAL",
+            // Letters and function keys already read as themselves.
+            other => other.name().unwrap_or(""),
+        }
+    }
 }
 
 /// A fixed-capacity set of held keys.
@@ -896,5 +1031,68 @@ mod tests {
         for button in MouseButton::ALL {
             assert!(!state.is_mouse_button_down(button));
         }
+    }
+
+    #[test]
+    fn every_named_key_round_trips_through_its_written_name() {
+        for key in KeyCode::ALL {
+            let name = key.name().expect("every key in ALL has a name");
+            assert_eq!(
+                KeyCode::from_name(name),
+                Some(key),
+                "{key:?} did not survive its own name"
+            );
+        }
+    }
+
+    #[test]
+    fn no_two_keys_share_a_name_and_unknown_has_none() {
+        // A duplicate would make one of the two unreadable from a configuration file, and
+        // the loss would be silent: the file would load, and the wrong key would be bound.
+        let mut names: Vec<&str> = KeyCode::ALL
+            .iter()
+            .map(|key| key.name().unwrap_or(""))
+            .collect();
+        names.sort_unstable();
+        let count = names.len();
+        names.dedup();
+        assert_eq!(names.len(), count, "two keys share a written name");
+
+        assert_eq!(KeyCode::Unknown.name(), None, "an unnameable key was named");
+    }
+
+    #[test]
+    fn an_unrecognised_name_binds_nothing() {
+        for name in ["", "unknown", "a", "DIGIT10", "F13", "MOUSE1", " SPACE"] {
+            assert_eq!(KeyCode::from_name(name), None, "{name:?} produced a key");
+        }
+    }
+
+    #[test]
+    fn a_slot_prints_a_short_label_for_every_key() {
+        assert_eq!(KeyCode::Digit1.label(), "1");
+        assert_eq!(KeyCode::Digit0.label(), "0");
+        assert_eq!(KeyCode::W.label(), "W");
+        assert_eq!(KeyCode::F5.label(), "F5");
+        assert_eq!(KeyCode::Space.label(), "SPC");
+        // Four characters is what fits an action bar slot's corner at the design size.
+        for key in KeyCode::ALL {
+            let label = key.label();
+            assert!(!label.is_empty(), "{key:?} prints nothing");
+            assert!(
+                label.len() <= 4,
+                "{key:?} prints {label:?}, which will not fit"
+            );
+        }
+    }
+
+    #[test]
+    fn a_digit_key_reports_the_digit_it_types() {
+        for digit in 0..=9 {
+            let key = KeyCode::digit_key(digit).expect("0-9 are digit keys");
+            assert_eq!(key.digit_number(), Some(digit));
+        }
+        assert_eq!(KeyCode::W.digit_number(), None);
+        assert_eq!(KeyCode::F1.digit_number(), None);
     }
 }

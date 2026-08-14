@@ -55,6 +55,11 @@ impl MenuScreen {
 /// The pause menu's items, in layout order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PauseItem {
+    /// Leaves the menu and turns HUD editing on.
+    ///
+    /// Not a screen of its own: the editor *is* the HUD, so the menu closes rather than
+    /// covering the thing the player is about to arrange.
+    EditHud,
     /// Opens the settings screen.
     Settings,
     /// Ends the session.
@@ -123,6 +128,8 @@ pub enum MenuAction {
     OpenedSettings,
     /// The settings screen closed back to the pause menu.
     ClosedSettings,
+    /// The player asked to arrange the HUD. Close the menu and turn edit mode on.
+    EditHudRequested,
     /// The player asked to end the session.
     QuitRequested,
     /// Camera sensitivity is being dragged and now reads this. Apply it; do not save it.
@@ -297,6 +304,7 @@ impl MenuSystem {
     #[must_use]
     pub fn new(settings: GameSettings, title: &'static str) -> Self {
         let mut pause = UiScreen::new();
+        pause.push(PauseItem::EditHud, Button::new("EDIT HUD"));
         pause.push(PauseItem::Settings, Button::new("SETTINGS"));
         pause.push(PauseItem::Quit, Button::new("QUIT"));
         pause.push(PauseItem::Resume, Button::new("RESUME"));
@@ -482,9 +490,9 @@ impl MenuSystem {
     /// The panel the pause menu draws in.
     #[must_use]
     pub fn pause_panel(&self) -> UiRect {
-        // Two groups of one button, then a separated RESUME.
+        // A group of two, then QUIT, then a separated RESUME.
         let content = self.metrics.title_height
-            + self.metrics.button_height * 3.0
+            + self.metrics.button_height * 4.0
             + self.metrics.button_gap
             + self.metrics.group_gap * 2.0;
         self.centred_panel(self.viewport, content + self.metrics.padding * 2.0)
@@ -521,7 +529,12 @@ impl MenuSystem {
         let width = panel.width - self.metrics.padding * 2.0;
         let mut y = panel.y + self.metrics.padding + self.metrics.title_height;
 
-        // Group one: settings and anything a future build puts beside it.
+        // Group one: the things that change the game without leaving it.
+        self.pause.set_rect(
+            PauseItem::EditHud,
+            UiRect::new(x, y, width, self.metrics.button_height),
+        );
+        y += self.metrics.button_height + self.metrics.button_gap;
         self.pause.set_rect(
             PauseItem::Settings,
             UiRect::new(x, y, width, self.metrics.button_height),
@@ -606,6 +619,13 @@ impl MenuSystem {
                 continue;
             }
             match item {
+                PauseItem::EditHud => {
+                    // The menu gets out of the way: what the player is about to arrange is
+                    // underneath it.
+                    self.close();
+                    self.actions.push(MenuAction::EditHudRequested);
+                    return;
+                }
                 PauseItem::Settings => open_settings = true,
                 PauseItem::Quit => self.actions.push(MenuAction::QuitRequested),
                 PauseItem::Resume => {
@@ -1188,5 +1208,48 @@ mod tests {
             menu.update(&release(x, y));
         }
         assert_eq!(menu.actions.capacity(), capacity, "the menu reallocated");
+    }
+
+    #[test]
+    fn edit_hud_closes_the_menu_and_asks_the_application_for_edit_mode() {
+        let mut menu = MenuSystem::new(GameSettings::default(), "TEST");
+        menu.layout((1920, 1080));
+        menu.open_pause();
+
+        let actions = click_pause(&mut menu, PauseItem::EditHud);
+
+        assert!(
+            actions.contains(&MenuAction::EditHudRequested),
+            "{actions:?}"
+        );
+        assert!(!menu.is_open(), "the menu stayed over the HUD being edited");
+    }
+
+    #[test]
+    fn the_pause_menu_still_reads_top_to_bottom_with_the_new_button() {
+        let mut menu = MenuSystem::new(GameSettings::default(), "TEST");
+        menu.layout((1920, 1080));
+        let rect = |item| {
+            menu.pause_screen()
+                .widget(item)
+                .expect("the button exists")
+                .rect()
+        };
+        let edit = rect(PauseItem::EditHud);
+        let settings = rect(PauseItem::Settings);
+        let quit = rect(PauseItem::Quit);
+        let resume = rect(PauseItem::Resume);
+        assert!(edit.y < settings.y);
+        assert!(settings.y < quit.y);
+        assert!(quit.y < resume.y);
+        // EDIT HUD and SETTINGS are one group; RESUME is still separated from QUIT.
+        assert!(settings.y - edit.bottom() < quit.y - settings.bottom());
+        assert!(resume.y - quit.bottom() >= quit.y - settings.bottom());
+        // And the panel still contains everything in it.
+        let panel = menu.pause_panel();
+        assert!(
+            resume.bottom() <= panel.bottom() + 0.01,
+            "{resume:?} {panel:?}"
+        );
     }
 }

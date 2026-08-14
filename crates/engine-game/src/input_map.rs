@@ -85,6 +85,37 @@ impl Bindings {
         ]
     }
 
+    /// What `key` already does, if this binding set claims it.
+    ///
+    /// The one question a rebinding interface has to be able to ask before it writes a
+    /// binding down. It lives here because this module is the only place that knows which
+    /// key does what, and an interface that kept its own list of "keys you may not take"
+    /// would be a second list to forget to update.
+    ///
+    /// Escape is included even though it is not a field: it is what closes a menu, and a
+    /// player who bound it to an action bar slot would have bound their way out of the
+    /// interface that could unbind it.
+    #[must_use]
+    pub fn reserved(&self, key: KeyCode) -> Option<&'static str> {
+        if key == KeyCode::Escape {
+            return Some("THE MENU");
+        }
+        let named = [
+            (self.forward, "MOVE FORWARD"),
+            (self.back, "MOVE BACK"),
+            (self.left, "STRAFE LEFT"),
+            (self.right, "STRAFE RIGHT"),
+            (self.jump, "JUMP"),
+            (self.cycle_target, "CYCLE TARGET"),
+            (self.ultimate, "THE ULTIMATE"),
+            (self.reset_dummies, "RESET DUMMIES"),
+        ];
+        named
+            .into_iter()
+            .find(|(bound, _)| *bound == key)
+            .map(|(_, what)| what)
+    }
+
     /// The key that triggers ability `slot`.
     ///
     /// Slots 0 to 8 are the digits 1 to 9 and slot 9 is `0`, which is the layout every
@@ -113,6 +144,24 @@ impl Bindings {
         camera_yaw: f32,
         out: &mut Vec<PlayerCommand>,
     ) {
+        self.write_world_commands(input, camera_yaw, out);
+        self.write_bar_commands(input, out);
+    }
+
+    /// Appends everything except the ability bar: movement, jump, targeting, developer keys.
+    ///
+    /// What the game itself uses. The bar is left out because its keys are the player's to
+    /// arrange — eight bars of ten slots, each with a key of its own, saved in `hud.cfg` —
+    /// and a fixed digit row issuing commands beside them would cast twice on `1` and not at
+    /// all on a slot the player rebound. The arranged bar lives in `engine-presentation`;
+    /// what a slot does when it is pressed is still a `PlayerCommand`, built here in
+    /// [`Bindings::write_bar_commands`]'s shape.
+    pub fn write_world_commands(
+        &self,
+        input: &InputState,
+        camera_yaw: f32,
+        out: &mut Vec<PlayerCommand>,
+    ) {
         self.write_movement_commands(input, camera_yaw, out);
 
         if input.was_key_pressed(self.cycle_target) {
@@ -121,10 +170,16 @@ impl Bindings {
         if input.was_key_pressed(self.reset_dummies) {
             out.push(PlayerCommand::ResetDummies);
         }
+    }
 
-        // The bar. An *aimed* ability - one placed on the ground, or a cone pointed with the
-        // mouse - is deliberately not cast from here: its key shows the preview, and the
-        // application sends the command when the player clicks.
+    /// Appends the fixed digit-row bar: slot 1 on `1`, through slot 10 on `0`.
+    ///
+    /// The layout every action bar in the genre starts with, and the one a headless test or
+    /// a replay drives the class with when there is no interface to arrange one.
+    pub fn write_bar_commands(&self, input: &InputState, out: &mut Vec<PlayerCommand>) {
+        // An *aimed* ability - one placed on the ground, or a cone pointed with the mouse -
+        // is deliberately not cast from here: its key shows the preview, and the application
+        // sends the command when the player clicks.
         for slot in 0..ABILITY_SLOTS {
             let (Some(key), Some(ability)) =
                 (Self::ability_key(slot), FireAbility::from_slot(slot))
@@ -401,5 +456,56 @@ mod tests {
         // commands nobody acts on.
         let input = InputState::new();
         assert_eq!(commands(&input, 0.0).len(), 1);
+    }
+
+    #[test]
+    fn every_key_the_game_claims_reports_what_it_is_for() {
+        let bindings = Bindings::default();
+        for key in bindings.named_keys() {
+            assert!(
+                bindings.reserved(key).is_some(),
+                "{key:?} is bound but reports nothing"
+            );
+        }
+        // Escape is not a field, and is reserved anyway: it is the way out of every menu.
+        assert!(bindings.reserved(KeyCode::Escape).is_some());
+        // The digit row is not reserved. It is the default action bar, and the player is
+        // allowed to take it apart.
+        for slot in 0..ABILITY_SLOTS {
+            let key = Bindings::ability_key(slot).expect("every slot has a default key");
+            assert_eq!(bindings.reserved(key), None, "{key:?} cannot be rebound");
+        }
+        assert_eq!(bindings.reserved(KeyCode::F1), None);
+    }
+
+    #[test]
+    fn the_world_commands_are_everything_but_the_bar() {
+        let mut state = InputState::new();
+        frame(
+            &mut state,
+            &[KeyCode::W, KeyCode::Space, KeyCode::Tab, KeyCode::Digit1],
+            &[],
+        );
+
+        let mut world = Vec::new();
+        Bindings::default().write_world_commands(&state, 0.0, &mut world);
+        assert!(
+            !world
+                .iter()
+                .any(|command| matches!(command, PlayerCommand::UseAbility(_))),
+            "the bar reached the world commands: {world:?}"
+        );
+        assert!(world.contains(&PlayerCommand::Jump));
+        assert!(world.contains(&PlayerCommand::CycleTarget));
+
+        let mut bar = Vec::new();
+        Bindings::default().write_bar_commands(&state, &mut bar);
+        assert_eq!(bar, vec![PlayerCommand::UseAbility(0)]);
+
+        // Together they are exactly what the whole translation produces.
+        let mut both = Vec::new();
+        Bindings::default().write_commands(&state, 0.0, &mut both);
+        world.extend(bar);
+        assert_eq!(both, world);
     }
 }

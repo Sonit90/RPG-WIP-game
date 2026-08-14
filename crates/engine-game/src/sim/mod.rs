@@ -50,6 +50,7 @@ use crate::entity::EntityId;
 use crate::event::{CombatEvent, DamageEvent, EventStream};
 use crate::firemage::{AbilityError, FireAbility, FireMage, IgniteTick, PendingImpact, ZoneTick};
 use crate::movement::{self, Body, MoveIntent, MovementConfig};
+use crate::party::Party;
 use crate::status::StatusOutcome;
 use crate::targeting::TargetQuery;
 use crate::telemetry::CombatMeter;
@@ -315,6 +316,8 @@ pub struct Simulation {
     /// most of the time, which reads as "the simulation is free" rather than "the
     /// simulation did not run this frame".
     last_active_stats: SimStats,
+    /// Who the player is grouped with. The local player is always its first member.
+    party: Party,
 }
 
 impl Simulation {
@@ -365,6 +368,7 @@ impl Simulation {
             time: 0.0,
             stats: SimStats::default(),
             last_active_stats: SimStats::default(),
+            party: Party::new(),
         }
     }
 
@@ -433,10 +437,29 @@ impl Simulation {
     /// Names the entity the player controls.
     pub fn set_player_entity(&mut self, entity: EntityId) {
         self.player.entity = entity;
+        // The party is the player and whoever is with them, so naming the player enrolls
+        // them: a roster that had to be populated separately would be one the interface
+        // could find empty while a player was plainly standing there.
+        self.party.set_leader(entity);
         // The meter counts *this* actor's damage. Before anything could fight back every
         // damage event in the world was the player's own and the owner did not matter; with
         // enemies, a hit taken would otherwise be reported as damage dealt.
         self.meter.set_owner(entity);
+    }
+
+    /// Who the player is grouped with, local player first.
+    #[must_use]
+    pub fn party(&self) -> &Party {
+        &self.party
+    }
+
+    /// The party, mutably: how a member joins or leaves.
+    ///
+    /// Mutable access rather than `join`/`leave` wrappers, for the reason
+    /// [`Simulation::world_mut`] gives: the roster is plain data with its own rules, and
+    /// restating them here would be a second place they could be got wrong.
+    pub fn party_mut(&mut self) -> &mut Party {
+        &mut self.party
     }
 
     /// The player's body: position, velocity, ground contact and movement state.
@@ -1737,6 +1760,33 @@ mod tests {
             simulation.event_stream().capacity(),
             events,
             "the event stream reallocated in the steady state"
+        );
+    }
+
+    #[test]
+    fn naming_the_player_puts_them_at_the_head_of_the_party() {
+        // The party frame reads the roster, so a player standing in the world who is not in
+        // it would be a frame that is empty while they are plainly there.
+        let mut simulation = Simulation::new(SimConfig::default());
+        assert!(simulation.party().is_empty());
+
+        let entity = simulation
+            .world_mut()
+            .spawn(crate::world::EntityDesc::player(Vec3::ZERO));
+        simulation.set_player_entity(entity);
+        assert_eq!(simulation.party().members(), [entity]);
+        assert_eq!(simulation.party().member(0), Some(entity));
+
+        // And a member joining is visible immediately, without a tick.
+        let ally = simulation
+            .world_mut()
+            .spawn(crate::world::EntityDesc::player(Vec3::ZERO));
+        assert!(simulation.party_mut().join(ally));
+        assert_eq!(simulation.party().len(), 2);
+        assert_eq!(
+            simulation.party().member(0),
+            Some(entity),
+            "the player moved"
         );
     }
 }

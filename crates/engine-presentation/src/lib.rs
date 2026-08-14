@@ -62,8 +62,8 @@ pub use nameplate::{
     NameplateStatus, project,
 };
 pub use snapshot::{
-    AbilitySlotView, CastView, CombatView, NotificationView, PlayerView, SlotAvailability,
-    StatusList, StatusView, TargetView, UiSnapshot,
+    AbilitySlotView, CastView, CombatView, NotificationView, PartyMemberView, PlayerView,
+    SlotAvailability, StatusList, StatusView, TargetView, UiSnapshot,
 };
 pub use ui::{
     MenuAction, MenuScreen, MenuSystem, MenuTheme, PauseItem, SettingsItem, UiInput, UiScreen,

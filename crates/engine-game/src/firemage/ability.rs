@@ -135,6 +135,52 @@ impl FireAbility {
         &ABILITIES[self.index()]
     }
 
+    /// This ability's stable written name: what a configuration file stores.
+    ///
+    /// Lowercase and stable across builds, and deliberately not
+    /// [`AbilityDef::name`](crate::firemage::AbilityDef::name): that one is an uppercase
+    /// display string the interface prints, and renaming an ability on screen must not
+    /// silently empty every action bar slot holding it. It is not the discriminant either,
+    /// for the same reason reordering this enum must not rebind anything.
+    #[must_use]
+    pub fn config_name(self) -> &'static str {
+        match self {
+            Self::Firebolt => "firebolt",
+            Self::FlameLance => "flame_lance",
+            Self::FlameCone => "flame_cone",
+            Self::Meteor => "meteor",
+            Self::Pyroblast => "pyroblast",
+            Self::Firestorm => "firestorm",
+            Self::Detonate => "detonate",
+            Self::FireMastery => "fire_mastery",
+            Self::FlameShield => "flame_shield",
+            Self::Blink => "blink",
+            Self::Cataclysm => "cataclysm",
+            Self::Ignite => "ignite",
+        }
+    }
+
+    /// The ability with this written name, if there is one.
+    ///
+    /// Total: a name from a newer build, or a typo in a hand-edited file, gives `None`
+    /// rather than a guess, and the slot that asked for it stays empty.
+    #[must_use]
+    pub fn from_config_name(name: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|ability| ability.config_name() == name)
+    }
+
+    /// Whether the player can put this in an action bar slot and cast it.
+    ///
+    /// Ignite is a row in the damage meter rather than a button, and the Ultimate has a
+    /// place of its own beside the bar. Everything else is assignable, which is exactly the
+    /// list the spell picker offers.
+    #[must_use]
+    pub fn is_assignable(self) -> bool {
+        !self.is_passive() && !self.is_ultimate()
+    }
+
     /// The key that casts it: 1-0 across the bar, R for the Ultimate.
     #[must_use]
     pub fn key_hint(self) -> &'static str {
@@ -1056,5 +1102,46 @@ mod tests {
             book.tick(0.016, 0.0, &effects);
             assert!(book.is_ready(FireAbility::Firebolt));
         }
+    }
+
+    #[test]
+    fn every_ability_round_trips_through_its_written_name() {
+        let mut seen: Vec<&str> = Vec::new();
+        for ability in FireAbility::ALL {
+            let name = ability.config_name();
+            assert_eq!(
+                FireAbility::from_config_name(name),
+                Some(ability),
+                "{ability:?} did not survive its own name"
+            );
+            assert!(!seen.contains(&name), "{name} names two abilities");
+            assert!(
+                name.chars().all(|c| c.is_ascii_lowercase() || c == '_'),
+                "{name} is not a written name"
+            );
+            seen.push(name);
+        }
+        assert_eq!(FireAbility::from_config_name("frostbolt"), None);
+        assert_eq!(FireAbility::from_config_name(""), None);
+        // The display name is not the written one, and must not be usable as it.
+        assert_eq!(FireAbility::from_config_name("FIREBOLT"), None);
+    }
+
+    #[test]
+    fn everything_on_the_bar_can_be_assigned_and_nothing_else_can() {
+        for ability in FireAbility::BAR {
+            assert!(
+                ability.is_assignable(),
+                "{ability:?} cannot be put in a slot"
+            );
+        }
+        assert!(
+            !FireAbility::Ignite.is_assignable(),
+            "a damage meter row is not a button"
+        );
+        assert!(
+            !FireAbility::Cataclysm.is_assignable(),
+            "the Ultimate has a place of its own"
+        );
     }
 }
