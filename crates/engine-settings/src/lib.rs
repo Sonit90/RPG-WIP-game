@@ -30,6 +30,8 @@
 //! result. Nothing restates a default anywhere else — that is what makes "change the default
 //! sensitivity" a one-line change rather than a search.
 
+/// What the player can change about how the game plays.
+pub mod gameplay;
 /// The interface layout the player arranged: action bars, unit frames and their file.
 pub mod hud;
 /// How nameplates are sized, placed and separated.
@@ -41,6 +43,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+pub use gameplay::GameplaySettings;
 pub use hud::{
     ACTION_BAR_SLOTS, ACTION_BARS, ActionBarConfig, HUD_FILE_NAME, HUD_OFFSET_LIMIT,
     HUD_SCALE_DEFAULT, HUD_SCALE_MAX, HUD_SCALE_MIN, HUD_SCALE_STEP, HudAnchor, HudConfig,
@@ -146,6 +149,11 @@ pub struct GameSettings {
     pub ui_volume: f32,
     /// How loud the environment bed is.
     pub ambient_volume: f32,
+    /// What the player can change about how the game plays.
+    ///
+    /// Its own section for the same reason the nameplates have one: `settings.cfg` is meant
+    /// to be opened and read, and a flat list of every setting in the game stops being one.
+    pub gameplay: GameplaySettings,
     /// How nameplates are sized, placed and separated.
     ///
     /// A nested object rather than six more flat fields: nameplates are a screenful of
@@ -165,6 +173,7 @@ impl Default for GameSettings {
             sfx_volume: SFX_VOLUME_DEFAULT,
             ui_volume: UI_VOLUME_DEFAULT,
             ambient_volume: AMBIENT_VOLUME_DEFAULT,
+            gameplay: GameplaySettings::default(),
             nameplates: NameplateSettings::default(),
         }
     }
@@ -224,8 +233,9 @@ impl GameSettings {
                 *value = default;
             }
         }
-        // The nameplate section validates itself, field by field, so one nonsense number in
-        // it costs that number rather than the whole section.
+        // Each section validates itself, field by field, so one nonsense number in it costs
+        // that number rather than the whole section.
+        settings.gameplay = settings.gameplay.validated();
         settings.nameplates = settings.nameplates.validated();
         settings
     }
@@ -273,6 +283,31 @@ impl GameSettings {
         let steps = ((value - UI_SCALE_MIN) / UI_SCALE_STEP).round();
         let snapped = UI_SCALE_MIN + steps * UI_SCALE_STEP;
         snapped.clamp(UI_SCALE_MIN, UI_SCALE_MAX)
+    }
+}
+
+/// Reads a number, and reads anything that is not one as "no value".
+///
+/// A hand-edited file with `"size": "big"` in it is a file with one wrong field, not a file
+/// that cannot be read: strict deserialization would fail the whole document and the player
+/// would silently lose every other setting in it. Anything unreadable becomes `NaN`, which
+/// each section's `validated` then replaces with that field's default — the same outcome an
+/// out-of-range number gets, through the same code.
+///
+/// Shared by every section that wants it, which is why it lives here rather than beside one
+/// of them.
+pub(crate) fn lenient<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<f32, D::Error> {
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(value.as_f64().map_or(f32::NAN, f64_to_f32))
+}
+
+/// A JSON number as an `f32`, or `NaN` if it does not fit in one.
+fn f64_to_f32(value: f64) -> f32 {
+    let narrowed = value as f32;
+    if narrowed.is_finite() {
+        narrowed
+    } else {
+        f32::NAN
     }
 }
 
@@ -466,6 +501,18 @@ impl SettingsManager {
         });
     }
 
+    /// Sets the out-of-combat health regeneration rate, in percent of maximum per second.
+    ///
+    /// The simulation is told the result by the application; nothing here reaches gameplay.
+    pub fn set_health_regen_percent(&mut self, value: f32) {
+        self.update(GameSettings {
+            gameplay: GameplaySettings {
+                health_regen_percent_per_second: GameplaySettings::snap_health_regen_percent(value),
+            },
+            ..self.settings
+        });
+    }
+
     /// Writes the settings if they have changed since the last write.
     ///
     /// Returns whether anything was written. What a released slider handle calls.
@@ -578,6 +625,7 @@ mod tests {
             sfx_volume: 0.9,
             ui_volume: 0.35,
             ambient_volume: 0.0,
+            gameplay: GameplaySettings::default(),
             nameplates: NameplateSettings::default().with(NameplateSetting::Size, 14.0),
         };
         let text = serde_json::to_string(&settings).expect("settings serialize");
@@ -918,6 +966,49 @@ mod tests {
         // And the next launch reads back exactly what this one is running.
         let reloaded = SettingsManager::load(dir.file()).settings();
         assert_eq!(reloaded, settings);
+    }
+
+    #[test]
+    fn a_file_written_before_the_gameplay_section_existed_gains_its_defaults() {
+        let dir = TempDir::new("gameplay-migration");
+        dir.write("{\"camera_sensitivity\": 2.0}");
+
+        let settings = SettingsManager::load(dir.file()).settings();
+        assert_eq!(settings.camera_sensitivity, 2.0);
+        assert_eq!(settings.gameplay, GameplaySettings::default());
+        assert!((settings.gameplay.health_regen_fraction() - 0.01).abs() < 1e-9);
+    }
+
+    #[test]
+    fn the_regeneration_rate_survives_a_restart_and_an_invalid_one_does_not_break_the_file() {
+        let dir = TempDir::new("gameplay-restart");
+        {
+            let mut first = SettingsManager::load(dir.file());
+            first.set_health_regen_percent(2.5);
+            first.save_if_dirty();
+        }
+        assert!(
+            (SettingsManager::load(dir.file())
+                .settings()
+                .gameplay
+                .health_regen_percent_per_second
+                - 2.5)
+                .abs()
+                < 1e-6
+        );
+
+        dir.write(
+            "{\"camera_sensitivity\": 1.5, \"gameplay\": {\"health_regen_percent_per_second\": -9}}",
+        );
+        let settings = SettingsManager::load(dir.file()).settings();
+        assert_eq!(
+            settings.camera_sensitivity, 1.5,
+            "an unrelated setting reset"
+        );
+        assert_eq!(
+            settings.gameplay.health_regen_percent_per_second,
+            gameplay::HEALTH_REGEN_PERCENT_DEFAULT
+        );
     }
 
     #[test]

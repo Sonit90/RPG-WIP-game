@@ -32,91 +32,94 @@
 //! fraction of the viewport's height. A pixel value would mean one thing at 1080p and another
 //! at 4K, and the layout would have to be re-tuned per display.
 
+use engine_core::tuning::nameplates as tuning;
 use serde::{Deserialize, Serialize};
+
+use crate::lenient;
 
 /// Smallest nameplate the slider offers.
 ///
 /// Below this the 5x7 font's glyph scale rounds down to one and the plate stops being
 /// readable rather than merely becoming small.
-pub const NAMEPLATE_SIZE_MIN: f32 = 6.0;
+pub const NAMEPLATE_SIZE_MIN: f32 = tuning::SIZE_MIN;
 
 /// Largest nameplate the slider offers.
-pub const NAMEPLATE_SIZE_MAX: f32 = 24.0;
+pub const NAMEPLATE_SIZE_MAX: f32 = tuning::SIZE_MAX;
 
 /// The nameplate size a fresh install runs at.
 ///
 /// The reference value: a size of 11 converts to a scale of exactly one, so the default
 /// settings file draws the plate at the size the interface was designed at.
-pub const NAMEPLATE_SIZE_DEFAULT: f32 = 11.0;
+pub const NAMEPLATE_SIZE_DEFAULT: f32 = tuning::SIZE_DEFAULT;
 
 /// Granularity of the size slider. Whole numbers, as the screen prints them.
-pub const NAMEPLATE_SIZE_STEP: f32 = 1.0;
+pub const NAMEPLATE_SIZE_STEP: f32 = tuning::SIZE_STEP;
 
 /// Closest to the head a plate may be anchored.
-pub const NAMEPLATE_HEIGHT_MIN: f32 = 0.0;
+pub const NAMEPLATE_HEIGHT_MIN: f32 = tuning::HEIGHT_MIN;
 
 /// Furthest above the head a plate may be anchored.
 ///
 /// Twenty units is 4.5 m, which is above the tallest thing in the roster by more than its own
 /// height — past it the plate has stopped describing the monster it belongs to.
-pub const NAMEPLATE_HEIGHT_MAX: f32 = 20.0;
+pub const NAMEPLATE_HEIGHT_MAX: f32 = tuning::HEIGHT_MAX;
 
 /// How far above the head a plate floats on a fresh install.
-pub const NAMEPLATE_HEIGHT_DEFAULT: f32 = 4.0;
+pub const NAMEPLATE_HEIGHT_DEFAULT: f32 = tuning::HEIGHT_DEFAULT;
 
 /// Granularity of the height slider.
-pub const NAMEPLATE_HEIGHT_STEP: f32 = 1.0;
+pub const NAMEPLATE_HEIGHT_STEP: f32 = tuning::HEIGHT_STEP;
 
 /// Metres one unit of [`NameplateSettings::height_above_head`] is worth.
 ///
 /// Chosen so the default of 4 is the 0.90 m the plate already floated at, which is what makes
 /// a default settings file change nothing about how the game looks.
-pub const NAMEPLATE_HEIGHT_UNIT: f32 = 0.225;
+pub const NAMEPLATE_HEIGHT_UNIT: f32 = tuning::HEIGHT_UNIT_METRES;
 
 /// Most transparent a non-target plate goes, as a percentage. Fully invisible is deliberately
 /// offered: a player who wants only their target's plate in a fight can have that.
-pub const NAMEPLATE_OPACITY_MIN: f32 = 0.0;
+pub const NAMEPLATE_OPACITY_MIN: f32 = tuning::OPACITY_MIN;
 
 /// Fully opaque, as a percentage. The plate is drawn exactly as the target's is.
-pub const NAMEPLATE_OPACITY_MAX: f32 = 100.0;
+pub const NAMEPLATE_OPACITY_MAX: f32 = tuning::OPACITY_MAX;
 
 /// How visible a non-target plate is during a fight on a fresh install.
-pub const NAMEPLATE_OPACITY_DEFAULT: f32 = 40.0;
+pub const NAMEPLATE_OPACITY_DEFAULT: f32 = tuning::OPACITY_DEFAULT;
 
 /// Granularity of the opacity slider, in percent.
-pub const NAMEPLATE_OPACITY_STEP: f32 = 5.0;
+pub const NAMEPLATE_OPACITY_STEP: f32 = tuning::OPACITY_STEP;
 
 /// Least separation the layout enforces: plates may touch.
-pub const NAMEPLATE_MARGIN_MIN: f32 = 0.0;
+pub const NAMEPLATE_MARGIN_MIN: f32 = tuning::MARGIN_MIN;
 
 /// Most separation the layout enforces, as a multiple of a plate's own size.
 ///
 /// Three plate heights apart is already more than a crowded pull can satisfy; past it every
 /// plate in a pack is at its displacement limit and the setting stops meaning anything.
-pub const NAMEPLATE_MARGIN_MAX: f32 = 3.0;
+pub const NAMEPLATE_MARGIN_MAX: f32 = tuning::MARGIN_MAX;
 
 /// Minimum vertical gap between two plates, as a multiple of a plate's height.
-pub const NAMEPLATE_VERTICAL_MARGIN_DEFAULT: f32 = 0.93;
+pub const NAMEPLATE_VERTICAL_MARGIN_DEFAULT: f32 = tuning::VERTICAL_MARGIN_DEFAULT;
 
 /// Minimum horizontal gap between two plates, as a multiple of a plate's width.
-pub const NAMEPLATE_HORIZONTAL_MARGIN_DEFAULT: f32 = 0.63;
+pub const NAMEPLATE_HORIZONTAL_MARGIN_DEFAULT: f32 = tuning::HORIZONTAL_MARGIN_DEFAULT;
 
 /// Granularity of both margin sliders.
-pub const NAMEPLATE_MARGIN_STEP: f32 = 0.01;
+pub const NAMEPLATE_MARGIN_STEP: f32 = tuning::MARGIN_STEP;
 
 /// Smallest top safe zone: none at all.
-pub const NAMEPLATE_SAFE_ZONE_MIN: f32 = 0.0;
+pub const NAMEPLATE_SAFE_ZONE_MIN: f32 = tuning::SAFE_ZONE_MIN;
 
 /// Largest top safe zone, as a fraction of the viewport's height.
 ///
 /// Half the screen. Past it the protected region is most of the space a plate could be in.
-pub const NAMEPLATE_SAFE_ZONE_MAX: f32 = 0.50;
+pub const NAMEPLATE_SAFE_ZONE_MAX: f32 = tuning::SAFE_ZONE_MAX;
 
 /// How much of the top of the screen plates keep out of on a fresh install.
-pub const NAMEPLATE_SAFE_ZONE_DEFAULT: f32 = 0.07;
+pub const NAMEPLATE_SAFE_ZONE_DEFAULT: f32 = tuning::SAFE_ZONE_DEFAULT;
 
 /// Granularity of the safe-zone slider.
-pub const NAMEPLATE_SAFE_ZONE_STEP: f32 = 0.01;
+pub const NAMEPLATE_SAFE_ZONE_STEP: f32 = tuning::SAFE_ZONE_STEP;
 
 /// Which nameplate setting a value belongs to.
 ///
@@ -266,28 +269,6 @@ pub struct NameplateSettings {
     /// Fraction of the top of the screen plates stay out of.
     #[serde(deserialize_with = "lenient")]
     pub top_safe_zone: f32,
-}
-
-/// Reads a number, and reads anything that is not one as "no value".
-///
-/// A hand-edited file with `"size": "big"` in it is a file with one wrong field, not a file
-/// that cannot be read: strict deserialization would fail the whole document and the player
-/// would silently lose every other setting in it. Anything unreadable becomes `NaN`, which
-/// [`NameplateSettings::validated`] then replaces with that field's default — the same
-/// outcome an out-of-range number gets, through the same code.
-fn lenient<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<f32, D::Error> {
-    let value = serde_json::Value::deserialize(deserializer)?;
-    Ok(value.as_f64().map_or(f32::NAN, f64_to_f32))
-}
-
-/// A JSON number as an `f32`, or `NaN` if it does not fit in one.
-fn f64_to_f32(value: f64) -> f32 {
-    let narrowed = value as f32;
-    if narrowed.is_finite() {
-        narrowed
-    } else {
-        f32::NAN
-    }
 }
 
 impl Default for NameplateSettings {

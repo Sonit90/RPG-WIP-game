@@ -379,7 +379,7 @@ impl App {
             }
         });
 
-        let (simulation, demo) = match args.scene {
+        let (mut simulation, demo) = match args.scene {
             Scene::Combat => (
                 match environment.as_ref() {
                     Some(scene) => arena::environment_arena(scene, args.dummies),
@@ -523,12 +523,21 @@ impl App {
         // with a different lifetime: it changes while the game runs and it is written back.
         let game_settings = SettingsManager::load_from_game_directory();
         log::info!(
-            "settings: {} (camera sensitivity {:.2}, interface size {:.2}, nameplate size {:.0})",
+            "settings: {} (camera sensitivity {:.2}, interface size {:.2}, nameplate size {:.0},              health regen {:.1}%/s)",
             game_settings.path().display(),
             game_settings.settings().camera_sensitivity,
             game_settings.settings().ui_scale,
-            game_settings.settings().nameplates.size
+            game_settings.settings().nameplates.size,
+            game_settings
+                .settings()
+                .gameplay
+                .health_regen_percent_per_second
         );
+        // The player's regeneration rate reaches gameplay here and nowhere else: the scene
+        // built the simulation with the compiled-in default, and this is the one place that
+        // knows the file said otherwise.
+        simulation
+            .set_health_regen_per_second(game_settings.settings().gameplay.health_regen_fraction());
         let ui_scale = UiScale::new(game_settings.settings().ui_scale);
 
         // The HUD layout, in its own file. A first launch has no file, and only then is bar

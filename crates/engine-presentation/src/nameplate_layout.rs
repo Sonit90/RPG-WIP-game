@@ -126,7 +126,7 @@ impl Default for LayoutConstraints {
 /// Ten is a quarter of the way down a 1080p screen for a one-line plate: enough for a pack of
 /// eight standing on one another to separate completely, and near enough that the plate is
 /// still obviously that monster's.
-pub const DEFAULT_MAX_DISPLACEMENT: f32 = 10.0;
+pub const DEFAULT_MAX_DISPLACEMENT: f32 = engine_core::tuning::nameplates::MAX_DISPLACEMENT;
 
 /// Separation passes per frame by default.
 ///
@@ -134,13 +134,13 @@ pub const DEFAULT_MAX_DISPLACEMENT: f32 = 10.0;
 /// takes a few for the push at one end to reach the other. Eight resolves a pull that can be
 /// resolved at all, and a pass over twenty plates that overlap nothing exits on the first
 /// sweep — the cost is paid by crowds, which is where it belongs.
-pub const DEFAULT_ITERATIONS: usize = 8;
+pub const DEFAULT_ITERATIONS: usize = engine_core::tuning::nameplates::LAYOUT_ITERATIONS;
 
 /// How fast a plate slides towards its resolved position, in fraction per second.
 ///
 /// High enough that the plate is on its monster within a couple of frames — a nameplate that
 /// visibly lagged behind a moving body would be worse than one that jittered.
-pub const DEFAULT_SMOOTHING: f32 = 40.0;
+pub const DEFAULT_SMOOTHING: f32 = engine_core::tuning::nameplates::SMOOTHING_PER_SECOND;
 
 /// A jump this far, in plate heights, is a cut rather than a movement.
 ///

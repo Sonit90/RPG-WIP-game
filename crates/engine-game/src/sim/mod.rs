@@ -80,6 +80,11 @@ pub struct SimConfig {
     pub character: CharacterConfig,
     /// Seed for every chance the class rolls, so a fight can be replayed exactly.
     pub rng_seed: u64,
+    /// Health the player regains per second out of combat, as a fraction of their maximum.
+    ///
+    /// Zero turns regeneration off entirely. The player can set this in `settings.cfg`; the
+    /// default is [`engine_core::tuning::player::HEALTH_REGEN_PER_SECOND`].
+    pub health_regen_per_second: f32,
 }
 
 impl Default for SimConfig {
@@ -88,13 +93,14 @@ impl Default for SimConfig {
             tick_hz: engine_core::time::DEFAULT_TICK_HZ,
             movement: MovementConfig::default(),
             character: CharacterConfig::default(),
-            rng_seed: 0xF12E_5EED,
+            rng_seed: engine_core::tuning::simulation::RNG_SEED,
+            health_regen_per_second: engine_core::tuning::player::HEALTH_REGEN_PER_SECOND,
         }
     }
 }
 
 /// How long a refusal stays on screen, in seconds.
-pub const NOTIFICATION_SECONDS: f64 = 5.0;
+pub const NOTIFICATION_SECONDS: f64 = engine_core::tuning::simulation::NOTIFICATION_SECONDS;
 
 /// The player's gameplay state that is not shared with every other entity.
 ///
@@ -328,6 +334,13 @@ pub struct Simulation {
     last_active_stats: SimStats,
     /// Who the player is grouped with. The local player is always its first member.
     party: Party,
+    /// Seconds of out-of-combat time since the last regeneration tick.
+    ///
+    /// Regeneration happens once a second rather than every simulation tick: one heal of a
+    /// readable size, announced once, beats sixty of a sixtieth each — which would be sixty
+    /// events, sixty floating numbers and a line in the damage meter for every second the
+    /// player spends walking.
+    regen_elapsed: f32,
 }
 
 impl Simulation {
@@ -377,6 +390,7 @@ impl Simulation {
             hits: Vec::with_capacity(64),
             outcomes: Vec::with_capacity(16),
             observed: 0,
+            regen_elapsed: 0.0,
             tick: 0,
             time: 0.0,
             stats: SimStats::default(),
@@ -692,6 +706,9 @@ impl Simulation {
         let status_started = Instant::now();
         self.tick_statuses(step);
         stats.statuses += status_started.elapsed();
+
+        // After combat, so a tick that took damage cannot also regenerate from it.
+        self.tick_regeneration(step);
 
         let telemetry_started = Instant::now();
         self.flush_observations();
@@ -1592,6 +1609,84 @@ impl Simulation {
         }
     }
 
+    /// Whether the player is in a fight right now.
+    ///
+    /// True while any enemy is in one of the fighting states — chasing, attacking, casting or
+    /// recovering. Asked of the enemies rather than kept as a flag on the player: the pack
+    /// *is* the fight, and a timer since the last hit would say a player is in combat while
+    /// they stand alone in an empty room, and out of it while a Brute walks the last two
+    /// metres towards them.
+    ///
+    /// An enemy walking home has already given up, and Idle, Alert, Returning and Dead are
+    /// therefore all "not fighting": the fight ends when the last enemy stops chasing.
+    #[must_use]
+    pub fn player_in_combat(&self) -> bool {
+        self.enemies().any(|(_, brain)| brain.state().is_combat())
+    }
+
+    /// Health the player regains per second out of combat, as a fraction of their maximum.
+    #[must_use]
+    pub fn health_regen_per_second(&self) -> f32 {
+        self.config.health_regen_per_second
+    }
+
+    /// Sets the out-of-combat regeneration rate, as a fraction of maximum health per second.
+    ///
+    /// What the player's `settings.cfg` reaches the simulation through. A nonsense value is
+    /// ignored rather than stored: a NaN here would put NaN health on the player, and a
+    /// character with no health at all is a worse outcome than an ignored setting.
+    pub fn set_health_regen_per_second(&mut self, fraction: f32) {
+        if fraction.is_finite() && fraction >= 0.0 {
+            self.config.health_regen_per_second = fraction;
+        }
+    }
+
+    /// Gives the player health back while nothing is fighting them.
+    ///
+    /// Once a second, not once a tick. The amount is the same either way, but a tick's worth
+    /// of it is a hundredth of a point: too small to announce, too small to draw, and sixty
+    /// times a second it would fill the event stream and the damage meter with noise. One
+    /// heal a second is one event, one floating number and one line a player can read.
+    ///
+    /// The clock resets the moment anything engages, so leaving a fight does not immediately
+    /// pay out the second that was accumulating when it started.
+    fn tick_regeneration(&mut self, step: f32) {
+        let player = self.player.entity;
+        let rate = self.config.health_regen_per_second;
+        if rate <= 0.0 || !self.world.is_alive(player) || self.player_in_combat() {
+            self.regen_elapsed = 0.0;
+            return;
+        }
+        self.regen_elapsed += step;
+        // Against an epsilon, because sixty steps of a sixtieth do not add up to exactly one
+        // in binary floating point — without it every regeneration tick would land a frame
+        // late and the rate would be quietly wrong.
+        if self.regen_elapsed < 1.0 - crate::TIME_EPSILON {
+            return;
+        }
+        self.regen_elapsed = (self.regen_elapsed - 1.0).max(0.0);
+
+        let Some(health) = self.world.health(player) else {
+            return;
+        };
+        if health.current() >= health.max() {
+            return;
+        }
+        let restored = self.world.heal(player, health.max() * rate).applied;
+        if restored <= 0.0 {
+            return;
+        }
+        // Credited to the player and to no ability: regeneration is something the character
+        // does, not something they cast, and the meter must not report it as healing done.
+        self.events.push(CombatEvent::Healing {
+            source: player,
+            target: player,
+            amount: restored,
+            ability: AbilityId::NONE,
+            tick: self.tick,
+        });
+    }
+
     /// Restores every dummy and starts a new combat session.
     ///
     /// Health, position and statuses come back, the meter is cleared, and cooldowns and the
@@ -1676,6 +1771,153 @@ mod tests {
             .world()
             .health(id)
             .map_or(0.0, |health| health.current())
+    }
+
+    /// The player's health right now.
+    fn player_health(simulation: &Simulation) -> f32 {
+        simulation
+            .world()
+            .health(simulation.player().entity)
+            .map_or(0.0, crate::combat::Health::current)
+    }
+
+    #[test]
+    fn the_player_regenerates_one_percent_a_second_out_of_combat() {
+        // The training arena has dummies, and a dummy has no brain: nothing is fighting.
+        let mut simulation = arena();
+        let player = simulation.player().entity;
+        let max = simulation
+            .world()
+            .health(player)
+            .expect("the player exists")
+            .max();
+        simulation.world_mut().damage(player, max * 0.5);
+        let wounded = player_health(&simulation);
+
+        assert!(!simulation.player_in_combat());
+        // Ten seconds is ten ticks of regeneration at one percent of maximum each.
+        simulation.step_many(600);
+        let regained = player_health(&simulation) - wounded;
+        assert!(
+            (regained - max * 0.10).abs() < max * 0.005,
+            "regained {regained} in ten seconds, expected {}",
+            max * 0.10
+        );
+    }
+
+    #[test]
+    fn regeneration_ticks_once_a_second_rather_than_once_a_frame() {
+        // Sixty events a second of a sixtieth of a point each would be noise in the stream,
+        // in the meter and on the screen.
+        let mut simulation = arena();
+        let player = simulation.player().entity;
+        simulation.world_mut().damage(player, 200.0);
+
+        simulation.step_many(300);
+        let heals = simulation
+            .events()
+            .iter()
+            .filter(
+                |event| matches!(event, CombatEvent::Healing { target, .. } if *target == player),
+            )
+            .count();
+        assert_eq!(heals, 5, "five seconds should be five heals");
+    }
+
+    #[test]
+    fn regeneration_stops_while_anything_is_fighting_the_player() {
+        let config = ArenaConfig::with_group(0);
+        let mut simulation = arena::encounter_arena(&config, arena::pack_encounter(&config, 2));
+        let player = simulation.player().entity;
+        simulation.world_mut().damage(player, 200.0);
+        simulation.step_once();
+        let wounded = player_health(&simulation);
+
+        // Walk into the pack. Once they are chasing, the player heals nothing.
+        simulation.push_command(PlayerCommand::Teleport {
+            position: simulation.player_position() + Vec3::new(0.0, 0.0, -14.0),
+        });
+        simulation.step_many(120);
+        assert!(simulation.player_in_combat(), "the pack never engaged");
+
+        let before = player_health(&simulation);
+        simulation.step_many(300);
+        assert!(
+            player_health(&simulation) <= before,
+            "the player regenerated during a fight"
+        );
+        let _ = wounded;
+    }
+
+    #[test]
+    fn regeneration_stops_at_full_health_and_never_revives_a_corpse() {
+        let mut simulation = arena();
+        let player = simulation.player().entity;
+        let max = simulation
+            .world()
+            .health(player)
+            .expect("the player exists")
+            .max();
+        simulation.step_many(300);
+        assert_eq!(player_health(&simulation), max, "healing past full");
+        assert!(
+            !simulation
+                .events()
+                .iter()
+                .any(|event| matches!(event, CombatEvent::Healing { .. })),
+            "a plate at full health was healed anyway"
+        );
+
+        simulation.world_mut().damage(player, 1e9);
+        simulation.step_many(600);
+        assert!(
+            !simulation.player_alive(),
+            "regeneration revived the player"
+        );
+        assert_eq!(player_health(&simulation), 0.0);
+    }
+
+    #[test]
+    fn the_regeneration_rate_is_configurable_and_can_be_turned_off() {
+        let mut simulation = arena();
+        let player = simulation.player().entity;
+        simulation.world_mut().damage(player, 200.0);
+
+        simulation.set_health_regen_per_second(0.0);
+        let before = player_health(&simulation);
+        simulation.step_many(300);
+        assert_eq!(player_health(&simulation), before, "zero still regenerated");
+
+        // And a faster rate heals proportionally more.
+        simulation.set_health_regen_per_second(0.05);
+        simulation.step_many(60);
+        let regained = player_health(&simulation) - before;
+        let max = simulation
+            .world()
+            .health(player)
+            .expect("the player exists")
+            .max();
+        assert!(
+            (regained - max * 0.05).abs() < max * 0.005,
+            "regained {regained} at five percent a second"
+        );
+
+        // Nonsense is ignored rather than stored: NaN health is worse than a lost setting.
+        simulation.set_health_regen_per_second(f32::NAN);
+        assert_eq!(simulation.health_regen_per_second(), 0.05);
+        simulation.set_health_regen_per_second(-1.0);
+        assert_eq!(simulation.health_regen_per_second(), 0.05);
+    }
+
+    #[test]
+    fn regeneration_is_not_counted_as_healing_done() {
+        // The meter measures the fight. A player who took the long way round between pulls
+        // has not out-healed one who fought well.
+        let mut simulation = arena();
+        let player = simulation.player().entity;
+        simulation.world_mut().damage(player, 200.0);
+        simulation.step_many(300);
+        assert_eq!(simulation.meter().total_healing(), 0.0);
     }
 
     #[test]

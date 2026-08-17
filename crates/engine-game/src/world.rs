@@ -99,9 +99,9 @@ impl EntityDesc {
             kind: EntityKind::Player,
             faction: Faction::Player,
             position,
-            max_health: 500.0,
-            radius: 0.5,
-            height: 1.8,
+            max_health: engine_core::tuning::player::MAX_HEALTH,
+            radius: engine_core::tuning::player::RADIUS,
+            height: engine_core::tuning::player::HEIGHT,
         }
     }
 

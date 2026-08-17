@@ -34,7 +34,7 @@ use engine_game::status::StatusKind;
 use engine_game::world::{EntityKind, horizontal_distance};
 
 /// How far an enemy may be from the player and still have a nameplate, in metres.
-pub const NAMEPLATE_MAX_DISTANCE: f32 = 40.0;
+pub const NAMEPLATE_MAX_DISTANCE: f32 = engine_core::tuning::nameplates::MAX_DISTANCE_METRES;
 
 /// Characters a plate is laid out for.
 ///
@@ -48,7 +48,7 @@ pub const NAMEPLATE_COLUMNS: usize = 18;
 /// and a hundred plates was measured at 0.44 ms a frame — 1515 FPS against 4654 for the same
 /// scene without them. Twenty covers everything a player is fighting and costs a tenth of
 /// that. See `docs/phase3.md`.
-pub const MAX_NAMEPLATES: usize = 20;
+pub const MAX_NAMEPLATES: usize = engine_core::tuning::nameplates::MAX_PLATES;
 
 /// Statuses a plate shows before it stops listing them.
 ///
@@ -576,14 +576,12 @@ fn plate_id(entity: EntityId) -> u64 {
 
 /// Whether the player is in a fight right now.
 ///
-/// Asked of the enemies rather than of a flag: an enemy that has left Idle for anything other
-/// than walking home *is* the fight, and the same predicate the AI's own states are built on
-/// answers it without gameplay having to grow a presentation-shaped accessor.
+/// Gameplay's own answer, not a second one: [`Simulation::player_in_combat`] is what decides
+/// whether health regenerates, and a nameplate that dimmed on a different rule would be
+/// telling the player something the game does not believe.
 #[must_use]
 pub fn player_in_combat(simulation: &Simulation) -> bool {
-    simulation
-        .enemies()
-        .any(|(_, brain)| brain.state().is_combat())
+    simulation.player_in_combat()
 }
 
 /// Clip-space depth band nameplates are drawn in.

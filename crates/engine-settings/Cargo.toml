@@ -9,6 +9,9 @@ publish.workspace = true
 # a setting is a value with bounds, and loading one must be testable without a window, a
 # device or a simulation.
 [dependencies]
+# The one file every default in the project is edited in. Data only — no window, no device,
+# no gameplay — so every load/validate/save rule here is still testable with a temp file.
+engine-core = { workspace = true }
 log = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }

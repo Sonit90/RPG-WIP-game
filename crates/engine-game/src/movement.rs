@@ -94,19 +94,19 @@ pub struct MovementConfig {
 }
 
 impl Default for MovementConfig {
+    /// Every number from [`engine_core::tuning::movement`], which is where they are edited.
     fn default() -> Self {
+        use engine_core::tuning::movement as tuning;
         Self {
-            max_speed: 7.0,
-            acceleration: 60.0,
-            deceleration: 50.0,
-            air_control: 0.35,
-            gravity: 25.0,
-            // 8 m/s against 25 m/s² gravity is a 1.28 m jump lasting 0.64 s: high enough to
-            // read as a jump, short enough that it does not interrupt combat.
-            jump_speed: 8.0,
-            ground_height: 0.0,
-            arena_half_extent: 40.0,
-            terminal_velocity: 60.0,
+            max_speed: tuning::MAX_SPEED,
+            acceleration: tuning::ACCELERATION,
+            deceleration: tuning::DECELERATION,
+            air_control: tuning::AIR_CONTROL,
+            gravity: tuning::GRAVITY,
+            jump_speed: tuning::JUMP_SPEED,
+            ground_height: tuning::GROUND_HEIGHT,
+            arena_half_extent: tuning::ARENA_HALF_EXTENT,
+            terminal_velocity: tuning::TERMINAL_VELOCITY,
         }
     }
 }

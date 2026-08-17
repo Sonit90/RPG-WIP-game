@@ -151,6 +151,13 @@ impl CombatMeter {
                 CombatEvent::Healing {
                     amount, ability, ..
                 } => {
+                    // Healing that came from no ability is out-of-combat regeneration: the
+                    // character mending on the walk between pulls. Counting it would report
+                    // a player who took the long way round as having healed for more than
+                    // one who fought well, which is not what the meter is for.
+                    if ability == AbilityId::NONE {
+                        continue;
+                    }
                     self.total_healing += f64::from(amount);
                     if let Some(totals) = self.ability_mut(ability) {
                         totals.healing += f64::from(amount);
