@@ -274,6 +274,29 @@ impl NameplateSet {
         self.plates.capacity()
     }
 
+    /// The plate under `pointer`, if the pointer is on one.
+    ///
+    /// A nameplate is a box on the screen with an enemy's name and health in it, so it is a
+    /// thing that can be clicked. The *nearest* plate wins where two overlap, which is the
+    /// same order the depth test draws them in — so the one the player can read is the one
+    /// they select.
+    ///
+    /// Screen-space, and deliberately not a ray through the body: a plate floats above its
+    /// enemy and is still a plate the player pointed at when the body under it is behind a
+    /// pillar.
+    #[must_use]
+    pub fn at(&self, pointer: (f32, f32)) -> Option<&Nameplate> {
+        self.plates
+            .iter()
+            .filter(|plate| {
+                pointer.0 >= plate.origin.0
+                    && pointer.0 <= plate.origin.0 + plate.size.0
+                    && pointer.1 >= plate.origin.1
+                    && pointer.1 <= plate.origin.1 + plate.size.1
+            })
+            .min_by(|a, b| a.distance.total_cmp(&b.distance))
+    }
+
     /// Rebuilds the set for the current simulation state and camera.
     ///
     /// `viewport` is the render target size in pixels. Returns the plates, ordered furthest
@@ -513,6 +536,63 @@ mod tests {
     fn build(simulation: &Simulation, camera: &Camera, set: &mut NameplateSet) -> Vec<Nameplate> {
         set.build(simulation, &camera.view_projection(), VIEWPORT, &config())
             .to_vec()
+    }
+
+    #[test]
+    fn a_pointer_on_a_plate_finds_the_enemy_it_belongs_to() {
+        let (simulation, camera) = scene();
+        let mut set = NameplateSet::new();
+        let plates = build(&simulation, &camera, &mut set);
+        // The nearest one: plates overlap in a group, and the near one is what the player
+        // sees and therefore what a click on that patch of screen means.
+        let plate = *plates
+            .iter()
+            .min_by(|a, b| a.distance.total_cmp(&b.distance))
+            .expect("the arena has dummies in front");
+
+        // The middle of the plate, and each of its four corners.
+        let centre = (
+            plate.origin.0 + plate.size.0 * 0.5,
+            plate.origin.1 + plate.size.1 * 0.5,
+        );
+        assert_eq!(set.at(centre).map(|found| found.entity), Some(plate.entity));
+        for corner in [
+            plate.origin,
+            (plate.origin.0 + plate.size.0, plate.origin.1),
+            (plate.origin.0, plate.origin.1 + plate.size.1),
+            (plate.origin.0 + plate.size.0, plate.origin.1 + plate.size.1),
+        ] {
+            assert!(set.at(corner).is_some(), "{corner:?} is on the plate");
+        }
+
+        // A pixel outside it on every side is not on it.
+        assert!(
+            set.at((plate.origin.0 - 1.0, centre.1)).is_none()
+                || set.at((plate.origin.0 - 1.0, centre.1)).map(|f| f.entity) != Some(plate.entity)
+        );
+        assert!(set.at((-50.0, -50.0)).is_none(), "nothing is off-screen");
+    }
+
+    #[test]
+    fn the_nearest_plate_wins_where_two_overlap() {
+        // Two plates on top of each other is the ordinary case in a pack, and the one the
+        // player can read is the near one — which is the one the depth test draws on top.
+        let (simulation, camera) = scene();
+        let mut set = NameplateSet::new();
+        let plates = build(&simulation, &camera, &mut set);
+        assert!(plates.len() > 1, "the arena has a group in it");
+
+        for plate in &plates {
+            let centre = (
+                plate.origin.0 + plate.size.0 * 0.5,
+                plate.origin.1 + plate.size.1 * 0.5,
+            );
+            let found = set.at(centre).expect("a plate is under its own centre");
+            assert!(
+                found.distance <= plate.distance,
+                "a further plate was picked over a nearer one"
+            );
+        }
     }
 
     #[test]

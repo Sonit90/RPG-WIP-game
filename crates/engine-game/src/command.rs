@@ -16,6 +16,7 @@
 
 use engine_core::math::{Quat, Vec3};
 
+use crate::entity::EntityId;
 use crate::firemage::TalentId;
 
 /// One thing the player wants to happen.
@@ -65,6 +66,22 @@ pub enum PlayerCommand {
     SelectNearestTarget,
     /// Move to the next living hostile, by distance, within the class's own reach.
     CycleTarget,
+    /// Target the player's own character.
+    ///
+    /// The self-target key. Separate from [`PlayerCommand::SelectTarget`] because the caller
+    /// would otherwise have to know which entity the player is to ask for the one selection
+    /// that is always available.
+    SelectSelf,
+    /// Target a named entity: what clicking a nameplate asks for.
+    ///
+    /// The entity rather than a ray, because a nameplate *is* the entity — the interface
+    /// drew a box and wrote which one it belongs to inside it, and re-deriving that from a
+    /// ray would be answering a question that was already answered. Gameplay still decides
+    /// whether the request is legal, so a caller cannot select a corpse or an ally.
+    SelectTarget {
+        /// Which entity to select.
+        entity: EntityId,
+    },
     /// Target whatever a ray passes through: the gameplay half of clicking on something.
     ///
     /// A ray rather than an entity, so the *rules* of selection — who is hostile, who is

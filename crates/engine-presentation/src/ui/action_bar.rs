@@ -541,15 +541,19 @@ mod tests {
         let mut set = ActionBarSet::default();
         let bindings = Bindings::default();
         let at = address(5, 7);
-        assert!(set.assign_key(at, KeyCode::F1, &bindings));
+        // F2 rather than F1: F1 is the self-target key, and a reserved key is refused.
+        assert!(set.assign_key(at, KeyCode::F2, &bindings));
         assert_eq!(
             set.slot(at).expect("the slot exists").key,
-            Some(KeyCode::F1)
+            Some(KeyCode::F2)
         );
-        assert_eq!(set.slot_for_key(KeyCode::F1), Some(at));
+        assert_eq!(set.slot_for_key(KeyCode::F2), Some(at));
 
         assert!(set.clear_key(at));
-        assert_eq!(set.slot_for_key(KeyCode::F1), None);
+        assert_eq!(set.slot_for_key(KeyCode::F2), None);
+
+        // And the reserved one is refused, which is the whole point of the check.
+        assert!(!set.assign_key(at, KeyCode::F1, &bindings));
     }
 
     #[test]

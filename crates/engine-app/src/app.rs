@@ -1321,8 +1321,21 @@ impl App {
     /// told apart by how far the cursor travelled, because that is the difference a player
     /// means, and a time-based threshold would refuse a slow, careful click on a small enemy.
     ///
-    /// What is sent is a *ray*, not an entity: the camera and the cursor are this layer's, and
-    /// which body a ray meets is gameplay's — see [`PlayerCommand::PickTarget`].
+    /// There are two things under the cursor, and they are asked in this order:
+    ///
+    /// ```text
+    /// a nameplate  ->  SelectTarget { entity }   the plate already knows whose it is
+    /// the world    ->  PickTarget { ray }        gameplay works out what the ray meets
+    /// ```
+    ///
+    /// The plate first, because a plate is *interface*: it floats above its enemy, it is
+    /// drawn on top of the scene, and a click that went through it to whatever body happened
+    /// to be behind would be a click the player watched land somewhere else. It carries an
+    /// entity rather than a ray for the same reason — the question of whose plate it is was
+    /// answered when it was laid out.
+    ///
+    /// The world click sends a ray, not an entity: the camera and the cursor are this
+    /// layer's, and which body a ray meets is gameplay's — see [`PlayerCommand::PickTarget`].
     fn finish_click(&mut self) {
         let Some(cursor) = self.click_candidate.take() else {
             return;
@@ -1334,9 +1347,16 @@ impl App {
         if self.scene.is_collision() || self.menu.is_open() {
             return;
         }
+        let pointer = (cursor.0 as f32, cursor.1 as f32);
+        if let Some(plate) = self.nameplates.at(pointer) {
+            let entity = plate.entity;
+            self.simulation
+                .push_command(PlayerCommand::SelectTarget { entity });
+            return;
+        }
+
         let viewport = self.renderer.size();
         let view_projection = self.camera.view_projection();
-        let pointer = (cursor.0 as f32, cursor.1 as f32);
         let Some((origin, direction)) =
             engine_presentation::ui::targeting::cursor_ray(pointer, &view_projection, viewport)
         else {
@@ -2803,7 +2823,8 @@ fn log_controls(args: &Args, demo: Option<&DemoScene>) {
         log::info!("  BACKSPACE        reset the dummies and the combat meter");
         log::info!("  4 5 R            place with the mouse: left click confirms, right cancels");
         log::info!("  TAB              cycle target: the next enemy in range, nearest first");
-        log::info!("  LEFT CLICK       select what the pointer is on; hold and drag to orbit");
+        log::info!("  LEFT CLICK       select an enemy or its nameplate; hold and drag to orbit");
+        log::info!("  F1               target yourself");
         log::info!("  RIGHT CLICK      a slot: change its spell, bind a key, clear it");
     }
     log::info!(

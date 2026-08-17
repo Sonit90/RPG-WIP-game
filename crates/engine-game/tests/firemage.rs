@@ -194,6 +194,80 @@ fn a_burn_is_worth_more_when_heat_is_higher_with_no_reapplication() {
     );
 }
 
+// ---------------------------------------------------------------- Selection
+
+#[test]
+fn the_player_can_select_themselves_and_cannot_set_themselves_on_fire() {
+    // Selecting yourself is the one selection always available, and it must not turn the
+    // filler into a way to die.
+    let mut simulation = arena();
+    let player = simulation.player().entity;
+    let before = health(&simulation, player);
+
+    simulation.push_command(engine_game::command::PlayerCommand::SelectSelf);
+    simulation.step_once();
+    assert_eq!(simulation.player().target, Some(player));
+
+    assert_eq!(
+        simulation.cast(FireAbility::Firebolt),
+        Err(engine_game::firemage::AbilityError::TargetFriendly)
+    );
+    // And a cast that somehow started still lands on nobody.
+    for _ in 0..60 {
+        simulation.step_once();
+    }
+    assert_eq!(
+        health(&simulation, player),
+        before,
+        "the player burned themselves"
+    );
+    assert!(
+        simulation.mage().abilities.is_ready(FireAbility::Firebolt),
+        "a refusal spent the charge"
+    );
+}
+
+#[test]
+fn selecting_yourself_survives_a_tick_and_is_not_taken_away() {
+    // `retarget_if_needed` replaces a target that is dead or gone. A living player is
+    // neither, so the selection has to hold.
+    let mut simulation = arena();
+    let player = simulation.player().entity;
+    simulation.push_command(engine_game::command::PlayerCommand::SelectSelf);
+    for _ in 0..120 {
+        simulation.step_once();
+    }
+    assert_eq!(simulation.player().target, Some(player));
+}
+
+#[test]
+fn a_named_selection_is_still_checked_before_it_is_honoured() {
+    use engine_game::command::PlayerCommand;
+
+    let mut simulation = arena();
+    let dummy = target(&simulation);
+    let player = simulation.player().entity;
+
+    // A legal one: the caller names an enemy and gets it.
+    simulation.push_command(PlayerCommand::SelectSelf);
+    simulation.step_once();
+    simulation.push_command(PlayerCommand::SelectTarget { entity: dummy });
+    simulation.step_once();
+    assert_eq!(simulation.player().target, Some(dummy));
+
+    // A corpse is refused, and the selection that was there is kept.
+    simulation.push_command(PlayerCommand::SelectSelf);
+    simulation.step_once();
+    simulation.world_mut().damage(dummy, 1_000_000.0);
+    simulation.push_command(PlayerCommand::SelectTarget { entity: dummy });
+    simulation.step_once();
+    assert_eq!(
+        simulation.player().target,
+        Some(player),
+        "a dead enemy was selected by name"
+    );
+}
+
 // ---------------------------------------------------------------- Detonate
 
 #[test]

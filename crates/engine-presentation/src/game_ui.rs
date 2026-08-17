@@ -205,6 +205,12 @@ pub struct UiTheme {
     pub status: UiColor,
     /// The outline around the current target.
     pub target_outline: UiColor,
+    /// Panel behind the *targeted* enemy's nameplate.
+    ///
+    /// A second colour rather than a brighter outline: two pixels of white around a plate at
+    /// forty metres is a few pixels of white, and a player who has just clicked something
+    /// needs to see which plate answered from wherever they are standing.
+    pub target_panel: UiColor,
     /// Outline thickness in pixels.
     pub outline_pixels: f32,
     /// Glyph scale for nameplate text.
@@ -306,6 +312,9 @@ impl Default for UiTheme {
             text: [0.95, 0.95, 0.85, 1.0],
             status: [0.95, 0.62, 0.25, 1.0],
             target_outline: [1.0, 1.0, 1.0, 1.0],
+            // The panel's own hue, lifted and made more opaque: it still reads as the same
+            // piece of interface, and it is unmistakably the one that is selected.
+            target_panel: [0.18, 0.20, 0.26, 0.92],
             outline_pixels: 2.0,
             plate_text_scale: 2.0,
             bar_background: [0.10, 0.10, 0.12, 0.85],
@@ -526,7 +535,14 @@ impl GameUi {
     pub fn push_nameplates(&mut self, plates: &[Nameplate], config: &NameplateConfig) {
         for plate in plates {
             let rect = UiRect::new(plate.origin.0, plate.origin.1, plate.size.0, plate.size.1);
-            self.list.rect(rect, self.theme.panel);
+            // The selected plate is lit as well as outlined. The outline says where the
+            // target is; the panel says it from across the room.
+            let panel = if plate.is_target {
+                self.theme.target_panel
+            } else {
+                self.theme.panel
+            };
+            self.list.rect(rect, panel);
             if plate.is_target {
                 self.list.outline(
                     rect,

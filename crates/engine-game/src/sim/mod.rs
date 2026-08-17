@@ -784,10 +784,21 @@ impl Simulation {
                         self.player.target = Some(next);
                     }
                 }
+                PlayerCommand::SelectSelf => {
+                    self.player.target = Some(self.player.entity);
+                }
+                PlayerCommand::SelectTarget { entity } => {
+                    // The caller named an entity; the rules of selection are still this
+                    // crate's. A nameplate that outlived its enemy by a frame cannot select a
+                    // corpse, and nothing can be asked to select an ally.
+                    if TargetQuery::is_selectable(&self.world, self.player.entity, entity) {
+                        self.player.target = Some(entity);
+                    }
+                }
                 PlayerCommand::PickTarget { origin, direction } => {
                     // A miss changes nothing: clicking the floor is not a request to have no
                     // target, and `retarget_if_needed` would hand one straight back anyway.
-                    if let Some(picked) = self.targets.pick_hostile(
+                    if let Some(picked) = self.targets.pick_selectable(
                         &self.world,
                         self.player.entity,
                         origin,

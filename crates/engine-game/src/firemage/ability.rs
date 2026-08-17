@@ -657,6 +657,11 @@ pub enum AbilityError {
     NoTarget,
     /// The selected target is dead or gone.
     TargetInvalid,
+    /// The selected target is not something to attack — the player themselves, or an ally.
+    ///
+    /// Selecting yourself is legal and useful; setting yourself on fire is not, and the
+    /// refusal has to say which of the two happened.
+    TargetFriendly,
     /// The target is further away than it reaches.
     OutOfRange,
     /// The target is behind the caster.
@@ -682,6 +687,7 @@ impl AbilityError {
             Self::NotEnoughEnergy => "NOT ENOUGH ENERGY",
             Self::NoTarget => "NO TARGET",
             Self::TargetInvalid => "TARGET IS GONE",
+            Self::TargetFriendly => "THAT IS NOT AN ENEMY",
             Self::OutOfRange => "OUT OF RANGE",
             Self::FacingWrongWay => "YOU ARE FACING THE WRONG DIRECTION.",
             Self::NotEnoughIgnite => "NEEDS MAXIMUM IGNITE",

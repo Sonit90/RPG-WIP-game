@@ -34,6 +34,8 @@ pub struct Bindings {
     pub jump: KeyCode,
     /// Select the next hostile target.
     pub cycle_target: KeyCode,
+    /// Select the player's own character.
+    pub select_self: KeyCode,
     /// Aim the Ultimate. It is not on the bar, so it has a key of its own.
     ///
     /// Kept here beside the rest even though the application is what acts on it: a key that
@@ -56,6 +58,8 @@ impl Default for Bindings {
             right: KeyCode::D,
             jump: KeyCode::Space,
             cycle_target: KeyCode::Tab,
+            // F1, which is where the genre has put "target yourself" for twenty years.
+            select_self: KeyCode::F1,
             ultimate: KeyCode::R,
             // Not `R`: that is the Ultimate. A developer control has no business taking a
             // key the class needs.
@@ -72,7 +76,7 @@ impl Bindings {
     /// ones. A test walks the whole list, which is what stops two actions from quietly
     /// sharing a key again.
     #[must_use]
-    pub fn named_keys(&self) -> [KeyCode; 8] {
+    pub fn named_keys(&self) -> [KeyCode; 9] {
         [
             self.forward,
             self.back,
@@ -80,6 +84,7 @@ impl Bindings {
             self.right,
             self.jump,
             self.cycle_target,
+            self.select_self,
             self.ultimate,
             self.reset_dummies,
         ]
@@ -107,6 +112,7 @@ impl Bindings {
             (self.right, "STRAFE RIGHT"),
             (self.jump, "JUMP"),
             (self.cycle_target, "CYCLE TARGET"),
+            (self.select_self, "TARGET YOURSELF"),
             (self.ultimate, "THE ULTIMATE"),
             (self.reset_dummies, "RESET DUMMIES"),
         ];
@@ -166,6 +172,9 @@ impl Bindings {
 
         if input.was_key_pressed(self.cycle_target) {
             out.push(PlayerCommand::CycleTarget);
+        }
+        if input.was_key_pressed(self.select_self) {
+            out.push(PlayerCommand::SelectSelf);
         }
         if input.was_key_pressed(self.reset_dummies) {
             out.push(PlayerCommand::ResetDummies);
@@ -475,7 +484,10 @@ mod tests {
             let key = Bindings::ability_key(slot).expect("every slot has a default key");
             assert_eq!(bindings.reserved(key), None, "{key:?} cannot be rebound");
         }
-        assert_eq!(bindings.reserved(KeyCode::F1), None);
+        // F1 is claimed now: it is the self-target key, and a slot that took it would take
+        // the one selection a player can always make.
+        assert_eq!(bindings.reserved(KeyCode::F1), Some("TARGET YOURSELF"));
+        assert_eq!(bindings.reserved(KeyCode::F2), None);
     }
 
     #[test]

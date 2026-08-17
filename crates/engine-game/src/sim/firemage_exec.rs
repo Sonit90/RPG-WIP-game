@@ -265,6 +265,23 @@ impl Simulation {
         true
     }
 
+    /// Whether the player's spells may be pointed at `entity`.
+    ///
+    /// Hostile to the caster, which the player themselves is not. Selecting yourself is a
+    /// legal thing to do — every game in the genre lets a player look at their own frame —
+    /// and it must not turn Firebolt into a way to die.
+    #[must_use]
+    pub fn is_attackable(&self, entity: EntityId) -> bool {
+        let caster = self.player.entity;
+        if entity == caster {
+            return false;
+        }
+        self.world
+            .faction(caster)
+            .zip(self.world.faction(entity))
+            .is_some_and(|(mine, theirs)| mine.is_hostile_to(theirs))
+    }
+
     /// Whether `point` lies in the caster's frontal half-circle.
     #[must_use]
     pub fn is_facing(&self, point: Vec3) -> bool {
@@ -313,6 +330,13 @@ impl Simulation {
                 let target = self.player.target.ok_or(AbilityError::NoTarget)?;
                 if !self.world.is_alive(target) {
                     return Err(AbilityError::TargetInvalid);
+                }
+                // Selecting yourself is legal; burning yourself is not. Checked here rather
+                // than left to the selection rules, because what a target may be *used for*
+                // belongs to the ability and a future friendly spell would want the opposite
+                // answer from the same selection.
+                if !self.is_attackable(target) {
+                    return Err(AbilityError::TargetFriendly);
                 }
                 let distance = self
                     .world
@@ -848,8 +872,12 @@ impl Simulation {
         self.hits.clear();
         match definition.target {
             TargetMode::Single => {
+                // Alive *and* an enemy: `try_cast` refused a friendly target already, and
+                // this is the second of the two places that must agree about who a
+                // single-target spell lands on.
                 if let Some(target) = self.player.target
                     && self.world.is_alive(target)
+                    && self.is_attackable(target)
                 {
                     self.hits.push(target);
                 }

@@ -212,7 +212,30 @@ impl TargetQuery {
         }
     }
 
-    /// The nearest living hostile a ray passes through, if it passes through one.
+    /// Whether `viewer` is allowed to select `candidate`.
+    ///
+    /// Itself, or anything living and hostile to it. One function, so the click, the
+    /// nameplate and the cycle cannot disagree about what a legal selection is — and so
+    /// "the player can select themselves" is one rule rather than an exception in three
+    /// places.
+    ///
+    /// Selecting yourself is not an attack. What an ability does with a friendly target is
+    /// the ability's business, and the FireMage's single-target spells refuse one.
+    #[must_use]
+    pub fn is_selectable(world: &GameWorld, viewer: EntityId, candidate: EntityId) -> bool {
+        if !world.is_alive(candidate) {
+            return false;
+        }
+        if candidate == viewer {
+            return true;
+        }
+        world
+            .faction(viewer)
+            .zip(world.faction(candidate))
+            .is_some_and(|(mine, theirs)| mine.is_hostile_to(theirs))
+    }
+
+    /// The nearest selectable body a ray passes through, if it passes through one.
     ///
     /// The gameplay half of clicking on something. Presentation owns the camera and turns a
     /// cursor position into a ray; this owns *what a ray hits*, which is a question about
@@ -224,24 +247,21 @@ impl TargetQuery {
     ///
     /// Nearest along the ray wins, not nearest to the camera: two enemies in a line are
     /// picked front to back, which is what pointing at the front one means.
-    pub fn pick_hostile(
+    ///
+    /// The viewer's own body is a candidate. Clicking your character selects you, which is
+    /// how every game in the genre lets a player look at themselves — and the reason a ray
+    /// that starts *inside* a body reports a hit at zero rather than missing.
+    pub fn pick_selectable(
         &self,
         world: &GameWorld,
         from: EntityId,
         origin: engine_core::math::Vec3,
         direction: engine_core::math::Vec3,
     ) -> Option<EntityId> {
-        let faction = world.faction(from)?;
         let mut best: Option<(f32, EntityId)> = None;
 
         for candidate in world.entities() {
-            if candidate == from || !world.is_alive(candidate) {
-                continue;
-            }
-            if !world
-                .faction(candidate)
-                .is_some_and(|other| faction.is_hostile_to(other))
-            {
+            if !Self::is_selectable(world, from, candidate) {
                 continue;
             }
             let Some(position) = world.position(candidate) else {
@@ -256,6 +276,13 @@ impl TargetQuery {
             ) else {
                 continue;
             };
+            // A camera zoomed all the way in sits inside its own character, and every ray it
+            // casts starts inside that body. Selecting yourself with every click because the
+            // camera is in your head is not what the player meant — and a body the ray starts
+            // inside is a body they cannot see to click on.
+            if candidate == from && distance <= 0.0 {
+                continue;
+            }
             // The id is the tie-break for the same reason it is everywhere else in this file:
             // two bodies at exactly the same depth must not swap between runs.
             let better = match best {
@@ -482,23 +509,25 @@ mod tests {
     fn a_ray_down_the_line_of_dummies_picks_the_nearest_one() {
         let (world, player, dummies) = world();
         let query = TargetQuery::with_capacity(8);
-        // From above and behind, looking down at the nearest one: the camera's own angle.
-        let origin = Vec3::new(0.0, 3.0, 4.0);
-        let direction = Vec3::new(0.0, -2.0, -6.0);
+        // From above, in front of the player's own body, looking down the line of dummies.
+        // Started past the player deliberately: the player is selectable too, and a ray that
+        // crossed them would be picking them rather than what it is aimed along.
+        let origin = Vec3::new(0.0, 3.0, -0.5);
+        let direction = Vec3::new(0.0, -2.0, -2.0);
         assert_eq!(
-            query.pick_hostile(&world, player, origin, direction),
+            query.pick_selectable(&world, player, origin, direction),
             Some(dummies[0]),
             "a ray through three bodies picked something other than the first"
         );
     }
 
     #[test]
-    fn a_ray_that_meets_nothing_picks_nothing_and_the_caster_is_never_picked() {
+    fn a_ray_that_meets_nothing_picks_nothing() {
         let (world, player, _) = world();
         let query = TargetQuery::with_capacity(8);
         // Off to one side, past everything.
         assert_eq!(
-            query.pick_hostile(
+            query.pick_selectable(
                 &world,
                 player,
                 Vec3::new(50.0, 1.0, 0.0),
@@ -506,15 +535,41 @@ mod tests {
             ),
             None
         );
-        // Straight down onto the player's own head: the caster is not a target.
+    }
+
+    #[test]
+    fn clicking_your_own_character_selects_you() {
+        // The one selection that is always available, and the reason the picker considers the
+        // viewer's own body at all.
+        let (world, player, _) = world();
+        let query = TargetQuery::with_capacity(8);
         assert_eq!(
-            query.pick_hostile(
+            query.pick_selectable(
                 &world,
                 player,
                 Vec3::new(0.0, 10.0, 0.0),
                 Vec3::new(0.0, -1.0, 0.0)
             ),
-            None
+            Some(player)
+        );
+        assert!(TargetQuery::is_selectable(&world, player, player));
+    }
+
+    #[test]
+    fn a_camera_inside_its_own_character_does_not_select_it() {
+        // Zoomed all the way in, the ray starts inside the player's own body. Selecting
+        // yourself with every click because the camera is in your head is not a click.
+        let (world, player, dummies) = world();
+        let query = TargetQuery::with_capacity(8);
+        assert_eq!(
+            query.pick_selectable(
+                &world,
+                player,
+                Vec3::new(0.0, 1.0, 0.0),
+                Vec3::new(0.0, 0.0, -1.0)
+            ),
+            Some(dummies[0]),
+            "the body the ray started inside was picked instead of what it points at"
         );
     }
 
@@ -526,12 +581,12 @@ mod tests {
         let query = TargetQuery::with_capacity(8);
         let above = Vec3::new(0.0, 20.0, -4.0);
         assert_eq!(
-            query.pick_hostile(&world, player, above, Vec3::new(0.0, -1.0, 0.0)),
+            query.pick_selectable(&world, player, above, Vec3::new(0.0, -1.0, 0.0)),
             Some(dummies[1])
         );
         // And a hand's width to the side of it hits nothing at all.
         assert_eq!(
-            query.pick_hostile(
+            query.pick_selectable(
                 &world,
                 player,
                 Vec3::new(6.0, 20.0, -4.0),
@@ -543,15 +598,15 @@ mod tests {
 
     #[test]
     fn a_ray_pointing_away_from_a_body_does_not_pick_it() {
-        // Between the player and the first dummy, looking back the way the dummies are not.
+        // Off to the side, pointing further off to the side: everything is behind the ray.
         let (world, player, _) = world();
         let query = TargetQuery::with_capacity(8);
         assert_eq!(
-            query.pick_hostile(
+            query.pick_selectable(
                 &world,
                 player,
-                Vec3::new(0.0, 1.0, -1.0),
-                Vec3::new(0.0, 0.0, 1.0)
+                Vec3::new(5.0, 1.0, -4.0),
+                Vec3::new(1.0, 0.0, 0.0)
             ),
             None,
             "a body behind the ray's origin was picked"
@@ -562,15 +617,15 @@ mod tests {
     fn a_dead_body_cannot_be_clicked() {
         let (mut world, player, dummies) = world();
         let query = TargetQuery::with_capacity(8);
-        let origin = Vec3::new(0.0, 3.0, 4.0);
-        let direction = Vec3::new(0.0, -2.0, -6.0);
+        let origin = Vec3::new(0.0, 3.0, -0.5);
+        let direction = Vec3::new(0.0, -2.0, -2.0);
         assert_eq!(
-            query.pick_hostile(&world, player, origin, direction),
+            query.pick_selectable(&world, player, origin, direction),
             Some(dummies[0])
         );
         world.damage(dummies[0], 1_000.0);
         assert_eq!(
-            query.pick_hostile(&world, player, origin, direction),
+            query.pick_selectable(&world, player, origin, direction),
             Some(dummies[1]),
             "a corpse was clicked"
         );
