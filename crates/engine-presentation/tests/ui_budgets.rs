@@ -31,6 +31,9 @@ use engine_presentation::snapshot::UiSnapshot;
 use engine_render_data::ui::UiCommand;
 use engine_render_data::{Camera, Projection};
 
+/// One frame of real time, for the nameplate layout's smoothing.
+const FRAME: f32 = 1.0 / 60.0;
+
 const VIEWPORT: (u32, u32) = (1920, 1080);
 
 /// Commands a full combat HUD may produce.
@@ -77,7 +80,7 @@ fn build_frame(simulation: &Simulation, numbers: &FloatingNumbers, now: f32) -> 
     let config = NameplateConfig::default();
     let view_projection = camera_for(simulation);
     let mut plates = NameplateSet::with_capacity(32);
-    plates.build(simulation, &view_projection, VIEWPORT, &config);
+    plates.build(simulation, &view_projection, VIEWPORT, &config, FRAME);
 
     let snapshot = UiSnapshot::build(simulation);
     let mut ui = GameUi::new();
@@ -156,7 +159,7 @@ fn a_steady_hud_allocates_nothing_after_the_first_frame() {
     let mut snapshot = UiSnapshot::build(&simulation);
 
     for _ in 0..50 {
-        plates.build(&simulation, &view_projection, VIEWPORT, &config);
+        plates.build(&simulation, &view_projection, VIEWPORT, &config, FRAME);
         snapshot.refresh(&simulation, None);
         ui.build(&snapshot, plates.plates(), &config, VIEWPORT);
         ui.push_damage_numbers(&numbers, &view_projection, VIEWPORT, now);
@@ -165,7 +168,7 @@ fn a_steady_hud_allocates_nothing_after_the_first_frame() {
     let plate_capacity = plates.capacity();
 
     for _ in 0..1_000 {
-        plates.build(&simulation, &view_projection, VIEWPORT, &config);
+        plates.build(&simulation, &view_projection, VIEWPORT, &config, FRAME);
         snapshot.refresh(&simulation, None);
         ui.build(&snapshot, plates.plates(), &config, VIEWPORT);
         ui.push_damage_numbers(&numbers, &view_projection, VIEWPORT, now);

@@ -219,6 +219,8 @@ pub struct Slider {
     maximum: f32,
     step: f32,
     value: f32,
+    /// How many decimal places the value is printed to.
+    decimals: usize,
 }
 
 impl Slider {
@@ -249,9 +251,28 @@ impl Slider {
             maximum,
             step,
             value: minimum,
+            decimals: 2,
         };
         slider.set_value(value);
         slider
+    }
+
+    /// The same slider, printing its value to `decimals` places.
+    ///
+    /// Two by default, which is what a sensitivity or a volume wants. A setting whose step is
+    /// a whole number prints none: `11.00` for a size of eleven is three characters of noise,
+    /// and a number printed to more places than its step can reach is one the player cannot
+    /// land on.
+    #[must_use]
+    pub fn with_decimals(mut self, decimals: usize) -> Self {
+        self.decimals = decimals.min(4);
+        self
+    }
+
+    /// How many decimal places its value is printed to.
+    #[must_use]
+    pub fn decimals(&self) -> usize {
+        self.decimals
     }
 
     /// The same slider, disabled.

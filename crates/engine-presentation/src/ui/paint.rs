@@ -155,6 +155,30 @@ pub fn push_menu(
         MenuScreen::None => {}
         MenuScreen::Pause => push_pause(list, menu, theme, viewport, scale),
         MenuScreen::Settings => push_settings(list, menu, theme, scratch, viewport, scale),
+        MenuScreen::Nameplates => push_nameplates(list, menu, theme, scratch, viewport, scale),
+    }
+}
+
+/// The nameplate section: six sliders and a way back, in the same form as the settings.
+///
+/// A separate function only because the panel and the title differ; every widget on it is
+/// drawn by exactly the code that draws the settings screen's, so the two cannot drift apart
+/// visually.
+fn push_nameplates(
+    list: &mut UiDrawList,
+    menu: &MenuSystem,
+    theme: &MenuTheme,
+    scratch: &mut MenuScratch,
+    viewport: (u32, u32),
+    scale: UiScale,
+) {
+    let panel = menu.nameplate_panel();
+    push_backdrop(list, theme, viewport, panel, "NAMEPLATES", scale);
+    for (_, widget) in menu.nameplate_screen().widgets() {
+        match widget {
+            Widget::Slider(slider) => push_slider(list, slider, theme, scratch, scale),
+            _ => push_widget(list, widget, theme, scale),
+        }
     }
 }
 
@@ -359,9 +383,10 @@ fn push_slider(
 
     push_track(list, slider, theme, scale);
 
-    // The bounds, printed at the ends of the thing they bound.
-    write_hundredths(&mut scratch.minimum, slider.minimum());
-    write_hundredths(&mut scratch.maximum, slider.maximum());
+    // The bounds, printed at the ends of the thing they bound, to the same precision as the
+    // value between them: `0.10` beside `5.00` reads as a range, `0` beside `5.00` does not.
+    write_decimals(&mut scratch.minimum, slider.minimum(), slider.decimals());
+    write_decimals(&mut scratch.maximum, slider.maximum(), slider.decimals());
     let baseline = track.y + (track.height - 7.0 * scale.text(theme.value_scale)) * 0.5;
     list.text_aligned(
         (track.x - scale.px(10.0), baseline),
@@ -378,7 +403,7 @@ fn push_slider(
     );
 
     // The current value, under the handle, so the number and the position agree.
-    write_hundredths(&mut scratch.value, slider.value());
+    write_decimals(&mut scratch.value, slider.value(), slider.decimals());
     let handle = handle_rect(slider, theme, scale);
     let (origin, align) = centre_text(
         handle.x + handle.width * 0.5,
@@ -421,9 +446,18 @@ fn centre_text(x: f32, y: f32) -> ((f32, f32), TextAlign) {
 /// `format!` would allocate a `String` per number, and the settings screen prints three of
 /// them every frame it is open.
 pub fn write_hundredths(out: &mut String, value: f32) {
+    write_decimals(out, value, 2);
+}
+
+/// Writes a value to `decimals` places into `out`, replacing what was there.
+///
+/// The precision is the slider's, not this function's: a size of eleven is `11`, and a margin
+/// of 0.93 is `0.93`. `format!` would allocate a `String` per number, and a settings screen
+/// prints three of them per slider every frame it is open.
+pub fn write_decimals(out: &mut String, value: f32, decimals: usize) {
     use std::fmt::Write as _;
     out.clear();
-    let _ = write!(out, "{value:.2}");
+    let _ = write!(out, "{value:.*}", decimals.min(4));
 }
 
 #[cfg(test)]
@@ -544,6 +578,80 @@ mod tests {
         assert!(drawn.contains(&"5.00".to_owned()), "no maximum: {drawn:?}");
         assert!(drawn.contains(&"1.25".to_owned()), "no value: {drawn:?}");
         assert!(drawn.contains(&"BACK".to_owned()), "{drawn:?}");
+    }
+
+    #[test]
+    fn the_nameplate_screen_prints_its_settings_in_the_form_the_reference_uses() {
+        use crate::ui::menu::{NameplateItem, SettingsItem};
+        use engine_settings::NameplateSetting;
+
+        let mut menu = menu();
+        menu.open_pause();
+        open_settings(&mut menu);
+        // Into the nameplate section.
+        let rect = menu
+            .settings_screen()
+            .widget(SettingsItem::Nameplates)
+            .expect("the NAMEPLATES button exists")
+            .rect();
+        let (x, y) = (rect.x + rect.width * 0.5, rect.y + rect.height * 0.5);
+        menu.update(&UiInput {
+            pointer: (x, y),
+            pointer_down: true,
+            pointer_pressed: true,
+            ..UiInput::new()
+        });
+        menu.update(&UiInput {
+            pointer: (x, y),
+            pointer_released: true,
+            ..UiInput::new()
+        });
+
+        let drawn = texts(&render(&menu));
+        assert!(drawn.contains(&"NAMEPLATES".to_owned()), "{drawn:?}");
+        for setting in NameplateSetting::ALL {
+            assert!(
+                drawn.contains(&setting.label().to_owned()),
+                "{setting:?} has no label: {drawn:?}"
+            );
+        }
+        // The defaults, printed exactly as the reference layout prints them: whole numbers
+        // for the three that step in whole numbers, hundredths for the three that do not.
+        for expected in ["11", "4", "40", "0.93", "0.63", "0.07"] {
+            assert!(
+                drawn.contains(&expected.to_owned()),
+                "no {expected} on the screen: {drawn:?}"
+            );
+        }
+        assert!(drawn.contains(&"BACK".to_owned()), "{drawn:?}");
+
+        // And every slider's handle is on its own track.
+        let theme = MenuTheme::default();
+        for setting in NameplateSetting::ALL {
+            let Some(Widget::Slider(slider)) = menu
+                .nameplate_screen()
+                .widget(NameplateItem::Setting(setting))
+            else {
+                panic!("{setting:?} is not a slider");
+            };
+            let handle = handle_rect(slider, &theme, menu.scale());
+            assert!(handle.x >= slider.rect.x - 0.01, "{setting:?}");
+            assert!(handle.right() <= slider.rect.right() + 0.01, "{setting:?}");
+        }
+    }
+
+    #[test]
+    fn a_value_is_printed_to_the_places_its_slider_asks_for() {
+        let mut out = String::new();
+        write_decimals(&mut out, 11.0, 0);
+        assert_eq!(out, "11");
+        write_decimals(&mut out, 0.93, 2);
+        assert_eq!(out, "0.93");
+        write_decimals(&mut out, 40.0, 0);
+        assert_eq!(out, "40");
+        // The old two-place helper is the same function with a fixed precision.
+        write_hundredths(&mut out, 1.5);
+        assert_eq!(out, "1.50");
     }
 
     #[test]

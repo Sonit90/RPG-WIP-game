@@ -25,7 +25,8 @@
 use engine_render_data::ui::{UiRect, UiScale};
 use engine_settings::{
     CAMERA_SENSITIVITY_MAX, CAMERA_SENSITIVITY_MIN, CAMERA_SENSITIVITY_STEP, GameSettings,
-    UI_SCALE_MAX, UI_SCALE_MIN, UI_SCALE_STEP, VOLUME_MAX, VOLUME_MIN, VOLUME_STEP,
+    NameplateSetting, UI_SCALE_MAX, UI_SCALE_MIN, UI_SCALE_STEP, VOLUME_MAX, VOLUME_MIN,
+    VOLUME_STEP,
 };
 
 use super::input::UiInput;
@@ -42,6 +43,12 @@ pub enum MenuScreen {
     Pause,
     /// The settings screen.
     Settings,
+    /// The nameplate section of the settings.
+    ///
+    /// Its own screen rather than six more rows on the settings panel: twelve sliders in one
+    /// column is taller than a 720p window, and the reference layout gives nameplates a page
+    /// of their own for the same reason.
+    Nameplates,
 }
 
 impl MenuScreen {
@@ -83,7 +90,21 @@ pub enum SettingsItem {
     UiVolume,
     /// How loud the environment bed is.
     AmbientVolume,
+    /// Opens the nameplate section.
+    Nameplates,
     /// Returns to the pause menu.
+    Back,
+}
+
+/// The nameplate screen's items, in layout order.
+///
+/// The six sliders are [`NameplateSetting`]s, which is one enum from the file through the
+/// screen to the application; only the button that leaves the screen is this screen's own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NameplateItem {
+    /// One of the six settings.
+    Setting(NameplateSetting),
+    /// Returns to the settings screen.
     Back,
 }
 
@@ -151,6 +172,17 @@ pub enum MenuAction {
     VolumeChanged(VolumeChannel, f32),
     /// A volume settled on this value. Apply it and persist it.
     VolumeCommitted(VolumeChannel, f32),
+    /// The nameplate screen opened.
+    OpenedNameplates,
+    /// The nameplate screen closed back to the settings screen.
+    ClosedNameplates,
+    /// A nameplate setting is being dragged and now reads this. Apply it; do not save it.
+    ///
+    /// Applied while dragging, like the interface size and the volumes: every one of these
+    /// six changes something the player is looking at while they drag it.
+    NameplateChanged(NameplateSetting, f32),
+    /// A nameplate setting settled on this value. Apply it and persist it.
+    NameplateCommitted(NameplateSetting, f32),
 }
 
 /// The value one volume channel currently has.
@@ -217,6 +249,9 @@ const VOLUME_SLIDERS: [(SettingsItem, VolumeChannel); 4] = [
 
 /// How many sliders the settings panel must make room for.
 const SLIDER_COUNT: f32 = SLIDERS.len() as f32;
+
+/// How many sliders the nameplate panel must make room for.
+const NAMEPLATE_SLIDER_COUNT: f32 = NameplateSetting::ALL.len() as f32;
 
 /// Every menu measurement, converted from its design size to physical pixels once.
 ///
@@ -287,6 +322,7 @@ pub struct MenuSystem {
     title: &'static str,
     pause: UiScreen<PauseItem>,
     settings: UiScreen<SettingsItem>,
+    nameplates: UiScreen<NameplateItem>,
     /// This frame's actions. Cleared every update, never freed.
     actions: Vec<MenuAction>,
     /// The viewport the current layout was computed for.
@@ -342,13 +378,34 @@ impl MenuSystem {
                 ),
             );
         }
+        settings_screen.push(SettingsItem::Nameplates, Button::new("NAMEPLATES"));
         settings_screen.push(SettingsItem::Back, Button::new("BACK"));
+
+        // The nameplate section. Every slider is built from the setting itself — its label,
+        // its bounds, its step and how many decimals it prints — so adding a seventh is a
+        // row in `NameplateSetting::ALL` and nothing here.
+        let mut nameplate_screen = UiScreen::new();
+        for setting in NameplateSetting::ALL {
+            nameplate_screen.push(
+                NameplateItem::Setting(setting),
+                Slider::new(
+                    setting.label(),
+                    setting.minimum(),
+                    setting.maximum(),
+                    setting.step(),
+                    settings.nameplates.get(setting),
+                )
+                .with_decimals(setting.decimals()),
+            );
+        }
+        nameplate_screen.push(NameplateItem::Back, Button::new("BACK"));
 
         let mut system = Self {
             screen: MenuScreen::None,
             title,
             pause,
             settings: settings_screen,
+            nameplates: nameplate_screen,
             actions: Vec::with_capacity(4),
             viewport: (0, 0),
             metrics: MenuMetrics::new(UiScale::new(settings.ui_scale)),
@@ -396,6 +453,21 @@ impl MenuSystem {
         }
     }
 
+    /// The nameplate screen's widgets, for drawing.
+    #[must_use]
+    pub fn nameplate_screen(&self) -> &UiScreen<NameplateItem> {
+        &self.nameplates
+    }
+
+    /// One nameplate setting's slider.
+    #[must_use]
+    pub fn nameplate_slider(&self, setting: NameplateSetting) -> Option<&Slider> {
+        match self.nameplates.widget(NameplateItem::Setting(setting)) {
+            Some(Widget::Slider(slider)) => Some(slider),
+            _ => None,
+        }
+    }
+
     /// Pushes a settings value into the widgets without emitting anything.
     ///
     /// How loaded settings reach the UI. The slider is a view of the value; the value lives
@@ -412,6 +484,13 @@ impl MenuSystem {
         for (item, channel) in VOLUME_SLIDERS {
             if let Some(Widget::Slider(slider)) = self.settings.widget_mut(item) {
                 slider.set_value(volume_of(settings, channel));
+            }
+        }
+        for setting in NameplateSetting::ALL {
+            if let Some(Widget::Slider(slider)) =
+                self.nameplates.widget_mut(NameplateItem::Setting(setting))
+            {
+                slider.set_value(settings.nameplates.get(setting));
             }
         }
         self.set_scale(UiScale::new(settings.ui_scale));
@@ -471,6 +550,7 @@ impl MenuSystem {
         self.screen = MenuScreen::None;
         self.pause.reset();
         self.settings.reset();
+        self.nameplates.reset();
         self.actions.push(MenuAction::Closed);
     }
 
@@ -485,6 +565,7 @@ impl MenuSystem {
         self.viewport = viewport;
         self.layout_pause(viewport);
         self.layout_settings(viewport);
+        self.layout_nameplates(viewport);
     }
 
     /// The panel the pause menu draws in.
@@ -506,6 +587,20 @@ impl MenuSystem {
             + self.metrics.slider_value_height;
         let content = self.metrics.title_height
             + slider * SLIDER_COUNT
+            + self.metrics.group_gap
+            + self.metrics.button_height * 2.0
+            + self.metrics.button_gap;
+        self.centred_panel(self.viewport, content + self.metrics.padding * 2.0)
+    }
+
+    /// The panel the nameplate screen draws in.
+    #[must_use]
+    pub fn nameplate_panel(&self) -> UiRect {
+        let slider = self.metrics.slider_label_height
+            + self.metrics.track_height
+            + self.metrics.slider_value_height;
+        let content = self.metrics.title_height
+            + slider * NAMEPLATE_SLIDER_COUNT
             + self.metrics.group_gap
             + self.metrics.button_height;
         self.centred_panel(self.viewport, content + self.metrics.padding * 2.0)
@@ -577,8 +672,41 @@ impl MenuSystem {
             y += self.metrics.track_height + self.metrics.slider_value_height;
         }
 
+        // The way into the nameplate section, then the way out of the screen.
+        let mut y = y + self.metrics.group_gap;
+        self.settings.set_rect(
+            SettingsItem::Nameplates,
+            UiRect::new(x, y, width, self.metrics.button_height),
+        );
+        y += self.metrics.button_height + self.metrics.button_gap;
         self.settings.set_rect(
             SettingsItem::Back,
+            UiRect::new(x, y, width, self.metrics.button_height),
+        );
+    }
+
+    fn layout_nameplates(&mut self, viewport: (u32, u32)) {
+        self.viewport = viewport;
+        let panel = self.nameplate_panel();
+        let x = panel.x + self.metrics.padding;
+        let width = panel.width - self.metrics.padding * 2.0;
+        let mut y = panel.y + self.metrics.padding + self.metrics.title_height;
+
+        let track = UiRect::new(
+            x + self.metrics.bound_width,
+            0.0,
+            (width - self.metrics.bound_width * 2.0).max(0.0),
+            self.metrics.track_height,
+        );
+        for setting in NameplateSetting::ALL {
+            y += self.metrics.slider_label_height;
+            self.nameplates
+                .set_rect(NameplateItem::Setting(setting), UiRect { y, ..track });
+            y += self.metrics.track_height + self.metrics.slider_value_height;
+        }
+
+        self.nameplates.set_rect(
+            NameplateItem::Back,
             UiRect::new(
                 x,
                 y + self.metrics.group_gap,
@@ -602,6 +730,7 @@ impl MenuSystem {
             }
             MenuScreen::Pause => self.update_pause(input),
             MenuScreen::Settings => self.update_settings(input),
+            MenuScreen::Nameplates => self.update_nameplates(input),
         }
         &self.actions
     }
@@ -648,6 +777,7 @@ impl MenuSystem {
             return;
         }
         let mut back = false;
+        let mut open_nameplates = false;
         // Collected first: the borrow of the screen's event buffer ends here, and the
         // actions below are pushed onto this system's own.
         let mut sensitivity = (None, None);
@@ -656,6 +786,7 @@ impl MenuSystem {
         for (item, event) in self.settings.update(input) {
             match (item, event) {
                 (SettingsItem::Back, WidgetEvent::Activated) => back = true,
+                (SettingsItem::Nameplates, WidgetEvent::Activated) => open_nameplates = true,
                 (SettingsItem::CameraSensitivity, WidgetEvent::ValueChanged(value)) => {
                     sensitivity.0 = Some(*value);
                 }
@@ -706,8 +837,59 @@ impl MenuSystem {
         if let Some(value) = ui_scale.1 {
             self.actions.push(MenuAction::UiScaleCommitted(value));
         }
+        if open_nameplates {
+            self.screen = MenuScreen::Nameplates;
+            self.settings.reset();
+            self.nameplates.reset();
+            self.actions.push(MenuAction::OpenedNameplates);
+            return;
+        }
         if back {
             self.back_to_pause();
+        }
+    }
+
+    /// The nameplate section: six sliders that all behave the same way, and a way back.
+    ///
+    /// One loop rather than six branches — which setting a value belongs to is data the
+    /// widget is tagged with, so a seventh setting needs nothing here.
+    fn update_nameplates(&mut self, input: &UiInput) {
+        if input.cancel {
+            self.back_to_settings();
+            return;
+        }
+        let mut back = false;
+        let mut changes: [Option<(NameplateSetting, f32, bool)>; NameplateSetting::ALL.len() * 2] =
+            [None; NameplateSetting::ALL.len() * 2];
+        let mut count = 0;
+        for (item, event) in self.nameplates.update(input) {
+            match (item, event) {
+                (NameplateItem::Back, WidgetEvent::Activated) => back = true,
+                (NameplateItem::Setting(setting), WidgetEvent::ValueChanged(value))
+                    if count < changes.len() =>
+                {
+                    changes[count] = Some((*setting, *value, false));
+                    count += 1;
+                }
+                (NameplateItem::Setting(setting), WidgetEvent::ValueCommitted(value))
+                    if count < changes.len() =>
+                {
+                    changes[count] = Some((*setting, *value, true));
+                    count += 1;
+                }
+                _ => {}
+            }
+        }
+        for change in changes.iter().take(count).flatten() {
+            let (setting, value, committed) = *change;
+            self.actions.push(if committed {
+                MenuAction::NameplateCommitted(setting, value)
+            } else {
+                MenuAction::NameplateChanged(setting, value)
+            });
+        }
+        if back {
+            self.back_to_settings();
         }
     }
 
@@ -716,6 +898,15 @@ impl MenuSystem {
         self.settings.reset();
         self.pause.reset();
         self.actions.push(MenuAction::ClosedSettings);
+    }
+
+    /// Escape and BACK from the nameplate section return to the settings screen it was
+    /// opened from, not to the game — the same rule the settings screen itself follows.
+    fn back_to_settings(&mut self) {
+        self.screen = MenuScreen::Settings;
+        self.nameplates.reset();
+        self.settings.reset();
+        self.actions.push(MenuAction::ClosedNameplates);
     }
 }
 
@@ -1208,6 +1399,180 @@ mod tests {
             menu.update(&release(x, y));
         }
         assert_eq!(menu.actions.capacity(), capacity, "the menu reallocated");
+    }
+
+    /// Opens the pause menu, the settings screen and then the nameplate section.
+    fn open_nameplates(menu: &mut MenuSystem) {
+        menu.open_pause();
+        click_pause(menu, PauseItem::Settings);
+        click_settings(menu, SettingsItem::Nameplates);
+    }
+
+    fn nameplate_track(menu: &MenuSystem, setting: NameplateSetting) -> UiRect {
+        menu.nameplate_screen()
+            .widget(NameplateItem::Setting(setting))
+            .expect("every setting has a slider")
+            .rect()
+    }
+
+    #[test]
+    fn the_settings_screen_opens_the_nameplate_section_and_escape_returns_to_it() {
+        let mut menu = menu();
+        menu.open_pause();
+        click_pause(&mut menu, PauseItem::Settings);
+
+        let opened = click_settings(&mut menu, SettingsItem::Nameplates);
+        assert_eq!(opened, [MenuAction::OpenedNameplates]);
+        assert_eq!(menu.screen(), MenuScreen::Nameplates);
+
+        // Escape goes back one screen, not out to the game: the same rule the settings
+        // screen itself follows.
+        let closed = menu.update(&escape()).to_vec();
+        assert_eq!(closed, [MenuAction::ClosedNameplates]);
+        assert_eq!(menu.screen(), MenuScreen::Settings);
+
+        // And so does BACK.
+        click_settings(&mut menu, SettingsItem::Nameplates);
+        let (x, y) = {
+            let rect = nameplate_track(&menu, NameplateSetting::Size);
+            let _ = rect;
+            let back = menu
+                .nameplate_screen()
+                .widget(NameplateItem::Back)
+                .expect("BACK exists")
+                .rect();
+            (back.x + back.width * 0.5, back.y + back.height * 0.5)
+        };
+        menu.update(&press(x, y));
+        let closed = menu.update(&release(x, y)).to_vec();
+        assert_eq!(closed, [MenuAction::ClosedNameplates]);
+        assert_eq!(menu.screen(), MenuScreen::Settings);
+    }
+
+    #[test]
+    fn every_nameplate_setting_has_a_slider_showing_its_bounds_and_its_value() {
+        let mut menu = menu();
+        open_nameplates(&mut menu);
+        for setting in NameplateSetting::ALL {
+            let slider = menu.nameplate_slider(setting).expect("a slider");
+            assert_eq!(slider.minimum(), setting.minimum(), "{setting:?}");
+            assert_eq!(slider.maximum(), setting.maximum(), "{setting:?}");
+            assert_eq!(slider.step(), setting.step(), "{setting:?}");
+            assert_eq!(slider.value(), setting.default_value(), "{setting:?}");
+            assert_eq!(slider.decimals(), setting.decimals(), "{setting:?}");
+        }
+    }
+
+    #[test]
+    fn dragging_a_nameplate_slider_reports_that_setting_and_no_other() {
+        let mut menu = menu();
+        open_nameplates(&mut menu);
+        let track = nameplate_track(&menu, NameplateSetting::HeightAboveHead);
+        let (x, y) = (track.x + track.width * 0.75, track.y + track.height * 0.5);
+
+        let dragged = menu.update(&press(x, y)).to_vec();
+        assert!(
+            dragged.iter().any(|action| matches!(
+                action,
+                MenuAction::NameplateChanged(NameplateSetting::HeightAboveHead, _)
+            )),
+            "{dragged:?}"
+        );
+        assert_eq!(dragged.len(), 1, "another slider moved too: {dragged:?}");
+
+        let released = menu.update(&release(x, y)).to_vec();
+        assert!(
+            released.iter().any(|action| matches!(
+                action,
+                MenuAction::NameplateCommitted(NameplateSetting::HeightAboveHead, _)
+            )),
+            "{released:?}"
+        );
+    }
+
+    #[test]
+    fn a_nameplate_slider_never_leaves_its_settings_range() {
+        let mut menu = menu();
+        open_nameplates(&mut menu);
+        let track = nameplate_track(&menu, NameplateSetting::TopSafeZone);
+        let y = track.y + track.height * 0.5;
+
+        menu.update(&press(track.x, y));
+        for x in [-9_000.0, 0.0, track.x, track.right(), 9_000.0] {
+            menu.update(&hold(x, y));
+            let value = menu
+                .nameplate_slider(NameplateSetting::TopSafeZone)
+                .expect("a slider")
+                .value();
+            assert!(
+                (NameplateSetting::TopSafeZone.minimum()..=NameplateSetting::TopSafeZone.maximum())
+                    .contains(&value),
+                "{value} at x={x}"
+            );
+        }
+    }
+
+    #[test]
+    fn loaded_nameplate_settings_reach_their_sliders_without_reporting_a_change() {
+        let mut menu = menu();
+        let settings = GameSettings {
+            nameplates: engine_settings::NameplateSettings::default()
+                .with(NameplateSetting::Size, 18.0)
+                .with(NameplateSetting::VerticalMargin, 1.5),
+            ..GameSettings::default()
+        };
+        menu.apply_settings(settings);
+
+        assert_eq!(
+            menu.nameplate_slider(NameplateSetting::Size)
+                .expect("a slider")
+                .value(),
+            18.0
+        );
+        assert_eq!(
+            menu.nameplate_slider(NameplateSetting::VerticalMargin)
+                .expect("a slider")
+                .value(),
+            1.5
+        );
+        assert!(
+            menu.update(&at(0.0, 0.0)).is_empty(),
+            "applying settings emitted"
+        );
+    }
+
+    #[test]
+    fn the_nameplate_screen_stacks_its_sliders_inside_its_panel_without_overlapping() {
+        let mut menu = menu();
+        for viewport in [(1280, 720), (1920, 1080), (3840, 2160)] {
+            menu.layout(viewport);
+            let panel = menu.nameplate_panel();
+            let mut previous: Option<UiRect> = None;
+            for setting in NameplateSetting::ALL {
+                let rect = nameplate_track(&menu, setting);
+                assert!(rect.y >= panel.y, "{setting:?} escaped the top");
+                assert!(rect.bottom() <= panel.bottom(), "{setting:?} escaped below");
+                assert!(rect.x >= panel.x, "{setting:?} escaped left");
+                assert!(
+                    rect.right() <= panel.right() + 0.01,
+                    "{setting:?} escaped right"
+                );
+                if let Some(above) = previous {
+                    assert!(
+                        rect.y > above.bottom(),
+                        "{setting:?} overlaps the one above"
+                    );
+                }
+                previous = Some(rect);
+            }
+            let back = menu
+                .nameplate_screen()
+                .widget(NameplateItem::Back)
+                .expect("BACK exists")
+                .rect();
+            assert!(back.y > previous.expect("a slider").bottom());
+            assert!(back.bottom() <= panel.bottom());
+        }
     }
 
     #[test]

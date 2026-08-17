@@ -66,8 +66,8 @@ use engine_renderer::{
     Camera, Lighting, MaterialDesc, MaterialHandle, MeshHandle, Projection, Renderer,
     RendererConfig, UiDrawList,
 };
-use engine_settings::SettingsManager;
 use engine_settings::hud::HudConfigManager;
+use engine_settings::{NameplateSetting, SettingsManager};
 
 use crate::args::{Args, Scene};
 use crate::audio_device::AudioHost;
@@ -278,6 +278,12 @@ pub struct App {
     ui_ms: f64,
     /// This frame's nameplates. Reused; never freed.
     nameplates: NameplateSet,
+    /// How long the last frame took, in seconds of real time.
+    ///
+    /// Kept on the application because the UI is built after the camera, in a stage that does
+    /// not carry the engine's context — and the nameplate layout needs a time step to smooth
+    /// with. Real time, not simulated: this is how fast the *screen* is updating.
+    frame_seconds: f32,
     /// What the UI is allowed to know about the simulation, rebuilt each frame.
     snapshot: UiSnapshot,
     /// The game UI's layout. Owns its draw list across frames.
@@ -517,10 +523,11 @@ impl App {
         // with a different lifetime: it changes while the game runs and it is written back.
         let game_settings = SettingsManager::load_from_game_directory();
         log::info!(
-            "settings: {} (camera sensitivity {:.2}, interface size {:.2})",
+            "settings: {} (camera sensitivity {:.2}, interface size {:.2}, nameplate size {:.0})",
             game_settings.path().display(),
             game_settings.settings().camera_sensitivity,
-            game_settings.settings().ui_scale
+            game_settings.settings().ui_scale,
+            game_settings.settings().nameplates.size
         );
         let ui_scale = UiScale::new(game_settings.settings().ui_scale);
 
@@ -659,6 +666,7 @@ impl App {
             vfx_ms: 0.0,
             ui_ms: 0.0,
             nameplates: NameplateSet::with_capacity(32),
+            frame_seconds: 0.0,
             snapshot,
             game_ui: GameUi::with_scale(ui_scale),
             numbers: FloatingNumbers::new(),
@@ -1183,6 +1191,20 @@ impl App {
                 MenuAction::VolumeCommitted(channel, value) => {
                     self.apply_volume(channel, value, true);
                 }
+                MenuAction::OpenedNameplates => {
+                    self.play_ui_sound(engine_audio::SoundId::UiClick);
+                    // The screen shows what is in the settings, not what it last showed.
+                    self.menu.apply_settings(self.settings.settings());
+                }
+                MenuAction::ClosedNameplates => {
+                    self.play_ui_sound(engine_audio::SoundId::UiCancel);
+                }
+                MenuAction::NameplateChanged(setting, value) => {
+                    self.apply_nameplate(setting, value, false);
+                }
+                MenuAction::NameplateCommitted(setting, value) => {
+                    self.apply_nameplate(setting, value, true);
+                }
             }
         }
     }
@@ -1225,6 +1247,22 @@ impl App {
             log::info!(
                 "settings: interface size {:.2} saved",
                 self.settings.settings().ui_scale
+            );
+        }
+    }
+
+    /// Applies a nameplate setting, and writes it to disk if the interaction has finished.
+    ///
+    /// Nothing else has to happen: the plates are rebuilt from the settings every frame, so
+    /// the next one already uses the new value. That is the same property the layout depends
+    /// on — a nameplate is recomputed from the world rather than stored anywhere — and it is
+    /// why dragging one of these sliders shows the effect while the pointer is still down.
+    fn apply_nameplate(&mut self, setting: NameplateSetting, value: f32, persist: bool) {
+        self.settings.set_nameplate(setting, value);
+        if persist && self.settings.save_if_dirty() {
+            log::info!(
+                "settings: nameplate {setting:?} {:.2} saved",
+                self.settings.settings().nameplates.get(setting)
             );
         }
     }
@@ -1446,18 +1484,31 @@ impl App {
         // off the HUD rather than the settings means there is one answer, not two.
         let scale = self.game_ui.scale();
         let text = scale.text(UI_TEXT_SCALE);
+        // The player's own nameplate size, on top of the interface scale: the first is what
+        // the whole HUD is drawn at, the second is what they asked nameplates in particular
+        // to be, and multiplying them is what makes a plate readable at a size the rest of
+        // the interface would be unusable at.
+        let nameplates = self.settings.settings().nameplates;
+        let text = text * nameplates.text_scale();
         let config = NameplateConfig {
             cell_pixels: text,
             glyph_advance_pixels: engine_renderer::font::GLYPH_ADVANCE as f32 * text,
             line_advance_pixels: engine_renderer::font::LINE_ADVANCE as f32 * text,
             glyph_height_pixels: engine_renderer::font::GLYPH_HEIGHT as f32 * text,
-            padding_pixels: scale.px(NameplateConfig::default().padding_pixels),
+            padding_pixels: scale.px(NameplateConfig::default().padding_pixels)
+                * nameplates.text_scale(),
             ..NameplateConfig::default()
-        };
+        }
+        .with_settings(nameplates);
 
         let view_projection = self.camera.view_projection();
-        self.nameplates
-            .build(&self.simulation, &view_projection, viewport, &config);
+        self.nameplates.build(
+            &self.simulation,
+            &view_projection,
+            viewport,
+            &config,
+            self.frame_seconds,
+        );
 
         self.snapshot
             .refresh(&self.simulation, self.aiming_ability());
@@ -2466,6 +2517,8 @@ impl Application for App {
         // is drawn. Nothing happens unless something crossed a threshold: for a still camera
         // this is one subtract and one compare per object over a few hundred objects, which
         // is why it is not on an interval.
+        self.frame_seconds = ctx.time().real_delta().as_secs_f32();
+
         if self.environment.is_some() {
             engine_core::profile_scope!(profiler, "Environment");
             self.placer.update_lod(

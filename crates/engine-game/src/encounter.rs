@@ -366,7 +366,11 @@ mod tests {
     fn an_alarm_outlives_the_member_that_raised_it_but_not_the_pack_going_home() {
         let mut encounter = encounter();
         encounter.set_members(vec![EntityId::new(1, 1), EntityId::new(2, 1)]);
-        assert_eq!(encounter.alarm(), None, "a quiet pack has nothing to answer");
+        assert_eq!(
+            encounter.alarm(),
+            None,
+            "a quiet pack has nothing to answer"
+        );
 
         let killer = EntityId::new(0, 1);
         encounter.raise_alarm(killer);

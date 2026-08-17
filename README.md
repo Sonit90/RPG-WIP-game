@@ -123,6 +123,7 @@ crates/
   engine-showcase/    visual test bed for the renderer (bin: showcase) — never shipped
 docs/                 architecture, phase logs, testing, performance, memory, threading
 collision.md          the collision phase: design, decisions, benchmarks, limitations
+nameplates.md         nameplate settings and the minimal-displacement stacking layout
 tools/                package.ps1 — builds and verifies a clean release distribution
 ```
 

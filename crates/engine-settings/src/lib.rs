@@ -32,6 +32,8 @@
 
 /// The interface layout the player arranged: action bars, unit frames and their file.
 pub mod hud;
+/// How nameplates are sized, placed and separated.
+pub mod nameplate;
 
 use std::fs;
 use std::io;
@@ -44,6 +46,7 @@ pub use hud::{
     HUD_SCALE_DEFAULT, HUD_SCALE_MAX, HUD_SCALE_MIN, HUD_SCALE_STEP, HudAnchor, HudConfig,
     HudConfigManager, HudFrames, HudOrientation, HudPlacement, HudSlotConfig,
 };
+pub use nameplate::{NameplateSetting, NameplateSettings};
 
 /// Name of the settings file. JSON content; the extension is deliberately not `.json`.
 pub const SETTINGS_FILE_NAME: &str = "settings.cfg";
@@ -143,6 +146,13 @@ pub struct GameSettings {
     pub ui_volume: f32,
     /// How loud the environment bed is.
     pub ambient_volume: f32,
+    /// How nameplates are sized, placed and separated.
+    ///
+    /// A nested object rather than six more flat fields: nameplates are a screenful of
+    /// related settings, and `settings.cfg` is meant to be opened and read. `#[serde(default)]`
+    /// on [`NameplateSettings`] is what makes a file written before this section existed load
+    /// with every one of them at its default rather than failing to parse.
+    pub nameplates: NameplateSettings,
 }
 
 impl Default for GameSettings {
@@ -155,6 +165,7 @@ impl Default for GameSettings {
             sfx_volume: SFX_VOLUME_DEFAULT,
             ui_volume: UI_VOLUME_DEFAULT,
             ambient_volume: AMBIENT_VOLUME_DEFAULT,
+            nameplates: NameplateSettings::default(),
         }
     }
 }
@@ -213,6 +224,9 @@ impl GameSettings {
                 *value = default;
             }
         }
+        // The nameplate section validates itself, field by field, so one nonsense number in
+        // it costs that number rather than the whole section.
+        settings.nameplates = settings.nameplates.validated();
         settings
     }
 
@@ -440,6 +454,18 @@ impl SettingsManager {
         });
     }
 
+    /// Sets one nameplate setting, snapping it to that slider's step and range.
+    ///
+    /// The whole section is carried over and one field replaced, for the same reason every
+    /// other setter here carries the rest of the struct: a setter that rebuilt the section
+    /// would reset the five settings it does not name.
+    pub fn set_nameplate(&mut self, setting: NameplateSetting, value: f32) {
+        self.update(GameSettings {
+            nameplates: self.settings.nameplates.with(setting, value),
+            ..self.settings
+        });
+    }
+
     /// Writes the settings if they have changed since the last write.
     ///
     /// Returns whether anything was written. What a released slider handle calls.
@@ -552,6 +578,7 @@ mod tests {
             sfx_volume: 0.9,
             ui_volume: 0.35,
             ambient_volume: 0.0,
+            nameplates: NameplateSettings::default().with(NameplateSetting::Size, 14.0),
         };
         let text = serde_json::to_string(&settings).expect("settings serialize");
         let parsed: GameSettings = serde_json::from_str(&text).expect("settings parse");
@@ -868,6 +895,102 @@ mod tests {
         assert!(text.contains('\n'), "the file is one line: {text}");
         assert!(text.ends_with('\n'), "no trailing newline: {text:?}");
         assert!(text.contains("\"camera_sensitivity\""), "{text}");
+    }
+
+    #[test]
+    fn a_settings_file_written_before_nameplates_existed_keeps_everything_in_it() {
+        // The migration case: an existing player's file has no `nameplates` object at all.
+        // It must load, keep the values it does have, and gain the defaults for the rest.
+        let dir = TempDir::new("nameplates-migration");
+        dir.write("{\"camera_sensitivity\": 2.5, \"ui_scale\": 1.25, \"master_volume\": 0.35}");
+
+        let manager = SettingsManager::load(dir.file());
+        let settings = manager.settings();
+        assert_eq!(settings.camera_sensitivity, 2.5);
+        assert_eq!(settings.ui_scale, 1.25);
+        assert!((settings.master_volume - 0.35).abs() < 1e-6);
+        assert_eq!(
+            settings.nameplates,
+            NameplateSettings::default(),
+            "the missing section did not default"
+        );
+
+        // And the next launch reads back exactly what this one is running.
+        let reloaded = SettingsManager::load(dir.file()).settings();
+        assert_eq!(reloaded, settings);
+    }
+
+    #[test]
+    fn a_nameplate_setting_survives_a_restart_in_the_same_file() {
+        let dir = TempDir::new("nameplates-restart");
+        {
+            let mut first = SettingsManager::load(dir.file());
+            first.set_nameplate(NameplateSetting::Size, 16.0);
+            first.set_nameplate(NameplateSetting::TopSafeZone, 0.2);
+            assert!(first.is_dirty());
+            first.save_if_dirty();
+        }
+        let second = SettingsManager::load(dir.file());
+        assert_eq!(second.settings().nameplates.size, 16.0);
+        assert!((second.settings().nameplates.top_safe_zone - 0.2).abs() < 1e-6);
+        assert!(!second.is_dirty(), "a valid file was rewritten on load");
+
+        // One file, not two: the nameplate settings live in the same `settings.cfg`.
+        assert_eq!(
+            second.path().file_name().and_then(std::ffi::OsStr::to_str),
+            Some(SETTINGS_FILE_NAME)
+        );
+    }
+
+    #[test]
+    fn an_invalid_nameplate_value_in_the_file_becomes_that_settings_default() {
+        let dir = TempDir::new("nameplates-invalid");
+        dir.write(
+            "{\"camera_sensitivity\": 1.5, \"nameplates\": {\"size\": -20, \
+             \"vertical_margin\": 1.4, \"top_safe_zone\": \"soon\"}}",
+        );
+
+        let settings = SettingsManager::load(dir.file()).settings();
+        assert_eq!(
+            settings.camera_sensitivity, 1.5,
+            "an unrelated setting reset"
+        );
+        assert_eq!(
+            settings.nameplates.size,
+            nameplate::NAMEPLATE_SIZE_DEFAULT,
+            "an out-of-range size was kept"
+        );
+        assert_eq!(
+            settings.nameplates.top_safe_zone,
+            nameplate::NAMEPLATE_SAFE_ZONE_DEFAULT,
+            "a value of the wrong type was kept"
+        );
+        assert!(
+            (settings.nameplates.vertical_margin - 1.4).abs() < 1e-6,
+            "a valid neighbour was thrown away with the invalid ones"
+        );
+    }
+
+    #[test]
+    fn changing_a_nameplate_setting_leaves_every_other_setting_alone() {
+        let mut manager = SettingsManager::with_settings(
+            "does-not-need-to-exist",
+            GameSettings {
+                camera_sensitivity: 3.0,
+                ui_scale: 1.5,
+                ..GameSettings::default()
+            },
+        );
+        manager.set_nameplate(NameplateSetting::HeightAboveHead, 7.0);
+
+        assert_eq!(manager.settings().camera_sensitivity, 3.0);
+        assert_eq!(manager.settings().ui_scale, 1.5);
+        assert_eq!(manager.settings().nameplates.height_above_head, 7.0);
+        assert_eq!(
+            manager.settings().nameplates.size,
+            nameplate::NAMEPLATE_SIZE_DEFAULT,
+            "a sibling nameplate setting reset"
+        );
     }
 
     #[test]

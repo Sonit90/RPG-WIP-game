@@ -69,7 +69,8 @@ pub use hud_edit::{EditItem, EditOutcome, HudEditor};
 pub use hud_layout::{HudElementId, HudLayout, MIN_VISIBLE_FRACTION, clamp_on_screen};
 pub use input::UiInput;
 pub use menu::{
-    MenuAction, MenuScreen, MenuSystem, PauseItem, SettingsItem, VolumeChannel, volume_of,
+    MenuAction, MenuScreen, MenuSystem, NameplateItem, PauseItem, SettingsItem, VolumeChannel,
+    volume_of,
 };
 pub use paint::{MenuScratch, MenuTheme, push_menu};
 pub use screen::UiScreen;

@@ -542,12 +542,15 @@ impl GameUi {
             } else {
                 self.theme.panel
             };
-            self.list.rect(rect, panel);
+            // Every part of the plate takes the same fade, panel and text together: a plate
+            // whose background dimmed while its name stayed bright would be less readable
+            // than either, not a compromise between them.
+            self.list.rect(rect, faded(panel, plate.alpha));
             if plate.is_target {
                 self.list.outline(
                     rect,
                     self.metrics.scale.px(self.theme.outline_pixels),
-                    self.theme.target_outline,
+                    faded(self.theme.target_outline, plate.alpha),
                 );
             }
 
@@ -558,7 +561,7 @@ impl GameUi {
             self.list.text_at(
                 (text_x, text_y),
                 &self.title,
-                self.theme.text,
+                faded(self.theme.text, plate.alpha),
                 self.metrics.scale.text(self.theme.plate_text_scale),
             );
 
@@ -566,7 +569,7 @@ impl GameUi {
                 self.list.text_at(
                     (text_x, text_y + config.line_advance_pixels),
                     &self.statuses,
-                    self.theme.status,
+                    faded(self.theme.status, plate.alpha),
                     self.metrics.scale.text(self.theme.plate_text_scale),
                 );
             }
@@ -1594,6 +1597,20 @@ pub fn icon_for(ability: FireAbility) -> Option<UiIcon> {
     }
 }
 
+/// `color` with its alpha multiplied by `alpha`.
+///
+/// Multiplied rather than replaced: a colour that was already translucent — a panel behind a
+/// nameplate is — must not become *more* opaque because the plate was told to fade.
+#[must_use]
+pub fn faded(color: UiColor, alpha: f32) -> UiColor {
+    let alpha = if alpha.is_finite() {
+        alpha.clamp(0.0, 1.0)
+    } else {
+        1.0
+    };
+    [color[0], color[1], color[2], color[3] * alpha]
+}
+
 /// Writes an integer into `out` without allocating.
 ///
 /// `format!` would allocate a `String` per call, and the HUD writes a dozen numbers a frame.
@@ -1675,7 +1692,13 @@ mod tests {
     fn plates(simulation: &Simulation) -> (NameplateSet, NameplateConfig) {
         let config = NameplateConfig::default();
         let mut set = NameplateSet::with_capacity(32);
-        set.build(simulation, &view_projection(), VIEWPORT, &config);
+        set.build(
+            simulation,
+            &view_projection(),
+            VIEWPORT,
+            &config,
+            1.0 / 60.0,
+        );
         (set, config)
     }
 

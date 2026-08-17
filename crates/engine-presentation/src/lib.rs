@@ -38,6 +38,8 @@ pub mod game_ui;
 pub mod hud;
 pub mod mouse_look;
 pub mod nameplate;
+/// Where nameplates end up once they are not allowed to overlap.
+pub mod nameplate_layout;
 pub mod snapshot;
 /// The reusable UI framework and the game's menus.
 pub mod ui;
@@ -61,12 +63,13 @@ pub use nameplate::{
     MAX_NAMEPLATES, NAMEPLATE_MAX_DISTANCE, Nameplate, NameplateConfig, NameplateSet,
     NameplateStatus, project,
 };
+pub use nameplate_layout::{LayoutConstraints, NameplateLayout, PlateBox};
 pub use snapshot::{
     AbilitySlotView, CastView, CombatView, NotificationView, PartyMemberView, PlayerView,
     SlotAvailability, StatusList, StatusView, TargetView, UiSnapshot,
 };
 pub use ui::{
-    MenuAction, MenuScreen, MenuSystem, MenuTheme, PauseItem, SettingsItem, UiInput, UiScreen,
-    VolumeChannel, Widget, WidgetEvent, WidgetState, volume_of,
+    MenuAction, MenuScreen, MenuSystem, MenuTheme, NameplateItem, PauseItem, SettingsItem, UiInput,
+    UiScreen, VolumeChannel, Widget, WidgetEvent, WidgetState, volume_of,
 };
 pub use vfx::{ShapeBinding, VfxDirector, VfxDirectorStats, VfxVisuals};

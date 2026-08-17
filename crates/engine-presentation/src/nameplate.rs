@@ -76,7 +76,23 @@ pub struct Nameplate {
     /// Which enemy this describes.
     pub entity: EntityId,
     /// Where the plate's *top-left corner* goes, in pixels from the top-left of the target.
+    ///
+    /// The position after the layout has separated it from its neighbours, which is where it
+    /// is drawn and where a click on it is tested. [`Nameplate::preferred`] is where it
+    /// wanted to be.
     pub origin: (f32, f32),
+    /// Where the plate would sit if nothing else were on the screen: directly above its
+    /// monster's head.
+    ///
+    /// Kept so the distance between the two is observable — "how far did the layout have to
+    /// move this" is the number the whole design is about minimising, and a plate that has
+    /// drifted from its monster is a bug that is otherwise invisible from the outside.
+    pub preferred: (f32, f32),
+    /// What the whole plate is drawn at, in `[0, 1]`.
+    ///
+    /// One for the target and for everything out of combat; the player's configured
+    /// non-target opacity for the rest of a fight.
+    pub alpha: f32,
     /// Plate size in pixels.
     pub size: (f32, f32),
     /// Distance from the player, in metres.
@@ -203,19 +219,39 @@ pub struct NameplateConfig {
     pub line_advance_pixels: f32,
     /// Height of one glyph in pixels.
     pub glyph_height_pixels: f32,
+    /// Minimum vertical gap between two plates, as a multiple of a plate's height.
+    pub vertical_margin: f32,
+    /// Minimum horizontal gap between two plates, as a multiple of a plate's width.
+    pub horizontal_margin: f32,
+    /// Fraction of the top of the viewport no plate may enter.
+    pub top_safe_zone: f32,
+    /// What a non-target plate is drawn at while the player is in combat, in `[0, 1]`.
+    pub non_target_alpha: f32,
+    /// How fast a plate slides towards its resolved position, in fraction per second.
+    ///
+    /// Zero places it outright. The smoothing exists because a plate whose neighbour is
+    /// walking in and out of collision with it would otherwise snap between two positions
+    /// every few frames; it is fast enough that the plate is never visibly behind its body.
+    pub smoothing_per_second: f32,
 }
 
 impl Default for NameplateConfig {
     fn default() -> Self {
+        let defaults = engine_settings::NameplateSettings::default();
         Self {
             max_distance: NAMEPLATE_MAX_DISTANCE,
             max_plates: MAX_NAMEPLATES,
-            height_offset: 0.9,
+            height_offset: defaults.height_metres(),
             padding_pixels: 4.0,
             cell_pixels: 2.0,
             glyph_advance_pixels: 12.0,
             line_advance_pixels: 18.0,
             glyph_height_pixels: 14.0,
+            vertical_margin: defaults.vertical_margin,
+            horizontal_margin: defaults.horizontal_margin,
+            top_safe_zone: defaults.top_safe_zone,
+            non_target_alpha: defaults.non_target_alpha(),
+            smoothing_per_second: crate::nameplate_layout::DEFAULT_SMOOTHING,
         }
     }
 }
@@ -236,6 +272,36 @@ impl NameplateConfig {
         };
         text + self.padding_pixels * 2.0
     }
+
+    /// The rules the layout has to satisfy at `viewport`.
+    ///
+    /// The one place a nameplate setting becomes a layout constraint, so the settings screen
+    /// and the resolver cannot be given different numbers.
+    #[must_use]
+    pub fn constraints(&self, viewport: (u32, u32)) -> crate::nameplate_layout::LayoutConstraints {
+        crate::nameplate_layout::LayoutConstraints {
+            viewport: (viewport.0 as f32, viewport.1 as f32),
+            vertical_margin: self.vertical_margin,
+            horizontal_margin: self.horizontal_margin,
+            top_safe_zone: self.top_safe_zone,
+            ..crate::nameplate_layout::LayoutConstraints::default()
+        }
+    }
+
+    /// This configuration with everything the player can set taken from `settings`.
+    ///
+    /// The conversion from displayed units to engine units lives in `engine-settings`; this
+    /// is the one call that applies the result, so no caller has to remember which of the six
+    /// numbers are metres and which are multiples.
+    #[must_use]
+    pub fn with_settings(mut self, settings: engine_settings::NameplateSettings) -> Self {
+        self.height_offset = settings.height_metres();
+        self.vertical_margin = settings.vertical_margin;
+        self.horizontal_margin = settings.horizontal_margin;
+        self.top_safe_zone = settings.top_safe_zone;
+        self.non_target_alpha = settings.non_target_alpha();
+        self
+    }
 }
 
 /// Builds the frame's nameplates.
@@ -245,6 +311,11 @@ impl NameplateConfig {
 #[derive(Debug, Default, Clone)]
 pub struct NameplateSet {
     plates: Vec<Nameplate>,
+    /// Where the plates would go if none of them collided. Rebuilt every frame from the
+    /// world, never carried over: this is the input to the layout, not its memory.
+    boxes: Vec<crate::nameplate_layout::PlateBox>,
+    /// The collision resolver, and the only thing here that remembers a previous frame.
+    layout: crate::nameplate_layout::NameplateLayout,
 }
 
 impl NameplateSet {
@@ -259,6 +330,8 @@ impl NameplateSet {
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
             plates: Vec::with_capacity(capacity),
+            boxes: Vec::with_capacity(capacity),
+            layout: crate::nameplate_layout::NameplateLayout::with_capacity(capacity),
         }
     }
 
@@ -299,15 +372,22 @@ impl NameplateSet {
 
     /// Rebuilds the set for the current simulation state and camera.
     ///
-    /// `viewport` is the render target size in pixels. Returns the plates, ordered furthest
-    /// first — which matters only for a caller that ignores [`Nameplate::depth`], since the
-    /// depth test is what actually resolves overlap.
+    /// `viewport` is the render target size in pixels and `delta_seconds` is the frame's real
+    /// time step, which only the smoothing reads. Returns the plates, ordered furthest first
+    /// — which matters only for a caller that ignores [`Nameplate::depth`], since the depth
+    /// test is what actually resolves overlap.
+    ///
+    /// Every frame starts from the world again: the preferred position is projected afresh,
+    /// the layout is resolved afresh, and no resolved position is ever written back as if it
+    /// were where a monster is. That is what makes a plate follow its monster rather than
+    /// slowly drift away from it.
     pub fn build(
         &mut self,
         simulation: &Simulation,
         view_projection: &Mat4,
         viewport: (u32, u32),
         config: &NameplateConfig,
+        delta_seconds: f32,
     ) -> &[Nameplate] {
         self.plates.clear();
         let (width, height) = viewport;
@@ -398,6 +478,8 @@ impl NameplateSet {
             self.plates.push(Nameplate {
                 entity,
                 origin,
+                preferred: origin,
+                alpha: 1.0,
                 size: (plate_width, plate_height),
                 distance,
                 is_target: target == Some(entity),
@@ -424,8 +506,84 @@ impl NameplateSet {
         // Then furthest first for drawing. The depth test resolves overlap by itself, but a
         // stable order makes two runs of the same frame produce the same command stream.
         self.plates.reverse();
+
+        // Only what is actually going to be drawn takes part in the layout: a plate that was
+        // culled for distance, for being behind the camera or for being past the plate limit
+        // cannot push anything, because it is not there.
+        self.resolve_layout(config, viewport, delta_seconds);
+        self.fade_non_targets(simulation, config);
         &self.plates
     }
+
+    /// Moves the plates apart, as little as they can be moved.
+    fn resolve_layout(
+        &mut self,
+        config: &NameplateConfig,
+        viewport: (u32, u32),
+        delta_seconds: f32,
+    ) {
+        self.boxes.clear();
+        for plate in &self.plates {
+            self.boxes.push(
+                crate::nameplate_layout::PlateBox::new(
+                    plate_id(plate.entity),
+                    plate.preferred,
+                    plate.size,
+                )
+                // The plate the player selected holds its ground and its neighbours give way:
+                // the one plate they are certainly reading is the one that should not move.
+                .with_weight(if plate.is_target { TARGET_WEIGHT } else { 1.0 }),
+            );
+        }
+        let constraints = config.constraints(viewport);
+        self.layout.resolve(&self.boxes, &constraints);
+        let positions = self
+            .layout
+            .smooth(&self.boxes, delta_seconds, config.smoothing_per_second);
+        for (plate, position) in self.plates.iter_mut().zip(positions) {
+            plate.origin = *position;
+        }
+    }
+
+    /// Dims everything that is not the target, while there is a fight on.
+    ///
+    /// Out of combat every plate is drawn in full: the setting is there to make a pull
+    /// readable, and dimming the room a player is walking through would only make it harder
+    /// to see what is in it.
+    fn fade_non_targets(&mut self, simulation: &Simulation, config: &NameplateConfig) {
+        if !player_in_combat(simulation) {
+            return;
+        }
+        let alpha = config.non_target_alpha.clamp(0.0, 1.0);
+        for plate in &mut self.plates {
+            if !plate.is_target {
+                plate.alpha = alpha;
+            }
+        }
+    }
+}
+
+/// How much harder the target holds its position than an ordinary plate.
+const TARGET_WEIGHT: f32 = 8.0;
+
+/// One entity as the layout's opaque identity.
+///
+/// Slot and generation together, so a slot reused by a new spawn does not inherit the dead
+/// occupant's smoothed position and slide its plate across the screen.
+fn plate_id(entity: EntityId) -> u64 {
+    ((entity.index() as u64) << 32) | u64::from(entity.generation())
+}
+
+/// Whether the player is in a fight right now.
+///
+/// Asked of the enemies rather than of a flag: an enemy that has left Idle for anything other
+/// than walking home *is* the fight, and the same predicate the AI's own states are built on
+/// answers it without gameplay having to grow a presentation-shaped accessor.
+#[must_use]
+pub fn player_in_combat(simulation: &Simulation) -> bool {
+    simulation
+        .enemies()
+        .any(|(_, brain)| brain.state().is_combat())
 }
 
 /// Clip-space depth band nameplates are drawn in.
@@ -516,6 +674,9 @@ mod tests {
 
     const VIEWPORT: (u32, u32) = (1920, 1080);
 
+    /// One frame of real time, for the layout's smoothing.
+    const STEP: f32 = 1.0 / 60.0;
+
     /// The arena, with the camera behind the player looking at the dummies.
     fn scene() -> (Simulation, Camera) {
         let mut simulation = arena::training_arena(&ArenaConfig::default());
@@ -534,8 +695,14 @@ mod tests {
     }
 
     fn build(simulation: &Simulation, camera: &Camera, set: &mut NameplateSet) -> Vec<Nameplate> {
-        set.build(simulation, &camera.view_projection(), VIEWPORT, &config())
-            .to_vec()
+        set.build(
+            simulation,
+            &camera.view_projection(),
+            VIEWPORT,
+            &config(),
+            STEP,
+        )
+        .to_vec()
     }
 
     #[test]
@@ -961,14 +1128,251 @@ mod tests {
         let (anchor_x, anchor_y) =
             project(head, &camera.view_projection(), VIEWPORT).expect("the head is visible");
 
+        // The *preferred* position is the projection: that is the plate's ideal, and the
+        // layout's whole job is to give up as little of it as it can.
         assert!(
-            (plate.origin.0 + plate.size.0 * 0.5 - anchor_x).abs() < 0.01,
+            (plate.preferred.0 + plate.size.0 * 0.5 - anchor_x).abs() < 0.01,
             "not centred: {plate:?}"
         );
         assert!(
-            (plate.origin.1 + plate.size.1 - anchor_y).abs() < 0.01,
+            (plate.preferred.1 + plate.size.1 - anchor_y).abs() < 0.01,
             "not sitting above the head: {plate:?}"
         );
+    }
+
+    /// How far a plate ended up from where it wanted to be.
+    fn displacement(plate: &Nameplate) -> f32 {
+        let dx = plate.origin.0 - plate.preferred.0;
+        let dy = plate.origin.1 - plate.preferred.1;
+        (dx * dx + dy * dy).sqrt()
+    }
+
+    /// Whether two plates' rectangles touch.
+    fn plates_overlap(a: &Nameplate, b: &Nameplate) -> bool {
+        a.origin.0 < b.origin.0 + b.size.0
+            && b.origin.0 < a.origin.0 + a.size.0
+            && a.origin.1 < b.origin.1 + b.size.1
+            && b.origin.1 < a.origin.1 + a.size.1
+    }
+
+    #[test]
+    fn the_plates_of_a_crowd_do_not_overlap_and_stay_near_their_monsters() {
+        // The arena's group stands close enough together that their preferred positions
+        // collide, which is the case the layout exists for.
+        let (simulation, camera) = scene();
+        let mut set = NameplateSet::new();
+        let plates = build(&simulation, &camera, &mut set);
+        assert!(plates.len() > 2, "the arena has a group in it");
+
+        for i in 0..plates.len() {
+            for j in (i + 1)..plates.len() {
+                assert!(
+                    !plates_overlap(&plates[i], &plates[j]),
+                    "two plates overlap: {:?} and {:?}",
+                    plates[i].origin,
+                    plates[j].origin
+                );
+            }
+        }
+        // And none of them was flung anywhere: every plate is still obviously its monster's.
+        for plate in &plates {
+            let limit = plate.size.1 * crate::nameplate_layout::DEFAULT_MAX_DISPLACEMENT;
+            assert!(
+                displacement(plate) <= limit + 0.5,
+                "a plate is {} px from its monster",
+                displacement(plate)
+            );
+        }
+    }
+
+    #[test]
+    fn a_plate_with_nothing_near_it_is_left_exactly_where_its_monster_is() {
+        // One enemy, alone: the layout must be a no-op. The rule the whole design turns on.
+        let (mut simulation, camera) = scene();
+        let dummies: Vec<EntityId> = arena::dummies(simulation.world()).collect();
+        for dummy in dummies.iter().skip(1) {
+            simulation.world_mut().damage(*dummy, 1_000_000.0);
+        }
+        simulation.step_once();
+
+        let mut set = NameplateSet::new();
+        let plates = build(&simulation, &camera, &mut set);
+        assert_eq!(plates.len(), 1, "only one dummy is left alive");
+        assert_eq!(plates[0].origin, plates[0].preferred);
+    }
+
+    #[test]
+    fn no_plate_enters_the_top_safe_zone() {
+        // The dummies are put up in the air, so their plates project into the top of the
+        // screen and have to be pushed out of it.
+        let (mut simulation, camera) = scene();
+        for dummy in arena::dummies(simulation.world()).collect::<Vec<_>>() {
+            if let Some(body) = simulation.world_mut().body_mut(dummy) {
+                body.position.y += 6.0;
+            }
+        }
+
+        let config = NameplateConfig::default();
+        let mut set = NameplateSet::new();
+        let plates = set
+            .build(
+                &simulation,
+                &camera.view_projection(),
+                VIEWPORT,
+                &config,
+                STEP,
+            )
+            .to_vec();
+        assert!(!plates.is_empty(), "the dummies are still on screen");
+
+        let safe = VIEWPORT.1 as f32 * config.top_safe_zone;
+        for plate in &plates {
+            assert!(
+                plate.origin.1 >= safe - 0.01,
+                "a plate is at {} with a {safe} px safe zone",
+                plate.origin.1
+            );
+        }
+    }
+
+    #[test]
+    fn the_height_setting_moves_the_anchor_and_the_size_setting_moves_the_box() {
+        let (simulation, camera) = scene();
+        let mut set = NameplateSet::new();
+
+        let low =
+            NameplateConfig::default().with_settings(engine_settings::NameplateSettings::default());
+        let high = NameplateConfig::default().with_settings(
+            engine_settings::NameplateSettings::default()
+                .with(engine_settings::NameplateSetting::HeightAboveHead, 16.0),
+        );
+        let plate_at = |set: &mut NameplateSet, config: &NameplateConfig| {
+            set.build(
+                &simulation,
+                &camera.view_projection(),
+                VIEWPORT,
+                config,
+                STEP,
+            )
+            .iter()
+            .find(|plate| plate.is_target)
+            .copied()
+            .expect("the target has a plate")
+        };
+
+        let near = plate_at(&mut set, &low);
+        let far = plate_at(&mut set, &high);
+        assert!(
+            far.preferred.1 < near.preferred.1,
+            "raising the height did not raise the plate: {} then {}",
+            near.preferred.1,
+            far.preferred.1
+        );
+
+        // The size setting reaches the plate through the glyph metrics the application
+        // scales, so a bigger size is a bigger box.
+        let big = NameplateConfig {
+            glyph_advance_pixels: low.glyph_advance_pixels * 2.0,
+            ..low
+        };
+        assert!(big.plate_width() > low.plate_width());
+    }
+
+    #[test]
+    fn only_the_target_keeps_full_opacity_and_only_while_there_is_a_fight() {
+        // Out of combat every plate is drawn in full: the setting exists to make a pull
+        // readable, not to dim a room the player is walking through.
+        let (simulation, camera) = scene();
+        let mut set = NameplateSet::new();
+        let plates = build(&simulation, &camera, &mut set);
+        assert!(
+            plates.iter().all(|plate| plate.alpha == 1.0),
+            "a plate was dimmed out of combat"
+        );
+
+        // A real fight: an encounter, walked into, until its enemies are chasing.
+        let config = ArenaConfig::with_group(0);
+        let mut simulation = engine_game::arena::encounter_arena(
+            &config,
+            engine_game::arena::pack_encounter(&config, 3),
+        );
+        simulation.push_command(PlayerCommand::Teleport {
+            position: simulation.player_position() + Vec3::new(0.0, 0.0, -14.0),
+        });
+        for _ in 0..120 {
+            simulation.step_once();
+        }
+        assert!(
+            crate::nameplate::player_in_combat(&simulation),
+            "the pack never engaged"
+        );
+        simulation.select_nearest_target();
+
+        let controller = ThirdPersonCamera::following(simulation.player_position());
+        let mut camera = Camera::new(Projection::perspective(16.0 / 9.0)).expect("valid");
+        controller
+            .apply(&mut camera, 16.0 / 9.0)
+            .expect("a valid aspect");
+
+        let config = NameplateConfig::default();
+        let plates = set
+            .build(
+                &simulation,
+                &camera.view_projection(),
+                VIEWPORT,
+                &config,
+                STEP,
+            )
+            .to_vec();
+        let target = plates.iter().find(|plate| plate.is_target);
+        assert!(target.is_some(), "nothing is targeted");
+        for plate in &plates {
+            let expected = if plate.is_target {
+                1.0
+            } else {
+                config.non_target_alpha
+            };
+            assert!(
+                (plate.alpha - expected).abs() < 1e-6,
+                "{:?} is drawn at {} rather than {expected}",
+                plate.entity,
+                plate.alpha
+            );
+        }
+    }
+
+    #[test]
+    fn a_plate_follows_its_monster_and_does_not_drift_behind_it() {
+        // The property a system that stored its resolved position would lose. The dummy walks
+        // across the screen for ten seconds of frames; its plate stays on it throughout.
+        let (mut simulation, camera) = scene();
+        let dummy = simulation.player().target.expect("a dummy is targeted");
+        let mut set = NameplateSet::new();
+
+        for _ in 0..600 {
+            if let Some(body) = simulation.world_mut().body_mut(dummy) {
+                body.position.x += 0.02;
+            }
+            let plates = set
+                .build(
+                    &simulation,
+                    &camera.view_projection(),
+                    VIEWPORT,
+                    &NameplateConfig::default(),
+                    STEP,
+                )
+                .to_vec();
+            let plate = plates
+                .iter()
+                .find(|plate| plate.entity == dummy)
+                .expect("the dummy has a plate");
+            let limit = plate.size.1 * crate::nameplate_layout::DEFAULT_MAX_DISPLACEMENT;
+            assert!(
+                displacement(plate) <= limit + 0.5,
+                "the plate drifted {} px from its monster",
+                displacement(plate)
+            );
+        }
     }
 
     #[test]
@@ -986,7 +1390,13 @@ mod tests {
                 face_camera: false,
             });
             simulation.step_once();
-            set.build(&simulation, &camera.view_projection(), VIEWPORT, &config());
+            set.build(
+                &simulation,
+                &camera.view_projection(),
+                VIEWPORT,
+                &config(),
+                STEP,
+            );
         }
         assert_eq!(set.capacity(), capacity, "the plate list reallocated");
     }
