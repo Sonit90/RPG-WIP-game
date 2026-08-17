@@ -738,23 +738,37 @@ impl Simulation {
                 awake = true;
                 puller = puller.or_else(|| runtime.brain.target());
             }
-            if awake {
-                encounter.activate();
-            } else {
-                // Everybody is home, or everybody is dead. Either way the pack can be pulled
-                // as a whole again if anything is left to pull.
-                encounter.relax();
-            }
-
+            // A member killed outright never left Idle, so nobody in the pack is awake and
+            // there is no live target to read a puller off. Whoever landed the killing blow
+            // is that puller: a pack that slept through one of its own being deleted could be
+            // taken apart one member at a time.
+            let puller = puller.or_else(|| encounter.alarm());
             // One member pulled is the whole pack pulled, once. Done here rather than in the
             // brain because membership is the encounter's: an enemy knows its own aggro
             // radius and its own leash, and has no idea it is the second of five.
-            if !encounter.pack_pulled()
-                && let Some(target) = puller
-                && self.world.is_alive(target)
-            {
+            let pull = puller
+                .filter(|_| !encounter.pack_pulled())
+                .filter(|target| self.world.is_alive(*target));
+
+            if awake {
+                encounter.activate();
+            } else if pull.is_none() {
+                // Everybody is home, or everybody is dead. Either way the pack can be pulled
+                // as a whole again if anything is left to pull — and an alarm nobody is left
+                // to answer goes quiet with it.
+                encounter.relax();
+            }
+
+            if let Some(target) = pull {
                 encounter.note_pack_pull();
+                encounter.activate();
                 for member in encounter.members() {
+                    // A corpse is not provoked into anything. Its brain has not necessarily
+                    // been told it is dead yet — that happens on its next think — and waking
+                    // it would make the pack look awake for a tick.
+                    if !self.world.is_alive(*member) {
+                        continue;
+                    }
                     if let Some(Some(runtime)) = self.enemies.get_mut(member.index()) {
                         runtime.brain.provoke(target);
                     }

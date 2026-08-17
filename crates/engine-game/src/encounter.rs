@@ -113,6 +113,13 @@ pub struct Encounter {
     /// home, and the first member to arrive is woken again by the last one still returning —
     /// a pack that can never go back to sleep.
     pulled_together: bool,
+    /// Who killed a member, until the pack has been woken by it.
+    ///
+    /// The alarm a corpse cannot raise for itself. A member killed outright never leaves
+    /// Idle, so "somebody in this pack is awake" is false on every tick and the pack would
+    /// sleep through its neighbour being deleted. The killer is remembered here instead, and
+    /// the next tick pulls the pack with it exactly as a live member's target would.
+    alarm: Option<EntityId>,
 }
 
 impl Encounter {
@@ -126,6 +133,7 @@ impl Encounter {
             members: Vec::new(),
             resets: 0,
             pulled_together: false,
+            alarm: None,
         }
     }
 
@@ -139,6 +147,7 @@ impl Encounter {
             spawns,
             resets: 0,
             pulled_together: false,
+            alarm: None,
         }
     }
 
@@ -202,6 +211,7 @@ impl Encounter {
         self.members = members;
         self.state = EncounterState::NotStarted;
         self.pulled_together = false;
+        self.alarm = None;
     }
 
     /// Marks the fight as running. Idempotent.
@@ -239,6 +249,22 @@ impl Encounter {
     /// first one did.
     pub fn relax(&mut self) {
         self.pulled_together = false;
+        self.alarm = None;
+    }
+
+    /// Records that `killer` killed one of its members.
+    ///
+    /// The pull a one-shot kill would otherwise never produce. Called by the simulation from
+    /// the one place damage lands, because the killer's identity exists nowhere else — a
+    /// corpse's threat table is cleared when it dies.
+    pub fn raise_alarm(&mut self, killer: EntityId) {
+        self.alarm = Some(killer);
+    }
+
+    /// Who killed a member, if the pack has not been woken by it yet.
+    #[must_use]
+    pub fn alarm(&self) -> Option<EntityId> {
+        self.alarm
     }
 
     /// Asks for a reset. The simulation performs it on its next tick.
@@ -256,6 +282,7 @@ impl Encounter {
     pub fn finish_reset(&mut self) {
         self.state = EncounterState::NotStarted;
         self.pulled_together = false;
+        self.alarm = None;
         self.resets += 1;
     }
 
@@ -333,6 +360,29 @@ mod tests {
         encounter.set_members(vec![EntityId::new(1, 1)]);
         assert!(!encounter.observe_alive(0));
         assert_eq!(encounter.state(), EncounterState::NotStarted);
+    }
+
+    #[test]
+    fn an_alarm_outlives_the_member_that_raised_it_but_not_the_pack_going_home() {
+        let mut encounter = encounter();
+        encounter.set_members(vec![EntityId::new(1, 1), EntityId::new(2, 1)]);
+        assert_eq!(encounter.alarm(), None, "a quiet pack has nothing to answer");
+
+        let killer = EntityId::new(0, 1);
+        encounter.raise_alarm(killer);
+        assert_eq!(
+            encounter.alarm(),
+            Some(killer),
+            "the pack has to still hear it on the tick after the death"
+        );
+
+        // Going back to sleep is what makes it quiet again, and a reset does the same.
+        encounter.relax();
+        assert_eq!(encounter.alarm(), None);
+        encounter.raise_alarm(killer);
+        encounter.request_reset();
+        encounter.finish_reset();
+        assert_eq!(encounter.alarm(), None);
     }
 
     #[test]

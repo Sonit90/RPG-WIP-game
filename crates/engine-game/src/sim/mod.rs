@@ -1572,6 +1572,18 @@ impl Simulation {
             // corpse.
             self.clear_hazards_of(target);
 
+            // The pack it belonged to hears it die. A member killed outright never leaves
+            // Idle and its threat table is cleared by the death, so this is the only moment
+            // the killer's identity and the victim's membership are both in hand — without
+            // it a pack can be taken apart one silent one-shot at a time.
+            if source != target {
+                for encounter in &mut self.encounters {
+                    if encounter.contains(target) {
+                        encounter.raise_alarm(source);
+                    }
+                }
+            }
+
             self.events.push(CombatEvent::Death {
                 entity: target,
                 killer: source,

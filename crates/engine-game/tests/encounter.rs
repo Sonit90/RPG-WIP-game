@@ -425,6 +425,129 @@ fn a_pack_all_fights_and_all_of_it_can_die() {
     );
 }
 
+/// A pack of `count` brutes standing `distance` metres in front of the player.
+///
+/// Far enough that nothing in it notices the player on its own, so the only thing that can
+/// wake it is being attacked.
+fn sleeping_pack(count: usize, distance: f32) -> (Simulation, Vec<EntityId>) {
+    let config = ArenaConfig::with_group(0);
+    let origin = config.player_spawn;
+    let spawns = (0..count)
+        .map(|index| {
+            let offset = Vec3::new(index as f32 * 3.0 - 3.0, 0.0, -distance);
+            EnemySpawn::new(EnemyKind::Melee, origin + offset)
+        })
+        .collect();
+    let mut simulation = arena::encounter_arena(&config, Encounter::with_spawns("PACK", spawns));
+    let members = simulation
+        .encounter()
+        .map(|encounter| encounter.members().to_vec())
+        .expect("the encounter spawned its members");
+    run(&mut simulation, 60);
+    for member in &members {
+        assert_eq!(
+            state(&simulation, *member),
+            AiState::Idle,
+            "the pack must start asleep"
+        );
+    }
+    (simulation, members)
+}
+
+#[test]
+fn one_shotting_a_pack_member_still_wakes_the_rest() {
+    // The alarm a corpse cannot raise for itself. An enemy killed outright never leaves Idle,
+    // so "somebody in this pack is awake" is false on every tick — and without the killing
+    // blow itself being the pull, a player could delete a five-pack one member at a time.
+    let (mut simulation, members) = sleeping_pack(3, 30.0);
+    let victim = members[0];
+
+    // Softened to a sliver, then killed by one cast: the killing blow travels the real damage
+    // path, which is the only place the killer's identity exists.
+    simulation.world_mut().damage(victim, 319.0);
+    simulation.player_mut().target = Some(victim);
+    simulation
+        .cast(engine_game::FireAbility::Firebolt)
+        .expect("firebolt reaches 30 m");
+    let events = run(&mut simulation, 120);
+
+    assert!(
+        events.iter().any(|event| matches!(
+            *event,
+            CombatEvent::Death { entity, killer, .. }
+                if entity == victim && killer == simulation.player().entity
+        )),
+        "the player never killed it"
+    );
+    assert!(!simulation.world().is_alive(victim));
+
+    let player = simulation.player().entity;
+    for member in members.iter().skip(1) {
+        let brain = simulation.brain(*member).expect("an enemy");
+        assert_ne!(
+            brain.state(),
+            AiState::Idle,
+            "a pack member slept through its neighbour being killed"
+        );
+        assert_eq!(
+            brain.target(),
+            Some(player),
+            "the pack woke up angry at nobody"
+        );
+    }
+    assert_eq!(
+        simulation.encounter().map(engine_game::Encounter::state),
+        Some(EncounterState::Active),
+        "a kill is a pull, and a pull starts the fight"
+    );
+}
+
+#[test]
+fn a_pack_woken_by_a_kill_actually_comes_and_fights() {
+    // Aggro that never arrives is not aggro: the survivors have to cross thirty metres and
+    // hit somebody.
+    let (mut simulation, members) = sleeping_pack(3, 30.0);
+    let victim = members[0];
+    simulation.world_mut().damage(victim, 319.0);
+    simulation.player_mut().target = Some(victim);
+    simulation
+        .cast(engine_game::FireAbility::Firebolt)
+        .expect("firebolt reaches 30 m");
+    run(&mut simulation, 900);
+
+    assert!(
+        simulation.meter().total_damage_taken() > 0.0,
+        "the woken pack never reached the player"
+    );
+}
+
+#[test]
+fn a_pack_wiped_by_one_shot_each_completes_and_does_not_stay_pulled() {
+    // The other end of the same rule: the alarm must not outlive the pack. A corpse's dying
+    // shout is spent once, and an encounter with nobody left in it is over.
+    let (mut simulation, members) = sleeping_pack(2, 30.0);
+    for member in &members {
+        simulation.world_mut().damage(*member, 319.0);
+    }
+    for member in &members {
+        simulation.player_mut().target = Some(*member);
+        simulation
+            .cast(engine_game::FireAbility::Firebolt)
+            .expect("firebolt reaches 30 m");
+        run(&mut simulation, 90);
+    }
+
+    for member in &members {
+        assert!(!simulation.world().is_alive(*member));
+        assert_eq!(state(&simulation, *member), AiState::Dead);
+    }
+    assert_eq!(
+        simulation.encounter().map(engine_game::Encounter::state),
+        Some(EncounterState::Completed),
+        "a pack killed to the last member is a fight that is over"
+    );
+}
+
 #[test]
 fn the_meter_counts_what_the_player_dealt_and_not_what_it_took() {
     // The latent bug an enemy reveals: without an owner, damage *taken* would be reported
