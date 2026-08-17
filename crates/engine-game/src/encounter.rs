@@ -106,6 +106,13 @@ pub struct Encounter {
     members: Vec<EntityId>,
     /// How many times it has been reset, for the readout.
     resets: u32,
+    /// Whether the pack has already been woken as a whole since it was last at rest.
+    ///
+    /// One member being pulled pulls the rest, and it has to happen *once*. Without this the
+    /// condition "somebody in this pack is awake" is true for as long as anybody is walking
+    /// home, and the first member to arrive is woken again by the last one still returning —
+    /// a pack that can never go back to sleep.
+    pulled_together: bool,
 }
 
 impl Encounter {
@@ -118,6 +125,7 @@ impl Encounter {
             spawns: Vec::new(),
             members: Vec::new(),
             resets: 0,
+            pulled_together: false,
         }
     }
 
@@ -130,6 +138,7 @@ impl Encounter {
             members: Vec::with_capacity(spawns.len()),
             spawns,
             resets: 0,
+            pulled_together: false,
         }
     }
 
@@ -192,6 +201,7 @@ impl Encounter {
     pub fn set_members(&mut self, members: Vec<EntityId>) {
         self.members = members;
         self.state = EncounterState::NotStarted;
+        self.pulled_together = false;
     }
 
     /// Marks the fight as running. Idempotent.
@@ -211,6 +221,26 @@ impl Encounter {
         }
     }
 
+    /// Whether the pack has already been woken as a whole.
+    #[must_use]
+    pub fn pack_pulled(&self) -> bool {
+        self.pulled_together
+    }
+
+    /// Records that the whole pack has been woken, so it is not woken again.
+    pub fn note_pack_pull(&mut self) {
+        self.pulled_together = true;
+    }
+
+    /// Declares the pack at rest again: every member is home and idle.
+    ///
+    /// What re-arms the pack pull. A pack that leashed and walked home is a pack that can be
+    /// pulled a second time, and that second pull has to bring everybody exactly as the
+    /// first one did.
+    pub fn relax(&mut self) {
+        self.pulled_together = false;
+    }
+
     /// Asks for a reset. The simulation performs it on its next tick.
     pub fn request_reset(&mut self) {
         self.state = EncounterState::Resetting;
@@ -225,6 +255,7 @@ impl Encounter {
     /// Declares the reset finished.
     pub fn finish_reset(&mut self) {
         self.state = EncounterState::NotStarted;
+        self.pulled_together = false;
         self.resets += 1;
     }
 

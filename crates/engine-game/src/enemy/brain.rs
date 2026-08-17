@@ -412,6 +412,30 @@ impl EnemyBrain {
         self.archetype().phase_abilities(self.phase)
     }
 
+    /// Pulls it into a fight it has not noticed itself.
+    ///
+    /// What makes a pack a pack: one member being pulled brings the rest, whether or not the
+    /// player came close enough for each of them to see it. Called by the simulation when an
+    /// encounter activates — a pack is a property of the *encounter*, and an enemy has no
+    /// idea who else is in one.
+    ///
+    /// It enters Alert with its own `alert_time` rather than jumping straight to Chase, so a
+    /// pack waking up is one readable beat rather than five bodies snapping round at once,
+    /// and a monster with a longer notice still takes it.
+    ///
+    /// Returns whether anything changed. An enemy that is already fighting, walking home or
+    /// dead is left exactly as it is.
+    pub fn provoke(&mut self, target: EntityId) -> bool {
+        if self.state != AiState::Idle {
+            return false;
+        }
+        self.state = AiState::Alert;
+        self.target = Some(target);
+        self.timer = self.archetype().alert_time;
+        self.combat_time = 0.0;
+        true
+    }
+
     /// Marks it dead, which stops everything.
     ///
     /// Returns the cast it was running, if it had one, so the caller can announce that the

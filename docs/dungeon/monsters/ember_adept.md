@@ -16,7 +16,7 @@ so every blast is a question about whether you were paying attention two seconds
 | | |
 |---|---|
 | Health | 210 |
-| Movement speed | 4.2 m/s |
+| Movement speed | 5.46 m/s |
 | Radius / height | 0.5 m / 1.9 m |
 | Attack range | 25 m |
 | Melee range | n/a |
@@ -68,6 +68,9 @@ reach it, rather than sniping from the far wall.
 
 - **Idle** — stands at its spawn point.
 - **Aggro** — 20 m, or any damage.
+- **Pack** — it is pulled when *any* member of its pack is, whether or not it noticed
+  anything itself. Membership belongs to the encounter; this monster knows only its own
+  aggro radius.
 - **Alert** — 0.5 s, slightly longer than the Brute's, so a mixed pull reads as two separate
   reactions rather than one.
 - **Target selection** — highest threat, else nearest hostile.

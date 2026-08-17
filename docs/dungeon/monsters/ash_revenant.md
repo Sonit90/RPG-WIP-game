@@ -17,7 +17,7 @@ already had. The player who learned the first half has to re-learn the second.
 | | |
 |---|---|
 | Health | 900 |
-| Movement speed | 5.0 m/s (5.75 m/s in phase 2) |
+| Movement speed | 6.5 m/s (6.89 m/s in phase 2) |
 | Radius / height | 0.75 m / 2.3 m |
 | Attack range | 7.0 m (Ash Burst), 3.5 m (Sunder), 5.0 m (Cleave, phase 2) |
 | Melee range | 3.5 m |
@@ -37,7 +37,7 @@ Phase 1  ── health ≤ 50 % ──▶  Phase 2
 | Phase | Threshold | Abilities (priority order) | Speed | Cooldowns |
 |---|---|---|---|---|
 | 1 | start | Ash Burst, Sunder | ×1.00 | ×1.00 |
-| 2 | ≤ 50 % health | Ash Burst, Cleave, Sunder | ×1.15 | ×0.70 |
+| 2 | ≤ 50 % health | Ash Burst, Cleave, Sunder | ×1.06 | ×0.70 |
 
 The transition cancels whatever it is casting, drops the telegraph, and staggers it for
 1.5 s. That stagger is the player's window to notice something changed.
@@ -93,6 +93,9 @@ interruptible.
 
 - **Idle** — stands at its spawn point.
 - **Aggro** — 16 m, or any damage.
+- **Pack** — it is pulled when *any* member of its pack is, whether or not it noticed
+  anything itself. Membership belongs to the encounter; this monster knows only its own
+  aggro radius.
 - **Alert** — 0.6 s, the longest in the roster: an elite gets a longer beat before it starts.
 - **Target selection** — highest threat, else nearest hostile.
 - **Movement** — closes to 2.6 m and stops. It never retreats; the Ash Burst is what makes
@@ -136,7 +139,7 @@ No sound requirements.
 - Crossing 50 % health advances to phase 2 exactly once, and emits one phase-change event.
 - Healing it back above 50 % does not revert the phase.
 - Phase 2 has Cleave available; phase 1 does not.
-- Phase 2 cooldowns are 0.70× the table values and its speed is 1.15×.
+- Phase 2 cooldowns are 0.70× the table values and its speed is 1.06×.
 - The transition cancels an in-flight cast and removes its telegraph.
 - Reset returns it to phase 1, full health, home, idle.
 - Ash Burst is not interruptible and its damage radius equals the drawn ring.

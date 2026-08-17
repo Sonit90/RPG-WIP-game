@@ -135,12 +135,16 @@ fn every_monster_in_the_roster_is_distinct_and_reachable() {
             archetype.max_health > 0.0 && archetype.speed > 0.0,
             "{kind:?}"
         );
-        // Slower than the player's 7 m/s, in every phase. Anything that could outrun the
-        // player would make every "move out of it" mechanic in the dungeon unanswerable.
+        // Slower than the player, in every phase. Read off the player's own movement config
+        // rather than written down again: anything that could outrun the player would make
+        // every "move out of it" mechanic in the dungeon unanswerable, and a second copy of
+        // the number is a second thing to forget.
+        let player_speed = engine_game::movement::MovementConfig::default().max_speed;
         for index in 0..archetype.phase_count() {
             assert!(
-                archetype.phase_speed(index) < 7.0,
-                "{kind:?} phase {index} outruns the player"
+                archetype.phase_speed(index) < player_speed,
+                "{kind:?} phase {index} moves at {} against the player's {player_speed}",
+                archetype.phase_speed(index)
             );
         }
     }
@@ -693,6 +697,92 @@ fn a_pack_activates_when_one_member_is_pulled_and_completes_when_all_are_dead() 
         simulation.encounter().map(engine_game::Encounter::state),
         Some(EncounterState::Completed)
     );
+}
+
+#[test]
+fn pulling_one_member_of_a_pack_pulls_all_of_it() {
+    // The pack rule. The Warden and the Ritualist stand well outside their own aggro radius
+    // of the player and would never notice on their own; the Brute in front does, and brings
+    // them.
+    let config = ArenaConfig::with_group(0);
+    let origin = config.player_spawn;
+    let encounter = Encounter::with_spawns(
+        "SPREAD",
+        vec![
+            // Inside a brute's 14 m: this is the one the player walks into.
+            EnemySpawn::new(EnemyKind::Melee, origin + Vec3::new(0.0, 0.0, -10.0)),
+            // Well outside every aggro radius in the roster.
+            EnemySpawn::new(EnemyKind::Warden, origin + Vec3::new(22.0, 0.0, -30.0)),
+            EnemySpawn::new(EnemyKind::Ritualist, origin + Vec3::new(-22.0, 0.0, -30.0)),
+        ],
+    );
+    let mut simulation = arena::encounter_arena(&config, encounter);
+    let members = simulation
+        .encounter()
+        .expect("the encounter was installed")
+        .members()
+        .to_vec();
+
+    // The far two cannot see the player at all.
+    for member in &members[1..] {
+        let gap = horizontal_distance(
+            simulation.player_position(),
+            simulation
+                .world()
+                .position(*member)
+                .expect("it is in the world"),
+        );
+        let radius = simulation
+            .brain(*member)
+            .expect("it is an enemy")
+            .archetype()
+            .aggro_radius;
+        assert!(gap > radius, "{gap:.1} m is inside a {radius:.1} m radius");
+    }
+
+    run(&mut simulation, 300);
+    for member in &members {
+        assert_ne!(
+            state(&simulation, *member),
+            AiState::Idle,
+            "a pack member was left behind"
+        );
+    }
+}
+
+#[test]
+fn a_pack_pulled_together_can_go_home_and_be_pulled_again() {
+    // The pack pull is once per engagement, not a condition that holds while anybody is
+    // awake — otherwise the first member home is woken again by the last one still walking,
+    // and the pack can never go back to sleep.
+    let (mut simulation, members) = pack(&[EnemyKind::Melee, EnemyKind::Melee], 10.0);
+    run(&mut simulation, 120);
+    assert!(members.iter().all(|m| state(&simulation, *m).is_combat()));
+
+    simulation.push_command(PlayerCommand::Teleport {
+        position: Vec3::new(0.0, 0.0, 300.0),
+    });
+    run(&mut simulation, 1_500);
+    for member in &members {
+        assert_eq!(
+            state(&simulation, *member),
+            AiState::Idle,
+            "the pack never settled"
+        );
+    }
+
+    // And a second visit pulls it again, whole.
+    simulation.push_command(PlayerCommand::Teleport {
+        position: Vec3::new(0.0, 0.0, 0.0),
+    });
+    run(&mut simulation, 300);
+    for member in &members {
+        assert_ne!(
+            state(&simulation, *member),
+            AiState::Idle,
+            "the pack could not be pulled a second time"
+        );
+    }
 }
 
 #[test]

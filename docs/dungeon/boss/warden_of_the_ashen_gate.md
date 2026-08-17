@@ -40,7 +40,7 @@ the middle with room to spare and impossible if the player starts moving late.
 | | |
 |---|---|
 | Health | 6,000 |
-| Movement speed | 4.8 m/s (5.2 in phase 2, 5.5 in phase 3) |
+| Movement speed | 6.24 m/s (6.49 in phase 2, 6.86 in phase 3) |
 | Radius / height | 1.1 m / 3.0 m |
 | Attack range | 30 m (Ember Lance) down to 3.0 m (Swing) |
 | Basic attack damage | 14 (Swing) |
@@ -66,8 +66,8 @@ a player who is moving, and everything in it kills a player who is not.
 | Phase | Trigger | Abilities (priority order) | Speed | Cooldowns |
 |---|---|---|---|---|
 | 1 | Encounter start | Warden's Sweep, Ashfall, Ember Lance, Swing | ×1.00 | ×1.00 |
-| 2 | Health ≤ 66 % | Cinder Rain, Warden's Sweep, Ashfall, Ember Lance, Swing | ×1.08 | ×0.85 |
-| 3 | Health ≤ 33 % | Immolation Nova, Cinder Rain, Warden's Sweep, Ashfall, Swing | ×1.15 | ×0.70 |
+| 2 | Health ≤ 66 % | Cinder Rain, Warden's Sweep, Ashfall, Ember Lance, Swing | ×1.04 | ×0.85 |
+| 3 | Health ≤ 33 % | Immolation Nova, Cinder Rain, Warden's Sweep, Ashfall, Swing | ×1.10 | ×0.70 |
 
 **Transitions are deterministic and one-way.** They are health thresholds, checked every
 tick. Healing the boss above a threshold does not send it back a phase. Each transition:

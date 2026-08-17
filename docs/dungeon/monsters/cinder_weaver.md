@@ -16,7 +16,7 @@ becomes about footwork rather than about damage.
 | | |
 |---|---|
 | Health | 230 |
-| Movement speed | 4.4 m/s |
+| Movement speed | 5.72 m/s |
 | Radius / height | 0.5 m / 1.9 m |
 | Attack range | 22 m (Cinder Pool), 25 m (Bolt) |
 | Melee range | n/a |
@@ -57,6 +57,9 @@ Shared with the Ember Adept — see [ember_adept.md](ember_adept.md).
 
 - **Idle** — stands at its spawn point.
 - **Aggro** — 18 m, or any damage.
+- **Pack** — it is pulled when *any* member of its pack is, whether or not it noticed
+  anything itself. Membership belongs to the encounter; this monster knows only its own
+  aggro radius.
 - **Alert** — 0.5 s.
 - **Target selection** — highest threat, else nearest hostile.
 - **Movement** — holds at 15 m. It does not reposition to cut the player off; the pools do

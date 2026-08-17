@@ -17,7 +17,7 @@ where the player is standing and nothing else.
 | | |
 |---|---|
 | Health | 320 |
-| Movement speed | 5.2 m/s |
+| Movement speed | 6.76 m/s |
 | Radius / height | 0.6 m / 2.0 m |
 | Attack range | 5.0 m (Cleave), 3.0 m (Swing) |
 | Melee range | 3.0 m |
@@ -66,6 +66,9 @@ where the player is standing and nothing else.
 
 - **Idle** — stands at its spawn point facing the way it was placed.
 - **Aggro** — anything hostile within 14 m, or anything that damages it from any range.
+- **Pack** — it is pulled when *any* member of its pack is, whether or not it noticed
+  anything itself. Membership belongs to the encounter; this monster knows only its own
+  aggro radius.
 - **Alert** — 0.35 s of turning to look before it moves. This is the readable beat of a pull.
 - **Target selection** — highest threat; nearest hostile if it has no threat yet.
 - **Movement** — closes to 2.4 m and stops. It does not circle or strafe.
@@ -76,7 +79,9 @@ where the player is standing and nothing else.
 
 ## Player Counterplay
 
-Kite it. It is slower than the player (5.2 vs 7.0 m/s), so distance is always winnable.
+Kite it. It is slower than the player (6.76 vs 7.0 m/s), so distance is winnable — but only
+just. A Brute that is already on you stays on you; the room to escape one is made by Blink
+and by not letting it close in the first place.
 When the Cleave telegraph appears, step out of the wedge — it does not follow. In a pack,
 the Brute is the target that can be ignored longest, because it does the least damage per
 second of anything in the roster.

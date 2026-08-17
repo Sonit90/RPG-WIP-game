@@ -760,7 +760,10 @@ static REVENANT_PHASES: [EnemyPhaseDef; 1] = [EnemyPhaseDef {
         None,
         None,
     ],
-    speed_scale: 1.15,
+    // 1.06 rather than a bigger number: the base speed is already 6.5 m/s and the player's
+    // top speed is 7.0. A phase that scaled past that would be an elite that cannot be kited
+    // and an Ash Burst that cannot be walked out of.
+    speed_scale: 1.06,
     cooldown_scale: 0.7,
 }];
 
@@ -778,7 +781,7 @@ static BOSS_PHASES: [EnemyPhaseDef; 2] = [
             Some(EnemyAbility::Swing),
             None,
         ],
-        speed_scale: 1.08,
+        speed_scale: 1.04,
         cooldown_scale: 0.85,
     },
     EnemyPhaseDef {
@@ -792,7 +795,10 @@ static BOSS_PHASES: [EnemyPhaseDef; 2] = [
             Some(EnemyAbility::Swing),
             None,
         ],
-        speed_scale: 1.15,
+        // Held under the player's 7.0 m/s, which is what makes Immolation Nova a mechanic
+        // rather than a death sentence: the boss stands still to cast it, and the player has
+        // to be able to leave before it lands.
+        speed_scale: 1.10,
         cooldown_scale: 0.7,
     },
 ];
@@ -806,7 +812,7 @@ pub static ARCHETYPES: [EnemyArchetype; ENEMY_KIND_COUNT] = [
         height: 2.0,
         // Slower than the player's 7 m/s: a melee enemy that could not be kited would make
         // Blink and the class's movement pointless.
-        speed: 5.2,
+        speed: 6.76,
         aggro_radius: 14.0,
         leash_radius: 40.0,
         preferred_range: 2.4,
@@ -827,7 +833,7 @@ pub static ARCHETYPES: [EnemyArchetype; ENEMY_KIND_COUNT] = [
         max_health: 210.0,
         radius: 0.5,
         height: 1.9,
-        speed: 4.2,
+        speed: 5.46,
         aggro_radius: 20.0,
         leash_radius: 45.0,
         // It stops well short of its 25 m reach, so it stands where the player can see it
@@ -851,7 +857,7 @@ pub static ARCHETYPES: [EnemyArchetype; ENEMY_KIND_COUNT] = [
         max_health: 260.0,
         radius: 0.5,
         height: 1.9,
-        speed: 4.0,
+        speed: 5.2,
         aggro_radius: 18.0,
         leash_radius: 45.0,
         preferred_range: 18.0,
@@ -874,7 +880,7 @@ pub static ARCHETYPES: [EnemyArchetype; ENEMY_KIND_COUNT] = [
         max_health: 240.0,
         radius: 0.5,
         height: 1.9,
-        speed: 4.4,
+        speed: 5.72,
         aggro_radius: 16.0,
         leash_radius: 45.0,
         preferred_range: 14.0,
@@ -895,7 +901,7 @@ pub static ARCHETYPES: [EnemyArchetype; ENEMY_KIND_COUNT] = [
         max_health: 230.0,
         radius: 0.5,
         height: 1.9,
-        speed: 4.4,
+        speed: 5.72,
         aggro_radius: 18.0,
         leash_radius: 45.0,
         preferred_range: 15.0,
@@ -916,7 +922,7 @@ pub static ARCHETYPES: [EnemyArchetype; ENEMY_KIND_COUNT] = [
         max_health: 900.0,
         radius: 0.75,
         height: 2.3,
-        speed: 5.0,
+        speed: 6.5,
         aggro_radius: 16.0,
         leash_radius: 45.0,
         preferred_range: 2.6,
@@ -940,7 +946,7 @@ pub static ARCHETYPES: [EnemyArchetype; ENEMY_KIND_COUNT] = [
         height: 3.0,
         // Slower than the player in every phase. Nothing in this fight kills a player who is
         // moving, and everything in it kills a player who is not.
-        speed: 4.8,
+        speed: 6.24,
         aggro_radius: 28.0,
         leash_radius: 70.0,
         preferred_range: 3.0,

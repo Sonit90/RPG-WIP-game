@@ -17,7 +17,7 @@ The Ritualist is not dangerous. Ignoring the Ritualist is dangerous.
 | | |
 |---|---|
 | Health | 260 |
-| Movement speed | 4.0 m/s |
+| Movement speed | 5.2 m/s |
 | Radius / height | 0.5 m / 1.9 m |
 | Attack range | 24 m (Ritual Nova), 25 m (Bolt) |
 | Melee range | n/a |
@@ -55,6 +55,9 @@ Shared with the Ember Adept — see [ember_adept.md](ember_adept.md). Range 25 m
 
 - **Idle** — stands at its spawn point.
 - **Aggro** — 18 m, or any damage.
+- **Pack** — it is pulled when *any* member of its pack is, whether or not it noticed
+  anything itself. Membership belongs to the encounter; this monster knows only its own
+  aggro radius.
 - **Alert** — 0.5 s.
 - **Target selection** — highest threat, else nearest hostile.
 - **Movement** — holds at 18 m. Further out than the Adept, so in a mixed pack the Ritualist

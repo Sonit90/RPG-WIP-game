@@ -16,7 +16,7 @@ come back to full is the lesson, and it is taught exactly once.
 | | |
 |---|---|
 | Health | 240 |
-| Movement speed | 4.4 m/s |
+| Movement speed | 5.72 m/s |
 | Radius / height | 0.5 m / 1.9 m |
 | Attack range | 22 m (Mend), 25 m (Bolt) |
 | Melee range | n/a |
@@ -54,6 +54,9 @@ Shared with the Ember Adept — see [ember_adept.md](ember_adept.md).
 - **Idle** — stands at its spawn point.
 - **Aggro** — 16 m, the shortest of the ranged monsters, so it is usually pulled *with* its
   pack rather than on its own.
+- **Pack** — it is pulled when *any* member of its pack is, whether or not it noticed
+  anything itself. Membership belongs to the encounter; this monster knows only its own
+  aggro radius.
 - **Alert** — 0.45 s.
 - **Target selection** — for damage: highest threat, else nearest hostile. For Mend: the ally
   with the lowest health fraction inside 22 m, which may be itself.

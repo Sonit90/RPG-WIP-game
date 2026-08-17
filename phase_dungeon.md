@@ -102,12 +102,12 @@ its own**, and the state machine still contains no `match` on which enemy it is 
 
 | Monster | `EnemyKind` | Role | Health | Speed | Document |
 |---|---|---|---|---|---|
-| Brute | `Melee` | Melee bruiser | 320 | 5.2 | `docs/dungeon/monsters/brute.md` |
-| Ember Adept | `Caster` | Ranged caster | 210 | 4.2 | `docs/dungeon/monsters/ember_adept.md` |
-| Bone Ritualist | `Ritualist` | Interrupt-critical caster | 260 | 4.0 | `docs/dungeon/monsters/bone_ritualist.md` |
-| Crypt Warden | `Warden` | Support / healer | 240 | 4.4 | `docs/dungeon/monsters/crypt_warden.md` |
-| Cinder Weaver | `Weaver` | Area controller | 230 | 4.4 | `docs/dungeon/monsters/cinder_weaver.md` |
-| Ash Revenant | `Revenant` | Elite specialist, 2 phases | 900 | 5.0 | `docs/dungeon/monsters/ash_revenant.md` |
+| Brute | `Melee` | Melee bruiser | 320 | 6.76 | `docs/dungeon/monsters/brute.md` |
+| Ember Adept | `Caster` | Ranged caster | 210 | 5.46 | `docs/dungeon/monsters/ember_adept.md` |
+| Bone Ritualist | `Ritualist` | Interrupt-critical caster | 260 | 5.2 | `docs/dungeon/monsters/bone_ritualist.md` |
+| Crypt Warden | `Warden` | Support / healer | 240 | 5.72 | `docs/dungeon/monsters/crypt_warden.md` |
+| Cinder Weaver | `Weaver` | Area controller | 230 | 5.72 | `docs/dungeon/monsters/cinder_weaver.md` |
+| Ash Revenant | `Revenant` | Elite specialist, 2 phases | 900 | 6.5 | `docs/dungeon/monsters/ash_revenant.md` |
 
 Boss: `Boss` — Warden of the Ashen Gate, 6,000 health, `docs/dungeon/boss/warden_of_the_ashen_gate.md`.
 
@@ -164,8 +164,8 @@ doing at once goes from one thing to four.
 | Phase | Trigger | Adds | Speed | Cooldowns |
 |---|---|---|---|---|
 | 1 "The Gate" | Start | Warden's Sweep (uninterruptible cone), Ashfall (interruptible circle), Ember Lance, Swing | ×1.00 | ×1.00 |
-| 2 "The Ash" | ≤ 66 % health | Cinder Rain: 10 s burning pools | ×1.08 | ×0.85 |
-| 3 "The Burning" | ≤ 33 % health | Immolation Nova: a 14 m circle centred on the boss | ×1.15 | ×0.70 |
+| 2 "The Ash" | ≤ 66 % health | Cinder Rain: 10 s burning pools | ×1.04 | ×0.85 |
+| 3 "The Burning" | ≤ 33 % health | Immolation Nova: a 14 m circle centred on the boss | ×1.10 | ×0.70 |
 
 Every transition cancels the cast in flight, drops its telegraph, staggers the boss for 1.5 s
 and emits exactly one `PhaseChanged` event. Transitions are one-way: healing the boss above a
@@ -259,9 +259,21 @@ the victim differ.
 `PACKS` in `engine-game/src/dungeon.rs`. Every pack is populated when the dungeon is built and
 stands idle at its spawn points, so entering a room is a *pull* rather than a spawn.
 
-Pack behaviour needed no new code: threat, targeting, leashing and simultaneous combat are the
-previous phase's, and the tests confirm three monsters fight at once, all target the player,
-and a pack leashes home together and forgets everything.
+Threat, targeting, leashing and simultaneous combat are the previous phase's and needed no
+change. One thing was added: **pulling one member pulls the whole pack.** A Warden standing at
+the back of a room is 30 m from the door and would never notice the player on its own, so a
+pack without this is a pack fought one monster at a time.
+
+It lives in `sync_encounter` rather than in the brain, because membership belongs to the
+encounter — an enemy knows its own aggro radius and its own leash and has no idea it is the
+second of five. Each woken member enters Alert with its own `alert_time`, so a pack waking is
+one readable beat rather than five bodies snapping round at once.
+
+The pull is **once per engagement**, tracked on the encounter. "Somebody in this pack is awake"
+is true for as long as anybody is walking home, so a condition rather than a latch meant the
+first member to arrive was woken again by the last one still returning — a pack that could
+never go back to sleep. The latch is cleared when every member is idle or dead, so a pack that
+leashed can be pulled a second time exactly as it was the first.
 
 ### Milestone 8 — Encounter difficulty
 
@@ -269,6 +281,12 @@ Tuned by composition, not by inflation — see §5. The one stat change made for
 giving enemies their own movement speeds, which had never been wired up: before this phase
 every enemy walked at 7 m/s, the player's speed, which made kiting impossible and every
 "move out of it" mechanic unanswerable.
+
+Those speeds were later raised by 30 % across the roster, which brought the fastest of them
+within a quarter of a metre a second of the player. The invariant that every phase of every
+monster is *slower* than the player still holds and is asserted against
+`MovementConfig::default().max_speed` rather than a written-down 7.0 — but the margin is now
+thin enough that two phase scalars had to come down to preserve it (§13).
 
 ### Milestone 9 — Dungeon flow
 
@@ -406,27 +424,30 @@ Target: 240 FPS is 4,167 µs a frame.
 
 | Scenario | AI µs | Sim µs | Extract µs | Cull µs | VFX µs | Audio µs | Total µs | p99 µs | Allocs |
 |---|---|---|---|---|---|---|---|---|---|
-| 1 pack | 2.5 | 6.3 | 2.0 | 0.6 | 2.7 | 0.4 | 14.5 | 41.5 | 2,405 |
-| 3 packs | 2.6 | 6.3 | 1.6 | 0.6 | 5.4 | 0.7 | 17.1 | 30.9 | 2,402 |
-| 5 packs | 2.6 | 7.2 | 1.7 | 0.6 | 7.2 | 0.8 | 20.0 | 50.7 | 2,406 |
-| full dungeon | 2.9 | 7.6 | 1.9 | 0.6 | 8.7 | 0.9 | 22.6 | 67.9 | 2,403 |
-| boss encounter | 2.7 | 7.2 | 1.6 | 0.3 | 3.5 | 0.6 | 15.8 | 47.4 | 2,405 |
-| boss, worst case | 2.9 | 7.4 | 1.7 | 0.3 | 4.3 | 0.6 | 17.2 | 63.7 | 2,413 |
+| 1 pack | 2.3 | 5.8 | 1.4 | 0.6 | 2.6 | 0.3 | 13.0 | 17.2 | 2,401 |
+| 3 packs | 2.5 | 6.0 | 1.6 | 0.6 | 5.0 | 0.7 | 16.4 | 27.7 | 2,409 |
+| 5 packs | 2.4 | 6.4 | 1.5 | 0.5 | 6.1 | 0.7 | 17.5 | 24.5 | 2,405 |
+| full dungeon | 2.5 | 6.2 | 1.5 | 0.5 | 7.3 | 0.9 | 18.8 | 27.9 | 2,404 |
+| boss encounter | 2.2 | 5.8 | 1.5 | 0.2 | 2.3 | 0.4 | 12.4 | 15.7 | 2,402 |
+| boss, worst case | 2.4 | 6.4 | 1.5 | 0.2 | 3.7 | 0.6 | 14.8 | 20.3 | 2,411 |
 
 | Scenario | Entities | Hazards (peak) | Effects (peak) | Voices (peak) | Mix µs |
 |---|---|---|---|---|---|
-| 1 pack | 24 | 0 | 10 | 14 | 16.9 |
-| 3 packs | 24 | 0 | 15 | 26 | 37.8 |
-| 5 packs | 24 | 4 | 20 | 26 | 39.8 |
-| full dungeon | 24 | 3 | 21 | 27 | 47.0 |
-| boss encounter | 24 | 0 | 10 | 15 | 23.2 |
-| boss, worst case | 24 | 1 | 14 | 15 | 27.6 |
+| 1 pack | 24 | 0 | 10 | 15 | 16.1 |
+| 3 packs | 24 | 0 | 14 | 24 | 36.4 |
+| 5 packs | 24 | 4 | 21 | 23 | 37.3 |
+| full dungeon | 24 | 4 | 20 | 29 | 44.6 |
+| boss encounter | 24 | 0 | 8 | 12 | 16.4 |
+| boss, worst case | 24 | 1 | 14 | 19 | 28.0 |
 
-**Against the budget:** the worst p99 is the full dungeon at 67.9 µs — **1.6 % of the 4,167 µs
-that 240 FPS allows.** The AI cost is essentially flat from one pack to nine, because every
-brain runs every tick whether or not it has been pulled and 23 brains is not a number that
-matters. What grows is the VFX director, and it grows with what is on fire rather than with
-what exists.
+**Against the budget:** the worst p99 is the full dungeon at 27.9 µs — **0.7 % of the 4,167 µs
+that 240 FPS allows.** The AI cost is essentially flat from one pack to nine: a living brain is
+cheap and a dead one is skipped outright, so what a cleared room costs is nothing. What grows
+is the VFX director, and it grows with what is on fire rather than with what exists.
+
+These numbers are better than the ones this phase first recorded (full dungeon 22.6 µs mean and
+67.9 µs p99). Skipping corpses is most of the difference: before it, every dead enemy in a
+cleared room still paid for a full perception pass every tick.
 
 The "worst case" scenario holds the boss in phase 3 by threshold while every trash pack in the
 dungeon is also pulled and alive — a state the game cannot produce.
@@ -507,23 +528,33 @@ back to `NotStarted`, which means it can be pulled again on the next tick.
    human. Every claim in this document is either a test or a measurement.
 2. **Threat is damage-only.** There is no taunt, no threat modifier and no aggro table
    readout. Multi-target threat behaves correctly but is not *interesting* yet.
-3. **Packs do not coordinate.** Deliberately, per the brief. Monsters in a pack act
-   independently; there is no focus fire, no flanking and no pulling-in of neighbours.
-4. **The Crypt Warden can heal itself.** Correct per its documentation, and it makes a
+3. **Packs do not coordinate beyond waking together.** Pulling one member pulls all of them,
+   and after that they act independently: no focus fire, no flanking, no pulling in the
+   neighbouring pack.
+4. **The kiting margin is thin.** Monster speeds were raised 30 %, which puts the Brute at
+   6.76 m/s and the Ash Revenant's second phase at 6.89 against the player's 7.0. Every
+   monster in every phase is still slower than the player, so nothing is unkiteable and every
+   "move out of it" mechanic still resolves — enemies stand still while casting, so the whole
+   cast time is escape distance. But a melee enemy that has reached the player now stays
+   there, and the margin is small enough that two phase scalars had to be reduced to keep the
+   invariant: the Ash Revenant's phase 2 from ×1.15 to ×1.06, and the boss's phases from
+   ×1.08 / ×1.15 to ×1.04 / ×1.10. A flat 30 % without that would have made both of them
+   faster than the player, which makes Immolation Nova unavoidable rather than difficult.
+5. **The Crypt Warden can heal itself.** Correct per its documentation, and it makes a
    Warden fought alone slightly tedious. It is only ever fought in a pack.
-5. **Hazards are circles only.** `EnemyEffect::Hazard` takes its footprint from the ability's
+6. **Hazards are circles only.** `EnemyEffect::Hazard` takes its footprint from the ability's
    `TelegraphShape`, and only `Circle` produces a sensible pool. A cone-shaped hazard would
    need the shape carried into the hazard field.
-6. **The boss has no enrage.** A player who never dies can fight it indefinitely. An enrage
+7. **The boss has no enrage.** A player who never dies can fight it indefinitely. An enrage
    timer is a reward-adjacent pressure mechanic and was left out of a phase with no rewards.
-7. **Four allocations a frame** in the steady state, unchanged across every scenario, so not
+8. **Four allocations a frame** in the steady state, unchanged across every scenario, so not
    dungeon-specific. Not chased, because the measurement says it costs nothing at this scale.
-8. **Uncapped-loop CPU outliers** (p99 ~6 ms, max ~17 ms) are present in the dungeon and in
+9. **Uncapped-loop CPU outliers** (p99 ~6 ms, max ~17 ms) are present in the dungeon and in
    the pre-existing combat arena equally. Pre-existing; not investigated here.
-9. **No dungeon-completion state.** When the boss dies the dungeon is simply over; nothing
+10. **No dungeon-completion state.** When the boss dies the dungeon is simply over; nothing
    announces it beyond the encounter reaching `Completed`. That is a reward-shaped feature and
    was deliberately not built.
-10. **The entrance hall is empty.** It exists so that arriving is not the same event as being
+11. **The entrance hall is empty.** It exists so that arriving is not the same event as being
     noticed. It is not decorated beyond its walls, pillars and braziers.
 
 ---

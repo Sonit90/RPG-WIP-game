@@ -721,14 +721,44 @@ impl Simulation {
     fn sync_encounter(&mut self) {
         let mut encounters = std::mem::take(&mut self.encounters);
         for encounter in &mut encounters {
-            let pulled = encounter.members().iter().any(|member| {
-                self.enemies
-                    .get(member.index())
-                    .and_then(|slot| slot.as_ref())
-                    .is_some_and(|runtime| runtime.brain.state() != AiState::Idle)
-            });
-            if pulled {
+            // Who is awake, and what they are fighting. A pack is pulled *by* something, and
+            // the rest of it has to be told what.
+            let mut awake = false;
+            let mut puller = None;
+            for member in encounter.members() {
+                let Some(Some(runtime)) = self.enemies.get(member.index()) else {
+                    continue;
+                };
+                // A corpse is not awake and cannot pull anybody. The last member of a pack
+                // dying must leave the pack at rest, not permanently pulled.
+                if runtime.brain.state() == AiState::Idle || runtime.brain.state() == AiState::Dead
+                {
+                    continue;
+                }
+                awake = true;
+                puller = puller.or_else(|| runtime.brain.target());
+            }
+            if awake {
                 encounter.activate();
+            } else {
+                // Everybody is home, or everybody is dead. Either way the pack can be pulled
+                // as a whole again if anything is left to pull.
+                encounter.relax();
+            }
+
+            // One member pulled is the whole pack pulled, once. Done here rather than in the
+            // brain because membership is the encounter's: an enemy knows its own aggro
+            // radius and its own leash, and has no idea it is the second of five.
+            if !encounter.pack_pulled()
+                && let Some(target) = puller
+                && self.world.is_alive(target)
+            {
+                encounter.note_pack_pull();
+                for member in encounter.members() {
+                    if let Some(Some(runtime)) = self.enemies.get_mut(member.index()) {
+                        runtime.brain.provoke(target);
+                    }
+                }
             }
             let alive = encounter
                 .members()
