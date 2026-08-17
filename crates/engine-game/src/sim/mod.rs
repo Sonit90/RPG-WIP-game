@@ -772,9 +772,29 @@ impl Simulation {
                 }
                 PlayerCommand::CycleTarget => {
                     let current = self.player.target;
-                    self.player.target =
-                        self.targets
-                            .next_hostile(&self.world, self.player.entity, current);
+                    // Only what the class can actually reach. Nothing is selected when
+                    // nothing is in range: the key does nothing rather than handing the
+                    // player a target every ability would refuse.
+                    if let Some(next) = self.targets.next_hostile_within(
+                        &self.world,
+                        self.player.entity,
+                        current,
+                        Self::targeting_range(),
+                    ) {
+                        self.player.target = Some(next);
+                    }
+                }
+                PlayerCommand::PickTarget { origin, direction } => {
+                    // A miss changes nothing: clicking the floor is not a request to have no
+                    // target, and `retarget_if_needed` would hand one straight back anyway.
+                    if let Some(picked) = self.targets.pick_hostile(
+                        &self.world,
+                        self.player.entity,
+                        origin,
+                        direction,
+                    ) {
+                        self.player.target = Some(picked);
+                    }
                 }
                 PlayerCommand::ResetDummies => self.reset_dummies(),
                 PlayerCommand::Teleport { position } => self.teleport_player(position),
@@ -945,9 +965,14 @@ impl Simulation {
         if valid {
             return;
         }
-        self.player.target = self
-            .targets
-            .nearest_hostile(&self.world, self.player.entity);
+        // Within reach, like every other way a target is chosen. A target that walked out of
+        // range keeps its place — only a dead or missing one is replaced — so this cannot
+        // take a selection away from a player who is chasing something.
+        self.player.target = self.targets.nearest_hostile_within(
+            &self.world,
+            self.player.entity,
+            Self::targeting_range(),
+        );
     }
 
     /// Ticks every entity's statuses and applies the damage they deal.
@@ -1573,11 +1598,26 @@ impl Simulation {
         log::debug!("dummies reset at simulation time {:.2} s", self.time);
     }
 
-    /// Selects the nearest living hostile.
+    /// How far away something may be and still be worth selecting, in metres.
+    ///
+    /// The longest reach the class has. Selection is not a spell, so it does not belong to
+    /// any one ability's range — but a target nothing on the bar can hit is a target the
+    /// player would have to cycle past, which is what makes an eight-room dungeon's cycle key
+    /// useless.
+    #[must_use]
+    pub fn targeting_range() -> f32 {
+        crate::firemage::ability::longest_range()
+    }
+
+    /// Selects the nearest living hostile the class could reach.
     pub fn select_nearest_target(&mut self) {
-        self.player.target = self
-            .targets
-            .nearest_hostile(&self.world, self.player.entity);
+        if let Some(nearest) = self.targets.nearest_hostile_within(
+            &self.world,
+            self.player.entity,
+            Self::targeting_range(),
+        ) {
+            self.player.target = Some(nearest);
+        }
     }
 
     /// Where the player's feet are, or the origin if there is no player.

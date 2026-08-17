@@ -315,6 +315,34 @@ pub fn ground_under_cursor(
     view_projection: &Mat4,
     viewport: (u32, u32),
 ) -> Option<Vec3> {
+    let (near, direction) = cursor_ray(pointer, view_projection, viewport)?;
+    if direction.y.abs() < 1e-6 {
+        return None;
+    }
+
+    let t = (GROUND_HEIGHT - near.y) / direction.y;
+    if t < 0.0 {
+        return None;
+    }
+    Some(near + direction * t)
+}
+
+/// The world-space ray under the cursor: where it starts, and which way it goes.
+///
+/// The cursor position is unprojected through the inverse view-projection at both depths, and
+/// the ray is the line between them — so its `direction` spans exactly the near plane to the
+/// far plane and a parameter of one is the far plane. It is deliberately *not* normalised:
+/// callers either intersect something with it, which does not care, or want that property.
+///
+/// This is the only place a screen coordinate becomes a world direction. Everything that
+/// points at something — placing a Meteor, clicking on an enemy — asks here, so there is one
+/// unprojection to be wrong rather than one per feature.
+#[must_use]
+pub fn cursor_ray(
+    pointer: (f32, f32),
+    view_projection: &Mat4,
+    viewport: (u32, u32),
+) -> Option<(Vec3, Vec3)> {
     if viewport.0 == 0 || viewport.1 == 0 {
         return None;
     }
@@ -326,16 +354,7 @@ pub fn ground_under_cursor(
 
     let near = inverse.transform_point(Vec3::new(ndc_x, ndc_y, 0.0));
     let far = inverse.transform_point(Vec3::new(ndc_x, ndc_y, 1.0));
-    let direction = far - near;
-    if direction.y.abs() < 1e-6 {
-        return None;
-    }
-
-    let t = (GROUND_HEIGHT - near.y) / direction.y;
-    if t < 0.0 {
-        return None;
-    }
-    Some(near + direction * t)
+    Some((near, far - near))
 }
 
 /// Distance on the ground, ignoring height.

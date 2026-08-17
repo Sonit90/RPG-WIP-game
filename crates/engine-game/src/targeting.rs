@@ -8,9 +8,21 @@
 //! SelfCentered        -> everything hostile within a radius of the caster
 //! ```
 //!
-//! Selection itself is a command ([`crate::command::PlayerCommand::CycleTarget`]) rather
-//! than a click, because the arena has no cursor picking and the interesting question is
-//! whether an area effect hits the group and misses what is outside it.
+//! Selection is a command either way it is asked for:
+//!
+//! ```text
+//! CycleTarget                    -> the next hostile by distance, within the class's reach
+//! PickTarget { origin, dir }     -> whatever a ray meets, nearest along the ray
+//! ```
+//!
+//! Both are commands rather than direct writes, and the click carries a *ray* rather than an
+//! entity: the caller owns the camera and the cursor, and this module owns who is hostile,
+//! who is alive and what shape a body is. Nothing here knows a screen exists.
+//!
+//! Cycling is limited to the longest range the class has, because a target nothing on the bar
+//! can reach is a target the player would have to cycle past. Clicking is not: pointing at
+//! something across a room is unambiguous, and a click that was silently refused would be
+//! worse than a selection that is out of range and says so.
 //!
 //! Every query gathers into a buffer the caller owns and reuses, so resolving an ability's
 //! targets allocates nothing after the first few frames.
@@ -61,6 +73,25 @@ impl TargetQuery {
     /// Ties are broken by entity id, so the order is total and two runs of the same
     /// scenario cycle targets identically.
     pub fn hostiles_by_distance(&mut self, world: &GameWorld, from: EntityId) -> &[EntityId] {
+        self.hostiles_within(world, from, f32::INFINITY)
+    }
+
+    /// The living hostiles within `max_range` metres, nearest first.
+    ///
+    /// `max_range` is measured the way every range test in this crate is: between the two
+    /// bodies' edges, so a wide enemy is in range when its side is. `f32::INFINITY` asks for
+    /// all of them.
+    ///
+    /// This is what makes cycling useful rather than exhaustive. In an arena with one pack in
+    /// it the two questions have the same answer; in a dungeon with twenty-three enemies
+    /// standing in five rooms, "the next hostile in the world" is almost always something
+    /// behind a wall a hundred metres away.
+    pub fn hostiles_within(
+        &mut self,
+        world: &GameWorld,
+        from: EntityId,
+        max_range: f32,
+    ) -> &[EntityId] {
         self.scratch.clear();
         self.ranked.clear();
 
@@ -79,6 +110,9 @@ impl TargetQuery {
                 continue;
             }
             let distance = world.distance_between(from, candidate).unwrap_or(f32::MAX);
+            if distance > max_range {
+                continue;
+            }
             self.ranked.push((distance, candidate));
         }
 
@@ -126,6 +160,18 @@ impl TargetQuery {
         best.map(|(_, entity)| entity)
     }
 
+    /// The nearest living hostile within `max_range`, if there is one.
+    pub fn nearest_hostile_within(
+        &mut self,
+        world: &GameWorld,
+        from: EntityId,
+        max_range: f32,
+    ) -> Option<EntityId> {
+        self.hostiles_within(world, from, max_range)
+            .first()
+            .copied()
+    }
+
     /// The next living hostile after `current`, by distance, wrapping around.
     ///
     /// A dead or stale current target starts the cycle from the nearest, which is what a
@@ -136,12 +182,93 @@ impl TargetQuery {
         from: EntityId,
         current: Option<EntityId>,
     ) -> Option<EntityId> {
-        let ordered = self.hostiles_by_distance(world, from);
+        self.next_hostile_within(world, from, current, f32::INFINITY)
+    }
+
+    /// The next living hostile after `current` within `max_range`, wrapping around.
+    ///
+    /// A target that has walked out of range is not in the list, so the cycle restarts from
+    /// the nearest one that is — which is what a player pressing the key after their target
+    /// ran away expects, and the same rule a dead target already followed.
+    ///
+    /// Returns `None` when nothing is in range at all. The caller decides what that means;
+    /// the simulation keeps the target it had, because a key that silently deselected would
+    /// be worse than one that did nothing.
+    pub fn next_hostile_within(
+        &mut self,
+        world: &GameWorld,
+        from: EntityId,
+        current: Option<EntityId>,
+        max_range: f32,
+    ) -> Option<EntityId> {
+        let ordered = self.hostiles_within(world, from, max_range);
+        if ordered.is_empty() {
+            return None;
+        }
         let index = current.and_then(|target| ordered.iter().position(|id| *id == target));
         match index {
             Some(index) => ordered.get((index + 1) % ordered.len()).copied(),
             None => ordered.first().copied(),
         }
+    }
+
+    /// The nearest living hostile a ray passes through, if it passes through one.
+    ///
+    /// The gameplay half of clicking on something. Presentation owns the camera and turns a
+    /// cursor position into a ray; this owns *what a ray hits*, which is a question about
+    /// bodies and factions and has no business knowing that a screen exists.
+    ///
+    /// A body is tested as an upright cylinder of the entity's own radius and height — the
+    /// same two numbers collision and every range test use — so what the player clicks on is
+    /// the shape the game already thinks is there. `direction` need not be normalised.
+    ///
+    /// Nearest along the ray wins, not nearest to the camera: two enemies in a line are
+    /// picked front to back, which is what pointing at the front one means.
+    pub fn pick_hostile(
+        &self,
+        world: &GameWorld,
+        from: EntityId,
+        origin: engine_core::math::Vec3,
+        direction: engine_core::math::Vec3,
+    ) -> Option<EntityId> {
+        let faction = world.faction(from)?;
+        let mut best: Option<(f32, EntityId)> = None;
+
+        for candidate in world.entities() {
+            if candidate == from || !world.is_alive(candidate) {
+                continue;
+            }
+            if !world
+                .faction(candidate)
+                .is_some_and(|other| faction.is_hostile_to(other))
+            {
+                continue;
+            }
+            let Some(position) = world.position(candidate) else {
+                continue;
+            };
+            let Some(distance) = ray_hits_body(
+                origin,
+                direction,
+                position,
+                world.radius(candidate),
+                world.height(candidate),
+            ) else {
+                continue;
+            };
+            // The id is the tie-break for the same reason it is everywhere else in this file:
+            // two bodies at exactly the same depth must not swap between runs.
+            let better = match best {
+                Some((best_distance, best_entity)) => {
+                    is_further(best_distance, best_entity, distance, candidate)
+                }
+                None => true,
+            };
+            if better {
+                best = Some((distance, candidate));
+            }
+        }
+        best.map(|(_, entity)| entity)
     }
 
     /// Gathers every living hostile whose edge is within `radius` of `centre`.
@@ -178,6 +305,68 @@ impl TargetQuery {
         }
         &self.scratch
     }
+}
+
+/// How far along `direction` a ray from `origin` first meets an upright cylinder.
+///
+/// The cylinder stands on `feet` with `radius` and `height`. Returns the distance in units of
+/// `direction`'s length, or `None` if the ray misses, or only meets it behind the origin.
+///
+/// A cylinder rather than a capsule: a capsule's rounded cap makes the top of a body slightly
+/// harder to click than its middle, which is a difference nobody can see and a solver nobody
+/// should have to read. The two disagree only within half a radius of the crown.
+fn ray_hits_body(
+    origin: engine_core::math::Vec3,
+    direction: engine_core::math::Vec3,
+    feet: engine_core::math::Vec3,
+    radius: f32,
+    height: f32,
+) -> Option<f32> {
+    let height = height.max(0.0);
+
+    // The infinite cylinder, in the horizontal plane: a quadratic in the ray parameter, whose
+    // two roots bound the span of the ray that is inside the circle.
+    let (dx, dz) = (direction.x, direction.z);
+    let (ox, oz) = (origin.x - feet.x, origin.z - feet.z);
+    let a = dx.mul_add(dx, dz * dz);
+    let (mut enter, mut exit) = if a <= f32::EPSILON {
+        // Straight up or straight down: it is inside the circle for its whole length, or not
+        // at all.
+        if ox.mul_add(ox, oz * oz) > radius * radius {
+            return None;
+        }
+        (f32::NEG_INFINITY, f32::INFINITY)
+    } else {
+        let b = 2.0 * dx.mul_add(ox, dz * oz);
+        let c = ox.mul_add(ox, oz * oz) - radius * radius;
+        let discriminant = b.mul_add(b, -(4.0 * a * c));
+        if discriminant < 0.0 {
+            return None;
+        }
+        let root = discriminant.sqrt();
+        ((-b - root) / (2.0 * a), (-b + root) / (2.0 * a))
+    };
+
+    // Then the slab between the feet and the crown. Intersecting the two spans rather than
+    // testing the side and the caps separately is what makes a ray from a camera looking
+    // steeply down — which enters through the top, not the side — hit the body it is
+    // pointing at.
+    if direction.y.abs() <= f32::EPSILON {
+        if origin.y < feet.y || origin.y > feet.y + height {
+            return None;
+        }
+    } else {
+        let low = (feet.y - origin.y) / direction.y;
+        let high = (feet.y + height - origin.y) / direction.y;
+        enter = enter.max(low.min(high));
+        exit = exit.min(low.max(high));
+    }
+
+    if exit < 0.0 || enter > exit {
+        return None;
+    }
+    // A ray that started inside the body is touching it right now, at zero.
+    Some(enter.max(0.0))
 }
 
 /// Whether `(distance_a, entity_a)` sorts after `(distance_b, entity_b)`.
@@ -244,6 +433,146 @@ mod tests {
         assert_eq!(
             query.next_hostile(&world, player, current),
             Some(dummies[0])
+        );
+    }
+
+    #[test]
+    fn cycling_only_offers_what_the_class_can_reach() {
+        // Three dummies at 2, 4 and 6 m, and a fourth well outside anything's range. The far
+        // one is never selected, and the cycle wraps at the last one that is in range.
+        let (mut world, player, dummies) = world();
+        let far = world.spawn(EntityDesc::dummy(Vec3::new(0.0, 0.0, -80.0), 100.0));
+        let mut query = TargetQuery::with_capacity(8);
+
+        let mut current = None;
+        for expected in &dummies {
+            current = query.next_hostile_within(&world, player, current, 35.0);
+            assert_eq!(current, Some(*expected));
+        }
+        assert_eq!(
+            query.next_hostile_within(&world, player, current, 35.0),
+            Some(dummies[0]),
+            "the cycle wrapped past the end of what is in range"
+        );
+        assert!(
+            !query.hostiles_within(&world, player, 35.0).contains(&far),
+            "something out of range is in the cycle"
+        );
+        // And with everything out of range there is nothing to move to at all.
+        assert_eq!(query.next_hostile_within(&world, player, None, 0.05), None);
+    }
+
+    #[test]
+    fn a_target_that_walked_out_of_range_restarts_the_cycle_at_the_nearest() {
+        let (mut world, player, dummies) = world();
+        let mut query = TargetQuery::with_capacity(8);
+        // The third dummy is selected, and then moves out of reach.
+        let current = Some(dummies[2]);
+        if let Some(body) = world.body_mut(dummies[2]) {
+            body.position = Vec3::new(0.0, 0.0, -90.0);
+        }
+        assert_eq!(
+            query.next_hostile_within(&world, player, current, 35.0),
+            Some(dummies[0]),
+            "a target out of range should restart the cycle, as a dead one does"
+        );
+    }
+
+    #[test]
+    fn a_ray_down_the_line_of_dummies_picks_the_nearest_one() {
+        let (world, player, dummies) = world();
+        let query = TargetQuery::with_capacity(8);
+        // From above and behind, looking down at the nearest one: the camera's own angle.
+        let origin = Vec3::new(0.0, 3.0, 4.0);
+        let direction = Vec3::new(0.0, -2.0, -6.0);
+        assert_eq!(
+            query.pick_hostile(&world, player, origin, direction),
+            Some(dummies[0]),
+            "a ray through three bodies picked something other than the first"
+        );
+    }
+
+    #[test]
+    fn a_ray_that_meets_nothing_picks_nothing_and_the_caster_is_never_picked() {
+        let (world, player, _) = world();
+        let query = TargetQuery::with_capacity(8);
+        // Off to one side, past everything.
+        assert_eq!(
+            query.pick_hostile(
+                &world,
+                player,
+                Vec3::new(50.0, 1.0, 0.0),
+                Vec3::new(0.0, 0.0, -1.0)
+            ),
+            None
+        );
+        // Straight down onto the player's own head: the caster is not a target.
+        assert_eq!(
+            query.pick_hostile(
+                &world,
+                player,
+                Vec3::new(0.0, 10.0, 0.0),
+                Vec3::new(0.0, -1.0, 0.0)
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn a_ray_from_straight_overhead_hits_the_body_it_is_over() {
+        // The steep case: the ray enters through the crown rather than the side, which a
+        // side-only cylinder test misses entirely.
+        let (world, player, dummies) = world();
+        let query = TargetQuery::with_capacity(8);
+        let above = Vec3::new(0.0, 20.0, -4.0);
+        assert_eq!(
+            query.pick_hostile(&world, player, above, Vec3::new(0.0, -1.0, 0.0)),
+            Some(dummies[1])
+        );
+        // And a hand's width to the side of it hits nothing at all.
+        assert_eq!(
+            query.pick_hostile(
+                &world,
+                player,
+                Vec3::new(6.0, 20.0, -4.0),
+                Vec3::new(0.0, -1.0, 0.0)
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn a_ray_pointing_away_from_a_body_does_not_pick_it() {
+        // Between the player and the first dummy, looking back the way the dummies are not.
+        let (world, player, _) = world();
+        let query = TargetQuery::with_capacity(8);
+        assert_eq!(
+            query.pick_hostile(
+                &world,
+                player,
+                Vec3::new(0.0, 1.0, -1.0),
+                Vec3::new(0.0, 0.0, 1.0)
+            ),
+            None,
+            "a body behind the ray's origin was picked"
+        );
+    }
+
+    #[test]
+    fn a_dead_body_cannot_be_clicked() {
+        let (mut world, player, dummies) = world();
+        let query = TargetQuery::with_capacity(8);
+        let origin = Vec3::new(0.0, 3.0, 4.0);
+        let direction = Vec3::new(0.0, -2.0, -6.0);
+        assert_eq!(
+            query.pick_hostile(&world, player, origin, direction),
+            Some(dummies[0])
+        );
+        world.damage(dummies[0], 1_000.0);
+        assert_eq!(
+            query.pick_hostile(&world, player, origin, direction),
+            Some(dummies[1]),
+            "a corpse was clicked"
         );
     }
 

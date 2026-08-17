@@ -46,7 +46,7 @@ use engine_presentation::extract::{RenderExtractor, ViewParams, VisualBindings};
 use engine_presentation::game_ui::GameUi;
 #[cfg(feature = "debug-overlay")]
 use engine_presentation::hud::{self, HudModel};
-use engine_presentation::mouse_look::{LookChange, MouseLook, RelativeMotion};
+use engine_presentation::mouse_look::{LookChange, LookMode, MouseLook, RelativeMotion};
 use engine_presentation::nameplate::{NameplateConfig, NameplateSet};
 use engine_presentation::snapshot::UiSnapshot;
 use engine_presentation::ui::action_bar::{self, ActionBarSet, SlotAddress};
@@ -135,6 +135,13 @@ const DECAL_RING_LIFT: f32 = 0.02;
 /// The rim that shows past the fill *is* the outline: the world pass is opaque, so an
 /// outline has to be geometry rather than a stroke.
 const DECAL_EDGE_SCALE: f32 = 1.06;
+
+/// How far the cursor may travel during a left press and still count as a click.
+///
+/// The whole difference between "select what I am pointing at" and "look around". Generous
+/// enough that a hand that is not perfectly still still selects, small enough that a
+/// deliberate camera turn never does — a turn moves hundreds of pixels, not six.
+const CLICK_SLOP_PIXELS: i32 = 6;
 
 /// Size of the ring drawn over an enemy inside the targeting circle, in pixels.
 const AFFECTED_MARK_SIZE: f32 = 46.0;
@@ -244,6 +251,18 @@ pub struct App {
     /// Put back when the button is released, so turning the camera does not walk the
     /// pointer to the middle of the screen.
     cursor_before_look: (i32, i32),
+    /// The press that might still turn out to be a click, and where it landed.
+    ///
+    /// `Some` from the moment the orbit button goes down over the world until it comes back
+    /// up. `None` while the press belonged to the interface, or while the right button is
+    /// steering — a click selects, and only the left button clicks.
+    click_candidate: Option<(i32, i32)>,
+    /// Cursor pixels travelled since [`App::click_candidate`] was set.
+    ///
+    /// What separates a click from a drag. A press that moved the camera was the player
+    /// looking around, and selecting whatever happened to be under the cursor when they
+    /// stopped would be a selection they did not ask for.
+    click_travel: i32,
     /// Milliseconds the last render extraction took.
     ///
     /// Extraction alone: the VFX update is timed separately, because "what does the fight
@@ -634,6 +653,8 @@ impl App {
             mouse_look: MouseLook::new(),
             motion: RelativeMotion::new(),
             cursor_before_look: (0, 0),
+            click_candidate: None,
+            click_travel: 0,
             extract_ms: 0.0,
             vfx_ms: 0.0,
             ui_ms: 0.0,
@@ -795,6 +816,10 @@ impl App {
 
     /// Ends mouse-look if it is running. For focus loss and shutdown.
     fn cancel_mouse_look(&mut self) {
+        // The press is not a click any more either. Something else took the pointer — a spell
+        // being aimed, a menu opening — and the button coming up afterwards belongs to that,
+        // not to selecting whatever the cursor was over before it appeared.
+        self.click_candidate = None;
         if self.mouse_look.cancel().is_some() {
             self.end_mouse_look();
         }
@@ -1252,11 +1277,20 @@ impl App {
         let orbit_allowed = !self.menu.is_open();
         match self.mouse_look.update(ctx.input(), orbit_allowed) {
             Some(LookChange::Began) => {
-                self.begin_mouse_look(ctx.input().mouse_position());
+                let cursor = ctx.input().mouse_position();
+                // A press over the interface is the interface's. `hovered_ability` was set
+                // from this same cursor position earlier in this frame, so "was the pointer
+                // on a slot" is already answered and does not have to be asked twice.
+                self.click_candidate = (self.mouse_look.mode() == Some(LookMode::Orbit)
+                    && self.hovered_ability.is_none())
+                .then_some(cursor);
+                self.click_travel = 0;
+                self.begin_mouse_look(cursor);
                 return;
             }
             Some(LookChange::Ended) => {
                 self.end_mouse_look();
+                self.finish_click();
                 return;
             }
             None => {}
@@ -1264,11 +1298,52 @@ impl App {
         if !self.mouse_look.is_active() {
             return;
         }
+        // The right button steering cancels the click: it is not the selection gesture, and a
+        // player who pressed both is looking around rather than picking something.
+        if self.mouse_look.mode() != Some(LookMode::Orbit) {
+            self.click_candidate = None;
+        }
         let (delta_x, delta_y) = self.motion.take();
         if delta_x != 0 || delta_y != 0 {
+            self.click_travel = self
+                .click_travel
+                .saturating_add(delta_x.abs())
+                .saturating_add(delta_y.abs());
             self.controller.rotate(delta_x as f32, delta_y as f32);
         }
         self.recenter_cursor();
+    }
+
+    /// Turns a press that did not become a drag into a selection.
+    ///
+    /// Called when the orbit button comes up. The gesture is the genre's: **hold** the left
+    /// button to look around, **click** it to select what is under the pointer. The two are
+    /// told apart by how far the cursor travelled, because that is the difference a player
+    /// means, and a time-based threshold would refuse a slow, careful click on a small enemy.
+    ///
+    /// What is sent is a *ray*, not an entity: the camera and the cursor are this layer's, and
+    /// which body a ray meets is gameplay's — see [`PlayerCommand::PickTarget`].
+    fn finish_click(&mut self) {
+        let Some(cursor) = self.click_candidate.take() else {
+            return;
+        };
+        if self.click_travel > CLICK_SLOP_PIXELS {
+            return;
+        }
+        // No world to click in, or a scene with no targets in it.
+        if self.scene.is_collision() || self.menu.is_open() {
+            return;
+        }
+        let viewport = self.renderer.size();
+        let view_projection = self.camera.view_projection();
+        let pointer = (cursor.0 as f32, cursor.1 as f32);
+        let Some((origin, direction)) =
+            engine_presentation::ui::targeting::cursor_ray(pointer, &view_projection, viewport)
+        else {
+            return;
+        };
+        self.simulation
+            .push_command(PlayerCommand::PickTarget { origin, direction });
     }
 
     /// Rebuilds the whole game UI and hands it to the renderer.
@@ -2727,13 +2802,14 @@ fn log_controls(args: &Args, demo: Option<&DemoScene>) {
         log::info!("  R                cataclysm, the ultimate");
         log::info!("  BACKSPACE        reset the dummies and the combat meter");
         log::info!("  4 5 R            place with the mouse: left click confirms, right cancels");
-        log::info!("  TAB              cycle target");
+        log::info!("  TAB              cycle target: the next enemy in range, nearest first");
+        log::info!("  LEFT CLICK       select what the pointer is on; hold and drag to orbit");
         log::info!("  RIGHT CLICK      a slot: change its spell, bind a key, clear it");
     }
     log::info!(
         "  ESC              menu: edit hud, settings, quit, resume (the game keeps running)"
     );
-    log::info!("  LEFT MOUSE       hold to orbit the camera; the character keeps facing");
+    log::info!("  LEFT MOUSE       click to select, hold to orbit; the character keeps facing");
     log::info!("  RIGHT MOUSE      hold to turn the camera and steer the character");
     log::info!("  MOUSE WHEEL      camera distance");
     log::info!("  F3               collision debug drawing on/off");

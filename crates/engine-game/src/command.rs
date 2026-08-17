@@ -63,8 +63,23 @@ pub enum PlayerCommand {
     PurchaseTalent(TalentId),
     /// Target the nearest living hostile.
     SelectNearestTarget,
-    /// Move to the next living hostile, by distance.
+    /// Move to the next living hostile, by distance, within the class's own reach.
     CycleTarget,
+    /// Target whatever a ray passes through: the gameplay half of clicking on something.
+    ///
+    /// A ray rather than an entity, so the *rules* of selection — who is hostile, who is
+    /// alive, what shape a body is, which of two overlapping bodies wins — stay in gameplay.
+    /// The caller owns the camera and the cursor and nothing else; it says where the player
+    /// pointed, not what they picked.
+    ///
+    /// A ray that hits nothing changes nothing. Clicking empty floor is not a request to
+    /// have no target.
+    PickTarget {
+        /// Where the ray starts, in world space.
+        origin: Vec3,
+        /// Which way it goes. Need not be normalised.
+        direction: Vec3,
+    },
     /// Restore every dummy and clear the combat session. A developer control.
     ResetDummies,
     /// Put the character down at a position, at rest. A developer control.

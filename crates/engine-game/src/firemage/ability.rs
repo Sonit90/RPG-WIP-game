@@ -26,6 +26,22 @@ pub const ABILITY_SLOTS: usize = 10;
 /// Every ability, including the Ultimate and the passive row Ignite is credited to.
 pub const ABILITY_COUNT: usize = 12;
 
+/// The furthest anything the class has can reach, in metres.
+///
+/// What "in range" means for *selection*, as opposed to for one particular spell. A target
+/// further away than this cannot be hit by anything on the bar, so putting it in the cycle
+/// is offering the player something to select and then be refused for.
+///
+/// Derived from the table rather than written down, so an ability with a longer reach extends
+/// the cycle by being added rather than by anybody remembering to change a second number.
+#[must_use]
+pub fn longest_range() -> f32 {
+    ABILITIES
+        .iter()
+        .map(|definition| definition.range)
+        .fold(0.0, f32::max)
+}
+
 /// Whether the Ultimate can be used.
 ///
 /// **False for this iteration.** FireMage has no Ultimate concept yet, so the button is
