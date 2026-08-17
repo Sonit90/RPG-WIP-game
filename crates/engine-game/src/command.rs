@@ -66,6 +66,11 @@ pub enum PlayerCommand {
     SelectNearestTarget,
     /// Move to the next living hostile, by distance, within the class's own reach.
     CycleTarget,
+    /// Select nobody.
+    ///
+    /// What Escape asks for. A target is a thing the player chose, so dropping it is also a
+    /// choice — and nothing picks a new one afterwards.
+    ClearTarget,
     /// Target the player's own character.
     ///
     /// The self-target key. Separate from [`PlayerCommand::SelectTarget`] because the caller

@@ -457,6 +457,28 @@ pub fn frame_contains(placement: HudPlacement, rect: UiRect, pointer: (f32, f32)
     placement.enabled && rect.contains(pointer.0, pointer.1)
 }
 
+/// Which party row `pointer` is on, if it is on one.
+///
+/// The counterpart of [`action_bar::slot_at`](super::action_bar::slot_at), and derived from
+/// the same numbers [`push_party_frame`] lays the rows out with — so the row a player clicks
+/// is the row they were looking at. Rows past the end of the roster are not rows: an empty
+/// place in the frame is not a member to select.
+#[must_use]
+pub fn party_row_at(rect: UiRect, members: usize, pointer: (f32, f32)) -> Option<usize> {
+    if members == 0 || !rect.contains(pointer.0, pointer.1) {
+        return None;
+    }
+    let factor = factor_of(rect, size::PARTY_WIDTH);
+    let padding = size::PADDING * factor;
+    let inner = rect.inset(padding);
+    let row_height = size::PARTY_ROW * factor;
+    if row_height <= 0.0 || pointer.1 < inner.y {
+        return None;
+    }
+    let index = ((pointer.1 - inner.y) / row_height) as usize;
+    (index < members).then_some(index)
+}
+
 #[cfg(test)]
 #[allow(
     clippy::expect_used,
@@ -772,6 +794,36 @@ mod tests {
         assert_eq!(scratch.health.capacity(), health, "the scratch grew");
         assert_eq!(scratch.detail.capacity(), detail, "the scratch grew");
         assert_eq!(scratch.total.capacity(), total, "the scratch grew");
+    }
+
+    #[test]
+    fn a_party_row_is_found_where_it_was_drawn() {
+        // The row a player clicks has to be the row they were looking at, so the hit test is
+        // built from the same numbers the painter lays the rows out with.
+        let layout = HudLayout::default();
+        let rect = layout.rect_of(HudElementId::Party, UiScale::default(), FHD);
+        let factor = factor_of(rect, size::PARTY_WIDTH);
+        let inner = rect.inset(size::PADDING * factor);
+        let row_height = size::PARTY_ROW * factor;
+
+        // A party of three: the first three rows answer, the fourth does not.
+        for index in 0..3 {
+            let middle = (
+                inner.x + inner.width * 0.5,
+                inner.y + row_height * (index as f32 + 0.5),
+            );
+            assert_eq!(party_row_at(rect, 3, middle), Some(index));
+        }
+        let empty = (inner.x + inner.width * 0.5, inner.y + row_height * 3.5);
+        assert_eq!(
+            party_row_at(rect, 3, empty),
+            None,
+            "an empty place in the frame is not a member to select"
+        );
+
+        // Outside the frame, and a party of nobody.
+        assert_eq!(party_row_at(rect, 3, (rect.x - 5.0, rect.y - 5.0)), None);
+        assert_eq!(party_row_at(rect, 0, (inner.x, inner.y)), None);
     }
 
     #[test]

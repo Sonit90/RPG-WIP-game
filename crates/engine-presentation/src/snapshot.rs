@@ -723,6 +723,11 @@ fn ability_view(
 
     let target = simulation.player().target;
     let target_alive = target.is_some_and(|id| simulation.world().is_alive(id));
+    // A friendly selection — an ally, or the player themselves — is a legal thing to have
+    // and an illegal thing to point a Firebolt at. The bar says so before the click rather
+    // than after it: a button that looks ready and answers "THAT IS NOT AN ENEMY" has taught
+    // the player nothing they could not have been told.
+    let target_friendly = target.is_some_and(|id| !simulation.is_attackable(id));
     let in_range = target.and_then(|id| {
         simulation
             .world()
@@ -737,9 +742,12 @@ fn ability_view(
         SlotAvailability::NoResource
     } else if charges == 0 {
         SlotAvailability::Cooling
-    } else if definition.target.needs_target()
-        && (!target_alive || in_range.is_some_and(|distance| distance > definition.range))
+    } else if (target_friendly && !ability.usable_on_friendly_target())
+        || (definition.target.needs_target()
+            && (!target_alive || in_range.is_some_and(|distance| distance > definition.range)))
     {
+        // Three ways to have the wrong target and one way to say so: it is friendly and this
+        // is not a spell that can ignore that, it is dead or gone, or it is out of reach.
         SlotAvailability::InvalidTarget
     } else if ability == FireAbility::Detonate {
         // The one ability whose readiness is about the *target*: a full burn is what it is
@@ -811,6 +819,61 @@ mod tests {
         simulation.step_once();
         simulation.select_nearest_target();
         simulation
+    }
+
+    #[test]
+    fn selecting_yourself_dims_exactly_the_spells_that_need_an_enemy() {
+        // The bar's answer to a friendly selection, checked ability by ability. What may
+        // still be pressed is what does not point at the selection: the aimed ones, the
+        // self-buffs and the movement.
+        let mut simulation = arena();
+        simulation.push_command(engine_game::command::PlayerCommand::SelectSelf);
+        simulation.step_once();
+        let snapshot = UiSnapshot::build(&simulation);
+
+        let availability = |ability: FireAbility| {
+            let slot = ability.bar_slot().expect("a bar ability");
+            snapshot.abilities[slot].availability
+        };
+        for ability in [
+            FireAbility::Firebolt,
+            FireAbility::FlameLance,
+            FireAbility::Pyroblast,
+            FireAbility::Detonate,
+        ] {
+            assert_eq!(
+                availability(ability),
+                SlotAvailability::InvalidTarget,
+                "{} points at the selection and should be dimmed",
+                ability.definition().name
+            );
+        }
+        for ability in [
+            FireAbility::Blink,
+            FireAbility::FlameShield,
+            FireAbility::FireMastery,
+            FireAbility::Meteor,
+            FireAbility::Firestorm,
+            FireAbility::FlameCone,
+        ] {
+            assert_ne!(
+                availability(ability),
+                SlotAvailability::InvalidTarget,
+                "{} does not point at the selection and should stay usable",
+                ability.definition().name
+            );
+        }
+    }
+
+    #[test]
+    fn an_enemy_selection_leaves_the_single_target_spells_alone() {
+        // The control for the test above: the same bar, with a dummy selected instead.
+        let snapshot = UiSnapshot::build(&arena());
+        let slot = FireAbility::Firebolt.bar_slot().expect("a bar ability");
+        assert_ne!(
+            snapshot.abilities[slot].availability,
+            SlotAvailability::InvalidTarget
+        );
     }
 
     #[test]

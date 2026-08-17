@@ -268,6 +268,88 @@ fn a_named_selection_is_still_checked_before_it_is_honoured() {
     );
 }
 
+#[test]
+fn a_dead_target_is_dropped_and_nothing_is_chosen_in_its_place() {
+    // A target is something the player picked. Picking the next one for them walks the
+    // selection around the room on its own, and every spell pressed afterwards lands
+    // somewhere they did not aim it.
+    let mut simulation = arena();
+    let dummy = target(&simulation);
+    simulation.world_mut().damage(dummy, 1_000_000.0);
+    simulation.step_once();
+
+    assert_eq!(
+        simulation.player().target,
+        None,
+        "something was selected without being asked for"
+    );
+    // And it stays that way: the arena is full of other dummies.
+    for _ in 0..120 {
+        simulation.step_once();
+    }
+    assert_eq!(simulation.player().target, None);
+}
+
+#[test]
+fn escape_clears_the_selection_and_leaves_it_cleared() {
+    use engine_game::command::PlayerCommand;
+
+    let mut simulation = arena();
+    assert!(simulation.player().target.is_some());
+    simulation.push_command(PlayerCommand::ClearTarget);
+    simulation.step_once();
+    assert_eq!(simulation.player().target, None);
+
+    for _ in 0..120 {
+        simulation.step_once();
+    }
+    assert_eq!(
+        simulation.player().target,
+        None,
+        "a cleared selection came back on its own"
+    );
+}
+
+#[test]
+fn a_living_target_that_walked_out_of_reach_is_kept() {
+    // Only a dead or missing target is dropped. Chasing something must not lose it.
+    let mut simulation = arena();
+    let dummy = target(&simulation);
+    if let Some(body) = simulation.world_mut().body_mut(dummy) {
+        body.position = Vec3::new(0.0, 0.0, -300.0);
+    }
+    for _ in 0..60 {
+        simulation.step_once();
+    }
+    assert_eq!(simulation.player().target, Some(dummy));
+}
+
+#[test]
+fn every_bar_ability_agrees_with_the_documented_ally_rule() {
+    // The property pinned per ability, so deriving it from the target mode cannot quietly
+    // change what the bar does.
+    let usable = |ability: FireAbility| ability.usable_on_friendly_target();
+    for ability in [
+        FireAbility::Firebolt,
+        FireAbility::FlameLance,
+        FireAbility::Pyroblast,
+        FireAbility::Detonate,
+    ] {
+        assert!(!usable(ability), "{:?} needs an enemy", ability);
+    }
+    for ability in [
+        FireAbility::FlameCone,
+        FireAbility::Meteor,
+        FireAbility::Firestorm,
+        FireAbility::FireMastery,
+        FireAbility::FlameShield,
+        FireAbility::Blink,
+        FireAbility::Cataclysm,
+    ] {
+        assert!(usable(ability), "{:?} does not need an enemy", ability);
+    }
+}
+
 // ---------------------------------------------------------------- Detonate
 
 #[test]

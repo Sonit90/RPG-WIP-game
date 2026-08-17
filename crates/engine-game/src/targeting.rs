@@ -214,25 +214,22 @@ impl TargetQuery {
 
     /// Whether `viewer` is allowed to select `candidate`.
     ///
-    /// Itself, or anything living and hostile to it. One function, so the click, the
-    /// nameplate and the cycle cannot disagree about what a legal selection is — and so
-    /// "the player can select themselves" is one rule rather than an exception in three
-    /// places.
+    /// Anything alive, including the viewer itself and anything friendly. Selection is
+    /// "what am I looking at", not "what am I about to hit" — a player selects an ally to
+    /// read their health, and selects themselves for the same reason.
     ///
-    /// Selecting yourself is not an attack. What an ability does with a friendly target is
-    /// the ability's business, and the FireMage's single-target spells refuse one.
+    /// The restriction that matters lives on the *ability* instead: what a spell may be
+    /// pointed at is the spell's business, and the FireMage's single-target ones refuse a
+    /// friendly target. Putting the rule there rather than here is what makes a future heal
+    /// possible without changing what a click means.
+    ///
+    /// `viewer` is unused today and is kept because the question is genuinely about a pair:
+    /// a future faction that cannot see stealth, or a duel that hides the rest of a party,
+    /// answers it differently for two different viewers.
     #[must_use]
     pub fn is_selectable(world: &GameWorld, viewer: EntityId, candidate: EntityId) -> bool {
-        if !world.is_alive(candidate) {
-            return false;
-        }
-        if candidate == viewer {
-            return true;
-        }
-        world
-            .faction(viewer)
-            .zip(world.faction(candidate))
-            .is_some_and(|(mine, theirs)| mine.is_hostile_to(theirs))
+        let _ = viewer;
+        world.is_alive(candidate)
     }
 
     /// The nearest selectable body a ray passes through, if it passes through one.

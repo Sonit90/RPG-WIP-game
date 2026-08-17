@@ -686,7 +686,7 @@ impl Simulation {
         // has already interrupted any cast — and before statuses, so a cast that lands this
         // tick applies its damage before this tick's burns.
         self.tick_cast(step);
-        self.retarget_if_needed();
+        self.drop_invalid_target();
         stats.abilities += ability_started.elapsed();
 
         let status_started = Instant::now();
@@ -784,6 +784,9 @@ impl Simulation {
                         self.player.target = Some(next);
                     }
                 }
+                PlayerCommand::ClearTarget => {
+                    self.player.target = None;
+                }
                 PlayerCommand::SelectSelf => {
                     self.player.target = Some(self.player.entity);
                 }
@@ -797,7 +800,7 @@ impl Simulation {
                 }
                 PlayerCommand::PickTarget { origin, direction } => {
                     // A miss changes nothing: clicking the floor is not a request to have no
-                    // target, and `retarget_if_needed` would hand one straight back anyway.
+                    // target. Escape is how a player asks for that, and it says so.
                     if let Some(picked) = self.targets.pick_selectable(
                         &self.world,
                         self.player.entity,
@@ -963,27 +966,27 @@ impl Simulation {
         self.world.reset_history(player);
     }
 
-    /// Keeps the nearest hostile selected when nothing valid is.
+    /// Drops a target that has died or gone, and selects nobody in its place.
     ///
-    /// A prototype whose target silently becomes nothing when a dummy dies looks broken.
-    /// Deterministic, because "nearest" is resolved by distance with the entity id as the
-    /// tie-break.
-    fn retarget_if_needed(&mut self) {
+    /// **Nothing is chosen automatically.** A target is something the player picked, and
+    /// picking the next one for them is picking wrong: a pack whose members die in turn
+    /// would walk the selection around the room on its own, and every spell the player
+    /// pressed afterwards would land somewhere they did not aim it.
+    ///
+    /// This used to select the nearest hostile instead, on the grounds that a prototype
+    /// whose target quietly becomes nothing looks broken. With a dungeon rather than a
+    /// training arena, the opposite is true.
+    ///
+    /// A living target that walked out of range keeps its place: only a dead or missing one
+    /// is dropped, so this cannot take a selection away from a player chasing something.
+    fn drop_invalid_target(&mut self) {
         let valid = self
             .player
             .target
             .is_some_and(|target| self.world.is_alive(target));
-        if valid {
-            return;
+        if !valid {
+            self.player.target = None;
         }
-        // Within reach, like every other way a target is chosen. A target that walked out of
-        // range keeps its place — only a dead or missing one is replaced — so this cannot
-        // take a selection away from a player who is chasing something.
-        self.player.target = self.targets.nearest_hostile_within(
-            &self.world,
-            self.player.entity,
-            Self::targeting_range(),
-        );
     }
 
     /// Ticks every entity's statuses and applies the damage they deal.
@@ -1605,7 +1608,7 @@ impl Simulation {
             return;
         }
         self.meter.reset(self.time);
-        self.retarget_if_needed();
+        self.drop_invalid_target();
         log::debug!("dummies reset at simulation time {:.2} s", self.time);
     }
 

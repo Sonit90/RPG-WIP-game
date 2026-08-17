@@ -1121,6 +1121,13 @@ impl App {
                 log::debug!("cast cancelled");
                 return;
             }
+            // Then the selection, which is the last thing the player is "in" before they are
+            // in nothing. Pressing escape twice from a fight therefore drops the target and
+            // then opens the menu, which is the order every game in the genre uses.
+            if self.simulation.player().target.is_some() {
+                self.simulation.push_command(PlayerCommand::ClearTarget);
+                return;
+            }
         }
         // Copied out: applying an action needs `&mut self`, and the slice borrows the menu.
         self.menu_actions.clear();
@@ -1348,6 +1355,11 @@ impl App {
             return;
         }
         let pointer = (cursor.0 as f32, cursor.1 as f32);
+        if let Some(entity) = self.unit_frame_at(pointer) {
+            self.simulation
+                .push_command(PlayerCommand::SelectTarget { entity });
+            return;
+        }
         if let Some(plate) = self.nameplates.at(pointer) {
             let entity = plate.entity;
             self.simulation
@@ -1364,6 +1376,39 @@ impl App {
         };
         self.simulation
             .push_command(PlayerCommand::PickTarget { origin, direction });
+    }
+
+    /// The unit a frame under `pointer` describes, if the pointer is on one.
+    ///
+    /// The player's own frame and each party row. Both are how a player selects themselves
+    /// without hunting for their character in the middle of a fight — the same gesture the
+    /// genre has had since unit frames existed, and the reason selection is not restricted to
+    /// enemies.
+    ///
+    /// The target frame is deliberately *not* included: clicking the frame that shows your
+    /// target to select your target does nothing, and clicking it to select the *player*
+    /// would make the one frame that always shows an enemy select an ally.
+    fn unit_frame_at(&self, pointer: (f32, f32)) -> Option<engine_game::EntityId> {
+        let scale = self.game_ui.scale();
+        let viewport = self.renderer.size();
+        let rect_of = |id: HudElementId| {
+            self.hud_layout
+                .is_enabled(id)
+                .then(|| self.hud_layout.rect_of(id, scale, viewport))
+        };
+
+        if let Some(rect) = rect_of(HudElementId::Player)
+            && rect.contains(pointer.0, pointer.1)
+        {
+            return Some(self.simulation.player().entity);
+        }
+        let rect = rect_of(HudElementId::Party)?;
+        let row = engine_presentation::ui::unit_frame::party_row_at(
+            rect,
+            self.snapshot.party.len(),
+            pointer,
+        )?;
+        self.snapshot.party.get(row).map(|member| member.entity)
     }
 
     /// Rebuilds the whole game UI and hands it to the renderer.
@@ -2824,11 +2869,11 @@ fn log_controls(args: &Args, demo: Option<&DemoScene>) {
         log::info!("  4 5 R            place with the mouse: left click confirms, right cancels");
         log::info!("  TAB              cycle target: the next enemy in range, nearest first");
         log::info!("  LEFT CLICK       select an enemy or its nameplate; hold and drag to orbit");
-        log::info!("  F1               target yourself");
+        log::info!("  F1               target yourself (or click your own frame)");
         log::info!("  RIGHT CLICK      a slot: change its spell, bind a key, clear it");
     }
     log::info!(
-        "  ESC              menu: edit hud, settings, quit, resume (the game keeps running)"
+        "  ESC              drop the target, then the menu: edit hud, settings, quit, resume"
     );
     log::info!("  LEFT MOUSE       click to select, hold to orbit; the character keeps facing");
     log::info!("  RIGHT MOUSE      hold to turn the camera and steer the character");

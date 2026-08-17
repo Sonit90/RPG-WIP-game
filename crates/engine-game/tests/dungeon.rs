@@ -611,6 +611,61 @@ fn a_boss_reset_puts_back_every_piece_of_it() {
     );
 }
 
+#[test]
+fn a_corpse_stops_being_tracked_but_still_notices_that_it_died() {
+    // Two halves of the same rule. A dead enemy is skipped before it perceives anything —
+    // there is nothing left to decide and a cleared dungeon room would otherwise cost a
+    // full world scan per corpse per tick. But an enemy killed *outside* the combat path
+    // has a body at zero health and a brain that has not heard, and that one still has to
+    // think once so it can die properly.
+    let (mut simulation, enemy) = duel(EnemyKind::Melee, 8.0);
+    run(&mut simulation, 120);
+    assert!(state(&simulation, enemy).is_combat());
+
+    // Killed through the world, so the brain is not told directly.
+    simulation.world_mut().damage(enemy, 1_000_000.0);
+    run(&mut simulation, 1);
+    assert_eq!(state(&simulation, enemy), AiState::Dead, "it never noticed");
+
+    // And from then on it is left alone: nothing it could do reaches the event stream.
+    let events = run(&mut simulation, 300);
+    assert!(
+        !events.iter().any(|event| matches!(
+            event,
+            CombatEvent::AbilityUsed { source, .. }
+                | CombatEvent::CastStarted { source, .. }
+                | CombatEvent::TelegraphStarted { source, .. } if *source == enemy
+        )),
+        "a corpse acted"
+    );
+    assert_eq!(state(&simulation, enemy), AiState::Dead);
+    assert!(
+        simulation
+            .brain(enemy)
+            .is_some_and(|brain| brain.threat().is_empty() && brain.cast().is_none()),
+        "a corpse is still holding combat state"
+    );
+}
+
+#[test]
+fn a_reset_brings_a_corpse_back_into_the_fight() {
+    // The other side of skipping the dead: a reset has to undo it, or a wiped dungeon comes
+    // back full of enemies that never think again.
+    let (mut simulation, enemy) = duel(EnemyKind::Melee, 8.0);
+    run(&mut simulation, 60);
+    simulation.slay(enemy);
+    run(&mut simulation, 4);
+    assert_eq!(state(&simulation, enemy), AiState::Dead);
+
+    simulation.reset_encounter();
+    assert_eq!(state(&simulation, enemy), AiState::Idle);
+    run(&mut simulation, 120);
+    assert!(
+        state(&simulation, enemy).is_combat() || state(&simulation, enemy) == AiState::Alert,
+        "a restored enemy never woke up again"
+    );
+}
+
 // ---------------------------------------------------------------------------------------
 // Packs
 // ---------------------------------------------------------------------------------------

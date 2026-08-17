@@ -85,6 +85,19 @@ impl Simulation {
                 // The slot was freed under it: nothing to drive.
                 continue;
             };
+            // A corpse is not tracked. Its brain has already been through `die` — which
+            // dropped its target, its threat and its cast — and everything downstream of it
+            // has been cleaned up by the death itself: its burn, its statuses, its telegraph
+            // and the ground it lit. Thinking again would produce `AiDecision::IDLE` at the
+            // cost of a full perception pass over the world, which in a cleared dungeon room
+            // is several scans a tick for enemies nobody is fighting.
+            //
+            // Deliberately keyed on the *brain* rather than on the world: an entity killed
+            // outside the combat path has a body at zero health and a brain that has not
+            // noticed, and that one still has to think once so it can die properly.
+            if runtime.brain.state() == AiState::Dead {
+                continue;
+            }
 
             let percept = self.perceive(entity, &runtime.brain);
             // The cast as it was *before* thinking: a cast that completes this tick is taken

@@ -145,6 +145,16 @@ impl FireAbility {
         matches!(self, Self::Ignite)
     }
 
+    /// Whether this ability can still be used while a friendly target is selected.
+    ///
+    /// The per-ability form of [`TargetMode::usable_on_friendly_target`], which is where the
+    /// rule and the reasoning live. What the interface asks so it can dim a button the
+    /// player is about to be refused for.
+    #[must_use]
+    pub fn usable_on_friendly_target(self) -> bool {
+        self.definition().target.usable_on_friendly_target()
+    }
+
     /// This ability's definition.
     #[must_use]
     pub fn definition(self) -> &'static AbilityDef {
@@ -245,6 +255,29 @@ impl TargetMode {
     #[must_use]
     pub fn is_aimed(self) -> bool {
         matches!(self, Self::Ground | Self::Cone | Self::Line)
+    }
+
+    /// Whether an ability aimed this way can still be used while a friendly target — an
+    /// ally, or the player themselves — is selected.
+    ///
+    /// Every mode except [`TargetMode::Single`] can, and each for its own reason:
+    ///
+    /// ```text
+    /// Single    no   it is pointed at the selection, and the selection is not an enemy
+    /// Cone      yes  aimed with the mouse; the selection is not consulted
+    /// Ground    yes  the key opens the placement circle rather than casting
+    /// Line      yes  placed, like Ground
+    /// SelfCast  yes  it is used on the caster whatever is selected
+    /// Movement  yes  it moves the caster and touches nobody
+    /// ```
+    ///
+    /// Derived from the mode rather than written down per ability. A second column saying
+    /// "usable on an ally" would be a fact that can contradict the mode beside it, and the
+    /// mode is already the thing that decides who an ability is pointed at. A test pins the
+    /// per-ability answers so the derivation cannot quietly change what the bar does.
+    #[must_use]
+    pub fn usable_on_friendly_target(self) -> bool {
+        !matches!(self, Self::Single)
     }
 }
 
