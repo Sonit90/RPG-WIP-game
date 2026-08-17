@@ -84,8 +84,6 @@ fn every_ability_on_the_bar_produces_a_sound() {
         let mut simulation = arena(6);
         let mut audio = runtime();
         let mut director = AudioDirector::new();
-        // The bed would otherwise be the sound every one of these tests found.
-        director.set_ambience_enabled(false, &mut audio);
 
         let target = simulation
             .player()
@@ -126,7 +124,6 @@ fn the_firebolt_chain_is_cast_then_flight_then_impact() {
     let mut simulation = arena(1);
     let mut audio = runtime();
     let mut director = AudioDirector::new();
-    director.set_ambience_enabled(false, &mut audio);
 
     simulation.push_command(PlayerCommand::UseAbility(0));
     // One frame past the cast landing: the bolt is in the air and has not arrived.
@@ -153,7 +150,6 @@ fn a_burn_on_fifty_targets_is_not_fifty_sounds() {
     let mut simulation = arena(50);
     let mut audio = runtime();
     let mut director = AudioDirector::new();
-    director.set_ambience_enabled(false, &mut audio);
 
     // Light the whole pack: a cone into the group, then a few seconds of it burning.
     for _ in 0..6 {
@@ -212,7 +208,6 @@ fn a_fight_out_of_earshot_is_quieter_than_one_in_your_face() {
         let mut simulation = arena(4);
         let mut audio = runtime();
         let mut director = AudioDirector::new();
-        director.set_ambience_enabled(false, &mut audio);
 
         let listener_position = simulation.player_position() + Vec3::new(distance, 1.6, 0.0);
         audio.set_listener(engine_audio::Listener::new(

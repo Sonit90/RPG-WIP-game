@@ -289,8 +289,18 @@ pub struct Simulation {
     /// A parallel array like every other per-entity store in this crate: an enemy is an
     /// entity that happens to have a mind, not a different kind of object.
     enemies: Vec<Option<enemy_exec::EnemyRuntime>>,
-    /// The fight the enemies belong to, if the scene built one.
-    encounter: Option<crate::encounter::Encounter>,
+    /// The fights the enemies belong to, in the order the scene built them.
+    ///
+    /// A list rather than one, because a dungeon is a list of encounters and the alternative
+    /// — an encounter that holds sub-encounters — puts pack membership inside the thing that
+    /// is supposed to answer "who is in this pack".
+    encounters: Vec<crate::encounter::Encounter>,
+    /// Ground enemies have left burning.
+    hazards: crate::enemy::hazard::EnemyHazardField,
+    /// Hazard damage produced this step. Reused; never freed.
+    hazard_ticks: Vec<crate::enemy::hazard::HazardTick>,
+    /// Hazards that stopped burning this step, with their identities. Reused; never freed.
+    hazard_expired: Vec<(u32, Vec3)>,
     /// Identities for telegraphs, so an end can be matched to its start.
     next_telegraph: u32,
     events: EventStream,
@@ -356,7 +366,10 @@ impl Simulation {
             impacts: Vec::with_capacity(8),
             expired_zones: Vec::with_capacity(8),
             enemies: Vec::new(),
-            encounter: None,
+            encounters: Vec::new(),
+            hazards: crate::enemy::hazard::EnemyHazardField::new(),
+            hazard_ticks: Vec::with_capacity(16),
+            hazard_expired: Vec::with_capacity(16),
             next_telegraph: 0,
             events: EventStream::with_capacity(256),
             meter: CombatMeter::new(),
@@ -654,7 +667,13 @@ impl Simulation {
         // stage in the timings because "what does thinking cost" is the question the stress
         // test asks, and burying it in `abilities` would answer a different one.
         let ai_started = Instant::now();
+        // Resets first: a pack asked to reset last tick is put back before anybody thinks,
+        // so nothing spends a tick acting on a fight that is being taken down.
+        self.apply_encounter_resets();
         self.tick_ai(step);
+        // After the AI, so ground lit this tick does not also burn this tick — a pool the
+        // player has had no frame to see is a pool they could not have avoided.
+        self.tick_enemy_hazards(step);
         stats.ai += ai_started.elapsed();
 
         let movement_started = Instant::now();
@@ -789,12 +808,22 @@ impl Simulation {
             }
             // An enemy walks with the intent its brain decided; everything else stands
             // still and is only integrated so gravity and friction still apply to it.
-            let intent = self
+            let runtime = self
                 .enemies
                 .get(slot)
                 .and_then(|runtime| runtime.as_ref())
-                .filter(|_| self.world.is_alive(id))
-                .map_or(MoveIntent::NONE, |runtime| runtime.intent);
+                .filter(|_| self.world.is_alive(id));
+            let intent = runtime.map_or(MoveIntent::NONE, |runtime| runtime.intent);
+            // Its own speed, and its current phase's scaling of it. Without this every enemy
+            // walked at the player's top speed, which made "slower than the player" a number
+            // in a table that nothing read — and a boss phase's `speed_scale` meaningless.
+            let config = match runtime {
+                Some(runtime) => MovementConfig {
+                    max_speed: runtime.brain.speed(),
+                    ..config
+                },
+                None => config,
+            };
             if intent.direction.length() > 0.0 || intent.facing.is_some() {
                 // The same collided step the player takes: an enemy that walked through a
                 // wall would be an enemy the arena could not contain.
@@ -1208,23 +1237,118 @@ impl Simulation {
         self.enemies().count()
     }
 
-    /// The fight the scene built, if it built one.
+    /// The first fight the scene built, if it built one.
+    ///
+    /// The single-encounter question, unchanged: a scene with one fight in it has one
+    /// answer, and a dungeon's callers ask [`Simulation::encounters`] instead.
     #[must_use]
     pub fn encounter(&self) -> Option<&crate::encounter::Encounter> {
-        self.encounter.as_ref()
+        self.encounters.first()
     }
 
-    /// Installs an encounter and spawns every enemy it names.
+    /// The ground enemies have left burning.
+    ///
+    /// Read by the developer overlay and by presentation, which draws one effect per hazard.
+    #[must_use]
+    pub fn enemy_hazards(&self) -> &crate::enemy::hazard::EnemyHazardField {
+        &self.hazards
+    }
+
+    /// Every fight the scene built, in the order it built them.
+    #[must_use]
+    pub fn encounters(&self) -> &[crate::encounter::Encounter] {
+        &self.encounters
+    }
+
+    /// One fight by index.
+    #[must_use]
+    pub fn encounter_at(&self, index: usize) -> Option<&crate::encounter::Encounter> {
+        self.encounters.get(index)
+    }
+
+    /// Asks one fight to reset itself on the next tick.
+    pub fn request_encounter_reset(&mut self, index: usize) {
+        if let Some(encounter) = self.encounters.get_mut(index) {
+            encounter.request_reset();
+        }
+    }
+
+    /// Carries out every reset that was asked for, one encounter at a time.
+    ///
+    /// Run once a tick, before the AI: a reset is a *request* precisely so it happens between
+    /// ticks rather than in the middle of one, where it would despawn entities this tick's
+    /// events still name.
+    ///
+    /// Resetting one pack does not touch another. That is the difference between a wipe on
+    /// the boss and a wipe on the dungeon, and it is why this is per encounter rather than
+    /// the whole-world [`Simulation::reset_encounter`].
+    pub fn apply_encounter_resets(&mut self) {
+        let mut encounters = std::mem::take(&mut self.encounters);
+        for encounter in &mut encounters {
+            if !encounter.is_resetting() {
+                continue;
+            }
+            for member in encounter.members().to_vec() {
+                self.restore_enemy(member);
+            }
+            encounter.finish_reset();
+        }
+        self.encounters = encounters;
+    }
+
+    /// Puts one enemy back exactly as it spawned: home, whole, idle and forgetful.
+    ///
+    /// Restores rather than respawns, so entity ids stay valid and nothing holding one — a
+    /// nameplate, a floating number, an effect — is left pointing at a slot that has moved on.
+    pub fn restore_enemy(&mut self, entity: EntityId) {
+        let slot = entity.index();
+        let Some(Some(runtime)) = self.enemies.get_mut(slot) else {
+            return;
+        };
+        runtime.brain.reset();
+        runtime.intent = MoveIntent::NONE;
+        let telegraph = runtime.telegraph.take();
+        let home = runtime.brain.home();
+        if let Some(id) = telegraph {
+            let anchor = self.world.position(entity).unwrap_or(home);
+            self.events.push(CombatEvent::TelegraphEnded {
+                id,
+                anchor,
+                resolved: false,
+                tick: self.tick,
+            });
+        }
+        self.clear_hazards_of(entity);
+        if !self.world.contains(entity) {
+            return;
+        }
+        self.world.restore(entity);
+        if let Some(body) = self.world.body_mut(entity) {
+            *body = crate::movement::Body::at(home);
+        }
+    }
+
+    /// Installs a single encounter, replacing any that were there, and spawns its enemies.
     ///
     /// The encounter owns the *membership*; the simulation owns the entities. Nothing else
     /// spawns enemies, so "who is in this fight" has one answer.
-    pub fn set_encounter(&mut self, mut encounter: crate::encounter::Encounter) {
+    pub fn set_encounter(&mut self, encounter: crate::encounter::Encounter) {
+        self.encounters.clear();
+        self.add_encounter(encounter);
+    }
+
+    /// Adds an encounter and spawns every enemy it names.
+    ///
+    /// What a dungeon calls, once per pack. The enemies of every pack exist from the moment
+    /// the dungeon is built — they stand at their spawn points being idle, which is what
+    /// makes walking into a room a pull rather than a spawn.
+    pub fn add_encounter(&mut self, mut encounter: crate::encounter::Encounter) {
         let mut members = Vec::with_capacity(encounter.spawns().len());
         for spawn in encounter.spawns().to_vec() {
             members.push(self.spawn_enemy(spawn.kind, spawn.position, spawn.facing_yaw));
         }
         encounter.set_members(members);
-        self.encounter = Some(encounter);
+        self.encounters.push(encounter);
     }
 
     /// Puts the fight back: every enemy alive, home, idle and forgetful, and the player
@@ -1236,27 +1360,47 @@ impl Simulation {
     /// slot that has moved on.
     pub fn reset_encounter(&mut self) {
         for slot in 0..self.enemies.len() {
-            let Some(runtime) = self.enemies[slot].as_mut() else {
-                continue;
-            };
-            runtime.brain.reset();
-            runtime.intent = MoveIntent::NONE;
-            runtime.telegraph = None;
-            let home = runtime.brain.home();
             let Some(entity) = self.world.id_at(slot) else {
                 continue;
             };
-            self.world.restore(entity);
-            if let Some(body) = self.world.body_mut(entity) {
-                *body = crate::movement::Body::at(home);
-            }
+            // The same per-enemy restore a single pack's reset runs, so "reset everything"
+            // and "reset this pack" cannot drift apart.
+            self.restore_enemy(entity);
         }
         self.revive_player();
-        if let Some(encounter) = self.encounter.as_mut() {
+        // Ground left burning by anybody. A pool that survived a reset would be the one piece
+        // of the last attempt still on the floor during the next one.
+        self.clear_all_hazards();
+        for encounter in &mut self.encounters {
             encounter.finish_reset();
         }
         self.meter.reset(self.time);
         log::info!("encounter reset");
+    }
+
+    /// Kills an entity outright, through the ordinary damage path.
+    ///
+    /// A development control — the counterpart of the reset key — and what a headless test
+    /// uses to arrange "this pack is dead" without playing out a rotation. It goes through
+    /// [`Simulation::deal_damage`] rather than writing health directly, so everything a real
+    /// kill produces is produced: the death event, the cast bar coming down, the telegraph
+    /// ending, the hazards going out and the encounter noticing.
+    pub fn slay(&mut self, entity: EntityId) {
+        let Some(health) = self.world.health(entity) else {
+            return;
+        };
+        let remaining = health.current();
+        if remaining <= 0.0 {
+            return;
+        }
+        self.deal_damage(
+            EntityId::INVALID,
+            entity,
+            remaining,
+            AbilityId::NONE,
+            DamageType::Physical,
+            false,
+        );
     }
 
     /// Whether the player is alive.
@@ -1384,6 +1528,11 @@ impl Simulation {
                 }
             }
 
+            // Ground it left burning goes out with it. A pool whose caster is gone is a pool
+            // nothing will ever explain, and it would keep dealing damage credited to a
+            // corpse.
+            self.clear_hazards_of(target);
+
             self.events.push(CombatEvent::Death {
                 entity: target,
                 killer: source,
@@ -1415,7 +1564,7 @@ impl Simulation {
         // The same key puts the *fight* back where there is one: an encounter is what the
         // dummies are in a scene that has enemies, and a player who has just died pressing
         // the reset key means "again", not "restore the dummies I was not fighting".
-        if self.encounter.is_some() || !self.enemies.is_empty() {
+        if !self.encounters.is_empty() || !self.enemies.is_empty() {
             self.reset_encounter();
             return;
         }

@@ -56,6 +56,14 @@ pub enum Scene {
     /// different questions: the dummy scene is where a rotation is practised against a
     /// target that never moves, and this is where the fight is tested.
     Encounter,
+    /// The first dungeon: five rooms, eight packs and a three-phase boss, played from the
+    /// entrance to the boss's death without anything in between being loaded separately.
+    ///
+    /// Separate from the encounter test bed for the reason every scene here is separate:
+    /// the encounter bed answers "does one fight work", and this answers "does a sequence of
+    /// them hold together" — which is a question about pulls, resets, flow and pacing that a
+    /// single arena cannot ask.
+    Dungeon,
 }
 
 impl Scene {
@@ -70,6 +78,7 @@ impl Scene {
             Self::Vfx => "VFX",
             Self::Audio => "AUDIO",
             Self::Encounter => "ENCOUNTER",
+            Self::Dungeon => "DUNGEON",
         }
     }
 
@@ -85,7 +94,7 @@ impl Scene {
     /// own geometry and the character test bed deliberately brings none.
     #[must_use]
     pub fn has_environment(self) -> bool {
-        matches!(self, Self::Combat | Self::Environment)
+        matches!(self, Self::Combat | Self::Environment | Self::Dungeon)
     }
 
     /// Whether this is the character and model test bed.
@@ -117,6 +126,12 @@ impl Scene {
     pub fn is_encounter(self) -> bool {
         matches!(self, Self::Encounter)
     }
+
+    /// Whether this is the dungeon.
+    #[must_use]
+    pub fn is_dungeon(self) -> bool {
+        matches!(self, Self::Dungeon)
+    }
 }
 
 impl FromStr for Scene {
@@ -131,6 +146,7 @@ impl FromStr for Scene {
             "vfx" | "effects" | "VFX" => Ok(Self::Vfx),
             "audio" | "sound" | "AUDIO" => Ok(Self::Audio),
             "encounter" | "ai" | "enemies" | "ENCOUNTER" => Ok(Self::Encounter),
+            "dungeon" | "reliquary" | "DUNGEON" => Ok(Self::Dungeon),
             _ => Err(()),
         }
     }
@@ -156,7 +172,10 @@ options:
   --dummies <count>      training dummies in the group, on top of the single dummy
                          (default 4, combat scene only)
   --scene <name>         which scenario to load: combat (default), collision,
-                         character, environment, vfx, audio or encounter. The encounter
+                         character, environment, vfx, audio, encounter or dungeon.
+                         The dungeon scene is the first complete dungeon: five rooms,
+                         eight packs and a three-phase boss, walked from the entrance to
+                         the boss with BACKSPACE to put the whole thing back. The encounter
                          scene is the enemy test bed: enemies that notice you, chase you,
                          telegraph their attacks and can kill you, with BACKSPACE to put
                          the fight back. The audio scene is the
@@ -306,6 +325,7 @@ impl Args {
                 Scene::Vfx => "myGame — VFX demo".to_owned(),
                 Scene::Audio => "myGame — audio demo".to_owned(),
                 Scene::Encounter => "myGame — encounter demo".to_owned(),
+                Scene::Dungeon => "myGame — the Ashen Reliquary".to_owned(),
             },
         }
     }

@@ -190,6 +190,12 @@ fn describe(event: &CombatEvent) -> String {
             source.index(),
             source.generation()
         ),
+        CombatEvent::PhaseChanged {
+            entity,
+            phase,
+            name,
+            tick,
+        } => format!("phase {phase} '{name}' for {} at {tick}", entity.index()),
         CombatEvent::Damage(damage) => format!(
             "damage {} to {}:{} by {} amount {} overkill {} killed {} at {}",
             damage.ability.slot(),

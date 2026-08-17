@@ -73,6 +73,8 @@ pub mod arena;
 pub mod combat;
 pub mod command;
 pub mod demo;
+/// The first dungeon: which pack stands where, and how to put the whole thing back.
+pub mod dungeon;
 /// A fight as an object: members, lifecycle and reset.
 pub mod encounter;
 /// What an enemy is, what it wants, and who it is angry at.

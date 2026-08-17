@@ -103,10 +103,14 @@ impl Simulation {
 
             // Put the runtime back before executing: executing needs `&mut self`, and the
             // execution can itself kill things and read other enemies' state.
+            if let Some(phase) = decision.phase {
+                self.announce_phase(entity, phase, runtime.brain.phase_name());
+            }
+
             match request {
                 AiRequest::None => {}
                 AiRequest::Instant(ability) => {
-                    let victim = percept.victim();
+                    let victim = recipient_of(ability, &percept);
                     let aim = cast_anchor(ability, entity, victim, self);
                     self.execute_enemy_ability(entity, ability, victim, aim);
                 }
@@ -143,7 +147,13 @@ impl Simulation {
                     // The shape the telegraph drew, not a fresh one: they are the same
                     // value, and that is the whole guarantee.
                     let shape = cast.map_or(ability.definition().shape, |cast| cast.shape);
-                    self.execute_enemy_shape(entity, ability, anchor, shape, percept.victim());
+                    // Whoever the cast was started against — for a heal that is an ally, and
+                    // re-asking the percept here would find the thing the enemy is fighting.
+                    let recipient = cast
+                        .map(|cast| cast.target)
+                        .and_then(|target| self.describe_target(entity, target))
+                        .or_else(|| recipient_of(ability, &percept));
+                    self.execute_enemy_shape(entity, ability, anchor, shape, recipient);
                 }
                 AiRequest::CancelCast(ability) => {
                     let cast = running;
@@ -170,10 +180,82 @@ impl Simulation {
         self.sync_encounter();
     }
 
+    /// One entity described the way the AI sees it, from `entity`'s point of view.
+    ///
+    /// The same edge-to-edge distance [`Simulation::perceive`] measures, so a range check
+    /// against this and a range check against a percept cannot disagree.
+    fn describe_target(&self, entity: EntityId, candidate: EntityId) -> Option<AiTarget> {
+        if !self.world.is_alive(candidate) {
+            return None;
+        }
+        let position = self.world.position(entity)?;
+        let target_position = self.world.position(candidate)?;
+        let gap = horizontal_distance(position, target_position)
+            - self.world.radius(candidate)
+            - self.world.radius(entity);
+        Some(AiTarget {
+            entity: candidate,
+            position: target_position,
+            distance: gap.max(0.0),
+        })
+    }
+
+    /// The most wounded living ally of `entity` within `range`, itself included.
+    ///
+    /// Linear over the world, like every other targeting query in this crate. A pack is a
+    /// handful of entities and a map keyed by faction would cost more to maintain than the
+    /// scan costs to run.
+    fn most_wounded_ally(&self, entity: EntityId, range: f32) -> Option<AiTarget> {
+        let faction = self.world.faction(entity)?;
+        let mut best: Option<(f32, AiTarget)> = None;
+        for candidate in self.world.entities() {
+            if !self.world.is_alive(candidate) {
+                continue;
+            }
+            if self.world.faction(candidate) != Some(faction) {
+                continue;
+            }
+            let Some(health) = self.world.health(candidate) else {
+                continue;
+            };
+            let fraction = health.fraction();
+            if fraction >= 1.0 {
+                continue;
+            }
+            let Some(described) = self.describe_target(entity, candidate) else {
+                continue;
+            };
+            if described.distance > range {
+                continue;
+            }
+            // Ties break towards the lower entity slot, which `<` gives for free: the scan
+            // is in slot order, so the same pack in the same state always heals the same
+            // target.
+            if best.is_none_or(|(best_fraction, _)| fraction < best_fraction) {
+                best = Some((fraction, described));
+            }
+        }
+        best.map(|(_, target)| target)
+    }
+
     /// What one enemy can see this tick.
     fn perceive(&mut self, entity: EntityId, brain: &EnemyBrain) -> AiPercept {
         let position = self.world.position(entity).unwrap_or(Vec3::ZERO);
         let alive = self.world.is_alive(entity);
+        let health_fraction = self
+            .world
+            .health(entity)
+            .map_or(0.0, crate::combat::Health::fraction);
+        // Only asked for by an archetype that can actually heal. The scan is cheap, but it is
+        // a scan per enemy per tick, and most of the roster has no use for the answer.
+        let heal_range = brain
+            .abilities()
+            .filter(|ability| ability.definition().effect.is_healing())
+            .map(|ability| ability.definition().range)
+            .fold(0.0_f32, f32::max);
+        let wounded_ally = (heal_range > 0.0)
+            .then(|| self.most_wounded_ally(entity, heal_range))
+            .flatten();
 
         // The target is the highest threat that is still a legal victim. "Legal" is asked of
         // the world here rather than inside the threat table, which is what keeps the table
@@ -213,6 +295,8 @@ impl Simulation {
             alive,
             target: target.and_then(describe),
             nearest,
+            health_fraction,
+            wounded_ally,
         }
     }
 
@@ -225,6 +309,25 @@ impl Simulation {
         anchor: Vec3,
     ) {
         let definition = ability.definition();
+        // A heal is resolved on whoever it selected and never through the damage path: the
+        // shape of a heal is "one ally", and running it through `execute_enemy_shape` would
+        // collect everything hostile to the caster, which is precisely the wrong list.
+        if let crate::enemy::EnemyEffect::Heal { amount } = definition.effect {
+            let Some(target) = target else {
+                return;
+            };
+            if target.distance > definition.range {
+                return;
+            }
+            self.heal_entity(
+                source,
+                target.entity,
+                amount,
+                AbilityId::from_enemy(ability),
+            );
+            return;
+        }
+
         self.events.push(CombatEvent::AbilityUsed {
             source,
             ability: AbilityId::from_enemy(ability),
@@ -274,6 +377,22 @@ impl Simulation {
             self.execute_enemy_ability(source, ability, target, anchor);
             return;
         }
+        // Burning ground is lit before the impact is resolved, so the pool and the hit that
+        // created it are one event pair rather than two things that happened to coincide.
+        if let crate::enemy::EnemyEffect::Hazard {
+            duration,
+            damage_per_second,
+        } = definition.effect
+        {
+            self.light_hazard(
+                source,
+                ability,
+                anchor,
+                shape.reach(),
+                duration,
+                damage_per_second,
+            );
+        }
 
         self.hits.clear();
         let mut hits = std::mem::take(&mut self.hits);
@@ -318,6 +437,167 @@ impl Simulation {
         }
         hits.clear();
         self.hits = hits;
+    }
+
+    /// Restores health to one entity and announces it.
+    ///
+    /// The mirror of [`Simulation::deal_damage`]: the one place an enemy ability puts health
+    /// back, so "every health change is observable" holds in both directions.
+    fn heal_entity(&mut self, source: EntityId, target: EntityId, amount: f32, ability: AbilityId) {
+        if !self.world.is_alive(target) {
+            return;
+        }
+        let restored = self.world.heal(target, amount).applied;
+        self.events.push(CombatEvent::AbilityUsed {
+            source,
+            ability,
+            targets: 1,
+            tick: self.tick,
+        });
+        if restored <= 0.0 {
+            return;
+        }
+        self.events.push(CombatEvent::Healing {
+            source,
+            target,
+            amount: restored,
+            ability,
+            tick: self.tick,
+        });
+    }
+
+    /// Lights burning ground and announces it as an area effect.
+    fn light_hazard(
+        &mut self,
+        source: EntityId,
+        ability: crate::enemy::EnemyAbility,
+        anchor: Vec3,
+        radius: f32,
+        duration: f32,
+        damage_per_second: f32,
+    ) {
+        let mut expired = std::mem::take(&mut self.hazard_expired);
+        let id = self.hazards.spawn(
+            source,
+            ability,
+            anchor,
+            radius,
+            duration,
+            damage_per_second,
+            &mut expired,
+        );
+        self.hazard_expired = expired;
+        self.flush_expired_hazards();
+        // The gameplay radius, carried as the shape a visual is built from: what burns and
+        // what is drawn are one number.
+        self.events.push(CombatEvent::AreaEffectStarted {
+            id,
+            source,
+            ability: AbilityId::from_enemy(ability),
+            position: anchor,
+            shape: crate::firemage::zone::ZoneShape::Circle { radius },
+            duration,
+            tick: self.tick,
+        });
+    }
+
+    /// Announces every hazard that has stopped burning since the last flush.
+    fn flush_expired_hazards(&mut self) {
+        let tick = self.tick;
+        let mut expired = std::mem::take(&mut self.hazard_expired);
+        for (id, position) in expired.drain(..) {
+            self.events
+                .push(CombatEvent::AreaEffectEnded { id, position, tick });
+        }
+        self.hazard_expired = expired;
+    }
+
+    /// Advances every hazard and applies what it burned.
+    ///
+    /// Run once a tick from the simulation's own step, after the AI has had its turn, so a
+    /// pool lit this tick does not also tick this tick.
+    pub(super) fn tick_enemy_hazards(&mut self, step: f32) {
+        let mut ticks = std::mem::take(&mut self.hazard_ticks);
+        let mut expired = std::mem::take(&mut self.hazard_expired);
+        ticks.clear();
+        self.hazards.tick(step, &mut ticks, &mut expired);
+        self.hazard_expired = expired;
+
+        for hazard in &ticks {
+            let Some(faction) = self.world.faction(hazard.owner) else {
+                continue;
+            };
+            let ability = AbilityId::from_enemy(hazard.ability);
+            // Collected first: dealing damage can kill, and killing frees a slot the
+            // iteration is standing on.
+            self.hits.clear();
+            let mut hits = std::mem::take(&mut self.hits);
+            for candidate in self.world.entities() {
+                if !self.world.is_alive(candidate) {
+                    continue;
+                }
+                if !self
+                    .world
+                    .faction(candidate)
+                    .is_some_and(|theirs| faction.is_hostile_to(theirs))
+                {
+                    continue;
+                }
+                let Some(position) = self.world.position(candidate) else {
+                    continue;
+                };
+                let inside = {
+                    let (dx, dz) = (position.x - hazard.center.x, position.z - hazard.center.z);
+                    (dx * dx + dz * dz).sqrt() - self.world.radius(candidate) <= hazard.radius
+                };
+                if inside {
+                    hits.push(candidate);
+                }
+            }
+            for victim in &hits {
+                self.deal_damage(
+                    hazard.owner,
+                    *victim,
+                    hazard.damage,
+                    ability,
+                    hazard.ability.definition().damage_type,
+                    false,
+                );
+            }
+            hits.clear();
+            self.hits = hits;
+        }
+
+        ticks.clear();
+        self.hazard_ticks = ticks;
+        self.flush_expired_hazards();
+    }
+
+    /// Puts out everything an entity lit, and announces every removal.
+    pub(super) fn clear_hazards_of(&mut self, owner: EntityId) {
+        let mut expired = std::mem::take(&mut self.hazard_expired);
+        self.hazards.clear_owner(owner, &mut expired);
+        self.hazard_expired = expired;
+        self.flush_expired_hazards();
+    }
+
+    /// Puts every hazard out. What a reset runs.
+    pub(super) fn clear_all_hazards(&mut self) {
+        let mut expired = std::mem::take(&mut self.hazard_expired);
+        self.hazards.clear_into(&mut expired);
+        self.hazard_expired = expired;
+        self.flush_expired_hazards();
+    }
+
+    /// Announces a phase transition.
+    fn announce_phase(&mut self, entity: EntityId, phase: usize, name: &'static str) {
+        log::info!("{} entered {name}", entity.index());
+        self.events.push(CombatEvent::PhaseChanged {
+            entity,
+            phase,
+            name,
+            tick: self.tick,
+        });
     }
 
     /// Announces that an enemy started casting.
@@ -421,29 +701,43 @@ impl Simulation {
             .is_some_and(|runtime| runtime.brain.is_interruptible())
     }
 
-    /// Keeps the encounter's state in step with how many of its members are alive.
+    /// Keeps every encounter's state in step with how many of its members are alive.
+    ///
+    /// Taken out of `self` and put back so the loop can ask the world questions. A dungeon's
+    /// nine encounters are nine cheap passes over a handful of entity ids each.
     fn sync_encounter(&mut self) {
-        let Some(mut encounter) = self.encounter.take() else {
-            return;
-        };
-        let pulled = encounter.members().iter().any(|member| {
-            self.enemies
-                .get(member.index())
-                .and_then(|slot| slot.as_ref())
-                .is_some_and(|runtime| runtime.brain.state() != AiState::Idle)
-        });
-        if pulled {
-            encounter.activate();
+        let mut encounters = std::mem::take(&mut self.encounters);
+        for encounter in &mut encounters {
+            let pulled = encounter.members().iter().any(|member| {
+                self.enemies
+                    .get(member.index())
+                    .and_then(|slot| slot.as_ref())
+                    .is_some_and(|runtime| runtime.brain.state() != AiState::Idle)
+            });
+            if pulled {
+                encounter.activate();
+            }
+            let alive = encounter
+                .members()
+                .iter()
+                .filter(|member| self.world.is_alive(**member))
+                .count();
+            if encounter.observe_alive(alive) {
+                log::info!("encounter '{}' completed", encounter.name());
+            }
         }
-        let alive = encounter
-            .members()
-            .iter()
-            .filter(|member| self.world.is_alive(**member))
-            .count();
-        if encounter.observe_alive(alive) {
-            log::info!("encounter '{}' completed", encounter.name());
-        }
-        self.encounter = Some(encounter);
+        self.encounters = encounters;
+    }
+}
+
+/// Who an ability is used on, given what its caster can see.
+///
+/// The same question [`crate::enemy::brain::EnemyBrain`] asked when it chose the ability, so
+/// what the brain aimed at and what combat resolves cannot be two different things.
+fn recipient_of(ability: crate::enemy::EnemyAbility, percept: &AiPercept) -> Option<AiTarget> {
+    match ability.definition().select {
+        crate::enemy::EnemyTarget::Victim => percept.victim(),
+        crate::enemy::EnemyTarget::WoundedAlly => percept.wounded_ally,
     }
 }
 

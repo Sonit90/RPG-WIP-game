@@ -53,6 +53,7 @@
 
 pub mod arena;
 pub mod asset;
+pub mod dungeon;
 pub mod lighting;
 pub mod object;
 pub mod scene;

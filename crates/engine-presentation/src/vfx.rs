@@ -526,6 +526,21 @@ impl VfxDirector {
                 }
             }
             // Everything else is either a state the frame synchronises, or moves no picture.
+            // A phase change: one burst at the enemy that changed, so "it became something
+            // else" is visible from across the room without reading a frame.
+            CombatEvent::PhaseChanged { entity, .. } => {
+                let Some(position) = simulation.world().position(entity) else {
+                    return;
+                };
+                let height = simulation.world().height(entity).max(1.0);
+                self.spawn(
+                    VfxSpawn::at(
+                        VfxId::Explosion,
+                        position + Vec3::new(0.0, height * 0.5, 0.0),
+                    )
+                    .with_radius(height.mul_add(0.5, 2.0)),
+                );
+            }
             CombatEvent::Damage(_) | CombatEvent::Healing { .. } | CombatEvent::Jumped { .. } => {}
         }
     }

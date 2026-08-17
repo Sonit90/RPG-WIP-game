@@ -77,6 +77,15 @@ path = "src/audio_bench.rs"
 name = "vfx_bench"
 path = "src/vfx_bench.rs"
 
+# The first dungeon end to end: one pack, three, five, all eight, the boss encounter, and the
+# worst case the boss can produce. Separate from ai_bench because "what does a fight cost"
+# and "what does a dungeon cost" are different questions - a dungeon holds every pack from
+# the moment it is built, and whether the ones nobody is fighting are free is exactly what
+# has to be measured.
+[[bin]]
+name = "dungeon_bench"
+path = "src/dungeon_bench.rs"
+
 [dependencies]
 engine-collision = { workspace = true }
 engine-assets = { workspace = true }

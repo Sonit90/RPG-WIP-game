@@ -109,6 +109,14 @@ pub struct AiPercept {
     /// What pulls an idle enemy into a fight: it has no threat towards anybody yet, so
     /// "who is nearby" is a separate question from "who am I angriest at".
     pub nearest: Option<AiTarget>,
+    /// How much of its health is left, in `[0, 1]`. What phase transitions are read from.
+    pub health_fraction: f32,
+    /// The most wounded living ally, if anything friendly has lost health.
+    ///
+    /// The caster itself counts. `None` means nothing is hurt, which is what makes an
+    /// untouched pack's healer fall through to its filler instead of casting a heal at
+    /// nobody.
+    pub wounded_ally: Option<AiTarget>,
 }
 
 impl AiPercept {
@@ -147,6 +155,12 @@ pub struct AiDecision {
     pub intent: MoveIntent,
     /// What it wants combat to do about an ability, if anything.
     pub request: AiRequest,
+    /// The phase it entered this tick, if it changed phase.
+    ///
+    /// Carried on the decision rather than polled off the brain afterwards, for the same
+    /// reason the ability request is: everything the simulation has to act on comes out of
+    /// one call, and there is no second question to forget to ask.
+    pub phase: Option<usize>,
 }
 
 impl AiDecision {
@@ -154,7 +168,15 @@ impl AiDecision {
     pub const IDLE: Self = Self {
         intent: MoveIntent::NONE,
         request: AiRequest::None,
+        phase: None,
     };
+
+    /// The same decision, reporting that it entered `phase` this tick.
+    #[must_use]
+    fn entering(mut self, phase: Option<usize>) -> Self {
+        self.phase = phase;
+        self
+    }
 }
 
 /// An ability the brain wants resolved.
@@ -254,6 +276,11 @@ pub struct EnemyBrain {
     cast: Option<EnemyCast>,
     /// Seconds it has been in combat, for the readout.
     combat_time: f32,
+    /// Which phase it is in. Zero is the archetype's own ability list.
+    ///
+    /// Only ever increases within a life: healing an enemy back over a threshold does not
+    /// put it back a phase, which is what stops a Crypt Warden from rewinding a boss.
+    phase: usize,
 }
 
 impl EnemyBrain {
@@ -271,6 +298,7 @@ impl EnemyBrain {
             cooldowns: [0.0; ENEMY_ABILITY_COUNT],
             cast: None,
             combat_time: 0.0,
+            phase: 0,
         }
     }
 
@@ -355,6 +383,33 @@ impl EnemyBrain {
         self.cooldowns = [0.0; ENEMY_ABILITY_COUNT];
         self.cast = None;
         self.combat_time = 0.0;
+        self.phase = 0;
+    }
+
+    /// Which phase it is in. Zero is the first.
+    #[must_use]
+    pub fn phase(&self) -> usize {
+        self.phase
+    }
+
+    /// The name of the phase it is in, for the boss frame and the readout.
+    #[must_use]
+    pub fn phase_name(&self) -> &'static str {
+        self.archetype().phase_name(self.phase)
+    }
+
+    /// How fast it moves right now, in metres per second.
+    ///
+    /// The archetype's speed scaled by its phase. Read by movement, which is what makes a
+    /// phase's `speed_scale` mean something rather than being a number in a table.
+    #[must_use]
+    pub fn speed(&self) -> f32 {
+        self.archetype().phase_speed(self.phase)
+    }
+
+    /// The abilities it can use right now, in preference order.
+    pub fn abilities(&self) -> impl Iterator<Item = EnemyAbility> + '_ {
+        self.archetype().phase_abilities(self.phase)
     }
 
     /// Marks it dead, which stops everything.
@@ -415,6 +470,7 @@ impl EnemyBrain {
                     return AiDecision {
                         intent: MoveIntent::NONE,
                         request: AiRequest::CancelCast(cast.ability),
+                        phase: None,
                     };
                 }
             }
@@ -437,6 +493,22 @@ impl EnemyBrain {
             self.combat_time += step;
         }
 
+        // The phase, before anything is decided with it: a boss that crossed a threshold this
+        // tick must not spend this tick casting the ability it no longer has.
+        if let Some(entered) = self.advance_phase(percept.health_fraction) {
+            let cast = self.stop_cast(CastStop::Lost);
+            self.state = AiState::Recover;
+            self.timer = super::PHASE_STAGGER;
+            if let Some(cast) = cast {
+                return AiDecision {
+                    intent: MoveIntent::NONE,
+                    request: AiRequest::CancelCast(cast.ability),
+                    phase: Some(entered),
+                };
+            }
+            return AiDecision::IDLE.entering(Some(entered));
+        }
+
         // The leash, checked once for every state rather than inside each of them: an enemy
         // that has been pulled too far - or displaced too far by anything else - goes home,
         // and it goes home from Idle and Alert as readily as from a fight.
@@ -449,6 +521,7 @@ impl EnemyBrain {
                 return AiDecision {
                     intent: MoveIntent::NONE,
                     request: AiRequest::CancelCast(cast.ability),
+                    phase: None,
                 };
             }
             return self.think_returning(percept);
@@ -503,6 +576,7 @@ impl EnemyBrain {
                 facing: Some(yaw_towards(percept.position, noticed.position)),
             },
             request: AiRequest::None,
+            phase: None,
         }
     }
 
@@ -520,6 +594,7 @@ impl EnemyBrain {
                     facing: Some(yaw_towards(percept.position, target.position)),
                 },
                 request: AiRequest::None,
+                phase: None,
             };
         }
         self.state = AiState::Chase;
@@ -549,17 +624,29 @@ impl EnemyBrain {
                     facing: Some(facing),
                 },
                 request: AiRequest::None,
+                phase: None,
             };
         }
 
         self.state = AiState::Attack;
-        // The archetype's list *is* the priority list: the first ability that is off
-        // cooldown and in range is the one used. A boss with a rotation is a longer list.
-        let choice = archetype.abilities().find(|ability| {
-            let definition = ability.definition();
-            self.cooldowns[ability.index()] <= 0.0 && target.distance <= definition.range
-        });
-        let Some(ability) = choice else {
+        // The phase's list *is* the priority list: the first ability that is off cooldown,
+        // in range, and has somebody to be used on is the one used. A boss with a rotation is
+        // a longer list; a healer is a list whose first entry selects an ally.
+        let choice = archetype
+            .phase_abilities(self.phase)
+            .filter_map(|ability| {
+                let definition = ability.definition();
+                if self.cooldowns[ability.index()] > 0.0 {
+                    return None;
+                }
+                let recipient = match definition.select {
+                    super::EnemyTarget::Victim => target,
+                    super::EnemyTarget::WoundedAlly => percept.wounded_ally?,
+                };
+                (recipient.distance <= definition.range).then_some((ability, recipient))
+            })
+            .next();
+        let Some((ability, recipient)) = choice else {
             // Nothing ready: hold position and keep facing. Standing still rather than
             // circling is deliberate — movement the player cannot predict is not a
             // foundation, it is noise.
@@ -570,11 +657,16 @@ impl EnemyBrain {
                     facing: Some(facing),
                 },
                 request: AiRequest::None,
+                phase: None,
             };
         };
 
         let definition = ability.definition();
-        self.cooldowns[ability.index()] = definition.cooldown;
+        // The phase's cooldown scaling is applied here, once, when the ability is started —
+        // not when it is read — so a phase change does not retroactively shorten a cooldown
+        // that is already running.
+        self.cooldowns[ability.index()] =
+            definition.cooldown * archetype.phase_cooldown_scale(self.phase);
         let intent = MoveIntent {
             direction: Vec3::ZERO,
             jump: false,
@@ -586,9 +678,11 @@ impl EnemyBrain {
                 ability,
                 elapsed: 0.0,
                 duration: definition.cast_time,
-                target: target.entity,
+                // Whoever the ability selected, which for a heal is an ally rather than the
+                // thing the enemy is fighting.
+                target: recipient.entity,
                 anchor: match definition.aim {
-                    super::EnemyAim::Target => target.position,
+                    super::EnemyAim::Target => recipient.position,
                     super::EnemyAim::Caster => percept.position,
                 },
                 interruptible: definition.interruptible,
@@ -597,6 +691,7 @@ impl EnemyBrain {
             return AiDecision {
                 intent,
                 request: AiRequest::BeginCast(ability),
+                phase: None,
             };
         }
         self.state = AiState::Recover;
@@ -604,6 +699,7 @@ impl EnemyBrain {
         AiDecision {
             intent,
             request: AiRequest::Instant(ability),
+            phase: None,
         }
     }
 
@@ -623,6 +719,7 @@ impl EnemyBrain {
             return AiDecision {
                 intent: MoveIntent::NONE,
                 request: AiRequest::CancelCast(cast.ability),
+                phase: None,
             };
         }
 
@@ -639,6 +736,7 @@ impl EnemyBrain {
                     facing,
                 },
                 request: AiRequest::None,
+                phase: None,
             };
         }
 
@@ -652,6 +750,7 @@ impl EnemyBrain {
                 facing,
             },
             request: AiRequest::CompleteCast(cast.ability),
+            phase: None,
         }
     }
 
@@ -672,6 +771,7 @@ impl EnemyBrain {
                     facing,
                 },
                 request: AiRequest::None,
+                phase: None,
             };
         }
         self.state = AiState::Chase;
@@ -699,6 +799,7 @@ impl EnemyBrain {
                 facing: Some(yaw_towards(percept.position, self.home)),
             },
             request: AiRequest::None,
+            phase: None,
         }
     }
 
@@ -711,7 +812,28 @@ impl EnemyBrain {
                 facing: Some(self.home_yaw),
             },
             request: AiRequest::None,
+            phase: None,
         }
+    }
+
+    /// Moves it into the phase its health says it is in, if that is a later one.
+    ///
+    /// Returns the phase it entered, once, on the tick it entered it. A hit that crosses two
+    /// thresholds at once lands in the deeper of the two and announces that one — there is no
+    /// intermediate phase the player would never have seen.
+    fn advance_phase(&mut self, health_fraction: f32) -> Option<usize> {
+        let archetype = self.archetype();
+        if archetype.phases.is_empty() {
+            return None;
+        }
+        let phase = archetype.phase_for_health(health_fraction, self.phase);
+        if phase == self.phase {
+            return None;
+        }
+        self.phase = phase;
+        // Cooldowns are not cleared: a phase change is not a free rotation reset, and an
+        // ability the previous phase just used should still be on its cooldown in the next.
+        Some(phase)
     }
 
     /// Whether it has been pulled further from home than it is willing to go.
@@ -792,6 +914,8 @@ mod tests {
             alive: true,
             target: engaged.then_some(target),
             nearest: Some(target),
+            health_fraction: 1.0,
+            wounded_ally: None,
         }
     }
 
@@ -844,6 +968,8 @@ mod tests {
                 distance: 30.0,
             }),
             nearest: None,
+            health_fraction: 1.0,
+            wounded_ally: None,
         };
         brain.think(&far, STEP);
         assert_eq!(brain.state(), AiState::Alert);
@@ -938,6 +1064,8 @@ mod tests {
             alive: true,
             target: None,
             nearest: None,
+            health_fraction: 1.0,
+            wounded_ally: None,
         };
         // The tick it loses its target it drops the cast; from the next one it walks.
         brain.think(&lost, STEP);

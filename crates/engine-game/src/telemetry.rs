@@ -170,6 +170,9 @@ impl CombatMeter {
                 | CombatEvent::CastStarted { .. }
                 | CombatEvent::CastEnded { .. }
                 | CombatEvent::Teleported { .. }
+                // A phase change moves no health. What the new phase does arrives as damage
+                // like everything else.
+                | CombatEvent::PhaseChanged { .. }
                 // Presentation events. A projectile, an impact, an area of fire, a jump and
                 // a landing all move health through `Damage` and nowhere else — counting
                 // them here would report the same damage under two names.

@@ -123,15 +123,12 @@ pub struct AudioDirector {
     mastery: Option<VoiceHandle>,
     /// The gathering sound, while a cast is running.
     cast: Option<VoiceHandle>,
-    /// The arena's bed, while the director is enabled.
-    ambience: Option<VoiceHandle>,
     /// Where the player was last frame, and how far it has walked since its last step.
     last_player: Option<Vec3>,
     stride: f32,
     /// The next id handed to a scheduled impact, so its whistle can be found again.
     next_incoming: u32,
     enabled: bool,
-    ambience_enabled: bool,
     refused: u64,
 }
 
@@ -147,7 +144,6 @@ impl AudioDirector {
             telegraphs: Vec::with_capacity(8),
             enemy_casts: Vec::with_capacity(8),
             enabled: true,
-            ambience_enabled: true,
             ..Self::default()
         }
     }
@@ -170,14 +166,6 @@ impl AudioDirector {
         }
     }
 
-    /// Turns the environment bed on or off without touching combat.
-    pub fn set_ambience_enabled(&mut self, enabled: bool, audio: &mut AudioSystem) {
-        self.ambience_enabled = enabled;
-        if !enabled && let Some(handle) = self.ambience.take() {
-            audio.stop(handle);
-        }
-    }
-
     /// Ends everything the director is holding. For a scene change or a combat reset.
     pub fn clear(&mut self, audio: &mut AudioSystem) {
         audio.stop_all();
@@ -190,7 +178,6 @@ impl AudioDirector {
         self.shield = None;
         self.mastery = None;
         self.cast = None;
-        self.ambience = None;
         self.last_player = None;
         self.stride = 0.0;
     }
@@ -208,8 +195,7 @@ impl AudioDirector {
                 + self.ignited.iter().filter(|slot| slot.is_some()).count()
                 + usize::from(self.shield.is_some())
                 + usize::from(self.mastery.is_some())
-                + usize::from(self.cast.is_some())
-                + usize::from(self.ambience.is_some()),
+                + usize::from(self.cast.is_some()),
             refused: self.refused,
         }
     }
@@ -461,8 +447,9 @@ impl AudioDirector {
                 };
                 self.request(SoundCue::at(sound, position).with_gain(gain), audio);
             }
-            // Nothing to hear, or a state the frame synchronises instead.
-            CombatEvent::Healing { .. } => {}
+            // Nothing to hear, or a state the frame synchronises instead. A phase change is
+            // seen rather than heard: this phase authors no new cues.
+            CombatEvent::Healing { .. } | CombatEvent::PhaseChanged { .. } => {}
         }
     }
 
@@ -504,9 +491,23 @@ impl AudioDirector {
         // Reused from the player's own casts rather than given sounds of their own: a
         // gather is a gather, and this phase adds no new audio assets.
         let sound = match ability {
-            EnemyAbility::GroundBlast => SoundId::PyroblastCast,
-            EnemyAbility::Cleave => SoundId::FlameLanceCast,
-            EnemyAbility::Bolt | EnemyAbility::Swing => SoundId::FireboltCast,
+            // The dungeon's monsters and its boss are deliberately absent from this table's
+            // right-hand side: the phase adds no ability sounds, and every new attack reuses
+            // one of the three gathers that already exist.
+            EnemyAbility::GroundBlast
+            | EnemyAbility::RitualNova
+            | EnemyAbility::Ashfall
+            | EnemyAbility::ImmolationNova => SoundId::PyroblastCast,
+            EnemyAbility::Cleave
+            | EnemyAbility::WardensSweep
+            | EnemyAbility::AshBurst
+            | EnemyAbility::CinderPool
+            | EnemyAbility::CinderRain => SoundId::FlameLanceCast,
+            EnemyAbility::Bolt
+            | EnemyAbility::Swing
+            | EnemyAbility::Sunder
+            | EnemyAbility::Mend
+            | EnemyAbility::EmberLance => SoundId::FireboltCast,
         };
         let origin = self.chest_of(source, simulation);
         let key = source.index() as u32;
@@ -586,16 +587,6 @@ impl AudioDirector {
             &mut self.mastery,
             mastered,
             SoundCue::at(SoundId::FireMasteryLoop, simulation.player_position()).anchored_to(slot),
-            audio,
-            &mut self.refused,
-        );
-
-        // The arena's bed. Not positional: wind is everywhere, and giving it a place would
-        // make it swing across the speakers as the camera turned.
-        Self::sync_loop(
-            &mut self.ambience,
-            self.ambience_enabled,
-            SoundCue::ui(SoundId::AmbientWind),
             audio,
             &mut self.refused,
         );

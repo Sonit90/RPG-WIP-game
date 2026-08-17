@@ -184,6 +184,14 @@ pub struct TargetView {
     pub casting: Option<EnemyCastView>,
     /// What its AI is doing, for the developer readout. `None` if it has no brain.
     pub ai_state: Option<AiState>,
+    /// Which phase it is in and what that phase is called, if it has more than one.
+    ///
+    /// `None` for everything that does not change while it is being fought, which is most of
+    /// the roster — so the frame draws a phase line for a boss and an elite and for nothing
+    /// else, without any widget knowing which monsters those are.
+    pub phase: Option<(usize, &'static str)>,
+    /// Whether it is a boss, so a frame can say so without knowing the roster.
+    pub boss: bool,
 }
 
 /// An enemy's cast, for its cast bar.
@@ -691,6 +699,12 @@ fn target_view(simulation: &Simulation, entity: EntityId) -> Option<TargetView> 
             })
         }),
         ai_state: simulation.brain(entity).map(|brain| brain.state()),
+        phase: simulation.brain(entity).and_then(|brain| {
+            (brain.archetype().phase_count() > 1).then(|| (brain.phase() + 1, brain.phase_name()))
+        }),
+        boss: simulation
+            .brain(entity)
+            .is_some_and(|brain| brain.kind().is_boss()),
     })
 }
 

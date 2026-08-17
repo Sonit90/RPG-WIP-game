@@ -312,11 +312,38 @@ pub fn push_target_frame(
 
     // Room for one more line only on the full-size frame; the small one stops at health.
     let status_y = y + bar + 2.0 * factor;
-    if status_y + size::LINE * factor <= rect.bottom() && target.ignite_stacks > 0 {
-        scratch.detail.clear();
-        scratch.detail.push_str("IGNITE ");
-        write_integer(&mut scratch.detail, i64::from(target.ignite_stacks));
-        list.text_at((inner.x, status_y), &scratch.detail, theme.status, scale);
+    if status_y + size::LINE * factor <= rect.bottom() {
+        if target.ignite_stacks > 0 {
+            scratch.detail.clear();
+            scratch.detail.push_str("IGNITE ");
+            write_integer(&mut scratch.detail, i64::from(target.ignite_stacks));
+            list.text_at((inner.x, status_y), &scratch.detail, theme.status, scale);
+        }
+        // The phase, on the right of the same line, and only for something that has more
+        // than one. It is the boss encounter's only piece of dedicated interface: a fight
+        // that changes has to say so somewhere the player is already looking, and the frame
+        // they are aiming with is that place.
+        if let Some((phase, name)) = target.phase {
+            scratch.detail.clear();
+            scratch.detail.push('P');
+            write_integer(&mut scratch.detail, phase as i64);
+            // A boss's phase is drawn in the enemy cast colour, which is the palette's
+            // "something is about to happen to you" — the same meaning it carries on a cast
+            // bar, so it needs no legend.
+            let colour = if target.boss {
+                theme.enemy_cast_fill
+            } else {
+                theme.status
+            };
+            list.text_aligned(
+                (inner.right(), status_y),
+                &scratch.detail,
+                colour,
+                scale,
+                TextAlign::Right,
+            );
+            let _ = name;
+        }
     }
 }
 

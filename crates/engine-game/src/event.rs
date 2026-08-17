@@ -160,6 +160,21 @@ pub enum CombatEvent {
         /// The simulation tick it happened on.
         tick: u64,
     },
+    /// A multi-phase enemy entered a new phase.
+    ///
+    /// Announced rather than exposed as state for the same reason a cast is: a boss frame, a
+    /// visual change and a future encounter log all read the one stream. Emitted exactly
+    /// once per transition, on the tick the threshold was crossed.
+    PhaseChanged {
+        /// Which enemy.
+        entity: EntityId,
+        /// Which phase it entered. Zero is the first, so this is always one or more.
+        phase: usize,
+        /// The phase's name, for a readout that should not have to know the table.
+        name: &'static str,
+        /// The simulation tick it happened on.
+        tick: u64,
+    },
     /// An entity's health reached zero.
     Death {
         /// Who died.
@@ -326,6 +341,7 @@ impl CombatEvent {
             | Self::CastStarted { tick, .. }
             | Self::CastEnded { tick, .. }
             | Self::Teleported { tick, .. }
+            | Self::PhaseChanged { tick, .. }
             | Self::Death { tick, .. }
             | Self::ProjectileLaunched { tick, .. }
             | Self::ImpactScheduled { tick, .. }

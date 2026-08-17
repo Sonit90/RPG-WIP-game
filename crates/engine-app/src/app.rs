@@ -340,7 +340,12 @@ impl App {
             // points and several times the scatter. Loading it through the ordinary path
             // rather than through a separate scene is deliberate — a stress configuration
             // that goes down a different code path measures the other code path.
-            if args.env_density > 1.0 {
+            if args.scene.is_dungeon() {
+                // The same deterministic function gameplay built its collision from. Building
+                // the level twice is how the picture and the collision end up describing two
+                // different rooms.
+                engine_game::dungeon::dungeon_scene()
+            } else if args.env_density > 1.0 {
                 engine_environment::arena::stress_arena(args.env_density)
             } else if args.scene.is_environment() {
                 engine_environment::arena::environment_demo()
@@ -401,6 +406,18 @@ impl App {
                     encounter.spawns().len()
                 );
                 (arena::encounter_arena(&config, encounter), None)
+            }
+            // The dungeon: five rooms, eight packs and a boss, built by gameplay from the
+            // same scene the renderer is about to draw.
+            Scene::Dungeon => {
+                let (simulation, dungeon) = engine_game::dungeon::build_dungeon();
+                log::info!(
+                    "dungeon '{}': {} packs across {} areas",
+                    dungeon.name(),
+                    dungeon.packs().len(),
+                    dungeon.areas().len(),
+                );
+                (simulation, None)
             }
             Scene::Collision => {
                 let (simulation, scene) = demo::collision_demo();
@@ -1890,18 +1907,42 @@ impl App {
         // how angry it is. Developer-only, and in the log rather than over the game, exactly
         // as the audio readout is.
         if self.simulation.enemy_count() > 0 {
-            let encounter = self.simulation.encounter();
+            let encounters = self.simulation.encounters();
             log::info!(
-                "  encounter: {} | {} enemies | player {:.0} hp, took {:.0}",
-                encounter.map_or("-", |encounter| encounter.state().as_str()),
+                "  encounters: {} | {} enemies | {} hazards | player {:.0} hp, took {:.0}",
+                encounters.len(),
                 self.simulation.enemy_count(),
+                self.simulation.enemy_hazards().len(),
                 self.simulation
                     .world()
                     .health(self.simulation.player().entity)
                     .map_or(0.0, engine_game::Health::current),
                 self.simulation.meter().total_damage_taken(),
             );
+            // One line per pack: what it is called, where it is in its life, and how much of
+            // it is still standing. A dungeon's nine packs fit on nine lines; a single
+            // encounter scene prints one and reads exactly as it did before.
+            for encounter in encounters {
+                let alive = encounter
+                    .members()
+                    .iter()
+                    .filter(|member| self.simulation.world().is_alive(**member))
+                    .count();
+                log::info!(
+                    "    pack {:<26} {:<11} {alive}/{} alive | {} resets",
+                    encounter.name(),
+                    encounter.state().as_str(),
+                    encounter.len(),
+                    encounter.resets(),
+                );
+            }
+            // Only what is doing something, once there are more than a handful: a dungeon
+            // holds twenty-two enemies and twenty of them are standing still.
+            let verbose = self.simulation.enemy_count() <= 8;
             for (entity, brain) in self.simulation.enemies() {
+                if !verbose && brain.state() == engine_game::enemy::brain::AiState::Idle {
+                    continue;
+                }
                 let position = self
                     .simulation
                     .world()
@@ -1912,13 +1953,14 @@ impl App {
                     .and_then(|target| self.simulation.world().position(target))
                     .map(|other| engine_game::world::horizontal_distance(position, other));
                 log::info!(
-                    "    {} {:<7} {:>3.0} hp | target {} at {} m | threat {} | {}{}",
+                    "    {} {:<7} {:>3.0} hp | {} | target {} at {} m | threat {} | {}{}",
                     brain.archetype().name,
                     brain.state().as_str(),
                     self.simulation
                         .world()
                         .health(entity)
                         .map_or(0.0, engine_game::Health::current),
+                    brain.phase_name(),
                     target.map_or(-1, |target| target.index() as i64),
                     distance.map_or("-".to_owned(), |metres| format!("{metres:.1}")),
                     brain.threat().len(),
@@ -2640,6 +2682,14 @@ fn log_controls(args: &Args, demo: Option<&DemoScene>) {
                 log::info!("  {key}  {}", effect.name());
             }
         }
+        None if args.scene.is_dungeon() => {
+            log::info!(
+                "the Ashen Reliquary: walk forward. {} packs across {} rooms, then the boss",
+                engine_game::dungeon::PACK_COUNT - 1,
+                engine_environment::dungeon::AREA_COUNT,
+            );
+            log::info!("nothing spawns: every pack is standing there already, waiting to notice");
+        }
         None if args.scene.is_encounter() => {
             log::info!("encounter demo: walk forward to be noticed; BACKSPACE resets the fight");
         }
@@ -2688,7 +2738,7 @@ fn log_controls(args: &Args, demo: Option<&DemoScene>) {
     log::info!("  MOUSE WHEEL      camera distance");
     log::info!("  F3               collision debug drawing on/off");
     log::info!("  F5               developer overlay on/off");
-    if args.scene.is_encounter() {
+    if args.scene.is_encounter() || args.scene.is_dungeon() {
         log::info!("  BACKSPACE        put the fight back: enemies home and whole, you alive");
         log::info!("  G                interrupt the target's cast (developer control)");
     }
