@@ -41,6 +41,7 @@
 
 pub mod animation;
 pub mod character;
+pub mod disk;
 pub mod error;
 pub mod gltf_import;
 pub mod library;

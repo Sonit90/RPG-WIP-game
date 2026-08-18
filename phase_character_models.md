@@ -351,7 +351,6 @@ Explicitly refused, with a precise error rather than a silent approximation:
 | `JOINTS_1` (more than 4 influences) | Truncating unnormalizes weights and deflates the mesh |
 | External `.bin` / image files | No filesystem asset resolver exists; the error says "export GLB" |
 | Non-PNG images | One decoder, deliberately |
-| Multiple skins | A character has one |
 | Morph targets, cameras, lights | Ignored, not refused â€” they are not this engine's concern |
 
 The nastiest importer details, each with a test: glTF is column-major and so is `Mat4`, so the
@@ -359,6 +358,26 @@ matrix copy must **not** transpose; inverse bind matrices come from the file and
 derived from the rest pose; a skinned primitive's node transform must be ignored per spec; a
 joint's parent is its nearest *joint* ancestor, because exporters leave un-skinned pivot nodes
 mid-chain.
+
+**A real export is messier than a clean one, and the importer absorbs three kinds of mess.**
+Several skins over one hierarchy are merged into one skeleton, each skin keeping its own
+`JOINTS_0` index table, because the runtime poses one skeleton and binds one palette. A bone's
+rest transform is computed from node *world* matrices rather than copied off the node, so the
+un-skinned pivots between joints and the conversion node the whole rig hangs under — the
+hundredth-scale, quarter-turn node every FBX-to-glTF pipeline emits — are both preserved; a
+character imported without them is a hundred times too big and lying on its side. And a
+texture over the runtime's resolution budget is halved until it fits rather than refused,
+which is `disk::load_glb`'s doing, not the importer's: a 4096 map is a memory decision, not a
+malformed file.
+
+`disk` is the one module that touches the filesystem. `disk::find_model` looks a `.glb` up in
+`MYGAME_ASSETS`, beside the executable, in `./assets` and finally in the repository's own
+`assets/`, and reports `Ok(None)` when nothing is there — a missing export leaves the
+procedural model in place, while an export that *is* there and fails to load is an error, so
+a mis-exported file never looks like an undelivered one. **Models themselves are not in the
+repository.** A 50 MB `.glb` is binary git cannot pack and cannot ever delete from history, so
+`assets/` is ignored apart from its README: a machine that has the export renders it, a
+machine that does not renders the procedural model, and both build.
 
 **No runtime cost.** Import runs when a scene is assembled. A frame touches `ModelAsset` only
 through `AnimationPlayer::update` and `Skeleton::skinning_matrices`, which are linear passes

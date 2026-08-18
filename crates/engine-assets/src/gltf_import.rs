@@ -22,6 +22,10 @@
 //! * **More than four influences per vertex.** glTF allows `JOINTS_1`; the runtime vertex has
 //!   four slots. Rejected rather than truncated, because dropping the fifth influence
 //!   unnormalizes the weights and deflates the mesh.
+//!
+//! Several skins *are* supported, and become one skeleton: an export that skins the body and
+//! the clothing separately describes one hierarchy twice, and the runtime poses one skeleton
+//! per character. See [`import_skeleton`].
 //! * **Morph targets, cameras, lights, extensions.** Ignored — they are not this engine's
 //!   concern yet, and ignoring them lets a file that contains them still deliver its meshes.
 //! * **External `.bin` and image files.** Only GLB binary chunks and `data:` URIs are read,
@@ -84,11 +88,19 @@ pub fn import_glb(name: &str, bytes: &[u8]) -> Result<ModelAsset, AssetError> {
     })
 }
 
-/// A skin, plus the mapping the rest of the import needs.
+/// A skeleton, plus the mappings the rest of the import needs.
 struct ImportedSkin {
     skeleton: Skeleton,
-    /// glTF node index of each joint, by bone index.
+    /// glTF node index of each bone, by bone index.
     joint_nodes: Vec<usize>,
+    /// The bone each glTF skin's joints refer to, by skin index and then by the skin's own
+    /// joint index — which is exactly what a primitive's `JOINTS_0` stores.
+    ///
+    /// One skeleton can be split across several skins: an exporter that gives the body and
+    /// the clothing a skin each writes two joint lists over one hierarchy, and vertex 7 of
+    /// the clothing means "joint 3 *of that skin*". Without this table those indices would
+    /// be read against the merged bone list and the garment would be sewn to the wrong bones.
+    skin_bones: Vec<Vec<u16>>,
 }
 
 impl ImportedSkin {
@@ -337,98 +349,273 @@ fn import_materials(gltf: &gltf::Gltf) -> Vec<MaterialAsset> {
     materials
 }
 
-/// Builds a skeleton from the document's first skin.
+/// Builds one skeleton from every skin in the document.
 ///
 /// Returns `None` for a document with no skin, which is a perfectly good rigid prop.
+///
+/// # Why the bones come from the node hierarchy rather than from the joint's own transform
+///
+/// A bone's rest transform here is the joint's transform *relative to its nearest joint
+/// ancestor*, computed from world matrices. Two things in a real export make the simpler copy
+/// wrong: an exporter routinely leaves un-skinned pivots between two joints
+/// (`Hip -> BoneRoot -> Pelvis`), and the whole rig usually hangs under a conversion node
+/// carrying the unit and axis change — a hundredth-scale, quarter-turn affair. Copying the
+/// node's own transform silently drops both, which is a character a hundred times too big
+/// lying on its side.
+///
+/// # Why several skins become one skeleton
+///
+/// The runtime poses one skeleton per character and the shader reads one bone palette. An
+/// export that skins the body and the clothing separately describes one hierarchy twice, so
+/// the joints are merged by node and each skin keeps its own index table in
+/// [`ImportedSkin::skin_bones`].
 fn import_skeleton(
     model: &str,
     gltf: &gltf::Gltf,
     buffers: &[Vec<u8>],
 ) -> Result<Option<ImportedSkin>, AssetError> {
-    let Some(skin) = gltf.skins().next() else {
+    if gltf.skins().len() == 0 {
         return Ok(None);
+    }
+
+    let parent_of = node_parents(gltf);
+    let worlds = node_worlds(gltf, &parent_of);
+
+    // Every joint any skin names, once, ordered so a parent always precedes its children —
+    // which is what `Skeleton::new` requires and what makes its one-pass composition valid.
+    let mut joint_nodes: Vec<usize> = Vec::new();
+    for skin in gltf.skins() {
+        for joint in skin.joints() {
+            if !joint_nodes.contains(&joint.index()) {
+                joint_nodes.push(joint.index());
+            }
+        }
+    }
+    joint_nodes.sort_by_key(|node| (ancestor_depth(*node, &parent_of), *node));
+
+    // The file's own inverse binds, by node. Derived only where the file states none: an
+    // exporter is entitled to make them differ from the rest pose, and assuming otherwise
+    // turns the character inside out.
+    let mut inverse_binds: Vec<Option<Mat4>> = vec![None; gltf.nodes().len()];
+    for skin in gltf.skins() {
+        let joints: Vec<usize> = skin.joints().map(|joint| joint.index()).collect();
+        let reader = skin.reader(|buffer| buffers.get(buffer.index()).map(|bytes| &bytes[..]));
+        // The spec's default is the identity for every joint, which means the bind pose is
+        // the model's own space.
+        let Some(matrices) = reader.read_inverse_bind_matrices() else {
+            continue;
+        };
+        let matrices: Vec<Mat4> = matrices.map(columns_to_mat4).collect();
+        if matrices.len() != joints.len() {
+            return Err(AssetError::invalid(
+                model,
+                format!("skin {}", skin.index()),
+                format!(
+                    "{} inverse bind matrices for {} joints",
+                    matrices.len(),
+                    joints.len()
+                ),
+            ));
+        }
+        for (node, matrix) in joints.into_iter().zip(matrices) {
+            inverse_binds[node] = Some(matrix);
+        }
+    }
+
+    let bone_of_node = |node: usize| -> Option<u16> {
+        joint_nodes
+            .iter()
+            .position(|joint| *joint == node)
+            .map(|index| index as u16)
     };
-    if gltf.skins().len() > 1 {
-        return Err(AssetError::Unsupported {
-            model: model.to_owned(),
-            feature: format!("{} skins; a character has one", gltf.skins().len()),
+
+    let names: Vec<Option<String>> = gltf
+        .nodes()
+        .map(|node| node.name().map(str::to_owned))
+        .collect();
+
+    let mut bones = Vec::with_capacity(joint_nodes.len());
+    for node in joint_nodes.iter().copied() {
+        // Nearest rather than immediate ancestor: an un-skinned pivot in the middle of a
+        // chain is not a break in the skeleton, and treating it as one detaches half the
+        // character. Its transform is not lost — it is inside the world matrices below.
+        let mut ancestor = parent_of[node];
+        let mut parent = None;
+        while let Some(candidate) = ancestor {
+            if let Some(bone) = bone_of_node(candidate) {
+                parent = Some(bone);
+                break;
+            }
+            ancestor = parent_of[candidate];
+        }
+
+        let world = worlds[node];
+        let rest = match parent {
+            Some(parent) => match worlds[joint_nodes[parent as usize]].inverse() {
+                Some(inverse) => inverse * world,
+                // A zero scale somewhere above this joint. The bone is placed in its
+                // parent's space unchanged rather than filled with NaNs.
+                None => world,
+            },
+            None => world,
+        };
+
+        bones.push(Bone {
+            name: names[node]
+                .clone()
+                .unwrap_or_else(|| format!("bone{node}")),
+            parent,
+            rest: decompose(rest),
+            inverse_bind: match inverse_binds[node] {
+                Some(matrix) => matrix,
+                None => world.inverse().unwrap_or(Mat4::IDENTITY),
+            },
         });
     }
 
-    let joints: Vec<gltf::Node<'_>> = skin.joints().collect();
-    let joint_nodes: Vec<usize> = joints.iter().map(gltf::Node::index).collect();
-
-    let reader = skin.reader(|buffer| buffers.get(buffer.index()).map(|bytes| &bytes[..]));
-    let inverse_binds: Vec<Mat4> = match reader.read_inverse_bind_matrices() {
-        Some(matrices) => matrices.map(columns_to_mat4).collect(),
-        // The spec's default is the identity for every joint, which means the bind pose is
-        // the model's own space.
-        None => vec![Mat4::IDENTITY; joints.len()],
-    };
-    if inverse_binds.len() != joints.len() {
-        return Err(AssetError::invalid(
-            model,
-            "skin",
-            format!(
-                "{} inverse bind matrices for {} joints",
-                inverse_binds.len(),
-                joints.len()
-            ),
-        ));
+    let mut skin_bones = Vec::with_capacity(gltf.skins().len());
+    for skin in gltf.skins() {
+        let mut table = Vec::new();
+        for joint in skin.joints() {
+            let Some(bone) = bone_of_node(joint.index()) else {
+                return Err(AssetError::invalid(
+                    model,
+                    format!("skin {}", skin.index()),
+                    format!("joint node {} is not in the merged skeleton", joint.index()),
+                ));
+            };
+            table.push(bone);
+        }
+        skin_bones.push(table);
     }
 
-    // Parent of each node, from the hierarchy. glTF stores children, not parents.
+    Ok(Some(ImportedSkin {
+        skeleton: Skeleton::new(bones)?,
+        joint_nodes,
+        skin_bones,
+    }))
+}
+
+/// Each node's parent, by node index. glTF stores children, not parents.
+fn node_parents(gltf: &gltf::Gltf) -> Vec<Option<usize>> {
     let mut parent_of = vec![None; gltf.nodes().len()];
     for node in gltf.nodes() {
         for child in node.children() {
             parent_of[child.index()] = Some(node.index());
         }
     }
+    parent_of
+}
 
-    // A joint's parent bone is its nearest ancestor that is also a joint. Nearest rather
-    // than immediate, because exporters routinely leave an un-skinned pivot node in the
-    // middle of a chain, and treating that as "no parent" detaches half the character.
-    let mut bones = Vec::with_capacity(joints.len());
-    for (index, node) in joints.iter().enumerate() {
-        let mut ancestor = parent_of[node.index()];
-        let mut parent = None;
-        while let Some(candidate) = ancestor {
-            if let Some(bone) = joint_nodes.iter().position(|joint| *joint == candidate) {
-                parent = Some(bone as u16);
+/// How many ancestors a node has. The sort key that puts parents before children.
+fn ancestor_depth(node: usize, parent_of: &[Option<usize>]) -> usize {
+    let mut depth = 0;
+    let mut current = parent_of[node];
+    // Bounded by the node count: a malformed file containing a cycle leaves this loop
+    // rather than hanging the import.
+    while let Some(parent) = current {
+        depth += 1;
+        if depth > parent_of.len() {
+            break;
+        }
+        current = parent_of[parent];
+    }
+    depth
+}
+
+/// Each node's transform relative to the document root, by node index.
+fn node_worlds(gltf: &gltf::Gltf, parent_of: &[Option<usize>]) -> Vec<Mat4> {
+    let locals: Vec<Mat4> = gltf
+        .nodes()
+        .map(|node| columns_to_mat4(node.transform().matrix()))
+        .collect();
+    let mut worlds: Vec<Option<Mat4>> = vec![None; locals.len()];
+    for index in 0..locals.len() {
+        // Up to the nearest ancestor already resolved, then back down: every node is
+        // composed exactly once however deep the hierarchy is, and nothing recurses.
+        let mut chain = Vec::new();
+        let mut current = Some(index);
+        while let Some(node) = current {
+            if worlds[node].is_some() || chain.len() > locals.len() {
                 break;
             }
-            ancestor = parent_of[candidate];
+            chain.push(node);
+            current = parent_of[node];
         }
-        if let Some(parent) = parent
-            && parent as usize >= index
-        {
-            return Err(AssetError::invalid(
-                model,
-                format!("joint {index}"),
-                "the skin lists a joint before its parent; re-export with a sorted hierarchy",
-            ));
+        let mut accumulated = current
+            .and_then(|node| worlds[node])
+            .unwrap_or(Mat4::IDENTITY);
+        for node in chain.into_iter().rev() {
+            accumulated = accumulated * locals[node];
+            worlds[node] = Some(accumulated);
         }
-
-        let (translation, rotation, scale) = node.transform().decomposed();
-        bones.push(Bone {
-            name: node.name().unwrap_or("bone").to_owned(),
-            parent,
-            rest: Transform::new(
-                Vec3::new(translation[0], translation[1], translation[2]),
-                Quat::new(rotation[0], rotation[1], rotation[2], rotation[3]),
-                Vec3::new(scale[0], scale[1], scale[2]),
-            ),
-            // The file's own inverse binds, never derived from the rest pose: an exporter is
-            // entitled to make them differ, and assuming otherwise turns the character
-            // inside out.
-            inverse_bind: inverse_binds[index],
-        });
     }
+    worlds
+        .into_iter()
+        .map(|world| world.unwrap_or(Mat4::IDENTITY))
+        .collect()
+}
 
-    Ok(Some(ImportedSkin {
-        skeleton: Skeleton::new(bones)?,
-        joint_nodes,
-    }))
+/// Splits an affine matrix into the translation, rotation and scale a [`Transform`] holds.
+///
+/// Shear is not representable and is dropped: a skewed bone is not something a rig should
+/// contain, and the alternative is carrying a matrix per bone through the whole animation
+/// system to preserve something no exporter intends.
+fn decompose(matrix: Mat4) -> Transform {
+    let values = matrix.to_cols_array();
+    let axis = |column: usize| {
+        Vec3::new(
+            values[column * 4],
+            values[column * 4 + 1],
+            values[column * 4 + 2],
+        )
+    };
+    let (x, y, z) = (axis(0), axis(1), axis(2));
+    let mut scale = Vec3::new(x.length(), y.length(), z.length());
+    // A negative determinant is a mirrored basis, which no quaternion expresses. The flip
+    // goes on X, the convention every other engine uses, so a mirrored rig at least mirrors
+    // consistently instead of rotating unpredictably.
+    if matrix.determinant() < 0.0 {
+        scale.x = -scale.x;
+    }
+    let unit = |vector: Vec3, length: f32| {
+        if length.abs() > 1e-8 {
+            vector * (1.0 / length)
+        } else {
+            Vec3::ZERO
+        }
+    };
+    let rotation = quat_from_basis(
+        unit(x, scale.x),
+        unit(y, scale.y),
+        unit(z, scale.z),
+    );
+    Transform::new(
+        Vec3::new(values[12], values[13], values[14]),
+        rotation,
+        scale,
+    )
+}
+
+/// The rotation an orthonormal basis describes, as its three column vectors.
+fn quat_from_basis(x: Vec3, y: Vec3, z: Vec3) -> Quat {
+    let trace = x.x + y.y + z.z;
+    // Four branches rather than one formula: the short form divides by a component that can
+    // be zero, and picking the largest keeps the division well conditioned.
+    let quat = if trace > 0.0 {
+        let s = (trace + 1.0).sqrt() * 2.0;
+        Quat::new((y.z - z.y) / s, (z.x - x.z) / s, (x.y - y.x) / s, 0.25 * s)
+    } else if x.x > y.y && x.x > z.z {
+        let s = (1.0 + x.x - y.y - z.z).sqrt() * 2.0;
+        Quat::new(0.25 * s, (y.x + x.y) / s, (z.x + x.z) / s, (y.z - z.y) / s)
+    } else if y.y > z.z {
+        let s = (1.0 + y.y - x.x - z.z).sqrt() * 2.0;
+        Quat::new((y.x + x.y) / s, 0.25 * s, (z.y + y.z) / s, (z.x - x.z) / s)
+    } else {
+        let s = (1.0 + z.z - x.x - y.y).sqrt() * 2.0;
+        Quat::new((z.x + x.z) / s, (z.y + y.z) / s, 0.25 * s, (x.y - y.x) / s)
+    };
+    quat.normalize()
 }
 
 /// glTF's column-major `[[f32; 4]; 4]` into a [`Mat4`].
@@ -509,8 +696,9 @@ fn import_submeshes(
 
             let material = primitive.material().index().unwrap_or(default_material);
 
-            let geometry = match (skin, reader.read_joints(0), reader.read_weights(0)) {
-                (Some(skin), Some(joints), Some(weights)) => {
+            let geometry = match (skin, node.skin(), reader.read_joints(0), reader.read_weights(0))
+            {
+                (Some(skin), Some(node_skin), Some(joints), Some(weights)) => {
                     if primitive.get(&gltf::Semantic::Joints(1)).is_some() {
                         return Err(AssetError::Unsupported {
                             model: model.to_owned(),
@@ -528,27 +716,39 @@ fn import_submeshes(
                             "JOINTS_0 and WEIGHTS_0 must cover every vertex",
                         ));
                     }
-                    let bones = skin.skeleton.len();
+                    // `JOINTS_0` indexes *this primitive's skin*, not the merged skeleton.
+                    // Reading it as a bone index directly is how a garment ends up sewn to
+                    // the wrong bones when an export carries more than one skin.
+                    let Some(bones_of_joint) = skin.skin_bones.get(node_skin.index()) else {
+                        return Err(AssetError::invalid(
+                            model,
+                            &name,
+                            format!("names skin {}, which does not exist", node_skin.index()),
+                        ));
+                    };
                     let mut vertices = Vec::with_capacity(positions.len());
                     for at in 0..positions.len() {
-                        if let Some(joint) =
-                            joints[at].iter().find(|joint| **joint as usize >= bones)
-                        {
-                            return Err(AssetError::invalid(
-                                model,
-                                &name,
-                                format!(
-                                    "vertex {at} is bound to joint {joint}, and the skin has \
-                                     {bones}"
-                                ),
-                            ));
+                        let mut bones = [0u16; 4];
+                        for (slot, joint) in joints[at].iter().enumerate() {
+                            let Some(bone) = bones_of_joint.get(*joint as usize) else {
+                                return Err(AssetError::invalid(
+                                    model,
+                                    &name,
+                                    format!(
+                                        "vertex {at} is bound to joint {joint}, and its skin \
+                                         has {}",
+                                        bones_of_joint.len()
+                                    ),
+                                ));
+                            };
+                            bones[slot] = *bone;
                         }
                         vertices.push(
                             SkinVertex {
                                 position: positions[at],
                                 normal: normals[at],
                                 uv: uvs[at],
-                                joints: joints[at],
+                                joints: bones,
                                 weights: weights[at],
                             }
                             // Exporters routinely emit weights summing to 0.9999.

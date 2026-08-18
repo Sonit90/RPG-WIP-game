@@ -2672,19 +2672,81 @@ fn controller_eye_guess(scene: &engine_environment::EnvironmentScene) -> Vec3 {
     scene.spawns.player + Vec3::new(0.0, 4.0, 8.0)
 }
 
+/// The file an artist's FireMage is delivered as, looked for in every asset root.
+const FIREMAGE_MODEL_FILE: &str = "firemage.glb";
+
 /// Uploads the FireMage and builds the player's visual controller.
 ///
-/// **This is the whole of "which character the player is", and it is four lines.** The model
-/// comes from a function today and will come from a `.glb` tomorrow; the definition says
-/// which clips fill which roles; the controller joins them. Gameplay is not involved, and
-/// adding a second playable character means calling this with a different pair.
+/// **This is the whole of "which character the player is".** The model is the artist's
+/// export if one is installed and the procedural mage if not; the definition says which
+/// clips fill which roles; the controller joins them. Gameplay is not involved, and adding a
+/// second playable character means calling this with a different pair.
+///
+/// An export that is present but does not load is an error rather than a silent fall back to
+/// the procedural mage: a mis-exported file and a file nobody delivered yet must not look the
+/// same at startup.
 fn build_player_visual(renderer: &mut Renderer) -> Result<CharacterVisual, EngineError> {
-    let model = fire_mage()
-        .map_err(|error| EngineError::unsupported("build the FireMage").with_source(error))?;
+    let (definition, model) = match engine_assets::disk::find_model("firemage", FIREMAGE_MODEL_FILE)
+    {
+        Ok(Some(model)) => {
+            log::info!(
+                "FireMage: imported {FIREMAGE_MODEL_FILE} - {} triangles, {} bones, {} clips, \
+                 {} KiB of textures, {:.2} m tall",
+                model.triangle_count(),
+                model.skeleton.as_ref().map_or(0, engine_assets::Skeleton::len),
+                model.clips.len(),
+                model.texture_bytes() / 1024,
+                model.bind_pose_height(),
+            );
+            (imported_character(&model, fire_mage_character()), model)
+        }
+        Ok(None) => (
+            fire_mage_character(),
+            fire_mage().map_err(|error| {
+                EngineError::unsupported("build the FireMage").with_source(error)
+            })?,
+        ),
+        Err(error) => {
+            return Err(
+                EngineError::unsupported("import the FireMage model").with_source(error)
+            );
+        }
+    };
+
     let binding = renderer.create_model(&model)?;
-    CharacterVisual::new(fire_mage_character(), std::sync::Arc::new(model), binding).map_err(
-        |error| EngineError::unsupported("bind the FireMage's animations").with_source(error),
-    )
+    CharacterVisual::new(definition, std::sync::Arc::new(model), binding).map_err(|error| {
+        EngineError::unsupported("bind the FireMage's animations").with_source(error)
+    })
+}
+
+/// `definition` retargeted at an imported model.
+///
+/// Two things a file decides and a definition cannot: how tall the model is authored — read
+/// from the bind pose, so a rig authored in centimetres is still scaled to the capsule
+/// gameplay collides with — and which of the definition's clip names the file actually
+/// carries. A name the export does not have is dropped rather than refused, because a model
+/// delivered before its animations should stand in its bind pose, not fail to load.
+fn imported_character(
+    model: &engine_assets::ModelAsset,
+    definition: engine_assets::CharacterDef,
+) -> engine_assets::CharacterDef {
+    let mut definition = definition;
+    let height = model.bind_pose_height();
+    if height > 1e-3 {
+        definition.model_height = height;
+    }
+    let before = definition.clips.len();
+    definition
+        .clips
+        .retain(|(_, name)| model.clip_index(name).is_some());
+    if definition.clips.len() < before {
+        log::warn!(
+            "FireMage: the export carries {} of the {before} clips the character wants; the \
+             rest fall back to the bind pose",
+            definition.clips.len(),
+        );
+    }
+    definition
 }
 
 /// The two entities the ground indicator is drawn with, and which shape they were built for.

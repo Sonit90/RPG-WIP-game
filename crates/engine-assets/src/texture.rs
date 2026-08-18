@@ -147,6 +147,59 @@ impl TextureAsset {
         }
     }
 
+    /// The same image halved in each dimension, averaging each 2x2 block.
+    ///
+    /// `None` once either dimension is 1, which is where halving stops meaning anything.
+    #[must_use]
+    pub fn halved(&self) -> Option<Self> {
+        if self.width < 2 || self.height < 2 {
+            return None;
+        }
+        let (width, height) = (self.width / 2, self.height / 2);
+        let stride = self.width as usize * 4;
+        let mut texels = Vec::with_capacity(width as usize * height as usize * 4);
+        for y in 0..height as usize {
+            for x in 0..width as usize {
+                let top = y * 2 * stride + x * 2 * 4;
+                let bottom = top + stride;
+                for channel in 0..4 {
+                    // A box filter in whatever space the texels are in. Correct for a data
+                    // map; slightly dark for an sRGB one, which is the trade every engine
+                    // makes until it has a reason to convert both ways per texel.
+                    let sum = u32::from(self.texels[top + channel])
+                        + u32::from(self.texels[top + 4 + channel])
+                        + u32::from(self.texels[bottom + channel])
+                        + u32::from(self.texels[bottom + 4 + channel]);
+                    texels.push((sum / 4) as u8);
+                }
+            }
+        }
+        Some(Self {
+            name: self.name.clone(),
+            width,
+            height,
+            format: self.format,
+            texels,
+        })
+    }
+
+    /// The same image, halved until neither dimension exceeds `max`.
+    ///
+    /// What lets a 4096 map an artist exported anyway load at the size the runtime budgets
+    /// for, instead of the whole model being refused over a texture nobody looks at closely.
+    /// A texture already within the limit is returned unchanged and copies nothing.
+    #[must_use]
+    pub fn fitted_within(mut self, max: u32) -> Self {
+        let max = max.max(1);
+        while self.width > max || self.height > max {
+            match self.halved() {
+                Some(smaller) => self = smaller,
+                None => break,
+            }
+        }
+        self
+    }
+
     /// A single-texel opaque white image.
     ///
     /// What a material with no base colour texture binds. A branch in the shader would be a
@@ -193,6 +246,35 @@ mod tests {
             "u should be 0.25 at the first centre"
         );
         assert_eq!(texture.texels[4], 191, "and 0.75 at the second");
+    }
+
+    #[test]
+    fn halving_averages_each_block_and_keeps_the_buffer_consistent() {
+        let texture = TextureAsset::generated("ramp", 4, 4, TextureFormat::Rgba8Unorm, |u, _| {
+            [(u * 200.0) as u8, 0, 0, 255]
+        });
+        let Some(half) = texture.halved() else {
+            panic!("a 4x4 image halves");
+        };
+        assert_eq!((half.width, half.height), (2, 2));
+        assert_eq!(half.texels.len(), 2 * 2 * 4);
+        assert_eq!(
+            u32::from(half.texels[0]),
+            (u32::from(texture.texels[0]) + u32::from(texture.texels[4])) / 2,
+            "a block of two equal rows averages to the row"
+        );
+    }
+
+    #[test]
+    fn a_texture_over_the_limit_is_halved_until_it_fits_and_one_under_it_is_untouched() {
+        let big = TextureAsset::generated("big", 8, 4, TextureFormat::Rgba8Srgb, |_, _| {
+            [1, 2, 3, 4]
+        });
+        let fitted = big.fitted_within(2);
+        assert_eq!((fitted.width, fitted.height), (2, 1));
+
+        let small = TextureAsset::white().fitted_within(2);
+        assert_eq!((small.width, small.height), (1, 1));
     }
 
     #[test]

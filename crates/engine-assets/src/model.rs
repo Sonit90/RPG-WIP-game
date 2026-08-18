@@ -26,7 +26,7 @@ use engine_core::math::Sphere;
 
 use crate::animation::AnimationClip;
 use crate::material::MaterialAsset;
-use crate::mesh::SubMesh;
+use crate::mesh::{Geometry, SubMesh};
 use crate::skeleton::Skeleton;
 use crate::texture::TextureAsset;
 
@@ -206,6 +206,69 @@ impl ModelAsset {
     #[must_use]
     pub fn triangle_count(&self) -> usize {
         self.lod0().map_or(0, ModelLod::triangle_count)
+    }
+
+    /// How tall LOD0 stands in its bind pose, in the units the model is authored in.
+    ///
+    /// Measured through the skinning matrices rather than off the raw positions, because a
+    /// skinned mesh's vertices are in whatever space its skin was authored in — an export
+    /// whose vertices are in centimetres and whose rig carries the conversion measures 190
+    /// raw and 1.9 posed. The number a character definition wants is the second one: it is
+    /// what the character will actually be on screen before gameplay scales it.
+    ///
+    /// A rigid model measures its positions directly. A model with no geometry, or one whose
+    /// pose cannot be composed, reports zero and leaves the caller to decide what that means.
+    #[must_use]
+    pub fn bind_pose_height(&self) -> f32 {
+        let Some(lod) = self.lod0() else {
+            return 0.0;
+        };
+        let palette = match self.skeleton.as_ref() {
+            Some(skeleton) => {
+                let mut palette = Vec::with_capacity(skeleton.len());
+                if skeleton
+                    .skinning_matrices(&skeleton.rest_pose(), &mut palette)
+                    .is_err()
+                {
+                    return 0.0;
+                }
+                palette
+            }
+            None => Vec::new(),
+        };
+
+        let mut lowest = f32::MAX;
+        let mut highest = f32::MIN;
+        for submesh in &lod.submeshes {
+            match &submesh.geometry {
+                Geometry::Static(vertices) => {
+                    for vertex in vertices {
+                        lowest = lowest.min(vertex.position.y);
+                        highest = highest.max(vertex.position.y);
+                    }
+                }
+                Geometry::Skinned(vertices) => {
+                    for vertex in vertices {
+                        let mut y = 0.0;
+                        for (joint, weight) in vertex.joints.iter().zip(vertex.weights) {
+                            let Some(matrix) = palette.get(*joint as usize) else {
+                                continue;
+                            };
+                            y += weight * matrix.transform_point(vertex.position).y;
+                        }
+                        lowest = lowest.min(y);
+                        highest = highest.max(y);
+                    }
+                }
+            }
+        }
+
+        let height = highest - lowest;
+        if height.is_finite() && height > 0.0 {
+            height
+        } else {
+            0.0
+        }
     }
 }
 

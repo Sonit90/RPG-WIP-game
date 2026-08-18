@@ -24,3 +24,9 @@ Desktop.ini
 
 # Packaged distributions (tools/package.ps1)
 /dist/
+
+# Art source. Models are megabytes of binary that git cannot pack, so they live beside the
+# repository rather than inside it: drop a .glb in assets/ and the loader finds it, and a
+# checkout without one falls back to the procedural model. See assets/README.md.
+/assets/*
+!/assets/README.md
