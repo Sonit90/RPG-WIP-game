@@ -1,0 +1,23 @@
+[package]
+name = "engine-editor"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+# The level editor, and only the game's development builds depend on it. `engine-app` names
+# it as an optional dependency behind its `editor` feature, so a player's binary contains
+# none of this — see that crate's Cargo.toml.
+#
+# No `engine-renderer` and no `windows`: the editor edits *data* and paints into a
+# `UiDrawList`, exactly as every other screen in this project does. That is what lets a click
+# that places a pillar be tested without a device.
+[dependencies]
+engine-core = { workspace = true }
+engine-environment = { workspace = true }
+engine-presentation = { workspace = true }
+engine-render-data = { workspace = true }
+log = { workspace = true }
+
+[lints]
+workspace = true

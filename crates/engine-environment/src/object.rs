@@ -160,6 +160,43 @@ impl EnvironmentObject {
     }
 }
 
+/// What an asset blocks when nobody says otherwise.
+///
+/// Every placement carries its own primitive, and a layout function is free to author one —
+/// the arena's kerb is a knee-high wall segment and the dungeon's is a two-and-a-half metre
+/// one, from the same asset. This is the answer for the two authors that cannot make that
+/// judgement: the Blender layout importer and the in-game editor, where an object is placed
+/// by pointing at the ground and has to block something sensible immediately.
+///
+/// The numbers are the ones the arena and the dungeon already author by hand, with the
+/// blocking reading chosen where they disagree — an editor that placed a wall you could walk
+/// through would be an editor that lies about the level.
+#[must_use]
+pub fn default_collision(asset: EnvironmentAsset) -> EnvironmentCollision {
+    use crate::asset::{
+        ARCH, BRAZIER, PILLAR, PINE, ROCK_MEDIUM, ROCK_SPIRE, SUPPLY_CRATE, WALL_SEGMENT,
+    };
+    match asset {
+        // Full height, not the arena's kerb: a wall an editor places is a wall meant to stop
+        // somebody.
+        a if a == WALL_SEGMENT => EnvironmentCollision::standing(4.0, 2.4, 0.45),
+        a if a == PILLAR => EnvironmentCollision::standing(0.62, 4.6, 0.62),
+        // The two legs, as one box. An arch is a doorway and the doorway must stay open, so
+        // the box spans the jambs and not the span between them.
+        a if a == ARCH => EnvironmentCollision::standing(0.7, 5.5, 0.7),
+        a if a == BRAZIER => EnvironmentCollision::standing(0.45, 1.35, 0.45),
+        a if a == SUPPLY_CRATE => EnvironmentCollision::standing(0.46, 0.92, 0.46),
+        a if a == ROCK_MEDIUM => EnvironmentCollision::standing(0.85, 1.15, 0.78),
+        a if a == ROCK_SPIRE => EnvironmentCollision::standing(0.66, 3.6, 0.62),
+        // The trunk, not the canopy. A character brushing through the lower branches of a
+        // conifer is correct; being stopped four metres from the trunk is not.
+        a if a == PINE => EnvironmentCollision::standing(0.28, 5.0, 0.28),
+        // Ground, ground cover, banners, distant scenery and the sky: nothing. A collision
+        // shape a player can trip on without being able to see why is worse than none.
+        _ => EnvironmentCollision::None,
+    }
+}
+
 /// A collision box placed in the world: centre, half-extents, orientation.
 ///
 /// The hand-off type between this crate and whoever owns a collision world. Plain math.
@@ -201,6 +238,34 @@ mod tests {
     use super::*;
     use crate::asset::{FERN, PILLAR};
     use engine_core::math::Quat;
+
+    #[test]
+    fn the_default_table_blocks_what_a_character_should_not_walk_through() {
+        use crate::asset::{GROUND_PLAIN, LIBRARY, PINE, ROCK_SMALL, SKY_DOME, WALL_SEGMENT};
+
+        assert!(default_collision(WALL_SEGMENT).blocks(), "a wall stops you");
+        assert!(default_collision(PILLAR).blocks());
+        assert!(default_collision(PINE).blocks(), "the trunk does");
+        assert!(!default_collision(FERN).blocks(), "ground cover does not");
+        assert!(!default_collision(ROCK_SMALL).blocks(), "nor a knee-high rock");
+        assert!(!default_collision(GROUND_PLAIN).blocks());
+        assert!(!default_collision(SKY_DOME).blocks());
+
+        // Every box in the table stands on the model's origin, because every model in the
+        // library does. A box centred below the floor is a box a character falls into.
+        for asset in LIBRARY {
+            if let EnvironmentCollision::Box {
+                center,
+                half_extents,
+            } = default_collision(asset)
+            {
+                assert!(
+                    (center.y - half_extents.y).abs() < 1e-6,
+                    "{asset} does not stand on its origin"
+                );
+            }
+        }
+    }
 
     #[test]
     fn a_decoration_blocks_nothing_and_has_no_world_box() {

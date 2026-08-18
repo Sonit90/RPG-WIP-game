@@ -27,9 +27,15 @@
 //! ```text
 //! cargo tree -p engine-environment
 //! engine-environment
-//! └── engine-core
-//!     └── log
+//! ├── engine-core
+//! │   └── log
+//! └── serde / serde_json      (the scene file, and nothing else)
 //! ```
+//!
+//! `serde` is the one addition, and it is not a loosening of the rule: the rule is about
+//! *engine* crates, and it exists so that no reader of a scene can reach a mesh, a device or
+//! a collision world through it. A JSON codec reaches nothing. It must never gain `windows`,
+//! `engine-renderer`, `engine-render-data`, `engine-assets` or `engine-game`.
 //!
 //! # What is here and what is not
 //!
@@ -57,11 +63,13 @@ pub mod dungeon;
 pub mod lighting;
 pub mod object;
 pub mod scene;
+pub mod scene_file;
 
 pub use asset::{EnvironmentAsset, LIBRARY};
 pub use lighting::EnvironmentLighting;
 pub use object::{EnvironmentCollision, EnvironmentObject};
 pub use scene::{EnvironmentScene, SpawnPoints};
+pub use scene_file::{SceneDocument, SceneFileError};
 
 /// Deterministic value in `0..1` from a pair of integers.
 ///

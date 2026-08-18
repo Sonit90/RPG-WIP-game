@@ -1314,3 +1314,42 @@ on a real GPU: 5.5× the objects, **one** extra draw call.
   when the CPU cost of building the list dominates, which at these counts it does not.
 * **Collision.** The static world's grid broad phase is rebuilt once at load and handles a
   thousand shapes comfortably; a moving level would need something incremental.
+
+## Authoring: scene files, Blender layouts, and the in-game editor
+
+The layout functions in `engine_environment::{arena, dungeon}` are no longer the only way a
+level exists. Three routes now produce the same `EnvironmentScene`, and everything downstream —
+`EnvironmentVisuals::upload`, `EnvironmentPlacer::place`, `arena::add_environment_collision` —
+is unchanged, because none of them ever knew where a scene came from.
+
+```text
+  arena::combat_arena()      ─┐
+  scene_file::load(x.json)   ─┼─►  EnvironmentScene  ─┬─►  placer   (render entities, LOD)
+  disk::load_layout(x.glb)   ─┘                       └─►  collision world
+```
+
+**`--scene-file <path>`** reads `engine_environment::scene_file`'s JSON: a version, a name,
+bounds, spawn points, lighting and a list of placements naming assets by their library name.
+The file has its own record types rather than `derive(Serialize)` on the runtime structs,
+because a file is an interface that outlives the build that wrote it. A broken file fails
+loudly, naming `objects[17]` — a level that half-loads is a dungeon missing a wall the designer
+believes is there.
+
+**`--layout <path.glb>`** reads a Blender export's node **names and world transforms** and
+nothing else — `gltf_import::import_layout` never touches a mesh. Naming an object `pillar.001`
+places a pillar; the duplicate suffix, a collection prefix and case are all ignored. Unmatched
+names are skipped and counted, because every export carries cameras and lights.
+
+**`F6`, in a build made with `--features editor`,** opens the level editor: a fly camera, a
+palette of the sixteen library assets, click-to-place on the ground, drag-to-move with a grid,
+`R`/`T` to turn and resize, `X` to delete, `C` to duplicate, `Z` to undo and `CTRL+S` to write
+the scene file. It lives in its own crate, `engine-editor`, which depends on neither
+`engine-renderer` nor `engine-game`: it edits a `Vec<EnvironmentObject>` and paints into the
+same `UiDrawList` as every other screen, which is why all of its verbs are unit-tested with no
+device open. `engine-app` names it as an *optional* dependency, so a player's build does not
+compile it at all.
+
+While the editor is open the simulation does not advance. That is the difference between an
+editor and a game with a palette in the corner: an author placing a wall should not have to
+place it around a pack of enemies walking through the room. Collision is **not** rebuilt per
+edit — save and relaunch with `--scene-file` to walk into what was built.

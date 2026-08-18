@@ -13,6 +13,10 @@ publish.workspace = true
 # checkable with `cargo tree -p engine-environment`.
 [dependencies]
 engine-core = { workspace = true }
+# The scene file, and only the scene file. A codec cannot reach a mesh or a collision world,
+# which is what the rule above is actually protecting.
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
 
 [lints]
 workspace = true

@@ -20,6 +20,8 @@
 //! That is not a nicety: a benchmark comparing two runs has to know the scene did not move
 //! between them, and a screenshot compared against last week's has to be of the same arena.
 
+use std::borrow::Cow;
+
 use engine_core::math::Vec3;
 
 use crate::asset::EnvironmentAsset;
@@ -58,7 +60,11 @@ impl Default for SpawnPoints {
 #[derive(Debug, Clone, PartialEq)]
 pub struct EnvironmentScene {
     /// What it is: `"combat_arena"`, `"environment_demo"`, `"stress"`.
-    pub name: &'static str,
+    ///
+    /// Borrowed for a layout function, which names itself with a literal, and owned for a
+    /// scene that came out of a file, which learns its name at run time. A `Cow` rather than
+    /// a `String` so the built-in layouts still cost no allocation.
+    pub name: Cow<'static, str>,
     /// Every placement.
     pub objects: Vec<EnvironmentObject>,
     /// Where the fight happens.
@@ -74,9 +80,9 @@ pub struct EnvironmentScene {
 impl EnvironmentScene {
     /// An empty scene with room for `capacity` objects.
     #[must_use]
-    pub fn with_capacity(name: &'static str, capacity: usize) -> Self {
+    pub fn with_capacity(name: impl Into<Cow<'static, str>>, capacity: usize) -> Self {
         Self {
-            name,
+            name: name.into(),
             objects: Vec::with_capacity(capacity),
             spawns: SpawnPoints::default(),
             lighting: EnvironmentLighting::arena_afternoon(),

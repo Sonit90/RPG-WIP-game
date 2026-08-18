@@ -1,0 +1,652 @@
+//! A level as a file: what the editor writes and the game reads.
+//!
+//! ```text
+//!  assets/scenes/x.json ──► load ──► EnvironmentScene ──► the same three readers a
+//!                    ▲                                    layout function feeds
+//!                    └── save ◄── the in-game editor
+//! ```
+//!
+//! # Why the file has its own types
+//!
+//! [`SceneDocument`] and its parts are not [`EnvironmentScene`] with `derive(Serialize)` on
+//! it. A file is an *interface*: it outlives the build that wrote it, it is edited by hand
+//! when something has to be fixed at two in the morning, and it must not change shape because
+//! a runtime type gained a field. Keeping the two apart means the runtime struct stays free to
+//! change and the schema changes only when somebody decides it should — and it keeps
+//! `engine-core`'s math types out of the format, so a `Vec3` is three numbers in an array
+//! rather than whatever serde would make of it.
+//!
+//! # What a broken file does
+//!
+//! Fails, naming what is wrong and where. This is the opposite of
+//! [`engine_settings`](https://docs.rs)-style lenient loading, and deliberately: a HUD config
+//! that half-parses costs a misplaced health bar, while a level that half-parses is a dungeon
+//! missing a wall the designer thinks is there. An asset name the library does not contain,
+//! a malformed number, a truncated file — each is an error that names the object's index.
+//!
+//! # Only names cross the boundary
+//!
+//! An [`EnvironmentAsset`] is resolved by looking its name up in [`crate::asset::LIBRARY`], so
+//! the file never carries an index into a table whose order might change, and adding an asset
+//! to the library does not renumber every scene ever written.
+
+use std::path::Path;
+
+use serde::{Deserialize, Serialize};
+
+use engine_core::math::{Quat, Vec3};
+use engine_core::transform::Transform;
+
+use crate::asset::{EnvironmentAsset, LIBRARY};
+use crate::lighting::EnvironmentLighting;
+use crate::object::{EnvironmentCollision, EnvironmentObject};
+use crate::scene::{EnvironmentScene, SpawnPoints};
+
+/// The version this build writes, and the only one it reads.
+///
+/// One number in the file so that a format change is a message naming the version rather than
+/// a confusing parse failure three fields in.
+pub const FORMAT_VERSION: u32 = 1;
+
+/// What went wrong with a scene file.
+#[derive(Debug)]
+pub enum SceneFileError {
+    /// The file could not be read or written.
+    Io {
+        /// Which file.
+        path: String,
+        /// What the operating system said.
+        reason: String,
+    },
+    /// The bytes are not the JSON this format expects.
+    Malformed {
+        /// Which file.
+        path: String,
+        /// What the parser said, including the line.
+        reason: String,
+    },
+    /// The document parsed but says something impossible.
+    Invalid {
+        /// Which file.
+        path: String,
+        /// Where inside it: `"objects[17]"`, `"version"`.
+        location: String,
+        /// What is wrong.
+        reason: String,
+    },
+}
+
+impl std::fmt::Display for SceneFileError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Io { path, reason } => write!(formatter, "scene '{path}': {reason}"),
+            Self::Malformed { path, reason } => {
+                write!(formatter, "scene '{path}' is not valid JSON: {reason}")
+            }
+            Self::Invalid {
+                path,
+                location,
+                reason,
+            } => write!(formatter, "scene '{path}' at {location}: {reason}"),
+        }
+    }
+}
+
+impl std::error::Error for SceneFileError {}
+
+/// One placement, as the file says it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ObjectRecord {
+    /// The asset's name, as [`crate::asset`] spells it.
+    pub asset: String,
+    /// Where it stands: `[x, y, z]` in metres.
+    pub position: [f32; 3],
+    /// How far it is turned about +Y, in radians.
+    ///
+    /// A yaw rather than a quaternion because everything in this game stands on the ground,
+    /// and a number a human can read and edit is worth more here than the generality. A
+    /// layout that needed pitch would carry a quaternion instead, and that is a format change
+    /// with a version bump behind it.
+    #[serde(default)]
+    pub yaw: f32,
+    /// Per-axis scale. One entry means uniform.
+    #[serde(default = "unit_scale")]
+    pub scale: [f32; 3],
+    /// What it blocks. Absent means the library's default for the asset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub collision: Option<CollisionRecord>,
+}
+
+/// What an object blocks, as the file says it.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum CollisionRecord {
+    /// Nothing: the character walks through it.
+    None,
+    /// A box in the model's own space.
+    Box {
+        /// Centre, in the model's local space.
+        center: [f32; 3],
+        /// Half-width, half-height, half-depth, in the model's local space.
+        half_extents: [f32; 3],
+    },
+}
+
+/// Where the scene says things start.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct SpawnRecord {
+    /// Where the player starts.
+    pub player: [f32; 3],
+    /// Where the single-target dummy stands.
+    pub featured_dummy: [f32; 3],
+    /// Centre of the dummy group.
+    pub group_center: [f32; 3],
+    /// Metres between dummies in the group.
+    pub group_spacing: f32,
+}
+
+/// The sun, the fill and the sky.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct LightingRecord {
+    /// The direction the sun's light travels.
+    pub sun_direction: [f32; 3],
+    /// Linear colour of the sun.
+    pub sun_color: [f32; 3],
+    /// Sun strength.
+    pub sun_intensity: f32,
+    /// Linear ambient colour.
+    pub ambient_color: [f32; 3],
+    /// Ambient strength.
+    pub ambient_intensity: f32,
+    /// Linear colour straight overhead.
+    pub sky_zenith: [f32; 3],
+    /// Linear colour at the horizon.
+    pub sky_horizon: [f32; 3],
+}
+
+/// A whole level, as the file says it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SceneDocument {
+    /// Which schema this is. Refused if it is not [`FORMAT_VERSION`].
+    pub version: u32,
+    /// What the level is called.
+    pub name: String,
+    /// Half-width of the square a character is confined to, in metres.
+    pub half_extent: f32,
+    /// The y the floor is at.
+    pub ground_height: f32,
+    /// Where things start. Absent means the defaults.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spawns: Option<SpawnRecord>,
+    /// The light. Absent means the arena's afternoon preset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lighting: Option<LightingRecord>,
+    /// Every placement, in draw order.
+    pub objects: Vec<ObjectRecord>,
+}
+
+/// The default scale of a placement that does not name one.
+fn unit_scale() -> [f32; 3] {
+    [1.0, 1.0, 1.0]
+}
+
+/// The asset in the library called `name`.
+///
+/// By name rather than by index so that adding an asset does not renumber every scene ever
+/// saved, and so a hand-edited file says `"pillar"` rather than `11`.
+#[must_use]
+pub fn asset_named(name: &str) -> Option<EnvironmentAsset> {
+    LIBRARY.into_iter().find(|asset| asset.name() == name)
+}
+
+impl SceneDocument {
+    /// The document a scene would be written as.
+    #[must_use]
+    pub fn from_scene(scene: &EnvironmentScene) -> Self {
+        Self {
+            version: FORMAT_VERSION,
+            name: scene.name.to_string(),
+            half_extent: scene.half_extent,
+            ground_height: scene.ground_height,
+            spawns: Some(SpawnRecord {
+                player: array(scene.spawns.player),
+                featured_dummy: array(scene.spawns.featured_dummy),
+                group_center: array(scene.spawns.group_center),
+                group_spacing: scene.spawns.group_spacing,
+            }),
+            lighting: Some(LightingRecord {
+                sun_direction: array(scene.lighting.sun_direction),
+                sun_color: array(scene.lighting.sun_color),
+                sun_intensity: scene.lighting.sun_intensity,
+                ambient_color: array(scene.lighting.ambient_color),
+                ambient_intensity: scene.lighting.ambient_intensity,
+                sky_zenith: array(scene.lighting.sky_zenith),
+                sky_horizon: array(scene.lighting.sky_horizon),
+            }),
+            objects: scene.objects.iter().map(ObjectRecord::from_object).collect(),
+        }
+    }
+
+    /// The scene this document describes.
+    ///
+    /// # Errors
+    ///
+    /// [`SceneFileError::Invalid`] naming the object's index for an unknown asset, a
+    /// non-finite number or a scale of zero, and naming `version` for a schema this build
+    /// does not read.
+    pub fn to_scene(&self, path: &str) -> Result<EnvironmentScene, SceneFileError> {
+        if self.version != FORMAT_VERSION {
+            return Err(SceneFileError::Invalid {
+                path: path.to_owned(),
+                location: "version".to_owned(),
+                reason: format!(
+                    "this build reads version {FORMAT_VERSION}, and the file is version {}",
+                    self.version
+                ),
+            });
+        }
+
+        let mut scene = EnvironmentScene::with_capacity(self.name.clone(), self.objects.len());
+        scene.half_extent = self.half_extent;
+        scene.ground_height = self.ground_height;
+        if let Some(spawns) = self.spawns {
+            scene.spawns = SpawnPoints {
+                player: vector(spawns.player),
+                featured_dummy: vector(spawns.featured_dummy),
+                group_center: vector(spawns.group_center),
+                group_spacing: spawns.group_spacing,
+            };
+        }
+        if let Some(lighting) = self.lighting {
+            scene.lighting = EnvironmentLighting {
+                sun_direction: vector(lighting.sun_direction),
+                sun_color: vector(lighting.sun_color),
+                sun_intensity: lighting.sun_intensity,
+                ambient_color: vector(lighting.ambient_color),
+                ambient_intensity: lighting.ambient_intensity,
+                sky_zenith: vector(lighting.sky_zenith),
+                sky_horizon: vector(lighting.sky_horizon),
+            };
+        }
+
+        for (index, record) in self.objects.iter().enumerate() {
+            let invalid = |reason: String| SceneFileError::Invalid {
+                path: path.to_owned(),
+                location: format!("objects[{index}]"),
+                reason,
+            };
+            let Some(asset) = asset_named(&record.asset) else {
+                return Err(invalid(format!(
+                    "'{}' is not an asset this build knows; the library is {}",
+                    record.asset,
+                    LIBRARY
+                        .iter()
+                        .map(|asset| asset.name())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )));
+            };
+            let finite = record.position.iter().all(|value| value.is_finite())
+                && record.scale.iter().all(|value| value.is_finite())
+                && record.yaw.is_finite();
+            if !finite {
+                return Err(invalid("a position, scale or yaw is not a number".to_owned()));
+            }
+            if record.scale.iter().any(|value| value.abs() < 1e-6) {
+                return Err(invalid(
+                    "a scale of zero collapses the mesh and makes its bounds meaningless"
+                        .to_owned(),
+                ));
+            }
+            scene.push(record.to_object(asset));
+        }
+
+        Ok(scene)
+    }
+}
+
+impl ObjectRecord {
+    /// The record a placement would be written as.
+    ///
+    /// The rotation is written as a yaw, which is what every placement in this game actually
+    /// has. A transform carrying pitch or roll loses it here — nothing authors one, and the
+    /// alternative is a quaternion in the file that no human can read.
+    #[must_use]
+    pub fn from_object(object: &EnvironmentObject) -> Self {
+        Self {
+            asset: object.asset.name().to_owned(),
+            position: array(object.transform.translation),
+            yaw: yaw_of(object.transform.rotation),
+            scale: array(object.transform.scale),
+            collision: Some(match object.collision {
+                EnvironmentCollision::None => CollisionRecord::None,
+                EnvironmentCollision::Box {
+                    center,
+                    half_extents,
+                } => CollisionRecord::Box {
+                    center: array(center),
+                    half_extents: array(half_extents),
+                },
+            }),
+        }
+    }
+
+    /// The placement this record describes, given the asset its name resolved to.
+    #[must_use]
+    pub fn to_object(&self, asset: EnvironmentAsset) -> EnvironmentObject {
+        EnvironmentObject {
+            asset,
+            transform: Transform {
+                translation: vector(self.position),
+                rotation: Quat::from_yaw_pitch_roll(self.yaw, 0.0, 0.0),
+                scale: vector(self.scale),
+            },
+            collision: match self.collision {
+                Some(CollisionRecord::None) => EnvironmentCollision::None,
+                Some(CollisionRecord::Box {
+                    center,
+                    half_extents,
+                }) => EnvironmentCollision::Box {
+                    center: vector(center),
+                    half_extents: vector(half_extents),
+                },
+                // An object that says nothing about collision gets what the library says the
+                // asset blocks. That is what makes a hand-written or Blender-authored file
+                // short: `{"asset": "pillar", "position": [4, 0, 0]}` is a pillar you cannot
+                // walk through.
+                None => crate::object::default_collision(asset),
+            },
+        }
+    }
+}
+
+/// Writes `scene` to `path`, creating the directory if it is not there.
+///
+/// # Errors
+///
+/// [`SceneFileError::Io`] if the directory cannot be created or the file cannot be written.
+pub fn save(scene: &EnvironmentScene, path: impl AsRef<Path>) -> Result<(), SceneFileError> {
+    let path = path.as_ref();
+    let display = path.display().to_string();
+    let document = SceneDocument::from_scene(scene);
+    let text = serde_json::to_string_pretty(&document).map_err(|error| SceneFileError::Io {
+        path: display.clone(),
+        reason: error.to_string(),
+    })?;
+    if let Some(directory) = path.parent()
+        && !directory.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(directory).map_err(|error| SceneFileError::Io {
+            path: display.clone(),
+            reason: format!("the directory could not be created: {error}"),
+        })?;
+    }
+    std::fs::write(path, text).map_err(|error| SceneFileError::Io {
+        path: display,
+        reason: error.to_string(),
+    })
+}
+
+/// Reads the scene in `path`.
+///
+/// # Errors
+///
+/// [`SceneFileError::Io`] if the file cannot be read, [`SceneFileError::Malformed`] if it is
+/// not JSON of this shape, and [`SceneFileError::Invalid`] for anything the document says that
+/// cannot be built — each naming the place inside the file.
+pub fn load(path: impl AsRef<Path>) -> Result<EnvironmentScene, SceneFileError> {
+    let path = path.as_ref();
+    let display = path.display().to_string();
+    let text = std::fs::read_to_string(path).map_err(|error| SceneFileError::Io {
+        path: display.clone(),
+        reason: error.to_string(),
+    })?;
+    let document: SceneDocument =
+        serde_json::from_str(&text).map_err(|error| SceneFileError::Malformed {
+            path: display.clone(),
+            reason: error.to_string(),
+        })?;
+    document.to_scene(&display)
+}
+
+/// A vector as three numbers.
+fn array(vector: Vec3) -> [f32; 3] {
+    [vector.x, vector.y, vector.z]
+}
+
+/// Three numbers as a vector.
+fn vector(values: [f32; 3]) -> Vec3 {
+    Vec3::new(values[0], values[1], values[2])
+}
+
+/// How far a rotation turns about +Y.
+///
+/// Everything in this game stands on the ground, so a placement's rotation is a yaw and this
+/// recovers it exactly. A quaternion carrying pitch or roll returns the yaw part of it, which
+/// is the closest thing the format can say.
+fn yaw_of(rotation: Quat) -> f32 {
+    let siny = 2.0 * (rotation.w * rotation.y + rotation.z * rotation.x);
+    let cosy = 1.0 - 2.0 * (rotation.x * rotation.x + rotation.y * rotation.y);
+    siny.atan2(cosy)
+}
+
+#[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    reason = "test code may assert on known-good values"
+)]
+mod tests {
+    use super::*;
+    use crate::asset::{FERN, PILLAR, WALL_SEGMENT};
+
+    fn scene() -> EnvironmentScene {
+        let mut scene = EnvironmentScene::with_capacity("test_level", 3);
+        scene.half_extent = 33.0;
+        scene.ground_height = 0.5;
+        scene.push(
+            EnvironmentObject::decoration(PILLAR, Vec3::new(4.0, 0.0, -8.0))
+                .with_collision(EnvironmentCollision::standing(0.62, 4.6, 0.62)),
+        );
+        scene.push(
+            EnvironmentObject::decoration(WALL_SEGMENT, Vec3::new(-12.0, 0.0, 3.0))
+                .with_yaw(std::f32::consts::FRAC_PI_2)
+                .with_collision(EnvironmentCollision::standing(4.0, 2.4, 0.45)),
+        );
+        scene.push(EnvironmentObject::decoration(FERN, Vec3::new(1.0, 0.0, 1.0)).with_scale(1.4));
+        scene
+    }
+
+    /// Asserts two scenes describe the same level, to the precision a file has.
+    ///
+    /// Not [`EnvironmentScene::signature`], which hashes float *bits*: a rotation written as
+    /// a yaw and rebuilt from it is the same rotation and rarely the same bit pattern, and a
+    /// bit-exact assertion here would be a test that fails on a correct round trip. Every
+    /// number is compared to a tolerance far tighter than anything a level cares about.
+    fn assert_same_level(restored: &EnvironmentScene, original: &EnvironmentScene) {
+        assert_eq!(restored.name, original.name);
+        assert!((restored.half_extent - original.half_extent).abs() < 1e-5);
+        assert!((restored.ground_height - original.ground_height).abs() < 1e-5);
+        assert_eq!(restored.spawns, original.spawns);
+        assert_eq!(restored.lighting, original.lighting);
+        assert_eq!(
+            restored.objects.len(),
+            original.objects.len(),
+            "a placement was lost"
+        );
+
+        for (index, (restored, original)) in restored
+            .objects
+            .iter()
+            .zip(&original.objects)
+            .enumerate()
+        {
+            assert_eq!(restored.asset, original.asset, "objects[{index}]");
+            assert!(
+                (restored.position() - original.position()).length() < 1e-4,
+                "objects[{index}] moved"
+            );
+            assert!(
+                (restored.transform.scale - original.transform.scale).length() < 1e-4,
+                "objects[{index}] changed size"
+            );
+            // The rotation compared by what it does to a vector, not by its components: a
+            // quaternion and its negation are the same rotation.
+            let axis = Vec3::new(1.0, 0.0, 0.0);
+            assert!(
+                (restored.transform.rotation.rotate(axis)
+                    - original.transform.rotation.rotate(axis))
+                .length()
+                    < 1e-4,
+                "objects[{index}] turned"
+            );
+            assert_eq!(
+                restored.collision, original.collision,
+                "objects[{index}] blocks differently"
+            );
+        }
+    }
+
+    #[test]
+    fn a_scene_survives_the_round_trip_placement_for_placement() {
+        let original = scene();
+        let document = SceneDocument::from_scene(&original);
+        let restored = document.to_scene("memory").expect("the document is valid");
+        assert_same_level(&restored, &original);
+    }
+
+    #[test]
+    fn a_file_round_trips_through_the_disk_too() {
+        let path = std::env::temp_dir()
+            .join("mygame_scene_tests")
+            .join("round_trip.json");
+        let original = scene();
+        save(&original, &path).expect("the scene saves");
+        let restored = load(&path).expect("the scene loads");
+        assert_same_level(&restored, &original);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn the_dungeon_itself_survives_the_round_trip() {
+        // The real test of the format: 800-odd placements of eight assets, every one of them
+        // carrying an authored collision box, written and read back.
+        let original = crate::dungeon::ashen_reliquary();
+        let restored = SceneDocument::from_scene(&original)
+            .to_scene("memory")
+            .expect("the dungeon is describable");
+        assert_same_level(&restored, &original);
+    }
+
+    #[test]
+    fn an_asset_the_library_does_not_have_names_the_object_that_asked_for_it() {
+        let document = SceneDocument {
+            version: FORMAT_VERSION,
+            name: "broken".to_owned(),
+            half_extent: 40.0,
+            ground_height: 0.0,
+            spawns: None,
+            lighting: None,
+            objects: vec![
+                ObjectRecord {
+                    asset: "pillar".to_owned(),
+                    position: [0.0; 3],
+                    yaw: 0.0,
+                    scale: unit_scale(),
+                    collision: None,
+                },
+                ObjectRecord {
+                    asset: "obelisk_of_typos".to_owned(),
+                    position: [0.0; 3],
+                    yaw: 0.0,
+                    scale: unit_scale(),
+                    collision: None,
+                },
+            ],
+        };
+        let Err(error) = document.to_scene("broken.json") else {
+            panic!("an unknown asset must not load as nothing");
+        };
+        let message = error.to_string();
+        assert!(message.contains("objects[1]"), "{message}");
+        assert!(message.contains("obelisk_of_typos"), "{message}");
+    }
+
+    #[test]
+    fn an_object_that_says_nothing_about_collision_gets_the_library_default() {
+        let record = ObjectRecord {
+            asset: "pillar".to_owned(),
+            position: [1.0, 0.0, 2.0],
+            yaw: 0.0,
+            scale: unit_scale(),
+            collision: None,
+        };
+        assert!(
+            record.to_object(PILLAR).collision.blocks(),
+            "a pillar nobody described still stops a character"
+        );
+    }
+
+    #[test]
+    fn a_file_from_another_version_says_so_rather_than_half_loading() {
+        let mut document = SceneDocument::from_scene(&scene());
+        document.version = FORMAT_VERSION + 7;
+        let Err(error) = document.to_scene("future.json") else {
+            panic!("a future version must not load");
+        };
+        assert!(error.to_string().contains("version"), "{error}");
+    }
+
+    #[test]
+    fn a_truncated_file_is_an_error_and_not_a_panic() {
+        let path = std::env::temp_dir()
+            .join("mygame_scene_tests")
+            .join("truncated.json");
+        std::fs::create_dir_all(path.parent().expect("it has a parent")).expect("the directory");
+        std::fs::write(&path, "{\"version\": 1, \"name\": \"half").expect("the file");
+        assert!(matches!(load(&path), Err(SceneFileError::Malformed { .. })));
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn a_missing_file_names_itself() {
+        let Err(error) = load("no-such-directory-4f2a/level.json") else {
+            panic!("a file that is not there cannot load");
+        };
+        assert!(error.to_string().contains("level.json"), "{error}");
+    }
+
+    #[test]
+    fn a_degenerate_scale_is_refused_because_its_bounds_would_be_meaningless() {
+        let document = SceneDocument {
+            version: FORMAT_VERSION,
+            name: "flat".to_owned(),
+            half_extent: 40.0,
+            ground_height: 0.0,
+            spawns: None,
+            lighting: None,
+            objects: vec![ObjectRecord {
+                asset: "pillar".to_owned(),
+                position: [0.0; 3],
+                yaw: 0.0,
+                scale: [1.0, 0.0, 1.0],
+                collision: None,
+            }],
+        };
+        assert!(document.to_scene("flat.json").is_err());
+    }
+
+    #[test]
+    fn a_yaw_survives_being_written_as_a_number_and_read_back_as_a_rotation() {
+        for turns in [0.0_f32, 0.25, 0.5, -0.75] {
+            let yaw = turns * std::f32::consts::TAU;
+            let object = EnvironmentObject::decoration(PILLAR, Vec3::ZERO).with_yaw(yaw);
+            let restored = ObjectRecord::from_object(&object).to_object(PILLAR);
+            let turned = restored.transform.rotation.rotate(Vec3::new(1.0, 0.0, 0.0));
+            let expected = object.transform.rotation.rotate(Vec3::new(1.0, 0.0, 0.0));
+            assert!(
+                (turned - expected).length() < 1e-4,
+                "{yaw} came back as a different rotation"
+            );
+        }
+    }
+}

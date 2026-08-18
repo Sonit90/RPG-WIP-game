@@ -210,6 +210,13 @@ options:
   --no-ui                do not draw the game UI. A measurement control: it makes the
                          interface's cost the difference between two runs of the same
                          binary rather than of two builds
+  --scene-file <path>    load this scene file instead of the scene's built-in layout.
+                         Written by the in-game editor (F6, in a build made with
+                         --features editor) and readable by any build
+  --layout <path.glb>    load a Blender layout export instead of the built-in layout.
+                         Only node *names* and transforms are read: name each object
+                         after the asset it stands for, as in 'pillar.001', and the
+                         engine keeps saying what a pillar looks like
   -h, --help             print this help and exit";
 
 /// Parsed command line.
@@ -269,6 +276,16 @@ pub struct Args {
     /// do fifty simultaneous explosions cost over the arena" and "over an empty floor" are
     /// both worth knowing.
     pub vfx_stress: f32,
+    /// A scene file to load instead of the built-in layout, if one was named.
+    ///
+    /// What makes an authored level playable: the layout functions stay as they are, and a
+    /// file written by the editor replaces the objects, the spawn points and the light.
+    pub scene_file: Option<String>,
+    /// A Blender layout export to load instead of the built-in layout, if one was named.
+    ///
+    /// The same job as [`Args::scene_file`] from the other authoring direction. Naming both
+    /// is refused rather than silently preferring one.
+    pub layout: Option<String>,
     /// Whether `--help` was requested.
     pub help: bool,
 }
@@ -291,6 +308,8 @@ impl Default for Args {
             vfx_stress: 0.0,
             enemies: 0,
             audio: true,
+            scene_file: None,
+            layout: None,
             help: false,
         }
     }
@@ -397,6 +416,14 @@ where
             "--env-density" => args.env_density = next_value(&mut iter, "--env-density")?,
             "--vfx-stress" => args.vfx_stress = next_value(&mut iter, "--vfx-stress")?,
             "--enemies" => args.enemies = next_value(&mut iter, "--enemies")?,
+            "--scene-file" => {
+                let raw = iter.next().ok_or(ArgsError::MissingValue("--scene-file"))?;
+                args.scene_file = Some(raw.as_ref().to_owned());
+            }
+            "--layout" => {
+                let raw = iter.next().ok_or(ArgsError::MissingValue("--layout"))?;
+                args.layout = Some(raw.as_ref().to_owned());
+            }
             "--no-audio" => args.audio = false,
             "--no-ui" => args.ui = false,
             "-h" | "--help" => args.help = true,
@@ -515,6 +542,31 @@ mod tests {
                 .dummies,
             500
         );
+    }
+
+    #[test]
+    fn a_scene_file_and_a_layout_are_both_optional_and_both_carry_their_path() {
+        let plain = parse::<[&str; 0], &str>([]).expect("empty is valid");
+        assert_eq!(plain.scene_file, None);
+        assert_eq!(plain.layout, None);
+
+        let named = parse(["--scene-file", "assets/scenes/keep.json"]).expect("valid");
+        assert_eq!(named.scene_file.as_deref(), Some("assets/scenes/keep.json"));
+
+        let layout = parse(["--layout", "assets/keep.glb"]).expect("valid");
+        assert_eq!(layout.layout.as_deref(), Some("assets/keep.glb"));
+    }
+
+    #[test]
+    fn a_scene_file_with_no_path_after_it_is_an_error_rather_than_an_empty_name() {
+        assert!(matches!(
+            parse(["--scene-file"]),
+            Err(ArgsError::MissingValue("--scene-file"))
+        ));
+        assert!(matches!(
+            parse(["--layout"]),
+            Err(ArgsError::MissingValue("--layout"))
+        ));
     }
 
     #[test]

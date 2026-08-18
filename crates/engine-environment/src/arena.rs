@@ -108,7 +108,7 @@ pub fn combat_arena() -> EnvironmentScene {
 #[must_use]
 pub fn environment_demo() -> EnvironmentScene {
     let mut scene = combat_arena();
-    scene.name = "environment_demo";
+    scene.name = "environment_demo".into();
 
     // Two rows of eight. Spaced far enough apart that a large asset does not overlap the
     // one beside it, and placed past `CLEAR_RADIUS` so the demo row is not in the arena.
@@ -464,17 +464,10 @@ fn inside_scatter(
 /// The phase brief's own table, as code: a large rock is a primitive, a tree is its trunk,
 /// and ground cover is nothing at all. Only consulted for placements inside the arena wall.
 fn natural_collision(asset: EnvironmentAsset) -> EnvironmentCollision {
-    match asset {
-        // Knee-high. Blocking it would mean a player stopping dead on something they read as
-        // ground texture.
-        a if a == ROCK_SMALL => EnvironmentCollision::None,
-        a if a == ROCK_MEDIUM => EnvironmentCollision::standing(0.85, 1.15, 0.78),
-        a if a == ROCK_SPIRE => EnvironmentCollision::standing(0.66, 3.6, 0.62),
-        // The trunk, not the canopy. A character brushing through the lower branches of a
-        // conifer is correct; being stopped four metres from the trunk is not.
-        a if a == PINE => EnvironmentCollision::standing(0.28, 5.0, 0.28),
-        _ => EnvironmentCollision::None,
-    }
+    // The library-wide table, which was this function's numbers: a large rock is a primitive,
+    // a tree is its trunk, ground cover is nothing. The scatter has no reason to disagree
+    // with what an editor would place, and two copies of these numbers would drift.
+    crate::object::default_collision(asset)
 }
 
 /// One asset placed on the demo row, at a sensible size and angle for looking at.

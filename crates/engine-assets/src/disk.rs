@@ -22,8 +22,12 @@
 
 use std::path::{Path, PathBuf};
 
+use engine_environment::object::default_collision;
+use engine_environment::scene_file::asset_named;
+use engine_environment::{EnvironmentObject, EnvironmentScene};
+
 use crate::error::AssetError;
-use crate::gltf_import::import_glb;
+use crate::gltf_import::{LayoutNode, import_glb, import_layout};
 use crate::model::ModelAsset;
 use crate::validate::{ValidationLimits, validate_model};
 
@@ -109,6 +113,109 @@ pub fn find_model(name: &str, file: &str) -> Result<Option<ModelAsset>, AssetErr
     load_glb(name, &path, &ValidationLimits::default()).map(Some)
 }
 
+/// What a layout export contained, for the line the loader logs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct LayoutReport {
+    /// Nodes that became placements.
+    pub placed: usize,
+    /// Named nodes that matched no asset and no spawn point.
+    pub skipped: usize,
+}
+
+/// Reads a Blender layout `.glb` as a scene.
+///
+/// # How a node becomes a placement
+///
+/// By its **name**. `pillar`, `pillar.001` and `Pillar.042` are all the `pillar` asset —
+/// Blender's duplicate suffix is cut at the first dot and the comparison ignores case, which
+/// is the whole of the naming convention an artist has to learn. A node named
+/// `spawn_player`, `spawn_featured_dummy` or `spawn_group` moves that spawn point instead of
+/// placing anything.
+///
+/// Collision comes from [`default_collision`], so a wall built in Blender blocks without the
+/// author saying so. A layout that needs something else says so in the scene file the editor
+/// writes; this is the fast path from a modelling package, not the last word.
+///
+/// A name that matches nothing is **skipped and counted**, never guessed at: an export always
+/// carries cameras, lights and collections, and treating an unrecognised name as an error
+/// would make the common export fail.
+///
+/// # Errors
+///
+/// [`AssetError::Malformed`] if the file cannot be read or is not a glTF document, and
+/// [`AssetError::Invalid`] if nothing in it named an asset — which means the naming
+/// convention was not followed, and is worth failing over rather than opening an empty level.
+pub fn load_layout(
+    name: &str,
+    path: &Path,
+) -> Result<(EnvironmentScene, LayoutReport), AssetError> {
+    let bytes = std::fs::read(path).map_err(|error| AssetError::Malformed {
+        model: name.to_owned(),
+        reason: format!("{} could not be read: {error}", path.display()),
+    })?;
+    let nodes = import_layout(name, &bytes)?;
+    scene_from_layout(name, &nodes)
+}
+
+/// The scene a layout export's nodes describe.
+///
+/// Separate from [`load_layout`] so the mapping is testable without a file.
+///
+/// # Errors
+///
+/// [`AssetError::Invalid`] if no node named an asset.
+pub fn scene_from_layout(
+    name: &str,
+    nodes: &[LayoutNode],
+) -> Result<(EnvironmentScene, LayoutReport), AssetError> {
+    let mut scene = EnvironmentScene::with_capacity(name.to_owned(), nodes.len());
+    let mut report = LayoutReport::default();
+
+    for node in nodes {
+        let key = layout_key(&node.name);
+        if let Some(asset) = asset_named(&key) {
+            scene.push(EnvironmentObject {
+                asset,
+                transform: node.transform,
+                collision: default_collision(asset),
+            });
+            report.placed += 1;
+            continue;
+        }
+        match key.as_str() {
+            "spawn_player" => scene.spawns.player = node.transform.translation,
+            "spawn_featured_dummy" => scene.spawns.featured_dummy = node.transform.translation,
+            "spawn_group" => scene.spawns.group_center = node.transform.translation,
+            _ => report.skipped += 1,
+        }
+    }
+
+    if report.placed == 0 {
+        return Err(AssetError::invalid(
+            name,
+            "layout",
+            "no node named an environment asset; name each object after the asset it stands \
+             for, as in 'pillar.001'",
+        ));
+    }
+
+    // Room to walk, taken from what was actually placed. A layout that says nothing about its
+    // bounds should not confine the player to a square smaller than the level.
+    scene.half_extent = scene.half_extent.max(scene.horizontal_reach() + 4.0);
+    Ok((scene, report))
+}
+
+/// The asset name a node name means.
+///
+/// Blender's `.001` duplicate suffix is cut, an exporter's `Collection:` prefix is cut, and
+/// case is ignored. Everything else is left alone, because a name that has been mangled
+/// further than this should be fixed in the export rather than guessed at here.
+fn layout_key(node_name: &str) -> String {
+    let after_prefix = node_name.rsplit(':').next().unwrap_or(node_name);
+    let before_suffix = after_prefix.split('.').next().unwrap_or(after_prefix);
+    before_suffix.trim().to_lowercase()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -168,6 +275,65 @@ mod tests {
             (0.5..4.0).contains(&height),
             "a humanoid measures about two metres posed, not {height} - the rig's unit \
              conversion was dropped"
+        );
+    }
+
+    fn node(name: &str, x: f32, z: f32) -> LayoutNode {
+        LayoutNode {
+            name: name.to_owned(),
+            transform: engine_core::transform::Transform::from_translation(
+                engine_core::math::Vec3::new(x, 0.0, z),
+            ),
+        }
+    }
+
+    #[test]
+    fn a_layout_places_what_its_nodes_are_named_after_and_counts_what_it_skipped() {
+        let nodes = vec![
+            node("pillar", 4.0, 0.0),
+            node("Pillar.001", -4.0, 0.0),
+            node("wall_segment.042", 0.0, 8.0),
+            node("Collection:pine.003", 20.0, 20.0),
+            node("spawn_player", 1.0, 2.0),
+            node("Camera", 0.0, 0.0),
+            node("Light.001", 0.0, 0.0),
+        ];
+        let Ok((scene, report)) = scene_from_layout("test_layout", &nodes) else {
+            panic!("a layout with assets in it loads");
+        };
+        assert_eq!(report.placed, 4, "four nodes named an asset");
+        assert_eq!(report.skipped, 2, "the camera and the light are not assets");
+        assert_eq!(scene.spawns.player, engine_core::math::Vec3::new(1.0, 0.0, 2.0));
+
+        let Some(pillar) = asset_named("pillar") else {
+            panic!("the library has a pillar");
+        };
+        assert_eq!(scene.count_of(pillar), 2, "the .001 duplicate is a pillar too");
+        assert!(
+            scene.objects.iter().all(|object| object.collision.blocks()),
+            "a wall built in Blender blocks without anyone saying so"
+        );
+    }
+
+    #[test]
+    fn a_layout_that_follows_no_naming_convention_fails_rather_than_opening_empty() {
+        let nodes = vec![node("Cube", 0.0, 0.0), node("Cube.001", 1.0, 0.0)];
+        let Err(error) = scene_from_layout("nameless", &nodes) else {
+            panic!("a layout with no recognisable node must not load as an empty level");
+        };
+        assert!(error.to_string().contains("pillar.001"), "{error}");
+    }
+
+    #[test]
+    fn the_playable_square_grows_to_hold_what_was_placed() {
+        let nodes = vec![node("pillar", 300.0, 0.0)];
+        let Ok((scene, _)) = scene_from_layout("wide", &nodes) else {
+            panic!("it loads");
+        };
+        assert!(
+            scene.half_extent > 300.0,
+            "the player would be walled off from half the level: {}",
+            scene.half_extent
         );
     }
 

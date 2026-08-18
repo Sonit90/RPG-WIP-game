@@ -28,6 +28,9 @@ members = [
     "crates/engine-settings",
     # Gameplay to rendering: extraction, the third-person camera, the developer overlay.
     "crates/engine-presentation",
+    # The level editor. Development only: engine-app names it behind its `editor` feature,
+    # so a player's binary contains none of it.
+    "crates/engine-editor",
     "crates/engine-app",
     "crates/engine-bench",
     # The FireMage combat simulator. Headless: it drives engine-game's own simulation, so
@@ -64,6 +67,7 @@ engine-environment = { path = "crates/engine-environment" }
 # The gameplay simulation. Must never gain a `windows`, renderer or render-data dependency.
 engine-game = { path = "crates/engine-game" }
 engine-presentation = { path = "crates/engine-presentation" }
+engine-editor = { path = "crates/engine-editor" }
 # Effects as data and their runtime. Must never gain `windows`, `engine-renderer`,
 # `engine-game` or `engine-assets` — see its lib docs for why each absence is load-bearing.
 engine-vfx = { path = "crates/engine-vfx" }

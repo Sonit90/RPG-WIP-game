@@ -185,6 +185,12 @@ pub struct App {
     bindings: Bindings,
     /// Which scenario is loaded. Chosen once, at startup, by `--scene`.
     scene: Scene,
+    /// The level editor, in a build that has one.
+    ///
+    /// Behind the `editor` feature, so a player's binary has no field here at all — the
+    /// editor is development scaffolding and must not ship inside the game.
+    #[cfg(feature = "editor")]
+    editor: engine_editor::Editor,
     /// The collision demo's stations and labels. `None` in the combat scene.
     demo: Option<DemoScene>,
     /// The collision demo's world-space labels. Its own draw list, because the demo scene
@@ -366,7 +372,8 @@ impl App {
         // The level. Built before the simulation, because the simulation's arena bounds and
         // spawn points come out of it — the scene owns where there is room to stand, because
         // the scene is what put a boulder somewhere.
-        let environment = args.scene.has_environment().then(|| {
+        let authored = load_authored_scene(args)?;
+        let environment = authored.or_else(|| args.scene.has_environment().then(|| {
             // A density above one is the stress layout: the same boundary, the same spawn
             // points and several times the scatter. Loading it through the ordinary path
             // rather than through a separate scene is deliberate — a stress configuration
@@ -383,7 +390,7 @@ impl App {
             } else {
                 engine_environment::arena::combat_arena()
             }
-        });
+        }));
 
         let (mut simulation, demo) = match args.scene {
             Scene::Combat => (
@@ -647,6 +654,8 @@ impl App {
             placer,
             bindings: Bindings::default(),
             scene: args.scene,
+            #[cfg(feature = "editor")]
+            editor: engine_editor::Editor::new(),
             demo,
             collision_ui: UiDrawList::with_capacity(64, 1_024),
             #[cfg(feature = "debug-overlay")]
@@ -1587,6 +1596,19 @@ impl App {
             viewport,
         );
 
+        // The editor over the HUD it is standing in front of.
+        #[cfg(feature = "editor")]
+        if let Some(scene) = self.environment.as_ref() {
+            engine_editor::ui::push_editor(
+                self.game_ui.list_mut(),
+                &self.editor,
+                scene,
+                &self.menu_theme,
+                &mut self.hud_scratch,
+                viewport,
+            );
+        }
+
         // Last of all, into the same list: painter's order puts the menu over the HUD, and
         // sharing the list keeps the whole interface one batch and one draw call.
         engine_presentation::ui::push_menu(
@@ -1598,6 +1620,95 @@ impl App {
         );
         self.ui_ms = started.elapsed().as_secs_f64() * 1e3;
         self.renderer.set_ui(self.game_ui.list());
+    }
+
+    /// One frame of the level editor. Returns whether it owned the frame.
+    ///
+    /// `F6` opens it and closes it. While it is open the simulation does not advance and no
+    /// gameplay command is issued, so the only things that move are the camera and whatever
+    /// the author is dragging.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError`] if the camera cannot be written, which a degenerate aspect
+    /// ratio causes.
+    #[cfg(feature = "editor")]
+    fn update_editor(&mut self, ctx: &mut EngineContext) -> Result<bool, EngineError> {
+        let viewport = self.renderer.size();
+        if !self.editor.is_active() {
+            if !engine_editor::wants_to_enter(ctx.input()) {
+                return Ok(false);
+            }
+            let Some((name, count)) = self
+                .environment
+                .as_ref()
+                .map(|scene| (scene.name.to_string(), scene.len()))
+            else {
+                log::info!("editor: this scene has no environment to edit");
+                return Ok(false);
+            };
+            // A pointer that is captured for mouse-look cannot pick anything, and a hidden
+            // one cannot be aimed. The editor is a pointer interface, exactly as edit-HUD
+            // and the slot menu are.
+            let focus = engine_presentation::extract::interpolated_player_position(&self.simulation);
+            self.cancel_mouse_look();
+            self.editor
+                .set_scale(self.game_ui.scale(), viewport);
+            self.editor.enter(focus, &name, viewport);
+            log::info!("editor: editing '{name}' ({count} objects); F6 goes back to playing");
+            return Ok(true);
+        }
+
+        let ui_input = UiInput::from_input(ctx.input());
+        let view_projection = self.camera.view_projection();
+        let seconds = ctx.time().real_delta().as_secs_f32();
+        let mut changed = false;
+        if let Some(scene) = self.environment.as_mut() {
+            match self.editor.update(
+                ctx.input(),
+                &ui_input,
+                scene,
+                &view_projection,
+                viewport,
+                seconds,
+            ) {
+                engine_editor::EditorOutcome::SceneChanged => changed = true,
+                engine_editor::EditorOutcome::Left => {
+                    log::info!(
+                        "editor: back to playing. Collision still describes the level as it \
+                         was loaded — save with CTRL+S and relaunch with --scene-file to \
+                         walk into what you built"
+                    );
+                    return Ok(false);
+                }
+                engine_editor::EditorOutcome::Idle => {}
+            }
+        }
+
+        // One code path for "the scene changed": clear the placements and put them back.
+        // A few hundred respawns is a load-time-sized cost paid on the frames an author is
+        // actually editing, and an incremental spawn path is a second description of the
+        // scene that can disagree with the first.
+        if changed && let Some(scene) = self.environment.as_ref() {
+            let world = self.extractor.render_world_mut();
+            self.placer.clear(world);
+            self.placer.place(world, scene, controller_eye_guess(scene), LOD_BIAS);
+        }
+
+        let (width, height) = self.renderer.size();
+        if width > 0 && height > 0 {
+            self.editor
+                .apply_camera(&mut self.camera, aspect_of(width, height))?;
+        }
+        if self.environment.is_some() {
+            self.placer.update_lod(
+                self.extractor.render_world_mut(),
+                self.camera.position(),
+                LOD_BIAS,
+            );
+        }
+        self.build_ui();
+        Ok(true)
     }
 
     /// Puts the area indicator on the ground, or takes it away.
@@ -2338,6 +2449,17 @@ impl Application for App {
     fn update(&mut self, ctx: &mut EngineContext) -> Result<(), EngineError> {
         let profiler = ctx.profiler();
 
+        // The level editor takes the whole frame when it is open: its own camera, its own
+        // input, and no simulation step. Freezing the world is the difference between an
+        // editor and a game with a palette in the corner — an author placing a wall should
+        // not have to place it around a pack of enemies walking through the room.
+        //
+        // Behind the feature, so a player's build has neither the branch nor the crate.
+        #[cfg(feature = "editor")]
+        if self.update_editor(ctx)? {
+            return Ok(());
+        }
+
         {
             engine_core::profile_scope!(profiler, "Input");
             // The menu sees the frame's input first, and then gameplay sees it too: the
@@ -2629,6 +2751,52 @@ fn upload_visuals(renderer: &mut Renderer) -> Result<VisualBindings, EngineError
         marker_bounds: cube_bounds,
         marker_material,
     })
+}
+
+/// The level `--scene-file` or `--layout` names, if either did.
+///
+/// Both are refused together rather than one silently winning: they are two authoring
+/// routes to the same thing, and a command line that names both is a mistake worth stopping
+/// for. A file that cannot be read or does not describe a level is a startup failure, for the
+/// same reason a mis-exported model is — an authored level that silently falls back to the
+/// built-in layout looks exactly like an authored level that did not save.
+///
+/// # Errors
+///
+/// [`EngineError`] naming the file and what is wrong inside it.
+fn load_authored_scene(
+    args: &Args,
+) -> Result<Option<engine_environment::EnvironmentScene>, EngineError> {
+    match (args.scene_file.as_deref(), args.layout.as_deref()) {
+        (Some(_), Some(_)) => Err(EngineError::unsupported(
+            "load both --scene-file and --layout; they are two ways to say what the level is",
+        )),
+        (Some(path), None) => {
+            let scene = engine_environment::scene_file::load(path)
+                .map_err(|error| EngineError::unsupported("load the scene file").with_source(error))?;
+            log::info!(
+                "scene file: '{}' from {path} - {} objects, {} of them blocking",
+                scene.name,
+                scene.len(),
+                scene.blocking_count()
+            );
+            Ok(Some(scene))
+        }
+        (None, Some(path)) => {
+            let (scene, report) =
+                engine_assets::disk::load_layout("layout", std::path::Path::new(path))
+                    .map_err(|error| {
+                        EngineError::unsupported("load the layout export").with_source(error)
+                    })?;
+            log::info!(
+                "layout: {path} - {} objects placed, {} nodes named nothing in the library",
+                report.placed,
+                report.skipped
+            );
+            Ok(Some(scene))
+        }
+        (None, None) => Ok(None),
+    }
 }
 
 /// Uploads every environment asset in the library, once.
@@ -3003,6 +3171,8 @@ fn log_controls(args: &Args, demo: Option<&DemoScene>) {
     log::info!("  MOUSE WHEEL      camera distance");
     log::info!("  F3               collision debug drawing on/off");
     log::info!("  F5               developer overlay on/off");
+    #[cfg(feature = "editor")]
+    log::info!("  F6               level editor: place, move and delete environment objects");
     if args.scene.is_encounter() || args.scene.is_dungeon() {
         log::info!("  BACKSPACE        put the fight back: enemies home and whole, you alive");
         log::info!("  G                interrupt the target's cast (developer control)");

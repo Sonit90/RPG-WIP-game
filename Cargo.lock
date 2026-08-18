@@ -192,6 +192,7 @@ dependencies = [
  "engine-assets",
  "engine-audio",
  "engine-core",
+ "engine-editor",
  "engine-environment",
  "engine-game",
  "engine-platform",
@@ -256,10 +257,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "engine-editor"
+version = "0.1.0"
+dependencies = [
+ "engine-core",
+ "engine-environment",
+ "engine-presentation",
+ "engine-render-data",
+ "log",
+]
+
+[[package]]
 name = "engine-environment"
 version = "0.1.0"
 dependencies = [
  "engine-core",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

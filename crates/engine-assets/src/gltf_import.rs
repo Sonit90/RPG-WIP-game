@@ -88,6 +88,56 @@ pub fn import_glb(name: &str, bytes: &[u8]) -> Result<ModelAsset, AssetError> {
     })
 }
 
+/// One node of a layout export: what it is called, and where it stands.
+///
+/// The whole of what a layout `.glb` contributes. No geometry, no material and no texture is
+/// read out of one — see [`import_layout`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct LayoutNode {
+    /// The node's name, exactly as the file spells it: `"pillar.007"`, `"spawn_player"`.
+    pub name: String,
+    /// Where it stands in the document's space, with every ancestor's transform applied.
+    pub transform: Transform,
+}
+
+/// Reads a `.glb` as a *layout*: node names and world transforms, and nothing else.
+///
+/// # Why a layout is not a model
+///
+/// A level built in Blender out of this game's own assets should not arrive as one enormous
+/// mesh. Baking it would throw away the three things the runtime already does well: one
+/// upload per distinct asset however many times it is placed, a level of detail chosen per
+/// object, and a cull per object. So the exporter's job is to say *where things are*, and the
+/// engine keeps saying what they look like — the file's meshes are never read, and a
+/// half-gigabyte export costs only its JSON chunk.
+///
+/// Every named node is returned, including empties and parents. Deciding which names mean
+/// something is the caller's job, because this crate does not know what an environment asset
+/// is called — see `disk::load_layout`.
+///
+/// # Errors
+///
+/// [`AssetError::Malformed`] if the bytes are not a glTF document.
+pub fn import_layout(name: &str, bytes: &[u8]) -> Result<Vec<LayoutNode>, AssetError> {
+    let gltf = gltf::Gltf::from_slice(bytes).map_err(|error| AssetError::Malformed {
+        model: name.to_owned(),
+        reason: error.to_string(),
+    })?;
+    let parent_of = node_parents(&gltf);
+    let worlds = node_worlds(&gltf, &parent_of);
+
+    Ok(gltf
+        .nodes()
+        .filter_map(|node| {
+            let name = node.name()?;
+            Some(LayoutNode {
+                name: name.to_owned(),
+                transform: decompose(worlds[node.index()]),
+            })
+        })
+        .collect())
+}
+
 /// A skeleton, plus the mappings the rest of the import needs.
 struct ImportedSkin {
     skeleton: Skeleton,
@@ -915,6 +965,75 @@ mod tests {
         };
         let text = error.to_string();
         assert!(text.contains("GLB"), "{text}");
+    }
+
+    /// A GLB carrying `json` and no binary chunk.
+    fn glb(json: &str) -> Vec<u8> {
+        let mut chunk = json.as_bytes().to_vec();
+        while chunk.len() % 4 != 0 {
+            chunk.push(b' ');
+        }
+        let mut bytes = Vec::with_capacity(chunk.len() + 20);
+        bytes.extend_from_slice(b"glTF");
+        bytes.extend_from_slice(&2u32.to_le_bytes());
+        bytes.extend_from_slice(&(20 + chunk.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(&(chunk.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(b"JSON");
+        bytes.extend_from_slice(&chunk);
+        bytes
+    }
+
+    #[test]
+    fn a_layout_reports_every_named_node_where_its_ancestors_put_it() {
+        // A parent that scales by two and turns a quarter turn about +Y, and a child ten
+        // metres down +X. The child's world position is therefore twenty metres down −Z.
+        // Reading the child's own transform instead would put it in the wrong room, which is
+        // the whole reason a layout is composed rather than copied.
+        let document = r#"{
+            "asset": {"version": "2.0"},
+            "scenes": [{"nodes": [0]}],
+            "scene": 0,
+            "nodes": [
+                {
+                    "name": "Room",
+                    "children": [1, 2],
+                    "scale": [2.0, 2.0, 2.0],
+                    "rotation": [0.0, 0.70710678, 0.0, 0.70710678]
+                },
+                {"name": "pillar.001", "translation": [10.0, 0.0, 0.0]},
+                {"name": "spawn_player", "translation": [0.0, 0.0, 1.0]}
+            ]
+        }"#;
+        let Ok(nodes) = import_layout("layout", &glb(document)) else {
+            panic!("a layout document parses");
+        };
+        assert_eq!(nodes.len(), 3, "every named node is reported");
+
+        let Some(pillar) = nodes.iter().find(|node| node.name == "pillar.001") else {
+            panic!("the pillar is in the layout");
+        };
+        let position = pillar.transform.translation;
+        assert!(
+            (position - Vec3::new(0.0, 0.0, -20.0)).length() < 1e-3,
+            "the parent's scale and rotation were dropped: {position:?}"
+        );
+        assert!(
+            (pillar.transform.scale - Vec3::splat(2.0)).length() < 1e-3,
+            "the parent's scale is the pillar's size"
+        );
+    }
+
+    #[test]
+    fn a_layout_reads_no_geometry_so_a_document_with_none_is_still_a_layout() {
+        let document = r#"{
+            "asset": {"version": "2.0"},
+            "nodes": [{"name": "wall_segment", "translation": [1.0, 2.0, 3.0]}]
+        }"#;
+        let Ok(nodes) = import_layout("layout", &glb(document)) else {
+            panic!("meshes are not required");
+        };
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].transform.translation, Vec3::new(1.0, 2.0, 3.0));
     }
 
     #[test]

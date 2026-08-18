@@ -21,6 +21,34 @@ nobody has delivered yet.
 | File | What it replaces |
 |---|---|
 | `firemage.glb` | The player character, `procedural::fire_mage` |
+| `scenes/*.json` | A level's layout function. Load one with `--scene-file` |
+| `*.glb` layouts | The same, authored in Blender. Load one with `--layout` |
+
+## Authoring a level
+
+Two routes, one destination — an `EnvironmentScene`, which is what the renderer places and
+what gameplay builds its collision from.
+
+**In the game.** Build with `cargo run -p engine-app --features editor`, press `F6`, and place
+objects from the palette. `CTRL+S` writes `assets/scenes/<scene name>.json`. Play it with
+`--scene-file assets/scenes/<name>.json`. The editor is behind a Cargo feature, so a player's
+build has none of it.
+
+**In Blender.** Build the level out of stand-ins and name each object after the asset it
+stands for — `pillar`, `pillar.001`, `Collection:wall_segment.042` all resolve to the library
+asset, case-insensitively, with Blender's duplicate suffix cut at the dot. Export one `.glb`
+and load it with `--layout assets/<name>.glb`.
+
+Only **names and transforms** are read out of a layout export — never its geometry. That is
+what keeps one upload per distinct asset however many times it is placed, a level of detail
+per object, and a cull per object. A node whose name matches nothing is skipped and counted in
+the startup log; `spawn_player`, `spawn_featured_dummy` and `spawn_group` move the scene's
+spawn points instead of placing anything.
+
+Collision comes from the library's own table (`engine_environment::object::default_collision`),
+so a wall placed either way blocks without the author saying so. A scene file can override it
+per object; a layout export cannot, which is the one thing the file format does that Blender
+does not.
 
 ## Exporting a model this importer accepts
 
