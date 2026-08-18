@@ -410,6 +410,223 @@ impl KeyCode {
     }
 }
 
+/// Whether a key is a modifier — the half of a chord that is held rather than pressed.
+///
+/// A modifier cannot be a chord's key: `SHIFT` on its own is how the player reaches
+/// `SHIFT+1`, and a slot bound to it would fire on the way to every other slot.
+#[must_use]
+pub const fn is_modifier(key: KeyCode) -> bool {
+    matches!(
+        key,
+        KeyCode::LeftShift
+            | KeyCode::RightShift
+            | KeyCode::LeftControl
+            | KeyCode::RightControl
+            | KeyCode::LeftAlt
+            | KeyCode::RightAlt
+    )
+}
+
+/// Which modifiers a chord asks for: control, shift and alt, in any combination.
+///
+/// Left and right are the same modifier here. The player who binds `SHIFT+1` means the shift
+/// key their hand is nearest, not a particular one of the two, and no game in the genre
+/// distinguishes them.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Modifiers {
+    bits: u8,
+}
+
+impl Modifiers {
+    /// Control's bit.
+    const CTRL: u8 = 1 << 0;
+    /// Shift's bit.
+    const SHIFT: u8 = 1 << 1;
+    /// Alt's bit.
+    const ALT: u8 = 1 << 2;
+
+    /// No modifiers: a plain key press.
+    #[must_use]
+    pub const fn none() -> Self {
+        Self { bits: 0 }
+    }
+
+    /// The three flags, spelled out.
+    #[must_use]
+    pub const fn new(ctrl: bool, shift: bool, alt: bool) -> Self {
+        let mut bits = 0;
+        if ctrl {
+            bits |= Self::CTRL;
+        }
+        if shift {
+            bits |= Self::SHIFT;
+        }
+        if alt {
+            bits |= Self::ALT;
+        }
+        Self { bits }
+    }
+
+    /// Whether control is part of this combination.
+    #[must_use]
+    pub const fn ctrl(self) -> bool {
+        self.bits & Self::CTRL != 0
+    }
+
+    /// Whether shift is part of this combination.
+    #[must_use]
+    pub const fn shift(self) -> bool {
+        self.bits & Self::SHIFT != 0
+    }
+
+    /// Whether alt is part of this combination.
+    #[must_use]
+    pub const fn alt(self) -> bool {
+        self.bits & Self::ALT != 0
+    }
+
+    /// Whether this asks for nothing to be held.
+    #[must_use]
+    pub const fn is_empty(self) -> bool {
+        self.bits == 0
+    }
+
+    /// The written prefix a configuration file stores, ending in `+` when there is one.
+    ///
+    /// Stable across builds for the same reason [`KeyCode::name`] is: it is written to a file
+    /// and read back next launch. The order is always control, shift, alt, so one combination
+    /// has exactly one spelling and a file cannot hold two names for one chord.
+    #[must_use]
+    pub const fn config_prefix(self) -> &'static str {
+        match self.bits {
+            0 => "",
+            1 => "CTRL+",
+            2 => "SHIFT+",
+            3 => "CTRL+SHIFT+",
+            4 => "ALT+",
+            5 => "CTRL+ALT+",
+            6 => "SHIFT+ALT+",
+            _ => "CTRL+SHIFT+ALT+",
+        }
+    }
+
+    /// The short prefix printed in the corner of a slot.
+    ///
+    /// Display, not storage, and abbreviated to one letter each: three characters plus the
+    /// key still fit the corner of a 48-pixel slot in a 5x7 font, where `CTRL+SHIFT+` would
+    /// run off the far side of the bar.
+    #[must_use]
+    pub const fn label_prefix(self) -> &'static str {
+        match self.bits {
+            0 => "",
+            1 => "C-",
+            2 => "S-",
+            3 => "CS-",
+            4 => "A-",
+            5 => "CA-",
+            6 => "SA-",
+            _ => "CSA-",
+        }
+    }
+}
+
+/// A key press with the modifiers that must be held for it: `SHIFT+1`, `CTRL+Q`, or `1`.
+///
+/// A chord matches *exactly*. Holding control and pressing `1` fires whatever is on `CTRL+1`
+/// and nothing else — the slot on plain `1` stays quiet, because a bar where every chord also
+/// fired the unmodified slot would cast twice on every press.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct KeyChord {
+    /// The key that is pressed.
+    pub key: KeyCode,
+    /// What must be held while it is.
+    pub modifiers: Modifiers,
+}
+
+impl KeyChord {
+    /// A chord of `key` with `modifiers`.
+    #[must_use]
+    pub const fn new(key: KeyCode, modifiers: Modifiers) -> Self {
+        Self { key, modifiers }
+    }
+
+    /// The key on its own, with nothing held.
+    #[must_use]
+    pub const fn plain(key: KeyCode) -> Self {
+        Self::new(key, Modifiers::none())
+    }
+
+    /// Whether this is a bare key press rather than a combination.
+    #[must_use]
+    pub const fn is_plain(self) -> bool {
+        self.modifiers.is_empty()
+    }
+
+    /// Whether a chord could ever be pressed: a modifier is held, never pressed.
+    #[must_use]
+    pub const fn is_bindable(self) -> bool {
+        !is_modifier(self.key) && self.key as u8 != KeyCode::Unknown as u8
+    }
+
+    /// This chord's stable written name: what a configuration file stores.
+    ///
+    /// `CTRL+SHIFT+DIGIT1`. `None` for a key the engine does not name, which is the same
+    /// answer [`KeyCode::name`] gives and for the same reason.
+    #[must_use]
+    pub fn to_name(self) -> Option<String> {
+        let key = self.key.name()?;
+        let mut out = String::with_capacity(self.modifiers.config_prefix().len() + key.len());
+        out.push_str(self.modifiers.config_prefix());
+        out.push_str(key);
+        Some(out)
+    }
+
+    /// The chord with this written name, if the engine names one.
+    ///
+    /// The inverse of [`KeyChord::to_name`], and total: an unrecognised name — including a
+    /// modifier repeated, or one written out of order — is `None` rather than a guess, so a
+    /// hand-edited file produces an unbound slot instead of a key the player did not ask for.
+    /// A bare key name is read as a plain chord, which is what every file written before
+    /// combinations existed contains.
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<Self> {
+        let mut rest = name;
+        let (mut ctrl, mut shift, mut alt) = (false, false, false);
+        loop {
+            if let Some(tail) = rest.strip_prefix("CTRL+") {
+                if ctrl || shift || alt {
+                    return None;
+                }
+                ctrl = true;
+                rest = tail;
+            } else if let Some(tail) = rest.strip_prefix("SHIFT+") {
+                if shift || alt {
+                    return None;
+                }
+                shift = true;
+                rest = tail;
+            } else if let Some(tail) = rest.strip_prefix("ALT+") {
+                if alt {
+                    return None;
+                }
+                alt = true;
+                rest = tail;
+            } else {
+                break;
+            }
+        }
+        let key = KeyCode::from_name(rest)?;
+        let chord = Self::new(key, Modifiers::new(ctrl, shift, alt));
+        chord.is_bindable().then_some(chord)
+    }
+
+    /// Writes the short form printed in the corner of a slot: `CS-1`, `C-Q`, `1`.
+    pub fn write_label(self, out: &mut String) {
+        out.push_str(self.modifiers.label_prefix());
+        out.push_str(self.key.label());
+    }
+}
+
 /// A fixed-capacity set of held keys.
 ///
 /// One bit per [`KeyCode`], so membership tests and the whole-set copy that drives
@@ -670,6 +887,25 @@ impl InputState {
     #[must_use]
     pub fn was_key_released(&self, key: KeyCode) -> bool {
         !self.keys.contains(key) && self.previous_keys.contains(key)
+    }
+
+    /// Which modifiers are held right now. Left and right count as the same modifier.
+    #[must_use]
+    pub fn modifiers(&self) -> Modifiers {
+        Modifiers::new(
+            self.is_key_down(KeyCode::LeftControl) || self.is_key_down(KeyCode::RightControl),
+            self.is_key_down(KeyCode::LeftShift) || self.is_key_down(KeyCode::RightShift),
+            self.is_key_down(KeyCode::LeftAlt) || self.is_key_down(KeyCode::RightAlt),
+        )
+    }
+
+    /// Whether this chord fired this frame: its key pressed, its modifiers held, no others.
+    ///
+    /// The match is exact, so `1` does not fire while control is down. That is what lets
+    /// `CTRL+1` and `1` sit on two different slots without one press casting both.
+    #[must_use]
+    pub fn was_chord_pressed(&self, chord: KeyChord) -> bool {
+        self.was_key_pressed(chord.key) && self.modifiers() == chord.modifiers
     }
 
     /// Whether any key at all is held.
@@ -1084,6 +1320,108 @@ mod tests {
                 "{key:?} prints {label:?}, which will not fit"
             );
         }
+    }
+
+    #[test]
+    fn every_chord_round_trips_through_its_written_name() {
+        for key in KeyCode::ALL {
+            for bits in 0..8 {
+                let modifiers = Modifiers::new(bits & 1 != 0, bits & 2 != 0, bits & 4 != 0);
+                let chord = KeyChord::new(key, modifiers);
+                let Some(name) = chord.to_name() else {
+                    continue;
+                };
+                if !chord.is_bindable() {
+                    assert_eq!(
+                        KeyChord::from_name(&name),
+                        None,
+                        "{name} names a chord nothing can press"
+                    );
+                    continue;
+                }
+                assert_eq!(KeyChord::from_name(&name), Some(chord), "{name}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_bare_key_name_reads_as_a_plain_chord_so_older_files_still_load() {
+        assert_eq!(
+            KeyChord::from_name("DIGIT1"),
+            Some(KeyChord::plain(KeyCode::Digit1))
+        );
+        assert_eq!(
+            KeyChord::from_name("CTRL+SHIFT+DIGIT1"),
+            Some(KeyChord::new(
+                KeyCode::Digit1,
+                Modifiers::new(true, true, false)
+            ))
+        );
+    }
+
+    #[test]
+    fn a_misspelled_or_reordered_chord_name_binds_nothing() {
+        for name in [
+            "SHIFT+CTRL+DIGIT1",
+            "CTRL+CTRL+DIGIT1",
+            "CTRL+",
+            "CTRL+NONSENSE",
+            "SUPER+DIGIT1",
+            "CTRL+LEFTSHIFT",
+        ] {
+            assert_eq!(KeyChord::from_name(name), None, "{name}");
+        }
+    }
+
+    #[test]
+    fn a_chord_fires_only_when_exactly_its_modifiers_are_held() {
+        let plain = KeyChord::plain(KeyCode::Digit1);
+        let with_shift = KeyChord::new(KeyCode::Digit1, Modifiers::new(false, true, false));
+
+        let mut state = InputState::new();
+        frame(&mut state, &[key_down(KeyCode::Digit1)]);
+        assert!(state.was_chord_pressed(plain));
+        assert!(!state.was_chord_pressed(with_shift));
+
+        // Shift held first, then the digit: the plain slot must stay quiet, or one press
+        // would cast both slots.
+        let mut state = InputState::new();
+        frame(&mut state, &[key_down(KeyCode::LeftShift)]);
+        frame(&mut state, &[key_down(KeyCode::Digit1)]);
+        assert!(state.was_chord_pressed(with_shift));
+        assert!(!state.was_chord_pressed(plain));
+    }
+
+    #[test]
+    fn left_and_right_modifiers_are_the_same_modifier() {
+        let chord = KeyChord::new(KeyCode::Q, Modifiers::new(true, false, false));
+        for control in [KeyCode::LeftControl, KeyCode::RightControl] {
+            let mut state = InputState::new();
+            frame(&mut state, &[key_down(control)]);
+            frame(&mut state, &[key_down(KeyCode::Q)]);
+            assert!(state.was_chord_pressed(chord), "{control:?}");
+        }
+    }
+
+    #[test]
+    fn a_modifier_is_never_a_chord_of_its_own() {
+        for key in KeyCode::ALL {
+            assert_eq!(
+                is_modifier(key),
+                !KeyChord::plain(key).is_bindable(),
+                "{key:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_chord_prints_a_short_label_that_fits_a_slot_corner() {
+        let mut label = String::new();
+        KeyChord::new(KeyCode::Digit1, Modifiers::new(true, true, false)).write_label(&mut label);
+        assert_eq!(label, "CS-1");
+        label.clear();
+        KeyChord::plain(KeyCode::Digit1).write_label(&mut label);
+        assert_eq!(label, "1");
     }
 
     #[test]

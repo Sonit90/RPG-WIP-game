@@ -231,6 +231,12 @@ pub struct App {
     talent_scratch: String,
     /// Which ability button the pointer is over, for the tooltip.
     hovered_ability: Option<FireAbility>,
+    /// Which action bar slot that ability is in, when the pointer is over a bar.
+    ///
+    /// Remembered rather than searched for again: the same spell may sit in several slots on
+    /// several bars, and a tooltip that looked its ability up would point at the first copy
+    /// instead of the one under the pointer.
+    hovered_slot: Option<SlotAddress>,
     /// The area indicator drawn on the ground while an ability is being placed.
     ///
     /// Two render entities rather than a screen-space circle: an area on the floor has to
@@ -663,6 +669,7 @@ impl App {
             talent_theme: TalentTheme::default(),
             talent_scratch: String::with_capacity(32),
             hovered_ability: None,
+            hovered_slot: None,
             targeting_decal: None,
             decal_visuals,
             affected: Vec::with_capacity(32),
@@ -861,6 +868,7 @@ impl App {
         // rule every handler has to remember.
         if self.hud_editor.is_active() {
             self.hovered_ability = None;
+            self.hovered_slot = None;
             match self
                 .hud_editor
                 .update(&ui_input, &mut self.hud_layout, scale, viewport)
@@ -878,6 +886,7 @@ impl App {
         // The slot menu, which covers the bar under it.
         if self.slot_menu.is_open() {
             self.hovered_ability = None;
+            self.hovered_slot = None;
             let input = ui_input.with_captured_key(ctx.input());
             let outcome = self
                 .slot_menu
@@ -931,6 +940,7 @@ impl App {
 
         // The bars: what the pointer is over, what it clicked, and what it right-clicked.
         self.hovered_ability = None;
+        self.hovered_slot = None;
         let mut pressed = None;
         let mut open_menu = None;
         for index in 0..engine_settings::hud::ACTION_BARS {
@@ -959,6 +969,7 @@ impl App {
                 continue;
             };
             self.hovered_ability = Some(ability);
+            self.hovered_slot = Some(address);
             if ui_input.pointer_pressed {
                 pressed = Some(ability);
             }
@@ -976,6 +987,7 @@ impl App {
         let ultimate = self.game_ui.ultimate_rect(viewport);
         if ultimate.contains(ui_input.pointer.0, ui_input.pointer.1) {
             self.hovered_ability = Some(self.snapshot.ultimate.ability);
+            self.hovered_slot = None;
             if ui_input.pointer_pressed {
                 pressed = Some(self.snapshot.ultimate.ability);
             }
@@ -988,7 +1000,7 @@ impl App {
             let (Some(key), Some(ability)) = (slot.key, slot.ability) else {
                 continue;
             };
-            if ctx.input().was_key_pressed(key) {
+            if ctx.input().was_chord_pressed(key) {
                 pressed = Some(ability);
             }
         }
@@ -1003,32 +1015,19 @@ impl App {
 
     /// The rectangle of the slot the pointer is over, if it is over one.
     ///
-    /// Found again rather than remembered from the interface update: the tooltip is drawn
-    /// from the same layout the click was tested against, so the two cannot disagree about
-    /// where a slot is after a resize between the two calls.
+    /// The slot is the one the pointer was over, remembered when it was found; only its
+    /// rectangle is worked out again, from the same layout the click was tested against, so
+    /// the two cannot disagree about where a slot is after a resize between the two calls.
     fn hovered_slot_rect(&self, viewport: (u32, u32)) -> Option<UiRect> {
-        let ability = self.hovered_ability?;
-        let scale = self.game_ui.scale();
-        for index in 0..engine_settings::hud::ACTION_BARS {
-            let id = HudElementId::ActionBar(index);
-            if !self.hud_layout.is_enabled(id) {
-                continue;
-            }
-            let bar = self.hud_layout.rect_of(id, scale, viewport);
-            let orientation = self.hud_layout.orientation(index);
-            let Some(contents) = self.action_bars.bar(index) else {
-                continue;
-            };
-            for (slot_index, slot) in contents.slots().iter().enumerate() {
-                if slot.ability != Some(ability) {
-                    continue;
-                }
-                if let Some(cell) = action_bar::slot_rect(bar, orientation, slot_index) {
-                    return Some(cell);
-                }
-            }
+        let address = self.hovered_slot?;
+        let id = HudElementId::ActionBar(address.bar);
+        if !self.hud_layout.is_enabled(id) {
+            return None;
         }
-        None
+        let scale = self.game_ui.scale();
+        let bar = self.hud_layout.rect_of(id, scale, viewport);
+        let orientation = self.hud_layout.orientation(address.bar);
+        action_bar::slot_rect(bar, orientation, address.slot)
     }
 
     /// Carries out what the slot menu asked for, and writes the result to disk.

@@ -10,7 +10,7 @@
     reason = "test code may assert on known-good values"
 )]
 
-use engine_core::input::KeyCode;
+use engine_core::input::{KeyChord, KeyCode};
 use engine_game::firemage::FireAbility;
 use engine_game::input_map::Bindings;
 use engine_presentation::ui::action_bar::{ActionBarSet, SlotAddress};
@@ -159,7 +159,11 @@ fn a_whole_arrangement_survives_a_restart() {
         FHD,
     );
     assert!(bars.assign_spell(SlotAddress::new(2, 0), Some(FireAbility::Pyroblast)));
-    assert!(bars.assign_key(SlotAddress::new(2, 0), KeyCode::F4, &bindings));
+    assert!(bars.assign_key(
+        SlotAddress::new(2, 0),
+        KeyChord::plain(KeyCode::F4),
+        &bindings
+    ));
     assert!(bars.clear_slot(SlotAddress::new(0, 9)));
 
     let placements: Vec<_> = HudElementId::all().map(|id| layout.placement(id)).collect();
@@ -186,7 +190,7 @@ fn a_whole_arrangement_survives_a_restart() {
             .slot(SlotAddress::new(2, 0))
             .expect("the slot exists")
             .key,
-        Some(KeyCode::F4)
+        Some(KeyChord::plain(KeyCode::F4))
     );
 }
 
@@ -281,17 +285,21 @@ fn no_two_slots_share_a_key_through_a_save_and_a_reload() {
 
     // Hand `1` from bar one to bar four, the way the slot menu's REPLACE does.
     bars.assign_spell(SlotAddress::new(3, 6), Some(FireAbility::Blink));
-    assert!(bars.assign_key(SlotAddress::new(3, 6), KeyCode::Digit1, &bindings));
+    assert!(bars.assign_key(
+        SlotAddress::new(3, 6),
+        KeyChord::plain(KeyCode::Digit1),
+        &bindings
+    ));
     let layout = HudLayout::new(manager.config().clone());
     save(&mut manager, &layout, &bars);
 
     let manager = HudConfigManager::load(dir.file());
     let (_, restored) = load(&manager);
     assert_eq!(
-        restored.slot_for_key(KeyCode::Digit1),
+        restored.slot_for_key(KeyChord::plain(KeyCode::Digit1)),
         Some(SlotAddress::new(3, 6))
     );
-    let mut keys: Vec<KeyCode> = restored
+    let mut keys: Vec<KeyChord> = restored
         .occupied()
         .filter_map(|(_, slot)| slot.key)
         .collect();

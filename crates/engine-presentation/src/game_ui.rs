@@ -11,6 +11,7 @@
 //!
 //! Commands are pushed in paint order: world-space elements first, screen-space HUD on top.
 
+use engine_core::input::Modifiers;
 use engine_core::math::{Mat4, Vec3};
 use engine_render_data::ui::{TextAlign, UiColor, UiDrawList, UiIcon, UiRect, UiScale};
 
@@ -700,9 +701,11 @@ impl GameUi {
                     self.list.rect(cell, self.theme.panel);
                     self.list.outline(cell, outline, self.theme.slot_disabled);
                     if let Some(key) = slot.key {
+                        self.title.clear();
+                        key.write_label(&mut self.title);
                         self.list.text_at(
                             (cell.x + scale.px(3.0), cell.y + scale.px(3.0)),
-                            key.label(),
+                            &self.title,
                             self.theme.text,
                             text,
                         );
@@ -710,7 +713,8 @@ impl GameUi {
                     continue;
                 };
                 let mut view = *view;
-                view.key = slot.key.map_or("", engine_core::input::KeyCode::label);
+                view.key = slot.key.map_or("", |chord| chord.key.label());
+                view.key_modifiers = slot.key.map_or(Modifiers::none(), |chord| chord.modifiers);
                 self.push_ability_button(cell, &view, text);
             }
         }
@@ -1102,13 +1106,16 @@ impl GameUi {
             );
         }
 
-        // The key that casts it.
+        // The key that casts it, with whatever has to be held for it in front.
+        self.title.clear();
+        self.title.push_str(view.key_modifiers.label_prefix());
+        self.title.push_str(view.key);
         self.list.text_at(
             (
                 rect.x + self.metrics.scale.px(3.0),
                 rect.y + self.metrics.scale.px(3.0),
             ),
-            view.key,
+            &self.title,
             self.theme.text,
             scale,
         );

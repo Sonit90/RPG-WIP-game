@@ -28,7 +28,7 @@
 //! `REPLACE` produces an outcome. There is no path through this state machine that produces
 //! two slots on one key, and [`ActionBarSet::assign_key`] would not allow one anyway.
 
-use engine_core::input::KeyCode;
+use engine_core::input::KeyChord;
 use engine_game::firemage::FireAbility;
 use engine_game::input_map::Bindings;
 use engine_render_data::ui::{UiDrawList, UiRect, UiScale};
@@ -93,8 +93,8 @@ pub enum SlotMenuMode {
     Refused(&'static str),
     /// Another slot holds the key. Offers to take it.
     Confirm {
-        /// The key the player pressed.
-        key: KeyCode,
+        /// The key, or combination, the player pressed.
+        key: KeyChord,
         /// The slot that currently has it.
         holder: SlotAddress,
     },
@@ -109,8 +109,8 @@ pub enum SlotMenuOutcome {
     Closed,
     /// Put this spell in this slot, or empty it of its spell if `None`.
     AssignSpell(SlotAddress, Option<FireAbility>),
-    /// Give this slot this key, taking it from whoever had it.
-    AssignKey(SlotAddress, KeyCode),
+    /// Give this slot this key or combination, taking it from whoever had it.
+    AssignKey(SlotAddress, KeyChord),
     /// Empty this slot: spell and key.
     ClearSlot(SlotAddress),
 }
@@ -183,8 +183,13 @@ impl Default for SlotMenuMetrics {
 pub struct SlotMenu {
     address: Option<SlotAddress>,
     mode: SlotMenuMode,
-    /// Where the panel's top-left corner sits, in physical pixels.
-    origin: (f32, f32),
+    /// The slot the menu was opened on, in physical pixels.
+    ///
+    /// The rectangle rather than a corner, because the panel hangs *upwards* from it and its
+    /// height depends on which mode is showing: keeping the slot means the panel can be
+    /// placed again from scratch every time the mode changes, instead of the origin having to
+    /// be moved by the difference between two heights.
+    anchor: UiRect,
     actions: UiScreen<SlotMenuItem>,
     picker: UiScreen<usize>,
     confirm: UiScreen<ConfirmItem>,
@@ -225,7 +230,7 @@ impl SlotMenu {
         Self {
             address: None,
             mode: SlotMenuMode::Actions,
-            origin: (0.0, 0.0),
+            anchor: UiRect::new(0.0, 0.0, 0.0, 0.0),
             actions,
             picker,
             confirm,
@@ -285,10 +290,15 @@ impl SlotMenu {
         &self.confirm
     }
 
-    /// Opens the menu for `address`, with its panel beside `slot` on screen.
+    /// Opens the menu for `address`, with its panel centred over `slot` and rising from it.
     ///
-    /// The panel is placed at the slot and then clamped into the viewport, so a menu opened
-    /// on the last slot of a bar in the corner opens inwards instead of off the edge.
+    /// Upwards rather than downwards: a bar is nearly always at the bottom of the screen,
+    /// which is where the genre puts it and where this game's default layout has it, so a
+    /// panel that grew downwards from the slot would spend its whole life clamped against the
+    /// bottom edge and covering the bar it was opened from. The panel's bottom edge sits on
+    /// the slot's top edge and its centre on the slot's, so the menu reads as belonging to the
+    /// cell that was clicked and leaves that cell visible. It is still clamped into the
+    /// viewport afterwards, so a bar dragged to the top opens downwards instead of off-screen.
     pub fn open(&mut self, address: SlotAddress, slot: UiRect, viewport: (u32, u32)) {
         if !address.is_valid() {
             return;
@@ -296,7 +306,7 @@ impl SlotMenu {
         self.address = Some(address);
         self.mode = SlotMenuMode::Actions;
         self.viewport = viewport;
-        self.origin = (slot.right(), slot.y);
+        self.anchor = slot;
         self.actions.reset();
         self.picker.reset();
         self.confirm.reset();
@@ -350,7 +360,12 @@ impl SlotMenu {
             ),
         };
         super::hud_layout::clamp_on_screen(
-            UiRect::new(self.origin.0, self.origin.1, width, height),
+            UiRect::new(
+                self.anchor.x + (self.anchor.width - width) * 0.5,
+                self.anchor.y - height,
+                width,
+                height,
+            ),
             self.viewport,
         )
     }
@@ -430,6 +445,16 @@ impl SlotMenu {
                     SlotMenuOutcome::Idle
                 }
             };
+        }
+
+        // A click outside the panel dismisses the menu, the way every context menu in the
+        // genre behaves. It is checked before the modes so that no mode has to repeat it, and
+        // after escape so that the two ways out stay one decision apart.
+        if (input.pointer_pressed || input.secondary_pressed)
+            && !self.panel().contains(input.pointer.0, input.pointer.1)
+        {
+            self.close();
+            return SlotMenuOutcome::Closed;
         }
 
         match self.mode {
@@ -529,7 +554,7 @@ impl SlotMenu {
         &mut self,
         input: &UiInput,
         address: SlotAddress,
-        key: KeyCode,
+        key: KeyChord,
     ) -> SlotMenuOutcome {
         let mut chosen = None;
         for (item, event) in self.confirm.update(input) {
@@ -590,7 +615,7 @@ pub fn push_slot_menu(
     }
     scratch.push_str("  KEY ");
     match contents.key {
-        Some(key) => scratch.push_str(key.label()),
+        Some(key) => key.write_label(scratch),
         None => scratch.push_str("NONE"),
     }
     list.text_at(
@@ -635,6 +660,17 @@ pub fn push_slot_menu(
                 theme.title,
                 text,
             );
+            // Smaller, and on its own line: the whole sentence at the heading's size is
+            // wider than the panel, and the panel is the width every other mode is.
+            list.text_at(
+                (
+                    panel.x + inset,
+                    panel.y + scale.px(layout::HEADING) + text * 10.0,
+                ),
+                "HOLD CTRL/SHIFT/ALT TOO",
+                theme.text,
+                text * 0.75,
+            );
         }
         SlotMenuMode::Refused(what) => {
             scratch.clear();
@@ -649,7 +685,7 @@ pub fn push_slot_menu(
         }
         SlotMenuMode::Confirm { key, holder } => {
             scratch.clear();
-            scratch.push_str(key.label());
+            key.write_label(scratch);
             scratch.push_str(" IS ON ");
             let mut owner = String::new();
             holder.write_label(&mut owner);
@@ -674,6 +710,7 @@ pub fn push_slot_menu(
 )]
 mod tests {
     use super::*;
+    use engine_core::input::{KeyCode, Modifiers};
 
     const FHD: (u32, u32) = (1920, 1080);
     const SLOT: UiRect = UiRect {
@@ -726,7 +763,7 @@ mod tests {
             .rect()
     }
 
-    fn press_key(menu: &mut SlotMenu, key: KeyCode, bars: &ActionBarSet) -> SlotMenuOutcome {
+    fn press_key(menu: &mut SlotMenu, key: KeyChord, bars: &ActionBarSet) -> SlotMenuOutcome {
         let input = UiInput {
             captured_key: Some(key),
             ..UiInput::new()
@@ -759,8 +796,135 @@ mod tests {
             "a closed menu acted on a click"
         );
         assert_eq!(
-            press_key(&mut menu, KeyCode::F1, &bars),
+            press_key(&mut menu, KeyChord::plain(KeyCode::F1), &bars),
             SlotMenuOutcome::Idle
+        );
+    }
+
+    #[test]
+    fn a_click_outside_the_panel_closes_the_menu() {
+        let bars = ActionBarSet::with_default_bindings();
+        for mode_opener in [None, Some(SlotMenuItem::ChangeSpell)] {
+            let mut menu = menu();
+            if let Some(item) = mode_opener {
+                click_action(&mut menu, item, &bars);
+            }
+            let panel = menu.panel();
+            let outside = UiInput {
+                pointer: (panel.x - 40.0, panel.y - 40.0),
+                pointer_down: true,
+                pointer_pressed: true,
+                ..UiInput::new()
+            };
+            assert_eq!(
+                menu.update(&outside, &bars, &Bindings::default()),
+                SlotMenuOutcome::Closed
+            );
+            assert!(!menu.is_open(), "a click outside left the menu open");
+        }
+    }
+
+    #[test]
+    fn a_right_click_outside_the_panel_closes_the_menu_too() {
+        let bars = ActionBarSet::with_default_bindings();
+        let mut menu = menu();
+        let panel = menu.panel();
+        let outside = UiInput {
+            pointer: (panel.right() + 40.0, panel.bottom() + 40.0),
+            secondary_pressed: true,
+            ..UiInput::new()
+        };
+        assert_eq!(
+            menu.update(&outside, &bars, &Bindings::default()),
+            SlotMenuOutcome::Closed
+        );
+        assert!(!menu.is_open());
+    }
+
+    #[test]
+    fn a_click_inside_the_panel_but_on_no_button_keeps_the_menu_open() {
+        let bars = ActionBarSet::with_default_bindings();
+        let mut menu = menu();
+        let panel = menu.panel();
+        // The heading, which is inside the panel and belongs to no widget.
+        let inside = UiInput {
+            pointer: (panel.x + panel.width * 0.5, panel.y + 2.0),
+            pointer_down: true,
+            pointer_pressed: true,
+            ..UiInput::new()
+        };
+        assert_eq!(
+            menu.update(&inside, &bars, &Bindings::default()),
+            SlotMenuOutcome::Idle
+        );
+        assert!(menu.is_open(), "a click on the panel itself closed it");
+    }
+
+    #[test]
+    fn the_panel_rises_from_the_slot_rather_than_hanging_below_it() {
+        // A slot near the bottom of the screen, where a bar actually lives.
+        let slot = UiRect::new(800.0, 900.0, 48.0, 48.0);
+        let mut menu = SlotMenu::new();
+        menu.open(SlotAddress::new(0, 0), slot, FHD);
+        let panel = menu.panel();
+        assert!(
+            panel.y < slot.y,
+            "the panel started at {} rather than above the slot at {}",
+            panel.y,
+            slot.y
+        );
+        assert!(
+            (panel.bottom() - slot.y).abs() < 0.5,
+            "the panel's bottom edge left the slot's top"
+        );
+        assert!(
+            (panel.x + panel.width * 0.5 - (slot.x + slot.width * 0.5)).abs() < 0.5,
+            "the panel is not centred on the slot"
+        );
+    }
+
+    #[test]
+    fn the_panel_still_rises_from_the_slot_after_the_mode_changes_its_height() {
+        let slot = UiRect::new(800.0, 900.0, 48.0, 48.0);
+        let mut menu = SlotMenu::new();
+        menu.open(SlotAddress::new(0, 0), slot, FHD);
+        let bars = ActionBarSet::with_default_bindings();
+        let actions = menu.panel();
+        click_action(&mut menu, SlotMenuItem::ChangeSpell, &bars);
+        let picker = menu.panel();
+        assert_eq!(menu.mode(), SlotMenuMode::Picker);
+        assert!(
+            (picker.bottom() - actions.bottom()).abs() < 0.5,
+            "the taller picker grew downwards instead of upwards"
+        );
+    }
+
+    #[test]
+    fn a_combination_is_captured_with_the_key_that_was_pressed() {
+        let bars = ActionBarSet::with_default_bindings();
+        let mut menu = menu();
+        click_action(&mut menu, SlotMenuItem::AssignKey, &bars);
+        assert_eq!(menu.mode(), SlotMenuMode::Capture);
+
+        let chord = KeyChord::new(KeyCode::F9, Modifiers::new(true, true, false));
+        assert_eq!(
+            press_key(&mut menu, chord, &bars),
+            SlotMenuOutcome::AssignKey(SlotAddress::new(0, 0), chord)
+        );
+    }
+
+    #[test]
+    fn a_combination_over_a_key_another_slot_holds_bare_is_not_a_conflict() {
+        let bars = ActionBarSet::with_default_bindings();
+        let mut menu = SlotMenu::new();
+        menu.open(SlotAddress::new(1, 0), SLOT, FHD);
+        click_action(&mut menu, SlotMenuItem::AssignKey, &bars);
+
+        // Bar one slot one holds plain `1`; `CTRL+1` is a different binding entirely.
+        let chord = KeyChord::new(KeyCode::Digit1, Modifiers::new(true, false, false));
+        assert_eq!(
+            press_key(&mut menu, chord, &bars),
+            SlotMenuOutcome::AssignKey(SlotAddress::new(1, 0), chord)
         );
     }
 
@@ -881,8 +1045,8 @@ mod tests {
         assert_eq!(menu.mode(), SlotMenuMode::Capture);
 
         assert_eq!(
-            press_key(&mut menu, KeyCode::F9, &bars),
-            SlotMenuOutcome::AssignKey(SlotAddress::new(0, 0), KeyCode::F9)
+            press_key(&mut menu, KeyChord::plain(KeyCode::F9), &bars),
+            SlotMenuOutcome::AssignKey(SlotAddress::new(0, 0), KeyChord::plain(KeyCode::F9))
         );
         assert!(!menu.is_open());
     }
@@ -919,7 +1083,7 @@ mod tests {
         click_action(&mut menu, SlotMenuItem::AssignKey, &bars);
 
         assert_eq!(
-            press_key(&mut menu, KeyCode::W, &bars),
+            press_key(&mut menu, KeyChord::plain(KeyCode::W), &bars),
             SlotMenuOutcome::Idle
         );
         match menu.mode() {
@@ -938,14 +1102,14 @@ mod tests {
 
         // `1` belongs to bar one, slot one.
         assert_eq!(
-            press_key(&mut menu, KeyCode::Digit1, &bars),
+            press_key(&mut menu, KeyChord::plain(KeyCode::Digit1), &bars),
             SlotMenuOutcome::Idle,
             "the key was taken without asking"
         );
         assert_eq!(
             menu.mode(),
             SlotMenuMode::Confirm {
-                key: KeyCode::Digit1,
+                key: KeyChord::plain(KeyCode::Digit1),
                 holder: SlotAddress::new(0, 0),
             }
         );
@@ -957,7 +1121,7 @@ mod tests {
         let mut menu = SlotMenu::new();
         menu.open(SlotAddress::new(1, 0), SLOT, FHD);
         click_action(&mut menu, SlotMenuItem::AssignKey, &bars);
-        press_key(&mut menu, KeyCode::Digit1, &bars);
+        press_key(&mut menu, KeyChord::plain(KeyCode::Digit1), &bars);
 
         let cancel = menu
             .confirm_screen()
@@ -968,7 +1132,7 @@ mod tests {
         assert_eq!(menu.mode(), SlotMenuMode::Actions);
         // And the model was never touched, because the menu does not touch it.
         assert_eq!(
-            bars.slot_for_key(KeyCode::Digit1),
+            bars.slot_for_key(KeyChord::plain(KeyCode::Digit1)),
             Some(SlotAddress::new(0, 0))
         );
     }
@@ -979,7 +1143,7 @@ mod tests {
         let mut menu = SlotMenu::new();
         menu.open(SlotAddress::new(1, 0), SLOT, FHD);
         click_action(&mut menu, SlotMenuItem::AssignKey, &bars);
-        press_key(&mut menu, KeyCode::Digit1, &bars);
+        press_key(&mut menu, KeyChord::plain(KeyCode::Digit1), &bars);
 
         let replace = menu
             .confirm_screen()
@@ -989,7 +1153,7 @@ mod tests {
         let outcome = click(&mut menu, replace, &bars);
         assert_eq!(
             outcome,
-            SlotMenuOutcome::AssignKey(SlotAddress::new(1, 0), KeyCode::Digit1)
+            SlotMenuOutcome::AssignKey(SlotAddress::new(1, 0), KeyChord::plain(KeyCode::Digit1))
         );
         assert!(!menu.is_open());
 
@@ -998,7 +1162,7 @@ mod tests {
             assert!(bars.assign_key(address, key, &Bindings::default()));
         }
         assert_eq!(
-            bars.slot_for_key(KeyCode::Digit1),
+            bars.slot_for_key(KeyChord::plain(KeyCode::Digit1)),
             Some(SlotAddress::new(1, 0))
         );
         assert_eq!(
@@ -1013,8 +1177,8 @@ mod tests {
         let mut menu = menu();
         click_action(&mut menu, SlotMenuItem::AssignKey, &bars);
         assert_eq!(
-            press_key(&mut menu, KeyCode::Digit1, &bars),
-            SlotMenuOutcome::AssignKey(SlotAddress::new(0, 0), KeyCode::Digit1)
+            press_key(&mut menu, KeyChord::plain(KeyCode::Digit1), &bars),
+            SlotMenuOutcome::AssignKey(SlotAddress::new(0, 0), KeyChord::plain(KeyCode::Digit1))
         );
     }
 

@@ -30,7 +30,7 @@
 //! refuse outright for a key the game already needs — is decided by
 //! [`ActionBarSet::conflict`] before the assignment is made.
 
-use engine_core::input::KeyCode;
+use engine_core::input::KeyChord;
 use engine_game::firemage::FireAbility;
 use engine_game::input_map::Bindings;
 use engine_render_data::ui::UiRect;
@@ -89,8 +89,8 @@ impl SlotAddress {
 pub struct ActionBarSlot {
     /// The spell this slot casts.
     pub ability: Option<FireAbility>,
-    /// The key that presses it.
-    pub key: Option<KeyCode>,
+    /// The key, or key combination, that presses it.
+    pub key: Option<KeyChord>,
 }
 
 impl ActionBarSlot {
@@ -178,7 +178,7 @@ impl ActionBarSet {
         for slot in 0..ACTION_BAR_SLOTS {
             set.bars[0].slots[slot] = ActionBarSlot {
                 ability: FireAbility::from_slot(slot),
-                key: Bindings::ability_key(slot),
+                key: Bindings::ability_key(slot).map(KeyChord::plain),
             };
         }
         set
@@ -257,10 +257,10 @@ impl ActionBarSet {
     pub fn conflict(
         &self,
         address: SlotAddress,
-        key: KeyCode,
+        key: KeyChord,
         bindings: &Bindings,
     ) -> Option<KeyConflict> {
-        if let Some(what) = bindings.reserved(key) {
+        if let Some(what) = reserved_chord(key, bindings) {
             return Some(KeyConflict::Reserved(what));
         }
         self.slot_for_key(key)
@@ -275,8 +275,8 @@ impl ActionBarSet {
     /// caller can observe — or persist — an ambiguous configuration. A reserved key is
     /// refused outright; the caller is expected to have asked [`ActionBarSet::conflict`]
     /// first and to have told the player why.
-    pub fn assign_key(&mut self, address: SlotAddress, key: KeyCode, bindings: &Bindings) -> bool {
-        if bindings.reserved(key).is_some() || !address.is_valid() {
+    pub fn assign_key(&mut self, address: SlotAddress, key: KeyChord, bindings: &Bindings) -> bool {
+        if reserved_chord(key, bindings).is_some() || !address.is_valid() {
             return false;
         }
         if let Some(previous) = self.slot_for_key(key)
@@ -303,7 +303,7 @@ impl ActionBarSet {
 
     /// Which slot `key` presses, if any.
     #[must_use]
-    pub fn slot_for_key(&self, key: KeyCode) -> Option<SlotAddress> {
+    pub fn slot_for_key(&self, key: KeyChord) -> Option<SlotAddress> {
         self.occupied()
             .find(|(_, slot)| slot.key == Some(key))
             .map(|(address, _)| address)
@@ -332,7 +332,7 @@ impl ActionBarSet {
                     .as_deref()
                     .and_then(FireAbility::from_config_name)
                     .filter(|ability| ability.is_assignable());
-                let key = saved.key.as_deref().and_then(KeyCode::from_name);
+                let key = saved.key.as_deref().and_then(KeyChord::from_name);
                 if saved.spell.is_some() && ability.is_none() {
                     log::warn!(
                         "hud: action bar {} slot {} holds an unknown spell; leaving it empty",
@@ -370,14 +370,29 @@ impl ActionBarSet {
             for (slot_index, slot) in bar.slots.iter().enumerate() {
                 saved.slots[slot_index] = HudSlotConfig {
                     spell: slot.ability.map(|ability| ability.config_name().to_owned()),
-                    key: slot
-                        .key
-                        .and_then(KeyCode::name)
-                        .map(std::borrow::ToOwned::to_owned),
+                    key: slot.key.and_then(KeyChord::to_name),
                 };
             }
         }
     }
+}
+
+/// What stands in the way of binding `chord`, as far as the game's own keys are concerned.
+///
+/// A modifier held over a key the game needs is *not* a conflict: `SHIFT+W` is not `W`, and
+/// refusing it would be refusing the whole point of combinations — a bar of eighty slots
+/// cannot be reached from the keys the game does not already use. A bare press of a reserved
+/// key is refused exactly as it was before combinations existed, and so is a chord whose key
+/// is itself a modifier, which is a chord that could never be pressed.
+#[must_use]
+pub fn reserved_chord(chord: KeyChord, bindings: &Bindings) -> Option<&'static str> {
+    if !chord.is_bindable() {
+        return Some("A MODIFIER");
+    }
+    if chord.is_plain() {
+        return bindings.reserved(chord.key);
+    }
+    None
 }
 
 /// How big a bar is in logical pixels, before any scale is applied.
@@ -438,6 +453,7 @@ pub fn slot_at(bar: UiRect, orientation: HudOrientation, x: f32, y: f32) -> Opti
 mod tests {
     use super::*;
     use crate::ui::hud_layout::{HudElementId, HudLayout};
+    use engine_core::input::{KeyCode, Modifiers};
     use engine_render_data::ui::UiScale;
 
     const FHD: (u32, u32) = (1920, 1080);
@@ -463,7 +479,10 @@ mod tests {
         for slot in 0..ACTION_BAR_SLOTS {
             let contents = set.slot(address(0, slot)).expect("bar one exists");
             assert_eq!(contents.ability, FireAbility::from_slot(slot));
-            assert_eq!(contents.key, Bindings::ability_key(slot));
+            assert_eq!(
+                contents.key,
+                Bindings::ability_key(slot).map(KeyChord::plain)
+            );
         }
         // And nothing else is set up, because nothing else was asked for.
         for index in 1..ACTION_BARS {
@@ -497,7 +516,11 @@ mod tests {
         assert!(set.assign_spell(at, Some(FireAbility::Pyroblast)));
         let slot = set.slot(at).expect("the slot exists");
         assert_eq!(slot.ability, Some(FireAbility::Pyroblast));
-        assert_eq!(slot.key, Some(KeyCode::Digit1), "the binding was lost");
+        assert_eq!(
+            slot.key,
+            Some(KeyChord::plain(KeyCode::Digit1)),
+            "the binding was lost"
+        );
     }
 
     #[test]
@@ -507,7 +530,7 @@ mod tests {
         assert!(set.clear_slot(at));
         assert!(set.slot(at).expect("the slot exists").is_empty());
         // And the key it held is free again.
-        assert_eq!(set.slot_for_key(KeyCode::Digit5), None);
+        assert_eq!(set.slot_for_key(KeyChord::plain(KeyCode::Digit5)), None);
     }
 
     #[test]
@@ -530,7 +553,7 @@ mod tests {
             assert!(!bad.is_valid());
             assert_eq!(set.slot(bad), None);
             assert!(!set.assign_spell(bad, Some(FireAbility::Blink)));
-            assert!(!set.assign_key(bad, KeyCode::F1, &bindings));
+            assert!(!set.assign_key(bad, KeyChord::plain(KeyCode::F1), &bindings));
             assert!(!set.clear_slot(bad));
         }
         assert_eq!(set, ActionBarSet::default());
@@ -542,18 +565,18 @@ mod tests {
         let bindings = Bindings::default();
         let at = address(5, 7);
         // F2 rather than F1: F1 is the self-target key, and a reserved key is refused.
-        assert!(set.assign_key(at, KeyCode::F2, &bindings));
+        assert!(set.assign_key(at, KeyChord::plain(KeyCode::F2), &bindings));
         assert_eq!(
             set.slot(at).expect("the slot exists").key,
-            Some(KeyCode::F2)
+            Some(KeyChord::plain(KeyCode::F2))
         );
-        assert_eq!(set.slot_for_key(KeyCode::F2), Some(at));
+        assert_eq!(set.slot_for_key(KeyChord::plain(KeyCode::F2)), Some(at));
 
         assert!(set.clear_key(at));
-        assert_eq!(set.slot_for_key(KeyCode::F2), None);
+        assert_eq!(set.slot_for_key(KeyChord::plain(KeyCode::F2)), None);
 
         // And the reserved one is refused, which is the whole point of the check.
-        assert!(!set.assign_key(at, KeyCode::F1, &bindings));
+        assert!(!set.assign_key(at, KeyChord::plain(KeyCode::F1), &bindings));
     }
 
     #[test]
@@ -561,16 +584,87 @@ mod tests {
         let set = ActionBarSet::with_default_bindings();
         let bindings = Bindings::default();
         assert_eq!(
-            set.conflict(address(1, 0), KeyCode::Digit1, &bindings),
+            set.conflict(address(1, 0), KeyChord::plain(KeyCode::Digit1), &bindings),
             Some(KeyConflict::Slot(address(0, 0)))
         );
         // A slot rebinding the key it already has is not a clash with itself.
         assert_eq!(
-            set.conflict(address(0, 0), KeyCode::Digit1, &bindings),
+            set.conflict(address(0, 0), KeyChord::plain(KeyCode::Digit1), &bindings),
             None
         );
         // A free key is free.
-        assert_eq!(set.conflict(address(1, 0), KeyCode::F9, &bindings), None);
+        assert_eq!(
+            set.conflict(address(1, 0), KeyChord::plain(KeyCode::F9), &bindings),
+            None
+        );
+    }
+
+    #[test]
+    fn a_combination_is_a_different_binding_from_the_bare_key() {
+        let mut set = ActionBarSet::with_default_bindings();
+        let bindings = Bindings::default();
+        let shifted = KeyChord::new(KeyCode::Digit1, Modifiers::new(false, true, false));
+
+        // Bar one slot one is on plain `1`; `SHIFT+1` is nobody's.
+        assert_eq!(set.conflict(address(1, 0), shifted, &bindings), None);
+        assert!(set.assign_key(address(1, 0), shifted, &bindings));
+        assert_eq!(set.slot_for_key(shifted), Some(address(1, 0)));
+        assert_eq!(
+            set.slot(address(0, 0)).expect("bar one slot one").key,
+            Some(KeyChord::plain(KeyCode::Digit1)),
+            "assigning SHIFT+1 must not unbind 1"
+        );
+    }
+
+    #[test]
+    fn a_modifier_over_a_key_the_game_needs_is_allowed_but_the_bare_key_is_not() {
+        let mut set = ActionBarSet::default();
+        let bindings = Bindings::default();
+        let at = address(2, 0);
+        assert!(matches!(
+            set.conflict(at, KeyChord::plain(KeyCode::W), &bindings),
+            Some(KeyConflict::Reserved(_))
+        ));
+        let shifted = KeyChord::new(KeyCode::W, Modifiers::new(false, true, false));
+        assert_eq!(set.conflict(at, shifted, &bindings), None);
+        assert!(set.assign_key(at, shifted, &bindings));
+    }
+
+    #[test]
+    fn a_modifier_key_cannot_be_a_binding_of_its_own() {
+        let mut set = ActionBarSet::default();
+        let bindings = Bindings::default();
+        let at = address(2, 0);
+        for key in [KeyCode::LeftShift, KeyCode::RightControl, KeyCode::LeftAlt] {
+            let chord = KeyChord::plain(key);
+            assert!(matches!(
+                set.conflict(at, chord, &bindings),
+                Some(KeyConflict::Reserved(_))
+            ));
+            assert!(!set.assign_key(at, chord, &bindings), "{key:?}");
+        }
+    }
+
+    #[test]
+    fn a_combination_survives_a_trip_through_the_configuration_file() {
+        let mut set = ActionBarSet::default();
+        let bindings = Bindings::default();
+        let chord = KeyChord::new(KeyCode::Q, Modifiers::new(true, false, true));
+        assert!(set.assign_spell(address(3, 4), Some(FireAbility::Firebolt)));
+        assert!(set.assign_key(address(3, 4), chord, &bindings));
+
+        let mut config = HudConfig::default();
+        set.write_config(&mut config);
+        assert_eq!(
+            config.bars[3].slots[4].key.as_deref(),
+            Some("CTRL+ALT+Q"),
+            "the stored name is the one a player would read"
+        );
+        let restored = ActionBarSet::from_config(&config);
+        assert_eq!(
+            restored.slot(address(3, 4)).expect("the slot exists").key,
+            Some(chord)
+        );
     }
 
     #[test]
@@ -578,14 +672,14 @@ mod tests {
         let mut set = ActionBarSet::default();
         let bindings = Bindings::default();
         for key in [
-            KeyCode::W,
-            KeyCode::S,
-            KeyCode::A,
-            KeyCode::D,
-            KeyCode::Space,
-            KeyCode::Tab,
-            KeyCode::Escape,
-            KeyCode::R,
+            KeyChord::plain(KeyCode::W),
+            KeyChord::plain(KeyCode::S),
+            KeyChord::plain(KeyCode::A),
+            KeyChord::plain(KeyCode::D),
+            KeyChord::plain(KeyCode::Space),
+            KeyChord::plain(KeyCode::Tab),
+            KeyChord::plain(KeyCode::Escape),
+            KeyChord::plain(KeyCode::R),
         ] {
             let conflict = set.conflict(address(0, 0), key, &bindings);
             assert!(
@@ -607,8 +701,11 @@ mod tests {
         let thief = address(2, 4);
         set.assign_spell(thief, Some(FireAbility::Blink));
 
-        assert!(set.assign_key(thief, KeyCode::Digit1, &bindings));
-        assert_eq!(set.slot_for_key(KeyCode::Digit1), Some(thief));
+        assert!(set.assign_key(thief, KeyChord::plain(KeyCode::Digit1), &bindings));
+        assert_eq!(
+            set.slot_for_key(KeyChord::plain(KeyCode::Digit1)),
+            Some(thief)
+        );
         assert_eq!(
             set.slot(address(0, 0)).expect("bar one slot one").key,
             None,
@@ -623,7 +720,7 @@ mod tests {
         // No duplicates anywhere, which is the property the whole conflict rule exists for.
         let holders: Vec<_> = set
             .occupied()
-            .filter(|(_, slot)| slot.key == Some(KeyCode::Digit1))
+            .filter(|(_, slot)| slot.key == Some(KeyChord::plain(KeyCode::Digit1)))
             .collect();
         assert_eq!(holders.len(), 1, "{holders:?}");
     }
@@ -633,12 +730,18 @@ mod tests {
         let mut set = ActionBarSet::with_default_bindings();
         let bindings = Bindings::default();
         // Hand the same four keys around the bars over and over.
-        let keys = [KeyCode::F1, KeyCode::F2, KeyCode::Digit1, KeyCode::Q];
+        let keys = [
+            KeyChord::plain(KeyCode::F1),
+            KeyChord::plain(KeyCode::F2),
+            KeyChord::plain(KeyCode::Digit1),
+            KeyChord::plain(KeyCode::Q),
+        ];
         for step in 0..64 {
             let at = address(step % ACTION_BARS, (step * 3) % ACTION_BAR_SLOTS);
             set.assign_key(at, keys[step % keys.len()], &bindings);
 
-            let mut bound: Vec<KeyCode> = set.occupied().filter_map(|(_, slot)| slot.key).collect();
+            let mut bound: Vec<KeyChord> =
+                set.occupied().filter_map(|(_, slot)| slot.key).collect();
             let count = bound.len();
             bound.sort_unstable();
             bound.dedup();
@@ -655,7 +758,7 @@ mod tests {
         let mut set = ActionBarSet::with_default_bindings();
         let bindings = Bindings::default();
         set.assign_spell(address(4, 2), Some(FireAbility::Pyroblast));
-        set.assign_key(address(4, 2), KeyCode::F4, &bindings);
+        set.assign_key(address(4, 2), KeyChord::plain(KeyCode::F4), &bindings);
         set.clear_slot(address(0, 9));
 
         let mut config = HudConfig::default();
@@ -677,7 +780,7 @@ mod tests {
             set.slot(address(0, 0)).expect("slot one"),
             ActionBarSlot {
                 ability: None,
-                key: Some(KeyCode::Digit1),
+                key: Some(KeyChord::plain(KeyCode::Digit1)),
             }
         );
         assert_eq!(

@@ -19,7 +19,7 @@
 //! Escape is the exception, and it is not navigation: it is the key that opens the menu, so
 //! it is also the key that closes it.
 
-use engine_core::input::{InputState, KeyCode, MouseButton};
+use engine_core::input::{InputState, KeyChord, KeyCode, MouseButton, is_modifier};
 
 /// One frame of input, as the UI sees it.
 ///
@@ -44,7 +44,10 @@ pub struct UiInput {
     /// capture — the one screen in the game that has to read an arbitrary key. Everywhere
     /// else it is `None`, which is what keeps the rule above true: the interface answers the
     /// mouse and escape, and a key the player pressed to play with is not the menu's.
-    pub captured_key: Option<KeyCode>,
+    ///
+    /// A chord rather than a key, because the modifiers held at the moment of the press are
+    /// part of what the player asked for and are gone by the next frame.
+    pub captured_key: Option<KeyChord>,
     /// Whether the secondary pointer button went down this frame.
     ///
     /// Only the ground-targeting system reads it, and only to cancel a placement - the same
@@ -89,17 +92,22 @@ impl UiInput {
         }
     }
 
-    /// The same input carrying the first key pressed this frame, for a screen in capture.
+    /// The same input carrying the first key pressed this frame and what was held with it.
     ///
     /// Escape is deliberately not captured: it is how the player backs out of the capture
     /// itself, and a slot bound to it would be a slot that had taken the way out with it.
+    /// A modifier is not captured either — it is the half of a chord that is held, so
+    /// pressing shift on the way to `SHIFT+1` must not end the capture on shift alone.
     /// The order is [`KeyCode::ALL`]'s, so two keys in one frame resolve the same way every
     /// time rather than by whichever the hardware reported first.
     #[must_use]
     pub fn with_captured_key(mut self, input: &InputState) -> Self {
         self.captured_key = KeyCode::ALL
             .into_iter()
-            .find(|key| *key != KeyCode::Escape && input.was_key_pressed(*key));
+            .find(|key| {
+                *key != KeyCode::Escape && !is_modifier(*key) && input.was_key_pressed(*key)
+            })
+            .map(|key| KeyChord::new(key, input.modifiers()));
         self
     }
 

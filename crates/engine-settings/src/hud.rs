@@ -66,7 +66,11 @@ pub const HUD_SCALE_MAX: f32 = 2.00;
 pub const HUD_SCALE_DEFAULT: f32 = 1.00;
 
 /// How much one press of the bigger/smaller control changes an element's scale.
-pub const HUD_SCALE_STEP: f32 = 0.10;
+///
+/// Five per cent. A tenth was coarse enough that a bar was either slightly too small or
+/// noticeably too big, with nothing in between; half that gives the range from
+/// [`HUD_SCALE_MIN`] to [`HUD_SCALE_MAX`] thirty stops instead of fifteen.
+pub const HUD_SCALE_STEP: f32 = 0.05;
 
 /// Furthest an element may be offset from its anchor, as a fraction of the viewport.
 ///

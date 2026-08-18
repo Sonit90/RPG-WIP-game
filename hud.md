@@ -309,7 +309,7 @@ Per frame, while active:
 3. Movement writes a new normalized offset through `HudLayout`, which clamps.
 4. Release ends the drag and marks the config dirty.
 5. The control strip acts on the selected element: `SHOWN` (toggle), `SMALLER`/`BIGGER`
-   (scale by one step, clamped), `HORIZONTAL`/`VERTICAL` for a bar, and `DONE`.
+   (scale by one `HUD_SCALE_STEP` of 5 %, clamped), `HORIZONTAL`/`VERTICAL` for a bar, and `DONE`.
 
 **Gameplay cannot be triggered while editing.** `update_firemage_ui` returns early when the
 editor is active, so no click casts, no slot opens a menu, and mouse-look is cancelled on
@@ -320,12 +320,16 @@ as it does not stop for the pause menu.
 
 Left click a slot: casts, as today.
 
-Right click a slot: opens `SlotMenu` anchored beside the slot.
+Right click a slot: opens `SlotMenu` centred over the slot, rising from it. The panel's
+bottom edge sits on the slot's top edge and it grows *upwards*, because a bar is normally at
+the bottom of the screen; it is still clamped into the viewport, so a bar dragged to the top
+opens downwards instead of off-screen. A click — either button — outside the panel closes
+the menu, in every mode, the way a context menu is expected to behave.
 
 ```text
 +-----------------------+
 | FIREBOLT              |
-| KEY: 1                |
+| KEY: CS-1             |
 +-----------------------+
 | CHANGE SPELL          |
 | ASSIGN KEY            |
@@ -338,13 +342,16 @@ Three modes, one state machine:
 - `Menu` — the three buttons above.
 - `Picker` — a list of every castable ability, with its icon, in a scrollless grid sized to
   the registry. Choosing one assigns it and closes.
-- `Capture` — prints `PRESS A KEY...`. The next key press that is not escape is the
-  candidate; escape cancels. A reserved key is refused with a printed reason. A key held by
-  another slot opens `Confirm`.
+- `Capture` — prints `PRESS A KEY...` over `HOLD CTRL/SHIFT/ALT TOO`. The next key press
+  that is not escape and not a modifier is the candidate, together with whichever of control, shift and alt was
+  held with it; escape cancels. A *bare* reserved key is refused with a printed reason —
+  `SHIFT+W` is not `W`, so a combination over a reserved key is allowed, which is what makes
+  eighty slots reachable from a keyboard the game already half uses. A chord held by another
+  slot opens `Confirm`.
 - `Confirm` — `KEY "1" IS ALREADY ASSIGNED TO BAR 1 SLOT 1. REPLACE?` with Cancel/Replace.
 
 Capture is the one place in the UI that reads an arbitrary key, and it does so through a new
-`UiInput::captured_key: Option<KeyCode>` field, filled only while a capture is in progress.
+`UiInput::captured_key: Option<KeyChord>` field, filled only while a capture is in progress.
 That keeps the "the menu reads the mouse and escape only" rule intact everywhere else: the
 field is `None` unless something explicitly asked to capture, and the existing test that
 asserts no other key reaches the UI keeps passing.

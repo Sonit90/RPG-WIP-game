@@ -13,6 +13,7 @@
 //! cleared and refilled, so a snapshot is a copy of a few hundred bytes rather than a fresh
 //! object graph.
 
+use engine_core::input::Modifiers;
 use engine_game::EntityId;
 use engine_game::ability::AbilityId;
 use engine_game::enemy::EnemyAbility;
@@ -282,6 +283,12 @@ pub struct AbilitySlotView {
     pub name: &'static str,
     /// The key that casts it.
     pub key: &'static str,
+    /// What has to be held with that key, when the slot is bound to a combination.
+    ///
+    /// Kept beside the key's name rather than folded into it because the name is `'static`
+    /// and a combination's is not: the two are joined where the slot is drawn, in a buffer
+    /// that is already there for the cooldown numbers.
+    pub key_modifiers: Modifiers,
     /// Why it looks the way it does.
     pub availability: SlotAvailability,
     /// Charges ready now.
@@ -767,6 +774,7 @@ fn ability_view(
         id: AbilityId::from_fire(ability),
         name: definition.name,
         key: ability.key_hint(),
+        key_modifiers: Modifiers::none(),
         availability,
         charges,
         max_charges,
