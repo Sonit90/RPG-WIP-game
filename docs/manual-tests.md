@@ -583,3 +583,32 @@ abilities, and leaves the world running. BACKSPACE puts everybody back: enemies 
 and whole, you alive and at full health. Running away long enough sends them home; they walk,
 they do not teleport, and they forget you. Twenty enemies all fight, all telegraph, and the
 frame rate stays far above the target.
+
+---
+
+## MT-025 — A wall stops a targeted spell
+
+**Purpose** — a targeted ability that requires line of sight is refused when the level is
+between the caster and the target, the refusal says so, and the developer view shows why.
+
+**Steps**
+
+1. `.\target\release\mygame.exe --scene dungeon`
+2. Pull a pack, then step back around a corner so a wall stands between you and an enemy
+   that is still selected and still well inside 35 m.
+3. Press 1 (Firebolt). Read the message.
+4. Press F3 and look at the line drawn between you and the target, and at the overlay text.
+5. Step back into the doorway so the enemy is visible again and press 1.
+6. Start a Pyroblast (5) with the enemy in the open, and while it casts let the enemy walk
+   behind a pillar.
+7. Repeat step 6, but let the enemy walk back into view before the cast bar fills.
+8. Press F3 again to turn the developer view off.
+
+**Expected** — behind the wall, the cast is refused with TARGET IS NOT IN LINE OF SIGHT and
+no damage is dealt; the cast bar never starts. With F3 on, a red bar runs from your chest to
+the point on the wall where it stopped, the blocking wall is lit red, and the overlay reads
+`LOS`, `RANGE OK / REQUIRED YES`, `RESULT BLOCKED` and the blocker's name. Stepping into the
+doorway makes the same cast work and turns the bar green all the way to the target. The
+Pyroblast that loses its target mid-cast ends early, deals nothing and prints the same
+refusal; the one whose target steps back into view lands normally. F3 removes the drawing
+and the extra overlay lines together, and the combat HUD never shows any of it.

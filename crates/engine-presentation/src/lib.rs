@@ -36,6 +36,8 @@ pub mod environment;
 pub mod extract;
 pub mod game_ui;
 pub mod hud;
+/// The developer readout for targeted-ability line of sight.
+pub mod los_debug;
 pub mod mouse_look;
 pub mod nameplate;
 /// Where nameplates end up once they are not allowed to overlap.

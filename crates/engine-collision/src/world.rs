@@ -24,6 +24,7 @@ use crate::broad::{BroadPhase, Proxy};
 use crate::contact::{QueryStats, StaticContact};
 use crate::layer::{CollisionFilter, CollisionMask};
 use crate::narrow;
+use crate::ray::{Ray, RayHit, ray_vs_shape};
 use crate::shape::{Capsule, Obb, Shape};
 
 /// A handle to one static object.
@@ -221,6 +222,20 @@ impl CollisionWorld {
         self.add_static(StaticDesc::new(Shape::box_between(min, max)).labelled(label))
     }
 
+    /// Adds a box that blocks line of sight and nothing else.
+    ///
+    /// A boss barrier or an encounter wall: it stops a targeted ability without stopping a
+    /// body, because its filter collides with nothing. Removing it with
+    /// [`CollisionWorld::remove_static`] and rebuilding the broad phase is all a door
+    /// opening is — nothing in the line-of-sight query knows what kind of obstacle this is.
+    pub fn add_los_blocker(&mut self, min: Vec3, max: Vec3, label: &'static str) -> StaticId {
+        self.add_static(
+            StaticDesc::new(Shape::box_between(min, max))
+                .labelled(label)
+                .with_filter(CollisionFilter::los_blocker()),
+        )
+    }
+
     /// Adds a box standing on the floor: a footprint and a size.
     pub fn add_block(&mut self, footprint: Vec3, size: Vec3, label: &'static str) -> StaticId {
         self.add_static(StaticDesc::new(Shape::box_standing(footprint, size)).labelled(label))
@@ -410,6 +425,77 @@ impl CollisionWorld {
         stats
     }
 
+    /// The nearest static object `ray` meets within `max_distance`, of those `mask` selects.
+    ///
+    /// Allocation-free and buffer-free: a ray query reduces its candidates to one nearest
+    /// hit as it goes, so unlike an overlap it has nothing to hand back a list in. That is
+    /// what lets a `&self` caller — ability validation, which borrows the simulation
+    /// immutably — ask the question at all.
+    ///
+    /// The ray is a **segment**: nothing beyond `max_distance` is a hit, which is how a
+    /// caller asks "is anything between these two points" rather than "what is over there".
+    #[must_use]
+    pub fn raycast(
+        &self,
+        ray: &Ray,
+        max_distance: f32,
+        mask: CollisionMask,
+    ) -> Option<StaticRayHit> {
+        if mask.is_empty() || self.live == 0 || max_distance <= 0.0 || !max_distance.is_finite() {
+            return None;
+        }
+
+        // The broad phase asks in boxes, so the ray is offered as the box containing it.
+        let end = ray.at(max_distance);
+        let bounds = Aabb::new(ray.origin.min(end), ray.origin.max(end));
+
+        let mut nearest: Option<StaticRayHit> = None;
+        let mut reach = max_distance;
+        let mut visit = |index: u32| {
+            let slot = index as usize;
+            let Some(hit) = ray_vs_shape(ray, &self.shapes[slot], reach) else {
+                return;
+            };
+            if nearest.is_some_and(|best: StaticRayHit| hit.distance >= best.hit.distance) {
+                return;
+            }
+            // Shortening the ray as hits are found means every later candidate is tested
+            // against the distance already achieved rather than the full length.
+            reach = hit.distance;
+            nearest = Some(StaticRayHit {
+                hit,
+                id: StaticId {
+                    index,
+                    generation: self.generations[slot],
+                },
+                filter: self.filters[slot],
+            });
+        };
+
+        if self.dirty {
+            BroadPhase::Linear.for_each_candidate(&self.proxies, &bounds, mask, &mut visit);
+        } else {
+            self.broad
+                .for_each_candidate(&self.proxies, &bounds, mask, &mut visit);
+        }
+        nearest
+    }
+
+    /// Whether anything `mask` selects stands between `from` and `to`.
+    ///
+    /// The question a line-of-sight check asks, phrased the way it is asked. Two points that
+    /// are the same point have nothing between them.
+    #[must_use]
+    pub fn segment_blocked(
+        &self,
+        from: Vec3,
+        to: Vec3,
+        mask: CollisionMask,
+    ) -> Option<StaticRayHit> {
+        let (ray, distance) = Ray::between(from, to)?;
+        self.raycast(&ray, distance, mask)
+    }
+
     /// Whether `capsule` touches anything `mask` selects.
     ///
     /// Separate from [`CollisionWorld::overlap_capsule`] because "is this position free?" is
@@ -423,6 +509,17 @@ impl CollisionWorld {
         self.overlap_capsule(capsule, mask, buffers);
         !buffers.contacts.is_empty()
     }
+}
+
+/// What a ray met, and which static object it was.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct StaticRayHit {
+    /// Where the ray met the surface.
+    pub hit: RayHit,
+    /// Which object was hit.
+    pub id: StaticId,
+    /// What that object is and what it collides with.
+    pub filter: CollisionFilter,
 }
 
 #[cfg(test)]
@@ -456,6 +553,100 @@ mod tests {
         assert!(matches!(world.shape(floor), Some(Shape::Plane(_))));
         assert_eq!(world.filter(wall), Some(CollisionFilter::world()));
         assert_eq!(world.statics().count(), 2);
+    }
+
+    #[test]
+    fn a_ray_finds_the_wall_between_two_points_and_names_it() {
+        let (world, _, wall) = world_with_a_floor_and_a_wall();
+        let hit = world
+            .segment_blocked(
+                Vec3::new(-5.0, 1.0, 0.0),
+                Vec3::new(8.0, 1.0, 0.0),
+                CollisionMask::LINE_OF_SIGHT,
+            )
+            .expect("the wall stands between them");
+        assert_eq!(hit.id, wall);
+        assert_eq!(world.label(hit.id), "WALL");
+        assert!((hit.hit.distance - 7.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn a_segment_that_stops_before_the_wall_is_clear() {
+        // The endpoint rule: geometry past the far point is not between the two points.
+        let (world, _, _) = world_with_a_floor_and_a_wall();
+        assert_eq!(
+            world.segment_blocked(
+                Vec3::new(-5.0, 1.0, 0.0),
+                Vec3::new(1.0, 1.0, 0.0),
+                CollisionMask::LINE_OF_SIGHT,
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn a_ray_reports_the_nearest_of_several_hits() {
+        let mut world = CollisionWorld::with_capacity(8);
+        let near = world.add_box(Vec3::new(-1.0, 0.0, -2.0), Vec3::new(1.0, 4.0, 2.0), "NEAR");
+        world.add_box(Vec3::new(5.0, 0.0, -2.0), Vec3::new(7.0, 4.0, 2.0), "FAR");
+        world.rebuild_broad_phase();
+        let hit = world
+            .segment_blocked(
+                Vec3::new(-8.0, 1.0, 0.0),
+                Vec3::new(9.0, 1.0, 0.0),
+                CollisionMask::LINE_OF_SIGHT,
+            )
+            .expect("two walls, and the near one is first");
+        assert_eq!(hit.id, near);
+    }
+
+    #[test]
+    fn a_ray_only_finds_the_layers_it_asked_for() {
+        let mut world = CollisionWorld::with_capacity(8);
+        let barrier = world.add_static(
+            StaticDesc::new(Shape::box_between(
+                Vec3::new(-1.0, 0.0, -2.0),
+                Vec3::new(1.0, 4.0, 2.0),
+            ))
+            .labelled("BARRIER")
+            .with_filter(CollisionFilter::los_blocker()),
+        );
+        world.rebuild_broad_phase();
+
+        let from = Vec3::new(-5.0, 1.0, 0.0);
+        let to = Vec3::new(5.0, 1.0, 0.0);
+        // A barrier stops sight...
+        assert_eq!(
+            world
+                .segment_blocked(from, to, CollisionMask::LINE_OF_SIGHT)
+                .map(|hit| hit.id),
+            Some(barrier)
+        );
+        // ...and stops nothing that moves.
+        assert_eq!(world.segment_blocked(from, to, CollisionMask::WORLD), None);
+    }
+
+    #[test]
+    fn a_degenerate_or_backwards_segment_finds_nothing() {
+        let (world, _, _) = world_with_a_floor_and_a_wall();
+        let point = Vec3::new(-5.0, 1.0, 0.0);
+        assert_eq!(
+            world.segment_blocked(point, point, CollisionMask::LINE_OF_SIGHT),
+            None
+        );
+        // Away from the wall rather than towards it.
+        assert_eq!(
+            world.segment_blocked(
+                point,
+                Vec3::new(-20.0, 1.0, 0.0),
+                CollisionMask::LINE_OF_SIGHT
+            ),
+            None
+        );
+        assert_eq!(
+            world.segment_blocked(point, Vec3::new(8.0, 1.0, 0.0), CollisionMask::NONE),
+            None
+        );
     }
 
     #[test]

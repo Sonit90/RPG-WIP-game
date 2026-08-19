@@ -49,6 +49,7 @@ use crate::enemy::brain::EnemyBrain;
 use crate::entity::EntityId;
 use crate::event::{CombatEvent, DamageEvent, EventStream};
 use crate::firemage::{AbilityError, FireAbility, FireMage, IgniteTick, PendingImpact, ZoneTick};
+use crate::los::LineOfSightCheck;
 use crate::movement::{self, Body, MoveIntent, MovementConfig};
 use crate::party::Party;
 use crate::status::StatusOutcome;
@@ -199,12 +200,68 @@ pub enum CastEnd {
     Cancelled,
     /// The caster died.
     CasterDied,
+    /// The target went out of line of sight before it landed.
+    ///
+    /// Its own reason rather than [`CastEnd::Interrupted`]: a player who walked their
+    /// target behind a pillar has to be told which of the two things happened, and a cast
+    /// bar that says "interrupted" for both teaches the wrong lesson.
+    LineOfSightLost,
     /// Something interrupted it.
     ///
     /// Only enemy casts can reach this today, because the player has nothing that interrupts
     /// them. The reason still belongs on the shared enum rather than on a second one: a cast
     /// bar that has to know whose cast it is watching is a cast bar with two code paths.
     Interrupted,
+}
+
+/// When a line-of-sight check was run.
+///
+/// A targeted ability with a cast time is checked twice — once when the player presses it
+/// and once when it lands — and a developer looking at a refusal has to know which of the
+/// two they are reading.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LineOfSightPhase {
+    /// When the ability was activated.
+    Activation,
+    /// When a cast finished, immediately before its effect landed.
+    CastCompletion,
+}
+
+/// The last line-of-sight question a targeted ability asked, kept for the debug view.
+///
+/// Developer tooling. Nothing in gameplay reads it: it is written where the rule is applied
+/// so that the debug drawing and the readout report the query that was actually run, rather
+/// than a second query performed on their behalf that could disagree with it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LineOfSightDebug {
+    /// Which ability asked.
+    pub ability: FireAbility,
+    /// What it was pointed at.
+    pub target: EntityId,
+    /// Whether that ability requires line of sight at all.
+    pub required: bool,
+    /// Whether the target was within the ability's range when the question was asked.
+    pub in_range: bool,
+    /// When the question was asked.
+    pub phase: LineOfSightPhase,
+    /// The answer, absent only if one of the two entities had no position.
+    pub check: Option<LineOfSightCheck>,
+    /// The tick it was asked on.
+    pub tick: u64,
+}
+
+impl LineOfSightDebug {
+    /// Whether the target was reachable.
+    #[must_use]
+    pub fn visible(&self) -> bool {
+        self.check.is_some_and(|check| check.visible)
+    }
+
+    /// The blocking object's label, or an empty string when nothing blocked.
+    #[must_use]
+    pub fn blocker_label(&self) -> &'static str {
+        self.check.map_or("", |check| check.blocker_label)
+    }
 }
 
 /// Where the simulation spent its time, and how much of it there was.
@@ -268,6 +325,11 @@ pub struct Simulation {
     collision_buffers: QueryBuffers,
     /// What the player's last collided move did, for a developer readout.
     last_move: MoveResult,
+    /// The last line-of-sight check a targeted ability ran, for the debug view.
+    ///
+    /// One slot, overwritten. A history would be a log, and the question a developer asks
+    /// is always about the cast that just failed.
+    last_los: Option<LineOfSightDebug>,
     player: Player,
     config: SimConfig,
     timestep: FixedTimestep,
@@ -359,6 +421,7 @@ impl Simulation {
             // two walls and a ramp meet. Past the first tick this never grows again.
             collision_buffers: QueryBuffers::with_capacity(16),
             last_move: MoveResult::default(),
+            last_los: None,
             player: Player {
                 entity: EntityId::INVALID,
                 target: None,
@@ -419,6 +482,46 @@ impl Simulation {
     /// The world, for a scenario builder. Gameplay systems go through the simulation.
     pub fn world_mut(&mut self) -> &mut GameWorld {
         &mut self.world
+    }
+
+    /// The last line-of-sight check a targeted ability ran, if any.
+    ///
+    /// Developer tooling: the debug view draws it and the overlay prints it. Gameplay never
+    /// reads it — the rule was already applied where the check was made.
+    #[must_use]
+    pub fn last_line_of_sight(&self) -> Option<LineOfSightDebug> {
+        self.last_los
+    }
+
+    /// Runs a line-of-sight check for `ability` against `target` and records it.
+    ///
+    /// The only place a targeted ability's ray is cast, so the recorded query and the one
+    /// gameplay obeyed cannot come apart. A target with no position is not visible: the
+    /// caller has already refused such a target for being invalid, and answering "yes"
+    /// here would make this the one path that disagreed.
+    pub(crate) fn check_line_of_sight(
+        &mut self,
+        ability: FireAbility,
+        target: EntityId,
+        phase: LineOfSightPhase,
+    ) -> bool {
+        let definition = ability.definition();
+        let check =
+            crate::los::line_of_sight(&self.collision, &self.world, self.player.entity, target);
+        let in_range = self
+            .world
+            .distance_between(self.player.entity, target)
+            .is_some_and(|distance| distance <= definition.range);
+        self.last_los = Some(LineOfSightDebug {
+            ability,
+            target,
+            required: definition.checks_line_of_sight(),
+            in_range,
+            phase,
+            check,
+            tick: self.tick,
+        });
+        check.is_some_and(|check| check.visible)
     }
 
     /// The static collision geometry.
@@ -1083,7 +1186,25 @@ impl Simulation {
             return;
         }
 
-        // Finished. The effect lands now, against the target the cast was started on.
+        // Finished — but not landed yet. A targeted ability that needs line of sight is
+        // asked one last time, against the target the cast was started on, so a player who
+        // walked their target behind a pillar during a three-second Pyroblast does not hit
+        // through it. Two checks, at the start and here: no ray is cast on the frames in
+        // between.
+        if let Some(target) = cast.target
+            && cast.ability.definition().checks_line_of_sight()
+            && !self.check_line_of_sight(cast.ability, target, LineOfSightPhase::CastCompletion)
+        {
+            self.player.last_error = Some(AbilityError::NoLineOfSight);
+            self.player.last_error_at = self.time;
+            // `end_cast` takes the cast, announces it and gives back the global cooldown:
+            // the cast produced nothing, so it is refunded exactly like one that was
+            // cancelled.
+            self.end_cast(CastEnd::LineOfSightLost);
+            return;
+        }
+
+        // The effect lands now, against the target the cast was started on.
         self.player.cast = None;
         self.fire.casts_completed += 1;
         let ability = cast.ability;

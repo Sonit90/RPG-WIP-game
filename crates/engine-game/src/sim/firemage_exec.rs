@@ -322,7 +322,11 @@ impl Simulation {
     }
 
     /// Checks that an ability has something to be cast at.
-    fn validate_aim(&self, ability: FireAbility, aim: CastAim) -> Result<(), AbilityError> {
+    ///
+    /// `&mut self` for one reason: a line-of-sight check records what it asked and what it
+    /// found, so the debug view can show the query that refused the cast rather than a
+    /// second one run later against a world that has moved on.
+    fn validate_aim(&mut self, ability: FireAbility, aim: CastAim) -> Result<(), AbilityError> {
         let definition = ability.definition();
         let caster = self.player.entity;
         match definition.target {
@@ -351,6 +355,18 @@ impl Simulation {
                     .ok_or(AbilityError::TargetInvalid)?;
                 if !self.is_facing(position) {
                     return Err(AbilityError::FacingWrongWay);
+                }
+                // After range, so a target on the far side of the level is still refused
+                // for the distance rather than for the wall that also happens to be there.
+                // Only an ability that asked for the check casts a ray at all.
+                if definition.checks_line_of_sight()
+                    && !self.check_line_of_sight(
+                        ability,
+                        target,
+                        crate::sim::LineOfSightPhase::Activation,
+                    )
+                {
+                    return Err(AbilityError::NoLineOfSight);
                 }
                 // The one requirement that is a *mechanic* rather than a check: Detonate
                 // exists to be held until the burn is full.

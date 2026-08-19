@@ -23,6 +23,12 @@ impl CollisionLayer {
     pub const WORLD: Self = Self(1 << 1);
     /// A training dummy or other non-player character.
     pub const DUMMY: Self = Self(1 << 2);
+    /// Something that stops a targeted ability without stopping a body.
+    ///
+    /// A boss barrier, an encounter wall: geometry that exists to break line of sight and
+    /// nothing else. Static world geometry already blocks sight by being solid, so this is
+    /// only for the case where the two answers differ.
+    pub const LOS_BLOCKER: Self = Self(1 << 3);
 
     /// A layer from a bit index in `0..32`.
     ///
@@ -67,6 +73,12 @@ impl CollisionMask {
     pub const ALL: Self = Self(u32::MAX);
     /// What a character controller collides with by default: static geometry only.
     pub const WORLD: Self = CollisionLayer::WORLD.as_mask();
+    /// What stops a line-of-sight ray: solid world geometry, and anything placed purely to
+    /// break sight.
+    ///
+    /// A mask rather than a single layer because the two are genuinely different questions
+    /// asked of the same ray, and a caller must not have to remember to `or` them together.
+    pub const LINE_OF_SIGHT: Self = Self(CollisionLayer::WORLD.0 | CollisionLayer::LOS_BLOCKER.0);
 
     /// A mask from raw bits.
     #[must_use]
@@ -151,6 +163,15 @@ impl CollisionFilter {
         Self::new(CollisionLayer::DUMMY, CollisionMask::NONE)
     }
 
+    /// Something that blocks line of sight and nothing else.
+    ///
+    /// Collides with nothing, so a barrier added mid-encounter cannot change where the
+    /// player may walk — it is only ever found by a query that asks for its layer by name.
+    #[must_use]
+    pub const fn los_blocker() -> Self {
+        Self::new(CollisionLayer::LOS_BLOCKER, CollisionMask::NONE)
+    }
+
     /// Whether these two objects collide.
     ///
     /// Symmetric by construction: both sides have to agree, so a caller cannot get a
@@ -170,10 +191,12 @@ mod tests {
         assert_eq!(CollisionLayer::PLAYER.bits().count_ones(), 1);
         assert_eq!(CollisionLayer::WORLD.bits().count_ones(), 1);
         assert_eq!(CollisionLayer::DUMMY.bits().count_ones(), 1);
+        assert_eq!(CollisionLayer::LOS_BLOCKER.bits().count_ones(), 1);
         let combined = CollisionLayer::PLAYER.bits()
             | CollisionLayer::WORLD.bits()
-            | CollisionLayer::DUMMY.bits();
-        assert_eq!(combined.count_ones(), 3, "two layers share a bit");
+            | CollisionLayer::DUMMY.bits()
+            | CollisionLayer::LOS_BLOCKER.bits();
+        assert_eq!(combined.count_ones(), 4, "two layers share a bit");
     }
 
     #[test]
@@ -223,6 +246,25 @@ mod tests {
             one_sided.collides_with(player)
         );
         assert!(!player.collides_with(one_sided));
+    }
+
+    #[test]
+    fn line_of_sight_selects_walls_and_barriers_and_nothing_else() {
+        let mask = CollisionMask::LINE_OF_SIGHT;
+        assert!(mask.contains(CollisionLayer::WORLD));
+        assert!(mask.contains(CollisionLayer::LOS_BLOCKER));
+        assert!(!mask.contains(CollisionLayer::PLAYER));
+        assert!(!mask.contains(CollisionLayer::DUMMY));
+    }
+
+    #[test]
+    fn a_sight_blocker_blocks_no_movement() {
+        // The point of the layer: it is found by a ray that asks for it, and by nothing
+        // that moves.
+        let barrier = CollisionFilter::los_blocker();
+        assert!(!barrier.collides_with(CollisionFilter::player()));
+        assert!(!CollisionFilter::player().collides_with(barrier));
+        assert!(!barrier.collides_with(CollisionFilter::world()));
     }
 
     #[test]

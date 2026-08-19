@@ -48,6 +48,7 @@
 //! | [`status`] | Lasting effects such as burning |
 //! | [`ability`] | Ability definitions, slots and cooldowns |
 //! | [`targeting`] | Who an ability affects |
+//! | [`los`] | Whether a targeted ability can reach its target through the level |
 //! | [`event`] | What happened, as data |
 //! | [`telemetry`] | The combat meter |
 //! | [`command`] | What the player asked for |
@@ -83,6 +84,8 @@ pub mod entity;
 pub mod event;
 pub mod firemage;
 pub mod input_map;
+/// Line of sight for targeted abilities, and nothing else.
+pub mod los;
 pub mod movement;
 /// Who the player is grouped with: the roster the party frames read.
 pub mod party;
@@ -104,6 +107,7 @@ pub use entity::EntityId;
 pub use event::{CombatEvent, DamageEvent};
 pub use firemage::{AbilityError, FireAbility, FireMage, TalentId};
 pub use input_map::Bindings;
+pub use los::{CombatPoint, LineOfSightCheck, has_line_of_sight, line_of_sight};
 pub use movement::{Body, MovementState};
 pub use party::{MAX_PARTY, Party};
 pub use sim::{Player, SimConfig, SimStats, Simulation};

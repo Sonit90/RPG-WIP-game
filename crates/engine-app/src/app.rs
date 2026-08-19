@@ -2327,6 +2327,13 @@ impl App {
             memory: Some(ctx.frame_allocator().stats()),
         };
         hud::write_lines(&mut self.overlay_lines, &model);
+        // The line-of-sight readout rides with the collision debug drawing, on the same key:
+        // the ray is drawn in the world by F3, and this says in words what it found. Off
+        // while that view is off, so the ordinary overlay is still the frame rate and
+        // nothing else.
+        if self.collision_debug.enabled() {
+            engine_presentation::los_debug::append_lines(&mut self.overlay_lines, &self.simulation);
+        }
         self.renderer.set_overlay_text(&self.overlay_lines);
         // Appends to the geometry `set_overlay_text` rebuilt, so it comes after it. The
         // backdrop is sized from the text it has to cover.

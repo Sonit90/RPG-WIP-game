@@ -326,6 +326,17 @@ pub struct AbilityDef {
     pub energy: f32,
     /// Ultimate Energy it costs. Only the Ultimate costs any.
     pub energy_cost: f32,
+    /// Whether the caster must have an unobstructed line to the target.
+    ///
+    /// **Opt-in, and never inferred.** An ability that does not set this casts no ray at
+    /// all, which is both the backwards-compatible answer and the reason the check costs
+    /// nothing for the abilities that do not want it. Only meaningful together with
+    /// [`TargetMode::Single`]: an aimed, placed, self or movement ability has no target to
+    /// have a line to, and [`AbilityDef::checks_line_of_sight`] is where the two are
+    /// combined.
+    ///
+    /// See `line_of_sight.md` for which abilities set it and why.
+    pub requires_line_of_sight: bool,
     /// Whether haste shortens its cooldown.
     ///
     /// True for everything the player *casts*, because going faster is what haste is. False
@@ -337,6 +348,17 @@ pub struct AbilityDef {
 }
 
 impl AbilityDef {
+    /// Whether casting this actually runs a line-of-sight check.
+    ///
+    /// The two conditions together, in one place: it must be pointed at a target, and it
+    /// must have asked. Everything that decides whether to cast a ray asks this rather than
+    /// reading the flag, so a `requires_line_of_sight` accidentally set on a ground ability
+    /// cannot start firing rays at nothing.
+    #[must_use]
+    pub fn checks_line_of_sight(&self) -> bool {
+        self.requires_line_of_sight && self.target.needs_target()
+    }
+
     /// Whether it can hit more than one thing.
     #[must_use]
     pub fn is_area(&self) -> bool {
@@ -406,6 +428,7 @@ pub static ABILITIES: [AbilityDef; ABILITY_COUNT] = [
         ignite_chance: 0.50,
         heat: 2.0,
         energy: 1.0,
+        requires_line_of_sight: true,
         cooldown_hasted: true,
         energy_cost: 0.0,
     },
@@ -430,6 +453,7 @@ pub static ABILITIES: [AbilityDef; ABILITY_COUNT] = [
         ignite_chance: 1.0,
         heat: 4.0,
         energy: 2.0,
+        requires_line_of_sight: true,
         cooldown_hasted: true,
         energy_cost: 0.0,
     },
@@ -454,6 +478,7 @@ pub static ABILITIES: [AbilityDef; ABILITY_COUNT] = [
         ignite_chance: 1.0,
         heat: 3.0,
         energy: 2.0,
+        requires_line_of_sight: false,
         cooldown_hasted: true,
         energy_cost: 0.0,
     },
@@ -478,6 +503,7 @@ pub static ABILITIES: [AbilityDef; ABILITY_COUNT] = [
         ignite_chance: 0.0,
         heat: 5.0,
         energy: 5.0,
+        requires_line_of_sight: false,
         cooldown_hasted: true,
         energy_cost: 0.0,
     },
@@ -502,6 +528,7 @@ pub static ABILITIES: [AbilityDef; ABILITY_COUNT] = [
         ignite_chance: 0.0,
         heat: 5.0,
         energy: 10.0,
+        requires_line_of_sight: true,
         cooldown_hasted: true,
         energy_cost: 0.0,
     },
@@ -526,6 +553,7 @@ pub static ABILITIES: [AbilityDef; ABILITY_COUNT] = [
         ignite_chance: 0.15,
         heat: 5.0,
         energy: 8.0,
+        requires_line_of_sight: false,
         cooldown_hasted: true,
         energy_cost: 0.0,
     },
@@ -550,6 +578,7 @@ pub static ABILITIES: [AbilityDef; ABILITY_COUNT] = [
         ignite_chance: 0.0,
         heat: 0.0,
         energy: 3.0,
+        requires_line_of_sight: true,
         cooldown_hasted: false,
         energy_cost: 0.0,
     },
@@ -574,6 +603,7 @@ pub static ABILITIES: [AbilityDef; ABILITY_COUNT] = [
         ignite_chance: 0.0,
         heat: 0.0,
         energy: 0.0,
+        requires_line_of_sight: false,
         cooldown_hasted: true,
         energy_cost: 0.0,
     },
@@ -598,6 +628,7 @@ pub static ABILITIES: [AbilityDef; ABILITY_COUNT] = [
         ignite_chance: 0.0,
         heat: 0.0,
         energy: 0.0,
+        requires_line_of_sight: false,
         cooldown_hasted: true,
         energy_cost: 0.0,
     },
@@ -622,6 +653,7 @@ pub static ABILITIES: [AbilityDef; ABILITY_COUNT] = [
         ignite_chance: 0.0,
         heat: 0.0,
         energy: 0.0,
+        requires_line_of_sight: false,
         cooldown_hasted: true,
         energy_cost: 0.0,
     },
@@ -646,6 +678,7 @@ pub static ABILITIES: [AbilityDef; ABILITY_COUNT] = [
         ignite_chance: 1.0,
         heat: 0.0,
         energy: 0.0,
+        requires_line_of_sight: false,
         cooldown_hasted: true,
         energy_cost: 100.0,
     },
@@ -670,6 +703,7 @@ pub static ABILITIES: [AbilityDef; ABILITY_COUNT] = [
         ignite_chance: 0.0,
         heat: 0.0,
         energy: 0.0,
+        requires_line_of_sight: false,
         cooldown_hasted: true,
         energy_cost: 0.0,
     },
@@ -699,6 +733,8 @@ pub enum AbilityError {
     OutOfRange,
     /// The target is behind the caster.
     FacingWrongWay,
+    /// Something in the level stands between the caster and the target.
+    NoLineOfSight,
     /// Detonate without a full burn on the target.
     NotEnoughIgnite,
     /// A ground-targeted ability was cast without a placement.
@@ -723,6 +759,7 @@ impl AbilityError {
             Self::TargetFriendly => "THAT IS NOT AN ENEMY",
             Self::OutOfRange => "OUT OF RANGE",
             Self::FacingWrongWay => "YOU ARE FACING THE WRONG DIRECTION.",
+            Self::NoLineOfSight => "TARGET IS NOT IN LINE OF SIGHT",
             Self::NotEnoughIgnite => "NEEDS MAXIMUM IGNITE",
             Self::NeedsGroundTarget => "CHOOSE A LOCATION",
             Self::GroundOutOfRange => "TOO FAR AWAY",

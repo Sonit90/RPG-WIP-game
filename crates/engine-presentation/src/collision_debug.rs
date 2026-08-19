@@ -85,6 +85,18 @@ const CONTACT_GROUND_TINT: [f32; 3] = [0.40, 1.00, 0.60];
 /// Colour of a contact on a wall or ceiling.
 const CONTACT_WALL_TINT: [f32; 3] = [1.00, 0.35, 0.35];
 
+/// Colour of a line-of-sight ray that reached its target.
+const LOS_CLEAR_TINT: [f32; 3] = [0.40, 1.00, 0.55];
+
+/// Colour of a line-of-sight ray that was stopped.
+const LOS_BLOCKED_TINT: [f32; 3] = [1.00, 0.30, 0.30];
+
+/// Thickness of the drawn line-of-sight ray, in metres.
+const LOS_THICKNESS: f32 = 0.06;
+
+/// Size of the marker drawn at each end of the ray, and at the blocking point.
+const LOS_MARKER_SIZE: f32 = 0.22;
+
 /// The collision world, drawn.
 #[derive(Debug)]
 pub struct CollisionDebug {
@@ -160,6 +172,7 @@ impl CollisionDebug {
         let mut used = 0;
         self.draw_statics(render, simulation.collision_world(), &mut used);
         self.draw_character(render, simulation, &mut used);
+        self.draw_line_of_sight(render, simulation, &mut used);
 
         // Anything the pool still holds beyond what this frame needed is parked out of
         // sight rather than despawned: a frame with one contact fewer than the last must
@@ -301,6 +314,95 @@ impl CollisionDebug {
                 self.bindings.box_bounds,
                 self.bindings.contact_material,
                 tint(colour, 0.9),
+                used,
+            );
+        }
+    }
+
+    /// Draws the last line-of-sight check a targeted ability ran.
+    ///
+    /// The recorded query, not a fresh one: the point of the picture is to explain a
+    /// refusal that already happened, and re-asking would answer about the world as it is
+    /// now rather than as it was when the ability was refused.
+    ///
+    /// ```text
+    /// caster o=================o target      clear
+    /// caster o======x  | wall |   target     blocked, x is where it stopped
+    /// ```
+    fn draw_line_of_sight(
+        &mut self,
+        render: &mut RenderWorld,
+        simulation: &Simulation,
+        used: &mut usize,
+    ) {
+        let Some(record) = simulation.last_line_of_sight() else {
+            return;
+        };
+        let Some(check) = record.check else {
+            return;
+        };
+        let colour = if check.visible {
+            LOS_CLEAR_TINT
+        } else {
+            LOS_BLOCKED_TINT
+        };
+        let style = tint(colour, 0.9);
+
+        // The ray itself, drawn only as far as it actually got: a bar that runs through the
+        // wall to the target would be a picture of the answer the check did not give.
+        let end = check.blocked_at.unwrap_or(check.to);
+        let along = end - check.from;
+        let length = along.length();
+        if length > 1e-3 {
+            self.push(
+                render,
+                Transform::from_translation((check.from + end) * 0.5)
+                    .with_rotation(rotation_from_up(along))
+                    .with_scale(Vec3::new(LOS_THICKNESS, length, LOS_THICKNESS)),
+                self.bindings.box_mesh,
+                self.bindings.box_bounds,
+                self.bindings.contact_material,
+                style,
+                used,
+            );
+        }
+
+        // Both combat points, so it is obvious the ray leaves a chest rather than a foot,
+        // and the point at which it stopped.
+        for point in [Some(check.from), Some(check.to), check.blocked_at]
+            .into_iter()
+            .flatten()
+        {
+            self.push(
+                render,
+                Transform::from_translation(point).with_scale(Vec3::splat(LOS_MARKER_SIZE)),
+                self.bindings.sphere_mesh,
+                self.bindings.sphere_bounds,
+                self.bindings.contact_material,
+                style,
+                used,
+            );
+        }
+
+        // The blocking shape itself, lit up among the ordinary blue boxes.
+        if let Some(id) = check.blocker
+            && let Some(shape) = simulation.collision_world().shape(id)
+        {
+            let transform = match shape {
+                Shape::Plane(_) => return,
+                Shape::Aabb(bounds) => Transform::from_translation(bounds.center())
+                    .with_scale(bounds.half_extents() * 2.0),
+                Shape::Obb(obb) => Transform::from_translation(obb.center)
+                    .with_rotation(obb.rotation)
+                    .with_scale(obb.half_extents * 2.0),
+            };
+            self.push(
+                render,
+                transform,
+                self.bindings.box_mesh,
+                self.bindings.box_bounds,
+                self.bindings.shape_material,
+                tint(LOS_BLOCKED_TINT, 0.35),
                 used,
             );
         }
