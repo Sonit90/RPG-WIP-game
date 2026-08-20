@@ -61,6 +61,7 @@ pub mod arena;
 pub mod asset;
 pub mod dungeon;
 pub mod lighting;
+pub mod los_course;
 pub mod object;
 pub mod scene;
 pub mod scene_file;

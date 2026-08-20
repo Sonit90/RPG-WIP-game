@@ -56,6 +56,15 @@ pub enum Scene {
     /// different questions: the dummy scene is where a rotation is practised against a
     /// target that never moves, and this is where the fight is tested.
     Encounter,
+    /// The line-of-sight test bed: three domes, six dummies standing on two of them, and
+    /// two pits to drop into.
+    ///
+    /// Separate from the combat scene because the question it asks is about a *rule* rather
+    /// than about a fight: which of a near slope, a crest and a far slope a targeted ability
+    /// will refuse to reach. The arena is flat and has nothing in it a spell can be stopped
+    /// by, so the rule cannot be exercised there at all — and a course full of test geometry
+    /// is not something to put in front of a player practising a rotation.
+    LineOfSight,
     /// The first dungeon: five rooms, eight packs and a three-phase boss, played from the
     /// entrance to the boss's death without anything in between being loaded separately.
     ///
@@ -78,6 +87,7 @@ impl Scene {
             Self::Vfx => "VFX",
             Self::Audio => "AUDIO",
             Self::Encounter => "ENCOUNTER",
+            Self::LineOfSight => "LINE OF SIGHT",
             Self::Dungeon => "DUNGEON",
         }
     }
@@ -94,7 +104,10 @@ impl Scene {
     /// own geometry and the character test bed deliberately brings none.
     #[must_use]
     pub fn has_environment(self) -> bool {
-        matches!(self, Self::Combat | Self::Environment | Self::Dungeon)
+        matches!(
+            self,
+            Self::Combat | Self::Environment | Self::Dungeon | Self::LineOfSight
+        )
     }
 
     /// Whether this is the character and model test bed.
@@ -132,6 +145,12 @@ impl Scene {
     pub fn is_dungeon(self) -> bool {
         matches!(self, Self::Dungeon)
     }
+
+    /// Whether this is the line-of-sight test bed.
+    #[must_use]
+    pub fn is_line_of_sight(self) -> bool {
+        matches!(self, Self::LineOfSight)
+    }
 }
 
 impl FromStr for Scene {
@@ -147,6 +166,7 @@ impl FromStr for Scene {
             "audio" | "sound" | "AUDIO" => Ok(Self::Audio),
             "encounter" | "ai" | "enemies" | "ENCOUNTER" => Ok(Self::Encounter),
             "dungeon" | "reliquary" | "DUNGEON" => Ok(Self::Dungeon),
+            "los" | "line-of-sight" | "sight" | "LOS" => Ok(Self::LineOfSight),
             _ => Err(()),
         }
     }
@@ -172,7 +192,11 @@ options:
   --dummies <count>      training dummies in the group, on top of the single dummy
                          (default 4, combat scene only)
   --scene <name>         which scenario to load: combat (default), collision,
-                         character, environment, vfx, audio, encounter or dungeon.
+                         character, environment, vfx, audio, encounter, los or
+                         dungeon. The los scene is the line-of-sight course: three
+                         domes with a dummy on the near slope, the crest and the far
+                         slope of two of them, and two pits to drop into - one place
+                         to stand and see which of the three a targeted spell refuses.
                          The dungeon scene is the first complete dungeon: five rooms,
                          eight packs and a three-phase boss, walked from the entrance to
                          the boss with BACKSPACE to put the whole thing back. The encounter
@@ -345,6 +369,7 @@ impl Args {
                 Scene::Audio => "myGame — audio demo".to_owned(),
                 Scene::Encounter => "myGame — encounter demo".to_owned(),
                 Scene::Dungeon => "myGame — the Ashen Reliquary".to_owned(),
+                Scene::LineOfSight => "myGame — line-of-sight course".to_owned(),
             },
         }
     }

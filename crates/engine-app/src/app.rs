@@ -373,24 +373,30 @@ impl App {
         // spawn points come out of it — the scene owns where there is room to stand, because
         // the scene is what put a boulder somewhere.
         let authored = load_authored_scene(args)?;
-        let environment = authored.or_else(|| args.scene.has_environment().then(|| {
-            // A density above one is the stress layout: the same boundary, the same spawn
-            // points and several times the scatter. Loading it through the ordinary path
-            // rather than through a separate scene is deliberate — a stress configuration
-            // that goes down a different code path measures the other code path.
-            if args.scene.is_dungeon() {
-                // The same deterministic function gameplay built its collision from. Building
-                // the level twice is how the picture and the collision end up describing two
-                // different rooms.
-                engine_game::dungeon::dungeon_scene()
-            } else if args.env_density > 1.0 {
-                engine_environment::arena::stress_arena(args.env_density)
-            } else if args.scene.is_environment() {
-                engine_environment::arena::environment_demo()
-            } else {
-                engine_environment::arena::combat_arena()
-            }
-        }));
+        let environment = authored.or_else(|| {
+            args.scene.has_environment().then(|| {
+                // A density above one is the stress layout: the same boundary, the same spawn
+                // points and several times the scatter. Loading it through the ordinary path
+                // rather than through a separate scene is deliberate — a stress configuration
+                // that goes down a different code path measures the other code path.
+                if args.scene.is_dungeon() {
+                    // The same deterministic function gameplay built its collision from. Building
+                    // the level twice is how the picture and the collision end up describing two
+                    // different rooms.
+                    engine_game::dungeon::dungeon_scene()
+                } else if args.env_density > 1.0 {
+                    engine_environment::arena::stress_arena(args.env_density)
+                } else if args.scene.is_line_of_sight() {
+                    // The same deterministic layout gameplay built its collision from, for the
+                    // reason the dungeon does it: two descriptions of one course are two courses.
+                    engine_environment::los_course::los_course()
+                } else if args.scene.is_environment() {
+                    engine_environment::arena::environment_demo()
+                } else {
+                    engine_environment::arena::combat_arena()
+                }
+            })
+        });
 
         let (mut simulation, demo) = match args.scene {
             Scene::Combat => (
@@ -455,6 +461,21 @@ impl App {
                     dungeon.packs().len(),
                     dungeon.areas().len(),
                 );
+                (simulation, None)
+            }
+            // The line-of-sight course: three domes, six dummies standing on two of them,
+            // and a floor with two pits in it. Built by gameplay from the same scene the
+            // renderer is about to draw.
+            Scene::LineOfSight => {
+                let (simulation, course) = engine_game::los_course::los_course_arena();
+                for dummy in &course.dummies {
+                    log::info!(
+                        "line of sight: {} {} should be {}",
+                        dummy.dome,
+                        dummy.name,
+                        dummy.expected.as_str()
+                    );
+                }
                 (simulation, None)
             }
             Scene::Collision => {
@@ -1650,10 +1671,10 @@ impl App {
             // A pointer that is captured for mouse-look cannot pick anything, and a hidden
             // one cannot be aimed. The editor is a pointer interface, exactly as edit-HUD
             // and the slot menu are.
-            let focus = engine_presentation::extract::interpolated_player_position(&self.simulation);
+            let focus =
+                engine_presentation::extract::interpolated_player_position(&self.simulation);
             self.cancel_mouse_look();
-            self.editor
-                .set_scale(self.game_ui.scale(), viewport);
+            self.editor.set_scale(self.game_ui.scale(), viewport);
             self.editor.enter(focus, &name, viewport);
             log::info!("editor: editing '{name}' ({count} objects); F6 goes back to playing");
             return Ok(true);
@@ -1692,7 +1713,8 @@ impl App {
         if changed && let Some(scene) = self.environment.as_ref() {
             let world = self.extractor.render_world_mut();
             self.placer.clear(world);
-            self.placer.place(world, scene, controller_eye_guess(scene), LOD_BIAS);
+            self.placer
+                .place(world, scene, controller_eye_guess(scene), LOD_BIAS);
         }
 
         let (width, height) = self.renderer.size();
@@ -2779,8 +2801,9 @@ fn load_authored_scene(
             "load both --scene-file and --layout; they are two ways to say what the level is",
         )),
         (Some(path), None) => {
-            let scene = engine_environment::scene_file::load(path)
-                .map_err(|error| EngineError::unsupported("load the scene file").with_source(error))?;
+            let scene = engine_environment::scene_file::load(path).map_err(|error| {
+                EngineError::unsupported("load the scene file").with_source(error)
+            })?;
             log::info!(
                 "scene file: '{}' from {path} - {} objects, {} of them blocking",
                 scene.name,
@@ -2791,10 +2814,9 @@ fn load_authored_scene(
         }
         (None, Some(path)) => {
             let (scene, report) =
-                engine_assets::disk::load_layout("layout", std::path::Path::new(path))
-                    .map_err(|error| {
-                        EngineError::unsupported("load the layout export").with_source(error)
-                    })?;
+                engine_assets::disk::load_layout("layout", std::path::Path::new(path)).map_err(
+                    |error| EngineError::unsupported("load the layout export").with_source(error),
+                )?;
             log::info!(
                 "layout: {path} - {} objects placed, {} nodes named nothing in the library",
                 report.placed,
@@ -2868,7 +2890,10 @@ fn build_player_visual(renderer: &mut Renderer) -> Result<CharacterVisual, Engin
                 "FireMage: imported {FIREMAGE_MODEL_FILE} - {} triangles, {} bones, {} clips, \
                  {} KiB of textures, {:.2} m tall",
                 model.triangle_count(),
-                model.skeleton.as_ref().map_or(0, engine_assets::Skeleton::len),
+                model
+                    .skeleton
+                    .as_ref()
+                    .map_or(0, engine_assets::Skeleton::len),
                 model.clips.len(),
                 model.texture_bytes() / 1024,
                 model.bind_pose_height(),
@@ -2882,9 +2907,7 @@ fn build_player_visual(renderer: &mut Renderer) -> Result<CharacterVisual, Engin
             })?,
         ),
         Err(error) => {
-            return Err(
-                EngineError::unsupported("import the FireMage model").with_source(error)
-            );
+            return Err(EngineError::unsupported("import the FireMage model").with_source(error));
         }
     };
 
@@ -3136,6 +3159,15 @@ fn log_controls(args: &Args, demo: Option<&DemoScene>) {
                 "audio demo: {AUDIO_SCENE_DUMMIES} dummies, one key per sound, {} sounds in the catalogue",
                 engine_audio::SOUND_COUNT
             );
+        }
+        None if args.scene.is_line_of_sight() => {
+            log::info!(
+                "line-of-sight course: three domes, with a dummy on the near slope, the crest and the far slope of the two outer ones"
+            );
+            log::info!("  TAB through them and cast: the far slope should be refused");
+            log::info!("  the middle dome carries nobody: it is there to walk round and look past");
+            log::info!("  drop into a pit: from the bottom of one, the floor is what blocks you");
+            log::info!("  F3 draws the ray, the blocker and the reason");
         }
         None if args.scene.is_environment() => {
             log::info!("environment demo: the combat arena plus one of every asset, and no fight")

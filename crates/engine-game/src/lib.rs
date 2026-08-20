@@ -86,6 +86,7 @@ pub mod firemage;
 pub mod input_map;
 /// Line of sight for targeted abilities, and nothing else.
 pub mod los;
+pub mod los_course;
 pub mod movement;
 /// Who the player is grouped with: the roster the party frames read.
 pub mod party;

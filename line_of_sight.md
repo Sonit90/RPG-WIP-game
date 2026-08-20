@@ -194,6 +194,71 @@ and a 29.5 us p99 frame.
 
 ---
 
+## The test course
+
+`cargo run --bin mygame -- --scene los`
+
+A scene that exists to be played rather than measured: one place to stand, six targets, and
+a stated answer for each of them.
+
+```text
+              x = -18              x = 0               x = +18
+
+  z = -4       (((D)))            (((.)))              (((D)))     three domes, r = 7 m
+                3 2 1              empty                1 2 3      dummies on two of them
+
+  z = +8     [ P I T ]                                [ P I T ]    9 x 9, 3.5 m deep
+
+  z = +14                          (P)                             player spawn, facing -Z
+```
+
+| # | Where it stands | What the rule should say |
+| --- | --- | --- |
+| 1 | on the near slope, 0.6 r out | **CLEAR** — cast it |
+| 2 | on the crest | **GRAZING** — in sight, with the ray passing just over the surface |
+| 3 | on the far slope, 0.6 r past the middle | **BLOCKED** — "TARGET IS NOT IN LINE OF SIGHT" |
+
+The two outer domes are mirror images, so the same three answers come back twice — a
+difference between left and right is a bug, and there is a test that says so. The middle
+dome carries nobody: it is the control, something to walk round and look past, and the
+blocker whose label appears in the F3 readout when nothing is behind it.
+
+The pits ask the question from below. Standing on the floor of one, a caster's chest is
+three and a half metres under the lip and every dummy on the course is refused — with
+`COURSE FLOOR` named as the blocker, which is the "the floor is a blocker" limitation below
+turned into something a player can stand in. A ramp climbs out of each pit towards `+Z`, so
+the test can be run more than once.
+
+### Where it lives
+
+```text
+engine_environment::los_course    the layout: domes, pits, ramps, and the six stands
+        |                         with the answer each one expects
+engine_game::los_course           the fight: six dummies, and a collision world whose
+        |                         floor has holes in it
+engine_app  --scene los           the scene, its logged instructions and the F3 overlay
+```
+
+Two things are worth knowing about how it is built:
+
+- **A dome blocks as a field of boxes.** `engine-collision` has a plane, a box and an
+  oriented box; a hemisphere is none of them, and one test course is not a reason to grow the
+  narrow phase. Each dome is a 12 × 12 grid of boxes over its footprint, each as tall as the
+  drawn surface above the middle of its cell. The dummies stand on the *analytic* surface, so
+  what the player sees is where they are; the two descriptions differ by less than a cell's
+  rise, which is well inside the margin the near and far stands were placed with.
+- **The dummies carry their own floor.** A body that never moves is integrated by
+  `movement::step`, which has no collision world and whose whole idea of a floor is the
+  arena's `ground_height`. `Body::support_height` is that number per body, so a dummy standing
+  on a dome stays on the dome instead of sinking to `y = 0` inside the hill.
+
+The course states its expectations in code (`LineOfSight::{Clear, Grazing, Blocked}`), and
+`engine_game::los_course`'s tests assert exactly them through `los::has_line_of_sight` — the
+same query the ability path runs. The hand-test and the automated test are therefore the
+same claim, not two opinions about it.
+
+---
+
 ## Known limitations
 
 - **One ray, one point.** A target whose chest is behind a pillar but whose head and legs

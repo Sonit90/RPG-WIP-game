@@ -2,7 +2,7 @@
 //!
 //! ```text
 //!  terrain        ground_plain   arena_floor
-//!  architecture   wall_segment   pillar        arch
+//!  architecture   wall_segment   pillar        arch          dome
 //!  rocks          rock_small     rock_medium   rock_spire
 //!  vegetation     shrub          fern          pine
 //!  props          brazier        supply_crate  banner
@@ -98,6 +98,7 @@ pub fn environment_model(asset: EnvironmentAsset) -> ModelAsset {
         a if a == ids::WALL_SEGMENT => wall_segment(),
         a if a == ids::PILLAR => pillar(),
         a if a == ids::ARCH => arch(),
+        a if a == ids::DOME => dome(),
         a if a == ids::ROCK_SMALL => rock(RockSize::Small),
         a if a == ids::ROCK_MEDIUM => rock(RockSize::Medium),
         a if a == ids::ROCK_SPIRE => rock(RockSize::Spire),
@@ -632,6 +633,83 @@ fn stone_material() -> MaterialAsset {
     MaterialAsset::colored("env_stone", 1.0, 1.0, 1.0)
         .with_roughness(0.88)
         .with_base_color_texture(0)
+}
+
+/// A smooth stone dome: a unit hemisphere standing on its own flat base.
+///
+/// Authored at radius one and scaled by the placement, because a dome is the one library
+/// asset whose whole purpose is to be placed at a size the scene chooses: the line-of-sight
+/// course wants a seven-metre hill, and a future scene may want a two-metre boulder-cap out
+/// of the same mesh.
+///
+/// # Why a swept shell and not a stack of prisms
+///
+/// Every other rounded piece here is faceted on purpose — a boulder wants facets. A dome
+/// does not: what it is *for* is a surface that curves away from the caster, so a target
+/// halfway up it is visible and a target the same distance down the far side is not. Facets
+/// large enough to see would make that boundary a staircase, and the staircase would be the
+/// thing being tested rather than the curve.
+///
+/// Thirty-six quads at three rings of twelve, which is the coarsest ring count whose
+/// silhouette still reads as round from the gameplay camera at ten metres.
+fn dome() -> ModelAsset {
+    let level = |segments: u32, rings: u32| {
+        let mut builder = MeshBuilder::new();
+        // Cosine-spaced in elevation: the rings bunch towards the crest, where the surface
+        // turns fastest and a coarse ring would flatten the top into a plate.
+        let ring = |index: u32| -> (f32, f32) {
+            let angle = index as f32 / rings as f32 * std::f32::consts::FRAC_PI_2;
+            (angle.sin(), angle.cos())
+        };
+        let point = |angle: f32, height: f32, radius: f32| {
+            Vec3::new(angle.cos() * radius, height, angle.sin() * radius)
+        };
+        // Planar UVs from the footprint, two tiles across the diameter. A spherical
+        // projection would pinch every texel at the crest, which on a stone texture reads as
+        // a bruise.
+        let uv = |position: Vec3| Vec2::new(position.x + 1.0, position.z + 1.0);
+        for index in 0..rings {
+            let (low, low_radius) = ring(index);
+            let (high, high_radius) = ring(index + 1);
+            for step in 0..segments {
+                let a0 = step as f32 / segments as f32 * std::f32::consts::TAU;
+                let a1 = (step + 1) as f32 / segments as f32 * std::f32::consts::TAU;
+                let corners = [
+                    point(a0, low, low_radius),
+                    point(a0, high, high_radius),
+                    point(a1, high, high_radius),
+                    point(a1, low, low_radius),
+                ];
+                // Radial, from the middle of the quad: one normal per quad is what the
+                // builder takes, and the middle of a quad on a unit sphere already points
+                // the way the surface does.
+                let middle = (corners[0] + corners[1] + corners[2] + corners[3]) * 0.25;
+                let normal = if middle.length() > 1e-4 {
+                    middle.normalize()
+                } else {
+                    Vec3::Y
+                };
+                let uvs = [
+                    uv(corners[0]),
+                    uv(corners[1]),
+                    uv(corners[2]),
+                    uv(corners[3]),
+                ];
+                builder.quad(corners, normal, uvs);
+            }
+        }
+        vec![builder.into_submesh("dome", 0)]
+    };
+
+    ModelAsset::rigid(
+        "dome",
+        level(12, 3),
+        vec![stone_material()],
+        vec![stone_texture()],
+    )
+    // One coarser level. A dome is large and there are three of them, so the level that
+    // matters is the near one; this is what the far end of the course draws.
+    .with_lod(level(8, 2), 60.0)
 }
 
 // ---------------------------------------------------------------------------------------
@@ -1563,6 +1641,50 @@ mod tests {
             checked += 1;
         }
         assert!(checked > 200, "only {checked} sky triangles were testable");
+    }
+
+    #[test]
+    fn the_dome_is_wound_outwards_and_its_normals_agree_with_its_winding() {
+        let model = environment_model(ids::DOME);
+        let Some(lod) = model.lod0() else {
+            panic!("the dome has geometry");
+        };
+        let Some(submesh) = lod.submeshes.first() else {
+            panic!("the dome has a submesh");
+        };
+        let crate::mesh::Geometry::Static(vertices) = &submesh.geometry else {
+            panic!("the dome is rigid");
+        };
+
+        // The opposite claim to the sky's: the camera is outside this one, so a triangle
+        // whose geometric normal points at the middle of the hemisphere is a triangle that
+        // is back-face culled — and the symptom is a hill you can see the inside of.
+        let mut checked = 0;
+        for triangle in submesh.indices.chunks_exact(3) {
+            let a = vertices[triangle[0] as usize].position;
+            let b = vertices[triangle[1] as usize].position;
+            let c = vertices[triangle[2] as usize].position;
+            let geometric = (b - a).cross(c - b);
+            if geometric.length_squared() < 1e-9 {
+                continue;
+            }
+            let centroid = (a + b + c) * (1.0 / 3.0);
+            assert!(
+                geometric.dot(centroid) > 0.0,
+                "a dome triangle at {centroid:?} faces inwards"
+            );
+            // And the shading normal has to agree with the winding, or the lit side is the
+            // side the eye cannot see.
+            let shading = vertices[triangle[0] as usize].normal;
+            assert!(
+                shading.dot(geometric.normalize()) > 0.0,
+                "a dome triangle at {centroid:?} is lit on its back face"
+            );
+            checked += 1;
+        }
+        // Sixty of the seventy-two: the top ring's quads have both of their upper corners
+        // at the crest, so one triangle of each pair has no area and no winding to test.
+        assert!(checked >= 60, "only {checked} dome triangles were testable");
     }
 
     #[test]

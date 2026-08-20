@@ -193,6 +193,17 @@ pub struct Body {
     pub facing_yaw: f32,
     /// What the body is doing, derived every step.
     pub state: MovementState,
+    /// The y this body's feet rest on, for a body that is not moved against geometry.
+    ///
+    /// [`step`] has no collision world: its whole idea of a floor is one number, and that
+    /// number is the arena's. A training dummy standing on top of something — the domes of
+    /// the line-of-sight course — is the one case where the floor under a body is not the
+    /// floor under the arena, and this is that case written down rather than a dummy that
+    /// sinks to y = 0 the first time it is integrated.
+    ///
+    /// Zero for everything else, which is what the arena's floor already is. Bodies that go
+    /// through [`step_collided`] ignore it: they have real geometry to stand on.
+    pub support_height: f32,
 }
 
 impl Default for Body {
@@ -212,7 +223,18 @@ impl Body {
             ground_normal: Vec3::Y,
             facing_yaw: 0.0,
             state: MovementState::Idle,
+            support_height: 0.0,
         }
+    }
+
+    /// The same body, resting on a floor of its own at `y`.
+    ///
+    /// For a body [`step`] moves that does not stand on the arena's floor. See
+    /// [`Body::support_height`].
+    #[must_use]
+    pub fn supported_at(mut self, y: f32) -> Self {
+        self.support_height = y;
+        self
     }
 
     /// Horizontal speed, ignoring any rise or fall.
@@ -375,9 +397,13 @@ fn accelerate_horizontally(
 }
 
 /// Puts the body back on the floor if it went through it.
+///
+/// The floor is the arena's, or whatever the body is standing on top of if that is higher —
+/// see [`Body::support_height`].
 fn resolve_ground(body: &mut Body, config: &MovementConfig) {
-    if body.position.y <= config.ground_height + GROUND_EPSILON {
-        body.position.y = config.ground_height;
+    let floor = config.ground_height.max(body.support_height);
+    if body.position.y <= floor + GROUND_EPSILON {
+        body.position.y = floor;
         if body.velocity.y < 0.0 {
             body.velocity.y = 0.0;
         }

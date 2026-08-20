@@ -2,7 +2,7 @@
 //!
 //! ```text
 //!  terrain        ground_plain   arena_floor
-//!  architecture   wall_segment   pillar        arch
+//!  architecture   wall_segment   pillar        arch          dome
 //!  rocks          rock_small     rock_medium   rock_spire
 //!  vegetation     shrub          fern          pine
 //!  props          brazier        crate         banner
@@ -66,6 +66,13 @@ pub const WALL_SEGMENT: EnvironmentAsset = EnvironmentAsset::new("wall_segment")
 pub const PILLAR: EnvironmentAsset = EnvironmentAsset::new("pillar");
 /// A broken arch: the arena's entrance and its one tall landmark.
 pub const ARCH: EnvironmentAsset = EnvironmentAsset::new("arch");
+/// A smooth stone dome: a hemisphere the size of a small hill.
+///
+/// The one piece of architecture that is round in every direction, which is why the
+/// line-of-sight course is built from it: a wall answers "is a wall a wall", and a dome
+/// answers the harder question of what happens to a target standing part of the way up
+/// something that curves away from the caster.
+pub const DOME: EnvironmentAsset = EnvironmentAsset::new("dome");
 
 /// A knee-high boulder. The cheapest scatter piece, and the most numerous.
 pub const ROCK_SMALL: EnvironmentAsset = EnvironmentAsset::new("rock_small");
@@ -99,12 +106,13 @@ pub const SKY_DOME: EnvironmentAsset = EnvironmentAsset::new("sky_dome");
 /// asset then shares the mesh and material handles it returned. That sharing is the whole
 /// of the instancing requirement — see the crate docs of
 /// `engine_presentation::environment`.
-pub const LIBRARY: [EnvironmentAsset; 16] = [
+pub const LIBRARY: [EnvironmentAsset; 17] = [
     GROUND_PLAIN,
     ARENA_FLOOR,
     WALL_SEGMENT,
     PILLAR,
     ARCH,
+    DOME,
     ROCK_SMALL,
     ROCK_MEDIUM,
     ROCK_SPIRE,
@@ -142,7 +150,7 @@ mod tests {
         for asset in [SHRUB, FERN, PINE] {
             assert!(has(asset));
         }
-        for asset in [WALL_SEGMENT, PILLAR, ARCH] {
+        for asset in [WALL_SEGMENT, PILLAR, ARCH, DOME] {
             assert!(has(asset));
         }
         for asset in [BRAZIER, SUPPLY_CRATE, BANNER] {
