@@ -3,7 +3,7 @@
 //! ```text
 //!   engine_environment::los_course      engine_game::los_course
 //!   ------------------------------      -----------------------
-//!   three domes, r = 7            -->   a field of boxes each, in the collision world
+//!   three domes, r = 7, h = 3.15  -->   a tiled surface each, in the collision world
 //!   six dummy stands              -->   six dummies, standing on the surface
 //!   two pits and their ramps      -->   a floor with holes in it, and a way back out
 //!   the expected answer per stand -->   what a test asserts and the overlay prints
@@ -22,16 +22,21 @@
 //!
 //! # Why the domes are boxes
 //!
-//! `engine-collision` has a plane, a box and an oriented box. A hemisphere is none of them,
-//! and one test course is not a reason to grow the narrow phase — so a dome blocks as a
-//! grid of boxes, each as tall as the surface above the middle of its cell, and the dummies
-//! stand on the *drawn* surface rather than on the staircase. The two disagree by less than
-//! a cell's rise, which is under half a metre at this radius and well inside the margin the
-//! near-slope and far-slope stands were placed with.
+//! `engine-collision` has a plane, a box and an oriented box. A dome is none of them, and
+//! one test course is not a reason to grow the narrow phase — so the surface is tiled with
+//! *tilted* boxes, five bands of them following the profile the mesh is built from, added
+//! with `add_ramp` because that is what each one is. The dummies stand on the analytic
+//! surface; the tiles are within ten centimetres of it.
+//!
+//! Tilted rather than upright, because the course is walked as well as looked at. Upright
+//! boxes as tall as the surface above them block a ray perfectly well and are a staircase to
+//! stand on — at this radius, steps of over a metre against a character that can climb 0.45,
+//! which is a hill that can only be looked at. `a_player_can_walk_up_a_dome_and_stand_on_its_crest`
+//! is the test that says this is not that.
 
 use engine_collision::shape::Obb;
 use engine_collision::world::CollisionWorld;
-use engine_core::math::Vec3;
+use engine_core::math::{Quat, Vec3};
 use engine_environment::los_course::{self, LineOfSight};
 
 use crate::arena::{self, ArenaConfig};
@@ -166,9 +171,19 @@ pub fn build_collision(world: &mut CollisionWorld) {
         );
     }
 
+    // The domes, as bands of tilted boxes following the profile the mesh is built from.
+    // `add_ramp` rather than `add_box`, because that is what they are: a character walks up
+    // a dome the same way it walks up the collision course's slopes.
     for dome in los_course::domes() {
-        for slab in dome.collision() {
-            world.add_box(slab.min, slab.max, slab.label);
+        for tile in dome.collision() {
+            world.add_ramp(
+                Obb::new(
+                    tile.center,
+                    tile.half_extents,
+                    Quat::from_yaw_pitch_roll(tile.yaw, tile.pitch, 0.0),
+                ),
+                tile.label,
+            );
         }
     }
 
@@ -387,5 +402,84 @@ mod tests {
             "the player is still {} m down after walking up the ramp",
             -out.y
         );
+    }
+
+    #[test]
+    fn a_player_can_walk_up_a_dome_and_stand_on_its_crest() {
+        let (mut simulation, course) = los_course_arena();
+        let dome = engine_environment::los_course::domes()[1];
+
+        // Start at the rim of the middle dome, on the player's side of it, and walk at the
+        // crest. The dome is the reason the course exists to be walked on: if the surface
+        // were the field of upright boxes it used to be, this walk would stop at the first
+        // step and the assertion below would fail by three metres.
+        let start = Vec3::new(dome.center.x, 0.0, dome.center.z + dome.radius + 1.0);
+        if let Some(body) = simulation.world_mut().body_mut(course.player) {
+            body.position = start;
+            body.grounded = true;
+        }
+        // Walking towards -Z is the camera's forward at yaw zero.
+        let walk = |simulation: &mut Simulation| {
+            simulation.push_command(crate::command::PlayerCommand::Move {
+                forward: 1.0,
+                right: 0.0,
+                yaw: 0.0,
+                face_camera: false,
+            });
+        };
+
+        let mut highest = 0.0_f32;
+        let mut reached_crest = false;
+        for _ in 0..120 {
+            walk(&mut simulation);
+            simulation.step_once();
+            let body = simulation.world().body(course.player).expect("a body");
+            highest = highest.max(body.position.y);
+            // Past the middle of the dome is as far as the climb goes; beyond it the walk
+            // is a descent, and a test that keeps walking measures the far rim.
+            if body.position.z <= dome.center.z {
+                reached_crest = true;
+                break;
+            }
+            // At every step of the way, the feet are on the surface the player can see —
+            // that is the difference between a hill and a staircase with a lip on it.
+            let surface = dome.surface_height(body.position.x, body.position.z);
+            assert!(
+                (body.position.y - surface).abs() < 0.35,
+                "on the way up, the player is at {:.2} and the surface is at {surface:.2}",
+                body.position.y
+            );
+        }
+
+        assert!(reached_crest, "the player never got over the middle");
+        assert!(
+            highest > dome.height() - 0.4,
+            "the player got {highest:.2} m up a {:.2} m hill",
+            dome.height()
+        );
+
+        // And standing still on it, rather than sliding back down: the surface is inside the
+        // controller's slope limit everywhere. Movement intent is held between commands, so
+        // letting go means saying so.
+        simulation.push_command(crate::command::PlayerCommand::Move {
+            forward: 0.0,
+            right: 0.0,
+            yaw: 0.0,
+            face_camera: false,
+        });
+        simulation.step_many(30);
+        let settled = simulation
+            .world()
+            .body(course.player)
+            .expect("a body")
+            .position;
+        simulation.step_many(60);
+        let body = simulation.world().body(course.player).expect("a body");
+        assert!(
+            (body.position - settled).length() < 0.5,
+            "the player slid from {settled:?} to {:?}",
+            body.position
+        );
+        assert!(body.grounded, "the player is not standing on the dome");
     }
 }

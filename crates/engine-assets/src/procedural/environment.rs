@@ -635,12 +635,21 @@ fn stone_material() -> MaterialAsset {
         .with_base_color_texture(0)
 }
 
-/// A smooth stone dome: a unit hemisphere standing on its own flat base.
+/// A smooth stone dome: a round hill on a unit footprint, gentle enough to walk up.
 ///
 /// Authored at radius one and scaled by the placement, because a dome is the one library
 /// asset whose whole purpose is to be placed at a size the scene chooses: the line-of-sight
 /// course wants a seven-metre hill, and a future scene may want a two-metre boulder-cap out
-/// of the same mesh.
+/// of the same mesh. The scale is uniform, so the profile's shape is the same at any size.
+///
+/// # Why the curve is not a hemisphere
+///
+/// A hemisphere is vertical where it meets the ground, so the only way onto one is to be
+/// placed there. This one is [`engine_environment::asset::dome_profile`] — a raised cosine,
+/// flat at the crest, flat at the rim, and 35 degrees at its steepest — which is a hill a
+/// character can walk up and a shape the collision world can follow with tilted boxes
+/// instead of a staircase. The mesh and the level read that one function, so what the eye
+/// sees, what the feet stand on and what stops a ray are the same hill.
 ///
 /// # Why a swept shell and not a stack of prisms
 ///
@@ -649,53 +658,48 @@ fn stone_material() -> MaterialAsset {
 /// halfway up it is visible and a target the same distance down the far side is not. Facets
 /// large enough to see would make that boundary a staircase, and the staircase would be the
 /// thing being tested rather than the curve.
-///
-/// Thirty-six quads at three rings of twelve, which is the coarsest ring count whose
-/// silhouette still reads as round from the gameplay camera at ten metres.
 fn dome() -> ModelAsset {
     let level = |segments: u32, rings: u32| {
         let mut builder = MeshBuilder::new();
-        // Cosine-spaced in elevation: the rings bunch towards the crest, where the surface
-        // turns fastest and a coarse ring would flatten the top into a plate.
-        let ring = |index: u32| -> (f32, f32) {
-            let angle = index as f32 / rings as f32 * std::f32::consts::FRAC_PI_2;
-            (angle.sin(), angle.cos())
+        let point = |angle: f32, t: f32| {
+            Vec3::new(
+                angle.cos() * t,
+                engine_environment::asset::dome_profile(t),
+                angle.sin() * t,
+            )
         };
-        let point = |angle: f32, height: f32, radius: f32| {
-            Vec3::new(angle.cos() * radius, height, angle.sin() * radius)
+        // The surface normal from the profile's own slope: `dy/dt` against the radial
+        // direction, which is exact for a surface of revolution and costs one sine.
+        let normal = |angle: f32, t: f32| {
+            let slope = engine_environment::asset::dome_slope(t);
+            Vec3::new(-slope * angle.cos(), 1.0, -slope * angle.sin()).normalize()
         };
         // Planar UVs from the footprint, two tiles across the diameter. A spherical
         // projection would pinch every texel at the crest, which on a stone texture reads as
         // a bruise.
         let uv = |position: Vec3| Vec2::new(position.x + 1.0, position.z + 1.0);
         for index in 0..rings {
-            let (low, low_radius) = ring(index);
-            let (high, high_radius) = ring(index + 1);
+            let inner = index as f32 / rings as f32;
+            let outer = (index + 1) as f32 / rings as f32;
             for step in 0..segments {
                 let a0 = step as f32 / segments as f32 * std::f32::consts::TAU;
                 let a1 = (step + 1) as f32 / segments as f32 * std::f32::consts::TAU;
                 let corners = [
-                    point(a0, low, low_radius),
-                    point(a0, high, high_radius),
-                    point(a1, high, high_radius),
-                    point(a1, low, low_radius),
+                    point(a0, outer),
+                    point(a0, inner),
+                    point(a1, inner),
+                    point(a1, outer),
                 ];
-                // Radial, from the middle of the quad: one normal per quad is what the
-                // builder takes, and the middle of a quad on a unit sphere already points
-                // the way the surface does.
-                let middle = (corners[0] + corners[1] + corners[2] + corners[3]) * 0.25;
-                let normal = if middle.length() > 1e-4 {
-                    middle.normalize()
-                } else {
-                    Vec3::Y
-                };
+                // One normal per quad is what the builder takes; the middle of the patch is
+                // where it is least wrong.
+                let facing = normal((a0 + a1) * 0.5, (inner + outer) * 0.5);
                 let uvs = [
                     uv(corners[0]),
                     uv(corners[1]),
                     uv(corners[2]),
                     uv(corners[3]),
                 ];
-                builder.quad(corners, normal, uvs);
+                builder.quad(corners, facing, uvs);
             }
         }
         vec![builder.into_submesh("dome", 0)]
@@ -1656,9 +1660,9 @@ mod tests {
             panic!("the dome is rigid");
         };
 
-        // The opposite claim to the sky's: the camera is outside this one, so a triangle
-        // whose geometric normal points at the middle of the hemisphere is a triangle that
-        // is back-face culled — and the symptom is a hill you can see the inside of.
+        // The opposite claim to the sky's: the camera is outside this one, and every face of
+        // a hill faces upwards. A triangle wound the other way is back-face culled, and the
+        // symptom is a hole in the ground where the dome should be.
         let mut checked = 0;
         for triangle in submesh.indices.chunks_exact(3) {
             let a = vertices[triangle[0] as usize].position;
@@ -1670,8 +1674,8 @@ mod tests {
             }
             let centroid = (a + b + c) * (1.0 / 3.0);
             assert!(
-                geometric.dot(centroid) > 0.0,
-                "a dome triangle at {centroid:?} faces inwards"
+                geometric.dot(Vec3::Y) > 0.0,
+                "a dome triangle at {centroid:?} faces downwards"
             );
             // And the shading normal has to agree with the winding, or the lit side is the
             // side the eye cannot see.
@@ -1682,8 +1686,8 @@ mod tests {
             );
             checked += 1;
         }
-        // Sixty of the seventy-two: the top ring's quads have both of their upper corners
-        // at the crest, so one triangle of each pair has no area and no winding to test.
+        // Sixty of the seventy-two: the innermost ring's quads have both of their inner
+        // corners at the crest, so one triangle of each pair has no area and no winding.
         assert!(checked >= 60, "only {checked} dome triangles were testable");
     }
 

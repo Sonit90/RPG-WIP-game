@@ -3,7 +3,7 @@
 //! ```text
 //!            x = -18            x = 0             x = +18
 //!
-//!   z = -4     (((D)))          (((.)))           (((D)))     three domes, r = 7
+//!   z = -4     (((D)))          (((.)))           (((D)))     three domes, r = 7, h = 3.15
 //!               3 2 1            empty             1 2 3      dummies on two of them
 //!
 //!   z = +8    [ P I T ]                          [ P I T ]    two 9 x 9 shafts, 3.5 m deep
@@ -29,6 +29,10 @@
 //! that "the ray stopped" can be told apart from "the ray stopped at *that*" in the F3
 //! readout, and so there is something to walk around and look past.
 //!
+//! A dome is a *hill*, not a hemisphere: gentle enough to walk up, so the same three
+//! questions can be asked again from the crest of the one in the middle. See
+//! [`crate::asset::dome_profile`] for why the curve is the shape it is.
+//!
 //! The two pits are the same question asked from below. A caster standing three and a half
 //! metres down has its chest under the lip, and every dummy on the course is then behind the
 //! floor it is standing on — which is the one case the ray has to get right for a reason
@@ -36,8 +40,8 @@
 //!
 //! # Only the layout lives here
 //!
-//! This module names the domes, their radius, the cells their collision is approximated by,
-//! the pits and the six places a dummy stands. It spawns nothing: `engine_game::los_course`
+//! This module names the domes, their radius, the tiles their collision surface is built
+//! from, the pits and the six places a dummy stands. It spawns nothing: `engine_game::los_course`
 //! reads all of it and builds the fight, exactly as `engine_game::arena` reads
 //! [`crate::arena`]. The two facts that must not drift apart — where a dome is and where a
 //! dummy stands on it — are one calculation here rather than two lists in two crates.
@@ -123,18 +127,33 @@ pub struct Dome {
     pub occupied: bool,
 }
 
-/// How many cells across its diameter a dome's collision is approximated by.
+/// How many rings a dome's collision surface is tiled with, crest to rim.
 ///
-/// A hemisphere is not one of the three primitives `engine-collision` has, and adding a
-/// fourth for one test course would be a narrow-phase, a broad-phase bound and a debug
-/// drawing for a shape gameplay does not otherwise use. So the dome blocks as a field of
-/// boxes, one per cell of a grid over its footprint, each as tall as the surface above the
-/// middle of that cell.
+/// A dome is not one of the three shapes `engine-collision` has — a plane, a box and an
+/// oriented box — and one test course is not a reason to grow the narrow phase. So the
+/// surface is *tiled*: each step of the profile becomes a band of oriented boxes, each
+/// tilted to the slope of the curve across that band, and a character walks up the tilted
+/// faces exactly as it walks up the collision course's ramps.
 ///
-/// Twelve cells is a 1.2 m step at this radius: coarse enough to stay under a hundred and
-/// twenty shapes a dome, fine enough that the boundary between "in sight" and "blocked"
-/// lands within a step of where the drawn surface says it should.
-pub const DOME_CELLS: u32 = 12;
+/// ```text
+///          ______                a band is a flat box tilted to the chord of the
+///        /`      `\              profile it spans. Five of them follow the curve
+///      /`          `\            to within a couple of centimetres, and the seam
+///    _/              \_          between two is a step of under three.
+/// ```
+///
+/// The alternative — a grid of upright boxes, each as tall as the surface above it — is what
+/// this replaced. It blocked a ray correctly and was a staircase to walk on: at this radius
+/// its steps were over a metre, which is more than twice the character's step height, so the
+/// hill could be looked at and not climbed.
+pub const DOME_RINGS: u32 = 5;
+
+/// How long a tile is allowed to be around its ring, in metres.
+///
+/// A tile is a flat box and the ring it belongs to is a circle, so a tile is a chord: the
+/// shorter it is, the rounder the ring. A metre and a half puts the middle of a chord within
+/// two centimetres of the arc at the outer ring of a seven-metre dome.
+pub const DOME_TILE_ARC: f32 = 1.5;
 
 /// A box in the collision world, as the two corners a caller builds a shape from.
 ///
@@ -171,53 +190,127 @@ impl Slab {
     }
 }
 
-impl Dome {
-    /// How high the drawn surface is above `(x, z)`, or zero outside the footprint.
+/// One tilted box: a patch of a dome's surface.
+///
+/// The numbers an oriented box is built from, for the reason [`Slab`] is two corners: this
+/// crate does not depend on `engine-collision`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Tile {
+    /// Which dome it belongs to, and what a contact report calls it.
+    pub label: &'static str,
+    /// The middle of the box.
+    pub center: Vec3,
+    /// Half its width across the ring, half its thickness, half its length down the slope.
+    pub half_extents: Vec3,
+    /// Which way round the dome it sits, radians about +Y. Its length runs outwards.
+    pub yaw: f32,
+    /// How far it is tilted about its own +X, in radians. Positive descends outwards.
+    pub pitch: f32,
+}
+
+impl Tile {
+    /// The normal of the face a character stands on.
     ///
-    /// The analytic hemisphere, not the boxes that approximate it: this is what a dummy
-    /// standing on the dome has its feet set to, so that it stands on the surface the player
-    /// can see rather than on the staircase the collision world tests against.
+    /// `+Y` carried round by the tile's own rotation — a pitch about `+X` and then a yaw
+    /// about `+Y`, which is the order the rotation is built in.
     #[must_use]
-    pub fn surface_height(&self, x: f32, z: f32) -> f32 {
-        let distance_squared = (x - self.center.x).powi(2) + (z - self.center.z).powi(2);
-        let remaining = self.radius * self.radius - distance_squared;
-        if remaining <= 0.0 {
-            return self.center.y;
-        }
-        self.center.y + remaining.sqrt()
+    pub fn up(&self) -> Vec3 {
+        let (sin_pitch, cos_pitch) = self.pitch.sin_cos();
+        let (sin_yaw, cos_yaw) = self.yaw.sin_cos();
+        Vec3::new(sin_yaw * sin_pitch, cos_pitch, cos_yaw * sin_pitch)
     }
 
-    /// The boxes the collision world blocks this dome with.
-    ///
-    /// One per cell of a `DOME_CELLS` × `DOME_CELLS` grid over the footprint, each rising
-    /// from below the floor to the surface height above the middle of its cell, and each
-    /// cell whose surface is barely off the floor left out — a five-centimetre kerb around
-    /// the base is a thing to trip on and blocks nothing that the cells inside it do not.
+    /// The angle of the face a character stands on, in degrees.
     #[must_use]
-    pub fn collision(&self) -> Vec<Slab> {
-        /// Below this the cell is not worth a shape.
-        const MINIMUM_HEIGHT: f32 = 0.25;
-        /// How far under the floor a cell starts, so it welds into the slab under it.
-        const FOOTING: f32 = 0.5;
+    pub fn slope_degrees(&self) -> f32 {
+        self.pitch.abs().to_degrees()
+    }
+}
 
-        let cell = self.radius * 2.0 / DOME_CELLS as f32;
-        let mut slabs = Vec::with_capacity((DOME_CELLS * DOME_CELLS) as usize);
-        for row in 0..DOME_CELLS {
-            for column in 0..DOME_CELLS {
-                let x = self.center.x - self.radius + (column as f32 + 0.5) * cell;
-                let z = self.center.z - self.radius + (row as f32 + 0.5) * cell;
-                let height = self.surface_height(x, z);
-                if height - self.center.y < MINIMUM_HEIGHT {
-                    continue;
-                }
-                slabs.push(Slab::new(
-                    Vec3::new(x - cell * 0.5, self.center.y - FOOTING, z - cell * 0.5),
-                    Vec3::new(x + cell * 0.5, height, z + cell * 0.5),
-                    self.label,
-                ));
+impl Dome {
+    /// How high the crest stands above the floor, in metres.
+    #[must_use]
+    pub fn height(&self) -> f32 {
+        self.radius * crate::asset::DOME_HEIGHT
+    }
+
+    /// How high the drawn surface is above `(x, z)`, or the floor outside the footprint.
+    ///
+    /// [`crate::asset::dome_profile`] scaled to this dome: the same curve the mesh is built
+    /// from, so a dummy put down at this height stands on the hill the player can see.
+    #[must_use]
+    pub fn surface_height(&self, x: f32, z: f32) -> f32 {
+        let distance = (x - self.center.x).hypot(z - self.center.z);
+        self.center.y + self.radius * crate::asset::dome_profile(distance / self.radius)
+    }
+
+    /// The tilted boxes the collision world builds this dome's surface from.
+    ///
+    /// `DOME_RINGS` bands from the crest outwards. A band spans one step of the profile and
+    /// is tilted to the chord between that step's two ends; each tile in it is then sunk by
+    /// its own half-thickness along its own up, so its **top face** lands on the curve
+    /// rather than its middle. That is the correction the collision course's ramps make, and
+    /// it is what stops every band presenting half a tile's thickness as a lip at its lower
+    /// edge — five lips on the way up a hill is five things to trip on.
+    ///
+    /// The tiles are thick, so each band reaches through the one below it and into the
+    /// floor: what a character walks on is a continuous surface rather than a set of plates
+    /// with gaps between them, and a ray meets something solid wherever it enters the hill.
+    #[must_use]
+    pub fn collision(&self) -> Vec<Tile> {
+        /// How thick a tile is, in metres.
+        ///
+        /// A thin plate laid along a chord leaves a wedge of empty space under it, and a
+        /// wedge inside a hill is somewhere a ray gets through and a foot falls into.
+        const THICKNESS: f32 = 1.6;
+        /// How much wider than its own chord a tile is made.
+        ///
+        /// The tiles of a ring are chords of a circle, so neighbours meet at an angle. A
+        /// little overlap is what stops the seam between two of them being a crack.
+        const OVERLAP: f32 = 1.12;
+
+        let half_thickness = THICKNESS * 0.5;
+        let mut tiles = Vec::new();
+        for ring in 0..DOME_RINGS {
+            let inner_t = ring as f32 / DOME_RINGS as f32;
+            let outer_t = (ring + 1) as f32 / DOME_RINGS as f32;
+            let inner_radius = self.radius * inner_t;
+            let outer_radius = self.radius * outer_t;
+            let inner_height = self.center.y + self.radius * crate::asset::dome_profile(inner_t);
+            let outer_height = self.center.y + self.radius * crate::asset::dome_profile(outer_t);
+
+            let run = outer_radius - inner_radius;
+            let fall = inner_height - outer_height;
+            let pitch = fall.atan2(run);
+            let half_length = run.hypot(fall) * 0.5;
+
+            // As many tiles as it takes to keep every chord short, and never fewer than
+            // three: a ring of two boxes is not a ring.
+            let circumference = std::f32::consts::TAU * outer_radius;
+            let segments = ((circumference / DOME_TILE_ARC).ceil() as u32).max(3);
+            let half_width = circumference / segments as f32 * 0.5 * OVERLAP;
+            let middle_radius = (inner_radius + outer_radius) * 0.5;
+            for step in 0..segments {
+                let yaw = step as f32 / segments as f32 * std::f32::consts::TAU;
+                let (sin_yaw, cos_yaw) = yaw.sin_cos();
+                let tile = Tile {
+                    label: self.label,
+                    center: Vec3::new(
+                        self.center.x + sin_yaw * middle_radius,
+                        (inner_height + outer_height) * 0.5,
+                        self.center.z + cos_yaw * middle_radius,
+                    ),
+                    half_extents: Vec3::new(half_width, half_thickness, half_length),
+                    yaw,
+                    pitch,
+                };
+                tiles.push(Tile {
+                    center: tile.center - tile.up() * half_thickness,
+                    ..tile
+                });
             }
         }
-        slabs
+        tiles
     }
 
     /// Where the three dummies on this dome stand, nearest first.
@@ -698,7 +791,7 @@ mod tests {
         for dome in domes().into_iter().filter(|dome| dome.occupied) {
             let stands = dome.dummy_stands();
             let [near, crest, far] = [&stands[0], &stands[1], &stands[2]];
-            assert!((crest.position.y - dome.radius).abs() < 1e-3);
+            assert!((crest.position.y - dome.height()).abs() < 1e-3);
             assert!(near.position.y < crest.position.y);
             assert!((near.position.y - far.position.y).abs() < 1e-3);
             // And the far one really is further away, which is what makes it the far one.
@@ -717,17 +810,63 @@ mod tests {
     }
 
     #[test]
-    fn a_domes_boxes_stay_inside_the_dome_they_approximate() {
+    fn a_domes_tiles_follow_the_curve_they_approximate() {
         for dome in domes() {
-            let slabs = dome.collision();
-            assert!(!slabs.is_empty());
-            assert!(slabs.len() <= (DOME_CELLS * DOME_CELLS) as usize);
-            for slab in &slabs {
-                assert!(slab.max.y <= dome.center.y + dome.radius + 1e-3);
-                let corner = (slab.max.x - dome.center.x)
-                    .abs()
-                    .max((slab.min.x - dome.center.x).abs());
-                assert!(corner <= dome.radius + 1e-3, "a cell reaches past the base");
+            let tiles = dome.collision();
+            assert!(!tiles.is_empty());
+            for tile in &tiles {
+                // The top face is what a character stands on, so it is the top face that has
+                // to be on the surface — the middle of the box is half a thickness below it.
+                let surface = tile.center + tile.up() * tile.half_extents.y;
+                let expected = dome.surface_height(surface.x, surface.z);
+                // A tile is a chord and the profile it spans is curved, so the middle of a
+                // tile sits a little under the surface where the curve bulges up and a
+                // little over it where the curve bends the other way. Ten centimetres over
+                // a 3.15 m hill: a player walks the drawn surface, not a shape beside it.
+                let error = surface.y - expected;
+                assert!(
+                    error.abs() < 0.10,
+                    "{} has a tile {error:.3} m off the surface at {surface:?}",
+                    tile.label
+                );
+                assert!(surface.y <= dome.center.y + dome.height() + 1e-3);
+            }
+        }
+    }
+
+    #[test]
+    fn every_tile_is_gentle_enough_to_walk_up_and_they_meet_without_a_step() {
+        /// What the character controller refuses, in degrees.
+        const CONTROLLER_LIMIT: f32 = 50.0;
+        /// What the character controller can step up, in metres.
+        const STEP_HEIGHT: f32 = 0.45;
+
+        for dome in domes() {
+            let tiles = dome.collision();
+            let steepest = tiles
+                .iter()
+                .map(Tile::slope_degrees)
+                .fold(0.0_f32, f32::max);
+            assert!(
+                steepest < CONTROLLER_LIMIT - 5.0,
+                "{} has a {steepest} degree tile against a {CONTROLLER_LIMIT} degree limit",
+                dome.label
+            );
+
+            // Walk the profile from rim to crest and check what a foot meets at each band
+            // boundary: the tiles either side of it are chords of the same curve, so the
+            // difference between where one ends and the next begins is the step to climb.
+            for ring in 1..DOME_RINGS {
+                let t = ring as f32 / DOME_RINGS as f32;
+                let radius = dome.radius * t;
+                let below = dome.surface_height(dome.center.x + radius + 0.01, dome.center.z);
+                let above = dome.surface_height(dome.center.x + radius - 0.01, dome.center.z);
+                assert!(
+                    (above - below).abs() < STEP_HEIGHT,
+                    "{} steps {:.2} m at ring {ring}",
+                    dome.label,
+                    above - below
+                );
             }
         }
     }

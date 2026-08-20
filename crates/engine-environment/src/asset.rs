@@ -66,13 +66,67 @@ pub const WALL_SEGMENT: EnvironmentAsset = EnvironmentAsset::new("wall_segment")
 pub const PILLAR: EnvironmentAsset = EnvironmentAsset::new("pillar");
 /// A broken arch: the arena's entrance and its one tall landmark.
 pub const ARCH: EnvironmentAsset = EnvironmentAsset::new("arch");
-/// A smooth stone dome: a hemisphere the size of a small hill.
+/// A smooth stone dome: a round hill, wider than it is tall, that a character can walk up.
 ///
 /// The one piece of architecture that is round in every direction, which is why the
 /// line-of-sight course is built from it: a wall answers "is a wall a wall", and a dome
 /// answers the harder question of what happens to a target standing part of the way up
-/// something that curves away from the caster.
+/// something that curves away from the caster. Walking up it is the other half of that
+/// question — see [`dome_profile`].
 pub const DOME: EnvironmentAsset = EnvironmentAsset::new("dome");
+
+/// How tall a dome is, as a fraction of its radius.
+///
+/// Not a hemisphere. A hemisphere's surface is vertical where it meets the ground, so the
+/// only way onto one is to be placed on it — and a hill a player cannot walk up is a hill
+/// that can only be looked at. At this ratio the steepest part of the surface is 35°, which
+/// is inside the character controller's 50° limit with room for the approximation the
+/// collision world makes of it.
+pub const DOME_HEIGHT: f32 = 0.45;
+
+/// The dome's profile: how high the surface is at `t`, the distance from the middle as a
+/// fraction of the radius.
+///
+/// A raised cosine, on a unit dome, so a placement's scale is its radius and its height
+/// follows. The curve is flat at the crest and flat again where it meets the ground, which
+/// is what makes both ends walkable: a profile with a kink at the rim presents a lip the
+/// controller has to step over to get onto a hill that is otherwise gentle.
+///
+/// ```text
+///  y
+///  |    ___
+///  |  /     \        y = DOME_HEIGHT * (1 + cos(pi * t)) / 2
+///  | /       ///  |/         \_
+///  +-------------- t
+///  0            1
+/// ```
+///
+/// One function rather than one curve in the mesh and another in the level, because the
+/// dome is the one asset whose *shape* is gameplay: a dummy stands on it, a ray is stopped
+/// by it and a player walks up it. Two descriptions of it would be two hills.
+#[must_use]
+pub fn dome_profile(t: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0);
+    DOME_HEIGHT * 0.5 * (1.0 + (std::f32::consts::PI * t).cos())
+}
+
+/// The slope of [`dome_profile`] at `t`: `dy/dt` on a unit dome.
+///
+/// Negative, because the surface descends as it goes out. Steepest at the half-way point,
+/// where it is `DOME_HEIGHT * pi / 2`.
+#[must_use]
+pub fn dome_slope(t: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0);
+    -DOME_HEIGHT * 0.5 * std::f32::consts::PI * (std::f32::consts::PI * t).sin()
+}
+
+/// The steepest angle anywhere on a dome, in degrees.
+#[must_use]
+pub fn dome_max_slope_degrees() -> f32 {
+    (DOME_HEIGHT * std::f32::consts::FRAC_PI_2)
+        .atan()
+        .to_degrees()
+}
 
 /// A knee-high boulder. The cheapest scatter piece, and the most numerous.
 pub const ROCK_SMALL: EnvironmentAsset = EnvironmentAsset::new("rock_small");
@@ -159,6 +213,35 @@ mod tests {
         for asset in [GROUND_PLAIN, ARENA_FLOOR, RIDGE, SKY_DOME] {
             assert!(has(asset));
         }
+    }
+
+    #[test]
+    fn a_dome_is_flat_at_both_ends_and_never_steeper_than_a_character_can_walk() {
+        assert!((dome_profile(0.0) - DOME_HEIGHT).abs() < 1e-6);
+        assert!(dome_profile(1.0).abs() < 1e-6);
+        // Outside the footprint there is no dome, and asking for it gets the ground.
+        assert_eq!(dome_profile(1.4), 0.0);
+
+        // Flat at the crest and flat at the rim: both are places a character walks onto the
+        // dome from, and a kink at either is a lip to step over.
+        assert!(dome_slope(0.0).abs() < 1e-6);
+        assert!(dome_slope(1.0).abs() < 1e-4);
+
+        // And monotone in between, or the hill has a dip in it.
+        let mut previous = dome_profile(0.0);
+        for step in 1..=100 {
+            let height = dome_profile(step as f32 / 100.0);
+            assert!(height <= previous + 1e-6, "the profile rises at t = {step}");
+            previous = height;
+        }
+
+        // The controller's limit is 50 degrees. The margin is what the collision world's
+        // approximation of the curve is allowed to cost.
+        let steepest = dome_max_slope_degrees();
+        assert!(
+            (30.0..40.0).contains(&steepest),
+            "the steepest part of a dome is {steepest} degrees"
+        );
     }
 
     #[test]

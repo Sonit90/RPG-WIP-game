@@ -204,7 +204,8 @@ a stated answer for each of them.
 ```text
               x = -18              x = 0               x = +18
 
-  z = -4       (((D)))            (((.)))              (((D)))     three domes, r = 7 m
+  z = -4       (((D)))            (((.)))              (((D)))     three domes, r = 7 m,
+                                                                    h = 3.15 m, walkable
                 3 2 1              empty                1 2 3      dummies on two of them
 
   z = +8     [ P I T ]                                [ P I T ]    9 x 9, 3.5 m deep
@@ -241,12 +242,22 @@ engine_app  --scene los           the scene, its logged instructions and the F3 
 
 Two things are worth knowing about how it is built:
 
-- **A dome blocks as a field of boxes.** `engine-collision` has a plane, a box and an
-  oriented box; a hemisphere is none of them, and one test course is not a reason to grow the
-  narrow phase. Each dome is a 12 × 12 grid of boxes over its footprint, each as tall as the
-  drawn surface above the middle of its cell. The dummies stand on the *analytic* surface, so
-  what the player sees is where they are; the two descriptions differ by less than a cell's
-  rise, which is well inside the margin the near and far stands were placed with.
+- **A dome is a hill, not a hemisphere.** Its profile is a raised cosine — flat at the
+  crest, flat at the rim, 35° at its steepest against the character controller's 50° limit —
+  so the course can be walked as well as looked at, and the same three questions can be asked
+  again from the top of the middle dome. The curve lives in
+  `engine_environment::asset::dome_profile`, and the mesh, the level and the dummies' feet all
+  read that one function: two descriptions of the shape would be two hills.
+- **A dome's surface is tiled with tilted boxes.** `engine-collision` has a plane, a box and
+  an oriented box; a dome is none of them, and one test course is not a reason to grow the
+  narrow phase. So each dome is five bands of oriented boxes, each band tilted to the chord
+  of the profile it spans and sunk by its own half-thickness so its top face lands on the
+  curve. The tiles stay within ten centimetres of the drawn surface and the seam between two
+  bands is a step of under three, against a step height of 0.45.
+
+  The first version of this was a grid of *upright* boxes, each as tall as the surface above
+  it. It blocked a ray perfectly well and was a staircase of metre-high steps to stand on — a
+  hill that could only be looked at, which is half a test bed.
 - **The dummies carry their own floor.** A body that never moves is integrated by
   `movement::step`, which has no collision world and whose whole idea of a floor is the
   arena's `ground_height`. `Body::support_height` is that number per body, so a dummy standing
