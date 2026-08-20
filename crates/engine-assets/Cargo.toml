@@ -18,9 +18,12 @@ log.workspace = true
 # `import` feature drags in an image decoder and a filesystem walker for a job this crate
 # does itself.
 gltf = { version = "1", default-features = false, features = ["utils", "names"] }
-# The only texture container the importer accepts. See `texture.rs` for why the runtime
-# format is uncompressed RGBA and the container is only ever a delivery mechanism.
+# The two containers glTF allows an embedded image to be in. See `texture.rs` for why the
+# runtime format is uncompressed RGBA and a container is only ever a delivery mechanism.
 png = "0.17"
+# JPEG, which is what a DCC tool writes for a base colour map it has no alpha for. Decoder
+# only, pure Rust, no encoder and no other formats dragged along.
+zune-jpeg = "0.4"
 
 [lints]
 workspace = true

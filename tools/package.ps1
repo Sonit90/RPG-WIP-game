@@ -91,6 +91,22 @@ New-Item -ItemType Directory -Force -Path $OutputPath | Out-Null
 Copy-Item $binary -Destination $OutputPath
 Copy-Item (Join-Path $repositoryRoot 'README.md') -Destination $OutputPath -ErrorAction SilentlyContinue
 
+# Content, beside the executable. The loader searches the executable's own directory before
+# the working directory, so a player who double-clicks the .exe from anywhere finds it; a
+# checkout with an empty assets/ still packages, because every model has a procedural
+# fallback and a build with no content directory must still run.
+$assetSource = Join-Path $repositoryRoot 'assets'
+$assetFiles = @(Get-ChildItem -Recurse -File $assetSource -Exclude 'README.md' -ErrorAction SilentlyContinue)
+if ($assetFiles.Count -gt 0) {
+    $assetTarget = Join-Path $OutputPath 'assets'
+    New-Item -ItemType Directory -Force -Path $assetTarget | Out-Null
+    Copy-Item (Join-Path $assetSource '*') -Destination $assetTarget -Recurse -Exclude 'README.md'
+    $assetBytes = ($assetFiles | Measure-Object -Property Length -Sum).Sum
+    Write-Host ("Content: {0} file(s), {1:N1} MB" -f $assetFiles.Count, ($assetBytes / 1MB))
+} else {
+    Write-Host 'Content: none in assets/ - the package uses procedural models only.' -ForegroundColor Yellow
+}
+
 Write-Host "Package written to $OutputPath" -ForegroundColor Cyan
 Write-Host ''
 Write-Host 'Verifying the package...' -ForegroundColor Cyan
@@ -106,7 +122,10 @@ $forbiddenNames = @(
     'performance_test', 'cpu_bench', 'cull_bench', 'showcase',
     'test', 'bench', 'deps', 'incremental'
 )
-foreach ($file in $packaged) {
+# Content is exempt: an artist's file may legitimately be called anything, and it is the
+# build output, not the art, that this check is about.
+$buildOutput = $packaged | Where-Object { $_.FullName -notlike (Join-Path $OutputPath 'assets\*') }
+foreach ($file in $buildOutput) {
     foreach ($pattern in $forbiddenNames) {
         if ($file.Name -like "*$pattern*") {
             $failures += "test/benchmark artefact in package: $($file.Name)"

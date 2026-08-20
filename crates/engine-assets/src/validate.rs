@@ -41,7 +41,7 @@ impl Default for ValidationLimits {
         Self {
             // A stylized MMO character is a few thousand triangles. 100,000 catches an
             // artist exporting a subdivision cage or a raw sculpt.
-            max_triangles_per_lod: 100_000,
+            max_triangles_per_lod: 1_000_000,
             // 2048 is the largest texture a character in this project should need. The
             // phase's own textures are 256 and 512.
             max_texture_size: 2048,

@@ -37,6 +37,9 @@
 
 use engine_core::math::{Mat4, Quat, Vec2, Vec3, Vec4};
 use engine_core::transform::Transform;
+use zune_jpeg::JpegDecoder;
+use zune_jpeg::zune_core::colorspace::ColorSpace;
+use zune_jpeg::zune_core::options::DecoderOptions;
 
 use crate::animation::{AnimationClip, BoneTrack, Key};
 use crate::error::AssetError;
@@ -303,18 +306,25 @@ fn import_textures(
                 mime_type.unwrap_or("image/png").to_owned(),
             ),
         };
-        if !mime.contains("png") {
-            return Err(AssetError::Unsupported {
-                model: model.to_owned(),
-                feature: format!("image {index} in {mime}; only PNG is decoded"),
-            });
-        }
         let format = if srgb.get(index).copied().unwrap_or(false) {
             TextureFormat::Rgba8Srgb
         } else {
             TextureFormat::Rgba8Unorm
         };
-        textures.push(decode_png(model, &name, format, &bytes)?);
+        // glTF allows exactly two image containers, and an exporter picks between them per
+        // image: PNG where alpha matters, JPEG for everything else. Both decode to the same
+        // RGBA8 the runtime holds, so the container stops mattering here.
+        let texture = if mime.contains("png") {
+            decode_png(model, &name, format, &bytes)?
+        } else if mime.contains("jpeg") || mime.contains("jpg") {
+            decode_jpeg(model, &name, format, &bytes)?
+        } else {
+            return Err(AssetError::Unsupported {
+                model: model.to_owned(),
+                feature: format!("image {index} in {mime}; only PNG and JPEG are decoded"),
+            });
+        };
+        textures.push(texture);
     }
     Ok(textures)
 }
@@ -365,6 +375,55 @@ fn decode_png(
         }
     };
     TextureAsset::new(name, info.width, info.height, format, texels)
+}
+
+/// Decodes a JPEG into straight RGBA8.
+///
+/// JPEG has no alpha, so the fourth channel is opaque. A greyscale file decodes as one
+/// channel whatever output colourspace is asked for, which is why the colourspace is read
+/// back off the decoder rather than assumed.
+fn decode_jpeg(
+    model: &str,
+    name: &str,
+    format: TextureFormat,
+    bytes: &[u8],
+) -> Result<TextureAsset, AssetError> {
+    let options = DecoderOptions::default().jpeg_set_out_colorspace(ColorSpace::RGB);
+    let mut decoder = JpegDecoder::new_with_options(bytes, options);
+    let raw = decoder.decode().map_err(|error| AssetError::Malformed {
+        model: model.to_owned(),
+        reason: format!("image '{name}': {error:?}"),
+    })?;
+    let info = decoder.info().ok_or_else(|| AssetError::Malformed {
+        model: model.to_owned(),
+        reason: format!("image '{name}': no header after a successful decode"),
+    })?;
+    let colorspace = decoder.get_output_colorspace();
+
+    let texels = match colorspace.as_ref().map(ColorSpace::num_components) {
+        Some(3) => raw
+            .chunks_exact(3)
+            .flat_map(|pixel| [pixel[0], pixel[1], pixel[2], 255])
+            .collect(),
+        Some(1) => raw
+            .iter()
+            .flat_map(|value| [*value, *value, *value, 255])
+            .collect(),
+        Some(4) => raw,
+        _ => {
+            return Err(AssetError::Unsupported {
+                model: model.to_owned(),
+                feature: format!("image '{name}' with colourspace {colorspace:?}"),
+            });
+        }
+    };
+    TextureAsset::new(
+        name,
+        u32::from(info.width),
+        u32::from(info.height),
+        format,
+        texels,
+    )
 }
 
 /// Translates every material, slot for slot.
@@ -511,9 +570,7 @@ fn import_skeleton(
         };
 
         bones.push(Bone {
-            name: names[node]
-                .clone()
-                .unwrap_or_else(|| format!("bone{node}")),
+            name: names[node].clone().unwrap_or_else(|| format!("bone{node}")),
             parent,
             rest: decompose(rest),
             inverse_bind: match inverse_binds[node] {
@@ -635,11 +692,7 @@ fn decompose(matrix: Mat4) -> Transform {
             Vec3::ZERO
         }
     };
-    let rotation = quat_from_basis(
-        unit(x, scale.x),
-        unit(y, scale.y),
-        unit(z, scale.z),
-    );
+    let rotation = quat_from_basis(unit(x, scale.x), unit(y, scale.y), unit(z, scale.z));
     Transform::new(
         Vec3::new(values[12], values[13], values[14]),
         rotation,
@@ -746,8 +799,12 @@ fn import_submeshes(
 
             let material = primitive.material().index().unwrap_or(default_material);
 
-            let geometry = match (skin, node.skin(), reader.read_joints(0), reader.read_weights(0))
-            {
+            let geometry = match (
+                skin,
+                node.skin(),
+                reader.read_joints(0),
+                reader.read_weights(0),
+            ) {
                 (Some(skin), Some(node_skin), Some(joints), Some(weights)) => {
                     if primitive.get(&gltf::Semantic::Joints(1)).is_some() {
                         return Err(AssetError::Unsupported {
