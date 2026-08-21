@@ -2722,7 +2722,10 @@ impl Application for App {
             }
 
             // While a spell is being aimed both buttons are spoken for — left confirms
-            // where it lands, right cancels — and the talent window owns the pointer too.
+            // where it lands, right cancels — and the talent and character windows own the
+            // pointer too. The character sheet especially: the left button *orbits the
+            // camera*, so without this a drag across the panel steers the world instead of
+            // carrying an item, with the cursor hidden and re-centred the whole way.
             // Cancelled rather than skipped: skipping also skips the *end* of a look, which
             // would leave the cursor hidden if a button came up on the frame one of these
             // opened.
@@ -2731,6 +2734,7 @@ impl Application for App {
             // or pick a spell.
             if self.targeting.is_active()
                 || self.talent_menu.is_open()
+                || self.character_menu.is_open()
                 || self.hud_editor.is_active()
                 || self.slot_menu.is_open()
             {

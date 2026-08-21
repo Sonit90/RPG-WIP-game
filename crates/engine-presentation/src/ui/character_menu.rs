@@ -236,6 +236,25 @@ pub struct Drag {
     pub stack: ItemStack,
     /// Where inside the slot the pointer took hold, so the icon does not jump on pick-up.
     pub grab: (f32, f32),
+    /// Where the pointer is now, updated every frame the item is in the air.
+    ///
+    /// Carried on the drag rather than left to the painter to work out from the slot under
+    /// the cursor: an item being dragged across the gap between two slots is over no slot at
+    /// all, and an icon that snapped back to its origin every time the pointer crossed a gap
+    /// would not look like it was being carried.
+    pub pointer: (f32, f32),
+}
+
+impl Drag {
+    /// Where the dragged icon's top-left corner belongs, for a slot of `size` pixels.
+    ///
+    /// The pointer, less where inside the slot it took hold, so the icon sits under the
+    /// cursor exactly where it was picked up rather than jumping its own width on the first
+    /// frame.
+    #[must_use]
+    pub fn icon_origin(&self) -> (f32, f32) {
+        (self.pointer.0 - self.grab.0, self.pointer.1 - self.grab.1)
+    }
 }
 
 /// The character panel: whether it is open, what the pointer is over, and what it is holding.
@@ -367,6 +386,9 @@ impl CharacterMenu {
         let (x, y) = input.pointer;
         let over = self.slot_at(x, y, viewport);
         self.hovered = over;
+        if let Some(drag) = &mut self.drag {
+            drag.pointer = (x, y);
+        }
         let character = &snapshot.character;
 
         // Picking up: a press on a slot with something in it.
@@ -380,6 +402,7 @@ impl CharacterMenu {
                     from: slot,
                     stack,
                     grab: (x - rect.x, y - rect.y),
+                    pointer: (x, y),
                 });
                 return CharacterMenuOutcome::Idle;
             }
@@ -735,7 +758,7 @@ pub fn push_character_menu(
     push_footer(list, menu, theme, viewport);
 
     // Above everything: what the pointer is holding, then what it is over.
-    push_dragged(list, menu, theme, viewport);
+    push_dragged(list, menu, theme);
     push_tooltip(list, menu, character, theme, scratch, viewport);
 }
 
@@ -1034,7 +1057,7 @@ fn push_slots(
     for worn in EquipSlot::ALL {
         let slot = ItemSlot::Equipment(worn);
         let rect = menu.equipment_rect(worn, viewport);
-        push_slot(list, menu, character, slot, rect, theme, viewport);
+        push_slot(list, menu, character, slot, rect, theme);
 
         // The slot's own name, outside the frame, so an empty slot still says what it is.
         // Left column labels sit to the right of the icon and vice versa, which is what
@@ -1111,7 +1134,7 @@ fn push_inventory(
     for index in 0..INVENTORY_SLOTS {
         let slot = ItemSlot::Inventory(index);
         let rect = menu.cell_rect(index, viewport);
-        push_slot(list, menu, character, slot, rect, theme, viewport);
+        push_slot(list, menu, character, slot, rect, theme);
     }
 }
 
@@ -1123,7 +1146,6 @@ fn push_slot(
     slot: ItemSlot,
     rect: UiRect,
     theme: &CharacterTheme,
-    viewport: (u32, u32),
 ) {
     let scale = menu.metrics().scale;
     let held = character.at(slot);
@@ -1194,17 +1216,10 @@ fn push_slot(
     if let Some((thickness, color)) = outline {
         list.outline(rect, scale.px(thickness), color);
     }
-
-    let _ = viewport;
 }
 
 /// The item in the air, drawn under the pointer.
-fn push_dragged(
-    list: &mut UiDrawList,
-    menu: &CharacterMenu,
-    theme: &CharacterTheme,
-    viewport: (u32, u32),
-) {
+fn push_dragged(list: &mut UiDrawList, menu: &CharacterMenu, theme: &CharacterTheme) {
     let Some(drag) = menu.drag() else {
         return;
     };
@@ -1213,13 +1228,8 @@ fn push_dragged(
     };
     let metrics = menu.metrics();
     let scale = metrics.scale;
-    // The pointer position is not carried on the menu, so the icon is placed relative to the
-    // slot the pointer is over; while nothing is under it, it stays on its origin slot. That
-    // keeps this function free of a second copy of the pointer and is invisible in practice,
-    // because a drag that is over nothing is a drag about to be cancelled.
-    let anchor = menu.hovered().unwrap_or(drag.from);
-    let rect = menu.slot_rect(anchor, viewport);
-    let ghost = UiRect::new(rect.x, rect.y, metrics.slot, metrics.slot);
+    let (x, y) = drag.icon_origin();
+    let ghost = UiRect::new(x, y, metrics.slot, metrics.slot);
     list.rect(ghost, theme.slot_filled);
     list.icon(
         ghost.inset(scale.px(3.0)),
@@ -1550,6 +1560,23 @@ mod tests {
             .iter()
             .filter_map(|command| match command {
                 UiCommand::Icon { icon, .. } => Some(*icon),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn icon_rects(list: &UiDrawList) -> Vec<UiRect> {
+        drawn_icons(list)
+            .into_iter()
+            .map(|(_, rect, _)| rect)
+            .collect()
+    }
+
+    fn drawn_icons(list: &UiDrawList) -> Vec<(UiIcon, UiRect, UiColor)> {
+        list.commands()
+            .iter()
+            .filter_map(|command| match command {
+                UiCommand::Icon { icon, rect, tint } => Some((*icon, *rect, *tint)),
                 _ => None,
             })
             .collect()
@@ -2001,6 +2028,87 @@ mod tests {
         for slot in EquipSlot::ALL {
             assert!(menu.equipment_rect(slot, SMALLEST).bottom() <= grid.y);
         }
+    }
+
+    #[test]
+    fn the_dragged_item_is_drawn_under_the_cursor_and_follows_it() {
+        let snapshot = snapshot();
+        let mut menu = open();
+        let origin = menu.equipment_rect(EquipSlot::Chest, VIEWPORT);
+
+        // Picked up a few pixels in from the slot's corner.
+        let grab = (origin.x + 9.0, origin.y + 7.0);
+        menu.update(&press(grab.0, grab.1), &snapshot, VIEWPORT);
+        let drag = menu.drag().expect("the chestpiece is in the air");
+        assert_eq!(drag.grab, (9.0, 7.0));
+        assert_eq!(drag.icon_origin(), (origin.x, origin.y));
+
+        // Moved across the panel, over no slot at all: the item stays in the air and the
+        // icon is under the cursor rather than back on the slot it came from.
+        let held = UiInput {
+            pointer_down: true,
+            ..at(grab.0 + 260.0, grab.1 + 31.0)
+        };
+        menu.update(&held, &snapshot, VIEWPORT);
+        let drag = menu.drag().expect("crossing a gap dropped the item");
+        assert_eq!(drag.icon_origin(), (origin.x + 260.0, origin.y + 31.0));
+
+        let drawn = icon_rects(&render(&menu, &snapshot));
+        assert!(
+            drawn
+                .iter()
+                .any(|rect| (rect.x - drag.icon_origin().0).abs() < menu.metrics().slot),
+            "no icon is drawn near the cursor"
+        );
+    }
+
+    #[test]
+    fn the_slot_an_item_was_picked_up_from_reads_as_empty_while_it_is_held() {
+        let snapshot = snapshot();
+        let mut menu = open();
+        let origin = menu.equipment_rect(EquipSlot::Chest, VIEWPORT);
+        let (x, y) = centre(origin);
+
+        // An empty slot draws the family it wants at a fraction of full alpha; a filled one
+        // draws the item at full. Dragging the item out has to turn the first into the
+        // second, or the item is on screen twice.
+        let opaque_in_origin = |menu: &CharacterMenu| {
+            drawn_icons(&render(menu, &snapshot))
+                .into_iter()
+                .filter(|(_, rect, tint)| {
+                    tint[3] > 0.5
+                        && rect.x >= origin.x
+                        && rect.right() <= origin.right()
+                        && rect.y >= origin.y
+                        && rect.bottom() <= origin.bottom()
+                })
+                .count()
+        };
+
+        assert_eq!(opaque_in_origin(&menu), 1, "the chestpiece is not drawn");
+        menu.update(&press(x, y), &snapshot, VIEWPORT);
+
+        // One opaque icon in that rectangle, and it is the one in the air: on the frame of
+        // the press the cursor has not moved yet, so the ghost sits exactly on the slot.
+        assert_eq!(
+            opaque_in_origin(&menu),
+            1,
+            "the item is drawn both in its slot and in the air"
+        );
+        let drag = menu.drag().expect("something is held");
+        assert_eq!(drag.icon_origin(), (origin.x, origin.y));
+
+        // Moved away, the origin slot keeps only its dim hint.
+        let held = UiInput {
+            pointer_down: true,
+            ..at(x + 300.0, y)
+        };
+        menu.update(&held, &snapshot, VIEWPORT);
+        assert_eq!(
+            opaque_in_origin(&menu),
+            0,
+            "the item stayed behind in the slot it left"
+        );
     }
 
     #[test]
