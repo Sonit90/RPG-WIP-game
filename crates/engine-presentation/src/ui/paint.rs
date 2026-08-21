@@ -12,7 +12,7 @@
 
 use engine_render_data::ui::{TextAlign, UiColor, UiDrawList, UiRect, UiScale};
 
-use super::menu::{MenuScreen, MenuSystem, PauseItem};
+use super::menu::{HeroItem, MenuScreen, MenuSystem, PauseItem};
 use super::widget::{Slider, Widget, WidgetState};
 
 /// How the menus are coloured and sized.
@@ -155,7 +155,40 @@ pub fn push_menu(
         MenuScreen::None => {}
         MenuScreen::Pause => push_pause(list, menu, theme, viewport, scale),
         MenuScreen::Settings => push_settings(list, menu, theme, scratch, viewport, scale),
+        MenuScreen::Heroes => push_heroes(list, menu, theme, viewport, scale),
         MenuScreen::Nameplates => push_nameplates(list, menu, theme, scratch, viewport, scale),
+    }
+}
+
+/// The hero roster: one ticked row per playable character, a line saying what it is, and a
+/// way back.
+///
+/// The tick is the checkbox's own, so "which hero am I" is drawn by the same widget that
+/// draws every other yes-or-no in the menu. The description is the only thing this screen
+/// adds, and it is read straight off the hero rather than written down here.
+fn push_heroes(
+    list: &mut UiDrawList,
+    menu: &MenuSystem,
+    theme: &MenuTheme,
+    viewport: (u32, u32),
+    scale: UiScale,
+) {
+    let panel = menu.hero_panel();
+    push_backdrop(list, theme, viewport, panel, "SWAP HERO", scale);
+    for (item, widget) in menu.hero_screen().widgets() {
+        push_widget(list, widget, theme, scale);
+        let HeroItem::Hero(hero) = item else {
+            continue;
+        };
+        // In the gap the layout reserved under the row, indented to line up with the label
+        // beside the tick.
+        let rect = widget.rect();
+        list.text_at(
+            (rect.x + scale.px(48.0), rect.bottom() + scale.px(6.0)),
+            hero.description(),
+            theme.text_disabled,
+            scale.text(0.8),
+        );
     }
 }
 

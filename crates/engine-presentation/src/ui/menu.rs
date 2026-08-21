@@ -29,9 +29,11 @@ use engine_settings::{
     VOLUME_STEP,
 };
 
+use engine_game::hero::Hero;
+
 use super::input::UiInput;
 use super::screen::UiScreen;
-use super::widget::{Button, Slider, Widget, WidgetEvent};
+use super::widget::{Button, Checkbox, Slider, Widget, WidgetEvent};
 
 /// Which menu is on screen.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -43,6 +45,13 @@ pub enum MenuScreen {
     Pause,
     /// The settings screen.
     Settings,
+    /// The hero roster: which of the playable characters the player is.
+    ///
+    /// Reached from the pause menu rather than from the settings, because which hero you are
+    /// is a fact about the *game* and not a preference about the client — it changes the bar,
+    /// the model and what the player can do, and none of that belongs beside a volume
+    /// slider.
+    Heroes,
     /// The nameplate section of the settings.
     ///
     /// Its own screen rather than six more rows on the settings panel: twelve sliders in one
@@ -62,6 +71,8 @@ impl MenuScreen {
 /// The pause menu's items, in layout order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PauseItem {
+    /// Opens the hero roster.
+    SwapHero,
     /// Leaves the menu and turns HUD editing on.
     ///
     /// Not a screen of its own: the editor *is* the HUD, so the menu closes rather than
@@ -92,6 +103,15 @@ pub enum SettingsItem {
     AmbientVolume,
     /// Opens the nameplate section.
     Nameplates,
+    /// Returns to the pause menu.
+    Back,
+}
+
+/// The hero screen's items, in layout order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HeroItem {
+    /// One of the playable heroes. Ticked when it is the one the player already is.
+    Hero(Hero),
     /// Returns to the pause menu.
     Back,
 }
@@ -172,6 +192,16 @@ pub enum MenuAction {
     VolumeChanged(VolumeChannel, f32),
     /// A volume settled on this value. Apply it and persist it.
     VolumeCommitted(VolumeChannel, f32),
+    /// The hero roster opened.
+    OpenedHeroes,
+    /// The hero roster closed back to the pause menu.
+    ClosedHeroes,
+    /// The player chose a hero. Becoming it is the application's to carry out.
+    ///
+    /// Emitted even for the hero the player already is: the menu reports what was pressed
+    /// and the application decides that nothing changed, which is the same division every
+    /// other action here follows.
+    HeroSelected(Hero),
     /// The nameplate screen opened.
     OpenedNameplates,
     /// The nameplate screen closed back to the settings screen.
@@ -221,6 +251,8 @@ mod layout {
     pub const SLIDER_VALUE_HEIGHT: f32 = 30.0;
     /// Width reserved either side of a track for its minimum and maximum.
     pub const BOUND_WIDTH: f32 = 62.0;
+    /// Height of the line of description under a hero's row.
+    pub const HERO_DESCRIPTION_HEIGHT: f32 = 26.0;
 }
 
 /// The sliders on the settings screen, in the order they are stacked.
@@ -282,6 +314,8 @@ pub struct MenuMetrics {
     pub slider_value_height: f32,
     /// `layout::BOUND_WIDTH` in physical pixels.
     pub bound_width: f32,
+    /// `layout::HERO_DESCRIPTION_HEIGHT` in physical pixels.
+    pub hero_description_height: f32,
 }
 
 impl MenuMetrics {
@@ -300,6 +334,7 @@ impl MenuMetrics {
             slider_label_height: scale.px(layout::SLIDER_LABEL_HEIGHT),
             slider_value_height: scale.px(layout::SLIDER_VALUE_HEIGHT),
             bound_width: scale.px(layout::BOUND_WIDTH),
+            hero_description_height: scale.px(layout::HERO_DESCRIPTION_HEIGHT),
         }
     }
 }
@@ -322,7 +357,14 @@ pub struct MenuSystem {
     title: &'static str,
     pause: UiScreen<PauseItem>,
     settings: UiScreen<SettingsItem>,
+    heroes: UiScreen<HeroItem>,
     nameplates: UiScreen<NameplateItem>,
+    /// Which hero the roster shows a tick beside.
+    ///
+    /// A copy of what the simulation says, pushed in by the application. The menu never
+    /// decides it: pressing a hero emits an action, and the tick moves when the game comes
+    /// back and says it moved.
+    hero: Hero,
     /// This frame's actions. Cleared every update, never freed.
     actions: Vec<MenuAction>,
     /// The viewport the current layout was computed for.
@@ -340,6 +382,7 @@ impl MenuSystem {
     #[must_use]
     pub fn new(settings: GameSettings, title: &'static str) -> Self {
         let mut pause = UiScreen::new();
+        pause.push(PauseItem::SwapHero, Button::new("SWAP HERO"));
         pause.push(PauseItem::EditHud, Button::new("EDIT HUD"));
         pause.push(PauseItem::Settings, Button::new("SETTINGS"));
         pause.push(PauseItem::Quit, Button::new("QUIT"));
@@ -381,6 +424,17 @@ impl MenuSystem {
         settings_screen.push(SettingsItem::Nameplates, Button::new("NAMEPLATES"));
         settings_screen.push(SettingsItem::Back, Button::new("BACK"));
 
+        // The roster. One row per hero, built from `Hero::ALL`, so a fourth playable
+        // character is a row in that array and nothing here.
+        let mut hero_screen = UiScreen::new();
+        for hero in Hero::ALL {
+            hero_screen.push(
+                HeroItem::Hero(hero),
+                Checkbox::new(hero.name()).checked(hero == Hero::default()),
+            );
+        }
+        hero_screen.push(HeroItem::Back, Button::new("BACK"));
+
         // The nameplate section. Every slider is built from the setting itself — its label,
         // its bounds, its step and how many decimals it prints — so adding a seventh is a
         // row in `NameplateSetting::ALL` and nothing here.
@@ -405,7 +459,9 @@ impl MenuSystem {
             title,
             pause,
             settings: settings_screen,
+            heroes: hero_screen,
             nameplates: nameplate_screen,
+            hero: Hero::default(),
             actions: Vec::with_capacity(4),
             viewport: (0, 0),
             metrics: MenuMetrics::new(UiScale::new(settings.ui_scale)),
@@ -450,6 +506,32 @@ impl MenuSystem {
         match self.settings.widget(SettingsItem::CameraSensitivity) {
             Some(Widget::Slider(slider)) => Some(slider),
             _ => None,
+        }
+    }
+
+    /// The hero roster's widgets, for drawing.
+    #[must_use]
+    pub fn hero_screen(&self) -> &UiScreen<HeroItem> {
+        &self.heroes
+    }
+
+    /// Which hero the roster is ticking.
+    #[must_use]
+    pub fn hero(&self) -> Hero {
+        self.hero
+    }
+
+    /// Tells the menu which hero the player now is.
+    ///
+    /// The application calls this after the simulation has actually swapped, which is what
+    /// keeps the tick a report rather than a promise.
+    pub fn set_hero(&mut self, hero: Hero) {
+        self.hero = hero;
+        for candidate in Hero::ALL {
+            if let Some(Widget::Checkbox(tick)) = self.heroes.widget_mut(HeroItem::Hero(candidate))
+            {
+                tick.set_checked(candidate == hero);
+            }
         }
     }
 
@@ -550,6 +632,7 @@ impl MenuSystem {
         self.screen = MenuScreen::None;
         self.pause.reset();
         self.settings.reset();
+        self.heroes.reset();
         self.nameplates.reset();
         self.actions.push(MenuAction::Closed);
     }
@@ -565,17 +648,33 @@ impl MenuSystem {
         self.viewport = viewport;
         self.layout_pause(viewport);
         self.layout_settings(viewport);
+        self.layout_heroes(viewport);
         self.layout_nameplates(viewport);
     }
 
     /// The panel the pause menu draws in.
     #[must_use]
     pub fn pause_panel(&self) -> UiRect {
-        // A group of two, then QUIT, then a separated RESUME.
+        // A group of three, then QUIT, then a separated RESUME.
         let content = self.metrics.title_height
-            + self.metrics.button_height * 4.0
-            + self.metrics.button_gap
+            + self.metrics.button_height * 5.0
+            + self.metrics.button_gap * 2.0
             + self.metrics.group_gap * 2.0;
+        self.centred_panel(self.viewport, content + self.metrics.padding * 2.0)
+    }
+
+    /// The panel the hero roster draws in.
+    ///
+    /// One row per hero with a line of description under each, then a separated BACK.
+    #[must_use]
+    pub fn hero_panel(&self) -> UiRect {
+        let row = self.metrics.button_height
+            + self.metrics.hero_description_height
+            + self.metrics.button_gap;
+        let content = self.metrics.title_height
+            + row * Hero::ALL.len() as f32
+            + self.metrics.group_gap
+            + self.metrics.button_height;
         self.centred_panel(self.viewport, content + self.metrics.padding * 2.0)
     }
 
@@ -625,6 +724,11 @@ impl MenuSystem {
         let mut y = panel.y + self.metrics.padding + self.metrics.title_height;
 
         // Group one: the things that change the game without leaving it.
+        self.pause.set_rect(
+            PauseItem::SwapHero,
+            UiRect::new(x, y, width, self.metrics.button_height),
+        );
+        y += self.metrics.button_height + self.metrics.button_gap;
         self.pause.set_rect(
             PauseItem::EditHud,
             UiRect::new(x, y, width, self.metrics.button_height),
@@ -685,6 +789,37 @@ impl MenuSystem {
         );
     }
 
+    fn layout_heroes(&mut self, viewport: (u32, u32)) {
+        self.viewport = viewport;
+        let panel = self.hero_panel();
+        let x = panel.x + self.metrics.padding;
+        let width = panel.width - self.metrics.padding * 2.0;
+        let mut y = panel.y + self.metrics.padding + self.metrics.title_height;
+
+        for hero in Hero::ALL {
+            self.heroes.set_rect(
+                HeroItem::Hero(hero),
+                UiRect::new(x, y, width, self.metrics.button_height),
+            );
+            // The gap under a row is the description's line plus the ordinary spacing: the
+            // text is drawn in it, so the layout reserves it rather than the painter
+            // borrowing the next row's.
+            y += self.metrics.button_height
+                + self.metrics.hero_description_height
+                + self.metrics.button_gap;
+        }
+
+        self.heroes.set_rect(
+            HeroItem::Back,
+            UiRect::new(
+                x,
+                y - self.metrics.button_gap + self.metrics.group_gap,
+                width,
+                self.metrics.button_height,
+            ),
+        );
+    }
+
     fn layout_nameplates(&mut self, viewport: (u32, u32)) {
         self.viewport = viewport;
         let panel = self.nameplate_panel();
@@ -730,6 +865,7 @@ impl MenuSystem {
             }
             MenuScreen::Pause => self.update_pause(input),
             MenuScreen::Settings => self.update_settings(input),
+            MenuScreen::Heroes => self.update_heroes(input),
             MenuScreen::Nameplates => self.update_nameplates(input),
         }
         &self.actions
@@ -743,11 +879,13 @@ impl MenuSystem {
             return;
         }
         let mut open_settings = false;
+        let mut open_heroes = false;
         for (item, event) in self.pause.update(input) {
             if *event != WidgetEvent::Activated {
                 continue;
             }
             match item {
+                PauseItem::SwapHero => open_heroes = true,
                 PauseItem::EditHud => {
                     // The menu gets out of the way: what the player is about to arrange is
                     // underneath it.
@@ -763,12 +901,61 @@ impl MenuSystem {
                 }
             }
         }
+        if open_heroes {
+            self.screen = MenuScreen::Heroes;
+            self.pause.reset();
+            self.heroes.reset();
+            self.actions.push(MenuAction::OpenedHeroes);
+            return;
+        }
         if open_settings {
             self.screen = MenuScreen::Settings;
             self.pause.reset();
             self.settings.reset();
             self.actions.push(MenuAction::OpenedSettings);
         }
+    }
+
+    /// The hero roster: one row per hero, and a way back.
+    ///
+    /// Choosing a hero closes the menu. A swap changes the bar, the model and everything the
+    /// player is holding, and a panel still covering the screen afterwards would hide the
+    /// only thing that just happened.
+    fn update_heroes(&mut self, input: &UiInput) {
+        if input.cancel {
+            self.back_to_pause_from_heroes();
+            return;
+        }
+        let mut chosen = None;
+        let mut back = false;
+        for (item, event) in self.heroes.update(input) {
+            match (item, event) {
+                (HeroItem::Back, WidgetEvent::Activated) => back = true,
+                // A checkbox reports the tick it just moved. Which hero was pressed is what
+                // matters; the tick itself is put back where the game says it belongs below.
+                (HeroItem::Hero(hero), WidgetEvent::Toggled(_) | WidgetEvent::Activated) => {
+                    chosen = Some(*hero);
+                }
+                _ => {}
+            }
+        }
+        let hero = self.hero;
+        self.set_hero(hero);
+        if let Some(hero) = chosen {
+            self.actions.push(MenuAction::HeroSelected(hero));
+            self.close();
+            return;
+        }
+        if back {
+            self.back_to_pause_from_heroes();
+        }
+    }
+
+    fn back_to_pause_from_heroes(&mut self) {
+        self.screen = MenuScreen::Pause;
+        self.heroes.reset();
+        self.pause.reset();
+        self.actions.push(MenuAction::ClosedHeroes);
     }
 
     fn update_settings(&mut self, input: &UiInput) {
@@ -988,6 +1175,104 @@ mod tests {
         let (x, y) = centre_of_settings(menu, item);
         menu.update(&press(x, y));
         menu.update(&release(x, y)).to_vec()
+    }
+
+    fn centre_of_hero(menu: &MenuSystem, item: HeroItem) -> (f32, f32) {
+        let rect = menu
+            .hero_screen()
+            .widget(item)
+            .expect("the item exists")
+            .rect();
+        (rect.x + rect.width * 0.5, rect.y + rect.height * 0.5)
+    }
+
+    fn click_hero(menu: &mut MenuSystem, item: HeroItem) -> Vec<MenuAction> {
+        let (x, y) = centre_of_hero(menu, item);
+        menu.update(&press(x, y));
+        menu.update(&release(x, y)).to_vec()
+    }
+
+    #[test]
+    fn the_pause_menu_offers_the_hero_roster_and_escape_comes_back_from_it() {
+        let mut menu = menu();
+        menu.open_pause();
+        let actions = click_pause(&mut menu, PauseItem::SwapHero);
+        assert_eq!(actions, [MenuAction::OpenedHeroes]);
+        assert_eq!(menu.screen(), MenuScreen::Heroes);
+
+        let actions = menu.update(&escape()).to_vec();
+        assert_eq!(actions, [MenuAction::ClosedHeroes]);
+        assert_eq!(menu.screen(), MenuScreen::Pause);
+    }
+
+    #[test]
+    fn the_roster_lists_every_hero_and_ticks_the_one_you_are() {
+        let mut menu = menu();
+        for hero in Hero::ALL {
+            let widget = menu
+                .hero_screen()
+                .widget(HeroItem::Hero(hero))
+                .expect("every hero has a row");
+            let Widget::Checkbox(tick) = widget else {
+                panic!("a hero's row is a tick box");
+            };
+            assert_eq!(tick.label, hero.name());
+            assert_eq!(tick.checked, hero == Hero::default());
+        }
+
+        menu.set_hero(Hero::Druid);
+        assert_eq!(menu.hero(), Hero::Druid);
+        for hero in Hero::ALL {
+            let Some(Widget::Checkbox(tick)) = menu.hero_screen().widget(HeroItem::Hero(hero))
+            else {
+                panic!("a hero's row is a tick box");
+            };
+            assert_eq!(tick.checked, hero == Hero::Druid, "{hero:?}");
+        }
+    }
+
+    #[test]
+    fn choosing_a_hero_reports_it_and_leaves_the_menu() {
+        let mut menu = menu();
+        menu.open_pause();
+        click_pause(&mut menu, PauseItem::SwapHero);
+        let actions = click_hero(&mut menu, HeroItem::Hero(Hero::Warrior));
+        assert_eq!(
+            actions,
+            [MenuAction::HeroSelected(Hero::Warrior), MenuAction::Closed]
+        );
+        assert!(!menu.is_open());
+
+        // The menu did not decide anything: until the application says the swap happened,
+        // the tick is still on the hero the game says the player is.
+        assert_eq!(menu.hero(), Hero::default());
+        let Some(Widget::Checkbox(tick)) = menu.hero_screen().widget(HeroItem::Hero(Hero::Warrior))
+        else {
+            panic!("a hero's row is a tick box");
+        };
+        assert!(
+            !tick.checked,
+            "the menu ticked a hero the game has not made"
+        );
+    }
+
+    #[test]
+    fn the_roster_leaves_room_for_every_row_it_draws() {
+        // The same rule the settings panel follows: a panel that is not tall enough for its
+        // contents puts the last row outside the box it is drawn in.
+        let menu = menu();
+        let panel = menu.hero_panel();
+        let back = menu
+            .hero_screen()
+            .widget(HeroItem::Back)
+            .expect("the way back exists")
+            .rect();
+        assert!(
+            back.bottom() <= panel.bottom() + 0.5,
+            "BACK ends at {} in a panel that ends at {}",
+            back.bottom(),
+            panel.bottom()
+        );
     }
 
     #[test]

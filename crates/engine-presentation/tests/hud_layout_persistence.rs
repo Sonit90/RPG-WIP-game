@@ -12,6 +12,7 @@
 
 use engine_core::input::{KeyChord, KeyCode};
 use engine_game::firemage::FireAbility;
+use engine_game::hero::Hero;
 use engine_game::input_map::Bindings;
 use engine_presentation::ui::action_bar::{ActionBarSet, SlotAddress};
 use engine_presentation::ui::hud_layout::{HudElementId, HudLayout};
@@ -90,7 +91,7 @@ fn a_first_launch_writes_the_class_bar_and_the_second_reads_it_back() {
     // First launch: no file, so the application fills bar one in and saves.
     let mut manager = HudConfigManager::load(dir.file());
     assert!(!manager.existed(), "a file appeared from nowhere");
-    let bars = ActionBarSet::with_default_bindings();
+    let bars = ActionBarSet::with_default_bindings(Hero::default());
     let layout = HudLayout::new(manager.config().clone());
     save(&mut manager, &layout, &bars);
 
@@ -114,7 +115,7 @@ fn a_cleared_bar_stays_cleared_across_a_restart() {
     // the player deliberately did.
     let dir = TempDir::new("cleared");
     let mut manager = HudConfigManager::load(dir.file());
-    let mut bars = ActionBarSet::with_default_bindings();
+    let mut bars = ActionBarSet::with_default_bindings(Hero::default());
     for slot in 0..engine_settings::hud::ACTION_BAR_SLOTS {
         bars.clear_slot(SlotAddress::new(0, slot));
     }
@@ -135,7 +136,7 @@ fn a_whole_arrangement_survives_a_restart() {
     let dir = TempDir::new("arrangement");
     let mut manager = HudConfigManager::load(dir.file());
     let mut layout = HudLayout::new(manager.config().clone());
-    let mut bars = ActionBarSet::with_default_bindings();
+    let mut bars = ActionBarSet::with_default_bindings(Hero::default());
     let bindings = Bindings::default();
 
     // Everything the brief asks to persist, changed from its default.
@@ -216,7 +217,7 @@ fn an_arrangement_means_the_same_thing_at_every_resolution() {
     save(
         &mut manager,
         &layout,
-        &ActionBarSet::with_default_bindings(),
+        &ActionBarSet::with_default_bindings(Hero::default()),
     );
 
     // Restart on a different display. Everything is in the same relative place, and nothing
@@ -280,7 +281,7 @@ fn a_hand_edited_file_full_of_nonsense_still_produces_a_playable_hud() {
 fn no_two_slots_share_a_key_through_a_save_and_a_reload() {
     let dir = TempDir::new("keys");
     let mut manager = HudConfigManager::load(dir.file());
-    let mut bars = ActionBarSet::with_default_bindings();
+    let mut bars = ActionBarSet::with_default_bindings(Hero::default());
     let bindings = Bindings::default();
 
     // Hand `1` from bar one to bar four, the way the slot menu's REPLACE does.

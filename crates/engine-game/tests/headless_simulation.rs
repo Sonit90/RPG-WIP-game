@@ -46,7 +46,7 @@ fn feed(
     commands: &mut Vec<PlayerCommand>,
 ) {
     commands.clear();
-    Bindings::default().write_commands(input, yaw, commands);
+    Bindings::default().write_commands(engine_game::Hero::default(), input, yaw, commands);
     simulation.push_commands(commands.iter().copied());
 }
 

@@ -22,6 +22,7 @@ use engine_game::firemage::{
     ABILITY_SLOTS, AbilityError, ENERGY_MAXIMUM, FireAbility, FireMastery, HEAT_HOT_THRESHOLD,
     HEAT_MAXIMUM, HEAT_WARM_THRESHOLD, HeatTier, TALENTS, TalentId, ULTIMATE_ENABLED,
 };
+use engine_game::hero::Hero;
 use engine_game::sim::Simulation;
 use engine_game::status::StatusKind;
 use engine_game::world::EntityKind;
@@ -499,10 +500,16 @@ pub struct UiSnapshot {
     /// The party, local player first. Rebuilt in place; never reallocated after the first
     /// frame that needed the capacity.
     pub party: Vec<PartyMemberView>,
-    /// The ability bar, in bar order.
-    pub abilities: [AbilitySlotView; ABILITY_SLOTS],
-    /// The Ultimate, which is not on the bar.
-    pub ultimate: AbilitySlotView,
+    /// Which hero the player is. What the swap menu ticks, and what the bar is built from.
+    pub hero: Hero,
+    /// The ability bar, in bar order. `None` in a slot the current hero does not fill.
+    ///
+    /// An option per slot rather than a shorter array: slot four is the `4` key whichever
+    /// hero is holding it, and a bar that renumbered itself per class would move a player's
+    /// muscle memory every time they swapped.
+    pub abilities: [Option<AbilitySlotView>; ABILITY_SLOTS],
+    /// The Ultimate, for a hero that has one. The Warrior and the Druid do not.
+    pub ultimate: Option<AbilitySlotView>,
     /// The cast in progress.
     pub cast: Option<CastView>,
     /// The fight so far.
@@ -524,6 +531,23 @@ pub struct UiSnapshot {
 }
 
 impl UiSnapshot {
+    /// The button state of one ability, whichever slot it is in and whether it is the
+    /// Ultimate.
+    ///
+    /// The lookup an action bar does: a slot holds an *ability*, and the view for it is
+    /// whatever the snapshot has for that ability. `None` covers both "nothing there" and
+    /// "the current hero cannot cast that", which are the same thing to a button — an
+    /// assignment left behind by another hero draws as an empty slot rather than as
+    /// somebody else's spell.
+    #[must_use]
+    pub fn ability_view(&self, ability: FireAbility) -> Option<&AbilitySlotView> {
+        self.abilities
+            .iter()
+            .flatten()
+            .chain(self.ultimate.iter())
+            .find(|view| view.ability == ability)
+    }
+
     /// Reads the simulation.
     #[must_use]
     pub fn build(simulation: &Simulation) -> Self {
@@ -553,8 +577,9 @@ impl UiSnapshot {
             target: None,
             target_of_target: None,
             party: Vec::with_capacity(engine_game::party::MAX_PARTY),
-            abilities: [ability_view(simulation, FireAbility::Firebolt, aiming); ABILITY_SLOTS],
-            ultimate: ability_view(simulation, FireAbility::Cataclysm, aiming),
+            hero: simulation.hero(),
+            abilities: [None; ABILITY_SLOTS],
+            ultimate: None,
             cast: None,
             combat: CombatView::default(),
             notification: NotificationView::default(),
@@ -626,10 +651,14 @@ impl UiSnapshot {
             });
         }
 
-        for (slot, ability) in FireAbility::BAR.into_iter().enumerate() {
-            self.abilities[slot] = ability_view(simulation, ability, aiming);
+        self.hero = simulation.hero();
+        for (slot, ability) in simulation.hero().bar().into_iter().enumerate() {
+            self.abilities[slot] = ability.map(|ability| ability_view(simulation, ability, aiming));
         }
-        self.ultimate = ability_view(simulation, FireAbility::Cataclysm, aiming);
+        self.ultimate = simulation
+            .hero()
+            .ultimate()
+            .map(|ability| ability_view(simulation, ability, aiming));
 
         self.cast = simulation.casting().map(|cast| CastView {
             ability: cast.ability,
@@ -829,6 +858,11 @@ mod tests {
         simulation
     }
 
+    /// The view in bar slot `slot`, which the mage's bar fills all ten of.
+    fn filled(snapshot: &UiSnapshot, slot: usize) -> AbilitySlotView {
+        snapshot.abilities[slot].expect("the mage fills every slot of its bar")
+    }
+
     #[test]
     fn selecting_yourself_dims_exactly_the_spells_that_need_an_enemy() {
         // The bar's answer to a friendly selection, checked ability by ability. What may
@@ -840,8 +874,10 @@ mod tests {
         let snapshot = UiSnapshot::build(&simulation);
 
         let availability = |ability: FireAbility| {
-            let slot = ability.bar_slot().expect("a bar ability");
-            snapshot.abilities[slot].availability
+            snapshot
+                .ability_view(ability)
+                .expect("a bar ability")
+                .availability
         };
         for ability in [
             FireAbility::Firebolt,
@@ -877,9 +913,11 @@ mod tests {
     fn an_enemy_selection_leaves_the_single_target_spells_alone() {
         // The control for the test above: the same bar, with a dummy selected instead.
         let snapshot = UiSnapshot::build(&arena());
-        let slot = FireAbility::Firebolt.bar_slot().expect("a bar ability");
         assert_ne!(
-            snapshot.abilities[slot].availability,
+            snapshot
+                .ability_view(FireAbility::Firebolt)
+                .expect("a bar ability")
+                .availability,
             SlotAvailability::InvalidTarget
         );
     }
@@ -887,7 +925,12 @@ mod tests {
     #[test]
     fn the_bar_is_the_ten_designed_abilities_and_the_ultimate_is_separate() {
         let snapshot = UiSnapshot::build(&arena());
-        let names: Vec<&str> = snapshot.abilities.iter().map(|slot| slot.name).collect();
+        let names: Vec<&str> = snapshot
+            .abilities
+            .iter()
+            .flatten()
+            .map(|slot| slot.name)
+            .collect();
         assert_eq!(
             names,
             [
@@ -903,7 +946,10 @@ mod tests {
                 "BLINK",
             ]
         );
-        assert_eq!(snapshot.ultimate.name, "CATACLYSM");
+        assert_eq!(
+            snapshot.ultimate.expect("the mage has an Ultimate").name,
+            "CATACLYSM"
+        );
         assert!(
             !names.contains(&"CATACLYSM"),
             "the ultimate is on the regular bar"
@@ -913,11 +959,11 @@ mod tests {
     #[test]
     fn charges_are_reported_only_where_there_are_several() {
         let snapshot = UiSnapshot::build(&arena());
-        let lance = snapshot.abilities[1];
+        let lance = filled(&snapshot, 1);
         assert_eq!((lance.charges, lance.max_charges), (2, 2));
         assert!(lance.shows_charges());
 
-        let firebolt = snapshot.abilities[0];
+        let firebolt = filled(&snapshot, 0);
         assert!(!firebolt.shows_charges(), "firebolt has one charge");
     }
 
@@ -930,7 +976,7 @@ mod tests {
         simulation.step_many(60);
 
         let snapshot = UiSnapshot::build(&simulation);
-        let blink = snapshot.abilities[9];
+        let blink = filled(&snapshot, 9);
         assert_eq!(blink.charges, 0);
         assert!(blink.is_cooling());
         assert!(blink.cooldown_remaining > 0.0);
@@ -943,7 +989,7 @@ mod tests {
         let mut simulation = arena();
         let snapshot = UiSnapshot::build(&simulation);
         assert_eq!(
-            snapshot.abilities[6].availability,
+            filled(&snapshot, 6).availability,
             SlotAvailability::InvalidTarget,
             "it offered itself against a cold target"
         );
@@ -958,10 +1004,10 @@ mod tests {
 
         let snapshot = UiSnapshot::build(&simulation);
         assert_eq!(
-            snapshot.abilities[6].availability,
+            filled(&snapshot, 6).availability,
             SlotAvailability::Empowered
         );
-        assert!(snapshot.abilities[6].availability.is_ready());
+        assert!(filled(&snapshot, 6).availability.is_ready());
         assert!(snapshot.target.expect("a target").ignite_at_maximum);
     }
 
@@ -969,7 +1015,13 @@ mod tests {
     fn the_ultimate_reports_its_energy_while_it_is_switched_off() {
         let mut simulation = arena();
         let snapshot = UiSnapshot::build(&simulation);
-        assert_eq!(snapshot.ultimate.availability, SlotAvailability::Disabled);
+        assert_eq!(
+            snapshot
+                .ultimate
+                .expect("the mage has an Ultimate")
+                .availability,
+            SlotAvailability::Disabled
+        );
         assert!(!snapshot.player.ultimate_ready);
 
         simulation.mage_mut().gain_energy(100.0);
@@ -1010,9 +1062,24 @@ mod tests {
         let mut simulation = arena();
         simulation.mage_mut().gain_energy(100.0);
         let snapshot = UiSnapshot::build(&simulation);
-        assert_eq!(snapshot.ultimate.ability, FireAbility::Cataclysm);
-        assert_eq!(snapshot.ultimate.availability, SlotAvailability::Disabled);
-        assert!(!snapshot.ultimate.availability.is_ready());
+        assert_eq!(
+            snapshot.ultimate.expect("the mage has an Ultimate").ability,
+            FireAbility::Cataclysm
+        );
+        assert_eq!(
+            snapshot
+                .ultimate
+                .expect("the mage has an Ultimate")
+                .availability,
+            SlotAvailability::Disabled
+        );
+        assert!(
+            !snapshot
+                .ultimate
+                .expect("the mage has an Ultimate")
+                .availability
+                .is_ready()
+        );
         assert!(!snapshot.player.ultimate_ready);
     }
 

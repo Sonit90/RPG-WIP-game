@@ -14,7 +14,8 @@
 use engine_core::input::{InputState, KeyCode, MouseButton};
 
 use crate::command::PlayerCommand;
-use crate::firemage::{ABILITY_SLOTS, FireAbility};
+use crate::firemage::ABILITY_SLOTS;
+use crate::hero::Hero;
 
 /// Which key does what.
 ///
@@ -146,12 +147,13 @@ impl Bindings {
     /// [`InputState::was_key_pressed`], so holding `1` casts once.
     pub fn write_commands(
         &self,
+        hero: Hero,
         input: &InputState,
         camera_yaw: f32,
         out: &mut Vec<PlayerCommand>,
     ) {
         self.write_world_commands(input, camera_yaw, out);
-        self.write_bar_commands(input, out);
+        self.write_bar_commands(hero, input, out);
     }
 
     /// Appends everything except the ability bar: movement, jump, targeting, developer keys.
@@ -181,17 +183,16 @@ impl Bindings {
         }
     }
 
-    /// Appends the fixed digit-row bar: slot 1 on `1`, through slot 10 on `0`.
+    /// Appends `hero`'s digit-row bar: slot 1 on `1`, through slot 10 on `0`.
     ///
     /// The layout every action bar in the genre starts with, and the one a headless test or
     /// a replay drives the class with when there is no interface to arrange one.
-    pub fn write_bar_commands(&self, input: &InputState, out: &mut Vec<PlayerCommand>) {
+    pub fn write_bar_commands(&self, hero: Hero, input: &InputState, out: &mut Vec<PlayerCommand>) {
         // An *aimed* ability - one placed on the ground, or a cone pointed with the mouse -
         // is deliberately not cast from here: its key shows the preview, and the application
         // sends the command when the player clicks.
         for slot in 0..ABILITY_SLOTS {
-            let (Some(key), Some(ability)) =
-                (Self::ability_key(slot), FireAbility::from_slot(slot))
+            let (Some(key), Some(ability)) = (Self::ability_key(slot), hero.ability_at(slot))
             else {
                 continue;
             };
@@ -259,7 +260,7 @@ mod tests {
 
     fn commands(input: &InputState, yaw: f32) -> Vec<PlayerCommand> {
         let mut out = Vec::new();
-        Bindings::default().write_commands(input, yaw, &mut out);
+        Bindings::default().write_commands(Hero::default(), input, yaw, &mut out);
         out
     }
 
@@ -394,7 +395,9 @@ mod tests {
     #[test]
     fn every_ability_key_produces_its_own_slot() {
         for slot in 0..ABILITY_SLOTS {
-            let ability = FireAbility::from_slot(slot).expect("every slot has an ability");
+            let ability = Hero::default()
+                .ability_at(slot)
+                .expect("every slot of the mage's bar has an ability");
             // An aimed ability shows its preview instead of casting from the key; the
             // application sends the command when the player clicks.
             if ability.definition().target.is_aimed() {
@@ -511,12 +514,12 @@ mod tests {
         assert!(world.contains(&PlayerCommand::CycleTarget));
 
         let mut bar = Vec::new();
-        Bindings::default().write_bar_commands(&state, &mut bar);
+        Bindings::default().write_bar_commands(Hero::default(), &state, &mut bar);
         assert_eq!(bar, vec![PlayerCommand::UseAbility(0)]);
 
         // Together they are exactly what the whole translation produces.
         let mut both = Vec::new();
-        Bindings::default().write_commands(&state, 0.0, &mut both);
+        Bindings::default().write_commands(Hero::default(), &state, 0.0, &mut both);
         world.extend(bar);
         assert_eq!(both, world);
     }

@@ -30,6 +30,7 @@
 
 use engine_core::input::KeyChord;
 use engine_game::firemage::FireAbility;
+use engine_game::hero::Hero;
 use engine_game::input_map::Bindings;
 use engine_render_data::ui::{UiDrawList, UiRect, UiScale};
 
@@ -115,21 +116,30 @@ pub enum SlotMenuOutcome {
     ClearSlot(SlotAddress),
 }
 
-/// Every spell a slot may hold, in the order the picker lists them.
+/// Every spell `hero` may put in a slot, in the order the picker lists them.
 ///
-/// Read from the class's own registry rather than restated, so an ability added to the game
-/// appears in the picker without this file changing.
-pub fn assignable_spells() -> impl Iterator<Item = FireAbility> {
-    FireAbility::ALL
-        .into_iter()
+/// The *current* hero's, not the game's: a picker offering a Warrior's cleave to a mage is
+/// offering a button that could never be pressed. Read from the hero's own bar rather than
+/// restated, so an ability added to a class appears in its picker without this file
+/// changing.
+pub fn assignable_spells(hero: Hero) -> impl Iterator<Item = FireAbility> {
+    hero.abilities()
+        .iter()
+        .copied()
         .filter(|ability| ability.is_assignable())
 }
 
 /// How many spells the picker has to make room for.
 #[must_use]
-pub fn assignable_count() -> usize {
-    assignable_spells().count()
+pub fn assignable_count(hero: Hero) -> usize {
+    assignable_spells(hero).count()
 }
+
+/// The most spells any hero can offer, which is how many buttons the picker is built with.
+///
+/// Built for the largest rather than rebuilt per hero: a screen in this crate is a list of
+/// rectangles created once, and a hero with three abilities simply lays out three of them.
+const MAX_ASSIGNABLE: usize = engine_game::firemage::ABILITY_SLOTS;
 
 /// Every measurement, converted from its design size to physical pixels once.
 ///
@@ -195,6 +205,8 @@ pub struct SlotMenu {
     confirm: UiScreen<ConfirmItem>,
     metrics: SlotMenuMetrics,
     viewport: (u32, u32),
+    /// Which hero's spells the picker offers.
+    hero: Hero,
 }
 
 impl Default for SlotMenu {
@@ -217,7 +229,7 @@ impl SlotMenu {
         actions.push(SlotMenuItem::Close, Button::new("CLOSE"));
 
         let mut picker = UiScreen::new();
-        for index in 0..assignable_count() {
+        for index in 0..MAX_ASSIGNABLE {
             // No label: the picker draws the spell's art, and a name under a 48-pixel icon
             // in a 5x7 font would be four characters of nothing useful.
             picker.push(index, Button::new(""));
@@ -236,6 +248,7 @@ impl SlotMenu {
             confirm,
             metrics: SlotMenuMetrics::default(),
             viewport: (0, 0),
+            hero: Hero::default(),
         }
     }
 
@@ -313,6 +326,25 @@ impl SlotMenu {
         self.layout();
     }
 
+    /// Which hero's spells the picker is offering.
+    #[must_use]
+    pub fn hero(&self) -> Hero {
+        self.hero
+    }
+
+    /// Offers `hero`'s spells from here on, and closes the menu if one is open.
+    ///
+    /// Closed rather than relaid out: the menu is opened on a slot, and a hero swap has just
+    /// changed what that slot holds. Re-opening it is one right click.
+    pub fn set_hero(&mut self, hero: Hero) {
+        if self.hero == hero {
+            return;
+        }
+        self.hero = hero;
+        self.close();
+        self.layout();
+    }
+
     /// Closes the menu.
     pub fn close(&mut self) {
         self.address = None;
@@ -335,7 +367,7 @@ impl SlotMenu {
                     + metrics.padding * 2.0,
             ),
             SlotMenuMode::Picker => {
-                let rows = assignable_count().div_ceil(layout::PICK_COLUMNS) as f32;
+                let rows = assignable_count(self.hero).div_ceil(layout::PICK_COLUMNS) as f32;
                 let columns = layout::PICK_COLUMNS as f32;
                 (
                     metrics.padding * 2.0
@@ -392,7 +424,7 @@ impl SlotMenu {
                 .set_rect(item, UiRect::new(x, y, width, metrics.row_height));
         }
 
-        for index in 0..assignable_count() {
+        for index in 0..assignable_count(self.hero) {
             let column = index % layout::PICK_COLUMNS;
             let row = index / layout::PICK_COLUMNS;
             self.picker.set_rect(
@@ -514,7 +546,7 @@ impl SlotMenu {
         let Some(index) = chosen else {
             return SlotMenuOutcome::Idle;
         };
-        let Some(ability) = assignable_spells().nth(index) else {
+        let Some(ability) = assignable_spells(self.hero).nth(index) else {
             return SlotMenuOutcome::Idle;
         };
         self.close();
@@ -632,7 +664,7 @@ pub fn push_slot_menu(
             }
         }
         SlotMenuMode::Picker => {
-            for (index, ability) in assignable_spells().enumerate() {
+            for (index, ability) in assignable_spells(menu.hero()).enumerate() {
                 let Some(widget) = menu.picker_screen().widget(index) else {
                     continue;
                 };
@@ -789,7 +821,7 @@ mod tests {
     #[test]
     fn a_closed_menu_ignores_everything() {
         let mut menu = SlotMenu::new();
-        let bars = ActionBarSet::with_default_bindings();
+        let bars = ActionBarSet::with_default_bindings(Hero::default());
         assert_eq!(
             click(&mut menu, SLOT, &bars),
             SlotMenuOutcome::Idle,
@@ -803,7 +835,7 @@ mod tests {
 
     #[test]
     fn a_click_outside_the_panel_closes_the_menu() {
-        let bars = ActionBarSet::with_default_bindings();
+        let bars = ActionBarSet::with_default_bindings(Hero::default());
         for mode_opener in [None, Some(SlotMenuItem::ChangeSpell)] {
             let mut menu = menu();
             if let Some(item) = mode_opener {
@@ -826,7 +858,7 @@ mod tests {
 
     #[test]
     fn a_right_click_outside_the_panel_closes_the_menu_too() {
-        let bars = ActionBarSet::with_default_bindings();
+        let bars = ActionBarSet::with_default_bindings(Hero::default());
         let mut menu = menu();
         let panel = menu.panel();
         let outside = UiInput {
@@ -843,7 +875,7 @@ mod tests {
 
     #[test]
     fn a_click_inside_the_panel_but_on_no_button_keeps_the_menu_open() {
-        let bars = ActionBarSet::with_default_bindings();
+        let bars = ActionBarSet::with_default_bindings(Hero::default());
         let mut menu = menu();
         let panel = menu.panel();
         // The heading, which is inside the panel and belongs to no widget.
@@ -888,7 +920,7 @@ mod tests {
         let slot = UiRect::new(800.0, 900.0, 48.0, 48.0);
         let mut menu = SlotMenu::new();
         menu.open(SlotAddress::new(0, 0), slot, FHD);
-        let bars = ActionBarSet::with_default_bindings();
+        let bars = ActionBarSet::with_default_bindings(Hero::default());
         let actions = menu.panel();
         click_action(&mut menu, SlotMenuItem::ChangeSpell, &bars);
         let picker = menu.panel();
@@ -901,7 +933,7 @@ mod tests {
 
     #[test]
     fn a_combination_is_captured_with_the_key_that_was_pressed() {
-        let bars = ActionBarSet::with_default_bindings();
+        let bars = ActionBarSet::with_default_bindings(Hero::default());
         let mut menu = menu();
         click_action(&mut menu, SlotMenuItem::AssignKey, &bars);
         assert_eq!(menu.mode(), SlotMenuMode::Capture);
@@ -915,7 +947,7 @@ mod tests {
 
     #[test]
     fn a_combination_over_a_key_another_slot_holds_bare_is_not_a_conflict() {
-        let bars = ActionBarSet::with_default_bindings();
+        let bars = ActionBarSet::with_default_bindings(Hero::default());
         let mut menu = SlotMenu::new();
         menu.open(SlotAddress::new(1, 0), SLOT, FHD);
         click_action(&mut menu, SlotMenuItem::AssignKey, &bars);
@@ -950,12 +982,14 @@ mod tests {
 
     #[test]
     fn picking_a_spell_assigns_it_and_closes() {
-        let bars = ActionBarSet::with_default_bindings();
+        let bars = ActionBarSet::with_default_bindings(Hero::default());
         let mut menu = menu();
         click_action(&mut menu, SlotMenuItem::ChangeSpell, &bars);
         assert_eq!(menu.mode(), SlotMenuMode::Picker);
 
-        let third = assignable_spells().nth(2).expect("a third spell");
+        let third = assignable_spells(Hero::default())
+            .nth(2)
+            .expect("a third spell");
         let rect = menu
             .picker_screen()
             .widget(2)
@@ -970,13 +1004,13 @@ mod tests {
 
     #[test]
     fn the_picker_offers_every_castable_spell_and_nothing_else() {
-        let listed: Vec<_> = assignable_spells().collect();
-        for ability in FireAbility::BAR {
-            assert!(listed.contains(&ability), "{ability:?} is not offered");
+        let listed: Vec<_> = assignable_spells(Hero::default()).collect();
+        for ability in Hero::default().abilities() {
+            assert!(listed.contains(ability), "{ability:?} is not offered");
         }
         assert!(!listed.contains(&FireAbility::Ignite));
         assert!(!listed.contains(&FireAbility::Cataclysm));
-        assert_eq!(listed.len(), assignable_count());
+        assert_eq!(listed.len(), assignable_count(Hero::default()));
         // Every entry the picker draws corresponds to one of them.
         let menu = menu();
         assert_eq!(menu.picker_screen().len(), listed.len());
@@ -984,12 +1018,12 @@ mod tests {
 
     #[test]
     fn every_picker_entry_is_inside_the_panel_and_none_overlap() {
-        let bars = ActionBarSet::with_default_bindings();
+        let bars = ActionBarSet::with_default_bindings(Hero::default());
         let mut menu = menu();
         click_action(&mut menu, SlotMenuItem::ChangeSpell, &bars);
         let panel = menu.panel();
 
-        let rects: Vec<UiRect> = (0..assignable_count())
+        let rects: Vec<UiRect> = (0..assignable_count(Hero::default()))
             .map(|index| {
                 menu.picker_screen()
                     .widget(index)
@@ -1017,7 +1051,7 @@ mod tests {
 
     #[test]
     fn clearing_a_slot_reports_it_and_closes() {
-        let bars = ActionBarSet::with_default_bindings();
+        let bars = ActionBarSet::with_default_bindings(Hero::default());
         let mut menu = menu();
         assert_eq!(
             click_action(&mut menu, SlotMenuItem::ClearSlot, &bars),
@@ -1028,7 +1062,7 @@ mod tests {
 
     #[test]
     fn closing_changes_nothing() {
-        let bars = ActionBarSet::with_default_bindings();
+        let bars = ActionBarSet::with_default_bindings(Hero::default());
         let mut menu = menu();
         assert_eq!(
             click_action(&mut menu, SlotMenuItem::Close, &bars),
@@ -1039,7 +1073,7 @@ mod tests {
 
     #[test]
     fn capturing_a_free_key_assigns_it() {
-        let bars = ActionBarSet::with_default_bindings();
+        let bars = ActionBarSet::with_default_bindings(Hero::default());
         let mut menu = menu();
         click_action(&mut menu, SlotMenuItem::AssignKey, &bars);
         assert_eq!(menu.mode(), SlotMenuMode::Capture);
@@ -1053,7 +1087,7 @@ mod tests {
 
     #[test]
     fn escape_backs_out_of_a_capture_without_binding_anything() {
-        let bars = ActionBarSet::with_default_bindings();
+        let bars = ActionBarSet::with_default_bindings(Hero::default());
         let mut menu = menu();
         click_action(&mut menu, SlotMenuItem::AssignKey, &bars);
 
@@ -1078,7 +1112,7 @@ mod tests {
 
     #[test]
     fn a_key_the_game_needs_is_refused_and_says_why() {
-        let bars = ActionBarSet::with_default_bindings();
+        let bars = ActionBarSet::with_default_bindings(Hero::default());
         let mut menu = menu();
         click_action(&mut menu, SlotMenuItem::AssignKey, &bars);
 
@@ -1095,7 +1129,7 @@ mod tests {
 
     #[test]
     fn a_key_another_slot_holds_asks_before_taking_it() {
-        let bars = ActionBarSet::with_default_bindings();
+        let bars = ActionBarSet::with_default_bindings(Hero::default());
         let mut menu = SlotMenu::new();
         menu.open(SlotAddress::new(1, 0), SLOT, FHD);
         click_action(&mut menu, SlotMenuItem::AssignKey, &bars);
@@ -1117,7 +1151,7 @@ mod tests {
 
     #[test]
     fn cancelling_the_prompt_leaves_the_binding_where_it_was() {
-        let bars = ActionBarSet::with_default_bindings();
+        let bars = ActionBarSet::with_default_bindings(Hero::default());
         let mut menu = SlotMenu::new();
         menu.open(SlotAddress::new(1, 0), SLOT, FHD);
         click_action(&mut menu, SlotMenuItem::AssignKey, &bars);
@@ -1139,7 +1173,7 @@ mod tests {
 
     #[test]
     fn replacing_hands_the_key_over_exactly_once() {
-        let mut bars = ActionBarSet::with_default_bindings();
+        let mut bars = ActionBarSet::with_default_bindings(Hero::default());
         let mut menu = SlotMenu::new();
         menu.open(SlotAddress::new(1, 0), SLOT, FHD);
         click_action(&mut menu, SlotMenuItem::AssignKey, &bars);
@@ -1173,7 +1207,7 @@ mod tests {
 
     #[test]
     fn rebinding_a_slot_to_the_key_it_already_has_is_not_a_conflict() {
-        let bars = ActionBarSet::with_default_bindings();
+        let bars = ActionBarSet::with_default_bindings(Hero::default());
         let mut menu = menu();
         click_action(&mut menu, SlotMenuItem::AssignKey, &bars);
         assert_eq!(

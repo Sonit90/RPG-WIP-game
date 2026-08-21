@@ -49,6 +49,7 @@ use crate::enemy::brain::EnemyBrain;
 use crate::entity::EntityId;
 use crate::event::{CombatEvent, DamageEvent, EventStream};
 use crate::firemage::{AbilityError, FireAbility, FireMage, IgniteTick, PendingImpact, ZoneTick};
+use crate::hero::Hero;
 use crate::los::LineOfSightCheck;
 use crate::movement::{self, Body, MoveIntent, MovementConfig};
 use crate::party::Party;
@@ -338,6 +339,13 @@ pub struct Simulation {
     intent: MoveIntent,
     /// Discrete commands waiting for the next tick.
     pending: CommandBuffer,
+    /// Which hero the player is: which abilities the bar holds and which model they wear.
+    ///
+    /// The class *state* below is the FireMage's and stays whatever the player is — Heat and
+    /// Ignite simply do not move for a Warrior, because no Warrior row generates any. One
+    /// resource block that the other two heroes leave at rest is a great deal less to go
+    /// wrong than three that have to be kept in step.
+    hero: Hero,
     /// The class: abilities, Ignite, Heat, Ultimate Energy, talents and ground fire.
     mage: FireMage,
     /// What the class did this fight, for the combat simulator's report.
@@ -435,6 +443,7 @@ impl Simulation {
             timestep,
             intent: MoveIntent::NONE,
             pending: CommandBuffer::with_capacity(16),
+            hero: Hero::default(),
             mage: FireMage::new(seed),
             fire: FireCounters::default(),
             ignite_ticks: Vec::with_capacity(32),
@@ -460,6 +469,33 @@ impl Simulation {
             last_active_stats: SimStats::default(),
             party: Party::new(),
         }
+    }
+
+    /// Which hero the player is.
+    #[must_use]
+    pub fn hero(&self) -> Hero {
+        self.hero
+    }
+
+    /// Becomes `hero`, and returns whether anything changed.
+    ///
+    /// A swap is a *reset of what the player is holding*, not of the world: the fight, the
+    /// enemies and the player's position and health are all untouched, and every cooldown,
+    /// the cast in progress, the burn the old hero banked and the fire it left on the ground
+    /// are not. Keeping a half-finished Pyroblast running while its caster became a Warrior
+    /// is the one outcome that is certainly wrong, and the cheapest way to be sure of the
+    /// rest is to hand the new hero a clean class state.
+    pub fn set_hero(&mut self, hero: Hero) -> bool {
+        if self.hero == hero {
+            return false;
+        }
+        self.hero = hero;
+        self.player.cast = None;
+        self.player.queued = None;
+        self.player.last_ability = None;
+        self.player.last_error = None;
+        self.mage.reset();
+        true
     }
 
     /// The FireMage: abilities, resources, Ignite, zones and talents.
@@ -875,7 +911,7 @@ impl Simulation {
                     let _ = self.use_slot(slot);
                 }
                 PlayerCommand::UseAbilityAt { slot, position } => {
-                    if let Some(ability) = FireAbility::from_slot(slot) {
+                    if let Some(ability) = self.hero.ability_at(slot) {
                         let _ = self.cast_at(ability, position);
                     }
                 }
@@ -899,7 +935,7 @@ impl Simulation {
                         &self.world,
                         self.player.entity,
                         current,
-                        Self::targeting_range(),
+                        self.targeting_range(),
                     ) {
                         self.player.target = Some(next);
                     }
@@ -1280,7 +1316,7 @@ impl Simulation {
     ///
     /// Returns [`AbilityError`] with the reason it was refused.
     pub fn use_slot(&mut self, slot: usize) -> Result<u32, AbilityError> {
-        let ability = FireAbility::from_slot(slot).ok_or(AbilityError::CasterDead)?;
+        let ability = self.hero.ability_at(slot).ok_or(AbilityError::CasterDead)?;
         self.cast(ability)
     }
 
@@ -1842,13 +1878,13 @@ impl Simulation {
 
     /// How far away something may be and still be worth selecting, in metres.
     ///
-    /// The longest reach the class has. Selection is not a spell, so it does not belong to
-    /// any one ability's range — but a target nothing on the bar can hit is a target the
-    /// player would have to cycle past, which is what makes an eight-room dungeon's cycle key
-    /// useless.
+    /// The longest reach the current hero has. Selection is not a spell, so it does not
+    /// belong to any one ability's range — but a target nothing on the bar can hit is a
+    /// target the player would have to cycle past, which is what makes an eight-room
+    /// dungeon's cycle key useless.
     #[must_use]
-    pub fn targeting_range() -> f32 {
-        crate::firemage::ability::longest_range()
+    pub fn targeting_range(&self) -> f32 {
+        self.hero.longest_range()
     }
 
     /// Selects the nearest living hostile the class could reach.
@@ -1856,7 +1892,7 @@ impl Simulation {
         if let Some(nearest) = self.targets.nearest_hostile_within(
             &self.world,
             self.player.entity,
-            Self::targeting_range(),
+            self.targeting_range(),
         ) {
             self.player.target = Some(nearest);
         }

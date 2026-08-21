@@ -20,17 +20,22 @@
 //! downstream — not the renderer, not the animation controller, not gameplay — can tell the
 //! difference, and that is the property this module exists to demonstrate.
 
+pub mod druid;
 pub mod dummy;
 pub mod environment;
 pub mod firemage;
+pub mod humanoid;
+pub mod warrior;
 
 use engine_core::math::{Vec2, Vec3};
 
 use crate::mesh::{Geometry, MeshVertex, SubMesh};
 
+pub use druid::{druid, druid_character};
 pub use dummy::{DummyVariant, training_dummy};
 pub use environment::{environment_library, environment_model};
 pub use firemage::{fire_mage, fire_mage_character};
+pub use warrior::{warrior, warrior_character};
 
 /// One corner of a generated face.
 pub type Corner = (Vec3, Vec3, Vec2);

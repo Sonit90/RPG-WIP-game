@@ -21,6 +21,7 @@ use engine_core::math::Vec3;
 use engine_game::arena::{self, ArenaConfig};
 use engine_game::command::PlayerCommand;
 use engine_game::firemage::FireAbility;
+use engine_game::hero::Hero;
 use engine_game::sim::Simulation;
 use engine_presentation::AudioDirector;
 
@@ -80,7 +81,7 @@ fn every_ability_on_the_bar_produces_a_sound() {
     // The acceptance criterion, as a test. An ability that made no sound at all would be one
     // the player casts into silence — the exact failure this phase exists to remove, and the
     // one most likely to come back when an ability is rebalanced or renamed.
-    for ability in FireAbility::BAR {
+    for ability in Hero::default().abilities().iter().copied() {
         let mut simulation = arena(6);
         let mut audio = runtime();
         let mut director = AudioDirector::new();

@@ -26,7 +26,6 @@
 use engine_core::math::Vec3;
 
 use crate::ability::AbilityId;
-use crate::combat::DamageType;
 use crate::entity::EntityId;
 use crate::event::CombatEvent;
 use crate::firemage::{
@@ -471,14 +470,19 @@ impl Simulation {
                 self.mage.flame_shield.start(definition.duration);
                 0
             }
-            FireAbility::Blink => {
-                self.blink();
+            FireAbility::Blink | FireAbility::Charge => {
+                self.dash(definition.range);
                 0
             }
             FireAbility::Firestorm => {
                 self.spawn_firestorm(aim, origin);
                 0
             }
+            FireAbility::Starfall => {
+                self.spawn_placed_zone(ability, aim, origin);
+                0
+            }
+            FireAbility::Regrowth => self.heal_self(definition.base_damage(&self.mage.stats())),
             _ => self.apply_direct(ability),
         }
     }
@@ -802,9 +806,14 @@ impl Simulation {
         affected
     }
 
-    /// Blink: as far forward as the geometry allows, and no further.
-    fn blink(&mut self) {
-        let distance = FireAbility::Blink.definition().range;
+    /// Moves the caster `distance` metres forward: as far as the geometry allows, and no
+    /// further.
+    ///
+    /// One movement for both of the abilities that are movements. A Blink and a Charge
+    /// differ in how far they go and in what the presentation layer makes of them; they do
+    /// not differ in what happens to the character, and two copies of "slide forward and
+    /// forget the interpolation history" is two chances to fix a teleport bug once.
+    fn dash(&mut self, distance: f32) {
         let entity = self.player.entity;
         let Some(body) = self.world.body(entity).copied() else {
             return;
@@ -826,6 +835,69 @@ impl Simulation {
             entity,
             from,
             to,
+            tick,
+        });
+    }
+
+    /// Heals the caster and announces it. Returns how many entities were affected.
+    ///
+    /// The only heal a player can cast. It goes through [`GameWorld::heal`] and the
+    /// `Healing` event exactly as an enemy's does, so "every health change is observable"
+    /// holds for the player's own as well.
+    fn heal_self(&mut self, amount: f32) -> u32 {
+        let entity = self.player.entity;
+        if !self.world.is_alive(entity) {
+            return 0;
+        }
+        let restored = self.world.heal(entity, amount).applied;
+        if restored <= 0.0 {
+            return 0;
+        }
+        let tick = self.tick;
+        self.events.push(CombatEvent::Healing {
+            source: entity,
+            target: entity,
+            amount: restored,
+            ability: AbilityId::from_fire(FireAbility::Regrowth),
+            tick,
+        });
+        1
+    }
+
+    /// Places a circular zone where the player put it: Starfall's patch of sky.
+    ///
+    /// The same [`Zone`] Firestorm and Molten Meteor's ground are, with the shape and the
+    /// numbers off the ability's own row. What burns, how often and for how long is data;
+    /// the only thing this decides is where the circle goes.
+    fn spawn_placed_zone(&mut self, ability: FireAbility, aim: CastAim, origin: Vec3) {
+        let definition = *ability.definition();
+        let position = match aim {
+            CastAim::Ground(position) => position,
+            CastAim::Target => origin,
+        };
+        let shape = ZoneShape::Circle {
+            radius: definition.radius,
+        };
+        let id = self.mage.zones.spawn(Zone {
+            kind: ZoneKind::Starfall,
+            source: ability,
+            position,
+            shape,
+            remaining: definition.duration,
+            until_tick: definition.tick_interval,
+            interval: definition.tick_interval,
+            coefficient: definition.tick_coefficient,
+            ignite_stacks: 0,
+            ignite_chance: 0.0,
+        });
+        let tick = self.tick;
+        self.events.push(CombatEvent::AreaEffectStarted {
+            id,
+            source: self.player.entity,
+            ability: AbilityId::from_fire(ability),
+            position,
+            shape,
+            duration: definition.duration,
             tick,
         });
     }
@@ -1056,7 +1128,7 @@ impl Simulation {
             target,
             amount,
             AbilityId::from_fire(ability),
-            DamageType::Fire,
+            ability.definition().damage_type,
             crit,
         );
         crit

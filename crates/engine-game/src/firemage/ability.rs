@@ -17,14 +17,21 @@
 //! Charges and cooldowns are one system: an ability with one charge is the ordinary case,
 //! and an ability with two is the same rules with a bigger bucket.
 
+use crate::combat::DamageType;
+
 use super::stats::Stats;
 use super::talent::TalentEffects;
+use crate::hero::Hero;
 
 /// Abilities on the regular bar.
 pub const ABILITY_SLOTS: usize = 10;
 
-/// Every ability, including the Ultimate and the passive row Ignite is credited to.
-pub const ABILITY_COUNT: usize = 12;
+/// Every ability of every hero, including the Ultimate and the passive row Ignite is
+/// credited to.
+///
+/// One table for all three heroes rather than one each: see [`crate::hero`] for why a class
+/// is a slice of this table and not a system of its own.
+pub const ABILITY_COUNT: usize = 18;
 
 /// The furthest anything the class has can reach, in metres.
 ///
@@ -76,6 +83,18 @@ pub enum FireAbility {
     Blink,
     /// The Ultimate. Not on the bar, and disabled this iteration.
     Cataclysm,
+    /// Warrior: the melee opener, and the biggest single hit in the game at its range.
+    MortalStrike,
+    /// Warrior: a swing that catches everything in front of it.
+    Cleave,
+    /// Warrior: closes the gap the class spends its whole life closing.
+    Charge,
+    /// Druid: the filler, thrown from range.
+    Moonfire,
+    /// Druid: a patch of falling stars the player places.
+    Starfall,
+    /// Druid: a heal on the caster. The only heal a player can cast.
+    Regrowth,
     /// Not an ability: the row the burn's damage is credited to.
     ///
     /// Ignite is the class's largest single source of damage and it comes from no cast, so
@@ -98,21 +117,13 @@ impl FireAbility {
         Self::FlameShield,
         Self::Blink,
         Self::Cataclysm,
+        Self::MortalStrike,
+        Self::Cleave,
+        Self::Charge,
+        Self::Moonfire,
+        Self::Starfall,
+        Self::Regrowth,
         Self::Ignite,
-    ];
-
-    /// The ten abilities on the regular bar, in bar order.
-    pub const BAR: [Self; ABILITY_SLOTS] = [
-        Self::Firebolt,
-        Self::FlameLance,
-        Self::FlameCone,
-        Self::Meteor,
-        Self::Pyroblast,
-        Self::Firestorm,
-        Self::Detonate,
-        Self::FireMastery,
-        Self::FlameShield,
-        Self::Blink,
     ];
 
     /// Dense index into the ability arrays.
@@ -121,16 +132,26 @@ impl FireAbility {
         self as usize
     }
 
-    /// The ability in bar slot `slot`, if there is one.
+    /// Which hero casts it.
     #[must_use]
-    pub fn from_slot(slot: usize) -> Option<Self> {
-        Self::BAR.get(slot).copied()
+    pub fn hero(self) -> Hero {
+        self.definition().hero
     }
 
-    /// Which bar slot this ability sits in, or `None` for the Ultimate.
+    /// Which slot of *its own hero's* bar this ability sits in, or `None` for the Ultimate
+    /// and for Ignite.
+    ///
+    /// Derived from the owning hero rather than from a global list, and unambiguous because
+    /// no two heroes share an ability — the property
+    /// `every_castable_ability_belongs_to_exactly_one_heros_bar` pins in [`crate::hero`].
+    /// It is what lets everything that draws a button keep asking the ability where it goes,
+    /// with no idea that a second hero exists.
     #[must_use]
     pub fn bar_slot(self) -> Option<usize> {
-        Self::BAR.iter().position(|ability| *ability == self)
+        self.hero()
+            .abilities()
+            .iter()
+            .position(|ability| *ability == self)
     }
 
     /// Whether this is the Ultimate, which lives outside the bar.
@@ -182,6 +203,12 @@ impl FireAbility {
             Self::FlameShield => "flame_shield",
             Self::Blink => "blink",
             Self::Cataclysm => "cataclysm",
+            Self::MortalStrike => "mortal_strike",
+            Self::Cleave => "cleave",
+            Self::Charge => "charge",
+            Self::Moonfire => "moonfire",
+            Self::Starfall => "starfall",
+            Self::Regrowth => "regrowth",
             Self::Ignite => "ignite",
         }
     }
@@ -286,6 +313,17 @@ impl TargetMode {
 pub struct AbilityDef {
     /// Which ability this describes.
     pub id: FireAbility,
+    /// Which hero casts it.
+    ///
+    /// The whole of "which class an ability belongs to". Nothing branches on it: it decides
+    /// which bar the row appears on and nothing else.
+    pub hero: Hero,
+    /// What the damage it deals counts as.
+    ///
+    /// A column rather than a rule about the caster: a Druid's stars are arcane and a
+    /// Warrior's swing is physical because their rows say so, which is the same reason the
+    /// mage's are fire.
+    pub damage_type: DamageType,
     /// Uppercase name; the UI font has no lowercase glyphs.
     pub name: &'static str,
     /// One line of what it does, for the tooltip.
@@ -408,6 +446,8 @@ impl AbilityDef {
 /// The whole class, in bar order. The Ultimate is last.
 pub static ABILITIES: [AbilityDef; ABILITY_COUNT] = [
     AbilityDef {
+        hero: Hero::FireMage,
+        damage_type: DamageType::Fire,
         id: FireAbility::Firebolt,
         name: "FIREBOLT",
         description: "FILLER. ALWAYS IGNITES AN UNBURNT TARGET, 50% CHANCE OTHERWISE",
@@ -433,6 +473,8 @@ pub static ABILITIES: [AbilityDef; ABILITY_COUNT] = [
         energy_cost: 0.0,
     },
     AbilityDef {
+        hero: Hero::FireMage,
+        damage_type: DamageType::Fire,
         id: FireAbility::FlameLance,
         name: "FLAME LANCE",
         description: "APPLIES 2 IGNITE. A CRITICAL STRIKE REDUCES COOLDOWN OF PYROBLAST BY 2 SECONDS",
@@ -458,6 +500,8 @@ pub static ABILITIES: [AbilityDef; ABILITY_COUNT] = [
         energy_cost: 0.0,
     },
     AbilityDef {
+        hero: Hero::FireMage,
+        damage_type: DamageType::Fire,
         id: FireAbility::FlameCone,
         name: "FLAME CONE",
         description: "A CONE OF FIRE. APPLIES 2 IGNITE TO EVERY ENEMY HIT",
@@ -483,6 +527,8 @@ pub static ABILITIES: [AbilityDef; ABILITY_COUNT] = [
         energy_cost: 0.0,
     },
     AbilityDef {
+        hero: Hero::FireMage,
+        damage_type: DamageType::Fire,
         id: FireAbility::Meteor,
         name: "METEOR",
         description: "A ROCK FALLS ON THE CHOSEN GROUND. +10% DAMAGE PER IGNITE STACK",
@@ -508,6 +554,8 @@ pub static ABILITIES: [AbilityDef; ABILITY_COUNT] = [
         energy_cost: 0.0,
     },
     AbilityDef {
+        hero: Hero::FireMage,
+        damage_type: DamageType::Fire,
         id: FireAbility::Pyroblast,
         name: "PYROBLAST",
         description: "VERY HIGH DAMAGE. +10% PER IGNITE STACK ON THE TARGET",
@@ -533,6 +581,8 @@ pub static ABILITIES: [AbilityDef; ABILITY_COUNT] = [
         energy_cost: 0.0,
     },
     AbilityDef {
+        hero: Hero::FireMage,
+        damage_type: DamageType::Fire,
         id: FireAbility::Firestorm,
         name: "FIRESTORM",
         description: "A 20 X 10 M LINE OF FIRE FOR 6 S. EACH TICK CAN IGNITE",
@@ -558,6 +608,8 @@ pub static ABILITIES: [AbilityDef; ABILITY_COUNT] = [
         energy_cost: 0.0,
     },
     AbilityDef {
+        hero: Hero::FireMage,
+        damage_type: DamageType::Fire,
         id: FireAbility::Detonate,
         name: "DETONATE",
         description: "CONSUMES A FULL BURN FOR 60% OF ITS REMAINING DAMAGE, AT ONCE",
@@ -583,6 +635,8 @@ pub static ABILITIES: [AbilityDef; ABILITY_COUNT] = [
         energy_cost: 0.0,
     },
     AbilityDef {
+        hero: Hero::FireMage,
+        damage_type: DamageType::Fire,
         id: FireAbility::FireMastery,
         name: "FIRE MASTERY",
         description: "20 S OF HASTE OR CRITICAL STRIKE, WHICHEVER YOU SPECIALISE IN",
@@ -608,6 +662,8 @@ pub static ABILITIES: [AbilityDef; ABILITY_COUNT] = [
         energy_cost: 0.0,
     },
     AbilityDef {
+        hero: Hero::FireMage,
+        damage_type: DamageType::Fire,
         id: FireAbility::FlameShield,
         name: "FLAME SHIELD",
         description: "TAKE 30% LESS DAMAGE FOR 5 SECONDS",
@@ -633,6 +689,8 @@ pub static ABILITIES: [AbilityDef; ABILITY_COUNT] = [
         energy_cost: 0.0,
     },
     AbilityDef {
+        hero: Hero::FireMage,
+        damage_type: DamageType::Fire,
         id: FireAbility::Blink,
         name: "BLINK",
         description: "TELEPORT 10 M FORWARD",
@@ -658,6 +716,8 @@ pub static ABILITIES: [AbilityDef; ABILITY_COUNT] = [
         energy_cost: 0.0,
     },
     AbilityDef {
+        hero: Hero::FireMage,
+        damage_type: DamageType::Fire,
         id: FireAbility::Cataclysm,
         name: "CATACLYSM",
         description: "NOT YET DESIGNED. THE ULTIMATE IS DISABLED",
@@ -683,6 +743,170 @@ pub static ABILITIES: [AbilityDef; ABILITY_COUNT] = [
         energy_cost: 100.0,
     },
     AbilityDef {
+        hero: Hero::Warrior,
+        damage_type: DamageType::Physical,
+        id: FireAbility::MortalStrike,
+        name: "MORTAL STRIKE",
+        description: "A MELEE BLOW. THE HARDEST SINGLE HIT ANY HERO HAS, AT FIVE METRES",
+        target: TargetMode::Single,
+        cast_time: 0.0,
+        cooldown: 6.0,
+        charges: 1,
+        range: 5.0,
+        radius: 0.0,
+        width: 0.0,
+        duration: 0.0,
+        impact_delay: 0.0,
+        coefficient: 3.20,
+        tick_coefficient: 0.0,
+        tick_interval: 0.0,
+        ignite_bonus_per_stack: 0.0,
+        ignite_stacks: 0,
+        ignite_chance: 0.0,
+        heat: 0.0,
+        energy: 0.0,
+        requires_line_of_sight: true,
+        cooldown_hasted: true,
+        energy_cost: 0.0,
+    },
+    AbilityDef {
+        hero: Hero::Warrior,
+        damage_type: DamageType::Physical,
+        id: FireAbility::Cleave,
+        name: "CLEAVE",
+        description: "A SWEEP THAT CATCHES EVERY ENEMY IN FRONT OF YOU",
+        target: TargetMode::Cone,
+        cast_time: 0.0,
+        cooldown: 10.0,
+        charges: 1,
+        range: 8.0,
+        radius: 0.0,
+        width: 0.0,
+        duration: 0.0,
+        impact_delay: 0.0,
+        coefficient: 2.00,
+        tick_coefficient: 0.0,
+        tick_interval: 0.0,
+        ignite_bonus_per_stack: 0.0,
+        ignite_stacks: 0,
+        ignite_chance: 0.0,
+        heat: 0.0,
+        energy: 0.0,
+        requires_line_of_sight: false,
+        cooldown_hasted: true,
+        energy_cost: 0.0,
+    },
+    AbilityDef {
+        hero: Hero::Warrior,
+        damage_type: DamageType::Physical,
+        id: FireAbility::Charge,
+        name: "CHARGE",
+        description: "CLOSE 18 M IN THE DIRECTION YOU FACE",
+        target: TargetMode::Movement,
+        cast_time: 0.0,
+        cooldown: 20.0,
+        charges: 1,
+        range: 18.0,
+        radius: 0.0,
+        width: 0.0,
+        duration: 0.0,
+        impact_delay: 0.0,
+        coefficient: 0.0,
+        tick_coefficient: 0.0,
+        tick_interval: 0.0,
+        ignite_bonus_per_stack: 0.0,
+        ignite_stacks: 0,
+        ignite_chance: 0.0,
+        heat: 0.0,
+        energy: 0.0,
+        requires_line_of_sight: false,
+        cooldown_hasted: true,
+        energy_cost: 0.0,
+    },
+    AbilityDef {
+        hero: Hero::Druid,
+        damage_type: DamageType::Arcane,
+        id: FireAbility::Moonfire,
+        name: "MOONFIRE",
+        description: "THE FILLER. MOONLIGHT AT THIRTY METRES",
+        target: TargetMode::Single,
+        cast_time: 1.0,
+        cooldown: 0.0,
+        charges: 1,
+        range: 30.0,
+        radius: 0.0,
+        width: 0.0,
+        duration: 0.0,
+        impact_delay: 0.0,
+        coefficient: 1.60,
+        tick_coefficient: 0.0,
+        tick_interval: 0.0,
+        ignite_bonus_per_stack: 0.0,
+        ignite_stacks: 0,
+        ignite_chance: 0.0,
+        heat: 0.0,
+        energy: 0.0,
+        requires_line_of_sight: true,
+        cooldown_hasted: true,
+        energy_cost: 0.0,
+    },
+    AbilityDef {
+        hero: Hero::Druid,
+        damage_type: DamageType::Arcane,
+        id: FireAbility::Starfall,
+        name: "STARFALL",
+        description: "STARS FALL ON AN 8 M CIRCLE FOR 6 S",
+        target: TargetMode::Ground,
+        cast_time: 0.0,
+        cooldown: 24.0,
+        charges: 1,
+        range: 30.0,
+        radius: 8.0,
+        width: 0.0,
+        duration: 6.0,
+        impact_delay: 0.0,
+        coefficient: 0.0,
+        tick_coefficient: 0.60,
+        tick_interval: 0.5,
+        ignite_bonus_per_stack: 0.0,
+        ignite_stacks: 0,
+        ignite_chance: 0.0,
+        heat: 0.0,
+        energy: 0.0,
+        requires_line_of_sight: false,
+        cooldown_hasted: true,
+        energy_cost: 0.0,
+    },
+    AbilityDef {
+        hero: Hero::Druid,
+        damage_type: DamageType::Arcane,
+        id: FireAbility::Regrowth,
+        name: "REGROWTH",
+        description: "HEALS YOU FOR 400% SPELL POWER",
+        target: TargetMode::SelfCast,
+        cast_time: 1.5,
+        cooldown: 12.0,
+        charges: 1,
+        range: 0.0,
+        radius: 0.0,
+        width: 0.0,
+        duration: 0.0,
+        impact_delay: 0.0,
+        coefficient: 4.00,
+        tick_coefficient: 0.0,
+        tick_interval: 0.0,
+        ignite_bonus_per_stack: 0.0,
+        ignite_stacks: 0,
+        ignite_chance: 0.0,
+        heat: 0.0,
+        energy: 0.0,
+        requires_line_of_sight: false,
+        cooldown_hasted: true,
+        energy_cost: 0.0,
+    },
+    AbilityDef {
+        hero: Hero::FireMage,
+        damage_type: DamageType::Fire,
         id: FireAbility::Ignite,
         name: "IGNITE",
         description: "A STACKING BURN. 20% SPELL POWER PER STACK EVERY 2 SECONDS",
@@ -958,8 +1182,9 @@ mod tests {
     }
 
     #[test]
-    fn the_bar_holds_the_ten_abilities_in_the_designed_order() {
-        let names: Vec<&str> = FireAbility::BAR
+    fn the_mages_bar_holds_the_ten_abilities_in_the_designed_order() {
+        let names: Vec<&str> = Hero::FireMage
+            .abilities()
             .iter()
             .map(|ability| ability.definition().name)
             .collect();
@@ -997,7 +1222,7 @@ mod tests {
     fn the_ultimate_is_not_on_the_bar_and_is_disabled() {
         assert!(FireAbility::Cataclysm.is_ultimate());
         assert_eq!(FireAbility::Cataclysm.bar_slot(), None);
-        assert_eq!(FireAbility::BAR.len(), ABILITY_SLOTS);
+        assert_eq!(Hero::FireMage.abilities().len(), ABILITY_SLOTS);
         #[allow(
             clippy::assertions_on_constants,
             reason = "the constant is the subject"
@@ -1094,7 +1319,7 @@ mod tests {
 
     #[test]
     fn only_the_ultimate_costs_a_resource() {
-        for ability in FireAbility::BAR {
+        for ability in Hero::FireMage.abilities() {
             assert_eq!(ability.definition().energy_cost, 0.0);
         }
         assert_eq!(FireAbility::Cataclysm.definition().energy_cost, 100.0);
@@ -1221,7 +1446,7 @@ mod tests {
 
     #[test]
     fn everything_on_the_bar_can_be_assigned_and_nothing_else_can() {
-        for ability in FireAbility::BAR {
+        for ability in Hero::FireMage.abilities().iter().copied() {
             assert!(
                 ability.is_assignable(),
                 "{ability:?} cannot be put in a slot"

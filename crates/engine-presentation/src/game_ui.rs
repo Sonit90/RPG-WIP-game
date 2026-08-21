@@ -692,8 +692,7 @@ impl GameUi {
                 };
                 let Some(view) = slot
                     .ability
-                    .and_then(FireAbility::bar_slot)
-                    .and_then(|bar_slot| snapshot.abilities.get(bar_slot))
+                    .and_then(|ability| snapshot.ability_view(ability))
                 else {
                     // An empty slot is still drawn. It is where the player drops the next
                     // spell, and a bar that showed only what was in it would be a bar that
@@ -983,6 +982,12 @@ impl GameUi {
     /// The ten-slot ability bar, and the Ultimate beside it.
     pub fn push_ability_bar(&mut self, snapshot: &UiSnapshot, viewport: (u32, u32)) {
         for (slot, view) in snapshot.abilities.iter().enumerate() {
+            // A slot the current hero does not fill draws nothing at all. An empty *frame*
+            // belongs to the arrangeable action bars, where it is a place to drop a spell;
+            // this fixed bar is a readout of what the hero has.
+            let Some(view) = view else {
+                continue;
+            };
             let rect = self.slot_rect(slot, viewport);
             self.push_ability_button(
                 rect,
@@ -991,20 +996,24 @@ impl GameUi {
             );
         }
 
-        let rect = self.ultimate_rect(viewport);
-        self.push_ability_button(
-            rect,
-            &snapshot.ultimate,
-            self.metrics.scale.text(self.theme.hud_text_scale * 0.5),
-        );
-        if snapshot.player.ultimate_ready {
-            // The Ultimate glows when it can be used: it is the one button worth finding
-            // without looking for it.
-            self.list.outline(
-                rect.inset(-self.metrics.scale.px(3.0)),
-                self.metrics.scale.px(3.0),
-                self.theme.energy_full,
+        // A hero with no Ultimate draws no Ultimate: an empty button beside the bar reads
+        // as a spell that has not loaded, not as a class that has none.
+        if let Some(ultimate) = snapshot.ultimate.as_ref() {
+            let rect = self.ultimate_rect(viewport);
+            self.push_ability_button(
+                rect,
+                ultimate,
+                self.metrics.scale.text(self.theme.hud_text_scale * 0.5),
             );
+            if snapshot.player.ultimate_ready {
+                // The Ultimate glows when it can be used: it is the one button worth finding
+                // without looking for it.
+                self.list.outline(
+                    rect.inset(-self.metrics.scale.px(3.0)),
+                    self.metrics.scale.px(3.0),
+                    self.theme.energy_full,
+                );
+            }
         }
     }
 
@@ -1671,6 +1680,7 @@ mod tests {
     use crate::snapshot::UiSnapshot;
     use engine_core::math::Mat4;
     use engine_game::arena::{self, ArenaConfig};
+    use engine_game::hero::Hero;
     use engine_game::sim::Simulation;
     use engine_render_data::ui::{MAX_ICON_PIXELS, UiCommand};
     use engine_settings::{UI_SCALE_MAX, UI_SCALE_MIN, UI_SCALE_STEP};
@@ -2027,7 +2037,8 @@ mod tests {
             (FireAbility::Blink, UiIcon::Blink),
         ];
         for (ability, expected) in art {
-            let slot = FireAbility::BAR
+            let slot = Hero::default()
+                .abilities()
                 .iter()
                 .position(|candidate| *candidate == ability)
                 .expect("the ability is on the bar");
@@ -2071,7 +2082,7 @@ mod tests {
             })
             .collect();
 
-        for (slot, ability) in FireAbility::BAR.iter().enumerate() {
+        for (slot, ability) in Hero::default().abilities().iter().enumerate() {
             let rect = ui.slot_rect(slot, VIEWPORT);
             // Where `push_ability_button` centres a name.
             let centre = (rect.x + rect.width * 0.5, rect.y + rect.height * 0.5 - 4.0);
@@ -2215,11 +2226,14 @@ mod tests {
             snapshot
                 .abilities
                 .iter()
-                .all(|view| view.is_on_global_cooldown()),
+                .flatten()
+                .all(AbilitySlotView::is_on_global_cooldown),
             "the global cooldown did not reach every slot"
         );
         assert!(
-            snapshot.ultimate.is_on_global_cooldown(),
+            snapshot
+                .ultimate
+                .is_some_and(|view| view.is_on_global_cooldown()),
             "the Ultimate is on the same shared timer"
         );
 
@@ -2228,6 +2242,7 @@ mod tests {
         let cooling: Vec<_> = snapshot
             .abilities
             .iter()
+            .flatten()
             .filter(|view| view.is_cooling())
             .collect();
         assert!(!cooling.is_empty(), "nothing went on its own cooldown");
@@ -2248,7 +2263,8 @@ mod tests {
         simulation.step_once();
 
         let ui = built(&simulation);
-        let casting = FireAbility::BAR
+        let casting = Hero::default()
+            .abilities()
             .iter()
             .position(|ability| *ability == FireAbility::Pyroblast)
             .expect("Pyroblast is on the bar");
@@ -2291,25 +2307,31 @@ mod tests {
         let aimed = FireAbility::Meteor;
         let snapshot = UiSnapshot::build_aiming(&simulation, Some(aimed));
 
-        let slot = FireAbility::BAR
+        let slot = Hero::default()
+            .abilities()
             .iter()
             .position(|ability| *ability == aimed)
             .expect("Meteor is on the bar");
-        assert!(snapshot.abilities[slot].aiming);
-        assert!(snapshot.abilities[slot].shows_active_frame());
-        assert!(
-            !snapshot.abilities[slot].casting,
-            "an unconfirmed placement is not a cast"
-        );
+        let Some(view) = snapshot.abilities[slot] else {
+            panic!("the mage's Meteor slot is filled");
+        };
+        assert!(view.aiming);
+        assert!(view.shows_active_frame());
+        assert!(!view.casting, "an unconfirmed placement is not a cast");
 
         // Exactly one slot, and it is that one.
         let framed = snapshot
             .abilities
             .iter()
+            .flatten()
             .filter(|view| view.shows_active_frame())
             .count();
         assert_eq!(framed, 1, "{framed} slots claim to be active");
-        assert!(!snapshot.ultimate.shows_active_frame());
+        assert!(
+            !snapshot
+                .ultimate
+                .is_some_and(|view| view.shows_active_frame())
+        );
 
         // And it reaches the drawn frame, not just the view.
         let (set, config) = plates(&simulation);
@@ -2334,6 +2356,7 @@ mod tests {
             snapshot
                 .abilities
                 .iter()
+                .flatten()
                 .all(|view| !view.shows_active_frame()),
             "a slot is framed with nothing happening"
         );

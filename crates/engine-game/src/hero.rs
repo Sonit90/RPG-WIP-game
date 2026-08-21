@@ -1,0 +1,264 @@
+//! Which playable character the player is, and which abilities that gives them.
+//!
+//! ```text
+//! Hero ──► bar(): [Option<FireAbility>; ABILITY_SLOTS] ──► the action bar's defaults
+//!      └─► every ability's `AbilityDef::hero` says which hero owns it
+//! ```
+//!
+//! # Why a hero is an index into the one ability table
+//!
+//! There is exactly one ability table in the project ([`crate::firemage::ABILITIES`]) and
+//! exactly one executor that reads it. A second class implemented as a second table would be
+//! a second set of cooldown rules, a second global cooldown, a second tooltip generator and a
+//! second thing for the damage meter to learn — four opportunities for two classes to
+//! disagree about what a cast is.
+//!
+//! So a hero is not a new system: it is a *slice* of the table. Every row names its owner,
+//! and a hero's bar is the rows that name it, in bar order. Everything downstream — the
+//! executor, the meter, the tooltips, the action bar, the simulator — reads a row and never
+//! asks who is casting it.
+//!
+//! # What a hero is not
+//!
+//! It is not a stat block and it is not a resource. Heat, Ignite and the talent grid belong
+//! to [`crate::firemage::FireMage`] and are the FireMage's; the Warrior and the Druid
+//! generate no Heat and apply no burn because their rows say zero, not because anything
+//! branches on who they are.
+
+use crate::firemage::{ABILITY_SLOTS, FireAbility};
+
+/// Which playable character the player is.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Hero {
+    /// Fire, Heat, Ignite and the payoff. The class the game was built around.
+    #[default]
+    FireMage,
+    /// Melee: reach it, hit it, cleave what stands beside it.
+    Warrior,
+    /// In human form: the moon, the stars, and a heal that is not a cooldown.
+    Druid,
+}
+
+impl Hero {
+    /// Every hero, in selection order.
+    pub const ALL: [Self; 3] = [Self::FireMage, Self::Warrior, Self::Druid];
+
+    /// Dense index, for an array or a settings file.
+    #[must_use]
+    pub fn index(self) -> usize {
+        match self {
+            Self::FireMage => 0,
+            Self::Warrior => 1,
+            Self::Druid => 2,
+        }
+    }
+
+    /// The hero at `index`, if there is one.
+    #[must_use]
+    pub fn from_index(index: usize) -> Option<Self> {
+        Self::ALL.get(index).copied()
+    }
+
+    /// Uppercase display name. The UI font has no lowercase glyphs.
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::FireMage => "FIREMAGE",
+            Self::Warrior => "WARRIOR",
+            Self::Druid => "DRUID",
+        }
+    }
+
+    /// One line of what the hero is, for the swap menu.
+    #[must_use]
+    pub fn description(self) -> &'static str {
+        match self {
+            Self::FireMage => "RANGED FIRE. BANK A BURN, THEN SPEND IT",
+            Self::Warrior => "MELEE. CLOSE THE GAP AND CLEAVE",
+            Self::Druid => "HUMAN FORM. MOON, STARS AND A HEAL",
+        }
+    }
+
+    /// The stable written name a configuration file stores.
+    ///
+    /// Lowercase and stable across builds, and deliberately not [`Hero::name`]: renaming a
+    /// hero on screen must not silently reset which hero a player was.
+    #[must_use]
+    pub fn config_name(self) -> &'static str {
+        match self {
+            Self::FireMage => "firemage",
+            Self::Warrior => "warrior",
+            Self::Druid => "druid",
+        }
+    }
+
+    /// The hero with this written name, if there is one.
+    #[must_use]
+    pub fn from_config_name(name: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|hero| hero.config_name() == name)
+    }
+
+    /// The name of the model this hero is drawn with.
+    ///
+    /// A *name*, not a mesh: `engine-game` depends on `engine-core` and nothing else, and it
+    /// must not learn that a triangle exists. The visual layer looks the name up in its model
+    /// library, exactly as it already does for the FireMage.
+    #[must_use]
+    pub fn model_name(self) -> &'static str {
+        match self {
+            Self::FireMage => "fire_mage",
+            Self::Warrior => "warrior",
+            Self::Druid => "druid",
+        }
+    }
+
+    /// The abilities this hero can cast, in bar order.
+    #[must_use]
+    pub fn abilities(self) -> &'static [FireAbility] {
+        match self {
+            Self::FireMage => &[
+                FireAbility::Firebolt,
+                FireAbility::FlameLance,
+                FireAbility::FlameCone,
+                FireAbility::Meteor,
+                FireAbility::Pyroblast,
+                FireAbility::Firestorm,
+                FireAbility::Detonate,
+                FireAbility::FireMastery,
+                FireAbility::FlameShield,
+                FireAbility::Blink,
+            ],
+            Self::Warrior => &[
+                FireAbility::MortalStrike,
+                FireAbility::Cleave,
+                FireAbility::Charge,
+            ],
+            Self::Druid => &[
+                FireAbility::Moonfire,
+                FireAbility::Starfall,
+                FireAbility::Regrowth,
+            ],
+        }
+    }
+
+    /// The hero's bar: its abilities on the digits, and nothing in the slots it does not
+    /// fill.
+    ///
+    /// A fixed-width array rather than a slice so that "slot 4" means the same key for every
+    /// hero. A hero with three abilities leaves seven slots empty; it does not renumber the
+    /// keyboard.
+    #[must_use]
+    pub fn bar(self) -> [Option<FireAbility>; ABILITY_SLOTS] {
+        let mut bar = [None; ABILITY_SLOTS];
+        for (slot, ability) in self.abilities().iter().enumerate().take(ABILITY_SLOTS) {
+            bar[slot] = Some(*ability);
+        }
+        bar
+    }
+
+    /// The ability on this hero's bar in `slot`, if there is one.
+    #[must_use]
+    pub fn ability_at(self, slot: usize) -> Option<FireAbility> {
+        self.abilities().get(slot).copied()
+    }
+
+    /// Whether this hero can cast `ability`.
+    #[must_use]
+    pub fn has(self, ability: FireAbility) -> bool {
+        ability.hero() == self
+    }
+
+    /// The furthest anything this hero has can reach, in metres.
+    ///
+    /// What "in range" means for *selection*: a target further away than this cannot be hit
+    /// by anything on the bar, so putting it in the target cycle is offering the player
+    /// something to select and then be refused for. Derived from the hero's own rows, which
+    /// is why a Warrior's cycle is five metres deep and a mage's is thirty-five.
+    #[must_use]
+    pub fn longest_range(self) -> f32 {
+        self.abilities()
+            .iter()
+            .map(|ability| ability.definition().range)
+            .fold(0.0, f32::max)
+    }
+
+    /// This hero's Ultimate, if it has one.
+    ///
+    /// Only the FireMage has a row for one, and it is switched off — see
+    /// [`crate::firemage::ULTIMATE_ENABLED`]. The Warrior and the Druid have no Ultimate at
+    /// all, which is a different thing from having one that is disabled, and the interface
+    /// draws nothing rather than a button that refuses.
+    #[must_use]
+    pub fn ultimate(self) -> Option<FireAbility> {
+        match self {
+            Self::FireMage => Some(FireAbility::Cataclysm),
+            Self::Warrior | Self::Druid => None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::firemage::ABILITIES;
+
+    #[test]
+    fn every_hero_round_trips_through_its_index_and_its_written_name() {
+        for hero in Hero::ALL {
+            assert_eq!(Hero::from_index(hero.index()), Some(hero));
+            assert_eq!(Hero::from_config_name(hero.config_name()), Some(hero));
+        }
+        assert_eq!(Hero::from_index(Hero::ALL.len()), None);
+        assert_eq!(Hero::from_config_name("necromancer"), None);
+    }
+
+    #[test]
+    fn every_castable_ability_belongs_to_exactly_one_heros_bar() {
+        // The property the whole design rests on: an ability's bar slot can be derived from
+        // the ability alone, because no two heroes share one.
+        for ability in FireAbility::ALL {
+            if !ability.is_assignable() {
+                continue;
+            }
+            let owners: Vec<Hero> = Hero::ALL
+                .into_iter()
+                .filter(|hero| hero.abilities().contains(&ability))
+                .collect();
+            assert_eq!(owners.len(), 1, "{ability:?} is owned by {owners:?}");
+            assert_eq!(owners[0], ability.hero(), "{ability:?}");
+        }
+    }
+
+    #[test]
+    fn a_heros_bar_is_its_abilities_and_then_nothing() {
+        for hero in Hero::ALL {
+            let bar = hero.bar();
+            let filled = bar.iter().filter(|slot| slot.is_some()).count();
+            assert_eq!(filled, hero.abilities().len());
+            for (slot, ability) in hero.abilities().iter().enumerate() {
+                assert_eq!(bar[slot], Some(*ability));
+                assert_eq!(hero.ability_at(slot), Some(*ability));
+                assert_eq!(ability.bar_slot(), Some(slot), "{ability:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_two_new_heroes_have_three_abilities_each_and_no_heat_or_ignite() {
+        // What makes them different classes rather than a mage with different names: their
+        // rows generate nothing the FireMage's resources are made of. This is data, not a
+        // branch in the executor, and this test is what keeps it that way.
+        for hero in [Hero::Warrior, Hero::Druid] {
+            assert_eq!(hero.abilities().len(), 3, "{hero:?}");
+            for ability in hero.abilities() {
+                let definition = &ABILITIES[ability.index()];
+                assert_eq!(definition.heat, 0.0, "{ability:?} generates Heat");
+                assert_eq!(definition.ignite_stacks, 0, "{ability:?} applies Ignite");
+                assert_eq!(definition.energy_cost, 0.0, "{ability:?} costs energy");
+            }
+            assert_eq!(hero.ultimate(), None);
+        }
+    }
+}

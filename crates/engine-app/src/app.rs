@@ -21,7 +21,10 @@
 
 use std::time::{Duration, Instant};
 
-use engine_assets::procedural::{DummyVariant, fire_mage, fire_mage_character, training_dummy};
+use engine_assets::procedural::{
+    DummyVariant, druid, druid_character, fire_mage, fire_mage_character, training_dummy, warrior,
+    warrior_character,
+};
 use engine_core::application::{Application, EngineContext};
 use engine_core::config::EngineSettings;
 use engine_core::error::EngineError;
@@ -31,6 +34,7 @@ use engine_game::arena::{self, ArenaConfig};
 use engine_game::command::PlayerCommand;
 use engine_game::demo::{self, DemoScene};
 use engine_game::firemage::FireAbility;
+use engine_game::hero::Hero;
 use engine_game::input_map::Bindings;
 use engine_game::sim::Simulation;
 use engine_platform::{Window, WindowConfig, WindowEvent};
@@ -201,6 +205,14 @@ pub struct App {
     collision_debug: CollisionDebug,
     /// Commands built from this frame's input. Reused; never freed.
     commands: Vec<PlayerCommand>,
+    /// Every playable hero's model, uploaded once at startup.
+    ///
+    /// All three are uploaded whether or not they are worn, because a swap happens from a
+    /// menu in a running frame: uploading a model there would mean a `create_model` — a
+    /// buffer allocation and a copy — in the middle of a frame the player is looking at, to
+    /// save perhaps a megabyte of vertex data. Three prism characters are cheaper than one
+    /// hitch.
+    heroes: HeroVisuals,
     /// The pause and settings menus. Owns no gameplay and no file: it emits actions.
     menu: MenuSystem,
     /// This frame's menu actions, copied out of the menu so they can be applied to `self`.
@@ -496,7 +508,8 @@ impl App {
         // The player's model, skeleton and clips. Every scene gets one, including the
         // collision course — a character test needs a character, and a capsule that walks is
         // easier to judge when it has legs.
-        extractor.set_player_visual(build_player_visual(&mut renderer)?);
+        let heroes = HeroVisuals::upload(&mut renderer)?;
+        extractor.set_player_visual(heroes.visual(simulation.hero())?);
         if args.scene.is_collision() {
             // The demo course brings its own floor: a slab whose top face is at y = 0. The
             // extractor's floor plane is at y = 0 too, and two coplanar surfaces are a
@@ -581,7 +594,7 @@ impl App {
         let action_bars = if hud_config.existed() {
             ActionBarSet::from_config(hud_config.config())
         } else {
-            let bars = ActionBarSet::with_default_bindings();
+            let bars = ActionBarSet::with_default_bindings(simulation.hero());
             let mut fresh = hud_config.config().clone();
             bars.write_config(&mut fresh);
             hud_config.update(fresh);
@@ -682,6 +695,7 @@ impl App {
             #[cfg(feature = "debug-overlay")]
             collision_debug,
             commands: Vec::with_capacity(16),
+            heroes,
             menu: MenuSystem::new(game_settings.settings(), env!("CARGO_PKG_VERSION")),
             menu_actions: Vec::with_capacity(4),
             menu_theme: MenuTheme::default(),
@@ -1014,12 +1028,17 @@ impl App {
             return;
         }
 
+        // Only for a hero that has one. The Warrior and the Druid draw no Ultimate button,
+        // and a rectangle that answers the pointer where nothing is drawn is a dead zone the
+        // player cannot see.
         let ultimate = self.game_ui.ultimate_rect(viewport);
-        if ultimate.contains(ui_input.pointer.0, ui_input.pointer.1) {
-            self.hovered_ability = Some(self.snapshot.ultimate.ability);
+        if let Some(view) = self.snapshot.ultimate
+            && ultimate.contains(ui_input.pointer.0, ui_input.pointer.1)
+        {
+            self.hovered_ability = Some(view.ability);
             self.hovered_slot = None;
             if ui_input.pointer_pressed {
-                pressed = Some(self.snapshot.ultimate.ability);
+                pressed = Some(view.ability);
             }
         }
 
@@ -1101,6 +1120,62 @@ impl App {
     /// belongs to and reaches the interface through the snapshot like everything else.
     fn aiming_ability(&self) -> Option<FireAbility> {
         self.targeting.active().map(|target| target.ability)
+    }
+
+    /// Becomes `hero`: the simulation, the model, the bar and the roster's tick, in that
+    /// order.
+    ///
+    /// ```text
+    /// Simulation::set_hero   the abilities, and a clean class state
+    ///          │
+    ///          ├── HeroVisuals::visual      the model the player is drawn as
+    ///          ├── ActionBarSet::rebind     bar one, saved to the HUD file
+    ///          └── MenuSystem::set_hero     the tick, reported back from the game
+    /// ```
+    ///
+    /// The world is untouched. The player keeps their position, their health, their target
+    /// and the fight they are in: a hero swap is a change of what you are holding, not a
+    /// reload, and treating it as one would make it useless as the thing it is for — trying
+    /// the three classes against the same dummies.
+    ///
+    /// Anything the old hero had open goes with it. A Meteor being placed by a mage who is
+    /// now a Warrior has no ability behind it, and a targeting circle for a spell nobody can
+    /// cast is the one state this must not leave behind.
+    fn swap_hero(&mut self, hero: Hero) {
+        if !self.simulation.set_hero(hero) {
+            // Already this hero. The tick is still refreshed, because the menu may have
+            // moved it optimistically.
+            self.menu.set_hero(hero);
+            return;
+        }
+        self.targeting.cancel();
+        // The picker offers the hero's own spells, so it is told before it is next opened.
+        self.slot_menu.set_hero(hero);
+        self.hovered_ability = None;
+        self.hovered_slot = None;
+
+        match self.heroes.visual(hero) {
+            Ok(visual) => self.extractor.set_player_visual(visual),
+            // The model failed to bind, which upload has already ruled out. The character
+            // keeps the model it had rather than vanishing, and the line says which hero has
+            // the wrong body.
+            Err(error) => log::error!("hero swap: {} kept the old model: {error}", hero.name()),
+        }
+
+        // Bar one follows the class; the player's other seven bars are their own. Saved
+        // straight away, so the hero a player last chose is the bar they come back to.
+        self.action_bars.rebind_to_hero(hero);
+        let mut config = self.hud_config.config().clone();
+        self.action_bars.write_config(&mut config);
+        self.hud_config.update(config);
+        self.hud_config.save_if_dirty();
+
+        self.menu.set_hero(hero);
+        log::info!(
+            "hero: now the {} ({} abilities)",
+            hero.name(),
+            hero.abilities().len()
+        );
     }
 
     /// Casts an ability, or opens the targeting indicator if it is aimed with the mouse.
@@ -1202,6 +1277,20 @@ impl App {
                 }
                 MenuAction::ClosedSettings => {
                     self.play_ui_sound(engine_audio::SoundId::UiCancel);
+                }
+                MenuAction::OpenedHeroes => {
+                    self.play_ui_sound(engine_audio::SoundId::UiClick);
+                    // The roster shows who the player *is*, which is the simulation's answer
+                    // and not the menu's memory of it.
+                    let hero = self.simulation.hero();
+                    self.menu.set_hero(hero);
+                }
+                MenuAction::ClosedHeroes => {
+                    self.play_ui_sound(engine_audio::SoundId::UiCancel);
+                }
+                MenuAction::HeroSelected(hero) => {
+                    self.play_ui_sound(engine_audio::SoundId::UiSelect);
+                    self.swap_hero(hero);
                 }
                 MenuAction::EditHudRequested => {
                     self.play_ui_sound(engine_audio::SoundId::UiClick);
@@ -1571,18 +1660,21 @@ impl App {
         if let Some(ability) = self.hovered_ability {
             // The rectangle the tooltip points at is wherever the player put the slot, not
             // wherever the class's fixed bar used to be.
-            let (rect, view) = match ability.bar_slot() {
-                Some(slot) => (
-                    self.hovered_slot_rect(viewport)
-                        .unwrap_or_else(|| self.game_ui.ultimate_rect(viewport)),
-                    self.snapshot.abilities[slot],
-                ),
-                None => (self.game_ui.ultimate_rect(viewport), self.snapshot.ultimate),
+            let rect = match ability.bar_slot() {
+                Some(_) => self
+                    .hovered_slot_rect(viewport)
+                    .unwrap_or_else(|| self.game_ui.ultimate_rect(viewport)),
+                None => self.game_ui.ultimate_rect(viewport),
             };
-            let ignite_max = self.snapshot.ignite_max;
-            let mastery = self.snapshot.player.mastery;
-            self.game_ui
-                .push_ability_tooltip(rect, &view, ignite_max, mastery, viewport);
+            // The view is looked up by ability rather than by slot: a slot the current hero
+            // does not fill has no view, and a tooltip for a spell the player cannot cast is
+            // exactly what must not be drawn.
+            if let Some(view) = self.snapshot.ability_view(ability).copied() {
+                let ignite_max = self.snapshot.ignite_max;
+                let mastery = self.snapshot.player.mastery;
+                self.game_ui
+                    .push_ability_tooltip(rect, &view, ignite_max, mastery, viewport);
+            }
         }
         self.push_affected_highlights(viewport);
         engine_presentation::ui::talent_menu::push_talent_menu(
@@ -2869,26 +2961,110 @@ fn controller_eye_guess(scene: &engine_environment::EnvironmentScene) -> Vec3 {
     scene.spawns.player + Vec3::new(0.0, 4.0, 8.0)
 }
 
-/// The file an artist's FireMage is delivered as, looked for in every asset root.
-const FIREMAGE_MODEL_FILE: &str = "firemage.glb";
+/// One row of the hero table: who, which file an artist would deliver, how to build the
+/// procedural stand-in, and what the character's definition is.
+type HeroSource = (
+    Hero,
+    &'static str,
+    fn() -> Result<engine_assets::ModelAsset, engine_assets::AssetError>,
+    fn() -> engine_assets::CharacterDef,
+);
 
-/// Uploads the FireMage and builds the player's visual controller.
+/// Every hero's uploaded model, in [`Hero::ALL`] order.
 ///
-/// **This is the whole of "which character the player is".** The model is the artist's
-/// export if one is installed and the procedural mage if not; the definition says which
-/// clips fill which roles; the controller joins them. Gameplay is not involved, and adding a
-/// second playable character means calling this with a different pair.
+/// **This is the whole of "what the player looks like".** A hero names a model
+/// ([`Hero::model_name`]); this is where that name became triangles. Gameplay is not
+/// involved, the extractor is handed a controller and asks nothing about who is in it, and a
+/// fourth playable character is a row in the table below.
+struct HeroVisuals {
+    entries: Vec<HeroVisual>,
+}
+
+/// One hero's definition and uploaded geometry, kept so a swap can rebuild its controller
+/// without touching the GPU.
+struct HeroVisual {
+    hero: Hero,
+    definition: engine_assets::CharacterDef,
+    model: std::sync::Arc<engine_assets::ModelAsset>,
+    binding: engine_render_data::ModelBinding,
+}
+
+impl HeroVisuals {
+    /// Uploads all three heroes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError`] if a model fails to build, fails to import or fails to upload.
+    fn upload(renderer: &mut Renderer) -> Result<Self, EngineError> {
+        // Which hero is built from what. The one table: an artist's export is looked for
+        // under the hero's own file name, and the procedural model stands in until one is
+        // delivered.
+        let sources: [HeroSource; 3] = [
+            (
+                Hero::FireMage,
+                "firemage.glb",
+                fire_mage,
+                fire_mage_character,
+            ),
+            (Hero::Warrior, "warrior.glb", warrior, warrior_character),
+            (Hero::Druid, "druid.glb", druid, druid_character),
+        ];
+
+        let mut entries = Vec::with_capacity(sources.len());
+        for (hero, file, build, character) in sources {
+            let (definition, model) = load_character(hero, file, build, character)?;
+            let binding = renderer.create_model(&model)?;
+            entries.push(HeroVisual {
+                hero,
+                definition,
+                model: std::sync::Arc::new(model),
+                binding,
+            });
+        }
+        Ok(Self { entries })
+    }
+
+    /// A fresh visual controller for `hero`.
+    ///
+    /// A new controller rather than a stored one: a controller holds *where in which clip*
+    /// the character is, and a hero that was mid-cast when it was taken off must not come
+    /// back still holding that pose. The model and its upload are shared, so this allocates
+    /// a bone palette and nothing else.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError`] if the model's clips cannot be bound, which validation at
+    /// upload has already ruled out.
+    fn visual(&self, hero: Hero) -> Result<CharacterVisual, EngineError> {
+        let Some(entry) = self.entries.iter().find(|entry| entry.hero == hero) else {
+            return Err(EngineError::unsupported("find the hero's model"));
+        };
+        CharacterVisual::new(
+            entry.definition.clone(),
+            std::sync::Arc::clone(&entry.model),
+            entry.binding.clone(),
+        )
+        .map_err(|error| EngineError::unsupported("bind the hero's animations").with_source(error))
+    }
+}
+
+/// One hero's model: the artist's export if one is installed, the procedural model if not.
 ///
 /// An export that is present but does not load is an error rather than a silent fall back to
-/// the procedural mage: a mis-exported file and a file nobody delivered yet must not look the
-/// same at startup.
-fn build_player_visual(renderer: &mut Renderer) -> Result<CharacterVisual, EngineError> {
-    let (definition, model) = match engine_assets::disk::find_model("firemage", FIREMAGE_MODEL_FILE)
-    {
+/// the procedural model: a mis-exported file and a file nobody delivered yet must not look
+/// the same at startup.
+fn load_character(
+    hero: Hero,
+    file: &str,
+    build: fn() -> Result<engine_assets::ModelAsset, engine_assets::AssetError>,
+    character: fn() -> engine_assets::CharacterDef,
+) -> Result<(engine_assets::CharacterDef, engine_assets::ModelAsset), EngineError> {
+    let name = hero.model_name();
+    match engine_assets::disk::find_model(hero.config_name(), file) {
         Ok(Some(model)) => {
             log::info!(
-                "FireMage: imported {FIREMAGE_MODEL_FILE} - {} triangles, {} bones, {} clips, \
-                 {} KiB of textures, {:.2} m tall",
+                "{name}: imported {file} - {} triangles, {} bones, {} clips, {} KiB of \
+                 textures, {:.2} m tall",
                 model.triangle_count(),
                 model
                     .skeleton
@@ -2898,23 +3074,16 @@ fn build_player_visual(renderer: &mut Renderer) -> Result<CharacterVisual, Engin
                 model.texture_bytes() / 1024,
                 model.bind_pose_height(),
             );
-            (imported_character(&model, fire_mage_character()), model)
+            Ok((imported_character(&model, character()), model))
         }
-        Ok(None) => (
-            fire_mage_character(),
-            fire_mage().map_err(|error| {
-                EngineError::unsupported("build the FireMage").with_source(error)
+        Ok(None) => Ok((
+            character(),
+            build().map_err(|error| {
+                EngineError::unsupported("build a hero's model").with_source(error)
             })?,
-        ),
-        Err(error) => {
-            return Err(EngineError::unsupported("import the FireMage model").with_source(error));
-        }
-    };
-
-    let binding = renderer.create_model(&model)?;
-    CharacterVisual::new(definition, std::sync::Arc::new(model), binding).map_err(|error| {
-        EngineError::unsupported("bind the FireMage's animations").with_source(error)
-    })
+        )),
+        Err(error) => Err(EngineError::unsupported("import a hero's model").with_source(error)),
+    }
 }
 
 /// `definition` retargeted at an imported model.
@@ -2939,8 +3108,9 @@ fn imported_character(
         .retain(|(_, name)| model.clip_index(name).is_some());
     if definition.clips.len() < before {
         log::warn!(
-            "FireMage: the export carries {} of the {before} clips the character wants; the \
-             rest fall back to the bind pose",
+            "{}: the export carries {} of the {before} clips the character wants; the rest \
+             fall back to the bind pose",
+            definition.name,
             definition.clips.len(),
         );
     }
@@ -3306,7 +3476,10 @@ mod tests {
         // looks like.
         use engine_presentation::ui::targeting::TargetShape;
 
-        for ability in FireAbility::BAR {
+        // Every hero's, not only the mage's: the Warrior's cleave and the Druid's Starfall
+        // are aimed too, and an indicator that only knew about fire would draw nothing for
+        // either.
+        for ability in Hero::ALL.into_iter().flat_map(Hero::abilities).copied() {
             if !ability.definition().target.is_aimed() {
                 continue;
             }
@@ -3315,7 +3488,9 @@ mod tests {
             let kind = DecalShape::of(shape);
             match ability {
                 FireAbility::Firestorm => assert_eq!(kind, DecalShape::Line),
-                FireAbility::FlameCone => assert_eq!(kind, DecalShape::Cone),
+                FireAbility::FlameCone | FireAbility::Cleave => {
+                    assert_eq!(kind, DecalShape::Cone);
+                }
                 _ => assert_eq!(kind, DecalShape::Circle, "{ability:?}"),
             }
         }

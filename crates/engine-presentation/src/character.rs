@@ -456,7 +456,10 @@ fn animated_bounds(local: Sphere, transform: &Transform) -> Sphere {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine_assets::procedural::{fire_mage, fire_mage_character};
+    use engine_assets::procedural::{
+        druid, druid_character, fire_mage, fire_mage_character, warrior, warrior_character,
+    };
+    use engine_game::hero::Hero;
     use engine_render_data::{MaterialHandle, ModelLodBinding, ModelPart, SkinnedMeshHandle};
 
     /// A binding that names handles nothing uploaded: the controller never dereferences
@@ -499,6 +502,67 @@ mod tests {
         match CharacterVisual::new(fire_mage_character(), model, binding) {
             Ok(visual) => visual,
             Err(error) => panic!("the FireMage's own definition must resolve: {error}"),
+        }
+    }
+
+    /// Every playable hero, as the application builds them.
+    fn every_hero() -> Vec<(Hero, CharacterVisual)> {
+        type Source = (
+            Hero,
+            fn() -> Result<ModelAsset, AssetError>,
+            fn() -> engine_assets::CharacterDef,
+        );
+        let sources: [Source; 3] = [
+            (Hero::FireMage, fire_mage, fire_mage_character),
+            (Hero::Warrior, warrior, warrior_character),
+            (Hero::Druid, druid, druid_character),
+        ];
+        sources
+            .into_iter()
+            .map(|(hero, build, character)| {
+                let Ok(model) = build() else {
+                    panic!("{hero:?} must build");
+                };
+                let model = Arc::new(model);
+                let binding = binding(&model);
+                match CharacterVisual::new(character(), model, binding) {
+                    Ok(visual) => (hero, visual),
+                    Err(error) => panic!("{hero:?}'s definition must resolve: {error}"),
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn every_hero_the_swap_menu_offers_can_actually_be_worn() {
+        // What a swap does at runtime, without a device: build the model the hero names,
+        // resolve its definition against it and drive one frame of it. A hero whose
+        // definition and model disagree is a menu entry that turns the player into a
+        // bind-pose statue, and the roster has no way to know.
+        for (hero, mut visual) in every_hero() {
+            assert_eq!(hero.model_name(), visual.def().model.as_str(), "{hero:?}");
+            assert_eq!(
+                visual.def().clips.len(),
+                AnimationSlot::ALL.len(),
+                "{hero:?} does not fill every animation slot"
+            );
+            let Ok(()) = visual.update(0.016, CharacterState::default()) else {
+                panic!("{hero:?} must animate");
+            };
+            assert_eq!(visual.slot(), AnimationSlot::Idle, "{hero:?}");
+            assert_eq!(visual.palette().len(), 21, "{hero:?} has a different rig");
+        }
+    }
+
+    #[test]
+    fn every_hero_runs_when_it_is_moved_and_lands_when_it_touches_down() {
+        // The gameplay-to-animation seam, per hero: the roles are chosen from the state, and
+        // a character whose speeds were mis-declared would walk where it should run.
+        for (hero, mut visual) in every_hero() {
+            let Ok(()) = visual.update(0.016, moving(visual.def().run_speed + 1.0)) else {
+                panic!("{hero:?} must animate");
+            };
+            assert_eq!(visual.slot(), AnimationSlot::Run, "{hero:?} will not run");
         }
     }
 

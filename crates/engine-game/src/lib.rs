@@ -83,6 +83,8 @@ pub mod enemy;
 pub mod entity;
 pub mod event;
 pub mod firemage;
+/// Which playable character the player is, and which abilities that gives them.
+pub mod hero;
 pub mod input_map;
 /// Line of sight for targeted abilities, and nothing else.
 pub mod los;
@@ -107,6 +109,7 @@ pub use enemy::{EnemyAbility, EnemyKind, TelegraphShape};
 pub use entity::EntityId;
 pub use event::{CombatEvent, DamageEvent};
 pub use firemage::{AbilityError, FireAbility, FireMage, TalentId};
+pub use hero::Hero;
 pub use input_map::Bindings;
 pub use los::{CombatPoint, LineOfSightCheck, has_line_of_sight, line_of_sight};
 pub use movement::{Body, MovementState};

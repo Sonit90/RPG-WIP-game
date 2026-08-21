@@ -739,6 +739,16 @@ pub fn activation_sound(ability: FireAbility) -> Option<SoundId> {
         FireAbility::Detonate => Some(SoundId::DetonateCast),
         FireAbility::FireMastery => Some(SoundId::FireMasteryActivate),
         FireAbility::FlameShield => Some(SoundId::FlameShieldActivate),
+        // The Warrior and the Druid borrow the sounds whose *shape* matches what they do:
+        // a swing is an impact, a cleave is a cone, a placed circle of stars is a placed
+        // area, and a heal is a soft activation. Sounds of their own are art this phase does
+        // not have, and silence would be worse than a stand-in that is the right length.
+        FireAbility::MortalStrike => Some(SoundId::FireboltCast),
+        FireAbility::Cleave => Some(SoundId::FlameConeCast),
+        FireAbility::Charge => Some(SoundId::FlameShieldActivate),
+        FireAbility::Moonfire => Some(SoundId::FireboltCast),
+        FireAbility::Starfall => Some(SoundId::MeteorCast),
+        FireAbility::Regrowth => Some(SoundId::FireMasteryActivate),
         FireAbility::FlameLance | FireAbility::Pyroblast | FireAbility::Cataclysm => None,
         FireAbility::Blink | FireAbility::Ignite => None,
     }
@@ -778,6 +788,7 @@ pub fn impact_sound(ability: FireAbility) -> SoundId {
 mod tests {
     use super::*;
     use engine_audio::{DEFAULT_MAX_VOICES, SoundBank};
+    use engine_game::hero::Hero;
 
     fn runtime() -> AudioSystem {
         AudioSystem::with_bank(SoundBank::synthesised(8_000), 8_000, DEFAULT_MAX_VOICES)
@@ -787,7 +798,7 @@ mod tests {
     fn every_ability_on_the_bar_makes_a_sound_somewhere() {
         // The acceptance criterion, as a test: an ability with no activation sound has to
         // have a cast bed, and every ability has an impact.
-        for ability in FireAbility::BAR {
+        for ability in Hero::default().abilities().iter().copied() {
             let heard = activation_sound(ability).is_some()
                 || charge_sound(ability).is_some()
                 || matches!(ability, FireAbility::Blink);

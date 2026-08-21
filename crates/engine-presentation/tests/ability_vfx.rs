@@ -20,6 +20,7 @@ use engine_core::math::{Sphere, Vec3};
 use engine_game::arena::{self, ArenaConfig};
 use engine_game::command::PlayerCommand;
 use engine_game::firemage::FireAbility;
+use engine_game::hero::Hero;
 use engine_game::sim::Simulation;
 use engine_presentation::vfx::{VfxDirector, VfxVisuals};
 use engine_render_data::{MaterialHandle, MeshHandle, RenderWorld};
@@ -82,7 +83,7 @@ fn every_ability_on_the_bar_produces_a_visual() {
     // The whole bar, in bar order, each in a fresh fight. An ability that showed nothing
     // would be one the player casts into silence — which is the exact failure this phase
     // exists to remove, and the one most likely to come back when an ability is rebalanced.
-    for ability in FireAbility::BAR {
+    for ability in Hero::default().abilities().iter().copied() {
         let mut simulation = arena(6);
         let mut director = director();
         let mut world = RenderWorld::new();

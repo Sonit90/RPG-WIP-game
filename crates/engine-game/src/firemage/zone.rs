@@ -32,6 +32,8 @@ pub enum ZoneKind {
     BurningGround,
     /// The Ultimate's second phase. Unused while the Ultimate is disabled.
     InfernalGround,
+    /// The Druid's Starfall: a placed circle of falling stars.
+    Starfall,
 }
 
 impl ZoneKind {
@@ -42,6 +44,7 @@ impl ZoneKind {
             Self::Firestorm => "FIRESTORM",
             Self::BurningGround => "BURNING GROUND",
             Self::InfernalGround => "INFERNAL GROUND",
+            Self::Starfall => "STARFALL",
         }
     }
 

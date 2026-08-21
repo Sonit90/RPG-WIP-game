@@ -32,6 +32,7 @@
 
 use engine_core::input::KeyChord;
 use engine_game::firemage::FireAbility;
+use engine_game::hero::Hero;
 use engine_game::input_map::Bindings;
 use engine_render_data::ui::UiRect;
 use engine_settings::hud::{
@@ -167,21 +168,36 @@ impl Default for ActionBarSet {
 }
 
 impl ActionBarSet {
-    /// The bars a new player starts with: bar one holding the class, the rest empty.
+    /// The bars a new player starts with: bar one holding `hero`, the rest empty.
     ///
-    /// Bar one is exactly what the game's single bar is today — the ten abilities of
-    /// [`FireAbility::BAR`] on the digits [`Bindings::ability_key`] gives them — so a fresh
-    /// install plays identically to the build before eight bars existed.
+    /// Bar one is exactly the hero's own bar — its abilities on the digits
+    /// [`Bindings::ability_key`] gives them — so a fresh install plays identically to the
+    /// build before eight bars existed, and a hero with three abilities fills three slots
+    /// rather than borrowing seven of somebody else's.
     #[must_use]
-    pub fn with_default_bindings() -> Self {
+    pub fn with_default_bindings(hero: Hero) -> Self {
         let mut set = Self::default();
         for slot in 0..ACTION_BAR_SLOTS {
             set.bars[0].slots[slot] = ActionBarSlot {
-                ability: FireAbility::from_slot(slot),
+                ability: hero.ability_at(slot),
                 key: Bindings::ability_key(slot).map(KeyChord::plain),
             };
         }
         set
+    }
+
+    /// Rebinds bar one to `hero`'s abilities, leaving every other bar alone.
+    ///
+    /// What a hero swap does to the interface. Bar one is the class bar by convention — it
+    /// is what `with_default_bindings` fills — so it follows the class; bars two to eight are
+    /// the player's own arrangement and are not touched. Any slot anywhere still holding an
+    /// ability the new hero cannot cast simply draws empty, which
+    /// [`crate::snapshot::UiSnapshot::ability_view`] takes care of without anything being
+    /// erased.
+    pub fn rebind_to_hero(&mut self, hero: Hero) {
+        for slot in 0..ACTION_BAR_SLOTS {
+            self.bars[0].slots[slot].ability = hero.ability_at(slot);
+        }
     }
 
     /// The bars, in bar order.
@@ -475,10 +491,10 @@ mod tests {
 
     #[test]
     fn a_fresh_install_gets_the_bar_the_game_already_had() {
-        let set = ActionBarSet::with_default_bindings();
+        let set = ActionBarSet::with_default_bindings(Hero::default());
         for slot in 0..ACTION_BAR_SLOTS {
             let contents = set.slot(address(0, slot)).expect("bar one exists");
-            assert_eq!(contents.ability, FireAbility::from_slot(slot));
+            assert_eq!(contents.ability, Hero::default().ability_at(slot));
             assert_eq!(
                 contents.key,
                 Bindings::ability_key(slot).map(KeyChord::plain)
@@ -511,7 +527,7 @@ mod tests {
 
     #[test]
     fn changing_a_slots_spell_keeps_its_key() {
-        let mut set = ActionBarSet::with_default_bindings();
+        let mut set = ActionBarSet::with_default_bindings(Hero::default());
         let at = address(0, 0);
         assert!(set.assign_spell(at, Some(FireAbility::Pyroblast)));
         let slot = set.slot(at).expect("the slot exists");
@@ -525,7 +541,7 @@ mod tests {
 
     #[test]
     fn clearing_a_slot_takes_the_key_with_it() {
-        let mut set = ActionBarSet::with_default_bindings();
+        let mut set = ActionBarSet::with_default_bindings(Hero::default());
         let at = address(0, 4);
         assert!(set.clear_slot(at));
         assert!(set.slot(at).expect("the slot exists").is_empty());
@@ -581,7 +597,7 @@ mod tests {
 
     #[test]
     fn a_key_another_slot_holds_is_reported_as_a_conflict() {
-        let set = ActionBarSet::with_default_bindings();
+        let set = ActionBarSet::with_default_bindings(Hero::default());
         let bindings = Bindings::default();
         assert_eq!(
             set.conflict(address(1, 0), KeyChord::plain(KeyCode::Digit1), &bindings),
@@ -601,7 +617,7 @@ mod tests {
 
     #[test]
     fn a_combination_is_a_different_binding_from_the_bare_key() {
-        let mut set = ActionBarSet::with_default_bindings();
+        let mut set = ActionBarSet::with_default_bindings(Hero::default());
         let bindings = Bindings::default();
         let shifted = KeyChord::new(KeyCode::Digit1, Modifiers::new(false, true, false));
 
@@ -696,7 +712,7 @@ mod tests {
 
     #[test]
     fn replacing_a_binding_leaves_exactly_one_slot_holding_the_key() {
-        let mut set = ActionBarSet::with_default_bindings();
+        let mut set = ActionBarSet::with_default_bindings(Hero::default());
         let bindings = Bindings::default();
         let thief = address(2, 4);
         set.assign_spell(thief, Some(FireAbility::Blink));
@@ -727,7 +743,7 @@ mod tests {
 
     #[test]
     fn no_two_slots_ever_share_a_key_however_many_are_assigned() {
-        let mut set = ActionBarSet::with_default_bindings();
+        let mut set = ActionBarSet::with_default_bindings(Hero::default());
         let bindings = Bindings::default();
         // Hand the same four keys around the bars over and over.
         let keys = [
@@ -755,7 +771,7 @@ mod tests {
 
     #[test]
     fn the_bars_survive_a_round_trip_through_the_saved_layout() {
-        let mut set = ActionBarSet::with_default_bindings();
+        let mut set = ActionBarSet::with_default_bindings(Hero::default());
         let bindings = Bindings::default();
         set.assign_spell(address(4, 2), Some(FireAbility::Pyroblast));
         set.assign_key(address(4, 2), KeyChord::plain(KeyCode::F4), &bindings);
@@ -801,7 +817,7 @@ mod tests {
         config.frames.party.enabled = false;
         let before = config.clone();
 
-        ActionBarSet::with_default_bindings().write_config(&mut config);
+        ActionBarSet::with_default_bindings(Hero::default()).write_config(&mut config);
         for (index, bar) in config.bars.iter().enumerate() {
             assert_eq!(bar.placement, before.bars[index].placement, "bar {index}");
             assert_eq!(
@@ -888,7 +904,7 @@ mod tests {
     fn turning_a_bar_on_its_side_moves_nothing_between_slots() {
         // The property the brief asks for by name: changing orientation must not destroy or
         // reorder an assignment.
-        let set = ActionBarSet::with_default_bindings();
+        let set = ActionBarSet::with_default_bindings(Hero::default());
         let mut layout = HudLayout::default();
         let before: Vec<_> = set.bar(0).expect("bar one").slots().to_vec();
 
