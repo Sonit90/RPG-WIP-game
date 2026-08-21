@@ -16,6 +16,7 @@
 
 use engine_core::math::{Quat, Vec3};
 
+use crate::character::ItemSlot;
 use crate::entity::EntityId;
 use crate::firemage::TalentId;
 
@@ -62,6 +63,19 @@ pub enum PlayerCommand {
     },
     /// Buy a talent. A menu action, in the command stream so it is ordered with the fight.
     PurchaseTalent(TalentId),
+    /// Move an item between two slots: equip, unequip, swap or rearrange.
+    ///
+    /// A command like a talent purchase, and for the same reason: dragging a ring onto a
+    /// finger changes what the character's stats are, so it belongs in the same ordered
+    /// stream as the casts those stats decide. A refused move is not an error here — the
+    /// simulation applies what it can, exactly as it does with an ability that cannot be
+    /// cast.
+    MoveItem {
+        /// Where the item is now.
+        from: ItemSlot,
+        /// Where it was dropped.
+        to: ItemSlot,
+    },
     /// Target the nearest living hostile.
     SelectNearestTarget,
     /// Move to the next living hostile, by distance, within the class's own reach.

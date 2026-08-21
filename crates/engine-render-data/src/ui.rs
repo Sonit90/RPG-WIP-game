@@ -246,11 +246,35 @@ pub enum UiIcon {
     FlameShield,
     /// The short teleport.
     Blink,
+
+    // Equipment. The character sheet draws these; nothing casts them.
+    /// A helm.
+    Helm,
+    /// Shoulders.
+    Shoulders,
+    /// A chestpiece.
+    Chestpiece,
+    /// A cloak.
+    Cloak,
+    /// Gloves.
+    Gloves,
+    /// Leggings.
+    Leggings,
+    /// Boots.
+    Boots,
+    /// Bracers.
+    Bracers,
+    /// An amulet.
+    Amulet,
+    /// A ring.
+    Ring,
+    /// A trinket.
+    Trinket,
 }
 
 impl UiIcon {
     /// Every icon, in atlas order.
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 21] = [
         Self::Firebolt,
         Self::Meteor,
         Self::FlameCone,
@@ -261,6 +285,17 @@ impl UiIcon {
         Self::FireMastery,
         Self::FlameShield,
         Self::Blink,
+        Self::Helm,
+        Self::Shoulders,
+        Self::Chestpiece,
+        Self::Cloak,
+        Self::Gloves,
+        Self::Leggings,
+        Self::Boots,
+        Self::Bracers,
+        Self::Amulet,
+        Self::Ring,
+        Self::Trinket,
     ];
 
     /// How many icons there are.

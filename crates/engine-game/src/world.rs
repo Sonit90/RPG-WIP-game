@@ -354,6 +354,17 @@ impl GameWorld {
         self.healths[id.index()].heal(amount)
     }
 
+    /// Changes an entity's maximum health, keeping the fraction it is at.
+    ///
+    /// What a change of Stamina reaches the world through. See [`Health::set_max`] for why
+    /// the fraction is what is preserved.
+    pub fn set_max_health(&mut self, id: EntityId, max: f32) {
+        if !self.contains(id) {
+            return;
+        }
+        self.healths[id.index()].set_max(max);
+    }
+
     /// An entity's statuses.
     #[must_use]
     pub fn statuses(&self, id: EntityId) -> Option<&StatusSet> {

@@ -1,0 +1,23 @@
+<svg version="1.1" xmlns="http://www.w3.org/2000/svg" style="display: block;" viewBox="0 0 512 512" width="512" height="512" preserveAspectRatio="none">
+<defs>
+	<linearGradient id="amulet_panel" gradientUnits="userSpaceOnUse" x1="40" y1="472" x2="472" y2="40">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(30,24,14)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(66,52,26)"></stop>
+	</linearGradient>
+	<radialGradient id="amulet_glow" gradientUnits="userSpaceOnUse" cx="256" cy="272" r="230">
+		<stop offset="0" stop-opacity="0.40" stop-color="rgb(240,196,96)"></stop>
+		<stop offset="1" stop-opacity="0" stop-color="rgb(240,196,96)"></stop>
+	</radialGradient>
+	<clipPath id="amulet_tile">
+		<path d="M 40 120 C 40 76 76 40 120 40 L 392 40 C 436 40 472 76 472 120 L 472 392 C 472 436 436 472 392 472 L 120 472 C 76 472 40 436 40 392 Z"></path>
+	</clipPath>
+</defs>
+<g clip-path="url(#amulet_tile)">
+	<path fill="url(#amulet_panel)" d="M 40 120 C 40 76 76 40 120 40 L 392 40 C 436 40 472 76 472 120 L 472 392 C 472 436 436 472 392 472 L 120 472 C 76 472 40 436 40 392 Z"></path>
+	<path fill="url(#amulet_glow)" d="M 40 40 L 472 40 L 472 472 L 40 472 Z"></path>
+	<path fill="rgb(196,156,72)" d="M 148 116 C 148 116 196 240 224 288 L 288 288 C 316 240 364 116 364 116 L 396 132 C 396 132 336 268 304 316 L 208 316 C 176 268 116 132 116 132 Z"></path>
+	<path fill="rgb(196,156,72)" d="M 256 296 L 340 350 L 308 448 L 204 448 L 172 350 Z"></path>
+	<path fill="rgb(244,212,128)" d="M 256 320 L 320 361 L 296 428 L 216 428 L 192 361 Z"></path>
+	<path fill="rgb(122,94,40)" d="M 256 348 L 288 371 L 276 408 L 236 408 L 224 371 Z"></path>
+</g>
+</svg>

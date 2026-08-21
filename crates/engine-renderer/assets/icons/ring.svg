@@ -1,0 +1,24 @@
+<svg version="1.1" xmlns="http://www.w3.org/2000/svg" style="display: block;" viewBox="0 0 512 512" width="512" height="512" preserveAspectRatio="none">
+<defs>
+	<linearGradient id="ring_panel" gradientUnits="userSpaceOnUse" x1="40" y1="472" x2="472" y2="40">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(30,24,14)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(66,52,26)"></stop>
+	</linearGradient>
+	<radialGradient id="ring_glow" gradientUnits="userSpaceOnUse" cx="256" cy="272" r="230">
+		<stop offset="0" stop-opacity="0.40" stop-color="rgb(240,196,96)"></stop>
+		<stop offset="1" stop-opacity="0" stop-color="rgb(240,196,96)"></stop>
+	</radialGradient>
+	<clipPath id="ring_tile">
+		<path d="M 40 120 C 40 76 76 40 120 40 L 392 40 C 436 40 472 76 472 120 L 472 392 C 472 436 436 472 392 472 L 120 472 C 76 472 40 436 40 392 Z"></path>
+	</clipPath>
+</defs>
+<g clip-path="url(#ring_tile)">
+	<path fill="url(#ring_panel)" d="M 40 120 C 40 76 76 40 120 40 L 392 40 C 436 40 472 76 472 120 L 472 392 C 472 436 436 472 392 472 L 120 472 C 76 472 40 436 40 392 Z"></path>
+	<path fill="url(#ring_glow)" d="M 40 40 L 472 40 L 472 472 L 40 472 Z"></path>
+	<path fill="rgb(198,158,74)" d="M 256 176 C 336 176 400 240 400 320 C 400 400 336 464 256 464 C 176 464 112 400 112 320 C 112 240 176 176 256 176 Z M 256 232 C 208 232 168 272 168 320 C 168 368 208 408 256 408 C 304 408 344 368 344 320 C 344 272 304 232 256 232 Z"></path>
+	<path fill="rgb(246,214,130)" d="M 256 176 C 296 176 332 192 358 218 L 320 254 C 302 240 280 232 256 232 C 208 232 168 272 168 320 L 112 320 C 112 240 176 176 256 176 Z"></path>
+	<path fill="rgb(124,96,42)" d="M 196 156 L 316 156 L 344 216 C 318 194 288 184 256 184 C 224 184 194 194 168 216 Z"></path>
+	<path fill="rgb(246,214,130)" d="M 256 44 L 322 108 L 256 172 L 190 108 Z"></path>
+	<path fill="rgb(198,158,74)" d="M 256 76 L 300 108 L 256 140 L 212 108 Z"></path>
+</g>
+</svg>

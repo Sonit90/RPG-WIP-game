@@ -176,6 +176,22 @@ impl Health {
         self.current = self.max;
     }
 
+    /// Changes the maximum, keeping the same fraction of it.
+    ///
+    /// What a change of Stamina does. The *fraction* is preserved rather than the absolute
+    /// current health, so putting a Stamina trinket on is not a free heal and taking one off
+    /// is not a way to die: a character at half health is at half health either side of the
+    /// change. A non-positive or non-finite maximum is refused outright, for the reason
+    /// [`Health::new`] clamps one.
+    pub fn set_max(&mut self, max: f32) {
+        if !max.is_finite() || max <= 0.0 {
+            return;
+        }
+        let fraction = self.fraction();
+        self.max = max;
+        self.current = (max * fraction).clamp(0.0, max);
+    }
+
     /// Sets the current health directly, clamped into range.
     ///
     /// For arena setup and tests. Gameplay goes through [`Health::damage`] and

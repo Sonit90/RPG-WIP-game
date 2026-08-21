@@ -160,6 +160,50 @@ const ICONS: &[IconEntry] = &[
         file: "blink.svg",
         constant: "BLINK",
     },
+    IconEntry {
+        file: "helm.svg",
+        constant: "HELM",
+    },
+    IconEntry {
+        file: "shoulders.svg",
+        constant: "SHOULDERS",
+    },
+    IconEntry {
+        file: "chestpiece.svg",
+        constant: "CHESTPIECE",
+    },
+    IconEntry {
+        file: "cloak.svg",
+        constant: "CLOAK",
+    },
+    IconEntry {
+        file: "gloves.svg",
+        constant: "GLOVES",
+    },
+    IconEntry {
+        file: "leggings.svg",
+        constant: "LEGGINGS",
+    },
+    IconEntry {
+        file: "boots.svg",
+        constant: "BOOTS",
+    },
+    IconEntry {
+        file: "bracers.svg",
+        constant: "BRACERS",
+    },
+    IconEntry {
+        file: "amulet.svg",
+        constant: "AMULET",
+    },
+    IconEntry {
+        file: "ring.svg",
+        constant: "RING",
+    },
+    IconEntry {
+        file: "trinket.svg",
+        constant: "TRINKET",
+    },
 ];
 
 /// One icon: a file under `assets/icons/` and the constant its texels are bound to.

@@ -473,6 +473,17 @@ fn icon_texels(icon: UiIcon) -> [&'static [u8]; ICON_VARIANTS] {
         UiIcon::FireMastery => raster::FIRE_MASTERY,
         UiIcon::FlameShield => raster::FLAME_SHIELD,
         UiIcon::Blink => raster::BLINK,
+        UiIcon::Helm => raster::HELM,
+        UiIcon::Shoulders => raster::SHOULDERS,
+        UiIcon::Chestpiece => raster::CHESTPIECE,
+        UiIcon::Cloak => raster::CLOAK,
+        UiIcon::Gloves => raster::GLOVES,
+        UiIcon::Leggings => raster::LEGGINGS,
+        UiIcon::Boots => raster::BOOTS,
+        UiIcon::Bracers => raster::BRACERS,
+        UiIcon::Amulet => raster::AMULET,
+        UiIcon::Ring => raster::RING,
+        UiIcon::Trinket => raster::TRINKET,
     }
 }
 

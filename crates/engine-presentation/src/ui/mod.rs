@@ -46,6 +46,8 @@
 
 /// Eight action bars: what is in each slot, which key presses it, and where it is drawn.
 pub mod action_bar;
+/// The character sheet: stats, fifteen equipment slots, and the bag.
+pub mod character_menu;
 /// Edit HUD: the interface made draggable.
 pub mod hud_edit;
 /// Where every arrangeable interface element sits, at any resolution.
@@ -64,6 +66,10 @@ pub mod widget;
 
 pub use action_bar::{
     ActionBar, ActionBarSet, ActionBarSlot, KeyConflict, SlotAddress, bar_size, slot_at, slot_rect,
+};
+pub use character_menu::{
+    CharacterMenu, CharacterMenuOutcome, CharacterMetrics, CharacterTheme, Drag,
+    push_character_menu, quality_color,
 };
 pub use hud_edit::{EditItem, EditOutcome, HudEditor};
 pub use hud_layout::{HudElementId, HudLayout, MIN_VISIBLE_FRACTION, clamp_on_screen};

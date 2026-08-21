@@ -1,0 +1,26 @@
+<svg version="1.1" xmlns="http://www.w3.org/2000/svg" style="display: block;" viewBox="0 0 512 512" width="512" height="512" preserveAspectRatio="none">
+<defs>
+	<linearGradient id="helm_panel" gradientUnits="userSpaceOnUse" x1="40" y1="472" x2="472" y2="40">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(26,22,20)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(58,48,40)"></stop>
+	</linearGradient>
+	<radialGradient id="helm_glow" gradientUnits="userSpaceOnUse" cx="256" cy="272" r="230">
+		<stop offset="0" stop-opacity="0.40" stop-color="rgb(196,150,96)"></stop>
+		<stop offset="1" stop-opacity="0" stop-color="rgb(196,150,96)"></stop>
+	</radialGradient>
+	<clipPath id="helm_tile">
+		<path d="M 40 120 C 40 76 76 40 120 40 L 392 40 C 436 40 472 76 472 120 L 472 392 C 472 436 436 472 392 472 L 120 472 C 76 472 40 436 40 392 Z"></path>
+	</clipPath>
+</defs>
+<g clip-path="url(#helm_tile)">
+	<path fill="url(#helm_panel)" d="M 40 120 C 40 76 76 40 120 40 L 392 40 C 436 40 472 76 472 120 L 472 392 C 472 436 436 472 392 472 L 120 472 C 76 472 40 436 40 392 Z"></path>
+	<path fill="url(#helm_glow)" d="M 40 40 L 472 40 L 472 472 L 40 472 Z"></path>
+	<path fill="rgb(120,96,72)" d="M 256 112 C 328 112 380 166 380 240 L 380 316 C 380 344 362 364 336 372 L 336 296 C 336 268 312 250 256 250 C 200 250 176 268 176 296 L 176 372 C 150 364 132 344 132 316 L 132 240 C 132 166 184 112 256 112 Z"></path>
+	<path fill="rgb(168,140,106)" d="M 256 132 C 316 132 360 176 360 238 L 360 258 C 336 226 302 210 256 210 C 210 210 176 226 152 258 L 152 238 C 152 176 196 132 256 132 Z"></path>
+	<path fill="rgb(74,58,42)" d="M 176 262 L 336 262 L 336 300 L 176 300 Z"></path>
+	<path fill="rgb(120,96,72)" d="M 176 306 L 224 306 L 224 400 L 176 400 Z"></path>
+	<path fill="rgb(120,96,72)" d="M 288 306 L 336 306 L 336 400 L 288 400 Z"></path>
+	<path fill="rgb(168,140,106)" d="M 176 306 L 224 306 L 224 322 L 176 322 Z"></path>
+	<path fill="rgb(168,140,106)" d="M 288 306 L 336 306 L 336 322 L 288 322 Z"></path>
+</g>
+</svg>

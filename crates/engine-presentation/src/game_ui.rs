@@ -71,6 +71,8 @@ mod layout {
     pub const RESOURCE_LIFT: f32 = 84.0;
     /// Size of the talent button in the top-right corner.
     pub const TALENT_BUTTON_SIZE: f32 = 44.0;
+    /// Gap between the two corner buttons.
+    pub const CORNER_BUTTON_GAP: f32 = 6.0;
     /// Size of one Ignite stack pip.
     pub const IGNITE_PIP: f32 = 10.0;
     /// Gap between Ignite pips.
@@ -140,6 +142,8 @@ pub struct HudMetrics {
     pub resource_lift: f32,
     /// `layout::TALENT_BUTTON_SIZE` in physical pixels.
     pub talent_button_size: f32,
+    /// `layout::CORNER_BUTTON_GAP` in physical pixels.
+    pub corner_button_gap: f32,
     /// `layout::IGNITE_PIP` in physical pixels.
     pub ignite_pip: f32,
     /// `layout::IGNITE_PIP_GAP` in physical pixels.
@@ -178,6 +182,7 @@ impl HudMetrics {
             resource_bar_height: scale.px(layout::RESOURCE_BAR_HEIGHT),
             resource_lift: scale.px(layout::RESOURCE_LIFT),
             talent_button_size: scale.px(layout::TALENT_BUTTON_SIZE),
+            corner_button_gap: scale.px(layout::CORNER_BUTTON_GAP),
             ignite_pip: scale.px(layout::IGNITE_PIP),
             ignite_pip_gap: scale.px(layout::IGNITE_PIP_GAP),
             tooltip_width: scale.px(layout::TOOLTIP_WIDTH),
@@ -598,6 +603,7 @@ impl GameUi {
         self.push_resource_bars(snapshot, viewport);
         self.push_ability_bar(snapshot, viewport);
         self.push_talent_button(snapshot, viewport);
+        self.push_character_button(viewport);
         self.push_cast_bar(snapshot, viewport);
         self.push_enemy_cast_bar(snapshot, viewport);
         self.push_notification(snapshot, viewport);
@@ -647,6 +653,7 @@ impl GameUi {
         self.push_action_bars(snapshot, layout, bars, viewport);
 
         self.push_talent_button(snapshot, viewport);
+        self.push_character_button(viewport);
         self.push_cast_bar(snapshot, viewport);
         self.push_enemy_cast_bar(snapshot, viewport);
         self.push_notification(snapshot, viewport);
@@ -1169,6 +1176,40 @@ impl GameUi {
             self.metrics.talent_button_size,
             self.metrics.talent_button_size,
         )
+    }
+
+    /// Where the character button sits: beside the talent button, further left.
+    ///
+    /// The same size and the same row, because the two are the same kind of thing — a window
+    /// the player opens — and a corner that mixes button sizes reads as two unrelated
+    /// controls that happen to be next to each other.
+    #[must_use]
+    pub fn character_button_rect(&self, viewport: (u32, u32)) -> UiRect {
+        let talent = self.talent_button_rect(viewport);
+        UiRect::new(
+            talent.x - self.metrics.corner_button_gap - self.metrics.talent_button_size,
+            talent.y,
+            self.metrics.talent_button_size,
+            self.metrics.talent_button_size,
+        )
+    }
+
+    /// The character button, which opens the character sheet.
+    pub fn push_character_button(&mut self, viewport: (u32, u32)) {
+        let rect = self.character_button_rect(viewport);
+        self.list.rect(rect, self.theme.panel);
+        self.list.outline(
+            rect,
+            self.metrics.scale.px(self.theme.outline_pixels),
+            self.theme.target_outline,
+        );
+
+        let (origin, align) = centered(rect.x + rect.width * 0.5, rect.y + 8.0);
+        self.list
+            .text_aligned(origin, "CHR", self.theme.text, 1.5, align);
+        let (origin, align) = centered(rect.x + rect.width * 0.5, rect.bottom() - 16.0);
+        self.list
+            .text_aligned(origin, "C", self.theme.target_outline, 1.5, align);
     }
 
     /// The talent button, with the points waiting to be spent.

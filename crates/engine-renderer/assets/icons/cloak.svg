@@ -1,0 +1,24 @@
+<svg version="1.1" xmlns="http://www.w3.org/2000/svg" style="display: block;" viewBox="0 0 512 512" width="512" height="512" preserveAspectRatio="none">
+<defs>
+	<linearGradient id="cloak_panel" gradientUnits="userSpaceOnUse" x1="40" y1="472" x2="472" y2="40">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(28,22,18)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(62,46,32)"></stop>
+	</linearGradient>
+	<radialGradient id="cloak_glow" gradientUnits="userSpaceOnUse" cx="256" cy="272" r="230">
+		<stop offset="0" stop-opacity="0.40" stop-color="rgb(214,146,72)"></stop>
+		<stop offset="1" stop-opacity="0" stop-color="rgb(214,146,72)"></stop>
+	</radialGradient>
+	<clipPath id="cloak_tile">
+		<path d="M 40 120 C 40 76 76 40 120 40 L 392 40 C 436 40 472 76 472 120 L 472 392 C 472 436 436 472 392 472 L 120 472 C 76 472 40 436 40 392 Z"></path>
+	</clipPath>
+</defs>
+<g clip-path="url(#cloak_tile)">
+	<path fill="url(#cloak_panel)" d="M 40 120 C 40 76 76 40 120 40 L 392 40 C 436 40 472 76 472 120 L 472 392 C 472 436 436 472 392 472 L 120 472 C 76 472 40 436 40 392 Z"></path>
+	<path fill="url(#cloak_glow)" d="M 40 40 L 472 40 L 472 472 L 40 472 Z"></path>
+	<path fill="rgb(96,66,52)" d="M 196 132 L 316 132 L 400 404 C 340 428 172 428 112 404 Z"></path>
+	<path fill="rgb(140,102,80)" d="M 196 132 L 256 132 L 256 420 C 214 418 158 414 112 404 Z"></path>
+	<path fill="rgb(58,40,30)" d="M 316 132 L 400 404 C 372 415 336 421 300 424 L 288 132 Z"></path>
+	<path fill="rgb(96,66,52)" d="M 176 116 C 216 96 296 96 336 116 L 322 152 C 288 138 224 138 190 152 Z"></path>
+	<path fill="rgb(140,102,80)" d="M 240 100 L 272 100 L 280 148 L 232 148 Z"></path>
+</g>
+</svg>

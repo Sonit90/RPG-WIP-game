@@ -29,6 +29,8 @@ pub mod audio;
 pub mod camera;
 /// The character visual controller: gameplay state in, a posed and placed character out.
 pub mod character;
+/// The character file and the roster, in both directions.
+pub mod character_save;
 pub mod collision_debug;
 pub mod collision_hud;
 pub mod damage_numbers;
@@ -50,6 +52,7 @@ pub mod vfx;
 
 pub use audio::{AudioDirector, AudioDirectorStats, HEAVY_DAMAGE, STRIDE};
 pub use camera::ThirdPersonCamera;
+pub use character_save::{apply_config, config_of};
 pub use collision_debug::{CollisionDebug, DebugBindings};
 pub use collision_hud::CollisionHudModel;
 pub use damage_numbers::{FloatingNumber, FloatingNumbers, MAX_FLOATING_NUMBERS};
@@ -67,11 +70,12 @@ pub use nameplate::{
 };
 pub use nameplate_layout::{LayoutConstraints, NameplateLayout, PlateBox};
 pub use snapshot::{
-    AbilitySlotView, CastView, CombatView, NotificationView, PartyMemberView, PlayerView,
-    SlotAvailability, StatusList, StatusView, TargetView, UiSnapshot,
+    AbilitySlotView, CastView, CharacterView, CombatView, NotificationView, PartyMemberView,
+    PlayerView, SlotAvailability, StatusList, StatusView, TargetView, UiSnapshot,
 };
 pub use ui::{
-    MenuAction, MenuScreen, MenuSystem, MenuTheme, NameplateItem, PauseItem, SettingsItem, UiInput,
-    UiScreen, VolumeChannel, Widget, WidgetEvent, WidgetState, volume_of,
+    CharacterMenu, CharacterMenuOutcome, CharacterTheme, MenuAction, MenuScreen, MenuSystem,
+    MenuTheme, NameplateItem, PauseItem, SettingsItem, UiInput, UiScreen, VolumeChannel, Widget,
+    WidgetEvent, WidgetState, volume_of,
 };
 pub use vfx::{ShapeBinding, VfxDirector, VfxDirectorStats, VfxVisuals};

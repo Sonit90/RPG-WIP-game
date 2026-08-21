@@ -30,6 +30,8 @@
 //! result. Nothing restates a default anywhere else — that is what makes "change the default
 //! sensitivity" a one-line change rather than a search.
 
+/// What each character wears and carries, and the file it lives in.
+pub mod character;
 /// What the player can change about how the game plays.
 pub mod gameplay;
 /// The interface layout the player arranged: action bars, unit frames and their file.
@@ -43,6 +45,10 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+pub use character::{
+    CHARACTER_FILE_NAME, CharacterConfig, CharacterConfigManager, EquippedEntry, HeroLoadout,
+    InventoryEntry,
+};
 pub use gameplay::GameplaySettings;
 pub use hud::{
     ACTION_BAR_SLOTS, ACTION_BARS, ActionBarConfig, HUD_FILE_NAME, HUD_OFFSET_LIMIT,

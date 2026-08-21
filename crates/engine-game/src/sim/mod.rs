@@ -42,6 +42,9 @@ use engine_core::math::Vec3;
 use engine_core::time::FixedTimestep;
 
 use crate::ability::AbilityId;
+use crate::character::spirit::SpiritSurge;
+use crate::character::stat::{Stat, health_from_stamina};
+use crate::character::{CharacterSheet, ItemSlot, MoveError, Roster};
 use crate::combat::DamageType;
 use crate::command::{CommandBuffer, PlayerCommand};
 use crate::enemy::EnemyKind;
@@ -346,6 +349,17 @@ pub struct Simulation {
     /// resource block that the other two heroes leave at rest is a great deal less to go
     /// wrong than three that have to be kept in step.
     hero: Hero,
+    /// One character sheet per hero: what each is wearing and carrying.
+    ///
+    /// Per hero rather than one shared sheet, because a hero swap is a change of character
+    /// and a character's gear is theirs. The sheet of the hero the player currently is, is
+    /// what every derived number in this struct reads.
+    roster: Roster,
+    /// The Spirit buff's stacks and their clocks.
+    ///
+    /// Inert on the current roster — nothing grants Spirit, so nothing can proc — and
+    /// ticked anyway, so enabling the stat is a change to the item table and nowhere here.
+    spirit: SpiritSurge,
     /// The class: abilities, Ignite, Heat, Ultimate Energy, talents and ground fire.
     mage: FireMage,
     /// What the class did this fight, for the combat simulator's report.
@@ -444,6 +458,8 @@ impl Simulation {
             intent: MoveIntent::NONE,
             pending: CommandBuffer::with_capacity(16),
             hero: Hero::default(),
+            roster: Roster::starting(),
+            spirit: SpiritSurge::new(),
             mage: FireMage::new(seed),
             fire: FireCounters::default(),
             ignite_ticks: Vec::with_capacity(32),
@@ -495,7 +511,90 @@ impl Simulation {
         self.player.last_ability = None;
         self.player.last_error = None;
         self.mage.reset();
+        // The new hero is a different character with different gear, so their health and
+        // their stats are the new sheet's. Cleared with the class state for the same reason
+        // a half-finished cast is: the buff was the old character's.
+        self.spirit.clear();
+        self.refresh_character();
         true
+    }
+
+    /// Every character the player owns.
+    #[must_use]
+    pub fn roster(&self) -> &Roster {
+        &self.roster
+    }
+
+    /// The character sheet of the hero the player currently is.
+    #[must_use]
+    pub fn sheet(&self) -> &CharacterSheet {
+        self.roster.sheet(self.hero)
+    }
+
+    /// The whole roster, for a save being loaded.
+    ///
+    /// Every caller that changes anything through this has to call
+    /// [`Simulation::refresh_character`] afterwards, which is why gameplay goes through
+    /// [`PlayerCommand::MoveItem`] instead.
+    pub fn roster_mut(&mut self) -> &mut Roster {
+        &mut self.roster
+    }
+
+    /// The Spirit buff's current stacks and clocks.
+    #[must_use]
+    pub fn spirit(&self) -> &SpiritSurge {
+        &self.spirit
+    }
+
+    /// **The player's stats, right now**: base, plus gear, plus the Spirit buff.
+    ///
+    /// What the character panel prints and what [`Simulation::refresh_character`] hands the
+    /// class. Derived on every call; see [`crate::character`] for why nothing stores it.
+    #[must_use]
+    pub fn character_stats(&self) -> crate::character::StatBlock {
+        self.sheet().stats_with(&self.spirit)
+    }
+
+    /// Moves an item between two slots on the current character, and recomputes everything
+    /// that depended on what was worn.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`MoveError`] if the move is not allowed; nothing is changed in that case.
+    pub fn move_item(&mut self, from: ItemSlot, to: ItemSlot) -> Result<(), MoveError> {
+        self.roster.sheet_mut(self.hero).move_item(from, to)?;
+        self.refresh_character();
+        Ok(())
+    }
+
+    /// **Pushes the character sheet's stats into everything derived from them.**
+    ///
+    /// Two consumers today: the player entity's maximum health, which is Stamina, and the
+    /// class's [`crate::firemage::Gear`], which is how the main stat becomes spell power and
+    /// how a haste or crit rating becomes the fraction the class already multiplies by.
+    ///
+    /// Called whenever the inputs change — an item moved, a hero swapped, a save loaded, the
+    /// Spirit buff gaining or losing a stack — rather than every tick, because the sheet is
+    /// unchanged on the overwhelming majority of them.
+    pub fn refresh_character(&mut self) {
+        let stats = self.character_stats();
+        let main = self.hero.main_stat();
+
+        self.world.set_max_health(
+            self.player.entity,
+            health_from_stamina(stats.get(Stat::Stamina)),
+        );
+
+        // The bridge between the character sheet and the class. Gear is stated as what is
+        // *added* to the class's base, and the base main stat is the base spell power, so
+        // the difference is exactly what the character is wearing plus what Spirit is
+        // multiplying.
+        self.mage.gear = crate::firemage::Gear {
+            spell_power: stats.get(main) - crate::character::BASE_MAIN_STAT,
+            haste: stats.percent(Stat::Haste),
+            crit_chance: stats.percent(Stat::CriticalStrike),
+            crit_damage: 0.0,
+        };
     }
 
     /// The FireMage: abilities, resources, Ignite, zones and talents.
@@ -611,6 +710,9 @@ impl Simulation {
         // damage event in the world was the player's own and the owner did not matter; with
         // enemies, a hit taken would otherwise be reported as damage dealt.
         self.meter.set_owner(entity);
+        // The entity spawned with the archetype's health; the character's Stamina is what
+        // decides it. Doing this here means every scene builder gets it without asking.
+        self.refresh_character();
     }
 
     /// Who the player is grouped with, local player first.
@@ -848,6 +950,7 @@ impl Simulation {
 
         // After combat, so a tick that took damage cannot also regenerate from it.
         self.tick_regeneration(step);
+        self.tick_spirit(step);
 
         let telemetry_started = Instant::now();
         self.flush_observations();
@@ -920,6 +1023,11 @@ impl Simulation {
                 }
                 PlayerCommand::PurchaseTalent(talent) => {
                     let _ = self.mage.purchase_talent(talent);
+                }
+                PlayerCommand::MoveItem { from, to } => {
+                    // A refused move is not an error the tick should fail on, for the same
+                    // reason an ability that cannot be cast is not: a command is a request.
+                    let _ = self.move_item(from, to);
                 }
                 PlayerCommand::SelectNearestTarget => {
                     self.player.target = self
@@ -1807,6 +1915,18 @@ impl Simulation {
     ///
     /// The clock resets the moment anything engages, so leaving a fight does not immediately
     /// pay out the second that was accumulating when it started.
+    /// Runs the Spirit buff's clocks and recomputes the stats when a stack falls off.
+    ///
+    /// Does nothing at all when no stack is running, which on the current roster is always:
+    /// no hero and no item grants Spirit, so nothing can ever have procced.
+    fn tick_spirit(&mut self, step: f32) {
+        if !self.spirit.is_active() {
+            return;
+        }
+        self.spirit.tick(step);
+        self.refresh_character();
+    }
+
     fn tick_regeneration(&mut self, step: f32) {
         let player = self.player.entity;
         let rate = self.config.health_regen_per_second;

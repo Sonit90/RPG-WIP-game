@@ -16,6 +16,8 @@
 use engine_core::input::Modifiers;
 use engine_game::EntityId;
 use engine_game::ability::AbilityId;
+use engine_game::character::equipment::INVENTORY_SLOTS;
+use engine_game::character::{EquipSlot, ItemSlot, ItemStack, Stat, StatBlock};
 use engine_game::enemy::EnemyAbility;
 use engine_game::enemy::brain::AiState;
 use engine_game::firemage::{
@@ -26,6 +28,34 @@ use engine_game::hero::Hero;
 use engine_game::sim::Simulation;
 use engine_game::status::StatusKind;
 use engine_game::world::EntityKind;
+
+/// Reads the current character sheet.
+///
+/// A free function rather than a method on the view, because building one is a question for
+/// the simulation and the view is the answer.
+fn character_view(simulation: &Simulation) -> CharacterView {
+    let sheet = simulation.sheet();
+    let mut equipment = [None; EquipSlot::COUNT];
+    for slot in EquipSlot::ALL {
+        equipment[slot.index()] = sheet.equipment().get(slot);
+    }
+    let mut inventory = [None; INVENTORY_SLOTS];
+    for (index, cell) in sheet.inventory().cells().iter().enumerate() {
+        inventory[index] = *cell;
+    }
+    let total = simulation.character_stats();
+    CharacterView {
+        hero: sheet.hero(),
+        main_stat: sheet.main_stat(),
+        base: sheet.base_stats(),
+        gear: sheet.gear_stats(),
+        total,
+        max_health: engine_game::character::stat::health_from_stamina(total.get(Stat::Stamina)),
+        equipment,
+        inventory,
+        spirit_stacks: simulation.spirit().stacks(),
+    }
+}
 
 /// One status on an entity, as the UI sees it.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -488,6 +518,83 @@ impl PartyMemberView {
     }
 }
 
+/// The character sheet, as the interface sees it.
+///
+/// Every number here was computed by [`engine_game::character::CharacterSheet`]; nothing in
+/// the panel adds a stat up. That is the same rule the rest of this file follows, and it is
+/// what makes "the sheet and combat agree" structural rather than a thing to remember: there
+/// is one aggregation and the panel is downstream of it.
+///
+/// `Copy`, and the two item lists are fixed-width arrays, so refreshing this allocates
+/// nothing — a character sheet is a few hundred bytes memcopied once a frame.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CharacterView {
+    /// Which hero this sheet is for.
+    pub hero: Hero,
+    /// Which stat is this hero's main stat.
+    pub main_stat: Stat,
+    /// The hero's own stats, before anything is worn.
+    pub base: StatBlock,
+    /// What the worn items add up to.
+    pub gear: StatBlock,
+    /// **The total**: base, plus gear, plus the Spirit buff. What the panel prints.
+    pub total: StatBlock,
+    /// Maximum health, derived from Stamina.
+    pub max_health: f32,
+    /// What is worn, indexed by [`EquipSlot::index`].
+    pub equipment: [Option<ItemStack>; EquipSlot::COUNT],
+    /// What is carried, in grid order.
+    pub inventory: [Option<ItemStack>; INVENTORY_SLOTS],
+    /// How many stacks of the Spirit buff are running. Zero on the current roster.
+    pub spirit_stacks: u8,
+}
+
+impl CharacterView {
+    /// What is in `slot`.
+    #[must_use]
+    pub fn at(&self, slot: ItemSlot) -> Option<ItemStack> {
+        match slot {
+            ItemSlot::Equipment(worn) => self.equipment[worn.index()],
+            ItemSlot::Inventory(index) => self.inventory.get(index).copied().flatten(),
+        }
+    }
+
+    /// Whether `stack` may be dropped in `slot`.
+    ///
+    /// The same question [`engine_game::character::CharacterSheet::accepts`] answers, asked
+    /// against the same item data. The interface asks it to colour a drop target while the
+    /// item is still in the air; the simulation asks it again when the move arrives, and it
+    /// is the simulation's answer that decides anything.
+    #[must_use]
+    pub fn accepts(&self, slot: ItemSlot, stack: ItemStack) -> bool {
+        match slot {
+            ItemSlot::Equipment(worn) => stack.fits(worn),
+            ItemSlot::Inventory(index) => index < self.inventory.len(),
+        }
+    }
+
+    /// Whether moving what is in `from` to `to` would be allowed.
+    ///
+    /// Both ends, because a swap sends the displaced item the other way: a ring dropped on a
+    /// worn cloak would put the cloak on a finger, and the whole exchange is refused.
+    #[must_use]
+    pub fn can_move(&self, from: ItemSlot, to: ItemSlot) -> bool {
+        if from == to {
+            return false;
+        }
+        let Some(moving) = self.at(from) else {
+            return false;
+        };
+        if !self.accepts(to, moving) {
+            return false;
+        }
+        match self.at(to) {
+            Some(displaced) => self.accepts(from, displaced),
+            None => true,
+        }
+    }
+}
+
 /// Everything the interface may read, rebuilt every frame.
 #[derive(Debug, Clone)]
 pub struct UiSnapshot {
@@ -502,6 +609,8 @@ pub struct UiSnapshot {
     pub party: Vec<PartyMemberView>,
     /// Which hero the player is. What the swap menu ticks, and what the bar is built from.
     pub hero: Hero,
+    /// The character sheet: stats, what is worn and what is carried.
+    pub character: CharacterView,
     /// The ability bar, in bar order. `None` in a slot the current hero does not fill.
     ///
     /// An option per slot rather than a shorter array: slot four is the `4` key whichever
@@ -578,6 +687,7 @@ impl UiSnapshot {
             target_of_target: None,
             party: Vec::with_capacity(engine_game::party::MAX_PARTY),
             hero: simulation.hero(),
+            character: character_view(simulation),
             abilities: [None; ABILITY_SLOTS],
             ultimate: None,
             cast: None,
@@ -652,6 +762,7 @@ impl UiSnapshot {
         }
 
         self.hero = simulation.hero();
+        self.character = character_view(simulation);
         for (slot, ability) in simulation.hero().bar().into_iter().enumerate() {
             self.abilities[slot] = ability.map(|ability| ability_view(simulation, ability, aiming));
         }

@@ -44,6 +44,12 @@ pub struct Bindings {
     /// how it ended up sharing `R` with the developer reset and silently wiping the energy
     /// bar every time the Ultimate was pressed.
     pub ultimate: KeyCode,
+    /// Open and close the character sheet.
+    ///
+    /// Here rather than in the application for the reason [`Bindings::ultimate`] gives: a key
+    /// that lives somewhere else is a key nothing can check for a collision, and an action
+    /// bar slot bound to it would silently open the character panel mid-fight.
+    pub character_sheet: KeyCode,
     /// Restore the dummies and clear the combat session. A developer control.
     pub reset_dummies: KeyCode,
     /// The mouse button held to turn the camera, which also turns the character.
@@ -61,6 +67,9 @@ impl Default for Bindings {
             cycle_target: KeyCode::Tab,
             // F1, which is where the genre has put "target yourself" for twenty years.
             select_self: KeyCode::F1,
+            // C, which is where the genre has put the character sheet for as long as there
+            // have been character sheets.
+            character_sheet: KeyCode::C,
             ultimate: KeyCode::R,
             // Not `R`: that is the Ultimate. A developer control has no business taking a
             // key the class needs.
@@ -77,7 +86,7 @@ impl Bindings {
     /// ones. A test walks the whole list, which is what stops two actions from quietly
     /// sharing a key again.
     #[must_use]
-    pub fn named_keys(&self) -> [KeyCode; 9] {
+    pub fn named_keys(&self) -> [KeyCode; 10] {
         [
             self.forward,
             self.back,
@@ -87,6 +96,7 @@ impl Bindings {
             self.cycle_target,
             self.select_self,
             self.ultimate,
+            self.character_sheet,
             self.reset_dummies,
         ]
     }
@@ -115,6 +125,7 @@ impl Bindings {
             (self.cycle_target, "CYCLE TARGET"),
             (self.select_self, "TARGET YOURSELF"),
             (self.ultimate, "THE ULTIMATE"),
+            (self.character_sheet, "THE CHARACTER SHEET"),
             (self.reset_dummies, "RESET DUMMIES"),
         ];
         named

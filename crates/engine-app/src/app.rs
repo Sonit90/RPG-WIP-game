@@ -54,6 +54,9 @@ use engine_presentation::mouse_look::{LookChange, LookMode, MouseLook, RelativeM
 use engine_presentation::nameplate::{NameplateConfig, NameplateSet};
 use engine_presentation::snapshot::UiSnapshot;
 use engine_presentation::ui::action_bar::{self, ActionBarSet, SlotAddress};
+use engine_presentation::ui::character_menu::{
+    CharacterMenu, CharacterMenuOutcome, CharacterTheme, push_character_menu,
+};
 use engine_presentation::ui::hud_edit::{EditOutcome, HudEditor, push_hud_editor};
 use engine_presentation::ui::hud_layout::{HudElementId, HudLayout};
 use engine_presentation::ui::slot_menu::{SlotMenu, SlotMenuOutcome, push_slot_menu};
@@ -70,6 +73,7 @@ use engine_renderer::{
     Camera, Lighting, MaterialDesc, MaterialHandle, MeshHandle, Projection, Renderer,
     RendererConfig, UiDrawList,
 };
+use engine_settings::character::CharacterConfigManager;
 use engine_settings::hud::HudConfigManager;
 use engine_settings::{NameplateSetting, SettingsManager};
 
@@ -247,6 +251,14 @@ pub struct App {
     talent_theme: TalentTheme,
     /// Scratch the talent menu formats its numbers into. Reused; never freed.
     talent_scratch: String,
+    /// The character sheet, opened from the corner button or the character key.
+    character_menu: CharacterMenu,
+    /// How the character sheet is coloured.
+    character_theme: CharacterTheme,
+    /// Scratch the character sheet formats its numbers into. Reused; never freed.
+    character_scratch: String,
+    /// What each character wears and carries, and the file it lives in.
+    character_config: CharacterConfigManager,
     /// Which ability button the pointer is over, for the tooltip.
     hovered_ability: Option<FireAbility>,
     /// Which action bar slot that ability is in, when the pointer is over a bar.
@@ -601,6 +613,19 @@ impl App {
             hud_config.save_if_dirty();
             bars
         };
+        // What each character owns. A first launch has no file, and the roster keeps the
+        // starting gear the simulation dressed it in; afterwards the file *is* what they
+        // own, empty slots and all.
+        let character_config = CharacterConfigManager::load_from_game_directory();
+        if character_config.existed() {
+            engine_presentation::character_save::apply_config(
+                character_config.config(),
+                simulation.roster_mut(),
+            );
+            simulation.refresh_character();
+            log::info!("character: loaded {}", character_config.path().display());
+        }
+
         let hud_layout = HudLayout::new(hud_config.config().clone());
         log::info!(
             "hud: {} ({} bars enabled)",
@@ -712,6 +737,10 @@ impl App {
             talent_menu: TalentMenu::with_scale(ui_scale),
             talent_theme: TalentTheme::default(),
             talent_scratch: String::with_capacity(32),
+            character_menu: CharacterMenu::with_scale(ui_scale),
+            character_theme: CharacterTheme::default(),
+            character_scratch: String::with_capacity(64),
+            character_config,
             hovered_ability: None,
             hovered_slot: None,
             targeting_decal: None,
@@ -939,6 +968,42 @@ impl App {
             return;
         }
 
+        // The character key, read here rather than in the input map for the reason the bar's
+        // keys are: it toggles a window, and whether a press opens or closes one is a
+        // question about the interface rather than about the character. Read after the slot
+        // menu so a rebinding capture that is waiting for a key gets it first.
+        if ctx.input().was_key_pressed(self.bindings.character_sheet) {
+            if self.character_menu.is_open() {
+                self.character_menu.close();
+            } else {
+                self.open_character_sheet();
+            }
+            return;
+        }
+
+        // The character sheet, which covers everything while it is up. Above the talent
+        // menu in this chain only because two windows cannot both be open: opening either
+        // closes the other, so the order decides nothing beyond which is asked first.
+        if self.character_menu.is_open() {
+            self.hovered_ability = None;
+            self.hovered_slot = None;
+            match self
+                .character_menu
+                .update(&ui_input, &self.snapshot, viewport)
+            {
+                CharacterMenuOutcome::Move { from, to } => {
+                    self.simulation
+                        .push_command(PlayerCommand::MoveItem { from, to });
+                    // Written on the drop rather than on the way out: a crash between
+                    // equipping something and closing the panel should not cost the
+                    // player the item they just put on.
+                    self.save_characters();
+                }
+                CharacterMenuOutcome::Idle | CharacterMenuOutcome::Closed => {}
+            }
+            return;
+        }
+
         // The talent menu, which covers everything while it is up.
         if self.talent_menu.is_open() {
             match self.talent_menu.update(&ui_input, &self.snapshot, viewport) {
@@ -951,12 +1016,19 @@ impl App {
             return;
         }
 
-        // The talent button, in the top-right corner.
+        // The two corner buttons.
         let talent_button = self.game_ui.talent_button_rect(viewport);
         if ui_input.pointer_pressed
             && talent_button.contains(ui_input.pointer.0, ui_input.pointer.1)
         {
-            self.talent_menu.open();
+            self.open_talents();
+            return;
+        }
+        let character_button = self.game_ui.character_button_rect(viewport);
+        if ui_input.pointer_pressed
+            && character_button.contains(ui_input.pointer.0, ui_input.pointer.1)
+        {
+            self.open_character_sheet();
             return;
         }
 
@@ -1104,6 +1176,35 @@ impl App {
     ///
     /// Both together, because they share one file and one validation pass: the layout owns
     /// where a bar is, the bars own what is in it, and the file is the two merged.
+    /// Opens the character sheet, closing whatever other window was up.
+    ///
+    /// Two full-screen windows open at once would each eat the other's clicks, so opening
+    /// one closes the other here rather than in either window's own update.
+    fn open_character_sheet(&mut self) {
+        self.talent_menu.close();
+        self.hovered_ability = None;
+        self.hovered_slot = None;
+        self.character_menu.open();
+    }
+
+    /// Opens the talent window, closing the character sheet.
+    fn open_talents(&mut self) {
+        self.character_menu.close();
+        self.talent_menu.open();
+    }
+
+    /// Writes what every character is wearing and carrying.
+    ///
+    /// The roster is the authority; the file is a copy of it. Nothing reads the panel to
+    /// decide what was saved, which is what keeps a half-finished drag out of the save.
+    fn save_characters(&mut self) {
+        let config = engine_presentation::character_save::config_of(self.simulation.roster());
+        self.character_config.update(config);
+        if self.character_config.save_if_dirty() {
+            log::debug!("character: saved");
+        }
+    }
+
     fn save_hud_layout(&mut self) {
         let mut config = self.hud_layout.config().clone();
         self.action_bars.write_config(&mut config);
@@ -1228,6 +1329,10 @@ impl App {
             // that runs after this one. Backing out of one of them must not also open the
             // pause menu on the same press.
             if self.hud_editor.is_active() || self.slot_menu.is_open() {
+                return;
+            }
+            if self.character_menu.is_open() {
+                self.character_menu.close();
                 return;
             }
             if self.talent_menu.is_open() {
@@ -1368,6 +1473,7 @@ impl App {
         self.game_ui.set_scale(scale);
         self.menu.set_scale(scale);
         self.talent_menu.set_scale(scale);
+        self.character_menu.set_scale(scale);
         self.slot_menu.set_scale(scale);
         self.hud_editor.layout(scale, self.renderer.size());
         if persist && self.settings.save_if_dirty() {
@@ -1683,6 +1789,14 @@ impl App {
             &self.snapshot,
             &self.talent_theme,
             &mut self.talent_scratch,
+            viewport,
+        );
+        push_character_menu(
+            self.game_ui.list_mut(),
+            &self.character_menu,
+            &self.snapshot,
+            &self.character_theme,
+            &mut self.character_scratch,
             viewport,
         );
 

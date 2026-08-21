@@ -53,6 +53,7 @@
 //! | [`telemetry`] | The combat meter |
 //! | [`command`] | What the player asked for |
 //! | [`input_map`] | Keys to commands — the only module that knows a key |
+//! | [`character`] | Stats, items, the fifteen equipment slots and the bag |
 //! | [`arena`] | The training arena |
 //! | [`demo`] | The collision demo scene: geometry, no combat |
 //! | [`enemy`] | Enemy archetypes, their attacks, their threat and their state machine |
@@ -71,6 +72,8 @@ pub const TIME_EPSILON: f32 = 1e-4;
 
 pub mod ability;
 pub mod arena;
+/// The character sheet: stats, items, equipment, the bag and Spirit.
+pub mod character;
 pub mod combat;
 pub mod command;
 pub mod demo;
@@ -100,6 +103,10 @@ pub mod world;
 
 pub use ability::{ABILITY_SLOTS, AbilityId};
 pub use arena::{Arena, ArenaConfig, training_arena};
+pub use character::{
+    CharacterSheet, EquipSlot, Equipment, Inventory, ItemDef, ItemFamily, ItemId, ItemQuality,
+    ItemSlot, ItemStack, MoveError, Roster, Stat, StatBlock, StatGroup,
+};
 pub use combat::{DamageType, Faction, Health, Resource};
 pub use command::{CommandBuffer, PlayerCommand};
 pub use demo::{DemoScene, Station, collision_demo};

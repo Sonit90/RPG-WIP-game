@@ -25,6 +25,8 @@
 //! generate no Heat and apply no burn because their rows say zero, not because anything
 //! branches on who they are.
 
+use crate::character::stat::{Stat, StatBlock};
+use crate::character::{BASE_MAIN_STAT, BASE_STAMINA};
 use crate::firemage::{ABILITY_SLOTS, FireAbility};
 
 /// Which playable character the player is.
@@ -182,6 +184,30 @@ impl Hero {
             .iter()
             .map(|ability| ability.definition().range)
             .fold(0.0, f32::max)
+    }
+
+    /// Which stat this hero's damage and healing scale from.
+    ///
+    /// A property of the hero rather than of the character sheet, so a sheet, a tooltip and
+    /// a damage calculation cannot disagree about which of the two primary stats matters.
+    #[must_use]
+    pub fn main_stat(self) -> Stat {
+        match self {
+            Self::FireMage | Self::Druid => Stat::Intellect,
+            Self::Warrior => Stat::Strength,
+        }
+    }
+
+    /// What this hero is worth with nothing equipped.
+    ///
+    /// The main stat and Stamina, and zero of everything else. Every hero has the same base
+    /// numbers on purpose: what separates the three is their abilities, and a base block
+    /// that differed per class would be three balance passes before there is one.
+    #[must_use]
+    pub fn base_stats(self) -> StatBlock {
+        let mut stats = StatBlock::of(self.main_stat(), BASE_MAIN_STAT);
+        stats.set(Stat::Stamina, BASE_STAMINA);
+        stats
     }
 
     /// This hero's Ultimate, if it has one.
