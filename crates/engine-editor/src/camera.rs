@@ -191,7 +191,10 @@ mod tests {
             pitch: 0.0,
         };
         let before = camera.forward();
-        assert!((before - Vec3::new(0.0, 0.0, -1.0)).length() < 1e-4, "-Z is forward");
+        assert!(
+            (before - Vec3::new(0.0, 0.0, -1.0)).length() < 1e-4,
+            "-Z is forward"
+        );
 
         camera.turn(200.0, 0.0);
         let after = camera.forward();

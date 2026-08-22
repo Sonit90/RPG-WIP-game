@@ -374,6 +374,9 @@ pub struct App {
     last_effect: Option<engine_vfx::VfxId>,
     report_interval: Option<Duration>,
     last_report: Instant,
+    /// Scratch buffer the periodic report is built into, kept between reports so the
+    /// steady state allocates nothing.
+    report: String,
     #[cfg(feature = "debug-overlay")]
     overlay_lines: Vec<String>,
     #[cfg(feature = "debug-overlay")]
@@ -822,6 +825,7 @@ impl App {
             last_effect: None,
             report_interval,
             last_report: Instant::now(),
+            report: String::new(),
             #[cfg(feature = "debug-overlay")]
             overlay_lines: Vec::with_capacity(32),
             #[cfg(feature = "debug-overlay")]
@@ -2489,11 +2493,16 @@ impl App {
         let _ = scene;
     }
 
-    /// Logs a combat and performance line if the reporting interval has elapsed.
+    /// Logs a combat and performance report if the reporting interval has elapsed.
     ///
-    /// Logging allocates while formatting, so it happens on an interval and never per
-    /// frame.
+    /// The whole report is **one** log record. It used to be fifteen to thirty-five, and
+    /// each one was its own unbuffered write to stderr — on a Windows console that is
+    /// blocking inter-process communication, and thirty of them in a row is a visible
+    /// hitch once a second. Built into a reusable buffer, so the report costs a formatted
+    /// string and nothing else.
     fn maybe_report(&mut self, ctx: &EngineContext) {
+        use std::fmt::Write as _;
+
         let Some(interval) = self.report_interval else {
             return;
         };
@@ -2504,6 +2513,14 @@ impl App {
             return;
         };
         self.last_report = Instant::now();
+        // One check for the whole report, since it is one record: nothing below is built
+        // when the level filters it out.
+        if !engine_core::logging::enabled(log::Level::Info, module_path!()) {
+            return;
+        }
+        // Taken rather than borrowed: the report reads the rest of `self` while it is
+        // being built, and the buffer goes back at the end with its capacity intact.
+        let mut report = std::mem::take(&mut self.report);
 
         // The last advance that ticked, not the last advance: most frames at these rates
         // run no ticks, and their zero would read as "the simulation is free".
@@ -2511,17 +2528,25 @@ impl App {
         let meter = self.simulation.meter();
         let cull = self.renderer.cull_stats();
         let ui = self.renderer.ui_stats();
-        log::info!(
-            "CPU mean {:.3} ms ({:.0} FPS) p99 {:.3} | GPU {} | sim {:.3} ms ({} ticks) | \
-             extract {:.3} ms | vfx {:.3} ms | audio {:.3} ms | cull {:.3} ms | ui {:.3} ms ({} quads, {} cmds) | visible {} | \
-             draws {} ({} skinned) | tris {}",
+        // Writing to a `String` cannot fail, here and below.
+        let _ = write!(
+            report,
+            "CPU mean {:.3} ms ({:.0} FPS) p99 {:.3} | GPU ",
             summary.cpu.mean_ms,
             summary.cpu.mean_fps(),
             summary.cpu.p99_ms,
-            match summary.gpu {
-                Some(gpu) => format!("mean {:.3} p99 {:.3} ms", gpu.mean_ms, gpu.p99_ms),
-                None => "N/A".to_owned(),
-            },
+        );
+        match summary.gpu {
+            Some(gpu) => {
+                let _ = write!(report, "mean {:.3} p99 {:.3} ms", gpu.mean_ms, gpu.p99_ms);
+            }
+            None => report.push_str("N/A"),
+        }
+        let _ = write!(
+            report,
+            " | sim {:.3} ms ({} ticks) | \
+             extract {:.3} ms | vfx {:.3} ms | audio {:.3} ms | cull {:.3} ms | ui {:.3} ms ({} quads, {} cmds) | visible {} | \
+             draws {} ({} skinned) | tris {}",
             stats.total_ms(),
             stats.ticks,
             self.extract_ms,
@@ -2541,16 +2566,21 @@ impl App {
         // frame got slower" impossible to attribute.
         let shadow = self.renderer.shadow_stats();
         if shadow.enabled {
-            log::info!(
-                "  shadows: {} cascade(s) at {} | cpu {:.3} ms | gpu {} | {} draws, {} tris, \
+            let _ = write!(
+                report,
+                "\n  shadows: {} cascade(s) at {} | cpu {:.3} ms | gpu ",
+                shadow.cascade_count, shadow.resolution, shadow.cpu_ms,
+            );
+            match shadow.gpu_ms {
+                Some(milliseconds) => {
+                    let _ = write!(report, "{milliseconds:.3} ms");
+                }
+                None => report.push_str("N/A"),
+            }
+            let _ = write!(
+                report,
+                " | {} draws, {} tris, \
                  {} casters ({} dropped) | local {} view(s), {} refused | atlas {}x{}",
-                shadow.cascade_count,
-                shadow.resolution,
-                shadow.cpu_ms,
-                match shadow.gpu_ms {
-                    Some(milliseconds) => format!("{milliseconds:.3} ms"),
-                    None => "N/A".to_owned(),
-                },
                 shadow.draw_calls(),
                 shadow.triangles(),
                 shadow.casters(),
@@ -2562,8 +2592,9 @@ impl App {
             );
         }
         let vfx = self.vfx.stats();
-        log::info!(
-            "  vfx: {} effects, {} particles (peak {}), {} mesh draws, {} entities |              dropped {} effects / {} particles | drawn {}",
+        let _ = write!(
+            report,
+            "\n  vfx: {} effects, {} particles (peak {}), {} mesh draws, {} entities |              dropped {} effects / {} particles | drawn {}",
             vfx.system.instances,
             vfx.system.particles,
             vfx.system.peak_particles,
@@ -2576,10 +2607,20 @@ impl App {
         // Audio, with every refusal counted: what is playing, what was thinned by the
         // limiter, and what the pool had no room for. A wall of identical sounds shows up
         // here as a large `thinned` and a steady `voices`, which is the system working.
-        if let Ok(audio) = self.audio.system().lock() {
-            let stats = self.audio_director.stats(&audio);
-            log::info!(
-                "  audio: {} voices (peak {} of {}) | started {} | thinned {} | dropped {} | stolen {} | missing {} | limited {} | {} loops, {} bolts | device {}",
+        //
+        // The statistics are copied out and the lock released before anything is
+        // formatted: the audio mutex is shared with the real-time cpal callback, and
+        // holding it across a `write!` would stall the sound to print a line about it.
+        let audio_stats = self
+            .audio
+            .system()
+            .lock()
+            .ok()
+            .map(|audio| self.audio_director.stats(&audio));
+        if let Some(stats) = audio_stats {
+            let _ = write!(
+                report,
+                "\n  audio: {} voices (peak {} of {}) | started {} | thinned {} | dropped {} | stolen {} | missing {} | limited {} | {} loops, {} bolts | device {}",
                 stats.system.active,
                 stats.system.peak_active,
                 stats.system.capacity,
@@ -2603,8 +2644,9 @@ impl App {
         // as the audio readout is.
         if self.simulation.enemy_count() > 0 {
             let encounters = self.simulation.encounters();
-            log::info!(
-                "  encounters: {} | {} enemies | {} hazards | player {:.0} hp, took {:.0}",
+            let _ = write!(
+                report,
+                "\n  encounters: {} | {} enemies | {} hazards | player {:.0} hp, took {:.0}",
                 encounters.len(),
                 self.simulation.enemy_count(),
                 self.simulation.enemy_hazards().len(),
@@ -2623,55 +2665,72 @@ impl App {
                     .iter()
                     .filter(|member| self.simulation.world().is_alive(**member))
                     .count();
-                log::info!(
-                    "    pack {:<26} {:<11} {alive}/{} alive | {} resets",
+                let _ = write!(
+                    report,
+                    "\n    pack {:<26} {:<11} {alive}/{} alive | {} resets",
                     encounter.name(),
                     encounter.state().as_str(),
                     encounter.len(),
                     encounter.resets(),
                 );
             }
-            // Only what is doing something, once there are more than a handful: a dungeon
-            // holds twenty-two enemies and twenty of them are standing still.
-            let verbose = self.simulation.enemy_count() <= 8;
-            for (entity, brain) in self.simulation.enemies() {
-                if !verbose && brain.state() == engine_game::enemy::brain::AiState::Idle {
-                    continue;
-                }
-                let position = self
-                    .simulation
-                    .world()
-                    .position(entity)
-                    .unwrap_or(Vec3::ZERO);
-                let target = brain.target();
-                let distance = target
-                    .and_then(|target| self.simulation.world().position(target))
-                    .map(|other| engine_game::world::horizontal_distance(position, other));
-                log::info!(
-                    "    {} {:<7} {:>3.0} hp | {} | target {} at {} m | threat {} | {}{}",
-                    brain.archetype().name,
-                    brain.state().as_str(),
-                    self.simulation
+            // The per-enemy roll-call is the bulk of the report and is rarely what is being
+            // read, so it comes in at `Debug`: absent from a release build, and off by
+            // default elsewhere. Only what is doing something, once there are more than a
+            // handful: a dungeon holds twenty-two enemies and twenty of them are standing
+            // still.
+            if log::log_enabled!(log::Level::Debug) {
+                let verbose = self.simulation.enemy_count() <= 8;
+                for (entity, brain) in self.simulation.enemies() {
+                    if !verbose && brain.state() == engine_game::enemy::brain::AiState::Idle {
+                        continue;
+                    }
+                    let position = self
+                        .simulation
                         .world()
-                        .health(entity)
-                        .map_or(0.0, engine_game::Health::current),
-                    brain.phase_name(),
-                    target.map_or(-1, |target| target.index() as i64),
-                    distance.map_or("-".to_owned(), |metres| format!("{metres:.1}")),
-                    brain.threat().len(),
-                    brain.cast().map_or("-".to_owned(), |cast| format!(
-                        "{} {:.1}s",
-                        cast.ability.name(),
-                        cast.remaining()
-                    )),
-                    if brain.threat().is_empty() { "" } else { " *" },
-                );
+                        .position(entity)
+                        .unwrap_or(Vec3::ZERO);
+                    let target = brain.target();
+                    let distance = target
+                        .and_then(|target| self.simulation.world().position(target))
+                        .map(|other| engine_game::world::horizontal_distance(position, other));
+                    let _ = write!(
+                        report,
+                        "\n    {} {:<7} {:>3.0} hp | {} | target {} at ",
+                        brain.archetype().name,
+                        brain.state().as_str(),
+                        self.simulation
+                            .world()
+                            .health(entity)
+                            .map_or(0.0, engine_game::Health::current),
+                        brain.phase_name(),
+                        target.map_or(-1, |target| target.index() as i64),
+                    );
+                    match distance {
+                        Some(metres) => {
+                            let _ = write!(report, "{metres:.1}");
+                        }
+                        None => report.push('-'),
+                    }
+                    let _ = write!(report, " m | threat {} | ", brain.threat().len());
+                    match brain.cast() {
+                        Some(cast) => {
+                            let _ =
+                                write!(report, "{} {:.1}s", cast.ability.name(), cast.remaining());
+                        }
+                        None => report.push('-'),
+                    }
+                    if !brain.threat().is_empty() {
+                        report.push_str(" *");
+                    }
+                }
             }
         }
         if let Some(scene) = self.environment.as_ref() {
             let environment = self.placer.stats();
-            log::info!(
-                "  environment '{}': {} objects, {} entities, {} models, {} lod changes",
+            let _ = write!(
+                report,
+                "\n  environment '{}': {} objects, {} entities, {} models, {} lod changes",
                 scene.name,
                 environment.objects,
                 environment.entities,
@@ -2679,14 +2738,18 @@ impl App {
                 environment.lod_changes,
             );
         }
-        log::info!(
-            "  combat: {:.0} damage | {:.0} DPS over {:.1} s | {} deaths | {} events",
+        let _ = write!(
+            report,
+            "\n  combat: {:.0} damage | {:.0} DPS over {:.1} s | {} deaths | {} events",
             meter.total_damage(),
             meter.dps(),
             meter.combat_seconds(),
             meter.deaths(),
             self.simulation.event_stream().total_recorded(),
         );
+        log::info!("{report}");
+        report.clear();
+        self.report = report;
     }
 
     /// Appends the shadow stage's statistics to the developer overlay.

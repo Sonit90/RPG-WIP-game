@@ -286,10 +286,9 @@ impl Editor {
 
     /// The keyboard verbs. Returns whether the scene changed.
     fn update_keys(&mut self, input: &InputState, scene: &mut EnvironmentScene) -> bool {
-        let control = input.is_key_down(KeyCode::LeftControl)
-            || input.is_key_down(KeyCode::RightControl);
-        let shift =
-            input.is_key_down(KeyCode::LeftShift) || input.is_key_down(KeyCode::RightShift);
+        let control =
+            input.is_key_down(KeyCode::LeftControl) || input.is_key_down(KeyCode::RightControl);
+        let shift = input.is_key_down(KeyCode::LeftShift) || input.is_key_down(KeyCode::RightShift);
 
         if input.was_key_pressed(KeyCode::Escape) {
             self.selection = None;
@@ -351,8 +350,7 @@ impl Editor {
             let step = if shift { -YAW_STEP } else { YAW_STEP };
             let object = &mut scene.objects[index];
             let yaw = yaw_of(object.transform) + step;
-            object.transform.rotation =
-                engine_core::math::Quat::from_yaw_pitch_roll(yaw, 0.0, 0.0);
+            object.transform.rotation = engine_core::math::Quat::from_yaw_pitch_roll(yaw, 0.0, 0.0);
             self.status = format!("yaw {:.0} deg", yaw.to_degrees());
             return true;
         }
@@ -404,7 +402,10 @@ impl Editor {
                 // that selects and does not drag must not fill the undo stack.
                 let before = scene.objects.clone();
                 self.push_undo(before);
-                self.drag = Some(Drag { moved: true, ..drag });
+                self.drag = Some(Drag {
+                    moved: true,
+                    ..drag
+                });
             }
             let Some(object) = scene.objects.get_mut(drag.index) else {
                 return false;
@@ -418,9 +419,11 @@ impl Editor {
             return false;
         }
 
-        let Some((origin, direction)) =
-            engine_presentation::ui::targeting::cursor_ray(ui_input.pointer, view_projection, viewport)
-        else {
+        let Some((origin, direction)) = engine_presentation::ui::targeting::cursor_ray(
+            ui_input.pointer,
+            view_projection,
+            viewport,
+        ) else {
             return false;
         };
 
@@ -623,7 +626,12 @@ mod tests {
     fn a_closed_editor_ignores_everything() {
         let mut editor = Editor::new();
         let mut scene = scene();
-        let outcome = update(&mut editor, &InputState::new(), &press(centre()), &mut scene);
+        let outcome = update(
+            &mut editor,
+            &InputState::new(),
+            &press(centre()),
+            &mut scene,
+        );
         assert_eq!(outcome, EditorOutcome::Idle);
         assert!(scene.is_empty(), "a closed editor placed something");
     }
@@ -632,7 +640,12 @@ mod tests {
     fn a_click_on_empty_ground_places_the_palettes_asset_once() {
         let mut editor = editor();
         let mut scene = scene();
-        let outcome = update(&mut editor, &InputState::new(), &press(centre()), &mut scene);
+        let outcome = update(
+            &mut editor,
+            &InputState::new(),
+            &press(centre()),
+            &mut scene,
+        );
 
         assert_eq!(outcome, EditorOutcome::SceneChanged);
         assert_eq!(scene.len(), 1, "exactly one placement per click");
@@ -651,9 +664,19 @@ mod tests {
         let mut scene = scene();
         // The palette starts on ground_plain, which blocks nothing; move it to a pillar.
         while editor.asset() != PILLAR {
-            update(&mut editor, &keyed(KeyCode::Tab), &UiInput::new(), &mut scene);
+            update(
+                &mut editor,
+                &keyed(KeyCode::Tab),
+                &UiInput::new(),
+                &mut scene,
+            );
         }
-        update(&mut editor, &InputState::new(), &press(centre()), &mut scene);
+        update(
+            &mut editor,
+            &InputState::new(),
+            &press(centre()),
+            &mut scene,
+        );
         assert!(
             scene.objects[0].collision.blocks(),
             "a pillar placed in the editor is a pillar you cannot walk through"
@@ -669,7 +692,12 @@ mod tests {
                 .with_collision(default_collision(PILLAR)),
         );
 
-        let outcome = update(&mut editor, &InputState::new(), &press(centre()), &mut scene);
+        let outcome = update(
+            &mut editor,
+            &InputState::new(),
+            &press(centre()),
+            &mut scene,
+        );
         assert_eq!(outcome, EditorOutcome::Idle, "selecting is not a change");
         assert_eq!(scene.len(), 1, "nothing was placed on top of it");
         assert_eq!(editor.selection(), Some(0));
@@ -683,10 +711,18 @@ mod tests {
             EnvironmentObject::decoration(PILLAR, Vec3::ZERO)
                 .with_collision(default_collision(PILLAR)),
         );
-        scene.push(EnvironmentObject::decoration(ROCK_SMALL, Vec3::new(30.0, 0.0, 30.0)));
+        scene.push(EnvironmentObject::decoration(
+            ROCK_SMALL,
+            Vec3::new(30.0, 0.0, 30.0),
+        ));
         let untouched = scene.objects[1];
 
-        update(&mut editor, &InputState::new(), &press(centre()), &mut scene);
+        update(
+            &mut editor,
+            &InputState::new(),
+            &press(centre()),
+            &mut scene,
+        );
         let (x, y) = centre();
         let outcome = update(
             &mut editor,
@@ -714,7 +750,12 @@ mod tests {
         );
         assert_eq!(editor.grid(), 1.0, "the editor starts on a one metre grid");
 
-        update(&mut editor, &InputState::new(), &press(centre()), &mut scene);
+        update(
+            &mut editor,
+            &InputState::new(),
+            &press(centre()),
+            &mut scene,
+        );
         let (x, y) = centre();
         update(
             &mut editor,
@@ -742,7 +783,12 @@ mod tests {
         assert_eq!(outcome, EditorOutcome::Idle, "nothing was selected");
         assert_eq!(scene.len(), 1);
 
-        update(&mut editor, &InputState::new(), &press(centre()), &mut scene);
+        update(
+            &mut editor,
+            &InputState::new(),
+            &press(centre()),
+            &mut scene,
+        );
         let outcome = update(&mut editor, &keyed(KeyCode::X), &UiInput::new(), &mut scene);
         assert_eq!(outcome, EditorOutcome::SceneChanged);
         assert!(scene.is_empty());
@@ -753,10 +799,18 @@ mod tests {
     fn undo_puts_back_what_the_last_verb_changed() {
         let mut editor = editor();
         let mut scene = scene();
-        scene.push(EnvironmentObject::decoration(ROCK_SMALL, Vec3::new(9.0, 0.0, 9.0)));
+        scene.push(EnvironmentObject::decoration(
+            ROCK_SMALL,
+            Vec3::new(9.0, 0.0, 9.0),
+        ));
         let before = scene.objects.clone();
 
-        update(&mut editor, &InputState::new(), &press(centre()), &mut scene);
+        update(
+            &mut editor,
+            &InputState::new(),
+            &press(centre()),
+            &mut scene,
+        );
         assert_eq!(scene.len(), 2, "a placement happened");
 
         let outcome = update(&mut editor, &keyed(KeyCode::Z), &UiInput::new(), &mut scene);
@@ -777,7 +831,12 @@ mod tests {
             EnvironmentObject::decoration(PILLAR, Vec3::ZERO)
                 .with_collision(default_collision(PILLAR)),
         );
-        update(&mut editor, &InputState::new(), &press(centre()), &mut scene);
+        update(
+            &mut editor,
+            &InputState::new(),
+            &press(centre()),
+            &mut scene,
+        );
 
         update(&mut editor, &keyed(KeyCode::R), &UiInput::new(), &mut scene);
         let turned = scene.objects[0].transform.rotation;
@@ -850,10 +909,20 @@ mod tests {
     fn f6_leaves_and_the_scene_keeps_what_was_done_to_it() {
         let mut editor = editor();
         let mut scene = scene();
-        update(&mut editor, &InputState::new(), &press(centre()), &mut scene);
+        update(
+            &mut editor,
+            &InputState::new(),
+            &press(centre()),
+            &mut scene,
+        );
         assert_eq!(scene.len(), 1);
 
-        let outcome = update(&mut editor, &keyed(KeyCode::F6), &UiInput::new(), &mut scene);
+        let outcome = update(
+            &mut editor,
+            &keyed(KeyCode::F6),
+            &UiInput::new(),
+            &mut scene,
+        );
         assert_eq!(outcome, EditorOutcome::Left);
         assert!(!editor.is_active());
         assert_eq!(scene.len(), 1, "leaving is not undoing");

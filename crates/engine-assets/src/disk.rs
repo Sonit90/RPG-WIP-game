@@ -303,12 +303,19 @@ mod tests {
         };
         assert_eq!(report.placed, 4, "four nodes named an asset");
         assert_eq!(report.skipped, 2, "the camera and the light are not assets");
-        assert_eq!(scene.spawns.player, engine_core::math::Vec3::new(1.0, 0.0, 2.0));
+        assert_eq!(
+            scene.spawns.player,
+            engine_core::math::Vec3::new(1.0, 0.0, 2.0)
+        );
 
         let Some(pillar) = asset_named("pillar") else {
             panic!("the library has a pillar");
         };
-        assert_eq!(scene.count_of(pillar), 2, "the .001 duplicate is a pillar too");
+        assert_eq!(
+            scene.count_of(pillar),
+            2,
+            "the .001 duplicate is a pillar too"
+        );
         assert!(
             scene.objects.iter().all(|object| object.collision.blocks()),
             "a wall built in Blender blocks without anyone saying so"

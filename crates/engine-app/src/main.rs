@@ -45,9 +45,12 @@ fn main() -> ExitCode {
     let config = EngineConfig::default().with_frame_budget(settings.frame_budget);
     let result = App::new(&settings, &args).and_then(|app| Engine::new(app, config).run());
 
+    // Records are written by a background thread, so every exit path drains before
+    // returning: a process that exits with the queue full prints nothing about why.
     match result {
         Ok(()) => {
             log::info!("clean shutdown");
+            engine_core::logging::drain();
             ExitCode::SUCCESS
         }
         Err(error) => {
@@ -55,6 +58,7 @@ fn main() -> ExitCode {
             // renderer" alone says nothing about which call returned which HRESULT.
             let chain = error.chain();
             log::error!("fatal: {chain}");
+            engine_core::logging::drain();
             eprintln!("fatal: {chain}");
             ExitCode::FAILURE
         }

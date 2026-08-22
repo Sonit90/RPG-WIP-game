@@ -46,13 +46,11 @@ mod layout {
 #[must_use]
 pub fn panel_rect(scale: UiScale, viewport: (u32, u32)) -> UiRect {
     let rows = engine_environment::asset::LIBRARY.len() as f32;
-    let height = scale.px(
-        layout::PADDING * 2.0
-            + layout::HEADING
-            + rows * layout::ROW_HEIGHT
-            + (rows - 1.0) * layout::ROW_GAP
-            + layout::STATUS_HEIGHT,
-    );
+    let height = scale.px(layout::PADDING * 2.0
+        + layout::HEADING
+        + rows * layout::ROW_HEIGHT
+        + (rows - 1.0) * layout::ROW_GAP
+        + layout::STATUS_HEIGHT);
     let width = scale.px(layout::PANEL_WIDTH);
     let margin = scale.px(layout::MARGIN);
     // Clamped so the palette is reachable on a short window rather than hanging off the
@@ -119,7 +117,12 @@ pub fn push_editor(
     // Under the palette: what just happened, and what is selected.
     let status_top = panel.bottom() - scale.px(layout::STATUS_HEIGHT);
     list.rect(
-        UiRect::new(panel.x + border, status_top, panel.width - border * 2.0, border),
+        UiRect::new(
+            panel.x + border,
+            status_top,
+            panel.width - border * 2.0,
+            border,
+        ),
         theme.separator,
     );
     list.text_at(
@@ -130,7 +133,10 @@ pub fn push_editor(
     );
 
     scratch.clear();
-    match editor.selection().and_then(|index| scene.objects.get(index)) {
+    match editor
+        .selection()
+        .and_then(|index| scene.objects.get(index))
+    {
         Some(object) => {
             scratch.push_str(object.asset.name());
             scratch.push_str(" @ ");
@@ -152,10 +158,7 @@ pub fn push_editor(
     scratch.push_str("objects ");
     write_count(scratch, scene.len());
     list.text_at(
-        (
-            panel.x + padding,
-            status_top + padding * 0.5 + text * 20.0,
-        ),
+        (panel.x + padding, status_top + padding * 0.5 + text * 20.0),
         scratch,
         theme.text_disabled,
         text,
@@ -229,8 +232,14 @@ mod tests {
                 panic!("row {index} exists");
             };
             let rect = widget.rect();
-            assert!(rect.x >= panel.x && rect.right() <= panel.right(), "{rect:?}");
-            assert!(rect.y >= previous_bottom, "row {index} overlaps the one above");
+            assert!(
+                rect.x >= panel.x && rect.right() <= panel.right(),
+                "{rect:?}"
+            );
+            assert!(
+                rect.y >= previous_bottom,
+                "row {index} overlaps the one above"
+            );
             previous_bottom = rect.bottom();
         }
     }

@@ -31,8 +31,7 @@ fn pick_box(object: &EnvironmentObject) -> (Vec3, Vec3, engine_core::math::Quat)
         None => {
             let scale = object.transform.scale;
             (
-                object.position()
-                    + Vec3::new(0.0, DECORATION_HALF_EXTENTS.y * scale.y, 0.0),
+                object.position() + Vec3::new(0.0, DECORATION_HALF_EXTENTS.y * scale.y, 0.0),
                 Vec3::new(
                     DECORATION_HALF_EXTENTS.x * scale.x,
                     DECORATION_HALF_EXTENTS.y * scale.y,
@@ -106,11 +105,7 @@ pub fn ray_box_distance(
 /// Nearest wins, and ties go to the earlier placement — which is stable, because a scene's
 /// object order is stable.
 #[must_use]
-pub fn object_under_ray(
-    scene: &EnvironmentScene,
-    origin: Vec3,
-    direction: Vec3,
-) -> Option<usize> {
+pub fn object_under_ray(scene: &EnvironmentScene, origin: Vec3, direction: Vec3) -> Option<usize> {
     let mut best: Option<(usize, f32)> = None;
     for (index, object) in scene.objects.iter().enumerate() {
         let (center, half_extents, rotation) = pick_box(object);
@@ -141,7 +136,10 @@ mod tests {
             EnvironmentObject::decoration(PILLAR, Vec3::new(0.0, 0.0, -30.0))
                 .with_collision(default_collision(PILLAR)),
         );
-        scene.push(EnvironmentObject::decoration(FERN, Vec3::new(6.0, 0.0, -10.0)));
+        scene.push(EnvironmentObject::decoration(
+            FERN,
+            Vec3::new(6.0, 0.0, -10.0),
+        ));
         scene
     }
 
@@ -164,7 +162,11 @@ mod tests {
             Vec3::new(6.0, 0.9, 0.0),
             Vec3::new(0.0, 0.0, -1.0),
         );
-        assert_eq!(hit, Some(2), "a fern the character walks through is still an object");
+        assert_eq!(
+            hit,
+            Some(2),
+            "a fern the character walks through is still an object"
+        );
     }
 
     #[test]
@@ -179,11 +181,7 @@ mod tests {
 
     #[test]
     fn nothing_behind_the_eye_is_ever_picked() {
-        let hit = object_under_ray(
-            &scene(),
-            Vec3::new(0.0, 2.0, 0.0),
-            Vec3::new(0.0, 0.0, 1.0),
-        );
+        let hit = object_under_ray(&scene(), Vec3::new(0.0, 2.0, 0.0), Vec3::new(0.0, 0.0, 1.0));
         assert_eq!(hit, None, "the pillars are the other way");
     }
 
@@ -223,6 +221,9 @@ mod tests {
             half_extents,
             rotation,
         );
-        assert!(past_the_end.is_none(), "the wall does not reach twelve metres");
+        assert!(
+            past_the_end.is_none(),
+            "the wall does not reach twelve metres"
+        );
     }
 }

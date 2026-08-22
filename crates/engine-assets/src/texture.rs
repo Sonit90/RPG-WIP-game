@@ -267,9 +267,8 @@ mod tests {
 
     #[test]
     fn a_texture_over_the_limit_is_halved_until_it_fits_and_one_under_it_is_untouched() {
-        let big = TextureAsset::generated("big", 8, 4, TextureFormat::Rgba8Srgb, |_, _| {
-            [1, 2, 3, 4]
-        });
+        let big =
+            TextureAsset::generated("big", 8, 4, TextureFormat::Rgba8Srgb, |_, _| [1, 2, 3, 4]);
         let fitted = big.fitted_within(2);
         assert_eq!((fitted.width, fitted.height), (2, 1));
 
