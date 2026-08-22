@@ -1,0 +1,65 @@
+<svg version="1.1" xmlns="http://www.w3.org/2000/svg" style="display: block;" viewBox="0 189.333 682.667 762.667" width="682.667" height="762.667" preserveAspectRatio="none">
+<defs>
+	<linearGradient id="last_stand_panel" gradientUnits="userSpaceOnUse" x1="23.848" y1="789.072" x2="653.072" y2="323.171">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(24,28,35)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(11,13,17)"></stop>
+	</linearGradient>
+	<radialGradient id="last_stand_forge" gradientUnits="userSpaceOnUse" cx="338" cy="560" r="340">
+		<stop offset="0" stop-opacity="0.42" stop-color="rgb(224,170,68)"></stop>
+		<stop offset="0.55" stop-opacity="0.14" stop-color="rgb(58,70,88)"></stop>
+		<stop offset="1" stop-opacity="0" stop-color="rgb(11,13,17)"></stop>
+	</radialGradient>
+	<linearGradient id="last_stand_steel" gradientUnits="userSpaceOnUse" x1="170" y1="300" x2="500" y2="840">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(214,222,232)"></stop>
+		<stop offset="0.45" stop-opacity="1" stop-color="rgb(128,141,159)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(50,58,71)"></stop>
+	</linearGradient>
+	<linearGradient id="last_stand_deep" gradientUnits="userSpaceOnUse" x1="200" y1="340" x2="470" y2="830">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(84,95,112)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(32,38,48)"></stop>
+	</linearGradient>
+	<linearGradient id="last_stand_gold" gradientUnits="userSpaceOnUse" x1="150" y1="330" x2="520" y2="830">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(247,214,132)"></stop>
+		<stop offset="0.5" stop-opacity="1" stop-color="rgb(224,170,68)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(158,108,32)"></stop>
+	</linearGradient>
+	<linearGradient id="last_stand_blood" gradientUnits="userSpaceOnUse" x1="338" y1="760" x2="338" y2="360">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(92,12,14)"></stop>
+		<stop offset="0.5" stop-opacity="1" stop-color="rgb(150,26,26)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(206,54,42)"></stop>
+	</linearGradient>
+	<clipPath id="last_stand_tile">
+		<path d="M 17.7 340 C 17.7 279.2 66.9 230 127.7 230 L 549.4 230 C 610.2 230 659.4 279.2 659.4 340 L 659.4 801 C 659.4 861.8 610.2 911 549.4 911 L 127.7 911 C 66.9 911 17.7 861.8 17.7 801 Z"></path>
+	</clipPath>
+</defs>
+<g clip-path="url(#last_stand_tile)">
+	<path fill="url(#last_stand_panel)" d="M 17.7 340 C 17.7 279.2 66.9 230 127.7 230 L 549.4 230 C 610.2 230 659.4 279.2 659.4 340 L 659.4 801 C 659.4 861.8 610.2 911 549.4 911 L 127.7 911 C 66.9 911 17.7 861.8 17.7 801 Z"></path>
+	<path fill="url(#last_stand_forge)" d="M 17.7 230 L 659.4 230 L 659.4 911 L 17.7 911 Z"></path>
+
+	<!-- The light it is standing in. -->
+	<path fill="url(#last_stand_gold)" fill-opacity="0.22" d="M 338 260 L 484 806 L 192 806 z"></path>
+	<path fill="url(#last_stand_gold)" fill-opacity="0.16" d="M 338 244 L 620 806 L 56 806 z"></path>
+	<path fill="rgb(18,20,26)" d="M 17.7 806 L 659.4 806 L 659.4 911 L 17.7 911 z"></path>
+	<path fill="url(#last_stand_gold)" fill-opacity="0.5" d="M 60 806 L 616 806 L 616 818 L 60 818 z"></path>
+
+	<!-- The sword, hilt up, driven in past the ground line. -->
+	<path fill="url(#last_stand_steel)" d="M 306 316 L 370 316 L 370 736 L 338 806 L 306 736 z"></path>
+	<path fill="rgb(236,242,250)" fill-opacity="0.45" d="M 322 330 L 348 330 L 348 730 L 336 762 L 322 730 z"></path>
+	<path fill="url(#last_stand_gold)" d="M 232 280 L 444 280 L 444 320 L 232 320 z"></path>
+	<path fill="url(#last_stand_deep)" d="M 318 226 L 358 226 L 358 282 L 318 282 z"></path>
+	<path fill="url(#last_stand_gold)" d="M 338 190 C 356 190 370 204 370 222 C 370 240 356 254 338 254 C 320 254 306 240 306 222 C 306 204 320 190 338 190 z"></path>
+
+	<!-- The shield set against it, leaning. -->
+	<path fill="url(#last_stand_gold)" d="M 196 430 C 262 452 336 466 410 474 C 418 646 388 762 320 848 C 284 894 250 922 214 940 C 178 922 146 894 110 848 C 42 762 12 646 20 474 C 94 466 130 452 196 430 z"></path>
+	<path fill="url(#last_stand_deep)" d="M 196 466 C 258 486 330 500 396 508 C 402 662 376 764 314 838 C 282 878 250 902 214 918 C 178 902 148 878 116 838 C 54 764 28 662 34 508 C 100 500 134 486 196 466 z"></path>
+	<path fill="url(#last_stand_steel)" d="M 196 494 C 254 512 322 526 382 534 C 388 672 364 762 306 828 C 276 864 246 886 214 900 C 182 886 152 864 122 828 C 64 762 40 672 46 534 C 106 526 138 512 196 494 z"></path>
+	<path fill="rgb(214,222,232)" fill-opacity="0.3" d="M 196 520 C 248 536 310 548 364 556 C 368 674 348 750 296 808 C 270 840 244 858 214 872 L 214 520 z"></path>
+	<path fill="url(#last_stand_gold)" d="M 214 620 C 248 620 276 648 276 682 C 276 716 248 744 214 744 C 180 744 152 716 152 682 C 152 648 180 620 214 620 z"></path>
+	<path fill="url(#last_stand_deep)" d="M 214 646 C 234 646 250 662 250 682 C 250 702 234 718 214 718 C 194 718 178 702 178 682 C 178 662 194 646 214 646 z"></path>
+
+	<!-- Sparks off the light behind. -->
+	<path fill="rgb(247,214,132)" d="M 542 452 C 552 458 556 468 554 480 C 542 472 536 462 536 452 z"></path>
+	<path fill="rgb(255,246,214)" d="M 500 612 C 510 618 514 628 512 638 C 500 632 494 622 494 612 z"></path>
+	<path fill="rgb(247,214,132)" d="M 566 700 C 574 706 578 714 576 724 C 566 718 560 710 560 700 z"></path>
+</g>
+</svg>

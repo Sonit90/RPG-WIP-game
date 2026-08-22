@@ -1,0 +1,63 @@
+<svg version="1.1" xmlns="http://www.w3.org/2000/svg" style="display: block;" viewBox="0 189.333 682.667 762.667" width="682.667" height="762.667" preserveAspectRatio="none">
+<defs>
+	<linearGradient id="shield_charge_panel" gradientUnits="userSpaceOnUse" x1="23.848" y1="789.072" x2="653.072" y2="323.171">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(24,28,35)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(11,13,17)"></stop>
+	</linearGradient>
+	<radialGradient id="shield_charge_forge" gradientUnits="userSpaceOnUse" cx="338" cy="560" r="340">
+		<stop offset="0" stop-opacity="0.42" stop-color="rgb(120,136,158)"></stop>
+		<stop offset="0.55" stop-opacity="0.14" stop-color="rgb(58,70,88)"></stop>
+		<stop offset="1" stop-opacity="0" stop-color="rgb(11,13,17)"></stop>
+	</radialGradient>
+	<linearGradient id="shield_charge_steel" gradientUnits="userSpaceOnUse" x1="170" y1="300" x2="500" y2="840">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(214,222,232)"></stop>
+		<stop offset="0.45" stop-opacity="1" stop-color="rgb(128,141,159)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(50,58,71)"></stop>
+	</linearGradient>
+	<linearGradient id="shield_charge_deep" gradientUnits="userSpaceOnUse" x1="200" y1="340" x2="470" y2="830">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(84,95,112)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(32,38,48)"></stop>
+	</linearGradient>
+	<linearGradient id="shield_charge_gold" gradientUnits="userSpaceOnUse" x1="150" y1="330" x2="520" y2="830">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(247,214,132)"></stop>
+		<stop offset="0.5" stop-opacity="1" stop-color="rgb(224,170,68)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(158,108,32)"></stop>
+	</linearGradient>
+	<linearGradient id="shield_charge_blood" gradientUnits="userSpaceOnUse" x1="338" y1="760" x2="338" y2="360">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(92,12,14)"></stop>
+		<stop offset="0.5" stop-opacity="1" stop-color="rgb(150,26,26)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(206,54,42)"></stop>
+	</linearGradient>
+	<clipPath id="shield_charge_tile">
+		<path d="M 17.7 340 C 17.7 279.2 66.9 230 127.7 230 L 549.4 230 C 610.2 230 659.4 279.2 659.4 340 L 659.4 801 C 659.4 861.8 610.2 911 549.4 911 L 127.7 911 C 66.9 911 17.7 861.8 17.7 801 Z"></path>
+	</clipPath>
+</defs>
+<g clip-path="url(#shield_charge_tile)">
+	<path fill="url(#shield_charge_panel)" d="M 17.7 340 C 17.7 279.2 66.9 230 127.7 230 L 549.4 230 C 610.2 230 659.4 279.2 659.4 340 L 659.4 801 C 659.4 861.8 610.2 911 549.4 911 L 127.7 911 C 66.9 911 17.7 861.8 17.7 801 Z"></path>
+	<path fill="url(#shield_charge_forge)" d="M 17.7 230 L 659.4 230 L 659.4 911 L 17.7 911 Z"></path>
+
+	<!-- Speed: the world going past, longest at the edges. -->
+	<path fill="rgb(214,222,232)" fill-opacity="0.5" d="M 34 366 L 214 396 L 214 420 L 34 390 z"></path>
+	<path fill="rgb(214,222,232)" fill-opacity="0.35" d="M 34 470 L 176 486 L 176 508 L 34 492 z"></path>
+	<path fill="rgb(214,222,232)" fill-opacity="0.5" d="M 34 578 L 190 592 L 190 614 L 34 600 z"></path>
+	<path fill="rgb(214,222,232)" fill-opacity="0.3" d="M 34 684 L 160 690 L 160 712 L 34 706 z"></path>
+	<path fill="url(#shield_charge_gold)" fill-opacity="0.75" d="M 34 528 L 232 540 L 232 560 L 34 548 z"></path>
+
+	<!-- Dust off the ground it is crossing. -->
+	<path fill="rgb(214,222,232)" fill-opacity="0.18" d="M 120 812 C 220 786 420 786 540 816 C 420 806 220 806 120 828 z"></path>
+
+	<!-- The shield, three-quarter on, leading with its edge. -->
+	<path fill="url(#shield_charge_deep)" d="M 300 292 C 384 322 470 340 566 348 C 574 552 542 706 466 812 C 418 878 374 918 322 946 C 296 872 286 792 288 704 C 290 552 296 420 300 292 z"></path>
+	<path fill="url(#shield_charge_gold)" d="M 296 288 C 382 320 470 338 570 346 C 578 556 546 712 468 820 C 420 886 374 926 322 954 L 318 906 C 366 880 406 844 450 786 C 520 688 550 546 542 366 C 452 358 372 342 294 314 z"></path>
+	<path fill="url(#shield_charge_steel)" d="M 300 330 C 380 358 458 374 544 382 C 550 566 522 704 452 802 C 410 860 370 894 324 918 C 306 852 298 776 300 696 C 302 558 300 442 300 330 z"></path>
+	<path fill="rgb(214,222,232)" fill-opacity="0.32" d="M 316 356 C 384 380 448 394 520 402 C 524 560 500 682 442 768 C 406 820 372 850 334 872 C 320 812 314 748 314 682 C 314 566 316 456 316 356 z"></path>
+
+	<!-- The boss, and the studs around it. -->
+	<path fill="url(#shield_charge_gold)" d="M 418 546 C 452 546 480 574 480 608 C 480 642 452 670 418 670 C 384 670 356 642 356 608 C 356 574 384 546 418 546 z"></path>
+	<path fill="url(#shield_charge_steel)" d="M 418 570 C 439 570 456 587 456 608 C 456 629 439 646 418 646 C 397 646 380 629 380 608 C 380 587 397 570 418 570 z"></path>
+	<path fill="rgb(247,214,132)" fill-opacity="0.9" d="M 410 586 C 420 586 428 594 428 604 C 428 614 420 622 410 622 C 400 622 392 614 392 604 C 392 594 400 586 410 586 z"></path>
+	<path fill="url(#shield_charge_gold)" fill-opacity="0.85" d="M 358 420 C 370 420 380 430 380 442 C 380 454 370 464 358 464 C 346 464 336 454 336 442 C 336 430 346 420 358 420 z"></path>
+	<path fill="url(#shield_charge_gold)" fill-opacity="0.85" d="M 486 442 C 498 442 508 452 508 464 C 508 476 498 486 486 486 C 474 486 464 476 464 464 C 464 452 474 442 486 442 z"></path>
+	<path fill="url(#shield_charge_gold)" fill-opacity="0.85" d="M 378 748 C 390 748 400 758 400 770 C 400 782 390 792 378 792 C 366 792 356 782 356 770 C 356 758 366 748 378 748 z"></path>
+</g>
+</svg>

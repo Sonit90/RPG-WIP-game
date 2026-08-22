@@ -1,0 +1,62 @@
+<svg version="1.1" xmlns="http://www.w3.org/2000/svg" style="display: block;" viewBox="0 189.333 682.667 762.667" width="682.667" height="762.667" preserveAspectRatio="none">
+<defs>
+	<linearGradient id="recuperate_panel" gradientUnits="userSpaceOnUse" x1="23.848" y1="789.072" x2="653.072" y2="323.171">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(24,28,35)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(11,13,17)"></stop>
+	</linearGradient>
+	<radialGradient id="recuperate_forge" gradientUnits="userSpaceOnUse" cx="338" cy="560" r="340">
+		<stop offset="0" stop-opacity="0.42" stop-color="rgb(224,170,68)"></stop>
+		<stop offset="0.55" stop-opacity="0.14" stop-color="rgb(58,70,88)"></stop>
+		<stop offset="1" stop-opacity="0" stop-color="rgb(11,13,17)"></stop>
+	</radialGradient>
+	<linearGradient id="recuperate_steel" gradientUnits="userSpaceOnUse" x1="170" y1="300" x2="500" y2="840">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(214,222,232)"></stop>
+		<stop offset="0.45" stop-opacity="1" stop-color="rgb(128,141,159)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(50,58,71)"></stop>
+	</linearGradient>
+	<linearGradient id="recuperate_deep" gradientUnits="userSpaceOnUse" x1="200" y1="340" x2="470" y2="830">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(84,95,112)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(32,38,48)"></stop>
+	</linearGradient>
+	<linearGradient id="recuperate_gold" gradientUnits="userSpaceOnUse" x1="150" y1="330" x2="520" y2="830">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(247,214,132)"></stop>
+		<stop offset="0.5" stop-opacity="1" stop-color="rgb(224,170,68)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(158,108,32)"></stop>
+	</linearGradient>
+	<linearGradient id="recuperate_blood" gradientUnits="userSpaceOnUse" x1="338" y1="760" x2="338" y2="360">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(92,12,14)"></stop>
+		<stop offset="0.5" stop-opacity="1" stop-color="rgb(150,26,26)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(206,54,42)"></stop>
+	</linearGradient>
+	<clipPath id="recuperate_tile">
+		<path d="M 17.7 340 C 17.7 279.2 66.9 230 127.7 230 L 549.4 230 C 610.2 230 659.4 279.2 659.4 340 L 659.4 801 C 659.4 861.8 610.2 911 549.4 911 L 127.7 911 C 66.9 911 17.7 861.8 17.7 801 Z"></path>
+	</clipPath>
+</defs>
+<g clip-path="url(#recuperate_tile)">
+	<path fill="url(#recuperate_panel)" d="M 17.7 340 C 17.7 279.2 66.9 230 127.7 230 L 549.4 230 C 610.2 230 659.4 279.2 659.4 340 L 659.4 801 C 659.4 861.8 610.2 911 549.4 911 L 127.7 911 C 66.9 911 17.7 861.8 17.7 801 Z"></path>
+	<path fill="url(#recuperate_forge)" d="M 17.7 230 L 659.4 230 L 659.4 911 L 17.7 911 Z"></path>
+
+	<!-- The mend: three arcs lifting off the knuckles. -->
+	<path fill="url(#recuperate_gold)" fill-opacity="0.55" d="M 250 400 C 288 356 388 356 426 400 C 396 380 280 380 250 400 z"></path>
+	<path fill="url(#recuperate_gold)" fill-opacity="0.75" d="M 268 350 C 306 306 370 306 408 350 C 378 330 298 330 268 350 z"></path>
+	<path fill="rgb(247,214,132)" fill-opacity="0.9" d="M 292 306 C 316 280 360 280 384 306 C 362 292 314 292 292 306 z"></path>
+
+	<!-- Wrist and forearm plate. -->
+	<path fill="url(#recuperate_deep)" d="M 262 700 L 414 700 L 428 830 L 248 830 z"></path>
+	<path fill="url(#recuperate_steel)" d="M 272 690 L 404 690 L 412 726 L 264 726 z"></path>
+	<path fill="url(#recuperate_gold)" d="M 258 786 L 418 786 L 422 812 L 254 812 z"></path>
+
+	<!-- The fist: back of the hand, then four knuckle plates and the thumb. -->
+	<path fill="url(#recuperate_steel)" d="M 238 470 C 238 444 258 428 284 428 L 392 428 C 418 428 438 444 438 470 L 438 660 C 438 686 418 704 392 704 L 284 704 C 258 704 238 686 238 660 z"></path>
+	<path fill="url(#recuperate_deep)" d="M 254 560 L 422 560 L 422 668 C 422 686 408 696 392 696 L 284 696 C 268 696 254 686 254 668 z"></path>
+	<path fill="url(#recuperate_steel)" d="M 262 448 C 262 436 272 428 286 428 L 320 428 C 334 428 344 436 344 448 L 344 540 L 262 540 z"></path>
+	<path fill="url(#recuperate_steel)" d="M 352 448 C 352 436 362 428 376 428 L 396 428 C 412 428 422 436 422 448 L 422 540 L 352 540 z"></path>
+	<path fill="rgb(214,222,232)" fill-opacity="0.65" d="M 270 440 L 336 440 L 336 452 L 270 452 z"></path>
+	<path fill="rgb(214,222,232)" fill-opacity="0.65" d="M 360 440 L 414 440 L 414 452 L 360 452 z"></path>
+	<path fill="url(#recuperate_deep)" d="M 200 540 C 200 516 216 500 240 500 L 262 500 L 262 636 L 240 636 C 216 636 200 620 200 596 z"></path>
+	<path fill="url(#recuperate_steel)" d="M 212 546 C 212 530 224 518 240 518 L 254 518 L 254 616 L 240 616 C 224 616 212 604 212 588 z"></path>
+
+	<!-- One warm point on the knuckles, so the eye lands on the hand. -->
+	<path fill="rgb(247,214,132)" fill-opacity="0.85" d="M 322 566 C 336 566 348 578 348 592 C 348 606 336 618 322 618 C 308 618 296 606 296 592 C 296 578 308 566 322 566 z"></path>
+</g>
+</svg>

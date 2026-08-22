@@ -1689,6 +1689,17 @@ pub fn icon_for(ability: FireAbility) -> Option<UiIcon> {
         FireAbility::FireMastery => Some(UiIcon::FireMastery),
         FireAbility::FlameShield => Some(UiIcon::FlameShield),
         FireAbility::Blink => Some(UiIcon::Blink),
+        FireAbility::Recuperate => Some(UiIcon::Recuperate),
+        FireAbility::WarStomp => Some(UiIcon::WarStomp),
+        FireAbility::ColossusStrike => Some(UiIcon::ColossusStrike),
+        FireAbility::ShieldCharge => Some(UiIcon::ShieldCharge),
+        FireAbility::ShieldBash => Some(UiIcon::ShieldBash),
+        FireAbility::ShieldBlock => Some(UiIcon::ShieldBlock),
+        FireAbility::PunctureBlood => Some(UiIcon::PunctureBlood),
+        FireAbility::Adrenaline => Some(UiIcon::Adrenaline),
+        FireAbility::BattleTrance => Some(UiIcon::BattleTrance),
+        FireAbility::SpellReflect => Some(UiIcon::SpellReflect),
+        FireAbility::LastStand => Some(UiIcon::LastStand),
         _ => None,
     }
 }

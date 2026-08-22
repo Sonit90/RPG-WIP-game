@@ -247,6 +247,31 @@ pub enum UiIcon {
     /// The short teleport.
     Blink,
 
+    // The Warrior's eleven. Cold steel where the mage's are fire, one warm amber the eye
+    // lands on, and blood only where an ability actually draws it.
+    /// The filler: a fist, and the mend coming off it.
+    Recuperate,
+    /// The targeted cleave: a boot down, and the ground answering.
+    WarStomp,
+    /// The maul at the bottom of its swing, and the bleed it leaves.
+    ColossusStrike,
+    /// The shield coming at you, and the ground going past it.
+    ShieldCharge,
+    /// The interrupt: an edge driven forward, and a cast coming apart.
+    ShieldBash,
+    /// The shield square on and braced. The one that does not move.
+    ShieldBlock,
+    /// A blade through the gauntlet, and the blood becoming a ward.
+    PunctureBlood,
+    /// A heart caged in steel, and the trace it is banking.
+    Adrenaline,
+    /// A helm lit from the inside. A state rather than a swing.
+    BattleTrance,
+    /// A bolt arriving, and the same bolt leaving.
+    SpellReflect,
+    /// A sword driven in, a shield set against it, and the light behind.
+    LastStand,
+
     // Equipment. The character sheet draws these; nothing casts them.
     /// A helm.
     Helm,
@@ -274,7 +299,7 @@ pub enum UiIcon {
 
 impl UiIcon {
     /// Every icon, in atlas order.
-    pub const ALL: [Self; 21] = [
+    pub const ALL: [Self; 32] = [
         Self::Firebolt,
         Self::Meteor,
         Self::FlameCone,
@@ -285,6 +310,17 @@ impl UiIcon {
         Self::FireMastery,
         Self::FlameShield,
         Self::Blink,
+        Self::Recuperate,
+        Self::WarStomp,
+        Self::ColossusStrike,
+        Self::ShieldCharge,
+        Self::ShieldBash,
+        Self::ShieldBlock,
+        Self::PunctureBlood,
+        Self::Adrenaline,
+        Self::BattleTrance,
+        Self::SpellReflect,
+        Self::LastStand,
         Self::Helm,
         Self::Shoulders,
         Self::Chestpiece,

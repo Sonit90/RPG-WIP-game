@@ -1,0 +1,58 @@
+<svg version="1.1" xmlns="http://www.w3.org/2000/svg" style="display: block;" viewBox="0 189.333 682.667 762.667" width="682.667" height="762.667" preserveAspectRatio="none">
+<defs>
+	<linearGradient id="shield_bash_panel" gradientUnits="userSpaceOnUse" x1="23.848" y1="789.072" x2="653.072" y2="323.171">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(24,28,35)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(11,13,17)"></stop>
+	</linearGradient>
+	<radialGradient id="shield_bash_forge" gradientUnits="userSpaceOnUse" cx="338" cy="560" r="340">
+		<stop offset="0" stop-opacity="0.42" stop-color="rgb(140,120,190)"></stop>
+		<stop offset="0.55" stop-opacity="0.14" stop-color="rgb(58,70,88)"></stop>
+		<stop offset="1" stop-opacity="0" stop-color="rgb(11,13,17)"></stop>
+	</radialGradient>
+	<linearGradient id="shield_bash_steel" gradientUnits="userSpaceOnUse" x1="170" y1="300" x2="500" y2="840">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(214,222,232)"></stop>
+		<stop offset="0.45" stop-opacity="1" stop-color="rgb(128,141,159)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(50,58,71)"></stop>
+	</linearGradient>
+	<linearGradient id="shield_bash_deep" gradientUnits="userSpaceOnUse" x1="200" y1="340" x2="470" y2="830">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(84,95,112)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(32,38,48)"></stop>
+	</linearGradient>
+	<linearGradient id="shield_bash_gold" gradientUnits="userSpaceOnUse" x1="150" y1="330" x2="520" y2="830">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(247,214,132)"></stop>
+		<stop offset="0.5" stop-opacity="1" stop-color="rgb(224,170,68)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(158,108,32)"></stop>
+	</linearGradient>
+	<linearGradient id="shield_bash_blood" gradientUnits="userSpaceOnUse" x1="338" y1="760" x2="338" y2="360">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(92,12,14)"></stop>
+		<stop offset="0.5" stop-opacity="1" stop-color="rgb(150,26,26)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(206,54,42)"></stop>
+	</linearGradient>
+	<clipPath id="shield_bash_tile">
+		<path d="M 17.7 340 C 17.7 279.2 66.9 230 127.7 230 L 549.4 230 C 610.2 230 659.4 279.2 659.4 340 L 659.4 801 C 659.4 861.8 610.2 911 549.4 911 L 127.7 911 C 66.9 911 17.7 861.8 17.7 801 Z"></path>
+	</clipPath>
+</defs>
+<g clip-path="url(#shield_bash_tile)">
+	<path fill="url(#shield_bash_panel)" d="M 17.7 340 C 17.7 279.2 66.9 230 127.7 230 L 549.4 230 C 610.2 230 659.4 279.2 659.4 340 L 659.4 801 C 659.4 861.8 610.2 911 549.4 911 L 127.7 911 C 66.9 911 17.7 861.8 17.7 801 Z"></path>
+	<path fill="url(#shield_bash_forge)" d="M 17.7 230 L 659.4 230 L 659.4 911 L 17.7 911 Z"></path>
+
+	<!-- The cast, coming apart. Cool purple, because it is not the Warrior's. -->
+	<path fill="rgb(168,142,224)" fill-opacity="0.75" d="M 470 486 C 512 470 552 470 588 486 C 552 490 512 496 470 512 z"></path>
+	<path fill="rgb(168,142,224)" fill-opacity="0.6" d="M 476 612 C 518 620 558 630 594 646 C 556 646 514 638 470 622 z"></path>
+	<path fill="rgb(196,178,240)" fill-opacity="0.85" d="M 484 548 C 528 540 578 540 618 552 C 576 556 528 560 482 570 z"></path>
+	<path fill="rgb(168,142,224)" fill-opacity="0.5" d="M 528 416 C 552 400 578 392 606 392 C 582 406 558 420 538 438 z"></path>
+	<path fill="rgb(168,142,224)" fill-opacity="0.5" d="M 534 688 C 560 700 584 716 602 736 C 574 728 550 714 528 696 z"></path>
+
+	<!-- The impact star where the edge met it. -->
+	<path fill="rgb(247,214,132)" fill-opacity="0.95" d="M 462 424 L 492 528 L 596 560 L 492 592 L 462 696 L 434 592 L 330 560 L 434 528 z"></path>
+	<path fill="rgb(255,246,214)" fill-opacity="0.9" d="M 462 500 L 476 546 L 522 560 L 476 574 L 462 620 L 448 574 L 402 560 L 448 546 z"></path>
+
+	<!-- The shield, edge-on and driven right. -->
+	<path fill="url(#shield_bash_deep)" d="M 118 336 C 190 358 250 372 316 380 C 322 552 296 682 232 772 C 192 830 156 862 116 886 C 96 812 88 736 90 656 C 92 516 112 424 118 336 z"></path>
+	<path fill="url(#shield_bash_gold)" d="M 114 330 C 188 354 250 368 320 376 C 328 558 300 690 234 782 C 194 840 156 872 114 896 L 110 852 C 148 828 182 796 218 748 C 276 664 302 546 296 398 C 224 390 158 376 112 358 z"></path>
+	<path fill="url(#shield_bash_steel)" d="M 126 372 C 190 392 250 404 302 412 C 306 562 284 676 226 762 C 192 812 160 840 122 862 C 108 806 102 742 102 674 C 104 556 122 460 126 372 z"></path>
+	<path fill="rgb(214,222,232)" fill-opacity="0.3" d="M 142 396 C 194 414 244 424 288 432 C 290 562 272 660 222 734 C 194 776 168 800 138 818 C 128 770 124 716 124 658 C 126 558 138 472 142 396 z"></path>
+	<path fill="url(#shield_bash_gold)" d="M 206 552 C 236 552 260 576 260 606 C 260 636 236 660 206 660 C 176 660 152 636 152 606 C 152 576 176 552 206 552 z"></path>
+	<path fill="url(#shield_bash_steel)" d="M 206 574 C 224 574 238 588 238 606 C 238 624 224 638 206 638 C 188 638 174 624 174 606 C 174 588 188 574 206 574 z"></path>
+</g>
+</svg>

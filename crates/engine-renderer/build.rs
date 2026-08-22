@@ -185,6 +185,50 @@ const ICONS: &[IconEntry] = &[
         constant: "BLINK",
     },
     IconEntry {
+        file: "recuperate.svg",
+        constant: "RECUPERATE",
+    },
+    IconEntry {
+        file: "war_stomp.svg",
+        constant: "WAR_STOMP",
+    },
+    IconEntry {
+        file: "colossus_strike.svg",
+        constant: "COLOSSUS_STRIKE",
+    },
+    IconEntry {
+        file: "shield_charge.svg",
+        constant: "SHIELD_CHARGE",
+    },
+    IconEntry {
+        file: "shield_bash.svg",
+        constant: "SHIELD_BASH",
+    },
+    IconEntry {
+        file: "shield_block.svg",
+        constant: "SHIELD_BLOCK",
+    },
+    IconEntry {
+        file: "puncture_blood.svg",
+        constant: "PUNCTURE_BLOOD",
+    },
+    IconEntry {
+        file: "adrenaline.svg",
+        constant: "ADRENALINE",
+    },
+    IconEntry {
+        file: "battle_trance.svg",
+        constant: "BATTLE_TRANCE",
+    },
+    IconEntry {
+        file: "spell_reflect.svg",
+        constant: "SPELL_REFLECT",
+    },
+    IconEntry {
+        file: "last_stand.svg",
+        constant: "LAST_STAND",
+    },
+    IconEntry {
         file: "helm.svg",
         constant: "HELM",
     },

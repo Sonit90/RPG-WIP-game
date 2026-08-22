@@ -1,0 +1,63 @@
+<svg version="1.1" xmlns="http://www.w3.org/2000/svg" style="display: block;" viewBox="0 189.333 682.667 762.667" width="682.667" height="762.667" preserveAspectRatio="none">
+<defs>
+	<linearGradient id="puncture_blood_panel" gradientUnits="userSpaceOnUse" x1="23.848" y1="789.072" x2="653.072" y2="323.171">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(24,28,35)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(11,13,17)"></stop>
+	</linearGradient>
+	<radialGradient id="puncture_blood_forge" gradientUnits="userSpaceOnUse" cx="338" cy="560" r="340">
+		<stop offset="0" stop-opacity="0.42" stop-color="rgb(158,40,36)"></stop>
+		<stop offset="0.55" stop-opacity="0.14" stop-color="rgb(58,70,88)"></stop>
+		<stop offset="1" stop-opacity="0" stop-color="rgb(11,13,17)"></stop>
+	</radialGradient>
+	<linearGradient id="puncture_blood_steel" gradientUnits="userSpaceOnUse" x1="170" y1="300" x2="500" y2="840">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(214,222,232)"></stop>
+		<stop offset="0.45" stop-opacity="1" stop-color="rgb(128,141,159)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(50,58,71)"></stop>
+	</linearGradient>
+	<linearGradient id="puncture_blood_deep" gradientUnits="userSpaceOnUse" x1="200" y1="340" x2="470" y2="830">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(84,95,112)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(32,38,48)"></stop>
+	</linearGradient>
+	<linearGradient id="puncture_blood_gold" gradientUnits="userSpaceOnUse" x1="150" y1="330" x2="520" y2="830">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(247,214,132)"></stop>
+		<stop offset="0.5" stop-opacity="1" stop-color="rgb(224,170,68)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(158,108,32)"></stop>
+	</linearGradient>
+	<linearGradient id="puncture_blood_blood" gradientUnits="userSpaceOnUse" x1="338" y1="760" x2="338" y2="360">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(92,12,14)"></stop>
+		<stop offset="0.5" stop-opacity="1" stop-color="rgb(150,26,26)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(206,54,42)"></stop>
+	</linearGradient>
+	<clipPath id="puncture_blood_tile">
+		<path d="M 17.7 340 C 17.7 279.2 66.9 230 127.7 230 L 549.4 230 C 610.2 230 659.4 279.2 659.4 340 L 659.4 801 C 659.4 861.8 610.2 911 549.4 911 L 127.7 911 C 66.9 911 17.7 861.8 17.7 801 Z"></path>
+	</clipPath>
+</defs>
+<g clip-path="url(#puncture_blood_tile)">
+	<path fill="url(#puncture_blood_panel)" d="M 17.7 340 C 17.7 279.2 66.9 230 127.7 230 L 549.4 230 C 610.2 230 659.4 279.2 659.4 340 L 659.4 801 C 659.4 861.8 610.2 911 549.4 911 L 127.7 911 C 66.9 911 17.7 861.8 17.7 801 Z"></path>
+	<path fill="url(#puncture_blood_forge)" d="M 17.7 230 L 659.4 230 L 659.4 911 L 17.7 911 Z"></path>
+
+	<!-- The ward the blood becomes: an arc closing over the wound. -->
+	<path fill="url(#puncture_blood_blood)" fill-opacity="0.4" d="M 338 618 C 452 618 546 692 546 786 C 546 830 526 868 494 896 C 512 868 522 834 522 798 C 522 714 440 646 338 646 C 236 646 154 714 154 798 C 154 834 164 868 182 896 C 150 868 130 830 130 786 C 130 692 224 618 338 618 z"></path>
+	<path fill="rgb(206,54,42)" fill-opacity="0.65" d="M 338 664 C 428 664 502 722 502 794 C 502 822 492 848 474 868 C 484 848 490 824 490 800 C 490 738 422 688 338 688 C 254 688 186 738 186 800 C 186 824 192 848 202 868 C 184 848 174 822 174 794 C 174 722 248 664 338 664 z"></path>
+
+	<!-- The blade, driven down through the plate. -->
+	<path fill="url(#puncture_blood_steel)" d="M 338 244 L 372 320 L 372 604 L 304 604 L 304 320 z"></path>
+	<path fill="rgb(236,242,250)" fill-opacity="0.45" d="M 338 262 L 356 322 L 356 596 L 338 596 z"></path>
+	<path fill="url(#puncture_blood_deep)" d="M 304 604 L 372 604 L 338 700 z"></path>
+	<path fill="url(#puncture_blood_gold)" d="M 262 424 L 414 424 L 414 458 L 262 458 z"></path>
+	<path fill="url(#puncture_blood_gold)" d="M 292 356 L 384 356 L 384 384 L 292 384 z"></path>
+
+	<!-- The gauntlet it went through: two plates, split by the blade. -->
+	<path fill="url(#puncture_blood_deep)" d="M 158 486 L 300 486 L 300 636 C 300 664 282 682 254 682 L 202 682 C 176 682 158 664 158 636 z"></path>
+	<path fill="url(#puncture_blood_steel)" d="M 168 490 L 296 490 L 296 566 L 168 566 z"></path>
+	<path fill="url(#puncture_blood_deep)" d="M 376 486 L 518 486 L 518 636 C 518 664 500 682 474 682 L 422 682 C 394 682 376 664 376 636 z"></path>
+	<path fill="url(#puncture_blood_steel)" d="M 380 490 L 508 490 L 508 566 L 380 566 z"></path>
+	<path fill="url(#puncture_blood_gold)" fill-opacity="0.9" d="M 158 592 L 300 592 L 300 616 L 158 616 z"></path>
+	<path fill="url(#puncture_blood_gold)" fill-opacity="0.9" d="M 376 592 L 518 592 L 518 616 L 376 616 z"></path>
+
+	<!-- What is running out of it. -->
+	<path fill="url(#puncture_blood_blood)" d="M 306 620 C 322 660 338 692 338 716 C 338 740 322 756 302 756 C 282 756 266 740 266 716 C 266 690 288 660 306 620 z"></path>
+	<path fill="rgb(206,54,42)" d="M 402 668 C 414 696 424 718 424 734 C 424 752 412 764 398 764 C 384 764 372 752 372 734 C 372 716 390 694 402 668 z"></path>
+	<path fill="url(#puncture_blood_blood)" fill-opacity="0.9" d="M 240 726 C 250 748 258 764 258 776 C 258 790 248 800 236 800 C 224 800 214 790 214 776 C 214 762 230 746 240 726 z"></path>
+</g>
+</svg>

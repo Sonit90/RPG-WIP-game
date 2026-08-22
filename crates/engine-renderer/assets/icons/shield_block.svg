@@ -1,0 +1,62 @@
+<svg version="1.1" xmlns="http://www.w3.org/2000/svg" style="display: block;" viewBox="0 189.333 682.667 762.667" width="682.667" height="762.667" preserveAspectRatio="none">
+<defs>
+	<linearGradient id="shield_block_panel" gradientUnits="userSpaceOnUse" x1="23.848" y1="789.072" x2="653.072" y2="323.171">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(24,28,35)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(11,13,17)"></stop>
+	</linearGradient>
+	<radialGradient id="shield_block_forge" gradientUnits="userSpaceOnUse" cx="338" cy="560" r="340">
+		<stop offset="0" stop-opacity="0.42" stop-color="rgb(224,170,68)"></stop>
+		<stop offset="0.55" stop-opacity="0.14" stop-color="rgb(58,70,88)"></stop>
+		<stop offset="1" stop-opacity="0" stop-color="rgb(11,13,17)"></stop>
+	</radialGradient>
+	<linearGradient id="shield_block_steel" gradientUnits="userSpaceOnUse" x1="170" y1="300" x2="500" y2="840">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(214,222,232)"></stop>
+		<stop offset="0.45" stop-opacity="1" stop-color="rgb(128,141,159)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(50,58,71)"></stop>
+	</linearGradient>
+	<linearGradient id="shield_block_deep" gradientUnits="userSpaceOnUse" x1="200" y1="340" x2="470" y2="830">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(84,95,112)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(32,38,48)"></stop>
+	</linearGradient>
+	<linearGradient id="shield_block_gold" gradientUnits="userSpaceOnUse" x1="150" y1="330" x2="520" y2="830">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(247,214,132)"></stop>
+		<stop offset="0.5" stop-opacity="1" stop-color="rgb(224,170,68)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(158,108,32)"></stop>
+	</linearGradient>
+	<linearGradient id="shield_block_blood" gradientUnits="userSpaceOnUse" x1="338" y1="760" x2="338" y2="360">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(92,12,14)"></stop>
+		<stop offset="0.5" stop-opacity="1" stop-color="rgb(150,26,26)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(206,54,42)"></stop>
+	</linearGradient>
+	<clipPath id="shield_block_tile">
+		<path d="M 17.7 340 C 17.7 279.2 66.9 230 127.7 230 L 549.4 230 C 610.2 230 659.4 279.2 659.4 340 L 659.4 801 C 659.4 861.8 610.2 911 549.4 911 L 127.7 911 C 66.9 911 17.7 861.8 17.7 801 Z"></path>
+	</clipPath>
+</defs>
+<g clip-path="url(#shield_block_tile)">
+	<path fill="url(#shield_block_panel)" d="M 17.7 340 C 17.7 279.2 66.9 230 127.7 230 L 549.4 230 C 610.2 230 659.4 279.2 659.4 340 L 659.4 801 C 659.4 861.8 610.2 911 549.4 911 L 127.7 911 C 66.9 911 17.7 861.8 17.7 801 Z"></path>
+	<path fill="url(#shield_block_forge)" d="M 17.7 230 L 659.4 230 L 659.4 911 L 17.7 911 Z"></path>
+
+	<!-- The brace behind it: two bars, dark, so the shield sits proud. -->
+	<path fill="rgb(18,20,26)" d="M 96 470 L 580 470 L 580 508 L 96 508 z"></path>
+	<path fill="rgb(18,20,26)" d="M 96 654 L 580 654 L 580 692 L 96 692 z"></path>
+
+	<!-- Rim, then the plate it holds. -->
+	<path fill="url(#shield_block_gold)" d="M 338 264 C 412 296 500 316 588 326 C 596 554 560 704 476 812 C 428 876 384 916 338 940 C 292 916 248 876 200 812 C 116 704 80 554 88 326 C 176 316 264 296 338 264 z"></path>
+	<path fill="url(#shield_block_deep)" d="M 338 306 C 406 336 486 354 566 364 C 572 566 540 700 464 796 C 420 852 380 888 338 910 C 296 888 256 852 212 796 C 136 700 104 566 110 364 C 190 354 270 336 338 306 z"></path>
+	<path fill="url(#shield_block_steel)" d="M 338 336 C 402 364 476 380 550 390 C 556 574 526 696 456 784 C 416 834 378 866 338 886 C 298 866 260 834 220 784 C 150 696 120 574 126 390 C 200 380 274 364 338 336 z"></path>
+	<path fill="rgb(214,222,232)" fill-opacity="0.28" d="M 338 366 C 396 392 462 406 528 416 C 532 578 506 686 444 764 C 408 808 374 838 338 856 L 338 366 z"></path>
+
+	<!-- The band across it, and the boss the blow lands on. -->
+	<path fill="url(#shield_block_gold)" d="M 128 540 L 548 540 L 546 584 L 130 584 z"></path>
+	<path fill="url(#shield_block_gold)" d="M 338 452 C 402 452 454 504 454 568 C 454 632 402 684 338 684 C 274 684 222 632 222 568 C 222 504 274 452 338 452 z"></path>
+	<path fill="url(#shield_block_deep)" d="M 338 486 C 383 486 420 523 420 568 C 420 613 383 650 338 650 C 293 650 256 613 256 568 C 256 523 293 486 338 486 z"></path>
+	<path fill="url(#shield_block_steel)" d="M 338 510 C 370 510 396 536 396 568 C 396 600 370 626 338 626 C 306 626 280 600 280 568 C 280 536 306 510 338 510 z"></path>
+	<path fill="rgb(247,214,132)" fill-opacity="0.95" d="M 322 528 C 338 528 350 540 350 556 C 350 572 338 584 322 584 C 306 584 294 572 294 556 C 294 540 306 528 322 528 z"></path>
+
+	<!-- Rivets, in the places a real one would carry them. -->
+	<path fill="url(#shield_block_gold)" d="M 178 428 C 192 428 202 438 202 452 C 202 466 192 476 178 476 C 164 476 154 466 154 452 C 154 438 164 428 178 428 z"></path>
+	<path fill="url(#shield_block_gold)" d="M 498 428 C 512 428 522 438 522 452 C 522 466 512 476 498 476 C 484 476 474 466 474 452 C 474 438 484 428 498 428 z"></path>
+	<path fill="url(#shield_block_gold)" d="M 210 704 C 224 704 234 714 234 728 C 234 742 224 752 210 752 C 196 752 186 742 186 728 C 186 714 196 704 210 704 z"></path>
+	<path fill="url(#shield_block_gold)" d="M 466 704 C 480 704 490 714 490 728 C 490 742 480 752 466 752 C 452 752 442 742 442 728 C 442 714 452 704 466 704 z"></path>
+</g>
+</svg>

@@ -1,0 +1,65 @@
+<svg version="1.1" xmlns="http://www.w3.org/2000/svg" style="display: block;" viewBox="0 189.333 682.667 762.667" width="682.667" height="762.667" preserveAspectRatio="none">
+<defs>
+	<linearGradient id="battle_trance_panel" gradientUnits="userSpaceOnUse" x1="23.848" y1="789.072" x2="653.072" y2="323.171">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(24,28,35)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(11,13,17)"></stop>
+	</linearGradient>
+	<radialGradient id="battle_trance_forge" gradientUnits="userSpaceOnUse" cx="338" cy="560" r="340">
+		<stop offset="0" stop-opacity="0.42" stop-color="rgb(224,170,68)"></stop>
+		<stop offset="0.55" stop-opacity="0.14" stop-color="rgb(58,70,88)"></stop>
+		<stop offset="1" stop-opacity="0" stop-color="rgb(11,13,17)"></stop>
+	</radialGradient>
+	<linearGradient id="battle_trance_steel" gradientUnits="userSpaceOnUse" x1="170" y1="300" x2="500" y2="840">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(214,222,232)"></stop>
+		<stop offset="0.45" stop-opacity="1" stop-color="rgb(128,141,159)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(50,58,71)"></stop>
+	</linearGradient>
+	<linearGradient id="battle_trance_deep" gradientUnits="userSpaceOnUse" x1="200" y1="340" x2="470" y2="830">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(84,95,112)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(32,38,48)"></stop>
+	</linearGradient>
+	<linearGradient id="battle_trance_gold" gradientUnits="userSpaceOnUse" x1="150" y1="330" x2="520" y2="830">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(247,214,132)"></stop>
+		<stop offset="0.5" stop-opacity="1" stop-color="rgb(224,170,68)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(158,108,32)"></stop>
+	</linearGradient>
+	<linearGradient id="battle_trance_blood" gradientUnits="userSpaceOnUse" x1="338" y1="760" x2="338" y2="360">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(92,12,14)"></stop>
+		<stop offset="0.5" stop-opacity="1" stop-color="rgb(150,26,26)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(206,54,42)"></stop>
+	</linearGradient>
+	<clipPath id="battle_trance_tile">
+		<path d="M 17.7 340 C 17.7 279.2 66.9 230 127.7 230 L 549.4 230 C 610.2 230 659.4 279.2 659.4 340 L 659.4 801 C 659.4 861.8 610.2 911 549.4 911 L 127.7 911 C 66.9 911 17.7 861.8 17.7 801 Z"></path>
+	</clipPath>
+</defs>
+<g clip-path="url(#battle_trance_tile)">
+	<path fill="url(#battle_trance_panel)" d="M 17.7 340 C 17.7 279.2 66.9 230 127.7 230 L 549.4 230 C 610.2 230 659.4 279.2 659.4 340 L 659.4 801 C 659.4 861.8 610.2 911 549.4 911 L 127.7 911 C 66.9 911 17.7 861.8 17.7 801 Z"></path>
+	<path fill="url(#battle_trance_forge)" d="M 17.7 230 L 659.4 230 L 659.4 911 L 17.7 911 Z"></path>
+
+	<!-- What is coming off it. -->
+	<path fill="url(#battle_trance_gold)" fill-opacity="0.4" d="M 338 250 L 356 380 L 338 420 L 320 380 z"></path>
+	<path fill="url(#battle_trance_gold)" fill-opacity="0.3" d="M 176 300 L 226 400 L 218 440 L 186 366 z"></path>
+	<path fill="url(#battle_trance_gold)" fill-opacity="0.3" d="M 500 300 L 490 366 L 458 440 L 450 400 z"></path>
+
+	<!-- The helm: skull, brow, and the cheek plates. -->
+	<path fill="url(#battle_trance_deep)" d="M 338 336 C 434 336 508 402 508 496 L 508 690 C 508 786 442 856 338 856 C 234 856 168 786 168 690 L 168 496 C 168 402 242 336 338 336 z"></path>
+	<path fill="url(#battle_trance_steel)" d="M 338 348 C 424 348 490 406 490 492 L 490 560 L 186 560 L 186 492 C 186 406 252 348 338 348 z"></path>
+	<path fill="rgb(214,222,232)" fill-opacity="0.35" d="M 338 372 C 402 372 452 410 462 466 C 434 424 390 400 338 400 C 286 400 242 424 214 466 C 224 410 274 372 338 372 z"></path>
+	<path fill="url(#battle_trance_gold)" d="M 180 566 L 496 566 L 496 604 L 180 604 z"></path>
+
+	<!-- The slit, and the light behind it. -->
+	<path fill="rgb(12,13,17)" d="M 200 620 L 306 620 L 306 682 L 200 682 z"></path>
+	<path fill="rgb(12,13,17)" d="M 370 620 L 476 620 L 476 682 L 370 682 z"></path>
+	<path fill="rgb(247,214,132)" d="M 214 636 L 296 636 L 296 668 L 214 668 z"></path>
+	<path fill="rgb(247,214,132)" d="M 380 636 L 462 636 L 462 668 L 380 668 z"></path>
+	<path fill="rgb(255,246,214)" fill-opacity="0.9" d="M 222 644 L 288 644 L 288 658 L 222 658 z"></path>
+	<path fill="rgb(255,246,214)" fill-opacity="0.9" d="M 388 644 L 454 644 L 454 658 L 388 658 z"></path>
+
+	<!-- The nose bar and the jaw. -->
+	<path fill="url(#battle_trance_steel)" d="M 316 604 L 360 604 L 360 792 L 316 792 z"></path>
+	<path fill="url(#battle_trance_deep)" d="M 186 700 L 306 700 L 306 800 C 306 828 288 844 260 844 L 226 844 C 202 844 186 828 186 800 z"></path>
+	<path fill="url(#battle_trance_deep)" d="M 370 700 L 490 700 L 490 800 C 490 828 474 844 450 844 L 416 844 C 388 844 370 828 370 800 z"></path>
+	<path fill="url(#battle_trance_gold)" fill-opacity="0.9" d="M 196 736 L 300 736 L 300 760 L 196 760 z"></path>
+	<path fill="url(#battle_trance_gold)" fill-opacity="0.9" d="M 376 736 L 480 736 L 480 760 L 376 760 z"></path>
+</g>
+</svg>

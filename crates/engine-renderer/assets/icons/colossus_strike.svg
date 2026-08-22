@@ -1,0 +1,66 @@
+<svg version="1.1" xmlns="http://www.w3.org/2000/svg" style="display: block;" viewBox="0 189.333 682.667 762.667" width="682.667" height="762.667" preserveAspectRatio="none">
+<defs>
+	<linearGradient id="colossus_strike_panel" gradientUnits="userSpaceOnUse" x1="23.848" y1="789.072" x2="653.072" y2="323.171">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(24,28,35)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(11,13,17)"></stop>
+	</linearGradient>
+	<radialGradient id="colossus_strike_forge" gradientUnits="userSpaceOnUse" cx="338" cy="560" r="340">
+		<stop offset="0" stop-opacity="0.42" stop-color="rgb(150,60,44)"></stop>
+		<stop offset="0.55" stop-opacity="0.14" stop-color="rgb(58,70,88)"></stop>
+		<stop offset="1" stop-opacity="0" stop-color="rgb(11,13,17)"></stop>
+	</radialGradient>
+	<linearGradient id="colossus_strike_steel" gradientUnits="userSpaceOnUse" x1="170" y1="300" x2="500" y2="840">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(214,222,232)"></stop>
+		<stop offset="0.45" stop-opacity="1" stop-color="rgb(128,141,159)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(50,58,71)"></stop>
+	</linearGradient>
+	<linearGradient id="colossus_strike_deep" gradientUnits="userSpaceOnUse" x1="200" y1="340" x2="470" y2="830">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(84,95,112)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(32,38,48)"></stop>
+	</linearGradient>
+	<linearGradient id="colossus_strike_gold" gradientUnits="userSpaceOnUse" x1="150" y1="330" x2="520" y2="830">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(247,214,132)"></stop>
+		<stop offset="0.5" stop-opacity="1" stop-color="rgb(224,170,68)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(158,108,32)"></stop>
+	</linearGradient>
+	<linearGradient id="colossus_strike_blood" gradientUnits="userSpaceOnUse" x1="338" y1="760" x2="338" y2="360">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(92,12,14)"></stop>
+		<stop offset="0.5" stop-opacity="1" stop-color="rgb(150,26,26)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(206,54,42)"></stop>
+	</linearGradient>
+	<clipPath id="colossus_strike_tile">
+		<path d="M 17.7 340 C 17.7 279.2 66.9 230 127.7 230 L 549.4 230 C 610.2 230 659.4 279.2 659.4 340 L 659.4 801 C 659.4 861.8 610.2 911 549.4 911 L 127.7 911 C 66.9 911 17.7 861.8 17.7 801 Z"></path>
+	</clipPath>
+</defs>
+<g clip-path="url(#colossus_strike_tile)">
+	<path fill="url(#colossus_strike_panel)" d="M 17.7 340 C 17.7 279.2 66.9 230 127.7 230 L 549.4 230 C 610.2 230 659.4 279.2 659.4 340 L 659.4 801 C 659.4 861.8 610.2 911 549.4 911 L 127.7 911 C 66.9 911 17.7 861.8 17.7 801 Z"></path>
+	<path fill="url(#colossus_strike_forge)" d="M 17.7 230 L 659.4 230 L 659.4 911 L 17.7 911 Z"></path>
+
+	<!-- The split it opened, and what runs out of it. -->
+	<path fill="rgb(16,17,22)" d="M 92 830 L 288 786 L 338 828 L 392 786 L 590 830 L 590 880 L 92 880 z"></path>
+	<path fill="url(#colossus_strike_blood)" fill-opacity="0.9" d="M 288 786 L 314 838 L 292 878 L 268 836 z"></path>
+	<path fill="url(#colossus_strike_blood)" fill-opacity="0.9" d="M 392 786 L 414 836 L 396 878 L 370 838 z"></path>
+	<path fill="url(#colossus_strike_blood)" fill-opacity="0.7" d="M 172 812 L 192 848 L 176 876 L 158 844 z"></path>
+	<path fill="url(#colossus_strike_blood)" fill-opacity="0.7" d="M 500 812 L 518 844 L 502 876 L 484 848 z"></path>
+
+	<!-- The arc the head came down through. -->
+	<path fill="rgb(214,222,232)" fill-opacity="0.22" d="M 108 356 C 108 520 190 640 338 700 C 486 640 568 520 568 356 C 548 512 466 616 338 668 C 210 616 128 512 108 356 z"></path>
+
+	<!-- Haft, running corner to corner, and its grip. -->
+	<path fill="url(#colossus_strike_deep)" d="M 452 268 L 512 306 L 300 720 L 240 682 z"></path>
+	<path fill="url(#colossus_strike_steel)" fill-opacity="0.5" d="M 462 280 L 490 298 L 296 700 L 268 682 z"></path>
+	<path fill="url(#colossus_strike_gold)" d="M 262 636 L 322 674 L 300 716 L 240 678 z"></path>
+	<path fill="url(#colossus_strike_gold)" d="M 218 706 L 278 744 L 258 780 L 198 742 z"></path>
+
+	<!-- The head: a slab, with the striking face turned to the light. -->
+	<path fill="url(#colossus_strike_deep)" d="M 300 300 L 552 300 C 578 300 596 318 596 344 L 596 460 C 596 486 578 504 552 504 L 300 504 C 274 504 256 486 256 460 L 256 344 C 256 318 274 300 300 300 z"></path>
+	<path fill="url(#colossus_strike_steel)" d="M 300 300 L 552 300 C 578 300 596 318 596 344 L 596 412 L 256 412 L 256 344 C 256 318 274 300 300 300 z"></path>
+	<path fill="rgb(214,222,232)" fill-opacity="0.6" d="M 274 322 L 578 322 L 578 340 L 274 340 z"></path>
+	<path fill="url(#colossus_strike_gold)" d="M 256 420 L 596 420 L 596 448 L 256 448 z"></path>
+	<path fill="url(#colossus_strike_blood)" fill-opacity="0.85" d="M 268 480 L 584 480 L 584 504 C 566 504 556 496 540 496 C 520 496 512 508 492 508 C 472 508 464 496 444 496 C 424 496 416 508 396 508 C 376 508 368 496 348 496 C 328 496 320 508 300 508 C 284 508 278 500 268 500 z"></path>
+
+	<!-- Studs on the face. -->
+	<path fill="url(#colossus_strike_gold)" d="M 320 348 C 334 348 344 358 344 372 C 344 386 334 396 320 396 C 306 396 296 386 296 372 C 296 358 306 348 320 348 z"></path>
+	<path fill="url(#colossus_strike_gold)" d="M 532 348 C 546 348 556 358 556 372 C 556 386 546 396 532 396 C 518 396 508 386 508 372 C 508 358 518 348 532 348 z"></path>
+</g>
+</svg>

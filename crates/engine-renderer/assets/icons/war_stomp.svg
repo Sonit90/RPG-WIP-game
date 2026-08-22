@@ -1,0 +1,64 @@
+<svg version="1.1" xmlns="http://www.w3.org/2000/svg" style="display: block;" viewBox="0 189.333 682.667 762.667" width="682.667" height="762.667" preserveAspectRatio="none">
+<defs>
+	<linearGradient id="war_stomp_panel" gradientUnits="userSpaceOnUse" x1="23.848" y1="789.072" x2="653.072" y2="323.171">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(24,28,35)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(11,13,17)"></stop>
+	</linearGradient>
+	<radialGradient id="war_stomp_forge" gradientUnits="userSpaceOnUse" cx="338" cy="560" r="340">
+		<stop offset="0" stop-opacity="0.42" stop-color="rgb(120,136,158)"></stop>
+		<stop offset="0.55" stop-opacity="0.14" stop-color="rgb(58,70,88)"></stop>
+		<stop offset="1" stop-opacity="0" stop-color="rgb(11,13,17)"></stop>
+	</radialGradient>
+	<linearGradient id="war_stomp_steel" gradientUnits="userSpaceOnUse" x1="170" y1="300" x2="500" y2="840">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(214,222,232)"></stop>
+		<stop offset="0.45" stop-opacity="1" stop-color="rgb(128,141,159)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(50,58,71)"></stop>
+	</linearGradient>
+	<linearGradient id="war_stomp_deep" gradientUnits="userSpaceOnUse" x1="200" y1="340" x2="470" y2="830">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(84,95,112)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(32,38,48)"></stop>
+	</linearGradient>
+	<linearGradient id="war_stomp_gold" gradientUnits="userSpaceOnUse" x1="150" y1="330" x2="520" y2="830">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(247,214,132)"></stop>
+		<stop offset="0.5" stop-opacity="1" stop-color="rgb(224,170,68)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(158,108,32)"></stop>
+	</linearGradient>
+	<linearGradient id="war_stomp_blood" gradientUnits="userSpaceOnUse" x1="338" y1="760" x2="338" y2="360">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(92,12,14)"></stop>
+		<stop offset="0.5" stop-opacity="1" stop-color="rgb(150,26,26)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(206,54,42)"></stop>
+	</linearGradient>
+	<clipPath id="war_stomp_tile">
+		<path d="M 17.7 340 C 17.7 279.2 66.9 230 127.7 230 L 549.4 230 C 610.2 230 659.4 279.2 659.4 340 L 659.4 801 C 659.4 861.8 610.2 911 549.4 911 L 127.7 911 C 66.9 911 17.7 861.8 17.7 801 Z"></path>
+	</clipPath>
+</defs>
+<g clip-path="url(#war_stomp_tile)">
+	<path fill="url(#war_stomp_panel)" d="M 17.7 340 C 17.7 279.2 66.9 230 127.7 230 L 549.4 230 C 610.2 230 659.4 279.2 659.4 340 L 659.4 801 C 659.4 861.8 610.2 911 549.4 911 L 127.7 911 C 66.9 911 17.7 861.8 17.7 801 Z"></path>
+	<path fill="url(#war_stomp_forge)" d="M 17.7 230 L 659.4 230 L 659.4 911 L 17.7 911 Z"></path>
+
+	<!-- Cracked ground, fanning into the cleave's arc. -->
+	<path fill="rgb(18,20,26)" d="M 60 800 L 300 764 L 338 796 L 384 764 L 622 800 L 622 872 L 60 872 z"></path>
+	<path fill="url(#war_stomp_gold)" fill-opacity="0.8" d="M 300 764 L 320 812 L 292 856 L 276 812 z"></path>
+	<path fill="url(#war_stomp_gold)" fill-opacity="0.8" d="M 384 764 L 404 812 L 392 856 L 366 812 z"></path>
+	<path fill="url(#war_stomp_gold)" fill-opacity="0.55" d="M 150 792 L 176 828 L 156 862 L 140 826 z"></path>
+	<path fill="url(#war_stomp_gold)" fill-opacity="0.55" d="M 522 792 L 540 826 L 524 862 L 504 828 z"></path>
+
+	<!-- The shockwave: two rings, widest at the ground. -->
+	<path fill="url(#war_stomp_steel)" fill-opacity="0.5" d="M 338 706 C 458 706 560 736 560 774 C 560 812 458 842 338 842 C 218 842 116 812 116 774 C 116 736 218 706 338 706 z M 338 736 C 246 736 168 752 168 774 C 168 796 246 812 338 812 C 430 812 508 796 508 774 C 508 752 430 736 338 736 z"></path>
+	<path fill="rgb(214,222,232)" fill-opacity="0.35" d="M 338 668 C 502 668 636 712 636 766 C 636 786 620 804 592 818 C 610 806 620 790 620 772 C 620 724 494 686 338 686 C 182 686 56 724 56 772 C 56 790 66 806 84 818 C 56 804 40 786 40 766 C 40 712 174 668 338 668 z"></path>
+
+	<!-- The boot, planted. Greave, then the sole it landed on. -->
+	<path fill="url(#war_stomp_deep)" d="M 258 300 L 418 300 L 430 620 L 246 620 z"></path>
+	<path fill="url(#war_stomp_steel)" d="M 266 300 L 410 300 L 418 416 L 258 416 z"></path>
+	<path fill="url(#war_stomp_steel)" d="M 254 440 L 422 440 L 428 560 L 248 560 z"></path>
+	<path fill="url(#war_stomp_gold)" d="M 250 572 L 426 572 L 430 606 L 246 606 z"></path>
+	<path fill="url(#war_stomp_steel)" d="M 218 620 L 458 620 C 486 620 502 640 502 668 L 502 706 C 502 726 486 740 458 740 L 218 740 C 194 740 178 726 178 706 L 178 668 C 178 640 194 620 218 620 z"></path>
+	<path fill="url(#war_stomp_deep)" d="M 190 690 L 494 690 L 494 712 C 494 730 480 740 458 740 L 218 740 C 200 740 186 730 186 712 z"></path>
+	<path fill="rgb(214,222,232)" fill-opacity="0.55" d="M 206 636 L 468 636 L 468 652 L 206 652 z"></path>
+
+	<!-- Studs on the sole: what the ground actually met. -->
+	<path fill="url(#war_stomp_gold)" d="M 232 660 C 246 660 256 670 256 684 C 256 698 246 708 232 708 C 218 708 208 698 208 684 C 208 670 218 660 232 660 z"></path>
+	<path fill="url(#war_stomp_gold)" d="M 338 654 C 354 654 366 666 366 682 C 366 698 354 710 338 710 C 322 710 310 698 310 682 C 310 666 322 654 338 654 z"></path>
+	<path fill="url(#war_stomp_gold)" d="M 444 660 C 458 660 468 670 468 684 C 468 698 458 708 444 708 C 430 708 420 698 420 684 C 420 670 430 660 444 660 z"></path>
+</g>
+</svg>
