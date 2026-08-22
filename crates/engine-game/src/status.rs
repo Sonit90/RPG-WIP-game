@@ -37,6 +37,18 @@ pub const STATUS_TICK_INTERVAL: f32 = 1.0;
 pub enum StatusKind {
     /// Damage over time. Consumed by Detonate.
     Burning,
+    /// The Warrior's bleed, from Colossus Strike.
+    ///
+    /// The one status in the game whose damage is **not** decided when it is applied: every
+    /// tick reads the caster's maximum health at the moment of the tick. See
+    /// [`Status::source_health_per_tick`].
+    Bleeding,
+    /// The Warrior's self heal, from Recuperate. Stacks to five.
+    Recuperating,
+    /// The healing Adrenaline banked, paid back over its recovery.
+    Recovering,
+    /// War Stomp's attack-speed debuff. Stacks to eight.
+    Sundered,
 }
 
 impl StatusKind {
@@ -45,6 +57,10 @@ impl StatusKind {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Burning => "BURNING",
+            Self::Bleeding => "BLEEDING",
+            Self::Recuperating => "RECUPERATING",
+            Self::Recovering => "RECOVERING",
+            Self::Sundered => "SUNDERED",
         }
     }
 
@@ -53,7 +69,30 @@ impl StatusKind {
     pub fn damage_type(self) -> DamageType {
         match self {
             Self::Burning => DamageType::Fire,
+            Self::Bleeding | Self::Recuperating | Self::Recovering | Self::Sundered => {
+                DamageType::Physical
+            }
         }
+    }
+
+    /// How many times this status may stack on one bearer.
+    ///
+    /// One for everything that refreshes rather than stacks, which is most of them. A
+    /// property of the kind rather than of each application, so two callers cannot disagree
+    /// about how tall a stack of War Stomp is.
+    #[must_use]
+    pub fn max_stacks(self) -> u8 {
+        match self {
+            Self::Burning | Self::Bleeding | Self::Recovering => 1,
+            Self::Recuperating => 5,
+            Self::Sundered => 8,
+        }
+    }
+
+    /// Whether a tick of this status restores health rather than removing it.
+    #[must_use]
+    pub fn heals(self) -> bool {
+        matches!(self, Self::Recuperating | Self::Recovering)
     }
 }
 
@@ -82,9 +121,24 @@ pub struct Status {
     pub remaining: f32,
     /// Full duration, kept so the overlay can draw a fraction.
     pub duration: f32,
-    /// Damage each tick deals.
+    /// Damage each tick deals, per stack, as a flat number decided when it was applied.
     pub damage_per_tick: f32,
-    /// Seconds until the next damage tick.
+    /// Damage each tick deals, per stack, as a fraction of the **source's maximum health at
+    /// the moment the tick happens**.
+    ///
+    /// The whole of "this effect does not snapshot". The status carries a *coefficient*, not
+    /// a number of points, so there is structurally nowhere for a stale maximum health to be
+    /// stored — the simulation multiplies it out against the live value when it applies the
+    /// outcome. Colossus Strike's bleed is the reason, and a Last Stand cast while it is
+    /// running makes the rest of it hit harder because of this field and nothing else.
+    pub source_health_per_tick: f32,
+    /// How many stacks are on the bearer. At least one.
+    pub stacks: u8,
+    /// How many it may reach. From [`StatusKind::max_stacks`] unless overridden.
+    pub max_stacks: u8,
+    /// Seconds between ticks. [`STATUS_TICK_INTERVAL`] unless the ability says otherwise.
+    pub interval: f32,
+    /// Seconds until the next tick.
     timer: f32,
 }
 
@@ -106,8 +160,51 @@ impl Status {
             remaining: duration,
             duration,
             damage_per_tick: damage_per_tick.max(0.0),
+            source_health_per_tick: 0.0,
+            stacks: 1,
+            max_stacks: kind.max_stacks(),
+            interval: STATUS_TICK_INTERVAL,
             timer: STATUS_TICK_INTERVAL,
         }
+    }
+
+    /// The same, ticking every `interval` seconds instead of every second.
+    #[must_use]
+    pub fn every(mut self, interval: f32) -> Self {
+        if interval > 0.0 {
+            self.interval = interval;
+            self.timer = interval;
+        }
+        self
+    }
+
+    /// The same, with each tick also worth `fraction` of the source's **current** maximum
+    /// health.
+    #[must_use]
+    pub fn scaling_with_source_health(mut self, fraction: f32) -> Self {
+        self.source_health_per_tick = fraction.max(0.0);
+        self
+    }
+
+    /// The same, applied `stacks` deep rather than one.
+    ///
+    /// Clamped to the kind's maximum here rather than at the call site, so an empowered
+    /// application that grants two stacks cannot overshoot a cap it does not know about.
+    #[must_use]
+    pub fn with_stacks(mut self, stacks: u8) -> Self {
+        self.stacks = stacks.clamp(1, self.max_stacks.max(1));
+        self
+    }
+
+    /// What one tick is worth against a source whose maximum health is `source_max_health`.
+    ///
+    /// Stacks included. The one place the two halves of a tick — the flat part and the part
+    /// that reads live maximum health — are added together.
+    #[must_use]
+    pub fn tick_amount(&self, source_max_health: f32) -> f32 {
+        let per_stack =
+            self.damage_per_tick + self.source_health_per_tick * source_max_health.max(0.0);
+        per_stack * f32::from(self.stacks.max(1))
     }
 
     /// How much of the duration is left, in [0, 1].
@@ -126,7 +223,7 @@ impl Status {
 /// the simulation remains the only place that changes health.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum StatusOutcome {
-    /// The status dealt its periodic damage.
+    /// The status ticked.
     Tick {
         /// Which status ticked.
         kind: StatusKind,
@@ -134,8 +231,20 @@ pub enum StatusOutcome {
         source: EntityId,
         /// Which ability is credited.
         ability: AbilityId,
-        /// How much damage to apply.
+        /// The flat part of the tick, stacks already multiplied in.
         damage: f32,
+        /// The part that has still to be multiplied by the **source's** current maximum
+        /// health, stacks already multiplied in.
+        ///
+        /// Handed out rather than resolved here because a [`StatusSet`] is a pure function
+        /// of time and knows nothing about who is in the world. The simulation multiplies it
+        /// against the live value on the tick it is applied, which is what makes the bleed
+        /// unsnapshotted.
+        source_health_fraction: f32,
+        /// How many stacks produced it, for the meter and the log.
+        stacks: u8,
+        /// Whether this restores health instead of removing it.
+        heals: bool,
     },
     /// The status ended.
     Ended {
@@ -178,8 +287,16 @@ impl StatusSet {
             // The timer is *not* reset: a refresh extends the burn, it does not delay the
             // next tick, which would let a refresh every 0.9 s produce no damage at all.
             let timer = existing.timer;
+            // A stacking status adds what the new application brought and keeps its own
+            // ceiling; everything else replaces, which is the old refresh behaviour written
+            // as the one-stack case of the same rule.
+            let stacks = existing
+                .stacks
+                .saturating_add(status.stacks)
+                .min(status.max_stacks.max(1));
             *existing = status;
             existing.timer = timer;
+            existing.stacks = stacks;
             return false;
         }
         self.entries.push(status);
@@ -196,6 +313,12 @@ impl StatusSet {
     #[must_use]
     pub fn has(&self, kind: StatusKind) -> bool {
         self.get(kind).is_some()
+    }
+
+    /// How many stacks of a status the bearer has, or zero if it is not there.
+    #[must_use]
+    pub fn stacks(&self, kind: StatusKind) -> u8 {
+        self.get(kind).map_or(0, |status| status.stacks)
     }
 
     /// Seconds left on a status, or zero if it is not there.
@@ -264,14 +387,25 @@ impl StatusSet {
                 entry.remaining = 0.0;
             }
 
+            let interval = if entry.interval > 0.0 {
+                entry.interval
+            } else {
+                STATUS_TICK_INTERVAL
+            };
+            let stacks = entry.stacks.max(1);
             while entry.timer <= crate::TIME_EPSILON {
-                entry.timer += STATUS_TICK_INTERVAL;
-                if entry.damage_per_tick > 0.0 {
+                entry.timer += interval;
+                let damage = entry.damage_per_tick * f32::from(stacks);
+                let fraction = entry.source_health_per_tick * f32::from(stacks);
+                if damage > 0.0 || fraction > 0.0 {
                     out.push(StatusOutcome::Tick {
                         kind: entry.kind,
                         source: entry.source,
                         ability: entry.ability,
-                        damage: entry.damage_per_tick,
+                        damage,
+                        source_health_fraction: fraction,
+                        stacks,
+                        heals: entry.kind.heals(),
                     });
                 }
             }
@@ -439,6 +573,109 @@ mod tests {
                 reason: StatusEnd::Cleared,
             }]
         );
+    }
+
+    #[test]
+    fn a_stacking_status_climbs_to_its_ceiling_and_stops() {
+        let mut statuses = StatusSet::new();
+        let stack = || {
+            Status::new(
+                StatusKind::Recuperating,
+                EntityId::new(0, 1),
+                AbilityId::from_slot(1).expect("slot 1 exists"),
+                10.0,
+                1.0,
+            )
+        };
+        assert!(statuses.apply(stack()));
+        assert_eq!(statuses.stacks(StatusKind::Recuperating), 1);
+        for _ in 0..10 {
+            statuses.apply(stack());
+        }
+        assert_eq!(statuses.stacks(StatusKind::Recuperating), 5);
+        assert_eq!(statuses.len(), 1, "a stack is one entry, not five");
+    }
+
+    #[test]
+    fn an_empowered_application_may_grant_two_stacks_at_once() {
+        let mut statuses = StatusSet::new();
+        let two = Status::new(
+            StatusKind::Sundered,
+            EntityId::new(0, 1),
+            AbilityId::from_slot(1).expect("slot 1 exists"),
+            10.0,
+            0.0,
+        )
+        .with_stacks(2);
+        statuses.apply(two);
+        assert_eq!(statuses.stacks(StatusKind::Sundered), 2);
+        statuses.apply(two);
+        assert_eq!(statuses.stacks(StatusKind::Sundered), 4);
+        for _ in 0..10 {
+            statuses.apply(two);
+        }
+        assert_eq!(statuses.stacks(StatusKind::Sundered), 8);
+    }
+
+    #[test]
+    fn a_health_scaled_tick_carries_a_fraction_rather_than_a_number() {
+        // The structural half of "the bleed does not snapshot": what comes out of a tick is
+        // a coefficient, and there is nowhere in the status for a maximum health to live.
+        let mut statuses = StatusSet::new();
+        statuses.apply(
+            Status::new(
+                StatusKind::Bleeding,
+                EntityId::new(0, 1),
+                AbilityId::from_slot(1).expect("slot 1 exists"),
+                8.0,
+                0.0,
+            )
+            .every(2.0)
+            .scaling_with_source_health(0.01),
+        );
+        let mut outcomes = Vec::new();
+        for _ in 0..(8 * 60) {
+            statuses.tick(STEP, &mut outcomes);
+        }
+        let ticks: Vec<f32> = outcomes
+            .iter()
+            .filter_map(|outcome| match outcome {
+                StatusOutcome::Tick {
+                    source_health_fraction,
+                    damage,
+                    ..
+                } => {
+                    assert_eq!(*damage, 0.0);
+                    Some(*source_health_fraction)
+                }
+                StatusOutcome::Ended { .. } => None,
+            })
+            .collect();
+        assert_eq!(ticks.len(), 4, "eight seconds, one tick every two");
+        for fraction in ticks {
+            assert!((fraction - 0.01).abs() < 1e-6);
+        }
+    }
+
+    #[test]
+    fn a_healing_status_says_so_on_every_tick() {
+        let mut statuses = StatusSet::new();
+        statuses.apply(Status::new(
+            StatusKind::Recovering,
+            EntityId::new(0, 1),
+            AbilityId::from_slot(1).expect("slot 1 exists"),
+            6.0,
+            10.0,
+        ));
+        let mut outcomes = Vec::new();
+        for _ in 0..(6 * 60) {
+            statuses.tick(STEP, &mut outcomes);
+        }
+        let heals = outcomes
+            .iter()
+            .filter(|outcome| matches!(outcome, StatusOutcome::Tick { heals: true, .. }))
+            .count();
+        assert_eq!(heals, 6);
     }
 
     #[test]

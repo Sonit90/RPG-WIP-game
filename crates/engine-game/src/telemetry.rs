@@ -193,7 +193,20 @@ impl CombatMeter {
                 // lands, and a telegraph that was interrupted moved no health at all.
                 | CombatEvent::TelegraphStarted { .. }
                 | CombatEvent::TelegraphEnded { .. }
-                | CombatEvent::Landed { .. } => {}
+                | CombatEvent::Landed { .. }
+                // The Warrior's defensive stream. A Block, a Parry, a Dodge, a point of
+                // Deflection and a shield taking a hit all *prevent* damage rather than
+                // move any, and the healing they cause arrives as `Healing` like every
+                // other heal. A reflected spell is the same: it is announced here and it
+                // deals its damage through `Damage`, credited to Spell Reflect, so counting
+                // the announcement as well would report it twice.
+                | CombatEvent::AttackDefended { .. }
+                | CombatEvent::DeflectionGained { .. }
+                | CombatEvent::DeflectionSpent { .. }
+                | CombatEvent::AbsorbApplied { .. }
+                | CombatEvent::Absorbed { .. }
+                | CombatEvent::SpellReflected { .. }
+                | CombatEvent::ControlApplied { .. } => {}
             }
         }
     }

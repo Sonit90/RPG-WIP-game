@@ -26,7 +26,9 @@
 //! branches on who they are.
 
 use crate::character::stat::{Stat, StatBlock};
-use crate::character::{BASE_MAIN_STAT, BASE_STAMINA};
+use crate::character::{
+    BASE_MAIN_STAT, BASE_STAMINA, WARRIOR_BASE_ARMOR, WARRIOR_BASE_AVOIDANCE_RATING,
+};
 use crate::firemage::{ABILITY_SLOTS, FireAbility};
 
 /// Which playable character the player is.
@@ -35,7 +37,7 @@ pub enum Hero {
     /// Fire, Heat, Ignite and the payoff. The class the game was built around.
     #[default]
     FireMage,
-    /// Melee: reach it, hit it, cleave what stands beside it.
+    /// The tank. Block, Parry and Dodge pay a resource; the resource pays the kit.
     Warrior,
     /// In human form: the moon, the stars, and a heal that is not a cooldown.
     Druid,
@@ -76,7 +78,7 @@ impl Hero {
     pub fn description(self) -> &'static str {
         match self {
             Self::FireMage => "RANGED FIRE. BANK A BURN, THEN SPEND IT",
-            Self::Warrior => "MELEE. CLOSE THE GAP AND CLEAVE",
+            Self::Warrior => "TANK. BLOCK, PARRY AND DODGE INTO DEFLECTION",
             Self::Druid => "HUMAN FORM. MOON, STARS AND A HEAL",
         }
     }
@@ -133,9 +135,20 @@ impl Hero {
                 FireAbility::Blink,
             ],
             Self::Warrior => &[
-                FireAbility::MortalStrike,
-                FireAbility::Cleave,
-                FireAbility::Charge,
+                FireAbility::Recuperate,
+                FireAbility::WarStomp,
+                FireAbility::ColossusStrike,
+                FireAbility::ShieldCharge,
+                FireAbility::ShieldBash,
+                FireAbility::ShieldBlock,
+                FireAbility::PunctureBlood,
+                FireAbility::Adrenaline,
+                FireAbility::BattleTrance,
+                FireAbility::SpellReflect,
+                // Eleven abilities on a ten-key bar: the eleventh is the hero's Ultimate,
+                // which is the `R` key beside the bar and already exists for the FireMage.
+                // See `Hero::ultimate` and `Hero::bar`.
+                FireAbility::LastStand,
             ],
             Self::Druid => &[
                 FireAbility::Moonfire,
@@ -151,6 +164,10 @@ impl Hero {
     /// A fixed-width array rather than a slice so that "slot 4" means the same key for every
     /// hero. A hero with three abilities leaves seven slots empty; it does not renumber the
     /// keyboard.
+    ///
+    /// A hero with *more* than ten does not renumber it either: the extra ability is the
+    /// hero's Ultimate, sits on `R`, and is excluded here by the `take` — see
+    /// [`Hero::ultimate`].
     #[must_use]
     pub fn bar(self) -> [Option<FireAbility>; ABILITY_SLOTS] {
         let mut bar = [None; ABILITY_SLOTS];
@@ -163,6 +180,9 @@ impl Hero {
     /// The ability on this hero's bar in `slot`, if there is one.
     #[must_use]
     pub fn ability_at(self, slot: usize) -> Option<FireAbility> {
+        if slot >= ABILITY_SLOTS {
+            return None;
+        }
         self.abilities().get(slot).copied()
     }
 
@@ -207,20 +227,33 @@ impl Hero {
     pub fn base_stats(self) -> StatBlock {
         let mut stats = StatBlock::of(self.main_stat(), BASE_MAIN_STAT);
         stats.set(Stat::Stamina, BASE_STAMINA);
+        // The one exception to "every hero has the same base numbers", and it is the tank's:
+        // Armour, Block, Parry and Dodge are what the Warrior's whole resource is generated
+        // by, and a class whose resource cannot move at base gear is a class that cannot be
+        // played until it is geared. See `crate::character::WARRIOR_BASE_ARMOR`.
+        if matches!(self, Self::Warrior) {
+            stats.set(Stat::Armor, WARRIOR_BASE_ARMOR);
+            stats.set(Stat::Block, WARRIOR_BASE_AVOIDANCE_RATING);
+            stats.set(Stat::Parry, WARRIOR_BASE_AVOIDANCE_RATING);
+            stats.set(Stat::Dodge, WARRIOR_BASE_AVOIDANCE_RATING);
+        }
         stats
     }
 
-    /// This hero's Ultimate, if it has one.
+    /// This hero's Ultimate: the ability on `R`, beside the bar.
     ///
-    /// Only the FireMage has a row for one, and it is switched off — see
-    /// [`crate::firemage::ULTIMATE_ENABLED`]. The Warrior and the Druid have no Ultimate at
-    /// all, which is a different thing from having one that is disabled, and the interface
-    /// draws nothing rather than a button that refuses.
+    /// The FireMage's is Cataclysm, which has no design yet and is switched off — see
+    /// [`crate::firemage::ULTIMATE_ENABLED`]. The Warrior's is Last Stand, which is a real
+    /// button: the class has eleven abilities and the bar has ten keys, and the slot beside
+    /// the bar already exists rather than being invented for it. The Druid has none at all,
+    /// which is a different thing from having one that is disabled, and the interface draws
+    /// nothing rather than a button that refuses.
     #[must_use]
     pub fn ultimate(self) -> Option<FireAbility> {
         match self {
             Self::FireMage => Some(FireAbility::Cataclysm),
-            Self::Warrior | Self::Druid => None,
+            Self::Warrior => Some(FireAbility::LastStand),
+            Self::Druid => None,
         }
     }
 }
@@ -228,7 +261,7 @@ impl Hero {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::firemage::ABILITIES;
+    use crate::firemage::{ABILITIES, ABILITY_SLOTS};
 
     #[test]
     fn every_hero_round_trips_through_its_index_and_its_written_name() {
@@ -262,8 +295,8 @@ mod tests {
         for hero in Hero::ALL {
             let bar = hero.bar();
             let filled = bar.iter().filter(|slot| slot.is_some()).count();
-            assert_eq!(filled, hero.abilities().len());
-            for (slot, ability) in hero.abilities().iter().enumerate() {
+            assert_eq!(filled, hero.abilities().len().min(ABILITY_SLOTS));
+            for (slot, ability) in hero.abilities().iter().enumerate().take(ABILITY_SLOTS) {
                 assert_eq!(bar[slot], Some(*ability));
                 assert_eq!(hero.ability_at(slot), Some(*ability));
                 assert_eq!(ability.bar_slot(), Some(slot), "{ability:?}");
@@ -272,19 +305,50 @@ mod tests {
     }
 
     #[test]
-    fn the_two_new_heroes_have_three_abilities_each_and_no_heat_or_ignite() {
+    fn the_other_two_heroes_generate_no_heat_and_no_ignite() {
         // What makes them different classes rather than a mage with different names: their
         // rows generate nothing the FireMage's resources are made of. This is data, not a
         // branch in the executor, and this test is what keeps it that way.
         for hero in [Hero::Warrior, Hero::Druid] {
-            assert_eq!(hero.abilities().len(), 3, "{hero:?}");
             for ability in hero.abilities() {
                 let definition = &ABILITIES[ability.index()];
                 assert_eq!(definition.heat, 0.0, "{ability:?} generates Heat");
                 assert_eq!(definition.ignite_stacks, 0, "{ability:?} applies Ignite");
                 assert_eq!(definition.energy_cost, 0.0, "{ability:?} costs energy");
             }
-            assert_eq!(hero.ultimate(), None);
+        }
+        assert_eq!(Hero::Druid.abilities().len(), 3);
+        assert_eq!(Hero::Druid.ultimate(), None);
+    }
+
+    #[test]
+    fn the_warrior_is_eleven_abilities_on_ten_keys_and_an_ultimate() {
+        assert_eq!(Hero::Warrior.abilities().len(), 11);
+        let bar = Hero::Warrior.bar();
+        assert_eq!(bar.iter().filter(|slot| slot.is_some()).count(), 10);
+        assert_eq!(Hero::Warrior.ultimate(), Some(FireAbility::LastStand));
+        // The eleventh is not on a digit, and asking for an eleventh slot answers nothing
+        // rather than the ability that lives beside the bar.
+        assert_eq!(Hero::Warrior.ability_at(ABILITY_SLOTS), None);
+        assert!(FireAbility::LastStand.is_ultimate());
+        assert!(!FireAbility::LastStand.is_disabled());
+    }
+
+    #[test]
+    fn only_the_warrior_starts_with_defences() {
+        use crate::character::stat::Stat;
+        for hero in Hero::ALL {
+            let stats = hero.base_stats();
+            let expected = f32::from(u8::from(matches!(hero, Hero::Warrior)));
+            for stat in [Stat::Armor, Stat::Block, Stat::Parry, Stat::Dodge] {
+                let value = stats.get(stat);
+                assert_eq!(
+                    value > 0.0,
+                    expected > 0.0,
+                    "{hero:?} {}: {value}",
+                    stat.name()
+                );
+            }
         }
     }
 }

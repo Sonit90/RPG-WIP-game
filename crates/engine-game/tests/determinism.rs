@@ -413,6 +413,101 @@ fn describe(event: &CombatEvent) -> String {
             fixed(position.z),
             fixed(speed)
         ),
+        // The Warrior's defensive stream. Every one of these is the product of a roll or of
+        // a resource, and both are part of what a replay has to reproduce exactly: a fight
+        // where the same swing was dodged on one run and blocked on the next is not a
+        // deterministic fight.
+        CombatEvent::AttackDefended {
+            attacker,
+            defender,
+            outcome,
+            ability,
+            tick,
+            ..
+        } => format!(
+            "defend {} by {} from {} ability {} at {tick}",
+            outcome.as_str(),
+            defender.index(),
+            attacker.index(),
+            ability.slot()
+        ),
+        CombatEvent::DeflectionGained {
+            entity,
+            amount,
+            value,
+            tick,
+        } => format!(
+            "deflection +{} = {} for {} at {tick}",
+            fixed(amount),
+            fixed(value),
+            entity.index()
+        ),
+        CombatEvent::DeflectionSpent {
+            entity,
+            amount,
+            value,
+            ability,
+            tick,
+        } => format!(
+            "deflection -{} = {} for {} on {} at {tick}",
+            fixed(amount),
+            fixed(value),
+            entity.index(),
+            ability.slot()
+        ),
+        CombatEvent::AbsorbApplied {
+            target,
+            amount,
+            duration,
+            ability,
+            tick,
+        } => format!(
+            "absorb {} for {} s on {} from {} at {tick}",
+            fixed(amount),
+            fixed(duration),
+            target.index(),
+            ability.slot()
+        ),
+        CombatEvent::Absorbed {
+            target,
+            amount,
+            remaining,
+            tick,
+        } => format!(
+            "absorbed {} leaving {} on {} at {tick}",
+            fixed(amount),
+            fixed(remaining),
+            target.index()
+        ),
+        CombatEvent::SpellReflected {
+            source,
+            target,
+            ability,
+            amount,
+            empowered,
+            tick,
+        } => format!(
+            "reflect {} for {} from {} to {} empowered {empowered} at {tick}",
+            ability.slot(),
+            fixed(amount),
+            source.index(),
+            target.index()
+        ),
+        CombatEvent::ControlApplied {
+            source,
+            target,
+            control,
+            seconds,
+            ability,
+            tick,
+        } => format!(
+            "control {} for {} s on {} by {} from {} at {tick}",
+            control.as_str(),
+            fixed(seconds),
+            target.index(),
+            source.index(),
+            ability.slot()
+        ),
     }
 }
 

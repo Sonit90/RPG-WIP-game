@@ -31,7 +31,7 @@ pub const ABILITY_SLOTS: usize = 10;
 ///
 /// One table for all three heroes rather than one each: see [`crate::hero`] for why a class
 /// is a slice of this table and not a system of its own.
-pub const ABILITY_COUNT: usize = 18;
+pub const ABILITY_COUNT: usize = 26;
 
 /// The furthest anything the class has can reach, in metres.
 ///
@@ -83,12 +83,28 @@ pub enum FireAbility {
     Blink,
     /// The Ultimate. Not on the bar, and disabled this iteration.
     Cataclysm,
-    /// Warrior: the melee opener, and the biggest single hit in the game at its range.
-    MortalStrike,
-    /// Warrior: a swing that catches everything in front of it.
-    Cleave,
-    /// Warrior: closes the gap the class spends its whole life closing.
-    Charge,
+    /// Warrior: the filler. Attacks, and stacks a heal on the caster.
+    Recuperate,
+    /// Warrior: a targeted 120-degree cleave that slows what it catches.
+    WarStomp,
+    /// Warrior: a ground smash that leaves a bleed scaled from the Warrior's own health.
+    ColossusStrike,
+    /// Warrior: a real, animated charge that ends in an area hit and a short stun.
+    ShieldCharge,
+    /// Warrior: the interrupt.
+    ShieldBash,
+    /// Warrior: six seconds of Block, and no critical strikes taken.
+    ShieldBlock,
+    /// Warrior: trades current health for an absorb built from maximum health.
+    PunctureBlood,
+    /// Warrior: banks a share of the damage taken and gives it back as healing.
+    Adrenaline,
+    /// Warrior: ten seconds where every defensive event heals.
+    BattleTrance,
+    /// Warrior: six seconds where enemy spells go back where they came from.
+    SpellReflect,
+    /// Warrior: the emergency cooldown. More maximum health, a heal, and less damage taken.
+    LastStand,
     /// Druid: the filler, thrown from range.
     Moonfire,
     /// Druid: a patch of falling stars the player places.
@@ -117,9 +133,17 @@ impl FireAbility {
         Self::FlameShield,
         Self::Blink,
         Self::Cataclysm,
-        Self::MortalStrike,
-        Self::Cleave,
-        Self::Charge,
+        Self::Recuperate,
+        Self::WarStomp,
+        Self::ColossusStrike,
+        Self::ShieldCharge,
+        Self::ShieldBash,
+        Self::ShieldBlock,
+        Self::PunctureBlood,
+        Self::Adrenaline,
+        Self::BattleTrance,
+        Self::SpellReflect,
+        Self::LastStand,
         Self::Moonfire,
         Self::Starfall,
         Self::Regrowth,
@@ -152,12 +176,29 @@ impl FireAbility {
             .abilities()
             .iter()
             .position(|ability| *ability == self)
+            .filter(|slot| *slot < ABILITY_SLOTS)
     }
 
-    /// Whether this is the Ultimate, which lives outside the bar.
+    /// Whether this is its hero's Ultimate, which lives outside the bar on the `R` key.
+    ///
+    /// Asked of the owning hero rather than written down here, so the one place that
+    /// decides which ability sits beside the bar is [`Hero::ultimate`]. The FireMage's is
+    /// Cataclysm and is switched off ([`ULTIMATE_ENABLED`]); the Warrior's is Last Stand and
+    /// is a real button, which is what lets an eleven-ability class fit a ten-key bar
+    /// without renumbering the keyboard for the other two heroes.
     #[must_use]
     pub fn is_ultimate(self) -> bool {
-        matches!(self, Self::Cataclysm)
+        self.hero().ultimate() == Some(self)
+    }
+
+    /// Whether this ability is disabled outright, whatever its cooldown says.
+    ///
+    /// One ability is: Cataclysm, which has no design yet. Kept as a question about the
+    /// ability rather than about "the Ultimate", because the Ultimate *slot* now holds a
+    /// working ability for the Warrior.
+    #[must_use]
+    pub fn is_disabled(self) -> bool {
+        matches!(self, Self::Cataclysm) && !ULTIMATE_ENABLED
     }
 
     /// Whether this is a row in the meter rather than something that can be cast.
@@ -203,9 +244,17 @@ impl FireAbility {
             Self::FlameShield => "flame_shield",
             Self::Blink => "blink",
             Self::Cataclysm => "cataclysm",
-            Self::MortalStrike => "mortal_strike",
-            Self::Cleave => "cleave",
-            Self::Charge => "charge",
+            Self::Recuperate => "recuperate",
+            Self::WarStomp => "war_stomp",
+            Self::ColossusStrike => "colossus_strike",
+            Self::ShieldCharge => "shield_charge",
+            Self::ShieldBash => "shield_bash",
+            Self::ShieldBlock => "shield_block",
+            Self::PunctureBlood => "puncture_blood",
+            Self::Adrenaline => "adrenaline",
+            Self::BattleTrance => "battle_trance",
+            Self::SpellReflect => "spell_reflect",
+            Self::LastStand => "last_stand",
             Self::Moonfire => "moonfire",
             Self::Starfall => "starfall",
             Self::Regrowth => "regrowth",
@@ -251,6 +300,14 @@ pub enum TargetMode {
     Single,
     /// A cone of `range` metres in front of the caster.
     Cone,
+    /// A cone of `range` metres, pointed at the **current target**.
+    ///
+    /// The player picks an enemy; the game decides the direction from that, and everything
+    /// inside [`TARGET_CLEAVE_HALF_ANGLE`] of it is hit. Deliberately not a freeform aimed
+    /// cone: War Stomp is pressed in a pack while the camera is somewhere else, and an
+    /// ability that has to be drawn before it fires is an ability that cannot be pressed
+    /// every four seconds.
+    TargetCone,
     /// A circle the player places with the mouse.
     Ground,
     /// A rectangle aimed from the caster, `range` long and `width` wide.
@@ -265,7 +322,7 @@ impl TargetMode {
     /// Whether the player has to have something selected.
     #[must_use]
     pub fn needs_target(self) -> bool {
-        matches!(self, Self::Single)
+        matches!(self, Self::Single | Self::TargetCone)
     }
 
     /// Whether the player places this ability with the mouse.
@@ -291,6 +348,7 @@ impl TargetMode {
     ///
     /// ```text
     /// Single    no   it is pointed at the selection, and the selection is not an enemy
+    /// TargetCone no  likewise: the cone is aimed by the selection
     /// Cone      yes  aimed with the mouse; the selection is not consulted
     /// Ground    yes  the key opens the placement circle rather than casting
     /// Line      yes  placed, like Ground
@@ -304,7 +362,65 @@ impl TargetMode {
     /// per-ability answers so the derivation cannot quietly change what the bar does.
     #[must_use]
     pub fn usable_on_friendly_target(self) -> bool {
-        !matches!(self, Self::Single)
+        !matches!(self, Self::Single | Self::TargetCone)
+    }
+}
+
+/// Half the angle of a target-pointed cleave, in radians.
+///
+/// A third of pi: sixty degrees either side of the line to the target, which is the
+/// hundred-and-twenty-degree cleave War Stomp is specified as. Derived from the target mode
+/// rather than carried as a column, because there is exactly one kind of cleave and a second
+/// number per row would be a second thing to disagree with the mode beside it.
+pub const TARGET_CLEAVE_HALF_ANGLE: f32 = std::f32::consts::FRAC_PI_3;
+
+/// The Warrior's columns of the ability table.
+///
+/// Nested rather than eight more fields on every row, so the eighteen rows that are not the
+/// Warrior's say [`WarriorRow::NONE`] once instead of repeating eight zeroes. The
+/// **magnitudes** of what twenty Deflection buys are not here: they differ in kind from one
+/// ability to the next — a silence, five per cent of Block, half again on a bleed — and they
+/// live as named constants in [`crate::warrior::tuning`], which is one place a designer
+/// reads rather than a column that would be a different quantity in every row.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct WarriorRow {
+    /// Deflection this ability spends to be empowered, or zero if it has no empowered form.
+    ///
+    /// Twenty for every spender in the kit, as one number rather than nine.
+    pub deflection_cost: f32,
+    /// What the damage this ability deals is multiplied by on its way into a threat table.
+    ///
+    /// One for everything that is not deliberately a threat tool. A column rather than a
+    /// Warrior-only threat system: the threat table, the one place threat is added and the
+    /// rule that only damage generates it are all unchanged — see [`crate::enemy::threat`].
+    pub threat_multiplier: f32,
+    /// Impact damage as a fraction of the **caster's current** maximum health.
+    ///
+    /// Added to whatever [`AbilityDef::coefficient`] produced. `0.01` is "and 1 % of your
+    /// maximum health".
+    pub health_coefficient: f32,
+    /// One periodic tick as a fraction of the caster's maximum health **at the moment the
+    /// tick happens**.
+    ///
+    /// Never snapshotted. The bleed a Colossus Strike leaves reads the Warrior's maximum
+    /// health on every tick, so a Last Stand cast after the bleed was applied makes the rest
+    /// of that bleed hit harder — see [`crate::status::Status::source_health_per_tick`].
+    pub tick_health_coefficient: f32,
+}
+
+impl WarriorRow {
+    /// What a row that is not the Warrior's says.
+    pub const NONE: Self = Self {
+        deflection_cost: 0.0,
+        threat_multiplier: 1.0,
+        health_coefficient: 0.0,
+        tick_health_coefficient: 0.0,
+    };
+
+    /// Whether twenty Deflection buys this ability anything.
+    #[must_use]
+    pub const fn is_empowerable(&self) -> bool {
+        self.deflection_cost > 0.0
     }
 }
 
@@ -375,6 +491,8 @@ pub struct AbilityDef {
     ///
     /// See `line_of_sight.md` for which abilities set it and why.
     pub requires_line_of_sight: bool,
+    /// The Warrior's columns: what it spends, what it threatens for, how it reads health.
+    pub warrior: WarriorRow,
     /// Whether haste shortens its cooldown.
     ///
     /// True for everything the player *casts*, because going faster is what haste is. False
@@ -400,7 +518,11 @@ impl AbilityDef {
     /// Whether it can hit more than one thing.
     #[must_use]
     pub fn is_area(&self) -> bool {
-        self.radius > 0.0 || matches!(self.target, TargetMode::Cone | TargetMode::Line)
+        self.radius > 0.0
+            || matches!(
+                self.target,
+                TargetMode::Cone | TargetMode::Line | TargetMode::TargetCone
+            )
     }
 
     /// Whether it holds more than one charge, with talents applied.
@@ -441,6 +563,21 @@ impl AbilityDef {
     pub fn base_tick_damage(&self, stats: &Stats) -> f32 {
         self.tick_coefficient * stats.spell_power
     }
+
+    /// Its impact damage at `stats` **including** what it takes from maximum health.
+    ///
+    /// The one entry point for an ability that scales from both. `max_health` is the
+    /// caster's current maximum, read at the moment of the hit; nothing stores it.
+    #[must_use]
+    pub fn base_damage_with_health(&self, stats: &Stats, max_health: f32) -> f32 {
+        self.base_damage(stats) + self.warrior.health_coefficient * max_health.max(0.0)
+    }
+
+    /// One periodic tick at `stats` including its share of `max_health`.
+    #[must_use]
+    pub fn base_tick_damage_with_health(&self, stats: &Stats, max_health: f32) -> f32 {
+        self.base_tick_damage(stats) + self.warrior.tick_health_coefficient * max_health.max(0.0)
+    }
 }
 
 /// The whole class, in bar order. The Ultimate is last.
@@ -471,6 +608,7 @@ pub static ABILITIES: [AbilityDef; ABILITY_COUNT] = [
         requires_line_of_sight: true,
         cooldown_hasted: true,
         energy_cost: 0.0,
+        warrior: WarriorRow::NONE,
     },
     AbilityDef {
         hero: Hero::FireMage,
@@ -498,6 +636,7 @@ pub static ABILITIES: [AbilityDef; ABILITY_COUNT] = [
         requires_line_of_sight: true,
         cooldown_hasted: true,
         energy_cost: 0.0,
+        warrior: WarriorRow::NONE,
     },
     AbilityDef {
         hero: Hero::FireMage,
@@ -525,6 +664,7 @@ pub static ABILITIES: [AbilityDef; ABILITY_COUNT] = [
         requires_line_of_sight: false,
         cooldown_hasted: true,
         energy_cost: 0.0,
+        warrior: WarriorRow::NONE,
     },
     AbilityDef {
         hero: Hero::FireMage,
@@ -552,6 +692,7 @@ pub static ABILITIES: [AbilityDef; ABILITY_COUNT] = [
         requires_line_of_sight: false,
         cooldown_hasted: true,
         energy_cost: 0.0,
+        warrior: WarriorRow::NONE,
     },
     AbilityDef {
         hero: Hero::FireMage,
@@ -579,6 +720,7 @@ pub static ABILITIES: [AbilityDef; ABILITY_COUNT] = [
         requires_line_of_sight: true,
         cooldown_hasted: true,
         energy_cost: 0.0,
+        warrior: WarriorRow::NONE,
     },
     AbilityDef {
         hero: Hero::FireMage,
@@ -606,6 +748,7 @@ pub static ABILITIES: [AbilityDef; ABILITY_COUNT] = [
         requires_line_of_sight: false,
         cooldown_hasted: true,
         energy_cost: 0.0,
+        warrior: WarriorRow::NONE,
     },
     AbilityDef {
         hero: Hero::FireMage,
@@ -633,6 +776,7 @@ pub static ABILITIES: [AbilityDef; ABILITY_COUNT] = [
         requires_line_of_sight: true,
         cooldown_hasted: false,
         energy_cost: 0.0,
+        warrior: WarriorRow::NONE,
     },
     AbilityDef {
         hero: Hero::FireMage,
@@ -660,6 +804,7 @@ pub static ABILITIES: [AbilityDef; ABILITY_COUNT] = [
         requires_line_of_sight: false,
         cooldown_hasted: true,
         energy_cost: 0.0,
+        warrior: WarriorRow::NONE,
     },
     AbilityDef {
         hero: Hero::FireMage,
@@ -687,6 +832,7 @@ pub static ABILITIES: [AbilityDef; ABILITY_COUNT] = [
         requires_line_of_sight: false,
         cooldown_hasted: true,
         energy_cost: 0.0,
+        warrior: WarriorRow::NONE,
     },
     AbilityDef {
         hero: Hero::FireMage,
@@ -714,6 +860,7 @@ pub static ABILITIES: [AbilityDef; ABILITY_COUNT] = [
         requires_line_of_sight: false,
         cooldown_hasted: true,
         energy_cost: 0.0,
+        warrior: WarriorRow::NONE,
     },
     AbilityDef {
         hero: Hero::FireMage,
@@ -741,25 +888,26 @@ pub static ABILITIES: [AbilityDef; ABILITY_COUNT] = [
         requires_line_of_sight: false,
         cooldown_hasted: true,
         energy_cost: 100.0,
+        warrior: WarriorRow::NONE,
     },
     AbilityDef {
         hero: Hero::Warrior,
         damage_type: DamageType::Physical,
-        id: FireAbility::MortalStrike,
-        name: "MORTAL STRIKE",
-        description: "A MELEE BLOW. THE HARDEST SINGLE HIT ANY HERO HAS, AT FIVE METRES",
+        id: FireAbility::Recuperate,
+        name: "RECUPERATE",
+        description: "A SWING THAT STACKS A HEAL ON YOU. 5 STACKS, 0.2% MAX HP EACH A SECOND",
         target: TargetMode::Single,
         cast_time: 0.0,
-        cooldown: 6.0,
+        cooldown: 0.0,
         charges: 1,
         range: 5.0,
         radius: 0.0,
         width: 0.0,
-        duration: 0.0,
+        duration: 10.0,
         impact_delay: 0.0,
-        coefficient: 3.20,
+        coefficient: 1.20,
         tick_coefficient: 0.0,
-        tick_interval: 0.0,
+        tick_interval: 1.0,
         ignite_bonus_per_stack: 0.0,
         ignite_stacks: 0,
         ignite_chance: 0.0,
@@ -768,23 +916,29 @@ pub static ABILITIES: [AbilityDef; ABILITY_COUNT] = [
         requires_line_of_sight: true,
         cooldown_hasted: true,
         energy_cost: 0.0,
+        warrior: WarriorRow {
+            deflection_cost: 0.0,
+            threat_multiplier: 1.0,
+            health_coefficient: 0.0,
+            tick_health_coefficient: 0.0,
+        },
     },
     AbilityDef {
         hero: Hero::Warrior,
         damage_type: DamageType::Physical,
-        id: FireAbility::Cleave,
-        name: "CLEAVE",
-        description: "A SWEEP THAT CATCHES EVERY ENEMY IN FRONT OF YOU",
-        target: TargetMode::Cone,
+        id: FireAbility::WarStomp,
+        name: "WAR STOMP",
+        description: "A 120 DEGREE CLEAVE AT YOUR TARGET. -2% ATTACK SPEED A STACK, UP TO 8",
+        target: TargetMode::TargetCone,
         cast_time: 0.0,
-        cooldown: 10.0,
+        cooldown: 4.0,
         charges: 1,
         range: 8.0,
         radius: 0.0,
         width: 0.0,
-        duration: 0.0,
+        duration: 10.0,
         impact_delay: 0.0,
-        coefficient: 2.00,
+        coefficient: 1.10,
         tick_coefficient: 0.0,
         tick_interval: 0.0,
         ignite_bonus_per_stack: 0.0,
@@ -795,21 +949,126 @@ pub static ABILITIES: [AbilityDef; ABILITY_COUNT] = [
         requires_line_of_sight: false,
         cooldown_hasted: true,
         energy_cost: 0.0,
+        warrior: WarriorRow {
+            deflection_cost: 20.0,
+            threat_multiplier: 3.0,
+            health_coefficient: 0.0,
+            tick_health_coefficient: 0.0,
+        },
     },
     AbilityDef {
         hero: Hero::Warrior,
         damage_type: DamageType::Physical,
-        id: FireAbility::Charge,
-        name: "CHARGE",
-        description: "CLOSE 18 M IN THE DIRECTION YOU FACE",
-        target: TargetMode::Movement,
+        id: FireAbility::ColossusStrike,
+        name: "COLOSSUS STRIKE",
+        description: "SMASHES THE GROUND. +1% MAX HP, AND AN 8 S BLEED THAT READS YOUR HEALTH",
+        target: TargetMode::SelfCast,
         cast_time: 0.0,
-        cooldown: 20.0,
+        cooldown: 8.0,
         charges: 1,
-        range: 18.0,
+        range: 0.0,
+        radius: 8.0,
+        width: 0.0,
+        duration: 8.0,
+        impact_delay: 0.0,
+        coefficient: 2.00,
+        tick_coefficient: 1.50,
+        tick_interval: 2.0,
+        ignite_bonus_per_stack: 0.0,
+        ignite_stacks: 0,
+        ignite_chance: 0.0,
+        heat: 0.0,
+        energy: 0.0,
+        requires_line_of_sight: false,
+        cooldown_hasted: true,
+        energy_cost: 0.0,
+        warrior: WarriorRow {
+            deflection_cost: 20.0,
+            threat_multiplier: 3.0,
+            health_coefficient: 0.01,
+            tick_health_coefficient: 0.0075,
+        },
+    },
+    AbilityDef {
+        hero: Hero::Warrior,
+        damage_type: DamageType::Physical,
+        id: FireAbility::ShieldCharge,
+        name: "SHIELD CHARGE",
+        description: "RUN AT YOUR TARGET. AREA DAMAGE AND A 0.5 S STUN WHEN YOU ARRIVE",
+        target: TargetMode::Single,
+        cast_time: 0.0,
+        cooldown: 15.0,
+        charges: 1,
+        range: 25.0,
+        radius: 5.0,
+        width: 0.0,
+        duration: 0.0,
+        impact_delay: 0.0,
+        coefficient: 2.50,
+        tick_coefficient: 0.0,
+        tick_interval: 0.0,
+        ignite_bonus_per_stack: 0.0,
+        ignite_stacks: 0,
+        ignite_chance: 0.0,
+        heat: 0.0,
+        energy: 0.0,
+        requires_line_of_sight: true,
+        cooldown_hasted: true,
+        energy_cost: 0.0,
+        warrior: WarriorRow {
+            deflection_cost: 20.0,
+            threat_multiplier: 4.0,
+            health_coefficient: 0.0,
+            tick_health_coefficient: 0.0,
+        },
+    },
+    AbilityDef {
+        hero: Hero::Warrior,
+        damage_type: DamageType::Physical,
+        id: FireAbility::ShieldBash,
+        name: "SHIELD BASH",
+        description: "INTERRUPTS THE CAST. WITH DEFLECTION, SILENCES FOR 4 SECONDS",
+        target: TargetMode::Single,
+        cast_time: 0.0,
+        cooldown: 15.0,
+        charges: 1,
+        range: 5.0,
         radius: 0.0,
         width: 0.0,
         duration: 0.0,
+        impact_delay: 0.0,
+        coefficient: 1.50,
+        tick_coefficient: 0.0,
+        tick_interval: 0.0,
+        ignite_bonus_per_stack: 0.0,
+        ignite_stacks: 0,
+        ignite_chance: 0.0,
+        heat: 0.0,
+        energy: 0.0,
+        requires_line_of_sight: true,
+        cooldown_hasted: true,
+        energy_cost: 0.0,
+        warrior: WarriorRow {
+            deflection_cost: 20.0,
+            threat_multiplier: 3.0,
+            health_coefficient: 0.0,
+            tick_health_coefficient: 0.0,
+        },
+    },
+    AbilityDef {
+        hero: Hero::Warrior,
+        damage_type: DamageType::Physical,
+        id: FireAbility::ShieldBlock,
+        name: "SHIELD BLOCK",
+        description: "6 S OF EXTRA BLOCK, SCALED BY MAX HP. NO CRITICAL STRIKES TAKEN",
+        target: TargetMode::SelfCast,
+        cast_time: 0.0,
+        cooldown: 15.0,
+        charges: 1,
+        range: 0.0,
+        radius: 0.0,
+        width: 0.0,
+        duration: 6.0,
         impact_delay: 0.0,
         coefficient: 0.0,
         tick_coefficient: 0.0,
@@ -822,6 +1081,177 @@ pub static ABILITIES: [AbilityDef; ABILITY_COUNT] = [
         requires_line_of_sight: false,
         cooldown_hasted: true,
         energy_cost: 0.0,
+        warrior: WarriorRow {
+            deflection_cost: 20.0,
+            threat_multiplier: 1.0,
+            health_coefficient: 0.0,
+            tick_health_coefficient: 0.0,
+        },
+    },
+    AbilityDef {
+        hero: Hero::Warrior,
+        damage_type: DamageType::Physical,
+        id: FireAbility::PunctureBlood,
+        name: "PUNCTURE BLOOD",
+        description: "SPEND 30% OF CURRENT HP FOR AN ABSORB OF 30% OF MAXIMUM HP, 10 S",
+        target: TargetMode::SelfCast,
+        cast_time: 0.0,
+        cooldown: 30.0,
+        charges: 1,
+        range: 0.0,
+        radius: 0.0,
+        width: 0.0,
+        duration: 10.0,
+        impact_delay: 0.0,
+        coefficient: 0.0,
+        tick_coefficient: 0.0,
+        tick_interval: 0.0,
+        ignite_bonus_per_stack: 0.0,
+        ignite_stacks: 0,
+        ignite_chance: 0.0,
+        heat: 0.0,
+        energy: 0.0,
+        requires_line_of_sight: false,
+        cooldown_hasted: true,
+        energy_cost: 0.0,
+        warrior: WarriorRow {
+            deflection_cost: 20.0,
+            threat_multiplier: 1.0,
+            health_coefficient: 0.0,
+            tick_health_coefficient: 0.0,
+        },
+    },
+    AbilityDef {
+        hero: Hero::Warrior,
+        damage_type: DamageType::Physical,
+        id: FireAbility::Adrenaline,
+        name: "ADRENALINE",
+        description: "BANKS 30% OF THE DAMAGE TAKEN FOR 6 S, THEN HEALS IT BACK OVER 6 S",
+        target: TargetMode::SelfCast,
+        cast_time: 0.0,
+        cooldown: 30.0,
+        charges: 1,
+        range: 0.0,
+        radius: 0.0,
+        width: 0.0,
+        duration: 6.0,
+        impact_delay: 0.0,
+        coefficient: 0.0,
+        tick_coefficient: 0.0,
+        tick_interval: 1.0,
+        ignite_bonus_per_stack: 0.0,
+        ignite_stacks: 0,
+        ignite_chance: 0.0,
+        heat: 0.0,
+        energy: 0.0,
+        requires_line_of_sight: false,
+        cooldown_hasted: true,
+        energy_cost: 0.0,
+        warrior: WarriorRow {
+            deflection_cost: 20.0,
+            threat_multiplier: 1.0,
+            health_coefficient: 0.0,
+            tick_health_coefficient: 0.0,
+        },
+    },
+    AbilityDef {
+        hero: Hero::Warrior,
+        damage_type: DamageType::Physical,
+        id: FireAbility::BattleTrance,
+        name: "BATTLE TRANCE",
+        description: "10 S. EVERY BLOCK, PARRY OR DODGE HEALS 1% MAX HP AND PAYS DOUBLE",
+        target: TargetMode::SelfCast,
+        cast_time: 0.0,
+        cooldown: 45.0,
+        charges: 1,
+        range: 0.0,
+        radius: 0.0,
+        width: 0.0,
+        duration: 10.0,
+        impact_delay: 0.0,
+        coefficient: 0.0,
+        tick_coefficient: 0.0,
+        tick_interval: 0.0,
+        ignite_bonus_per_stack: 0.0,
+        ignite_stacks: 0,
+        ignite_chance: 0.0,
+        heat: 0.0,
+        energy: 0.0,
+        requires_line_of_sight: false,
+        cooldown_hasted: true,
+        energy_cost: 0.0,
+        warrior: WarriorRow {
+            deflection_cost: 0.0,
+            threat_multiplier: 1.0,
+            health_coefficient: 0.0,
+            tick_health_coefficient: 0.0,
+        },
+    },
+    AbilityDef {
+        hero: Hero::Warrior,
+        damage_type: DamageType::Physical,
+        id: FireAbility::SpellReflect,
+        name: "SPELL REFLECT",
+        description: "6 S. ENEMY SPELLS GO BACK TO WHOEVER CAST THEM",
+        target: TargetMode::SelfCast,
+        cast_time: 0.0,
+        cooldown: 45.0,
+        charges: 1,
+        range: 0.0,
+        radius: 0.0,
+        width: 0.0,
+        duration: 6.0,
+        impact_delay: 0.0,
+        coefficient: 0.0,
+        tick_coefficient: 0.0,
+        tick_interval: 0.0,
+        ignite_bonus_per_stack: 0.0,
+        ignite_stacks: 0,
+        ignite_chance: 0.0,
+        heat: 0.0,
+        energy: 0.0,
+        requires_line_of_sight: false,
+        cooldown_hasted: true,
+        energy_cost: 0.0,
+        warrior: WarriorRow {
+            deflection_cost: 20.0,
+            threat_multiplier: 1.0,
+            health_coefficient: 0.0,
+            tick_health_coefficient: 0.0,
+        },
+    },
+    AbilityDef {
+        hero: Hero::Warrior,
+        damage_type: DamageType::Physical,
+        id: FireAbility::LastStand,
+        name: "LAST STAND",
+        description: "MORE MAXIMUM HP, A HEAL FOR THE SAME SHARE, AND 10% LESS DAMAGE TAKEN",
+        target: TargetMode::SelfCast,
+        cast_time: 0.0,
+        cooldown: 90.0,
+        charges: 1,
+        range: 0.0,
+        radius: 0.0,
+        width: 0.0,
+        duration: 15.0,
+        impact_delay: 0.0,
+        coefficient: 0.0,
+        tick_coefficient: 0.0,
+        tick_interval: 0.0,
+        ignite_bonus_per_stack: 0.0,
+        ignite_stacks: 0,
+        ignite_chance: 0.0,
+        heat: 0.0,
+        energy: 0.0,
+        requires_line_of_sight: false,
+        cooldown_hasted: true,
+        energy_cost: 0.0,
+        warrior: WarriorRow {
+            deflection_cost: 20.0,
+            threat_multiplier: 1.0,
+            health_coefficient: 0.0,
+            tick_health_coefficient: 0.0,
+        },
     },
     AbilityDef {
         hero: Hero::Druid,
@@ -849,6 +1279,7 @@ pub static ABILITIES: [AbilityDef; ABILITY_COUNT] = [
         requires_line_of_sight: true,
         cooldown_hasted: true,
         energy_cost: 0.0,
+        warrior: WarriorRow::NONE,
     },
     AbilityDef {
         hero: Hero::Druid,
@@ -876,6 +1307,7 @@ pub static ABILITIES: [AbilityDef; ABILITY_COUNT] = [
         requires_line_of_sight: false,
         cooldown_hasted: true,
         energy_cost: 0.0,
+        warrior: WarriorRow::NONE,
     },
     AbilityDef {
         hero: Hero::Druid,
@@ -903,6 +1335,7 @@ pub static ABILITIES: [AbilityDef; ABILITY_COUNT] = [
         requires_line_of_sight: false,
         cooldown_hasted: true,
         energy_cost: 0.0,
+        warrior: WarriorRow::NONE,
     },
     AbilityDef {
         hero: Hero::FireMage,
@@ -930,6 +1363,7 @@ pub static ABILITIES: [AbilityDef; ABILITY_COUNT] = [
         requires_line_of_sight: false,
         cooldown_hasted: true,
         energy_cost: 0.0,
+        warrior: WarriorRow::NONE,
     },
 ];
 

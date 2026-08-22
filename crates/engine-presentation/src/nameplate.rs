@@ -182,7 +182,15 @@ impl Nameplate {
                 out.push(' ');
             }
             if status.stacks > 0 {
-                let _ = write!(out, "IGNITE {} {:.1}", status.stacks, status.remaining);
+                // The burn is printed under the *ability's* name rather than the status's:
+                // the player pressed Ignite, and "BURNING" is the mechanism's name for it.
+                // Every other stacking debuff prints its own.
+                let label = if status.kind == StatusKind::Burning {
+                    "IGNITE"
+                } else {
+                    status.kind.as_str()
+                };
+                let _ = write!(out, "{label} {} {:.1}", status.stacks, status.remaining);
             } else {
                 let _ = write!(out, "{} {:.1}", status.kind.as_str(), status.remaining);
             }
@@ -459,7 +467,11 @@ impl NameplateSet {
                     statuses[status_count] = NameplateStatus {
                         kind: status.kind,
                         remaining: status.remaining,
-                        stacks: 0,
+                        // A stacking debuff counts on the plate. War Stomp's eighth stack is
+                        // a condition the Warrior is playing towards — it is worth ten per
+                        // cent of their armour — and a plate that cannot count cannot tell
+                        // them they have reached it.
+                        stacks: if status.stacks > 1 { status.stacks } else { 0 },
                     };
                     status_count += 1;
                 }

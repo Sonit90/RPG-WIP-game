@@ -447,9 +447,50 @@ impl AudioDirector {
                 };
                 self.request(SoundCue::at(sound, position).with_gain(gain), audio);
             }
+            // The Warrior's defensive stream. Every cue here is an **existing** sound
+            // chosen by shape, exactly as the Warrior's and the Druid's ability sounds are:
+            // a block is a heavy impact, an attack that touched nothing is the fizzle that
+            // already means "that did not happen", and a cooldown coming up is the
+            // activation the class's other cooldowns use. No new audio assets are authored
+            // for this class.
+            CombatEvent::AttackDefended {
+                defender, outcome, ..
+            } => {
+                let sound = if outcome.is_avoided() {
+                    SoundId::CastFizzle
+                } else {
+                    SoundId::HeavyImpact
+                };
+                let origin = self.chest_of(defender, simulation);
+                self.request(SoundCue::at(sound, origin), audio);
+            }
+            CombatEvent::DeflectionSpent { entity, .. } => {
+                let origin = self.chest_of(entity, simulation);
+                self.request(SoundCue::at(SoundId::FireMasteryActivate, origin), audio);
+            }
+            CombatEvent::AbsorbApplied { target, .. } => {
+                let origin = self.chest_of(target, simulation);
+                self.request(SoundCue::at(SoundId::FlameShieldActivate, origin), audio);
+            }
+            CombatEvent::Absorbed { target, .. } => {
+                let origin = self.chest_of(target, simulation);
+                self.request(SoundCue::at(SoundId::HitNormal, origin), audio);
+            }
+            CombatEvent::SpellReflected { source, .. } => {
+                let origin = self.chest_of(source, simulation);
+                self.request(SoundCue::at(SoundId::DetonateExplosion, origin), audio);
+            }
+            CombatEvent::ControlApplied { target, .. } => {
+                let origin = self.chest_of(target, simulation);
+                self.request(SoundCue::at(SoundId::HeavyImpact, origin), audio);
+            }
             // Nothing to hear, or a state the frame synchronises instead. A phase change is
-            // seen rather than heard: this phase authors no new cues.
-            CombatEvent::Healing { .. } | CombatEvent::PhaseChanged { .. } => {}
+            // seen rather than heard: this phase authors no new cues. A point of Deflection
+            // is deliberately silent — it happens several times a second in a pack, and the
+            // sound of the block that produced it has already played.
+            CombatEvent::Healing { .. }
+            | CombatEvent::PhaseChanged { .. }
+            | CombatEvent::DeflectionGained { .. } => {}
         }
     }
 
@@ -743,9 +784,17 @@ pub fn activation_sound(ability: FireAbility) -> Option<SoundId> {
         // a swing is an impact, a cleave is a cone, a placed circle of stars is a placed
         // area, and a heal is a soft activation. Sounds of their own are art this phase does
         // not have, and silence would be worse than a stand-in that is the right length.
-        FireAbility::MortalStrike => Some(SoundId::FireboltCast),
-        FireAbility::Cleave => Some(SoundId::FlameConeCast),
-        FireAbility::Charge => Some(SoundId::FlameShieldActivate),
+        FireAbility::Recuperate => Some(SoundId::FireboltCast),
+        FireAbility::WarStomp => Some(SoundId::FlameConeCast),
+        FireAbility::ColossusStrike => Some(SoundId::MeteorImpact),
+        FireAbility::ShieldCharge => Some(SoundId::FlameShieldActivate),
+        FireAbility::ShieldBash => Some(SoundId::HeavyImpact),
+        FireAbility::ShieldBlock => Some(SoundId::FlameShieldActivate),
+        FireAbility::PunctureBlood => Some(SoundId::HitCritical),
+        FireAbility::Adrenaline | FireAbility::BattleTrance | FireAbility::LastStand => {
+            Some(SoundId::FireMasteryActivate)
+        }
+        FireAbility::SpellReflect => Some(SoundId::FlameShieldActivate),
         FireAbility::Moonfire => Some(SoundId::FireboltCast),
         FireAbility::Starfall => Some(SoundId::MeteorCast),
         FireAbility::Regrowth => Some(SoundId::FireMasteryActivate),

@@ -92,6 +92,25 @@ pub const LANDING_SPEED: f32 = 4.5;
 /// Colour of dust, which is the one effect in the class that is not fire.
 const DUST_TINT: [f32; 4] = [0.55, 0.50, 0.44, 0.7];
 
+/// A blocked attack: the pale flash of a shield taking a blow.
+const BLOCKED_TINT: [f32; 4] = [0.80, 0.82, 0.88, 0.9];
+
+/// A parried or dodged attack: cooler and thinner, because nothing touched the character.
+const AVOIDED_TINT: [f32; 4] = [0.62, 0.78, 0.95, 0.7];
+
+/// Deflection being spent: the resource's own colour, and the one moment it is worth
+/// drawing.
+const DEFLECTION_TINT: [f32; 4] = [0.95, 0.82, 0.35, 1.0];
+
+/// Puncture Blood's shell.
+const ABSORB_TINT: [f32; 4] = [0.85, 0.25, 0.30, 0.85];
+
+/// A spell going back where it came from.
+const REFLECT_TINT: [f32; 4] = [0.70, 0.55, 0.95, 1.0];
+
+/// A stun or a silence landing.
+const CONTROL_TINT: [f32; 4] = [0.95, 0.90, 0.55, 0.9];
+
 /// Colour of the mage's own defensive shell.
 const SHIELD_TINT: [f32; 4] = [1.0, 0.62, 0.30, 1.0];
 
@@ -544,7 +563,90 @@ impl VfxDirector {
                     .with_radius(height.mul_add(0.5, 2.0)),
                 );
             }
-            CombatEvent::Damage(_) | CombatEvent::Healing { .. } | CombatEvent::Jumped { .. } => {}
+            // The Warrior's defensive stream, drawn out of the **existing** catalogue: a
+            // block is an impact, a shield is the shell Flame Shield already uses, and a
+            // reflected spell is an explosion where it turned round. No new effects are
+            // authored for this class.
+            CombatEvent::AttackDefended {
+                defender,
+                outcome,
+                position,
+                ..
+            } => {
+                let height = simulation.world().height(defender).max(1.0);
+                let tint = if outcome.is_avoided() {
+                    AVOIDED_TINT
+                } else {
+                    BLOCKED_TINT
+                };
+                self.spawn(
+                    VfxSpawn::at(
+                        VfxId::Impact,
+                        position + Vec3::new(0.0, height * CHEST_FRACTION, 0.0),
+                    )
+                    .with_radius(0.7)
+                    .tinted(tint),
+                );
+            }
+            // Spending is the one moment the resource is worth showing: the passive bonuses
+            // have just come back, and the player pressed something to make it happen.
+            CombatEvent::DeflectionSpent { entity, .. } => {
+                let Some(position) = simulation.world().position(entity) else {
+                    return;
+                };
+                self.spawn(
+                    VfxSpawn::at(VfxId::BlinkArrival, position)
+                        .with_radius(1.2)
+                        .tinted(DEFLECTION_TINT),
+                );
+            }
+            CombatEvent::AbsorbApplied {
+                target, duration, ..
+            } => {
+                let Some(position) = simulation.world().position(target) else {
+                    return;
+                };
+                let height = simulation.world().height(target).max(1.0);
+                self.spawn(
+                    VfxSpawn::at(VfxId::Shield, position + Vec3::new(0.0, height * 0.5, 0.0))
+                        .with_radius(1.1)
+                        .lasting(duration)
+                        .tinted(ABSORB_TINT),
+                );
+            }
+            CombatEvent::SpellReflected { source, .. } => {
+                let Some(position) = simulation.world().position(source) else {
+                    return;
+                };
+                let height = simulation.world().height(source).max(1.0);
+                self.spawn(
+                    VfxSpawn::at(
+                        VfxId::Explosion,
+                        position + Vec3::new(0.0, height * 0.5, 0.0),
+                    )
+                    .with_radius(1.4)
+                    .tinted(REFLECT_TINT),
+                );
+            }
+            CombatEvent::ControlApplied { target, .. } => {
+                let Some(position) = simulation.world().position(target) else {
+                    return;
+                };
+                let height = simulation.world().height(target).max(1.0);
+                self.spawn(
+                    VfxSpawn::at(VfxId::Impact, position + Vec3::new(0.0, height, 0.0))
+                        .with_radius(0.9)
+                        .tinted(CONTROL_TINT),
+                );
+            }
+            // A point of Deflection and a shield taking a hit move no picture of their own:
+            // both happen several times a second in a pack, and the block that caused them
+            // has already been drawn.
+            CombatEvent::Damage(_)
+            | CombatEvent::Healing { .. }
+            | CombatEvent::Jumped { .. }
+            | CombatEvent::DeflectionGained { .. }
+            | CombatEvent::Absorbed { .. } => {}
         }
     }
 

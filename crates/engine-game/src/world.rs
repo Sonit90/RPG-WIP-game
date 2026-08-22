@@ -365,6 +365,29 @@ impl GameWorld {
         self.healths[id.index()].set_max(max);
     }
 
+    /// Changes an entity's maximum health, keeping the health it currently has.
+    ///
+    /// What a *buff* reaches the world through, as opposed to a change of gear. See
+    /// [`Health::set_max_keeping_current`].
+    pub fn set_max_health_keeping_current(&mut self, id: EntityId, max: f32) {
+        if !self.contains(id) {
+            return;
+        }
+        self.healths[id.index()].set_max_keeping_current(max);
+    }
+
+    /// An entity's health, for arena setup and a developer control.
+    ///
+    /// Gameplay goes through [`GameWorld::damage`] and [`GameWorld::heal`] so every change
+    /// produces an event; this is the same escape hatch [`GameWorld::body_mut`] is, for the
+    /// same callers.
+    pub fn health_mut(&mut self, id: EntityId) -> Option<&mut Health> {
+        if !self.contains(id) {
+            return None;
+        }
+        self.healths.get_mut(id.index())
+    }
+
     /// An entity's statuses.
     #[must_use]
     pub fn statuses(&self, id: EntityId) -> Option<&StatusSet> {

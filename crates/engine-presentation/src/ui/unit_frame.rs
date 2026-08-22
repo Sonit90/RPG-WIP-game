@@ -216,8 +216,24 @@ pub fn push_player_frame(
         scale,
     );
 
-    // Heat and Ultimate Energy: the two resources the class actually has. Nothing invents a
-    // third, and a class with different resources would list different ones here.
+    // **The resources the hero the player *is* actually has.** The Warrior has Deflection
+    // and no Heat; the FireMage has Heat and Ultimate Energy and no Deflection. One frame,
+    // one branch, and neither class is shown a bar that can never move.
+    if player.warrior.active {
+        push_deflection_rows(
+            list,
+            inner,
+            y + bar + 2.0 * factor,
+            bar,
+            factor,
+            scale,
+            player,
+            theme,
+            scratch,
+        );
+        return;
+    }
+
     y += bar + 2.0 * factor;
     list.bar(
         UiRect::new(inner.x, y, inner.width, bar),
@@ -247,6 +263,105 @@ pub fn push_player_frame(
         },
     );
     list.text_at((inner.x + 3.0 * factor, y), "ENERGY", theme.text, scale);
+}
+
+/// The Warrior's rows: the Deflection bar, what it is currently worth, and what is running.
+///
+/// Three lines, because the resource is three facts the player is trading between: how much
+/// is banked, what holding it is costing them, and which cooldowns are up.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one row of a frame that is already laid out by its caller"
+)]
+fn push_deflection_rows(
+    list: &mut UiDrawList,
+    inner: UiRect,
+    mut y: f32,
+    bar: f32,
+    factor: f32,
+    scale: f32,
+    player: &crate::snapshot::PlayerView,
+    theme: &UiTheme,
+    scratch: &mut FrameScratch,
+) {
+    let warrior = &player.warrior;
+    list.bar(
+        UiRect::new(inner.x, y, inner.width, bar),
+        warrior.deflection_fraction(),
+        theme.bar_background,
+        theme.deflection_color(warrior.is_capped()),
+    );
+    scratch.detail.clear();
+    scratch.detail.push_str("DEFLECTION ");
+    write_integer(&mut scratch.detail, warrior.deflection.round() as i64);
+    // The empowered marker, on the resource itself: twenty banked is an ability's worth.
+    if warrior.can_empower() {
+        scratch.detail.push_str(" *");
+    }
+    list.text_at(
+        (inner.x + 3.0 * factor, y),
+        &scratch.detail,
+        theme.text,
+        scale,
+    );
+
+    // **What holding it is costing.** The passive bonuses run backwards, and a player who
+    // cannot see them shrink has no reason to spend. Printed as the bonus they still have,
+    // which is what a hundred Deflection reads as zero of.
+    y += bar + 2.0 * factor;
+    scratch.detail.clear();
+    scratch.detail.push('+');
+    write_integer(
+        &mut scratch.detail,
+        (warrior.max_health_bonus * 1000.0).round() as i64,
+    );
+    // Tenths of a per cent: at twenty-five Deflection the bonus is 3.75 %, and rounding it
+    // to a whole number would show the same figure for two very different states.
+    scratch.detail.insert(scratch.detail.len() - 1, '.');
+    scratch.detail.push_str("% HP  +");
+    write_integer(
+        &mut scratch.detail,
+        (warrior.armor_bonus * 1000.0).round() as i64,
+    );
+    scratch.detail.insert(scratch.detail.len() - 1, '.');
+    scratch.detail.push_str("% ARMOUR");
+    list.text_at((inner.x, y), &scratch.detail, theme.status, scale);
+
+    // What is running. Only what is actually up: a line of dark labels for eleven abilities
+    // would be furniture.
+    y += size::LINE * factor;
+    scratch.detail.clear();
+    if warrior.shield_block > 0.0 {
+        scratch.detail.push_str("BLOCK ");
+    }
+    if warrior.battle_trance > 0.0 {
+        scratch.detail.push_str("TRANCE ");
+    }
+    if warrior.last_stand > 0.0 {
+        scratch.detail.push_str("STAND ");
+    }
+    if warrior.spell_reflect > 0.0 {
+        scratch.detail.push_str("REFLECT ");
+    }
+    if warrior.charging {
+        scratch.detail.push_str("CHARGE ");
+    }
+    if warrior.war_stomp_armor {
+        scratch.detail.push_str("STOMPED ");
+    }
+    if warrior.adrenaline > 0.0 {
+        // The Recovery Pool, while it is being filled: what the player will get back.
+        scratch.detail.push_str("POOL ");
+        write_integer(&mut scratch.detail, warrior.recovery_pool.round() as i64);
+        scratch.detail.push(' ');
+    }
+    if warrior.absorb > 0.0 {
+        scratch.detail.push_str("ABSORB ");
+        write_integer(&mut scratch.detail, warrior.absorb.round() as i64);
+    }
+    if !scratch.detail.is_empty() {
+        list.text_at((inner.x, y), &scratch.detail, theme.text, scale);
+    }
 }
 
 /// Draws a frame for a target, or its empty state when there is nothing selected.

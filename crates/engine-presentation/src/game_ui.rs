@@ -275,6 +275,13 @@ pub struct UiTheme {
     pub energy: UiColor,
     /// The Ultimate Energy bar once it is full.
     pub energy_full: UiColor,
+    /// The Warrior's Deflection bar below the cap.
+    ///
+    /// Warm rather than cool, and the *filling* of it is the warning: a full bar is a full
+    /// bank and no passive defence at all. See [`UiTheme::deflection_color`].
+    pub deflection: UiColor,
+    /// The Deflection bar at a hundred, where the passive bonuses are worth nothing.
+    pub deflection_capped: UiColor,
     /// An ability that cannot be paid for.
     pub slot_no_resource: UiColor,
     /// An ability that is switched off entirely.
@@ -349,6 +356,8 @@ impl Default for UiTheme {
             heat_inferno: [1.0, 0.30, 0.10, 1.0],
             energy: [0.35, 0.55, 0.95, 1.0],
             energy_full: [0.65, 0.85, 1.0, 1.0],
+            deflection: [0.85, 0.72, 0.30, 1.0],
+            deflection_capped: [1.0, 0.55, 0.20, 1.0],
             slot_disabled: [0.25, 0.25, 0.28, 1.0],
             slot_no_resource: [0.70, 0.18, 0.18, 1.0],
             slot_invalid: [0.60, 0.15, 0.15, 1.0],
@@ -421,6 +430,21 @@ impl UiTheme {
             HeatTier::Warm => self.heat_warm,
             HeatTier::Hot => self.heat_high,
             HeatTier::Inferno => self.heat_inferno,
+        }
+    }
+
+    /// What colour the Deflection bar is at `value`.
+    ///
+    /// One of two: the ordinary bar, and the capped one. The cap is worth calling out
+    /// because it is the one state the design asks the player to get out of — not with a
+    /// penalty, but because the passive maximum health and armour bonuses are worth nothing
+    /// there and there is a full bank to spend.
+    #[must_use]
+    pub fn deflection_color(&self, capped: bool) -> UiColor {
+        if capped {
+            self.deflection_capped
+        } else {
+            self.deflection
         }
     }
 
@@ -1441,6 +1465,21 @@ impl GameUi {
             line.push_str("COSTS ");
             write_integer(&mut line, definition.energy_cost as i64);
             line.push_str(" ENERGY");
+        }
+        // What twenty Deflection buys, and whether pressing it now will buy it. Two facts
+        // rather than one: an ability the player cannot afford to empower still has to say
+        // what its empowered form is, or there is nothing to save for.
+        if definition.warrior.is_empowerable() {
+            if !line.is_empty() {
+                line.push_str("  ");
+            }
+            line.push_str(if view.spends_deflection {
+                "SPENDS "
+            } else {
+                "NEEDS "
+            });
+            write_integer(&mut line, definition.warrior.deflection_cost as i64);
+            line.push_str(" DEFLECTION");
         }
         if !line.is_empty() {
             self.tooltip_lines.push(line);

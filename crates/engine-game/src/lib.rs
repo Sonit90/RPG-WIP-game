@@ -99,6 +99,8 @@ pub mod sim;
 pub mod status;
 pub mod targeting;
 pub mod telemetry;
+/// The Warrior: Deflection, and the state its eleven abilities leave behind.
+pub mod warrior;
 pub mod world;
 
 pub use ability::{ABILITY_SLOTS, AbilityId};
@@ -114,7 +116,7 @@ pub use encounter::{Encounter, EncounterState, EnemySpawn};
 pub use enemy::brain::{AiState, EnemyBrain};
 pub use enemy::{EnemyAbility, EnemyKind, TelegraphShape};
 pub use entity::EntityId;
-pub use event::{CombatEvent, DamageEvent};
+pub use event::{CombatEvent, ControlKind, DamageEvent};
 pub use firemage::{AbilityError, FireAbility, FireMage, TalentId};
 pub use hero::Hero;
 pub use input_map::Bindings;
@@ -124,4 +126,5 @@ pub use party::{MAX_PARTY, Party};
 pub use sim::{Player, SimConfig, SimStats, Simulation};
 pub use status::{StatusKind, StatusSet};
 pub use telemetry::CombatMeter;
+pub use warrior::{Deflection, Warrior};
 pub use world::{EntityDesc, EntityKind, GameWorld};

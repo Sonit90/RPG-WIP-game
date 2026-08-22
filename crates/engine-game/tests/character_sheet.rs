@@ -19,6 +19,7 @@ use engine_game::character::{
 use engine_game::firemage::BASE_SPELL_POWER;
 use engine_game::hero::Hero;
 use engine_game::sim::Simulation;
+use engine_game::warrior::PASSIVE_MAX_HEALTH_AT_ZERO;
 use engine_game::{ItemFamily, PlayerCommand};
 
 /// A running arena with one step taken, so everything is initialised.
@@ -279,7 +280,15 @@ fn swapping_hero_swaps_the_gear_the_bag_and_the_stats() {
     let stats = simulation.character_stats();
     assert_eq!(stats.get(Stat::Strength), BASE_MAIN_STAT);
     assert_eq!(stats.get(Stat::Intellect), 0.0);
-    assert_eq!(max_health(&simulation), BASE_STAMINA * HEALTH_PER_STAMINA);
+    // The Warrior's health is Stamina *and* what Deflection is currently worth. A fresh
+    // Warrior is at zero Deflection, which is where the passive bonus is at its largest:
+    // five per cent. See `engine_game::warrior::deflection`.
+    let expected = BASE_STAMINA * HEALTH_PER_STAMINA * (1.0 + PASSIVE_MAX_HEALTH_AT_ZERO);
+    assert!(
+        (max_health(&simulation) - expected).abs() < 1e-3,
+        "{} against {expected}",
+        max_health(&simulation)
+    );
 
     // And back: the FireMage is still missing a chestpiece.
     assert!(simulation.set_hero(Hero::FireMage));

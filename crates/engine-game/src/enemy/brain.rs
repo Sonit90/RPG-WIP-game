@@ -281,6 +281,24 @@ pub struct EnemyBrain {
     /// Only ever increases within a life: healing an enemy back over a threshold does not
     /// put it back a phase, which is what stops a Crypt Warden from rewinding a boss.
     phase: usize,
+    /// Seconds of stun left. While it is running the enemy does nothing at all.
+    ///
+    /// A control effect lives on the mind rather than in a status set because what it does
+    /// is stop the mind: a stunned enemy is not an enemy with a debuff that something has to
+    /// remember to check, it is an enemy whose `think` returns before it decides anything.
+    stun: f32,
+    /// Seconds of silence left. While it is running the enemy may not start a *cast*.
+    ///
+    /// Instant attacks are unaffected, which is what makes a silence a different tool from a
+    /// stun: a silenced caster walks up and swings.
+    silence: f32,
+    /// What its attack speed is multiplied by. One is unhindered.
+    ///
+    /// Pushed in from outside — War Stomp's stacks are a status on the enemy, and the
+    /// simulation converts them into this — so the brain has no idea what a Warrior is. It
+    /// divides every cooldown it starts, which is what "attack speed" means for an enemy
+    /// whose whole rotation is cooldowns.
+    attack_speed_scale: f32,
 }
 
 impl EnemyBrain {
@@ -299,6 +317,9 @@ impl EnemyBrain {
             cast: None,
             combat_time: 0.0,
             phase: 0,
+            stun: 0.0,
+            silence: 0.0,
+            attack_speed_scale: 1.0,
         }
     }
 
@@ -362,6 +383,66 @@ impl EnemyBrain {
         self.combat_time
     }
 
+    /// Whether it is stunned: doing nothing, and deciding nothing.
+    #[must_use]
+    pub fn is_stunned(&self) -> bool {
+        self.stun > 0.0
+    }
+
+    /// Seconds of stun left.
+    #[must_use]
+    pub fn stun_remaining(&self) -> f32 {
+        self.stun.max(0.0)
+    }
+
+    /// Whether it is silenced: instants only.
+    #[must_use]
+    pub fn is_silenced(&self) -> bool {
+        self.silence > 0.0
+    }
+
+    /// Seconds of silence left.
+    #[must_use]
+    pub fn silence_remaining(&self) -> f32 {
+        self.silence.max(0.0)
+    }
+
+    /// Stuns it for `seconds`, keeping whichever stun is longer.
+    ///
+    /// The longer of the two rather than the sum, for the reason every timer in the project
+    /// takes the longer: two half-second stuns landing together are one half-second stun,
+    /// not a second of one.
+    pub fn stun(&mut self, seconds: f32) {
+        if seconds > self.stun {
+            self.stun = seconds.max(0.0);
+        }
+    }
+
+    /// Silences it for `seconds`, keeping whichever silence is longer.
+    pub fn silence(&mut self, seconds: f32) {
+        if seconds > self.silence {
+            self.silence = seconds.max(0.0);
+        }
+    }
+
+    /// Sets what its attack speed is multiplied by.
+    ///
+    /// Clamped to a floor rather than allowed to reach zero: an enemy whose cooldowns are
+    /// divided by nothing never attacks again, which is a stun with no duration.
+    pub fn set_attack_speed_scale(&mut self, scale: f32) {
+        self.attack_speed_scale = if scale.is_finite() {
+            scale.clamp(0.2, 4.0)
+        } else {
+            1.0
+        };
+    }
+
+    /// What its attack speed is multiplied by.
+    #[must_use]
+    pub fn attack_speed_scale(&self) -> f32 {
+        self.attack_speed_scale
+    }
+
     /// Adds threat, which is how being attacked reaches the AI.
     ///
     /// Called by the simulation when damage lands on this enemy. It does *not* pull the
@@ -384,6 +465,9 @@ impl EnemyBrain {
         self.cast = None;
         self.combat_time = 0.0;
         self.phase = 0;
+        self.stun = 0.0;
+        self.silence = 0.0;
+        self.attack_speed_scale = 1.0;
     }
 
     /// Which phase it is in. Zero is the first.
@@ -504,6 +588,23 @@ impl EnemyBrain {
             return AiDecision::IDLE;
         }
 
+        // Stunned: nothing else in this function runs. A cast in progress is lost, exactly
+        // as it is to an interrupt, and the caller is told so it can take the telegraph
+        // down — a stun that left a cast bar on screen would be a lie about what is
+        // happening.
+        if self.is_stunned() {
+            if let Some(cast) = self.stop_cast(CastStop::Interrupted) {
+                self.state = AiState::Recover;
+                self.timer = self.timer.max(self.stun);
+                return AiDecision {
+                    intent: MoveIntent::NONE,
+                    request: AiRequest::CancelCast(cast.ability),
+                    phase: None,
+                };
+            }
+            return AiDecision::IDLE;
+        }
+
         // The target is re-chosen every tick from threat, so a taunt, a death or a new
         // attacker changes who is being hit without any state needing to know about it.
         //
@@ -565,6 +666,8 @@ impl EnemyBrain {
     /// Counts down every timer this tick.
     fn tick_timers(&mut self, step: f32) {
         self.timer = (self.timer - step).max(0.0);
+        self.stun = (self.stun - step).max(0.0);
+        self.silence = (self.silence - step).max(0.0);
         for cooldown in &mut self.cooldowns {
             *cooldown = (*cooldown - step).max(0.0);
         }
@@ -663,6 +766,12 @@ impl EnemyBrain {
                 if self.cooldowns[ability.index()] > 0.0 {
                     return None;
                 }
+                // Silenced: everything with a cast bar is off the list, and the instants
+                // stay. Filtered here rather than refused later so a silenced caster picks
+                // its swing instead of standing still holding a spell it cannot cast.
+                if self.is_silenced() && definition.is_cast() {
+                    return None;
+                }
                 let recipient = match definition.select {
                     super::EnemyTarget::Victim => target,
                     super::EnemyTarget::WoundedAlly => percept.wounded_ally?,
@@ -689,8 +798,9 @@ impl EnemyBrain {
         // The phase's cooldown scaling is applied here, once, when the ability is started —
         // not when it is read — so a phase change does not retroactively shorten a cooldown
         // that is already running.
-        self.cooldowns[ability.index()] =
-            definition.cooldown * archetype.phase_cooldown_scale(self.phase);
+        self.cooldowns[ability.index()] = definition.cooldown
+            * archetype.phase_cooldown_scale(self.phase)
+            / self.attack_speed_scale.max(0.2);
         let intent = MoveIntent {
             direction: Vec3::ZERO,
             jump: false,

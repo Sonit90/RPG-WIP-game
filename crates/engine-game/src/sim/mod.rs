@@ -59,12 +59,15 @@ use crate::party::Party;
 use crate::status::StatusOutcome;
 use crate::targeting::TargetQuery;
 use crate::telemetry::CombatMeter;
+use crate::warrior::Warrior;
 use crate::world::{EntityKind, GameWorld};
 
 /// How the simulation is configured.
 /// Enemy brains, their attacks and their telegraphs: the combat half of the AI.
 pub mod enemy_exec;
 mod firemage_exec;
+/// Casting the Warrior: Deflection, the incoming-damage pipeline and the charge.
+mod warrior_exec;
 
 pub use firemage_exec::{
     CONE_HALF_ANGLE, CastAim, DETONATE_FRACTION, FireCounters, horizontal_distance,
@@ -362,6 +365,26 @@ pub struct Simulation {
     spirit: SpiritSurge,
     /// The class: abilities, Ignite, Heat, Ultimate Energy, talents and ground fire.
     mage: FireMage,
+    /// Stats granted to the player on top of their sheet and the Spirit buff.
+    ///
+    /// What a *temporary* grant looks like: a scripted encounter's buff, a developer
+    /// control, or a test putting a character in the gear it wants to measure. Added in
+    /// [`Simulation::character_stats`] with everything else rather than written into the
+    /// sheet, because the sheet is what the character owns and this is not.
+    stat_bonus: crate::character::StatBlock,
+    /// The last incoming attack's outcome, for the debug readout and for a test.
+    ///
+    /// One slot, overwritten, exactly like [`Simulation::last_line_of_sight`]: the question
+    /// a developer asks is always about the swing that just landed.
+    last_defense: Option<crate::character::DefenseOutcome>,
+    /// The Warrior: Deflection, its timers, its absorb and its banked pool.
+    ///
+    /// Beside the FireMage rather than instead of it, for the reason the FireMage's own
+    /// state sits here while a Druid is being played: the class that is not being played
+    /// costs a handful of floats and is ticked to rest, and one block of state per class
+    /// that is always present is a great deal less to go wrong than a block that appears
+    /// and disappears with the hero.
+    warrior: Warrior,
     /// What the class did this fight, for the combat simulator's report.
     ///
     /// Counts only. Nothing in gameplay reads them, and they are cleared with the dummies.
@@ -461,6 +484,9 @@ impl Simulation {
             roster: Roster::starting(),
             spirit: SpiritSurge::new(),
             mage: FireMage::new(seed),
+            warrior: Warrior::new(),
+            stat_bonus: crate::character::StatBlock::zero(),
+            last_defense: None,
             fire: FireCounters::default(),
             ignite_ticks: Vec::with_capacity(32),
             zone_ticks: Vec::with_capacity(16),
@@ -511,6 +537,7 @@ impl Simulation {
         self.player.last_ability = None;
         self.player.last_error = None;
         self.mage.reset();
+        self.warrior.reset();
         // The new hero is a different character with different gear, so their health and
         // their stats are the new sheet's. Cleared with the class state for the same reason
         // a half-finished cast is: the buff was the old character's.
@@ -552,7 +579,49 @@ impl Simulation {
     /// class. Derived on every call; see [`crate::character`] for why nothing stores it.
     #[must_use]
     pub fn character_stats(&self) -> crate::character::StatBlock {
-        self.sheet().stats_with(&self.spirit)
+        let mut stats = self.sheet().stats_with(&self.spirit);
+        stats.add_block(&self.stat_bonus);
+        stats
+    }
+
+    /// The stats granted on top of the sheet.
+    #[must_use]
+    pub fn stat_bonus(&self) -> crate::character::StatBlock {
+        self.stat_bonus
+    }
+
+    /// Grants stats on top of the sheet, and recomputes everything derived from them.
+    ///
+    /// Replaces rather than adds, so the caller holds the whole of what is granted and there
+    /// is no way to accumulate a buff that was never taken off.
+    pub fn set_stat_bonus(&mut self, bonus: crate::character::StatBlock) {
+        self.stat_bonus = bonus;
+        self.refresh_character();
+    }
+
+    /// The outcome of the last attack on the player: hit, blocked, parried or dodged.
+    #[must_use]
+    pub fn last_defense(&self) -> Option<crate::character::DefenseOutcome> {
+        self.last_defense
+    }
+
+    /// **Delivers one attack to the player through the ordinary incoming pipeline.**
+    ///
+    /// The scripted-encounter and test entry point, and deliberately not a second pipeline:
+    /// it is the same call an enemy's swing makes, so what it reflects, avoids, blocks,
+    /// mitigates, absorbs and banks is what a real attack does. Returns the outcome the one
+    /// roll produced.
+    pub fn deliver_attack(
+        &mut self,
+        attacker: EntityId,
+        amount: f32,
+        ability: AbilityId,
+        damage_type: DamageType,
+    ) -> Option<crate::character::DefenseOutcome> {
+        self.last_defense = None;
+        let target = self.player.entity;
+        self.deal_damage(attacker, target, amount, ability, damage_type, false);
+        self.last_defense
     }
 
     /// Moves an item between two slots on the current character, and recomputes everything
@@ -580,9 +649,13 @@ impl Simulation {
         let stats = self.character_stats();
         let main = self.hero.main_stat();
 
+        // Stamina, and then whatever the class is currently multiplying it by: the
+        // Warrior's Deflection bonus and Last Stand. The *fraction* is preserved here
+        // because this is the gear path — see `refresh_warrior_health` for the buff path,
+        // which keeps the absolute health instead.
         self.world.set_max_health(
             self.player.entity,
-            health_from_stamina(stats.get(Stat::Stamina)),
+            health_from_stamina(stats.get(Stat::Stamina)) * self.warrior_health_multiplier(),
         );
 
         // The bridge between the character sheet and the class. Gear is stated as what is
@@ -936,6 +1009,10 @@ impl Simulation {
         stats.movement += movement_started.elapsed();
 
         let ability_started = Instant::now();
+        // Before the class tick and before the cast, because a Shield Charge in flight is a
+        // movement that this tick's abilities are aimed from: the Warrior has to have
+        // arrived before anything decides what is in range.
+        self.tick_warrior(step);
         self.tick_firemage(step);
         // After the frame's commands have been applied — an instant ability used this tick
         // has already interrupted any cast — and before statuses, so a cast that lands this
@@ -1019,7 +1096,11 @@ impl Simulation {
                     }
                 }
                 PlayerCommand::UseUltimate { position } => {
-                    let _ = self.cast_at(FireAbility::Cataclysm, position);
+                    // Whichever ability this hero keeps beside the bar. The FireMage's is
+                    // switched off and refuses; the Warrior's is Last Stand.
+                    if let Some(ultimate) = self.hero.ultimate() {
+                        let _ = self.cast_at(ultimate, position);
+                    }
                 }
                 PlayerCommand::PurchaseTalent(talent) => {
                     let _ = self.mage.purchase_talent(talent);
@@ -1280,11 +1361,45 @@ impl Simulation {
                         source,
                         ability,
                         damage,
+                        source_health_fraction,
+                        heals,
+                        ..
                     } => {
+                        // **The unsnapshotted half.** The status handed out a coefficient;
+                        // the source's maximum health is read here, on the tick the effect
+                        // actually happens, so a bleed applied at ten thousand maximum health
+                        // ticks for more after a Last Stand and for less after it ends.
+                        let scaled = if source_health_fraction > 0.0 {
+                            let max = self
+                                .world
+                                .health(source)
+                                .map_or(0.0, crate::combat::Health::max);
+                            source_health_fraction * max
+                        } else {
+                            0.0
+                        };
+                        let amount = damage + scaled;
+                        if amount <= 0.0 {
+                            continue;
+                        }
+                        if heals {
+                            let restored = self.world.heal(id, amount).applied;
+                            if restored > 0.0 {
+                                let tick = self.tick;
+                                self.events.push(CombatEvent::Healing {
+                                    source,
+                                    target: id,
+                                    amount: restored,
+                                    ability,
+                                    tick,
+                                });
+                            }
+                            continue;
+                        }
                         // A periodic tick does not roll: the roll belongs to the cast that
                         // applied the status, and rerolling per tick would make a damage
                         // over time effect a second source of critical strikes.
-                        self.deal_damage(source, id, damage, ability, kind.damage_type(), false);
+                        self.deal_damage(source, id, amount, ability, kind.damage_type(), false);
                     }
                     StatusOutcome::Ended { kind, reason } => {
                         let tick = self.tick;
@@ -1724,6 +1839,20 @@ impl Simulation {
         );
     }
 
+    /// Whether `entity` is something that may attack the player.
+    ///
+    /// Asked before the incoming pipeline runs, so a Warrior's own Puncture Blood and a
+    /// friendly heal never roll a dodge against themselves.
+    #[must_use]
+    pub fn is_hostile_to_player(&self, entity: EntityId) -> bool {
+        let Some(theirs) = self.world.faction(entity) else {
+            return false;
+        };
+        self.world
+            .faction(self.player.entity)
+            .is_some_and(|ours| ours.is_hostile_to(theirs))
+    }
+
     /// Whether the player is alive.
     ///
     /// The one question every "can I act" check asks. It is on the simulation rather than
@@ -1763,6 +1892,23 @@ impl Simulation {
         damage_type: DamageType,
         critical: bool,
     ) {
+        // **The incoming pipeline.** An attack on the player is answered before it is
+        // applied: reflected, avoided, blocked, mitigated by armour, absorbed, and banked
+        // by Adrenaline — in that order, once, in one place. Everything a defensive event
+        // pays out is fed from the single outcome that produces, which is what makes
+        // duplicate payment structurally impossible rather than a rule to remember.
+        let mut amount = amount;
+        if target == self.player.entity && source != target && self.is_hostile_to_player(source) {
+            match self.defend_player(source, amount, ability, damage_type) {
+                Some(landing) => amount = landing,
+                None => return,
+            }
+        }
+        // Shield Block's promise, kept where damage is applied: a defender who cannot be
+        // critically struck is never handed a critical hit. Nothing rolls a critical against
+        // the player today, so this is a guard on a future one rather than a live branch.
+        let critical = critical && !self.defense_profile().immune_to_critical;
+
         // Read before the damage: a killing blow frees nothing this tick, but a hit is a
         // thing that happened where the target was standing when it landed, and reading the
         // position afterwards would be reading it after a death has been processed.
@@ -1792,10 +1938,18 @@ impl Simulation {
         // Being hit is what makes an enemy angry, and it is the only thing that does.
         // Threat is fed here, in the one place damage lands, so no ability can deal damage
         // without generating threat and none can generate threat without dealing damage.
+        // The ability's own threat multiplier, off its row. One for everything that is not
+        // deliberately a threat tool; three or four for the Warrior's, which is the whole of
+        // "the tank holds a pack" — no second threat system, no Warrior-only table, and
+        // still nothing but damage that generates any threat at all.
+        let threat = result.applied
+            * ability
+                .fire()
+                .map_or(1.0, |fire| fire.definition().warrior.threat_multiplier);
         if let Some(Some(runtime)) = self.enemies.get_mut(target.index())
             && self.world.contains(target)
         {
-            runtime.brain.add_threat(source, result.applied);
+            runtime.brain.add_threat(source, threat);
         }
 
         if result.killed {

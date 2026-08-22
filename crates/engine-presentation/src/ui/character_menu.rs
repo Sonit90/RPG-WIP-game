@@ -855,6 +855,28 @@ fn push_stats_column(
         y += metrics.stat_row;
     }
 
+    // Defensive. Armour, Block, Parry and Dodge: what an incoming attack meets. Its own
+    // section rather than four more Secondary rows, because it is read as a group and
+    // because Armour is printed flat while the other three read as percentages — see
+    // `Stat::is_rating`.
+    y += metrics.section * 0.5;
+    y = push_section_heading(list, column, y, "DEFENSIVE", theme, metrics);
+    for stat in Stat::ALL {
+        if stat.group() != StatGroup::Defensive {
+            continue;
+        }
+        push_stat_row(
+            list,
+            stat_row_rect(column, y, metrics),
+            stat,
+            &character.total,
+            theme,
+            scratch,
+            metrics,
+        );
+        y += metrics.stat_row;
+    }
+
     // What the gear is contributing, as one line. The panel does not add this up; it prints
     // the difference the sheet already reports between base and total.
     y += metrics.section * 0.5;
@@ -1700,6 +1722,7 @@ mod tests {
         assert!(drawn.iter().any(|text| text.contains("FIREMAGE")));
         assert!(drawn.contains(&"PRIMARY".to_owned()));
         assert!(drawn.contains(&"SECONDARY".to_owned()));
+        assert!(drawn.contains(&"DEFENSIVE".to_owned()));
         assert!(drawn.contains(&"DERIVED".to_owned()));
         assert!(drawn.contains(&"INVENTORY".to_owned()));
         for stat in Stat::ALL {

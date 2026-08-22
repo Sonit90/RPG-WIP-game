@@ -192,6 +192,23 @@ impl Health {
         self.current = (max * fraction).clamp(0.0, max);
     }
 
+    /// Changes the maximum, keeping the **absolute** current health.
+    ///
+    /// What a temporary buff does, and the opposite of [`Health::set_max`], which is what a
+    /// change of *gear* does. The distinction is load-bearing for the Warrior: Deflection
+    /// moves the maximum by a fraction of a per cent every time an attack is blocked, and a
+    /// fraction-preserving change would turn that into a stream of free healing on the way
+    /// down and free damage on the way up. A buff that grants maximum health does not heal;
+    /// one that expires does not kill, because the current value is clamped rather than
+    /// scaled.
+    pub fn set_max_keeping_current(&mut self, max: f32) {
+        if !max.is_finite() || max <= 0.0 {
+            return;
+        }
+        self.max = max;
+        self.current = self.current.clamp(0.0, max);
+    }
+
     /// Sets the current health directly, clamped into range.
     ///
     /// For arena setup and tests. Gameplay goes through [`Health::damage`] and

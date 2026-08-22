@@ -27,7 +27,42 @@ use engine_game::firemage::{
 use engine_game::hero::Hero;
 use engine_game::sim::Simulation;
 use engine_game::status::StatusKind;
+use engine_game::warrior::{DEFLECTION_MAXIMUM, DEFLECTION_SPEND};
 use engine_game::world::EntityKind;
+
+/// Reads everything the Warrior's readouts show.
+///
+/// A free function beside [`character_view`], for the same reason: building one is a
+/// question for the simulation, and the view is the answer. Every hero but the Warrior gets
+/// the inert default, so a frame drawing it asks one question rather than branching on who
+/// the player is in five places.
+fn warrior_view(simulation: &Simulation) -> WarriorView {
+    if simulation.hero() != Hero::Warrior {
+        return WarriorView::default();
+    }
+    let warrior = simulation.warrior();
+    let profile = simulation.defense_profile();
+    WarriorView {
+        active: true,
+        deflection: warrior.deflection.value(),
+        max_health_bonus: warrior.deflection.max_health_bonus(),
+        armor_bonus: warrior.deflection.armor_bonus(),
+        shield_block: warrior.shield_block.remaining(),
+        shield_block_empowered: warrior.shield_block_empowered,
+        battle_trance: warrior.battle_trance.remaining(),
+        last_stand: warrior.last_stand.remaining(),
+        spell_reflect: warrior.spell_reflect.remaining(),
+        spell_reflect_empowered: warrior.spell_reflect_empowered,
+        adrenaline: warrior.adrenaline.remaining(),
+        recovery_pool: warrior.recovery_pool,
+        absorb: warrior.absorb.remaining(),
+        absorb_seconds: warrior.absorb.seconds_left(),
+        charging: warrior.charge.is_some(),
+        war_stomp_armor: warrior.war_stomp_armor,
+        defensive_chance: profile.defensive_chance(),
+        armor: profile.armor,
+    }
+}
 
 /// Reads the current character sheet.
 ///
@@ -62,6 +97,12 @@ fn character_view(simulation: &Simulation) -> CharacterView {
 pub struct StatusView {
     /// Which status.
     pub kind: StatusKind,
+    /// How many stacks are on the bearer. One for a status that does not stack.
+    ///
+    /// Carried so a plate can print "SUNDERED 8" rather than "SUNDERED": War Stomp's eighth
+    /// stack is a condition the Warrior is watching for, and a plate that cannot count is a
+    /// plate that cannot tell them they have reached it.
+    pub stacks: u8,
     /// Seconds left.
     pub remaining: f32,
     /// How much of its duration is left, in `0.0..=1.0`.
@@ -103,6 +144,74 @@ impl StatusList {
     }
 }
 
+/// **The Warrior's own readouts.**
+///
+/// Everything the interface needs to say what Deflection is worth right now, and what the
+/// class currently has running. Every field is read from the simulation rather than derived
+/// here, which is the rule the rest of this module already follows: a bar that works out its
+/// own bonus is a bar that can disagree with the damage pipeline.
+///
+/// `active` is false for every other hero, and the frame draws its own resources instead.
+#[derive(Debug, Default, Clone, Copy, PartialEq)]
+pub struct WarriorView {
+    /// Whether the player is the Warrior at all.
+    pub active: bool,
+    /// Deflection banked, in `0..=100`.
+    pub deflection: f32,
+    /// The maximum health bonus Deflection is currently worth, as a fraction.
+    pub max_health_bonus: f32,
+    /// The armour bonus Deflection is currently worth, as a fraction.
+    pub armor_bonus: f32,
+    /// Seconds of Shield Block left.
+    pub shield_block: f32,
+    /// Whether the running Shield Block was empowered.
+    pub shield_block_empowered: bool,
+    /// Seconds of Battle Trance left.
+    pub battle_trance: f32,
+    /// Seconds of Last Stand left.
+    pub last_stand: f32,
+    /// Seconds of Spell Reflect left.
+    pub spell_reflect: f32,
+    /// Whether the next spell reflected will be empowered.
+    pub spell_reflect_empowered: bool,
+    /// Seconds of Adrenaline left.
+    pub adrenaline: f32,
+    /// What Adrenaline has banked so far, in points of health.
+    pub recovery_pool: f32,
+    /// Puncture Blood's remaining absorb, in points of damage.
+    pub absorb: f32,
+    /// Seconds the absorb has left.
+    pub absorb_seconds: f32,
+    /// Whether a Shield Charge is running.
+    pub charging: bool,
+    /// Whether something in the world carries a full stack of War Stomp.
+    pub war_stomp_armor: bool,
+    /// The chance an attack is answered by a Block, Parry or Dodge, as a fraction.
+    pub defensive_chance: f32,
+    /// Armour, after every multiplier.
+    pub armor: f32,
+}
+
+impl WarriorView {
+    /// Deflection as a fraction, for a bar.
+    #[must_use]
+    pub fn deflection_fraction(&self) -> f32 {
+        (self.deflection / DEFLECTION_MAXIMUM).clamp(0.0, 1.0)
+    }
+
+    /// Whether there is enough banked to empower an ability.
+    #[must_use]
+    pub fn can_empower(&self) -> bool {
+        self.deflection + f32::EPSILON >= DEFLECTION_SPEND
+    }
+
+    /// Whether the bar is full, which is where the passive bonuses are worth nothing.
+    #[must_use]
+    pub fn is_capped(&self) -> bool {
+        self.deflection >= DEFLECTION_MAXIMUM
+    }
+}
+
 /// The player's own state.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PlayerView {
@@ -138,6 +247,8 @@ pub struct PlayerView {
     pub alive: bool,
     /// Damage taken this fight, which is a different number from the damage dealt.
     pub damage_taken: f32,
+    /// The Warrior's readouts. Inert for every other hero.
+    pub warrior: WarriorView,
 }
 
 impl PlayerView {
@@ -363,6 +474,14 @@ pub struct AbilitySlotView {
     pub ignite_stacks: u8,
     /// Chance those stacks land, for the abilities that roll for it.
     pub ignite_chance: f32,
+    /// Deflection this ability spends to be empowered. Zero if it has no empowered form.
+    pub deflection_cost: f32,
+    /// Whether pressing it **now** will spend that Deflection.
+    ///
+    /// Its own field rather than left to the button to work out from the cost and the
+    /// resource: "this press will cost you twenty" is a fact about the simulation, and a
+    /// button that computes it is a button that can be wrong about it.
+    pub spends_deflection: bool,
 }
 
 impl AbilitySlotView {
@@ -670,6 +789,7 @@ impl UiSnapshot {
             player: PlayerView {
                 health: 0.0,
                 max_health: 0.0,
+                warrior: WarriorView::default(),
                 heat: 0.0,
                 heat_tier: HeatTier::Cold,
                 inferno_remaining: 0.0,
@@ -731,6 +851,7 @@ impl UiSnapshot {
             statuses: statuses_of(simulation, player.entity),
             alive: simulation.player_alive(),
             damage_taken: simulation.meter().total_damage_taken() as f32,
+            warrior: warrior_view(simulation),
         };
 
         self.target = player
@@ -881,9 +1002,17 @@ fn ability_view(
             .distance_between(simulation.player().entity, id)
     });
 
-    let availability = if ability.is_ultimate() && !ULTIMATE_ENABLED {
-        // The Ultimate has no gameplay concept yet. The button stays where it is and says
-        // so, rather than disappearing and taking its architecture with it.
+    // Whether pressing this now spends twenty Deflection. Asked of the simulation's own
+    // resource, so the highlight on the button and the spend in the executor are the same
+    // question answered once.
+    let deflection = simulation.warrior().deflection.value();
+    let spends_deflection = simulation.hero() == Hero::Warrior
+        && definition.warrior.is_empowerable()
+        && deflection + f32::EPSILON >= definition.warrior.deflection_cost;
+
+    let availability = if ability.is_disabled() {
+        // Cataclysm has no gameplay concept yet. The button stays where it is and says so,
+        // rather than disappearing and taking its architecture with it.
         SlotAvailability::Disabled
     } else if definition.energy_cost > 0.0 && !mage.energy.is_full() {
         SlotAvailability::NoResource
@@ -905,6 +1034,12 @@ fn ability_view(
             }
             _ => SlotAvailability::InvalidTarget,
         }
+    } else if spends_deflection {
+        // **The empowered highlight.** The same state Detonate-on-a-full-burn already uses,
+        // reached by a second class for its own reason: it is ready, and pressing it right
+        // now buys something extra. One state, one colour on the bar, and no second visual
+        // language for the Warrior.
+        SlotAvailability::Empowered
     } else {
         SlotAvailability::Ready
     };
@@ -935,6 +1070,8 @@ fn ability_view(
         ignite_scaling: definition.ignite_bonus_per_stack,
         ignite_stacks: definition.ignite_stacks,
         ignite_chance: definition.ignite_chance,
+        deflection_cost: definition.warrior.deflection_cost,
+        spends_deflection,
     }
 }
 
@@ -945,6 +1082,7 @@ fn statuses_of(simulation: &Simulation, entity: EntityId) -> StatusList {
         for status in statuses.iter() {
             list.push(StatusView {
                 kind: status.kind,
+                stacks: status.stacks,
                 remaining: status.remaining,
                 fraction: status.fraction(),
             });

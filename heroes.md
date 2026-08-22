@@ -12,7 +12,7 @@ A **slice of the one ability table**, and nothing else.
 Hero ─┬─ abilities()  the rows of ABILITIES whose `hero` column names it, in bar order
       ├─ bar()        those rows on the digit keys; empty in the slots it does not fill
       ├─ model_name() a name the visual layer looks up. `engine-game` never sees a triangle
-      └─ ultimate()   Some for the mage (disabled), None for the other two
+      └─ ultimate()   the ability on `R`: Cataclysm (disabled), Last Stand, or none
 ```
 
 `engine-game/src/hero.rs`. Every row of `ABILITIES` carries `hero` and `damage_type`; no two
@@ -27,14 +27,16 @@ second tooltip generator and a second thing for the damage meter to learn.
 | hero | 1 | 2 | 3 |
 | --- | --- | --- | --- |
 | FireMage | *ten, unchanged* — see `firemage.md` | | |
-| Warrior | MORTAL STRIKE — 5 m, 6 s, 320 % | CLEAVE — 8 m cone, 10 s, 200 % | CHARGE — 18 m forward, 20 s |
+| Warrior | *eleven* — see `warrior.md` | | |
 | Druid | MOONFIRE — 30 m, 1.0 s cast, 160 % | STARFALL — 8 m circle, 6 s, 60 %/tick | REGROWTH — self heal, 400 %, 12 s |
 
 Nothing in the executor branches on who is casting. The Warrior and the Druid generate no
 Heat and apply no Ignite because their rows say zero, and a test asserts that against a live
 fight rather than against the table. Three mechanisms were generalized rather than copied:
 
-* **Movement** — Blink and Charge are one `dash(distance)`; the distance is the row's range.
+* **Movement** — Blink is `dash(distance)`; the distance is the row's range. The Warrior's
+  Shield Charge is deliberately *not* the same thing — it is a run through the collision
+  world, steered a step at a time. See `warrior.md`.
 * **Placed zones** — Starfall is the `Zone` Firestorm and Molten Meteor's ground already are,
   with a circle instead of a line.
 * **Healing** — Regrowth is the first heal a *player* can cast. It goes through
@@ -106,12 +108,12 @@ cheaper than one.
 
 * **No hero is persisted.** Every session starts as the FireMage. Bar one's *arrangement* is
   saved, so the bar comes back as whatever hero last wrote it, and the swap rewrites it.
-* **The Warrior and the Druid have no resource.** The FireMage's Heat and Ignite sit at rest
-  while they are worn; rage and mana are not designed.
-* **They borrow the mage's sounds and have no VFX of their own.** The stand-ins are chosen by
+* **The Druid has no resource.** The FireMage's Heat and Ignite sit at rest while it is worn;
+  mana is not designed. The Warrior has Deflection — see `warrior.md`.
+* **They borrow the mage's sounds and effects rather than having their own.** The stand-ins are chosen by
   shape — a swing is an impact, a placed circle is a placed area — because silence would read
   worse than a sound of the right length.
-* **Three abilities each, and no talents.** The talent grid is the FireMage's.
+* **No talents outside the FireMage.** The talent grid is the FireMage's.
 * **No animal forms.** In human form the Druid is the same rig as the Warrior, which is the
   property `humanoid.rs` exists to demonstrate; a bear would be a different skeleton, a
   different set of cycles and a second character in everything but the name.

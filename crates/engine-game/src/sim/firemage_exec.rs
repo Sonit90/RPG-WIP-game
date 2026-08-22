@@ -31,8 +31,9 @@ use crate::event::CombatEvent;
 use crate::firemage::{
     AbilityError, CRIT_FEEDBACK_CAP, FireAbility, IgniteTick, MOLTEN_GROUND_INTERVAL,
     MOLTEN_GROUND_TICK_COEFFICIENT, MOLTEN_GROUND_VULNERABILITY, PendingImpact, TargetMode,
-    ULTIMATE_ENABLED, VULNERABILITY_DURATION, Zone, ZoneKind, ZoneShape, ZoneTick,
+    VULNERABILITY_DURATION, Zone, ZoneKind, ZoneShape, ZoneTick,
 };
+use crate::hero::Hero;
 use crate::sim::CastEnd;
 
 use super::{ActiveCast, Simulation};
@@ -178,7 +179,9 @@ impl Simulation {
         if ability.is_passive() {
             return Err(AbilityError::OnCooldown);
         }
-        if ability.is_ultimate() && !ULTIMATE_ENABLED {
+        // One ability in the game is switched off, and it is Cataclysm. The *slot* beside
+        // the bar is not: the Warrior's Last Stand lives there and is a real button.
+        if ability.is_disabled() {
             return Err(AbilityError::UltimateDisabled);
         }
         if !self.world.is_alive(caster) {
@@ -329,7 +332,7 @@ impl Simulation {
         let definition = ability.definition();
         let caster = self.player.entity;
         match definition.target {
-            TargetMode::Single => {
+            TargetMode::Single | TargetMode::TargetCone => {
                 let target = self.player.target.ok_or(AbilityError::NoTarget)?;
                 if !self.world.is_alive(target) {
                     return Err(AbilityError::TargetInvalid);
@@ -352,7 +355,12 @@ impl Simulation {
                     .world
                     .position(target)
                     .ok_or(AbilityError::TargetInvalid)?;
-                if !self.is_facing(position) {
+                // A target-pointed cleave *turns* the character towards the selection —
+                // choosing a target is how the player says which way the cleave points, and
+                // refusing it for facing would be refusing them for the camera.
+                if matches!(definition.target, TargetMode::TargetCone) {
+                    self.face_towards(position);
+                } else if !self.is_facing(position) {
                     return Err(AbilityError::FacingWrongWay);
                 }
                 // After range, so a target on the far side of the level is still refused
@@ -465,6 +473,10 @@ impl Simulation {
             tick,
         });
 
+        if ability.hero() == Hero::Warrior {
+            return self.land_warrior(ability, hits);
+        }
+
         match ability {
             FireAbility::Detonate => self.detonate(),
             FireAbility::FireMastery => {
@@ -475,7 +487,7 @@ impl Simulation {
                 self.mage.flame_shield.start(definition.duration);
                 0
             }
-            FireAbility::Blink | FireAbility::Charge => {
+            FireAbility::Blink => {
                 self.dash(definition.range);
                 0
             }
@@ -487,7 +499,10 @@ impl Simulation {
                 self.spawn_placed_zone(ability, aim, origin);
                 0
             }
-            FireAbility::Regrowth => self.heal_self(definition.base_damage(&self.mage.stats())),
+            FireAbility::Regrowth => self.heal_self(
+                definition.base_damage(&self.mage.stats()),
+                FireAbility::Regrowth,
+            ),
             _ => self.apply_direct(ability),
         }
     }
@@ -849,7 +864,7 @@ impl Simulation {
     /// The only heal a player can cast. It goes through [`GameWorld::heal`] and the
     /// `Healing` event exactly as an enemy's does, so "every health change is observable"
     /// holds for the player's own as well.
-    fn heal_self(&mut self, amount: f32) -> u32 {
+    pub(super) fn heal_self(&mut self, amount: f32, ability: FireAbility) -> u32 {
         let entity = self.player.entity;
         if !self.world.is_alive(entity) {
             return 0;
@@ -863,7 +878,7 @@ impl Simulation {
             source: entity,
             target: entity,
             amount: restored,
-            ability: AbilityId::from_fire(FireAbility::Regrowth),
+            ability: AbilityId::from_fire(ability),
             tick,
         });
         1
@@ -987,7 +1002,26 @@ impl Simulation {
             }
             TargetMode::Cone => {
                 let yaw = self.aim_yaw(aim, origin);
-                self.collect_in_cone(origin, yaw, definition.range);
+                self.collect_in_cone(origin, yaw, definition.range, CONE_HALF_ANGLE);
+            }
+            TargetMode::TargetCone => {
+                // Pointed by the selection rather than by the mouse, and wider: see
+                // `TARGET_CLEAVE_HALF_ANGLE`. Everything else is the same cone.
+                let yaw = match self
+                    .player
+                    .target
+                    .and_then(|target| self.world.position(target))
+                {
+                    Some(position) => crate::enemy::brain::yaw_towards(origin, position),
+                    None => self.facing_yaw(),
+                };
+                self.face_towards(origin + Vec3::new(-yaw.sin(), 0.0, -yaw.cos()));
+                self.collect_in_cone(
+                    origin,
+                    yaw,
+                    definition.range,
+                    crate::firemage::TARGET_CLEAVE_HALF_ANGLE,
+                );
             }
             TargetMode::Ground => {
                 if let CastAim::Ground(position) = aim {
@@ -998,6 +1032,16 @@ impl Simulation {
                         },
                     );
                 }
+            }
+            // A self-cast with a radius is an area centred on the caster: Colossus Strike
+            // smashes the ground it is standing on. One without is a buff and hits nobody.
+            TargetMode::SelfCast if definition.radius > 0.0 => {
+                self.collect_in_shape(
+                    origin,
+                    ZoneShape::Circle {
+                        radius: definition.radius,
+                    },
+                );
             }
             // Firestorm is placed as a zone rather than hitting on the cast.
             TargetMode::Line | TargetMode::SelfCast | TargetMode::Movement => {}
@@ -1025,7 +1069,7 @@ impl Simulation {
     }
 
     /// Fills the hit list with every living hostile inside a cone.
-    fn collect_in_cone(&mut self, origin: Vec3, yaw: f32, range: f32) {
+    pub(super) fn collect_in_cone(&mut self, origin: Vec3, yaw: f32, range: f32, half_angle: f32) {
         let forward = Vec3::new(-yaw.sin(), 0.0, -yaw.cos());
         let player = self.player.entity;
         for slot in 0..self.world.slot_count() {
@@ -1048,7 +1092,7 @@ impl Simulation {
                 continue;
             }
             let cosine = (offset.x * forward.x + offset.z * forward.z) / distance;
-            if cosine >= CONE_HALF_ANGLE.cos() {
+            if cosine >= half_angle.cos() {
                 self.hits.push(id);
             }
         }
@@ -1105,7 +1149,7 @@ impl Simulation {
     /// The single place a FireMage number becomes damage: Heat's band, the target's fire
     /// vulnerability and the critical strike all apply here, so a new source of damage
     /// cannot forget one of them. Returns whether it critically struck.
-    fn strike(
+    pub(super) fn strike(
         &mut self,
         target: EntityId,
         base: f32,
@@ -1166,7 +1210,7 @@ impl Simulation {
     /// not a millisecond more, whatever a talent claims. What the reduction could not use is
     /// recorded rather than banked, because a reduction that fell on a ready ability is a
     /// real loss the simulator has to be able to see.
-    fn reduce_cooldown(&mut self, ability: FireAbility, seconds: f32, cap: f32) {
+    pub(super) fn reduce_cooldown(&mut self, ability: FireAbility, seconds: f32, cap: f32) {
         let seconds = seconds.min(cap);
         if seconds <= 0.0 {
             return;

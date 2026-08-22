@@ -84,14 +84,16 @@ fn a_swap_changes_which_abilities_the_bar_holds() {
     assert!(simulation.set_hero(Hero::Warrior));
     assert_eq!(
         simulation.hero().ability_at(0),
-        Some(FireAbility::MortalStrike)
+        Some(FireAbility::Recuperate)
     );
-    // Slot four is still slot four; the Warrior simply does not fill it.
+
+    // Slot four is still slot four; a hero with three abilities simply does not fill it.
+    assert!(simulation.set_hero(Hero::Druid));
     assert_eq!(simulation.hero().ability_at(3), None);
     assert_eq!(simulation.use_slot(3), Err(AbilityError::CasterDead));
 
     // Swapping to the hero you already are changes nothing and says so.
-    assert!(!simulation.set_hero(Hero::Warrior));
+    assert!(!simulation.set_hero(Hero::Druid));
 }
 
 #[test]
@@ -122,19 +124,19 @@ fn a_swap_drops_the_cast_in_progress_and_the_fire_on_the_ground() {
 }
 
 #[test]
-fn the_warriors_strike_only_reaches_five_metres() {
+fn the_warriors_filler_only_reaches_five_metres() {
     let mut simulation = arena_as(Hero::Warrior);
     // The dummies stand well outside a melee reach, which is the whole point of the class
     // having a gap-closer.
     assert_eq!(
-        simulation.cast(FireAbility::MortalStrike),
+        simulation.cast(FireAbility::Recuperate),
         Err(AbilityError::OutOfRange)
     );
 
     close_to_target(&mut simulation, 3.0);
     let victim = target(&simulation);
     let before = health(&simulation, victim);
-    cast_through(&mut simulation, FireAbility::MortalStrike);
+    cast_through(&mut simulation, FireAbility::Recuperate);
     assert!(
         health(&simulation, victim) < before,
         "the strike landed nothing"
@@ -142,7 +144,7 @@ fn the_warriors_strike_only_reaches_five_metres() {
 }
 
 #[test]
-fn the_warriors_cleave_catches_more_than_one_enemy() {
+fn the_warriors_stomp_catches_more_than_one_enemy() {
     let mut simulation = arena_as(Hero::Warrior);
     // The arena's dummies stand apart, so one is moved to stand beside the other: what is
     // being asserted is that a cone hits everything inside it, not how the arena is laid
@@ -160,32 +162,62 @@ fn the_warriors_cleave_catches_more_than_one_enemy() {
         body.position = beside + Vec3::new(0.9, 0.0, 0.0);
     }
     close_to_target(&mut simulation, 2.0);
-    // Aimed at the target rather than at the selection: a cone is pointed with the mouse.
-    let Some(at) = simulation.world().position(target(&simulation)) else {
-        panic!("the target has a position");
-    };
+    // Pointed by the *selection*, not by the mouse: War Stomp is a targeted cleave, and the
+    // hundred-and-twenty-degree cone is measured from the line to whatever is selected.
     let hits = simulation
-        .cast_at(FireAbility::Cleave, at)
-        .expect("the cleave was refused");
+        .cast(FireAbility::WarStomp)
+        .expect("the stomp was refused");
     assert!(hits >= 2, "a cleave that caught {hits} is a strike");
 }
 
 #[test]
-fn a_charge_moves_the_warrior_further_than_a_blink_moves_the_mage() {
+fn a_shield_charge_runs_rather_than_teleports() {
     let mut simulation = arena_as(Hero::Warrior);
     let player = simulation.player().entity;
+    let victim = target(&simulation);
     let Some(from) = simulation.world().position(player) else {
         panic!("the player has a position");
     };
-    simulation.cast(FireAbility::Charge).expect("instant");
-    let Some(to) = simulation.world().position(player) else {
+
+    simulation.cast(FireAbility::ShieldCharge).expect("instant");
+    // Nothing has happened yet: a charge is a *movement*, and on the tick it is pressed the
+    // Warrior has not gone anywhere. This is the whole difference from Blink.
+    let Some(immediately) = simulation.world().position(player) else {
         panic!("the player has a position");
     };
-    let travelled = (to - from).length();
     assert!(
-        travelled > FireAbility::Blink.definition().range,
-        "a charge of {travelled} m is no better than a blink"
+        (immediately - from).length() < 0.001,
+        "the charge teleported"
     );
+
+    let mut travelled = 0.0;
+    let mut previous = from;
+    for _ in 0..180 {
+        simulation.step_once();
+        let Some(now) = simulation.world().position(player) else {
+            panic!("the player has a position");
+        };
+        // Every step is a step: no single tick of a charge covers a Blink's distance.
+        let step = (now - previous).length();
+        assert!(
+            step < FireAbility::Blink.definition().range,
+            "{step} m in one tick"
+        );
+        travelled += step;
+        previous = now;
+        if simulation.warrior().charge.is_none() {
+            break;
+        }
+    }
+    assert!(travelled > 5.0, "the charge covered {travelled} m");
+    let Some(reached) = simulation.world().position(player) else {
+        panic!("the player has a position");
+    };
+    let Some(destination) = simulation.world().position(victim) else {
+        panic!("the target has a position");
+    };
+    let gap = (reached - destination).length();
+    assert!(gap < 4.0, "the charge stopped {gap} m short");
 }
 
 #[test]

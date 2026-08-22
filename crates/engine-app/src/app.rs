@@ -3944,7 +3944,7 @@ mod tests {
             let kind = DecalShape::of(shape);
             match ability {
                 FireAbility::Firestorm => assert_eq!(kind, DecalShape::Line),
-                FireAbility::FlameCone | FireAbility::Cleave => {
+                FireAbility::FlameCone => {
                     assert_eq!(kind, DecalShape::Cone);
                 }
                 _ => assert_eq!(kind, DecalShape::Circle, "{ability:?}"),
