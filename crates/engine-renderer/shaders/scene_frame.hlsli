@@ -1,0 +1,630 @@
+// The frame's shader ABI, and the lighting every mesh pipeline shades with.
+//
+// Included by mesh.hlsl, mesh_instanced.hlsl and mesh_skinned.hlsl. Before shadows those
+// three carried three copies of the same `cbuffer Frame`, the same material buffer and the
+// same six lines of Lambert — and a test (tests/instanced_equivalence.rs) asserting that the
+// copies produced identical images. Shadow sampling is two hundred lines rather than six, so
+// the copies became one file: the three pipelines cannot disagree about lighting if there is
+// only one lighting function.
+//
+// The CPU mirror of `cbuffer Frame` is `FrameConstants` in src/scene.rs, field for field. A
+// change here is a change there, and `scene.rs` carries the offset assertions that fail when
+// only one of the two is edited.
+
+#ifndef SCENE_FRAME_HLSLI
+#define SCENE_FRAME_HLSLI
+
+// Must match settings.rs: MAX_CASCADES, MAX_LOCAL_LIGHTS, MAX_LOCAL_SHADOW_VIEWS.
+#define MAX_CASCADES 4
+#define MAX_LOCAL_LIGHTS 8
+#define MAX_LOCAL_SHADOW_VIEWS 16
+
+cbuffer Frame : register(b0)
+{
+    column_major float4x4 view_projection;
+    float3 camera_position;
+    float frame_padding;
+    // The direction the light travels, not the direction towards it. Stored the way it is
+    // authored ("the sun points down and to the left") and negated once, here, rather than
+    // at every call site that sets it.
+    float3 light_direction;
+    float light_intensity;
+    float3 light_color;
+    float ambient_intensity;
+    float3 ambient_color;
+    float frame_padding_2;
+
+    // ---- directional shadows -------------------------------------------------------
+    // One light view-projection per cascade, and where each cascade lives in the atlas.
+    column_major float4x4 cascade_view_projection[MAX_CASCADES];
+    float4 cascade_uv_scale_bias[MAX_CASCADES];
+    // The far distance of each cascade, in metres along the view direction.
+    float4 cascade_far;
+    // How much world one texel of each cascade covers, in metres. What the normal-offset
+    // bias is scaled by, so one "texel" of offset means the right distance in every cascade.
+    float4 cascade_texel_world;
+    // x: cascade count  y: blend fraction  z: PCF kernel code  w: debug mode
+    float4 shadow_params;
+    // x: normal offset in texels  y: its ceiling in metres  z: shadow strength (0 = off)
+    // w: unused
+    float4 shadow_params2;
+    // x,y: atlas size in texels   z,w: its reciprocal
+    float4 shadow_atlas_size;
+    // x: camera near  y: camera far  z,w: unused
+    float4 camera_params;
+    // x: contact ray length  y: steps  z: thickness  w: max distance (0 = off)
+    float4 contact_params;
+    column_major float4x4 inverse_view_projection;
+
+    // ---- local lights --------------------------------------------------------------
+    float4 light_position_range[MAX_LOCAL_LIGHTS];   // xyz position, w range
+    float4 light_color_intensity[MAX_LOCAL_LIGHTS];  // rgb colour,  w intensity
+    float4 light_direction_inner[MAX_LOCAL_LIGHTS];  // xyz spot axis, w inner cosine
+    // x: outer cosine  y: first shadow view (-1 for none)  z: view count  w: 1 for a spot
+    float4 light_shadow[MAX_LOCAL_LIGHTS];
+    float4 local_light_count;
+
+    column_major float4x4 local_view_projection[MAX_LOCAL_SHADOW_VIEWS];
+    float4 local_uv_scale_bias[MAX_LOCAL_SHADOW_VIEWS];
+};
+
+// The material constants and the base colour map, shared with the depth-only shadow
+// pipeline — which reads the alpha cutoff out of the same layout.
+#include "material.hlsli"
+
+// The one shadow atlas: every cascade, every spot light and every point-light face.
+// Sampled through a *comparison* sampler, so the hardware performs the depth test and the
+// bilinear filter together — which is what makes a 3x3 kernel nine taps rather than
+// thirty-six.
+Texture2D<float> shadow_atlas : register(t1);
+SamplerComparisonState shadow_sampler : register(s1);
+
+// Last frame's... no: *this* frame's depth, from the prepass, for the contact-shadow march.
+// Bound to a 1x1 texture when contact shadows are off, so the pipeline needs no permutation.
+Texture2D<float> scene_depth : register(t2);
+SamplerState depth_sampler : register(s2);
+
+// ---------------------------------------------------------------------------------------
+// Shadow sampling
+//
+// Everything below returns a *shadow factor*: 1 is fully lit, 0 is fully shadowed. It is
+// deliberately not multiplied into a light colour here — §13 asks for the sampler to stay
+// reusable, and the lighting function below is the only place the two are combined.
+// ---------------------------------------------------------------------------------------
+
+// Clamps an atlas coordinate to its own tile, half a texel in from the edge.
+//
+// A PCF kernel at the edge of a tile would otherwise read its neighbour: the atlas holds a
+// cascade and four spot lights side by side, and one light's depth appearing inside
+// another's shadow is a bug that looks like a light leak.
+float2 clamp_to_tile(float2 uv, float4 scale_bias)
+{
+    float2 half_texel = 0.5 * shadow_atlas_size.zw;
+    float2 low = scale_bias.zw + half_texel;
+    float2 high = scale_bias.zw + scale_bias.xy - half_texel;
+    return clamp(uv, low, high);
+}
+
+// One depth comparison, filtered by the hardware.
+float shadow_tap(float2 atlas_uv, float compare, float4 scale_bias)
+{
+    return shadow_atlas.SampleCmpLevelZero(
+        shadow_sampler, clamp_to_tile(atlas_uv, scale_bias), compare);
+}
+
+// Percentage-closer filtering over a square kernel.
+//
+// The kernel width comes from the quality preset: one tap (the comparison sampler's own 2x2
+// is already a soft edge), nine, or twenty-five. Unrolled per branch rather than looped over
+// a variable radius, because a dynamic loop around a texture fetch is markedly slower than
+// three static ones and there are only three widths.
+float shadow_pcf(float2 atlas_uv, float compare, float4 scale_bias, uint kernel)
+{
+    if (kernel == 0)
+    {
+        return shadow_tap(atlas_uv, compare, scale_bias);
+    }
+
+    float2 texel = shadow_atlas_size.zw;
+    float total = 0.0;
+    if (kernel == 1)
+    {
+        [unroll]
+        for (int y = -1; y <= 1; ++y)
+        {
+            [unroll]
+            for (int x = -1; x <= 1; ++x)
+            {
+                total += shadow_tap(atlas_uv + float2(x, y) * texel, compare, scale_bias);
+            }
+        }
+        return total / 9.0;
+    }
+
+    [unroll]
+    for (int y2 = -2; y2 <= 2; ++y2)
+    {
+        [unroll]
+        for (int x2 = -2; x2 <= 2; ++x2)
+        {
+            total += shadow_tap(atlas_uv + float2(x2, y2) * texel, compare, scale_bias);
+        }
+    }
+    return total / 25.0;
+}
+
+// Projects a world position into one shadow view and filters it.
+//
+// Returns 1 — fully lit — for anything outside the view, which is what makes a cascade's
+// edge a fade into the next cascade rather than a wall of darkness.
+float shadow_in_view(
+    float3 world_position,
+    column_major float4x4 light_view_projection,
+    float4 scale_bias,
+    uint kernel)
+{
+    float4 light_clip = mul(light_view_projection, float4(world_position, 1.0));
+    if (light_clip.w <= 0.0)
+    {
+        return 1.0;
+    }
+    float3 ndc = light_clip.xyz / light_clip.w;
+    if (any(abs(ndc.xy) > 1.0) || ndc.z < 0.0 || ndc.z > 1.0)
+    {
+        return 1.0;
+    }
+    // Clip space is Y-up and a texture is Y-down, which is the sign flip below and nothing
+    // more mysterious than that.
+    float2 uv = ndc.xy * float2(0.5, -0.5) + 0.5;
+    return shadow_pcf(uv * scale_bias.xy + scale_bias.zw, ndc.z, scale_bias, kernel);
+}
+
+// Which cube face a direction from a point light falls on: +X, -X, +Y, -Y, +Z, -Z.
+//
+// The CPU builds the six views in this order (see shadow/local.rs), and a test there asserts
+// the two agree. Getting it wrong lights five sixths of a room correctly.
+uint cube_face_of(float3 direction)
+{
+    float3 magnitude = abs(direction);
+    if (magnitude.x >= magnitude.y && magnitude.x >= magnitude.z)
+    {
+        return direction.x < 0.0 ? 1u : 0u;
+    }
+    if (magnitude.y >= magnitude.z)
+    {
+        return direction.y < 0.0 ? 3u : 2u;
+    }
+    return direction.z < 0.0 ? 5u : 4u;
+}
+
+// How far in front of the camera a point is, in metres.
+float view_depth_of(float3 world_position)
+{
+    float4 clip = mul(view_projection, float4(world_position, 1.0));
+    return clip.w;
+}
+
+// Which cascade covers `depth`, and how far it has crossed into the next one.
+//
+// The CPU mirror is `cascade_blend` in shadow/cascade.rs, and it is the same arithmetic:
+// find the first cascade whose far plane is beyond the fragment, then measure how far into
+// that cascade's blend region it lies.
+void select_cascade(float depth, out uint near_index, out uint far_index, out float blend)
+{
+    uint count = (uint)shadow_params.x;
+    near_index = count;
+    [unroll]
+    for (uint index = 0; index < MAX_CASCADES; ++index)
+    {
+        if (index < count && near_index == count && depth < cascade_far[index])
+        {
+            near_index = index;
+        }
+    }
+    far_index = near_index;
+    blend = 0.0;
+    if (near_index >= count)
+    {
+        return;
+    }
+
+    float far_edge = cascade_far[near_index];
+    float near_edge = near_index == 0 ? camera_params.x : cascade_far[near_index - 1];
+    float width = (far_edge - near_edge) * shadow_params.y;
+    if (width > 0.0 && near_index + 1 < count && depth > far_edge - width)
+    {
+        far_index = near_index + 1;
+        blend = saturate((depth - (far_edge - width)) / width);
+    }
+}
+
+// The screen-space contact shadow.
+//
+// A short march along the ray towards the light, comparing each step against the depth the
+// prepass wrote. It resolves the centimetres a shadow map cannot: the gap under a boot, the
+// seam where a crate meets the floor. Deliberately short — see ContactShadowSettings.
+//
+// The `thickness` test is what stops every silhouette in the frame from occluding
+// everything behind it: the depth buffer records a surface, not a solid, so a sample that is
+// *much* nearer than the ray is a different object the ray passes behind rather than an
+// occluder it runs into.
+float contact_shadow(float3 world_position, float3 normal, float3 to_light, float view_distance)
+{
+    float max_distance = contact_params.w;
+    if (max_distance <= 0.0 || view_distance > max_distance)
+    {
+        return 1.0;
+    }
+
+    int steps = max((int)contact_params.y, 1);
+    float step_length = contact_params.x / (float)steps;
+    float near_plane = camera_params.x;
+    float far_plane = camera_params.y;
+    float projection_depth = far_plane / (near_plane - far_plane);
+
+    // Fade the whole effect out over the last quarter of its range, so it does not switch
+    // off along a visible circle on the floor.
+    float fade = saturate((max_distance - view_distance) / (max_distance * 0.25));
+
+    // Start the march half a step off the surface, along the normal.
+    //
+    // Without this the ray begins exactly on the surface it is shading, and on a large flat
+    // one — a floor — the early samples project back onto that same floor. The depth
+    // difference they find is then the floor's own slope in screen space, not an occluder,
+    // and once the camera is low enough that the difference lands inside the thickness
+    // window the whole floor reports occluded. Which parts of it do so depends on the
+    // camera's angle, so the artefact swims about as the camera turns.
+    float3 origin = world_position + normal * (step_length * 0.5);
+
+    float occlusion = 0.0;
+    [loop]
+    for (int step = 1; step <= steps; ++step)
+    {
+        float3 sample_position = origin + to_light * (step_length * (float)step);
+        float4 clip = mul(view_projection, float4(sample_position, 1.0));
+        if (clip.w <= 0.0)
+        {
+            break;
+        }
+        float3 ndc = clip.xyz / clip.w;
+        if (any(abs(ndc.xy) > 1.0))
+        {
+            break;
+        }
+        float2 uv = ndc.xy * float2(0.5, -0.5) + 0.5;
+        float scene_ndc_depth = scene_depth.SampleLevel(depth_sampler, uv, 0).r;
+        // The prepass writes 1.0 where nothing was drawn; there is nothing to be occluded by.
+        if (scene_ndc_depth >= 1.0)
+        {
+            continue;
+        }
+
+        // Both depths made linear, so `thickness` is a distance in metres rather than a
+        // number that means something different at every range.
+        float scene_distance = projection_depth * near_plane / (scene_ndc_depth + projection_depth);
+        float ray_distance = clip.w;
+        float difference = ray_distance - scene_distance;
+        if (difference > 0.02 && difference < contact_params.z)
+        {
+            occlusion = 1.0;
+            break;
+        }
+    }
+    return saturate(1.0 - occlusion * fade);
+}
+
+// The directional light's shadow factor at a world position.
+//
+// ```text
+// world position -> cascade -> light space -> PCF -> blend with the next cascade -> factor
+// ```
+//
+// `normal` is used for the normal-offset bias: the sample position is pushed along the
+// surface normal by a fraction of a shadow texel before it is projected, which fixes the
+// acne that is left after the rasterizer's slope bias without the peter-panning a large
+// constant bias would cause.
+float directional_shadow(float3 world_position, float3 normal, float view_distance)
+{
+    float strength = shadow_params2.z;
+    uint count = (uint)shadow_params.x;
+    if (strength <= 0.0 || count == 0)
+    {
+        return 1.0;
+    }
+
+    uint near_index;
+    uint far_index;
+    float blend;
+    select_cascade(view_distance, near_index, far_index, blend);
+    if (near_index >= count)
+    {
+        return 1.0;
+    }
+
+    uint kernel = (uint)shadow_params.z;
+    float offset_scale = min(
+        cascade_texel_world[near_index] * shadow_params2.x, shadow_params2.y);
+    float3 offset_position = world_position + normal * offset_scale;
+
+    float factor = shadow_in_view(
+        offset_position,
+        cascade_view_projection[near_index],
+        cascade_uv_scale_bias[near_index],
+        kernel);
+
+    if (blend > 0.0)
+    {
+        float far_offset = min(
+            cascade_texel_world[far_index] * shadow_params2.x, shadow_params2.y);
+        float next = shadow_in_view(
+            world_position + normal * far_offset,
+            cascade_view_projection[far_index],
+            cascade_uv_scale_bias[far_index],
+            kernel);
+        factor = lerp(factor, next, blend);
+    }
+
+    // Fade out over the last tenth of the shadow range, so the far edge of the last cascade
+    // is a gradient rather than a line drawn across the world.
+    float shadow_distance = cascade_far[count - 1];
+    float fade = saturate((shadow_distance - view_distance) / max(shadow_distance * 0.1, 0.001));
+    factor = lerp(1.0, factor, fade);
+
+    return lerp(1.0, factor, strength);
+}
+
+// The shadow factor for one local light, or 1 if it has no shadow map.
+float local_light_shadow(uint light, float3 world_position, float3 normal)
+{
+    float first_view = light_shadow[light].y;
+    if (first_view < 0.0)
+    {
+        return 1.0;
+    }
+    uint view = (uint)first_view;
+    if (light_shadow[light].w < 0.5)
+    {
+        // A point light: pick the face the surface is on.
+        view += cube_face_of(world_position - light_position_range[light].xyz);
+    }
+    if (view >= MAX_LOCAL_SHADOW_VIEWS)
+    {
+        return 1.0;
+    }
+
+    // A local map's texel covers more world the further it is from the light, so the normal
+    // offset is scaled by distance rather than by a per-cascade constant.
+    float distance_to_light = length(world_position - light_position_range[light].xyz);
+    float offset = min(distance_to_light * 0.004 * shadow_params2.x, shadow_params2.y);
+    return shadow_in_view(
+        world_position + normal * offset,
+        local_view_projection[view],
+        local_uv_scale_bias[view],
+        (uint)shadow_params.z);
+}
+
+// Everything the local lights add at a surface.
+//
+// A plain loop over a small fixed array: there is no clustering and no light culling
+// structure, so the count is a per-pixel cost. That is the documented limitation of the
+// local-light path — see docs/shadows.md — and the reason MAX_LOCAL_LIGHTS is eight.
+float3 local_light_contribution(float3 world_position, float3 normal, float3 albedo, float receives_shadow)
+{
+    float3 total = float3(0.0, 0.0, 0.0);
+    uint count = min((uint)local_light_count.x, (uint)MAX_LOCAL_LIGHTS);
+    [loop]
+    for (uint light = 0; light < count; ++light)
+    {
+        float3 to_light = light_position_range[light].xyz - world_position;
+        float distance_to_light = length(to_light);
+        float range = light_position_range[light].w;
+        if (distance_to_light >= range)
+        {
+            continue;
+        }
+        float3 direction = to_light / max(distance_to_light, 1e-4);
+        float lambert = saturate(dot(normal, direction));
+        if (lambert <= 0.0)
+        {
+            continue;
+        }
+
+        // Inverse-square, windowed so it reaches exactly zero at the light's range: an
+        // unwindowed falloff never reaches zero, and a light that is never quite off cannot
+        // be culled at any distance.
+        float normalized = distance_to_light / range;
+        float window = saturate(1.0 - normalized * normalized * normalized * normalized);
+        float attenuation = window * window / (1.0 + distance_to_light * distance_to_light);
+
+        if (light_shadow[light].w > 0.5)
+        {
+            // A spot light: the cone, with a soft rim between its inner and outer angles.
+            float cosine = dot(-direction, normalize(light_direction_inner[light].xyz));
+            float inner = light_direction_inner[light].w;
+            float outer = light_shadow[light].x;
+            float cone = saturate((cosine - outer) / max(inner - outer, 1e-4));
+            attenuation *= cone * cone;
+        }
+        if (attenuation <= 0.0)
+        {
+            continue;
+        }
+
+        float shadow = 1.0;
+        if (receives_shadow > 0.5)
+        {
+            shadow = local_light_shadow(light, world_position, normal);
+        }
+
+        total += albedo * light_color_intensity[light].rgb
+            * (light_color_intensity[light].w * lambert * attenuation * shadow);
+    }
+    return total;
+}
+
+// A debug colour for the cascade a fragment landed in, or white past the last one.
+float3 cascade_debug_tint(float view_distance)
+{
+    uint count = (uint)shadow_params.x;
+    uint near_index;
+    uint far_index;
+    float blend;
+    select_cascade(view_distance, near_index, far_index, blend);
+    if (near_index >= count)
+    {
+        return float3(1.0, 1.0, 1.0);
+    }
+    float3 tints[MAX_CASCADES] = {
+        float3(1.0, 0.4, 0.4),
+        float3(0.4, 1.0, 0.4),
+        float3(0.4, 0.55, 1.0),
+        float3(1.0, 0.95, 0.4)
+    };
+    float3 tint = tints[near_index];
+    if (blend > 0.0)
+    {
+        tint = lerp(tint, tints[far_index], blend);
+    }
+    return tint;
+}
+
+// The shadow atlas itself, drawn in the corner of the screen.
+//
+// Returns true when `pixel` is inside the preview and fills `color` with what to show there.
+//
+// # Why this is inside the mesh shader
+//
+// A debug view of a texture wants to be a fullscreen pass with its own pipeline. It is here
+// instead because every pixel of the preview is covered by *some* fragment of the scene —
+// the sky dome, if nothing else — and every one of those fragments takes this branch and
+// writes the same colour, so the preview appears without a second pipeline, a second root
+// signature, a second vertex buffer or a second draw. What it costs is one compare per
+// fragment in a branch that is uniform across the frame and never taken while the debug mode
+// is off. What it cannot do is draw over a hole in the scene, which is why the preview sits
+// in the bottom-left corner where the ground always is.
+//
+// Empty atlas is white (the clear is the far plane) and a caster is darker the closer it is
+// to the light. The red lines are the cascade tile borders, which is what makes "the third
+// cascade is empty" and "a light's tile is bleeding into its neighbour" visible at a glance.
+bool shadow_atlas_preview(float2 pixel, out float3 color)
+{
+    color = float3(0.0, 0.0, 0.0);
+    float2 viewport = camera_params.zw;
+    if (viewport.x < 1.0 || viewport.y < 1.0 || shadow_atlas_size.x < 1.0)
+    {
+        return false;
+    }
+
+    const float MARGIN = 16.0;
+    float side = min(viewport.x, viewport.y) * 0.42;
+    float2 size = float2(side * (shadow_atlas_size.x / shadow_atlas_size.y), side);
+    float2 low = float2(MARGIN, viewport.y - MARGIN - size.y);
+    float2 high = low + size;
+    if (any(pixel < low) || any(pixel > high))
+    {
+        return false;
+    }
+
+    float2 uv = (pixel - low) / size;
+    float depth = shadow_atlas.SampleLevel(depth_sampler, uv, 0);
+    color = depth.xxx;
+
+    // The cascade borders, two texels wide in screen space so they survive the downscale.
+    float2 edge = 2.0 / size;
+    uint count = (uint)shadow_params.x;
+    for (uint index = 0u; index < count; ++index)
+    {
+        float4 rect = cascade_uv_scale_bias[index];
+        float2 within = (uv - rect.zw) / max(rect.xy, 1e-6);
+        if (any(within < 0.0) || any(within > 1.0))
+        {
+            continue;
+        }
+        float2 border = min(within, 1.0 - within);
+        if (min(border.x, border.y) < max(edge.x, edge.y))
+        {
+            color = float3(0.9, 0.15, 0.15);
+        }
+    }
+    return true;
+}
+
+// The one lighting function every mesh pipeline calls.
+//
+// ```text
+// world position + normal
+//        |
+//   cascade -> light space -> PCF -> cascade blend -> shadow factor
+//        |                                              |
+//        |                                       contact shadow
+//        v                                              v
+//   directional light  x  shadow factor   +  ambient  +  local lights  +  emissive
+// ```
+//
+// Ambient is added *outside* the shadow factor, deliberately: the sun being blocked does not
+// stop the sky from lighting a surface, and multiplying the ambient term by the shadow is
+// what makes a shadowed area look like a hole in the world.
+float4 shade_surface(
+    float4 screen_position,
+    float3 world_position,
+    float3 world_normal,
+    float2 uv,
+    float4 tint,
+    float emissive_scale,
+    float receives_shadow)
+{
+    float4 albedo = base_color * base_color_map.Sample(base_color_sampler, uv);
+    // Alpha-tested materials: foliage, fences, grates. `alpha_cutoff` is zero for an opaque
+    // material, so this is one comparison that is never taken for most of the scene. The
+    // same test runs in the shadow pass, which is what makes a leaf's shadow leaf-shaped.
+    if (alpha_cutoff > 0.0 && albedo.a < alpha_cutoff)
+    {
+        discard;
+    }
+
+    float3 normal = normalize(world_normal);
+    float3 to_light = normalize(-light_direction);
+    float lambert = saturate(dot(normal, to_light));
+    float3 tinted = albedo.rgb * tint.rgb;
+    float view_distance = view_depth_of(world_position);
+
+    float shadow = 1.0;
+    if (receives_shadow > 0.5 && lambert > 0.0)
+    {
+        shadow = directional_shadow(world_position, normal, view_distance);
+        if (shadow > 0.0)
+        {
+            shadow = min(shadow, contact_shadow(world_position, normal, to_light, view_distance));
+        }
+    }
+
+    uint debug_mode = (uint)shadow_params.w;
+    if (debug_mode == 3u)
+    {
+        float3 preview;
+        if (shadow_atlas_preview(screen_position.xy, preview))
+        {
+            return float4(preview, 1.0);
+        }
+    }
+    if (debug_mode == 2u)
+    {
+        // The shadow factor alone, on a neutral surface: what the cascades, the filter and
+        // the biases are actually producing, with albedo and lighting out of the way.
+        return float4(shadow.xxx, 1.0);
+    }
+
+    float3 diffuse = tinted * light_color * (light_intensity * lambert * shadow);
+    float3 ambient = tinted * ambient_color * ambient_intensity;
+    float3 local = local_light_contribution(world_position, normal, tinted, receives_shadow);
+    float3 glow = emissive + tinted * emissive_scale;
+
+    float3 color = diffuse + ambient + local + glow;
+    if (debug_mode == 1u)
+    {
+        color *= cascade_debug_tint(view_distance);
+    }
+    return float4(color, albedo.a * tint.a);
+}
+
+#endif // SCENE_FRAME_HLSLI

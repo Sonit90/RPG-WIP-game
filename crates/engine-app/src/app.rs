@@ -52,6 +52,8 @@ use engine_presentation::game_ui::GameUi;
 use engine_presentation::hud::{self, HudModel};
 use engine_presentation::mouse_look::{LookChange, LookMode, MouseLook, RelativeMotion};
 use engine_presentation::nameplate::{NameplateConfig, NameplateSet};
+#[cfg(feature = "debug-overlay")]
+use engine_presentation::shadow_debug::ShadowCasterDebug;
 use engine_presentation::snapshot::UiSnapshot;
 use engine_presentation::ui::action_bar::{self, ActionBarSet, SlotAddress};
 use engine_presentation::ui::character_menu::{
@@ -71,7 +73,7 @@ use engine_render_data::ui::{UiRect, UiScale};
 use engine_renderer::mesh::MeshData;
 use engine_renderer::{
     Camera, Lighting, MaterialDesc, MaterialHandle, MeshHandle, Projection, Renderer,
-    RendererConfig, UiDrawList,
+    RendererConfig, ShadowPreset, UiDrawList,
 };
 use engine_settings::character::CharacterConfigManager;
 use engine_settings::hud::HudConfigManager;
@@ -128,6 +130,21 @@ const OVERLAY_TOGGLE_KEY: KeyCode = KeyCode::F5;
 /// row beside F5 (overlay) and F9 (wireframe).
 #[cfg(feature = "debug-overlay")]
 const COLLISION_DEBUG_KEY: KeyCode = KeyCode::F3;
+
+/// Function key that cycles shadow quality: off, low, medium, high, ultra, off.
+///
+/// A developer key on the same row, *and* the setting the player would pick on a settings
+/// screen — the key writes the same field the file holds, so what it changes is what is
+/// saved. Changing it stalls for a GPU idle, which is why it is a key press rather than
+/// something a slider fires per frame.
+const SHADOW_QUALITY_KEY: KeyCode = KeyCode::F6;
+
+/// Function key that cycles the shadow debug view: off, cascade tint, shadow factor.
+///
+/// §18 asks for a visualization that needs no change to game content. This is it: the mesh
+/// shader already has every number the view needs, so a debug mode is a constant in the
+/// frame buffer rather than a second pass.
+const SHADOW_DEBUG_KEY: KeyCode = KeyCode::F7;
 
 /// How far above the floor the targeting disc sits, in metres.
 ///
@@ -207,6 +224,12 @@ pub struct App {
     /// The collision world, drawn. Developer-only, and off in the combat scene.
     #[cfg(feature = "debug-overlay")]
     collision_debug: CollisionDebug,
+    /// Which stop of the F7 cycle is showing. 0-3 are the renderer's shader views, 4 is the
+    /// caster bounds, which are geometry rather than a shader mode.
+    shadow_debug_view: u32,
+    /// The shadow caster bounds, drawn. The fourth stop on the F7 cycle.
+    #[cfg(feature = "debug-overlay")]
+    shadow_debug: ShadowCasterDebug,
     /// Commands built from this frame's input. Reused; never freed.
     commands: Vec<PlayerCommand>,
     /// Every playable hero's model, uploaded once at startup.
@@ -414,6 +437,8 @@ impl App {
                     // The same deterministic layout gameplay built its collision from, for the
                     // reason the dungeon does it: two descriptions of one course are two courses.
                     engine_environment::los_course::los_course()
+                } else if args.scene.is_shadows() {
+                    engine_environment::shadow_course::shadow_course()
                 } else if args.scene.is_environment() {
                     engine_environment::arena::environment_demo()
                 } else {
@@ -502,6 +527,18 @@ impl App {
                 }
                 (simulation, None)
             }
+            // The shadow course: the scene's own floor and props, and nobody standing on
+            // them but the player. One dummy would be a scale reference, as it is in the
+            // environment bed — but a dummy is a *skinned* caster, and a skinned caster is
+            // the one thing here that has to be judged animating rather than standing, so
+            // it is judged in the combat scene where it moves.
+            Scene::Shadows => (
+                match environment.as_ref() {
+                    Some(scene) => arena::environment_arena(scene, 0),
+                    None => arena::training_arena(&ArenaConfig::with_group(0)),
+                },
+                None,
+            ),
             Scene::Collision => {
                 let (simulation, scene) = demo::collision_demo();
                 (simulation, Some(scene))
@@ -568,6 +605,8 @@ impl App {
         // The collision course is only visible through the debug view, so in that scene the
         // view starts on: it *is* the scene's picture, not an overlay on top of one. F3
         // still turns it off, which is how a developer checks that turning it off works.
+        #[cfg(feature = "debug-overlay")]
+        let shadow_debug = ShadowCasterDebug::new(debug_visuals);
         #[cfg(feature = "debug-overlay")]
         let mut collision_debug = CollisionDebug::new(debug_visuals);
         #[cfg(feature = "debug-overlay")]
@@ -700,7 +739,16 @@ impl App {
 
         log_controls(args, demo.as_ref());
 
-        Ok(Self {
+        // The shadow quality the settings file asked for, applied before the first frame:
+        // the renderer starts at its own default, and a player who chose "off" should never
+        // see a frame that was not.
+        // `--shadows` overrides the file for this run without writing to it: a measurement
+        // or a bug report should not change what the player sees next time they start.
+        let shadow_quality = args
+            .shadows
+            .unwrap_or(game_settings.settings().graphics.shadows);
+
+        let mut app = Self {
             window,
             renderer,
             simulation,
@@ -719,6 +767,9 @@ impl App {
             collision_ui: UiDrawList::with_capacity(64, 1_024),
             #[cfg(feature = "debug-overlay")]
             collision_debug,
+            shadow_debug_view: 0,
+            #[cfg(feature = "debug-overlay")]
+            shadow_debug,
             commands: Vec::with_capacity(16),
             heroes,
             menu: MenuSystem::new(game_settings.settings(), env!("CARGO_PKG_VERSION")),
@@ -775,7 +826,9 @@ impl App {
             overlay_lines: Vec::with_capacity(32),
             #[cfg(feature = "debug-overlay")]
             last_overlay_update: Instant::now(),
-        })
+        };
+        app.apply_shadow_quality(shadow_quality);
+        Ok(app)
     }
 
     /// Applies one physical key press that is not a gameplay binding.
@@ -824,6 +877,31 @@ impl App {
                 self.renderer.set_wireframe(enabled);
                 log::info!("wireframe {}", if enabled { "on" } else { "off" });
             }
+            SHADOW_QUALITY_KEY => self.cycle_shadow_quality(),
+            SHADOW_DEBUG_KEY => {
+                // Five stops, cycled. Four of them are shader views the renderer owns; the
+                // fifth draws the caster bounds, which is presentation's geometry rather
+                // than the renderer's, so it is tracked as "mode 4 means renderer mode 0
+                // with the bounds on" instead of being a fifth branch in the pixel shader.
+                let previous = self.shadow_debug_view;
+                let mode = (previous + 1) % 5;
+                self.shadow_debug_view = mode;
+                self.renderer
+                    .set_shadow_debug_mode(if mode == 4 { 0 } else { mode });
+                #[cfg(feature = "debug-overlay")]
+                self.shadow_debug
+                    .set_enabled(self.extractor.render_world_mut(), mode == 4);
+                log::info!(
+                    "shadow debug view: {}",
+                    match mode {
+                        1 => "cascade tint",
+                        2 => "shadow factor",
+                        3 => "the atlas, bottom left",
+                        4 => "caster bounds",
+                        _ => "off",
+                    }
+                );
+            }
             #[cfg(feature = "debug-overlay")]
             COLLISION_DEBUG_KEY => {
                 let enabled = !self.collision_debug.enabled();
@@ -837,6 +915,55 @@ impl App {
                 }
             }
         }
+    }
+
+    /// Moves to the next shadow quality level and applies it.
+    ///
+    /// The setting is written back through the settings manager, so the level survives a
+    /// restart — a quality key that only changed the frame would be a key that lies about
+    /// what it did.
+    fn cycle_shadow_quality(&mut self) {
+        let mut settings = self.settings.settings();
+        settings.graphics.shadows = settings.graphics.shadows.next();
+        self.settings.update(settings);
+        self.apply_shadow_quality(settings.graphics.shadows);
+    }
+
+    /// Tells the renderer what a shadow quality level means.
+    ///
+    /// The conversion from the player's word to the renderer's numbers, done here because
+    /// the application is the one place that knows both `engine-settings` and
+    /// `engine-renderer` — the same rule the scene's lighting follows.
+    fn apply_shadow_quality(&mut self, quality: engine_settings::ShadowQuality) {
+        let preset = match quality {
+            engine_settings::ShadowQuality::Off => ShadowPreset::Off,
+            engine_settings::ShadowQuality::Low => ShadowPreset::Low,
+            engine_settings::ShadowQuality::Medium => ShadowPreset::Medium,
+            engine_settings::ShadowQuality::High => ShadowPreset::High,
+            engine_settings::ShadowQuality::Ultra => ShadowPreset::Ultra,
+        };
+        let settings = preset.settings();
+        if let Err(error) = self.renderer.set_shadow_settings(settings) {
+            // A quality change that fails leaves the previous configuration running, which
+            // is a worse picture rather than a broken one.
+            log::error!("shadows: could not switch to {}: {error}", quality.as_str());
+            return;
+        }
+        let (width, height) = settings.atlas_size();
+        log::info!(
+            "shadows: {} | {} cascade(s) at {} | atlas {width}x{height} ({:.1} MiB) | \
+             local views {} | contact {}",
+            quality.as_str(),
+            settings.cascade_count,
+            settings.resolution,
+            settings.atlas_bytes() as f64 / (1024.0 * 1024.0),
+            settings.local_view_budget(),
+            if settings.contact.enabled {
+                "on"
+            } else {
+                "off"
+            },
+        );
     }
 
     /// Puts the character at a numbered test station, or back at the start.
@@ -2263,6 +2390,11 @@ impl App {
                         bounds,
                         visible: true,
                         style: engine_render_data::InstanceStyle::NEUTRAL,
+                        // The targeting indicator: a shape painted on the ground to say
+                        // where a spell will land. It is interface, not matter — it casts
+                        // nothing, and a shadow falling across it must not make the area it
+                        // marks harder to read.
+                        shadow: engine_render_data::ShadowCasting::NONE,
                     })
                 };
                 let fill = spawn(fill_mesh, fill_material, fill_transform);
@@ -2404,6 +2536,31 @@ impl App {
             self.renderer.skinned_draws_last_frame(),
             self.renderer.triangles_last_frame(),
         );
+        // Shadows on their own line: the stage has its own CPU time, its own GPU time and
+        // its own draw calls, and folding them into the frame's totals is what makes "the
+        // frame got slower" impossible to attribute.
+        let shadow = self.renderer.shadow_stats();
+        if shadow.enabled {
+            log::info!(
+                "  shadows: {} cascade(s) at {} | cpu {:.3} ms | gpu {} | {} draws, {} tris, \
+                 {} casters ({} dropped) | local {} view(s), {} refused | atlas {}x{}",
+                shadow.cascade_count,
+                shadow.resolution,
+                shadow.cpu_ms,
+                match shadow.gpu_ms {
+                    Some(milliseconds) => format!("{milliseconds:.3} ms"),
+                    None => "N/A".to_owned(),
+                },
+                shadow.draw_calls(),
+                shadow.triangles(),
+                shadow.casters(),
+                shadow.lod_counts[3],
+                shadow.local_views,
+                shadow.local_lights_refused,
+                shadow.atlas_size.0,
+                shadow.atlas_size.1,
+            );
+        }
         let vfx = self.vfx.stats();
         log::info!(
             "  vfx: {} effects, {} particles (peak {}), {} mesh draws, {} entities |              dropped {} effects / {} particles | drawn {}",
@@ -2532,6 +2689,88 @@ impl App {
         );
     }
 
+    /// Appends the shadow stage's statistics to the developer overlay.
+    ///
+    /// Everything §18 and §19 ask to be inspectable, in the order it is useful: what the
+    /// stage is configured as, what it cost, and what it drew — per cascade, because "the
+    /// shadow pass is expensive" and "the last cascade is drawing the whole world" are
+    /// different problems with the same symptom.
+    #[cfg(feature = "debug-overlay")]
+    fn append_shadow_lines(&mut self) {
+        use std::fmt::Write as _;
+
+        let stats = self.renderer.shadow_stats();
+        let quality = self.settings.settings().graphics.shadows;
+        let mut push = |text: String| self.overlay_lines.push(text);
+
+        let mut line = String::with_capacity(64);
+        let _ = write!(
+            line,
+            "SHADOWS {}  {} CASC {}  ATLAS {}X{} ({:.0} MB)",
+            quality.as_str().to_uppercase(),
+            stats.cascade_count,
+            stats.resolution,
+            stats.atlas_size.0,
+            stats.atlas_size.1,
+            stats.atlas_bytes as f64 / (1024.0 * 1024.0),
+        );
+        push(std::mem::take(&mut line));
+
+        let _ = write!(
+            line,
+            "  CPU {:>5.2} MS  GPU {}  DRAWS {}  TRIS {}",
+            stats.cpu_ms,
+            match stats.gpu_ms {
+                Some(milliseconds) => format!("{milliseconds:>5.2} MS"),
+                None => " N/A".to_owned(),
+            },
+            stats.draw_calls(),
+            stats.triangles(),
+        );
+        push(std::mem::take(&mut line));
+
+        let _ = write!(
+            line,
+            "  CASTERS {}  SKINNED {}  DROPPED {}  PREPASS {}",
+            stats.casters(),
+            stats.skinned_draws,
+            stats.lod_counts[3],
+            if stats.prepass { "ON" } else { "OFF" },
+        );
+        push(std::mem::take(&mut line));
+
+        for index in 0..stats.cascade_count as usize {
+            let pass = stats.cascades[index];
+            let _ = write!(
+                line,
+                "  C{index} <{:>5.1} M  {:>4} CASTERS  {:>3} DRAWS  {:>6} TRIS",
+                stats.splits[index], pass.casters, pass.draw_calls, pass.triangles,
+            );
+            push(std::mem::take(&mut line));
+        }
+
+        if stats.local_views > 0 || stats.local_lights_refused > 0 {
+            let _ = write!(
+                line,
+                "  LOCAL {} LIGHT(S) IN {} VIEW(S), {} REFUSED  {} DRAWS",
+                stats.local_lights,
+                stats.local_views,
+                stats.local_lights_refused,
+                stats.local.draw_calls,
+            );
+            push(std::mem::take(&mut line));
+        }
+
+        // What the LOD policy actually did, which is the number that says whether it is
+        // earning its place: level 0 is full detail, level 3 is "not drawn at all".
+        let _ = write!(
+            line,
+            "  LOD {} / {} / {} / {} (FULL / REDUCED / SIMPLE / NONE)",
+            stats.lod_counts[0], stats.lod_counts[1], stats.lod_counts[2], stats.lod_counts[3],
+        );
+        push(line);
+    }
+
     /// Rebuilds the overlay text if the update interval has elapsed.
     #[cfg(feature = "debug-overlay")]
     fn maybe_update_overlay(&mut self, ctx: &EngineContext) {
@@ -2559,6 +2798,12 @@ impl App {
         // the ray is drawn in the world by F3, and this says in words what it found. Off
         // while that view is off, so the ordinary overlay is still the frame rate and
         // nothing else.
+        // The shadow readout rides with the shadow debug view, on the same key: F7 tints the
+        // world by cascade and this says in numbers what that view is showing. Off while the
+        // view is off, so the ordinary overlay stays the frame rate and nothing else.
+        if self.shadow_debug_view > 0 {
+            self.append_shadow_lines();
+        }
         if self.collision_debug.enabled() {
             engine_presentation::los_debug::append_lines(&mut self.overlay_lines, &self.simulation);
         }
@@ -2830,6 +3075,12 @@ impl Application for App {
             #[cfg(feature = "debug-overlay")]
             self.collision_debug
                 .rebuild(self.extractor.render_world_mut(), &self.simulation);
+            // After the collision view, so its spheres are the last thing spawned and the
+            // debug spheres it would otherwise wrap are already in the world marked
+            // `ShadowCasting::NONE` — which is what keeps the caster view from drawing a
+            // bound around every collision box.
+            #[cfg(feature = "debug-overlay")]
+            self.shadow_debug.rebuild(self.extractor.render_world_mut());
             self.extract_ms = started.elapsed().as_secs_f64() * 1e3 - self.vfx_ms;
         }
 
@@ -3460,6 +3711,26 @@ fn log_controls(args: &Args, demo: Option<&DemoScene>) {
         None if args.scene.is_environment() => {
             log::info!("environment demo: the combat arena plus one of every asset, and no fight")
         }
+        None if args.scene.is_shadows() => {
+            log::info!("shadow course: six bays on flat ground, one per way a shadow goes wrong");
+            log::info!("  -Z, far left   one pillar alone: bias, acne and peter-panning");
+            log::info!(
+                "  -Z, far right  {} crates in a grid: caster culling and the shadow LOD",
+                engine_environment::shadow_course::CRATE_GRID.pow(2)
+            );
+            log::info!("  -Z, middle     rocks receding to the horizon: walk down them and watch");
+            log::info!("                 the cascades change hands. A seam is a bug, a change of");
+            log::info!("                 resolution is not");
+            log::info!("  +Z, left       leaf screens: the silhouette is the texture's alpha");
+            log::info!("  +Z, middle     a colonnade under three spot lights, of which the budget");
+            log::info!("                 grants two at Medium and three at High");
+            log::info!("  +Z, right      four braziers asking for six shadow views each. Walk");
+            log::info!("                 into the bay: local shadows reach 40 m, so from here");
+            log::info!("                 none of them are granted one");
+            log::info!(
+                "  F6 cycles the quality, F7 cycles the shadow debug views: cascade tint,                  shadow factor, the atlas, caster bounds"
+            );
+        }
         None => log::info!("training arena: 1 dummy plus a group of {}", args.dummies),
     }
 
@@ -3504,6 +3775,10 @@ fn log_controls(args: &Args, demo: Option<&DemoScene>) {
         log::info!("  BACKSPACE        put the fight back: enemies home and whole, you alive");
         log::info!("  G                interrupt the target's cast (developer control)");
     }
+    log::info!("  F6               shadow quality: off, low, medium, high, ultra");
+    log::info!(
+        "  F7               shadow debug view: cascade tint, shadow factor, the atlas,          caster bounds"
+    );
     log::info!("  F8               audio on/off");
     log::info!("  F9               wireframe on/off");
 }

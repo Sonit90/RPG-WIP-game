@@ -36,6 +36,100 @@ pub struct EnvironmentLighting {
     pub sky_horizon: Vec3,
 }
 
+/// A light that belongs to a place rather than to the sky.
+///
+/// A brazier, a torch, a shaft of light down a stairwell. Scene data, exactly like the sun
+/// above it — and, exactly like the sun, it reaches the renderer as a copy made by the
+/// application rather than by sharing a type with it: this crate must not depend on
+/// `engine-render-data`, for the same reason `engine-game` must not.
+///
+/// # Shadows are opt-in and rationed
+///
+/// `casts_shadow` is a *request*. The renderer has a small budget of shadow maps for local
+/// lights and hands them out by priority and then by distance, so a dungeon can ask for
+/// twenty and get four. Asking costs nothing when it is refused; see §21 of the shadow plan.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SceneLight {
+    /// Where it is.
+    pub position: Vec3,
+    /// Which way the cone points. Ignored unless `cone_radians` is set.
+    pub direction: Vec3,
+    /// Linear colour.
+    pub color: Vec3,
+    /// Strength at the light itself, before attenuation.
+    pub intensity: f32,
+    /// How far it reaches, in metres.
+    pub range: f32,
+    /// The cone's inner and outer half-angles in radians, or `None` for a point light.
+    pub cone_radians: Option<(f32, f32)>,
+    /// Whether it asks for a shadow map.
+    pub casts_shadow: bool,
+    /// Which lights win when there are more applicants than shadow maps. Higher is better.
+    pub priority: i16,
+}
+
+impl Default for SceneLight {
+    fn default() -> Self {
+        Self {
+            position: Vec3::ZERO,
+            direction: Vec3::new(0.0, -1.0, 0.0),
+            color: Vec3::ONE,
+            intensity: 1.0,
+            range: 10.0,
+            cone_radians: None,
+            casts_shadow: false,
+            priority: 0,
+        }
+    }
+}
+
+impl SceneLight {
+    /// A warm point light: a brazier, a fire, a lamp.
+    #[must_use]
+    pub fn brazier(position: Vec3, range: f32) -> Self {
+        Self {
+            position,
+            // Firelight: strongly warm, because the sun in these scenes is warm-neutral and
+            // the fill is blue. A neutral point light reads as a bug rather than as a fire.
+            color: Vec3::new(1.0, 0.62, 0.28),
+            intensity: 3.0,
+            range,
+            ..Self::default()
+        }
+    }
+
+    /// A cone of light pointing along `direction`.
+    #[must_use]
+    pub fn spot(position: Vec3, direction: Vec3, range: f32, outer_radians: f32) -> Self {
+        Self {
+            position,
+            direction,
+            intensity: 4.0,
+            range,
+            // The inner angle at two thirds of the outer one gives a rim soft enough not to
+            // read as a stencil and hard enough to still be a beam.
+            cone_radians: Some((outer_radians * 0.66, outer_radians)),
+            ..Self::default()
+        }
+    }
+
+    /// The same light, asking for a shadow map at the given priority.
+    #[must_use]
+    pub fn casting_shadows(mut self, priority: i16) -> Self {
+        self.casts_shadow = true;
+        self.priority = priority;
+        self
+    }
+
+    /// The same light with its colour and strength replaced.
+    #[must_use]
+    pub fn with_color(mut self, color: Vec3, intensity: f32) -> Self {
+        self.color = color;
+        self.intensity = intensity;
+        self
+    }
+}
+
 impl EnvironmentLighting {
     /// Late afternoon: a low warm sun, a cool sky, long readable shading.
     ///

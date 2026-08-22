@@ -223,7 +223,11 @@ impl SceneDocument {
                 sky_zenith: array(scene.lighting.sky_zenith),
                 sky_horizon: array(scene.lighting.sky_horizon),
             }),
-            objects: scene.objects.iter().map(ObjectRecord::from_object).collect(),
+            objects: scene
+                .objects
+                .iter()
+                .map(ObjectRecord::from_object)
+                .collect(),
         }
     }
 
@@ -290,7 +294,9 @@ impl SceneDocument {
                 && record.scale.iter().all(|value| value.is_finite())
                 && record.yaw.is_finite();
             if !finite {
-                return Err(invalid("a position, scale or yaw is not a number".to_owned()));
+                return Err(invalid(
+                    "a position, scale or yaw is not a number".to_owned(),
+                ));
             }
             if record.scale.iter().any(|value| value.abs() < 1e-6) {
                 return Err(invalid(
@@ -474,11 +480,8 @@ mod tests {
             "a placement was lost"
         );
 
-        for (index, (restored, original)) in restored
-            .objects
-            .iter()
-            .zip(&original.objects)
-            .enumerate()
+        for (index, (restored, original)) in
+            restored.objects.iter().zip(&original.objects).enumerate()
         {
             assert_eq!(restored.asset, original.asset, "objects[{index}]");
             assert!(

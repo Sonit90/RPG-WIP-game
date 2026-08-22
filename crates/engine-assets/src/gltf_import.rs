@@ -449,6 +449,18 @@ fn import_materials(gltf: &gltf::Gltf) -> Vec<MaterialAsset> {
                 orm_texture: pbr
                     .metallic_roughness_texture()
                     .map(|info| info.texture().source().index()),
+                // glTF's alpha mode, mapped onto the only kind of transparency this
+                // renderer has. `Mask` is a cutout and carries its own threshold; `Blend`
+                // becomes one too, at glTF's default threshold, because a leaf card with a
+                // hard edge is a much closer answer than an opaque rectangle and there is no
+                // sorted transparent pass to give it instead. `Opaque` performs no test.
+                alpha_cutoff: match material.alpha_mode() {
+                    gltf::material::AlphaMode::Opaque => 0.0,
+                    gltf::material::AlphaMode::Mask => {
+                        material.alpha_cutoff().unwrap_or(0.5).clamp(0.0, 1.0)
+                    }
+                    gltf::material::AlphaMode::Blend => 0.5,
+                },
             }
         })
         .collect();

@@ -9,7 +9,7 @@
 use windows::Win32::Graphics::Direct3D::ID3DBlob;
 use windows::Win32::Graphics::Direct3D12::{
     D3D_ROOT_SIGNATURE_VERSION_1, D3D12_BLEND_DESC, D3D12_BLEND_ONE, D3D12_BLEND_OP_ADD,
-    D3D12_BLEND_ZERO, D3D12_COLOR_WRITE_ENABLE_ALL, D3D12_COMPARISON_FUNC_LESS,
+    D3D12_BLEND_ZERO, D3D12_COLOR_WRITE_ENABLE_ALL, D3D12_COMPARISON_FUNC_LESS_EQUAL,
     D3D12_CULL_MODE_BACK, D3D12_CULL_MODE_NONE, D3D12_DEPTH_STENCIL_DESC,
     D3D12_DEPTH_WRITE_MASK_ALL, D3D12_FILL_MODE_SOLID, D3D12_FILL_MODE_WIREFRAME,
     D3D12_GRAPHICS_PIPELINE_STATE_DESC, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,
@@ -222,7 +222,16 @@ pub(crate) fn depth_stencil_desc() -> D3D12_DEPTH_STENCIL_DESC {
     D3D12_DEPTH_STENCIL_DESC {
         DepthEnable: true.into(),
         DepthWriteMask: D3D12_DEPTH_WRITE_MASK_ALL,
-        DepthFunc: D3D12_COMPARISON_FUNC_LESS,
+        // **Less-or-equal, not less.** When contact shadows are on, a depth prepass has
+        // already written exactly the depth this pass is about to compute, so every fragment
+        // in the frame arrives *equal* to what is in the buffer. Under `LESS` every one of
+        // them fails and the scene renders as the clear colour — which is what happened, and
+        // which looks like the lighting broke rather than like a depth comparison did.
+        //
+        // Without a prepass the two are indistinguishable: nothing in this renderer draws the
+        // same surface twice, so there is no coplanar geometry for `LESS_EQUAL` to let
+        // through that `LESS` would have rejected.
+        DepthFunc: D3D12_COMPARISON_FUNC_LESS_EQUAL,
         StencilEnable: false.into(),
         ..Default::default()
     }

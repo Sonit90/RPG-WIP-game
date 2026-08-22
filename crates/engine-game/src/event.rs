@@ -77,6 +77,13 @@ pub enum CombatEvent {
         ability: AbilityId,
         /// How many entities it affected.
         targets: u32,
+        /// Which way it was aimed, in radians about +Y.
+        ///
+        /// The yaw the executor collected its hit list with, not the caster's facing now:
+        /// a cone clicked to one side while the camera steers the character somewhere else
+        /// must be *drawn* where it *hit*. Meaningless for an ability that covers no
+        /// ground, and zero there.
+        facing: f32,
         /// The simulation tick it happened on.
         tick: u64,
     },
@@ -553,6 +560,7 @@ mod tests {
                 source: entity,
                 ability,
                 targets: 4,
+                facing: 0.0,
                 tick: 7,
             },
             damage(1.0, 7),

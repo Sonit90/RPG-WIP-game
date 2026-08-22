@@ -345,6 +345,7 @@ impl Simulation {
             source,
             ability: AbilityId::from_enemy(ability),
             targets: 1,
+            facing: self.body_yaw(source),
             tick: self.tick,
         });
         match definition.shape {
@@ -436,6 +437,12 @@ impl Simulation {
             source,
             ability: AbilityId::from_enemy(ability),
             targets: hits.len() as u32,
+            // The shape's own yaw, which for a cast was decided when the cast started: the
+            // attack is announced pointing where it actually swept.
+            facing: match shape {
+                TelegraphShape::Cone { yaw, .. } => yaw,
+                TelegraphShape::Circle { .. } | TelegraphShape::Single => self.body_yaw(source),
+            },
             tick: self.tick,
         });
         for victim in &hits {
@@ -452,6 +459,11 @@ impl Simulation {
         self.hits = hits;
     }
 
+    /// Which way an entity is pointing, or zero if it has no body.
+    fn body_yaw(&self, entity: EntityId) -> f32 {
+        self.world.body(entity).map_or(0.0, |body| body.facing_yaw)
+    }
+
     /// Restores health to one entity and announces it.
     ///
     /// The mirror of [`Simulation::deal_damage`]: the one place an enemy ability puts health
@@ -465,6 +477,7 @@ impl Simulation {
             source,
             ability,
             targets: 1,
+            facing: self.body_yaw(source),
             tick: self.tick,
         });
         if restored <= 0.0 {

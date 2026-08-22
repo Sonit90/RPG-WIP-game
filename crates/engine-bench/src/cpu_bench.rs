@@ -307,6 +307,7 @@ fn benchmark_culling() {
                 bounds: Sphere::new(Vec3::ZERO, 1.0),
                 visible: true,
                 style: engine_render_data::InstanceStyle::NEUTRAL,
+                shadow: engine_render_data::ShadowCasting::CASTS_AND_RECEIVES,
             });
         }
 

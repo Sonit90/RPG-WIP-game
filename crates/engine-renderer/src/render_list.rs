@@ -137,6 +137,14 @@ pub struct RenderList {
     meshes: Vec<MeshHandle>,
     materials: Vec<MaterialHandle>,
     styles: Vec<InstanceStyle>,
+    /// Whether each entry is darkened where a shadow falls on it.
+    ///
+    /// A `bool` per entry rather than a field on [`InstanceStyle`]: the style is written
+    /// every frame by extraction and this is a property of the *object*, set when it is
+    /// spawned and almost never changed. Recording folds it into the padding word the
+    /// per-object constants and the per-instance stream both already carry, so it costs no
+    /// bytes on the GPU at all.
+    receives_shadow: Vec<bool>,
     /// The order recording walks, filled by `group_by_material_and_mesh`.
     order: Vec<u32>,
     /// Runs of entries sharing a mesh and a material.
@@ -169,6 +177,7 @@ impl RenderList {
             meshes: Vec::with_capacity(capacity),
             materials: Vec::with_capacity(capacity),
             styles: Vec::with_capacity(capacity),
+            receives_shadow: Vec::with_capacity(capacity),
             order: Vec::with_capacity(capacity),
             batches: Vec::new(),
             counts: Vec::new(),
@@ -186,6 +195,7 @@ impl RenderList {
         self.meshes.clear();
         self.materials.clear();
         self.styles.clear();
+        self.receives_shadow.clear();
         self.order.clear();
         self.batches.clear();
     }
@@ -201,12 +211,14 @@ impl RenderList {
         mesh: MeshHandle,
         material: MaterialHandle,
         style: InstanceStyle,
+        receives_shadow: bool,
     ) {
         self.entities.push(entity);
         self.transforms.push(transform);
         self.meshes.push(mesh);
         self.materials.push(material);
         self.styles.push(style);
+        self.receives_shadow.push(receives_shadow);
     }
 
     /// Entries in the list.
@@ -254,6 +266,12 @@ impl RenderList {
         &self.materials
     }
 
+    /// Whether each entry receives shadows.
+    #[must_use]
+    pub fn receives_shadow(&self) -> &[bool] {
+        &self.receives_shadow
+    }
+
     /// The per-entity visual state of each entry.
     ///
     /// A parallel array rather than part of the material, because it is the one field that
@@ -267,8 +285,8 @@ impl RenderList {
     /// Appends every entry of `other`, leaving it untouched.
     ///
     /// The merge step of a chunked cull: each worker fills its own list, and the chunks are
-    /// concatenated in chunk order afterwards. Four `extend_from_slice` calls, which are
-    /// four memcpys — the arrays being separate is what makes that true, and is one more
+    /// concatenated in chunk order afterwards. One `extend_from_slice` per array, which is
+    /// one memcpy each — the arrays being separate is what makes that true, and is one more
     /// reason the layout is parallel arrays rather than an array of structs.
     ///
     /// Chunk order is world order, so the concatenated list is identical to what a serial
@@ -281,6 +299,8 @@ impl RenderList {
         self.meshes.extend_from_slice(&other.meshes);
         self.materials.extend_from_slice(&other.materials);
         self.styles.extend_from_slice(&other.styles);
+        self.receives_shadow
+            .extend_from_slice(&other.receives_shadow);
     }
 
     /// Reserves room for `additional` more entries in every array.
@@ -293,6 +313,7 @@ impl RenderList {
         self.meshes.reserve(additional);
         self.materials.reserve(additional);
         self.styles.reserve(additional);
+        self.receives_shadow.reserve(additional);
     }
 
     /// Groups the list so entries sharing a material and a mesh are adjacent.
@@ -474,7 +495,14 @@ mod tests {
         let mut list = RenderList::new();
         for index in 0..count {
             let (entity, transform, mesh, material) = entry(index);
-            list.push(entity, transform, mesh, material, InstanceStyle::NEUTRAL);
+            list.push(
+                entity,
+                transform,
+                mesh,
+                material,
+                InstanceStyle::NEUTRAL,
+                true,
+            );
         }
         list
     }
@@ -532,6 +560,7 @@ mod tests {
             MeshHandle::new(0, 1),
             MaterialHandle::new(0, 1),
             InstanceStyle::NEUTRAL,
+            true,
         );
 
         let Some(read) = list.entry(0) else {
@@ -577,7 +606,14 @@ mod tests {
         list.clear();
         for index in 100..105_u32 {
             let (entity, transform, mesh, material) = entry(index);
-            list.push(entity, transform, mesh, material, InstanceStyle::NEUTRAL);
+            list.push(
+                entity,
+                transform,
+                mesh,
+                material,
+                InstanceStyle::NEUTRAL,
+                true,
+            );
         }
 
         assert_eq!(list.len(), 5, "the first twenty must not survive");
@@ -594,7 +630,14 @@ mod tests {
         let mut list = RenderList::new();
         for _ in 0..64 {
             let (entity, transform, mesh, material) = entry(0);
-            list.push(entity, transform, mesh, material, InstanceStyle::NEUTRAL);
+            list.push(
+                entity,
+                transform,
+                mesh,
+                material,
+                InstanceStyle::NEUTRAL,
+                true,
+            );
         }
         let capacity = list.capacity();
         assert!(capacity >= 64);
@@ -603,7 +646,14 @@ mod tests {
             list.clear();
             for index in 0..64 {
                 let (entity, transform, mesh, material) = entry(index);
-                list.push(entity, transform, mesh, material, InstanceStyle::NEUTRAL);
+                list.push(
+                    entity,
+                    transform,
+                    mesh,
+                    material,
+                    InstanceStyle::NEUTRAL,
+                    true,
+                );
             }
         }
         assert_eq!(

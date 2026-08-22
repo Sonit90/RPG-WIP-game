@@ -42,7 +42,7 @@ use crate::asset::{
     ARCH, ARENA_FLOOR, BANNER, BRAZIER, EnvironmentAsset, FERN, GROUND_PLAIN, LIBRARY, PILLAR,
     PINE, RIDGE, ROCK_MEDIUM, ROCK_SMALL, ROCK_SPIRE, SHRUB, SKY_DOME, SUPPLY_CRATE, WALL_SEGMENT,
 };
-use crate::lighting::EnvironmentLighting;
+use crate::lighting::{EnvironmentLighting, SceneLight};
 use crate::object::{EnvironmentCollision, EnvironmentObject};
 use crate::scene::{EnvironmentScene, SpawnPoints};
 use crate::{hash_range, hash01};
@@ -110,10 +110,14 @@ pub fn environment_demo() -> EnvironmentScene {
     let mut scene = combat_arena();
     scene.name = "environment_demo".into();
 
-    // Two rows of eight. Spaced far enough apart that a large asset does not overlap the
+    // Two rows of nine. Spaced far enough apart that a large asset does not overlap the
     // one beside it, and placed past `CLEAR_RADIUS` so the demo row is not in the arena.
+    //
+    // Nine and not eight because the library grew to eighteen: a third row would start at
+    // z = 42, which is outside the wall the demo is meant to be walkable inside. Widening a
+    // row costs nothing — nine columns at seven metres reach x = 28 against a limit of 38.6.
     const SPACING: f32 = 7.0;
-    const PER_ROW: usize = 8;
+    const PER_ROW: usize = 9;
     for (index, asset) in LIBRARY.iter().enumerate() {
         // The sky dome and the ground plain are the scene, not exhibits: a second one would
         // be a shell inside the shell and a second floor two centimetres above the first.
@@ -278,6 +282,19 @@ fn push_arena_props(scene: &mut EnvironmentScene) {
                 .with_collision(brazier_collision)
                 .with_yaw(hash_range(index as u32, 7, 0.0, std::f32::consts::TAU)),
         );
+        // A light at the bowl, not at the base: the model is about 1.4 m tall and a light
+        // inside the floor lights the ground it stands on and nothing else.
+        //
+        // Two of the four ask for shadow maps, and the two that do are the pair beside the
+        // combat space. That is what §20 means by "not every light": four shadow-casting
+        // braziers would spend the entire local budget on scenery in the corners of an arena
+        // lit by the sun, and the two nearest the fight are the ones a player ever sees cast.
+        let light = SceneLight::brazier(Vec3::new(x, 1.45, z), 14.0);
+        scene.push_light(if index < 2 {
+            light.casting_shadows(1)
+        } else {
+            light
+        });
     }
 
     let crate_collision = EnvironmentCollision::standing(0.46, 0.92, 0.46);

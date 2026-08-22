@@ -19,15 +19,14 @@ use windows::Win32::Graphics::Direct3D12::{
     D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET,
     D3D12_TEXTURE_COPY_LOCATION, D3D12_TEXTURE_COPY_LOCATION_0,
     D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT, D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
-    D3D12_TEXTURE_LAYOUT_ROW_MAJOR, ID3D12CommandAllocator, ID3D12DescriptorHeap,
-    ID3D12GraphicsCommandList, ID3D12Resource,
+    D3D12_TEXTURE_LAYOUT_ROW_MAJOR, ID3D12CommandAllocator, ID3D12DescriptorHeap, ID3D12Resource,
 };
 use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_UNKNOWN, DXGI_SAMPLE_DESC};
 use windows::core::Interface;
 
 use engine_core::transform::Transform;
 
-use crate::command::{scissor_for, transition_barrier, viewport_for};
+use crate::command::{CommandContext, scissor_for, transition_barrier, viewport_for};
 use crate::depth::{DEPTH_CLEAR, DepthBuffer};
 use crate::device::RenderDevice;
 use crate::error::RendererError;
@@ -67,15 +66,49 @@ struct WhiteMap {
     table: windows::Win32::Graphics::Direct3D12::D3D12_GPU_DESCRIPTOR_HANDLE,
 }
 
-/// Creates the shared white map for one offscreen submission.
-fn white_map(context: &RenderDevice) -> Result<WhiteMap, RendererError> {
-    use crate::descriptor::GpuDescriptorHeap;
-    use crate::resource::{GpuTexture, TrackedResource};
-    use crate::upload::StagingUploader;
-    use windows::Win32::Graphics::Direct3D12::{
-        D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_SHADER_RESOURCE_VIEW_DESC,
-        D3D12_SHADER_RESOURCE_VIEW_DESC_0, D3D12_SRV_DIMENSION_TEXTURE2D, D3D12_TEX2D_SRV,
+/// Prints whatever the validation layer stored, if it is running.
+///
+/// Silent when the layer is off, which is the usual case: `GetNumStoredMessages` on a device
+/// with no info queue returns nothing rather than failing.
+fn drain_validation_messages(context: &RenderDevice) {
+    use windows::Win32::Graphics::Direct3D12::ID3D12InfoQueue;
+    use windows::core::Interface;
+
+    let Ok(queue) = context.device().cast::<ID3D12InfoQueue>() else {
+        return;
     };
+    // SAFETY: FFI calls on a live info queue. The message buffer is sized by the same call
+    // that fills it, which is the documented two-call pattern.
+    unsafe {
+        let count = queue.GetNumStoredMessages();
+        for index in 0..count {
+            let mut length = 0_usize;
+            if queue.GetMessage(index, None, &mut length).is_err() || length == 0 {
+                continue;
+            }
+            let mut bytes = vec![0_u8; length];
+            let message = bytes.as_mut_ptr().cast();
+            if queue.GetMessage(index, Some(message), &mut length).is_err() {
+                continue;
+            }
+            let message = &*(message as *const windows::Win32::Graphics::Direct3D12::D3D12_MESSAGE);
+            let text = std::slice::from_raw_parts(
+                message.pDescription.cast::<u8>(),
+                message.DescriptionByteLength.saturating_sub(1),
+            );
+            eprintln!("d3d12: {}", String::from_utf8_lossy(text));
+        }
+    }
+}
+
+/// Uploads the shared 1x1 white texture.
+///
+/// Split from [`white_map`] so a path that owns its own descriptor heap — the shadowed one,
+/// which has to share a heap with the shadow atlas — can put the view somewhere else.
+fn white_texture(context: &RenderDevice) -> Result<crate::resource::GpuTexture, RendererError> {
+    use crate::resource::GpuTexture;
+    use crate::upload::StagingUploader;
+    use windows::Win32::Graphics::Direct3D12::D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
     use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
 
     let texture = GpuTexture::new(
@@ -93,9 +126,22 @@ fn white_map(context: &RenderDevice) -> Result<WhiteMap, RendererError> {
         D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
     )?;
     uploader.flush(context)?;
+    Ok(texture)
+}
 
-    let mut heap = GpuDescriptorHeap::new(context, 1, 0, 1)?;
-    let descriptor = heap.allocate_persistent()?;
+/// Writes the white texture's shader-resource view into `handle`.
+fn create_white_view(
+    context: &RenderDevice,
+    texture: &crate::resource::GpuTexture,
+    handle: crate::descriptor::DescriptorHandle,
+) {
+    use crate::resource::TrackedResource;
+    use windows::Win32::Graphics::Direct3D12::{
+        D3D12_SHADER_RESOURCE_VIEW_DESC, D3D12_SHADER_RESOURCE_VIEW_DESC_0,
+        D3D12_SRV_DIMENSION_TEXTURE2D, D3D12_TEX2D_SRV,
+    };
+    use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
+
     let desc = D3D12_SHADER_RESOURCE_VIEW_DESC {
         Format: DXGI_FORMAT_R8G8B8A8_UNORM_SRGB,
         ViewDimension: D3D12_SRV_DIMENSION_TEXTURE2D,
@@ -110,14 +156,24 @@ fn white_map(context: &RenderDevice) -> Result<WhiteMap, RendererError> {
         },
     };
     // SAFETY: FFI call. The texture outlives the submission, and the CPU handle addresses a
-    // slot this heap just allocated.
+    // slot the caller just allocated.
     unsafe {
         context.device().CreateShaderResourceView(
-            Some(TrackedResource::resource(&texture)),
+            Some(TrackedResource::resource(texture)),
             Some(&desc),
-            descriptor.cpu,
+            handle.cpu,
         );
     }
+}
+
+/// Creates the shared white map for one offscreen submission.
+fn white_map(context: &RenderDevice) -> Result<WhiteMap, RendererError> {
+    use crate::descriptor::GpuDescriptorHeap;
+
+    let texture = white_texture(context)?;
+    let mut heap = GpuDescriptorHeap::new(context, 1, 0, 1)?;
+    let descriptor = heap.allocate_persistent()?;
+    create_white_view(context, &texture, descriptor);
 
     let table = descriptor.gpu.ok_or_else(|| RendererError::InvalidConfig {
         reason: "the offscreen white map descriptor is not shader visible".to_owned(),
@@ -189,7 +245,8 @@ pub fn render_vertices(
     clear_color: [f32; 4],
     vertices: &[Vertex],
 ) -> Result<CapturedImage, RendererError> {
-    render_with(width, height, clear_color, |context, list, _| {
+    render_with(width, height, clear_color, |context, commands, _, _| {
+        let list = commands.list();
         let pipeline = ScenePipeline::new(context.device())?;
         let mesh = VertexStream::upload(context, vertices)?;
 
@@ -249,7 +306,8 @@ pub fn render_skinned_scene(
     camera: &Camera,
     lighting: Lighting,
 ) -> Result<CapturedImage, RendererError> {
-    render_with(width, height, clear_color, |context, list, _| {
+    render_with(width, height, clear_color, |context, commands, _, _| {
+        let list = commands.list();
         let pipeline = SkinnedMeshPipeline::new(context.device())?;
         // Room for one palette and one set of constants per object.
         let mut ring = UploadRing::new(context, 1 << 20, 1)?;
@@ -338,7 +396,8 @@ pub fn render_scene(
     camera: &Camera,
     lighting: Lighting,
 ) -> Result<CapturedImage, RendererError> {
-    render_with(width, height, clear_color, |context, list, _| {
+    render_with(width, height, clear_color, |context, commands, _, _| {
+        let list = commands.list();
         let pipeline = MeshPipeline::new(context.device())?;
         // One frame slot: this path submits once and waits, so there is nothing to overlap.
         // A megabyte, not 64 KiB: one 256-byte object constant per draw, and the
@@ -390,6 +449,233 @@ pub fn render_scene(
     })
 }
 
+/// One object in a shadowed scene.
+///
+/// Separate from [`SceneObject`] because it carries the one thing that scene does not: what
+/// the object does about shadows. Adding the field to `SceneObject` would have edited twenty
+/// call sites in tests that have no opinion about shadows at all.
+pub struct ShadowSceneObject<'a> {
+    /// Where it is.
+    pub transform: Transform,
+    /// Its geometry.
+    pub mesh: &'a MeshData,
+    /// Its surface.
+    pub material: MaterialDesc,
+    /// Whether it casts, receives, or neither.
+    pub shadow: engine_render_data::ShadowCasting,
+}
+
+/// Renders a scene *with the real shadow stage*, and reads the result back.
+///
+/// This is the offscreen counterpart of what the window renders, and it is deliberately
+/// built out of the shipping pieces rather than a copy of them: the real
+/// [`ShadowRenderer`](crate::shadow::ShadowRenderer), the real cascade mathematics, the real
+/// depth-only pipelines, the real atlas, and the real mesh pipeline sampling it. A pixel test
+/// on the result is therefore evidence about the path the game runs.
+///
+/// ```text
+/// shadow.prepare()   cascades and caster lists      (CPU)
+/// shadow.record()    the atlas, one viewport per view
+/// mesh pass          the same scene, sampling the atlas
+/// -> pixels
+/// ```
+///
+/// # Errors
+///
+/// Returns [`RendererError`] if any D3D12 call fails.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "an offscreen frame is a size, a clear, a scene, its lights, a camera, its               lighting and the settings under test; every one of them varies per test"
+)]
+pub fn render_scene_shadowed(
+    width: u32,
+    height: u32,
+    clear_color: [f32; 4],
+    objects: &[ShadowSceneObject<'_>],
+    lights: &[engine_render_data::LocalLight],
+    camera: &Camera,
+    lighting: Lighting,
+    settings: crate::shadow::ShadowSettings,
+) -> Result<CapturedImage, RendererError> {
+    render_scene_shadowed_debug(
+        width,
+        height,
+        clear_color,
+        objects,
+        lights,
+        camera,
+        lighting,
+        settings,
+        0,
+    )
+}
+
+/// [`render_scene_shadowed`], with one of the shadow debug views switched on.
+///
+/// `debug_mode` is the value [`Renderer::set_shadow_debug_mode`](crate::Renderer::set_shadow_debug_mode)
+/// takes. It exists so the debug views can be *tested*: they are the tools a person reaches
+/// for when a shadow looks wrong, and a broken tool is worst exactly then — the one moment
+/// nobody is in a position to notice it is the tool that is lying.
+///
+/// # Errors
+///
+/// Returns [`RendererError`] if any D3D12 call fails.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "an offscreen frame is this many things"
+)]
+pub fn render_scene_shadowed_debug(
+    width: u32,
+    height: u32,
+    clear_color: [f32; 4],
+    objects: &[ShadowSceneObject<'_>],
+    lights: &[engine_render_data::LocalLight],
+    camera: &Camera,
+    lighting: Lighting,
+    settings: crate::shadow::ShadowSettings,
+    debug_mode: u32,
+) -> Result<CapturedImage, RendererError> {
+    render_with(
+        width,
+        height,
+        clear_color,
+        |context, commands, rtv, depth| {
+            let dsv = depth.view().cpu;
+            let depth_texture = depth.texture();
+            let pipeline = MeshPipeline::new(context.device())?;
+            let mut ring = UploadRing::new(context, 4 << 20, 1)?;
+            ring.begin_frame(0);
+
+            // One shader-visible heap for everything the frame samples: the white base colour
+            // map, the shadow atlas and the depth copy. Only one such heap can be bound at a
+            // time, which is exactly why the renderer has one and why this path must too.
+            let mut descriptors = crate::descriptor::GpuDescriptorHeap::new(context, 16, 0, 1)?;
+            let white_texture = white_texture(context)?;
+            let white_handle = descriptors.allocate_persistent()?;
+            create_white_view(context, &white_texture, white_handle);
+
+            let mut shadow = crate::shadow::ShadowRenderer::new(
+                context,
+                &mut descriptors,
+                settings,
+                (width, height),
+            )?;
+            shadow.set_debug_mode(debug_mode);
+
+            let mut meshes = Vec::with_capacity(objects.len());
+            let mut materials = Vec::with_capacity(objects.len());
+            let mut tables = Vec::with_capacity(objects.len());
+            let mut world = engine_render_data::RenderWorld::with_capacity(objects.len());
+            for (index, object) in objects.iter().enumerate() {
+                meshes.push(GpuMesh::upload(context, object.mesh)?);
+                materials.push(Material::new(context, object.material)?);
+                tables.push(white_handle.gpu);
+                world.spawn(engine_render_data::RenderEntityDesc {
+                    transform: object.transform,
+                    mesh: engine_render_data::MeshHandle::new(index as u32, 1),
+                    material: engine_render_data::MaterialHandle::new(index as u32, 1),
+                    bounds: object.mesh.bounds(),
+                    visible: true,
+                    style: engine_render_data::InstanceStyle::NEUTRAL,
+                    shadow: object.shadow,
+                });
+            }
+            for light in lights {
+                world.push_light(*light);
+            }
+
+            commands.set_descriptor_heaps(&[Some(descriptors.heap().clone())]);
+
+            // The shadow stage, exactly as the renderer runs it.
+            shadow.prepare(&world, camera, lighting);
+            let empty = engine_render_data::SkinnedDrawList::new();
+            let scene = crate::shadow::renderer::ShadowScene {
+                meshes: &meshes,
+                skinned_meshes: &[],
+                materials: &materials,
+                material_tables: &tables,
+                skinned: &empty,
+            };
+            shadow.record(commands, &mut ring, 0, &scene)?;
+
+            // The camera's depth prepass, when the settings ask for one, so the contact-shadow
+            // march has depth to march against — and so this path exercises it at all.
+            if shadow.needs_prepass() {
+                let mut visible = crate::render_list::RenderList::new();
+                let mut culler = crate::culling::Culler::new();
+                culler.accept_all(&world, &mut visible);
+                visible.group_by_material_and_mesh(usize::MAX, usize::MAX);
+                let scene = crate::shadow::renderer::ShadowScene {
+                    meshes: &meshes,
+                    skinned_meshes: &[],
+                    materials: &materials,
+                    material_tables: &tables,
+                    skinned: &empty,
+                };
+                shadow.record_prepass(
+                    commands,
+                    &mut ring,
+                    0,
+                    &scene,
+                    &visible,
+                    camera,
+                    dsv,
+                    (width, height),
+                )?;
+                shadow.copy_scene_depth(commands, depth_texture);
+            }
+
+            // Back to the camera's target, which the shadow pass replaced with the atlas.
+            commands.set_render_target_and_depth(rtv, dsv);
+            commands.set_viewport(width, height);
+
+            let mut frame =
+                FrameConstants::new(camera.view_projection(), camera.position(), lighting);
+            frame.set_camera(camera);
+            frame.set_viewport(width, height);
+            shadow.write_frame_constants(&mut frame, world.lights());
+            let frame_allocation = ring.write_constants(0, &frame)?;
+
+            commands.set_pipeline(pipeline.root_signature(), pipeline.pipeline_state());
+            commands.set_topology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+            commands.set_root_cbv(ROOT_FRAME_CBV, frame_allocation.gpu_address());
+            if let Some(table) = white_handle.gpu {
+                commands.set_root_descriptor_table(ROOT_MATERIAL_TABLE, table);
+            }
+            if let Some(table) = shadow.atlas_table() {
+                commands.set_root_descriptor_table(crate::scene::ROOT_SHADOW_TABLE, table);
+            }
+            if let Some(table) = shadow.depth_table() {
+                commands.set_root_descriptor_table(crate::scene::ROOT_DEPTH_TABLE, table);
+            }
+
+            for (index, object) in objects.iter().enumerate() {
+                let constants = ObjectConstants::shadowed(
+                    object.transform.matrix(),
+                    engine_render_data::InstanceStyle::NEUTRAL,
+                    object.shadow.receives,
+                );
+                let allocation = ring.write_constants(0, &constants)?;
+                commands.set_root_cbv(ROOT_MATERIAL_CBV, materials[index].gpu_address());
+                commands.set_root_cbv(ROOT_OBJECT_CBV, allocation.gpu_address());
+                commands.set_vertex_buffer(0, *meshes[index].vertex_view());
+                commands.set_index_buffer(*meshes[index].index_view());
+                commands.draw_indexed(meshes[index].index_count(), 1, 0);
+            }
+
+            Ok(Box::new((
+                pipeline,
+                ring,
+                meshes,
+                materials,
+                white_texture,
+                descriptors,
+                shadow,
+            )) as Box<dyn std::any::Any>)
+        },
+    )
+}
+
 /// Renders a [`ParticleDrawList`](engine_render_data::ParticleDrawList) through a camera
 /// and reads the result back.
 ///
@@ -413,7 +699,8 @@ pub fn render_particles(
     use windows::Win32::Graphics::Direct3D::D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP;
     use windows::Win32::Graphics::Direct3D12::D3D12_VERTEX_BUFFER_VIEW;
 
-    render_with(width, height, clear_color, |context, list, _| {
+    render_with(width, height, clear_color, |context, commands, _, _| {
+        let list = commands.list();
         let pipeline = ParticlePipeline::new(context.device())?;
         let mut ring = UploadRing::new(context, 1 << 20, 1)?;
         ring.begin_frame(0);
@@ -492,7 +779,8 @@ pub fn render_ui(
     };
     use crate::upload::StagingUploader;
 
-    render_with(width, height, clear_color, |context, list, _| {
+    render_with(width, height, clear_color, |context, commands, _, _| {
+        let list = commands.list();
         let pipeline = UiPipeline::new(context.device())?;
 
         let atlas_pixels = UiAtlas::new();
@@ -603,7 +891,8 @@ pub fn render_scene_instanced(
     camera: &Camera,
     lighting: Lighting,
 ) -> Result<CapturedImage, RendererError> {
-    render_with(width, height, clear_color, |context, list, _| {
+    render_with(width, height, clear_color, |context, commands, _, _| {
+        let list = commands.list();
         let pipeline = InstancedMeshPipeline::new(context.device())?;
         // A megabyte, not 64 KiB: one 256-byte object constant per draw, and the
         // environment tests place a whole arena. Exhausting the ring fails the frame with a
@@ -699,8 +988,9 @@ fn render_with(
     clear_color: [f32; 4],
     record: impl FnOnce(
         &RenderDevice,
-        &ID3D12GraphicsCommandList,
+        &mut CommandContext,
         D3D12_CPU_DESCRIPTOR_HANDLE,
+        &DepthBuffer,
     ) -> Result<Box<dyn std::any::Any>, RendererError>,
 ) -> Result<CapturedImage, RendererError> {
     if width == 0 || height == 0 {
@@ -709,7 +999,13 @@ fn render_with(
         });
     }
 
-    let context = RenderDevice::new(false, false)?;
+    // `OFFSCREEN_DEBUG_LAYER=1` turns on the D3D12 validation layer for this submission and
+    // prints whatever it has to say when the submission fails. Off by default because the
+    // layer costs several times the CPU time of the work being validated, and on by an
+    // environment variable rather than a feature because the moment it is wanted is *after*
+    // a failure, when rebuilding is the last thing that helps.
+    let debug_layer = std::env::var("OFFSCREEN_DEBUG_LAYER").is_ok();
+    let context = RenderDevice::new(debug_layer, false)?;
     let device = context.device();
 
     let target_desc = D3D12_RESOURCE_DESC {
@@ -834,10 +1130,12 @@ fn render_with(
     let allocator: ID3D12CommandAllocator =
         unsafe { device.CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT) }
             .map_err(|error| RendererError::api("ID3D12Device::CreateCommandAllocator", error))?;
-    // SAFETY: FFI call. The allocator is live and no initial pipeline state is required.
-    let list: ID3D12GraphicsCommandList =
-        unsafe { device.CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, &allocator, None) }
-            .map_err(|error| RendererError::api("ID3D12Device::CreateCommandList", error))?;
+    // A `CommandContext` rather than a bare list, so a pass written for the renderer — the
+    // shadow stage is one — records here through exactly the same type it records through in
+    // the window path, barrier tracking and redundant-bind elision included.
+    let mut commands = CommandContext::new(&context, &allocator)?;
+    commands.begin(&allocator)?;
+    let list = commands.list().clone();
 
     let source = D3D12_TEXTURE_COPY_LOCATION {
         // SAFETY: non-owning copy of the interface pointer, kept in a ManuallyDrop so it
@@ -869,7 +1167,17 @@ fn render_with(
         list.ClearDepthStencilView(dsv, D3D12_CLEAR_FLAG_DEPTH, DEPTH_CLEAR, 0, None);
     }
 
-    let recorded = record(&context, &list, rtv)?;
+    let recorded = match record(&context, &mut commands, rtv, &depth) {
+        Ok(recorded) => recorded,
+        Err(error) => {
+            drain_validation_messages(&context);
+            return Err(error);
+        }
+    };
+
+    // Any barrier the recorded pass left queued has to reach the list before the copy that
+    // reads the target — the context batches them, and this is the last chance.
+    commands.flush_barriers();
 
     // SAFETY: FFI calls recording into the same open list; the target and readback buffer
     // outlive the submission this function waits for.
@@ -882,9 +1190,10 @@ fn render_with(
         list.CopyTextureRegion(&destination, 0, 0, 0, &source, None);
     }
 
-    // SAFETY: FFI call closing the list recorded above.
-    unsafe { list.Close() }
-        .map_err(|error| RendererError::api("ID3D12GraphicsCommandList::Close", error))?;
+    if let Err(error) = commands.close() {
+        drain_validation_messages(&context);
+        return Err(error);
+    }
 
     let submission = [Some(list.cast().map_err(|error| {
         RendererError::api("ID3D12GraphicsCommandList::cast", error)
@@ -893,8 +1202,19 @@ fn render_with(
     unsafe { context.queue().ExecuteCommandLists(&submission) };
 
     let mut fence = crate::sync::GpuFence::new(&context)?;
-    fence.wait_for_idle(context.queue())?;
+    let waited = fence.wait_for_idle(context.queue());
+    if waited.is_err() {
+        // The GPU did not finish. Whatever the validation layer recorded is the only
+        // description of why, and it is lost the moment the device is dropped.
+        drain_validation_messages(&context);
+    }
+    waited?;
 
+    if debug_layer {
+        // Everything the layer had to say about a submission that *worked*, which is where
+        // a silently ignored copy or a mismatched state shows up.
+        drain_validation_messages(&context);
+    }
     let pixels = read_pixels(&readback, &footprint, width, height, total_bytes)?;
     // Everything the list referenced stayed alive until here, which is the point of
     // handing it back rather than letting the closure drop it.

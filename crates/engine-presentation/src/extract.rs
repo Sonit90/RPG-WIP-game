@@ -30,7 +30,7 @@ use engine_game::sim::Simulation;
 use engine_game::world::EntityKind;
 use engine_render_data::{
     InstanceStyle, MaterialHandle, MeshHandle, ModelBinding, ModelLodBinding, ModelPart,
-    PartGeometry, RenderEntity, RenderEntityDesc, RenderWorld,
+    PartGeometry, RenderEntity, RenderEntityDesc, RenderWorld, ShadowCasting,
 };
 
 use crate::character::{CastVisual, CharacterState, CharacterVisual};
@@ -378,6 +378,10 @@ impl RenderExtractor {
             bounds: bindings.ground_bounds,
             visible: true,
             style: InstanceStyle::NEUTRAL,
+            // The floor receives every shadow in the scene and casts none: it is a flat
+            // plane, so its own shadow is either nothing or — seen from a low sun — a
+            // horizon-wide slab of darkness over everything behind it.
+            shadow: ShadowCasting::RECEIVES_ONLY,
         });
         let marker = world.spawn(RenderEntityDesc {
             transform: Transform::IDENTITY,
@@ -386,6 +390,11 @@ impl RenderExtractor {
             bounds: bindings.marker_bounds,
             visible: false,
             style: InstanceStyle::NEUTRAL,
+            // A ring drawn on the floor under the selected target. It is an interface
+            // element that happens to be geometry: it must not cast a shadow, and it must
+            // not be darkened by one either, or the selection it marks becomes unreadable
+            // exactly when the target steps into shade.
+            shadow: ShadowCasting::NONE,
         });
 
         Self {
@@ -578,6 +587,10 @@ impl RenderExtractor {
                                     bounds: part.bounds,
                                     visible: true,
                                     style,
+                                    // A dummy, an enemy or anything else the simulation
+                                    // owns. Its shadow on the ground is what tells the
+                                    // player where it is standing.
+                                    shadow: ShadowCasting::CASTS_AND_RECEIVES,
                                 }));
                                 stats.spawned += 1;
                             }

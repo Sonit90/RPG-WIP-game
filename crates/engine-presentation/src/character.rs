@@ -426,6 +426,9 @@ impl CharacterVisual {
                 style: InstanceStyle::NEUTRAL,
                 palette_start,
                 palette_len,
+                // A character is the shadow the player looks at. Nothing here opts out.
+                casts_shadow: true,
+                receives_shadow: true,
             });
         }
     }

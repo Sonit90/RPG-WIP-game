@@ -8,36 +8,11 @@
 //
 // The frame and material constant buffers are unchanged and still live at b0 and b2 — the
 // root signature is the same one, minus the per-object slot the instance stream replaces.
-// Keeping the registers identical is what lets both pipelines share a root signature and
-// the material upload path.
+// The lighting is not merely "the same as mesh.hlsl": it is literally the same function, out
+// of scene_frame.hlsli, which is what makes tests/instanced_equivalence.rs a check on the
+// vertex path rather than on two copies of a pixel shader.
 
-cbuffer Frame : register(b0)
-{
-    column_major float4x4 view_projection;
-    float3 camera_position;
-    float frame_padding;
-    // The direction the light travels, not the direction towards it.
-    float3 light_direction;
-    float light_intensity;
-    float3 light_color;
-    float ambient_intensity;
-    float3 ambient_color;
-    float frame_padding_2;
-};
-
-cbuffer Material : register(b2)
-{
-    float4 base_color;
-    float3 emissive;
-    float roughness;
-    float metallic;
-    float3 material_padding;
-};
-
-// The same base colour map and static sampler mesh.hlsl declares, at the same registers,
-// because both pipelines share one root signature.
-Texture2D base_color_map : register(t0);
-SamplerState base_color_sampler : register(s0);
+#include "scene_frame.hlsli"
 
 struct VertexInput
 {
@@ -62,16 +37,20 @@ struct VertexInput
     // material put it in. Neutral is tint (1,1,1,1) and emissive 0, and it costs the same
     // as not having the feature: the multiply and the add still happen.
     float4 tint     : INSTANCE_TINT;
-    float emissive_scale : INSTANCE_EMISSIVE;
+    // x: the emissive add. y: 1 when this instance is darkened by shadows. The second
+    // component reads a word that was padding in the instance record, so per-instance
+    // shadow receipt costs no extra bytes in the stream.
+    float2 emissive_scale : INSTANCE_EMISSIVE;
 };
 
 struct PixelInput
 {
-    float4 position     : SV_POSITION;
-    float3 world_normal : NORMAL;
-    float2 uv           : TEXCOORD0;
-    float4 tint         : COLOR0;
-    float emissive_scale : COLOR1;
+    float4 position       : SV_POSITION;
+    float3 world_position : TEXCOORD1;
+    float3 world_normal   : NORMAL;
+    float2 uv             : TEXCOORD0;
+    float4 tint           : COLOR0;
+    float2 emissive_scale : COLOR1;
 };
 
 PixelInput VSMain(VertexInput input)
@@ -91,9 +70,9 @@ PixelInput VSMain(VertexInput input)
 
     float4 world = mul(float4(input.position, 1.0), model);
     output.position = mul(view_projection, world);
-    // Correct only for uniform scale, exactly as in mesh.hlsl. Non-uniform scale needs the
-    // inverse transpose, which nothing yet uses.
-    // Vector-first for the same reason, on the upper-left 3x3.
+    output.world_position = world.xyz;
+    // Correct only for uniform scale, exactly as in mesh.hlsl. Vector-first for the same
+    // reason, on the upper-left 3x3.
     output.world_normal = mul(input.normal, (float3x3)model);
     output.uv = input.uv;
     output.tint = input.tint;
@@ -103,22 +82,12 @@ PixelInput VSMain(VertexInput input)
 
 float4 PSMain(PixelInput input) : SV_TARGET
 {
-    // Byte-for-byte the same lighting as mesh.hlsl. If the two ever disagree, an instanced
-    // frame and a non-instanced frame would be different images, and the equivalence test
-    // in tests/instanced_equivalence.rs is what catches that.
-    float3 normal = normalize(input.world_normal);
-    float3 to_light = normalize(-light_direction);
-    float lambert = saturate(dot(normal, to_light));
-
-    float4 albedo = base_color * base_color_map.Sample(base_color_sampler, input.uv);
-
-    // The per-instance tint multiplies the authored surface rather than replacing it, so a
-    // tinted dummy is still recognisably the same material.
-    float3 tinted = albedo.rgb * input.tint.rgb;
-    float3 diffuse = tinted * light_color * (light_intensity * lambert);
-    float3 ambient = tinted * ambient_color * ambient_intensity;
-    // The instance's emissive is added to the material's, so a flash brightens a surface
-    // that already glows rather than overriding it.
-    float3 glow = emissive + tinted * input.emissive_scale;
-    return float4(diffuse + ambient + glow, albedo.a * input.tint.a);
+    return shade_surface(
+        input.position,
+        input.world_position,
+        input.world_normal,
+        input.uv,
+        input.tint,
+        input.emissive_scale.x,
+        input.emissive_scale.y);
 }

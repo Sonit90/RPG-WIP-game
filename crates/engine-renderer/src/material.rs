@@ -33,6 +33,18 @@ pub struct MaterialDesc {
     pub metallic: f32,
     /// Colour emitted regardless of lighting.
     pub emissive: Vec3,
+    /// Below this alpha a fragment is discarded, in both the camera pass and the shadow pass.
+    ///
+    /// Zero is an opaque material and performs no test, which is what nearly every surface
+    /// in a scene is. A positive value is a *cutout* material — foliage, a fence, a grate —
+    /// and it is the whole of the transparency the renderer supports: there is no sorted
+    /// blended geometry pass, so a value between 0 and 1 is a hard edge and not a fade.
+    ///
+    /// It is on the material rather than on the entity because it is a property of the
+    /// surface: two instances of the same leaf card cut out at the same threshold, and the
+    /// shadow pass needs the same number the camera pass uses or a leaf's shadow is a
+    /// rectangle.
+    pub alpha_cutoff: f32,
 }
 
 impl Default for MaterialDesc {
@@ -42,6 +54,7 @@ impl Default for MaterialDesc {
             roughness: 0.8,
             metallic: 0.0,
             emissive: Vec3::ZERO,
+            alpha_cutoff: 0.0,
         }
     }
 }
@@ -77,6 +90,31 @@ impl MaterialDesc {
         self
     }
 
+    /// Returns the description as a cutout material with the given alpha threshold.
+    ///
+    /// Clamped into (0, 1]: zero would mean "opaque" and is not a cutout at all, and a
+    /// threshold above one discards every fragment, which renders as an object that has
+    /// vanished with no error anywhere.
+    #[must_use]
+    pub fn with_alpha_cutoff(mut self, cutoff: f32) -> Self {
+        self.alpha_cutoff = if cutoff.is_finite() {
+            cutoff.clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        self
+    }
+
+    /// Whether this material needs the alpha test in the depth passes.
+    ///
+    /// What selects the shadow pass's cutout pipeline over its opaque one — and an opaque
+    /// material must answer `false`, because the opaque pipeline binds no pixel shader at
+    /// all and is markedly faster for it.
+    #[must_use]
+    pub fn is_alpha_tested(&self) -> bool {
+        self.alpha_cutoff > 0.0
+    }
+
     /// Rejects values a shader cannot use.
     ///
     /// `NaN` is the one that matters: it propagates through the whole lighting expression
@@ -85,6 +123,7 @@ impl MaterialDesc {
         let finite = self.base_color.dot(self.base_color).is_finite()
             && self.roughness.is_finite()
             && self.metallic.is_finite()
+            && self.alpha_cutoff.is_finite()
             && self.emissive.length_squared().is_finite();
         if !finite {
             return Err(RendererError::InvalidConfig {
@@ -120,8 +159,10 @@ pub struct MaterialConstants {
     pub roughness: f32,
     /// Metalness.
     pub metallic: f32,
+    /// Below this alpha a fragment is discarded. Zero is opaque.
+    pub alpha_cutoff: f32,
     /// Padding to a whole 16-byte register.
-    pub padding: [f32; 3],
+    pub padding: [f32; 2],
 }
 
 impl From<MaterialDesc> for MaterialConstants {
@@ -136,7 +177,8 @@ impl From<MaterialDesc> for MaterialConstants {
             emissive: [desc.emissive.x, desc.emissive.y, desc.emissive.z],
             roughness: desc.roughness,
             metallic: desc.metallic,
-            padding: [0.0; 3],
+            alpha_cutoff: desc.alpha_cutoff,
+            padding: [0.0; 2],
         }
     }
 }

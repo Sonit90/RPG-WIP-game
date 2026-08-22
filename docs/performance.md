@@ -1037,3 +1037,49 @@ draws fewer objects. Nothing in this phase changed the cost of a frame that has 
 it — the AI stage costs nothing when `enemies` is empty, which is the case in every existing
 scene.
 
+
+# Phase 7 — shadows
+
+## What shadows cost
+
+`mygame --scene shadows --frames 900 --report 0 --shadows <level>`, release, 152 objects and
+230–390 casters, mean over the run:
+
+| Preset | Frame GPU | Shadow stage CPU | Shadow stage GPU | Shadow draws | Casters |
+| --- | --- | --- | --- | --- | --- |
+| off | 0.125 ms | – | – | – | – |
+| low | 0.177 ms | 0.014 ms | 0.016 ms | 31 | 49 |
+| medium | 0.213 ms | 0.030 ms | 0.032 ms | 82 | 215 |
+| high | 0.342 ms | 0.037 ms | 0.065 ms | 82 | 215 |
+| ultra | 0.422 ms | 0.045 ms | 0.071 ms | 117 | 371 |
+
+The dungeon at high, the heaviest shipping scene: 0.062 ms CPU, 0.079 ms GPU, 252 draws,
+151 026 triangles, 393 casters, 6 local shadow views granted and 19 refused.
+
+The draw and caster counts are about 12% lower than the first measurement of the same scene
+because floors, ridges and the sky dome stopped being drawn into cascades: a flat plane's
+shadow is the plane, and the ground plain is one 640 m quad that was being drawn into every
+cascade to change no pixel.
+
+Two readings. The **shadow stage itself is under a tenth of a millisecond** at every preset —
+it is a depth-only pass with a null pixel shader over a culled, LOD-reduced caster list.
+Most of the difference between off and high is elsewhere: the depth prepass contact shadows
+need, and the extra sampling the mesh pass does per pixel. That is why High enables contact
+shadows and Medium does not, rather than the other way round.
+
+The stage's CPU cost scales with casters and not with preset, which is what the caster
+culling and the four-level shadow LOD are for.
+
+## Memory
+
+The atlas is the whole footprint: 8 MB at low, 16 MB at medium, 64 MB at high, 80 MB at
+ultra. Local shadow views cost nothing extra at high — eight 512² tiles fit inside the
+quarter of a 4096² atlas that three 2048² cascades leave empty.
+
+## Allocation
+
+The shadow stage allocates nothing per frame. Caster lists, batch scratch and instance
+scratch are owned buffers that grow to the scene once and are cleared rather than freed;
+constants go through the frame's existing upload ring. Changing the quality **does** allocate
+and stall: the atlas is recreated, behind a `wait_for_idle()`, which is why it belongs on a
+settings screen rather than on a slider.

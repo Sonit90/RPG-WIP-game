@@ -1,28 +1,17 @@
-// Opaque mesh shading: transform by the camera, tint by the material.
+// Opaque mesh shading: transform by the camera, shade with the sun, the shadow atlas and
+// whatever local lights reach the surface.
 //
 // Matrices are declared column_major, which is both the HLSL default and the layout
 // engine_core::math::Mat4 already has in memory — columns in consecutive registers. So a
 // matrix is memcpy'd into the constant buffer with no transpose, and mul(M, v) is the same
 // M * v the CPU-side math means.
 //
-// There is no lighting here. That is Milestone 14; this milestone is about geometry
-// arriving in the right place, and a flat colour makes "the right place" unambiguous.
+// The frame constants, the material constants and the whole lighting function live in
+// scene_frame.hlsli, shared with the instanced and skinned pipelines. Only the two things
+// that genuinely differ between them are here: how a vertex reaches world space, and where
+// the per-object tint comes from.
 
-cbuffer Frame : register(b0)
-{
-    column_major float4x4 view_projection;
-    float3 camera_position;
-    float frame_padding;
-    // The direction the light travels, not the direction towards it. Stored the way it is
-    // authored ("the sun points down and to the left") and negated once, here, rather than
-    // at every call site that sets it.
-    float3 light_direction;
-    float light_intensity;
-    float3 light_color;
-    float ambient_intensity;
-    float3 ambient_color;
-    float frame_padding_2;
-};
+#include "scene_frame.hlsli"
 
 cbuffer Object : register(b1)
 {
@@ -32,27 +21,12 @@ cbuffer Object : register(b1)
     // a non-instanced frame are different images.
     float4 instance_tint;
     float instance_emissive;
-    float3 object_padding;
+    // 1 when the lighting pass may darken this object where a shadow falls on it. Carried in
+    // what used to be padding, so the per-object constants did not grow a register for a
+    // flag.
+    float instance_receives_shadow;
+    float2 object_padding;
 };
-
-cbuffer Material : register(b2)
-{
-    float4 base_color;
-    float3 emissive;
-    float roughness;
-    float metallic;
-    float3 material_padding;
-};
-
-// The material's base colour map, bound as a one-descriptor table at root parameter 3, and
-// the sampler that reads it — a static sampler in the root signature, so there is no
-// descriptor to allocate and nothing per-material to bind for it.
-//
-// Every material has a map. An untextured one points at a shared 1x1 white texel, which
-// costs one texture fetch that returns 1 and saves a second pipeline state, a second shader
-// and the branch that would choose between them.
-Texture2D base_color_map : register(t0);
-SamplerState base_color_sampler : register(s0);
 
 struct VertexInput
 {
@@ -63,9 +37,10 @@ struct VertexInput
 
 struct PixelInput
 {
-    float4 position     : SV_POSITION;
-    float3 world_normal : NORMAL;
-    float2 uv           : TEXCOORD0;
+    float4 position       : SV_POSITION;
+    float3 world_position : TEXCOORD1;
+    float3 world_normal   : NORMAL;
+    float2 uv             : TEXCOORD0;
 };
 
 PixelInput VSMain(VertexInput input)
@@ -73,9 +48,11 @@ PixelInput VSMain(VertexInput input)
     PixelInput output;
     float4 world = mul(model, float4(input.position, 1.0));
     output.position = mul(view_projection, world);
+    // The world position is what every shadow lookup starts from: a cascade, a spot light
+    // and the contact-shadow march all project it into a different space.
+    output.world_position = world.xyz;
     // Correct only for uniform scale. Non-uniform scale needs the inverse transpose, which
-    // costs an extra matrix per object; nothing scales non-uniformly yet, and Milestone 14
-    // is where a wrong normal would start to show.
+    // costs an extra matrix per object; nothing scales non-uniformly yet.
     output.world_normal = mul((float3x3)model, input.normal);
     output.uv = input.uv;
     return output;
@@ -83,23 +60,12 @@ PixelInput VSMain(VertexInput input)
 
 float4 PSMain(PixelInput input) : SV_TARGET
 {
-    // Lambert diffuse plus a constant ambient term. Not a BRDF: roughness and metallic are
-    // carried in the material and deliberately unused, because a specular lobe would be a
-    // second thing to be wrong while establishing that normals and light direction are
-    // right. Milestone 14's job is that a lit surface is brighter than an unlit one, for
-    // the correct geometric reason.
-    float3 normal = normalize(input.world_normal);
-    float3 to_light = normalize(-light_direction);
-    float lambert = saturate(dot(normal, to_light));
-
-    // Identical to mesh_instanced.hlsl, including the texture fetch, the tint and the
-    // emissive add. The map multiplies the material's constant rather than replacing it, so
-    // a colour authored on the material still tints a textured surface.
-    float4 albedo = base_color * base_color_map.Sample(base_color_sampler, input.uv);
-
-    float3 tinted = albedo.rgb * instance_tint.rgb;
-    float3 diffuse = tinted * light_color * (light_intensity * lambert);
-    float3 ambient = tinted * ambient_color * ambient_intensity;
-    float3 glow = emissive + tinted * instance_emissive;
-    return float4(diffuse + ambient + glow, albedo.a * instance_tint.a);
+    return shade_surface(
+        input.position,
+        input.world_position,
+        input.world_normal,
+        input.uv,
+        instance_tint,
+        instance_emissive,
+        instance_receives_shadow);
 }

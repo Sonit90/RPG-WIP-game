@@ -115,6 +115,12 @@ pub struct CommandStats {
     pub barrier_flushes: u32,
     /// Transitions skipped because the resource was already in the requested state.
     pub redundant_transitions: u32,
+    /// Whole-resource copies recorded.
+    ///
+    /// One a frame at most, and only when contact shadows are on: the camera depth buffer
+    /// being copied into the texture the march samples. Counted so that cost is visible
+    /// rather than folded anonymously into the frame.
+    pub copies: u32,
 }
 
 impl CommandStats {
@@ -352,6 +358,65 @@ impl CommandContext {
             self.list
                 .OMSetRenderTargets(1, Some(&rtv), false, Some(&dsv))
         };
+    }
+
+    /// Binds a depth-stencil view with no render target.
+    ///
+    /// What a depth-only pass wants: the shadow atlas and the camera's depth prepass write
+    /// depth and nothing else, and binding a render target they would not write to is both
+    /// a state change for nothing and a validation warning about a target with no output.
+    pub fn set_depth_target(&mut self, dsv: D3D12_CPU_DESCRIPTOR_HANDLE) {
+        self.flush_barriers();
+        // SAFETY: FFI call on the open list with a handle from a heap the caller owns. Zero
+        // render targets with a null pointer is the documented way to bind depth alone.
+        unsafe { self.list.OMSetRenderTargets(0, None, false, Some(&dsv)) };
+    }
+
+    /// Copies one resource over another of the same size and compatible format.
+    ///
+    /// Both must already be in the right states — `COPY_SOURCE` and `COPY_DEST` — which the
+    /// caller queues through [`Self::transition_to`]; the flush below is what makes those
+    /// transitions take effect before the copy reads them.
+    pub fn copy_resource<D, S>(&mut self, destination: &D, source: &S)
+    where
+        D: TrackedResource + ?Sized,
+        S: TrackedResource + ?Sized,
+    {
+        self.flush_barriers();
+        // SAFETY: FFI call on the open list. Both resources outlive the submission, and
+        // their states were queued by the caller and flushed above.
+        unsafe {
+            self.list
+                .CopyResource(destination.resource(), source.resource());
+        }
+        self.stats.copies += 1;
+    }
+
+    /// Sets the viewport and scissor rectangle to one rectangle of a larger target.
+    ///
+    /// What makes a shadow *atlas* possible: every cascade and every local light renders
+    /// into its own rectangle of one texture, so the whole stage costs one depth target, one
+    /// clear and one barrier.
+    pub fn set_viewport_rect(&mut self, x: u32, y: u32, width: u32, height: u32) {
+        let viewport = D3D12_VIEWPORT {
+            TopLeftX: x as f32,
+            TopLeftY: y as f32,
+            Width: width as f32,
+            Height: height as f32,
+            MinDepth: 0.0,
+            MaxDepth: 1.0,
+        };
+        let scissor = RECT {
+            left: x as i32,
+            top: y as i32,
+            right: (x + width) as i32,
+            bottom: (y + height) as i32,
+        };
+        // SAFETY: FFI calls on the open list; both structures live across the calls.
+        unsafe {
+            self.list.RSSetViewports(&[viewport]);
+            self.list.RSSetScissorRects(&[scissor]);
+        }
     }
 
     /// Clears the depth part of a depth-stencil view.

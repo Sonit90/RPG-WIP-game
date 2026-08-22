@@ -244,6 +244,8 @@ impl Scene {
             bounds: self.ground_bounds,
             visible: true,
             style: engine_renderer::InstanceStyle::NEUTRAL,
+            // The floor receives the scene's shadows and casts none of its own.
+            shadow: engine_renderer::ShadowCasting::RECEIVES_ONLY,
         });
         self.scene_triangles += u64::from(self.ground_triangles);
 
@@ -286,6 +288,8 @@ impl Scene {
             bounds: local_bounds,
             visible: true,
             style: engine_renderer::InstanceStyle::NEUTRAL,
+            // Ordinary scene geometry, which is what the showcase is a field of.
+            shadow: engine_renderer::ShadowCasting::CASTS_AND_RECEIVES,
         });
         self.scene_triangles += u64::from(triangles);
 

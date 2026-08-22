@@ -101,12 +101,23 @@ fn a_surface_behind_another_does_not_show_through() {
 }
 
 #[test]
-fn coplanar_surfaces_keep_the_first_one_drawn() {
+fn coplanar_surfaces_keep_the_last_one_drawn() {
     let _guard = gpu_lock();
 
-    // `LESS`, not `LESS_EQUAL`: a fragment at exactly the stored depth is rejected. That is
-    // the choice that makes z-fighting deterministic rather than dependent on rasterization
-    // order, and it is worth pinning down because the two comparisons look interchangeable.
+    // `LESS_EQUAL`, not `LESS`: a fragment at exactly the stored depth is **accepted**, so
+    // the later of two coplanar surfaces wins.
+    //
+    // This used to be the opposite, and the change was forced rather than chosen. The depth
+    // prepass the contact shadows need writes exactly the depth the camera pass then
+    // computes, so under `LESS` *every fragment in the frame* fails its own test and the
+    // scene renders as the clear colour. Accepting equality is the only comparison that
+    // works with a prepass at all.
+    //
+    // What it costs: deliberately coplanar geometry now resolves by submission order rather
+    // than by rejection. Nothing in this renderer draws the same surface twice, and the one
+    // place two surfaces are nearly coplanar on purpose — the targeting decal on the floor —
+    // already separates them by three centimetres because a tie flickers under *either*
+    // comparison as the camera moves.
     let mut vertices = Vec::new();
     vertices.extend_from_slice(&covering_triangle(0.5, [1.0, 0.0, 0.0, 1.0]));
     vertices.extend_from_slice(&covering_triangle(0.5, [0.0, 1.0, 0.0, 1.0]));
@@ -114,8 +125,8 @@ fn coplanar_surfaces_keep_the_first_one_drawn() {
     let image = render_vertices(SIZE, SIZE, CLEAR, &vertices).expect("render must succeed");
     let pixel = center(&image);
     assert!(
-        pixel[0] > 200 && pixel[1] < 60,
-        "expected the first-drawn surface to survive, got {pixel:?}"
+        pixel[1] > 200 && pixel[0] < 60,
+        "expected the last-drawn surface to survive, got {pixel:?}"
     );
 }
 

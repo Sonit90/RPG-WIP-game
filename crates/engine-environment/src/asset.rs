@@ -141,6 +141,15 @@ pub const SHRUB: EnvironmentAsset = EnvironmentAsset::new("shrub");
 pub const FERN: EnvironmentAsset = EnvironmentAsset::new("fern");
 /// A conifer. The treeline outside the arena is made of these.
 pub const PINE: EnvironmentAsset = EnvironmentAsset::new("pine");
+/// A screen of broad leaves on crossed cards: the one asset whose silhouette lives in its
+/// texture's alpha rather than in its geometry.
+///
+/// Every other plant here is solid, so every other plant casts the shadow of the box it is
+/// made of. This one exists because an alpha-tested shadow caster is a different code path
+/// end to end — the depth pass has to run a pixel shader and `discard`, instead of running
+/// no pixel shader at all — and a path with no content that uses it is a path that quietly
+/// rots. Its shadow is a scatter of leaf shapes or it is broken.
+pub const LEAF_SCREEN: EnvironmentAsset = EnvironmentAsset::new("leaf_screen");
 
 /// A lit brazier. The arena's warm accent and its only emissive prop.
 pub const BRAZIER: EnvironmentAsset = EnvironmentAsset::new("brazier");
@@ -160,7 +169,7 @@ pub const SKY_DOME: EnvironmentAsset = EnvironmentAsset::new("sky_dome");
 /// asset then shares the mesh and material handles it returned. That sharing is the whole
 /// of the instancing requirement — see the crate docs of
 /// `engine_presentation::environment`.
-pub const LIBRARY: [EnvironmentAsset; 17] = [
+pub const LIBRARY: [EnvironmentAsset; 18] = [
     GROUND_PLAIN,
     ARENA_FLOOR,
     WALL_SEGMENT,
@@ -173,6 +182,7 @@ pub const LIBRARY: [EnvironmentAsset; 17] = [
     SHRUB,
     FERN,
     PINE,
+    LEAF_SCREEN,
     BRAZIER,
     SUPPLY_CRATE,
     BANNER,
@@ -201,7 +211,7 @@ mod tests {
         for asset in [ROCK_SMALL, ROCK_MEDIUM, ROCK_SPIRE] {
             assert!(has(asset));
         }
-        for asset in [SHRUB, FERN, PINE] {
+        for asset in [SHRUB, FERN, PINE, LEAF_SCREEN] {
             assert!(has(asset));
         }
         for asset in [WALL_SEGMENT, PILLAR, ARCH, DOME] {

@@ -65,9 +65,10 @@ pub mod los_course;
 pub mod object;
 pub mod scene;
 pub mod scene_file;
+pub mod shadow_course;
 
 pub use asset::{EnvironmentAsset, LIBRARY};
-pub use lighting::EnvironmentLighting;
+pub use lighting::{EnvironmentLighting, SceneLight};
 pub use object::{EnvironmentCollision, EnvironmentObject};
 pub use scene::{EnvironmentScene, SpawnPoints};
 pub use scene_file::{SceneDocument, SceneFileError};

@@ -39,6 +39,7 @@ pub mod renderer;
 pub mod resource;
 pub mod scene;
 pub mod shader;
+pub mod shadow;
 pub mod stress;
 pub mod swapchain;
 pub mod sync;
@@ -63,6 +64,7 @@ pub use pipeline::{TRIANGLE_VERTICES, Vertex};
 pub use render_list::{RenderList, RenderListEntry};
 pub use renderer::Renderer;
 pub use scene::{FrameConstants, ObjectConstants};
+pub use shadow::{ShadowPreset, ShadowRenderer, ShadowSettings, ShadowStats};
 pub use ui_atlas::{AtlasUv, UiAtlas};
 pub use ui_pipeline::{UiBatchStats, UiBatcher, UiFrameConstants, UiPipeline, UiVertex};
 
@@ -71,10 +73,10 @@ pub use ui_pipeline::{UiBatchStats, UiBatcher, UiFrameConstants, UiPipeline, UiV
 // visible here because `use engine_renderer::RenderWorld` is what every existing caller,
 // test and benchmark writes, and the split was a boundary change rather than an API one.
 pub use engine_render_data::{
-    Camera, DEFAULT_FAR, DEFAULT_FOV_Y, DEFAULT_NEAR, InstanceStyle, Lighting, MAX_ICON_PIXELS,
-    MaterialHandle, MeshHandle, ParticleBlend, ParticleDrawList, ParticleInstance, Projection,
-    RenderEntity, RenderEntityDesc, RenderWorld, TextAlign, UiColor, UiCommand, UiDrawList, UiIcon,
-    UiRect, UiScale,
+    Camera, DEFAULT_FAR, DEFAULT_FOV_Y, DEFAULT_NEAR, InstanceStyle, Lighting, LocalLight,
+    LocalLightKind, MAX_ICON_PIXELS, MaterialHandle, MeshHandle, ParticleBlend, ParticleDrawList,
+    ParticleInstance, Projection, RenderEntity, RenderEntityDesc, RenderWorld, ShadowCasting,
+    TextAlign, UiColor, UiCommand, UiDrawList, UiIcon, UiRect, UiScale,
 };
 pub use stress::STRESS_LEVELS;
 pub use swapchain::{BACK_BUFFER_FORMAT, FRAME_COUNT};

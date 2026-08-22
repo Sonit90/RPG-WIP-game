@@ -110,6 +110,32 @@ matrix was built first and measured **14% slower** at 10,000 objects, because co
 in the recording loop hides under the per-draw driver calls and composing it in a tight
 gather loop does not. See the module docs for the measurement.
 
+### Shadows in that pipeline
+
+The shadow stage is inserted between `begin_recording` and the mesh pass, and it does not
+change the shape above — it consumes the same `RenderWorld`:
+
+```text
+RenderWorld
+    |               ShadowRenderer::prepare   cascades, per-view caster lists (CPU)
+    |                       |
+    | Culler::cull          | ShadowRenderer::record   depth-only, into one atlas
+    v                       v
+RenderList  ------------->  mesh pass, sampling the atlas  ->  GPU
+```
+
+Two rules kept it from becoming a parallel renderer. Caster collection reuses `RenderList`
+and the same counting-sort batching the camera pass uses, so there is one scene
+representation rather than two. And the shadow pipelines share the mesh pipelines' **root
+signature object** — D3D12 deduplicates identical root signatures, and
+`tests/root_signature_identity.rs` asserts the pointer really is the same one — so entering
+the shadow pass rebinds a PSO and nothing else.
+
+Which renderables cast and receive is data on the entity (`ShadowCasting` in
+`engine-render-data`), authored where the entity is spawned, so no part of the renderer needs
+to know that a particle is a particle. `docs/shadows.md` is the full account: cascades,
+biases, the atlas decision, the presets and what they cost.
+
 What stayed in `engine-renderer` and why:
 
 | Type | Why it did not move |

@@ -38,6 +38,7 @@ fn desc(position: Vec3, mesh: u32, material: u32) -> RenderEntityDesc {
         bounds: Sphere::new(Vec3::ZERO, 1.0),
         visible: true,
         style: InstanceStyle::NEUTRAL,
+        shadow: engine_render_data::ShadowCasting::CASTS_AND_RECEIVES,
     }
 }
 
@@ -149,6 +150,7 @@ fn an_entry_carries_the_data_its_entity_was_spawned_with() {
         bounds: Sphere::new(Vec3::ZERO, 1.0),
         visible: true,
         style: InstanceStyle::NEUTRAL,
+        shadow: engine_render_data::ShadowCasting::CASTS_AND_RECEIVES,
     });
 
     let mut list = RenderList::new();

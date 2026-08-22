@@ -351,6 +351,56 @@ impl GpuTexture {
         })
     }
 
+    /// Creates a depth texture that can also be sampled.
+    ///
+    /// Two things separate this from [`GpuTexture::depth_buffer`], and both are required
+    /// together: the resource is created **typeless**, and the depth-stencil view names the
+    /// typed format instead of inheriting it. D3D12 refuses a shader-resource view of a
+    /// `D32_FLOAT` resource — a depth format is not readable as colour — so a shadow map,
+    /// which is written as depth and read as a value, has to be `R32_TYPELESS` with a
+    /// `D32_FLOAT` DSV and an `R32_FLOAT` SRV over the same memory.
+    ///
+    /// The optimized clear value still names the typed format: it describes what a *clear*
+    /// writes, and a clear goes through the depth-stencil view.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RendererError::Api`] if the device rejects the request.
+    pub fn sampleable_depth(
+        device: &RenderDevice,
+        width: u32,
+        height: u32,
+        clear_depth: f32,
+    ) -> Result<Self, RendererError> {
+        use windows::Win32::Graphics::Dxgi::Common::{
+            DXGI_FORMAT_D32_FLOAT, DXGI_FORMAT_R32_TYPELESS,
+        };
+        let clear_value = D3D12_CLEAR_VALUE {
+            Format: DXGI_FORMAT_D32_FLOAT,
+            Anonymous: D3D12_CLEAR_VALUE_0 {
+                DepthStencil: D3D12_DEPTH_STENCIL_VALUE {
+                    Depth: clear_depth,
+                    Stencil: 0,
+                },
+            },
+        };
+        let resource = device.create_texture_2d(
+            width,
+            height,
+            DXGI_FORMAT_R32_TYPELESS,
+            D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL,
+            D3D12_RESOURCE_STATE_DEPTH_WRITE,
+            Some(clear_value),
+        )?;
+        Ok(Self {
+            resource,
+            width,
+            height,
+            format: DXGI_FORMAT_R32_TYPELESS,
+            state: Cell::new(D3D12_RESOURCE_STATE_DEPTH_WRITE),
+        })
+    }
+
     /// Creates a plain texture with no render-target or depth flags.
     ///
     /// # Errors

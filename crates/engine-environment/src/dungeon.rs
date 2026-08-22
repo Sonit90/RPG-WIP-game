@@ -51,7 +51,7 @@ use engine_core::math::Vec3;
 use engine_core::transform::Transform;
 
 use crate::asset::{ARCH, BRAZIER, GROUND_PLAIN, PILLAR, SKY_DOME, WALL_SEGMENT};
-use crate::lighting::EnvironmentLighting;
+use crate::lighting::{EnvironmentLighting, SceneLight};
 use crate::object::{EnvironmentCollision, EnvironmentObject};
 use crate::scene::{EnvironmentScene, SpawnPoints};
 
@@ -297,10 +297,15 @@ fn push_room(scene: &mut EnvironmentScene, area: &DungeonArea, open_south: bool,
             continue;
         }
         for side in [-1.0_f32, 1.0] {
-            scene.push(EnvironmentObject::decoration(
-                BRAZIER,
-                Vec3::new(area.center.x + side * (DOOR_HALF + 1.5), 0.0, edge),
-            ));
+            let position = Vec3::new(area.center.x + side * (DOOR_HALF + 1.5), 0.0, edge);
+            scene.push(EnvironmentObject::decoration(BRAZIER, position));
+            // Indoors, the braziers are not decoration: they are what the room is lit by.
+            // Every one of them asks for a shadow map and the renderer hands out the few it
+            // has by distance, so the pair the player is standing between casts and the pair
+            // three rooms away does not — which is the whole point of §21's budget.
+            scene.push_light(
+                SceneLight::brazier(position + Vec3::new(0.0, 1.45, 0.0), 12.0).casting_shadows(2),
+            );
         }
     }
 }

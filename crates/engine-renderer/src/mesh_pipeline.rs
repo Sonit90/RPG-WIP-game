@@ -7,23 +7,25 @@
 
 use windows::Win32::Graphics::Direct3D::ID3DBlob;
 use windows::Win32::Graphics::Direct3D12::{
-    D3D_ROOT_SIGNATURE_VERSION_1, D3D12_COMPARISON_FUNC_ALWAYS, D3D12_DEPTH_STENCIL_DESC,
-    D3D12_DESCRIPTOR_RANGE, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND, D3D12_DESCRIPTOR_RANGE_TYPE_SRV,
-    D3D12_FILTER_MIN_MAG_MIP_LINEAR, D3D12_FLOAT32_MAX, D3D12_GRAPHICS_PIPELINE_STATE_DESC,
-    D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,
-    D3D12_INPUT_ELEMENT_DESC, D3D12_INPUT_LAYOUT_DESC, D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE,
-    D3D12_RASTERIZER_DESC, D3D12_ROOT_DESCRIPTOR, D3D12_ROOT_DESCRIPTOR_TABLE,
-    D3D12_ROOT_PARAMETER, D3D12_ROOT_PARAMETER_0, D3D12_ROOT_PARAMETER_TYPE_CBV,
-    D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE, D3D12_ROOT_SIGNATURE_DESC,
-    D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT, D3D12_SHADER_VISIBILITY_ALL,
-    D3D12_SHADER_VISIBILITY_PIXEL, D3D12_SHADER_VISIBILITY_VERTEX,
-    D3D12_STATIC_BORDER_COLOR_OPAQUE_BLACK, D3D12_STATIC_SAMPLER_DESC,
+    D3D_ROOT_SIGNATURE_VERSION_1, D3D12_COMPARISON_FUNC_ALWAYS, D3D12_COMPARISON_FUNC_LESS_EQUAL,
+    D3D12_DEPTH_STENCIL_DESC, D3D12_DESCRIPTOR_RANGE, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND,
+    D3D12_DESCRIPTOR_RANGE_TYPE_SRV, D3D12_FILTER_COMPARISON_MIN_MAG_LINEAR_MIP_POINT,
+    D3D12_FILTER_MIN_MAG_MIP_LINEAR, D3D12_FILTER_MIN_MAG_MIP_POINT, D3D12_FLOAT32_MAX,
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA,
+    D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, D3D12_INPUT_ELEMENT_DESC, D3D12_INPUT_LAYOUT_DESC,
+    D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE, D3D12_RASTERIZER_DESC, D3D12_ROOT_DESCRIPTOR,
+    D3D12_ROOT_DESCRIPTOR_TABLE, D3D12_ROOT_PARAMETER, D3D12_ROOT_PARAMETER_0,
+    D3D12_ROOT_PARAMETER_TYPE_CBV, D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE,
+    D3D12_ROOT_SIGNATURE_DESC, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT,
+    D3D12_SHADER_VISIBILITY_ALL, D3D12_SHADER_VISIBILITY_PIXEL, D3D12_SHADER_VISIBILITY_VERTEX,
+    D3D12_STATIC_BORDER_COLOR_OPAQUE_BLACK, D3D12_STATIC_BORDER_COLOR_OPAQUE_WHITE,
+    D3D12_STATIC_SAMPLER_DESC, D3D12_TEXTURE_ADDRESS_MODE_BORDER, D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
     D3D12_TEXTURE_ADDRESS_MODE_WRAP, D3D12SerializeRootSignature, ID3D12Device,
     ID3D12PipelineState, ID3D12RootSignature,
 };
 use windows::Win32::Graphics::Dxgi::Common::{
-    DXGI_FORMAT_R16G16B16A16_UINT, DXGI_FORMAT_R32_FLOAT, DXGI_FORMAT_R32G32_FLOAT,
-    DXGI_FORMAT_R32G32B32_FLOAT, DXGI_FORMAT_R32G32B32A32_FLOAT, DXGI_SAMPLE_DESC,
+    DXGI_FORMAT_R16G16B16A16_UINT, DXGI_FORMAT_R32G32_FLOAT, DXGI_FORMAT_R32G32B32_FLOAT,
+    DXGI_FORMAT_R32G32B32A32_FLOAT, DXGI_SAMPLE_DESC,
 };
 use windows::core::s;
 
@@ -139,7 +141,8 @@ impl MeshPipeline {
     }
 }
 
-/// Creates the root signature every mesh pipeline — rigid, instanced and skinned — shares.
+/// Creates the root signature every mesh pipeline — rigid, instanced, skinned, and the
+/// depth-only shadow pipelines — shares.
 ///
 /// ```text
 /// slot 0  CBV b0   frame constants        changes once per frame
@@ -147,8 +150,16 @@ impl MeshPipeline {
 /// slot 2  CBV b1   object constants       changes per draw (unused when instancing)
 /// slot 3  table t0 base colour map        changes per batch
 /// slot 4  CBV b3   bone palette           changes per skinned character
-/// static sampler s0
+/// slot 5  table t1 shadow atlas           changes once per frame
+/// slot 6  table t2 scene depth            changes once per frame
+/// static samplers s0 (base colour), s1 (shadow comparison), s2 (depth point)
 /// ```
+///
+/// The two shadow tables are one descriptor each rather than a two-descriptor range,
+/// deliberately: a range has to be contiguous in the heap, and the two SRVs are allocated
+/// independently from the persistent region beside every material's map. Two root parameters
+/// cost two DWORDs of the sixty-four available and remove the need for a range allocator
+/// that would exist for exactly this pair.
 ///
 /// Constant buffers are **root** CBVs: a GPU address written straight into the root
 /// arguments, with no descriptor to allocate and no table to bind. That is the cheapest
@@ -163,7 +174,9 @@ impl MeshPipeline {
 /// out: root slots are ordered by update frequency and shader registers are ordered by
 /// declaration, the two disagree, and having the mapping in one named place is what makes
 /// it testable.
-fn create_root_signature(device: &ID3D12Device) -> Result<ID3D12RootSignature, RendererError> {
+pub(crate) fn create_root_signature(
+    device: &ID3D12Device,
+) -> Result<ID3D12RootSignature, RendererError> {
     // Declared before `parameters` so it outlives the pointer the table parameter holds
     // into it. A range that went out of scope first would serialize garbage, and the failure
     // is a driver-side E_INVALIDARG that names nothing.
@@ -175,7 +188,7 @@ fn create_root_signature(device: &ID3D12Device) -> Result<ID3D12RootSignature, R
         OffsetInDescriptorsFromTableStart: D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND,
     }];
 
-    let mut parameters = Vec::with_capacity(5);
+    let mut parameters = Vec::with_capacity(7);
     parameters.extend_from_slice(&root_parameters());
     parameters.push(D3D12_ROOT_PARAMETER {
         ParameterType: D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE,
@@ -205,7 +218,42 @@ fn create_root_signature(device: &ID3D12Device) -> Result<ID3D12RootSignature, R
         "the ROOT_* constants index this array"
     );
 
-    let samplers = [static_sampler()];
+    // The shadow atlas, at t1. Its own table because it changes once per frame while the
+    // material's map changes per batch.
+    let shadow_range = [D3D12_DESCRIPTOR_RANGE {
+        RangeType: D3D12_DESCRIPTOR_RANGE_TYPE_SRV,
+        NumDescriptors: 1,
+        BaseShaderRegister: 1,
+        RegisterSpace: 0,
+        OffsetInDescriptorsFromTableStart: D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND,
+    }];
+    let depth_range = [D3D12_DESCRIPTOR_RANGE {
+        RangeType: D3D12_DESCRIPTOR_RANGE_TYPE_SRV,
+        NumDescriptors: 1,
+        BaseShaderRegister: 2,
+        RegisterSpace: 0,
+        OffsetInDescriptorsFromTableStart: D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND,
+    }];
+    for range in [&shadow_range, &depth_range] {
+        parameters.push(D3D12_ROOT_PARAMETER {
+            ParameterType: D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE,
+            Anonymous: D3D12_ROOT_PARAMETER_0 {
+                DescriptorTable: D3D12_ROOT_DESCRIPTOR_TABLE {
+                    NumDescriptorRanges: range.len() as u32,
+                    pDescriptorRanges: range.as_ptr(),
+                },
+            },
+            // Pixel-only: shadows are sampled while shading, never while transforming.
+            ShaderVisibility: D3D12_SHADER_VISIBILITY_PIXEL,
+        });
+    }
+    debug_assert_eq!(
+        parameters.len() as u32,
+        crate::scene::ROOT_DEPTH_TABLE + 1,
+        "the ROOT_* constants index this array"
+    );
+
+    let samplers = [static_sampler(), shadow_sampler(), depth_sampler()];
 
     let desc = D3D12_ROOT_SIGNATURE_DESC {
         NumParameters: parameters.len() as u32,
@@ -268,6 +316,56 @@ pub(crate) fn root_parameters() -> [D3D12_ROOT_PARAMETER; ROOT_PARAMETER_REGISTE
 
 /// Shader register the bone palette binds to, matching `cbuffer Skin : register(b3)`.
 const SKIN_SHADER_REGISTER: u32 = 3;
+
+/// The sampler every shadow lookup goes through, at `s1`.
+///
+/// A **comparison** sampler: the hardware performs the depth test *and* the bilinear filter
+/// in one fetch, which is what makes a 3x3 PCF kernel nine taps instead of thirty-six. The
+/// comparison is less-or-equal, so a receiver at exactly the depth the caster wrote counts as
+/// lit — the opposite would make every surface shadow itself.
+///
+/// Border addressing with a white border: a coordinate that escapes the atlas reads "nothing
+/// in the way" and the surface is lit. The sampling code clamps to the tile before it gets
+/// there, so this is the second line of defence rather than the first.
+fn shadow_sampler() -> D3D12_STATIC_SAMPLER_DESC {
+    D3D12_STATIC_SAMPLER_DESC {
+        Filter: D3D12_FILTER_COMPARISON_MIN_MAG_LINEAR_MIP_POINT,
+        AddressU: D3D12_TEXTURE_ADDRESS_MODE_BORDER,
+        AddressV: D3D12_TEXTURE_ADDRESS_MODE_BORDER,
+        AddressW: D3D12_TEXTURE_ADDRESS_MODE_BORDER,
+        MipLODBias: 0.0,
+        MaxAnisotropy: 1,
+        ComparisonFunc: D3D12_COMPARISON_FUNC_LESS_EQUAL,
+        BorderColor: D3D12_STATIC_BORDER_COLOR_OPAQUE_WHITE,
+        MinLOD: 0.0,
+        MaxLOD: D3D12_FLOAT32_MAX,
+        ShaderRegister: 1,
+        RegisterSpace: 0,
+        ShaderVisibility: D3D12_SHADER_VISIBILITY_PIXEL,
+    }
+}
+
+/// The sampler the contact-shadow march reads scene depth through, at `s2`.
+///
+/// Point-filtered and clamped: a depth buffer holds distances, and the average of two
+/// distances is a surface that is not there.
+fn depth_sampler() -> D3D12_STATIC_SAMPLER_DESC {
+    D3D12_STATIC_SAMPLER_DESC {
+        Filter: D3D12_FILTER_MIN_MAG_MIP_POINT,
+        AddressU: D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
+        AddressV: D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
+        AddressW: D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
+        MipLODBias: 0.0,
+        MaxAnisotropy: 1,
+        ComparisonFunc: D3D12_COMPARISON_FUNC_ALWAYS,
+        BorderColor: D3D12_STATIC_BORDER_COLOR_OPAQUE_BLACK,
+        MinLOD: 0.0,
+        MaxLOD: D3D12_FLOAT32_MAX,
+        ShaderRegister: 2,
+        RegisterSpace: 0,
+        ShaderVisibility: D3D12_SHADER_VISIBILITY_PIXEL,
+    }
+}
 
 /// The one sampler every material's base colour map is read through.
 ///
@@ -385,7 +483,7 @@ impl SkinnedMeshPipeline {
 ///
 /// The first three are byte-for-byte the rigid layout, so a skinned mesh and a rigid one
 /// share their position, normal and UV offsets and a change to one is a change to both.
-fn skinned_vertex_elements() -> [D3D12_INPUT_ELEMENT_DESC; 5] {
+pub(crate) fn skinned_vertex_elements() -> [D3D12_INPUT_ELEMENT_DESC; 5] {
     debug_assert_eq!(
         size_of::<SkinnedVertex>(),
         56,
@@ -419,6 +517,61 @@ fn skinned_vertex_elements() -> [D3D12_INPUT_ELEMENT_DESC; 5] {
     ]
 }
 
+/// The input elements the instanced pipelines consume: the rigid vertex, then the
+/// per-instance stream.
+///
+/// Shared with the depth-only shadow pipeline, which draws the same batches through the same
+/// stream — a shadow map of geometry laid out differently from the picture would be a shadow
+/// of something else.
+pub(crate) fn instanced_vertex_elements() -> Vec<D3D12_INPUT_ELEMENT_DESC> {
+    let mut elements = Vec::with_capacity(9);
+    elements.extend_from_slice(&mesh_vertex_elements());
+    // Slot 1, stepped once per instance: four float4 rows of the model matrix.
+    for (row, offset) in [0_u32, 16, 32, 48].into_iter().enumerate() {
+        elements.push(D3D12_INPUT_ELEMENT_DESC {
+            // One semantic, four indices. HLSL parses the trailing digits of
+            // `INSTANCE_MODEL0`..`INSTANCE_MODEL3` as the semantic *index*, so the shader
+            // declares one name four times over — and a layout that spelled out four
+            // distinct names matches nothing and fails PSO creation with a bare
+            // E_INVALIDARG that names neither the element nor the reason.
+            SemanticName: INSTANCE_MODEL_SEMANTIC,
+            SemanticIndex: row as u32,
+            Format: DXGI_FORMAT_R32G32B32A32_FLOAT,
+            InputSlot: 1,
+            AlignedByteOffset: offset,
+            InputSlotClass: D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA,
+            // One step per instance. A rate of zero here would make every instance read the
+            // first matrix, which renders the whole batch stacked at one place.
+            InstanceDataStepRate: 1,
+        });
+    }
+    // Per-instance visual state, in the same stream after the matrix: a colour multiply and
+    // an emissive add. Two more elements rather than a second vertex buffer, so a styled
+    // batch binds exactly what an unstyled one does.
+    elements.push(D3D12_INPUT_ELEMENT_DESC {
+        SemanticName: INSTANCE_TINT_SEMANTIC,
+        SemanticIndex: 0,
+        Format: DXGI_FORMAT_R32G32B32A32_FLOAT,
+        InputSlot: 1,
+        AlignedByteOffset: 64,
+        InputSlotClass: D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA,
+        InstanceDataStepRate: 1,
+    });
+    elements.push(D3D12_INPUT_ELEMENT_DESC {
+        SemanticName: INSTANCE_EMISSIVE_SEMANTIC,
+        SemanticIndex: 0,
+        // Two floats, not one: the emissive add, and beside it the per-instance "does this
+        // receive shadows" flag. The second component reads a word that was already padding
+        // in the instance record, so the stream did not grow.
+        Format: DXGI_FORMAT_R32G32_FLOAT,
+        InputSlot: 1,
+        AlignedByteOffset: 80,
+        InputSlotClass: D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA,
+        InstanceDataStepRate: 1,
+    });
+    elements
+}
+
 /// One instance's local-to-world matrix, as the four rows the shader's vertex elements
 /// declare.
 ///
@@ -440,9 +593,15 @@ pub struct InstanceTransform {
     pub tint: [f32; 4],
     /// Added to the material's emissive term.
     pub emissive: f32,
+    /// 1 when the lighting pass may darken this instance where a shadow falls on it.
+    ///
+    /// The second component of the `INSTANCE_EMISSIVE` element, which used to be padding.
+    /// Per instance rather than per material for the same reason the tint is: two copies of
+    /// one prop can disagree about it without splitting the batch.
+    pub receives_shadow: f32,
     /// Padding to a 16-byte boundary, so the element offsets the input layout declares are
     /// the ones the struct actually has.
-    pub padding: [f32; 3],
+    pub padding: [f32; 2],
 }
 
 impl InstanceTransform {
@@ -453,10 +612,23 @@ impl InstanceTransform {
     }
 
     /// Builds the per-instance data for a world transform and a visual state.
+    ///
+    /// Receives shadows, which is what ordinary geometry does; a caller with an opinion uses
+    /// [`InstanceTransform::shadowed`].
     #[must_use]
     pub fn styled(
         model: engine_core::math::Mat4,
         style: engine_render_data::InstanceStyle,
+    ) -> Self {
+        Self::shadowed(model, style, true)
+    }
+
+    /// Builds the per-instance data for a world transform, a visual state and a shadow flag.
+    #[must_use]
+    pub fn shadowed(
+        model: engine_core::math::Mat4,
+        style: engine_render_data::InstanceStyle,
+        receives_shadow: bool,
     ) -> Self {
         // `to_cols_array` is the column-major layout; the shader declares `row_major` and
         // assembles the four elements back into a matrix, so the two cancel and no
@@ -465,7 +637,8 @@ impl InstanceTransform {
             model: model.to_cols_array(),
             tint: style.tint,
             emissive: style.emissive,
-            padding: [0.0; 3],
+            receives_shadow: f32::from(u8::from(receives_shadow)),
+            padding: [0.0; 2],
         }
     }
 }
@@ -511,48 +684,7 @@ impl InstancedMeshPipeline {
         // path and one set of `ROOT_*` constants to keep correct.
         let root_signature = create_root_signature(device)?;
 
-        let mut input_elements = Vec::with_capacity(9);
-        input_elements.extend_from_slice(&mesh_vertex_elements());
-        // Slot 1, stepped once per instance: four float4 rows of the model matrix.
-        for (row, offset) in [0_u32, 16, 32, 48].into_iter().enumerate() {
-            input_elements.push(D3D12_INPUT_ELEMENT_DESC {
-                // One semantic, four indices. HLSL parses the trailing digits of
-                // `INSTANCE_MODEL0`..`INSTANCE_MODEL3` as the semantic *index*, so the
-                // shader declares one name four times over — and a layout that spelled out
-                // four distinct names matches nothing and fails PSO creation with a bare
-                // E_INVALIDARG that names neither the element nor the reason.
-                SemanticName: INSTANCE_MODEL_SEMANTIC,
-                SemanticIndex: row as u32,
-                Format: DXGI_FORMAT_R32G32B32A32_FLOAT,
-                InputSlot: 1,
-                AlignedByteOffset: offset,
-                InputSlotClass: D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA,
-                // One step per instance. A rate of zero here would make every instance read
-                // the first matrix, which renders the whole batch stacked at one place.
-                InstanceDataStepRate: 1,
-            });
-        }
-        // Per-instance visual state, in the same stream after the matrix: a colour multiply
-        // and an emissive add. Two more elements rather than a second vertex buffer, so a
-        // styled batch binds exactly what an unstyled one does.
-        input_elements.push(D3D12_INPUT_ELEMENT_DESC {
-            SemanticName: INSTANCE_TINT_SEMANTIC,
-            SemanticIndex: 0,
-            Format: DXGI_FORMAT_R32G32B32A32_FLOAT,
-            InputSlot: 1,
-            AlignedByteOffset: 64,
-            InputSlotClass: D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA,
-            InstanceDataStepRate: 1,
-        });
-        input_elements.push(D3D12_INPUT_ELEMENT_DESC {
-            SemanticName: INSTANCE_EMISSIVE_SEMANTIC,
-            SemanticIndex: 0,
-            Format: DXGI_FORMAT_R32_FLOAT,
-            InputSlot: 1,
-            AlignedByteOffset: 80,
-            InputSlotClass: D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA,
-            InstanceDataStepRate: 1,
-        });
+        let input_elements = instanced_vertex_elements();
 
         let mut desc = D3D12_GRAPHICS_PIPELINE_STATE_DESC {
             InputLayout: D3D12_INPUT_LAYOUT_DESC {

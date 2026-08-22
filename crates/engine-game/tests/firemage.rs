@@ -350,6 +350,54 @@ fn every_bar_ability_agrees_with_the_documented_ally_rule() {
     }
 }
 
+#[test]
+fn a_cone_is_aimed_where_it_was_clicked_and_announced_the_same_way() {
+    // The bug this pins: the cone was collected with the aim, but announced with the
+    // caster's facing *after* the tick had turned them - so a cone clicked to one side
+    // while the camera swung the other way burned one wedge and was drawn over another.
+    let mut simulation = arena();
+    let origin = simulation.player_position();
+    let slot = FireAbility::FlameCone
+        .bar_slot()
+        .expect("the cone is on the bar");
+    // Aimed hard left...
+    let aim = origin + Vec3::new(-10.0, 0.0, 0.0);
+    simulation.push_command(engine_game::command::PlayerCommand::UseAbilityAt {
+        slot,
+        position: aim,
+    });
+    // ...while the same frame's camera turns the character hard right.
+    let camera_yaw = -std::f32::consts::FRAC_PI_2;
+    simulation.push_command(engine_game::command::PlayerCommand::Move {
+        forward: 0.0,
+        right: 0.0,
+        yaw: camera_yaw,
+        face_camera: true,
+    });
+    simulation.step_once();
+
+    let aimed = std::f32::consts::FRAC_PI_2;
+    let facing = simulation
+        .events()
+        .iter()
+        .find_map(|event| match *event {
+            engine_game::event::CombatEvent::AbilityUsed {
+                ability, facing, ..
+            } if ability.fire() == Some(FireAbility::FlameCone) => Some(facing),
+            _ => None,
+        })
+        .expect("the cone was announced");
+    assert!(
+        (facing - aimed).abs() < 1e-3,
+        "the cone was announced facing {facing}, not the {aimed} it was aimed at"
+    );
+    let turned = simulation.player_body().map_or(0.0, |body| body.facing_yaw);
+    assert!(
+        (turned - camera_yaw).abs() < 1e-3,
+        "the camera did not turn the character: {turned}"
+    );
+}
+
 // ---------------------------------------------------------------- Detonate
 
 #[test]

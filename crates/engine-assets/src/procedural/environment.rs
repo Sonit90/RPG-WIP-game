@@ -1,10 +1,10 @@
-//! The environment library: sixteen models, authored in code, for one combat arena.
+//! The environment library: seventeen models, authored in code, for one combat arena.
 //!
 //! ```text
 //!  terrain        ground_plain   arena_floor
 //!  architecture   wall_segment   pillar        arch          dome
 //!  rocks          rock_small     rock_medium   rock_spire
-//!  vegetation     shrub          fern          pine
+//!  vegetation     shrub          fern          pine          leaf_screen
 //!  props          brazier        supply_crate  banner
 //!  background     ridge          sky_dome
 //! ```
@@ -16,7 +16,7 @@
 //!
 //! # The material budget
 //!
-//! Nine textures across the whole library, and every model draws from that set:
+//! Ten textures across the whole library, and every model draws from that set:
 //!
 //! | Texture | Used by |
 //! | --- | --- |
@@ -26,6 +26,7 @@
 //! | `env_rock` | all three rocks |
 //! | `env_bark` | pine trunk |
 //! | `env_foliage` | pine canopy, shrub, fern |
+//! | `env_leaf` | leaf screen (the one texture with an alpha channel that means something) |
 //! | `env_wood` | crate, banner pole |
 //! | `env_metal` | brazier |
 //! | `env_cloth` | banner |
@@ -50,7 +51,7 @@
 //! | Asset | Levels | Why |
 //! | --- | --- | --- |
 //! | pine, pillar, rock_medium, rock_spire | 3 | Numerous *and* tall enough to stay on screen from across the arena. |
-//! | wall segment, arch, crate, brazier, banner, shrub, fern, rock_small, arena floor | 2 | Either few, or small enough that the second level is the last one that matters. |
+//! | wall segment, arch, crate, brazier, banner, shrub, fern, leaf_screen, rock_small, arena floor | 2 | Either few, or small enough that the second level is the last one that matters. |
 //! | ground plain, sky dome, ridge | 1 | Two triangles, a shell and a silhouette. There is nothing to remove. |
 
 use engine_core::math::{Vec2, Vec3};
@@ -105,6 +106,7 @@ pub fn environment_model(asset: EnvironmentAsset) -> ModelAsset {
         a if a == ids::SHRUB => shrub(),
         a if a == ids::FERN => fern(),
         a if a == ids::PINE => pine(),
+        a if a == ids::LEAF_SCREEN => leaf_screen(),
         a if a == ids::BRAZIER => brazier(),
         a if a == ids::SUPPLY_CRATE => supply_crate(),
         a if a == ids::BANNER => banner(),
@@ -308,6 +310,55 @@ fn foliage_texture() -> TextureAsset {
             let needles = ((v * 83.0 + (u * 23.0).sin() * 4.0).sin() * 0.5 + 0.5) * 0.4;
             let t = (clumps * 0.5 + needles * 0.5).clamp(0.0, 1.0);
             texel(mix([0.20, 0.38, 0.19], [0.10, 0.22, 0.12], t))
+        },
+    )
+}
+
+/// Broad leaves with holes between them: the one environment texture with real alpha.
+///
+/// The alpha channel is the silhouette. Nine leaves scattered across the tile, each an
+/// ellipse fattened by a hash so no two are the same shape, and nothing between them. What
+/// makes this a *cutout* rather than a blend is that alpha is only ever near 0 or near 1 —
+/// an alpha test compares against one number and keeps or discards, so a texture with a soft
+/// ramp in it would give a shadow whose edge moves when the cutoff is retuned.
+fn leaf_texture() -> TextureAsset {
+    TextureAsset::generated(
+        "env_leaf",
+        TEXTURE_SIZE,
+        TEXTURE_SIZE,
+        TextureFormat::Rgba8Srgb,
+        |u, v| {
+            const COLUMNS: f32 = 3.0;
+            let (cell_u, cell_v) = ((u * COLUMNS).floor(), (v * COLUMNS).floor());
+            let (local_u, local_v) = ((u * COLUMNS).fract(), (v * COLUMNS).fract());
+            let seed = hash01(cell_u as u32, cell_v as u32);
+            // Each leaf is an ellipse leaning one way or the other, tall and narrow.
+            let lean = (seed - 0.5) * 0.8;
+            let x = (local_u - 0.5) + lean * (local_v - 0.5);
+            let y = local_v - 0.5;
+            let radius = (x / 0.22).powi(2) + (y / 0.42).powi(2);
+            if radius > 1.0 {
+                // Transparent, but *green*. A cutout texture whose gaps are black gets a
+                // black fringe wherever the sampler filters across a leaf's edge, because
+                // bilinear filtering averages colour and alpha separately and does not know
+                // which texels the alpha test was about to throw away.
+                let mut gap = texel([0.18, 0.34, 0.17]);
+                gap[3] = 0;
+                return gap;
+            }
+            // A midrib and a darker edge, so the card still reads as a leaf up close where
+            // the silhouette alone is not enough.
+            let rib = f32::from(x.abs() < 0.02);
+            let edge = radius.clamp(0.0, 1.0);
+            let base = mix(
+                [0.24, 0.44, 0.20],
+                [0.13, 0.27, 0.13],
+                edge * 0.8 + seed * 0.2,
+            );
+            let color = mix(base, [0.36, 0.52, 0.26], rib * 0.6);
+            let mut packed = texel(color);
+            packed[3] = 255;
+            packed
         },
     )
 }
@@ -914,6 +965,70 @@ fn fern() -> ModelAsset {
     .with_lod(level(2), 25.0)
 }
 
+/// Crossed cards of leaves: the library's one alpha-tested model.
+///
+/// Three quads through the same vertical axis at sixty degrees to each other, each emitted
+/// twice with opposite winding so a card is a card from both sides rather than vanishing
+/// when the camera walks around it. Six quads, twelve triangles — the cheapest geometry in
+/// the library, and deliberately so: the whole point is that the shape comes from the
+/// texture, so the shape costs nothing to draw and nothing to cast a shadow with.
+///
+/// # Why the alpha cutoff is 0.5
+///
+/// [`leaf_texture`] is binary — 0 or 255 and nothing between — so anything strictly inside
+/// that range separates the leaves from the gaps identically. 0.5 is the glTF default and
+/// the middle of the range, which means the model survives being re-authored as a real
+/// asset with a soft-edged texture without its silhouette jumping.
+fn leaf_screen() -> ModelAsset {
+    const HEIGHT: f32 = 1.7;
+    const HALF_WIDTH: f32 = 0.62;
+    let level = |cards: usize| {
+        let mut builder = MeshBuilder::new();
+        let cards = cards.max(1);
+        for index in 0..cards {
+            let angle = index as f32 / cards as f32 * std::f32::consts::PI;
+            let (sin, cos) = angle.sin_cos();
+            let across = Vec3::new(cos * HALF_WIDTH, 0.0, sin * HALF_WIDTH);
+            let corners = [
+                Vec3::new(-across.x, 0.0, -across.z),
+                Vec3::new(-across.x, HEIGHT, -across.z),
+                Vec3::new(across.x, HEIGHT, across.z),
+                Vec3::new(across.x, 0.0, across.z),
+            ];
+            let uvs = [
+                Vec2::new(0.0, 1.0),
+                Vec2::new(0.0, 0.0),
+                Vec2::new(1.0, 0.0),
+                Vec2::new(1.0, 1.0),
+            ];
+            let normal = Vec3::new(-sin, 0.0, cos);
+            builder.quad(corners, normal, uvs);
+            // The same card facing the other way. Reversing the corner order reverses the
+            // winding, and the normal follows it, so the back of a leaf is lit as the back
+            // of a leaf rather than as a black hole.
+            let flipped = [corners[3], corners[2], corners[1], corners[0]];
+            let flipped_uvs = [uvs[3], uvs[2], uvs[1], uvs[0]];
+            builder.quad(flipped, -normal, flipped_uvs);
+        }
+        vec![builder.into_submesh("leaf_screen", 0)]
+    };
+    ModelAsset::rigid(
+        "leaf_screen",
+        level(3),
+        vec![
+            MaterialAsset::colored("env_leaf", 1.0, 1.0, 1.0)
+                .with_roughness(0.9)
+                .with_base_color_texture(0)
+                .with_alpha_cutoff(0.5),
+        ],
+        vec![leaf_texture()],
+    )
+    // One card past thirty metres. Three cards and one card have the same silhouette from
+    // the side; what the other two buy is the screen still reading as a volume when you walk
+    // around it, and at thirty metres nobody walks around it fast enough to notice.
+    .with_lod(level(1), 30.0)
+}
+
 /// A conifer: a bark trunk and three stacked canopy tiers.
 ///
 /// Two materials, and the only plant that has two: a trunk shaded like foliage reads as a
@@ -1490,7 +1605,10 @@ mod tests {
         names.sort();
         names.dedup();
         assert!(
-            names.len() <= 12,
+            // Thirteen, because the leaf screen cannot share `env_foliage`: an alpha cutoff
+            // is a property of the material, and giving the solid plants one would start
+            // running a discard pixel shader over every shrub in the scene to no effect.
+            names.len() <= 13,
             "{} distinct materials across the library: {names:?}",
             names.len()
         );
@@ -1525,7 +1643,11 @@ mod tests {
             .iter()
             .map(|(_, model)| model.texture_bytes())
             .sum();
-        assert!(bytes < 1_048_576, "{bytes} bytes of environment textures");
+        // 1.25 MB, not 1 MB. The leaf screen's alpha texture is the tenth 128x128 RGBA
+        // image in the library and pushed the total past a megabyte by 36 KB; the number
+        // this test exists to catch is a 2048x2048 texture appearing, not the sixty-fourth
+        // kilobyte.
+        assert!(bytes < 1_310_720, "{bytes} bytes of environment textures");
         assert!(bytes > 100_000, "the textures did not get generated");
     }
 

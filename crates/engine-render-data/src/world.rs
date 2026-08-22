@@ -157,6 +157,102 @@ impl InstanceStyle {
 /// What a `RenderWorld` slot holds, in parallel arrays.
 ///
 /// Structure-of-arrays because culling reads `bounds` and `visible` and nothing else:
+/// How many coarser meshes an entity may offer the shadow pass.
+///
+/// Two, matching the two levels below LOD0 that the shadow LOD policy can select. A third
+/// would be geometry nothing authors: the asset library's models carry three levels, and
+/// the coarsest of them is already what a distant cascade wants.
+pub const SHADOW_LOD_MESHES: usize = 2;
+
+/// Whether an entity takes part in shadowing, and what geometry it offers when it does.
+///
+/// Explicit per entity rather than derived from the material, because the two questions are
+/// different: a material says what a surface *looks* like, and this says whether the surface
+/// exists as far as the light is concerned. A decal, a targeting ring and a debug box are
+/// all ordinary opaque geometry that must not be extruded into a shadow map.
+///
+/// ```text
+/// casts    -> the depth pass renders it into the cascades and the local maps
+/// receives -> the lighting pass applies a shadow factor to it
+/// ```
+///
+/// Both default to true for scene geometry, which is what makes a newly placed prop shadow
+/// correctly without anybody having said so. Particles, the UI and the developer overlay
+/// never become a `RenderWorld` entity at all, so there is nothing to switch off for them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ShadowCasting {
+    /// Whether the shadow passes render this entity's depth.
+    pub casts: bool,
+    /// Whether the lighting pass darkens this entity where a shadow falls on it.
+    pub receives: bool,
+    /// Coarser stand-ins the shadow pass may draw instead, finest first.
+    ///
+    /// [`MeshHandle::INVALID`] means "there is nothing coarser than the main mesh", which is
+    /// the ordinary case: a box has no simpler form. Filled in by whoever spawned the entity
+    /// from a model that already carries levels of detail — the shadow renderer never asks
+    /// for a special shadow mesh, it only reuses a level the asset already has.
+    pub lod_meshes: [MeshHandle; SHADOW_LOD_MESHES],
+}
+
+impl Default for ShadowCasting {
+    fn default() -> Self {
+        Self::CASTS_AND_RECEIVES
+    }
+}
+
+impl ShadowCasting {
+    /// Ordinary scene geometry: casts and receives, with no coarser stand-in.
+    pub const CASTS_AND_RECEIVES: Self = Self {
+        casts: true,
+        receives: true,
+        lod_meshes: [MeshHandle::INVALID; SHADOW_LOD_MESHES],
+    };
+
+    /// Geometry that takes no part in shadowing at all.
+    ///
+    /// What a decal, a targeting indicator or a debug volume wants: it is drawn, it is lit,
+    /// and it neither blocks the sun nor is darkened by it.
+    pub const NONE: Self = Self {
+        casts: false,
+        receives: false,
+        lod_meshes: [MeshHandle::INVALID; SHADOW_LOD_MESHES],
+    };
+
+    /// Geometry that is shadowed but casts nothing.
+    pub const RECEIVES_ONLY: Self = Self {
+        casts: false,
+        receives: true,
+        lod_meshes: [MeshHandle::INVALID; SHADOW_LOD_MESHES],
+    };
+
+    /// The same, with coarser shadow geometry the shadow LOD policy may substitute.
+    #[must_use]
+    pub fn with_lod_meshes(mut self, meshes: [MeshHandle; SHADOW_LOD_MESHES]) -> Self {
+        self.lod_meshes = meshes;
+        self
+    }
+
+    /// The mesh to render at shadow level `level`, falling back to `main`.
+    ///
+    /// Level 0 is always the main mesh. A level with no coarser stand-in falls back to the
+    /// coarsest one that does exist, so a policy that asks for level 2 on a model with one
+    /// stand-in draws that one — which is coarser than nothing, and is what the same object
+    /// would have drawn a metre closer anyway.
+    #[must_use]
+    pub fn mesh_for_level(&self, main: MeshHandle, level: usize) -> MeshHandle {
+        if level == 0 {
+            return main;
+        }
+        for candidate in (1..=level.min(SHADOW_LOD_MESHES)).rev() {
+            let mesh = self.lod_meshes[candidate - 1];
+            if mesh != MeshHandle::INVALID {
+                return mesh;
+            }
+        }
+        main
+    }
+}
+
 /// streaming mesh handles and materials it does not look at would waste the cache line it
 /// is reading through.
 #[derive(Debug, Default, Clone)]
@@ -169,6 +265,8 @@ pub struct RenderWorld {
     /// World-space bounding spheres, refreshed whenever a transform changes.
     bounds: Vec<Sphere>,
     visible: Vec<bool>,
+    /// Whether each slot casts and receives shadows, and what it offers the shadow pass.
+    shadow: Vec<ShadowCasting>,
     generations: Vec<u32>,
     /// Slots whose entity was despawned, most recent first.
     free_slots: Vec<u32>,
@@ -176,6 +274,13 @@ pub struct RenderWorld {
     /// This frame's skinned draws. Rebuilt every frame rather than slot-managed — see
     /// [`crate::skinning`] for why the two kinds of drawable are stored differently.
     skinned: crate::skinning::SkinnedDrawList,
+    /// This frame's local lights: torches, braziers, spell effects.
+    ///
+    /// Rebuilt every frame for the same reason the skinned list is — a light follows
+    /// something that moves — and kept here rather than on [`crate::Lighting`] because that
+    /// type is the *scene's* sun and ambient, which a whole area shares and which nothing
+    /// per-frame writes.
+    lights: Vec<crate::lighting::LocalLight>,
 }
 
 /// What a caller must supply to add something drawable.
@@ -193,6 +298,9 @@ pub struct RenderEntityDesc {
     pub visible: bool,
     /// Per-entity visual state. [`InstanceStyle::NEUTRAL`] for an ordinary object.
     pub style: InstanceStyle,
+    /// Whether it takes part in shadowing. [`ShadowCasting::CASTS_AND_RECEIVES`] for
+    /// ordinary scene geometry, which is the default.
+    pub shadow: ShadowCasting,
 }
 
 impl Default for RenderEntityDesc {
@@ -204,6 +312,7 @@ impl Default for RenderEntityDesc {
             bounds: Sphere::new(engine_core::math::Vec3::ZERO, 1.0),
             visible: true,
             style: InstanceStyle::NEUTRAL,
+            shadow: ShadowCasting::CASTS_AND_RECEIVES,
         }
     }
 }
@@ -225,10 +334,12 @@ impl RenderWorld {
             styles: Vec::with_capacity(capacity),
             bounds: Vec::with_capacity(capacity),
             visible: Vec::with_capacity(capacity),
+            shadow: Vec::with_capacity(capacity),
             generations: Vec::with_capacity(capacity),
             free_slots: Vec::new(),
             live: 0,
             skinned: crate::skinning::SkinnedDrawList::new(),
+            lights: Vec::new(),
         }
     }
 
@@ -245,6 +356,7 @@ impl RenderWorld {
             self.styles[slot] = desc.style;
             self.bounds[slot] = world_bounds;
             self.visible[slot] = desc.visible;
+            self.shadow[slot] = desc.shadow;
             return RenderEntity::new(index, self.generations[slot]);
         }
 
@@ -255,6 +367,7 @@ impl RenderWorld {
         self.styles.push(desc.style);
         self.bounds.push(world_bounds);
         self.visible.push(desc.visible);
+        self.shadow.push(desc.shadow);
         // Generation 1, not 0: a default-constructed handle has generation 0 and must not
         // accidentally address a live slot.
         self.generations.push(1);
@@ -329,6 +442,19 @@ impl RenderWorld {
         true
     }
 
+    /// Replaces an entity's shadow behaviour.
+    ///
+    /// Cheap for the same reason [`RenderWorld::set_style`] is: it writes one slot and
+    /// changes nothing about which batch the entity belongs to. What it *does* change is
+    /// whether the shadow passes gather it, which they decide afresh every frame.
+    pub fn set_shadow_casting(&mut self, entity: RenderEntity, shadow: ShadowCasting) -> bool {
+        if !self.contains(entity) {
+            return false;
+        }
+        self.shadow[entity.index()] = shadow;
+        true
+    }
+
     /// Shows or hides an entity.
     pub fn set_visible(&mut self, entity: RenderEntity, visible: bool) -> bool {
         if !self.contains(entity) {
@@ -392,6 +518,15 @@ impl RenderWorld {
         &self.visible
     }
 
+    /// Per-slot shadow behaviour.
+    ///
+    /// Read by the shadow passes exactly the way [`RenderWorld::bounds`] is read by the
+    /// camera cull: one flat array, one slot per entity, no branching on what an entity is.
+    #[must_use]
+    pub fn shadow_casting(&self) -> &[ShadowCasting] {
+        &self.shadow
+    }
+
     /// The handle addressing slot `slot`.
     ///
     /// The inverse of [`RenderEntity::index`]: a consumer walking the parallel arrays by
@@ -429,15 +564,43 @@ impl RenderWorld {
         &mut self.skinned
     }
 
+    /// This frame's local lights.
+    #[must_use]
+    pub fn lights(&self) -> &[crate::lighting::LocalLight] {
+        &self.lights
+    }
+
+    /// Adds a local light for this frame.
+    ///
+    /// Dropped silently if it cannot contribute anything — see
+    /// [`LocalLight::is_significant`](crate::lighting::LocalLight::is_significant). A light
+    /// fading to nothing is ordinary, and the alternative is every consumer re-checking.
+    pub fn push_light(&mut self, light: crate::lighting::LocalLight) {
+        if light.is_significant() {
+            self.lights.push(light);
+        }
+    }
+
+    /// Removes this frame's local lights, keeping the allocation.
+    ///
+    /// Called by whoever rebuilds them, at the point it starts rebuilding. The world does
+    /// not clear them itself: a scene whose lights never move sets them once and would
+    /// otherwise lose them on the next frame.
+    pub fn clear_lights(&mut self) {
+        self.lights.clear();
+    }
+
     /// Removes every entity, keeping the allocated capacity.
     pub fn clear(&mut self) {
         self.skinned.clear();
+        self.lights.clear();
         self.transforms.clear();
         self.meshes.clear();
         self.materials.clear();
         self.styles.clear();
         self.bounds.clear();
         self.visible.clear();
+        self.shadow.clear();
         self.generations.clear();
         self.free_slots.clear();
         self.live = 0;
@@ -470,6 +633,7 @@ mod tests {
             bounds: Sphere::new(Vec3::ZERO, 1.0),
             visible: true,
             style: InstanceStyle::NEUTRAL,
+            shadow: ShadowCasting::CASTS_AND_RECEIVES,
         }
     }
 

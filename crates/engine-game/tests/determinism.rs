@@ -183,9 +183,10 @@ fn describe(event: &CombatEvent) -> String {
             source,
             ability,
             targets,
+            facing,
             tick,
         } => format!(
-            "used {} by {}:{} on {targets} at {tick}",
+            "used {} by {}:{} on {targets} facing {facing} at {tick}",
             ability.slot(),
             source.index(),
             source.generation()

@@ -22,7 +22,7 @@ use crate::descriptor::GpuDescriptorHeap;
 use crate::device::{BACKEND, RenderDevice, feature_level_name};
 use crate::error::RendererError;
 use crate::frame::{FrameRing, SyncStats};
-use crate::gpu_timer::GpuTimer;
+use crate::gpu_timer::{GpuTimer, SHADOW_PASS as SHADOW_PASS_QUERY};
 use crate::material::{Material, MaterialDesc};
 use crate::mesh::{GpuMesh, MeshData, MeshVertex, SkinnedMeshData, SkinnedVertex, VertexStream};
 use crate::mesh_pipeline::{
@@ -35,9 +35,11 @@ use crate::pipeline::{ScenePipeline, Vertex};
 use crate::render_list::RenderList;
 use crate::resource::DeferredReleaseQueue;
 use crate::scene::{
-    FrameConstants, ObjectConstants, ROOT_FRAME_CBV, ROOT_MATERIAL_CBV, ROOT_MATERIAL_TABLE,
-    ROOT_OBJECT_CBV, ROOT_SKIN_CBV,
+    FrameConstants, ObjectConstants, ROOT_DEPTH_TABLE, ROOT_FRAME_CBV, ROOT_MATERIAL_CBV,
+    ROOT_MATERIAL_TABLE, ROOT_OBJECT_CBV, ROOT_SHADOW_TABLE, ROOT_SKIN_CBV,
 };
+use crate::shadow::renderer::ShadowScene;
+use crate::shadow::{ShadowRenderer, ShadowSettings, ShadowStats};
 use crate::stress;
 use crate::swapchain::SwapChain;
 use crate::ui_atlas::UiAtlas;
@@ -51,8 +53,8 @@ use engine_core::math::Frustum;
 use engine_core::time::{FrameStats, FrameStatsWindow};
 use engine_render_data::Camera;
 use engine_render_data::{
-    Lighting, MAX_PALETTE_BONES, MaterialHandle, MeshHandle, ModelBinding, ModelLodBinding,
-    ModelPart, PartGeometry, RenderWorld, SkinnedMeshHandle,
+    Lighting, LocalLight, MAX_PALETTE_BONES, MaterialHandle, MeshHandle, ModelBinding,
+    ModelLodBinding, ModelPart, PartGeometry, RenderWorld, SkinnedDrawList, SkinnedMeshHandle,
 };
 
 /// How many shader-visible SRVs the renderer's one descriptor heap holds.
@@ -322,6 +324,29 @@ pub struct Renderer {
     white_texture: TextureHandle,
     /// Materials created through [`Renderer::create_material`], indexed by handle.
     materials: Vec<Material>,
+    /// The shadow stage: the atlas, what goes in it, and the passes that fill it.
+    ///
+    /// Declared before `context` like every other GPU-owning field, because it holds a
+    /// texture and pipeline states that must be released before the device is.
+    shadow: ShadowRenderer,
+    /// Each material's base colour map as a shader-visible handle, parallel to
+    /// [`Renderer::materials`].
+    ///
+    /// Resolved once at material creation rather than per batch. It exists because the
+    /// shadow pass needs the same lookup and cannot call a `&self` method while it holds a
+    /// `&mut` borrow of the renderer's shadow state — and having it as data rather than a
+    /// method also removes two indirections from the camera pass's inner loop.
+    material_tables: Vec<Option<windows::Win32::Graphics::Direct3D12::D3D12_GPU_DESCRIPTOR_HANDLE>>,
+    /// This frame's local lights, copied out of the world by [`Renderer::prepare_shadows`].
+    ///
+    /// Copied rather than borrowed for the same reason the render list is a copy: recording
+    /// happens in `draw_render_list`, which deliberately never looks at the `RenderWorld`.
+    lights: Vec<LocalLight>,
+    /// This frame's skinned draws, *unculled*, for the shadow passes.
+    ///
+    /// Separate from [`Renderer::skinned`], which is the camera's filtered copy: a character
+    /// behind the camera casts into a cascade, so the shadow stage needs the whole list.
+    shadow_skinned: SkinnedDrawList,
     /// Which texture each material samples, parallel to [`Renderer::materials`].
     ///
     /// Parallel rather than a field on `Material`: a material's constants are a device
@@ -473,6 +498,14 @@ impl Renderer {
         // material texture. Bound once per frame; never switched.
         let mut descriptors =
             GpuDescriptorHeap::new(&context, MAX_TEXTURE_DESCRIPTORS, 0, frames_in_flight)?;
+        // Before the struct literal, because it allocates two persistent descriptors out of
+        // the heap above and the heap is moved into the literal.
+        let shadow = ShadowRenderer::new(
+            &context,
+            &mut descriptors,
+            ShadowSettings::default(),
+            (config.width, config.height),
+        )?;
         let ui = Self::create_ui_state(&context, &mut descriptors)?;
         let particle_pipeline = ParticlePipeline::new(context.device())?;
 
@@ -512,6 +545,10 @@ impl Renderer {
             white_texture: TextureHandle(0),
             materials: Vec::new(),
             material_textures: Vec::new(),
+            material_tables: Vec::new(),
+            shadow,
+            lights: Vec::new(),
+            shadow_skinned: SkinnedDrawList::new(),
             culler: Culler::new(),
             visible: RenderList::new(),
             culling_enabled: true,
@@ -895,6 +932,7 @@ impl Renderer {
         color: [f32; 4],
     ) -> Result<(), RendererError> {
         self.build_render_list(world, camera);
+        self.prepare_shadows(world, camera, lighting);
         self.draw_render_list(camera, lighting, color)
     }
 
@@ -913,6 +951,7 @@ impl Renderer {
         jobs: &engine_core::jobs::JobSystem,
     ) -> Result<(), RendererError> {
         self.build_render_list_with(world, camera, Some(jobs));
+        self.prepare_shadows(world, camera, lighting);
         self.draw_render_list(camera, lighting, color)
     }
 
@@ -1014,6 +1053,148 @@ impl Renderer {
         self.last_group_ms
     }
 
+    /// Decides what this frame's shadow maps contain.
+    ///
+    /// The shadow stage's half of the same split [`Renderer::build_render_list`] makes:
+    /// visibility now, recording later. It is a separate call for the same reason — a caller
+    /// may want to ask what is visible without recording it — and because it is the *last*
+    /// point at which the `RenderWorld` is in scope. Everything the shadow passes will need
+    /// from the world is copied here:
+    ///
+    /// ```text
+    /// RenderWorld ->  cascades, caster lists, chosen lights   (the shadow renderer)
+    ///             ->  this frame's local lights               (Renderer::lights)
+    ///             ->  this frame's skinned draws, unculled    (Renderer::shadow_skinned)
+    /// ```
+    ///
+    /// The two copies are a few kilobytes. They are what lets `draw_render_list` keep the
+    /// boundary Milestone 16 established: by the time recording starts, what to draw is
+    /// settled and the world is not consulted again.
+    pub fn prepare_shadows(&mut self, world: &RenderWorld, camera: &Camera, lighting: Lighting) {
+        self.lights.clear();
+        self.lights.extend_from_slice(world.lights());
+
+        // The whole list, not the culled one: a monster behind the camera still casts into a
+        // cascade the camera can see.
+        self.shadow_skinned.clear();
+        for instance in world.skinned().instances() {
+            self.shadow_skinned.push(*instance);
+        }
+        self.shadow_skinned.set_palette(world.skinned().palette());
+
+        self.shadow.prepare(world, camera, lighting);
+    }
+
+    /// The shadow system, for a caller that wants to change its settings or read its stats.
+    #[must_use]
+    pub fn shadow_settings(&self) -> &ShadowSettings {
+        self.shadow.settings()
+    }
+
+    /// Replaces the shadow settings, recreating whatever they invalidate.
+    ///
+    /// Waits for the GPU first, because a quality change can release the atlas and a texture
+    /// released while a frame in flight still reads it is a use-after-free inside the driver.
+    /// That makes this a *stall*, and it is why it belongs on a settings screen rather than
+    /// on a slider that fires every frame.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RendererError::Api`] if a D3D12 call fails.
+    pub fn set_shadow_settings(&mut self, settings: ShadowSettings) -> Result<(), RendererError> {
+        self.wait_for_idle()?;
+        let size = self.swap_chain.size();
+        self.shadow.set_settings(&self.context, settings, size)
+    }
+
+    /// What the last frame's shadow stage did.
+    #[must_use]
+    pub fn shadow_stats(&self) -> ShadowStats {
+        self.shadow.stats()
+    }
+
+    /// Selects the shadow debug view.
+    ///
+    /// `0` none, `1` tints each pixel by the cascade it sampled, `2` shows the shadow factor
+    /// alone with albedo and lighting out of the way, `3` draws the atlas itself in the
+    /// bottom-left corner with the cascade tiles outlined.
+    pub fn set_shadow_debug_mode(&mut self, mode: u32) {
+        self.shadow.set_debug_mode(mode);
+    }
+
+    /// The shadow debug view currently selected.
+    #[must_use]
+    pub fn shadow_debug_mode(&self) -> u32 {
+        self.shadow.debug_mode()
+    }
+
+    /// This frame's cascades, for a debug view that wants to draw their bounds.
+    #[must_use]
+    pub fn shadow_cascades(&self) -> &[crate::shadow::CascadeView] {
+        self.shadow.cascades()
+    }
+
+    /// Records the shadow stage, and restores the camera's own targets afterwards.
+    ///
+    /// ```text
+    /// shadow atlas   one depth pass per cascade and per local view
+    /// depth prepass  the camera's depth, for the contact-shadow march   (only if enabled)
+    /// depth copy     into the texture that march samples                (only if enabled)
+    /// -> back buffer and depth rebound, viewport restored
+    /// ```
+    fn record_shadow_stage(
+        &mut self,
+        slot: usize,
+        back_buffer: usize,
+        camera: &Camera,
+    ) -> Result<(), RendererError> {
+        let scene = ShadowScene {
+            meshes: &self.meshes,
+            skinned_meshes: &self.skinned_meshes,
+            materials: &self.materials,
+            material_tables: &self.material_tables,
+            skinned: &self.shadow_skinned,
+        };
+        // Every one of these is a *different field* of `self`, which is what lets the shadow
+        // renderer be borrowed mutably while the meshes and materials are borrowed shared.
+        self.shadow
+            .record(&mut self.commands, &mut self.uploads, slot, &scene)?;
+
+        if self.shadow.needs_prepass() {
+            let (width, height) = self.swap_chain.size();
+            let dsv = self.depth.view().cpu;
+            let scene = ShadowScene {
+                meshes: &self.meshes,
+                skinned_meshes: &self.skinned_meshes,
+                materials: &self.materials,
+                material_tables: &self.material_tables,
+                skinned: &self.shadow_skinned,
+            };
+            self.shadow.record_prepass(
+                &mut self.commands,
+                &mut self.uploads,
+                slot,
+                &scene,
+                &self.visible,
+                camera,
+                dsv,
+                (width, height),
+            )?;
+            self.shadow
+                .copy_scene_depth(&mut self.commands, self.depth.texture());
+        }
+
+        // Back to the camera's targets. The shadow passes bound a depth-only target and a
+        // viewport the size of an atlas tile; leaving either would render the scene into the
+        // corner of the shadow map, which is a spectacular and very confusing failure.
+        let rtv = self.swap_chain.rtv_handle(back_buffer);
+        let dsv = self.depth.view().cpu;
+        self.commands.set_render_target_and_depth(rtv, dsv);
+        let (width, height) = self.swap_chain.size();
+        self.commands.set_viewport(width, height);
+        Ok(())
+    }
+
     /// Records and submits a frame drawing whatever [`Renderer::build_render_list`] left in
     /// the render list.
     ///
@@ -1033,6 +1214,15 @@ impl Renderer {
     ) -> Result<(), RendererError> {
         let (slot, back_buffer) = self.begin_recording(color)?;
 
+        // Before the camera pass, and before its pipeline is bound: the shadow stage binds
+        // its own depth target, its own viewports and its own pipeline states, and rebinds
+        // the camera's when it is done.
+        self.gpu_timer
+            .begin_pass(self.commands.list(), slot, SHADOW_PASS_QUERY);
+        self.record_shadow_stage(slot, back_buffer, camera)?;
+        self.gpu_timer
+            .end_pass(self.commands.list(), slot, SHADOW_PASS_QUERY);
+
         let pipeline = if self.wireframe {
             &self.mesh_pipeline_wireframe
         } else {
@@ -1046,8 +1236,13 @@ impl Renderer {
         // The frame constants are written once into this slot's upload memory and bound
         // once. This is the upload ring's first real use: transient data, alive for exactly
         // one frame, reclaimed by the reset in `begin_recording`.
-        let frame_constants =
+        let mut frame_constants =
             FrameConstants::new(camera.view_projection(), camera.position(), lighting);
+        frame_constants.set_camera(camera);
+        let (viewport_width, viewport_height) = self.swap_chain.size();
+        frame_constants.set_viewport(viewport_width, viewport_height);
+        self.shadow
+            .write_frame_constants(&mut frame_constants, &self.lights);
         // The particle pass is recorded later, from a function with no camera. Its basis is
         // captured here, from the same camera the scene is drawn with, so a particle cannot
         // be billboarded against a different frame's view than the one it is drawn into.
@@ -1056,6 +1251,7 @@ impl Renderer {
         let allocation = self.uploads.write_constants(slot, &frame_constants)?;
         self.commands
             .set_root_cbv(ROOT_FRAME_CBV, allocation.gpu_address());
+        self.bind_shadow_tables();
 
         if self.instancing {
             return self.draw_batches_instanced(slot, back_buffer);
@@ -1102,9 +1298,10 @@ impl Renderer {
             let first = batch.first as usize;
             let last = first + batch.count as usize;
             for &entry in &self.visible.order()[first..last] {
-                let object = ObjectConstants::styled(
+                let object = ObjectConstants::shadowed(
                     self.visible.transforms()[entry as usize].matrix(),
                     self.visible.styles()[entry as usize],
+                    self.visible.receives_shadow()[entry as usize],
                 );
                 let allocation = self.uploads.write_constants(slot, &object)?;
                 self.commands
@@ -1170,9 +1367,10 @@ impl Renderer {
             self.instance_scratch.clear();
             self.instance_scratch.reserve(count);
             for &entry in &self.visible.order()[first..first + count] {
-                self.instance_scratch.push(InstanceTransform::styled(
+                self.instance_scratch.push(InstanceTransform::shadowed(
                     self.visible.transforms()[entry as usize].matrix(),
                     self.visible.styles()[entry as usize],
+                    self.visible.receives_shadow()[entry as usize],
                 ));
             }
             allocation.write(&self.instance_scratch)?;
@@ -1311,7 +1509,11 @@ impl Renderer {
                 bound_palette = Some(range);
             }
 
-            let object = ObjectConstants::styled(instance.transform.matrix(), instance.style);
+            let object = ObjectConstants::shadowed(
+                instance.transform.matrix(),
+                instance.style,
+                instance.receives_shadow,
+            );
             let allocation = self.uploads.write_constants(slot, &object)?;
 
             self.commands
@@ -1341,6 +1543,22 @@ impl Renderer {
     #[must_use]
     pub fn skinned_draws_last_frame(&self) -> u32 {
         self.skinned_draws_last_frame
+    }
+
+    /// Binds the shadow atlas and the scene-depth copy for the camera pass.
+    ///
+    /// Once per frame, right after the frame constants: both are single-descriptor tables
+    /// that change no more often than the frame does, and the lighting shader samples them
+    /// for every pixel of every batch.
+    fn bind_shadow_tables(&mut self) {
+        if let Some(table) = self.shadow.atlas_table() {
+            self.commands
+                .set_root_descriptor_table(ROOT_SHADOW_TABLE, table);
+        }
+        if let Some(table) = self.shadow.depth_table() {
+            self.commands
+                .set_root_descriptor_table(ROOT_DEPTH_TABLE, table);
+        }
     }
 
     /// Draws each batch as one instanced call rather than one call per object.
@@ -1527,6 +1745,10 @@ impl Renderer {
                 roughness: material.roughness,
                 metallic: material.metallic,
                 emissive: material.emissive,
+                // Carried through to the shadow pass as well as the camera pass: a cutout
+                // material that shadowed as an opaque rectangle would be worse than one
+                // that did not shadow at all.
+                alpha_cutoff: material.alpha_cutoff,
             };
             let texture = material
                 .base_color_texture
@@ -1908,6 +2130,13 @@ impl Renderer {
         let index = self.materials.len() as u32;
         self.materials.push(material);
         self.material_textures.push(texture);
+        // Resolved now, once: a texture's descriptor is fixed at creation and never moves,
+        // so there is nothing to invalidate it later.
+        self.material_tables.push(
+            self.textures
+                .get(texture.index())
+                .and_then(|uploaded| uploaded.descriptor.gpu),
+        );
         Ok(MaterialHandle::new(index, 1))
     }
 
@@ -1921,8 +2150,10 @@ impl Renderer {
         &self,
         material: MaterialHandle,
     ) -> Option<windows::Win32::Graphics::Direct3D12::D3D12_GPU_DESCRIPTOR_HANDLE> {
-        let texture = self.material_textures.get(material.index())?;
-        self.textures.get(texture.index())?.descriptor.gpu
+        self.material_tables
+            .get(material.index())
+            .copied()
+            .flatten()
     }
 
     /// What the most recent `render_world` cull pass did.
@@ -2008,6 +2239,11 @@ impl Renderer {
         if let Some(milliseconds) = self.gpu_timer.read_frame_ms(slot)? {
             self.last_gpu_frame_ms = Some(milliseconds);
         }
+        // The shadow stage's own timestamps, resolved by the same call and read at the same
+        // safe point. It lags by the same few frames the frame time does, which the overlay
+        // says rather than pretending otherwise.
+        let shadow_ms = self.gpu_timer.read_pass_ms(slot, SHADOW_PASS_QUERY)?;
+        self.shadow.set_gpu_ms(shadow_ms);
 
         // Resources whose last use the GPU has now passed. Costs a comparison per frame
         // when the queue is empty, which it usually is.
@@ -2293,6 +2529,10 @@ impl Renderer {
         // it is safe. It must match the back buffer exactly: a depth buffer smaller than
         // the render target is a draw-time error, and a larger one wastes memory.
         self.depth.resize(&self.context, width, height)?;
+        // The contact-shadow march samples a copy of the depth buffer, so it is the same
+        // size and is replaced at the same moment. The shadow *atlas* is unaffected: its
+        // size comes from the quality settings and not from the window.
+        self.shadow.resize(&self.context, (width, height))?;
 
         // After ResizeBuffers every slot is free again; forget the old fence values so
         // the next frames do not wait on submissions that referenced destroyed buffers.

@@ -417,9 +417,12 @@ impl VfxDirector {
             // explosion. Both are announced as `AbilityUsed`, which is the only event that
             // knows a cone was cast at all.
             CombatEvent::AbilityUsed {
-                source, ability, ..
+                source,
+                ability,
+                facing,
+                ..
             } => {
-                self.observe_ability(source, ability, simulation);
+                self.observe_ability(source, ability, facing, simulation);
             }
             // A teleport is two effects, because it is two places.
             CombatEvent::Teleported { from, to, .. } => {
@@ -550,6 +553,7 @@ impl VfxDirector {
         &mut self,
         source: EntityId,
         ability: engine_game::AbilityId,
+        facing: f32,
         simulation: &Simulation,
     ) {
         let Some(fire) = ability.fire() else {
@@ -557,10 +561,10 @@ impl VfxDirector {
         };
         let definition = fire.definition();
         let origin = simulation.world().position(source).unwrap_or(Vec3::ZERO);
-        let yaw = simulation
-            .world()
-            .body(source)
-            .map_or(0.0, |body| body.facing_yaw);
+        // The yaw the cast was aimed with, off the event - not the caster's facing now.
+        // A tick that turns the character after the cone has already picked its victims
+        // would otherwise paint the wedge somewhere nothing was hit.
+        let yaw = facing;
 
         match fire {
             // A wash of fire filling exactly the wedge the executor collects from.
@@ -874,6 +878,11 @@ impl VfxDirector {
                     bounds: binding.bounds,
                     visible: true,
                     style,
+                    // An effect: a wedge of fire on the floor, a ring, a telegraph. It is
+                    // additive light rather than matter, so it casts nothing — a fireball
+                    // that cast a shadow would darken the ground it is supposed to be
+                    // lighting — and it is not shadowed either.
+                    shadow: engine_render_data::ShadowCasting::NONE,
                 });
                 self.pools[shape].push(entity);
             }

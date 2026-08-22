@@ -52,7 +52,7 @@ pub mod world;
 
 pub use camera::{Camera, DEFAULT_FAR, DEFAULT_FOV_Y, DEFAULT_NEAR, Projection};
 pub use error::RenderDataError;
-pub use lighting::Lighting;
+pub use lighting::{Lighting, LocalLight, LocalLightKind};
 pub use particles::{DEFAULT_PARTICLE_CAPACITY, ParticleBlend, ParticleDrawList, ParticleInstance};
 pub use skinning::{
     MAX_PALETTE_BONES, ModelBinding, ModelLodBinding, ModelPart, PartGeometry, SkinnedDrawList,
@@ -63,5 +63,5 @@ pub use ui::{
 };
 pub use world::{
     Handle, InstanceStyle, MaterialHandle, MeshHandle, RenderEntity, RenderEntityDesc, RenderWorld,
-    world_bounds,
+    SHADOW_LOD_MESHES, ShadowCasting, world_bounds,
 };

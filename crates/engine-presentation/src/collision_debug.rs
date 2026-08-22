@@ -442,6 +442,10 @@ impl CollisionDebug {
                     bounds,
                     visible: true,
                     style,
+                    // Developer geometry drawn over the world. Shadowing it would be
+                    // shadowing the debug view rather than the game, and casting from it
+                    // would put the collision hull's shadow on the floor beside the object's.
+                    shadow: engine_render_data::ShadowCasting::NONE,
                 });
                 self.entities.push(entity);
             }

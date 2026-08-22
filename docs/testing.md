@@ -244,6 +244,35 @@ a per-instance one was meant) all produce a healthy CPU state and a black frame.
 asserts that each produces an effect, that an area is drawn at the radius it hits, that a
 rapid rotation never exhausts the pools, and that effects survive their targets dying.
 
+## Shadow tests (Phase 7, shadows)
+
+Shadows are tested at four levels, and two of them need a GPU:
+
+| Level | Where | Needs a device |
+| --- | --- | --- |
+| Cascades, atlas rectangles, LOD, light budget, presets | `engine-renderer/src/shadow/*` unit tests | no |
+| Who casts and receives, per entity | `engine-render-data`, `engine-presentation` unit tests | no |
+| The caster-bounds debug view | `engine-presentation/src/shadow_debug.rs` unit tests | no |
+| The system, in pixels | `engine-renderer/tests/shadow_render.rs` | yes, skips without one |
+| The shipping scene, in pixels | `engine-renderer/tests/shadow_course_render.rs` | yes, skips without one |
+
+The split matters here more than anywhere else in the renderer, because most shadow bugs are
+arithmetic: a cascade fitted to the wrong sphere, a texel snap performed in a space that is
+itself moving, a light granted a budget it cannot spend. All of those are decided on the CPU
+in code that needs no device, and all of them are asserted directly rather than through a
+picture. `tests/shadow_render.rs` covers what only a GPU can answer — that a caster darkens
+the floor, that `receives = false` is not darkened, that no preset produces acne, that an
+alpha-tested caster's shadow has holes in it, that there is no seam where cascades meet.
+
+`tests/shadow_course_render.rs` is the pair of that: it renders the scene the game actually
+loads (`--scene shadows`), not a synthetic one, because a shadow system that works on two
+objects and fails on a real scene fails for reasons that live in the content. It also asserts
+the atlas debug view draws the atlas, on the principle that a debugging tool is at its most
+dangerous when it is broken, because that is the one moment nobody is checking it.
+
+`docs/shadows.md` is the design document; MT-026 and MT-027 in `docs/manual-tests.md` are the
+judgements a person still has to make.
+
 ## Audio tests (Phase 4, audio)
 
 Audio is tested at four levels and **none of them needs an audio device**, which is the point

@@ -612,3 +612,67 @@ doorway makes the same cast work and turns the bar green all the way to the targ
 Pyroblast that loses its target mid-cast ends early, deals nothing and prints the same
 refusal; the one whose target steps back into view lands normally. F3 removes the drawing
 and the extra overlay lines together, and the combat HUD never shows any of it.
+
+---
+
+## MT-026 — The shadow course
+
+**Purpose** — shadows are correct, stable and adjustable in the running game, not only in a
+pixel test: no acne, no floating objects, no seam where cascades meet, alpha-tested casters
+keep their silhouette, and the quality setting does what it says.
+
+**Steps**
+
+1. `.\target\release\mygame.exe --scene shadows`
+2. Walk to the far-left bay (one pillar on empty ground). Circle it. Look at the base of
+   the pillar and at the small rock beside it.
+3. Walk to the middle bay and follow the line of rocks away from you, slowly, then back.
+   Watch the ground and the rocks' shadows as you move.
+4. Press F7 once (cascade tint) and walk the same line again. Press F7 again (shadow
+   factor), again (the atlas), again (caster bounds), then again to turn it off.
+5. Walk to the leaf screens on the near left. Look at their shadows on the ground.
+6. Walk into the colonnade on the near middle, under the spot lights.
+7. Walk into the ring of braziers on the near right and stand among the crates.
+8. Press F6 five times, pausing on each level, watching the same view.
+9. Press F5 and read the shadow block.
+10. Quit, restart with `--scene shadows`, and check the quality is the one you left on.
+
+**Expected** — the pillar's shadow starts *at* its base with no gap and no dark stripes on
+the pillar itself; the small rock has a shadow too, at its own scale. Down the line of rocks
+the shadows get softer and coarser with distance, which is correct, but nothing shimmers,
+crawls or snaps as you move, and there is no visible line drawn across the ground where one
+cascade hands over to the next. The cascade tint shows those handovers as a smooth colour
+blend rather than a hard edge; the shadow factor view shows clean grey shapes with no
+speckle; the atlas view shows the depth maps bottom-left with red tile outlines, and the
+tiles that should hold something do. The caster-bounds view puts a yellow sphere around every
+crate, rock and pillar and nothing around the ground, and turning it off leaves the scene
+exactly as it was. The leaf screens cast a scatter of leaf shapes, not
+rectangles. The colonnade's pillars cast under the spot lights; at Medium the far one loses
+its shadow and at High it has it back. Standing among the braziers, the crates cast in
+several directions at once. F6 changes the picture visibly at each step and Off removes
+shadows entirely without any other change to the scene. The overlay's shadow block reports a
+plausible atlas size and a sub-millisecond stage. The setting survives the restart.
+
+---
+
+## MT-027 — Shadows in the shipping scenes
+
+**Purpose** — the shadow system works in the scenes a player actually plays, not only in the
+bed built for it.
+
+**Steps**
+
+1. `.\target\release\mygame.exe --scene combat` — watch your own character's shadow while
+   running, jumping and casting.
+2. `.\target\release\mygame.exe --scene dungeon` — walk from the entrance towards the first
+   braziers and look at the walls and floor around them.
+3. `.\target\release\mygame.exe --scene encounter --enemies 20` — pull the lot and watch the
+   frame time in the F5 overlay while twenty enemies move.
+4. In each, press F6 to Off and back to High.
+
+**Expected** — the character's shadow follows the animation rather than the bind pose, and
+stays attached to the feet. In the dungeon the braziers cast local shadows that move
+correctly around the crates and pillars near them, and the sun's cascades still work
+outdoors. With twenty enemies the shadow stage stays well under a millisecond and the frame
+time does not step up when they come into view. Off and back leaves the scene otherwise
+identical.

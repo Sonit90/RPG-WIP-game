@@ -16,34 +16,15 @@
 // a per-instance array is a structured buffer and a second indirection. There are a handful
 // of characters and hundreds of dummies, and the dummies are the ones that need instancing.
 
-cbuffer Frame : register(b0)
-{
-    column_major float4x4 view_projection;
-    float3 camera_position;
-    float frame_padding;
-    float3 light_direction;
-    float light_intensity;
-    float3 light_color;
-    float ambient_intensity;
-    float3 ambient_color;
-    float frame_padding_2;
-};
+#include "scene_frame.hlsli"
 
 cbuffer Object : register(b1)
 {
     column_major float4x4 model;
     float4 instance_tint;
     float instance_emissive;
-    float3 object_padding;
-};
-
-cbuffer Material : register(b2)
-{
-    float4 base_color;
-    float3 emissive;
-    float roughness;
-    float metallic;
-    float3 material_padding;
+    float instance_receives_shadow;
+    float2 object_padding;
 };
 
 // The bone palette. A fixed-size array, because a constant buffer has to have a size the
@@ -59,9 +40,6 @@ cbuffer Skin : register(b3)
     column_major float4x4 bones[MAX_BONES];
 };
 
-Texture2D base_color_map : register(t0);
-SamplerState base_color_sampler : register(s0);
-
 struct VertexInput
 {
     float3 position : POSITION;
@@ -73,9 +51,10 @@ struct VertexInput
 
 struct PixelInput
 {
-    float4 position     : SV_POSITION;
-    float3 world_normal : NORMAL;
-    float2 uv           : TEXCOORD0;
+    float4 position       : SV_POSITION;
+    float3 world_position : TEXCOORD1;
+    float3 world_normal   : NORMAL;
+    float2 uv             : TEXCOORD0;
 };
 
 PixelInput VSMain(VertexInput input)
@@ -98,6 +77,7 @@ PixelInput VSMain(VertexInput input)
 
     PixelInput output;
     output.position = mul(view_projection, world);
+    output.world_position = world.xyz;
     // The same approximation mesh.hlsl makes — correct for uniform scale, which is what a
     // character has. A bone with non-uniform scale would need the inverse transpose of the
     // blend, which is a 3x3 inverse per vertex.
@@ -108,17 +88,12 @@ PixelInput VSMain(VertexInput input)
 
 float4 PSMain(PixelInput input) : SV_TARGET
 {
-    // Byte-for-byte the lighting in mesh.hlsl. A character lit differently from the ground
-    // it stands on is the most obvious way for a skinned pass to look wrong.
-    float3 normal = normalize(input.world_normal);
-    float3 to_light = normalize(-light_direction);
-    float lambert = saturate(dot(normal, to_light));
-
-    float4 albedo = base_color * base_color_map.Sample(base_color_sampler, input.uv);
-
-    float3 tinted = albedo.rgb * instance_tint.rgb;
-    float3 diffuse = tinted * light_color * (light_intensity * lambert);
-    float3 ambient = tinted * ambient_color * ambient_intensity;
-    float3 glow = emissive + tinted * instance_emissive;
-    return float4(diffuse + ambient + glow, albedo.a * instance_tint.a);
+    return shade_surface(
+        input.position,
+        input.world_position,
+        input.world_normal,
+        input.uv,
+        instance_tint,
+        instance_emissive,
+        instance_receives_shadow);
 }

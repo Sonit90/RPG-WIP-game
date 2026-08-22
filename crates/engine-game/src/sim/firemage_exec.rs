@@ -409,6 +409,9 @@ impl Simulation {
             self.mage.energy.spend_all();
         }
         let origin = self.world.position(caster).unwrap_or(Vec3::ZERO);
+        // Read before anything else moves the character: what the cast was aimed at is
+        // decided here, and everything the cast produces is pointed the same way.
+        let facing = self.aim_yaw(aim, origin);
         let tick = self.tick;
 
         // Heat is paid once per cast, whatever it hit. Per-target Heat made area abilities
@@ -442,6 +445,7 @@ impl Simulation {
                 source: caster,
                 ability: AbilityId::from_fire(ability),
                 targets: 0,
+                facing,
                 tick,
             });
             return 0;
@@ -457,6 +461,7 @@ impl Simulation {
             source: caster,
             ability: AbilityId::from_fire(ability),
             targets: hits as u32,
+            facing,
             tick,
         });
 
@@ -905,17 +910,7 @@ impl Simulation {
     /// Places Firestorm's line of fire, anchored on the caster and aimed where it was cast.
     fn spawn_firestorm(&mut self, aim: CastAim, origin: Vec3) {
         let definition = *FireAbility::Firestorm.definition();
-        let yaw = match aim {
-            CastAim::Ground(position) => {
-                let (dx, dz) = (position.x - origin.x, position.z - origin.z);
-                if dx.abs() > 1e-4 || dz.abs() > 1e-4 {
-                    (-dx).atan2(-dz)
-                } else {
-                    self.facing_yaw()
-                }
-            }
-            CastAim::Target => self.facing_yaw(),
-        };
+        let yaw = self.aim_yaw(aim, origin);
         let shape = ZoneShape::Line {
             yaw,
             length: definition.range,
@@ -947,6 +942,26 @@ impl Simulation {
         });
     }
 
+    /// Which way a cast was aimed: towards the point it was placed at, or dead ahead.
+    ///
+    /// The one answer every part of a cast uses - the hit list, the zone it leaves and the
+    /// effect drawn for it - so a cone cannot burn one wedge and be painted over another.
+    /// Read once, when the ability lands, because the character turns again the moment the
+    /// camera does.
+    fn aim_yaw(&self, aim: CastAim, origin: Vec3) -> f32 {
+        match aim {
+            CastAim::Ground(position) => {
+                let (dx, dz) = (position.x - origin.x, position.z - origin.z);
+                if dx.abs() > 1e-4 || dz.abs() > 1e-4 {
+                    (-dx).atan2(-dz)
+                } else {
+                    self.facing_yaw()
+                }
+            }
+            CastAim::Target => self.facing_yaw(),
+        }
+    }
+
     /// Which way the character is pointing.
     fn facing_yaw(&self) -> f32 {
         self.world
@@ -971,17 +986,7 @@ impl Simulation {
                 }
             }
             TargetMode::Cone => {
-                let yaw = match aim {
-                    CastAim::Ground(position) => {
-                        let (dx, dz) = (position.x - origin.x, position.z - origin.z);
-                        if dx.abs() > 1e-4 || dz.abs() > 1e-4 {
-                            (-dx).atan2(-dz)
-                        } else {
-                            self.facing_yaw()
-                        }
-                    }
-                    CastAim::Target => self.facing_yaw(),
-                };
+                let yaw = self.aim_yaw(aim, origin);
                 self.collect_in_cone(origin, yaw, definition.range);
             }
             TargetMode::Ground => {

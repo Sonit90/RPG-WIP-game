@@ -39,6 +39,14 @@ pub struct MaterialAsset {
     /// Packed occlusion (R), roughness (G), metallic (B), the glTF convention. Carried and
     /// validated, not yet sampled.
     pub orm_texture: Option<usize>,
+    /// Below this alpha a fragment is discarded, in the camera pass and the shadow pass
+    /// alike. Zero is an opaque material and performs no test.
+    ///
+    /// This is glTF's `MASK` alpha mode and its `alphaCutoff`. `BLEND` is deliberately not
+    /// represented: the renderer draws no sorted transparent geometry, and importing a
+    /// blended material as a cutout is a closer answer than importing it as opaque — a leaf
+    /// card with a hard edge rather than a rectangle.
+    pub alpha_cutoff: f32,
 }
 
 impl Default for MaterialAsset {
@@ -52,6 +60,7 @@ impl Default for MaterialAsset {
             base_color_texture: None,
             normal_texture: None,
             orm_texture: None,
+            alpha_cutoff: 0.0,
         }
     }
 }
@@ -86,6 +95,27 @@ impl MaterialAsset {
     pub fn with_emissive(mut self, emissive: Vec3) -> Self {
         self.emissive = emissive;
         self
+    }
+
+    /// Returns the material as a cutout, discarding fragments below `cutoff`.
+    ///
+    /// What foliage, a fence and a grate are made of. Clamped into [0, 1]: a cutoff above
+    /// one discards every fragment, which renders as an object that has vanished with no
+    /// error anywhere.
+    #[must_use]
+    pub fn with_alpha_cutoff(mut self, cutoff: f32) -> Self {
+        self.alpha_cutoff = if cutoff.is_finite() {
+            cutoff.clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        self
+    }
+
+    /// Whether this material needs an alpha test.
+    #[must_use]
+    pub fn is_alpha_tested(&self) -> bool {
+        self.alpha_cutoff > 0.0
     }
 
     /// The same material sampling `texture` for base colour.

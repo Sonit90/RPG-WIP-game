@@ -73,6 +73,14 @@ pub enum Scene {
     /// them hold together" — which is a question about pulls, resets, flow and pacing that a
     /// single arena cannot ask.
     Dungeon,
+    /// The shadow test course: six bays on flat ground, one per shadow failure mode.
+    ///
+    /// Separate from every other scene because shadows are judged against things the other
+    /// scenes deliberately do not have: empty flat ground with one caster on it, a hundred
+    /// identical casters in a grid, a line of geometry crossing every cascade split, and
+    /// more lights asking for shadow maps than any preset will grant. See
+    /// [`engine_environment::shadow_course`] for what stands in each bay and why.
+    Shadows,
 }
 
 impl Scene {
@@ -89,6 +97,7 @@ impl Scene {
             Self::Encounter => "ENCOUNTER",
             Self::LineOfSight => "LINE OF SIGHT",
             Self::Dungeon => "DUNGEON",
+            Self::Shadows => "SHADOWS",
         }
     }
 
@@ -106,7 +115,7 @@ impl Scene {
     pub fn has_environment(self) -> bool {
         matches!(
             self,
-            Self::Combat | Self::Environment | Self::Dungeon | Self::LineOfSight
+            Self::Combat | Self::Environment | Self::Dungeon | Self::LineOfSight | Self::Shadows
         )
     }
 
@@ -151,6 +160,12 @@ impl Scene {
     pub fn is_line_of_sight(self) -> bool {
         matches!(self, Self::LineOfSight)
     }
+
+    /// Whether this is the shadow test course.
+    #[must_use]
+    pub fn is_shadows(self) -> bool {
+        matches!(self, Self::Shadows)
+    }
 }
 
 impl FromStr for Scene {
@@ -167,6 +182,7 @@ impl FromStr for Scene {
             "encounter" | "ai" | "enemies" | "ENCOUNTER" => Ok(Self::Encounter),
             "dungeon" | "reliquary" | "DUNGEON" => Ok(Self::Dungeon),
             "los" | "line-of-sight" | "sight" | "LOS" => Ok(Self::LineOfSight),
+            "shadows" | "shadow" | "SHADOWS" => Ok(Self::Shadows),
             _ => Err(()),
         }
     }
@@ -192,8 +208,14 @@ options:
   --dummies <count>      training dummies in the group, on top of the single dummy
                          (default 4, combat scene only)
   --scene <name>         which scenario to load: combat (default), collision,
-                         character, environment, vfx, audio, encounter, los or
-                         dungeon. The los scene is the line-of-sight course: three
+                         character, environment, vfx, audio, encounter, los,
+                         dungeon or shadows. The shadows scene is the shadow test
+                         course: six bays on flat ground - one isolated caster, a
+                         hundred crates in a grid, a line of rocks crossing every
+                         cascade split, alpha-tested foliage, spot lights and point
+                         lights - built so each way shadows can go wrong is visible
+                         on its own. Pair it with --shadows to compare two quality
+                         levels of the same view. The los scene is the line-of-sight course: three
                          domes with a dummy on the near slope, the crest and the far
                          slope of two of them, and two pits to drop into - one place
                          to stand and see which of the three a targeted spell refuses.
@@ -237,6 +259,10 @@ options:
   --scene-file <path>    load this scene file instead of the scene's built-in layout.
                          Written by the in-game editor (F6, in a build made with
                          --features editor) and readable by any build
+  --shadows <level>      shadow quality for this run: off, low, medium, high or ultra.
+                         Overrides settings.cfg without writing to it, which is what
+                         makes 'the same scene at two quality levels' one binary and
+                         two command lines rather than an edit between runs
   --layout <path.glb>    load a Blender layout export instead of the built-in layout.
                          Only node *names* and transforms are read: name each object
                          after the asset it stands for, as in 'pillar.001', and the
@@ -262,6 +288,12 @@ pub struct Args {
     pub dummies: usize,
     /// Which scenario to load.
     pub scene: Scene,
+    /// Shadow quality for this run, overriding the settings file.
+    ///
+    /// `None` uses whatever the player's `settings.cfg` says, which is the ordinary case.
+    /// A value here is *not* written back: it is a measurement control, and a benchmark run
+    /// must not change what the player sees next time they start the game.
+    pub shadows: Option<engine_settings::ShadowQuality>,
     /// Whether the game UI is drawn.
     ///
     /// A measurement control rather than a game option: with it, the interface's cost is
@@ -321,6 +353,7 @@ impl Default for Args {
             height: 1080,
             vsync: false,
             frames: None,
+            shadows: None,
             report_interval_secs: 1.0,
             overlay: false,
             dummies: 4,
@@ -370,6 +403,7 @@ impl Args {
                 Scene::Encounter => "myGame — encounter demo".to_owned(),
                 Scene::Dungeon => "myGame — the Ashen Reliquary".to_owned(),
                 Scene::LineOfSight => "myGame — line-of-sight course".to_owned(),
+                Scene::Shadows => "myGame — shadow course".to_owned(),
             },
         }
     }
@@ -424,6 +458,16 @@ where
             "--width" => args.width = next_value(&mut iter, "--width")?,
             "--height" => args.height = next_value(&mut iter, "--height")?,
             "--frames" => args.frames = Some(next_value(&mut iter, "--frames")?),
+            "--shadows" => {
+                let value: String = next_value(&mut iter, "--shadows")?;
+                let Some(quality) = engine_settings::ShadowQuality::from_name(&value) else {
+                    return Err(ArgsError::InvalidValue {
+                        option: "--shadows",
+                        value,
+                    });
+                };
+                args.shadows = Some(quality);
+            }
             "--report" => args.report_interval_secs = next_value(&mut iter, "--report")?,
             "--vsync" => args.vsync = true,
             "--fullscreen" => args.fullscreen = true,

@@ -247,7 +247,10 @@ mod tests {
         assert!(default_collision(PILLAR).blocks());
         assert!(default_collision(PINE).blocks(), "the trunk does");
         assert!(!default_collision(FERN).blocks(), "ground cover does not");
-        assert!(!default_collision(ROCK_SMALL).blocks(), "nor a knee-high rock");
+        assert!(
+            !default_collision(ROCK_SMALL).blocks(),
+            "nor a knee-high rock"
+        );
         assert!(!default_collision(GROUND_PLAIN).blocks());
         assert!(!default_collision(SKY_DOME).blocks());
 

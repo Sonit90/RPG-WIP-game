@@ -39,21 +39,38 @@ use engine_renderer::scene::{
     ROOT_FRAME_CBV, ROOT_MATERIAL_CBV, ROOT_OBJECT_CBV, ROOT_PARAMETER_REGISTERS,
 };
 
-/// The shader the root signature describes, read at compile time so the test cannot drift
-/// away from the file the build compiles.
-const MESH_HLSL: &str = include_str!("../shaders/mesh.hlsl");
+/// The sources the root signature describes, read at compile time so the test cannot drift
+/// away from the files the build compiles.
+///
+/// Three of them, because the declarations moved when shadows arrived: the three mesh
+/// pipelines now share one frame buffer and one material buffer out of headers, and only the
+/// per-object buffer is still written per pipeline. The registers are the same registers.
+const SOURCES: [(&str, &str); 3] = [
+    ("shaders/mesh.hlsl", include_str!("../shaders/mesh.hlsl")),
+    (
+        "shaders/scene_frame.hlsli",
+        include_str!("../shaders/scene_frame.hlsli"),
+    ),
+    (
+        "shaders/material.hlsli",
+        include_str!("../shaders/material.hlsli"),
+    ),
+];
 
-/// The register a named `cbuffer` is declared at in `MESH_HLSL`.
+/// The register a named `cbuffer` is declared at.
 ///
 /// Deliberately a crude parse: it looks for `cbuffer <name>` and then the next
 /// `register(bN)`. Anything more would be a shader parser, and the point is to read the one
 /// number the root signature has to agree with.
 fn declared_register(name: &str) -> u32 {
     let declaration = format!("cbuffer {name}");
-    let Some(start) = MESH_HLSL.find(&declaration) else {
-        panic!("shaders/mesh.hlsl declares no `{declaration}`");
+    let Some((source, start)) = SOURCES
+        .iter()
+        .find_map(|(_, text)| text.find(&declaration).map(|start| (*text, start)))
+    else {
+        panic!("no shader source declares `{declaration}`");
     };
-    let tail = &MESH_HLSL[start..];
+    let tail = &source[start..];
     let Some(marker) = tail.find("register(b") else {
         panic!("`{declaration}` is not followed by a register assignment");
     };

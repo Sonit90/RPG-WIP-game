@@ -43,8 +43,8 @@
 use engine_core::math::{Sphere, Vec3};
 use engine_environment::{EnvironmentAsset, EnvironmentObject, EnvironmentScene};
 use engine_render_data::{
-    InstanceStyle, Lighting, ModelBinding, PartGeometry, RenderEntity, RenderEntityDesc,
-    RenderWorld,
+    InstanceStyle, Lighting, LocalLight, MeshHandle, ModelBinding, PartGeometry, RenderEntity,
+    RenderEntityDesc, RenderWorld, SHADOW_LOD_MESHES, ShadowCasting,
 };
 
 /// The uploaded model for every asset a scene can name.
@@ -208,6 +208,15 @@ impl EnvironmentPlacer {
             }
         }
 
+        // The scene's own lights, published once with the geometry rather than every frame:
+        // a brazier does not move, and `RenderWorld` keeps its lights until somebody clears
+        // them. A scene with no lights clears the previous scene's, which is what makes
+        // loading a second scene not inherit the first one's torches.
+        world.clear_lights();
+        for light in &scene.lights {
+            world.push_light(scene_light(light));
+        }
+
         self.objects.clear();
         self.objects.extend_from_slice(&scene.objects);
         self.placed.reserve(self.objects.len());
@@ -325,7 +334,7 @@ fn spawn_parts(
         return;
     };
     parts.reserve(level.parts.len());
-    for part in &level.parts {
+    for (index, part) in level.parts.iter().enumerate() {
         let PartGeometry::Rigid(mesh) = part.geometry else {
             // A skinned part on an environment prop. Nothing authors one — every asset in
             // the library is rigid, and a test asserts it — and the rigid path has no bone
@@ -342,8 +351,77 @@ fn spawn_parts(
             // describes what is happening to one entity right now, and nothing happens to a
             // rock — so it stays neutral and costs the multiply the shader does anyway.
             style: InstanceStyle::NEUTRAL,
+            // Scenery casts and receives, and hands the shadow passes the coarser levels the
+            // model already carries. This is the whole of what §10 asks for: no shadow
+            // meshes are authored, the asset's own levels of detail are reused, and a far
+            // cascade draws a rock's third level because its texels could not resolve the
+            // first.
+            shadow: shadow_lods(object.asset, binding, lod, index),
         }));
         stats.spawned += 1;
+    }
+}
+
+/// The shadow behaviour for one part of a placed object.
+///
+/// Looks the *same part index* up in the levels coarser than the one being drawn. Parts are
+/// in a stable order across a model's levels — the importer preserves submesh order — so
+/// part `index` of level 2 is the same piece of the object as part `index` of level 0. A
+/// level that does not have that part contributes nothing, and the shadow pass falls back to
+/// the mesh it is already drawing.
+fn shadow_lods(
+    asset: EnvironmentAsset,
+    binding: &ModelBinding,
+    lod: usize,
+    index: usize,
+) -> ShadowCasting {
+    let base = base_casting(asset);
+    if !base.casts {
+        // Nothing to hand a coarser mesh to. Building the array anyway would be four handle
+        // lookups per part of every floor in the scene, to fill a field the shadow pass will
+        // never read.
+        return base;
+    }
+    let mut meshes = [MeshHandle::INVALID; SHADOW_LOD_MESHES];
+    for (offset, slot) in meshes.iter_mut().enumerate() {
+        let Some(level) = binding.lods.get(lod + offset + 1) else {
+            break;
+        };
+        if let Some(part) = level.parts.get(index)
+            && let PartGeometry::Rigid(mesh) = part.geometry
+        {
+            *slot = mesh;
+        }
+    }
+    base.with_lod_meshes(meshes)
+}
+
+/// Whether an asset casts shadows, receives them, or neither.
+///
+/// Props, architecture, rocks and plants cast: that is the default and the interesting case.
+/// Three kinds of asset are deliberately excluded, and the exclusions are worth more than
+/// they look:
+///
+/// * **The floors** — the ground plain and the arena floor. A flat horizontal plane's shadow
+///   is the plane itself, so drawing one into every cascade is one draw per cascade for a
+///   shadow that changes no pixel. The ground plain is a 640 m quad and would be drawn into
+///   all of them.
+/// * **The backdrop** — the sky dome and the ridges. The dome surrounds the camera, so its
+///   shadow is the whole world; the ridges stand hundreds of metres out, past every cascade,
+///   where they can only ever contribute to the far one's extruded region.
+/// * Everything else casts and receives.
+///
+/// This is the same decision `extract` makes about a gameplay floor, in the one other place
+/// that spawns render entities from level data. The two agree on purpose.
+fn base_casting(asset: EnvironmentAsset) -> ShadowCasting {
+    use engine_environment::asset as ids;
+    match asset {
+        a if a == ids::GROUND_PLAIN || a == ids::ARENA_FLOOR => ShadowCasting::RECEIVES_ONLY,
+        // Not even a receiver: the dome is unlit backdrop drawn behind everything, and a
+        // shadow falling across the sky is the one artefact nobody could explain away.
+        a if a == ids::SKY_DOME => ShadowCasting::NONE,
+        a if a == ids::RIDGE => ShadowCasting::RECEIVES_ONLY,
+        _ => ShadowCasting::CASTS_AND_RECEIVES,
     }
 }
 
@@ -382,6 +460,31 @@ pub fn scene_lighting(lighting: &engine_environment::EnvironmentLighting) -> Lig
     }
 }
 
+/// Turns a scene's placed light into the one the renderer draws with.
+///
+/// The same five-field copy [`scene_lighting`] makes, for the same reason: `engine-environment`
+/// describes a place and `engine-render-data` describes a frame, and this crate is the only
+/// one allowed to know both. The angles become cosines here because that is what the shader
+/// compares against a dot product.
+#[must_use]
+pub fn scene_light(light: &engine_environment::SceneLight) -> LocalLight {
+    let mut converted = match light.cone_radians {
+        Some((inner, outer)) => LocalLight::spot(
+            light.position,
+            light.direction,
+            light.color,
+            light.intensity,
+            light.range,
+            inner,
+            outer,
+        ),
+        None => LocalLight::point(light.position, light.color, light.intensity, light.range),
+    };
+    converted.casts_shadow = light.casts_shadow;
+    converted.priority = light.priority;
+    converted
+}
+
 #[cfg(test)]
 #[allow(
     clippy::expect_used,
@@ -393,6 +496,35 @@ mod tests {
     use engine_environment::asset as ids;
     use engine_environment::{EnvironmentScene, arena};
     use engine_render_data::{MaterialHandle, MeshHandle, ModelLodBinding, ModelPart};
+
+    #[test]
+    fn the_floors_and_the_backdrop_do_not_cast_and_everything_else_does() {
+        // A flat floor's shadow is the floor, and the ground plain is a 640 m quad that would
+        // otherwise be drawn into every cascade to change no pixel. The dome is the one asset
+        // that must not even *receive*: it is backdrop, and a shadow across the sky is the
+        // artefact nobody could explain.
+        for asset in [ids::GROUND_PLAIN, ids::ARENA_FLOOR, ids::RIDGE] {
+            let casting = base_casting(asset);
+            assert!(!casting.casts, "{asset} is drawn into every cascade");
+            assert!(casting.receives, "{asset} is what shadows land on");
+        }
+        let sky = base_casting(ids::SKY_DOME);
+        assert!(
+            !sky.casts && !sky.receives,
+            "the sky takes no part in shadows"
+        );
+
+        for asset in [
+            ids::PILLAR,
+            ids::ARCH,
+            ids::ROCK_MEDIUM,
+            ids::PINE,
+            ids::BRAZIER,
+        ] {
+            let casting = base_casting(asset);
+            assert!(casting.casts && casting.receives, "{asset} should cast");
+        }
+    }
 
     /// Uploads the whole library over handles nothing created.
     ///

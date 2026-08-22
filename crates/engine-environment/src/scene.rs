@@ -25,7 +25,7 @@ use std::borrow::Cow;
 use engine_core::math::Vec3;
 
 use crate::asset::EnvironmentAsset;
-use crate::lighting::EnvironmentLighting;
+use crate::lighting::{EnvironmentLighting, SceneLight};
 use crate::object::EnvironmentObject;
 
 /// Where the scene says the fight happens.
@@ -71,6 +71,12 @@ pub struct EnvironmentScene {
     pub spawns: SpawnPoints,
     /// The sun, the fill and the sky.
     pub lighting: EnvironmentLighting,
+    /// Lights that belong to places in the scene: braziers, torches, shafts of light.
+    ///
+    /// Empty for an outdoor scene lit by the sun alone, which is most of them. A light here
+    /// is *placed* rather than *rendered*: which of them get shadow maps is the renderer's
+    /// decision and depends on where the camera is.
+    pub lights: Vec<SceneLight>,
     /// Half-width of the square a character is confined to, in metres.
     pub half_extent: f32,
     /// The y the floor is at.
@@ -86,6 +92,7 @@ impl EnvironmentScene {
             objects: Vec::with_capacity(capacity),
             spawns: SpawnPoints::default(),
             lighting: EnvironmentLighting::arena_afternoon(),
+            lights: Vec::new(),
             half_extent: 40.0,
             ground_height: 0.0,
         }
@@ -94,6 +101,11 @@ impl EnvironmentScene {
     /// Adds a placement.
     pub fn push(&mut self, object: EnvironmentObject) {
         self.objects.push(object);
+    }
+
+    /// Adds a local light.
+    pub fn push_light(&mut self, light: SceneLight) {
+        self.lights.push(light);
     }
 
     /// How many objects the scene holds.

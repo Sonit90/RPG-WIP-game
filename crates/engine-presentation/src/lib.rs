@@ -44,6 +44,7 @@ pub mod mouse_look;
 pub mod nameplate;
 /// Where nameplates end up once they are not allowed to overlap.
 pub mod nameplate_layout;
+pub mod shadow_debug;
 pub mod snapshot;
 /// The reusable UI framework and the game's menus.
 pub mod ui;
@@ -56,7 +57,9 @@ pub use character_save::{apply_config, config_of};
 pub use collision_debug::{CollisionDebug, DebugBindings};
 pub use collision_hud::CollisionHudModel;
 pub use damage_numbers::{FloatingNumber, FloatingNumbers, MAX_FLOATING_NUMBERS};
-pub use environment::{EnvironmentPlacer, EnvironmentStats, EnvironmentVisuals, scene_lighting};
+pub use environment::{
+    EnvironmentPlacer, EnvironmentStats, EnvironmentVisuals, scene_light, scene_lighting,
+};
 pub use extract::{
     RenderExtractor, VisualBindings, VisualStats, interpolated_player_position, lerp_angle,
     lerp_position,
@@ -69,6 +72,7 @@ pub use nameplate::{
     NameplateStatus, project,
 };
 pub use nameplate_layout::{LayoutConstraints, NameplateLayout, PlateBox};
+pub use shadow_debug::ShadowCasterDebug;
 pub use snapshot::{
     AbilitySlotView, CastView, CharacterView, CombatView, NotificationView, PartyMemberView,
     PlayerView, SlotAvailability, StatusList, StatusView, TargetView, UiSnapshot,

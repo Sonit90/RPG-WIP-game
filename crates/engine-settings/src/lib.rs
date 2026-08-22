@@ -34,6 +34,8 @@
 pub mod character;
 /// What the player can change about how the game plays.
 pub mod gameplay;
+/// What the player can change about how the game looks.
+pub mod graphics;
 /// The interface layout the player arranged: action bars, unit frames and their file.
 pub mod hud;
 /// How nameplates are sized, placed and separated.
@@ -50,6 +52,7 @@ pub use character::{
     InventoryEntry,
 };
 pub use gameplay::GameplaySettings;
+pub use graphics::{GraphicsSettings, ShadowQuality};
 pub use hud::{
     ACTION_BAR_SLOTS, ACTION_BARS, ActionBarConfig, HUD_FILE_NAME, HUD_OFFSET_LIMIT,
     HUD_SCALE_DEFAULT, HUD_SCALE_MAX, HUD_SCALE_MIN, HUD_SCALE_STEP, HudAnchor, HudConfig,
@@ -167,6 +170,12 @@ pub struct GameSettings {
     /// on [`NameplateSettings`] is what makes a file written before this section existed load
     /// with every one of them at its default rather than failing to parse.
     pub nameplates: NameplateSettings,
+    /// What the player can change about how the game looks: shadow quality, so far.
+    ///
+    /// Its own section for the same reason the two above have one, and `#[serde(default)]`
+    /// on [`GraphicsSettings`] is what lets a file written before shadows existed keep
+    /// everything in it.
+    pub graphics: GraphicsSettings,
 }
 
 impl Default for GameSettings {
@@ -181,6 +190,7 @@ impl Default for GameSettings {
             ambient_volume: AMBIENT_VOLUME_DEFAULT,
             gameplay: GameplaySettings::default(),
             nameplates: NameplateSettings::default(),
+            graphics: GraphicsSettings::default(),
         }
     }
 }
@@ -243,6 +253,7 @@ impl GameSettings {
         // that number rather than the whole section.
         settings.gameplay = settings.gameplay.validated();
         settings.nameplates = settings.nameplates.validated();
+        settings.graphics = settings.graphics.validated();
         settings
     }
 
@@ -633,6 +644,9 @@ mod tests {
             ambient_volume: 0.0,
             gameplay: GameplaySettings::default(),
             nameplates: NameplateSettings::default().with(NameplateSetting::Size, 14.0),
+            graphics: GraphicsSettings {
+                shadows: ShadowQuality::Ultra,
+            },
         };
         let text = serde_json::to_string(&settings).expect("settings serialize");
         let parsed: GameSettings = serde_json::from_str(&text).expect("settings parse");

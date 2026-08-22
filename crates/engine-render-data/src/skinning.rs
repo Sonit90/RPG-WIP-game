@@ -146,6 +146,16 @@ pub struct SkinnedInstance {
     pub palette_start: u32,
     /// How many bones it uses.
     pub palette_len: u32,
+    /// Whether the shadow passes render this submesh's depth.
+    ///
+    /// The skinned counterpart of
+    /// [`ShadowCasting::casts`](crate::world::ShadowCasting::casts), carried on the instance
+    /// rather than in a parallel array because a skinned draw list is rebuilt whole every
+    /// frame. True for a character: the player and every monster cast, which is the single
+    /// most visible shadow in a third-person game.
+    pub casts_shadow: bool,
+    /// Whether the lighting pass darkens this submesh where a shadow falls on it.
+    pub receives_shadow: bool,
 }
 
 /// Every skinned draw for one frame, and the matrices they index.
@@ -322,6 +332,8 @@ mod tests {
             style: InstanceStyle::NEUTRAL,
             palette_start: start,
             palette_len: len,
+            casts_shadow: true,
+            receives_shadow: true,
         });
         let Some(palette) = list.palette_of(0) else {
             panic!("the instance names a range inside the palette");
@@ -342,6 +354,8 @@ mod tests {
             style: InstanceStyle::NEUTRAL,
             palette_start: 0,
             palette_len: 4,
+            casts_shadow: true,
+            receives_shadow: true,
         });
         list.clear();
         assert!(list.is_empty());

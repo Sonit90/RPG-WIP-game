@@ -488,6 +488,7 @@ mod tests {
             source: player(),
             ability: ability(2),
             targets: 4,
+            facing: 0.0,
             tick: 1,
         }];
         for index in 0..4 {
