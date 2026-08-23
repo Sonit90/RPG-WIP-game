@@ -1083,3 +1083,30 @@ scratch are owned buffers that grow to the scene once and are cleared rather tha
 constants go through the frame's existing upload ring. Changing the quality **does** allocate
 and stall: the atlas is recreated, behind a `wait_for_idle()`, which is why it belongs on a
 settings screen rather than on a slider.
+
+# Phase 7b — the shadow optimisation
+
+Eight milestones against the combat arena, each measured with the same script against a
+reference binary run in the same session. `docs/performance/shadows/` carries one document per
+milestone with the numbers, the quality measurements and the regressions; `00-baseline.md`
+states the methodology and `06-final-comparison.md` is the summary.
+
+GPU p50, `--scene combat`, RX 6700 XT:
+
+| Resolution | Before, Ultra | After, Ultra | Before, High | After, High |
+| --- | ---: | ---: | ---: | ---: |
+| 1280×720 | 0.307 | 0.216 | 0.231 | 0.190 |
+| 1920×1080 | 0.606 | 0.396 | 0.454 | 0.358 |
+| 2560×1440 | 1.008 | 0.633 | 0.758 | 0.583 |
+| 3840×2160 | 2.754 | **1.327** | 1.598 | **1.201** |
+
+The two changes that did most of it: contact shadows became a half-resolution pass with a
+depth-weighted reconstruction (1.31 ms to 0.42 at 4K), and the 5×5 PCF grid became a six-tap
+rotated disc at the same penumbra width (0.22 ms at 4K). Clustered light culling took the
+per-light cost from 0.070 ms to 0.008 and lifted `MAX_LOCAL_LIGHTS` from 8 to 32, which the
+dungeon needed — it has twenty local lights and twelve of them were being dropped every frame.
+
+Three measurement controls were added to the game binary and are worth knowing about:
+`--warmup <n>`, `--shadow-tweak <k=v,…>` and `--lights <n> --shadow-lights <n>`. The driver is
+`tools/bench/shadow_matrix.ps1`, which interleaves its repetitions because the machine drifts
+enough over a few minutes to move a 4K number by 20 %.
