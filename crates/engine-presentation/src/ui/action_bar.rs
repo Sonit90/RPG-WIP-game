@@ -36,7 +36,8 @@ use engine_game::hero::Hero;
 use engine_game::input_map::Bindings;
 use engine_render_data::ui::UiRect;
 use engine_settings::hud::{
-    ACTION_BAR_SLOTS, ACTION_BARS, HudConfig, HudOrientation, HudSlotConfig,
+    ACTION_BAR_SLOTS, ACTION_BARS, BindingScope, HeroBindingsConfig, HudBarBindings, HudConfig,
+    HudOrientation, HudSlotConfig,
 };
 
 /// Size of one slot, in logical pixels.
@@ -200,6 +201,97 @@ impl ActionBarSet {
         }
     }
 
+    /// Rebinds bar one only if it is holding somebody else's spells.
+    ///
+    /// What a *launch* does, where [`ActionBarSet::rebind_to_hero`] is what a swap does. The
+    /// difference is the bug this exists for: bar one is saved to one file for the account,
+    /// a swap rewrites it to the new class, and nothing rewrote it on the way back in. A
+    /// player who last played the Druid and then restarted came back as the FireMage looking
+    /// at ten slots holding Druid spells — which
+    /// [`crate::snapshot::UiSnapshot::ability_view`] draws as empty, because the FireMage
+    /// cannot cast them. The bar looked like it had lost its icons, and putting the spells
+    /// back by hand fixed it because that is what a rebind does.
+    ///
+    /// Only a *foreign* bar is rewritten, so a slot this hero's own player deliberately
+    /// cleared stays cleared: emptiness is not another class's spell.
+    ///
+    /// Returns whether anything was rebound.
+    pub fn rebind_if_foreign(&mut self, hero: Hero) -> bool {
+        let foreign = self.bars[0]
+            .slots
+            .iter()
+            .filter_map(|slot| slot.ability)
+            .any(|ability| !hero.has(ability));
+        if foreign {
+            self.rebind_to_hero(hero);
+        }
+        foreign
+    }
+
+    /// The bars `hero` should be playing with, given where the player keeps them.
+    ///
+    /// ```text
+    /// BindingScope::Account    the one saved set, with bar one rebound if it is not this
+    ///                          hero's                    (rebind_if_foreign)
+    /// BindingScope::Character  this hero's own saved set, or its class bar if this is the
+    ///                          first time it has been played
+    /// ```
+    ///
+    /// Reading is total: a scope with nothing saved for this character is a character that
+    /// has never been arranged, which is a fresh bar rather than an error.
+    #[must_use]
+    pub fn for_hero(config: &HudConfig, scope: BindingScope, hero: Hero) -> Self {
+        if scope.is_per_character() {
+            return match config.hero_bindings(hero.config_name()) {
+                Some(saved) => Self::from_hero_bindings(saved),
+                None => Self::with_default_bindings(hero),
+            };
+        }
+        let mut set = Self::from_config(config);
+        set.rebind_if_foreign(hero);
+        set
+    }
+
+    /// Writes these bars into `config` as `hero`'s, wherever this scope keeps them.
+    ///
+    /// The account-wide bars are written in both scopes, because they are also where every
+    /// bar's *placement* lives and the layout must not stop being saved because the spells
+    /// moved elsewhere. The per-character record is written only in the per-character scope,
+    /// so a player using one set for the account cannot silently overwrite what a character
+    /// had saved from the last time they used the other.
+    pub fn store(&self, config: &mut HudConfig, scope: BindingScope, hero: Hero) {
+        self.write_config(config);
+        if scope.is_per_character() {
+            config.set_hero_bindings(self.hero_bindings(hero));
+        }
+    }
+
+    /// Reads the bars out of one character's saved record.
+    #[must_use]
+    fn from_hero_bindings(saved: &HeroBindingsConfig) -> Self {
+        let mut set = Self::default();
+        for (index, bar) in saved.bars.iter().enumerate().take(ACTION_BARS) {
+            for (slot_index, slot) in bar.slots.iter().enumerate().take(ACTION_BAR_SLOTS) {
+                set.bars[index].slots[slot_index] = slot_of_config(slot);
+            }
+        }
+        set
+    }
+
+    /// These bars as one character's saved record.
+    #[must_use]
+    fn hero_bindings(&self, hero: Hero) -> HeroBindingsConfig {
+        let mut bindings = HeroBindingsConfig::new(hero.config_name());
+        for (index, bar) in self.bars.iter().enumerate() {
+            let mut saved = HudBarBindings::default();
+            for (slot_index, slot) in bar.slots.iter().enumerate() {
+                saved.slots[slot_index] = config_of_slot(*slot);
+            }
+            bindings.bars[index] = saved;
+        }
+        bindings
+    }
+
     /// The bars, in bar order.
     #[must_use]
     pub fn bars(&self) -> &[ActionBar; ACTION_BARS] {
@@ -343,12 +435,7 @@ impl ActionBarSet {
         let mut set = Self::default();
         for (index, bar) in config.bars.iter().enumerate().take(ACTION_BARS) {
             for (slot_index, saved) in bar.slots.iter().enumerate().take(ACTION_BAR_SLOTS) {
-                let ability = saved
-                    .spell
-                    .as_deref()
-                    .and_then(FireAbility::from_config_name)
-                    .filter(|ability| ability.is_assignable());
-                let key = saved.key.as_deref().and_then(KeyChord::from_name);
+                let ActionBarSlot { ability, key } = slot_of_config(saved);
                 if saved.spell.is_some() && ability.is_none() {
                     log::warn!(
                         "hud: action bar {} slot {} holds an unknown spell; leaving it empty",
@@ -384,12 +471,35 @@ impl ActionBarSet {
                 .slots
                 .resize(ACTION_BAR_SLOTS, HudSlotConfig::default());
             for (slot_index, slot) in bar.slots.iter().enumerate() {
-                saved.slots[slot_index] = HudSlotConfig {
-                    spell: slot.ability.map(|ability| ability.config_name().to_owned()),
-                    key: slot.key.and_then(KeyChord::to_name),
-                };
+                saved.slots[slot_index] = config_of_slot(*slot);
             }
         }
+    }
+}
+
+/// One saved slot, resolved into a spell and a key this build knows.
+///
+/// A name this build does not recognise leaves that half empty. Both saved forms — the
+/// account's bars and a character's record — are the same [`HudSlotConfig`], so they resolve
+/// through one function rather than two that could drift apart.
+#[must_use]
+fn slot_of_config(saved: &HudSlotConfig) -> ActionBarSlot {
+    ActionBarSlot {
+        ability: saved
+            .spell
+            .as_deref()
+            .and_then(FireAbility::from_config_name)
+            .filter(|ability| ability.is_assignable()),
+        key: saved.key.as_deref().and_then(KeyChord::from_name),
+    }
+}
+
+/// One slot, written as names.
+#[must_use]
+fn config_of_slot(slot: ActionBarSlot) -> HudSlotConfig {
+    HudSlotConfig {
+        spell: slot.ability.map(|ability| ability.config_name().to_owned()),
+        key: slot.key.and_then(KeyChord::to_name),
     }
 }
 
@@ -468,6 +578,149 @@ pub fn slot_at(bar: UiRect, orientation: HudOrientation, x: f32, y: f32) -> Opti
 )]
 mod tests {
     use super::*;
+
+    /// The bug a restart used to have: bar one saved by one class, read back by another.
+    fn bars_saved_by(hero: Hero) -> HudConfig {
+        let mut config = HudConfig::default();
+        ActionBarSet::with_default_bindings(hero).write_config(&mut config);
+        config
+    }
+
+    #[test]
+    fn a_bar_holding_another_class_is_rebound_and_a_bar_holding_this_one_is_not() {
+        let mut set = ActionBarSet::with_default_bindings(Hero::Druid);
+        assert!(
+            set.rebind_if_foreign(Hero::FireMage),
+            "a bar of Druid spells is not the FireMage's"
+        );
+        for slot in 0..ACTION_BAR_SLOTS {
+            assert_eq!(
+                set.slot(SlotAddress::new(0, slot)).expect("slot").ability,
+                Hero::FireMage.ability_at(slot)
+            );
+        }
+        assert!(
+            !set.rebind_if_foreign(Hero::FireMage),
+            "a bar already this hero's was rewritten"
+        );
+    }
+
+    #[test]
+    fn a_slot_the_player_cleared_is_not_another_class_and_survives_a_launch() {
+        // Emptiness is not somebody else's spell, so the launch-time repair must leave it
+        // alone: the player cleared it on purpose and a helpful rebind would undo that.
+        let mut set = ActionBarSet::with_default_bindings(Hero::FireMage);
+        set.clear_slot(SlotAddress::new(0, 3));
+        assert!(!set.rebind_if_foreign(Hero::FireMage));
+        assert!(set.slot(SlotAddress::new(0, 3)).expect("slot").is_empty());
+    }
+
+    #[test]
+    fn a_key_the_player_moved_is_kept_when_a_foreign_bar_is_rebound() {
+        // Only the spells belong to the class. A rebind that also reset the keys would cost
+        // a player their bindings every time they came back as a different character.
+        let mut set = ActionBarSet::with_default_bindings(Hero::Warrior);
+        let bindings = Bindings::default();
+        let chord = KeyChord::plain(KeyCode::Y);
+        assert!(set.assign_key(SlotAddress::new(0, 2), chord, &bindings));
+        assert!(set.rebind_if_foreign(Hero::Druid));
+        assert_eq!(
+            set.slot(SlotAddress::new(0, 2)).expect("slot").key,
+            Some(chord)
+        );
+    }
+
+    #[test]
+    fn the_account_scope_hands_every_character_the_one_saved_set() {
+        let config = bars_saved_by(Hero::Druid);
+        let druid = ActionBarSet::for_hero(&config, BindingScope::Account, Hero::Druid);
+        assert_eq!(druid, ActionBarSet::with_default_bindings(Hero::Druid));
+
+        // The same file read as the FireMage: bar one is the FireMage's again, which is what
+        // a restart after a hero swap must produce.
+        let mage = ActionBarSet::for_hero(&config, BindingScope::Account, Hero::FireMage);
+        assert_eq!(mage, ActionBarSet::with_default_bindings(Hero::FireMage));
+    }
+
+    #[test]
+    fn the_character_scope_gives_a_character_its_own_bars_and_a_class_bar_if_it_has_none() {
+        let mut config = HudConfig::default();
+        let mut druid = ActionBarSet::with_default_bindings(Hero::Druid);
+        assert!(druid.assign_spell(SlotAddress::new(3, 0), Some(FireAbility::Swiftmend)));
+        druid.store(&mut config, BindingScope::Character, Hero::Druid);
+
+        let restored = ActionBarSet::for_hero(&config, BindingScope::Character, Hero::Druid);
+        assert_eq!(restored, druid, "the Druid did not get its own bars back");
+
+        // A character that has never been arranged gets its class bar rather than the
+        // Druid's, even though the Druid's is the set that was last saved.
+        let warrior = ActionBarSet::for_hero(&config, BindingScope::Character, Hero::Warrior);
+        assert_eq!(warrior, ActionBarSet::with_default_bindings(Hero::Warrior));
+    }
+
+    #[test]
+    fn two_characters_keep_their_own_arrangements_side_by_side() {
+        let mut config = HudConfig::default();
+        let bindings = Bindings::default();
+
+        let mut mage = ActionBarSet::with_default_bindings(Hero::FireMage);
+        assert!(mage.assign_spell(SlotAddress::new(1, 0), Some(FireAbility::Blink)));
+        assert!(mage.assign_key(SlotAddress::new(1, 0), KeyChord::plain(KeyCode::Y), &bindings));
+        mage.store(&mut config, BindingScope::Character, Hero::FireMage);
+
+        let mut warrior = ActionBarSet::with_default_bindings(Hero::Warrior);
+        assert!(warrior.assign_spell(SlotAddress::new(1, 0), Some(FireAbility::ShieldBlock)));
+        warrior.store(&mut config, BindingScope::Character, Hero::Warrior);
+
+        assert_eq!(
+            ActionBarSet::for_hero(&config, BindingScope::Character, Hero::FireMage),
+            mage,
+            "arranging the Warrior disturbed the FireMage"
+        );
+        assert_eq!(
+            ActionBarSet::for_hero(&config, BindingScope::Character, Hero::Warrior),
+            warrior
+        );
+    }
+
+    #[test]
+    fn storing_for_the_account_leaves_a_characters_saved_bars_alone() {
+        // Turning the setting off must not throw away what the characters had: the player
+        // can turn it back on, and their arrangements are still there.
+        let mut config = HudConfig::default();
+        let mut druid = ActionBarSet::with_default_bindings(Hero::Druid);
+        assert!(druid.assign_spell(SlotAddress::new(2, 5), Some(FireAbility::Nourish)));
+        druid.store(&mut config, BindingScope::Character, Hero::Druid);
+
+        ActionBarSet::with_default_bindings(Hero::FireMage).store(
+            &mut config,
+            BindingScope::Account,
+            Hero::FireMage,
+        );
+
+        assert_eq!(
+            ActionBarSet::for_hero(&config, BindingScope::Character, Hero::Druid),
+            druid,
+            "the account-wide save overwrote the Druid's own bars"
+        );
+    }
+
+    #[test]
+    fn a_characters_record_holds_its_spells_and_keys_and_not_where_the_bars_are() {
+        // Placement is the player's interface, one arrangement for the account: a
+        // per-character record that carried it would move a bar for one hero only.
+        let mut config = HudConfig::default();
+        ActionBarSet::with_default_bindings(Hero::Druid).store(
+            &mut config,
+            BindingScope::Character,
+            Hero::Druid,
+        );
+        let saved = config.hero_bindings("druid").expect("the Druid's record");
+        assert_eq!(saved.bars.len(), ACTION_BARS);
+        assert_eq!(saved.bars[0].slots.len(), ACTION_BAR_SLOTS);
+        assert_eq!(saved.bars[0].slots[0].spell.as_deref(), Some("moonfire"));
+        assert!(config.is_valid());
+    }
     use crate::ui::hud_layout::{HudElementId, HudLayout};
     use engine_core::input::{KeyCode, Modifiers};
     use engine_render_data::ui::UiScale;

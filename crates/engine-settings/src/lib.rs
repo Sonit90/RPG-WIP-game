@@ -54,9 +54,10 @@ pub use character::{
 pub use gameplay::GameplaySettings;
 pub use graphics::{GraphicsSettings, ShadowQuality};
 pub use hud::{
-    ACTION_BAR_SLOTS, ACTION_BARS, ActionBarConfig, HUD_FILE_NAME, HUD_OFFSET_LIMIT,
-    HUD_SCALE_DEFAULT, HUD_SCALE_MAX, HUD_SCALE_MIN, HUD_SCALE_STEP, HudAnchor, HudConfig,
-    HudConfigManager, HudFrames, HudOrientation, HudPlacement, HudSlotConfig,
+    ACTION_BAR_SLOTS, ACTION_BARS, ActionBarConfig, BindingScope, HUD_FILE_NAME,
+    HUD_OFFSET_LIMIT, HUD_SCALE_DEFAULT, HUD_SCALE_MAX, HUD_SCALE_MIN, HUD_SCALE_STEP,
+    HeroBindingsConfig, HudAnchor, HudBarBindings, HudConfig, HudConfigManager, HudFrames,
+    HudOrientation, HudPlacement, HudSlotConfig,
 };
 pub use nameplate::{NameplateSetting, NameplateSettings};
 
@@ -176,6 +177,14 @@ pub struct GameSettings {
     /// on [`GraphicsSettings`] is what lets a file written before shadows existed keep
     /// everything in it.
     pub graphics: GraphicsSettings,
+    /// Whether the action bars' spells and keys belong to the account or to the character.
+    ///
+    /// A scalar in this file rather than a field of `hud.cfg` because it is a setting the
+    /// player changes on the settings screen, and because it decides which half of the
+    /// layout file is read: a setting that chose how to read the file it lived in would have
+    /// to be found before the file it is in could be understood.
+    #[serde(default)]
+    pub binding_scope: BindingScope,
 }
 
 impl Default for GameSettings {
@@ -191,6 +200,7 @@ impl Default for GameSettings {
             gameplay: GameplaySettings::default(),
             nameplates: NameplateSettings::default(),
             graphics: GraphicsSettings::default(),
+            binding_scope: BindingScope::default(),
         }
     }
 }
@@ -506,6 +516,17 @@ impl SettingsManager {
         });
     }
 
+    /// Sets where the action bars' spells and keys are kept.
+    ///
+    /// Nothing is moved here: this records the player's answer, and the application decides
+    /// what the bars now are — which is the same division every other setter follows.
+    pub fn set_binding_scope(&mut self, scope: BindingScope) {
+        self.update(GameSettings {
+            binding_scope: scope,
+            ..self.settings
+        });
+    }
+
     /// Sets one nameplate setting, snapping it to that slider's step and range.
     ///
     /// The whole section is carried over and one field replaced, for the same reason every
@@ -647,12 +668,37 @@ mod tests {
             graphics: GraphicsSettings {
                 shadows: ShadowQuality::Ultra,
             },
+            binding_scope: BindingScope::Character,
         };
         let text = serde_json::to_string(&settings).expect("settings serialize");
         let parsed: GameSettings = serde_json::from_str(&text).expect("settings parse");
         assert_eq!(parsed, settings);
         assert!(text.contains("camera_sensitivity"), "{text}");
         assert!(text.contains("master_volume"), "{text}");
+        assert!(text.contains("\"binding_scope\":\"character\""), "{text}");
+    }
+
+    #[test]
+    fn a_settings_file_written_before_the_binding_scope_existed_still_loads() {
+        // The scope decides where a saved bar is read from, so a file that predates it must
+        // load as the account-wide arrangement the game has always had rather than fail.
+        let parsed: GameSettings =
+            serde_json::from_str(r#"{"camera_sensitivity": 1.0}"#).expect("an old file parses");
+        assert_eq!(parsed.binding_scope, BindingScope::Account);
+    }
+
+    #[test]
+    fn the_binding_scope_is_set_without_disturbing_the_rest() {
+        let dir = TempDir::new("binding-scope");
+        let mut manager = SettingsManager::load(dir.file());
+        manager.set_ui_scale(1.25);
+        manager.set_binding_scope(BindingScope::Character);
+        assert_eq!(manager.settings().binding_scope, BindingScope::Character);
+        assert!((manager.settings().ui_scale - 1.25).abs() < f32::EPSILON);
+        assert!(manager.save_if_dirty());
+
+        let reloaded = SettingsManager::load(dir.file());
+        assert_eq!(reloaded.settings().binding_scope, BindingScope::Character);
     }
 
     #[test]

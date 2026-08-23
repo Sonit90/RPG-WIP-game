@@ -24,9 +24,9 @@
 
 use engine_render_data::ui::{UiRect, UiScale};
 use engine_settings::{
-    CAMERA_SENSITIVITY_MAX, CAMERA_SENSITIVITY_MIN, CAMERA_SENSITIVITY_STEP, GameSettings,
-    NameplateSetting, UI_SCALE_MAX, UI_SCALE_MIN, UI_SCALE_STEP, VOLUME_MAX, VOLUME_MIN,
-    VOLUME_STEP,
+    BindingScope, CAMERA_SENSITIVITY_MAX, CAMERA_SENSITIVITY_MIN, CAMERA_SENSITIVITY_STEP,
+    GameSettings, NameplateSetting, UI_SCALE_MAX, UI_SCALE_MIN, UI_SCALE_STEP, VOLUME_MAX,
+    VOLUME_MIN, VOLUME_STEP,
 };
 
 use engine_game::hero::Hero;
@@ -101,6 +101,8 @@ pub enum SettingsItem {
     UiVolume,
     /// How loud the environment bed is.
     AmbientVolume,
+    /// Whether each character remembers its own bars.
+    BindingScope,
     /// Opens the nameplate section.
     Nameplates,
     /// Returns to the pause menu.
@@ -202,6 +204,11 @@ pub enum MenuAction {
     /// and the application decides that nothing changed, which is the same division every
     /// other action here follows.
     HeroSelected(Hero),
+    /// The player chose where the action bars' spells and keys are kept.
+    ///
+    /// Committed immediately — a checkbox has no drag to settle — so there is one action
+    /// rather than the changed/committed pair the sliders need.
+    BindingScopeCommitted(BindingScope),
     /// The nameplate screen opened.
     OpenedNameplates,
     /// The nameplate screen closed back to the settings screen.
@@ -421,6 +428,11 @@ impl MenuSystem {
                 ),
             );
         }
+        settings_screen.push(
+            SettingsItem::BindingScope,
+            Checkbox::new("KEYBINDS PER CHARACTER")
+                .checked(settings.binding_scope.is_per_character()),
+        );
         settings_screen.push(SettingsItem::Nameplates, Button::new("NAMEPLATES"));
         settings_screen.push(SettingsItem::Back, Button::new("BACK"));
 
@@ -568,6 +580,11 @@ impl MenuSystem {
                 slider.set_value(volume_of(settings, channel));
             }
         }
+        if let Some(Widget::Checkbox(checkbox)) =
+            self.settings.widget_mut(SettingsItem::BindingScope)
+        {
+            checkbox.set_checked(settings.binding_scope.is_per_character());
+        }
         for setting in NameplateSetting::ALL {
             if let Some(Widget::Slider(slider)) =
                 self.nameplates.widget_mut(NameplateItem::Setting(setting))
@@ -684,11 +701,14 @@ impl MenuSystem {
         let slider = self.metrics.slider_label_height
             + self.metrics.track_height
             + self.metrics.slider_value_height;
+        // The sliders, then the one checkbox, then the two buttons: the checkbox is a row of
+        // button height like the two under it, and the panel has to reserve it or the box
+        // would be drawn off the bottom of the thing it belongs to.
         let content = self.metrics.title_height
             + slider * SLIDER_COUNT
             + self.metrics.group_gap
-            + self.metrics.button_height * 2.0
-            + self.metrics.button_gap;
+            + self.metrics.button_height * 3.0
+            + self.metrics.button_gap * 2.0;
         self.centred_panel(self.viewport, content + self.metrics.padding * 2.0)
     }
 
@@ -776,8 +796,14 @@ impl MenuSystem {
             y += self.metrics.track_height + self.metrics.slider_value_height;
         }
 
-        // The way into the nameplate section, then the way out of the screen.
+        // Where the bars are kept, then the way into the nameplate section, then the way out
+        // of the screen.
         let mut y = y + self.metrics.group_gap;
+        self.settings.set_rect(
+            SettingsItem::BindingScope,
+            UiRect::new(x, y, width, self.metrics.button_height),
+        );
+        y += self.metrics.button_height + self.metrics.button_gap;
         self.settings.set_rect(
             SettingsItem::Nameplates,
             UiRect::new(x, y, width, self.metrics.button_height),
@@ -965,6 +991,7 @@ impl MenuSystem {
         }
         let mut back = false;
         let mut open_nameplates = false;
+        let mut binding_scope = None;
         // Collected first: the borrow of the screen's event buffer ends here, and the
         // actions below are pushed onto this system's own.
         let mut sensitivity = (None, None);
@@ -974,6 +1001,9 @@ impl MenuSystem {
             match (item, event) {
                 (SettingsItem::Back, WidgetEvent::Activated) => back = true,
                 (SettingsItem::Nameplates, WidgetEvent::Activated) => open_nameplates = true,
+                (SettingsItem::BindingScope, WidgetEvent::Toggled(checked)) => {
+                    binding_scope = Some(BindingScope::from_per_character(*checked));
+                }
                 (SettingsItem::CameraSensitivity, WidgetEvent::ValueChanged(value)) => {
                     sensitivity.0 = Some(*value);
                 }
@@ -1023,6 +1053,9 @@ impl MenuSystem {
         }
         if let Some(value) = ui_scale.1 {
             self.actions.push(MenuAction::UiScaleCommitted(value));
+        }
+        if let Some(scope) = binding_scope {
+            self.actions.push(MenuAction::BindingScopeCommitted(scope));
         }
         if open_nameplates {
             self.screen = MenuScreen::Nameplates;
@@ -1458,6 +1491,52 @@ mod tests {
             matches!(released.as_slice(), [MenuAction::SensitivityCommitted(_)]),
             "{released:?}"
         );
+    }
+
+    #[test]
+    fn ticking_the_keybind_box_reports_the_scope_the_player_chose() {
+        let mut menu = menu();
+        menu.open_pause();
+        click_pause(&mut menu, PauseItem::Settings);
+
+        let ticked = click_settings(&mut menu, SettingsItem::BindingScope);
+        assert!(
+            matches!(
+                ticked.as_slice(),
+                [MenuAction::BindingScopeCommitted(BindingScope::Character)]
+            ),
+            "{ticked:?}"
+        );
+
+        // And back off again: the box is a view of the setting, so unticking it asks for the
+        // account-wide arrangement rather than repeating the same answer.
+        let unticked = click_settings(&mut menu, SettingsItem::BindingScope);
+        assert!(
+            matches!(
+                unticked.as_slice(),
+                [MenuAction::BindingScopeCommitted(BindingScope::Account)]
+            ),
+            "{unticked:?}"
+        );
+    }
+
+    #[test]
+    fn the_keybind_box_shows_what_the_settings_file_says() {
+        // Loaded settings reach the widget through `apply_settings`, and must not come back
+        // out of it as an action: nothing was pressed.
+        let mut menu = menu();
+        menu.open_pause();
+        click_pause(&mut menu, PauseItem::Settings);
+        menu.apply_settings(GameSettings {
+            binding_scope: BindingScope::Character,
+            ..GameSettings::default()
+        });
+        let Some(Widget::Checkbox(checkbox)) = menu.settings_screen().widget(SettingsItem::BindingScope)
+        else {
+            panic!("the settings screen has no keybind box");
+        };
+        assert!(checkbox.checked);
+        assert!(menu.update(&at(0.0, 0.0)).is_empty());
     }
 
     #[test]

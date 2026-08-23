@@ -262,6 +262,55 @@ Writes happen on commit, not per frame: a drag mutates memory and marks the conf
 and the file is written when the pointer is released, when edit mode is left, and at
 shutdown. A test asserts the file is untouched mid-drag.
 
+## 6a. Whose bars they are
+
+Bar one follows the class: a hero swap rewrites its ten slots to the new hero's abilities,
+because a bar of spells nobody in the room can cast is not a bar. Everything else — the
+other seven bars, every key — is the player's own.
+
+That left one hole, and it was a bug worth writing down. `hud.cfg` is *one* arrangement for
+the account, a swap rewrote bar one, and nothing rewrote it on the way back in. A player who
+quit as the Druid started again as the FireMage with ten Druid spells on bar one, which the
+snapshot draws as empty slots because the FireMage cannot cast them. The bar looked like it
+had lost its art, and dragging each spell back was the only cure — which worked, because
+that is exactly what a rebind does.
+
+A launch is now told who is playing:
+
+```text
+ActionBarSet::for_hero(config, scope, hero)
+  account    the saved set, with bar one rebound only if it holds another class's spells
+  character  this character's own saved set, or its class bar if it has never been played
+```
+
+`rebind_if_foreign` rewrites bar one only when it holds a spell this hero cannot cast, so a
+slot the player deliberately cleared stays cleared: emptiness is not somebody else's spell.
+
+### The setting
+
+`settings.cfg` gains `binding_scope`, offered on the settings screen as **KEYBINDS PER
+CHARACTER**:
+
+| scope | what a swap does | where the slots live |
+| --- | --- | --- |
+| `account` (default) | bar one follows the class; the rest are untouched | `bars` in `hud.cfg` |
+| `character` | the old character's bars are saved, the new one's loaded | `heroes[]` in `hud.cfg` |
+
+```json
+"heroes": [
+  { "hero": "druid", "bars": [ { "slots": [ { "spell": "moonfire", "key": "DIGIT1" } ] } ] }
+]
+```
+
+Only the *slots* are per character. Where a bar sits, how big it is and which way it runs
+stay one arrangement for the account, because dragging a bar to a new place is a fact about
+the player's screen rather than about a character — and a per-character placement would move
+the bar for one hero and leave it behind for the others.
+
+Turning the setting off does not delete anything: every `heroes[]` record stays in the file,
+so a player who tries per-character bars and changes their mind finds their characters as
+they left them if they turn it back on.
+
 ## 7. Party
 
 `engine-game` gains `party.rs`:

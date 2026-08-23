@@ -76,7 +76,7 @@ use engine_renderer::{
     RendererConfig, ShadowPreset, UiDrawList,
 };
 use engine_settings::character::CharacterConfigManager;
-use engine_settings::hud::HudConfigManager;
+use engine_settings::hud::{BindingScope, HudConfigManager};
 use engine_settings::{NameplateSetting, SettingsManager};
 
 use crate::args::{Args, Scene};
@@ -644,17 +644,27 @@ impl App {
         // The HUD layout, in its own file. A first launch has no file, and only then is bar
         // one filled in with the class's abilities and their keys: after that the file *is*
         // the arrangement, and a bar the player deliberately cleared must come back cleared.
+        //
+        // A launch is not a swap, and the difference used to be a bug. Bar one follows the
+        // class, a swap rewrites it, and nothing rewrote it on the way back in: a player who
+        // quit as the Druid came back as the FireMage with ten Druid spells on bar one,
+        // which draw as empty slots because the FireMage cannot cast them.
+        // `ActionBarSet::for_hero` is what closes that — it rebinds a foreign bar, or hands
+        // back this character's own bars if the player keeps them per character.
+        let binding_scope = game_settings.settings().binding_scope;
         let mut hud_config = HudConfigManager::load_from_game_directory();
         let action_bars = if hud_config.existed() {
-            ActionBarSet::from_config(hud_config.config())
+            ActionBarSet::for_hero(hud_config.config(), binding_scope, simulation.hero())
         } else {
-            let bars = ActionBarSet::with_default_bindings(simulation.hero());
-            let mut fresh = hud_config.config().clone();
-            bars.write_config(&mut fresh);
-            hud_config.update(fresh);
-            hud_config.save_if_dirty();
-            bars
+            ActionBarSet::with_default_bindings(simulation.hero())
         };
+        // Written back whichever branch produced them: a first launch has no file to write,
+        // and a launch that rebound a foreign bar has a file that no longer says what the
+        // game is now showing.
+        let mut fresh = hud_config.config().clone();
+        action_bars.store(&mut fresh, binding_scope, simulation.hero());
+        hud_config.update(fresh);
+        hud_config.save_if_dirty();
         // What each character owns. A first launch has no file, and the roster keeps the
         // starting gear the simulation dressed it in; afterwards the file *is* what they
         // own, empty slots and all.
@@ -1370,7 +1380,12 @@ impl App {
 
     fn save_hud_layout(&mut self) {
         let mut config = self.hud_layout.config().clone();
-        self.action_bars.write_config(&mut config);
+        // The layout owns where everything sits and knows nothing about characters, so the
+        // per-character records are carried across from the file rather than dropped by a
+        // copy that never had them.
+        config.heroes.clone_from(&self.hud_config.config().heroes);
+        self.action_bars
+            .store(&mut config, self.binding_scope(), self.simulation.hero());
         self.hud_config.update(config);
         if self.hud_config.save_if_dirty() {
             log::debug!("hud: layout saved");
@@ -1406,6 +1421,9 @@ impl App {
     /// now a Warrior has no ability behind it, and a targeting circle for a spell nobody can
     /// cast is the one state this must not leave behind.
     fn swap_hero(&mut self, hero: Hero) {
+        // Read before the simulation is told: per character, the bars being replaced are the
+        // ones this character had, and after `set_hero` there is nothing left to ask.
+        let previous = self.simulation.hero();
         if !self.simulation.set_hero(hero) {
             // Already this hero. The tick is still refreshed, because the menu may have
             // moved it optimistically.
@@ -1426,11 +1444,22 @@ impl App {
             Err(error) => log::error!("hero swap: {} kept the old model: {error}", hero.name()),
         }
 
-        // Bar one follows the class; the player's other seven bars are their own. Saved
-        // straight away, so the hero a player last chose is the bar they come back to.
-        self.action_bars.rebind_to_hero(hero);
+        // What the swap does to the bars is the player's setting, not a rule:
+        //
+        //   account    bar one follows the class; the other seven are the player's own
+        //   character  the old character's bars are saved and the new character's loaded
+        //
+        // Either way it is written straight away, so the hero a player last chose is the bar
+        // they come back to.
+        let scope = self.binding_scope();
         let mut config = self.hud_config.config().clone();
-        self.action_bars.write_config(&mut config);
+        if scope.is_per_character() {
+            self.action_bars.store(&mut config, scope, previous);
+            self.action_bars = ActionBarSet::for_hero(&config, scope, hero);
+        } else {
+            self.action_bars.rebind_to_hero(hero);
+        }
+        self.action_bars.store(&mut config, scope, hero);
         self.hud_config.update(config);
         self.hud_config.save_if_dirty();
 
@@ -1586,6 +1615,7 @@ impl App {
                 MenuAction::VolumeCommitted(channel, value) => {
                     self.apply_volume(channel, value, true);
                 }
+                MenuAction::BindingScopeCommitted(scope) => self.apply_binding_scope(scope),
                 MenuAction::OpenedNameplates => {
                     self.play_ui_sound(engine_audio::SoundId::UiClick);
                     // The screen shows what is in the settings, not what it last showed.
@@ -1643,6 +1673,37 @@ impl App {
             log::info!(
                 "settings: interface size {:.2} saved",
                 self.settings.settings().ui_scale
+            );
+        }
+    }
+
+    /// Where the action bars' spells and keys are kept.
+    fn binding_scope(&self) -> BindingScope {
+        self.settings.settings().binding_scope
+    }
+
+    /// Moves the bars to where the player has just said they should be kept.
+    ///
+    /// Turning per-character bars *on* saves what is on screen as this character's, so the
+    /// arrangement the player is looking at is the one that character keeps rather than one
+    /// they have to make again. Turning it *off* leaves every character's record in the file
+    /// untouched: the setting can be turned back on, and nothing was thrown away by trying
+    /// it. The bars on screen do not change in either direction — a setting about where
+    /// something is stored must not rearrange the interface under the player's hands.
+    fn apply_binding_scope(&mut self, scope: BindingScope) {
+        if scope == self.binding_scope() {
+            return;
+        }
+        self.settings.set_binding_scope(scope);
+        self.save_hud_layout();
+        if self.settings.save_if_dirty() {
+            log::info!(
+                "settings: action bars are now kept {}",
+                if scope.is_per_character() {
+                    "per character"
+                } else {
+                    "for the account"
+                }
             );
         }
     }

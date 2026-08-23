@@ -17,7 +17,7 @@ use engine_game::input_map::Bindings;
 use engine_presentation::ui::action_bar::{ActionBarSet, SlotAddress};
 use engine_presentation::ui::hud_layout::{HudElementId, HudLayout};
 use engine_render_data::ui::UiScale;
-use engine_settings::hud::{HUD_FILE_NAME, HudConfigManager, HudOrientation};
+use engine_settings::hud::{BindingScope, HUD_FILE_NAME, HudConfigManager, HudOrientation};
 
 use std::fs;
 use std::path::PathBuf;
@@ -54,10 +54,29 @@ impl Drop for TempDir {
 /// The application's own save: the layout owns where things are, the bars own what is in
 /// them, and the two are merged into one file.
 fn save(manager: &mut HudConfigManager, layout: &HudLayout, bars: &ActionBarSet) {
+    save_as(manager, layout, bars, BindingScope::Account, Hero::default());
+}
+
+/// The same save, told who is playing and where they keep their bars.
+fn save_as(
+    manager: &mut HudConfigManager,
+    layout: &HudLayout,
+    bars: &ActionBarSet,
+    scope: BindingScope,
+    hero: Hero,
+) {
     let mut config = layout.config().clone();
-    bars.write_config(&mut config);
+    // What the application does: the layout owns the placements, the file owns what each
+    // character has saved, and the save is the two of them together.
+    config.heroes.clone_from(&manager.config().heroes);
+    bars.store(&mut config, scope, hero);
     manager.update(config);
     manager.save_if_dirty();
+}
+
+/// A launch: the file, read as the hero the player starts as.
+fn launch(manager: &HudConfigManager, scope: BindingScope, hero: Hero) -> ActionBarSet {
+    ActionBarSet::for_hero(manager.config(), scope, hero)
 }
 
 /// The application's own load.
@@ -308,4 +327,112 @@ fn no_two_slots_share_a_key_through_a_save_and_a_reload() {
     keys.sort_unstable();
     keys.dedup();
     assert_eq!(keys.len(), count, "a key is bound twice after a reload");
+}
+
+#[test]
+fn a_restart_after_a_hero_swap_finds_this_characters_own_spells_on_bar_one() {
+    // The bug this test exists for. Bar one follows the class, a swap rewrote it, and the
+    // file is one arrangement for the account — so a player who quit as the Druid came back
+    // as the FireMage with bar one full of Druid spells. Those draw as empty slots, because
+    // the FireMage cannot cast them, and putting each one back by hand was the only cure.
+    let dir = TempDir::new("restart-after-swap");
+    let mut manager = HudConfigManager::load(dir.file());
+    let layout = HudLayout::new(manager.config().clone());
+
+    // A session that ended as the Druid.
+    let druid = ActionBarSet::with_default_bindings(Hero::Druid);
+    save_as(&mut manager, &layout, &druid, BindingScope::Account, Hero::Druid);
+
+    // The next launch, which starts as the FireMage.
+    let manager = HudConfigManager::load(dir.file());
+    let bars = launch(&manager, BindingScope::Account, Hero::FireMage);
+    for slot in 0..engine_settings::hud::ACTION_BAR_SLOTS {
+        let contents = bars.slot(SlotAddress::new(0, slot)).expect("a slot");
+        assert_eq!(
+            contents.ability,
+            Hero::FireMage.ability_at(slot),
+            "bar one slot {slot} is not the FireMage's"
+        );
+        assert!(
+            contents.ability.is_some_and(|ability| Hero::FireMage.has(ability)),
+            "bar one slot {slot} holds a spell the FireMage cannot cast"
+        );
+    }
+}
+
+#[test]
+fn per_character_bars_send_each_character_back_to_its_own_arrangement() {
+    let dir = TempDir::new("per-character");
+    let scope = BindingScope::Character;
+    let mut manager = HudConfigManager::load(dir.file());
+    let layout = HudLayout::new(manager.config().clone());
+    let bindings = Bindings::default();
+
+    // The FireMage puts Blink on bar two and binds it.
+    let mut mage = ActionBarSet::with_default_bindings(Hero::FireMage);
+    assert!(mage.assign_spell(SlotAddress::new(1, 0), Some(FireAbility::Blink)));
+    assert!(mage.assign_key(
+        SlotAddress::new(1, 0),
+        KeyChord::plain(KeyCode::Y),
+        &bindings
+    ));
+    save_as(&mut manager, &layout, &mage, scope, Hero::FireMage);
+
+    // The player swaps to the Druid, which has never been arranged, and arranges it.
+    let swapped = launch(&manager, scope, Hero::Druid);
+    assert_eq!(
+        swapped,
+        ActionBarSet::with_default_bindings(Hero::Druid),
+        "a character that has never been played got somebody else's bars"
+    );
+    let mut druid = swapped;
+    assert!(druid.assign_spell(SlotAddress::new(1, 0), Some(FireAbility::Swiftmend)));
+    save_as(&mut manager, &layout, &druid, scope, Hero::Druid);
+
+    // A restart as either one finds that character exactly as it was left.
+    let manager = HudConfigManager::load(dir.file());
+    assert_eq!(launch(&manager, scope, Hero::Druid), druid);
+    assert_eq!(
+        launch(&manager, scope, Hero::FireMage),
+        mage,
+        "arranging the Druid disturbed the FireMage"
+    );
+}
+
+#[test]
+fn turning_per_character_bars_off_and_on_again_loses_nothing() {
+    // Trying the setting must be reversible. Off, the account's one set is what everyone
+    // plays with; on again, every character is still where it was left.
+    let dir = TempDir::new("scope-toggle");
+    let mut manager = HudConfigManager::load(dir.file());
+    let layout = HudLayout::new(manager.config().clone());
+
+    let mut warrior = ActionBarSet::with_default_bindings(Hero::Warrior);
+    assert!(warrior.assign_spell(SlotAddress::new(4, 2), Some(FireAbility::ShieldBlock)));
+    save_as(
+        &mut manager,
+        &layout,
+        &warrior,
+        BindingScope::Character,
+        Hero::Warrior,
+    );
+
+    // The setting goes off, and a session is played and saved for the account.
+    let mut mage = ActionBarSet::with_default_bindings(Hero::FireMage);
+    assert!(mage.assign_spell(SlotAddress::new(4, 2), Some(FireAbility::Pyroblast)));
+    save_as(
+        &mut manager,
+        &layout,
+        &mage,
+        BindingScope::Account,
+        Hero::FireMage,
+    );
+    let manager = HudConfigManager::load(dir.file());
+    assert_eq!(launch(&manager, BindingScope::Account, Hero::FireMage), mage);
+
+    // And on again: the Warrior's own arrangement was never thrown away.
+    assert_eq!(
+        launch(&manager, BindingScope::Character, Hero::Warrior),
+        warrior
+    );
 }

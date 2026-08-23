@@ -479,12 +479,172 @@ impl HudFrames {
     }
 }
 
+/// Whose arrangement the action bars' spells and keys are.
+///
+/// The bars themselves — where they sit, how big they are, which way they run — are the
+/// player's interface and are always one arrangement for the account. This is only about
+/// what is *in* the slots, which is the half that is a fact about a character: a Druid's
+/// keys are not a FireMage's, and a player who arranges one and then swaps has to decide
+/// whether they meant to arrange both.
+///
+/// Both answers are legitimate, so it is a setting rather than a rule.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BindingScope {
+    /// One set of spells and keys for the whole account, shared by every character.
+    ///
+    /// The default, because it is what the game did before the setting existed: bar one
+    /// follows the class on a swap and the other seven are the player's own, whoever they
+    /// are playing.
+    #[default]
+    Account,
+    /// One set of spells and keys per character, remembered separately.
+    ///
+    /// A swap saves what the old character had and loads what the new one had, so arranging
+    /// the Druid's bars cannot disturb the FireMage's.
+    Character,
+}
+
+impl BindingScope {
+    /// Every scope, in the order the setting offers them.
+    pub const ALL: [Self; 2] = [Self::Account, Self::Character];
+
+    /// Whether bars are remembered per character.
+    #[must_use]
+    pub fn is_per_character(self) -> bool {
+        matches!(self, Self::Character)
+    }
+
+    /// The scope a checkbox in this state means.
+    #[must_use]
+    pub fn from_per_character(per_character: bool) -> Self {
+        if per_character {
+            Self::Character
+        } else {
+            Self::Account
+        }
+    }
+}
+
+/// One bar's slots, with no placement.
+///
+/// A per-character record holds what the slots contain and nothing else: where the bar is
+/// drawn is the player's interface, one arrangement for the account, and duplicating it per
+/// character would mean dragging a bar moved it for one hero and not the others.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct HudBarBindings {
+    /// The slots, in slot order. Always [`ACTION_BAR_SLOTS`] long after validation.
+    pub slots: Vec<HudSlotConfig>,
+}
+
+impl Default for HudBarBindings {
+    fn default() -> Self {
+        Self {
+            slots: vec![HudSlotConfig::default(); ACTION_BAR_SLOTS],
+        }
+    }
+}
+
+impl HudBarBindings {
+    /// These slots, padded or trimmed to the length the interface has.
+    #[must_use]
+    pub fn validated(mut self) -> Self {
+        if self.slots.len() != ACTION_BAR_SLOTS {
+            self.slots
+                .resize(ACTION_BAR_SLOTS, HudSlotConfig::default());
+        }
+        self
+    }
+}
+
+/// What one character has in its bars.
+///
+/// Written for every character the player has arranged, whatever the scope currently is: a
+/// player who tries per-character bars, goes back to one set for the account and later
+/// returns finds their characters as they left them, because nothing deleted them in
+/// between.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct HeroBindingsConfig {
+    /// The hero's stable name: `"firemage"`, `"warrior"`, `"druid"`.
+    pub hero: String,
+    /// Its bars, in bar order. Always [`ACTION_BARS`] long after validation.
+    pub bars: Vec<HudBarBindings>,
+}
+
+impl Default for HeroBindingsConfig {
+    fn default() -> Self {
+        Self {
+            hero: String::new(),
+            bars: vec![HudBarBindings::default(); ACTION_BARS],
+        }
+    }
+}
+
+impl HeroBindingsConfig {
+    /// An empty record for `hero`.
+    #[must_use]
+    pub fn new(hero: impl Into<String>) -> Self {
+        Self {
+            hero: hero.into(),
+            ..Self::default()
+        }
+    }
+
+    /// This record with the right number of bars, each with the right number of slots, and
+    /// no key claimed twice.
+    #[must_use]
+    pub fn validated(mut self) -> Self {
+        if self.bars.len() != ACTION_BARS {
+            log::warn!(
+                "hud: character {:?} has {} bars rather than {ACTION_BARS}; padding or trimming",
+                self.hero,
+                self.bars.len()
+            );
+            self.bars.resize(ACTION_BARS, HudBarBindings::default());
+        }
+        self.bars = self
+            .bars
+            .into_iter()
+            .map(HudBarBindings::validated)
+            .collect();
+        let mut claimed: Vec<String> = Vec::new();
+        for bar in &mut self.bars {
+            for slot in &mut bar.slots {
+                let Some(key) = slot.key.clone() else {
+                    continue;
+                };
+                if claimed.contains(&key) {
+                    log::warn!(
+                        "hud: character {:?} claims key {key} twice; the later slot is left unbound",
+                        self.hero
+                    );
+                    slot.key = None;
+                } else {
+                    claimed.push(key);
+                }
+            }
+        }
+        self
+    }
+}
+
 /// The whole interface layout: eight action bars and four unit frames.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct HudConfig {
     /// The action bars, in bar order. Always [`ACTION_BARS`] long after validation.
+    ///
+    /// Where every bar is drawn, always; what is in its slots when the scope is the account.
     pub bars: Vec<ActionBarConfig>,
+    /// What each character has in its bars, used when the scope is the character.
+    ///
+    /// Empty until a player saves a character's bars, and never emptied afterwards. A
+    /// character with no record here has never been arranged, which is what tells the game
+    /// to give it its class's own bar rather than somebody else's.
+    #[serde(default)]
+    pub heroes: Vec<HeroBindingsConfig>,
     /// The unit frames.
     pub frames: HudFrames,
 }
@@ -493,6 +653,7 @@ impl Default for HudConfig {
     fn default() -> Self {
         Self {
             bars: (0..ACTION_BARS).map(ActionBarConfig::default_bar).collect(),
+            heroes: Vec::new(),
             frames: HudFrames::default(),
         }
     }
@@ -526,6 +687,7 @@ impl HudConfig {
             .collect();
         self.frames = self.frames.validated();
         self.deduplicate_keys();
+        self.validate_heroes();
         self
     }
 
@@ -562,10 +724,54 @@ impl HudConfig {
         &self.clone().validated() == self
     }
 
+    /// Repairs the per-character records: one per hero, each a usable set of bars.
+    ///
+    /// A record naming no hero is dropped, because nothing could ever ask for it, and a hero
+    /// named twice keeps its first record for the same reason a key claimed twice keeps its
+    /// first claim: the file read top to bottom is what the player would expect.
+    fn validate_heroes(&mut self) {
+        let mut seen: Vec<String> = Vec::new();
+        let mut kept: Vec<HeroBindingsConfig> = Vec::with_capacity(self.heroes.len());
+        for entry in std::mem::take(&mut self.heroes) {
+            if entry.hero.is_empty() {
+                log::warn!("hud: a per-character bar record names no character; dropping it");
+                continue;
+            }
+            if seen.contains(&entry.hero) {
+                log::warn!(
+                    "hud: character {:?} has two bar records; keeping the first",
+                    entry.hero
+                );
+                continue;
+            }
+            seen.push(entry.hero.clone());
+            kept.push(entry.validated());
+        }
+        self.heroes = kept;
+    }
+
     /// Bar `index`, if there is one.
     #[must_use]
     pub fn bar(&self, index: usize) -> Option<&ActionBarConfig> {
         self.bars.get(index)
+    }
+
+    /// What `hero` has in its bars, if that character has ever been arranged.
+    #[must_use]
+    pub fn hero_bindings(&self, hero: &str) -> Option<&HeroBindingsConfig> {
+        self.heroes.iter().find(|entry| entry.hero == hero)
+    }
+
+    /// Replaces what `hero` has in its bars, adding the record if it is the first.
+    pub fn set_hero_bindings(&mut self, bindings: HeroBindingsConfig) {
+        match self
+            .heroes
+            .iter_mut()
+            .find(|entry| entry.hero == bindings.hero)
+        {
+            Some(existing) => *existing = bindings,
+            None => self.heroes.push(bindings),
+        }
     }
 }
 
@@ -744,6 +950,96 @@ fn write_config(path: &Path, config: &HudConfig) -> io::Result<()> {
     reason = "test code may assert on known-good values"
 )]
 mod tests {
+
+    #[test]
+    fn a_character_keeps_its_own_bars_beside_the_accounts() {
+        let mut config = HudConfig::default();
+        assert!(config.hero_bindings("druid").is_none());
+
+        let mut druid = HeroBindingsConfig::new("druid");
+        druid.bars[0].slots[0] = HudSlotConfig::new("moonfire", "DIGIT1");
+        config.set_hero_bindings(druid.clone());
+        assert_eq!(config.hero_bindings("druid"), Some(&druid));
+
+        // Saving the same character again replaces its record rather than adding a second.
+        let mut again = HeroBindingsConfig::new("druid");
+        again.bars[0].slots[0] = HudSlotConfig::new("wrath", "DIGIT1");
+        config.set_hero_bindings(again.clone());
+        assert_eq!(config.heroes.len(), 1);
+        assert_eq!(config.hero_bindings("druid"), Some(&again));
+    }
+
+    #[test]
+    fn per_character_bars_survive_a_write_and_a_read() {
+        let dir = TempDir::new("hero-bindings");
+
+        let mut manager = HudConfigManager::load(dir.file());
+        let mut config = manager.config().clone();
+        let mut warrior = HeroBindingsConfig::new("warrior");
+        warrior.bars[2].slots[4] = HudSlotConfig::new("shield_block", "F");
+        config.set_hero_bindings(warrior.clone());
+        manager.update(config);
+        assert!(manager.save_if_dirty());
+
+        let reloaded = HudConfigManager::load(dir.file());
+        assert_eq!(reloaded.config().hero_bindings("warrior"), Some(&warrior));
+        // The account's own bars are untouched by a per-character record.
+        assert_eq!(reloaded.config().bars.len(), ACTION_BARS);
+    }
+
+    #[test]
+    fn a_file_written_before_the_setting_existed_still_loads() {
+        // The whole point of `#[serde(default)]` on the section: an old file has no
+        // `heroes` key at all, and must load as a player with no per-character records
+        // rather than as a parse failure.
+        let config: HudConfig =
+            serde_json::from_str(r#"{"bars": [], "frames": {}}"#).expect("an old file parses");
+        let config = config.validated();
+        assert!(config.heroes.is_empty());
+        assert_eq!(config.bars.len(), ACTION_BARS);
+    }
+
+    #[test]
+    fn a_hand_edited_character_section_is_repaired_rather_than_refused() {
+        let mut config = HudConfig::default();
+        // Three faults at once: a record naming nobody, the same hero twice, and a record
+        // with the wrong number of bars and a key claimed twice inside it.
+        config.heroes.push(HeroBindingsConfig::new(""));
+        let mut druid = HeroBindingsConfig::new("druid");
+        druid.bars.truncate(2);
+        druid.bars[0].slots[0] = HudSlotConfig::new("moonfire", "DIGIT1");
+        druid.bars[1].slots[3] = HudSlotConfig::new("wrath", "DIGIT1");
+        config.heroes.push(druid);
+        config.heroes.push(HeroBindingsConfig::new("druid"));
+
+        let config = config.validated();
+        assert_eq!(config.heroes.len(), 1, "the nameless and the duplicate stayed");
+        let kept = config.hero_bindings("druid").expect("the first druid record");
+        assert_eq!(kept.bars.len(), ACTION_BARS);
+        assert_eq!(kept.bars[0].slots.len(), ACTION_BAR_SLOTS);
+        assert_eq!(kept.bars[0].slots[0].key.as_deref(), Some("DIGIT1"));
+        assert_eq!(kept.bars[1].slots[3].key, None, "the second claim survived");
+        assert!(config.is_valid(), "validation is not a fixed point");
+    }
+
+    #[test]
+    fn a_scope_is_read_from_the_name_a_player_would_write() {
+        assert_eq!(BindingScope::default(), BindingScope::Account);
+        assert!(!BindingScope::Account.is_per_character());
+        assert!(BindingScope::Character.is_per_character());
+        assert_eq!(
+            BindingScope::from_per_character(true),
+            BindingScope::Character
+        );
+        assert_eq!(
+            BindingScope::from_per_character(false),
+            BindingScope::Account
+        );
+        let written = serde_json::to_string(&BindingScope::Character).expect("a scope writes");
+        assert_eq!(written, "\"character\"");
+        let read: BindingScope = serde_json::from_str("\"account\"").expect("a scope reads");
+        assert_eq!(read, BindingScope::Account);
+    }
     use super::*;
 
     /// A directory of this test's own, removed when the guard is dropped.

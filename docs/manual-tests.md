@@ -714,3 +714,29 @@ one heal over time and heals for a large amount. Wild Rush is visibly faster for
 Tranquility roots the character and heals once a second while it runs; walking cancels it and
 the healing stops on the same frame. BACKSPACE puts the dummies back, the friendly one back
 to half health, and both resources back to their starting values.
+
+---
+
+## MT-029 — The bar comes back as the class you are playing
+
+**Purpose** — a restart after a hero swap used to hand the FireMage a bar of Druid spells,
+which draw as empty slots because the FireMage cannot cast them, and the setting that decides
+whose bars they are actually moves them.
+
+**Steps**
+
+1. `.	argetelease\mygame.exe --scene combat`
+2. ESC → swap hero → DRUID. Look at bar one, then quit with ESC → QUIT.
+3. Start the game again and look at bar one before touching anything.
+4. ESC → SETTINGS. Tick **KEYBINDS PER CHARACTER**, then close the menu.
+5. Put a spell you would not normally use into a free slot on bar two, and bind a key to it.
+6. ESC → swap hero → WARRIOR. Look at bar two, then put a different spell into that same
+   slot.
+7. Swap back to the FireMage, then quit and start again as the FireMage.
+8. ESC → SETTINGS and untick **KEYBINDS PER CHARACTER**, then tick it once more.
+
+**Expected** — step 3 shows ten FireMage spells with icons on bar one, not ten empty slots.
+Step 6 shows the Warrior's bar two empty of what the FireMage put there, and step 7 finds the
+FireMage's slot exactly as it was left, key and all. Unticking the setting in step 8 changes
+nothing on screen and loses nothing: ticking it again brings each character's own bars back.
+Nothing about where the bars sit changes at any point in this test.
