@@ -676,3 +676,41 @@ correctly around the crates and pillars near them, and the sun's cascades still 
 outdoors. With twenty enemies the shadow stage stays well under a millisecond and the frame
 time does not step up when they come into view. Off and back leaves the scene otherwise
 identical.
+
+---
+
+## MT-028 — The Druid: two resources, an armed button and a heal that lands
+
+**Purpose** — the class is playable end to end with a human at the keyboard: it can be
+selected, both resources are visible and move, the Astral Power button reads as armed, an
+empowered cast reads differently from a plain one, and the heals reach a friendly target.
+
+**Steps**
+
+1. `.\target\release\mygame.exe --scene combat`
+2. ESC → swap hero → DRUID. Look at the bar and at the player frame.
+3. Cast WRATH (`3`) at the dummy in front of you half a dozen times, watching the second
+   resource bar.
+4. Fill it (keep casting), then press `G`.
+5. Press `1` (MOONFIRE) and watch the dummy's debuff and the floating numbers.
+6. Hover MOONFIRE, REGROWTH and NOURISH and read the tooltips.
+7. Click the friendly dummy standing to your left, then cast REJUVENATION (`4`), REGROWTH
+  (`5`), LIFEBLOOM (`6`), WILD GROWTH (`7`) and NOURISH (`9`) on it.
+8. With a heal over time still on it, press SWIFTMEND (`8`).
+9. Press `F` (WILD RUSH) and run.
+10. Press `R` (TRANQUILITY) and stand still, then press it again and walk out of it.
+11. Press BACKSPACE.
+
+**Expected** — the bar holds ten Druid spells with two more buttons beside the Ultimate; the
+player frame and the bars above the bar show MANA and ASTRAL POWER rather than HEAT and
+ENERGY. Wrath costs no Mana and fills the Astral bar; every other spell takes Mana out of it.
+At a hundred the Astral bar says READY; pressing `G` turns it pale, outlines it, and says
+ARMED, and every compatible button lights up in the empowered colour while NATURES CLEANSE
+and WILD RUSH do not. The empowered Moonfire hits visibly harder and its burn does not run
+out. Tooltips print the cost, what the cast puts into the bar, and one line saying exactly
+what Astral Power would do to that spell. Every heal lands on the friendly dummy — its health
+bar climbs, the party frame shows it, and nothing in the room attacks it. Swiftmend removes
+one heal over time and heals for a large amount. Wild Rush is visibly faster for six seconds.
+Tranquility roots the character and heals once a second while it runs; walking cancels it and
+the healing stops on the same frame. BACKSPACE puts the dummies back, the friendly one back
+to half health, and both resources back to their starting values.

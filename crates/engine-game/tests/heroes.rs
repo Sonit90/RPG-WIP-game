@@ -13,7 +13,7 @@
 use engine_core::math::Vec3;
 use engine_game::arena::{self, ArenaConfig};
 use engine_game::entity::EntityId;
-use engine_game::firemage::{AbilityError, FireAbility, ZoneKind};
+use engine_game::firemage::{ABILITY_SLOTS, AbilityError, FireAbility};
 use engine_game::hero::Hero;
 use engine_game::sim::Simulation;
 use engine_game::world::EntityKind;
@@ -87,10 +87,14 @@ fn a_swap_changes_which_abilities_the_bar_holds() {
         Some(FireAbility::Recuperate)
     );
 
-    // Slot four is still slot four; a hero with three abilities simply does not fill it.
+    // Slot four is still slot four, and the Druid fills it with its own spell.
     assert!(simulation.set_hero(Hero::Druid));
-    assert_eq!(simulation.hero().ability_at(3), None);
-    assert_eq!(simulation.use_slot(3), Err(AbilityError::CasterDead));
+    assert_eq!(
+        simulation.hero().ability_at(3),
+        Some(FireAbility::Rejuvenation)
+    );
+    // A slot no hero fills is still refused rather than casting somebody else's spell.
+    assert_eq!(simulation.hero().ability_at(ABILITY_SLOTS), None);
 
     // Swapping to the hero you already are changes nothing and says so.
     assert!(!simulation.set_hero(Hero::Druid));
@@ -221,7 +225,7 @@ fn a_shield_charge_runs_rather_than_teleports() {
 }
 
 #[test]
-fn the_druids_moonfire_hurts_and_the_starfall_keeps_hurting() {
+fn the_druids_moonfire_hurts_and_then_keeps_hurting() {
     let mut simulation = arena_as(Hero::Druid);
     let victim = target(&simulation);
     let before = health(&simulation, victim);
@@ -229,31 +233,16 @@ fn the_druids_moonfire_hurts_and_the_starfall_keeps_hurting() {
     let after_bolt = health(&simulation, victim);
     assert!(after_bolt < before, "moonfire landed nothing");
 
-    // Placed on the dummy's own ground, and it keeps burning after the cast.
-    let Some(at) = simulation.world().position(victim) else {
-        panic!("the target has a position");
-    };
-    simulation
-        .cast_at(FireAbility::Starfall, at)
-        .expect("the placement was refused");
-    assert!(
-        simulation
-            .mage()
-            .zones
-            .zones()
-            .iter()
-            .any(|zone| zone.kind == ZoneKind::Starfall),
-        "nothing was placed"
-    );
-    simulation.step_many(120);
+    // And the burn it left keeps working with nothing else pressed.
+    simulation.step_many(300);
     assert!(
         health(&simulation, victim) < after_bolt,
-        "the stars fell on nobody"
+        "the burn ticked for nothing"
     );
 }
 
 #[test]
-fn regrowth_is_the_one_thing_a_player_can_heal_with() {
+fn regrowth_heals_the_caster_when_nothing_friendly_is_selected() {
     let mut simulation = arena_as(Hero::Druid);
     let player = simulation.player().entity;
     let Some(full) = simulation.world().health(player).map(|health| health.max()) else {

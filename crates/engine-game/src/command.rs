@@ -61,6 +61,13 @@ pub enum PlayerCommand {
         /// Where the player put the circle.
         position: Vec3,
     },
+    /// Use one of the hero's buttons beside the bar. Edge-triggered.
+    ///
+    /// A class with more abilities than the bar has digits keeps the rest here — see
+    /// [`crate::hero::Hero::extras`]. Indexed rather than named, for the reason
+    /// [`PlayerCommand::UseAbility`] is: what sits in the slot is the hero's business, and a
+    /// replay that named a spell would cast a different one after a swap.
+    UseExtra(usize),
     /// Buy a talent. A menu action, in the command stream so it is ordered with the fight.
     PurchaseTalent(TalentId),
     /// Move an item between two slots: equip, unequip, swap or rearrange.

@@ -42,6 +42,14 @@ pub struct ArenaConfig {
     /// High enough that a full rotation does not delete the target before its damage-over-
     /// time has run, which is what makes the meter's numbers legible.
     pub dummy_health: f32,
+    /// Where the friendly dummy the healing kit is practised on stands.
+    pub healing_dummy: Vec3,
+    /// The size of that dummy's health pool.
+    ///
+    /// Two million, and it stands at half of it: large enough that a whole healing rotation
+    /// — every heal over time, a Tranquility and a Swiftmend — never tops it up, which is
+    /// what makes the numbers on it legible.
+    pub healing_dummy_health: f32,
     /// Half-width of the square the player is confined to.
     pub arena_half_extent: f32,
 }
@@ -55,6 +63,11 @@ impl Default for ArenaConfig {
             group_count: 4,
             group_spacing: 3.0,
             dummy_health: 200_000.0,
+            // In the main hall, beside the player's spawn and well clear of both the lone
+            // dummy in front of them and the group off to the side: it is a target to stand
+            // next to, not one to fight.
+            healing_dummy: Vec3::new(-6.0, 0.0, -4.0),
+            healing_dummy_health: 2_000_000.0,
             arena_half_extent: 40.0,
         }
     }
@@ -135,6 +148,8 @@ pub struct Arena {
     pub single_dummy: EntityId,
     /// The dummies in the group, in spawn order.
     pub group: Vec<EntityId>,
+    /// The friendly dummy the healing kit is practised on, at half health.
+    pub healing_dummy: EntityId,
 }
 
 /// Builds a simulation holding the training arena.
@@ -147,6 +162,10 @@ pub fn training_arena(config: &ArenaConfig) -> Simulation {
     let arena = populate(simulation.world_mut(), config);
     build_collision(simulation.collision_world_mut(), config);
     simulation.set_player_entity(arena.player);
+    // In the party, because that is what a party heal reaches and what the party frames
+    // draw: a friendly target standing in the room that no frame showed would be a target
+    // the player could only find by clicking on it.
+    simulation.party_mut().join(arena.healing_dummy);
     simulation.select_nearest_target();
     simulation
 }
@@ -308,6 +327,7 @@ pub fn environment_arena(
     );
 
     simulation.set_player_entity(arena.player);
+    simulation.party_mut().join(arena.healing_dummy);
     simulation.select_nearest_target();
     simulation
 }
@@ -329,6 +349,7 @@ pub fn encounter_arena(config: &ArenaConfig, encounter: crate::encounter::Encoun
     });
     let arena = populate(simulation.world_mut(), config);
     simulation.set_player_entity(arena.player);
+    simulation.party_mut().join(arena.healing_dummy);
     build_collision(simulation.collision_world_mut(), config);
     simulation.set_encounter(encounter);
     simulation
@@ -392,6 +413,7 @@ pub fn populate(world: &mut GameWorld, config: &ArenaConfig) -> Arena {
 
     let player = world.spawn(EntityDesc::player(config.player_spawn));
     let single_dummy = world.spawn(EntityDesc::dummy(config.single_dummy, config.dummy_health));
+    let healing_dummy = spawn_healing_dummy(world, config.healing_dummy, config.healing_dummy_health);
     let mut group = Vec::with_capacity(config.group_count);
     spawn_group(world, config, &mut group);
 
@@ -399,7 +421,19 @@ pub fn populate(world: &mut GameWorld, config: &ArenaConfig) -> Arena {
         player,
         single_dummy,
         group,
+        healing_dummy,
     }
+}
+
+/// Spawns the friendly dummy and puts it at half health.
+///
+/// The health is set through [`GameWorld::restore`] rather than by writing a number here, so
+/// the state it starts in and the state a reset key puts it back to are the same rule in the
+/// same place.
+pub fn spawn_healing_dummy(world: &mut GameWorld, position: Vec3, max_health: f32) -> EntityId {
+    let dummy = world.spawn(EntityDesc::healing_dummy(position, max_health));
+    world.restore(dummy);
+    dummy
 }
 
 /// Spawns the dummy group into `out`.
@@ -449,8 +483,20 @@ mod tests {
         let simulation = training_arena(&config);
         let world = simulation.world();
 
-        assert_eq!(world.len(), 2 + config.group_count);
+        // The player, the lone dummy, the friendly one, and the group.
+        assert_eq!(world.len(), 3 + config.group_count);
         assert_eq!(dummies(world).count(), 1 + config.group_count);
+        // The friendly dummy is not a dummy for the purposes of the reset key: it is in the
+        // player's own faction, in the party, and standing at half health.
+        let healing = simulation
+            .world()
+            .entities()
+            .find(|id| world.kind(*id) == Some(EntityKind::HealingDummy))
+            .expect("the main hall has a healing dummy");
+        assert!(simulation.party().contains(healing));
+        let health = world.health(healing).expect("it has health");
+        assert!((health.max() - config.healing_dummy_health).abs() < 1.0);
+        assert!((health.fraction() - 0.5).abs() < 1e-3, "{}", health.fraction());
         assert_eq!(
             world.kind(simulation.player().entity),
             Some(EntityKind::Player)
@@ -561,7 +607,7 @@ mod tests {
         let scene = engine_environment::arena::combat_arena();
         let simulation = environment_arena(&scene, 4);
 
-        assert_eq!(simulation.world().len(), 2 + 4);
+        assert_eq!(simulation.world().len(), 3 + 4);
         assert_eq!(
             simulation.world().position(simulation.player().entity),
             Some(scene.spawns.player)

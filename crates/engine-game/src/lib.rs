@@ -54,6 +54,7 @@
 //! | [`command`] | What the player asked for |
 //! | [`input_map`] | Keys to commands — the only module that knows a key |
 //! | [`character`] | Stats, items, the fifteen equipment slots and the bag |
+//! | [`druid`] | Mana, Astral Power and the Druid's own state |
 //! | [`arena`] | The training arena |
 //! | [`demo`] | The collision demo scene: geometry, no combat |
 //! | [`enemy`] | Enemy archetypes, their attacks, their threat and their state machine |
@@ -77,6 +78,8 @@ pub mod character;
 pub mod combat;
 pub mod command;
 pub mod demo;
+/// The Druid: Mana, Astral Power, and the state its thirteen abilities leave behind.
+pub mod druid;
 /// The first dungeon: which pack stands where, and how to put the whole thing back.
 pub mod dungeon;
 /// A fight as an object: members, lifecycle and reset.
@@ -112,6 +115,7 @@ pub use character::{
 pub use combat::{DamageType, Faction, Health, Resource};
 pub use command::{CommandBuffer, PlayerCommand};
 pub use demo::{DemoScene, Station, collision_demo};
+pub use druid::{AstralPower, Druid};
 pub use encounter::{Encounter, EncounterState, EnemySpawn};
 pub use enemy::brain::{AiState, EnemyBrain};
 pub use enemy::{EnemyAbility, EnemyKind, TelegraphShape};
@@ -124,7 +128,7 @@ pub use los::{CombatPoint, LineOfSightCheck, has_line_of_sight, line_of_sight};
 pub use movement::{Body, MovementState};
 pub use party::{MAX_PARTY, Party};
 pub use sim::{Player, SimConfig, SimStats, Simulation};
-pub use status::{StatusKind, StatusSet};
+pub use status::{DispelSchool, StatusKind, StatusSet};
 pub use telemetry::CombatMeter;
 pub use warrior::{Deflection, Warrior};
 pub use world::{EntityDesc, EntityKind, GameWorld};

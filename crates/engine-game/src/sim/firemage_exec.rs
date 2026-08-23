@@ -206,6 +206,10 @@ impl Simulation {
         if definition.energy_cost > 0.0 && !self.mage.energy.is_full() {
             return Err(AbilityError::NotEnoughEnergy);
         }
+        // The Druid's own refusals — Mana, the Astral Power button, Swiftmend with nothing to
+        // eat — asked before anything is spent, so a refusal costs neither the charge nor the
+        // global cooldown. Inert for every other hero.
+        self.druid_can_cast(ability)?;
         self.validate_aim(ability, aim)?;
 
         // An aimed ability turns the character to where it was aimed. Choosing a direction
@@ -238,6 +242,9 @@ impl Simulation {
                 duration: cast_time,
                 tick,
             });
+            // A channel pays out while it runs, so what it costs in Astral Power is settled
+            // here rather than when it ends. Inert for every other cast.
+            self.begin_druid_channel(ability);
             return Ok(0);
         }
 
@@ -387,6 +394,25 @@ impl Simulation {
                 }
                 Ok(())
             }
+            // A friendly ability is never refused for the selection: it falls back to the
+            // caster, which is what `friendly_target` decides. What it *can* be refused for
+            // is an ally who has walked out of range.
+            TargetMode::Friendly => {
+                let target = self
+                    .friendly_target()
+                    .ok_or(AbilityError::NoFriendlyTarget)?;
+                if target == caster {
+                    return Ok(());
+                }
+                let distance = self
+                    .world
+                    .distance_between(caster, target)
+                    .ok_or(AbilityError::TargetInvalid)?;
+                if distance > definition.range {
+                    return Err(AbilityError::OutOfRange);
+                }
+                Ok(())
+            }
             // An aimed ability turns the character towards where it was aimed, so there is
             // no wrong direction to be facing.
             TargetMode::Cone | TargetMode::Line => Ok(()),
@@ -476,6 +502,9 @@ impl Simulation {
         if ability.hero() == Hero::Warrior {
             return self.land_warrior(ability, hits);
         }
+        if ability.hero() == Hero::Druid {
+            return self.land_druid(ability, hits);
+        }
 
         match ability {
             FireAbility::Detonate => self.detonate(),
@@ -495,14 +524,6 @@ impl Simulation {
                 self.spawn_firestorm(aim, origin);
                 0
             }
-            FireAbility::Starfall => {
-                self.spawn_placed_zone(ability, aim, origin);
-                0
-            }
-            FireAbility::Regrowth => self.heal_self(
-                definition.base_damage(&self.mage.stats()),
-                FireAbility::Regrowth,
-            ),
             _ => self.apply_direct(ability),
         }
     }
@@ -884,44 +905,6 @@ impl Simulation {
         1
     }
 
-    /// Places a circular zone where the player put it: Starfall's patch of sky.
-    ///
-    /// The same [`Zone`] Firestorm and Molten Meteor's ground are, with the shape and the
-    /// numbers off the ability's own row. What burns, how often and for how long is data;
-    /// the only thing this decides is where the circle goes.
-    fn spawn_placed_zone(&mut self, ability: FireAbility, aim: CastAim, origin: Vec3) {
-        let definition = *ability.definition();
-        let position = match aim {
-            CastAim::Ground(position) => position,
-            CastAim::Target => origin,
-        };
-        let shape = ZoneShape::Circle {
-            radius: definition.radius,
-        };
-        let id = self.mage.zones.spawn(Zone {
-            kind: ZoneKind::Starfall,
-            source: ability,
-            position,
-            shape,
-            remaining: definition.duration,
-            until_tick: definition.tick_interval,
-            interval: definition.tick_interval,
-            coefficient: definition.tick_coefficient,
-            ignite_stacks: 0,
-            ignite_chance: 0.0,
-        });
-        let tick = self.tick;
-        self.events.push(CombatEvent::AreaEffectStarted {
-            id,
-            source: self.player.entity,
-            ability: AbilityId::from_fire(ability),
-            position,
-            shape,
-            duration: definition.duration,
-            tick,
-        });
-    }
-
     /// Places Firestorm's line of fire, anchored on the caster and aimed where it was cast.
     fn spawn_firestorm(&mut self, aim: CastAim, origin: Vec3) {
         let definition = *FireAbility::Firestorm.definition();
@@ -1033,6 +1016,10 @@ impl Simulation {
                     );
                 }
             }
+            // Whoever the heal resolved to, and the allies around them if it covers ground.
+            TargetMode::Friendly => {
+                self.collect_friendly_targets(ability);
+            }
             // A self-cast with a radius is an area centred on the caster: Colossus Strike
             // smashes the ground it is standing on. One without is a buff and hits nobody.
             TargetMode::SelfCast if definition.radius > 0.0 => {
@@ -1050,13 +1037,17 @@ impl Simulation {
     }
 
     /// Fills the hit list with every living hostile inside `shape` anchored at `anchor`.
+    ///
+    /// **Hostile**, asked of the factions rather than assumed from "not the caster". Until
+    /// there was a friendly body standing in the arena the two were the same question; with
+    /// one, an area spell that skipped only the caster would set the healing dummy on fire.
     pub(super) fn collect_in_shape(&mut self, anchor: Vec3, shape: ZoneShape) {
         let player = self.player.entity;
         for slot in 0..self.world.slot_count() {
             let Some(id) = self.world.id_at(slot) else {
                 continue;
             };
-            if id == player || !self.world.is_alive(id) {
+            if id == player || !self.world.is_alive(id) || !self.is_attackable(id) {
                 continue;
             }
             let Some(position) = self.world.position(id) else {
@@ -1076,7 +1067,7 @@ impl Simulation {
             let Some(id) = self.world.id_at(slot) else {
                 continue;
             };
-            if id == player || !self.world.is_alive(id) {
+            if id == player || !self.world.is_alive(id) || !self.is_attackable(id) {
                 continue;
             }
             let Some(position) = self.world.position(id) else {
@@ -1127,7 +1118,11 @@ impl Simulation {
             let Some(id) = self.world.id_at(slot) else {
                 continue;
             };
-            if id == player || !self.world.is_alive(id) || chained.contains(&id) {
+            if id == player
+                || !self.world.is_alive(id)
+                || !self.is_attackable(id)
+                || chained.contains(&id)
+            {
                 continue;
             }
             let Some(position) = self.world.position(id) else {

@@ -59,10 +59,13 @@ use crate::party::Party;
 use crate::status::StatusOutcome;
 use crate::targeting::TargetQuery;
 use crate::telemetry::CombatMeter;
+use crate::druid::Druid;
 use crate::warrior::Warrior;
 use crate::world::{EntityKind, GameWorld};
 
 /// How the simulation is configured.
+/// Casting the Druid: Mana, Astral Power, the empowerment and the channel.
+pub mod druid_exec;
 /// Enemy brains, their attacks and their telegraphs: the combat half of the AI.
 pub mod enemy_exec;
 mod firemage_exec;
@@ -385,6 +388,18 @@ pub struct Simulation {
     /// that is always present is a great deal less to go wrong than a block that appears
     /// and disappears with the hero.
     warrior: Warrior,
+    /// The Druid: Mana, Astral Power and the channel.
+    ///
+    /// Beside the other two for the reason they are beside each other: one block of state
+    /// per class that is always present is a great deal less to go wrong than a block that
+    /// appears and disappears with the hero.
+    druid: Druid,
+    /// Whether a damage-to-healing conversion is already running.
+    ///
+    /// Astral Sunfire's guard against feeding itself. Healing is not damage and cannot
+    /// re-enter the damage path today, so this is belt and braces for a future effect that
+    /// turns one into the other — and it costs a bool.
+    converting: bool,
     /// What the class did this fight, for the combat simulator's report.
     ///
     /// Counts only. Nothing in gameplay reads them, and they are cleared with the dummies.
@@ -485,6 +500,8 @@ impl Simulation {
             spirit: SpiritSurge::new(),
             mage: FireMage::new(seed),
             warrior: Warrior::new(),
+            druid: Druid::new(),
+            converting: false,
             stat_bonus: crate::character::StatBlock::zero(),
             last_defense: None,
             fire: FireCounters::default(),
@@ -538,6 +555,12 @@ impl Simulation {
         self.player.last_error = None;
         self.mage.reset();
         self.warrior.reset();
+        self.druid.reset();
+        // The old hero's own effects go with them: a Wild Rush on a character who has just
+        // become a Warrior is a buff nobody can explain.
+        if let Some(statuses) = self.world.statuses_mut(self.player.entity) {
+            statuses.clear();
+        }
         // The new hero is a different character with different gear, so their health and
         // their stats are the new sheet's. Cleared with the class state for the same reason
         // a half-finished cast is: the buff was the old character's.
@@ -622,6 +645,25 @@ impl Simulation {
         let target = self.player.entity;
         self.deal_damage(attacker, target, amount, ability, damage_type, false);
         self.last_defense
+    }
+
+    /// **Deals one instance of damage through the ordinary pipeline.**
+    ///
+    /// The counterpart of [`Simulation::deliver_attack`] for damage that is *not* aimed at
+    /// the player: a scripted encounter's hazard, a developer control, or a test arranging a
+    /// hit it did not want to play out a rotation for. It is the same `deal_damage` every
+    /// ability calls, so everything that reads a landed hit — Nature's Exposure, Astral
+    /// Sunfire's conversion, threat, the meter, the event stream — sees it exactly as it sees
+    /// a real one.
+    pub fn apply_damage(
+        &mut self,
+        source: EntityId,
+        target: EntityId,
+        amount: f32,
+        ability: AbilityId,
+        damage_type: DamageType,
+    ) {
+        self.deal_damage(source, target, amount, ability, damage_type, false);
     }
 
     /// Moves an item between two slots on the current character, and recomputes everything
@@ -1014,6 +1056,9 @@ impl Simulation {
         // arrived before anything decides what is in range.
         self.tick_warrior(step);
         self.tick_firemage(step);
+        // Before the cast, so a Tranquility that finishes this tick has already paid out the
+        // pulse that fell on the same step.
+        self.tick_druid(step);
         // After the frame's commands have been applied — an instant ability used this tick
         // has already interrupted any cast — and before statuses, so a cast that lands this
         // tick applies its damage before this tick's burns.
@@ -1100,6 +1145,11 @@ impl Simulation {
                     // switched off and refuses; the Warrior's is Last Stand.
                     if let Some(ultimate) = self.hero.ultimate() {
                         let _ = self.cast_at(ultimate, position);
+                    }
+                }
+                PlayerCommand::UseExtra(index) => {
+                    if let Some(ability) = self.hero.extras().nth(index) {
+                        let _ = self.cast(ability);
                     }
                 }
                 PlayerCommand::PurchaseTalent(talent) => {
@@ -1235,6 +1285,15 @@ impl Simulation {
             MoveIntent::NONE
         };
 
+        // Whatever the player's own class is currently multiplying their speed by: Wild
+        // Rush, and nothing else today. Applied to the configuration the collided step
+        // reads, so a faster character is faster through the same controller rather than
+        // through a second movement path.
+        let config = MovementConfig {
+            max_speed: config.max_speed * self.move_speed_multiplier(),
+            ..config
+        };
+
         // The player last, and out of the loop, because it is the one body that needs the
         // collision world and the query buffers — both of which are borrowed from `self`.
         if let Some(body) = self.world.body_mut(player) {
@@ -1345,8 +1404,13 @@ impl Simulation {
             }
 
             self.outcomes.clear();
+            // Haste, from the stats of *this* tick rather than from the moment the effect was
+            // applied: a Druid who gains haste mid-fight ticks their existing Moonfire faster,
+            // which is the same rule Ignite already follows. Only a status that asked to be
+            // hasted uses it, and every one that does is the player's own.
+            let haste_scale = self.mage.stats().interval(1.0);
             if let Some(statuses) = self.world.statuses_mut(id) {
-                statuses.tick(step, &mut self.outcomes);
+                statuses.tick(step, haste_scale, &mut self.outcomes);
             }
             if self.outcomes.is_empty() {
                 continue;
@@ -1401,7 +1465,13 @@ impl Simulation {
                         // over time effect a second source of critical strikes.
                         self.deal_damage(source, id, amount, ability, kind.damage_type(), false);
                     }
-                    StatusOutcome::Ended { kind, reason } => {
+                    StatusOutcome::Ended {
+                        kind,
+                        reason,
+                        ability,
+                        expiry_heal,
+                        ..
+                    } => {
                         let tick = self.tick;
                         self.events.push(CombatEvent::StatusRemoved {
                             target: id,
@@ -1409,6 +1479,11 @@ impl Simulation {
                             reason,
                             tick,
                         });
+                        // Lifebloom's bloom, and the only thing an ending pays out. The status
+                        // system already decided it is owed nothing unless it expired.
+                        if expiry_heal > 0.0 {
+                            self.bloom(id, ability, expiry_heal);
+                        }
                     }
                 }
             }
@@ -1897,7 +1972,11 @@ impl Simulation {
         // by Adrenaline — in that order, once, in one place. Everything a defensive event
         // pays out is fed from the single outcome that produces, which is what makes
         // duplicate payment structurally impossible rather than a rule to remember.
-        let mut amount = amount;
+        // **Nature's Exposure**, read where damage is applied rather than where a Druid spell
+        // is cast: it amplifies every point of Nature and Arcane damage the target takes,
+        // whoever dealt it, which is what the design asks for and what a per-ability
+        // multiplier could never be.
+        let mut amount = amount * self.exposure_multiplier(target, damage_type);
         if target == self.player.entity && source != target && self.is_hostile_to_player(source) {
             match self.defend_player(source, amount, ability, damage_type) {
                 Some(landing) => amount = landing,
@@ -1935,6 +2014,10 @@ impl Simulation {
             tick,
         }));
 
+        // **Astral Sunfire.** A share of what the party dealt to a marked enemy becomes
+        // healing, from the one place the damage that actually landed is known.
+        self.convert_astral_sunfire(source, target, result.applied);
+
         // Being hit is what makes an enemy angry, and it is the only thing that does.
         // Threat is fed here, in the one place damage lands, so no ability can deal damage
         // without generating threat and none can generate threat without dealing damage.
@@ -1967,7 +2050,7 @@ impl Simulation {
                 statuses.clear_into(&mut ended);
             }
             for outcome in &ended {
-                if let StatusOutcome::Ended { kind, reason } = *outcome {
+                if let StatusOutcome::Ended { kind, reason, .. } = *outcome {
                     self.events.push(CombatEvent::StatusRemoved {
                         target,
                         status: kind,
@@ -2125,12 +2208,24 @@ impl Simulation {
     /// known state, and waiting eight seconds for Detonate is not part of that state.
     pub fn reset_dummies(&mut self) {
         self.mage.reset();
+        self.warrior.reset();
+        self.druid.reset();
+        // The player's own buffs and burns are part of the state the control exists to clear.
+        if let Some(statuses) = self.world.statuses_mut(self.player.entity) {
+            statuses.clear();
+        }
         self.fire = FireCounters::default();
         for slot in 0..self.world.slot_count() {
             let Some(id) = self.world.id_at(slot) else {
                 continue;
             };
-            if self.world.kind(id) == Some(EntityKind::Dummy) {
+            // Both kinds of dummy: the hostile ones the rotation is practised on, and the
+            // friendly one the healing is. Restoring one and not the other would leave the
+            // heals of the last attempt running on a target the key was pressed to clear.
+            if matches!(
+                self.world.kind(id),
+                Some(EntityKind::Dummy | EntityKind::HealingDummy)
+            ) {
                 self.world.restore(id);
             }
         }

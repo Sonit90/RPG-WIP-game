@@ -1655,9 +1655,10 @@ mod tests {
         let mut extractor = extractor();
         extractor.extract(&simulation);
         let world = extractor.render_world();
-        // A thousand group dummies plus the featured one, each at its finest level, plus the
-        // floor and the marker. The player is in the skinned list rather than here.
-        assert_eq!(world.len(), 1_001 * parts_per_dummy() + 2);
+        // A thousand group dummies, the featured one and the friendly one in the main hall,
+        // each at its finest level, plus the floor and the marker. The player is in the
+        // skinned list rather than here.
+        assert_eq!(world.len(), 1_002 * parts_per_dummy() + 2);
         assert_eq!(world.skinned().len(), 4);
     }
 

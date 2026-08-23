@@ -646,6 +646,12 @@ impl VfxDirector {
             | CombatEvent::Healing { .. }
             | CombatEvent::Jumped { .. }
             | CombatEvent::DeflectionGained { .. }
+            | CombatEvent::AstralPowerGained { .. }
+            | CombatEvent::AstralPowerArmed { .. }
+            | CombatEvent::AstralPowerSpent { .. }
+            | CombatEvent::ManaSpent { .. }
+            | CombatEvent::ManaRestored { .. }
+            | CombatEvent::Dispelled { .. }
             | CombatEvent::Absorbed { .. } => {}
         }
     }

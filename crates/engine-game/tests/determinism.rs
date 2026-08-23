@@ -179,6 +179,53 @@ fn the_same_script_produces_the_same_events_in_the_same_order() {
 /// A stable textual form of an event, for comparing two runs.
 fn describe(event: &CombatEvent) -> String {
     match *event {
+        // The Druid's resource stream, in the same shape as the Warrior's below it: whose
+        // resource moved, by how much, and to what.
+        CombatEvent::AstralPowerGained {
+            entity,
+            amount,
+            value,
+            tick,
+            ..
+        } => format!("astral +{amount} to {value} for {} at {tick}", entity.index()),
+        CombatEvent::AstralPowerArmed {
+            entity,
+            value,
+            tick,
+        } => format!("astral armed at {value} for {} at {tick}", entity.index()),
+        CombatEvent::AstralPowerSpent {
+            entity,
+            amount,
+            value,
+            tick,
+            ..
+        } => format!("astral -{amount} to {value} for {} at {tick}", entity.index()),
+        CombatEvent::ManaSpent {
+            entity,
+            amount,
+            value,
+            tick,
+            ..
+        } => format!("mana -{amount} to {value} for {} at {tick}", entity.index()),
+        CombatEvent::ManaRestored {
+            entity,
+            amount,
+            value,
+            tick,
+            ..
+        } => format!("mana +{amount} to {value} for {} at {tick}", entity.index()),
+        CombatEvent::Dispelled {
+            target,
+            status,
+            school,
+            tick,
+            ..
+        } => format!(
+            "dispelled {} ({}) from {} at {tick}",
+            status.as_str(),
+            school.as_str(),
+            target.index()
+        ),
         CombatEvent::AbilityUsed {
             source,
             ability,

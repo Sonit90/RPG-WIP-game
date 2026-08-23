@@ -490,7 +490,13 @@ impl AudioDirector {
             // sound of the block that produced it has already played.
             CombatEvent::Healing { .. }
             | CombatEvent::PhaseChanged { .. }
-            | CombatEvent::DeflectionGained { .. } => {}
+            | CombatEvent::DeflectionGained { .. }
+            | CombatEvent::AstralPowerGained { .. }
+            | CombatEvent::AstralPowerArmed { .. }
+            | CombatEvent::AstralPowerSpent { .. }
+            | CombatEvent::ManaSpent { .. }
+            | CombatEvent::ManaRestored { .. }
+            | CombatEvent::Dispelled { .. } => {}
         }
     }
 
@@ -795,9 +801,20 @@ pub fn activation_sound(ability: FireAbility) -> Option<SoundId> {
             Some(SoundId::FireMasteryActivate)
         }
         FireAbility::SpellReflect => Some(SoundId::FlameShieldActivate),
-        FireAbility::Moonfire => Some(SoundId::FireboltCast),
-        FireAbility::Starfall => Some(SoundId::MeteorCast),
-        FireAbility::Regrowth => Some(SoundId::FireMasteryActivate),
+        FireAbility::Moonfire | FireAbility::Wrath => Some(SoundId::FireboltCast),
+        FireAbility::Sunfire => Some(SoundId::FlameConeCast),
+        // Every heal in the kit is a soft activation, and the two buttons beside the bar are
+        // the same: what they have in common is that nothing is thrown at anybody.
+        FireAbility::Rejuvenation
+        | FireAbility::Regrowth
+        | FireAbility::Lifebloom
+        | FireAbility::WildGrowth
+        | FireAbility::Swiftmend
+        | FireAbility::Nourish
+        | FireAbility::NaturesCleanse
+        | FireAbility::WildRush
+        | FireAbility::AstralPower
+        | FireAbility::Tranquility => Some(SoundId::FireMasteryActivate),
         FireAbility::FlameLance | FireAbility::Pyroblast | FireAbility::Cataclysm => None,
         FireAbility::Blink | FireAbility::Ignite => None,
     }

@@ -67,6 +67,9 @@ impl Simulation {
         let stats = self.character_stats();
         let mut profile = DefenseProfile::from_stats(&stats);
         if self.hero != Hero::Warrior {
+            // Every other hero's own reduction, through the same field the Warrior's Last
+            // Stand uses: one number, applied once, where damage is mitigated.
+            profile.damage_reduction = self.druid_damage_reduction();
             return profile;
         }
         profile.armor *= self.warrior.armor_multiplier();

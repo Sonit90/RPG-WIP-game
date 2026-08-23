@@ -152,8 +152,20 @@ impl Hero {
             ],
             Self::Druid => &[
                 FireAbility::Moonfire,
-                FireAbility::Starfall,
+                FireAbility::Sunfire,
+                FireAbility::Wrath,
+                FireAbility::Rejuvenation,
                 FireAbility::Regrowth,
+                FireAbility::Lifebloom,
+                FireAbility::WildGrowth,
+                FireAbility::Swiftmend,
+                FireAbility::Nourish,
+                FireAbility::NaturesCleanse,
+                // Thirteen abilities on a ten-key bar. Two of them sit on the buttons beside
+                // it — see `Hero::extras` — and the thirteenth is the Ultimate on `R`.
+                FireAbility::WildRush,
+                FireAbility::AstralPower,
+                FireAbility::Tranquility,
             ],
         }
     }
@@ -240,20 +252,41 @@ impl Hero {
         stats
     }
 
+    /// The abilities this hero keeps **beside** the bar, other than the Ultimate.
+    ///
+    /// A hero with more abilities than the keyboard has digits does not renumber the
+    /// keyboard: the overflow goes on the two buttons next to the Ultimate, on `F` and `G`.
+    /// The Ultimate is excluded here because it already has a place of its own — which is
+    /// what lets the Warrior's eleventh ability and the Druid's twelfth and thirteenth be
+    /// three different things without three rules.
+    pub fn extras(self) -> impl Iterator<Item = FireAbility> {
+        let ultimate = self.ultimate();
+        self.abilities()
+            .iter()
+            .copied()
+            .skip(ABILITY_SLOTS)
+            .filter(move |ability| Some(*ability) != ultimate)
+    }
+
+    /// Which of this hero's extra buttons `ability` sits on, if it sits on one.
+    #[must_use]
+    pub fn extra_index(self, ability: FireAbility) -> Option<usize> {
+        self.extras().position(|extra| extra == ability)
+    }
+
     /// This hero's Ultimate: the ability on `R`, beside the bar.
     ///
     /// The FireMage's is Cataclysm, which has no design yet and is switched off — see
-    /// [`crate::firemage::ULTIMATE_ENABLED`]. The Warrior's is Last Stand, which is a real
-    /// button: the class has eleven abilities and the bar has ten keys, and the slot beside
-    /// the bar already exists rather than being invented for it. The Druid has none at all,
-    /// which is a different thing from having one that is disabled, and the interface draws
-    /// nothing rather than a button that refuses.
+    /// [`crate::firemage::ULTIMATE_ENABLED`]. The Warrior's is Last Stand and the Druid's is
+    /// Tranquility, and both are real buttons: a class with more abilities than the bar has
+    /// keys puts its largest one in the slot beside the bar, which already exists rather
+    /// than being invented for it.
     #[must_use]
     pub fn ultimate(self) -> Option<FireAbility> {
         match self {
             Self::FireMage => Some(FireAbility::Cataclysm),
             Self::Warrior => Some(FireAbility::LastStand),
-            Self::Druid => None,
+            Self::Druid => Some(FireAbility::Tranquility),
         }
     }
 }
@@ -317,8 +350,19 @@ mod tests {
                 assert_eq!(definition.energy_cost, 0.0, "{ability:?} costs energy");
             }
         }
-        assert_eq!(Hero::Druid.abilities().len(), 3);
-        assert_eq!(Hero::Druid.ultimate(), None);
+        assert_eq!(Hero::Druid.abilities().len(), 13);
+        assert_eq!(Hero::Druid.ultimate(), Some(FireAbility::Tranquility));
+        // Ten on the digits, two beside the bar, and the Ultimate on `R`.
+        assert_eq!(
+            Hero::Druid.extras().collect::<Vec<_>>(),
+            [FireAbility::WildRush, FireAbility::AstralPower]
+        );
+        assert_eq!(Hero::Druid.extra_index(FireAbility::AstralPower), Some(1));
+        assert_eq!(FireAbility::WildRush.key_hint(), "F");
+        assert_eq!(FireAbility::AstralPower.key_hint(), "G");
+        assert_eq!(FireAbility::Tranquility.key_hint(), "R");
+        // The Warrior's eleventh is its Ultimate, so it has no extra buttons at all.
+        assert_eq!(Hero::Warrior.extras().count(), 0);
     }
 
     #[test]

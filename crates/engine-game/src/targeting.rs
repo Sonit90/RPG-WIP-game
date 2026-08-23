@@ -100,7 +100,8 @@ impl TargetQuery {
         };
 
         for candidate in world.entities() {
-            if candidate == from || !world.is_alive(candidate) {
+            if candidate == from || !world.is_alive(candidate) || !Self::is_combatant(world, candidate)
+            {
                 continue;
             }
             if !world
@@ -137,7 +138,8 @@ impl TargetQuery {
         let mut best: Option<(f32, EntityId)> = None;
 
         for candidate in world.entities() {
-            if candidate == from || !world.is_alive(candidate) {
+            if candidate == from || !world.is_alive(candidate) || !Self::is_combatant(world, candidate)
+            {
                 continue;
             }
             if !world
@@ -210,6 +212,17 @@ impl TargetQuery {
             Some(index) => ordered.get((index + 1) % ordered.len()).copied(),
             None => ordered.first().copied(),
         }
+    }
+
+    /// Whether `candidate` is something that can be fought at all.
+    ///
+    /// Everything except a healing dummy, which is a *target for practice* standing in the
+    /// player's own faction. Without this an enemy would walk past the player to hit an inert
+    /// post that never fights back, and the pull the level was built around would be decided
+    /// by whichever body happened to be nearer.
+    #[must_use]
+    pub fn is_combatant(world: &GameWorld, candidate: EntityId) -> bool {
+        world.kind(candidate) != Some(crate::world::EntityKind::HealingDummy)
     }
 
     /// Whether `viewer` is allowed to select `candidate`.

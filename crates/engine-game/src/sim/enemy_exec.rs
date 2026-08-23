@@ -36,6 +36,8 @@ use crate::movement::MoveIntent;
 use crate::sim::CastEnd;
 use crate::world::horizontal_distance;
 
+use crate::targeting::TargetQuery;
+
 use super::Simulation;
 
 /// One enemy's runtime: its brain, and what the last decision asked the body to do.
@@ -415,7 +417,10 @@ impl Simulation {
             return;
         };
         for candidate in self.world.entities() {
-            if candidate == source || !self.world.is_alive(candidate) {
+            if candidate == source
+                || !self.world.is_alive(candidate)
+                || !TargetQuery::is_combatant(&self.world, candidate)
+            {
                 continue;
             }
             if !self
@@ -559,7 +564,9 @@ impl Simulation {
             self.hits.clear();
             let mut hits = std::mem::take(&mut self.hits);
             for candidate in self.world.entities() {
-                if !self.world.is_alive(candidate) {
+                if !self.world.is_alive(candidate)
+                    || !TargetQuery::is_combatant(&self.world, candidate)
+                {
                     continue;
                 }
                 if !self

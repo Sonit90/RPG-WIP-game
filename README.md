@@ -44,10 +44,11 @@ Controls:
 | --- | --- |
 | W A S D | move, relative to the camera |
 | SPACE | jump |
-| 1 / 2 / 3 | Fireball / Ignite / Detonate (instant) |
-| 4 – 0 | placeholder abilities; 7 and 0 have cast times |
+| 1 – 0 | the current hero's ability bar |
+| F / G | the two ability buttons beside the bar, for a hero with more than ten |
+| R | the Ultimate: Last Stand, Tranquility — the FireMage's is switched off |
 | TAB | cycle target |
-| R | reset the dummies and the combat meter |
+| BACKSPACE | reset the dummies, the fight and the combat meter |
 | LEFT CLICK / ESC | capture / release the mouse for camera control |
 | MOUSE WHEEL | camera distance |
 | F5 | show or hide the developer overlay |

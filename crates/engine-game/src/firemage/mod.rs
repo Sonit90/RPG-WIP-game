@@ -42,7 +42,7 @@ use crate::entity::EntityId;
 
 pub use ability::{
     ABILITIES, ABILITY_COUNT, ABILITY_SLOTS, AbilityBook, AbilityDef, AbilityError, AbilityState,
-    FireAbility, TARGET_CLEAVE_HALF_ANGLE, TargetMode, ULTIMATE_ENABLED, WarriorRow,
+    DruidRow, FireAbility, TARGET_CLEAVE_HALF_ANGLE, TargetMode, ULTIMATE_ENABLED, WarriorRow,
 };
 pub use ignite::{
     IGNITE_BASE_DURATION, IGNITE_BASE_MAX_STACKS, IGNITE_BASE_TICK_INTERVAL,

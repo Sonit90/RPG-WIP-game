@@ -50,6 +50,13 @@ pub struct Bindings {
     /// that lives somewhere else is a key nothing can check for a collision, and an action
     /// bar slot bound to it would silently open the character panel mid-fight.
     pub character_sheet: KeyCode,
+    /// The first button beside the bar. A hero with more abilities than digits uses it.
+    ///
+    /// Here beside the Ultimate's key and for the same reason: a key that lives somewhere
+    /// else is a key nothing can check for a collision.
+    pub extra_one: KeyCode,
+    /// The second button beside the bar.
+    pub extra_two: KeyCode,
     /// Restore the dummies and clear the combat session. A developer control.
     pub reset_dummies: KeyCode,
     /// The mouse button held to turn the camera, which also turns the character.
@@ -71,6 +78,9 @@ impl Default for Bindings {
             // have been character sheets.
             character_sheet: KeyCode::C,
             ultimate: KeyCode::R,
+            // F and G: the two keys next to the digits that nothing else in the game wants.
+            extra_one: KeyCode::F,
+            extra_two: KeyCode::G,
             // Not `R`: that is the Ultimate. A developer control has no business taking a
             // key the class needs.
             reset_dummies: KeyCode::Backspace,
@@ -86,8 +96,10 @@ impl Bindings {
     /// ones. A test walks the whole list, which is what stops two actions from quietly
     /// sharing a key again.
     #[must_use]
-    pub fn named_keys(&self) -> [KeyCode; 10] {
+    pub fn named_keys(&self) -> [KeyCode; 12] {
         [
+            self.extra_one,
+            self.extra_two,
             self.forward,
             self.back,
             self.left,
@@ -125,6 +137,8 @@ impl Bindings {
             (self.cycle_target, "CYCLE TARGET"),
             (self.select_self, "TARGET YOURSELF"),
             (self.ultimate, "THE ULTIMATE"),
+            (self.extra_one, "THE FIRST EXTRA ABILITY"),
+            (self.extra_two, "THE SECOND EXTRA ABILITY"),
             (self.character_sheet, "THE CHARACTER SHEET"),
             (self.reset_dummies, "RESET DUMMIES"),
         ];
@@ -132,6 +146,16 @@ impl Bindings {
             .into_iter()
             .find(|(bound, _)| *bound == key)
             .map(|(_, what)| what)
+    }
+
+    /// The key that presses the hero's `index`th button beside the bar.
+    #[must_use]
+    pub fn extra_key(&self, index: usize) -> Option<KeyCode> {
+        match index {
+            0 => Some(self.extra_one),
+            1 => Some(self.extra_two),
+            _ => None,
+        }
     }
 
     /// The key that triggers ability `slot`.
@@ -209,6 +233,16 @@ impl Bindings {
             };
             if input.was_key_pressed(key) && !ability.definition().target.is_aimed() {
                 out.push(PlayerCommand::UseAbility(slot));
+            }
+        }
+        // And the buttons beside it, on the same terms: an aimed ability is not cast from a
+        // key press, and a hero with no extras issues nothing at all.
+        for (index, ability) in hero.extras().enumerate() {
+            let Some(key) = self.extra_key(index) else {
+                continue;
+            };
+            if input.was_key_pressed(key) && !ability.definition().target.is_aimed() {
+                out.push(PlayerCommand::UseExtra(index));
             }
         }
     }

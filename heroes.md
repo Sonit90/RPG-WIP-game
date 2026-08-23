@@ -12,7 +12,9 @@ A **slice of the one ability table**, and nothing else.
 Hero ─┬─ abilities()  the rows of ABILITIES whose `hero` column names it, in bar order
       ├─ bar()        those rows on the digit keys; empty in the slots it does not fill
       ├─ model_name() a name the visual layer looks up. `engine-game` never sees a triangle
-      └─ ultimate()   the ability on `R`: Cataclysm (disabled), Last Stand, or none
+      ├─ extras()     the ability buttons beside it, on `F` and `G`, for a hero with
+      │                more abilities than the keyboard has digits
+      └─ ultimate()   the ability on `R`: Cataclysm (disabled), Last Stand, Tranquility
 ```
 
 `engine-game/src/hero.rs`. Every row of `ABILITIES` carries `hero` and `damage_type`; no two
@@ -28,7 +30,7 @@ second tooltip generator and a second thing for the damage meter to learn.
 | --- | --- | --- | --- |
 | FireMage | *ten, unchanged* — see `firemage.md` | | |
 | Warrior | *eleven* — see `warrior.md` | | |
-| Druid | MOONFIRE — 30 m, 1.0 s cast, 160 % | STARFALL — 8 m circle, 6 s, 60 %/tick | REGROWTH — self heal, 400 %, 12 s |
+| Druid | *thirteen* — see `druid.md` | | |
 
 Nothing in the executor branches on who is casting. The Warrior and the Druid generate no
 Heat and apply no Ignite because their rows say zero, and a test asserts that against a live
@@ -108,8 +110,10 @@ cheaper than one.
 
 * **No hero is persisted.** Every session starts as the FireMage. Bar one's *arrangement* is
   saved, so the bar comes back as whatever hero last wrote it, and the swap rewrites it.
-* **The Druid has no resource.** The FireMage's Heat and Ignite sit at rest while it is worn;
-  mana is not designed. The Warrior has Deflection — see `warrior.md`.
+* **Each class has its own resources, and the two it is not playing sit at rest.** The Druid
+  has Mana and Astral Power (`druid.md`), the Warrior has Deflection (`warrior.md`), and the
+  FireMage's Heat and Ignite do not move for either of them — because no row of theirs
+  generates any, not because anything branches on who is casting.
 * **They borrow the mage's sounds and effects rather than having their own.** The stand-ins are chosen by
   shape — a swing is an impact, a placed circle is a placed area — because silence would read
   worse than a sound of the right length.

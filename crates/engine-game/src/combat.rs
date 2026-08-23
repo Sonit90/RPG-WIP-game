@@ -48,6 +48,12 @@ pub enum DamageType {
     Fire,
     /// Everything magical that is not fire.
     Arcane,
+    /// Life, moonlight and the things that grow. The Druid's school.
+    ///
+    /// Its own school rather than a second name for Arcane, because Nature's Exposure
+    /// amplifies both and a debuff that amplified one school twice would be a debuff that
+    /// could not be written down.
+    Nature,
 }
 
 impl DamageType {
@@ -58,6 +64,7 @@ impl DamageType {
             Self::Physical => "PHYSICAL",
             Self::Fire => "FIRE",
             Self::Arcane => "ARCANE",
+            Self::Nature => "NATURE",
         }
     }
 }
@@ -280,6 +287,20 @@ impl Resource {
         }
         self.current = (self.current - cost.max(0.0)).max(0.0);
         true
+    }
+
+    /// Puts `amount` back, and reports how much actually went in.
+    ///
+    /// What a restoration *event* uses — Wrath's one per cent of maximum Mana — as opposed
+    /// to the clock [`Resource::regenerate`] runs. What is over the pool is lost rather than
+    /// banked, exactly as an overheal is.
+    pub fn gain(&mut self, amount: f32) -> f32 {
+        if !amount.is_finite() || amount <= 0.0 {
+            return 0.0;
+        }
+        let before = self.current;
+        self.current = (self.current + amount).min(self.max);
+        self.current - before
     }
 
     /// Regenerates for one simulation step.

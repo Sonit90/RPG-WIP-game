@@ -103,7 +103,7 @@ impl ScenarioConfig {
 }
 
 /// What one fight produced.
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Clone)]
 pub struct RunResult {
     /// Total damage dealt.
     pub damage: f64,
@@ -119,6 +119,22 @@ pub struct RunResult {
     pub counters: FireCounters,
     /// Seconds the fight ran.
     pub seconds: f64,
+}
+
+impl Default for RunResult {
+    /// Written out rather than derived: the per-ability array is longer than the thirty-two
+    /// `Default` covers, and every field of it is zero.
+    fn default() -> Self {
+        Self {
+            damage: 0.0,
+            dps: 0.0,
+            overkill: 0.0,
+            deaths: 0,
+            by_ability: [0.0; engine_game::ability::ABILITY_SLOTS],
+            counters: FireCounters::default(),
+            seconds: 0.0,
+        }
+    }
 }
 
 impl RunResult {

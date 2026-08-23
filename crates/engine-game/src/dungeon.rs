@@ -338,6 +338,15 @@ pub fn build_dungeon() -> (Simulation, Dungeon) {
         .world_mut()
         .spawn(EntityDesc::player(config.player_spawn));
     simulation.set_player_entity(player);
+    // The one friendly body in the dungeon, standing in the entrance hall where nothing is
+    // fighting: a healer with no ally to practise on has half a kit. It is not a pack member
+    // and no encounter names it, so nothing here can pull it.
+    let healing_dummy = crate::arena::spawn_healing_dummy(
+        simulation.world_mut(),
+        AREAS[0].at(6.0, 0.0),
+        config.healing_dummy_health,
+    );
+    simulation.party_mut().join(healing_dummy);
 
     let world = simulation.collision_world_mut();
     // The outer bound and the floor first, then every wall, pillar and arch the level brought.
@@ -470,7 +479,8 @@ mod tests {
     fn building_it_produces_a_player_every_pack_and_nothing_else() {
         let (simulation, dungeon) = build_dungeon();
         let enemies: usize = PACKS.iter().map(PackDef::len).sum();
-        assert_eq!(simulation.world().len(), 1 + enemies);
+        // The player, every pack, and the one friendly body in the entrance hall.
+        assert_eq!(simulation.world().len(), 2 + enemies);
         assert_eq!(simulation.encounters().len(), PACK_COUNT);
         assert_eq!(dungeon.cleared(&simulation), 0);
         assert!(!dungeon.is_complete(&simulation));

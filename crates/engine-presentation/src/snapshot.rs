@@ -27,6 +27,7 @@ use engine_game::firemage::{
 use engine_game::hero::Hero;
 use engine_game::sim::Simulation;
 use engine_game::status::StatusKind;
+use engine_game::druid::tuning::{ASTRAL_MAXIMUM, ASTRAL_SPEND};
 use engine_game::warrior::{DEFLECTION_MAXIMUM, DEFLECTION_SPEND};
 use engine_game::world::EntityKind;
 
@@ -212,6 +213,94 @@ impl WarriorView {
     }
 }
 
+/// **The Druid's own readouts.**
+///
+/// Everything the interface needs to draw two resources and say what the next cast will do.
+/// Every field is read from the simulation rather than derived here, which is the rule the
+/// rest of this module follows: a bar that works out its own state is a bar that can
+/// disagree with the executor.
+///
+/// `active` is false for every other hero, and the frame draws its own resources instead.
+#[derive(Debug, Default, Clone, Copy, PartialEq)]
+pub struct DruidView {
+    /// Whether the player is the Druid at all.
+    pub active: bool,
+    /// Mana available.
+    pub mana: f32,
+    /// The size of the Mana pool.
+    pub max_mana: f32,
+    /// Astral Power banked, in `0..=100`.
+    pub astral: f32,
+    /// **Whether the next compatible spell will be empowered.**
+    ///
+    /// The one fact the whole resource is about, carried as a fact rather than as something
+    /// the bar works out from the value: a full bar is not armed, and an armed bar that has
+    /// just spent itself is not full.
+    pub armed: bool,
+    /// Whether the button can be pressed right now.
+    pub can_arm: bool,
+    /// Seconds of Astral Wrath left. Zero when it is not running.
+    pub astral_wrath: f32,
+    /// Seconds of Wild Rush left. Zero when it is not running.
+    pub wild_rush: f32,
+    /// Whether Tranquility is channelling.
+    pub channelling: bool,
+    /// Whether the running channel was empowered.
+    pub channel_empowered: bool,
+}
+
+impl DruidView {
+    /// Mana as a fraction, for a bar.
+    #[must_use]
+    pub fn mana_fraction(&self) -> f32 {
+        if self.max_mana <= 0.0 {
+            return 0.0;
+        }
+        (self.mana / self.max_mana).clamp(0.0, 1.0)
+    }
+
+    /// Astral Power as a fraction, for a bar.
+    #[must_use]
+    pub fn astral_fraction(&self) -> f32 {
+        (self.astral / ASTRAL_MAXIMUM).clamp(0.0, 1.0)
+    }
+
+    /// What one press of the button costs the next compatible spell.
+    #[must_use]
+    pub fn astral_cost(&self) -> f32 {
+        ASTRAL_SPEND
+    }
+}
+
+/// Reads everything the Druid's readouts show.
+///
+/// A free function beside [`warrior_view`], and for the same reason.
+fn druid_view(simulation: &Simulation) -> DruidView {
+    if simulation.hero() != Hero::Druid {
+        return DruidView::default();
+    }
+    let druid = simulation.druid();
+    let player = simulation.player().entity;
+    let seconds = |kind: StatusKind| {
+        simulation
+            .world()
+            .statuses(player)
+            .map_or(0.0, |statuses| statuses.remaining(kind))
+    };
+    DruidView {
+        active: true,
+        mana: druid.mana.current(),
+        max_mana: druid.mana.max(),
+        astral: druid.astral.value(),
+        armed: druid.astral.is_armed(),
+        can_arm: druid.astral.can_arm(),
+        astral_wrath: seconds(StatusKind::AstralWrath),
+        wild_rush: seconds(StatusKind::WildRush),
+        channelling: druid.channel.active,
+        channel_empowered: druid.channel.empowered,
+    }
+}
+
 /// The player's own state.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PlayerView {
@@ -249,6 +338,8 @@ pub struct PlayerView {
     pub damage_taken: f32,
     /// The Warrior's readouts. Inert for every other hero.
     pub warrior: WarriorView,
+    /// The Druid's readouts. Inert for every other hero.
+    pub druid: DruidView,
 }
 
 impl PlayerView {
@@ -482,6 +573,21 @@ pub struct AbilitySlotView {
     /// resource: "this press will cost you twenty" is a fact about the simulation, and a
     /// button that computes it is a button that can be wrong about it.
     pub spends_deflection: bool,
+    /// Mana one cast costs. Zero for everything that costs none.
+    pub mana_cost: f32,
+    /// Astral Power one successful cast generates.
+    pub astral_generation: f32,
+    /// Whether Astral Power can empower it at all. What the tooltip's Astral line is for.
+    pub astral_empowerable: bool,
+    /// **Whether pressing it now will be empowered.**
+    ///
+    /// Armed, and compatible. The same field `spends_deflection` is for the Warrior, and it
+    /// drives the same highlight — one visual language for "this press buys something
+    /// extra", whichever class is holding the bar.
+    pub spends_astral: bool,
+    /// What one healing event of this ability restores right now, at the current spell
+    /// power and *without* the empowerment. Zero for an ability that heals nothing.
+    pub healing: f32,
 }
 
 impl AbilitySlotView {
@@ -736,8 +842,13 @@ pub struct UiSnapshot {
     /// hero is holding it, and a bar that renumbered itself per class would move a player's
     /// muscle memory every time they swapped.
     pub abilities: [Option<AbilitySlotView>; ABILITY_SLOTS],
-    /// The Ultimate, for a hero that has one. The Warrior and the Druid do not.
+    /// The Ultimate, for a hero that has one.
     pub ultimate: Option<AbilitySlotView>,
+    /// The buttons beside the bar, for a hero with more abilities than digits.
+    ///
+    /// Two at most, in the hero's own order, on `F` and `G` — see
+    /// [`engine_game::hero::Hero::extras`]. Empty for the FireMage and the Warrior.
+    pub extras: [Option<AbilitySlotView>; 2],
     /// The cast in progress.
     pub cast: Option<CastView>,
     /// The fight so far.
@@ -772,6 +883,7 @@ impl UiSnapshot {
         self.abilities
             .iter()
             .flatten()
+            .chain(self.extras.iter().flatten())
             .chain(self.ultimate.iter())
             .find(|view| view.ability == ability)
     }
@@ -802,6 +914,7 @@ impl UiSnapshot {
                 statuses: StatusList::default(),
                 alive: true,
                 damage_taken: 0.0,
+                druid: DruidView::default(),
             },
             target: None,
             target_of_target: None,
@@ -810,6 +923,7 @@ impl UiSnapshot {
             character: character_view(simulation),
             abilities: [None; ABILITY_SLOTS],
             ultimate: None,
+            extras: [None; 2],
             cast: None,
             combat: CombatView::default(),
             notification: NotificationView::default(),
@@ -852,6 +966,7 @@ impl UiSnapshot {
             alive: simulation.player_alive(),
             damage_taken: simulation.meter().total_damage_taken() as f32,
             warrior: warrior_view(simulation),
+            druid: druid_view(simulation),
         };
 
         self.target = player
@@ -891,6 +1006,10 @@ impl UiSnapshot {
             .hero()
             .ultimate()
             .map(|ability| ability_view(simulation, ability, aiming));
+        self.extras = [None; 2];
+        for (index, ability) in simulation.hero().extras().enumerate().take(2) {
+            self.extras[index] = Some(ability_view(simulation, ability, aiming));
+        }
 
         self.cast = simulation.casting().map(|cast| CastView {
             ability: cast.ability,
@@ -1010,11 +1129,28 @@ fn ability_view(
         && definition.warrior.is_empowerable()
         && deflection + f32::EPSILON >= definition.warrior.deflection_cost;
 
+    // Whether pressing this now spends a hundred Astral Power. Asked of the simulation's own
+    // resource, exactly as the Warrior's spend is.
+    let spends_astral = simulation.astral_armed() && definition.druid.astral_empowerable;
+    // Mana, asked of the pool rather than of the number on the row: a spell the player cannot
+    // afford is dimmed before it is pressed rather than after.
+    let short_of_mana = simulation.hero() == Hero::Druid
+        && definition.druid.mana_cost > 0.0
+        && !simulation.druid().mana.can_pay(definition.druid.mana_cost);
+    // The Astral Power button has a requirement of its own, and it is not a cooldown: a bar
+    // that is not full, or one that is already armed, cannot be pressed.
+    let cannot_arm = ability == FireAbility::AstralPower && !simulation.druid().astral.can_arm();
+
     let availability = if ability.is_disabled() {
         // Cataclysm has no gameplay concept yet. The button stays where it is and says so,
         // rather than disappearing and taking its architecture with it.
         SlotAvailability::Disabled
-    } else if definition.energy_cost > 0.0 && !mage.energy.is_full() {
+    } else if (definition.energy_cost > 0.0 && !mage.energy.is_full())
+        || short_of_mana
+        || cannot_arm
+    {
+        // Three ways to be short of a resource and one way to say so: the Ultimate's energy,
+        // the Druid's Mana, and an Astral Power button that has nothing to arm with.
         SlotAvailability::NoResource
     } else if charges == 0 {
         SlotAvailability::Cooling
@@ -1034,7 +1170,7 @@ fn ability_view(
             }
             _ => SlotAvailability::InvalidTarget,
         }
-    } else if spends_deflection {
+    } else if spends_deflection || spends_astral {
         // **The empowered highlight.** The same state Detonate-on-a-full-burn already uses,
         // reached by a second class for its own reason: it is ready, and pressing it right
         // now buys something extra. One state, one colour on the bar, and no second visual
@@ -1062,7 +1198,9 @@ fn ability_view(
         aiming: aiming == Some(ability),
         ground_targeted: definition.target.is_ground_targeted(),
         cast_time: definition.cast_time_with(&stats),
-        damage: if definition.coefficient > 0.0 {
+        damage: if definition.target.is_friendly() {
+            0.0
+        } else if definition.coefficient > 0.0 {
             definition.base_damage(&stats)
         } else {
             definition.base_tick_damage(&stats)
@@ -1072,6 +1210,23 @@ fn ability_view(
         ignite_chance: definition.ignite_chance,
         deflection_cost: definition.warrior.deflection_cost,
         spends_deflection,
+        mana_cost: definition.druid.mana_cost,
+        astral_generation: definition.druid.astral_generation,
+        astral_empowerable: definition.druid.astral_empowerable,
+        spends_astral,
+        // Healing and damage are the same coefficient read against the same spell power;
+        // which of the two a row *is* is decided by who it is pointed at, so the interface
+        // never has to guess whether a number is a heal.
+        healing: if definition.target.is_friendly() {
+            let direct = definition.base_damage(&stats);
+            if direct > 0.0 {
+                direct
+            } else {
+                definition.base_tick_damage(&stats)
+            }
+        } else {
+            0.0
+        },
     }
 }
 
@@ -1168,6 +1323,110 @@ mod tests {
                 .expect("a bar ability")
                 .availability,
             SlotAvailability::InvalidTarget
+        );
+    }
+
+    #[test]
+    fn the_druids_bar_is_its_own_and_its_resources_reach_the_interface() {
+        let mut simulation = arena();
+        assert!(simulation.set_hero(Hero::Druid));
+        let snapshot = UiSnapshot::build(&simulation);
+
+        let names: Vec<&str> = snapshot
+            .abilities
+            .iter()
+            .flatten()
+            .map(|slot| slot.name)
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "MOONFIRE",
+                "SUNFIRE",
+                "WRATH",
+                "REJUVENATION",
+                "REGROWTH",
+                "LIFEBLOOM",
+                "WILD GROWTH",
+                "SWIFTMEND",
+                "NOURISH",
+                "NATURES CLEANSE",
+            ]
+        );
+        let druid = snapshot.player.druid;
+        assert!(druid.active);
+        assert!((druid.mana_fraction() - 1.0).abs() < 1e-6);
+        assert_eq!(druid.astral, 0.0);
+        assert!(!druid.armed);
+        assert!(!druid.can_arm);
+        // And the Warrior's readouts are inert, which is what keeps one frame drawing both.
+        assert!(!snapshot.player.warrior.active);
+    }
+
+    #[test]
+    fn arming_astral_power_lights_up_exactly_the_compatible_abilities() {
+        let mut simulation = arena();
+        assert!(simulation.set_hero(Hero::Druid));
+        simulation
+            .druid_mut()
+            .astral
+            .gain(engine_game::druid::tuning::ASTRAL_MAXIMUM);
+        // Full, and not yet pressed: nothing is empowered.
+        let snapshot = UiSnapshot::build(&simulation);
+        assert!(snapshot.player.druid.can_arm);
+        assert!(!snapshot.player.druid.armed);
+        assert!(
+            !snapshot
+                .ability_view(FireAbility::Moonfire)
+                .expect("a bar ability")
+                .spends_astral
+        );
+
+        simulation
+            .cast(FireAbility::AstralPower)
+            .expect("a full bar arms");
+        let snapshot = UiSnapshot::build(&simulation);
+        assert!(snapshot.player.druid.armed);
+        for ability in [
+            FireAbility::Moonfire,
+            FireAbility::Sunfire,
+            FireAbility::Wrath,
+            FireAbility::Rejuvenation,
+            FireAbility::Tranquility,
+        ] {
+            let view = snapshot.ability_view(ability).expect("a druid ability");
+            assert!(view.spends_astral, "{ability:?} did not light up");
+            assert_eq!(view.availability, SlotAvailability::Empowered, "{ability:?}");
+        }
+        for ability in [FireAbility::NaturesCleanse, FireAbility::WildRush] {
+            let view = snapshot.ability_view(ability).expect("a druid ability");
+            assert!(!view.spends_astral, "{ability:?} claimed an empowerment");
+        }
+    }
+
+    #[test]
+    fn a_druid_with_no_mana_sees_the_spells_it_cannot_afford() {
+        let mut simulation = arena();
+        assert!(simulation.set_hero(Hero::Druid));
+        simulation
+            .druid_mut()
+            .mana
+            .pay(engine_game::druid::tuning::MANA_MAXIMUM);
+        let snapshot = UiSnapshot::build(&simulation);
+        assert_eq!(
+            snapshot
+                .ability_view(FireAbility::Rejuvenation)
+                .expect("a bar ability")
+                .availability,
+            SlotAvailability::NoResource
+        );
+        // Wrath costs nothing and is unaffected, which is the whole point of Wrath.
+        assert_ne!(
+            snapshot
+                .ability_view(FireAbility::Wrath)
+                .expect("a bar ability")
+                .availability,
+            SlotAvailability::NoResource
         );
     }
 

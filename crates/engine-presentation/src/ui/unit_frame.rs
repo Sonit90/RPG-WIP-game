@@ -219,6 +219,20 @@ pub fn push_player_frame(
     // **The resources the hero the player *is* actually has.** The Warrior has Deflection
     // and no Heat; the FireMage has Heat and Ultimate Energy and no Deflection. One frame,
     // one branch, and neither class is shown a bar that can never move.
+    if player.druid.active {
+        push_astral_rows(
+            list,
+            inner,
+            y + bar + 2.0 * factor,
+            bar,
+            factor,
+            scale,
+            player,
+            theme,
+            scratch,
+        );
+        return;
+    }
     if player.warrior.active {
         push_deflection_rows(
             list,
@@ -263,6 +277,67 @@ pub fn push_player_frame(
         },
     );
     list.text_at((inner.x + 3.0 * factor, y), "ENERGY", theme.text, scale);
+}
+
+/// **The Druid's rows**: Mana, and the Astral Power that arms the next spell.
+///
+/// Two bars, because the class is two decisions: whether the fuel will last, and whether the
+/// next cast is the empowered one. The armed state is a word on the bar rather than a colour
+/// alone, so it survives being read at a glance and being read by somebody who cannot tell
+/// the two purples apart.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one row of a frame that is already laid out by its caller"
+)]
+fn push_astral_rows(
+    list: &mut UiDrawList,
+    inner: UiRect,
+    mut y: f32,
+    bar: f32,
+    factor: f32,
+    scale: f32,
+    player: &crate::snapshot::PlayerView,
+    theme: &UiTheme,
+    scratch: &mut FrameScratch,
+) {
+    let druid = &player.druid;
+    list.bar(
+        UiRect::new(inner.x, y, inner.width, bar),
+        druid.mana_fraction(),
+        theme.bar_background,
+        theme.mana,
+    );
+    scratch.detail.clear();
+    scratch.detail.push_str("MANA ");
+    write_integer(&mut scratch.detail, druid.mana.round() as i64);
+    list.text_at(
+        (inner.x + 3.0 * factor, y),
+        &scratch.detail,
+        theme.text,
+        scale,
+    );
+
+    y += bar + 2.0 * factor;
+    list.bar(
+        UiRect::new(inner.x, y, inner.width, bar),
+        druid.astral_fraction(),
+        theme.bar_background,
+        theme.astral_color(druid.armed),
+    );
+    scratch.detail.clear();
+    scratch.detail.push_str("ASTRAL ");
+    write_integer(&mut scratch.detail, druid.astral.round() as i64);
+    if druid.armed {
+        scratch.detail.push_str(" ARMED");
+    } else if druid.can_arm {
+        scratch.detail.push_str(" *");
+    }
+    list.text_at(
+        (inner.x + 3.0 * factor, y),
+        &scratch.detail,
+        theme.text,
+        scale,
+    );
 }
 
 /// The Warrior's rows: the Deflection bar, what it is currently worth, and what is running.
@@ -733,7 +808,9 @@ mod tests {
     fn the_party_frame_grows_and_shrinks_with_the_roster() {
         let simulation = simulation();
         let mut snapshot = snapshot(&simulation);
-        assert_eq!(snapshot.party.len(), 1, "a solo player is a party of one");
+        // The player and the friendly dummy the main hall stands them next to.
+        assert_eq!(snapshot.party.len(), 2);
+        snapshot.party.truncate(1);
 
         let solo = texts(&frames(&HudLayout::default(), &snapshot));
         assert!(solo.iter().filter(|text| **text == "YOU").count() >= 1);

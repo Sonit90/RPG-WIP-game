@@ -18,6 +18,10 @@
 //! and an ability with two is the same rules with a bigger bucket.
 
 use crate::combat::DamageType;
+use crate::druid::tuning::{
+    LIFEBLOOM_MANA, MOONFIRE_MANA, NATURES_CLEANSE_MANA, NOURISH_MANA, REGROWTH_MANA,
+    REJUVENATION_MANA, SUNFIRE_MANA, SWIFTMEND_MANA, TRANQUILITY_MANA, WILD_GROWTH_MANA,
+};
 
 use super::stats::Stats;
 use super::talent::TalentEffects;
@@ -31,7 +35,7 @@ pub const ABILITY_SLOTS: usize = 10;
 ///
 /// One table for all three heroes rather than one each: see [`crate::hero`] for why a class
 /// is a slice of this table and not a system of its own.
-pub const ABILITY_COUNT: usize = 26;
+pub const ABILITY_COUNT: usize = 36;
 
 /// The furthest anything the class has can reach, in metres.
 ///
@@ -105,12 +109,33 @@ pub enum FireAbility {
     SpellReflect,
     /// Warrior: the emergency cooldown. More maximum health, a heal, and less damage taken.
     LastStand,
-    /// Druid: the filler, thrown from range.
+    /// Druid: the instant that leaves moonlight burning on one enemy.
     Moonfire,
-    /// Druid: a patch of falling stars the player places.
-    Starfall,
-    /// Druid: a heal on the caster. The only heal a player can cast.
+    /// Druid: the same burn, spread across a pack.
+    Sunfire,
+    /// Druid: the free filler, and the debuff every cast of it stacks.
+    Wrath,
+    /// Druid: the instant heal over time.
+    Rejuvenation,
+    /// Druid: a large direct heal and the heal over time that follows it.
     Regrowth,
+    /// Druid: a heal over time that blooms when it runs out.
+    Lifebloom,
+    /// Druid: the party heal over time, on a cooldown.
+    WildGrowth,
+    /// Druid: eats one of its own heals over time for a large instant heal.
+    Swiftmend,
+    /// Druid: a direct heal that is larger the more of the Druid's heals are already on the
+    /// target.
+    Nourish,
+    /// Druid: the dispel.
+    NaturesCleanse,
+    /// Druid: the movement and damage-reduction cooldown.
+    WildRush,
+    /// Druid: the resource button. Arms the next compatible spell.
+    AstralPower,
+    /// Druid: the Ultimate. A channelled party heal.
+    Tranquility,
     /// Not an ability: the row the burn's damage is credited to.
     ///
     /// Ignite is the class's largest single source of damage and it comes from no cast, so
@@ -145,8 +170,18 @@ impl FireAbility {
         Self::SpellReflect,
         Self::LastStand,
         Self::Moonfire,
-        Self::Starfall,
+        Self::Sunfire,
+        Self::Wrath,
+        Self::Rejuvenation,
         Self::Regrowth,
+        Self::Lifebloom,
+        Self::WildGrowth,
+        Self::Swiftmend,
+        Self::Nourish,
+        Self::NaturesCleanse,
+        Self::WildRush,
+        Self::AstralPower,
+        Self::Tranquility,
         Self::Ignite,
     ];
 
@@ -256,8 +291,18 @@ impl FireAbility {
             Self::SpellReflect => "spell_reflect",
             Self::LastStand => "last_stand",
             Self::Moonfire => "moonfire",
-            Self::Starfall => "starfall",
+            Self::Sunfire => "sunfire",
+            Self::Wrath => "wrath",
+            Self::Rejuvenation => "rejuvenation",
             Self::Regrowth => "regrowth",
+            Self::Lifebloom => "lifebloom",
+            Self::WildGrowth => "wild_growth",
+            Self::Swiftmend => "swiftmend",
+            Self::Nourish => "nourish",
+            Self::NaturesCleanse => "natures_cleanse",
+            Self::WildRush => "wild_rush",
+            Self::AstralPower => "astral_power",
+            Self::Tranquility => "tranquility",
             Self::Ignite => "ignite",
         }
     }
@@ -286,8 +331,14 @@ impl FireAbility {
     /// The key that casts it: 1-0 across the bar, R for the Ultimate.
     #[must_use]
     pub fn key_hint(self) -> &'static str {
-        match self.bar_slot() {
-            Some(slot) => ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"][slot],
+        if let Some(slot) = self.bar_slot() {
+            return ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"][slot];
+        }
+        // Beside the bar: the Ultimate on `R`, and a hero with more abilities than keys puts
+        // the rest on the two buttons next to it. Asked of the hero rather than written down
+        // per ability, for the reason `bar_slot` is.
+        match self.hero().extra_index(self) {
+            Some(index) => ["F", "G"][index.min(1)],
             None => "R",
         }
     }
@@ -312,6 +363,15 @@ pub enum TargetMode {
     Ground,
     /// A rectangle aimed from the caster, `range` long and `width` wide.
     Line,
+    /// A friendly target: the selection when it is one, and the caster when it is not.
+    ///
+    /// **Never refused for the selection.** A healer with an enemy selected is a healer
+    /// mid-fight, and a heal that answered "THAT IS NOT AN ALLY" would be a heal that is
+    /// unusable exactly when it is needed. The fallback is the caster, which is what every
+    /// game in the genre does.
+    ///
+    /// With a radius it is an area heal, centred on whoever it resolved to.
+    Friendly,
     /// The caster only.
     SelfCast,
     /// A movement, not an attack.
@@ -363,6 +423,12 @@ impl TargetMode {
     #[must_use]
     pub fn usable_on_friendly_target(self) -> bool {
         !matches!(self, Self::Single | Self::TargetCone)
+    }
+
+    /// Whether this ability is pointed at an ally rather than at an enemy.
+    #[must_use]
+    pub fn is_friendly(self) -> bool {
+        matches!(self, Self::Friendly)
     }
 }
 
@@ -422,6 +488,42 @@ impl WarriorRow {
     pub const fn is_empowerable(&self) -> bool {
         self.deflection_cost > 0.0
     }
+}
+
+/// The Druid's columns of the ability table.
+///
+/// Nested for the same reason [`WarriorRow`] is: the rows that are not the Druid's say
+/// [`DruidRow::NONE`] once instead of repeating four zeroes. What Astral Power *does* to an
+/// ability is not here — a fifty per cent larger Moonfire and an indefinite one are
+/// different quantities from a thirty per cent larger heal, and they live as named constants
+/// in [`crate::druid::tuning`], which is the one place a designer reads.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DruidRow {
+    /// Mana one cast costs. Zero for Wrath, which is the whole point of Wrath.
+    pub mana_cost: f32,
+    /// Astral Power one successful cast generates.
+    ///
+    /// The whole of "how Astral Power is generated", as a column rather than a rule, so the
+    /// rate is tuned per ability without touching the resource.
+    pub astral_generation: f32,
+    /// Whether an armed Astral Power is spent on this ability and empowers it.
+    ///
+    /// False for Nature's Cleanse, Wild Rush and the Astral Power button itself, which is
+    /// exactly the exclusion list the design states.
+    pub astral_empowerable: bool,
+    /// Healing paid when this ability's own effect expires naturally, as a fraction of spell
+    /// power. Lifebloom's bloom, and nothing else.
+    pub bloom_coefficient: f32,
+}
+
+impl DruidRow {
+    /// What a row that is not the Druid's says.
+    pub const NONE: Self = Self {
+        mana_cost: 0.0,
+        astral_generation: 0.0,
+        astral_empowerable: false,
+        bloom_coefficient: 0.0,
+    };
 }
 
 /// One ability, entirely as data.
@@ -493,6 +595,9 @@ pub struct AbilityDef {
     pub requires_line_of_sight: bool,
     /// The Warrior's columns: what it spends, what it threatens for, how it reads health.
     pub warrior: WarriorRow,
+    /// The Druid's columns: what it costs, what it generates, what Astral Power may do to
+    /// it.
+    pub druid: DruidRow,
     /// Whether haste shortens its cooldown.
     ///
     /// True for everything the player *casts*, because going faster is what haste is. False
@@ -609,6 +714,7 @@ pub static ABILITIES: [AbilityDef; ABILITY_COUNT] = [
         cooldown_hasted: true,
         energy_cost: 0.0,
         warrior: WarriorRow::NONE,
+        druid: DruidRow::NONE,
     },
     AbilityDef {
         hero: Hero::FireMage,
@@ -637,6 +743,7 @@ pub static ABILITIES: [AbilityDef; ABILITY_COUNT] = [
         cooldown_hasted: true,
         energy_cost: 0.0,
         warrior: WarriorRow::NONE,
+        druid: DruidRow::NONE,
     },
     AbilityDef {
         hero: Hero::FireMage,
@@ -665,6 +772,7 @@ pub static ABILITIES: [AbilityDef; ABILITY_COUNT] = [
         cooldown_hasted: true,
         energy_cost: 0.0,
         warrior: WarriorRow::NONE,
+        druid: DruidRow::NONE,
     },
     AbilityDef {
         hero: Hero::FireMage,
@@ -693,6 +801,7 @@ pub static ABILITIES: [AbilityDef; ABILITY_COUNT] = [
         cooldown_hasted: true,
         energy_cost: 0.0,
         warrior: WarriorRow::NONE,
+        druid: DruidRow::NONE,
     },
     AbilityDef {
         hero: Hero::FireMage,
@@ -721,6 +830,7 @@ pub static ABILITIES: [AbilityDef; ABILITY_COUNT] = [
         cooldown_hasted: true,
         energy_cost: 0.0,
         warrior: WarriorRow::NONE,
+        druid: DruidRow::NONE,
     },
     AbilityDef {
         hero: Hero::FireMage,
@@ -749,6 +859,7 @@ pub static ABILITIES: [AbilityDef; ABILITY_COUNT] = [
         cooldown_hasted: true,
         energy_cost: 0.0,
         warrior: WarriorRow::NONE,
+        druid: DruidRow::NONE,
     },
     AbilityDef {
         hero: Hero::FireMage,
@@ -777,6 +888,7 @@ pub static ABILITIES: [AbilityDef; ABILITY_COUNT] = [
         cooldown_hasted: false,
         energy_cost: 0.0,
         warrior: WarriorRow::NONE,
+        druid: DruidRow::NONE,
     },
     AbilityDef {
         hero: Hero::FireMage,
@@ -805,6 +917,7 @@ pub static ABILITIES: [AbilityDef; ABILITY_COUNT] = [
         cooldown_hasted: true,
         energy_cost: 0.0,
         warrior: WarriorRow::NONE,
+        druid: DruidRow::NONE,
     },
     AbilityDef {
         hero: Hero::FireMage,
@@ -833,6 +946,7 @@ pub static ABILITIES: [AbilityDef; ABILITY_COUNT] = [
         cooldown_hasted: true,
         energy_cost: 0.0,
         warrior: WarriorRow::NONE,
+        druid: DruidRow::NONE,
     },
     AbilityDef {
         hero: Hero::FireMage,
@@ -861,6 +975,7 @@ pub static ABILITIES: [AbilityDef; ABILITY_COUNT] = [
         cooldown_hasted: true,
         energy_cost: 0.0,
         warrior: WarriorRow::NONE,
+        druid: DruidRow::NONE,
     },
     AbilityDef {
         hero: Hero::FireMage,
@@ -889,6 +1004,7 @@ pub static ABILITIES: [AbilityDef; ABILITY_COUNT] = [
         cooldown_hasted: true,
         energy_cost: 100.0,
         warrior: WarriorRow::NONE,
+        druid: DruidRow::NONE,
     },
     AbilityDef {
         hero: Hero::Warrior,
@@ -922,6 +1038,7 @@ pub static ABILITIES: [AbilityDef; ABILITY_COUNT] = [
             health_coefficient: 0.0,
             tick_health_coefficient: 0.0,
         },
+        druid: DruidRow::NONE,
     },
     AbilityDef {
         hero: Hero::Warrior,
@@ -955,6 +1072,7 @@ pub static ABILITIES: [AbilityDef; ABILITY_COUNT] = [
             health_coefficient: 0.0,
             tick_health_coefficient: 0.0,
         },
+        druid: DruidRow::NONE,
     },
     AbilityDef {
         hero: Hero::Warrior,
@@ -988,6 +1106,7 @@ pub static ABILITIES: [AbilityDef; ABILITY_COUNT] = [
             health_coefficient: 0.01,
             tick_health_coefficient: 0.0075,
         },
+        druid: DruidRow::NONE,
     },
     AbilityDef {
         hero: Hero::Warrior,
@@ -1021,6 +1140,7 @@ pub static ABILITIES: [AbilityDef; ABILITY_COUNT] = [
             health_coefficient: 0.0,
             tick_health_coefficient: 0.0,
         },
+        druid: DruidRow::NONE,
     },
     AbilityDef {
         hero: Hero::Warrior,
@@ -1054,6 +1174,7 @@ pub static ABILITIES: [AbilityDef; ABILITY_COUNT] = [
             health_coefficient: 0.0,
             tick_health_coefficient: 0.0,
         },
+        druid: DruidRow::NONE,
     },
     AbilityDef {
         hero: Hero::Warrior,
@@ -1087,6 +1208,7 @@ pub static ABILITIES: [AbilityDef; ABILITY_COUNT] = [
             health_coefficient: 0.0,
             tick_health_coefficient: 0.0,
         },
+        druid: DruidRow::NONE,
     },
     AbilityDef {
         hero: Hero::Warrior,
@@ -1120,6 +1242,7 @@ pub static ABILITIES: [AbilityDef; ABILITY_COUNT] = [
             health_coefficient: 0.0,
             tick_health_coefficient: 0.0,
         },
+        druid: DruidRow::NONE,
     },
     AbilityDef {
         hero: Hero::Warrior,
@@ -1153,6 +1276,7 @@ pub static ABILITIES: [AbilityDef; ABILITY_COUNT] = [
             health_coefficient: 0.0,
             tick_health_coefficient: 0.0,
         },
+        druid: DruidRow::NONE,
     },
     AbilityDef {
         hero: Hero::Warrior,
@@ -1186,6 +1310,7 @@ pub static ABILITIES: [AbilityDef; ABILITY_COUNT] = [
             health_coefficient: 0.0,
             tick_health_coefficient: 0.0,
         },
+        druid: DruidRow::NONE,
     },
     AbilityDef {
         hero: Hero::Warrior,
@@ -1219,6 +1344,7 @@ pub static ABILITIES: [AbilityDef; ABILITY_COUNT] = [
             health_coefficient: 0.0,
             tick_health_coefficient: 0.0,
         },
+        druid: DruidRow::NONE,
     },
     AbilityDef {
         hero: Hero::Warrior,
@@ -1252,23 +1378,92 @@ pub static ABILITIES: [AbilityDef; ABILITY_COUNT] = [
             health_coefficient: 0.0,
             tick_health_coefficient: 0.0,
         },
+        druid: DruidRow::NONE,
     },
     AbilityDef {
         hero: Hero::Druid,
-        damage_type: DamageType::Arcane,
+        damage_type: DamageType::Nature,
         id: FireAbility::Moonfire,
         name: "MOONFIRE",
-        description: "THE FILLER. MOONLIGHT AT THIRTY METRES",
+        description: "MOONLIGHT, AND 18 S OF IT BURNING. ASTRAL: +50% AND IT NEVER ENDS",
         target: TargetMode::Single,
-        cast_time: 1.0,
+        cast_time: 0.0,
         cooldown: 0.0,
         charges: 1,
         range: 30.0,
         radius: 0.0,
         width: 0.0,
-        duration: 0.0,
+        duration: 18.0,
         impact_delay: 0.0,
-        coefficient: 1.60,
+        coefficient: 1.20,
+        tick_coefficient: 0.35,
+        tick_interval: 2.0,
+        ignite_bonus_per_stack: 0.0,
+        ignite_stacks: 0,
+        ignite_chance: 0.0,
+        heat: 0.0,
+        energy: 0.0,
+        requires_line_of_sight: true,
+        cooldown_hasted: true,
+        energy_cost: 0.0,
+        warrior: WarriorRow::NONE,
+        druid: DruidRow {
+            mana_cost: MOONFIRE_MANA,
+            astral_generation: 12.0,
+            astral_empowerable: true,
+            bloom_coefficient: 0.0,
+        },
+    },
+    AbilityDef {
+        hero: Hero::Druid,
+        damage_type: DamageType::Nature,
+        id: FireAbility::Sunfire,
+        name: "SUNFIRE",
+        description: "THE SAME BURN, ON EVERYTHING AROUND THE TARGET. ASTRAL: +30% AND THE PACK HEALS YOU",
+        target: TargetMode::Single,
+        cast_time: 0.0,
+        cooldown: 0.0,
+        charges: 1,
+        range: 30.0,
+        radius: 8.0,
+        width: 0.0,
+        duration: 18.0,
+        impact_delay: 0.0,
+        coefficient: 1.00,
+        tick_coefficient: 0.35,
+        tick_interval: 2.0,
+        ignite_bonus_per_stack: 0.0,
+        ignite_stacks: 0,
+        ignite_chance: 0.0,
+        heat: 0.0,
+        energy: 0.0,
+        requires_line_of_sight: true,
+        cooldown_hasted: true,
+        energy_cost: 0.0,
+        warrior: WarriorRow::NONE,
+        druid: DruidRow {
+            mana_cost: SUNFIRE_MANA,
+            astral_generation: 12.0,
+            astral_empowerable: true,
+            bloom_coefficient: 0.0,
+        },
+    },
+    AbilityDef {
+        hero: Hero::Druid,
+        damage_type: DamageType::Nature,
+        id: FireAbility::Wrath,
+        name: "WRATH",
+        description: "FREE. STACKS NATURES EXPOSURE. ASTRAL: 15 S OF STACKING THE WHOLE PACK",
+        target: TargetMode::Single,
+        cast_time: 1.5,
+        cooldown: 0.0,
+        charges: 1,
+        range: 30.0,
+        radius: 0.0,
+        width: 0.0,
+        duration: 15.0,
+        impact_delay: 0.0,
+        coefficient: 2.20,
         tick_coefficient: 0.0,
         tick_interval: 0.0,
         ignite_bonus_per_stack: 0.0,
@@ -1280,25 +1475,31 @@ pub static ABILITIES: [AbilityDef; ABILITY_COUNT] = [
         cooldown_hasted: true,
         energy_cost: 0.0,
         warrior: WarriorRow::NONE,
+        druid: DruidRow {
+            mana_cost: 0.0,
+            astral_generation: 15.0,
+            astral_empowerable: true,
+            bloom_coefficient: 0.0,
+        },
     },
     AbilityDef {
         hero: Hero::Druid,
-        damage_type: DamageType::Arcane,
-        id: FireAbility::Starfall,
-        name: "STARFALL",
-        description: "STARS FALL ON AN 8 M CIRCLE FOR 6 S",
-        target: TargetMode::Ground,
+        damage_type: DamageType::Nature,
+        id: FireAbility::Rejuvenation,
+        name: "REJUVENATION",
+        description: "HEALS OVER 18 S. ASTRAL: +30% HEALING",
+        target: TargetMode::Friendly,
         cast_time: 0.0,
-        cooldown: 24.0,
+        cooldown: 0.0,
         charges: 1,
-        range: 30.0,
-        radius: 8.0,
+        range: 40.0,
+        radius: 0.0,
         width: 0.0,
-        duration: 6.0,
+        duration: 18.0,
         impact_delay: 0.0,
         coefficient: 0.0,
-        tick_coefficient: 0.60,
-        tick_interval: 0.5,
+        tick_coefficient: 0.45,
+        tick_interval: 3.0,
         ignite_bonus_per_stack: 0.0,
         ignite_stacks: 0,
         ignite_chance: 0.0,
@@ -1308,18 +1509,126 @@ pub static ABILITIES: [AbilityDef; ABILITY_COUNT] = [
         cooldown_hasted: true,
         energy_cost: 0.0,
         warrior: WarriorRow::NONE,
+        druid: DruidRow {
+            mana_cost: REJUVENATION_MANA,
+            astral_generation: 8.0,
+            astral_empowerable: true,
+            bloom_coefficient: 0.0,
+        },
     },
     AbilityDef {
         hero: Hero::Druid,
-        damage_type: DamageType::Arcane,
+        damage_type: DamageType::Nature,
         id: FireAbility::Regrowth,
         name: "REGROWTH",
-        description: "HEALS YOU FOR 400% SPELL POWER",
-        target: TargetMode::SelfCast,
+        description: "A LARGE HEAL AND 12 S OF IT AFTERWARDS. ASTRAL: +30% HEALING",
+        target: TargetMode::Friendly,
         cast_time: 1.5,
+        cooldown: 0.0,
+        charges: 1,
+        range: 40.0,
+        radius: 0.0,
+        width: 0.0,
+        duration: 12.0,
+        impact_delay: 0.0,
+        coefficient: 3.00,
+        tick_coefficient: 0.30,
+        tick_interval: 3.0,
+        ignite_bonus_per_stack: 0.0,
+        ignite_stacks: 0,
+        ignite_chance: 0.0,
+        heat: 0.0,
+        energy: 0.0,
+        requires_line_of_sight: false,
+        cooldown_hasted: true,
+        energy_cost: 0.0,
+        warrior: WarriorRow::NONE,
+        druid: DruidRow {
+            mana_cost: REGROWTH_MANA,
+            astral_generation: 10.0,
+            astral_empowerable: true,
+            bloom_coefficient: 0.0,
+        },
+    },
+    AbilityDef {
+        hero: Hero::Druid,
+        damage_type: DamageType::Nature,
+        id: FireAbility::Lifebloom,
+        name: "LIFEBLOOM",
+        description: "HEALS FOR 15 S AND BLOOMS WHEN IT ENDS. ASTRAL: +30% HEALING",
+        target: TargetMode::Friendly,
+        cast_time: 0.0,
+        cooldown: 0.0,
+        charges: 1,
+        range: 40.0,
+        radius: 0.0,
+        width: 0.0,
+        duration: 15.0,
+        impact_delay: 0.0,
+        coefficient: 0.0,
+        tick_coefficient: 0.25,
+        tick_interval: 1.0,
+        ignite_bonus_per_stack: 0.0,
+        ignite_stacks: 0,
+        ignite_chance: 0.0,
+        heat: 0.0,
+        energy: 0.0,
+        requires_line_of_sight: false,
+        cooldown_hasted: true,
+        energy_cost: 0.0,
+        warrior: WarriorRow::NONE,
+        druid: DruidRow {
+            mana_cost: LIFEBLOOM_MANA,
+            astral_generation: 8.0,
+            astral_empowerable: true,
+            bloom_coefficient: 2.50,
+        },
+    },
+    AbilityDef {
+        hero: Hero::Druid,
+        damage_type: DamageType::Nature,
+        id: FireAbility::WildGrowth,
+        name: "WILD GROWTH",
+        description: "HEALS THE TARGET AND HURT ALLIES NEAR THEM FOR 7 S. ASTRAL: +30% HEALING",
+        target: TargetMode::Friendly,
+        cast_time: 0.0,
+        cooldown: 15.0,
+        charges: 1,
+        range: 40.0,
+        radius: 15.0,
+        width: 0.0,
+        duration: 7.0,
+        impact_delay: 0.0,
+        coefficient: 0.0,
+        tick_coefficient: 0.30,
+        tick_interval: 1.0,
+        ignite_bonus_per_stack: 0.0,
+        ignite_stacks: 0,
+        ignite_chance: 0.0,
+        heat: 0.0,
+        energy: 0.0,
+        requires_line_of_sight: false,
+        cooldown_hasted: true,
+        energy_cost: 0.0,
+        warrior: WarriorRow::NONE,
+        druid: DruidRow {
+            mana_cost: WILD_GROWTH_MANA,
+            astral_generation: 12.0,
+            astral_empowerable: true,
+            bloom_coefficient: 0.0,
+        },
+    },
+    AbilityDef {
+        hero: Hero::Druid,
+        damage_type: DamageType::Nature,
+        id: FireAbility::Swiftmend,
+        name: "SWIFTMEND",
+        description: "EATS ONE OF YOUR HEALS OVER TIME FOR A LARGE ONE NOW. ASTRAL: +30% HEALING",
+        target: TargetMode::Friendly,
+        cast_time: 0.0,
         cooldown: 12.0,
         charges: 1,
-        range: 0.0,
+        range: 40.0,
         radius: 0.0,
         width: 0.0,
         duration: 0.0,
@@ -1336,6 +1645,182 @@ pub static ABILITIES: [AbilityDef; ABILITY_COUNT] = [
         cooldown_hasted: true,
         energy_cost: 0.0,
         warrior: WarriorRow::NONE,
+        druid: DruidRow {
+            mana_cost: SWIFTMEND_MANA,
+            astral_generation: 10.0,
+            astral_empowerable: true,
+            bloom_coefficient: 0.0,
+        },
+    },
+    AbilityDef {
+        hero: Hero::Druid,
+        damage_type: DamageType::Nature,
+        id: FireAbility::Nourish,
+        name: "NOURISH",
+        description: "+10% PER HEAL OVER TIME ALREADY ON THE TARGET, WITH NO CAP. ASTRAL: +30% HEALING",
+        target: TargetMode::Friendly,
+        cast_time: 2.0,
+        cooldown: 0.0,
+        charges: 1,
+        range: 40.0,
+        radius: 0.0,
+        width: 0.0,
+        duration: 0.0,
+        impact_delay: 0.0,
+        coefficient: 2.80,
+        tick_coefficient: 0.0,
+        tick_interval: 0.0,
+        ignite_bonus_per_stack: 0.0,
+        ignite_stacks: 0,
+        ignite_chance: 0.0,
+        heat: 0.0,
+        energy: 0.0,
+        requires_line_of_sight: false,
+        cooldown_hasted: true,
+        energy_cost: 0.0,
+        warrior: WarriorRow::NONE,
+        druid: DruidRow {
+            mana_cost: NOURISH_MANA,
+            astral_generation: 8.0,
+            astral_empowerable: true,
+            bloom_coefficient: 0.0,
+        },
+    },
+    AbilityDef {
+        hero: Hero::Druid,
+        damage_type: DamageType::Nature,
+        id: FireAbility::NaturesCleanse,
+        name: "NATURES CLEANSE",
+        description: "REMOVES MAGIC AND POISON FROM AN ALLY. NOT EMPOWERABLE",
+        target: TargetMode::Friendly,
+        cast_time: 0.0,
+        cooldown: 8.0,
+        charges: 1,
+        range: 40.0,
+        radius: 0.0,
+        width: 0.0,
+        duration: 0.0,
+        impact_delay: 0.0,
+        coefficient: 0.0,
+        tick_coefficient: 0.0,
+        tick_interval: 0.0,
+        ignite_bonus_per_stack: 0.0,
+        ignite_stacks: 0,
+        ignite_chance: 0.0,
+        heat: 0.0,
+        energy: 0.0,
+        requires_line_of_sight: false,
+        cooldown_hasted: true,
+        energy_cost: 0.0,
+        warrior: WarriorRow::NONE,
+        druid: DruidRow {
+            mana_cost: NATURES_CLEANSE_MANA,
+            astral_generation: 5.0,
+            astral_empowerable: false,
+            bloom_coefficient: 0.0,
+        },
+    },
+    AbilityDef {
+        hero: Hero::Druid,
+        damage_type: DamageType::Nature,
+        id: FireAbility::WildRush,
+        name: "WILD RUSH",
+        description: "6 S OF +50% SPEED AND -30% DAMAGE TAKEN. NOT EMPOWERABLE",
+        target: TargetMode::SelfCast,
+        cast_time: 0.0,
+        cooldown: 25.0,
+        charges: 1,
+        range: 0.0,
+        radius: 0.0,
+        width: 0.0,
+        duration: 6.0,
+        impact_delay: 0.0,
+        coefficient: 0.0,
+        tick_coefficient: 0.0,
+        tick_interval: 0.0,
+        ignite_bonus_per_stack: 0.0,
+        ignite_stacks: 0,
+        ignite_chance: 0.0,
+        heat: 0.0,
+        energy: 0.0,
+        requires_line_of_sight: false,
+        cooldown_hasted: true,
+        energy_cost: 0.0,
+        warrior: WarriorRow::NONE,
+        druid: DruidRow {
+            mana_cost: 0.0,
+            astral_generation: 0.0,
+            astral_empowerable: false,
+            bloom_coefficient: 0.0,
+        },
+    },
+    AbilityDef {
+        hero: Hero::Druid,
+        damage_type: DamageType::Nature,
+        id: FireAbility::AstralPower,
+        name: "ASTRAL POWER",
+        description: "ARMS THE NEXT COMPATIBLE SPELL. IT IS SPENT WHEN THAT SPELL IS CAST",
+        target: TargetMode::SelfCast,
+        cast_time: 0.0,
+        cooldown: 0.0,
+        charges: 1,
+        range: 0.0,
+        radius: 0.0,
+        width: 0.0,
+        duration: 0.0,
+        impact_delay: 0.0,
+        coefficient: 0.0,
+        tick_coefficient: 0.0,
+        tick_interval: 0.0,
+        ignite_bonus_per_stack: 0.0,
+        ignite_stacks: 0,
+        ignite_chance: 0.0,
+        heat: 0.0,
+        energy: 0.0,
+        requires_line_of_sight: false,
+        cooldown_hasted: true,
+        energy_cost: 0.0,
+        warrior: WarriorRow::NONE,
+        druid: DruidRow {
+            mana_cost: 0.0,
+            astral_generation: 0.0,
+            astral_empowerable: false,
+            bloom_coefficient: 0.0,
+        },
+    },
+    AbilityDef {
+        hero: Hero::Druid,
+        damage_type: DamageType::Nature,
+        id: FireAbility::Tranquility,
+        name: "TRANQUILITY",
+        description: "CHANNELLED. HEALS EVERY ALLY WITHIN 20 M ONCE A SECOND. ASTRAL: +30% HEALING",
+        target: TargetMode::Friendly,
+        cast_time: 6.0,
+        cooldown: 120.0,
+        charges: 1,
+        range: 40.0,
+        radius: 20.0,
+        width: 0.0,
+        duration: 6.0,
+        impact_delay: 0.0,
+        coefficient: 0.0,
+        tick_coefficient: 1.20,
+        tick_interval: 1.0,
+        ignite_bonus_per_stack: 0.0,
+        ignite_stacks: 0,
+        ignite_chance: 0.0,
+        heat: 0.0,
+        energy: 0.0,
+        requires_line_of_sight: false,
+        cooldown_hasted: true,
+        energy_cost: 0.0,
+        warrior: WarriorRow::NONE,
+        druid: DruidRow {
+            mana_cost: TRANQUILITY_MANA,
+            astral_generation: 0.0,
+            astral_empowerable: true,
+            bloom_coefficient: 0.0,
+        },
     },
     AbilityDef {
         hero: Hero::FireMage,
@@ -1364,6 +1849,7 @@ pub static ABILITIES: [AbilityDef; ABILITY_COUNT] = [
         cooldown_hasted: true,
         energy_cost: 0.0,
         warrior: WarriorRow::NONE,
+        druid: DruidRow::NONE,
     },
 ];
 
@@ -1401,6 +1887,14 @@ pub enum AbilityError {
     GroundOutOfRange,
     /// The Ultimate has no design yet and is switched off.
     UltimateDisabled,
+    /// Not enough Mana.
+    NotEnoughMana,
+    /// The Astral Power button was pressed without a full bar, or while already armed.
+    NotEnoughAstralPower,
+    /// Swiftmend was cast on a target with none of the Druid's heals over time on it.
+    NoHealOverTime,
+    /// A friendly ability was cast with nothing friendly to point it at.
+    NoFriendlyTarget,
 }
 
 impl AbilityError {
@@ -1422,6 +1916,10 @@ impl AbilityError {
             Self::NeedsGroundTarget => "CHOOSE A LOCATION",
             Self::GroundOutOfRange => "TOO FAR AWAY",
             Self::UltimateDisabled => "NOT AVAILABLE YET",
+            Self::NotEnoughMana => "NOT ENOUGH MANA",
+            Self::NotEnoughAstralPower => "NOT ENOUGH ASTRAL POWER",
+            Self::NoHealOverTime => "NO HEAL OVER TIME ON THE TARGET",
+            Self::NoFriendlyTarget => "NO FRIENDLY TARGET",
         }
     }
 }

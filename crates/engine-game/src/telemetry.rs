@@ -63,7 +63,7 @@ pub struct TargetTotals {
 /// Allocation: the per-ability totals are a fixed array, and the per-target list and its
 /// slot index are `Vec`s that are cleared rather than freed on reset. A session that has
 /// been reset a hundred times allocates as much as one that has never been.
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Clone)]
 pub struct CombatMeter {
     abilities: [AbilityTotals; ABILITY_SLOTS],
     targets: Vec<TargetTotals>,
@@ -86,6 +86,28 @@ pub struct CombatMeter {
     last_damage_at: f64,
     session_started_at: f64,
     now: f64,
+}
+
+impl Default for CombatMeter {
+    /// Written out rather than derived, because the per-ability array is longer than the
+    /// thirty-two `Default` covers. One row per ability in the game, all of them empty.
+    fn default() -> Self {
+        Self {
+            abilities: [AbilityTotals::default(); ABILITY_SLOTS],
+            targets: Vec::new(),
+            by_slot: Vec::new(),
+            total_damage: 0.0,
+            total_healing: 0.0,
+            total_overkill: 0.0,
+            total_damage_taken: 0.0,
+            owner: EntityId::INVALID,
+            deaths: 0,
+            first_damage_at: None,
+            last_damage_at: 0.0,
+            session_started_at: 0.0,
+            now: 0.0,
+        }
+    }
 }
 
 impl CombatMeter {
@@ -202,6 +224,12 @@ impl CombatMeter {
                 // the announcement as well would report it twice.
                 | CombatEvent::AttackDefended { .. }
                 | CombatEvent::DeflectionGained { .. }
+                | CombatEvent::AstralPowerGained { .. }
+                | CombatEvent::AstralPowerArmed { .. }
+                | CombatEvent::AstralPowerSpent { .. }
+                | CombatEvent::ManaSpent { .. }
+                | CombatEvent::ManaRestored { .. }
+                | CombatEvent::Dispelled { .. }
                 | CombatEvent::DeflectionSpent { .. }
                 | CombatEvent::AbsorbApplied { .. }
                 | CombatEvent::Absorbed { .. }

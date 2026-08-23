@@ -282,6 +282,15 @@ pub struct UiTheme {
     pub deflection: UiColor,
     /// The Deflection bar at a hundred, where the passive bonuses are worth nothing.
     pub deflection_capped: UiColor,
+    /// The Druid's Mana bar.
+    pub mana: UiColor,
+    /// The Astral Power bar while it is filling.
+    pub astral: UiColor,
+    /// The Astral Power bar once the next compatible spell is armed.
+    ///
+    /// Deliberately the same family as [`UiTheme::slot_empowered`]: "this will be empowered"
+    /// is one idea and it should be one colour, on the resource and on the button.
+    pub astral_armed: UiColor,
     /// An ability that cannot be paid for.
     pub slot_no_resource: UiColor,
     /// An ability that is switched off entirely.
@@ -358,6 +367,9 @@ impl Default for UiTheme {
             energy_full: [0.65, 0.85, 1.0, 1.0],
             deflection: [0.85, 0.72, 0.30, 1.0],
             deflection_capped: [1.0, 0.55, 0.20, 1.0],
+            mana: [0.30, 0.50, 0.95, 1.0],
+            astral: [0.55, 0.45, 0.85, 1.0],
+            astral_armed: [0.75, 0.85, 1.0, 1.0],
             slot_disabled: [0.25, 0.25, 0.28, 1.0],
             slot_no_resource: [0.70, 0.18, 0.18, 1.0],
             slot_invalid: [0.60, 0.15, 0.15, 1.0],
@@ -431,6 +443,12 @@ impl UiTheme {
             HeatTier::Hot => self.heat_high,
             HeatTier::Inferno => self.heat_inferno,
         }
+    }
+
+    /// What colour the Astral Power bar is, armed or not.
+    #[must_use]
+    pub fn astral_color(&self, armed: bool) -> UiColor {
+        if armed { self.astral_armed } else { self.astral }
     }
 
     /// What colour the Deflection bar is at `value`.
@@ -675,6 +693,10 @@ impl GameUi {
             viewport,
         );
         self.push_action_bars(snapshot, layout, bars, viewport);
+        // Not arrangeable, and drawn here for the same reason the cast bar is: the Ultimate
+        // and the extras have a place of their own beside the bar, and the application
+        // hit-tests them at exactly these rectangles.
+        self.push_side_buttons(snapshot, viewport);
 
         self.push_talent_button(snapshot, viewport);
         self.push_character_button(viewport);
@@ -919,10 +941,19 @@ impl GameUi {
     }
 
     /// The Heat and Ultimate Energy bars, above the ability bar.
+    ///
+    /// Or the Druid's Mana and Astral Power, which occupy the same two rows: the hero the
+    /// player *is* decides which pair is drawn, and neither class is shown a bar that can
+    /// never move.
     pub fn push_resource_bars(&mut self, snapshot: &UiSnapshot, viewport: (u32, u32)) {
         let (width, height) = (viewport.0 as f32, viewport.1 as f32);
         let x = (width - self.metrics.resource_bar_width) * 0.5;
         let bottom = height - self.metrics.ability_bar_bottom - self.metrics.slot_size;
+
+        if snapshot.player.druid.active {
+            self.push_druid_bars(snapshot, x, bottom);
+            return;
+        }
 
         // Heat: neutral when cold, orange when hot, and obviously different at the cap.
         let heat_rect = UiRect::new(
@@ -1010,6 +1041,104 @@ impl GameUi {
         );
     }
 
+    /// **The Druid's two bars**: Mana, and the Astral Power that arms a spell.
+    ///
+    /// The Astral bar says three things at once and says each of them once: how much is
+    /// banked, whether the button can be pressed, and whether the next compatible spell is
+    /// already armed. All three are read off the snapshot rather than worked out here.
+    fn push_druid_bars(&mut self, snapshot: &UiSnapshot, x: f32, bottom: f32) {
+        let druid = snapshot.player.druid;
+        let mana_rect = UiRect::new(
+            x,
+            bottom - self.metrics.resource_lift,
+            self.metrics.resource_bar_width,
+            self.metrics.resource_bar_height,
+        );
+        self.list.bar(
+            mana_rect,
+            druid.mana_fraction(),
+            self.theme.bar_background,
+            self.theme.mana,
+        );
+        self.title.clear();
+        self.title.push_str("MANA ");
+        write_integer(&mut self.title, druid.mana as i64);
+        self.title.push_str(" / ");
+        write_integer(&mut self.title, druid.max_mana as i64);
+        self.list.text_at(
+            (mana_rect.x, mana_rect.y - self.metrics.scale.px(14.0)),
+            &self.title,
+            self.theme.text,
+            self.metrics.scale.text(1.0),
+        );
+
+        let astral_rect = UiRect::new(
+            x,
+            mana_rect.bottom() + 20.0,
+            self.metrics.resource_bar_width,
+            self.metrics.resource_bar_height,
+        );
+        self.list.bar(
+            astral_rect,
+            druid.astral_fraction(),
+            self.theme.bar_background,
+            self.theme.astral_color(druid.armed),
+        );
+        if druid.armed {
+            // The armed bar is outlined as well as recoloured: the state changes what the
+            // *next* cast does, and it has to be findable without looking for it.
+            self.list
+                .outline(astral_rect, 3.0, self.theme.astral_armed);
+        }
+        self.title.clear();
+        self.title.push_str("ASTRAL POWER ");
+        write_integer(&mut self.title, druid.astral as i64);
+        self.title.push_str(" / ");
+        write_integer(&mut self.title, druid.astral_cost() as i64);
+        if druid.armed {
+            self.title.push_str("  ARMED");
+        } else if druid.can_arm {
+            self.title.push_str("  READY");
+        }
+        self.list.text_at(
+            (astral_rect.x, astral_rect.y - self.metrics.scale.px(14.0)),
+            &self.title,
+            self.theme.text,
+            self.metrics.scale.text(1.0),
+        );
+    }
+
+    /// **The buttons beside the bar**: the Ultimate, and the hero's extras after it.
+    ///
+    /// Drawn by both HUD paths, because neither is arrangeable: the Ultimate has always sat
+    /// beside the bar and the extras are the same idea for a class with more abilities than
+    /// the keyboard has digits.
+    pub fn push_side_buttons(&mut self, snapshot: &UiSnapshot, viewport: (u32, u32)) {
+        let text = self.metrics.scale.text(self.theme.hud_text_scale * 0.5);
+        // A hero with no Ultimate draws no Ultimate: an empty button beside the bar reads as
+        // a spell that has not loaded, not as a class that has none.
+        if let Some(ultimate) = snapshot.ultimate.as_ref() {
+            let rect = self.ultimate_rect(viewport);
+            self.push_ability_button(rect, ultimate, text);
+            if snapshot.player.ultimate_ready {
+                // The Ultimate glows when it can be used: it is the one button worth finding
+                // without looking for it.
+                self.list.outline(
+                    rect.inset(-self.metrics.scale.px(3.0)),
+                    self.metrics.scale.px(3.0),
+                    self.theme.energy_full,
+                );
+            }
+        }
+        for (index, extra) in snapshot.extras.iter().enumerate() {
+            let Some(view) = extra else {
+                continue;
+            };
+            let rect = self.extra_rect(index, viewport);
+            self.push_ability_button(rect, view, text);
+        }
+    }
+
     /// The ten-slot ability bar, and the Ultimate beside it.
     pub fn push_ability_bar(&mut self, snapshot: &UiSnapshot, viewport: (u32, u32)) {
         for (slot, view) in snapshot.abilities.iter().enumerate() {
@@ -1027,25 +1156,7 @@ impl GameUi {
             );
         }
 
-        // A hero with no Ultimate draws no Ultimate: an empty button beside the bar reads
-        // as a spell that has not loaded, not as a class that has none.
-        if let Some(ultimate) = snapshot.ultimate.as_ref() {
-            let rect = self.ultimate_rect(viewport);
-            self.push_ability_button(
-                rect,
-                ultimate,
-                self.metrics.scale.text(self.theme.hud_text_scale * 0.5),
-            );
-            if snapshot.player.ultimate_ready {
-                // The Ultimate glows when it can be used: it is the one button worth finding
-                // without looking for it.
-                self.list.outline(
-                    rect.inset(-self.metrics.scale.px(3.0)),
-                    self.metrics.scale.px(3.0),
-                    self.theme.energy_full,
-                );
-            }
-        }
+        self.push_side_buttons(snapshot, viewport);
     }
 
     /// One ability button: icon plate, state colour, cooldown sweep, charges and key.
@@ -1185,6 +1296,19 @@ impl GameUi {
         UiRect::new(
             last.right() + self.metrics.ultimate_gap,
             height - self.metrics.ability_bar_bottom - self.metrics.ultimate_size,
+            self.metrics.ultimate_size,
+            self.metrics.ultimate_size,
+        )
+    }
+
+    /// Where the hero's `index`th extra button sits: after the Ultimate, in a row.
+    #[must_use]
+    pub fn extra_rect(&self, index: usize, viewport: (u32, u32)) -> UiRect {
+        let ultimate = self.ultimate_rect(viewport);
+        let step = self.metrics.ultimate_size + self.metrics.ultimate_gap;
+        UiRect::new(
+            ultimate.x + step * (index as f32 + 1.0),
+            ultimate.y,
             self.metrics.ultimate_size,
             self.metrics.ultimate_size,
         )
@@ -1451,6 +1575,23 @@ impl GameUi {
             self.tooltip_lines.push(line);
         }
 
+        if view.mana_cost > 0.0 {
+            let mut line = String::new();
+            line.push_str("MANA ");
+            write_integer(&mut line, view.mana_cost as i64);
+            self.tooltip_lines.push(line);
+        }
+
+        if view.healing > 0.0 {
+            let mut line = String::new();
+            line.push_str("HEALS ");
+            write_integer(&mut line, view.healing as i64);
+            if definition.tick_coefficient > 0.0 && definition.coefficient <= 0.0 {
+                line.push_str(" PER TICK");
+            }
+            self.tooltip_lines.push(line);
+        }
+
         let mut line = String::new();
         if definition.heat > 0.0 {
             line.push_str("HEAT +");
@@ -1482,6 +1623,26 @@ impl GameUi {
             line.push_str(" DEFLECTION");
         }
         if !line.is_empty() {
+            self.tooltip_lines.push(line);
+        }
+
+        // **The Astral Power lines.** What this cast puts into the bar, and what spending the
+        // bar on it would buy — generated from the same constants the executor reads, so a
+        // tooltip cannot promise an empowerment the ability does not give.
+        if view.astral_generation > 0.0 {
+            let mut line = String::new();
+            line.push_str("ASTRAL POWER +");
+            write_integer(&mut line, view.astral_generation as i64);
+            self.tooltip_lines.push(line);
+        }
+        if view.astral_empowerable {
+            let mut line = String::new();
+            line.push_str(if view.spends_astral {
+                "ASTRAL: "
+            } else {
+                "ASTRAL (NOT ARMED): "
+            });
+            line.push_str(astral_effect(view.ability));
             self.tooltip_lines.push(line);
         }
 
@@ -1700,7 +1861,42 @@ pub fn icon_for(ability: FireAbility) -> Option<UiIcon> {
         FireAbility::BattleTrance => Some(UiIcon::BattleTrance),
         FireAbility::SpellReflect => Some(UiIcon::SpellReflect),
         FireAbility::LastStand => Some(UiIcon::LastStand),
+        // The Druid's thirteen have no art yet. A slot with no icon draws its abbreviated
+        // name, which is the same fallback every ability had before the two icon sets were
+        // painted — legible, and honest about what is missing.
         _ => None,
+    }
+}
+
+/// What spending Astral Power on this ability buys, in one line.
+///
+/// Generated from the tuning constants rather than written out, so a balance pass that moves
+/// a number moves the tooltip with it. Every healing spell says the same thing because it
+/// *is* the same thing: one modifier, in one place — see `engine_game::druid::Druid`.
+#[must_use]
+pub fn astral_effect(ability: FireAbility) -> &'static str {
+    use engine_game::druid::tuning::{
+        ASTRAL_HEAL_BONUS, ASTRAL_MOONFIRE_DAMAGE, ASTRAL_SUNFIRE_DAMAGE, ASTRAL_WRATH_DURATION,
+    };
+    // Const assertions rather than formatting: the strings below are `'static` and the HUD
+    // font is uppercase, so the numbers are written once and checked against the constants
+    // here. A balance change that moves one of them fails this compile-time comparison.
+    const _: () = assert!(ASTRAL_MOONFIRE_DAMAGE == 0.50);
+    const _: () = assert!(ASTRAL_SUNFIRE_DAMAGE == 0.30);
+    const _: () = assert!(ASTRAL_HEAL_BONUS == 0.30);
+    const _: () = assert!(ASTRAL_WRATH_DURATION == 15.0);
+    match ability {
+        FireAbility::Moonfire => "+50% DAMAGE, AND THE BURN NEVER ENDS",
+        FireAbility::Sunfire => "+30% DAMAGE, AND THE PACK HEALS YOU FOR 30% OF WHAT IT TAKES",
+        FireAbility::Wrath => "15 S OF STACKING THE DEBUFF ON EVERYTHING WITHIN 10 M",
+        FireAbility::Rejuvenation
+        | FireAbility::Regrowth
+        | FireAbility::Lifebloom
+        | FireAbility::WildGrowth
+        | FireAbility::Swiftmend
+        | FireAbility::Nourish
+        | FireAbility::Tranquility => "+30% HEALING",
+        _ => "NOTHING",
     }
 }
 
@@ -1948,12 +2144,155 @@ mod tests {
             .collect()
     }
 
+    /// A `GameUi` with the metrics a frame would have, for asking about rectangles.
+    fn ui_for(_simulation: &Simulation) -> GameUi {
+        GameUi::new()
+    }
+
     fn built(simulation: &Simulation) -> GameUi {
         let (set, config) = plates(simulation);
         let mut ui = GameUi::new();
         let snapshot = UiSnapshot::build(simulation);
         ui.build(&snapshot, set.plates(), &config, VIEWPORT);
         ui
+    }
+
+    /// The same arena, played as the Druid.
+    fn druid_sim() -> Simulation {
+        let mut simulation = sim();
+        assert!(simulation.set_hero(Hero::Druid));
+        simulation
+    }
+
+    #[test]
+    fn the_druid_gets_mana_and_astral_power_instead_of_heat() {
+        let mut simulation = druid_sim();
+        let found = texts(&built(&simulation));
+        assert!(
+            found.iter().any(|text| text.starts_with("MANA")),
+            "no mana bar: {found:?}"
+        );
+        assert!(
+            found.iter().any(|text| text.starts_with("ASTRAL POWER")),
+            "no astral bar: {found:?}"
+        );
+        assert!(
+            !found.iter().any(|text| text.starts_with("HEAT")),
+            "the Druid was shown a bar it can never move: {found:?}"
+        );
+
+        // Armed, and the bar says so where the player is already looking.
+        simulation
+            .druid_mut()
+            .astral
+            .gain(engine_game::druid::tuning::ASTRAL_MAXIMUM);
+        simulation
+            .cast(engine_game::firemage::FireAbility::AstralPower)
+            .expect("a full bar arms");
+        let found = texts(&built(&simulation));
+        assert!(
+            found.iter().any(|text| text.contains("ARMED")),
+            "the armed state is invisible: {found:?}"
+        );
+    }
+
+    #[test]
+    fn a_hero_with_extra_buttons_draws_them_beside_the_ultimate() {
+        let simulation = druid_sim();
+        let ultimate = ui_for(&simulation).ultimate_rect(VIEWPORT);
+        let first = ui_for(&simulation).extra_rect(0, VIEWPORT);
+        let second = ui_for(&simulation).extra_rect(1, VIEWPORT);
+        // In a row, after the Ultimate, and not on top of each other.
+        assert!(first.x > ultimate.x);
+        assert!(second.x > first.x);
+        assert_eq!(first.y, ultimate.y);
+
+        let snapshot = UiSnapshot::build(&simulation);
+        let names: Vec<&str> = snapshot
+            .extras
+            .iter()
+            .flatten()
+            .map(|view| view.name)
+            .collect();
+        assert_eq!(names, ["WILD RUSH", "ASTRAL POWER"]);
+        assert_eq!(
+            snapshot.ultimate.expect("the druid has one").name,
+            "TRANQUILITY"
+        );
+    }
+
+    #[test]
+    fn an_astral_tooltip_says_what_the_next_cast_will_do() {
+        use engine_game::firemage::FireAbility;
+        let mut simulation = druid_sim();
+        simulation
+            .druid_mut()
+            .astral
+            .gain(engine_game::druid::tuning::ASTRAL_MAXIMUM);
+        simulation
+            .cast(FireAbility::AstralPower)
+            .expect("a full bar arms");
+        let snapshot = UiSnapshot::build(&simulation);
+        let view = *snapshot
+            .ability_view(FireAbility::Moonfire)
+            .expect("moonfire is on the bar");
+
+        let mut ui = GameUi::new();
+        ui.push_ability_tooltip(
+            UiRect::new(100.0, 900.0, 48.0, 48.0),
+            &view,
+            5,
+            engine_game::firemage::FireMastery::Haste,
+            VIEWPORT,
+        );
+        let found = texts(&ui);
+        assert!(
+            found.iter().any(|text| text.starts_with("MANA")),
+            "the cost is missing: {found:?}"
+        );
+        assert!(
+            found.iter().any(|text| text.starts_with("ASTRAL POWER +")),
+            "what it generates is missing: {found:?}"
+        );
+        assert!(
+            found
+                .iter()
+                .any(|text| text.contains("NEVER ENDS") && text.starts_with("ASTRAL:")),
+            "what the empowerment does is missing: {found:?}"
+        );
+        // And the bar's highlight says the next press is the empowered one.
+        assert_eq!(view.availability, SlotAvailability::Empowered);
+        assert!(view.spends_astral);
+    }
+
+    #[test]
+    fn a_druid_heal_tooltip_prints_healing_rather_than_damage() {
+        use engine_game::firemage::FireAbility;
+        let simulation = druid_sim();
+        let snapshot = UiSnapshot::build(&simulation);
+        let view = *snapshot
+            .ability_view(FireAbility::Regrowth)
+            .expect("regrowth is on the bar");
+        assert_eq!(view.damage, 0.0);
+        assert!(view.healing > 0.0);
+
+        let mut ui = GameUi::new();
+        ui.push_ability_tooltip(
+            UiRect::new(100.0, 900.0, 48.0, 48.0),
+            &view,
+            5,
+            engine_game::firemage::FireMastery::Haste,
+            VIEWPORT,
+        );
+        let found = texts(&ui);
+        assert!(
+            found.iter().any(|text| text.starts_with("HEALS")),
+            "{found:?}"
+        );
+        assert!(
+            !found.iter().any(|text| text.starts_with("DAMAGE")),
+            "a heal claimed to deal damage: {found:?}"
+        );
     }
 
     #[test]

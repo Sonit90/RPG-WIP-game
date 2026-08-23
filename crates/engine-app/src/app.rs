@@ -858,7 +858,10 @@ impl App {
             // Interrupts the target's cast. A *developer* control: the class has no
             // interrupt ability, and inventing one would be a new player ability this phase
             // is explicitly not adding. The mechanism it drives is the shipping one.
-            KeyCode::G => {
+            // H rather than G: G is the second of the two ability buttons beside the bar
+            // (see `Bindings::extra_two`), and a developer control has no business taking a
+            // key the class needs.
+            KeyCode::H => {
                 let Some(target) = self.simulation.player().target else {
                     return;
                 };
@@ -1245,6 +1248,21 @@ impl App {
             }
         }
 
+        // The extras beside it, hit-tested at the rectangles they are drawn at.
+        for index in 0..self.snapshot.extras.len() {
+            let Some(view) = self.snapshot.extras[index] else {
+                continue;
+            };
+            let rect = self.game_ui.extra_rect(index, viewport);
+            if rect.contains(ui_input.pointer.0, ui_input.pointer.1) {
+                self.hovered_ability = Some(view.ability);
+                self.hovered_slot = None;
+                if ui_input.pointer_pressed {
+                    pressed = Some(view.ability);
+                }
+            }
+        }
+
         // The keys. Every slot's key is read here rather than in the input map: the bar is
         // the binding table now, and an aimed ability's key opens its targeting circle
         // instead of casting, which is a decision only this layer can make.
@@ -1256,8 +1274,22 @@ impl App {
                 pressed = Some(ability);
             }
         }
-        if ctx.input().was_key_pressed(self.bindings.ultimate) {
-            pressed = Some(FireAbility::Cataclysm);
+        // Whichever ability *this* hero keeps on the Ultimate key, rather than the mage's:
+        // the Warrior's Last Stand and the Druid's Tranquility live in the same slot, and a
+        // key that always meant Cataclysm was a key two of the three heroes could not press.
+        if ctx.input().was_key_pressed(self.bindings.ultimate)
+            && let Some(ultimate) = self.simulation.hero().ultimate()
+        {
+            pressed = Some(ultimate);
+        }
+        // And the two buttons beside it, for a hero with more abilities than digits.
+        for (index, ability) in self.simulation.hero().extras().enumerate() {
+            let Some(key) = self.bindings.extra_key(index) else {
+                continue;
+            };
+            if ctx.input().was_key_pressed(key) {
+                pressed = Some(ability);
+            }
         }
 
         if let Some(ability) = pressed {
@@ -1901,7 +1933,11 @@ impl App {
                 Some(_) => self
                     .hovered_slot_rect(viewport)
                     .unwrap_or_else(|| self.game_ui.ultimate_rect(viewport)),
-                None => self.game_ui.ultimate_rect(viewport),
+                // Beside the bar: the Ultimate's own square, or one of the extras after it.
+                None => match self.simulation.hero().extra_index(ability) {
+                    Some(index) => self.game_ui.extra_rect(index, viewport),
+                    None => self.game_ui.ultimate_rect(viewport),
+                },
             };
             // The view is looked up by ability rather than by slot: a slot the current hero
             // does not fill has no view, and a tooltip for a spell the player cannot cast is
@@ -3813,10 +3849,11 @@ fn log_controls(args: &Args, demo: Option<&DemoScene>) {
         log::info!("  B                stop everything");
         log::info!("  N                eight at once, to hear the limiter decide");
     } else {
-        log::info!("  1 - 0            firebolt, flame lance, flame wave, meteor,");
-        log::info!("                   firestorm, pyroblast, inferno, fire detonation,");
-        log::info!("                   flame shield, blink");
-        log::info!("  R                cataclysm, the ultimate");
+        log::info!("  1 - 0            the current hero's ability bar");
+        log::info!("  F / G            the two buttons beside it, for a hero with more");
+        log::info!("                   than ten abilities: the Druid's wild rush and");
+        log::info!("                   astral power");
+        log::info!("  R                the ultimate: last stand, tranquility");
         log::info!("  BACKSPACE        reset the dummies and the combat meter");
         log::info!("  4 5 R            place with the mouse: left click confirms, right cancels");
         log::info!("  TAB              cycle target: the next enemy in range, nearest first");

@@ -43,6 +43,12 @@ pub enum EntityKind {
     Player,
     /// A training dummy: hostile, and deliberately inert.
     Dummy,
+    /// A *friendly* training dummy, kept wounded so healing can be practised on it.
+    ///
+    /// The same inert body as [`EntityKind::Dummy`] on the other side of the factions, which
+    /// is the whole difference: a heal cannot be pointed at something hostile, and a class
+    /// whose kit is mostly healing has nothing to press in a room full of enemies.
+    HealingDummy,
     /// Something that fights back.
     Enemy,
 }
@@ -54,6 +60,7 @@ impl EntityKind {
         match self {
             Self::Player => "PLAYER",
             Self::Dummy => "DUMMY",
+            Self::HealingDummy => "HEALING DUMMY",
             Self::Enemy => "ENEMY",
         }
     }
@@ -117,7 +124,32 @@ impl EntityDesc {
             height: 2.2,
         }
     }
+
+    /// A friendly training dummy at `position`, for practising healing on.
+    ///
+    /// The same body as [`EntityDesc::dummy`] in the player's own faction. It spawns whole
+    /// and is put at [`HEALING_DUMMY_FRACTION`] by [`GameWorld::spawn`]'s caller — see
+    /// [`GameWorld::restore`], which is where the rule lives so that every reset obeys it.
+    #[must_use]
+    pub fn healing_dummy(position: Vec3, max_health: f32) -> Self {
+        Self {
+            kind: EntityKind::HealingDummy,
+            faction: Faction::Player,
+            position,
+            max_health,
+            radius: 0.7,
+            height: 2.2,
+        }
+    }
 }
+
+/// The fraction of its health a healing dummy is restored to.
+///
+/// Half, so there is always something to heal and always somewhere for an overheal to be
+/// visible. It is what [`GameWorld::restore`] puts the dummy back to, so an encounter reset
+/// and a fresh scene produce the same target rather than a full-health one nothing can be
+/// practised on.
+pub const HEALING_DUMMY_FRACTION: f32 = 0.5;
 
 /// An enemy of `kind` at `position`, for [`GameWorld::spawn`].
 ///
@@ -455,6 +487,12 @@ impl GameWorld {
         // slide back to its spawn over the following frame.
         self.previous_bodies[slot] = self.bodies[slot];
         self.healths[slot].restore();
+        // A healing dummy is restored to *half*: it exists to be healed, and putting it back
+        // at full health would make the reset key the one thing that takes the target away.
+        if self.kinds[slot] == EntityKind::HealingDummy {
+            let max = self.healths[slot].max();
+            self.healths[slot].damage(max * (1.0 - HEALING_DUMMY_FRACTION));
+        }
         self.statuses[slot].clear();
         true
     }

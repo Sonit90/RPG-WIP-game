@@ -261,7 +261,8 @@ fn a_thousand_dummies_simulate_without_a_device() {
     // survive the scale before it is worth measuring.
     let config = ArenaConfig::with_group(1_000);
     let mut simulation = arena::training_arena(&config);
-    assert_eq!(simulation.world().len(), 1_002);
+    // The player, a thousand dummies, the lone one, and the friendly one in the main hall.
+    assert_eq!(simulation.world().len(), 1_003);
 
     for _ in 0..60 {
         simulation.push_command(PlayerCommand::Move {
@@ -273,7 +274,7 @@ fn a_thousand_dummies_simulate_without_a_device() {
         simulation.advance(Duration::from_micros(16_667));
     }
     assert!(simulation.tick_count() >= 55);
-    assert_eq!(simulation.world().len(), 1_002, "nothing was lost");
+    assert_eq!(simulation.world().len(), 1_003, "nothing was lost");
 }
 
 #[test]
