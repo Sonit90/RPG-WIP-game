@@ -43,13 +43,30 @@ pub enum PcfKernel {
     /// One comparison, hardware-filtered. The cheapest thing that is still a comparison
     /// sampler: the 2x2 bilinear the comparison sampler performs is already a soft edge.
     Single,
-    /// Nine taps. The default, and what §13 of the shadow plan asks for.
+    /// Nine taps on a regular grid.
     Tap3x3,
-    /// Twenty-five taps, for a soft edge on hardware that can afford it.
+    /// Twenty-five taps on a regular grid. Kept so the filtering work has something to be
+    /// compared against, and because it is still the widest filter available.
     Tap5x5,
+    /// Four taps on a rotated Poisson disc.
+    Poisson4,
+    /// Six taps on a rotated Poisson disc. The default above Low.
+    Poisson6,
+    /// Eight taps on a rotated Poisson disc.
+    Poisson8,
 }
 
 impl PcfKernel {
+    /// Every kernel, cheapest first, for a benchmark or a settings list to walk.
+    pub const ALL: [Self; 6] = [
+        Self::Single,
+        Self::Poisson4,
+        Self::Poisson6,
+        Self::Poisson8,
+        Self::Tap3x3,
+        Self::Tap5x5,
+    ];
+
     /// Taps one shadow lookup costs.
     #[must_use]
     pub fn taps(self) -> u32 {
@@ -57,16 +74,65 @@ impl PcfKernel {
             Self::Single => 1,
             Self::Tap3x3 => 9,
             Self::Tap5x5 => 25,
+            Self::Poisson4 => 4,
+            Self::Poisson6 => 6,
+            Self::Poisson8 => 8,
         }
     }
 
     /// The value the shader switches on.
+    ///
+    /// The grid kernels keep the codes they had, so a shader and a build of the engine that
+    /// disagree about this enum still disagree about the *new* values only.
     #[must_use]
     pub fn shader_code(self) -> u32 {
         match self {
             Self::Single => 0,
             Self::Tap3x3 => 1,
             Self::Tap5x5 => 2,
+            Self::Poisson4 => 3,
+            Self::Poisson6 => 4,
+            Self::Poisson8 => 5,
+        }
+    }
+
+    /// Whether the kernel is a rotated disc rather than a regular grid.
+    ///
+    /// A grid of taps one texel apart shows its own structure as a staircase along a
+    /// shadow edge; a disc rotated per pixel turns the same budget into noise, which the
+    /// eye reads as softness. The distinction is worth a predicate because the distance LOD
+    /// steps *within* the disc family and must not silently land on a grid.
+    #[must_use]
+    pub fn is_poisson(self) -> bool {
+        matches!(self, Self::Poisson4 | Self::Poisson6 | Self::Poisson8)
+    }
+
+    /// The next cheaper kernel, or the same one when there is nothing cheaper.
+    ///
+    /// What the distance LOD steps down: full quality near the camera, one step coarser
+    /// further out. Grid kernels step onto the disc of the nearest size rather than onto a
+    /// narrower grid, because the disc is both cheaper and steadier.
+    #[must_use]
+    pub fn cheaper(self) -> Self {
+        match self {
+            Self::Tap5x5 => Self::Poisson8,
+            Self::Tap3x3 => Self::Poisson6,
+            Self::Poisson8 => Self::Poisson6,
+            Self::Poisson6 => Self::Poisson4,
+            Self::Poisson4 | Self::Single => Self::Single,
+        }
+    }
+
+    /// The word this kernel is written as in a log line or on the command line.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Single => "single",
+            Self::Tap3x3 => "3x3",
+            Self::Tap5x5 => "5x5",
+            Self::Poisson4 => "poisson4",
+            Self::Poisson6 => "poisson6",
+            Self::Poisson8 => "poisson8",
         }
     }
 }
@@ -273,6 +339,15 @@ pub struct ContactShadowSettings {
     /// The detail it adds is invisible at range, and the march is a per-pixel cost that is
     /// not.
     pub max_distance: f32,
+    /// How much smaller than the camera the march runs, on each axis.
+    ///
+    /// 1 marches once per shaded pixel. 2 marches at half width and half height - a quarter
+    /// of the rays - into its own target, which the lighting pass then reconstructs from.
+    /// The march is the expensive half of the effect and its result is a low-frequency
+    /// occlusion term, so this is the setting that decides what contact shadows cost.
+    ///
+    /// Clamped to 1..=4 by [`ShadowSettings::validated`].
+    pub divisor: u32,
 }
 
 impl Default for ContactShadowSettings {
@@ -283,7 +358,23 @@ impl Default for ContactShadowSettings {
             steps: 8,
             thickness: 0.06,
             max_distance: 25.0,
+            divisor: 1,
         }
+    }
+}
+
+impl ContactShadowSettings {
+    /// The dimensions the march runs at for a camera of `width` by `height`.
+    ///
+    /// Rounded up, so an odd camera size still covers every pixel: a half-resolution target
+    /// for 1281 pixels is 641, not 640, and the last column has somewhere to come from.
+    #[must_use]
+    pub fn target_size(&self, width: u32, height: u32) -> (u32, u32) {
+        let divisor = self.divisor.clamp(1, 4);
+        (
+            width.div_ceil(divisor).max(1),
+            height.div_ceil(divisor).max(1),
+        )
     }
 }
 
@@ -313,6 +404,13 @@ pub struct ShadowSettings {
     pub blend_fraction: f32,
     /// The PCF kernel every shadow lookup uses.
     pub pcf: PcfKernel,
+    /// How wide the disc kernels reach, in shadow-map texels.
+    ///
+    /// Ignored by the grid kernels, whose taps are one texel apart by construction. For the
+    /// disc it is the whole quality/noise trade in one number: too small and six taps are
+    /// six samples of the same texel, too large and the penumbra is a cloud of noise the
+    /// hardware's bilinear cannot close up.
+    pub filter_radius_texels: f32,
     /// The three biases.
     pub bias: ShadowBias,
     /// Whether cascades are snapped to their own texel grid.
@@ -387,7 +485,13 @@ impl ShadowSettings {
         self.local.resolution = self.local.resolution.clamp(128, 4096).next_power_of_two();
         self.local.max_views = self.local.max_views.min(MAX_LOCAL_SHADOW_VIEWS);
         self.local.max_distance = self.local.max_distance.max(0.0);
+        self.filter_radius_texels = if self.filter_radius_texels.is_finite() {
+            self.filter_radius_texels.clamp(0.5, 8.0)
+        } else {
+            2.0
+        };
         self.contact.steps = self.contact.steps.clamp(2, 32);
+        self.contact.divisor = self.contact.divisor.clamp(1, 4);
         self.contact.length = self.contact.length.clamp(0.0, 5.0);
         self.contact.thickness = self.contact.thickness.max(0.0);
         self.lod.cull_texels = self.lod.cull_texels.max(0.0);
@@ -405,6 +509,23 @@ impl ShadowSettings {
     #[must_use]
     pub fn with_resolution(mut self, resolution: u32) -> Self {
         self.resolution = resolution;
+        self.validated()
+    }
+
+    /// The settings with the shadow range moved to `meters`, keeping the split ratios.
+    ///
+    /// The splits are scaled rather than replaced: the ratios between them are the content
+    /// decision (a near cascade sized for combat, a far one for the skyline), and a shorter
+    /// range is a statement about how far shadows are wanted, not about where the seams go.
+    #[must_use]
+    pub fn with_max_distance(mut self, meters: f32) -> Self {
+        let current = self.max_distance();
+        if current > 0.0 && meters > 0.0 && meters.is_finite() {
+            let scale = meters / current;
+            for distance in &mut self.cascade_distances {
+                *distance *= scale;
+            }
+        }
         self.validated()
     }
 
@@ -547,6 +668,7 @@ impl ShadowPreset {
             resolution: 2048,
             blend_fraction: 0.1,
             pcf: PcfKernel::Tap3x3,
+            filter_radius_texels: 2.0,
             bias: ShadowBias::default(),
             stabilize: true,
             caster_extrusion: 60.0,

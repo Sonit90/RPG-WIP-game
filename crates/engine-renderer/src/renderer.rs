@@ -342,6 +342,12 @@ pub struct Renderer {
     /// Copied rather than borrowed for the same reason the render list is a copy: recording
     /// happens in `draw_render_list`, which deliberately never looks at the `RenderWorld`.
     lights: Vec<LocalLight>,
+    /// Whether this frame's local lights are shaded at all.
+    ///
+    /// A measurement control, not a quality level: "what do the local lights cost?" is
+    /// answered by two runs of one binary, and the alternative - deleting the braziers from
+    /// the scene - would measure a different scene. On for every ordinary run.
+    local_lights_enabled: bool,
     /// This frame's skinned draws, *unculled*, for the shadow passes.
     ///
     /// Separate from [`Renderer::skinned`], which is the camera's filtered copy: a character
@@ -548,6 +554,7 @@ impl Renderer {
             material_tables: Vec::new(),
             shadow,
             lights: Vec::new(),
+            local_lights_enabled: true,
             shadow_skinned: SkinnedDrawList::new(),
             culler: Culler::new(),
             visible: RenderList::new(),
@@ -1072,7 +1079,9 @@ impl Renderer {
     /// settled and the world is not consulted again.
     pub fn prepare_shadows(&mut self, world: &RenderWorld, camera: &Camera, lighting: Lighting) {
         self.lights.clear();
-        self.lights.extend_from_slice(world.lights());
+        if self.local_lights_enabled {
+            self.lights.extend_from_slice(world.lights());
+        }
 
         // The whole list, not the culled one: a monster behind the camera still casts into a
         // cascade the camera can see.
@@ -1105,6 +1114,19 @@ impl Renderer {
         self.wait_for_idle()?;
         let size = self.swap_chain.size();
         self.shadow.set_settings(&self.context, settings, size)
+    }
+
+    /// Switches the local lights off, or back on, for the whole frame.
+    ///
+    /// See [`Renderer::local_lights_enabled`] for why this exists rather than a scene edit.
+    pub fn set_local_lights_enabled(&mut self, enabled: bool) {
+        self.local_lights_enabled = enabled;
+    }
+
+    /// Whether local lights are being shaded.
+    #[must_use]
+    pub fn local_lights_enabled(&self) -> bool {
+        self.local_lights_enabled
     }
 
     /// What the last frame's shadow stage did.

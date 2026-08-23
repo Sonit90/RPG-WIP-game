@@ -9,6 +9,8 @@ use std::fmt;
 use std::str::FromStr;
 
 use engine_core::config::{DisplayMode, EngineSettings};
+use engine_renderer::ShadowSettings;
+use engine_renderer::shadow::PcfKernel;
 
 /// Which scenario the executable loads.
 ///
@@ -202,6 +204,16 @@ options:
   --validation           enable the D3D12 validation layer (on by default in debug
                          builds; it costs several times the frame time)
   --frames <count>       exit after rendering this many frames
+  --shadow-tweak <list>  override individual shadow settings on top of the preset, as a
+                         comma-separated key=value list: cascades, res, distance, pcf
+                         (single|3x3|5x5|poisson4|poisson6|poisson8), contact,
+                         contact-steps, contact-length, contact-distance,
+                         contact-divisor, local, local-views, local-lights. A
+                         measurement control like --shadows: never written back.
+  --warmup <count>       discard the first this many frames from the statistics window
+                         (default 0). A measurement control: driver warm-up, shader
+                         creation and the first upload all land in the opening frames,
+                         and a p95 that includes them describes the load, not the frame.
   --report <seconds>     frame-time report interval (default 1.0, 0 disables)
   --overlay              start with the debug overlay visible (F5 toggles it at any
                          time; hidden by default because it costs frame time)
@@ -269,6 +281,147 @@ options:
                          engine keeps saying what a pillar looks like
   -h, --help             print this help and exit";
 
+
+/// Individual shadow settings named on the command line, applied on top of a preset.
+///
+/// A measurement control, in the same family as `--shadows`: a preset is what a player
+/// chooses, and a benchmark that wants to know what one *field* costs has to be able to move
+/// that field without inventing a sixth quality level for it. Nothing here is written back to
+/// the settings file, and an empty override set leaves the preset exactly as it is.
+///
+/// ```text
+/// --shadow-tweak pcf=poisson6,contact-steps=8,contact-length=0.15
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct ShadowOverrides {
+    /// Cascade count.
+    pub cascades: Option<usize>,
+    /// Cascade shadow-map side, in texels.
+    pub resolution: Option<u32>,
+    /// The last cascade's far distance, in metres. The nearer splits keep their ratios.
+    pub distance: Option<f32>,
+    /// The filter kernel.
+    pub pcf: Option<PcfKernel>,
+    /// Whether contact shadows run.
+    pub contact: Option<bool>,
+    /// Steps in the contact-shadow march.
+    pub contact_steps: Option<u32>,
+    /// Length of the contact-shadow ray, in metres.
+    pub contact_length: Option<f32>,
+    /// Distance past which contact shadows are skipped, in metres.
+    pub contact_distance: Option<f32>,
+    /// Denominator of the contact-shadow resolution: 1 is full, 2 is half on each axis.
+    pub contact_divisor: Option<u32>,
+    /// Whether local lights may cast shadows.
+    pub local: Option<bool>,
+    /// Local shadow view budget.
+    pub local_views: Option<usize>,
+    /// Whether local lights are shaded at all.
+    ///
+    /// Not a shadow setting - it switches off the lights themselves - but it belongs to the
+    /// same measurement question ("what does this cost?") and shares its parser.
+    pub local_lights: Option<bool>,
+}
+
+impl ShadowOverrides {
+    /// Parses one `key=value,key=value` list, adding to what is already set.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ArgsError::InvalidValue`] for an unknown key or an unparseable value, so a
+    /// typo in a benchmark command is a message rather than a run that silently measured the
+    /// preset.
+    pub fn parse_into(&mut self, list: &str) -> Result<(), ArgsError> {
+        for entry in list.split(',').map(str::trim).filter(|e| !e.is_empty()) {
+            let invalid = || ArgsError::InvalidValue {
+                option: "--shadow-tweak",
+                value: entry.to_owned(),
+            };
+            let (key, value) = entry.split_once('=').ok_or_else(invalid)?;
+            let boolean = |v: &str| match v {
+                "on" | "true" | "1" => Some(true),
+                "off" | "false" | "0" => Some(false),
+                _ => None,
+            };
+            match key.trim() {
+                "cascades" => self.cascades = Some(value.parse().map_err(|_| invalid())?),
+                "res" | "resolution" => {
+                    self.resolution = Some(value.parse().map_err(|_| invalid())?);
+                }
+                "distance" => self.distance = Some(value.parse().map_err(|_| invalid())?),
+                "pcf" => {
+                    self.pcf = Some(match value {
+                        "1" | "single" => PcfKernel::Single,
+                        "3x3" => PcfKernel::Tap3x3,
+                        "5x5" => PcfKernel::Tap5x5,
+                        "poisson4" => PcfKernel::Poisson4,
+                        "poisson6" => PcfKernel::Poisson6,
+                        "poisson8" => PcfKernel::Poisson8,
+                        _ => return Err(invalid()),
+                    });
+                }
+                "contact" => self.contact = Some(boolean(value).ok_or_else(invalid)?),
+                "contact-steps" => {
+                    self.contact_steps = Some(value.parse().map_err(|_| invalid())?);
+                }
+                "contact-length" => {
+                    self.contact_length = Some(value.parse().map_err(|_| invalid())?);
+                }
+                "contact-distance" => {
+                    self.contact_distance = Some(value.parse().map_err(|_| invalid())?);
+                }
+                "contact-divisor" | "contact-scale" => {
+                    self.contact_divisor = Some(value.parse().map_err(|_| invalid())?);
+                }
+                "local" => self.local = Some(boolean(value).ok_or_else(invalid)?),
+                "local-views" => self.local_views = Some(value.parse().map_err(|_| invalid())?),
+                "local-lights" => self.local_lights = Some(boolean(value).ok_or_else(invalid)?),
+                _ => return Err(invalid()),
+            }
+        }
+        Ok(())
+    }
+
+    /// Applies whatever was named on top of `settings`, and returns it validated.
+    #[must_use]
+    pub fn apply(&self, mut settings: ShadowSettings) -> ShadowSettings {
+        if let Some(count) = self.cascades {
+            settings.cascade_count = count;
+        }
+        if let Some(resolution) = self.resolution {
+            settings.resolution = resolution;
+        }
+        if let Some(distance) = self.distance {
+            settings = settings.with_max_distance(distance);
+        }
+        if let Some(pcf) = self.pcf {
+            settings.pcf = pcf;
+        }
+        if let Some(enabled) = self.contact {
+            settings.contact.enabled = enabled;
+        }
+        if let Some(steps) = self.contact_steps {
+            settings.contact.steps = steps;
+        }
+        if let Some(length) = self.contact_length {
+            settings.contact.length = length;
+        }
+        if let Some(distance) = self.contact_distance {
+            settings.contact.max_distance = distance;
+        }
+        if let Some(divisor) = self.contact_divisor {
+            settings.contact.divisor = divisor;
+        }
+        if let Some(enabled) = self.local {
+            settings.local.enabled = enabled;
+        }
+        if let Some(views) = self.local_views {
+            settings.local.max_views = views;
+        }
+        settings.validated()
+    }
+}
+
 /// Parsed command line.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Args {
@@ -280,6 +433,14 @@ pub struct Args {
     pub vsync: bool,
     /// Optional frame budget after which the application exits on its own.
     pub frames: Option<u64>,
+    /// Individual shadow fields named on the command line, applied on top of the preset.
+    pub shadow_overrides: ShadowOverrides,
+    /// Frames whose timings are discarded before the statistics window starts.
+    ///
+    /// The opening frames of a run include driver warm-up, pipeline creation and the first
+    /// uploads. They are part of starting the game and not part of its steady state, so a
+    /// benchmark that reports a percentile over them reports the wrong thing.
+    pub warmup: u64,
     /// Seconds between frame-time reports. Zero disables reporting.
     pub report_interval_secs: f64,
     /// Whether the debug overlay starts visible. It can always be toggled with F5.
@@ -353,6 +514,8 @@ impl Default for Args {
             height: 1080,
             vsync: false,
             frames: None,
+            warmup: 0,
+            shadow_overrides: ShadowOverrides::default(),
             shadows: None,
             report_interval_secs: 1.0,
             overlay: false,
@@ -458,6 +621,11 @@ where
             "--width" => args.width = next_value(&mut iter, "--width")?,
             "--height" => args.height = next_value(&mut iter, "--height")?,
             "--frames" => args.frames = Some(next_value(&mut iter, "--frames")?),
+            "--warmup" => args.warmup = next_value(&mut iter, "--warmup")?,
+            "--shadow-tweak" => {
+                let raw = iter.next().ok_or(ArgsError::MissingValue("--shadow-tweak"))?;
+                args.shadow_overrides.parse_into(raw.as_ref())?;
+            }
             "--shadows" => {
                 let value: String = next_value(&mut iter, "--shadows")?;
                 let Some(quality) = engine_settings::ShadowQuality::from_name(&value) else {

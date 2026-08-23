@@ -46,7 +46,7 @@ cbuffer Frame : register(b0)
     // x: cascade count  y: blend fraction  z: PCF kernel code  w: debug mode
     float4 shadow_params;
     // x: normal offset in texels  y: its ceiling in metres  z: shadow strength (0 = off)
-    // w: unused
+    // w: disc-kernel radius in texels
     float4 shadow_params2;
     // x,y: atlas size in texels   z,w: its reciprocal
     float4 shadow_atlas_size;
@@ -118,7 +118,43 @@ float shadow_tap(float2 atlas_uv, float compare, float4 scale_bias)
 // is already a soft edge), nine, or twenty-five. Unrolled per branch rather than looped over
 // a variable radius, because a dynamic loop around a texture fetch is markedly slower than
 // three static ones and there are only three widths.
-float shadow_pcf(float2 atlas_uv, float compare, float4 scale_bias, uint kernel)
+// Interleaved gradient noise: a per-pixel angle, cheap and without a texture.
+//
+// Deliberately a function of the *pixel* and of nothing else. The engine has no temporal
+// accumulation and no TAA, so an angle that changed per frame would turn a static penumbra
+// into boiling noise. Fixed per pixel, the same budget of taps reads as a fine dither that
+// stands still while the camera moves - which is the behaviour a filter without a temporal
+// pass has to have.
+float interleaved_gradient_noise(float2 pixel)
+{
+    return frac(52.9829189 * frac(dot(pixel, float2(0.06711056, 0.00583715))));
+}
+
+// One point of a rotated Vogel disc.
+//
+// A golden-angle spiral rather than a stored Poisson set: it is well spread for *any* tap
+// count, so 4, 6 and 8 taps are the same code and the same tuning rather than three tables
+// somebody has to keep in agreement. The per-pixel rotation is what removes the spiral's own
+// structure, which is otherwise as visible along a shadow edge as a grid's staircase.
+float2 vogel_disc(uint index, uint count, float rotation)
+{
+    const float GOLDEN_ANGLE = 2.39996323;
+    float radius = sqrt((float)index + 0.5) / sqrt((float)count);
+    float theta = (float)index * GOLDEN_ANGLE + rotation;
+    return float2(cos(theta), sin(theta)) * radius;
+}
+
+// Percentage-closer filtering.
+//
+// Two families. The grid kernels (codes 0-2) place their taps one texel apart and are what
+// the engine shipped with; the disc kernels (codes 3-5) spend a smaller budget of taps on a
+// rotated Vogel disc of `shadow_params2.w` texels. Same width of penumbra, a quarter to a
+// third of the fetches, and the error left over is noise rather than a staircase.
+//
+// Unrolled per branch rather than looped over a variable radius, because a dynamic loop
+// around a texture fetch is markedly slower than a static one, and the branch itself is
+// uniform across the whole frame.
+float shadow_pcf(float2 atlas_uv, float compare, float4 scale_bias, uint kernel, float2 pixel)
 {
     if (kernel == 0)
     {
@@ -127,6 +163,21 @@ float shadow_pcf(float2 atlas_uv, float compare, float4 scale_bias, uint kernel)
 
     float2 texel = shadow_atlas_size.zw;
     float total = 0.0;
+
+    if (kernel >= 3)
+    {
+        uint taps = kernel == 3 ? 4u : (kernel == 4 ? 6u : 8u);
+        float rotation = interleaved_gradient_noise(pixel) * 6.2831853;
+        float2 radius = texel * shadow_params2.w;
+        [loop]
+        for (uint index = 0; index < taps; ++index)
+        {
+            float2 offset = vogel_disc(index, taps, rotation) * radius;
+            total += shadow_tap(atlas_uv + offset, compare, scale_bias);
+        }
+        return total / (float)taps;
+    }
+
     if (kernel == 1)
     {
         [unroll]
@@ -161,7 +212,8 @@ float shadow_in_view(
     float3 world_position,
     column_major float4x4 light_view_projection,
     float4 scale_bias,
-    uint kernel)
+    uint kernel,
+    float2 pixel)
 {
     float4 light_clip = mul(light_view_projection, float4(world_position, 1.0));
     if (light_clip.w <= 0.0)
@@ -176,7 +228,7 @@ float shadow_in_view(
     // Clip space is Y-up and a texture is Y-down, which is the sign flip below and nothing
     // more mysterious than that.
     float2 uv = ndc.xy * float2(0.5, -0.5) + 0.5;
-    return shadow_pcf(uv * scale_bias.xy + scale_bias.zw, ndc.z, scale_bias, kernel);
+    return shadow_pcf(uv * scale_bias.xy + scale_bias.zw, ndc.z, scale_bias, kernel, pixel);
 }
 
 // Which cube face a direction from a point light falls on: +X, -X, +Y, -Y, +Z, -Z.
@@ -323,7 +375,7 @@ float contact_shadow(float3 world_position, float3 normal, float3 to_light, floa
 // surface normal by a fraction of a shadow texel before it is projected, which fixes the
 // acne that is left after the rasterizer's slope bias without the peter-panning a large
 // constant bias would cause.
-float directional_shadow(float3 world_position, float3 normal, float view_distance)
+float directional_shadow(float3 world_position, float3 normal, float view_distance, float2 pixel)
 {
     float strength = shadow_params2.z;
     uint count = (uint)shadow_params.x;
@@ -350,7 +402,8 @@ float directional_shadow(float3 world_position, float3 normal, float view_distan
         offset_position,
         cascade_view_projection[near_index],
         cascade_uv_scale_bias[near_index],
-        kernel);
+        kernel,
+        pixel);
 
     if (blend > 0.0)
     {
@@ -360,7 +413,8 @@ float directional_shadow(float3 world_position, float3 normal, float view_distan
             world_position + normal * far_offset,
             cascade_view_projection[far_index],
             cascade_uv_scale_bias[far_index],
-            kernel);
+            kernel,
+            pixel);
         factor = lerp(factor, next, blend);
     }
 
@@ -374,7 +428,7 @@ float directional_shadow(float3 world_position, float3 normal, float view_distan
 }
 
 // The shadow factor for one local light, or 1 if it has no shadow map.
-float local_light_shadow(uint light, float3 world_position, float3 normal)
+float local_light_shadow(uint light, float3 world_position, float3 normal, float2 pixel)
 {
     float first_view = light_shadow[light].y;
     if (first_view < 0.0)
@@ -400,7 +454,8 @@ float local_light_shadow(uint light, float3 world_position, float3 normal)
         world_position + normal * offset,
         local_view_projection[view],
         local_uv_scale_bias[view],
-        (uint)shadow_params.z);
+        (uint)shadow_params.z,
+        pixel);
 }
 
 // Everything the local lights add at a surface.
@@ -408,7 +463,8 @@ float local_light_shadow(uint light, float3 world_position, float3 normal)
 // A plain loop over a small fixed array: there is no clustering and no light culling
 // structure, so the count is a per-pixel cost. That is the documented limitation of the
 // local-light path — see docs/shadows.md — and the reason MAX_LOCAL_LIGHTS is eight.
-float3 local_light_contribution(float3 world_position, float3 normal, float3 albedo, float receives_shadow)
+float3 local_light_contribution(
+    float3 world_position, float3 normal, float3 albedo, float receives_shadow, float2 pixel)
 {
     float3 total = float3(0.0, 0.0, 0.0);
     uint count = min((uint)local_light_count.x, (uint)MAX_LOCAL_LIGHTS);
@@ -453,7 +509,7 @@ float3 local_light_contribution(float3 world_position, float3 normal, float3 alb
         float shadow = 1.0;
         if (receives_shadow > 0.5)
         {
-            shadow = local_light_shadow(light, world_position, normal);
+            shadow = local_light_shadow(light, world_position, normal, pixel);
         }
 
         total += albedo * light_color_intensity[light].rgb
@@ -591,7 +647,7 @@ float4 shade_surface(
     float shadow = 1.0;
     if (receives_shadow > 0.5 && lambert > 0.0)
     {
-        shadow = directional_shadow(world_position, normal, view_distance);
+        shadow = directional_shadow(world_position, normal, view_distance, screen_position.xy);
         if (shadow > 0.0)
         {
             shadow = min(shadow, contact_shadow(world_position, normal, to_light, view_distance));
@@ -616,7 +672,8 @@ float4 shade_surface(
 
     float3 diffuse = tinted * light_color * (light_intensity * lambert * shadow);
     float3 ambient = tinted * ambient_color * ambient_intensity;
-    float3 local = local_light_contribution(world_position, normal, tinted, receives_shadow);
+    float3 local =
+        local_light_contribution(world_position, normal, tinted, receives_shadow, screen_position.xy);
     float3 glow = emissive + tinted * emissive_scale;
 
     float3 color = diffuse + ambient + local + glow;

@@ -240,7 +240,7 @@ impl FrameConstants {
             // is zero whenever there is nothing to sample rather than only when the feature
             // is off.
             if count == 0 { 0.0 } else { 1.0 },
-            0.0,
+            settings.filter_radius_texels,
         ];
         self.set_atlas_size(atlas_size);
     }

@@ -373,6 +373,27 @@ pub struct App {
     #[cfg(feature = "debug-overlay")]
     last_effect: Option<engine_vfx::VfxId>,
     report_interval: Option<Duration>,
+    /// Frames discarded from the statistics window before it starts collecting.
+    ///
+    /// Zero for an ordinary run. A benchmark passes `--warmup` so that driver warm-up,
+    /// pipeline creation and the first uploads - all of which happen in the opening frames
+    /// and none of which happen again - stay out of the percentiles.
+    warmup_frames: u64,
+    /// Individual shadow fields `--shadow-tweak` named, applied over whichever preset is
+    /// current - including the one F6 switches to.
+    shadow_overrides: crate::args::ShadowOverrides,
+    /// When the measured window opened, and at which frame.
+    ///
+    /// The run's own average frame rate covers the warm-up too, and at 900 frames the
+    /// opening tenth of a second is a large enough share of it to move the number. The
+    /// steady-state rate is measured from here instead.
+    measured_from: Option<(Instant, u64)>,
+    /// The shadow stage's own GPU time, one sample per frame that resolved a query.
+    ///
+    /// The frame's total says the frame got slower; this says whether the shadow stage is
+    /// where it went. Kept as a window rather than a running mean for the same reason the
+    /// frame's is: a mean hides a stall and a p50 does not.
+    shadow_gpu: engine_core::time::FrameStatsWindow,
     last_report: Instant,
     /// Scratch buffer the periodic report is built into, kept between reports so the
     /// steady state allocates nothing.
@@ -834,6 +855,10 @@ impl App {
             #[cfg(feature = "debug-overlay")]
             last_effect: None,
             report_interval,
+            warmup_frames: args.warmup,
+            shadow_overrides: args.shadow_overrides,
+            measured_from: None,
+            shadow_gpu: engine_core::time::FrameStatsWindow::new(1024),
             last_report: Instant::now(),
             report: String::new(),
             #[cfg(feature = "debug-overlay")]
@@ -842,6 +867,10 @@ impl App {
             last_overlay_update: Instant::now(),
         };
         app.apply_shadow_quality(shadow_quality);
+        if let Some(enabled) = args.shadow_overrides.local_lights {
+            app.renderer.set_local_lights_enabled(enabled);
+            log::info!("local lights: {}", if enabled { "on" } else { "off" });
+        }
         Ok(app)
     }
 
@@ -959,7 +988,9 @@ impl App {
             engine_settings::ShadowQuality::High => ShadowPreset::High,
             engine_settings::ShadowQuality::Ultra => ShadowPreset::Ultra,
         };
-        let settings = preset.settings();
+        // `--shadow-tweak` on top of the preset: a benchmark moves one field without
+        // inventing a quality level for it, and F6 still cycles the presets underneath.
+        let settings = self.shadow_overrides.apply(preset.settings());
         if let Err(error) = self.renderer.set_shadow_settings(settings) {
             // A quality change that fails leaves the previous configuration running, which
             // is a worse picture rather than a broken one.
@@ -969,11 +1000,12 @@ impl App {
         let (width, height) = settings.atlas_size();
         log::info!(
             "shadows: {} | {} cascade(s) at {} | atlas {width}x{height} ({:.1} MiB) | \
-             local views {} | contact {}",
+             pcf {} | local views {} | contact {}",
             quality.as_str(),
             settings.cascade_count,
             settings.resolution,
             settings.atlas_bytes() as f64 / (1024.0 * 1024.0),
+            settings.pcf.as_str(),
             settings.local_view_budget(),
             if settings.contact.enabled {
                 "on"
@@ -3000,6 +3032,16 @@ impl App {
             self.simulation.meter().total_damage(),
         );
 
+        if let Some((started, first_frame)) = self.measured_from {
+            let measured = frames.saturating_sub(first_frame);
+            let span = started.elapsed().as_secs_f64();
+            log::info!(
+                "measured window: {measured} frames in {span:.3} s ({:.0} FPS, warm-up {}                  frame(s) discarded)",
+                if span > 0.0 { measured as f64 / span } else { 0.0 },
+                self.warmup_frames,
+            );
+        }
+
         // Recompute rather than reading the cached summary: the last refresh can be up to
         // a quarter of a second old, and the closing numbers should cover the whole window.
         ctx.metrics_mut().refresh();
@@ -3017,6 +3059,15 @@ impl App {
             summary.cpu.max_ms,
             summary.cpu.count
         );
+        if let Some(stats) = self.shadow_gpu.stats() {
+            log::info!(
+                "final shadow-stage GPU: mean {:.3} | p50 {:.3} | p95 {:.3} ms | n={}",
+                stats.mean_ms,
+                stats.p50_ms,
+                stats.p95_ms,
+                stats.count,
+            );
+        }
         if let Some(gpu) = summary.gpu {
             log::info!(
                 "final GPU window: mean {:.3} | p50 {:.3} | p95 {:.3} | p99 {:.3} | max {:.3} ms \
@@ -3088,6 +3139,14 @@ impl Application for App {
     /// gameplay pipeline rather than to "update".
     fn update(&mut self, ctx: &mut EngineContext) -> Result<(), EngineError> {
         let profiler = ctx.profiler();
+
+        // The warm-up boundary: everything recorded so far described the load rather than
+        // the frame, so it is discarded here rather than being averaged with what follows.
+        if self.warmup_frames > 0 && ctx.frame_index() == self.warmup_frames {
+            ctx.metrics_mut().clear();
+            self.shadow_gpu.clear();
+            self.measured_from = Some((Instant::now(), ctx.frame_index()));
+        }
 
         // The level editor takes the whole frame when it is open: its own camera, its own
         // input, and no simulation step. Freezing the world is the difference between an
@@ -3344,6 +3403,11 @@ impl Application for App {
 
     /// Reporting and overlay text only; the engine has already recorded the frame.
     fn end_frame(&mut self, ctx: &mut EngineContext) {
+        // The stage's timestamps are resolved a frame or two behind, so a frame with no
+        // reading is skipped rather than recorded as zero.
+        if let Some(milliseconds) = self.renderer.shadow_stats().gpu_ms {
+            self.shadow_gpu.record_ms(milliseconds);
+        }
         self.maybe_report(ctx);
         #[cfg(feature = "debug-overlay")]
         self.maybe_update_overlay(ctx);
