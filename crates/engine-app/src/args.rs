@@ -203,6 +203,15 @@ options:
                          monitor, not the engine)
   --validation           enable the D3D12 validation layer (on by default in debug
                          builds; it costs several times the frame time)
+  --background           show the window without taking the keyboard focus, so starting
+                         the game does not steal it from the editor it was started from.
+                         The window can still be clicked into; this only changes what
+                         happens at launch. A development convenience.
+  --hidden               never show the window at all. The game still runs and still
+                         renders every frame on the GPU - headless here means no window
+                         on screen, not no rendering - which is what makes it useful for
+                         an automated run that has to exercise the real render path.
+                         Pair it with --frames.
   --frames <count>       exit after rendering this many frames
   --lights <count>       extra local lights spread over the scene's floor, as a lighting
                          stress control (default 0)
@@ -458,6 +467,18 @@ pub struct Args {
     pub height: u32,
     /// Whether to present with vsync.
     pub vsync: bool,
+    /// Whether the window takes the keyboard focus when it is first shown.
+    ///
+    /// A development convenience: `--background` starts the game beside whatever the
+    /// developer is typing in rather than in front of it.
+    pub focus: bool,
+    /// Whether the window is ever shown.
+    ///
+    /// `--hidden` runs the whole game with no window on screen and still renders every
+    /// frame. Presenting to a hidden window is not an error - `Present` returns
+    /// `DXGI_STATUS_OCCLUDED`, a success code - so the GPU does the frame's real work and a
+    /// test that measures or captures it measures the real path.
+    pub window: bool,
     /// Optional frame budget after which the application exits on its own.
     pub frames: Option<u64>,
     /// Extra local lights added to whichever scene loads, as a lighting stress control.
@@ -551,6 +572,8 @@ impl Default for Args {
             width: 1920,
             height: 1080,
             vsync: false,
+            focus: true,
+            window: true,
             frames: None,
             warmup: 0,
             stress_lights: 0,
@@ -660,6 +683,8 @@ where
         match argument {
             "--width" => args.width = next_value(&mut iter, "--width")?,
             "--height" => args.height = next_value(&mut iter, "--height")?,
+            "--background" => args.focus = false,
+            "--hidden" => args.window = false,
             "--frames" => args.frames = Some(next_value(&mut iter, "--frames")?),
             "--warmup" => args.warmup = next_value(&mut iter, "--warmup")?,
             "--shadow-tweak" => {
@@ -796,6 +821,27 @@ mod tests {
         assert!(args.vsync);
         assert_eq!(args.frames, Some(500));
         assert!((args.report_interval_secs - 0.5).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn the_window_takes_focus_and_is_shown_unless_told_otherwise() {
+        // Both are development conveniences and neither may change what a player gets by
+        // default: the game they launch appears, and it appears in front.
+        let default = parse::<[&str; 0], &str>([]).expect("empty is valid");
+        assert!(default.focus, "a player's game comes to the front");
+        assert!(default.window, "a player's game has a window");
+
+        let background = parse(["--background"]).expect("--background is valid");
+        assert!(!background.focus);
+        assert!(background.window, "--background still shows the window");
+
+        let hidden = parse(["--hidden"]).expect("--hidden is valid");
+        assert!(!hidden.window);
+        assert!(hidden.focus, "--hidden says nothing about focus");
+
+        let both = parse(["--hidden", "--background"]).expect("both are valid");
+        assert!(!both.window);
+        assert!(!both.focus);
     }
 
     #[test]

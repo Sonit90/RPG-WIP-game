@@ -338,3 +338,35 @@ purpose, steps and expected result per entry. Per-milestone Phase 0 steps remain
 A SKIPPED manual test is not a pass. Two entries need hardware not every machine has
 (a second monitor, a machine without a D3D12 adapter), and they stay SKIPPED until someone
 runs them on that hardware.
+
+## Running the game without it getting in the way
+
+Three flags on `mygame`, all development conveniences and none of them changing what a player
+gets:
+
+| Flag | What it does |
+| --- | --- |
+| `--background` | shows the window without taking the keyboard focus, so launching the game does not steal it from the editor. The window can still be clicked into. |
+| `--hidden` | never shows the window. The game still runs and **still renders every frame on the GPU** — presenting to a hidden window returns `DXGI_STATUS_OCCLUDED`, which is a success code — so a run like this exercises the real render path and reports real GPU timings. Pair it with `--frames`. |
+| `--frames <n>` | exit after this many frames. |
+
+```bash
+# a headless run that really renders, for CI or a timing check
+mygame --hidden --frames 900 --warmup 600 --report 0 --no-audio
+
+# the game beside the editor rather than in front of it
+mygame --background
+```
+
+`--hidden` is not an offscreen path: it is the ordinary swap chain with nothing on screen. The
+offscreen path — a render target and a readback, with no window at all — is
+`engine_renderer::offscreen`, which is what the pixel tests use.
+
+### The window appears with a frame already in it
+
+The window is always **created hidden** and shown after the first `present`. Between
+`CreateWindowExW` and the first frame the client area holds whatever the compositor last had
+there, which on Windows is white; loading a scene takes long enough for that to be a visible
+white flash. Showing the window only once there is something in it removes the flash rather
+than recolouring it, and the window class also carries a black background brush so any paint
+the window manager does on its own is black.

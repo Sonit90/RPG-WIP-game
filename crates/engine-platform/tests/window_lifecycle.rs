@@ -10,7 +10,9 @@ use engine_platform::window::query_client_size;
 use engine_platform::{Window, WindowConfig, WindowEvent};
 
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
-use windows::Win32::UI::WindowsAndMessaging::{SendMessageW, WM_CLOSE, WM_SIZE};
+use windows::Win32::UI::WindowsAndMessaging::{
+    GetForegroundWindow, IsWindowVisible, SendMessageW, WM_CLOSE, WM_SIZE,
+};
 
 fn hwnd_of(window: &Window) -> HWND {
     HWND(window.raw_handle() as *mut std::ffi::c_void)
@@ -29,6 +31,47 @@ fn creates_a_window_with_the_requested_client_size() {
     );
     assert_ne!(window.raw_handle(), 0);
     assert!(!window.is_minimized());
+}
+
+#[test]
+fn a_window_that_does_not_activate_does_not_take_the_foreground() {
+    // `--background`, at the level it is implemented. The window is real and shown; what it
+    // must not do is take the keyboard away from whatever had it. Asserting on
+    // `GetForegroundWindow` is the only observable form of that.
+    let config = WindowConfig::new("background test", 320, 240).with_activate(false);
+    let window = Window::new(&config).expect("window creation must succeed");
+
+    assert!(!window.activates());
+    // SAFETY: FFI call that only reads which window has the foreground.
+    let after = unsafe { GetForegroundWindow() };
+    assert_ne!(
+        after,
+        hwnd_of(&window),
+        "a window created with activate=false took the foreground"
+    );
+    // Only "not us": the rest of this file creates windows on other threads, so what the
+    // foreground *is* while this test runs is not this test's business.
+}
+
+#[test]
+fn a_hidden_window_stays_hidden_when_it_is_created() {
+    // `--hidden`. The window exists, has a client area and a handle the renderer can build a
+    // swap chain on — it is simply not on screen.
+    let config = WindowConfig::new("hidden test", 640, 360).with_visible(false);
+    let window = Window::new(&config).expect("window creation must succeed");
+
+    assert_ne!(window.raw_handle(), 0);
+    assert_eq!(window.client_size(), (640, 360));
+    assert!(
+        // SAFETY: FFI call reading the visibility of a window this test owns.
+        !unsafe { IsWindowVisible(hwnd_of(&window)) }.as_bool(),
+        "a window created hidden is visible"
+    );
+
+    // And showing it later works, which is what the deferred first-frame show relies on.
+    window.set_visible(true);
+    // SAFETY: as above.
+    assert!(unsafe { IsWindowVisible(hwnd_of(&window)) }.as_bool());
 }
 
 #[test]

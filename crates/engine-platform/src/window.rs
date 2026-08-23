@@ -7,14 +7,15 @@
 use std::sync::OnceLock;
 
 use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
-use windows::Win32::Graphics::Gdi::{ClientToScreen, HBRUSH};
+use windows::Win32::Graphics::Gdi::{BLACK_BRUSH, ClientToScreen, GetStockObject, HBRUSH};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::{
     AdjustWindowRectEx, CREATESTRUCTW, CS_HREDRAW, CS_OWNDC, CS_VREDRAW, CW_USEDEFAULT,
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GWLP_USERDATA, GetClientRect,
     GetSystemMetrics, GetWindowLongPtrW, IDC_ARROW, LoadCursorW, MSG, PM_REMOVE, PeekMessageW,
     PostQuitMessage, RegisterClassExW, SIZE_MAXIMIZED, SIZE_MINIMIZED, SIZE_RESTORED, SM_CXSCREEN,
-    SM_CYSCREEN, SW_HIDE, SW_SHOW, SW_SHOWNORMAL, SetCursorPos, SetWindowLongPtrW, SetWindowTextW,
+    SM_CYSCREEN, SW_HIDE, SW_SHOW, SW_SHOWNOACTIVATE, SW_SHOWNORMAL, SetCursorPos,
+    SetWindowLongPtrW, SetWindowTextW,
     ShowCursor, ShowWindow, TranslateMessage, WINDOW_EX_STYLE, WM_ACTIVATEAPP, WM_CLOSE,
     WM_DESTROY, WM_ERASEBKGND, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN,
     WM_MBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCCREATE, WM_QUIT, WM_RBUTTONDOWN, WM_RBUTTONUP,
@@ -64,6 +65,12 @@ pub struct Window {
     /// Owning pointer to the state the window procedure writes into.
     /// Reclaimed in [`Window::drop`] after the `HWND` is destroyed.
     state: *mut WindowState,
+    /// Whether showing this window should also focus it.
+    ///
+    /// Kept here rather than passed to [`Window::set_visible`] because it is a property of
+    /// the window for its whole life: an application that asked not to steal focus at
+    /// startup does not want to steal it when it shows the window later either.
+    activate: bool,
     quit_received: bool,
 }
 
@@ -158,24 +165,30 @@ impl Window {
         let window = Self {
             hwnd,
             state,
+            activate: config.activate,
             quit_received: false,
         };
 
-        let command = if config.visible {
-            SW_SHOWNORMAL
-        } else {
-            SW_HIDE
+        let command = match (config.visible, config.activate) {
+            (false, _) => SW_HIDE,
+            (true, true) => SW_SHOWNORMAL,
+            // Shown, but the keyboard stays wherever it was. `SW_SHOWNOACTIVATE` rather
+            // than the `WS_EX_NOACTIVATE` style: the style would stop the window taking
+            // focus when it is *clicked* too, which would make the game unplayable rather
+            // than unobtrusive.
+            (true, false) => SW_SHOWNOACTIVATE,
         };
         // SAFETY: `hwnd` is a live window owned by `window`. ShowWindow's BOOL result
         // reports the previous visibility, not success, so it is intentionally ignored.
         let _ = unsafe { ShowWindow(hwnd, command) };
 
         log::info!(
-            "window created: {}x{} client, resizable={}, visible={}, fullscreen={}",
+            "window created: {}x{} client, resizable={}, visible={}, activate={}, fullscreen={}",
             client.0,
             client.1,
             config.resizable && !config.fullscreen,
             config.visible,
+            config.activate,
             config.fullscreen
         );
 
@@ -326,10 +339,23 @@ impl Window {
     }
 
     /// Shows or hides the window.
+    ///
+    /// Showing respects the configuration's `activate`: a window created not to steal focus
+    /// does not steal it when it is shown later either.
     pub fn set_visible(&self, visible: bool) {
-        let command = if visible { SW_SHOW } else { SW_HIDE };
+        let command = match (visible, self.activate) {
+            (false, _) => SW_HIDE,
+            (true, true) => SW_SHOW,
+            (true, false) => SW_SHOWNOACTIVATE,
+        };
         // SAFETY: `hwnd` is live; the BOOL result is the previous visibility state.
         let _ = unsafe { ShowWindow(self.hwnd, command) };
+    }
+
+    /// Whether showing this window also gives it the keyboard focus.
+    #[must_use]
+    pub fn activates(&self) -> bool {
+        self.activate
     }
 
     fn state_ref(&self) -> &WindowState {
@@ -385,7 +411,16 @@ fn ensure_class_registered(instance: HINSTANCE) -> Result<(), PlatformError> {
             lpfnWndProc: Some(window_proc),
             hInstance: instance,
             hCursor: cursor,
-            hbrBackground: HBRUSH::default(),
+            // Black, not the null brush it was.
+            //
+            // `WM_ERASEBKGND` below tells GDI not to erase, because the renderer owns every
+            // pixel — but that is only true once the renderer has presented a frame. Between
+            // `CreateWindowExW` and the first `Present` the client area is whatever the
+            // compositor last had there, which on Windows is white, and loading a scene takes
+            // long enough for a player to see it. A black brush makes the window's own
+            // non-client paint black instead; the application defers showing the window until
+            // it has a frame, and the two together are why there is no white flash.
+            hbrBackground: HBRUSH(black_brush()),
             lpszClassName: CLASS_NAME,
             ..Default::default()
         };
@@ -403,6 +438,16 @@ fn ensure_class_registered(instance: HINSTANCE) -> Result<(), PlatformError> {
     result
         .clone()
         .map_err(|error| PlatformError::win32("RegisterClassExW", error))
+}
+
+/// The stock black brush, as the raw handle `WNDCLASSEXW` wants.
+///
+/// A stock object: it is owned by the system, never has to be freed, and returning it from
+/// several calls is the documented behaviour rather than a leak.
+fn black_brush() -> *mut core::ffi::c_void {
+    // SAFETY: FFI call with a valid stock-object index. The returned handle is owned by the
+    // system and outlives the process.
+    unsafe { GetStockObject(BLACK_BRUSH) }.0
 }
 
 /// Size of the primary monitor in pixels.

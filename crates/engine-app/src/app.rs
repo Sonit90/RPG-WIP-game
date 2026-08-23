@@ -373,6 +373,10 @@ pub struct App {
     #[cfg(feature = "debug-overlay")]
     last_effect: Option<engine_vfx::VfxId>,
     report_interval: Option<Duration>,
+    /// Whether the window should ever be shown. False for `--hidden`.
+    show_window: bool,
+    /// Whether it has been shown yet. The first presented frame flips this.
+    window_shown: bool,
     /// Frames discarded from the statistics window before it starts collecting.
     ///
     /// Zero for an ordinary run. A benchmark passes `--warmup` so that driver warm-up,
@@ -417,9 +421,20 @@ impl App {
         // not match the pixels on screen.
         engine_platform::dpi::set_process_dpi_aware();
 
+        // Created **hidden**, whatever the caller asked for, and shown after the first
+        // frame has been presented (see `present`). Between `CreateWindowExW` and the first
+        // `Present` the client area holds whatever the compositor last had there, which on
+        // Windows is white — and loading a scene takes long enough for that to be a white
+        // flash a player sees. Showing the window only once there is a frame in it removes
+        // the flash rather than recolouring it.
         let window_config = WindowConfig::new(&settings.title, settings.width, settings.height)
-            .with_fullscreen(settings.display_mode.is_fullscreen());
+            .with_fullscreen(settings.display_mode.is_fullscreen())
+            .with_activate(args.focus)
+            .with_visible(false);
         let window = Window::new(&window_config)?;
+        if !args.window {
+            log::info!("window: --hidden; the game runs and renders with nothing on screen");
+        }
 
         // The window is the authority on its client size: fullscreen takes the monitor's
         // size, and the OS may clamp a requested size on a small display.
@@ -874,6 +889,8 @@ impl App {
             #[cfg(feature = "debug-overlay")]
             last_effect: None,
             report_interval,
+            show_window: args.window,
+            window_shown: false,
             warmup_frames: args.warmup,
             shadow_overrides: args.shadow_overrides,
             measured_from: None,
@@ -3454,6 +3471,21 @@ impl Application for App {
 
     fn present(&mut self, _ctx: &mut EngineContext) -> Result<(), EngineError> {
         self.renderer.present()?;
+        // The window appears here, once, with a frame already in it. `--hidden` never takes
+        // this branch, which is what makes it a run that renders without a window rather
+        // than a run that does not render.
+        if !self.window_shown && self.show_window {
+            self.window.set_visible(true);
+            self.window_shown = true;
+            log::info!(
+                "window shown after the first frame{}",
+                if self.window.activates() {
+                    ""
+                } else {
+                    ", without taking focus"
+                }
+            );
+        }
         Ok(())
     }
 
