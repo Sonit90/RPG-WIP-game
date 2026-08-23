@@ -3,8 +3,11 @@
 //! Pure CPU, like [`super::cascade`]. Two jobs:
 //!
 //! * **Selection.** More lights ask for shadows than there are atlas tiles, always. §21 asks
-//!   for a mechanism rather than a rule of thumb, and this is it: in view, then priority,
-//!   then distance, greedily until the budget is spent.
+//!   for a mechanism rather than a rule of thumb, and this is it: reject the lights that
+//!   cannot matter (out of view, out of range, not asking), score the rest with
+//!   [`shadow_importance`], and spend the budget greedily on the highest scores. It **skips
+//!   rather than stops**: a point light that does not fit is passed over and a later spot
+//!   light that does fit still gets its view.
 //! * **Projection.** A spot light is one perspective view down its cone. A point light is
 //!   six, one per cube face, which is why it costs six times as much and why it is separately
 //!   switchable in the settings.
@@ -65,6 +68,50 @@ impl LocalShadowView {
     pub fn frustum(&self) -> Frustum {
         Frustum::from_view_projection(&self.view_projection)
     }
+}
+
+/// How much one step of [`LocalLight::priority`] is worth, as a multiplier on importance.
+///
+/// Four. A boss's brazier at priority 1 outranks a decorative one that is four times as
+/// important by every physical measure — which, since importance falls with the square of
+/// distance, is a decorative light standing twice as close. Two steps of priority is four
+/// times as close. That is the intended shape: priority is a thumb on the scale and not an
+/// override, so a designer marking something important cannot accidentally spend the whole
+/// budget on a light that is behind the player and a hundred metres away.
+const PRIORITY_WEIGHT: f32 = 4.0;
+
+/// How much a shadow map for this light is worth, larger being more.
+///
+/// § "do not arbitrarily choose the first N lights". The formula is one number out of five
+/// inputs, and each of them earns its place:
+///
+/// ```text
+/// intensity          a dim light's shadow is a faint shadow
+/// range / distance   the light's angular size on screen: this is the screen-space
+///                    influence term, and it is squared because area is
+/// range fade         a light at the edge of local.max_distance is worth nothing, and
+///                    fading rather than cutting stops a map appearing and vanishing as
+///                    the player walks a step back and forth
+/// priority           the gameplay term, PRIORITY_WEIGHT per step
+/// ```
+///
+/// Distance is measured to the light's *reach* rather than to the light, for the reason the
+/// range test uses the same measure: a big brazier lighting the room the player stands in is
+/// not far away because its centre is.
+#[must_use]
+pub fn shadow_importance(light: &LocalLight, camera_position: Vec3, max_distance: f32) -> f32 {
+    let distance = (light.position - camera_position).length();
+    // Never divide by less than a tenth of the range: inside the light, the ratio would run
+    // away and one torch would outrank everything in the level.
+    let apparent = light.range / distance.max(light.range * 0.1);
+    let reach = (distance - light.range).max(0.0);
+    let fade = if max_distance > 0.0 {
+        (1.0 - reach / max_distance).clamp(0.0, 1.0)
+    } else {
+        1.0
+    };
+    let gameplay = PRIORITY_WEIGHT.powi(i32::from(light.priority));
+    light.intensity.max(0.0) * apparent * apparent * fade * gameplay
 }
 
 /// A light that won a shadow map, and the views it spends.
@@ -206,20 +253,24 @@ pub fn select_shadow_lights(
         if !camera_frustum.intersects_sphere(&Sphere::new(light.position, light.range)) {
             continue;
         }
-        scratch.push((index, distance));
+        let importance = shadow_importance(light, camera_position, settings.local.max_distance);
+        // The floor. A budget with room left in it is otherwise always spent, and the last
+        // views go to lights whose shadow is a few hundred texels of nothing.
+        if importance < settings.local.min_importance {
+            continue;
+        }
+        scratch.push((index, importance));
     }
 
-    // Priority first, then distance. `sort_by` rather than `sort_unstable_by` so two lights
-    // that tie on both keep their authored order — otherwise which of them gets the last
-    // shadow map could change frame to frame, and a shadow map that appears and disappears
-    // is worse than one that was never there.
+    // Most important first. `sort_by` rather than `sort_unstable_by` so two lights that tie
+    // keep their authored order — otherwise which of them gets the last shadow map could
+    // change frame to frame, and a shadow map that appears and disappears is worse than one
+    // that was never there.
     scratch.sort_by(|left, right| {
-        let priority = lights[right.0].priority.cmp(&lights[left.0].priority);
-        priority.then(
-            left.1
-                .partial_cmp(&right.1)
-                .unwrap_or(std::cmp::Ordering::Equal),
-        )
+        right
+            .1
+            .partial_cmp(&left.1)
+            .unwrap_or(std::cmp::Ordering::Equal)
     });
 
     for &(index, _) in scratch.iter() {
@@ -261,7 +312,7 @@ pub fn select_shadow_lights(
 )]
 mod tests {
     use super::*;
-    use crate::shadow::settings::ShadowPreset;
+    use crate::shadow::settings::{LocalShadowSettings, ShadowPreset};
     use engine_render_data::{Camera, Projection};
 
     fn camera() -> Camera {
@@ -483,5 +534,124 @@ mod tests {
         );
         assert_eq!(views.capacity(), capacity);
         assert_eq!(views.len(), settings.local_view_budget());
+    }
+
+    #[test]
+    fn importance_falls_with_the_square_of_distance() {
+        // The screen-space influence term. A light twice as far away covers a quarter of the
+        // screen and is worth a quarter as much.
+        let near = spot_at(Vec3::new(0.0, 0.0, -10.0), 0);
+        let far = spot_at(Vec3::new(0.0, 0.0, -20.0), 0);
+        let near_score = shadow_importance(&near, Vec3::ZERO, 40.0);
+        let far_score = shadow_importance(&far, Vec3::ZERO, 40.0);
+        let ratio = near_score / far_score;
+        assert!(
+            (2.0..8.0).contains(&ratio),
+            "a light at half the distance scored {ratio}x, which is not an inverse square              plus a range fade"
+        );
+    }
+
+    #[test]
+    fn a_brighter_light_outranks_a_dimmer_one_at_the_same_place() {
+        let place = Vec3::new(3.0, 0.0, -12.0);
+        let dim = LocalLight {
+            intensity: 1.0,
+            ..spot_at(place, 0)
+        };
+        let bright = LocalLight {
+            intensity: 6.0,
+            ..spot_at(place, 0)
+        };
+        assert!(
+            shadow_importance(&bright, Vec3::ZERO, 40.0) > shadow_importance(&dim, Vec3::ZERO, 40.0)
+        );
+    }
+
+    #[test]
+    fn a_wider_light_outranks_a_narrower_one_at_the_same_place() {
+        let place = Vec3::new(0.0, 0.0, -15.0);
+        let small = LocalLight {
+            range: 4.0,
+            ..spot_at(place, 0)
+        };
+        let large = LocalLight {
+            range: 12.0,
+            ..spot_at(place, 0)
+        };
+        assert!(
+            shadow_importance(&large, Vec3::ZERO, 40.0) > shadow_importance(&small, Vec3::ZERO, 40.0)
+        );
+    }
+
+    #[test]
+    fn a_boss_light_outranks_a_nearer_decorative_one() {
+        // The case §21 names. The boss's light is three times as far away — a ninth of the
+        // screen influence — and its priority has to carry it anyway.
+        let settings = ShadowSettings {
+            local: LocalShadowSettings {
+                max_views: 1,
+                ..ShadowPreset::Ultra.settings().local
+            },
+            ..ShadowPreset::Ultra.settings()
+        }
+        .validated();
+        let decorative = spot_at(Vec3::new(0.0, 0.0, -8.0), 0);
+        let boss = spot_at(Vec3::new(0.0, 0.0, -24.0), 2);
+        let (selected, _) = select(&[decorative, boss], &settings);
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].light, 1, "the boss light did not win the map");
+    }
+
+    #[test]
+    fn priority_is_a_thumb_on_the_scale_and_not_an_override() {
+        // The other half of the same decision. A priority-1 light on the far side of the
+        // world must not beat the light burning next to the player, or a designer marking
+        // something important spends the whole budget on something nobody can see.
+        let settings = ShadowSettings {
+            local: LocalShadowSettings {
+                max_views: 1,
+                min_importance: 0.0,
+                ..ShadowPreset::Ultra.settings().local
+            },
+            ..ShadowPreset::Ultra.settings()
+        }
+        .validated();
+        let close = spot_at(Vec3::new(0.0, 0.0, -3.0), 0);
+        let distant = spot_at(Vec3::new(0.0, 0.0, -38.0), 1);
+        let (selected, _) = select(&[close, distant], &settings);
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].light, 0, "a distant priority light took the map");
+    }
+
+    #[test]
+    fn a_light_below_the_importance_floor_gets_no_map_even_with_the_budget_free() {
+        // The floor, which is not the ceiling. There are fifteen views going spare here and
+        // the light still must not get one: its shadow would be a few hundred texels of
+        // nothing.
+        let base = ShadowPreset::Ultra.settings();
+        let settings = ShadowSettings {
+            local: LocalShadowSettings {
+                min_importance: 1.0e6,
+                ..base.local
+            },
+            ..base
+        }
+        .validated();
+        let (selected, views) = select(&[spot_at(Vec3::new(0.0, 0.0, -12.0), 0)], &settings);
+        assert!(selected.is_empty(), "the floor did not reject the light");
+        assert!(views.is_empty());
+
+        // And with the floor at zero the same light is selected, so the test above is about
+        // the floor and not about some other rejection.
+        let permissive = ShadowSettings {
+            local: LocalShadowSettings {
+                min_importance: 0.0,
+                ..base.local
+            },
+            ..base
+        }
+        .validated();
+        let (selected, _) = select(&[spot_at(Vec3::new(0.0, 0.0, -12.0), 0)], &permissive);
+        assert_eq!(selected.len(), 1);
     }
 }

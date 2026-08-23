@@ -171,6 +171,8 @@ pub struct FrameConstants {
     /// frame", which is what a frame with the effect switched off — and every offscreen
     /// helper — produces.
     pub contact_target: [f32; 4],
+    /// `[near kernel code, far kernel code, first reduced cascade, unused]`.
+    pub filter_lod: [f32; 4],
 }
 
 
@@ -209,6 +211,7 @@ impl Default for FrameConstants {
             cluster_params: [0.0; 4],
             cluster_depth: [0.0; 4],
             contact_target: [0.0; 4],
+            filter_lod: [0.0; 4],
         }
     }
 }
@@ -294,6 +297,16 @@ impl FrameConstants {
             settings.blend_fraction,
             settings.pcf.shader_code() as f32,
             self.shadow_params[3],
+        ];
+        // The filter's level of detail: the full kernel near, one step cheaper past
+        // `filter_reduction_cascade`. A cascade beyond the first covers three times the
+        // distance for the same texels, so its penumbra is already wide and the taps that
+        // widened it are spent on something the eye reads as soft either way.
+        self.filter_lod = [
+            settings.pcf.shader_code() as f32,
+            settings.pcf.cheaper().shader_code() as f32,
+            settings.lod.filter_reduction_cascade as f32,
+            0.0,
         ];
         self.shadow_params_2 = [
             settings.bias.normal_texels,
@@ -549,7 +562,8 @@ mod tests {
         assert_eq!(std::mem::offset_of!(FrameConstants, cluster_params), 3968);
         assert_eq!(std::mem::offset_of!(FrameConstants, cluster_depth), 3984);
         assert_eq!(std::mem::offset_of!(FrameConstants, contact_target), 4000);
-        assert_eq!(size_of::<FrameConstants>(), 4016);
+        assert_eq!(std::mem::offset_of!(FrameConstants, filter_lod), 4016);
+        assert_eq!(size_of::<FrameConstants>(), 4032);
         // Kept small on purpose. The cluster masks live in their own buffer rather than
         // here: putting 13.5 KB of them in this one cost 0.34 ms a frame at 4K, because a
         // constant buffer that no longer fits the hardware's constant cache is slower to

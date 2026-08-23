@@ -205,14 +205,16 @@ options:
                          builds; it costs several times the frame time)
   --frames <count>       exit after rendering this many frames
   --lights <count>       extra local lights spread over the scene's floor, as a lighting
-                         stress control (default 0). None of them casts shadows: this
-                         measures what shading many lights costs, not what shadowing them
-                         does.
+                         stress control (default 0)
+  --shadow-lights <n>    how many of those extra lights ask for a shadow map (default 0).
+                         Shading many lights and shadowing many lights are two different
+                         costs; these are the two knobs that separate them.
   --shadow-tweak <list>  override individual shadow settings on top of the preset, as a
                          comma-separated key=value list: cascades, res, distance, pcf
                          (single|3x3|5x5|poisson4|poisson6|poisson8), contact,
                          contact-steps, contact-length, contact-distance,
-                         contact-divisor, local, local-views, local-lights, clusters. A
+                         contact-divisor, local, local-views, local-lights, clusters,
+                         filter-lod, min-importance. A
                          measurement control like --shadows: never written back.
   --warmup <count>       discard the first this many frames from the statistics window
                          (default 0). A measurement control: driver warm-up, shader
@@ -320,6 +322,10 @@ pub struct ShadowOverrides {
     pub local: Option<bool>,
     /// Local shadow view budget.
     pub local_views: Option<usize>,
+    /// The first cascade whose lookups use the cheaper filter. 4 disables the reduction.
+    pub filter_lod: Option<usize>,
+    /// The importance a local light must reach before it is given a shadow map.
+    pub min_importance: Option<f32>,
     /// Whether the clustered light grid is used at all.
     ///
     /// Off makes the shader walk the whole light list, which is what it did before the grid
@@ -387,6 +393,10 @@ impl ShadowOverrides {
                 "local-views" => self.local_views = Some(value.parse().map_err(|_| invalid())?),
                 "local-lights" => self.local_lights = Some(boolean(value).ok_or_else(invalid)?),
                 "clusters" => self.clusters = Some(boolean(value).ok_or_else(invalid)?),
+                "filter-lod" => self.filter_lod = Some(value.parse().map_err(|_| invalid())?),
+                "min-importance" => {
+                    self.min_importance = Some(value.parse().map_err(|_| invalid())?);
+                }
                 _ => return Err(invalid()),
             }
         }
@@ -429,6 +439,12 @@ impl ShadowOverrides {
         if let Some(views) = self.local_views {
             settings.local.max_views = views;
         }
+        if let Some(cascade) = self.filter_lod {
+            settings.lod.filter_reduction_cascade = cascade;
+        }
+        if let Some(importance) = self.min_importance {
+            settings.local.min_importance = importance;
+        }
         settings.validated()
     }
 }
@@ -449,6 +465,12 @@ pub struct Args {
     /// Zero for an ordinary run. The arena has four brazier lights, which is not enough of
     /// them to answer "does the lighting scale?"; this is the knob that asks.
     pub stress_lights: usize,
+    /// How many of the extra lights ask for a shadow map.
+    ///
+    /// Separate from the count because shading many lights and shadowing many lights are two
+    /// costs with two structures behind them, and a control that could not separate them
+    /// would measure their sum.
+    pub stress_shadow_lights: usize,
     /// Individual shadow fields named on the command line, applied on top of the preset.
     pub shadow_overrides: ShadowOverrides,
     /// Frames whose timings are discarded before the statistics window starts.
@@ -532,6 +554,7 @@ impl Default for Args {
             frames: None,
             warmup: 0,
             stress_lights: 0,
+            stress_shadow_lights: 0,
             shadow_overrides: ShadowOverrides::default(),
             shadows: None,
             report_interval_secs: 1.0,
@@ -671,6 +694,9 @@ where
             "--vfx-stress" => args.vfx_stress = next_value(&mut iter, "--vfx-stress")?,
             "--enemies" => args.enemies = next_value(&mut iter, "--enemies")?,
             "--lights" => args.stress_lights = next_value(&mut iter, "--lights")?,
+            "--shadow-lights" => {
+                args.stress_shadow_lights = next_value(&mut iter, "--shadow-lights")?;
+            }
             "--scene-file" => {
                 let raw = iter.next().ok_or(ArgsError::MissingValue("--scene-file"))?;
                 args.scene_file = Some(raw.as_ref().to_owned());

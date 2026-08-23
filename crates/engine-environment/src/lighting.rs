@@ -195,16 +195,18 @@ impl Default for EnvironmentLighting {
 /// given count always produces the same scene and two runs of a benchmark compare like with
 /// like.
 ///
-/// None of them casts shadows. What this exercises is the *shading* cost of many lights —
-/// the light culling structure, the per-pixel loop — and a shadow-casting stress light would
-/// mix that question up with the shadow budget's, which has its own control.
+/// The first `casting` of them ask for a shadow map; the rest only light. The split is the
+/// point: shading many lights and shadowing many lights are two different costs with two
+/// different structures behind them, and a control that could not separate them would
+/// measure their sum and attribute it to whichever was being changed.
 ///
 /// ```text
-/// count = 0    the scene as authored
-/// count = 8    eight more, on a ring inside the boundary
-/// count = 32   the renderer's per-frame maximum
+/// count = 0                  the scene as authored
+/// count = 8,  casting = 0    eight more torches, none of them shadowing
+/// count = 8,  casting = 8    the same eight, all asking for maps
+/// count = 32, casting = 0    the renderer's per-frame light maximum
 /// ```
-pub fn push_stress_lights(scene: &mut EnvironmentScene, count: usize) {
+pub fn push_stress_lights(scene: &mut EnvironmentScene, count: usize, casting: usize) {
     if count == 0 {
         return;
     }
@@ -225,7 +227,12 @@ pub fn push_stress_lights(scene: &mut EnvironmentScene, count: usize) {
             radius * angle.sin(),
         );
         // The brazier's own range, so a stress light costs what a real one costs.
-        scene.push_light(SceneLight::brazier(position, 14.0));
+        let light = SceneLight::brazier(position, 14.0);
+        scene.push_light(if index < casting {
+            light.casting_shadows(0)
+        } else {
+            light
+        });
     }
 }
 
@@ -243,7 +250,7 @@ mod stress_light_tests {
     #[test]
     fn no_stress_lights_leaves_the_scene_alone() {
         let mut scene = scene();
-        push_stress_lights(&mut scene, 0);
+        push_stress_lights(&mut scene, 0, 0);
         assert!(scene.lights.is_empty());
     }
 
@@ -252,7 +259,7 @@ mod stress_light_tests {
         // A stress light outside the boundary lights the outside of a wall, which measures
         // the cost of a light nobody can see.
         let mut scene = scene();
-        push_stress_lights(&mut scene, 32);
+        push_stress_lights(&mut scene, 32, 0);
         assert_eq!(scene.lights.len(), 32);
         for light in &scene.lights {
             let radius = light.position.x.hypot(light.position.z);
@@ -266,20 +273,28 @@ mod stress_light_tests {
     }
 
     #[test]
-    fn no_stress_light_casts_a_shadow() {
-        // The control measures what shading many lights costs. A shadow-casting stress light
-        // would spend the local shadow budget as well, and the two questions would be one
-        // number.
-        let mut scene = scene();
-        push_stress_lights(&mut scene, 16);
-        assert!(scene.lights.iter().all(|light| !light.casts_shadow));
+    fn stress_lights_cast_only_when_asked_to() {
+        // The two costs stay separable: "what does shading many lights cost" and "what does
+        // shadowing many lights cost" are different questions with different structures
+        // behind them.
+        let mut quiet = scene();
+        push_stress_lights(&mut quiet, 16, 0);
+        assert!(quiet.lights.iter().all(|light| !light.casts_shadow));
+
+        let mut casting = scene();
+        push_stress_lights(&mut casting, 16, 6);
+        assert_eq!(
+            casting.lights.iter().filter(|l| l.casts_shadow).count(),
+            6,
+            "the first six were asked to cast"
+        );
     }
 
     #[test]
     fn the_same_count_always_produces_the_same_scene() {
         let (mut first, mut second) = (scene(), scene());
-        push_stress_lights(&mut first, 12);
-        push_stress_lights(&mut second, 12);
+        push_stress_lights(&mut first, 12, 4);
+        push_stress_lights(&mut second, 12, 4);
         assert_eq!(first.lights, second.lights);
     }
 }

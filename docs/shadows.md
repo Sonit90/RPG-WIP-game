@@ -159,7 +159,14 @@ Then `shadow_lod_for` picks one of four levels:
 
 Two rules choose it: each cascade beyond the first steps down `levels_per_cascade` (1) levels,
 and any caster whose shadow would cover fewer than `cull_texels` (2, or 3 at Low) texels drops
-to `None`. A pebble at 140 m occupies a fraction of a texel of the last cascade; drawing it is
+to `None`.
+
+The **receiving** half is `filter_reduction_cascade` (1): a cascade at or beyond that index
+filters with `PcfKernel::cheaper()` instead of the full kernel — six taps inside 15 m and four
+beyond it at Ultra. The floor is four taps and not one, because four and six give the same
+penumbra width and a single tap does not: stepping to it would draw a seam across the world at
+the cascade split. It is worth about 1 % of the frame, which is small because Milestone 4
+already took the twenty-five-tap kernel away from the far cascades. A pebble at 140 m occupies a fraction of a texel of the last cascade; drawing it is
 a draw call that changes nothing, and a scene made of pebbles is thousands of them.
 
 The stand-in meshes come from the model's own LOD chain —
@@ -229,9 +236,28 @@ binary.
 ### The lights themselves
 
 `engine_render_data::LocalLight` is a point or a spot. A light asks for shadows with
-`casts_shadow` and a `priority`; the renderer decides. `select_shadow_lights` is greedy over
-in-view → priority → distance, and it **skips rather than stops**: a point light that does not
-fit is passed over and a later spot light that does fit still gets its view.
+`casts_shadow` and a `priority`; the renderer decides.
+
+`select_shadow_lights` rejects what cannot matter — not asking, out of view, past
+`local.max_distance` — scores the rest with `shadow_importance`, and spends the budget greedily
+on the highest scores. It **skips rather than stops**: a point light that does not fit is passed
+over and a later spot light that does fit still gets its view.
+
+```text
+importance = intensity x (range / distance)^2 x range fade x 4 ^ priority
+```
+
+Four per step of priority is a thumb on the scale, not an override: a boss's light at priority 2
+outranks a decorative one four times closer, and a priority-1 light on the far side of the world
+still loses to the torch burning next to the player. Both directions are asserted.
+
+`local.min_importance` (0.02) is a *floor* beneath the budget's ceiling. Without it a budget
+with room left in it is always spent, and the last views go to lights whose shadow map is four
+hundred texels of nothing.
+
+Measured: thirty-six lights all asking for shadow maps cost 0.042 ms more at 4K than the same
+thirty-six asking for none. See `docs/performance/shadows/05-shadow-lod.md`, which also records
+why per-light map *resolution* was rejected.
 
 The budget is counted in **views**: a spot is one, a point is six (the cube faces of
 `CUBE_FACE_DIRECTIONS`). Local views are 512² — a torch lights a few metres where a cascade

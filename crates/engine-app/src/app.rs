@@ -475,11 +475,19 @@ impl App {
         // of them: "what do many lights cost" is a question about the renderer, and a knob
         // that only worked in the arena would answer it for the arena.
         let environment = environment.map(|mut scene| {
-            engine_environment::push_stress_lights(&mut scene, args.stress_lights);
+            engine_environment::push_stress_lights(
+                &mut scene,
+                args.stress_lights,
+                args.stress_shadow_lights,
+            );
             scene
         });
         if args.stress_lights > 0 {
-            log::info!("lighting: {} stress light(s) added", args.stress_lights);
+            log::info!(
+                "lighting: {} stress light(s) added, {} of them casting",
+                args.stress_lights,
+                args.stress_shadow_lights.min(args.stress_lights),
+            );
         }
 
         let (mut simulation, demo) = match args.scene {
@@ -3106,6 +3114,16 @@ impl App {
             engine_renderer::light_cluster::CLUSTER_COUNT,
             clusters.max_per_cluster,
         );
+        let shadow = self.renderer.shadow_stats();
+        if shadow.enabled {
+            log::info!(
+                "final shadow budget: {} local view(s) granted, {} light(s) refused,                  {} caster(s), {} dropped by LOD",
+                shadow.local_views,
+                shadow.local_lights_refused,
+                shadow.casters(),
+                shadow.lod_counts[3],
+            );
+        }
         if let Some(stats) = self.shadow_gpu.stats() {
             log::info!(
                 "final shadow-stage GPU: mean {:.3} | p50 {:.3} | p95 {:.3} ms | n={}",

@@ -84,6 +84,9 @@ cbuffer Frame : register(b0)
     // x,y: the contact-shadow target's size in texels  z,w: its reciprocal. A zero width
     // means the pass did not run this frame.
     float4 contact_target;
+    // x: the kernel near cascades use  y: the one far cascades use  z: the first cascade
+    // that uses it. z >= MAX_CASCADES means every cascade uses x.
+    float4 filter_lod;
 };
 
 // The material constants and the base colour map, shared with the depth-only shadow
@@ -536,7 +539,11 @@ float directional_shadow(float3 world_position, float3 normal, float view_distan
         return 1.0;
     }
 
-    uint kernel = (uint)shadow_params.z;
+    // The filter's level of detail. A cascade past `filter_lod.z` steps down one kernel:
+    // it covers roughly three times the distance for the same texels, so its penumbra is
+    // already three times wider in world terms, and the far cascades are most of the screen
+    // in an outdoor scene.
+    uint kernel = near_index >= (uint)filter_lod.z ? (uint)filter_lod.y : (uint)filter_lod.x;
     float offset_scale = min(
         cascade_texel_world[near_index] * shadow_params2.x, shadow_params2.y);
     float3 offset_position = world_position + normal * offset_scale;
@@ -552,11 +559,13 @@ float directional_shadow(float3 world_position, float3 normal, float view_distan
     {
         float far_offset = min(
             cascade_texel_world[far_index] * shadow_params2.x, shadow_params2.y);
+        uint far_kernel =
+            far_index >= (uint)filter_lod.z ? (uint)filter_lod.y : (uint)filter_lod.x;
         float next = shadow_in_view(
             world_position + normal * far_offset,
             cascade_view_projection[far_index],
             cascade_uv_scale_bias[far_index],
-            kernel,
+            far_kernel,
             pixel);
         factor = lerp(factor, next, blend);
     }

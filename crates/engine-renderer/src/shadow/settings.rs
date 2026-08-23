@@ -117,6 +117,12 @@ impl PcfKernel {
     /// What the distance LOD steps down: full quality near the camera, one step coarser
     /// further out. Grid kernels step onto the disc of the nearest size rather than onto a
     /// narrower grid, because the disc is both cheaper and steadier.
+    ///
+    /// **The floor is four taps, not one.** Four and six produce the same penumbra width on
+    /// the same radius, so stepping between them across a cascade boundary is invisible;
+    /// stepping to a single tap is a six-pixel penumbra becoming a one-pixel one, which is a
+    /// seam drawn across the world at the cascade split. A kernel that is already at the
+    /// floor returns itself, so a preset filtering with four taps simply has no reduction.
     #[must_use]
     pub fn cheaper(self) -> Self {
         match self {
@@ -124,7 +130,8 @@ impl PcfKernel {
             Self::Tap3x3 => Self::Poisson6,
             Self::Poisson8 => Self::Poisson6,
             Self::Poisson6 => Self::Poisson4,
-            Self::Poisson4 | Self::Single => Self::Single,
+            Self::Poisson4 => Self::Poisson4,
+            Self::Single => Self::Single,
         }
     }
 
@@ -216,6 +223,17 @@ pub struct ShadowLodSettings {
     /// occupies a fraction of a texel of the last cascade; drawing it costs a draw call to
     /// change nothing, and a scene made of pebbles costs thousands of them.
     pub cull_texels: f32,
+    /// The first cascade whose lookups use [`PcfKernel::cheaper`] instead of the full filter.
+    ///
+    /// The *receiving* half of the level of detail, where `levels_per_cascade` is the casting
+    /// half. A cascade beyond the first covers three times the distance for the same texels,
+    /// so its penumbra is already three times wider in world terms and the extra taps are
+    /// spent softening something the eye reads as soft anyway. Filtering is a per-pixel cost
+    /// and the far cascades cover most of the screen in an outdoor scene, so this is where
+    /// the saving is.
+    ///
+    /// [`MAX_CASCADES`] or more disables it: every cascade then uses the full kernel.
+    pub filter_reduction_cascade: usize,
 }
 
 impl Default for ShadowLodSettings {
@@ -224,6 +242,11 @@ impl Default for ShadowLodSettings {
             enabled: true,
             levels_per_cascade: 1,
             cull_texels: 2.0,
+            // From the second cascade out: past 15 m at the shipping splits, which is the
+            // near cascade and the distance a third-person camera actually looks at a
+            // shadow's edge from. The step is six taps to four, which is the same penumbra
+            // width — see `cheaper` for why the floor is four and not one.
+            filter_reduction_cascade: 1,
         }
     }
 }
@@ -301,6 +324,19 @@ pub struct LocalShadowSettings {
     /// a dungeon corridor full of torches would otherwise spend the entire budget on lights
     /// behind the player.
     pub max_distance: f32,
+    /// The importance a light must reach before it is given a map at all.
+    ///
+    /// A budget is a ceiling; this is a floor, and the two answer different questions. The
+    /// ceiling stops a room full of torches from costing sixteen views. The floor stops a
+    /// *sparse* scene from spending views on lights nobody can see the shadow of — a small
+    /// decorative lamp thirty metres away passes every rejection test the selector has (it
+    /// is in view, it is in range, it asked) and its shadow map is four hundred texels of
+    /// nothing. Without a floor, a budget with room left in it is always spent.
+    ///
+    /// Compared against [`super::local::shadow_importance`], whose scale is "intensity times
+    /// the square of the light's angular size, times four per step of priority". 0.02 is
+    /// about a brazier at twenty-five metres.
+    pub min_importance: f32,
 }
 
 impl Default for LocalShadowSettings {
@@ -315,6 +351,7 @@ impl Default for LocalShadowSettings {
             max_views: 8,
             point_lights: true,
             max_distance: 40.0,
+            min_importance: 0.02,
         }
     }
 }
@@ -505,6 +542,11 @@ impl ShadowSettings {
         self.local.resolution = self.local.resolution.clamp(128, 4096).next_power_of_two();
         self.local.max_views = self.local.max_views.min(MAX_LOCAL_SHADOW_VIEWS);
         self.local.max_distance = self.local.max_distance.max(0.0);
+        self.local.min_importance = if self.local.min_importance.is_finite() {
+            self.local.min_importance.max(0.0)
+        } else {
+            0.0
+        };
         self.filter_radius_texels = if self.filter_radius_texels.is_finite() {
             self.filter_radius_texels.clamp(0.5, 8.0)
         } else {
@@ -515,6 +557,7 @@ impl ShadowSettings {
         self.contact.length = self.contact.length.clamp(0.0, 5.0);
         self.contact.thickness = self.contact.thickness.max(0.0);
         self.lod.cull_texels = self.lod.cull_texels.max(0.0);
+        self.lod.filter_reduction_cascade = self.lod.filter_reduction_cascade.min(MAX_CASCADES);
         self
     }
 
@@ -742,6 +785,10 @@ impl ShadowPreset {
                 lod: ShadowLodSettings {
                     // A cheap configuration drops small casters sooner.
                     cull_texels: 3.0,
+                    // And its filter is a single tap already, so there is nothing to step
+                    // down to. Named rather than left at the default so the preset says what
+                    // it does.
+                    filter_reduction_cascade: MAX_CASCADES,
                     ..base.lod
                 },
                 ..base
