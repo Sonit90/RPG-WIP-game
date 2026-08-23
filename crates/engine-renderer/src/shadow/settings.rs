@@ -683,8 +683,15 @@ impl ShadowPreset {
             cascade_distances: DEFAULT_CASCADE_DISTANCES,
             resolution: 2048,
             blend_fraction: 0.1,
-            pcf: PcfKernel::Tap3x3,
-            filter_radius_texels: 2.0,
+            // Four taps on a rotated disc, not nine on a grid. Measured against the 3x3 it
+            // replaces on the same scene: a 6-pixel penumbra against 4, a third less local
+            // noise, and 40% less drift when the camera moves - better on every axis, for
+            // five fewer fetches. See docs/performance/shadows/03-shadow-filtering.md.
+            pcf: PcfKernel::Poisson4,
+            // Two and a half texels. Below two the disc is several samples of the same texel;
+            // above three the penumbra is wider than the 5x5 it is standing in for. At 2.5 a
+            // six-tap disc and a twenty-five-tap grid produce the same 6-pixel penumbra.
+            filter_radius_texels: 2.5,
             bias: ShadowBias::default(),
             stabilize: true,
             caster_extrusion: 60.0,
@@ -767,7 +774,10 @@ impl ShadowPreset {
             .validated(),
             Self::Ultra => ShadowSettings {
                 cascade_count: 4,
-                pcf: PcfKernel::Tap5x5,
+                // Six taps rather than four. At the same radius it is the same penumbra and
+                // very nearly the same stability as the 5x5 grid this replaced, for a
+                // quarter of the fetches.
+                pcf: PcfKernel::Poisson6,
                 local: LocalShadowSettings {
                     max_views: MAX_LOCAL_SHADOW_VIEWS,
                     ..base.local

@@ -111,11 +111,32 @@ nudge in every cascade instead of being invisible near and enormous far.
 
 ## Filtering
 
-`PcfKernel` is `Single`, `Tap3x3` (default) or `Tap5x5`. Every tap goes through a
-`SamplerComparisonState` with `LESS_EQUAL` and a white border, so the hardware does the
-comparison and the bilinear filter in one fetch — a 3×3 kernel is nine fetches, not
-thirty-six. The kernels are unrolled per branch rather than looped, because a dynamic loop
-around a texture fetch is markedly slower and there are only three widths.
+`PcfKernel` is `Single`, `Poisson4` (the default above Low), `Poisson6` (Ultra), `Poisson8`, or
+one of the two grids `Tap3x3` and `Tap5x5`. Every tap goes through a `SamplerComparisonState`
+with `LESS_EQUAL` and a white border, so the hardware does the comparison and the bilinear
+filter in one fetch — a six-tap disc is six fetches covering twenty-four texels. Each width is
+its own unrolled branch, because a dynamic loop around a texture fetch is markedly slower and
+costs registers in the frame's largest shader.
+
+### The disc
+
+`vogel_disc` places `n` taps on a golden-angle spiral of `filter_radius_texels` (2.5), rotated
+per pixel by interleaved gradient noise. A golden-angle spiral rather than a stored Poisson
+set, because it is well spread for *any* tap count — 4, 6 and 8 are one piece of code and one
+radius to tune rather than three tables to keep in agreement.
+
+**The rotation is a function of the pixel and of nothing else.** There is no temporal
+accumulation in this engine and no TAA, so an angle that changed per frame would turn a static
+penumbra into boiling noise. Fixed per pixel it is a dither that stands still.
+
+Measured against the 5×5 grid it replaced, on the same scene: the same 6-pixel penumbra, drift
+on a one-centimetre camera move of 0.034 against 0.031, local noise 0.108 against 0.064 — and
+six fetches instead of twenty-five, which is 14 % of the frame at every resolution. The
+four-tap disc beats the 3×3 grid on penumbra, noise *and* stability for five fewer fetches.
+`docs/performance/shadows/03-shadow-filtering.md` has the radius sweep and the rest.
+
+The two grids are kept so the tests have something to compare against; no preset selects the
+5×5 any more.
 
 `clamp_to_tile` keeps every tap half a texel inside its own atlas rectangle. Without it a
 kernel at a tile edge reads its neighbour, and one light's depth showing up inside another's
@@ -319,7 +340,7 @@ renderer ignores.
 | --- | --- | --- | --- | --- | --- |
 | cascades | – | 2 | 3 | 3 | 4 |
 | resolution | – | 1024 | 1024 | 2048 | 2048 |
-| PCF | – | 1 tap | 3×3 | 3×3 | 5×5 |
+| PCF | – | 1 tap | 4-tap disc | 4-tap disc | 6-tap disc |
 | local views | – | 0 | 4 (no point lights) | 8 | 16 |
 | contact shadows | – | off | off | on, 8 steps, 15 m | on, 8 steps, 20 m |
 | atlas | 0 | 2048×1024, 8 MB | 2048×2048, 16 MB | 4096×4096, 64 MB | 4096×5120, 80 MB |
