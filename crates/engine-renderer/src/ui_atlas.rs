@@ -3,7 +3,7 @@
 //! ```text
 //! font::glyph (bit patterns)  --\
 //!                                >--  UiAtlas (one RGBA8 texture)  -->  one quad each
-//! assets/icons/*.svg (build.rs)-/
+//! assets/icons/<class>/*.svg  (build.rs)-/
 //! ```
 //!
 //! ## Why this exists

@@ -145,192 +145,196 @@ const HEADERS: &[&str] = &["scene_frame.hlsli", "material.hlsli"];
 /// is not silently compiled in, and a name in this table with no file is a build error.
 const ICONS: &[IconEntry] = &[
     IconEntry {
-        file: "firebolt.svg",
+        file: "firemage/firebolt.svg",
         constant: "FIREBOLT",
     },
     IconEntry {
-        file: "meteor.svg",
+        file: "firemage/meteor.svg",
         constant: "METEOR",
     },
     IconEntry {
-        file: "flame_cone.svg",
+        file: "firemage/flame_cone.svg",
         constant: "FLAME_CONE",
     },
     IconEntry {
-        file: "flame_lance.svg",
+        file: "firemage/flame_lance.svg",
         constant: "FLAME_LANCE",
     },
     IconEntry {
-        file: "pyroblast.svg",
+        file: "firemage/pyroblast.svg",
         constant: "PYROBLAST",
     },
     IconEntry {
-        file: "firestorm.svg",
+        file: "firemage/firestorm.svg",
         constant: "FIRESTORM",
     },
     IconEntry {
-        file: "detonate.svg",
+        file: "firemage/detonate.svg",
         constant: "DETONATE",
     },
     IconEntry {
-        file: "fire_mastery.svg",
+        file: "firemage/fire_mastery.svg",
         constant: "FIRE_MASTERY",
     },
     IconEntry {
-        file: "flame_shield.svg",
+        file: "firemage/flame_shield.svg",
         constant: "FLAME_SHIELD",
     },
     IconEntry {
-        file: "blink.svg",
+        file: "firemage/blink.svg",
         constant: "BLINK",
     },
     IconEntry {
-        file: "recuperate.svg",
+        file: "warrior/recuperate.svg",
         constant: "RECUPERATE",
     },
     IconEntry {
-        file: "war_stomp.svg",
+        file: "warrior/war_stomp.svg",
         constant: "WAR_STOMP",
     },
     IconEntry {
-        file: "colossus_strike.svg",
+        file: "warrior/colossus_strike.svg",
         constant: "COLOSSUS_STRIKE",
     },
     IconEntry {
-        file: "shield_charge.svg",
+        file: "warrior/shield_charge.svg",
         constant: "SHIELD_CHARGE",
     },
     IconEntry {
-        file: "shield_bash.svg",
+        file: "warrior/shield_bash.svg",
         constant: "SHIELD_BASH",
     },
     IconEntry {
-        file: "shield_block.svg",
+        file: "warrior/shield_block.svg",
         constant: "SHIELD_BLOCK",
     },
     IconEntry {
-        file: "puncture_blood.svg",
+        file: "warrior/puncture_blood.svg",
         constant: "PUNCTURE_BLOOD",
     },
     IconEntry {
-        file: "adrenaline.svg",
+        file: "warrior/adrenaline.svg",
         constant: "ADRENALINE",
     },
     IconEntry {
-        file: "battle_trance.svg",
+        file: "warrior/battle_trance.svg",
         constant: "BATTLE_TRANCE",
     },
     IconEntry {
-        file: "spell_reflect.svg",
+        file: "warrior/spell_reflect.svg",
         constant: "SPELL_REFLECT",
     },
     IconEntry {
-        file: "last_stand.svg",
+        file: "warrior/last_stand.svg",
         constant: "LAST_STAND",
     },
     // The Druid's thirteen.
     IconEntry {
-        file: "moonfire.svg",
+        file: "druid/moonfire.svg",
         constant: "MOONFIRE",
     },
     IconEntry {
-        file: "sunfire.svg",
+        file: "druid/sunfire.svg",
         constant: "SUNFIRE",
     },
     IconEntry {
-        file: "wrath.svg",
+        file: "druid/wrath.svg",
         constant: "WRATH",
     },
     IconEntry {
-        file: "rejuvenation.svg",
+        file: "druid/rejuvenation.svg",
         constant: "REJUVENATION",
     },
     IconEntry {
-        file: "regrowth.svg",
+        file: "druid/regrowth.svg",
         constant: "REGROWTH",
     },
     IconEntry {
-        file: "lifebloom.svg",
+        file: "druid/lifebloom.svg",
         constant: "LIFEBLOOM",
     },
     IconEntry {
-        file: "wild_growth.svg",
+        file: "druid/wild_growth.svg",
         constant: "WILD_GROWTH",
     },
     IconEntry {
-        file: "swiftmend.svg",
+        file: "druid/swiftmend.svg",
         constant: "SWIFTMEND",
     },
     IconEntry {
-        file: "nourish.svg",
+        file: "druid/nourish.svg",
         constant: "NOURISH",
     },
     IconEntry {
-        file: "natures_cleanse.svg",
+        file: "druid/natures_cleanse.svg",
         constant: "NATURES_CLEANSE",
     },
     IconEntry {
-        file: "wild_rush.svg",
+        file: "druid/wild_rush.svg",
         constant: "WILD_RUSH",
     },
     IconEntry {
-        file: "astral_power.svg",
+        file: "druid/astral_power.svg",
         constant: "ASTRAL_POWER",
     },
     IconEntry {
-        file: "tranquility.svg",
+        file: "druid/tranquility.svg",
         constant: "TRANQUILITY",
     },
 
     IconEntry {
-        file: "helm.svg",
+        file: "equipment/helm.svg",
         constant: "HELM",
     },
     IconEntry {
-        file: "shoulders.svg",
+        file: "equipment/shoulders.svg",
         constant: "SHOULDERS",
     },
     IconEntry {
-        file: "chestpiece.svg",
+        file: "equipment/chestpiece.svg",
         constant: "CHESTPIECE",
     },
     IconEntry {
-        file: "cloak.svg",
+        file: "equipment/cloak.svg",
         constant: "CLOAK",
     },
     IconEntry {
-        file: "gloves.svg",
+        file: "equipment/gloves.svg",
         constant: "GLOVES",
     },
     IconEntry {
-        file: "leggings.svg",
+        file: "equipment/leggings.svg",
         constant: "LEGGINGS",
     },
     IconEntry {
-        file: "boots.svg",
+        file: "equipment/boots.svg",
         constant: "BOOTS",
     },
     IconEntry {
-        file: "bracers.svg",
+        file: "equipment/bracers.svg",
         constant: "BRACERS",
     },
     IconEntry {
-        file: "amulet.svg",
+        file: "equipment/amulet.svg",
         constant: "AMULET",
     },
     IconEntry {
-        file: "ring.svg",
+        file: "equipment/ring.svg",
         constant: "RING",
     },
     IconEntry {
-        file: "trinket.svg",
+        file: "equipment/trinket.svg",
         constant: "TRINKET",
     },
 ];
 
 /// One icon: a file under `assets/icons/` and the constant its texels are bound to.
+///
+/// The path carries the folder, and the folders are who the icon belongs to: `firemage/`,
+/// `warrior/`, `druid/` and `equipment/`. A class's art is then one directory to look in
+/// rather than eleven names to pick out of forty-five.
 struct IconEntry {
-    /// File under `assets/icons/`.
+    /// File under `assets/icons/`, including its folder.
     file: &'static str,
     /// Name of the generated Rust constant.
     constant: &'static str,

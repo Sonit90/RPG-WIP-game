@@ -217,13 +217,13 @@ pub type UiColor = [f32; 4];
 
 /// A picture the renderer can draw, named rather than described.
 ///
-/// The art itself is an SVG under `engine-renderer/assets/icons`, rasterized into the UI
-/// atlas at build time. This crate names the icons and nothing more: a layout crate can ask
-/// for [`UiIcon::Meteor`] without knowing there is a texture, which is the same seam that
+/// The art itself is an SVG under `engine-renderer/assets/icons/<class>`, rasterized into
+/// the UI atlas at build time. This crate names the icons and nothing more: a layout crate can
+/// ask for [`UiIcon::Meteor`] without knowing there is a texture, which is the same seam that
 /// keeps [`UiCommand`] free of vertices.
 ///
-/// Adding one means adding a variant here, a file under `assets/icons`, and a line in that
-/// crate's `build.rs`. Two of those three fail to compile if the third is missing.
+/// Adding one means adding a variant here, a file under that class's folder, and a line in
+/// that crate's `build.rs`. Two of those three fail to compile if the third is missing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum UiIcon {
     /// The filler bolt.
