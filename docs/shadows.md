@@ -339,11 +339,21 @@ renderer ignores.
 | | Off | Low | Medium | High (default) | Ultra |
 | --- | --- | --- | --- | --- | --- |
 | cascades | – | 2 | 3 | 3 | 4 |
-| resolution | – | 1024 | 1024 | 2048 | 2048 |
+| resolution | – | 1024 | 1024 | 1536 | 2048 |
+| shadow distance | – | 35 m | 150 m | 150 m | 320 m |
 | PCF | – | 1 tap | 4-tap disc | 4-tap disc | 6-tap disc |
 | local views | – | 0 | 4 (no point lights) | 8 | 16 |
-| contact shadows | – | off | off | on, 8 steps, 15 m | on, 8 steps, 20 m |
-| atlas | 0 | 2048×1024, 8 MB | 2048×2048, 16 MB | 4096×4096, 64 MB | 4096×5120, 80 MB |
+| contact shadows | – | off | off | on, 8 steps, 15 m, ½ res | on, 8 steps, 20 m, ½ res |
+| atlas | 0 | 2048×1024, 8 MB | 2048×2048, 16 MB | 3072×3072, 36 MB | 4096×5120, 80 MB |
+
+High is 1536 rather than 2048: 2.25× Medium's texels for 2.25× its memory, where the next
+power of two is four times both for a difference that has to be looked for once contact
+shadows are resolving the seam anyway. `validated()` therefore rounds a resolution to a
+multiple of 256 rather than to a power of two — nothing needed a power of two, and the rule's
+only effect was to make 1536 impossible.
+
+Low's shadow distance is 35 m rather than 50: two cascades over a shorter range puts 40 % more
+texels on the ground the player is standing on, and past it there are no shadows at all.
 
 Medium turns point lights **off** rather than rationing them: one point light is six views, so
 a four-view budget with points enabled is one torch and nothing else. High's eight views fit

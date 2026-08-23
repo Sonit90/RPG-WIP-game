@@ -129,7 +129,7 @@ mod tests {
         let stats = ShadowStats::for_settings(&settings);
         assert!(stats.enabled);
         assert_eq!(stats.cascade_count, 3);
-        assert_eq!(stats.resolution, 2048);
+        assert_eq!(stats.resolution, 1536);
         assert_eq!(stats.splits[2], 150.0);
         assert_eq!(stats.draw_calls(), 0);
     }

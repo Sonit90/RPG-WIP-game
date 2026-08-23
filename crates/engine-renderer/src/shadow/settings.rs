@@ -470,9 +470,13 @@ impl ShadowSettings {
     #[must_use]
     pub fn validated(mut self) -> Self {
         self.cascade_count = self.cascade_count.clamp(1, MAX_CASCADES);
-        // Powers of two from 256: the atlas is laid out in tiles and a texel size that is
-        // not a power of two makes the snapping arithmetic lie by a fraction of a texel.
-        self.resolution = self.resolution.clamp(256, 4096).next_power_of_two();
+        // Multiples of 256, from 256 to 4096. It was powers of two, which ruled out 1536 —
+        // and 1536 is exactly the resolution High wants: 2.25x the texels of 1024 for 2.25x
+        // the memory, where the next power of two is 4x of both. Nothing needs a power of
+        // two: the atlas lays tiles out by multiplication, the local tiles subdivide a
+        // cascade tile an integer number of times at every value here, and the texel-snapping
+        // arithmetic divides by the resolution rather than shifting by it.
+        self.resolution = self.resolution.clamp(256, 4096).next_multiple_of(256).min(4096);
         self.blend_fraction = if self.blend_fraction.is_finite() {
             self.blend_fraction.clamp(0.0, 0.5)
         } else {
@@ -716,6 +720,12 @@ impl ShadowPreset {
             Self::Low => ShadowSettings {
                 cascade_count: 2,
                 resolution: 1024,
+                // A short range as well as a coarse map. Two cascades over 35 m rather than
+                // over 50 puts 40% more texels on the ground the player is standing on,
+                // which is where a cheap configuration should spend what it has; the far
+                // half of the world simply has no shadows, and at this quality level that
+                // reads as a choice rather than as a bug.
+                cascade_distances: [10.0, 35.0, 36.0, 37.0],
                 // One comparison sample. The hardware's own 2x2 filter still softens the
                 // edge, so this is a softer image than an unfiltered lookup and costs a
                 // ninth of the 3x3.
@@ -755,6 +765,11 @@ impl ShadowPreset {
             }
             .validated(),
             Self::High => ShadowSettings {
+                // 1536, between Medium's 1024 and Ultra's 2048. 2.25x the texels of Medium
+                // for 2.25x the memory — where the next power of two would be four times
+                // both, for a difference nobody can see at three cascades. This is the
+                // default preset, so it is the one that has to be honest about that.
+                resolution: 1536,
                 // Eight views: one point light and two spots, or eight spots. They all fit
                 // in the quarter of the atlas the three cascades leave empty, so this costs
                 // no extra memory at all — the tiles were already allocated.
@@ -891,7 +906,8 @@ mod tests {
         .validated();
 
         assert_eq!(broken.cascade_count, MAX_CASCADES);
-        assert!(broken.resolution.is_power_of_two());
+        assert_eq!(broken.resolution % 256, 0, "{}", broken.resolution);
+        assert!((256..=4096).contains(&broken.resolution));
         assert_eq!(broken.blend_fraction, 0.0);
         for pair in broken.cascade_distances.windows(2) {
             assert!(

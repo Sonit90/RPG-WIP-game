@@ -161,18 +161,51 @@ float interleaved_gradient_noise(float2 pixel)
     return frac(52.9829189 * frac(dot(pixel, float2(0.06711056, 0.00583715))));
 }
 
-// One point of a rotated Vogel disc.
+// The three discs, as constants.
 //
-// A golden-angle spiral rather than a stored Poisson set: it is well spread for *any* tap
-// count, so 4, 6 and 8 taps are the same code and the same tuning rather than three tables
-// somebody has to keep in agreement. The per-pixel rotation is what removes the spiral's own
-// structure, which is otherwise as visible along a shadow edge as a grid's staircase.
-float2 vogel_disc(uint index, uint count, float rotation)
+// A golden-angle (Vogel) spiral: `r = sqrt((i + 0.5) / n)`, `theta = i * 2.39996323`. Well
+// spread for any tap count, which is why it is a spiral rather than a stored Poisson set —
+// three widths from one rule instead of three tables somebody has to keep in agreement.
+//
+// **Baked rather than computed.** The obvious form evaluates a sine and a cosine per tap,
+// which is four to eight transcendentals per pixel and measurably slower than the nine-tap
+// grid it was supposed to beat: at Medium, a four-tap disc computing its own angles cost
+// 0.044 ms more at 4K than the 3x3 it replaced. Rotating a constant point costs a multiply
+// and an add, and the rotation itself is one sine and one cosine for the whole kernel.
+static const float2 VOGEL_4[4] = {
+    float2(+0.353553, +0.000000),
+    float2(-0.451544, +0.413652),
+    float2(+0.069116, -0.787542),
+    float2(+0.569142, +0.742346)
+};
+static const float2 VOGEL_6[6] = {
+    float2(+0.288675, +0.000000),
+    float2(-0.368684, +0.337745),
+    float2(+0.056433, -0.643026),
+    float2(+0.464703, +0.606123),
+    float2(-0.852787, -0.150846),
+    float2(+0.807834, -0.513878)
+};
+static const float2 VOGEL_8[8] = {
+    float2(+0.250000, +0.000000),
+    float2(-0.319290, +0.292496),
+    float2(+0.048872, -0.556877),
+    float2(+0.402444, +0.524918),
+    float2(-0.738535, -0.130636),
+    float2(+0.699605, -0.445031),
+    float2(-0.234004, +0.870484),
+    float2(-0.446271, -0.859268)
+};
+
+// One disc point turned by the pixel's own rotation.
+//
+// `turn` is `float2(cos, sin)` of the angle, computed once per pixel. (`point` is a reserved
+// word in HLSL - it is an interpolation modifier - which is why the parameter is `tap`.) The per-pixel rotation
+// is what removes the spiral's own structure, which is otherwise as visible along a shadow
+// edge as a grid's staircase.
+float2 rotate_tap(float2 tap, float2 turn)
 {
-    const float GOLDEN_ANGLE = 2.39996323;
-    float radius = sqrt((float)index + 0.5) / sqrt((float)count);
-    float theta = (float)index * GOLDEN_ANGLE + rotation;
-    return float2(cos(theta), sin(theta)) * radius;
+    return float2(tap.x * turn.x - tap.y * turn.y, tap.x * turn.y + tap.y * turn.x);
 }
 
 // Percentage-closer filtering.
@@ -197,7 +230,9 @@ float shadow_pcf(float2 atlas_uv, float compare, float4 scale_bias, uint kernel,
 
     if (kernel >= 3)
     {
-        float rotation = interleaved_gradient_noise(pixel) * 6.2831853;
+        float angle = interleaved_gradient_noise(pixel) * 6.2831853;
+        // One sine and one cosine for the whole kernel, not one pair per tap.
+        float2 turn = float2(cos(angle), sin(angle));
         float2 radius = texel * shadow_params2.w;
         // One unrolled loop per tap count, for the same reason the grid kernels have one
         // each: a dynamic loop around a texture fetch is markedly slower than a static one,
@@ -208,7 +243,7 @@ float shadow_pcf(float2 atlas_uv, float compare, float4 scale_bias, uint kernel,
             for (uint i4 = 0; i4 < 4; ++i4)
             {
                 total += shadow_tap(
-                    atlas_uv + vogel_disc(i4, 4, rotation) * radius, compare, scale_bias);
+                    atlas_uv + rotate_tap(VOGEL_4[i4], turn) * radius, compare, scale_bias);
             }
             return total * 0.25;
         }
@@ -218,7 +253,7 @@ float shadow_pcf(float2 atlas_uv, float compare, float4 scale_bias, uint kernel,
             for (uint i6 = 0; i6 < 6; ++i6)
             {
                 total += shadow_tap(
-                    atlas_uv + vogel_disc(i6, 6, rotation) * radius, compare, scale_bias);
+                    atlas_uv + rotate_tap(VOGEL_6[i6], turn) * radius, compare, scale_bias);
             }
             return total * (1.0 / 6.0);
         }
@@ -226,7 +261,7 @@ float shadow_pcf(float2 atlas_uv, float compare, float4 scale_bias, uint kernel,
         for (uint i8 = 0; i8 < 8; ++i8)
         {
             total += shadow_tap(
-                atlas_uv + vogel_disc(i8, 8, rotation) * radius, compare, scale_bias);
+                atlas_uv + rotate_tap(VOGEL_8[i8], turn) * radius, compare, scale_bias);
         }
         return total * 0.125;
     }

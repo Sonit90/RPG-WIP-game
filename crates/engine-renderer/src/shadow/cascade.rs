@@ -687,9 +687,12 @@ mod tests {
             shadow_lod_for(0.02, &cascades[2], &settings.lod, 2),
             ShadowLod::None
         );
-        // The same pebble under the character's feet is worth drawing.
+        // A stone under the character's feet is worth drawing. Five centimetres rather than
+        // two, because two is inside the cull threshold at High's 1536-texel cascade: one
+        // texel of the near cascade is about 23 mm there, and `cull_texels` is 2, so a 4 cm
+        // pebble is exactly the size the rule is meant to be ambiguous about.
         assert_eq!(
-            shadow_lod_for(0.02, &cascades[0], &settings.lod, 0),
+            shadow_lod_for(0.05, &cascades[0], &settings.lod, 0),
             ShadowLod::Full
         );
     }
