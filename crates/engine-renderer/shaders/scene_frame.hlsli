@@ -16,8 +16,17 @@
 
 // Must match settings.rs: MAX_CASCADES, MAX_LOCAL_LIGHTS, MAX_LOCAL_SHADOW_VIEWS.
 #define MAX_CASCADES 4
-#define MAX_LOCAL_LIGHTS 8
+#define MAX_LOCAL_LIGHTS 32
 #define MAX_LOCAL_SHADOW_VIEWS 16
+
+// Must match light_cluster.rs: CLUSTERS_X/Y/Z and CLUSTER_MASK_VECTORS.
+//
+// The grid is fixed rather than derived from the viewport: a cluster is a fraction of the
+// screen, not a number of pixels, so the same grid serves 720p and 4K and nothing has to be
+// reallocated when the window is resized.
+#define CLUSTERS_X 16
+#define CLUSTERS_Y 9
+#define CLUSTERS_Z 24
 
 cbuffer Frame : register(b0)
 {
@@ -66,6 +75,12 @@ cbuffer Frame : register(b0)
 
     column_major float4x4 local_view_projection[MAX_LOCAL_SHADOW_VIEWS];
     float4 local_uv_scale_bias[MAX_LOCAL_SHADOW_VIEWS];
+
+    // ---- the light cluster grid ----------------------------------------------------
+    // x,y,z: the grid dimensions  w: 1 when a grid was built for this frame
+    float4 cluster_params;
+    // x: depth-slice scale  y: its bias  z: camera near  w: camera far
+    float4 cluster_depth;
 };
 
 // The material constants and the base colour map, shared with the depth-only shadow
@@ -78,6 +93,13 @@ cbuffer Frame : register(b0)
 // thirty-six.
 Texture2D<float> shadow_atlas : register(t1);
 SamplerComparisonState shadow_sampler : register(s1);
+
+// One bitmask per cluster: bit i means local light i reaches it. See light_cluster.rs.
+//
+// A buffer rather than part of `cbuffer Frame`, which is where it lived first: 13.5 KB of
+// masks in the constant buffer made every read of that buffer slower, cascade matrices
+// included, and cost more than the lighting the grid exists to save.
+ByteAddressBuffer cluster_light_mask : register(t3);
 
 // Last frame's... no: *this* frame's depth, from the prepass, for the contact-shadow march.
 // Bound to a 1x1 texture when contact shadows are off, so the pipeline needs no permutation.
@@ -166,16 +188,38 @@ float shadow_pcf(float2 atlas_uv, float compare, float4 scale_bias, uint kernel,
 
     if (kernel >= 3)
     {
-        uint taps = kernel == 3 ? 4u : (kernel == 4 ? 6u : 8u);
         float rotation = interleaved_gradient_noise(pixel) * 6.2831853;
         float2 radius = texel * shadow_params2.w;
-        [loop]
-        for (uint index = 0; index < taps; ++index)
+        // One unrolled loop per tap count, for the same reason the grid kernels have one
+        // each: a dynamic loop around a texture fetch is markedly slower than a static one,
+        // and it costs registers in a shader that is already the frame's largest.
+        if (kernel == 3)
         {
-            float2 offset = vogel_disc(index, taps, rotation) * radius;
-            total += shadow_tap(atlas_uv + offset, compare, scale_bias);
+            [unroll]
+            for (uint i4 = 0; i4 < 4; ++i4)
+            {
+                total += shadow_tap(
+                    atlas_uv + vogel_disc(i4, 4, rotation) * radius, compare, scale_bias);
+            }
+            return total * 0.25;
         }
-        return total / (float)taps;
+        if (kernel == 4)
+        {
+            [unroll]
+            for (uint i6 = 0; i6 < 6; ++i6)
+            {
+                total += shadow_tap(
+                    atlas_uv + vogel_disc(i6, 6, rotation) * radius, compare, scale_bias);
+            }
+            return total * (1.0 / 6.0);
+        }
+        [unroll]
+        for (uint i8 = 0; i8 < 8; ++i8)
+        {
+            total += shadow_tap(
+                atlas_uv + vogel_disc(i8, 8, rotation) * radius, compare, scale_bias);
+        }
+        return total * 0.125;
     }
 
     if (kernel == 1)
@@ -458,19 +502,71 @@ float local_light_shadow(uint light, float3 world_position, float3 normal, float
         pixel);
 }
 
+// Which cluster a fragment falls in.
+//
+// Tiles come from the pixel position, the slice from the view depth on a logarithmic scale.
+// The CPU mirror is `slice_of` and `tile_of` in light_cluster.rs, and it is the same
+// arithmetic: a light whose cluster the shader computes differently from the way the CPU
+// assigned it is a light that goes out in a band across the screen.
+uint cluster_of(float2 pixel, float view_depth)
+{
+    float2 viewport = max(camera_params.zw, float2(1.0, 1.0));
+    float2 tile = floor(pixel / viewport * float2(CLUSTERS_X, CLUSTERS_Y));
+    tile = clamp(tile, float2(0.0, 0.0), float2(CLUSTERS_X - 1, CLUSTERS_Y - 1));
+
+    float slice = floor(log(max(view_depth, 1e-4)) * cluster_depth.x + cluster_depth.y);
+    slice = clamp(slice, 0.0, (float)(CLUSTERS_Z - 1));
+
+    return (uint)tile.x + (uint)tile.y * CLUSTERS_X + (uint)slice * (CLUSTERS_X * CLUSTERS_Y);
+}
+
+// The lights this fragment has to evaluate, as a bitmask.
+//
+// From the cluster grid when the frame built one, and from the whole light list when it did
+// not — the offscreen helpers and the older tests produce frames with lights and no camera
+// to cluster against, and "every light" is the correct answer there.
+uint lights_at(float2 pixel, float view_depth)
+{
+    uint count = min((uint)local_light_count.x, (uint)MAX_LOCAL_LIGHTS);
+    // The common case in an outdoor scene, and the one worth an early exit: no local lights
+    // at all means no grid lookup, so a frame lit only by the sun does not pay for the
+    // structure that exists for the frames that are not.
+    if (count == 0u)
+    {
+        return 0u;
+    }
+    uint live = count >= 32u ? 0xFFFFFFFFu : ((1u << count) - 1u);
+    if (cluster_params.w < 0.5)
+    {
+        return live;
+    }
+    uint cluster = cluster_of(pixel, view_depth);
+    return cluster_light_mask.Load(cluster * 4) & live;
+}
+
 // Everything the local lights add at a surface.
 //
-// A plain loop over a small fixed array: there is no clustering and no light culling
-// structure, so the count is a per-pixel cost. That is the documented limitation of the
-// local-light path — see docs/shadows.md — and the reason MAX_LOCAL_LIGHTS is eight.
+// The loop runs over the *cluster's* lights, not the frame's: `firstbitlow` walks the set
+// bits of the mask, so a fragment with two lights near it costs two iterations whether the
+// scene has two lights or thirty-two. Before the grid existed this was a loop over every
+// light in the frame, and a torch in the far corner of the arena was evaluated and rejected
+// on every pixel of the screen — see docs/shadows.md and light_cluster.rs.
 float3 local_light_contribution(
-    float3 world_position, float3 normal, float3 albedo, float receives_shadow, float2 pixel)
+    float3 world_position,
+    float3 normal,
+    float3 albedo,
+    float receives_shadow,
+    float2 pixel,
+    float view_distance)
 {
     float3 total = float3(0.0, 0.0, 0.0);
-    uint count = min((uint)local_light_count.x, (uint)MAX_LOCAL_LIGHTS);
+    uint mask = lights_at(pixel, view_distance);
     [loop]
-    for (uint light = 0; light < count; ++light)
+    while (mask != 0u)
     {
+        uint light = firstbitlow(mask);
+        mask &= mask - 1u;
+
         float3 to_light = light_position_range[light].xyz - world_position;
         float distance_to_light = length(to_light);
         float range = light_position_range[light].w;
@@ -672,8 +768,8 @@ float4 shade_surface(
 
     float3 diffuse = tinted * light_color * (light_intensity * lambert * shadow);
     float3 ambient = tinted * ambient_color * ambient_intensity;
-    float3 local =
-        local_light_contribution(world_position, normal, tinted, receives_shadow, screen_position.xy);
+    float3 local = local_light_contribution(
+        world_position, normal, tinted, receives_shadow, screen_position.xy, view_distance);
     float3 glow = emissive + tinted * emissive_scale;
 
     float3 color = diffuse + ambient + local + glow;

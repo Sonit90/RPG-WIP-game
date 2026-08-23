@@ -471,6 +471,17 @@ impl App {
             })
         });
 
+        // The lighting stress control, applied to whichever scene loaded rather than to one
+        // of them: "what do many lights cost" is a question about the renderer, and a knob
+        // that only worked in the arena would answer it for the arena.
+        let environment = environment.map(|mut scene| {
+            engine_environment::push_stress_lights(&mut scene, args.stress_lights);
+            scene
+        });
+        if args.stress_lights > 0 {
+            log::info!("lighting: {} stress light(s) added", args.stress_lights);
+        }
+
         let (mut simulation, demo) = match args.scene {
             Scene::Combat => (
                 match environment.as_ref() {
@@ -867,6 +878,10 @@ impl App {
             last_overlay_update: Instant::now(),
         };
         app.apply_shadow_quality(shadow_quality);
+        if let Some(enabled) = args.shadow_overrides.clusters {
+            app.renderer.set_light_clustering(enabled);
+            log::info!("light clustering: {}", if enabled { "on" } else { "off" });
+        }
         if let Some(enabled) = args.shadow_overrides.local_lights {
             app.renderer.set_local_lights_enabled(enabled);
             log::info!("local lights: {}", if enabled { "on" } else { "off" });
@@ -2690,6 +2705,21 @@ impl App {
             self.renderer.skinned_draws_last_frame(),
             self.renderer.triangles_last_frame(),
         );
+        // The light grid on the same line as the lights it culls: "how many lights" and
+        // "how many does a pixel actually evaluate" are the pair that says whether the
+        // clustering is doing anything, and either alone says nothing.
+        let clusters = self.renderer.light_cluster_stats();
+        let _ = write!(
+            report,
+            "
+  lights: {} local ({} dropped) | clusters {} occupied, {} assignments, worst {} per cluster",
+            clusters.lights,
+            clusters.dropped,
+            clusters.occupied,
+            clusters.assignments,
+            clusters.max_per_cluster,
+        );
+
         // Shadows on their own line: the stage has its own CPU time, its own GPU time and
         // its own draw calls, and folding them into the frame's totals is what makes "the
         // frame got slower" impossible to attribute.
@@ -3058,6 +3088,15 @@ impl App {
             summary.cpu.p99_ms,
             summary.cpu.max_ms,
             summary.cpu.count
+        );
+        let clusters = self.renderer.light_cluster_stats();
+        log::info!(
+            "final light clusters: {} local light(s), {} dropped, {} of {} clusters occupied,              worst {} light(s) in one cluster",
+            clusters.lights,
+            clusters.dropped,
+            clusters.occupied,
+            engine_renderer::light_cluster::CLUSTER_COUNT,
+            clusters.max_per_cluster,
         );
         if let Some(stats) = self.shadow_gpu.stats() {
             log::info!(

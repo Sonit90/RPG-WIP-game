@@ -25,13 +25,18 @@ pub const MAX_CASCADES: usize = 4;
 /// sixteen spots, and it is the size of the array in the frame constant buffer.
 pub const MAX_LOCAL_SHADOW_VIEWS: usize = 16;
 
-/// Most local lights the forward lighting pass shades with.
+/// Most local lights the forward lighting pass shades with in one frame.
 ///
-/// Eight, shadow-casting or not. There is no light culling structure — the shader loops over
-/// this array for every pixel — so the number is a shading cost per pixel and not a scene
-/// budget. It is documented as a limitation in `docs/shadows.md`: a scene that wants a
-/// hundred torches at once needs clustered shading first.
-pub const MAX_LOCAL_LIGHTS: usize = 8;
+/// Thirty-two, shadow-casting or not. This is a *scene* budget rather than a per-pixel cost:
+/// [`crate::light_cluster`] assigns each light to the clusters it reaches, and a pixel
+/// evaluates only the lights its own cluster lists. It was eight before that structure
+/// existed, because eight was as many as a shader looping over all of them could afford.
+///
+/// Thirty-two exactly, and not more: a cluster's light set is one `u32` bitmask, which is
+/// what lets the whole grid live in the frame constant buffer with no structured buffer, no
+/// extra root parameter and no compute pass. Going beyond this is a change of representation,
+/// not of a constant.
+pub const MAX_LOCAL_LIGHTS: usize = 32;
 
 /// How wide the PCF kernel is.
 ///

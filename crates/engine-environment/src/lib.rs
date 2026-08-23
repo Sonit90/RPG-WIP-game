@@ -68,7 +68,7 @@ pub mod scene_file;
 pub mod shadow_course;
 
 pub use asset::{EnvironmentAsset, LIBRARY};
-pub use lighting::{EnvironmentLighting, SceneLight};
+pub use lighting::{EnvironmentLighting, SceneLight, push_stress_lights};
 pub use object::{EnvironmentCollision, EnvironmentObject};
 pub use scene::{EnvironmentScene, SpawnPoints};
 pub use scene_file::{SceneDocument, SceneFileError};

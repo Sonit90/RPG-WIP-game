@@ -14,6 +14,8 @@
 
 use engine_core::math::Vec3;
 
+use crate::scene::EnvironmentScene;
+
 /// One directional light, an ambient term, and the sky's two colours.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct EnvironmentLighting {
@@ -182,6 +184,103 @@ impl EnvironmentLighting {
 impl Default for EnvironmentLighting {
     fn default() -> Self {
         Self::arena_afternoon()
+    }
+}
+
+/// Adds `count` extra point lights to a scene, spread over its floor.
+///
+/// A **stress control**, in the same family as the environment scatter density and the
+/// effect stress driver: the arena has four brazier lights, and "does the lighting scale?"
+/// is a question four of them cannot answer. Placed by the same hash the scatter uses, so a
+/// given count always produces the same scene and two runs of a benchmark compare like with
+/// like.
+///
+/// None of them casts shadows. What this exercises is the *shading* cost of many lights —
+/// the light culling structure, the per-pixel loop — and a shadow-casting stress light would
+/// mix that question up with the shadow budget's, which has its own control.
+///
+/// ```text
+/// count = 0    the scene as authored
+/// count = 8    eight more, on a ring inside the boundary
+/// count = 32   the renderer's per-frame maximum
+/// ```
+pub fn push_stress_lights(scene: &mut EnvironmentScene, count: usize) {
+    if count == 0 {
+        return;
+    }
+    // Inside the boundary and clear of the middle, where the fight happens: a stress light
+    // standing on the player is a light whose cost is one pixel's worth, which measures
+    // nothing.
+    let outer = (scene.half_extent - 6.0).max(4.0);
+    let inner = outer * 0.35;
+    for index in 0..count {
+        // A golden-angle spiral: successive lights land far apart in both angle and radius,
+        // so no count produces a ring of lights all in one cluster.
+        let fraction = (index as f32 + 0.5) / count as f32;
+        let angle = index as f32 * 2.399_963_2;
+        let radius = inner + (outer - inner) * fraction.sqrt();
+        let position = Vec3::new(
+            radius * angle.cos(),
+            1.45 + crate::hash_range(index as u32, 97, -0.3, 0.6),
+            radius * angle.sin(),
+        );
+        // The brazier's own range, so a stress light costs what a real one costs.
+        scene.push_light(SceneLight::brazier(position, 14.0));
+    }
+}
+
+
+#[cfg(test)]
+mod stress_light_tests {
+    use super::*;
+
+    fn scene() -> EnvironmentScene {
+        let mut scene = EnvironmentScene::with_capacity("test", 8);
+        scene.half_extent = 40.0;
+        scene
+    }
+
+    #[test]
+    fn no_stress_lights_leaves_the_scene_alone() {
+        let mut scene = scene();
+        push_stress_lights(&mut scene, 0);
+        assert!(scene.lights.is_empty());
+    }
+
+    #[test]
+    fn every_stress_light_stands_inside_the_scene() {
+        // A stress light outside the boundary lights the outside of a wall, which measures
+        // the cost of a light nobody can see.
+        let mut scene = scene();
+        push_stress_lights(&mut scene, 32);
+        assert_eq!(scene.lights.len(), 32);
+        for light in &scene.lights {
+            let radius = light.position.x.hypot(light.position.z);
+            assert!(
+                radius < scene.half_extent,
+                "a stress light stands {radius} m out, past the {} m boundary",
+                scene.half_extent
+            );
+            assert!(light.position.y > 0.0, "a stress light is under the floor");
+        }
+    }
+
+    #[test]
+    fn no_stress_light_casts_a_shadow() {
+        // The control measures what shading many lights costs. A shadow-casting stress light
+        // would spend the local shadow budget as well, and the two questions would be one
+        // number.
+        let mut scene = scene();
+        push_stress_lights(&mut scene, 16);
+        assert!(scene.lights.iter().all(|light| !light.casts_shadow));
+    }
+
+    #[test]
+    fn the_same_count_always_produces_the_same_scene() {
+        let (mut first, mut second) = (scene(), scene());
+        push_stress_lights(&mut first, 12);
+        push_stress_lights(&mut second, 12);
+        assert_eq!(first.lights, second.lights);
     }
 }
 

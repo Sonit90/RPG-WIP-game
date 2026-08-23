@@ -35,7 +35,8 @@ use crate::pipeline::{ScenePipeline, Vertex};
 use crate::render_list::RenderList;
 use crate::resource::DeferredReleaseQueue;
 use crate::scene::{
-    FrameConstants, ObjectConstants, ROOT_DEPTH_TABLE, ROOT_FRAME_CBV, ROOT_MATERIAL_CBV,
+    FrameConstants, ObjectConstants, ROOT_CLUSTER_SRV, ROOT_DEPTH_TABLE, ROOT_FRAME_CBV,
+    ROOT_MATERIAL_CBV,
     ROOT_MATERIAL_TABLE, ROOT_OBJECT_CBV, ROOT_SHADOW_TABLE, ROOT_SKIN_CBV,
 };
 use crate::shadow::renderer::ShadowScene;
@@ -47,6 +48,7 @@ use crate::ui_pipeline::{
     ROOT_UI_ATLAS_TABLE, ROOT_UI_FRAME_CBV, UiBatchStats, UiBatcher, UiFrameConstants, UiPipeline,
     UiVertex,
 };
+use crate::light_cluster::{LightClusterStats, LightClusters};
 use crate::upload::{CONSTANT_BUFFER_ALIGNMENT, StagingUploader, UploadRing};
 use crate::{AdapterInfo, RendererConfig};
 use engine_core::math::Frustum;
@@ -342,6 +344,16 @@ pub struct Renderer {
     /// Copied rather than borrowed for the same reason the render list is a copy: recording
     /// happens in `draw_render_list`, which deliberately never looks at the `RenderWorld`.
     lights: Vec<LocalLight>,
+    /// This frame's clustered light grid: which lights reach which part of the frustum.
+    ///
+    /// Rebuilt in [`Renderer::prepare_shadows`], where the camera is in scope, and written
+    /// into the frame constants beside the lights themselves.
+    clusters: LightClusters,
+    /// Whether the clustered grid is built at all.
+    ///
+    /// A measurement control. False leaves the grid disabled, and the shader then walks the
+    /// whole light list — which is what it did before [`crate::light_cluster`] existed.
+    light_clustering: bool,
     /// Whether this frame's local lights are shaded at all.
     ///
     /// A measurement control, not a quality level: "what do the local lights cost?" is
@@ -554,6 +566,8 @@ impl Renderer {
             material_tables: Vec::new(),
             shadow,
             lights: Vec::new(),
+            clusters: LightClusters::new(),
+            light_clustering: true,
             local_lights_enabled: true,
             shadow_skinned: SkinnedDrawList::new(),
             culler: Culler::new(),
@@ -1091,6 +1105,16 @@ impl Renderer {
         }
         self.shadow_skinned.set_palette(world.skinned().palette());
 
+        // The lights are clustered against the same camera the frame is drawn with, and
+        // before the shadow stage chooses which of them get maps: the two decisions are
+        // independent - a light with no shadow map still lights - and doing the grid here
+        // keeps every use of the camera in one function.
+        if self.light_clustering {
+            self.clusters.build(&self.lights, camera);
+        } else {
+            self.clusters.disable();
+        }
+
         self.shadow.prepare(world, camera, lighting);
     }
 
@@ -1116,6 +1140,19 @@ impl Renderer {
         self.shadow.set_settings(&self.context, settings, size)
     }
 
+    /// Switches the clustered light culling off, or back on.
+    ///
+    /// See [`Renderer::light_clustering`] for why this exists.
+    pub fn set_light_clustering(&mut self, enabled: bool) {
+        self.light_clustering = enabled;
+    }
+
+    /// Whether the clustered light grid is being built.
+    #[must_use]
+    pub fn light_clustering(&self) -> bool {
+        self.light_clustering
+    }
+
     /// Switches the local lights off, or back on, for the whole frame.
     ///
     /// See [`Renderer::local_lights_enabled`] for why this exists rather than a scene edit.
@@ -1127,6 +1164,12 @@ impl Renderer {
     #[must_use]
     pub fn local_lights_enabled(&self) -> bool {
         self.local_lights_enabled
+    }
+
+    /// What the last frame's light clustering did.
+    #[must_use]
+    pub fn light_cluster_stats(&self) -> LightClusterStats {
+        self.clusters.stats()
     }
 
     /// What the last frame's shadow stage did.
@@ -1265,6 +1308,7 @@ impl Renderer {
         frame_constants.set_viewport(viewport_width, viewport_height);
         self.shadow
             .write_frame_constants(&mut frame_constants, &self.lights);
+        frame_constants.set_light_clusters(&self.clusters);
         // The particle pass is recorded later, from a function with no camera. Its basis is
         // captured here, from the same camera the scene is drawn with, so a particle cannot
         // be billboarded against a different frame's view than the one it is drawn into.
@@ -1273,6 +1317,13 @@ impl Renderer {
         let allocation = self.uploads.write_constants(slot, &frame_constants)?;
         self.commands
             .set_root_cbv(ROOT_FRAME_CBV, allocation.gpu_address());
+        // The cluster grid rides in the same upload ring as the constants, in its own
+        // allocation: 13.5 KB of masks, bound as a root SRV and read by the lighting.
+        let clusters = self
+            .uploads
+            .write(slot, self.clusters.masks(), crate::upload::DEFAULT_ALIGNMENT)?;
+        self.commands
+            .set_root_srv(ROOT_CLUSTER_SRV, clusters.gpu_address());
         self.bind_shadow_tables();
 
         if self.instancing {

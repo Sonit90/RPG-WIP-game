@@ -16,6 +16,7 @@ use windows::Win32::Graphics::Direct3D12::{
     D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE, D3D12_RASTERIZER_DESC, D3D12_ROOT_DESCRIPTOR,
     D3D12_ROOT_DESCRIPTOR_TABLE, D3D12_ROOT_PARAMETER, D3D12_ROOT_PARAMETER_0,
     D3D12_ROOT_PARAMETER_TYPE_CBV, D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE,
+    D3D12_ROOT_PARAMETER_TYPE_SRV,
     D3D12_ROOT_SIGNATURE_DESC, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT,
     D3D12_SHADER_VISIBILITY_ALL, D3D12_SHADER_VISIBILITY_PIXEL, D3D12_SHADER_VISIBILITY_VERTEX,
     D3D12_STATIC_BORDER_COLOR_OPAQUE_BLACK, D3D12_STATIC_BORDER_COLOR_OPAQUE_WHITE,
@@ -152,6 +153,7 @@ impl MeshPipeline {
 /// slot 4  CBV b3   bone palette           changes per skinned character
 /// slot 5  table t1 shadow atlas           changes once per frame
 /// slot 6  table t2 scene depth            changes once per frame
+/// slot 7  SRV   t3 clustered light grid   changes once per frame
 /// static samplers s0 (base colour), s1 (shadow comparison), s2 (depth point)
 /// ```
 ///
@@ -188,7 +190,7 @@ pub(crate) fn create_root_signature(
         OffsetInDescriptorsFromTableStart: D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND,
     }];
 
-    let mut parameters = Vec::with_capacity(7);
+    let mut parameters = Vec::with_capacity(8);
     parameters.extend_from_slice(&root_parameters());
     parameters.push(D3D12_ROOT_PARAMETER {
         ParameterType: D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE,
@@ -250,6 +252,30 @@ pub(crate) fn create_root_signature(
     debug_assert_eq!(
         parameters.len() as u32,
         crate::scene::ROOT_DEPTH_TABLE + 1,
+        "the ROOT_* constants index this array"
+    );
+
+    // The clustered light grid, at t3. A **root** SRV rather than a table: it is a raw
+    // buffer, and a raw buffer can be addressed by a GPU virtual address written straight
+    // into the root arguments. No descriptor, no heap slot, and one bind per frame.
+    //
+    // It is deliberately not in the frame constant buffer, where it started: 13.5 KB of
+    // masks took that buffer from 2.4 KB to 17.8 KB and made every read of it slower, which
+    // cost more than the lighting the grid saves. See light_cluster.rs.
+    parameters.push(D3D12_ROOT_PARAMETER {
+        ParameterType: D3D12_ROOT_PARAMETER_TYPE_SRV,
+        Anonymous: D3D12_ROOT_PARAMETER_0 {
+            Descriptor: D3D12_ROOT_DESCRIPTOR {
+                ShaderRegister: CLUSTER_SHADER_REGISTER,
+                RegisterSpace: 0,
+            },
+        },
+        // Pixel-only: lights are gathered while shading.
+        ShaderVisibility: D3D12_SHADER_VISIBILITY_PIXEL,
+    });
+    debug_assert_eq!(
+        parameters.len() as u32,
+        crate::scene::ROOT_CLUSTER_SRV + 1,
         "the ROOT_* constants index this array"
     );
 
@@ -316,6 +342,9 @@ pub(crate) fn root_parameters() -> [D3D12_ROOT_PARAMETER; ROOT_PARAMETER_REGISTE
 
 /// Shader register the bone palette binds to, matching `cbuffer Skin : register(b3)`.
 const SKIN_SHADER_REGISTER: u32 = 3;
+
+/// Shader register the light grid binds to, matching `ByteAddressBuffer ... : register(t3)`.
+const CLUSTER_SHADER_REGISTER: u32 = 3;
 
 /// The sampler every shadow lookup goes through, at `s1`.
 ///

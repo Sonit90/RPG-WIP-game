@@ -323,6 +323,10 @@ pub fn render_skinned_scene(
         let white = white_map(context)?;
         let frame = FrameConstants::new(camera.view_projection(), camera.position(), lighting);
         let frame_allocation = ring.write_constants(0, &frame)?;
+        // An empty light grid. These paths have no local lights, so the shader never reads
+        // it — but a root SRV the signature declares is bound on every draw that could,
+        // rather than left for the validation layer to find.
+        let cluster_allocation = empty_light_grid(&mut ring)?;
 
         // SAFETY: FFI calls recording into the open list. Every referenced object is
         // returned below and kept alive until the submission completes.
@@ -332,6 +336,10 @@ pub fn render_skinned_scene(
             list.SetDescriptorHeaps(&[Some(white.heap.heap().clone())]);
             list.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
             list.SetGraphicsRootConstantBufferView(ROOT_FRAME_CBV, frame_allocation.gpu_address());
+            list.SetGraphicsRootShaderResourceView(
+                crate::scene::ROOT_CLUSTER_SRV,
+                cluster_allocation.gpu_address(),
+            );
             list.SetGraphicsRootDescriptorTable(ROOT_MATERIAL_TABLE, white.table);
         }
 
@@ -417,6 +425,10 @@ pub fn render_scene(
         let white = white_map(context)?;
         let frame = FrameConstants::new(camera.view_projection(), camera.position(), lighting);
         let frame_allocation = ring.write_constants(0, &frame)?;
+        // An empty light grid. These paths have no local lights, so the shader never reads
+        // it — but a root SRV the signature declares is bound on every draw that could,
+        // rather than left for the validation layer to find.
+        let cluster_allocation = empty_light_grid(&mut ring)?;
 
         // SAFETY: FFI calls recording into the open list. Every referenced object is
         // returned below and kept alive until the submission completes.
@@ -426,6 +438,10 @@ pub fn render_scene(
             list.SetDescriptorHeaps(&[Some(white.heap.heap().clone())]);
             list.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
             list.SetGraphicsRootConstantBufferView(ROOT_FRAME_CBV, frame_allocation.gpu_address());
+            list.SetGraphicsRootShaderResourceView(
+                crate::scene::ROOT_CLUSTER_SRV,
+                cluster_allocation.gpu_address(),
+            );
             list.SetGraphicsRootDescriptorTable(ROOT_MATERIAL_TABLE, white.table);
         }
 
@@ -463,6 +479,19 @@ pub struct ShadowSceneObject<'a> {
     pub material: MaterialDesc,
     /// Whether it casts, receives, or neither.
     pub shadow: engine_render_data::ShadowCasting,
+}
+
+
+/// One frame's worth of zeroed cluster masks, for a path that has no local lights.
+///
+/// # Errors
+///
+/// Returns [`RendererError`] if the upload ring cannot fit it.
+fn empty_light_grid(
+    ring: &mut crate::upload::UploadRing,
+) -> Result<crate::upload::UploadAllocation, RendererError> {
+    let empty = crate::light_cluster::LightClusters::new();
+    ring.write(0, empty.masks(), crate::upload::DEFAULT_ALIGNMENT)
 }
 
 /// Renders a scene *with the real shadow stage*, and reads the result back.
@@ -634,11 +663,23 @@ pub fn render_scene_shadowed_debug(
             frame.set_camera(camera);
             frame.set_viewport(width, height);
             shadow.write_frame_constants(&mut frame, world.lights());
+            // The same clustering the window does, from the same camera. This path exists to
+            // be evidence about the shipping one, and a local-light test that ran an
+            // unclustered shader would be evidence about a path the game does not take.
+            let mut clusters = crate::light_cluster::LightClusters::new();
+            clusters.build(world.lights(), camera);
+            frame.set_light_clusters(&clusters);
             let frame_allocation = ring.write_constants(0, &frame)?;
+            let cluster_allocation =
+                ring.write(0, clusters.masks(), crate::upload::DEFAULT_ALIGNMENT)?;
 
             commands.set_pipeline(pipeline.root_signature(), pipeline.pipeline_state());
             commands.set_topology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
             commands.set_root_cbv(ROOT_FRAME_CBV, frame_allocation.gpu_address());
+            commands.set_root_srv(
+                crate::scene::ROOT_CLUSTER_SRV,
+                cluster_allocation.gpu_address(),
+            );
             if let Some(table) = white_handle.gpu {
                 commands.set_root_descriptor_table(ROOT_MATERIAL_TABLE, table);
             }
@@ -911,6 +952,10 @@ pub fn render_scene_instanced(
         let white = white_map(context)?;
         let frame = FrameConstants::new(camera.view_projection(), camera.position(), lighting);
         let frame_allocation = ring.write_constants(0, &frame)?;
+        // An empty light grid. These paths have no local lights, so the shader never reads
+        // it — but a root SRV the signature declares is bound on every draw that could,
+        // rather than left for the validation layer to find.
+        let cluster_allocation = empty_light_grid(&mut ring)?;
 
         // SAFETY: FFI calls recording into the open list. Every referenced object is
         // returned below and kept alive until the submission completes.
@@ -920,6 +965,10 @@ pub fn render_scene_instanced(
             list.SetDescriptorHeaps(&[Some(white.heap.heap().clone())]);
             list.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
             list.SetGraphicsRootConstantBufferView(ROOT_FRAME_CBV, frame_allocation.gpu_address());
+            list.SetGraphicsRootShaderResourceView(
+                crate::scene::ROOT_CLUSTER_SRV,
+                cluster_allocation.gpu_address(),
+            );
             list.SetGraphicsRootDescriptorTable(ROOT_MATERIAL_TABLE, white.table);
         }
 

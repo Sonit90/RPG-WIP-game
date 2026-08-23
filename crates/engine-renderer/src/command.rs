@@ -564,6 +564,17 @@ impl CommandContext {
         unsafe { self.list.SetGraphicsRootConstantBufferView(slot, address) };
     }
 
+    /// Binds a raw or structured buffer to a root SRV parameter.
+    ///
+    /// Not tracked for redundancy: the only caller binds once per frame, so a tracked slot
+    /// would cost a compare to save nothing.
+    pub fn set_root_srv(&mut self, slot: u32, address: u64) {
+        // SAFETY: FFI call on the open list. The address comes from a live buffer the caller
+        // keeps alive for the frame, and the slot is a parameter index of the bound root
+        // signature.
+        unsafe { self.list.SetGraphicsRootShaderResourceView(slot, address) };
+    }
+
     /// Binds the shader-visible descriptor heaps for the draws that follow.
     ///
     /// D3D12 allows one CBV/SRV/UAV heap and one sampler heap bound at a time, and changing

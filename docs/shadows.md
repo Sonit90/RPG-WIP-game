@@ -178,6 +178,35 @@ course.
 
 ## Local lights
 
+### Which lights a pixel evaluates
+
+The frustum is a fixed grid of clusters — 16 tiles across, 9 down, 24 exponentially-spaced
+depth slices — and every frame each light is assigned on the CPU to the clusters its bounding
+sphere reaches. One `u32` per cluster, bit `i` for light `i`; the shader finds its cluster
+from `SV_Position` and the view depth and walks the mask with `firstbitlow`.
+
+```text
+   screen tiles x depth slices          a fragment evaluates the lights of one cluster,
+   +----+----+----+                     which in the shipping arena is one or none, and
+   |    |    |####|  <- one cluster     in a 32-light scene is at most nine
+   +----+----+----+
+```
+
+The grid is a `ByteAddressBuffer` in the upload ring, bound as a **root SRV** at `t3`. It was
+in the frame constant buffer first and that cost 0.34 ms a frame at 4K: 13.5 KB took the
+buffer past the hardware's constant cache and made every read of it slower, cascade matrices
+included. `crates/engine-renderer/src/light_cluster.rs` carries the rest of the reasoning.
+
+Assignment is on the CPU and output-sensitive — a light walks the clusters its projected
+bounds cover, not all 3456 — which is why there is no compute pass: the renderer has no
+compute pipelines at all, and one for a table this small would be the larger change.
+
+`--lights <count>` adds decorative point lights to any scene as a stress control, and
+`--shadow-tweak clusters=off` switches the grid off so the two paths can be compared in one
+binary.
+
+### The lights themselves
+
 `engine_render_data::LocalLight` is a point or a spot. A light asks for shadows with
 `casts_shadow` and a `priority`; the renderer decides. `select_shadow_lights` is greedy over
 in-view → priority → distance, and it **skips rather than stops**: a point light that does not
@@ -378,10 +407,12 @@ reused every frame, and the constants go through the existing upload ring.
 
 ## Deliberate limits
 
-* **`MAX_LOCAL_LIGHTS` is 8 per frame**, and the lighting pass loops over all of them for
-  every pixel. There is no clustering or tiling. Eight is comfortably more than any current
-  scene places within range; a scene with fifty torches in one room needs a light-culling
-  structure, and that is a separate piece of work, not a bigger constant.
+* **`MAX_LOCAL_LIGHTS` is 32 per frame.** It was eight, and the lighting pass looped over all
+  eight for every pixel; `crates/engine-renderer/src/light_cluster.rs` now assigns each light
+  to the clusters of the frustum it reaches and a pixel evaluates only its own cluster's.
+  Thirty-two is the cap because a cluster's light set is one `u32` bitmask, which is what
+  keeps the whole grid to 13.5 KB and one root SRV. Going past it is a change of
+  representation rather than of a constant. See `docs/performance/shadows/01-local-light-culling.md`.
 * **`MAX_LOCAL_SHADOW_VIEWS` is 16.** The atlas is laid out for it and the frame constants
   carry sixteen matrices.
 * **Cascade count is capped at 4**, which is the four sets of matrices and rectangles in the

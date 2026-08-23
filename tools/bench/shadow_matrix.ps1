@@ -4,7 +4,10 @@
 # scene put it and every run of a given scene sees the same frame; the only thing that
 # changes between cells is the shadow configuration named in -Configs.
 #
-# A configuration is "label|--shadows value|shadow-tweak list". The tweak list may be empty.
+# A configuration is "label|--shadows value|shadow-tweak list|exe|extra args". The tweak list may be
+# empty, and the fourth field names a binary other than the default - which is how a
+# milestone measures itself *against* the reference build in the same interleaved session
+# rather than against numbers taken half an hour earlier on a colder machine.
 #
 #   .\tools\bench\shadow_matrix.ps1 -Configs "off|off|;ultra|ultra|;no contact|ultra|contact=off"
 #
@@ -55,10 +58,13 @@ foreach ($res in $Resolutions.Split(",")) {
             $label   = $parts[0]
             $quality = if ($parts.Count -gt 1 -and $parts[1] -ne "") { $parts[1] } else { "ultra" }
             $tweak   = if ($parts.Count -gt 2) { $parts[2] } else { "" }
+            $binary  = if ($parts.Count -gt 3 -and $parts[3] -ne "") { $parts[3] } else { $exe }
+            $extra   = if ($parts.Count -gt 4) { $parts[4] } else { "" }
             $key     = "$res`t$label"
             if (-not $samples.ContainsKey($key)) {
                 $samples[$key] = [pscustomobject]@{
                     resolution = $res; config = $label; quality = $quality; tweak = $tweak
+                    binary = $binary
                     cpu = @(); cpu95 = @(); gpu = @(); gpu95 = @(); stage = @()
                 }
                 $order += $key
@@ -68,7 +74,8 @@ foreach ($res in $Resolutions.Split(",")) {
                       "--warmup", $Warmup, "--shadows", $quality, "--scene", $Scene,
                       "--report", "0", "--no-audio")
             if ($tweak -ne "") { $argv += @("--shadow-tweak", $tweak) }
-            $text = & $exe @argv 2>&1 | Out-String
+            if ($extra -ne "") { $argv += $extra.Split(" ") }
+            $text = & $binary @argv 2>&1 | Out-String
 
             $cpu   = [regex]::Match($text, "final CPU window: mean [\d.]+ \| p50 ([\d.]+) \| p95 ([\d.]+)")
             $gpu   = [regex]::Match($text, "final GPU window: mean [\d.]+ \| p50 ([\d.]+) \| p95 ([\d.]+)")
@@ -97,6 +104,7 @@ foreach ($key in $order) {
         config     = $s.config
         quality    = $s.quality
         tweak      = $s.tweak
+        binary     = $s.binary
         runs       = $s.cpu.Count
         cpu_p50    = $c50
         cpu_p95    = Median $s.cpu95

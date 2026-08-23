@@ -16,6 +16,7 @@
 use engine_core::math::{Mat4, Vec3};
 use engine_render_data::{Camera, Lighting, LocalLight, LocalLightKind};
 
+use crate::light_cluster::LightClusters;
 use crate::shadow::atlas::AtlasRect;
 use crate::shadow::cascade::CascadeView;
 use crate::shadow::local::{LocalShadowView, SelectedLight};
@@ -51,6 +52,13 @@ pub const ROOT_OBJECT_CBV: u32 = 2;
 pub const ROOT_SHADOW_TABLE: u32 = 5;
 /// The scene depth buffer the contact-shadow march reads, a one-descriptor table at `t2`.
 pub const ROOT_DEPTH_TABLE: u32 = 6;
+
+/// The clustered light grid, at `t3`.
+///
+/// A **root** SRV: a GPU address written straight into the root arguments, like the constant
+/// buffers and unlike the two textures above. A raw buffer can be one where a texture cannot,
+/// so the grid costs no descriptor, no heap slot and no range allocator.
+pub const ROOT_CLUSTER_SRV: u32 = 7;
 
 /// The material's base colour map, a one-descriptor table at `t0`.
 ///
@@ -92,7 +100,7 @@ pub const ROOT_PARAMETER_REGISTERS: [u32; 3] = [0, 2, 1];
 /// counterpart in the HLSL, and a struct that agrees with the shader today and not tomorrow
 /// is the kind of bug that renders as geometry in the wrong place with no error anywhere.
 #[repr(C)]
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct FrameConstants {
     /// `projection * view`, column-major — the layout `Mat4` already has.
     pub view_projection: [f32; 16],
@@ -149,6 +157,50 @@ pub struct FrameConstants {
     pub local_view_projection: [[f32; 16]; MAX_LOCAL_SHADOW_VIEWS],
     /// Where each local shadow view lives in the atlas.
     pub local_uv_scale_bias: [[f32; 4]; MAX_LOCAL_SHADOW_VIEWS],
+
+    /// `[cluster grid x, y, z, 1 when the grid is live]`.
+    pub cluster_params: [f32; 4],
+    /// `[depth-slice scale, depth-slice bias, camera near, camera far]`.
+    pub cluster_depth: [f32; 4],
+}
+
+
+/// Written out rather than derived: `#[derive(Default)]` does not reach an array longer than
+/// thirty-two, and the cluster mask array is eight hundred and sixty-four `uint4`s. Every
+/// field is zero, which is what the shader reads as "no shadows, no lights, no grid".
+impl Default for FrameConstants {
+    fn default() -> Self {
+        Self {
+            view_projection: [0.0; 16],
+            camera_position: [0.0; 3],
+            padding: 0.0,
+            light_direction: [0.0; 3],
+            light_intensity: 0.0,
+            light_color: [0.0; 3],
+            ambient_intensity: 0.0,
+            ambient_color: [0.0; 3],
+            padding_2: 0.0,
+            cascade_view_projection: [[0.0; 16]; MAX_CASCADES],
+            cascade_uv_scale_bias: [[0.0; 4]; MAX_CASCADES],
+            cascade_far: [0.0; 4],
+            cascade_texel_world: [0.0; 4],
+            shadow_params: [0.0; 4],
+            shadow_params_2: [0.0; 4],
+            shadow_atlas_size: [0.0; 4],
+            camera_params: [0.0; 4],
+            contact_params: [0.0; 4],
+            inverse_view_projection: [0.0; 16],
+            light_position_range: [[0.0; 4]; MAX_LOCAL_LIGHTS],
+            light_color_intensity: [[0.0; 4]; MAX_LOCAL_LIGHTS],
+            light_direction_inner: [[0.0; 4]; MAX_LOCAL_LIGHTS],
+            light_shadow: [[0.0; 4]; MAX_LOCAL_LIGHTS],
+            local_light_count: [0.0; 4],
+            local_view_projection: [[0.0; 16]; MAX_LOCAL_SHADOW_VIEWS],
+            local_uv_scale_bias: [[0.0; 4]; MAX_LOCAL_SHADOW_VIEWS],
+            cluster_params: [0.0; 4],
+            cluster_depth: [0.0; 4],
+        }
+    }
 }
 
 impl FrameConstants {
@@ -331,6 +383,17 @@ impl FrameConstants {
         }
     }
 
+    /// Records the clustered light grid this frame was built with.
+    ///
+    /// A frame that never calls this leaves `cluster_params.w` at zero, and the shader then
+    /// walks the whole light list instead — which is the right answer for the offscreen
+    /// helpers, whose scenes have at most a handful of lights and no camera to cluster
+    /// against.
+    pub fn set_light_clusters(&mut self, clusters: &LightClusters) {
+        self.cluster_params = clusters.params();
+        self.cluster_depth = clusters.depth_params();
+    }
+
     /// Sets the shader's debug mode: 0 none, 1 cascade tint, 2 shadow factor, 3 the atlas.
     pub fn set_debug_mode(&mut self, mode: u32) {
         self.shadow_params[3] = mode as f32;
@@ -439,26 +502,33 @@ mod tests {
         );
         assert_eq!(
             std::mem::offset_of!(FrameConstants, light_color_intensity),
-            752
-        );
-        assert_eq!(
-            std::mem::offset_of!(FrameConstants, light_direction_inner),
-            880
-        );
-        assert_eq!(std::mem::offset_of!(FrameConstants, light_shadow), 1008);
-        assert_eq!(
-            std::mem::offset_of!(FrameConstants, local_light_count),
             1136
         );
         assert_eq!(
+            std::mem::offset_of!(FrameConstants, light_direction_inner),
+            1648
+        );
+        assert_eq!(std::mem::offset_of!(FrameConstants, light_shadow), 2160);
+        assert_eq!(
+            std::mem::offset_of!(FrameConstants, local_light_count),
+            2672
+        );
+        assert_eq!(
             std::mem::offset_of!(FrameConstants, local_view_projection),
-            1152
+            2688
         );
         assert_eq!(
             std::mem::offset_of!(FrameConstants, local_uv_scale_bias),
-            2176
+            3712
         );
-        assert_eq!(size_of::<FrameConstants>(), 2432);
+        assert_eq!(std::mem::offset_of!(FrameConstants, cluster_params), 3968);
+        assert_eq!(std::mem::offset_of!(FrameConstants, cluster_depth), 3984);
+        assert_eq!(size_of::<FrameConstants>(), 4000);
+        // Kept small on purpose. The cluster masks live in their own buffer rather than
+        // here: putting 13.5 KB of them in this one cost 0.34 ms a frame at 4K, because a
+        // constant buffer that no longer fits the hardware's constant cache is slower to
+        // read *everywhere*, not only in the part that grew.
+        assert!(size_of::<FrameConstants>() <= 8 * 1024);
         // Whole registers, or the upload's padding to 256 bytes would leave the shader
         // reading a partial one.
         assert_eq!(size_of::<FrameConstants>() % 16, 0);
