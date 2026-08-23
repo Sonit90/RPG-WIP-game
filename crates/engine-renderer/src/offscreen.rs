@@ -341,6 +341,11 @@ pub fn render_skinned_scene(
                 cluster_allocation.gpu_address(),
             );
             list.SetGraphicsRootDescriptorTable(ROOT_MATERIAL_TABLE, white.table);
+            // A valid descriptor for a table these paths never read: they have no contact
+            // shadows, so `contact_target` is zero and the lighting takes the branch that
+            // does not sample. Bound anyway, because a root parameter the signature declares
+            // should not be left pointing at whatever the heap happens to contain.
+            list.SetGraphicsRootDescriptorTable(crate::scene::ROOT_CONTACT_TABLE, white.table);
         }
 
         let mut palette = Vec::with_capacity(MAX_PALETTE_BONES);
@@ -443,6 +448,11 @@ pub fn render_scene(
                 cluster_allocation.gpu_address(),
             );
             list.SetGraphicsRootDescriptorTable(ROOT_MATERIAL_TABLE, white.table);
+            // A valid descriptor for a table these paths never read: they have no contact
+            // shadows, so `contact_target` is zero and the lighting takes the branch that
+            // does not sample. Bound anyway, because a root parameter the signature declares
+            // should not be left pointing at whatever the heap happens to contain.
+            list.SetGraphicsRootDescriptorTable(crate::scene::ROOT_CONTACT_TABLE, white.table);
         }
 
         for (index, object) in objects.iter().enumerate() {
@@ -617,6 +627,26 @@ pub fn render_scene_shadowed_debug(
 
             // The shadow stage, exactly as the renderer runs it.
             shadow.prepare(&world, camera, lighting);
+
+            // The frame constants before the stage rather than after it, for the reason the
+            // window does the same: the contact-shadow pass reads them, and it runs inside
+            // the stage.
+            let mut frame =
+                FrameConstants::new(camera.view_projection(), camera.position(), lighting);
+            frame.set_camera(camera);
+            frame.set_viewport(width, height);
+            shadow.write_frame_constants(&mut frame, world.lights());
+            // The same clustering the window does, from the same camera. This path exists to
+            // be evidence about the shipping one, and a local-light test that ran an
+            // unclustered shader would be evidence about a path the game does not take.
+            let mut clusters = crate::light_cluster::LightClusters::new();
+            clusters.build(world.lights(), camera);
+            frame.set_light_clusters(&clusters);
+            frame.set_contact_target(shadow.contact_target_size());
+            let frame_allocation = ring.write_constants(0, &frame)?;
+            let cluster_allocation =
+                ring.write(0, clusters.masks(), crate::upload::DEFAULT_ALIGNMENT)?;
+
             let empty = engine_render_data::SkinnedDrawList::new();
             let scene = crate::shadow::renderer::ShadowScene {
                 meshes: &meshes,
@@ -652,26 +682,20 @@ pub fn render_scene_shadowed_debug(
                     (width, height),
                 )?;
                 shadow.copy_scene_depth(commands, depth_texture);
+
+                // And the contact-shadow pass, into its own target, so a pixel test of a
+                // contact shadow is a test of the pass the game runs rather than of a
+                // function nothing calls any more.
+                commands.set_root_cbv(ROOT_FRAME_CBV, frame_allocation.gpu_address());
+                if let Some(table) = shadow.depth_table() {
+                    commands.set_root_descriptor_table(crate::scene::ROOT_DEPTH_TABLE, table);
+                }
+                shadow.record_contact(commands);
             }
 
             // Back to the camera's target, which the shadow pass replaced with the atlas.
             commands.set_render_target_and_depth(rtv, dsv);
             commands.set_viewport(width, height);
-
-            let mut frame =
-                FrameConstants::new(camera.view_projection(), camera.position(), lighting);
-            frame.set_camera(camera);
-            frame.set_viewport(width, height);
-            shadow.write_frame_constants(&mut frame, world.lights());
-            // The same clustering the window does, from the same camera. This path exists to
-            // be evidence about the shipping one, and a local-light test that ran an
-            // unclustered shader would be evidence about a path the game does not take.
-            let mut clusters = crate::light_cluster::LightClusters::new();
-            clusters.build(world.lights(), camera);
-            frame.set_light_clusters(&clusters);
-            let frame_allocation = ring.write_constants(0, &frame)?;
-            let cluster_allocation =
-                ring.write(0, clusters.masks(), crate::upload::DEFAULT_ALIGNMENT)?;
 
             commands.set_pipeline(pipeline.root_signature(), pipeline.pipeline_state());
             commands.set_topology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
@@ -688,6 +712,9 @@ pub fn render_scene_shadowed_debug(
             }
             if let Some(table) = shadow.depth_table() {
                 commands.set_root_descriptor_table(crate::scene::ROOT_DEPTH_TABLE, table);
+            }
+            if let Some(table) = shadow.contact_table() {
+                commands.set_root_descriptor_table(crate::scene::ROOT_CONTACT_TABLE, table);
             }
 
             for (index, object) in objects.iter().enumerate() {
@@ -970,6 +997,11 @@ pub fn render_scene_instanced(
                 cluster_allocation.gpu_address(),
             );
             list.SetGraphicsRootDescriptorTable(ROOT_MATERIAL_TABLE, white.table);
+            // A valid descriptor for a table these paths never read: they have no contact
+            // shadows, so `contact_target` is zero and the lighting takes the branch that
+            // does not sample. Bound anyway, because a root parameter the signature declares
+            // should not be left pointing at whatever the heap happens to contain.
+            list.SetGraphicsRootDescriptorTable(crate::scene::ROOT_CONTACT_TABLE, white.table);
         }
 
         // Consecutive objects sharing a mesh and a material form one batch, which is what

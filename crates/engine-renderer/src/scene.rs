@@ -60,6 +60,9 @@ pub const ROOT_DEPTH_TABLE: u32 = 6;
 /// so the grid costs no descriptor, no heap slot and no range allocator.
 pub const ROOT_CLUSTER_SRV: u32 = 7;
 
+/// The contact-shadow target the lighting pass reconstructs from, at `t4`.
+pub const ROOT_CONTACT_TABLE: u32 = 8;
+
 /// The material's base colour map, a one-descriptor table at `t0`.
 ///
 /// A table rather than a root SRV: a root descriptor cannot address a texture, only a buffer.
@@ -162,6 +165,12 @@ pub struct FrameConstants {
     pub cluster_params: [f32; 4],
     /// `[depth-slice scale, depth-slice bias, camera near, camera far]`.
     pub cluster_depth: [f32; 4],
+    /// `[contact target width, height, 1 / width, 1 / height]`.
+    ///
+    /// A width below one is the lighting pass's "there is no contact-shadow target this
+    /// frame", which is what a frame with the effect switched off — and every offscreen
+    /// helper — produces.
+    pub contact_target: [f32; 4],
 }
 
 
@@ -199,6 +208,7 @@ impl Default for FrameConstants {
             local_uv_scale_bias: [[0.0; 4]; MAX_LOCAL_SHADOW_VIEWS],
             cluster_params: [0.0; 4],
             cluster_depth: [0.0; 4],
+            contact_target: [0.0; 4],
         }
     }
 }
@@ -394,6 +404,21 @@ impl FrameConstants {
         self.cluster_depth = clusters.depth_params();
     }
 
+    /// Records the size of the contact-shadow target the lighting pass reconstructs from.
+    ///
+    /// Zero switches the reconstruction off, and the lighting pass then treats every surface
+    /// as unoccluded by contact shadowing — which is the right answer when the pass did not
+    /// run.
+    pub fn set_contact_target(&mut self, size: Option<(u32, u32)>) {
+        self.contact_target = match size {
+            Some((width, height)) if width > 0 && height > 0 => {
+                let (width, height) = (width as f32, height as f32);
+                [width, height, 1.0 / width, 1.0 / height]
+            }
+            _ => [0.0; 4],
+        };
+    }
+
     /// Sets the shader's debug mode: 0 none, 1 cascade tint, 2 shadow factor, 3 the atlas.
     pub fn set_debug_mode(&mut self, mode: u32) {
         self.shadow_params[3] = mode as f32;
@@ -523,7 +548,8 @@ mod tests {
         );
         assert_eq!(std::mem::offset_of!(FrameConstants, cluster_params), 3968);
         assert_eq!(std::mem::offset_of!(FrameConstants, cluster_depth), 3984);
-        assert_eq!(size_of::<FrameConstants>(), 4000);
+        assert_eq!(std::mem::offset_of!(FrameConstants, contact_target), 4000);
+        assert_eq!(size_of::<FrameConstants>(), 4016);
         // Kept small on purpose. The cluster masks live in their own buffer rather than
         // here: putting 13.5 KB of them in this one cost 0.34 ms a frame at 4K, because a
         // constant buffer that no longer fits the hardware's constant cache is slower to

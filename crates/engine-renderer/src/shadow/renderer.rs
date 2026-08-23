@@ -44,6 +44,7 @@ use crate::scene::{
 use crate::upload::{CONSTANT_BUFFER_ALIGNMENT, UploadRing};
 
 use super::atlas::AtlasRect;
+use super::contact::{ContactShadowPipeline, ContactShadowTarget};
 use super::cascade::{CascadeView, build_cascades};
 use super::caster::{ShadowCasterCollector, skinned_caster_visible};
 use super::local::{LocalShadowView, SelectedLight, select_shadow_lights};
@@ -112,6 +113,12 @@ pub struct ShadowRenderer {
     settings: ShadowSettings,
     resources: ShadowResources,
     pipelines: ShadowPipelines,
+    /// The half-resolution contact-shadow target and the pass that fills it.
+    ///
+    /// Here rather than in the renderer because it belongs to the same stage: it reads the
+    /// depth copy this module makes and it is bracketed by the same GPU timer.
+    contact: ContactShadowTarget,
+    contact_pipeline: ContactShadowPipeline,
 
     /// This frame's cascades and where each one lives in the atlas.
     cascades: Vec<CascadeView>,
@@ -153,11 +160,21 @@ impl ShadowRenderer {
         let settings = settings.validated();
         let resources = ShadowResources::new(device, descriptors, &settings, scene_size)?;
         let pipelines = ShadowPipelines::new(device.device(), settings.bias)?;
+        let contact = ContactShadowTarget::new(
+            device,
+            descriptors,
+            &settings.contact,
+            settings.enabled,
+            scene_size,
+        )?;
+        let contact_pipeline = ContactShadowPipeline::new(device.device())?;
         Ok(Self {
             stats: ShadowStats::for_settings(&settings),
             settings,
             resources,
             pipelines,
+            contact,
+            contact_pipeline,
             cascades: Vec::new(),
             cascade_rects: Vec::new(),
             cascade_lists: Vec::new(),
@@ -201,6 +218,8 @@ impl ShadowRenderer {
     ) -> Result<(), RendererError> {
         let settings = settings.validated();
         self.resources.resize(device, &settings, scene_size)?;
+        self.contact
+            .resize(device, &settings.contact, settings.enabled, scene_size)?;
         self.pipelines.set_bias(device.device(), settings.bias)?;
         self.settings = settings;
         self.stats = ShadowStats::for_settings(&self.settings);
@@ -218,6 +237,12 @@ impl ShadowRenderer {
         scene_size: (u32, u32),
     ) -> Result<(), RendererError> {
         self.resources.resize(device, &self.settings, scene_size)?;
+        self.contact.resize(
+            device,
+            &self.settings.contact,
+            self.settings.enabled,
+            scene_size,
+        )?;
         Ok(())
     }
 
@@ -271,6 +296,18 @@ impl ShadowRenderer {
     }
 
     /// The scene-depth copy's shader-visible handle.
+    #[must_use]
+    pub fn contact_table(&self) -> Option<D3D12_GPU_DESCRIPTOR_HANDLE> {
+        self.contact.table()
+    }
+
+    /// The contact-shadow target's size, or `None` when the pass did not run this frame.
+    #[must_use]
+    pub fn contact_target_size(&self) -> Option<(u32, u32)> {
+        self.contact.is_live().then(|| self.contact.size_in_texels())
+    }
+
+    /// The scene-depth copy's descriptor table.
     #[must_use]
     pub fn depth_table(&self) -> Option<D3D12_GPU_DESCRIPTOR_HANDLE> {
         self.resources.scene_depth_srv().gpu
@@ -585,6 +622,16 @@ impl ShadowRenderer {
             D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
         );
         commands.transition_to(depth, D3D12_RESOURCE_STATE_DEPTH_WRITE);
+    }
+
+    /// Records the contact-shadow pass into its own half-resolution target.
+    ///
+    /// Runs immediately after [`ShadowRenderer::copy_scene_depth`], which is the depth it
+    /// marches through. The caller must already have bound the frame constants and the
+    /// scene-depth table — the pass reads both — and must restore its own render target
+    /// afterwards, which the shadow stage already does for the atlas.
+    pub fn record_contact(&mut self, commands: &mut CommandContext) {
+        self.contact.record(commands, &self.contact_pipeline);
     }
 
     /// Binds one of the depth-only pipelines, so a root signature is in place.

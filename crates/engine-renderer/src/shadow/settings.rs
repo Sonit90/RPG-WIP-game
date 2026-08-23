@@ -360,10 +360,21 @@ impl Default for ContactShadowSettings {
         Self {
             enabled: false,
             length: 0.35,
+            // Eight, not twelve. Over a 0.35 m ray that is a sample every 4.4 cm, and the
+            // step-count experiment in docs/performance/shadows/02-contact-shadows.md found
+            // twelve and eight to darken the same 76 pixels of a 256x256 test frame to
+            // within 5%: past a certain density the march is limited by the thickness test
+            // and the depth buffer's own resolution, not by how often it samples.
             steps: 8,
             thickness: 0.06,
-            max_distance: 25.0,
-            divisor: 1,
+            // Twenty metres, not twenty-five. The effect is invisible past the near cascade
+            // and the march is a per-pixel cost that is not; twenty covers a third-person
+            // camera's whole fight, and the last quarter of it is a fade rather than an edge.
+            max_distance: 20.0,
+            // Half on each axis: a quarter of the rays. The march is the expensive half of
+            // the effect and its result is low-frequency, so this is the setting that
+            // decides what contact shadows cost. See docs/performance/shadows/02.
+            divisor: 2,
         }
     }
 }
@@ -746,6 +757,9 @@ impl ShadowPreset {
                 },
                 contact: ContactShadowSettings {
                     enabled: true,
+                    // A shorter range than Ultra's: the same effect over the fight rather
+                    // than over the fight and the room behind it.
+                    max_distance: 15.0,
                     ..base.contact
                 },
                 ..base
@@ -760,7 +774,6 @@ impl ShadowPreset {
                 },
                 contact: ContactShadowSettings {
                     enabled: true,
-                    steps: 12,
                     ..base.contact
                 },
                 ..base

@@ -1015,7 +1015,7 @@ impl App {
         let (width, height) = settings.atlas_size();
         log::info!(
             "shadows: {} | {} cascade(s) at {} | atlas {width}x{height} ({:.1} MiB) | \
-             pcf {} | local views {} | contact {}",
+             pcf {} | local views {} | contact {}{}",
             quality.as_str(),
             settings.cascade_count,
             settings.resolution,
@@ -1026,6 +1026,14 @@ impl App {
                 "on"
             } else {
                 "off"
+            },
+            if settings.contact.enabled {
+                format!(
+                    ", {} step(s) at 1/{}",
+                    settings.contact.steps, settings.contact.divisor
+                )
+            } else {
+                String::new()
             },
         );
     }

@@ -35,8 +35,8 @@ use crate::pipeline::{ScenePipeline, Vertex};
 use crate::render_list::RenderList;
 use crate::resource::DeferredReleaseQueue;
 use crate::scene::{
-    FrameConstants, ObjectConstants, ROOT_CLUSTER_SRV, ROOT_DEPTH_TABLE, ROOT_FRAME_CBV,
-    ROOT_MATERIAL_CBV,
+    FrameConstants, ObjectConstants, ROOT_CLUSTER_SRV, ROOT_CONTACT_TABLE, ROOT_DEPTH_TABLE,
+    ROOT_FRAME_CBV, ROOT_MATERIAL_CBV,
     ROOT_MATERIAL_TABLE, ROOT_OBJECT_CBV, ROOT_SHADOW_TABLE, ROOT_SKIN_CBV,
 };
 use crate::shadow::renderer::ShadowScene;
@@ -1212,6 +1212,7 @@ impl Renderer {
         slot: usize,
         back_buffer: usize,
         camera: &Camera,
+        frame_constants: u64,
     ) -> Result<(), RendererError> {
         let scene = ShadowScene {
             meshes: &self.meshes,
@@ -1247,6 +1248,16 @@ impl Renderer {
             )?;
             self.shadow
                 .copy_scene_depth(&mut self.commands, self.depth.texture());
+
+            // The contact-shadow march, into its own half-resolution target. It reads the
+            // depth copy made on the line above and the frame constants, so it goes here and
+            // not with the atlas: the depth it marches through does not exist until now.
+            self.commands.set_root_cbv(ROOT_FRAME_CBV, frame_constants);
+            if let Some(table) = self.shadow.depth_table() {
+                self.commands
+                    .set_root_descriptor_table(ROOT_DEPTH_TABLE, table);
+            }
+            self.shadow.record_contact(&mut self.commands);
         }
 
         // Back to the camera's targets. The shadow passes bound a depth-only target and a
@@ -1279,12 +1290,33 @@ impl Renderer {
     ) -> Result<(), RendererError> {
         let (slot, back_buffer) = self.begin_recording(color)?;
 
+        // The frame constants are written once into this slot's upload memory and bound
+        // twice: once for the contact-shadow pass inside the shadow stage, once for the mesh
+        // pass. Built *before* the stage for that reason — the pass reads the same camera,
+        // the same light and the same contact settings the lighting does, and a second copy
+        // of them is a second thing to keep in step.
+        let mut frame_constants =
+            FrameConstants::new(camera.view_projection(), camera.position(), lighting);
+        frame_constants.set_camera(camera);
+        let (viewport_width, viewport_height) = self.swap_chain.size();
+        frame_constants.set_viewport(viewport_width, viewport_height);
+        self.shadow
+            .write_frame_constants(&mut frame_constants, &self.lights);
+        frame_constants.set_light_clusters(&self.clusters);
+        frame_constants.set_contact_target(self.shadow.contact_target_size());
+        // The particle pass is recorded later, from a function with no camera. Its basis is
+        // captured here, from the same camera the scene is drawn with, so a particle cannot
+        // be billboarded against a different frame's view than the one it is drawn into.
+        self.particles.constants =
+            ParticleConstants::new(&camera.view(), &camera.view_projection());
+        let allocation = self.uploads.write_constants(slot, &frame_constants)?;
+
         // Before the camera pass, and before its pipeline is bound: the shadow stage binds
         // its own depth target, its own viewports and its own pipeline states, and rebinds
         // the camera's when it is done.
         self.gpu_timer
             .begin_pass(self.commands.list(), slot, SHADOW_PASS_QUERY);
-        self.record_shadow_stage(slot, back_buffer, camera)?;
+        self.record_shadow_stage(slot, back_buffer, camera, allocation.gpu_address())?;
         self.gpu_timer
             .end_pass(self.commands.list(), slot, SHADOW_PASS_QUERY);
 
@@ -1297,24 +1329,6 @@ impl Renderer {
             .set_pipeline(pipeline.root_signature(), pipeline.pipeline_state());
         self.commands
             .set_topology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-
-        // The frame constants are written once into this slot's upload memory and bound
-        // once. This is the upload ring's first real use: transient data, alive for exactly
-        // one frame, reclaimed by the reset in `begin_recording`.
-        let mut frame_constants =
-            FrameConstants::new(camera.view_projection(), camera.position(), lighting);
-        frame_constants.set_camera(camera);
-        let (viewport_width, viewport_height) = self.swap_chain.size();
-        frame_constants.set_viewport(viewport_width, viewport_height);
-        self.shadow
-            .write_frame_constants(&mut frame_constants, &self.lights);
-        frame_constants.set_light_clusters(&self.clusters);
-        // The particle pass is recorded later, from a function with no camera. Its basis is
-        // captured here, from the same camera the scene is drawn with, so a particle cannot
-        // be billboarded against a different frame's view than the one it is drawn into.
-        self.particles.constants =
-            ParticleConstants::new(&camera.view(), &camera.view_projection());
-        let allocation = self.uploads.write_constants(slot, &frame_constants)?;
         self.commands
             .set_root_cbv(ROOT_FRAME_CBV, allocation.gpu_address());
         // The cluster grid rides in the same upload ring as the constants, in its own
@@ -1631,6 +1645,10 @@ impl Renderer {
         if let Some(table) = self.shadow.depth_table() {
             self.commands
                 .set_root_descriptor_table(ROOT_DEPTH_TABLE, table);
+        }
+        if let Some(table) = self.shadow.contact_table() {
+            self.commands
+                .set_root_descriptor_table(ROOT_CONTACT_TABLE, table);
         }
     }
 

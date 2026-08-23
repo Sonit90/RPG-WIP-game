@@ -120,6 +120,18 @@ const SHADERS: &[ShaderEntry] = &[
         constant: "SHADOW_DEPTH_ALPHA_PS",
     },
     ShaderEntry {
+        file: "contact.hlsl",
+        entry: "VSMain",
+        profile: "vs_6_0",
+        constant: "CONTACT_VS",
+    },
+    ShaderEntry {
+        file: "contact.hlsl",
+        entry: "PSMain",
+        profile: "ps_6_0",
+        constant: "CONTACT_PS",
+    },
+    ShaderEntry {
         file: "instanced.hlsl",
         entry: "VSMain",
         profile: "vs_6_0",

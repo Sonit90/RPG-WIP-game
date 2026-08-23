@@ -154,6 +154,7 @@ impl MeshPipeline {
 /// slot 5  table t1 shadow atlas           changes once per frame
 /// slot 6  table t2 scene depth            changes once per frame
 /// slot 7  SRV   t3 clustered light grid   changes once per frame
+/// slot 8  table t4 contact-shadow target   changes once per frame
 /// static samplers s0 (base colour), s1 (shadow comparison), s2 (depth point)
 /// ```
 ///
@@ -190,7 +191,7 @@ pub(crate) fn create_root_signature(
         OffsetInDescriptorsFromTableStart: D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND,
     }];
 
-    let mut parameters = Vec::with_capacity(8);
+    let mut parameters = Vec::with_capacity(9);
     parameters.extend_from_slice(&root_parameters());
     parameters.push(D3D12_ROOT_PARAMETER {
         ParameterType: D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE,
@@ -276,6 +277,31 @@ pub(crate) fn create_root_signature(
     debug_assert_eq!(
         parameters.len() as u32,
         crate::scene::ROOT_CLUSTER_SRV + 1,
+        "the ROOT_* constants index this array"
+    );
+
+    // The contact-shadow target, at t4. A table like the other two textures, and for the
+    // same reason: a root descriptor addresses a buffer, not a texture.
+    let contact_range = [D3D12_DESCRIPTOR_RANGE {
+        RangeType: D3D12_DESCRIPTOR_RANGE_TYPE_SRV,
+        NumDescriptors: 1,
+        BaseShaderRegister: 4,
+        RegisterSpace: 0,
+        OffsetInDescriptorsFromTableStart: D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND,
+    }];
+    parameters.push(D3D12_ROOT_PARAMETER {
+        ParameterType: D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE,
+        Anonymous: D3D12_ROOT_PARAMETER_0 {
+            DescriptorTable: D3D12_ROOT_DESCRIPTOR_TABLE {
+                NumDescriptorRanges: contact_range.len() as u32,
+                pDescriptorRanges: contact_range.as_ptr(),
+            },
+        },
+        ShaderVisibility: D3D12_SHADER_VISIBILITY_PIXEL,
+    });
+    debug_assert_eq!(
+        parameters.len() as u32,
+        crate::scene::ROOT_CONTACT_TABLE + 1,
         "the ROOT_* constants index this array"
     );
 

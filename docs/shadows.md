@@ -223,11 +223,34 @@ why bay F of the shadow course has to be walked into to be judged.
 ## Contact shadows
 
 Short-range screen-space shadows for the contact region a 2048² cascade cannot resolve: a
-foot on the ground, a crate against a wall. `contact_shadow` in the shader marches
-`contact.steps` samples along the light direction through this frame's depth buffer, up to
-`contact.length` (0.35 m), with a `thickness` (0.06 m) test to avoid shadowing through thin
-geometry. It only ever *reduces* the shadow factor, never invents one, and it is disabled past
-`contact.max_distance` (25 m).
+foot on the ground, a crate against a wall. `contact_shadow` marches `contact.steps` (8)
+samples along the light direction through this frame's depth buffer, up to `contact.length`
+(0.35 m), with a `thickness` (0.06 m) test to avoid shadowing through thin geometry. It only
+ever *reduces* the shadow factor, never invents one, and it is disabled past
+`contact.max_distance` (20 m at Ultra, 15 m at High).
+
+### It is a pass, at half resolution
+
+The march runs in `shaders/contact.hlsl`, as a fullscreen triangle into a target of its own at
+`contact.divisor` (2) on each axis — a quarter of the rays. It used to be a function called
+from the mesh pixel shader, and at 4K that was 1.31 ms of a 2.50 ms frame, the largest single
+item in it. It is 0.38 ms now.
+
+The target is `R16G16_FLOAT`: red the shadow factor, green the view distance the ray started
+from. The green channel is what makes half resolution look like full resolution —
+`contact_shadow_at` in `scene_frame.hlsli` weights each of the four neighbouring texels by how
+well its recorded distance agrees with the pixel being shaded, so a foot's contact shadow does
+not smear onto the wall behind it, and where no neighbour agrees the answer is "unoccluded"
+rather than a guess.
+
+The normal the march lifts its origin along is reconstructed from the depth buffer's own
+screen-space derivatives: this is a forward renderer and there is no G-buffer to read one from.
+
+The gating stayed in the mesh shader — `receives_shadow` and the sun-facing test — so a
+surface that does not receive shadows is still not darkened by this.
+
+`docs/performance/shadows/02-contact-shadows.md` has the measurements, including why quarter
+resolution and a four-step march were both rejected.
 
 The march starts **half a step off the surface along the normal**. Starting on the surface
 itself makes the early samples project back onto that same surface, so on a floor the march
@@ -298,7 +321,7 @@ renderer ignores.
 | resolution | – | 1024 | 1024 | 2048 | 2048 |
 | PCF | – | 1 tap | 3×3 | 3×3 | 5×5 |
 | local views | – | 0 | 4 (no point lights) | 8 | 16 |
-| contact shadows | – | off | off | on, 8 steps | on, 12 steps |
+| contact shadows | – | off | off | on, 8 steps, 15 m | on, 8 steps, 20 m |
 | atlas | 0 | 2048×1024, 8 MB | 2048×2048, 16 MB | 4096×4096, 64 MB | 4096×5120, 80 MB |
 
 Medium turns point lights **off** rather than rationing them: one point light is six views, so

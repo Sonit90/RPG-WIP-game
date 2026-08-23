@@ -81,6 +81,9 @@ cbuffer Frame : register(b0)
     float4 cluster_params;
     // x: depth-slice scale  y: its bias  z: camera near  w: camera far
     float4 cluster_depth;
+    // x,y: the contact-shadow target's size in texels  z,w: its reciprocal. A zero width
+    // means the pass did not run this frame.
+    float4 contact_target;
 };
 
 // The material constants and the base colour map, shared with the depth-only shadow
@@ -100,6 +103,12 @@ SamplerComparisonState shadow_sampler : register(s1);
 // masks in the constant buffer made every read of that buffer slower, cascade matrices
 // included, and cost more than the lighting the grid exists to save.
 ByteAddressBuffer cluster_light_mask : register(t3);
+
+// What the contact-shadow pass wrote: red the shadow factor, green the view distance the ray
+// started from. Half the camera's width and height by default - see shadow/contact.rs and
+// `contact_shadow_at` below for why that is affordable and how the green channel makes it
+// look like it is not.
+Texture2D<float2> contact_shadows : register(t4);
 
 // Last frame's... no: *this* frame's depth, from the prepass, for the contact-shadow march.
 // Bound to a 1x1 texture when contact shadows are off, so the pipeline needs no permutation.
@@ -407,6 +416,61 @@ float contact_shadow(float3 world_position, float3 normal, float3 to_light, floa
         }
     }
     return saturate(1.0 - occlusion * fade);
+}
+
+// The contact-shadow term for a shaded pixel, reconstructed from the half-resolution pass.
+//
+// A **depth-weighted** upsample, not a bilinear one. The four neighbouring texels each carry
+// the view distance their ray started from; a neighbour whose distance disagrees with this
+// pixel's is a different surface, and blending its occlusion in is what would smear a foot's
+// contact shadow onto the wall behind it. The weight falls off with the disagreement, and a
+// texel with no surface at all (the sky, which the pass writes as distance zero) is dropped
+// outright.
+//
+// If every neighbour disagrees - a one-pixel-wide silhouette, where the reconstruction has
+// nothing honest to say - the answer is "unoccluded" rather than a guess. Contact shadows
+// only ever darken, so failing towards 1 fails towards the picture without them.
+float contact_shadow_at(float2 pixel, float view_distance)
+{
+    if (contact_params.w <= 0.0 || view_distance > contact_params.w || contact_target.x < 1.0)
+    {
+        return 1.0;
+    }
+
+    float2 viewport = max(camera_params.zw, float2(1.0, 1.0));
+    float2 coordinate = (pixel / viewport) * contact_target.xy - 0.5;
+    float2 base = floor(coordinate);
+    float2 fraction = coordinate - base;
+    int2 limit = int2(contact_target.xy) - 1;
+
+    float total = 0.0;
+    float total_weight = 0.0;
+    [unroll]
+    for (int y = 0; y < 2; ++y)
+    {
+        [unroll]
+        for (int x = 0; x < 2; ++x)
+        {
+            int2 texel = clamp(int2(base) + int2(x, y), int2(0, 0), limit);
+            float2 tap = contact_shadows.Load(int3(texel, 0));
+            if (tap.y <= 0.0)
+            {
+                continue;
+            }
+            float bilinear = (x == 0 ? 1.0 - fraction.x : fraction.x)
+                           * (y == 0 ? 1.0 - fraction.y : fraction.y);
+            // Half a metre of disagreement halves the weight roughly eight times over. The
+            // scale is in metres because both quantities are.
+            float weight = bilinear / (1.0 + 16.0 * abs(tap.y - view_distance));
+            total += tap.x * weight;
+            total_weight += weight;
+        }
+    }
+    if (total_weight <= 1e-5)
+    {
+        return 1.0;
+    }
+    return saturate(total / total_weight);
 }
 
 // The directional light's shadow factor at a world position.
@@ -746,7 +810,7 @@ float4 shade_surface(
         shadow = directional_shadow(world_position, normal, view_distance, screen_position.xy);
         if (shadow > 0.0)
         {
-            shadow = min(shadow, contact_shadow(world_position, normal, to_light, view_distance));
+            shadow = min(shadow, contact_shadow_at(screen_position.xy, view_distance));
         }
     }
 
