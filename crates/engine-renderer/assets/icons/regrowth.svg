@@ -1,0 +1,73 @@
+<svg version="1.1" xmlns="http://www.w3.org/2000/svg" style="display: block;" viewBox="0 189.333 682.667 762.667" width="682.667" height="762.667" preserveAspectRatio="none">
+<defs>
+	<linearGradient id="regrowth_panel" gradientUnits="userSpaceOnUse" x1="23.848" y1="789.072" x2="653.072" y2="323.171">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(24,28,35)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(11,13,17)"></stop>
+	</linearGradient>
+	<radialGradient id="regrowth_grove" gradientUnits="userSpaceOnUse" cx="338" cy="560" r="340">
+		<stop offset="0" stop-opacity="0.42" stop-color="rgb(150,200,140)"></stop>
+		<stop offset="0.55" stop-opacity="0.14" stop-color="rgb(46,66,58)"></stop>
+		<stop offset="1" stop-opacity="0" stop-color="rgb(11,13,17)"></stop>
+	</radialGradient>
+	<linearGradient id="regrowth_leaf" gradientUnits="userSpaceOnUse" x1="170" y1="300" x2="500" y2="840">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(186,236,152)"></stop>
+		<stop offset="0.45" stop-opacity="1" stop-color="rgb(96,180,96)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(30,84,52)"></stop>
+	</linearGradient>
+	<linearGradient id="regrowth_deep" gradientUnits="userSpaceOnUse" x1="200" y1="340" x2="470" y2="830">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(52,102,74)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(20,40,32)"></stop>
+	</linearGradient>
+	<linearGradient id="regrowth_bark" gradientUnits="userSpaceOnUse" x1="240" y1="380" x2="440" y2="860">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(146,114,78)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(60,44,32)"></stop>
+	</linearGradient>
+	<linearGradient id="regrowth_moon" gradientUnits="userSpaceOnUse" x1="150" y1="330" x2="520" y2="830">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(226,234,255)"></stop>
+		<stop offset="0.5" stop-opacity="1" stop-color="rgb(146,164,232)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(64,76,132)"></stop>
+	</linearGradient>
+	<linearGradient id="regrowth_astral" gradientUnits="userSpaceOnUse" x1="180" y1="320" x2="500" y2="840">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(226,196,255)"></stop>
+		<stop offset="0.5" stop-opacity="1" stop-color="rgb(158,104,230)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(72,40,122)"></stop>
+	</linearGradient>
+	<linearGradient id="regrowth_sun" gradientUnits="userSpaceOnUse" x1="150" y1="330" x2="520" y2="830">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(255,236,168)"></stop>
+		<stop offset="0.5" stop-opacity="1" stop-color="rgb(240,182,62)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(148,90,22)"></stop>
+	</linearGradient>
+	<linearGradient id="regrowth_bloom" gradientUnits="userSpaceOnUse" x1="200" y1="340" x2="470" y2="830">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(255,214,230)"></stop>
+		<stop offset="0.5" stop-opacity="1" stop-color="rgb(228,124,170)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(122,40,84)"></stop>
+	</linearGradient>
+	<clipPath id="regrowth_tile">
+		<path d="M 17.7 340 C 17.7 279.2 66.9 230 127.7 230 L 549.4 230 C 610.2 230 659.4 279.2 659.4 340 L 659.4 801 C 659.4 861.8 610.2 911 549.4 911 L 127.7 911 C 66.9 911 17.7 861.8 17.7 801 Z"></path>
+	</clipPath>
+</defs>
+<g clip-path="url(#regrowth_tile)">
+	<path fill="url(#regrowth_panel)" d="M 17.7 340 C 17.7 279.2 66.9 230 127.7 230 L 549.4 230 C 610.2 230 659.4 279.2 659.4 340 L 659.4 801 C 659.4 861.8 610.2 911 549.4 911 L 127.7 911 C 66.9 911 17.7 861.8 17.7 801 Z"></path>
+	<path fill="url(#regrowth_grove)" d="M 17.7 230 L 659.4 230 L 659.4 911 L 17.7 911 Z"></path>
+
+	<!-- The stem, and the two leaves the direct heal grows off. -->
+	<path fill="url(#regrowth_bark)" d="M 324 862 L 352 862 L 358 640 L 320 640 z"></path>
+	<path fill="url(#regrowth_leaf)" d="M 318 700 C 246 700 200 744 196 806 C 268 810 316 766 318 700 z"></path>
+	<path fill="url(#regrowth_deep)" d="M 318 700 C 278 730 244 764 216 802 C 262 800 306 764 318 700 z"></path>
+	<path fill="url(#regrowth_leaf)" d="M 358 662 C 430 662 476 706 480 768 C 408 772 360 728 358 662 z"></path>
+	<path fill="url(#regrowth_deep)" d="M 358 662 C 398 692 432 726 460 764 C 414 762 370 726 358 662 z"></path>
+
+	<!-- The bloom: the large heal itself, open all at once. -->
+	<path fill="url(#regrowth_bloom)" fill-opacity="0.28" d="M 338 260 C 430 260 504 334 504 426 C 504 518 430 592 338 592 C 246 592 172 518 172 426 C 172 334 246 260 338 260 z"></path>
+	<path fill="url(#regrowth_bloom)" d="M 338 276 C 372 276 400 320 400 372 C 400 404 372 424 338 424 C 304 424 276 404 276 372 C 276 320 304 276 338 276 z"></path>
+	<path fill="url(#regrowth_bloom)" d="M 486 372 C 496 404 462 444 412 460 C 382 470 356 460 346 428 C 336 396 356 372 406 356 C 456 340 476 340 486 372 z"></path>
+	<path fill="url(#regrowth_bloom)" d="M 190 372 C 200 340 220 340 270 356 C 320 372 340 396 330 428 C 320 460 294 470 264 460 C 214 444 180 404 190 372 z"></path>
+	<path fill="url(#regrowth_bloom)" d="M 430 566 C 402 586 376 578 356 536 C 336 494 340 466 368 452 C 396 438 422 452 442 494 C 462 536 458 546 430 566 z"></path>
+	<path fill="url(#regrowth_bloom)" d="M 246 566 C 218 546 214 536 234 494 C 254 452 280 438 308 452 C 336 466 340 494 320 536 C 300 578 274 586 246 566 z"></path>
+	<path fill="rgb(255,214,230)" fill-opacity="0.55" d="M 300 300 C 320 288 348 288 366 300 C 340 300 320 300 300 300 z"></path>
+
+	<!-- The heart of it, warm so the eye lands there. -->
+	<path fill="url(#regrowth_sun)" d="M 338 402 C 380 402 414 436 414 478 C 414 520 380 554 338 554 C 296 554 262 520 262 478 C 262 436 296 402 338 402 z"></path>
+	<path fill="rgb(255,236,168)" fill-opacity="0.85" d="M 338 434 C 362 434 382 454 382 478 C 382 502 362 522 338 522 C 314 522 294 502 294 478 C 294 454 314 434 338 434 z"></path>
+</g>
+</svg>

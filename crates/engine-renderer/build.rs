@@ -228,6 +228,60 @@ const ICONS: &[IconEntry] = &[
         file: "last_stand.svg",
         constant: "LAST_STAND",
     },
+    // The Druid's thirteen.
+    IconEntry {
+        file: "moonfire.svg",
+        constant: "MOONFIRE",
+    },
+    IconEntry {
+        file: "sunfire.svg",
+        constant: "SUNFIRE",
+    },
+    IconEntry {
+        file: "wrath.svg",
+        constant: "WRATH",
+    },
+    IconEntry {
+        file: "rejuvenation.svg",
+        constant: "REJUVENATION",
+    },
+    IconEntry {
+        file: "regrowth.svg",
+        constant: "REGROWTH",
+    },
+    IconEntry {
+        file: "lifebloom.svg",
+        constant: "LIFEBLOOM",
+    },
+    IconEntry {
+        file: "wild_growth.svg",
+        constant: "WILD_GROWTH",
+    },
+    IconEntry {
+        file: "swiftmend.svg",
+        constant: "SWIFTMEND",
+    },
+    IconEntry {
+        file: "nourish.svg",
+        constant: "NOURISH",
+    },
+    IconEntry {
+        file: "natures_cleanse.svg",
+        constant: "NATURES_CLEANSE",
+    },
+    IconEntry {
+        file: "wild_rush.svg",
+        constant: "WILD_RUSH",
+    },
+    IconEntry {
+        file: "astral_power.svg",
+        constant: "ASTRAL_POWER",
+    },
+    IconEntry {
+        file: "tranquility.svg",
+        constant: "TRANQUILITY",
+    },
+
     IconEntry {
         file: "helm.svg",
         constant: "HELM",

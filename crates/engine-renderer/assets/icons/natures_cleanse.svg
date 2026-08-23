@@ -1,0 +1,71 @@
+<svg version="1.1" xmlns="http://www.w3.org/2000/svg" style="display: block;" viewBox="0 189.333 682.667 762.667" width="682.667" height="762.667" preserveAspectRatio="none">
+<defs>
+	<linearGradient id="natures_cleanse_panel" gradientUnits="userSpaceOnUse" x1="23.848" y1="789.072" x2="653.072" y2="323.171">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(24,28,35)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(11,13,17)"></stop>
+	</linearGradient>
+	<radialGradient id="natures_cleanse_grove" gradientUnits="userSpaceOnUse" cx="338" cy="560" r="340">
+		<stop offset="0" stop-opacity="0.42" stop-color="rgb(140,210,170)"></stop>
+		<stop offset="0.55" stop-opacity="0.14" stop-color="rgb(46,66,58)"></stop>
+		<stop offset="1" stop-opacity="0" stop-color="rgb(11,13,17)"></stop>
+	</radialGradient>
+	<linearGradient id="natures_cleanse_leaf" gradientUnits="userSpaceOnUse" x1="170" y1="300" x2="500" y2="840">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(186,236,152)"></stop>
+		<stop offset="0.45" stop-opacity="1" stop-color="rgb(96,180,96)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(30,84,52)"></stop>
+	</linearGradient>
+	<linearGradient id="natures_cleanse_deep" gradientUnits="userSpaceOnUse" x1="200" y1="340" x2="470" y2="830">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(52,102,74)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(20,40,32)"></stop>
+	</linearGradient>
+	<linearGradient id="natures_cleanse_bark" gradientUnits="userSpaceOnUse" x1="240" y1="380" x2="440" y2="860">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(146,114,78)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(60,44,32)"></stop>
+	</linearGradient>
+	<linearGradient id="natures_cleanse_moon" gradientUnits="userSpaceOnUse" x1="150" y1="330" x2="520" y2="830">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(226,234,255)"></stop>
+		<stop offset="0.5" stop-opacity="1" stop-color="rgb(146,164,232)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(64,76,132)"></stop>
+	</linearGradient>
+	<linearGradient id="natures_cleanse_astral" gradientUnits="userSpaceOnUse" x1="180" y1="320" x2="500" y2="840">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(226,196,255)"></stop>
+		<stop offset="0.5" stop-opacity="1" stop-color="rgb(158,104,230)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(72,40,122)"></stop>
+	</linearGradient>
+	<linearGradient id="natures_cleanse_sun" gradientUnits="userSpaceOnUse" x1="150" y1="330" x2="520" y2="830">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(255,236,168)"></stop>
+		<stop offset="0.5" stop-opacity="1" stop-color="rgb(240,182,62)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(148,90,22)"></stop>
+	</linearGradient>
+	<linearGradient id="natures_cleanse_bloom" gradientUnits="userSpaceOnUse" x1="200" y1="340" x2="470" y2="830">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(255,214,230)"></stop>
+		<stop offset="0.5" stop-opacity="1" stop-color="rgb(228,124,170)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(122,40,84)"></stop>
+	</linearGradient>
+	<clipPath id="natures_cleanse_tile">
+		<path d="M 17.7 340 C 17.7 279.2 66.9 230 127.7 230 L 549.4 230 C 610.2 230 659.4 279.2 659.4 340 L 659.4 801 C 659.4 861.8 610.2 911 549.4 911 L 127.7 911 C 66.9 911 17.7 861.8 17.7 801 Z"></path>
+	</clipPath>
+</defs>
+<g clip-path="url(#natures_cleanse_tile)">
+	<path fill="url(#natures_cleanse_panel)" d="M 17.7 340 C 17.7 279.2 66.9 230 127.7 230 L 549.4 230 C 610.2 230 659.4 279.2 659.4 340 L 659.4 801 C 659.4 861.8 610.2 911 549.4 911 L 127.7 911 C 66.9 911 17.7 861.8 17.7 801 Z"></path>
+	<path fill="url(#natures_cleanse_grove)" d="M 17.7 230 L 659.4 230 L 659.4 911 L 17.7 911 Z"></path>
+
+	<!-- The leaf, whole, with the light already through it. -->
+	<path fill="url(#natures_cleanse_leaf)" fill-opacity="0.22" d="M 172 826 C 140 660 202 500 344 396 C 486 500 548 660 516 826 C 402 872 286 872 172 826 z"></path>
+	<path fill="url(#natures_cleanse_leaf)" d="M 206 794 C 182 656 234 522 344 436 C 454 522 506 656 482 794 C 392 830 296 830 206 794 z"></path>
+	<path fill="url(#natures_cleanse_deep)" d="M 344 436 C 340 570 342 692 350 814 C 322 816 300 812 278 806 C 292 690 314 560 344 436 z"></path>
+	<path fill="rgb(214,250,190)" fill-opacity="0.55" d="M 344 470 C 384 540 410 618 420 700 C 396 636 370 560 344 470 z"></path>
+	<path fill="url(#natures_cleanse_bark)" d="M 334 858 L 358 858 L 356 780 L 336 780 z"></path>
+
+	<!-- The affliction lifted off it: dark, breaking up as it goes. -->
+	<path fill="rgb(158,104,230)" fill-opacity="0.9" d="M 396 300 C 424 300 446 322 446 350 C 446 378 424 400 396 400 C 368 400 346 378 346 350 C 346 322 368 300 396 300 z"></path>
+	<path fill="rgb(38,20,52)" fill-opacity="0.95" d="M 396 326 C 410 326 420 336 420 350 C 420 364 410 374 396 374 C 382 374 372 364 372 350 C 372 336 382 326 396 326 z"></path>
+	<path fill="rgb(158,104,230)" fill-opacity="0.75" d="M 480 260 C 496 260 508 272 508 288 C 508 304 496 316 480 316 C 464 316 452 304 452 288 C 452 272 464 260 480 260 z"></path>
+	<path fill="rgb(158,104,230)" fill-opacity="0.5" d="M 300 250 C 312 250 322 260 322 272 C 322 284 312 294 300 294 C 288 294 278 284 278 272 C 278 260 288 250 300 250 z"></path>
+
+	<!-- The light doing the lifting. -->
+	<path fill="rgb(214,250,190)" fill-opacity="0.5" d="M 380 424 L 414 424 L 424 292 L 372 292 z"></path>
+	<path fill="rgb(255,255,255)" fill-opacity="0.85" d="M 250 366 C 260 372 264 382 262 394 C 250 386 244 376 244 366 z"></path>
+	<path fill="rgb(214,250,190)" d="M 522 428 C 532 434 536 444 534 456 C 522 448 516 438 516 428 z"></path>
+</g>
+</svg>

@@ -1861,10 +1861,25 @@ pub fn icon_for(ability: FireAbility) -> Option<UiIcon> {
         FireAbility::BattleTrance => Some(UiIcon::BattleTrance),
         FireAbility::SpellReflect => Some(UiIcon::SpellReflect),
         FireAbility::LastStand => Some(UiIcon::LastStand),
-        // The Druid's thirteen have no art yet. A slot with no icon draws its abbreviated
-        // name, which is the same fallback every ability had before the two icon sets were
-        // painted — legible, and honest about what is missing.
-        _ => None,
+        FireAbility::Moonfire => Some(UiIcon::Moonfire),
+        FireAbility::Sunfire => Some(UiIcon::Sunfire),
+        FireAbility::Wrath => Some(UiIcon::Wrath),
+        FireAbility::Rejuvenation => Some(UiIcon::Rejuvenation),
+        FireAbility::Regrowth => Some(UiIcon::Regrowth),
+        FireAbility::Lifebloom => Some(UiIcon::Lifebloom),
+        FireAbility::WildGrowth => Some(UiIcon::WildGrowth),
+        FireAbility::Swiftmend => Some(UiIcon::Swiftmend),
+        FireAbility::Nourish => Some(UiIcon::Nourish),
+        FireAbility::NaturesCleanse => Some(UiIcon::NaturesCleanse),
+        FireAbility::WildRush => Some(UiIcon::WildRush),
+        FireAbility::AstralPower => Some(UiIcon::AstralPower),
+        FireAbility::Tranquility => Some(UiIcon::Tranquility),
+        // Two rows with nothing to draw: the mage's Ultimate is switched off, and Ignite is
+        // credited damage rather than a cast — it has a row so the meter can name it. A slot
+        // with no icon draws its abbreviated name, which is the fallback every ability had
+        // before the icon sets were painted.
+        FireAbility::Cataclysm => None,
+        FireAbility::Ignite => None,
     }
 }
 

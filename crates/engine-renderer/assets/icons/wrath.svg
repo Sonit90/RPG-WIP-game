@@ -1,0 +1,71 @@
+<svg version="1.1" xmlns="http://www.w3.org/2000/svg" style="display: block;" viewBox="0 189.333 682.667 762.667" width="682.667" height="762.667" preserveAspectRatio="none">
+<defs>
+	<linearGradient id="wrath_panel" gradientUnits="userSpaceOnUse" x1="23.848" y1="789.072" x2="653.072" y2="323.171">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(24,28,35)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(11,13,17)"></stop>
+	</linearGradient>
+	<radialGradient id="wrath_grove" gradientUnits="userSpaceOnUse" cx="338" cy="560" r="340">
+		<stop offset="0" stop-opacity="0.42" stop-color="rgb(132,200,132)"></stop>
+		<stop offset="0.55" stop-opacity="0.14" stop-color="rgb(46,66,58)"></stop>
+		<stop offset="1" stop-opacity="0" stop-color="rgb(11,13,17)"></stop>
+	</radialGradient>
+	<linearGradient id="wrath_leaf" gradientUnits="userSpaceOnUse" x1="170" y1="300" x2="500" y2="840">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(186,236,152)"></stop>
+		<stop offset="0.45" stop-opacity="1" stop-color="rgb(96,180,96)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(30,84,52)"></stop>
+	</linearGradient>
+	<linearGradient id="wrath_deep" gradientUnits="userSpaceOnUse" x1="200" y1="340" x2="470" y2="830">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(52,102,74)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(20,40,32)"></stop>
+	</linearGradient>
+	<linearGradient id="wrath_bark" gradientUnits="userSpaceOnUse" x1="240" y1="380" x2="440" y2="860">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(146,114,78)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(60,44,32)"></stop>
+	</linearGradient>
+	<linearGradient id="wrath_moon" gradientUnits="userSpaceOnUse" x1="150" y1="330" x2="520" y2="830">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(226,234,255)"></stop>
+		<stop offset="0.5" stop-opacity="1" stop-color="rgb(146,164,232)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(64,76,132)"></stop>
+	</linearGradient>
+	<linearGradient id="wrath_astral" gradientUnits="userSpaceOnUse" x1="180" y1="320" x2="500" y2="840">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(226,196,255)"></stop>
+		<stop offset="0.5" stop-opacity="1" stop-color="rgb(158,104,230)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(72,40,122)"></stop>
+	</linearGradient>
+	<linearGradient id="wrath_sun" gradientUnits="userSpaceOnUse" x1="150" y1="330" x2="520" y2="830">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(255,236,168)"></stop>
+		<stop offset="0.5" stop-opacity="1" stop-color="rgb(240,182,62)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(148,90,22)"></stop>
+	</linearGradient>
+	<linearGradient id="wrath_bloom" gradientUnits="userSpaceOnUse" x1="200" y1="340" x2="470" y2="830">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(255,214,230)"></stop>
+		<stop offset="0.5" stop-opacity="1" stop-color="rgb(228,124,170)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(122,40,84)"></stop>
+	</linearGradient>
+	<clipPath id="wrath_tile">
+		<path d="M 17.7 340 C 17.7 279.2 66.9 230 127.7 230 L 549.4 230 C 610.2 230 659.4 279.2 659.4 340 L 659.4 801 C 659.4 861.8 610.2 911 549.4 911 L 127.7 911 C 66.9 911 17.7 861.8 17.7 801 Z"></path>
+	</clipPath>
+</defs>
+<g clip-path="url(#wrath_tile)">
+	<path fill="url(#wrath_panel)" d="M 17.7 340 C 17.7 279.2 66.9 230 127.7 230 L 549.4 230 C 610.2 230 659.4 279.2 659.4 340 L 659.4 801 C 659.4 861.8 610.2 911 549.4 911 L 127.7 911 C 66.9 911 17.7 861.8 17.7 801 Z"></path>
+	<path fill="url(#wrath_grove)" d="M 17.7 230 L 659.4 230 L 659.4 911 L 17.7 911 Z"></path>
+
+	<!-- The bolt: nature's answer, thrown flat and fast. -->
+	<path fill="url(#wrath_leaf)" fill-opacity="0.25" d="M 372 234 L 202 552 L 316 552 L 246 866 L 486 490 L 356 490 z"></path>
+	<path fill="url(#wrath_leaf)" d="M 366 262 L 224 546 L 328 546 L 268 830 L 458 502 L 340 502 z"></path>
+	<path fill="rgb(214,250,190)" fill-opacity="0.8" d="M 352 300 L 262 534 L 320 534 L 292 700 L 336 546 L 288 546 z"></path>
+
+	<!-- The debuff it stacks: three marks, each deeper than the last. -->
+	<path fill="url(#wrath_deep)" d="M 486 596 L 574 596 L 574 630 L 486 630 z"></path>
+	<path fill="url(#wrath_leaf)" fill-opacity="0.55" d="M 486 596 L 552 596 L 552 630 L 486 630 z"></path>
+	<path fill="url(#wrath_deep)" d="M 486 664 L 574 664 L 574 698 L 486 698 z"></path>
+	<path fill="url(#wrath_leaf)" fill-opacity="0.75" d="M 486 664 L 560 664 L 560 698 L 486 698 z"></path>
+	<path fill="url(#wrath_deep)" d="M 486 732 L 574 732 L 574 766 L 486 766 z"></path>
+	<path fill="url(#wrath_leaf)" d="M 486 732 L 574 732 L 574 766 L 486 766 z"></path>
+
+	<!-- Leaves caught in it. -->
+	<path fill="url(#wrath_leaf)" fill-opacity="0.85" d="M 150 640 C 186 626 220 634 236 660 C 210 682 174 680 150 640 z"></path>
+	<path fill="url(#wrath_leaf)" fill-opacity="0.6" d="M 470 336 C 502 322 534 330 548 354 C 524 376 492 374 470 336 z"></path>
+	<path fill="rgb(186,236,152)" d="M 176 786 C 186 792 190 802 188 812 C 176 806 170 796 170 786 z"></path>
+</g>
+</svg>

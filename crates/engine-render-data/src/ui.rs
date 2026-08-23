@@ -272,6 +272,35 @@ pub enum UiIcon {
     /// A sword driven in, a shield set against it, and the light behind.
     LastStand,
 
+    // The Druid's thirteen. Green where the mage's are fire and the Warrior's steel, with
+    // moonlight and sun on the two that are not healing, and one violet for the resource.
+    /// Moonlight left burning on one enemy.
+    Moonfire,
+    /// The same burn, spread wide: a sun over a pack.
+    Sunfire,
+    /// The filler, and the marks each cast of it stacks.
+    Wrath,
+    /// One shoot, put on one target and left to run.
+    Rejuvenation,
+    /// A bloom open all at once, over the shoot that follows it.
+    Regrowth,
+    /// A bud in three rings, counting down to the bloom.
+    Lifebloom,
+    /// Three shoots out of one ring: the party, not one target.
+    WildGrowth,
+    /// A heal over time coming apart, spent as a burst.
+    Swiftmend,
+    /// A leaf held open, filling from above.
+    Nourish,
+    /// The affliction lifted off the leaf, breaking up as it goes.
+    NaturesCleanse,
+    /// A print leaning into the run, and the ground going past.
+    WildRush,
+    /// The gauge full and holding. Nothing has been spent.
+    AstralPower,
+    /// A canopy, and the light coming down through it onto everyone.
+    Tranquility,
+
     // Equipment. The character sheet draws these; nothing casts them.
     /// A helm.
     Helm,
@@ -299,7 +328,7 @@ pub enum UiIcon {
 
 impl UiIcon {
     /// Every icon, in atlas order.
-    pub const ALL: [Self; 32] = [
+    pub const ALL: [Self; 45] = [
         Self::Firebolt,
         Self::Meteor,
         Self::FlameCone,
@@ -321,6 +350,19 @@ impl UiIcon {
         Self::BattleTrance,
         Self::SpellReflect,
         Self::LastStand,
+        Self::Moonfire,
+        Self::Sunfire,
+        Self::Wrath,
+        Self::Rejuvenation,
+        Self::Regrowth,
+        Self::Lifebloom,
+        Self::WildGrowth,
+        Self::Swiftmend,
+        Self::Nourish,
+        Self::NaturesCleanse,
+        Self::WildRush,
+        Self::AstralPower,
+        Self::Tranquility,
         Self::Helm,
         Self::Shoulders,
         Self::Chestpiece,

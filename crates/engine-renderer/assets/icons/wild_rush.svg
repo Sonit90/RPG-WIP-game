@@ -1,0 +1,73 @@
+<svg version="1.1" xmlns="http://www.w3.org/2000/svg" style="display: block;" viewBox="0 189.333 682.667 762.667" width="682.667" height="762.667" preserveAspectRatio="none">
+<defs>
+	<linearGradient id="wild_rush_panel" gradientUnits="userSpaceOnUse" x1="23.848" y1="789.072" x2="653.072" y2="323.171">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(24,28,35)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(11,13,17)"></stop>
+	</linearGradient>
+	<radialGradient id="wild_rush_grove" gradientUnits="userSpaceOnUse" cx="338" cy="560" r="340">
+		<stop offset="0" stop-opacity="0.42" stop-color="rgb(160,200,120)"></stop>
+		<stop offset="0.55" stop-opacity="0.14" stop-color="rgb(46,66,58)"></stop>
+		<stop offset="1" stop-opacity="0" stop-color="rgb(11,13,17)"></stop>
+	</radialGradient>
+	<linearGradient id="wild_rush_leaf" gradientUnits="userSpaceOnUse" x1="170" y1="300" x2="500" y2="840">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(186,236,152)"></stop>
+		<stop offset="0.45" stop-opacity="1" stop-color="rgb(96,180,96)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(30,84,52)"></stop>
+	</linearGradient>
+	<linearGradient id="wild_rush_deep" gradientUnits="userSpaceOnUse" x1="200" y1="340" x2="470" y2="830">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(52,102,74)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(20,40,32)"></stop>
+	</linearGradient>
+	<linearGradient id="wild_rush_bark" gradientUnits="userSpaceOnUse" x1="240" y1="380" x2="440" y2="860">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(146,114,78)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(60,44,32)"></stop>
+	</linearGradient>
+	<linearGradient id="wild_rush_moon" gradientUnits="userSpaceOnUse" x1="150" y1="330" x2="520" y2="830">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(226,234,255)"></stop>
+		<stop offset="0.5" stop-opacity="1" stop-color="rgb(146,164,232)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(64,76,132)"></stop>
+	</linearGradient>
+	<linearGradient id="wild_rush_astral" gradientUnits="userSpaceOnUse" x1="180" y1="320" x2="500" y2="840">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(226,196,255)"></stop>
+		<stop offset="0.5" stop-opacity="1" stop-color="rgb(158,104,230)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(72,40,122)"></stop>
+	</linearGradient>
+	<linearGradient id="wild_rush_sun" gradientUnits="userSpaceOnUse" x1="150" y1="330" x2="520" y2="830">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(255,236,168)"></stop>
+		<stop offset="0.5" stop-opacity="1" stop-color="rgb(240,182,62)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(148,90,22)"></stop>
+	</linearGradient>
+	<linearGradient id="wild_rush_bloom" gradientUnits="userSpaceOnUse" x1="200" y1="340" x2="470" y2="830">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(255,214,230)"></stop>
+		<stop offset="0.5" stop-opacity="1" stop-color="rgb(228,124,170)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(122,40,84)"></stop>
+	</linearGradient>
+	<clipPath id="wild_rush_tile">
+		<path d="M 17.7 340 C 17.7 279.2 66.9 230 127.7 230 L 549.4 230 C 610.2 230 659.4 279.2 659.4 340 L 659.4 801 C 659.4 861.8 610.2 911 549.4 911 L 127.7 911 C 66.9 911 17.7 861.8 17.7 801 Z"></path>
+	</clipPath>
+</defs>
+<g clip-path="url(#wild_rush_tile)">
+	<path fill="url(#wild_rush_panel)" d="M 17.7 340 C 17.7 279.2 66.9 230 127.7 230 L 549.4 230 C 610.2 230 659.4 279.2 659.4 340 L 659.4 801 C 659.4 861.8 610.2 911 549.4 911 L 127.7 911 C 66.9 911 17.7 861.8 17.7 801 Z"></path>
+	<path fill="url(#wild_rush_grove)" d="M 17.7 230 L 659.4 230 L 659.4 911 L 17.7 911 Z"></path>
+
+	<!-- The speed: the ground going past, faster nearer the print. -->
+	<path fill="url(#wild_rush_leaf)" fill-opacity="0.5" d="M 96 396 L 300 396 L 268 440 L 64 440 z"></path>
+	<path fill="url(#wild_rush_leaf)" fill-opacity="0.35" d="M 120 486 L 262 486 L 234 528 L 92 528 z"></path>
+	<path fill="url(#wild_rush_leaf)" fill-opacity="0.5" d="M 86 704 L 256 704 L 226 748 L 56 748 z"></path>
+	<path fill="url(#wild_rush_leaf)" fill-opacity="0.3" d="M 128 800 L 250 800 L 224 840 L 102 840 z"></path>
+
+	<!-- The print itself, leaning into the run. -->
+	<path fill="url(#wild_rush_leaf)" fill-opacity="0.25" d="M 418 494 C 512 494 578 560 578 646 C 578 740 500 810 406 810 C 328 810 274 758 274 686 C 274 578 336 494 418 494 z"></path>
+	<path fill="url(#wild_rush_leaf)" d="M 420 552 C 490 552 540 602 540 664 C 540 730 486 776 416 776 C 356 776 316 738 316 684 C 316 604 360 552 420 552 z"></path>
+	<path fill="url(#wild_rush_deep)" d="M 420 586 C 472 586 508 622 508 666 C 508 712 470 744 418 744 C 374 744 346 716 346 678 C 346 620 378 586 420 586 z"></path>
+	<path fill="rgb(186,236,152)" fill-opacity="0.4" d="M 400 606 C 436 606 462 626 472 656 C 442 636 412 622 380 616 z"></path>
+
+	<!-- Four toes, set on the arc of the stride. -->
+	<path fill="url(#wild_rush_leaf)" d="M 322 452 C 350 452 372 478 372 512 C 372 546 352 570 324 570 C 296 570 276 546 276 512 C 276 478 294 452 322 452 z"></path>
+	<path fill="url(#wild_rush_leaf)" d="M 424 402 C 452 402 474 428 474 462 C 474 496 454 520 426 520 C 398 520 378 496 378 462 C 378 428 396 402 424 402 z"></path>
+	<path fill="url(#wild_rush_leaf)" d="M 526 428 C 554 428 576 454 576 488 C 576 522 556 546 528 546 C 500 546 480 522 480 488 C 480 454 498 428 526 428 z"></path>
+	<path fill="url(#wild_rush_leaf)" d="M 596 528 C 620 528 638 552 638 582 C 638 612 620 634 596 634 C 572 634 554 612 554 582 C 554 552 572 528 596 528 z"></path>
+	<path fill="rgb(186,236,152)" fill-opacity="0.45" d="M 316 472 C 336 472 350 488 352 508 C 340 492 326 482 308 478 z"></path>
+	<path fill="rgb(186,236,152)" fill-opacity="0.45" d="M 418 422 C 438 422 452 438 454 458 C 442 442 428 432 410 428 z"></path>
+</g>
+</svg>

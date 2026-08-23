@@ -1,0 +1,72 @@
+<svg version="1.1" xmlns="http://www.w3.org/2000/svg" style="display: block;" viewBox="0 189.333 682.667 762.667" width="682.667" height="762.667" preserveAspectRatio="none">
+<defs>
+	<linearGradient id="swiftmend_panel" gradientUnits="userSpaceOnUse" x1="23.848" y1="789.072" x2="653.072" y2="323.171">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(24,28,35)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(11,13,17)"></stop>
+	</linearGradient>
+	<radialGradient id="swiftmend_grove" gradientUnits="userSpaceOnUse" cx="338" cy="560" r="340">
+		<stop offset="0" stop-opacity="0.42" stop-color="rgb(150,210,130)"></stop>
+		<stop offset="0.55" stop-opacity="0.14" stop-color="rgb(46,66,58)"></stop>
+		<stop offset="1" stop-opacity="0" stop-color="rgb(11,13,17)"></stop>
+	</radialGradient>
+	<linearGradient id="swiftmend_leaf" gradientUnits="userSpaceOnUse" x1="170" y1="300" x2="500" y2="840">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(186,236,152)"></stop>
+		<stop offset="0.45" stop-opacity="1" stop-color="rgb(96,180,96)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(30,84,52)"></stop>
+	</linearGradient>
+	<linearGradient id="swiftmend_deep" gradientUnits="userSpaceOnUse" x1="200" y1="340" x2="470" y2="830">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(52,102,74)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(20,40,32)"></stop>
+	</linearGradient>
+	<linearGradient id="swiftmend_bark" gradientUnits="userSpaceOnUse" x1="240" y1="380" x2="440" y2="860">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(146,114,78)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(60,44,32)"></stop>
+	</linearGradient>
+	<linearGradient id="swiftmend_moon" gradientUnits="userSpaceOnUse" x1="150" y1="330" x2="520" y2="830">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(226,234,255)"></stop>
+		<stop offset="0.5" stop-opacity="1" stop-color="rgb(146,164,232)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(64,76,132)"></stop>
+	</linearGradient>
+	<linearGradient id="swiftmend_astral" gradientUnits="userSpaceOnUse" x1="180" y1="320" x2="500" y2="840">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(226,196,255)"></stop>
+		<stop offset="0.5" stop-opacity="1" stop-color="rgb(158,104,230)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(72,40,122)"></stop>
+	</linearGradient>
+	<linearGradient id="swiftmend_sun" gradientUnits="userSpaceOnUse" x1="150" y1="330" x2="520" y2="830">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(255,236,168)"></stop>
+		<stop offset="0.5" stop-opacity="1" stop-color="rgb(240,182,62)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(148,90,22)"></stop>
+	</linearGradient>
+	<linearGradient id="swiftmend_bloom" gradientUnits="userSpaceOnUse" x1="200" y1="340" x2="470" y2="830">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(255,214,230)"></stop>
+		<stop offset="0.5" stop-opacity="1" stop-color="rgb(228,124,170)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(122,40,84)"></stop>
+	</linearGradient>
+	<clipPath id="swiftmend_tile">
+		<path d="M 17.7 340 C 17.7 279.2 66.9 230 127.7 230 L 549.4 230 C 610.2 230 659.4 279.2 659.4 340 L 659.4 801 C 659.4 861.8 610.2 911 549.4 911 L 127.7 911 C 66.9 911 17.7 861.8 17.7 801 Z"></path>
+	</clipPath>
+</defs>
+<g clip-path="url(#swiftmend_tile)">
+	<path fill="url(#swiftmend_panel)" d="M 17.7 340 C 17.7 279.2 66.9 230 127.7 230 L 549.4 230 C 610.2 230 659.4 279.2 659.4 340 L 659.4 801 C 659.4 861.8 610.2 911 549.4 911 L 127.7 911 C 66.9 911 17.7 861.8 17.7 801 Z"></path>
+	<path fill="url(#swiftmend_grove)" d="M 17.7 230 L 659.4 230 L 659.4 911 L 17.7 911 Z"></path>
+
+	<!-- The heal over time being eaten: a leaf coming apart at the stem. -->
+	<path fill="url(#swiftmend_leaf)" fill-opacity="0.25" d="M 246 852 C 156 812 116 730 138 632 C 236 664 278 748 246 852 z"></path>
+	<path fill="url(#swiftmend_leaf)" d="M 244 820 C 172 786 140 720 158 640 C 238 666 272 736 244 820 z"></path>
+	<path fill="url(#swiftmend_deep)" d="M 244 820 C 214 764 190 710 172 656 C 214 700 240 754 244 820 z"></path>
+	<path fill="url(#swiftmend_bark)" d="M 250 812 L 276 800 L 348 636 L 320 624 z"></path>
+	<path fill="rgb(214,250,190)" fill-opacity="0.5" d="M 300 668 C 318 682 330 700 334 720 C 320 702 308 686 292 674 z"></path>
+
+	<!-- The burst it is spent on, all at once and upward. -->
+	<path fill="url(#swiftmend_leaf)" fill-opacity="0.22" d="M 372 250 L 412 430 L 592 470 L 412 510 L 372 690 L 332 510 L 152 470 L 332 430 z"></path>
+	<path fill="url(#swiftmend_leaf)" d="M 372 300 L 400 438 L 538 470 L 400 502 L 372 640 L 344 502 L 206 470 L 344 438 z"></path>
+	<path fill="rgb(214,250,190)" d="M 372 366 L 388 452 L 472 470 L 388 488 L 372 574 L 356 488 L 272 470 L 356 452 z"></path>
+	<path fill="rgb(255,255,255)" fill-opacity="0.85" d="M 372 420 C 400 420 422 442 422 470 C 422 498 400 520 372 520 C 344 520 322 498 322 470 C 322 442 344 420 372 420 z"></path>
+
+	<!-- What is left of the leaf, thrown clear. -->
+	<path fill="url(#swiftmend_leaf)" fill-opacity="0.75" d="M 540 636 C 574 622 606 632 618 660 C 590 680 556 674 540 636 z"></path>
+	<path fill="url(#swiftmend_leaf)" fill-opacity="0.55" d="M 148 594 C 174 578 202 582 216 604 C 194 624 166 622 148 594 z"></path>
+	<path fill="rgb(214,250,190)" d="M 546 328 C 556 334 560 344 558 356 C 546 348 540 338 540 328 z"></path>
+	<path fill="rgb(214,250,190)" fill-opacity="0.7" d="M 174 328 C 184 334 188 344 186 356 C 174 348 168 338 168 328 z"></path>
+</g>
+</svg>
