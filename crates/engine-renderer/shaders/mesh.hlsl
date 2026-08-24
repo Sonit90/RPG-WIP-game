@@ -33,12 +33,11 @@ struct VertexInput
     float3 position : POSITION;
     float3 normal   : NORMAL;
     float2 uv       : TEXCOORD0;
-    // Present in the layout and deliberately unread: this milestone establishes the data
-    // path so the vertex format can be frozen before assets are authored against it.
-    // Consuming the tangent is normal mapping and consuming the colour is vertex tinting,
-    // and both are later milestones. Declaring them here is what proves the semantic names
-    // and formats line up with `mesh_vertex_elements()`.
+    // The tangent frame normal mapping needs: xyz the direction texture-space U runs, w the
+    // handedness of the bitangent. Generated or imported by engine-assets; see pbr.hlsli.
     float4 tangent  : TANGENT;
+    // In the layout and still unread. Vertex tinting is its own decision about how authored
+    // colour combines with a material, and this milestone is about the material.
     float4 color    : COLOR;
 };
 
@@ -47,6 +46,9 @@ struct PixelInput
     float4 position       : SV_POSITION;
     float3 world_position : TEXCOORD1;
     float3 world_normal   : NORMAL;
+    // The tangent in world space, handedness carried through untouched in w: it is a property
+    // of the UV layout, not of where the object stands.
+    float4 world_tangent  : TANGENT;
     float2 uv             : TEXCOORD0;
 };
 
@@ -61,6 +63,10 @@ PixelInput VSMain(VertexInput input)
     // Correct only for uniform scale. Non-uniform scale needs the inverse transpose, which
     // costs an extra matrix per object; nothing scales non-uniformly yet.
     output.world_normal = mul((float3x3)model, input.normal);
+    // The same transform the normal gets, for the same reason and with the same uniform-scale
+    // caveat. `apply_normal_map` re-orthogonalizes the pair after interpolation.
+    output.world_tangent =
+        float4(mul((float3x3)model, input.tangent.xyz), input.tangent.w);
     output.uv = input.uv;
     return output;
 }
@@ -71,6 +77,7 @@ float4 PSMain(PixelInput input) : SV_TARGET
         input.position,
         input.world_position,
         input.world_normal,
+        input.world_tangent,
         input.uv,
         instance_tint,
         instance_emissive,

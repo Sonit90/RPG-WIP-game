@@ -299,11 +299,25 @@ fn the_orm_fallback_is_the_multiplicative_identity() {
 }
 
 #[test]
-fn the_emissive_fallback_emits_nothing() {
+fn the_emissive_fallback_is_the_multiplicative_identity_and_a_material_still_emits_nothing() {
+    // White, not black — and the reason is worth stating, because black looks obviously
+    // right until it is wrong.
+    //
+    // glTF multiplies `emissiveTexture` by `emissiveFactor`, and Milestone 3's shading does
+    // the same. A black fallback would therefore mean a material with an emissive *colour*
+    // and no emissive *map* emits nothing at all, which silently deletes the emissive
+    // constant for every material that has ever set one. White passes the factor through, and
+    // "no emission" comes from the factor being zero — which is glTF's default and this
+    // renderer's, so an asset with no emissive still emits nothing.
     assert_eq!(
         MaterialTextureSlot::Emissive.fallback_texel(),
-        [0, 0, 0, 255],
-        "a material with no emissive map must not glow"
+        [255, 255, 255, 255],
+        "the map scales the emissive factor, so the identity is white"
+    );
+    assert_eq!(
+        MaterialDesc::default().emissive,
+        engine_core::math::Vec3::ZERO,
+        "which only emits nothing because the default factor is zero"
     );
     assert!(
         MaterialTextureSlot::Emissive.is_srgb(),

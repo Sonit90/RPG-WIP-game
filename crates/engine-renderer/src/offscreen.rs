@@ -67,7 +67,10 @@ struct FallbackMaps {
     heap: crate::descriptor::GpuDescriptorHeap,
     /// Held, not read: the descriptors point into these, so dropping them would leave
     /// shader-visible SRVs addressing released memory.
-    #[allow(dead_code, reason = "keeps the textures the descriptors point at alive")]
+    #[allow(
+        dead_code,
+        reason = "keeps the textures the descriptors point at alive"
+    )]
     textures: Vec<crate::resource::GpuTexture>,
     table: windows::Win32::Graphics::Direct3D12::D3D12_GPU_DESCRIPTOR_HANDLE,
 }
@@ -121,7 +124,13 @@ fn fallback_textures(
     let mut textures = Vec::with_capacity(MaterialTextureSlot::ALL.len());
     let mut uploader = StagingUploader::new(context)?;
     for slot in MaterialTextureSlot::ALL {
-        let texture = GpuTexture::new(context, 1, 1, slot_format(slot), D3D12_RESOURCE_STATE_COPY_DEST)?;
+        let texture = GpuTexture::new(
+            context,
+            1,
+            1,
+            slot_format(slot),
+            D3D12_RESOURCE_STATE_COPY_DEST,
+        )?;
         uploader.queue_texture(
             context,
             &texture,
@@ -506,22 +515,80 @@ pub fn render_scene(
     })
 }
 
+/// One flat surface, its material texture set, and what is shining on it.
+///
+/// The parameters of [`render_material_surface`], as a struct because six positional
+/// arguments at a call site say nothing about which is which.
+#[derive(Debug, Clone, Copy)]
+pub struct MaterialSurface {
+    /// One straight-RGBA8 texel per slot, in [`MaterialTextureSlot::ALL`] order: base
+    /// colour, normal, ORM, emissive. Each becomes its own 1x1 texture with its own SRV in
+    /// one contiguous four-slot range, exactly as `Renderer::create_material_with_textures`
+    /// builds one.
+    pub texels: [[u8; 4]; MATERIAL_TEXTURE_COUNT as usize],
+    /// The constants: base colour factor, roughness, metallic, emissive factor. Each texel
+    /// above *scales* the matching constant, which is glTF's convention and the shader's.
+    pub material: MaterialDesc,
+    /// The sun and the ambient term the surface is shaded under.
+    pub lighting: Lighting,
+    /// The handedness stored in the quad's tangent `w`.
+    ///
+    /// `+1` makes the bitangent `cross(N, T)`, `-1` reverses it. It is a parameter because
+    /// the sign is the half of a tangent that is invisible until a normal map perturbs along
+    /// the bitangent, and a test that could not flip it could not prove the sign is read.
+    pub tangent_handedness: f32,
+    /// Which debug view the shader returns, or 0 for the shaded result.
+    ///
+    /// 4 to 7 are the raw material texels — what the descriptor at that register resolved
+    /// to, with no lighting in the way. 8 to 11 are what the shading made of them: the
+    /// normal after the TBN transform, then roughness, metallic and occlusion.
+    pub debug_mode: u32,
+}
+
+impl MaterialSurface {
+    /// A white-lit surface with the given maps and default constants.
+    #[must_use]
+    pub fn new(texels: [[u8; 4]; MATERIAL_TEXTURE_COUNT as usize], debug_mode: u32) -> Self {
+        Self {
+            texels,
+            material: MaterialDesc::default(),
+            lighting: Lighting::default(),
+            tangent_handedness: 1.0,
+            debug_mode,
+        }
+    }
+}
+
 /// Renders one surface with a caller-supplied material texture set and reads it back.
 ///
-/// What proves the four-descriptor material table reaches the GPU intact. `texels` is one
-/// straight-RGBA8 texel per slot, in [`MaterialTextureSlot::ALL`] order — base colour,
-/// normal, ORM, emissive — and each becomes its own 1x1 texture with its own SRV in one
-/// contiguous four-slot range, exactly as `Renderer::create_material_with_textures` builds
-/// one.
+/// The probe both halves of the material pipeline are tested through. With a debug mode in
+/// 4..=7 it answers "did this descriptor reach the GPU", which is what proves the
+/// four-descriptor table is intact; with mode 0 it answers "what did the lighting model make
+/// of it", which is what proves the maps are consumed — the same quad, the same bindings, so
+/// a disagreement between the two is a shading bug and not a binding one.
 ///
-/// `debug_mode` selects which slot the shader returns raw: 4 base colour, 5 normal, 6 ORM,
-/// 7 emissive. The captured image is therefore the texel that slot's descriptor actually
-/// resolved to, with no lighting in the way.
+/// The quad faces the camera at the origin with a known tangent frame: `T` along +X, `N`
+/// along +Z, and the bitangent `cross(N, T) * w`. A test that perturbs the normal map along
+/// one tangent axis therefore knows exactly which way the surface should tilt.
 ///
-/// This is a **binding** probe, not a shading test. Milestone 2 does not consume the normal
-/// or ORM maps in the lighting model, so the alternative to reading them here would be to
-/// prove the descriptors are right by writing the lighting model that reads them — which is
-/// a later milestone, and would make this evidence about that instead.
+/// # Errors
+///
+/// Returns [`RendererError`] if any D3D12 call fails.
+pub fn render_material_surface(surface: MaterialSurface) -> Result<CapturedImage, RendererError> {
+    render_material_quad(SURFACE_PROBE_SIZE, SURFACE_PROBE_SIZE, surface)
+}
+
+/// The square the material probe renders into.
+///
+/// Small deliberately: every pixel of it is the same flat surface, so a larger image would
+/// take longer to read back and say the same thing.
+pub const SURFACE_PROBE_SIZE: u32 = 64;
+
+/// Renders one surface with a caller-supplied material texture set and reads it back.
+///
+/// The original four-texel binding probe, kept because a dozen Milestone 2 tests call it:
+/// [`render_material_surface`] with default constants, default lighting and a right-handed
+/// tangent frame.
 ///
 /// # Errors
 ///
@@ -532,36 +599,44 @@ pub fn render_material_maps(
     texels: [[u8; 4]; MATERIAL_TEXTURE_COUNT as usize],
     debug_mode: u32,
 ) -> Result<CapturedImage, RendererError> {
+    render_material_quad(width, height, MaterialSurface::new(texels, debug_mode))
+}
+
+/// The body both entry points share.
+fn render_material_quad(
+    width: u32,
+    height: u32,
+    surface: MaterialSurface,
+) -> Result<CapturedImage, RendererError> {
+    let MaterialSurface {
+        texels,
+        material: material_desc,
+        lighting,
+        tangent_handedness,
+        debug_mode,
+    } = surface;
     use crate::descriptor::GpuDescriptorHeap;
     use crate::resource::GpuTexture;
-    use engine_core::math::Vec3;
     use crate::upload::StagingUploader;
+    use engine_core::math::Vec3;
     use windows::Win32::Graphics::Direct3D12::D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
 
-    // A quad filling the view, facing the camera. Its normal and UVs are what the shader
-    // samples with; the geometry itself is not what is under test.
+    // A quad filling the view, facing the camera, with an explicit tangent frame: T along
+    // +X, N along +Z, so the bitangent is +Y for a handedness of +1. Explicit rather than
+    // generated because the whole point of the normal-mapping tests is to know which way a
+    // perturbation should tilt the surface, and a generated frame would make the expected
+    // direction a property of the generator.
+    let tangent = engine_core::math::Vec4::new(1.0, 0.0, 0.0, tangent_handedness);
+    let corner = |position: Vec3, u: f32, v: f32| {
+        crate::mesh::MeshVertex::new(position, Vec3::Z, engine_core::math::Vec2::new(u, v))
+            .with_tangent(tangent)
+    };
     let quad = MeshData::new(
         vec![
-            crate::mesh::MeshVertex::new(
-                Vec3::new(-1.0, -1.0, 0.0),
-                Vec3::Z,
-                engine_core::math::Vec2::new(0.0, 1.0),
-            ),
-            crate::mesh::MeshVertex::new(
-                Vec3::new(1.0, -1.0, 0.0),
-                Vec3::Z,
-                engine_core::math::Vec2::new(1.0, 1.0),
-            ),
-            crate::mesh::MeshVertex::new(
-                Vec3::new(1.0, 1.0, 0.0),
-                Vec3::Z,
-                engine_core::math::Vec2::new(1.0, 0.0),
-            ),
-            crate::mesh::MeshVertex::new(
-                Vec3::new(-1.0, 1.0, 0.0),
-                Vec3::Z,
-                engine_core::math::Vec2::new(0.0, 0.0),
-            ),
+            corner(Vec3::new(-1.0, -1.0, 0.0), 0.0, 1.0),
+            corner(Vec3::new(1.0, -1.0, 0.0), 1.0, 1.0),
+            corner(Vec3::new(1.0, 1.0, 0.0), 1.0, 0.0),
+            corner(Vec3::new(-1.0, 1.0, 0.0), 0.0, 0.0),
         ],
         vec![0, 1, 2, 0, 2, 3],
     )?;
@@ -584,7 +659,7 @@ pub fn render_material_maps(
             ring.begin_frame(0);
 
             let mesh = GpuMesh::upload(context, &quad)?;
-            let material = Material::new(context, MaterialDesc::default())?;
+            let material = Material::new(context, material_desc)?;
 
             // One 1x1 texture per slot, with that slot's colour space, and one contiguous
             // four-descriptor range holding their views in slot order. The same shape the
@@ -616,11 +691,8 @@ pub fn render_material_maps(
                 reason: "the material map range is not shader visible".to_owned(),
             })?;
 
-            let mut frame = FrameConstants::new(
-                camera.view_projection(),
-                camera.position(),
-                Lighting::default(),
-            );
+            let mut frame =
+                FrameConstants::new(camera.view_projection(), camera.position(), lighting);
             frame.set_camera(&camera);
             frame.set_viewport(width, height);
             frame.set_debug_mode(debug_mode);
@@ -659,7 +731,8 @@ pub fn render_material_maps(
                 list.DrawIndexedInstanced(mesh.index_count(), 1, 0, 0, 0);
             }
 
-            Ok(Box::new((pipeline, ring, mesh, material, textures, heap)) as Box<dyn std::any::Any>)
+            Ok(Box::new((pipeline, ring, mesh, material, textures, heap))
+                as Box<dyn std::any::Any>)
         },
     )
 }
@@ -679,7 +752,6 @@ pub struct ShadowSceneObject<'a> {
     /// Whether it casts, receives, or neither.
     pub shadow: engine_render_data::ShadowCasting,
 }
-
 
 /// One frame's worth of zeroed cluster masks, for a path that has no local lights.
 ///
@@ -780,7 +852,12 @@ pub fn render_scene_shadowed_debug(
             let mut descriptors = crate::descriptor::GpuDescriptorHeap::new(context, 16, 0, 1)?;
             let white_texture = fallback_textures(context)?;
             let white_handle = descriptors.allocate_persistent_range(MATERIAL_TEXTURE_COUNT)?;
-            create_fallback_views(context, &white_texture, white_handle, descriptors.increment());
+            create_fallback_views(
+                context,
+                &white_texture,
+                white_handle,
+                descriptors.increment(),
+            );
 
             let mut shadow = crate::shadow::ShadowRenderer::new(
                 context,

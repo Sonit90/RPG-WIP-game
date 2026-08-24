@@ -139,7 +139,7 @@ const COLLISION_DEBUG_KEY: KeyCode = KeyCode::F3;
 /// something a slider fires per frame.
 const SHADOW_QUALITY_KEY: KeyCode = KeyCode::F6;
 
-/// Function key that cycles the shadow debug view: off, cascade tint, shadow factor.
+/// Function key that cycles the debug views: the shadow ones, then the material ones.
 ///
 /// §18 asks for a visualization that needs no change to game content. This is it: the mesh
 /// shader already has every number the view needs, so a debug mode is a constant in the
@@ -970,25 +970,36 @@ impl App {
             }
             SHADOW_QUALITY_KEY => self.cycle_shadow_quality(),
             SHADOW_DEBUG_KEY => {
-                // Five stops, cycled. Four of them are shader views the renderer owns; the
-                // fifth draws the caster bounds, which is presentation's geometry rather
-                // than the renderer's, so it is tracked as "mode 4 means renderer mode 0
-                // with the bounds on" instead of being a fifth branch in the pixel shader.
+                // Nine stops, cycled. Stops 1 to 3 are shadow views the renderer's pixel
+                // shader owns; stop 4 draws the caster bounds, which is presentation's
+                // geometry rather than the renderer's, so it is tracked as "mode 4 means
+                // renderer mode 0 with the bounds on" instead of being a branch in the pixel
+                // shader. Stops 5 to 8 are the material views, which the shader numbers 8 to
+                // 11 - what the lighting model made of the material set at this pixel, which
+                // is the only way to look at a normal map or a roughness map on real content
+                // rather than on a test quad.
                 let previous = self.shadow_debug_view;
-                let mode = (previous + 1) % 5;
+                let mode = (previous + 1) % 9;
                 self.shadow_debug_view = mode;
-                self.renderer
-                    .set_shadow_debug_mode(if mode == 4 { 0 } else { mode });
+                self.renderer.set_shadow_debug_mode(match mode {
+                    4 => 0,
+                    5..=8 => mode + 3,
+                    other => other,
+                });
                 #[cfg(feature = "debug-overlay")]
                 self.shadow_debug
                     .set_enabled(self.extractor.render_world_mut(), mode == 4);
                 log::info!(
-                    "shadow debug view: {}",
+                    "debug view: {}",
                     match mode {
                         1 => "cascade tint",
                         2 => "shadow factor",
                         3 => "the atlas, bottom left",
                         4 => "caster bounds",
+                        5 => "shading normal, after the normal map",
+                        6 => "roughness",
+                        7 => "metallic",
+                        8 => "ambient occlusion",
                         _ => "off",
                     }
                 );
@@ -3104,7 +3115,7 @@ impl App {
         // The shadow readout rides with the shadow debug view, on the same key: F7 tints the
         // world by cascade and this says in numbers what that view is showing. Off while the
         // view is off, so the ordinary overlay stays the frame rate and nothing else.
-        if self.shadow_debug_view > 0 {
+        if (1..=4).contains(&self.shadow_debug_view) {
             self.append_shadow_lines();
         }
         if self.collision_debug.enabled() {
@@ -4097,7 +4108,7 @@ fn log_controls(args: &Args, demo: Option<&DemoScene>) {
             log::info!("                 into the bay: local shadows reach 40 m, so from here");
             log::info!("                 none of them are granted one");
             log::info!(
-                "  F6 cycles the quality, F7 cycles the shadow debug views: cascade tint,                  shadow factor, the atlas, caster bounds"
+                "  F6 cycles the quality, F7 cycles the debug views: cascade tint, shadow                  factor, the atlas, caster bounds, then the material - normal,                  roughness, metallic, occlusion"
             );
         }
         None => log::info!("training arena: 1 dummy plus a group of {}", args.dummies),
@@ -4147,7 +4158,7 @@ fn log_controls(args: &Args, demo: Option<&DemoScene>) {
     }
     log::info!("  F6               shadow quality: off, low, medium, high, ultra");
     log::info!(
-        "  F7               shadow debug view: cascade tint, shadow factor, the atlas,          caster bounds"
+        "  F7               debug views: the shadows, then the material - shading normal,          roughness, metallic, occlusion"
     );
     log::info!("  F8               audio on/off");
     log::info!("  F9               wireframe on/off");

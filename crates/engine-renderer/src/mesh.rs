@@ -59,13 +59,14 @@ pub struct MeshVertex {
     pub uv: Vec2,
     /// Tangent direction in XYZ, handedness in W.
     ///
-    /// Uploaded and described to the input assembler; **not read by any shader yet**. The
-    /// data path exists so the vertex format can be frozen before assets are authored
-    /// against it; consuming it is normal mapping, which is a later milestone.
+    /// Read by every mesh pixel shader: it is the frame a tangent-space normal map is applied
+    /// in, and W says which way the bitangent runs. See `shaders/pbr.hlsli`.
     pub tangent: Vec4,
     /// Per-vertex colour, RGBA, read by the GPU as `R8G8B8A8_UNORM`.
     ///
-    /// Uploaded and described; not read by any shader yet, for the same reason.
+    /// Uploaded and described to the input assembler; not read by any shader yet. How
+    /// authored vertex colour combines with a material is its own decision, and nothing in
+    /// this engine authors it yet.
     pub color: [u8; 4],
 }
 

@@ -95,6 +95,10 @@ cbuffer Frame : register(b0)
 // The material set owns t0..t3, so every texture below starts at t4.
 #include "material.hlsli"
 
+// The BRDF the lighting below evaluates. Included here rather than by each pipeline so the
+// three mesh shaders cannot end up with different lobes.
+#include "pbr.hlsli"
+
 // The one shadow atlas: every cascade, every spot light and every point-light face.
 // Sampled through a *comparison* sampler, so the hardware performs the depth test and the
 // bilinear filter together — which is what makes a 3x3 kernel nine taps rather than
@@ -663,12 +667,12 @@ uint lights_at(float2 pixel, float view_depth)
 // on every pixel of the screen — see docs/shadows.md and light_cluster.rs.
 float3 local_light_contribution(
     float3 world_position,
-    float3 normal,
-    float3 albedo,
+    Surface surface,
     float receives_shadow,
     float2 pixel,
     float view_distance)
 {
+    float3 normal = surface.normal;
     float3 total = float3(0.0, 0.0, 0.0);
     uint mask = lights_at(pixel, view_distance);
     [loop]
@@ -685,8 +689,11 @@ float3 local_light_contribution(
             continue;
         }
         float3 direction = to_light / max(distance_to_light, 1e-4);
-        float lambert = saturate(dot(normal, direction));
-        if (lambert <= 0.0)
+        // The BRDF rather than a Lambert term, and evaluated before the shadow lookup for
+        // the same reason the old cosine was: a light behind the surface contributes
+        // nothing, and a fragment that contributes nothing must not pay for a shadow sample.
+        float3 shaded = shade_light(surface, direction);
+        if (all(shaded <= 0.0))
         {
             continue;
         }
@@ -718,8 +725,8 @@ float3 local_light_contribution(
             shadow = local_light_shadow(light, world_position, normal, pixel);
         }
 
-        total += albedo * light_color_intensity[light].rgb
-            * (light_color_intensity[light].w * lambert * attenuation * shadow);
+        total += shaded * light_color_intensity[light].rgb
+            * (light_color_intensity[light].w * attenuation * shadow);
     }
     return total;
 }
@@ -814,28 +821,39 @@ bool shadow_atlas_preview(float2 pixel, out float3 color)
 // The one lighting function every mesh pipeline calls.
 //
 // ```text
-// world position + normal
+// base colour x factor x tint --> diffuse albedo + F0      (the metallic split)
+// normal map  x TBN           --> shading normal
+// ORM                         --> occlusion, roughness, metallic
 //        |
 //   cascade -> light space -> PCF -> cascade blend -> shadow factor
 //        |                                              |
 //        |                                       contact shadow
 //        v                                              v
-//   directional light  x  shadow factor   +  ambient  +  local lights  +  emissive
+//   sun x BRDF x shadow  +  ambient x occlusion  +  local lights x BRDF  +  emissive
 // ```
+//
+// The BRDF is in pbr.hlsli: GGX, height-correlated Smith, Schlick, in the metallic-roughness
+// workflow glTF describes. The sun and every local light evaluate the same `shade_light`
+// against the same `Surface`, so a highlight on a character under a torch and one under the
+// sun are the same model rather than two.
 //
 // Ambient is added *outside* the shadow factor, deliberately: the sun being blocked does not
 // stop the sky from lighting a surface, and multiplying the ambient term by the shadow is
-// what makes a shadowed area look like a hole in the world.
+// what makes a shadowed area look like a hole in the world. Occlusion *is* applied to it,
+// which is what the ORM map's red channel is for - a crevice is dark because the sky cannot
+// reach it, which is a statement about ambient light and not about the sun.
 float4 shade_surface(
     float4 screen_position,
     float3 world_position,
     float3 world_normal,
+    float4 world_tangent,
     float2 uv,
     float4 tint,
     float emissive_scale,
     float receives_shadow)
 {
-    float4 albedo = base_color * base_color_map.Sample(base_color_sampler, uv);
+    MaterialSample material = sample_material(uv);
+    float4 albedo = material.base_color;
     // Alpha-tested materials: foliage, fences, grates. `alpha_cutoff` is zero for an opaque
     // material, so this is one comparison that is never taken for most of the scene. The
     // same test runs in the shadow pass, which is what makes a leaf's shadow leaf-shaped.
@@ -844,16 +862,30 @@ float4 shade_surface(
         discard;
     }
 
-    float3 normal = normalize(world_normal);
+    // The shading normal, out of the tangent frame the vertex carries. A material with no
+    // normal map samples the flat fallback, and this is the interpolated normal again.
+    float3 normal = apply_normal_map(world_normal, world_tangent, material.normal_ts);
     float3 to_light = normalize(-light_direction);
+    // The geometric normal is kept for the two things that want the surface itself rather
+    // than what the map made of it: the early-out below, and the shadow bias, which offsets
+    // along the surface and would push itself into a crevice if it followed a normal map.
+    float3 geometric_normal = normalize(world_normal);
     float lambert = saturate(dot(normal, to_light));
     float3 tinted = albedo.rgb * tint.rgb;
     float view_distance = view_depth_of(world_position);
 
+    float3 view = camera_position - world_position;
+    // A fragment exactly at the camera has no view direction. It cannot be visible either,
+    // but the normalize would be a NaN that spreads through the whole pixel.
+    view = dot(view, view) > 1e-12 ? normalize(view) : normal;
+    Surface surface = make_surface(
+        normal, view, tinted, material.roughness, material.metallic, material.occlusion);
+
     float shadow = 1.0;
     if (receives_shadow > 0.5 && lambert > 0.0)
     {
-        shadow = directional_shadow(world_position, normal, view_distance, screen_position.xy);
+        shadow = directional_shadow(
+            world_position, geometric_normal, view_distance, screen_position.xy);
         if (shadow > 0.0)
         {
             shadow = min(shadow, contact_shadow_at(screen_position.xy, view_distance));
@@ -875,27 +907,53 @@ float4 shade_surface(
         // the biases are actually producing, with albedo and lighting out of the way.
         return float4(shadow.xxx, 1.0);
     }
-    if (debug_mode >= 4u)
+    if (debug_mode >= 4u && debug_mode <= 7u)
     {
-        // The material maps, raw: 4 base colour, 5 normal, 6 ORM, 7 emissive. What proves
-        // the descriptor range really carries four distinct resources in the frozen order,
-        // at a milestone where the lighting model reads only the first of them. No shading
-        // is applied, deliberately — this is a resource-binding probe, not a preview of a
-        // later lighting model.
+        // The material maps, raw: 4 base colour, 5 normal, 6 ORM, 7 emissive. What proves the
+        // descriptor range really carries four distinct resources in the frozen order. No
+        // shading is applied, deliberately - this is a resource-binding probe, and it stays
+        // one now that the lighting model consumes all four.
         if (debug_mode == 4u)
         {
             return float4(albedo.rgb, 1.0);
         }
         return float4(material_map_preview(debug_mode, uv), 1.0);
     }
+    if (debug_mode >= 8u)
+    {
+        // What the *shading* made of those maps, which is the other half of the question and
+        // the one a raw texel view cannot answer: 8 the shading normal after the TBN
+        // transform, 9 roughness, 10 metallic, 11 occlusion. A normal map whose handedness is
+        // inverted looks perfectly correct at 5 and visibly wrong at 8.
+        if (debug_mode == 8u)
+        {
+            return float4(normal * 0.5 + 0.5, 1.0);
+        }
+        if (debug_mode == 9u)
+        {
+            return float4(surface.roughness.xxx, 1.0);
+        }
+        if (debug_mode == 10u)
+        {
+            return float4(material.metallic.xxx, 1.0);
+        }
+        return float4(surface.occlusion.xxx, 1.0);
+    }
 
-    float3 diffuse = tinted * light_color * (light_intensity * lambert * shadow);
-    float3 ambient = tinted * ambient_color * ambient_intensity;
+    float3 direct = shade_light(surface, to_light) * light_color * (light_intensity * shadow);
+    // Occlusion belongs to the ambient term and nothing else. Applying it to the sun as well
+    // is the common shortcut, and what it produces is a surface that goes dark when a light
+    // moves onto it: the map says how much *sky* reaches the point, and the sun is not sky.
+    float3 ambient =
+        surface.diffuse_color * ambient_color * (ambient_intensity * surface.occlusion);
     float3 local = local_light_contribution(
-        world_position, normal, tinted, receives_shadow, screen_position.xy, view_distance);
-    float3 glow = emissive + tinted * emissive_scale;
+        world_position, surface, receives_shadow, screen_position.xy, view_distance);
+    // The material's emissive factor times its emissive map, plus the per-object emissive
+    // pulse - which tints with the object and is a gameplay effect (a dummy flashing white),
+    // not a property of the surface.
+    float3 glow = material.emissive + tinted * emissive_scale;
 
-    float3 color = diffuse + ambient + local + glow;
+    float3 color = direct + ambient + local + glow;
     if (debug_mode == 1u)
     {
         color *= cascade_debug_tint(view_distance);

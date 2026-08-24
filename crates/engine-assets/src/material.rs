@@ -39,14 +39,14 @@ pub struct MaterialAsset {
     /// read it, because a normal map without tangents on the vertex is a wrong answer
     /// rather than a cheap one.
     pub normal_texture: Option<usize>,
-    /// Packed occlusion (R), roughness (G), metallic (B), the glTF convention. Carried and
-    /// validated, not yet sampled.
+    /// Packed occlusion (R), roughness (G), metallic (B), the glTF convention.
+    ///
+    /// Each channel *scales* the matching field above rather than replacing it, which is what
+    /// glTF specifies and what lets the shared white fallback stand in for an absent map.
     pub orm_texture: Option<usize>,
     /// Emissive colour, sampled in sRGB and multiplied with [`Self::emissive`].
     ///
-    /// glTF's `emissiveTexture`. Carried and validated; the Phase 5 shader binds it and does
-    /// not yet read it, for the same reason as the normal map — the lighting model that
-    /// consumes it is a later milestone, and this one exists to freeze the binding.
+    /// glTF's `emissiveTexture`, and multiplied with the factor exactly as glTF says.
     pub emissive_texture: Option<usize>,
     /// Below this alpha a fragment is discarded, in the camera pass and the shadow pass
     /// alike. Zero is an opaque material and performs no test.

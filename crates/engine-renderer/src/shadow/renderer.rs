@@ -44,9 +44,9 @@ use crate::scene::{
 use crate::upload::{CONSTANT_BUFFER_ALIGNMENT, UploadRing};
 
 use super::atlas::AtlasRect;
-use super::contact::{ContactShadowPipeline, ContactShadowTarget};
 use super::cascade::{CascadeView, build_cascades};
 use super::caster::{ShadowCasterCollector, skinned_caster_visible};
+use super::contact::{ContactShadowPipeline, ContactShadowTarget};
 use super::local::{LocalShadowView, SelectedLight, select_shadow_lights};
 use super::pipeline::{ShadowGeometry, ShadowPipelineSet, ShadowPipelines, ShadowSurface};
 use super::resources::{SHADOW_CLEAR, ShadowResources};
@@ -110,10 +110,20 @@ pub struct ShadowScene<'a> {
 
 /// The highest debug view `shade_surface` knows.
 ///
-/// 7 is the emissive map: the last of the four material texture views, which start at 4.
+/// ```text
+/// 0  none          4  base colour map     8  shading normal, after the TBN transform
+/// 1  cascade tint  5  normal map          9  roughness, after the ORM map scales it
+/// 2  shadow factor 6  ORM map            10  metallic, likewise
+/// 3  the atlas     7  emissive map       11  occlusion
+/// ```
+///
+/// 4 to 7 are the raw texels a descriptor resolved to; 8 to 11 are what the shading made of
+/// them, which is the half a texel view cannot answer — a normal map bound correctly and
+/// applied with the wrong handedness looks right at 5 and wrong at 8.
+///
 /// The shader's `if` chain and this number are the same fact stated twice, so raising one
 /// without the other silently disables the new view.
-pub const MAX_DEBUG_MODE: u32 = 7;
+pub const MAX_DEBUG_MODE: u32 = 11;
 
 /// Owns the shadow atlas, decides what goes in it, and records the passes that fill it.
 pub struct ShadowRenderer {
@@ -255,14 +265,13 @@ impl ShadowRenderer {
 
     /// Selects the shader's shadow debug view.
     ///
-    /// 0 none, 1 cascade tint, 2 shadow factor, 3 the atlas drawn in the corner, and
-    /// 4 to 7 the material texture set raw — base colour, normal, ORM, emissive, in the
-    /// order [`crate::material::MaterialTextureSlot`] freezes. The material views exist so
-    /// a test can prove all four descriptors reach the GPU at a milestone where the
-    /// lighting model reads only the first. Clamped
-    /// rather than rejected: the shader's `if` chain falls through to "no debug view" for
-    /// anything it does not know, and clamping here keeps the two ends agreeing on how many
-    /// views there are.
+    /// 0 none, 1 cascade tint, 2 shadow factor, 3 the atlas drawn in the corner, 4 to 7 the
+    /// material texture set raw — base colour, normal, ORM, emissive, in the order
+    /// [`crate::material::MaterialTextureSlot`] freezes — and 8 to 11 what the shading made
+    /// of them: the normal after the TBN transform, roughness, metallic, occlusion. See
+    /// [`MAX_DEBUG_MODE`]. Clamped rather than rejected: the shader's `if` chain falls
+    /// through to "no debug view" for anything it does not know, and clamping here keeps the
+    /// two ends agreeing on how many views there are.
     pub fn set_debug_mode(&mut self, mode: u32) {
         self.debug_mode = mode.min(MAX_DEBUG_MODE);
     }
@@ -315,7 +324,9 @@ impl ShadowRenderer {
     /// The contact-shadow target's size, or `None` when the pass did not run this frame.
     #[must_use]
     pub fn contact_target_size(&self) -> Option<(u32, u32)> {
-        self.contact.is_live().then(|| self.contact.size_in_texels())
+        self.contact
+            .is_live()
+            .then(|| self.contact.size_in_texels())
     }
 
     /// The scene-depth copy's descriptor table.

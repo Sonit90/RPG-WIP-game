@@ -169,9 +169,10 @@ pub const MATERIAL_TEXTURE_COUNT: u32 = 4;
 pub enum MaterialTextureSlot {
     /// `t0`. Multiplied with [`MaterialDesc::base_color`].
     BaseColor = 0,
-    /// `t1`. Tangent-space normals. Bound, and not yet read — see Milestone 8.
+    /// `t1`. Tangent-space normals, applied through the vertex tangent frame.
     Normal = 1,
-    /// `t2`. Occlusion in R, roughness in G, metallic in B.
+    /// `t2`. Occlusion in R, roughness in G, metallic in B. Each channel scales the matching
+    /// [`MaterialDesc`] field.
     Orm = 2,
     /// `t3`. Multiplied with [`MaterialDesc::emissive`].
     Emissive = 3,
@@ -179,12 +180,8 @@ pub enum MaterialTextureSlot {
 
 impl MaterialTextureSlot {
     /// Every slot, in descriptor order. Iterating this **is** the ABI.
-    pub const ALL: [Self; MATERIAL_TEXTURE_COUNT as usize] = [
-        Self::BaseColor,
-        Self::Normal,
-        Self::Orm,
-        Self::Emissive,
-    ];
+    pub const ALL: [Self; MATERIAL_TEXTURE_COUNT as usize] =
+        [Self::BaseColor, Self::Normal, Self::Orm, Self::Emissive];
 
     /// The shader register — and the offset into the material's descriptor range.
     #[must_use]
@@ -205,7 +202,11 @@ impl MaterialTextureSlot {
     ///   [`MaterialDesc::metallic`] through untouched and an occlusion of 1 is "not
     ///   occluded". Baking a default roughness into the texel instead would apply that
     ///   default a second time for every material that overrides it.
-    /// * emissive `(0, 0, 0, 255)` — emits nothing.
+    /// * emissive `(255, 255, 255, 255)` — glTF's convention again: the map *scales*
+    ///   [`MaterialDesc::emissive`], so white passes the factor through and a material that
+    ///   emits nothing does so because its factor is zero, which is the glTF default. A black
+    ///   fallback would look equally correct until the first material that sets an emissive
+    ///   colour and has no map, which would then emit nothing at all.
     ///
     /// Here rather than in the renderer so the window path and the offscreen path cannot
     /// disagree about what a missing map looks like, which is exactly the sort of difference
@@ -213,9 +214,8 @@ impl MaterialTextureSlot {
     #[must_use]
     pub fn fallback_texel(self) -> [u8; 4] {
         match self {
-            Self::BaseColor | Self::Orm => [255, 255, 255, 255],
+            Self::BaseColor | Self::Orm | Self::Emissive => [255, 255, 255, 255],
             Self::Normal => [128, 128, 255, 255],
-            Self::Emissive => [0, 0, 0, 255],
         }
     }
 

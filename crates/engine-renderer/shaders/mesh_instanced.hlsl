@@ -20,12 +20,11 @@ struct VertexInput
     float3 position : POSITION;
     float3 normal   : NORMAL;
     float2 uv       : TEXCOORD0;
-    // Present in the layout and deliberately unread: this milestone establishes the data
-    // path so the vertex format can be frozen before assets are authored against it.
-    // Consuming the tangent is normal mapping and consuming the colour is vertex tinting,
-    // and both are later milestones. Declaring them here is what proves the semantic names
-    // and formats line up with `mesh_vertex_elements()`.
+    // The tangent frame normal mapping needs: xyz the direction texture-space U runs, w the
+    // handedness of the bitangent. Generated or imported by engine-assets; see pbr.hlsli.
     float4 tangent  : TANGENT;
+    // In the layout and still unread. Vertex tinting is its own decision about how authored
+    // colour combines with a material, and this milestone is about the material.
     float4 color    : COLOR;
 
     // Per-instance, input slot 1. Four rows of the local-to-world matrix.
@@ -55,6 +54,9 @@ struct PixelInput
     float4 position       : SV_POSITION;
     float3 world_position : TEXCOORD1;
     float3 world_normal   : NORMAL;
+    // The tangent in world space, handedness carried through untouched in w: it is a property
+    // of the UV layout, not of where the instance stands.
+    float4 world_tangent  : TANGENT;
     float2 uv             : TEXCOORD0;
     float4 tint           : COLOR0;
     float2 emissive_scale : COLOR1;
@@ -81,6 +83,8 @@ PixelInput VSMain(VertexInput input)
     // Correct only for uniform scale, exactly as in mesh.hlsl. Vector-first for the same
     // reason, on the upper-left 3x3.
     output.world_normal = mul(input.normal, (float3x3)model);
+    // Vector-first against the transposed instance matrix, exactly as the normal above.
+    output.world_tangent = float4(mul(input.tangent.xyz, (float3x3)model), input.tangent.w);
     output.uv = input.uv;
     output.tint = input.tint;
     output.emissive_scale = input.emissive_scale;
@@ -93,6 +97,7 @@ float4 PSMain(PixelInput input) : SV_TARGET
         input.position,
         input.world_position,
         input.world_normal,
+        input.world_tangent,
         input.uv,
         input.tint,
         input.emissive_scale.x,

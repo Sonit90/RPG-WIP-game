@@ -149,7 +149,7 @@ const SHADERS: &[ShaderEntry] = &[
 ///
 /// Not entry points, so they have no place in [`SHADERS`] — but an edit to one changes the
 /// code of every shader that includes it, and Cargo only knows that if it is told.
-const HEADERS: &[&str] = &["scene_frame.hlsli", "material.hlsli"];
+const HEADERS: &[&str] = &["scene_frame.hlsli", "material.hlsli", "pbr.hlsli"];
 
 /// One icon rasterized into the UI atlas.
 ///
@@ -293,7 +293,6 @@ const ICONS: &[IconEntry] = &[
         file: "druid/tranquility.svg",
         constant: "TRANQUILITY",
     },
-
     IconEntry {
         file: "equipment/helm.svg",
         constant: "HELM",
