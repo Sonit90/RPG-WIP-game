@@ -12,6 +12,7 @@ use engine_core::math::{Vec3, Vec4};
 
 use crate::device::RenderDevice;
 use crate::error::RendererError;
+use crate::renderer::TextureHandle;
 use crate::resource::GpuBuffer;
 use crate::upload::{CONSTANT_BUFFER_ALIGNMENT, StagingUploader};
 
@@ -139,6 +140,208 @@ impl MaterialDesc {
             });
         }
         Ok(())
+    }
+}
+
+/// How many textures one material binds, and therefore how many descriptors its table holds.
+///
+/// Four, permanently: base colour, normal, ORM, emissive. It is a constant rather than a
+/// literal because the root signature's range, the descriptor allocation and the fallback
+/// set all have to be the same number, and three places agreeing by coincidence is how a
+/// table ends up one descriptor short of what the shader reads.
+pub const MATERIAL_TEXTURE_COUNT: u32 = 4;
+
+/// The material texture ABI: which shader register each map is bound to.
+///
+/// **This order is frozen.** The root signature declares one contiguous four-SRV range at
+/// `t0`, and the descriptors are written into it in exactly this order. Changing it means
+/// changing `shaders/material.hlsli` in the same edit, and `tests/root_signature_mapping.rs`
+/// asserts the two agree.
+///
+/// ```text
+/// t0  base colour   sRGB, multiplied with `base_color`
+/// t1  normal        tangent-space, linear
+/// t2  ORM           R occlusion, G roughness, B metallic — the glTF packing
+/// t3  emissive      sRGB
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[repr(u32)]
+pub enum MaterialTextureSlot {
+    /// `t0`. Multiplied with [`MaterialDesc::base_color`].
+    BaseColor = 0,
+    /// `t1`. Tangent-space normals. Bound, and not yet read — see Milestone 8.
+    Normal = 1,
+    /// `t2`. Occlusion in R, roughness in G, metallic in B.
+    Orm = 2,
+    /// `t3`. Multiplied with [`MaterialDesc::emissive`].
+    Emissive = 3,
+}
+
+impl MaterialTextureSlot {
+    /// Every slot, in descriptor order. Iterating this **is** the ABI.
+    pub const ALL: [Self; MATERIAL_TEXTURE_COUNT as usize] = [
+        Self::BaseColor,
+        Self::Normal,
+        Self::Orm,
+        Self::Emissive,
+    ];
+
+    /// The shader register — and the offset into the material's descriptor range.
+    #[must_use]
+    pub fn register(self) -> u32 {
+        self as u32
+    }
+
+    /// The texel the slot's shared fallback texture holds, as straight RGBA8.
+    ///
+    /// The **identity** for the slot, so a material with no such map and a material sampling
+    /// the fallback are the same picture:
+    ///
+    /// * base colour `(255, 255, 255, 255)` — the map multiplies `base_color`.
+    /// * normal `(128, 128, 255, 255)` — the flat tangent-space normal. `0.5` unpacks to
+    ///   zero through `2x - 1`, giving `+Z`: the interpolated vertex normal, unchanged.
+    /// * ORM `(255, 255, 255, 255)` — glTF's convention is that this map *scales* the
+    ///   roughness and metallic factors, so white passes [`MaterialDesc::roughness`] and
+    ///   [`MaterialDesc::metallic`] through untouched and an occlusion of 1 is "not
+    ///   occluded". Baking a default roughness into the texel instead would apply that
+    ///   default a second time for every material that overrides it.
+    /// * emissive `(0, 0, 0, 255)` — emits nothing.
+    ///
+    /// Here rather than in the renderer so the window path and the offscreen path cannot
+    /// disagree about what a missing map looks like, which is exactly the sort of difference
+    /// a pixel test is supposed to be evidence against.
+    #[must_use]
+    pub fn fallback_texel(self) -> [u8; 4] {
+        match self {
+            Self::BaseColor | Self::Orm => [255, 255, 255, 255],
+            Self::Normal => [128, 128, 255, 255],
+            Self::Emissive => [0, 0, 0, 255],
+        }
+    }
+
+    /// Whether the slot's textures are read through an sRGB view.
+    ///
+    /// Colour is sRGB and data is not. Getting it backwards is the classic washed-out or
+    /// muddy import, and it has no other symptom.
+    #[must_use]
+    pub fn is_srgb(self) -> bool {
+        matches!(self, Self::BaseColor | Self::Emissive)
+    }
+
+    /// The slot's name, for diagnostics and test failure messages.
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::BaseColor => "base_color",
+            Self::Normal => "normal",
+            Self::Orm => "orm",
+            Self::Emissive => "emissive",
+        }
+    }
+}
+
+/// One material's four maps, resolved: every slot names a real texture.
+///
+/// A named field per map rather than an array, because a renderer that has to know what
+/// `texture[2]` means is one silent reordering away from shading roughness with an emissive
+/// map. The array form exists only where the ABI genuinely needs it —
+/// [`Self::in_descriptor_order`] — and it is built from the names rather than the names
+/// being read out of it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MaterialTextures {
+    /// `t0`. sRGB.
+    pub base_color: TextureHandle,
+    /// `t1`. Linear tangent-space normals.
+    pub normal: TextureHandle,
+    /// `t2`. Occlusion, roughness, metallic. Linear.
+    pub orm: TextureHandle,
+    /// `t3`. sRGB.
+    pub emissive: TextureHandle,
+}
+
+impl MaterialTextures {
+    /// The four handles in descriptor order, for writing the table.
+    ///
+    /// The one place the semantic set becomes positional, so the ABI has exactly one
+    /// definition instead of one per call site.
+    #[must_use]
+    pub fn in_descriptor_order(&self) -> [TextureHandle; MATERIAL_TEXTURE_COUNT as usize] {
+        [self.base_color, self.normal, self.orm, self.emissive]
+    }
+
+    /// The handle bound to `slot`.
+    #[must_use]
+    pub fn slot(&self, slot: MaterialTextureSlot) -> TextureHandle {
+        match slot {
+            MaterialTextureSlot::BaseColor => self.base_color,
+            MaterialTextureSlot::Normal => self.normal,
+            MaterialTextureSlot::Orm => self.orm,
+            MaterialTextureSlot::Emissive => self.emissive,
+        }
+    }
+
+    /// A set where every slot is the same texture. What the shared fallback set is built
+    /// from before each slot is replaced by its own neutral texture.
+    #[must_use]
+    pub fn uniform(texture: TextureHandle) -> Self {
+        Self {
+            base_color: texture,
+            normal: texture,
+            orm: texture,
+            emissive: texture,
+        }
+    }
+}
+
+/// What a caller asks for: any subset of the four maps.
+///
+/// `None` is "this material has no such map", not an error, and resolves to the shared
+/// fallback for that slot. Every descriptor in a material's range is always valid — an
+/// unbound one is undefined behaviour on read, and the alternative to a fallback would be
+/// a shader permutation per absent map.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct MaterialTextureSet {
+    /// sRGB base colour, multiplied with [`MaterialDesc::base_color`].
+    pub base_color: Option<TextureHandle>,
+    /// Tangent-space normals.
+    pub normal: Option<TextureHandle>,
+    /// Occlusion (R), roughness (G), metallic (B).
+    pub orm: Option<TextureHandle>,
+    /// Emissive colour.
+    pub emissive: Option<TextureHandle>,
+}
+
+impl MaterialTextureSet {
+    /// A set with only a base colour map.
+    #[must_use]
+    pub fn base_color(texture: TextureHandle) -> Self {
+        Self {
+            base_color: Some(texture),
+            ..Self::default()
+        }
+    }
+
+    /// Fills every empty slot from `fallbacks`.
+    #[must_use]
+    pub fn resolve(self, fallbacks: &MaterialTextures) -> MaterialTextures {
+        MaterialTextures {
+            base_color: self.base_color.unwrap_or(fallbacks.base_color),
+            normal: self.normal.unwrap_or(fallbacks.normal),
+            orm: self.orm.unwrap_or(fallbacks.orm),
+            emissive: self.emissive.unwrap_or(fallbacks.emissive),
+        }
+    }
+
+    /// Every handle the caller actually named, with its slot, for range checking.
+    pub fn named(&self) -> impl Iterator<Item = (MaterialTextureSlot, TextureHandle)> + '_ {
+        [
+            (MaterialTextureSlot::BaseColor, self.base_color),
+            (MaterialTextureSlot::Normal, self.normal),
+            (MaterialTextureSlot::Orm, self.orm),
+            (MaterialTextureSlot::Emissive, self.emissive),
+        ]
+        .into_iter()
+        .filter_map(|(slot, handle)| handle.map(|handle| (slot, handle)))
     }
 }
 

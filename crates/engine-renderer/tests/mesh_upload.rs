@@ -9,6 +9,7 @@
 
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
+use engine_core::math::{Vec2, Vec3, Vec4};
 use engine_renderer::RendererError;
 use engine_renderer::command::CommandContext;
 use engine_renderer::device::RenderDevice;
@@ -132,6 +133,120 @@ fn a_cube_reaches_the_gpu_vertex_for_vertex() {
         data.indices().len(),
     );
     assert_eq!(indices, data.indices());
+}
+
+#[test]
+fn a_vertexs_tangent_and_colour_reach_the_gpu_at_the_offsets_the_layout_names() {
+    // The byte-level half of the vertex format. `a_cube_reaches_the_gpu_vertex_for_vertex`
+    // compares whole structs, which would still pass if `MeshVertex` and the input layout
+    // agreed with each other and both were wrong. This reads the raw bytes back and finds
+    // the tangent at 32 and the colour at 48 — the two offsets `mesh_vertex_elements()`
+    // hard-codes, and the ones an HLSL `TANGENT`/`COLOR` semantic will fetch from.
+    let _guard = gpu_lock();
+    let Some(device) = device_or_skip(
+        "a_vertexs_tangent_and_colour_reach_the_gpu_at_the_offsets_the_layout_names",
+    ) else {
+        return;
+    };
+
+    // Values chosen so no two of them could be confused for each other, and so a colour read
+    // as floats or a tangent read from the UV would be obvious rather than plausible.
+    let tangent = Vec4::new(0.0, 0.0, 1.0, -1.0);
+    let color = [17_u8, 34, 51, 68];
+    let vertices = vec![
+        MeshVertex::new(Vec3::ZERO, Vec3::Y, Vec2::ZERO)
+            .with_tangent(tangent)
+            .with_color(color),
+        MeshVertex::new(Vec3::X, Vec3::Y, Vec2::new(1.0, 0.0))
+            .with_tangent(tangent)
+            .with_color(color),
+        MeshVertex::new(Vec3::Z, Vec3::Y, Vec2::new(0.0, 1.0))
+            .with_tangent(tangent)
+            .with_color(color),
+    ];
+    let data = MeshData::new(vertices, vec![0, 1, 2]).expect("the triangle is well formed");
+    let mesh = GpuMesh::upload(&device, &data).expect("upload must succeed");
+
+    let stride = size_of::<MeshVertex>();
+    assert_eq!(stride, 52, "the offsets below describe a 52-byte vertex");
+    let bytes = read_back(
+        &device,
+        mesh.vertex_buffer(),
+        std::mem::size_of_val(data.vertices()),
+    );
+
+    for vertex in 0..data.vertices().len() {
+        let base = vertex * stride;
+        let read_f32 = |at: usize| {
+            let mut four = [0_u8; 4];
+            four.copy_from_slice(&bytes[at..at + 4]);
+            f32::from_le_bytes(four)
+        };
+        assert_eq!(read_f32(base + 32), tangent.x, "vertex {vertex} tangent.x");
+        assert_eq!(read_f32(base + 36), tangent.y, "vertex {vertex} tangent.y");
+        assert_eq!(read_f32(base + 40), tangent.z, "vertex {vertex} tangent.z");
+        assert_eq!(
+            read_f32(base + 44),
+            tangent.w,
+            "vertex {vertex} handedness — the half of a tangent a mirrored UV island needs"
+        );
+        assert_eq!(
+            &bytes[base + 48..base + 52],
+            &color,
+            "vertex {vertex} colour, four UNORM bytes rather than four floats"
+        );
+    }
+}
+
+#[test]
+fn a_hand_authored_vertex_carries_a_usable_tangent_rather_than_zeros() {
+    // Geometry built in this crate — the offscreen helpers, the stress scene, the showcase —
+    // has no UVs worth deriving a tangent from, so `MeshVertex::new` gives it the
+    // deterministic perpendicular frame. What must never reach a vertex buffer is a zero
+    // tangent: normal mapping would read it as a degenerate frame and shade the surface
+    // black, and this is the milestone that freezes the format.
+    let _guard = gpu_lock();
+    let Some(device) =
+        device_or_skip("a_hand_authored_vertex_carries_a_usable_tangent_rather_than_zeros")
+    else {
+        return;
+    };
+
+    let data = MeshData::uv_sphere(1.0, 16, 8);
+    let mesh = GpuMesh::upload(&device, &data).expect("upload must succeed");
+    let vertices: Vec<MeshVertex> = cast_back(
+        &read_back(
+            &device,
+            mesh.vertex_buffer(),
+            std::mem::size_of_val(data.vertices()),
+        ),
+        data.vertices().len(),
+    );
+
+    for (at, vertex) in vertices.iter().enumerate() {
+        let tangent = vertex.tangent;
+        let length = (tangent.x * tangent.x + tangent.y * tangent.y + tangent.z * tangent.z).sqrt();
+        assert!(
+            (length - 1.0).abs() < 1e-4,
+            "vertex {at} tangent is not unit: {length}"
+        );
+        assert!(
+            (tangent.w.abs() - 1.0).abs() < 1e-6,
+            "vertex {at} handedness is {}",
+            tangent.w
+        );
+        let dot =
+            vertex.normal.x * tangent.x + vertex.normal.y * tangent.y + vertex.normal.z * tangent.z;
+        assert!(
+            dot.abs() < 1e-4,
+            "vertex {at} tangent is not perpendicular to its normal: {dot}"
+        );
+        assert_eq!(
+            vertex.color,
+            [255, 255, 255, 255],
+            "vertex {at} colour must be the multiplicative identity"
+        );
+    }
 }
 
 #[test]

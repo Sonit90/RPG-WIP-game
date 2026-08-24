@@ -55,7 +55,10 @@ pub use device::BACKEND;
 pub use error::RendererError;
 pub use frame::{DEFAULT_FRAMES_IN_FLIGHT, MAX_FRAMES_IN_FLIGHT, SyncStats};
 pub use instancing::{InstanceData, UNIT_TRIANGLE};
-pub use material::{Material, MaterialConstants, MaterialDesc};
+pub use material::{
+    MATERIAL_TEXTURE_COUNT, Material, MaterialConstants, MaterialDesc, MaterialTextureSet,
+    MaterialTextureSlot, MaterialTextures,
+};
 pub use mesh::{GpuMesh, Index, MeshData, MeshVertex, VertexStream};
 pub use mesh_pipeline::MeshPipeline;
 #[cfg(feature = "debug-overlay")]
@@ -63,7 +66,7 @@ pub use overlay::OverlayMetrics;
 pub use particle_pipeline::{ParticleConstants, ParticlePipeline};
 pub use pipeline::{TRIANGLE_VERTICES, Vertex};
 pub use render_list::{RenderList, RenderListEntry};
-pub use renderer::Renderer;
+pub use renderer::{Renderer, TextureHandle, TextureImage};
 pub use scene::{FrameConstants, ObjectConstants};
 pub use light_cluster::{LightClusterStats, LightClusters};
 pub use shadow::{ShadowPreset, ShadowRenderer, ShadowSettings, ShadowStats};

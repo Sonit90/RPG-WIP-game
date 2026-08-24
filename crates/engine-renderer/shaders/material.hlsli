@@ -21,14 +21,45 @@ cbuffer Material : register(b2)
     float2 material_padding;
 };
 
-// The material's base colour map, bound as a one-descriptor table at root parameter 3, and
-// the sampler that reads it — a static sampler in the root signature, so there is no
-// descriptor to allocate and nothing per-material to bind for it.
+// The material texture set: one contiguous four-descriptor table at root parameter 3, read
+// through one static sampler. The registers are the ABI — src/material.rs's
+// `MaterialTextureSlot` writes the descriptors in exactly this order, and
+// tests/root_signature_mapping.rs asserts the two agree.
 //
-// Every material has a map. An untextured one points at a shared 1x1 white texel, which
-// costs one texture fetch that returns 1 and saves a second pipeline state, a second shader
-// and the branch that would choose between them.
+// Every material binds all four. A material with no such map points at a shared neutral
+// texture rather than leaving the descriptor unbound: one texture fetch that returns the
+// identity, against a shader permutation per absent map.
+//
+//   t0  base colour  sRGB, multiplied with `base_color`
+//   t1  normal       tangent-space, linear. Bound and not yet read — Milestone 8 consumes it.
+//   t2  ORM          R occlusion, G roughness, B metallic. The glTF packing.
+//   t3  emissive     sRGB, eventually multiplied with `emissive`.
 Texture2D base_color_map : register(t0);
+Texture2D normal_map     : register(t1);
+Texture2D orm_map        : register(t2);
+Texture2D emissive_map   : register(t3);
+
+// One sampler for all four, static in the root signature: there is nothing per-material to
+// bind for it and no sampler heap at all. Kept named for the base colour map because that is
+// what every existing call site says.
 SamplerState base_color_sampler : register(s0);
+
+// The material maps as the debug modes below display them, sampled and nothing more.
+//
+// This function is why the four textures survive DXIL dead-code elimination at a milestone
+// where the lighting model reads only the first: the root signature declares a four-SRV
+// range, and a shader that referenced one of them would make the other three untestable.
+float3 material_map_preview(uint mode, float2 uv)
+{
+    if (mode == 5u)
+    {
+        return normal_map.Sample(base_color_sampler, uv).rgb;
+    }
+    if (mode == 6u)
+    {
+        return orm_map.Sample(base_color_sampler, uv).rgb;
+    }
+    return emissive_map.Sample(base_color_sampler, uv).rgb;
+}
 
 #endif // MATERIAL_HLSLI

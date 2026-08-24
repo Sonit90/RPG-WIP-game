@@ -108,6 +108,13 @@ pub struct ShadowScene<'a> {
     pub skinned: &'a SkinnedDrawList,
 }
 
+/// The highest debug view `shade_surface` knows.
+///
+/// 7 is the emissive map: the last of the four material texture views, which start at 4.
+/// The shader's `if` chain and this number are the same fact stated twice, so raising one
+/// without the other silently disables the new view.
+pub const MAX_DEBUG_MODE: u32 = 7;
+
 /// Owns the shadow atlas, decides what goes in it, and records the passes that fill it.
 pub struct ShadowRenderer {
     settings: ShadowSettings,
@@ -248,12 +255,16 @@ impl ShadowRenderer {
 
     /// Selects the shader's shadow debug view.
     ///
-    /// 0 none, 1 cascade tint, 2 shadow factor, 3 the atlas drawn in the corner. Clamped
+    /// 0 none, 1 cascade tint, 2 shadow factor, 3 the atlas drawn in the corner, and
+    /// 4 to 7 the material texture set raw — base colour, normal, ORM, emissive, in the
+    /// order [`crate::material::MaterialTextureSlot`] freezes. The material views exist so
+    /// a test can prove all four descriptors reach the GPU at a milestone where the
+    /// lighting model reads only the first. Clamped
     /// rather than rejected: the shader's `if` chain falls through to "no debug view" for
     /// anything it does not know, and clamping here keeps the two ends agreeing on how many
     /// views there are.
     pub fn set_debug_mode(&mut self, mode: u32) {
-        self.debug_mode = mode.min(3);
+        self.debug_mode = mode.min(MAX_DEBUG_MODE);
     }
 
     /// The current debug view.

@@ -9,7 +9,7 @@
 //! the scene changes, never per frame, and a mesh's vertex and index buffers share one
 //! wait — see [`crate::upload::StagingUploader`].
 
-use engine_core::math::{Sphere, Vec2, Vec3};
+use engine_core::math::{Sphere, Vec2, Vec3, Vec4};
 use windows::Win32::Graphics::Direct3D12::{
     D3D12_INDEX_BUFFER_VIEW, D3D12_RESOURCE_STATE_INDEX_BUFFER,
     D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER, D3D12_VERTEX_BUFFER_VIEW, ID3D12Resource,
@@ -21,16 +21,35 @@ use crate::error::RendererError;
 use crate::resource::{GpuBuffer, TrackedResource};
 use crate::upload::StagingUploader;
 
-/// One vertex of a mesh: position, normal and texture coordinate.
+/// The vertex colour a mesh gets when nothing authored one: opaque white.
+///
+/// The renderer's copy of `engine_assets::DEFAULT_VERTEX_COLOR`, for the same reason the
+/// vertex types are duplicated — this crate is the one the input layout describes, and it
+/// must not depend on the asset crate to say what a default vertex is.
+pub const DEFAULT_VERTEX_COLOR: [u8; 4] = [255, 255, 255, 255];
+
+/// One vertex of a mesh: position, normal, texture coordinate, tangent and colour.
 ///
 /// `repr(C)` is required — the input layout describes this exact memory layout to the GPU,
 /// so Rust must not be free to reorder the fields.
 ///
-/// 32 bytes, which is two per cache line. Packing the normal into 4 bytes and the UV into 4
-/// would halve that; it is not done because nothing yet is vertex-fetch bound, and an
-/// unmeasured packing is a decoding cost in every shader for a saving nobody has seen.
+/// **52 bytes**, and the field order is the offset table `mesh_vertex_elements` describes:
+///
+/// ```text
+///  0  position  float3
+/// 12  normal    float3
+/// 24  uv        float2
+/// 32  tangent   float4     xyz direction, w handedness
+/// 48  color     unorm8x4
+/// ```
+///
+/// Colour is four bytes rather than four floats deliberately: it is a 0..1 quantity the
+/// hardware can unpack for free through `R8G8B8A8_UNORM`, and sixteen bytes for a tint would
+/// have cost more than the tangent does. The tangent is *not* packed, because a normal map's
+/// frame is what the packing error would show up in first, and nothing has measured that
+/// this vertex is worth compressing yet.
 #[repr(C)]
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MeshVertex {
     /// Position in the mesh's local space.
     pub position: Vec3,
@@ -38,32 +57,95 @@ pub struct MeshVertex {
     pub normal: Vec3,
     /// Texture coordinate.
     pub uv: Vec2,
+    /// Tangent direction in XYZ, handedness in W.
+    ///
+    /// Uploaded and described to the input assembler; **not read by any shader yet**. The
+    /// data path exists so the vertex format can be frozen before assets are authored
+    /// against it; consuming it is normal mapping, which is a later milestone.
+    pub tangent: Vec4,
+    /// Per-vertex colour, RGBA, read by the GPU as `R8G8B8A8_UNORM`.
+    ///
+    /// Uploaded and described; not read by any shader yet, for the same reason.
+    pub color: [u8; 4],
+}
+
+impl Default for MeshVertex {
+    /// Written out rather than derived: `[u8; 4]`'s derived default is transparent black,
+    /// and a default vertex colour has to be the multiplicative identity.
+    fn default() -> Self {
+        Self {
+            position: Vec3::ZERO,
+            normal: Vec3::ZERO,
+            uv: Vec2::ZERO,
+            tangent: engine_assets::tangent::fallback(Vec3::ZERO),
+            color: DEFAULT_VERTEX_COLOR,
+        }
+    }
 }
 
 impl MeshVertex {
-    /// Builds a vertex.
+    /// Builds a vertex with a normal-derived tangent and opaque white colour.
+    ///
+    /// Kept at three arguments so the offscreen helpers, the stress scene and the showcase
+    /// geometry that build meshes by hand read the same as they did. Geometry that comes
+    /// from an asset goes through [`MeshVertex::with_tangent`] and
+    /// [`MeshVertex::with_color`] instead, which is what `Renderer::create_model` uses: an
+    /// imported mesh's tangent comes from its UVs, and this constructor has none to consult.
+    ///
+    /// The tangent is `engine_assets::tangent::fallback` — the same deterministic
+    /// perpendicular frame the asset crate gives a vertex whose UVs imply no direction. Not
+    /// the zero vector, deliberately: the vertex format is frozen at this milestone, and
+    /// every vertex buffer the GPU sees should already satisfy "unit XYZ, handedness +-1"
+    /// before anything samples a normal map. A hand-authored mesh full of zeros would be the
+    /// one that renders black on the day something does.
     #[must_use]
-    pub const fn new(position: Vec3, normal: Vec3, uv: Vec2) -> Self {
+    pub fn new(position: Vec3, normal: Vec3, uv: Vec2) -> Self {
         Self {
             position,
             normal,
             uv,
+            tangent: engine_assets::tangent::fallback(normal),
+            color: DEFAULT_VERTEX_COLOR,
         }
+    }
+
+    /// The same vertex with an explicit tangent.
+    #[must_use]
+    pub const fn with_tangent(mut self, tangent: Vec4) -> Self {
+        self.tangent = tangent;
+        self
+    }
+
+    /// The same vertex with an explicit colour.
+    #[must_use]
+    pub const fn with_color(mut self, color: [u8; 4]) -> Self {
+        self.color = color;
+        self
     }
 }
 
 /// One vertex of a skinned mesh: a rigid vertex plus what moves it.
 ///
-/// 56 bytes, `repr(C)`, and the exact memory the skinned input layout describes. The layout
-/// mirrors `engine_assets::SkinVertex` field for field, so the conversion at upload is a copy
-/// rather than a repack.
+/// **76 bytes**, `repr(C)`, and the exact memory the skinned input layout describes. The
+/// field order matches [`MeshVertex`] for its first five fields, so the two layouts share
+/// their first five input elements:
+///
+/// ```text
+///  0  position  float3
+/// 12  normal    float3
+/// 24  uv        float2
+/// 32  tangent   float4
+/// 48  color     unorm8x4
+/// 52  joints    uint16x4     4-byte aligned, which D3D12 requires of an element offset
+/// 60  weights   float4
+/// ```
 ///
 /// Joints are `R16G16B16A16_UINT` and weights are `R32G32B32A32_FLOAT`. Packing them to
-/// `R8G8B8A8_UINT` and `R8G8B8A8_UNORM` would make the vertex 40 bytes and is the obvious
+/// `R8G8B8A8_UINT` and `R8G8B8A8_UNORM` would make the vertex 60 bytes and is the obvious
 /// later optimization; at one character of a few hundred vertices there is nothing yet to
 /// measure, and `MAX_BONES` would have to come down to 256 first.
 #[repr(C)]
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SkinnedVertex {
     /// Position in the mesh's bind pose, local space.
     pub position: Vec3,
@@ -71,16 +153,37 @@ pub struct SkinnedVertex {
     pub normal: Vec3,
     /// Texture coordinate.
     pub uv: Vec2,
+    /// Tangent direction in XYZ, handedness in W. See [`MeshVertex::tangent`].
+    pub tangent: Vec4,
+    /// Per-vertex colour. See [`MeshVertex::color`].
+    pub color: [u8; 4],
     /// Indices into the bone palette.
     pub joints: [u16; 4],
     /// How much each joint contributes. Sums to one.
     pub weights: [f32; 4],
 }
 
+impl Default for SkinnedVertex {
+    /// See [`MeshVertex::default`].
+    fn default() -> Self {
+        Self {
+            position: Vec3::ZERO,
+            normal: Vec3::ZERO,
+            uv: Vec2::ZERO,
+            tangent: engine_assets::tangent::fallback(Vec3::ZERO),
+            color: DEFAULT_VERTEX_COLOR,
+            joints: [0; 4],
+            weights: [0.0; 4],
+        }
+    }
+}
+
 impl SkinnedVertex {
-    /// Builds a skinned vertex.
+    /// Builds a skinned vertex with a normal-derived tangent and opaque white colour.
+    ///
+    /// The tangent is the same fallback frame [`MeshVertex::new`] uses, for the same reason.
     #[must_use]
-    pub const fn new(
+    pub fn new(
         position: Vec3,
         normal: Vec3,
         uv: Vec2,
@@ -91,9 +194,25 @@ impl SkinnedVertex {
             position,
             normal,
             uv,
+            tangent: engine_assets::tangent::fallback(normal),
+            color: DEFAULT_VERTEX_COLOR,
             joints,
             weights,
         }
+    }
+
+    /// The same vertex with an explicit tangent.
+    #[must_use]
+    pub const fn with_tangent(mut self, tangent: Vec4) -> Self {
+        self.tangent = tangent;
+        self
+    }
+
+    /// The same vertex with an explicit colour.
+    #[must_use]
+    pub const fn with_color(mut self, color: [u8; 4]) -> Self {
+        self.color = color;
+        self
     }
 }
 
@@ -981,9 +1100,34 @@ mod tests {
     fn a_vertex_is_the_size_the_input_layout_describes() {
         // The input layout hard-codes these offsets; a change here without a change there
         // reads the normal as part of the position.
-        assert_eq!(size_of::<MeshVertex>(), 32);
+        assert_eq!(size_of::<MeshVertex>(), 52);
         assert_eq!(std::mem::offset_of!(MeshVertex, position), 0);
         assert_eq!(std::mem::offset_of!(MeshVertex, normal), 12);
         assert_eq!(std::mem::offset_of!(MeshVertex, uv), 24);
+        assert_eq!(std::mem::offset_of!(MeshVertex, tangent), 32);
+        assert_eq!(std::mem::offset_of!(MeshVertex, color), 48);
+    }
+
+    #[test]
+    fn a_vertex_built_without_one_is_opaque_white() {
+        // Vertex colour multiplies, so the default has to be the identity. A derived
+        // `Default` would give transparent black and black out every mesh built by hand.
+        assert_eq!(MeshVertex::default().color, DEFAULT_VERTEX_COLOR);
+        assert_eq!(
+            MeshVertex::new(Vec3::ZERO, Vec3::Y, Vec2::ZERO).color,
+            DEFAULT_VERTEX_COLOR
+        );
+        assert_eq!(SkinnedVertex::default().color, DEFAULT_VERTEX_COLOR);
+        assert_eq!(
+            SkinnedVertex::new(
+                Vec3::ZERO,
+                Vec3::Y,
+                Vec2::ZERO,
+                [0; 4],
+                [1.0, 0.0, 0.0, 0.0]
+            )
+            .color,
+            DEFAULT_VERTEX_COLOR
+        );
     }
 }

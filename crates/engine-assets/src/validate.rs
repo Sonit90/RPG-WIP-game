@@ -453,6 +453,7 @@ mod tests {
             uv: Vec2::ZERO,
             joints: [joint, 0, 0, 0],
             weights,
+            ..SkinVertex::default()
         };
         SubMesh::new(
             "skin",

@@ -45,6 +45,13 @@ struct VertexInput
     float3 position : POSITION;
     float3 normal   : NORMAL;
     float2 uv       : TEXCOORD0;
+    // Present in the layout and deliberately unread: this milestone establishes the data
+    // path so the vertex format can be frozen before assets are authored against it.
+    // Consuming the tangent is normal mapping and consuming the colour is vertex tinting,
+    // and both are later milestones. Declaring them here is what proves the semantic names
+    // and formats line up with `mesh_vertex_elements()`.
+    float4 tangent  : TANGENT;
+    float4 color    : COLOR;
     uint4  joints   : BLENDINDICES0;
     float4 weights  : BLENDWEIGHT0;
 };

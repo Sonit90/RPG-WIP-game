@@ -5,15 +5,29 @@
 //! *only* reason to split one — a submesh boundary is a material boundary, never an artistic
 //! one.
 
-use engine_core::math::{Sphere, Vec2, Vec3};
+use engine_core::math::{Sphere, Vec2, Vec3, Vec4};
 
-/// A vertex of a rigid mesh: position, normal, texture coordinate.
+/// The vertex colour a mesh gets when its source has none: opaque white.
 ///
-/// 32 bytes, deliberately identical in layout to `engine_renderer::MeshVertex`. The two are
+/// White rather than black because vertex colour multiplies: white is the identity, so a
+/// mesh with no authored colours shades exactly as it did before the attribute existed.
+pub const DEFAULT_VERTEX_COLOR: [u8; 4] = [255, 255, 255, 255];
+
+/// A tangent whose XYZ is zero, meaning "not set".
+///
+/// The sentinel [`SubMesh::new`] looks for when it decides whether to generate tangents. A
+/// zero vector cannot be a real tangent — it has no direction — so it is unambiguous, and it
+/// is what `Default` produces, which is what makes every existing construction site keep
+/// compiling and still get correct tangents.
+pub const UNSET_TANGENT: Vec4 = Vec4::new(0.0, 0.0, 0.0, 0.0);
+
+/// A vertex of a rigid mesh: position, normal, texture coordinate, tangent, colour.
+///
+/// 52 bytes, deliberately identical in layout to `engine_renderer::MeshVertex`. The two are
 /// separate types because this crate must not depend on a renderer and the renderer's copy
 /// is `repr(C)` against an input-layout description; keeping the fields the same makes the
 /// conversion at upload a straight field copy rather than a reinterpretation.
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MeshVertex {
     /// Position in the model's local space, metres.
     pub position: Vec3,
@@ -21,17 +35,70 @@ pub struct MeshVertex {
     pub normal: Vec3,
     /// Texture coordinate.
     pub uv: Vec2,
+    /// Tangent direction in XYZ, **handedness** in W.
+    ///
+    /// W is +1 or -1 and says which way the bitangent runs:
+    /// `bitangent = cross(normal, tangent.xyz) * tangent.w`. Storing the sign rather than
+    /// the bitangent itself is four bytes against twelve, and it is the convention glTF
+    /// already uses, so an imported tangent needs no conversion.
+    ///
+    /// [`UNSET_TANGENT`] until [`SubMesh::new`] fills it in.
+    pub tangent: Vec4,
+    /// Per-vertex colour, RGBA, straight 8-bit.
+    ///
+    /// [`DEFAULT_VERTEX_COLOR`] when the source has none. Nothing consumes it yet — this
+    /// milestone establishes the data path and deliberately does not change shading.
+    pub color: [u8; 4],
+}
+
+impl Default for MeshVertex {
+    /// A degenerate vertex with an unset tangent and opaque white colour.
+    ///
+    /// Written out rather than derived because `[u8; 4]`'s derived default is transparent
+    /// black, and a vertex colour that multiplies to zero would black out any mesh built
+    /// through `Default`.
+    fn default() -> Self {
+        Self {
+            position: Vec3::ZERO,
+            normal: Vec3::ZERO,
+            uv: Vec2::ZERO,
+            tangent: UNSET_TANGENT,
+            color: DEFAULT_VERTEX_COLOR,
+        }
+    }
 }
 
 impl MeshVertex {
-    /// Builds a rigid vertex.
+    /// Builds a rigid vertex with an unset tangent and opaque white colour.
+    ///
+    /// The tangent is filled in by [`SubMesh::new`], which is where every producer of
+    /// geometry in this crate — the glTF importer and every procedural author — ends up. A
+    /// three-argument constructor is kept deliberately: an author placing a box has nothing
+    /// useful to say about tangents, and making it say something would be noise at three
+    /// hundred call sites.
     #[must_use]
     pub const fn new(position: Vec3, normal: Vec3, uv: Vec2) -> Self {
         Self {
             position,
             normal,
             uv,
+            tangent: UNSET_TANGENT,
+            color: DEFAULT_VERTEX_COLOR,
         }
+    }
+
+    /// The same vertex with an explicit tangent.
+    #[must_use]
+    pub const fn with_tangent(mut self, tangent: Vec4) -> Self {
+        self.tangent = tangent;
+        self
+    }
+
+    /// The same vertex with an explicit colour.
+    #[must_use]
+    pub const fn with_color(mut self, color: [u8; 4]) -> Self {
+        self.color = color;
+        self
     }
 }
 
@@ -46,13 +113,14 @@ pub const MAX_INFLUENCES: usize = 4;
 
 /// A vertex of a skinned mesh: a rigid vertex plus what moves it.
 ///
-/// 56 bytes. Joints are `u16` and weights are `f32`, which is the uncompressed form. Packing
-/// joints to `u8` and weights to `unorm8` would make it 40 and is the obvious later
-/// optimization; it is not done now because a 56-byte vertex on one character at a few
-/// thousand vertices is under 200 KB of bandwidth per frame, and an unmeasured packing buys
-/// a decode in every vertex shader for a saving nobody has seen. `MAX_BONES` is the thing to
-/// check before choosing `u8`.
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
+/// 76 bytes, and deliberately identical in layout to `engine_renderer::SkinnedVertex`: the
+/// rigid five fields first, then what moves the vertex. Joints are `u16` and weights are
+/// `f32`, which is the uncompressed form. Packing joints to `u8` and weights to `unorm8`
+/// would make it 60 and is the obvious later optimization; it is not done now because a
+/// 76-byte vertex on one character at a few thousand vertices is under 300 KB of bandwidth
+/// per frame, and an unmeasured packing buys a decode in every vertex shader for a saving
+/// nobody has seen. `MAX_BONES` is the thing to check before choosing `u8`.
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SkinVertex {
     /// Position in the model's **bind pose**, local space, metres.
     pub position: Vec3,
@@ -60,6 +128,10 @@ pub struct SkinVertex {
     pub normal: Vec3,
     /// Texture coordinate.
     pub uv: Vec2,
+    /// Tangent direction in XYZ, handedness in W. See [`MeshVertex::tangent`].
+    pub tangent: Vec4,
+    /// Per-vertex colour, RGBA. See [`MeshVertex::color`].
+    pub color: [u8; 4],
     /// Which bones move this vertex, as indices into [`crate::Skeleton::bones`].
     ///
     /// A zero weight's joint index is not read by the shader, but it still has to be in
@@ -70,7 +142,36 @@ pub struct SkinVertex {
     pub weights: [f32; MAX_INFLUENCES],
 }
 
+impl Default for SkinVertex {
+    /// See [`MeshVertex::default`] — the colour must be white, not transparent black.
+    fn default() -> Self {
+        Self {
+            position: Vec3::ZERO,
+            normal: Vec3::ZERO,
+            uv: Vec2::ZERO,
+            tangent: UNSET_TANGENT,
+            color: DEFAULT_VERTEX_COLOR,
+            joints: [0; MAX_INFLUENCES],
+            weights: [0.0; MAX_INFLUENCES],
+        }
+    }
+}
+
 impl SkinVertex {
+    /// The same vertex with an explicit tangent.
+    #[must_use]
+    pub const fn with_tangent(mut self, tangent: Vec4) -> Self {
+        self.tangent = tangent;
+        self
+    }
+
+    /// The same vertex with an explicit colour.
+    #[must_use]
+    pub const fn with_color(mut self, color: [u8; 4]) -> Self {
+        self.color = color;
+        self
+    }
+
     /// A vertex bound rigidly to one bone.
     ///
     /// Most of a stylized character is this: a forearm belongs to the forearm. Blending only
@@ -84,6 +185,7 @@ impl SkinVertex {
             uv,
             joints: [joint, 0, 0, 0],
             weights: [1.0, 0.0, 0.0, 0.0],
+            ..Self::default()
         }
     }
 
@@ -104,6 +206,7 @@ impl SkinVertex {
             uv,
             joints: [first, second, 0, 0],
             weights: [1.0 - blend, blend, 0.0, 0.0],
+            ..Self::default()
         }
     }
 
@@ -173,6 +276,78 @@ impl Geometry {
         matches!(self, Self::Skinned(_))
     }
 
+    /// The normals, whichever layout this is.
+    pub fn normals(&self) -> impl Iterator<Item = Vec3> + '_ {
+        (0..self.len()).map(move |index| match self {
+            Self::Static(vertices) => vertices[index].normal,
+            Self::Skinned(vertices) => vertices[index].normal,
+        })
+    }
+
+    /// The texture coordinates, whichever layout this is.
+    pub fn uvs(&self) -> impl Iterator<Item = Vec2> + '_ {
+        (0..self.len()).map(move |index| match self {
+            Self::Static(vertices) => vertices[index].uv,
+            Self::Skinned(vertices) => vertices[index].uv,
+        })
+    }
+
+    /// The tangents, whichever layout this is.
+    pub fn tangents(&self) -> impl Iterator<Item = Vec4> + '_ {
+        (0..self.len()).map(move |index| match self {
+            Self::Static(vertices) => vertices[index].tangent,
+            Self::Skinned(vertices) => vertices[index].tangent,
+        })
+    }
+
+    /// The colours, whichever layout this is.
+    pub fn colors(&self) -> impl Iterator<Item = [u8; 4]> + '_ {
+        (0..self.len()).map(move |index| match self {
+            Self::Static(vertices) => vertices[index].color,
+            Self::Skinned(vertices) => vertices[index].color,
+        })
+    }
+
+    /// Replaces the tangent of every vertex, in order.
+    ///
+    /// The write half of [`Geometry::tangents`], used by [`crate::tangent::generate`]. A
+    /// slice shorter than the geometry leaves the rest alone rather than panicking: the
+    /// generator always produces exactly one tangent per vertex, and a length mismatch would
+    /// be a bug in this crate rather than in an asset.
+    pub fn set_tangents(&mut self, tangents: &[Vec4]) {
+        match self {
+            Self::Static(vertices) => {
+                for (vertex, tangent) in vertices.iter_mut().zip(tangents) {
+                    vertex.tangent = *tangent;
+                }
+            }
+            Self::Skinned(vertices) => {
+                for (vertex, tangent) in vertices.iter_mut().zip(tangents) {
+                    vertex.tangent = *tangent;
+                }
+            }
+        }
+    }
+
+    /// Whether every vertex already carries a usable tangent.
+    ///
+    /// "Usable" is deliberately strict: finite, non-degenerate in XYZ, and a handedness of
+    /// ±1. An exporter that writes a zero tangent for a vertex it could not solve, or a NaN
+    /// for a degenerate UV triangle, is common enough that trusting the count alone would
+    /// import poison. See `crate::tangent` for what happens when this is false.
+    #[must_use]
+    pub fn has_tangents(&self) -> bool {
+        self.tangents().all(|tangent| {
+            let finite = tangent.x.is_finite()
+                && tangent.y.is_finite()
+                && tangent.z.is_finite()
+                && tangent.w.is_finite();
+            let directed =
+                tangent.x * tangent.x + tangent.y * tangent.y + tangent.z * tangent.z > 1e-12;
+            finite && directed && (tangent.w.abs() - 1.0).abs() < 1e-3
+        })
+    }
+
     /// The positions, whichever layout this is.
     pub fn positions(&self) -> impl Iterator<Item = Vec3> + '_ {
         // Two boxed-free branches joined by an enum of iterators would need a named type;
@@ -208,6 +383,18 @@ impl SubMesh {
         indices: Vec<u32>,
         material: usize,
     ) -> Self {
+        let mut geometry = geometry;
+        // The one place tangents are generated, because it is the one place every producer
+        // of geometry in this crate passes through: the glTF importer and all six procedural
+        // authors call this constructor. Doing it here rather than in each of them is what
+        // makes "a submesh always has usable tangents" an invariant of the type instead of a
+        // rule somebody has to remember.
+        //
+        // Import-time, never frame-time, and never in the renderer — a tangent is a property
+        // of the mesh, not of how it is drawn.
+        if !geometry.has_tangents() {
+            crate::tangent::generate(&mut geometry, &indices);
+        }
         let bounds = Sphere::around(geometry.positions().collect::<Vec<_>>());
         Self {
             name: name.into(),

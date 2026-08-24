@@ -25,7 +25,8 @@ use windows::Win32::Graphics::Direct3D12::{
     ID3D12PipelineState, ID3D12RootSignature,
 };
 use windows::Win32::Graphics::Dxgi::Common::{
-    DXGI_FORMAT_R16G16B16A16_UINT, DXGI_FORMAT_R32G32_FLOAT, DXGI_FORMAT_R32G32B32_FLOAT,
+    DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_R16G16B16A16_UINT, DXGI_FORMAT_R32G32_FLOAT,
+    DXGI_FORMAT_R32G32B32_FLOAT,
     DXGI_FORMAT_R32G32B32A32_FLOAT, DXGI_SAMPLE_DESC,
 };
 use windows::core::s;
@@ -105,8 +106,8 @@ impl MeshPipeline {
         desc.RTVFormats[0] = BACK_BUFFER_FORMAT;
         debug_assert_eq!(
             size_of::<MeshVertex>(),
-            32,
-            "the input layout offsets above describe a 32-byte vertex"
+            52,
+            "the input layout offsets above describe a 52-byte vertex"
         );
         debug_assert_ne!(
             desc.DepthStencilState,
@@ -149,14 +150,20 @@ impl MeshPipeline {
 /// slot 0  CBV b0   frame constants        changes once per frame
 /// slot 1  CBV b2   material constants     changes per batch
 /// slot 2  CBV b1   object constants       changes per draw (unused when instancing)
-/// slot 3  table t0 base colour map        changes per batch
+/// slot 3  table t0-t3 material texture set  changes per batch
 /// slot 4  CBV b3   bone palette           changes per skinned character
-/// slot 5  table t1 shadow atlas           changes once per frame
-/// slot 6  table t2 scene depth            changes once per frame
-/// slot 7  SRV   t3 clustered light grid   changes once per frame
-/// slot 8  table t4 contact-shadow target   changes once per frame
-/// static samplers s0 (base colour), s1 (shadow comparison), s2 (depth point)
+/// slot 5  table t4 shadow atlas           changes once per frame
+/// slot 6  table t5 scene depth            changes once per frame
+/// slot 7  SRV   t6 clustered light grid   changes once per frame
+/// slot 8  table t7 contact-shadow target   changes once per frame
+/// static samplers s0 (material maps), s1 (shadow comparison), s2 (depth point)
 /// ```
+///
+/// The material's table is **one contiguous four-SRV range** at `t0`, not four parameters:
+/// base colour, normal, ORM, emissive, in the order
+/// [`crate::material::MaterialTextureSlot`] freezes. The scene's own textures start at `t4`
+/// for that reason — the material set owns the bottom of the register space because it is
+/// the only binding whose size is part of the asset ABI.
 ///
 /// The two shadow tables are one descriptor each rather than a two-descriptor range,
 /// deliberately: a range has to be contiguous in the heap, and the two SRVs are allocated
@@ -183,10 +190,14 @@ pub(crate) fn create_root_signature(
     // Declared before `parameters` so it outlives the pointer the table parameter holds
     // into it. A range that went out of scope first would serialize garbage, and the failure
     // is a driver-side E_INVALIDARG that names nothing.
+    // One range of four, not four ranges of one: the four descriptors are allocated as a
+    // single contiguous run out of the persistent region, so `t0` addresses the run's first
+    // slot and `t1`..`t3` follow it. Four separate root parameters would cost six more
+    // DWORDs and four binds per batch to express the same thing.
     let ranges = [D3D12_DESCRIPTOR_RANGE {
         RangeType: D3D12_DESCRIPTOR_RANGE_TYPE_SRV,
-        NumDescriptors: 1,
-        BaseShaderRegister: 0,
+        NumDescriptors: crate::material::MATERIAL_TEXTURE_COUNT,
+        BaseShaderRegister: MATERIAL_BASE_SHADER_REGISTER,
         RegisterSpace: 0,
         OffsetInDescriptorsFromTableStart: D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND,
     }];
@@ -221,19 +232,19 @@ pub(crate) fn create_root_signature(
         "the ROOT_* constants index this array"
     );
 
-    // The shadow atlas, at t1. Its own table because it changes once per frame while the
-    // material's map changes per batch.
+    // The shadow atlas, at t4 — the first register above the material set. Its own table
+    // because it changes once per frame while the material's maps change per batch.
     let shadow_range = [D3D12_DESCRIPTOR_RANGE {
         RangeType: D3D12_DESCRIPTOR_RANGE_TYPE_SRV,
         NumDescriptors: 1,
-        BaseShaderRegister: 1,
+        BaseShaderRegister: SHADOW_ATLAS_SHADER_REGISTER,
         RegisterSpace: 0,
         OffsetInDescriptorsFromTableStart: D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND,
     }];
     let depth_range = [D3D12_DESCRIPTOR_RANGE {
         RangeType: D3D12_DESCRIPTOR_RANGE_TYPE_SRV,
         NumDescriptors: 1,
-        BaseShaderRegister: 2,
+        BaseShaderRegister: SCENE_DEPTH_SHADER_REGISTER,
         RegisterSpace: 0,
         OffsetInDescriptorsFromTableStart: D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND,
     }];
@@ -256,7 +267,7 @@ pub(crate) fn create_root_signature(
         "the ROOT_* constants index this array"
     );
 
-    // The clustered light grid, at t3. A **root** SRV rather than a table: it is a raw
+    // The clustered light grid, at t6. A **root** SRV rather than a table: it is a raw
     // buffer, and a raw buffer can be addressed by a GPU virtual address written straight
     // into the root arguments. No descriptor, no heap slot, and one bind per frame.
     //
@@ -280,12 +291,12 @@ pub(crate) fn create_root_signature(
         "the ROOT_* constants index this array"
     );
 
-    // The contact-shadow target, at t4. A table like the other two textures, and for the
+    // The contact-shadow target, at t7. A table like the other two textures, and for the
     // same reason: a root descriptor addresses a buffer, not a texture.
     let contact_range = [D3D12_DESCRIPTOR_RANGE {
         RangeType: D3D12_DESCRIPTOR_RANGE_TYPE_SRV,
         NumDescriptors: 1,
-        BaseShaderRegister: 4,
+        BaseShaderRegister: CONTACT_SHADOW_SHADER_REGISTER,
         RegisterSpace: 0,
         OffsetInDescriptorsFromTableStart: D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND,
     }];
@@ -369,8 +380,46 @@ pub(crate) fn root_parameters() -> [D3D12_ROOT_PARAMETER; ROOT_PARAMETER_REGISTE
 /// Shader register the bone palette binds to, matching `cbuffer Skin : register(b3)`.
 const SKIN_SHADER_REGISTER: u32 = 3;
 
-/// Shader register the light grid binds to, matching `ByteAddressBuffer ... : register(t3)`.
-const CLUSTER_SHADER_REGISTER: u32 = 3;
+/// First register of the material texture set, matching `Texture2D base_color_map :
+/// register(t0)` in `shaders/material.hlsli`. The set occupies `t0`..`t3`.
+const MATERIAL_BASE_SHADER_REGISTER: u32 = 0;
+
+/// Shader register the shadow atlas binds to, matching
+/// `Texture2D<float> shadow_atlas : register(t4)`.
+const SHADOW_ATLAS_SHADER_REGISTER: u32 = 4;
+
+/// Shader register the depth copy binds to, matching
+/// `Texture2D<float> scene_depth : register(t5)`.
+const SCENE_DEPTH_SHADER_REGISTER: u32 = 5;
+
+/// Shader register the light grid binds to, matching `ByteAddressBuffer ... : register(t6)`.
+const CLUSTER_SHADER_REGISTER: u32 = 6;
+
+/// Shader register the contact-shadow target binds to, matching
+/// `Texture2D<float2> contact_shadows : register(t7)`.
+const CONTACT_SHADOW_SHADER_REGISTER: u32 = 7;
+
+/// The material texture set's registers, exported for the root-signature regression test.
+///
+/// The test asserts these against the `register(tN)` declarations in
+/// `shaders/material.hlsli`, so the ABI has one definition the shader and the signature are
+/// both checked against.
+pub const MATERIAL_TEXTURE_REGISTERS: [u32; crate::material::MATERIAL_TEXTURE_COUNT as usize] = [
+    MATERIAL_BASE_SHADER_REGISTER,
+    MATERIAL_BASE_SHADER_REGISTER + 1,
+    MATERIAL_BASE_SHADER_REGISTER + 2,
+    MATERIAL_BASE_SHADER_REGISTER + 3,
+];
+
+/// The registers the scene's own textures occupy, all above the material set.
+///
+/// Exported for the same reason: the test proves no scene texture collides with `t0`..`t3`.
+pub const SCENE_TEXTURE_REGISTERS: [u32; 4] = [
+    SHADOW_ATLAS_SHADER_REGISTER,
+    SCENE_DEPTH_SHADER_REGISTER,
+    CLUSTER_SHADER_REGISTER,
+    CONTACT_SHADOW_SHADER_REGISTER,
+];
 
 /// The sampler every shadow lookup goes through, at `s1`.
 ///
@@ -538,17 +587,19 @@ impl SkinnedMeshPipeline {
 ///
 /// The first three are byte-for-byte the rigid layout, so a skinned mesh and a rigid one
 /// share their position, normal and UV offsets and a change to one is a change to both.
-pub(crate) fn skinned_vertex_elements() -> [D3D12_INPUT_ELEMENT_DESC; 5] {
+pub(crate) fn skinned_vertex_elements() -> [D3D12_INPUT_ELEMENT_DESC; 7] {
     debug_assert_eq!(
         size_of::<SkinnedVertex>(),
-        56,
-        "the offsets below describe a 56-byte vertex"
+        76,
+        "the offsets below describe a 76-byte vertex"
     );
     let rigid = mesh_vertex_elements();
     [
         rigid[0],
         rigid[1],
         rigid[2],
+        rigid[3],
+        rigid[4],
         D3D12_INPUT_ELEMENT_DESC {
             SemanticName: s!("BLENDINDICES"),
             SemanticIndex: 0,
@@ -556,7 +607,7 @@ pub(crate) fn skinned_vertex_elements() -> [D3D12_INPUT_ELEMENT_DESC; 5] {
             // here would silently convert and index the palette with a rounded value.
             Format: DXGI_FORMAT_R16G16B16A16_UINT,
             InputSlot: 0,
-            AlignedByteOffset: 32,
+            AlignedByteOffset: 52,
             InputSlotClass: D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,
             InstanceDataStepRate: 0,
         },
@@ -565,7 +616,7 @@ pub(crate) fn skinned_vertex_elements() -> [D3D12_INPUT_ELEMENT_DESC; 5] {
             SemanticIndex: 0,
             Format: DXGI_FORMAT_R32G32B32A32_FLOAT,
             InputSlot: 0,
-            AlignedByteOffset: 40,
+            AlignedByteOffset: 60,
             InputSlotClass: D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,
             InstanceDataStepRate: 0,
         },
@@ -579,7 +630,7 @@ pub(crate) fn skinned_vertex_elements() -> [D3D12_INPUT_ELEMENT_DESC; 5] {
 /// stream — a shadow map of geometry laid out differently from the picture would be a shadow
 /// of something else.
 pub(crate) fn instanced_vertex_elements() -> Vec<D3D12_INPUT_ELEMENT_DESC> {
-    let mut elements = Vec::with_capacity(9);
+    let mut elements = Vec::with_capacity(11);
     elements.extend_from_slice(&mesh_vertex_elements());
     // Slot 1, stepped once per instance: four float4 rows of the model matrix.
     for (row, offset) in [0_u32, 16, 32, 48].into_iter().enumerate() {
@@ -815,11 +866,11 @@ const INSTANCE_EMISSIVE_SEMANTIC: windows::core::PCSTR = s!("INSTANCE_EMISSIVE")
 ///
 /// Shared rather than written twice: the instanced pipeline appends per-instance elements
 /// to exactly this layout, and two copies that had to agree would eventually not.
-fn mesh_vertex_elements() -> [D3D12_INPUT_ELEMENT_DESC; 3] {
+fn mesh_vertex_elements() -> [D3D12_INPUT_ELEMENT_DESC; 5] {
     debug_assert_eq!(
         size_of::<MeshVertex>(),
-        32,
-        "the offsets below describe a 32-byte vertex"
+        52,
+        "the offsets below describe a 52-byte vertex"
     );
     [
         D3D12_INPUT_ELEMENT_DESC {
@@ -849,6 +900,28 @@ fn mesh_vertex_elements() -> [D3D12_INPUT_ELEMENT_DESC; 3] {
             InputSlotClass: D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,
             InstanceDataStepRate: 0,
         },
+        D3D12_INPUT_ELEMENT_DESC {
+            SemanticName: s!("TANGENT"),
+            SemanticIndex: 0,
+            // Four floats: the direction and the handedness sign. A three-component format
+            // would drop W, and W is the half of a tangent that a mirrored UV island needs.
+            Format: DXGI_FORMAT_R32G32B32A32_FLOAT,
+            InputSlot: 0,
+            AlignedByteOffset: 32,
+            InputSlotClass: D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,
+            InstanceDataStepRate: 0,
+        },
+        D3D12_INPUT_ELEMENT_DESC {
+            SemanticName: s!("COLOR"),
+            SemanticIndex: 0,
+            // Four bytes, unpacked to 0..1 by the input assembler at no cost. The shader
+            // sees a `float4` and never learns it was eight-bit.
+            Format: DXGI_FORMAT_R8G8B8A8_UNORM,
+            InputSlot: 0,
+            AlignedByteOffset: 48,
+            InputSlotClass: D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,
+            InstanceDataStepRate: 0,
+        },
     ]
 }
 
@@ -856,6 +929,88 @@ fn mesh_vertex_elements() -> [D3D12_INPUT_ELEMENT_DESC; 3] {
 mod tests {
     use super::*;
     use engine_core::math::{Mat4, Vec3};
+
+    #[test]
+    fn the_mesh_vertex_is_the_size_and_shape_its_input_layout_describes() {
+        // The input layout hands the GPU byte offsets. A field reordered by the compiler or
+        // a padding byte inserted between two of them makes every element read across its
+        // neighbour, and the symptom is geometry that is subtly wrong everywhere rather than
+        // an error anywhere.
+        assert_eq!(size_of::<MeshVertex>(), 52);
+        assert_eq!(std::mem::offset_of!(MeshVertex, position), 0);
+        assert_eq!(std::mem::offset_of!(MeshVertex, normal), 12);
+        assert_eq!(std::mem::offset_of!(MeshVertex, uv), 24);
+        assert_eq!(std::mem::offset_of!(MeshVertex, tangent), 32);
+        assert_eq!(std::mem::offset_of!(MeshVertex, color), 48);
+
+        let elements = mesh_vertex_elements();
+        assert_eq!(elements.len(), 5);
+        let offsets: Vec<u32> = elements.iter().map(|e| e.AlignedByteOffset).collect();
+        assert_eq!(offsets, vec![0, 12, 24, 32, 48]);
+        assert_eq!(elements[3].Format, DXGI_FORMAT_R32G32B32A32_FLOAT);
+        assert_eq!(elements[4].Format, DXGI_FORMAT_R8G8B8A8_UNORM);
+        for element in &elements {
+            assert_eq!(
+                element.AlignedByteOffset % 4,
+                0,
+                "D3D12 wants input element offsets on a four-byte boundary"
+            );
+            assert!(
+                (element.AlignedByteOffset as usize) < size_of::<MeshVertex>(),
+                "an element starts past the end of the vertex"
+            );
+        }
+    }
+
+    #[test]
+    fn the_skinned_vertex_is_the_size_and_shape_its_input_layout_describes() {
+        assert_eq!(size_of::<SkinnedVertex>(), 76);
+        assert_eq!(std::mem::offset_of!(SkinnedVertex, position), 0);
+        assert_eq!(std::mem::offset_of!(SkinnedVertex, normal), 12);
+        assert_eq!(std::mem::offset_of!(SkinnedVertex, uv), 24);
+        assert_eq!(std::mem::offset_of!(SkinnedVertex, tangent), 32);
+        assert_eq!(std::mem::offset_of!(SkinnedVertex, color), 48);
+        assert_eq!(std::mem::offset_of!(SkinnedVertex, joints), 52);
+        assert_eq!(std::mem::offset_of!(SkinnedVertex, weights), 60);
+
+        let elements = skinned_vertex_elements();
+        assert_eq!(elements.len(), 7);
+        let offsets: Vec<u32> = elements.iter().map(|e| e.AlignedByteOffset).collect();
+        assert_eq!(offsets, vec![0, 12, 24, 32, 48, 52, 60]);
+        for element in &elements {
+            assert_eq!(element.AlignedByteOffset % 4, 0);
+            assert!((element.AlignedByteOffset as usize) < size_of::<SkinnedVertex>());
+        }
+    }
+
+    #[test]
+    fn the_skinned_layout_shares_the_rigid_layout_element_for_element() {
+        // The two shaders read the same first five attributes from the same offsets. If they
+        // ever diverge, a mesh drawn skinned and the same mesh drawn rigid would disagree
+        // about where its UVs are.
+        let rigid = mesh_vertex_elements();
+        let skinned = skinned_vertex_elements();
+        for index in 0..rigid.len() {
+            assert_eq!(rigid[index].AlignedByteOffset, skinned[index].AlignedByteOffset);
+            assert_eq!(rigid[index].Format, skinned[index].Format);
+            assert_eq!(rigid[index].SemanticIndex, skinned[index].SemanticIndex);
+        }
+    }
+
+    #[test]
+    fn the_instanced_layout_carries_the_new_vertex_attributes_too() {
+        // The instanced path draws the same vertex buffer through a different pipeline. A
+        // layout that had not been widened with it would read the per-instance stream at the
+        // wrong offset.
+        let elements = instanced_vertex_elements();
+        assert_eq!(elements.len(), 11, "5 per-vertex + 4 matrix rows + tint + emissive");
+        let per_vertex: Vec<u32> = elements
+            .iter()
+            .filter(|e| e.InputSlot == 0)
+            .map(|e| e.AlignedByteOffset)
+            .collect();
+        assert_eq!(per_vertex, vec![0, 12, 24, 32, 48]);
+    }
 
     #[test]
     fn an_instance_is_the_size_the_input_layout_describes() {

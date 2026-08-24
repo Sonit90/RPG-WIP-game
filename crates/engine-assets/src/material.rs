@@ -1,16 +1,19 @@
 //! Surface parameters, plus the texture slots this phase adds.
 //!
-//! This mirrors `engine_renderer::MaterialDesc` — the same five constants — and adds three
+//! This mirrors `engine_renderer::MaterialDesc` — the same five constants — and adds four
 //! optional texture references. It is a separate type for the same reason [`crate::MeshVertex`]
 //! is: an asset must be describable without a device.
 //!
-//! # Why three slots and not a graph
+//! # Why four slots and not a graph
 //!
-//! Base colour, normal, and one packed occlusion/roughness/metallic map is the glTF metallic
-//! -roughness model, which is what every DCC tool exports and what an artist will hand over.
-//! Matching it exactly means the importer copies rather than translates. A material *graph*
-//! is a different feature that buys shader permutations, and the project's stated target is
-//! very high frame rates with a small number of pipeline states.
+//! Base colour, normal, one packed occlusion/roughness/metallic map and emissive is the
+//! glTF metallic-roughness model, which is what every DCC tool exports and what an artist
+//! will hand over. Matching it exactly means the importer copies rather than translates. A
+//! material *graph* is a different feature that buys shader permutations, and the project's
+//! stated target is very high frame rates with a small number of pipeline states.
+//!
+//! The four slots are the renderer's four descriptors, in the same order — see
+//! `engine_renderer::material::MaterialTextureSlot`.
 
 use engine_core::math::{Vec3, Vec4};
 
@@ -39,6 +42,12 @@ pub struct MaterialAsset {
     /// Packed occlusion (R), roughness (G), metallic (B), the glTF convention. Carried and
     /// validated, not yet sampled.
     pub orm_texture: Option<usize>,
+    /// Emissive colour, sampled in sRGB and multiplied with [`Self::emissive`].
+    ///
+    /// glTF's `emissiveTexture`. Carried and validated; the Phase 5 shader binds it and does
+    /// not yet read it, for the same reason as the normal map — the lighting model that
+    /// consumes it is a later milestone, and this one exists to freeze the binding.
+    pub emissive_texture: Option<usize>,
     /// Below this alpha a fragment is discarded, in the camera pass and the shadow pass
     /// alike. Zero is an opaque material and performs no test.
     ///
@@ -60,6 +69,7 @@ impl Default for MaterialAsset {
             base_color_texture: None,
             normal_texture: None,
             orm_texture: None,
+            emissive_texture: None,
             alpha_cutoff: 0.0,
         }
     }
@@ -125,7 +135,31 @@ impl MaterialAsset {
         self
     }
 
+    /// The same material sampling `texture` for tangent-space normals.
+    #[must_use]
+    pub fn with_normal_texture(mut self, texture: usize) -> Self {
+        self.normal_texture = Some(texture);
+        self
+    }
+
+    /// The same material sampling `texture` for occlusion, roughness and metallic.
+    #[must_use]
+    pub fn with_orm_texture(mut self, texture: usize) -> Self {
+        self.orm_texture = Some(texture);
+        self
+    }
+
+    /// The same material sampling `texture` for emissive colour.
+    #[must_use]
+    pub fn with_emissive_texture(mut self, texture: usize) -> Self {
+        self.emissive_texture = Some(texture);
+        self
+    }
+
     /// Every texture index this material names, in slot order.
+    ///
+    /// The order is the renderer's descriptor order — base colour, normal, ORM, emissive —
+    /// so this doubles as the readable statement of which maps a material carries.
     ///
     /// What validation walks to prove no material points past the end of the texture array.
     pub fn texture_indices(&self) -> impl Iterator<Item = (&'static str, usize)> + '_ {
@@ -133,6 +167,7 @@ impl MaterialAsset {
             ("base_color", self.base_color_texture),
             ("normal", self.normal_texture),
             ("orm", self.orm_texture),
+            ("emissive", self.emissive_texture),
         ]
         .into_iter()
         .filter_map(|(slot, index)| index.map(|index| (slot, index)))

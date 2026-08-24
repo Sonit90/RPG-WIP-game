@@ -50,6 +50,7 @@ pub mod mesh;
 pub mod model;
 pub mod procedural;
 pub mod skeleton;
+pub mod tangent;
 pub mod texture;
 pub mod validate;
 
@@ -58,7 +59,7 @@ pub use character::{AnimationSlot, CharacterDef, ClipBindings};
 pub use error::AssetError;
 pub use library::{ModelId, ModelLibrary};
 pub use material::MaterialAsset;
-pub use mesh::{Geometry, MeshVertex, SkinVertex, SubMesh};
+pub use mesh::{DEFAULT_VERTEX_COLOR, Geometry, MeshVertex, SkinVertex, SubMesh};
 pub use model::{ModelAsset, ModelLod};
 pub use skeleton::{Bone, Pose, Skeleton};
 pub use texture::{TextureAsset, TextureFormat};

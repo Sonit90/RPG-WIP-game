@@ -44,7 +44,7 @@ use zune_jpeg::zune_core::options::DecoderOptions;
 use crate::animation::{AnimationClip, BoneTrack, Key};
 use crate::error::AssetError;
 use crate::material::MaterialAsset;
-use crate::mesh::{Geometry, MeshVertex, SkinVertex, SubMesh};
+use crate::mesh::{DEFAULT_VERTEX_COLOR, Geometry, MeshVertex, SkinVertex, SubMesh, UNSET_TANGENT};
 use crate::model::ModelAsset;
 use crate::skeleton::{Bone, Skeleton};
 use crate::texture::{TextureAsset, TextureFormat};
@@ -449,6 +449,9 @@ fn import_materials(gltf: &gltf::Gltf) -> Vec<MaterialAsset> {
                 orm_texture: pbr
                     .metallic_roughness_texture()
                     .map(|info| info.texture().source().index()),
+                emissive_texture: material
+                    .emissive_texture()
+                    .map(|info| info.texture().source().index()),
                 // glTF's alpha mode, mapped onto the only kind of transparency this
                 // renderer has. `Mask` is a cutout and carries its own threshold; `Blend`
                 // becomes one too, at glTF's default threshold, because a leaf card with a
@@ -804,6 +807,72 @@ fn import_submeshes(
                 None => vec![Vec2::ZERO; positions.len()],
             };
 
+            // TANGENT is optional in glTF and most exporters only write it when a normal map
+            // is assigned. What arrives here is one of three things: a full set, nothing at
+            // all, or a set with holes in it where the exporter could not solve a vertex.
+            //
+            // The rule, and it matches this crate's validation philosophy of *repair what is
+            // unambiguous and refuse what is not*: a tangent set that is short, or that
+            // contains a non-finite or zero-length entry, is not trusted at all — the whole
+            // primitive falls back to generation. It is not refused, because a mesh with bad
+            // tangents is still a perfectly good mesh whose tangents this crate can compute;
+            // refusing it would reject assets over a derived attribute. It is not partially
+            // repaired either, because mixing exporter tangents with generated ones across
+            // one surface produces a seam that is far harder to diagnose than either.
+            let source_tangents: Option<Vec<Vec4>> = reader.read_tangents().and_then(|tangents| {
+                let values: Vec<Vec4> = tangents
+                    .map(|value| Vec4::new(value[0], value[1], value[2], value[3]))
+                    .collect();
+                if values.len() != positions.len() {
+                    log::warn!(
+                        "{model}: primitive '{name}' has {} tangents for {} vertices; \
+                         generating instead",
+                        values.len(),
+                        positions.len()
+                    );
+                    return None;
+                }
+                let usable = values.iter().all(|tangent| {
+                    tangent.x.is_finite()
+                        && tangent.y.is_finite()
+                        && tangent.z.is_finite()
+                        && tangent.w.is_finite()
+                        && tangent.x * tangent.x + tangent.y * tangent.y + tangent.z * tangent.z
+                            > 1e-12
+                        && (tangent.w.abs() - 1.0).abs() < 1e-3
+                });
+                if !usable {
+                    log::warn!(
+                        "{model}: primitive '{name}' has malformed TANGENT data; generating \
+                         instead"
+                    );
+                    return None;
+                }
+                Some(values)
+            });
+
+            // COLOR_0 may be RGB or RGBA, and 8-bit, 16-bit or float. `into_rgba_u8` is the
+            // glTF crate's own conversion and supplies an opaque alpha for the RGB forms,
+            // which is exactly the engine's convention — so alpha survives when it was
+            // authored and is 255 when it was not.
+            let colors: Vec<[u8; 4]> = match reader.read_colors(0) {
+                Some(colors) => {
+                    let values: Vec<[u8; 4]> = colors.into_rgba_u8().collect();
+                    if values.len() == positions.len() {
+                        values
+                    } else {
+                        log::warn!(
+                            "{model}: primitive '{name}' has {} vertex colours for {} \
+                             vertices; using white",
+                            values.len(),
+                            positions.len()
+                        );
+                        vec![DEFAULT_VERTEX_COLOR; positions.len()]
+                    }
+                }
+                None => vec![DEFAULT_VERTEX_COLOR; positions.len()],
+            };
+
             let indices: Vec<u32> = match reader.read_indices() {
                 Some(indices) => indices.into_u32().collect(),
                 None => (0..positions.len() as u32).collect(),
@@ -867,6 +936,12 @@ fn import_submeshes(
                                 position: positions[at],
                                 normal: normals[at],
                                 uv: uvs[at],
+                                // `UNSET_TANGENT` when the source had none, which is what
+                                // makes `SubMesh::new` generate a set for this primitive.
+                                tangent: source_tangents
+                                    .as_ref()
+                                    .map_or(UNSET_TANGENT, |tangents| tangents[at]),
+                                color: colors[at],
                                 joints: bones,
                                 weights: weights[at],
                             }
@@ -880,11 +955,35 @@ fn import_submeshes(
                     let matrix = node_matrix.unwrap_or(Mat4::IDENTITY);
                     let vertices = (0..positions.len())
                         .map(|at| {
-                            MeshVertex::new(
+                            let vertex = MeshVertex::new(
                                 matrix.transform_point(positions[at]),
                                 matrix.transform_vector(normals[at]).normalize(),
                                 uvs[at],
                             )
+                            .with_color(colors[at]);
+                            match source_tangents.as_ref() {
+                                // The node transform applies to the tangent's *direction*
+                                // exactly as it does to the normal. Handedness is a property
+                                // of the UV layout, not of where the node sits, so W is
+                                // carried across unchanged — a mirrored node transform would
+                                // need it flipped, and this importer already refuses to bake
+                                // one of those into static geometry elsewhere.
+                                Some(tangents) => {
+                                    let source = tangents[at];
+                                    let direction = matrix
+                                        .transform_vector(Vec3::new(
+                                            source.x, source.y, source.z,
+                                        ))
+                                        .normalize();
+                                    vertex.with_tangent(Vec4::new(
+                                        direction.x,
+                                        direction.y,
+                                        direction.z,
+                                        source.w,
+                                    ))
+                                }
+                                None => vertex,
+                            }
                         })
                         .collect();
                     Geometry::Static(vertices)
@@ -1050,6 +1149,127 @@ mod tests {
         bytes.extend_from_slice(b"JSON");
         bytes.extend_from_slice(&chunk);
         bytes
+    }
+
+    #[test]
+    fn every_material_texture_slot_gltf_defines_reaches_the_asset() {
+        // The regression this exists for: the importer used to read the base colour map and
+        // drop `normalTexture` and `metallicRoughnessTexture` on the floor, and there was no
+        // emissive slot at all. A model exported with four maps then rendered with one, with
+        // nothing anywhere saying three had been discarded.
+        //
+        // Four distinct image indices, so a slot that reads the wrong one cannot pass by
+        // coincidence. The images are never decoded — this exercises `import_materials`,
+        // which reads indices — so their URIs are placeholders.
+        let document = r#"{
+            "asset": { "version": "2.0" },
+            "images": [
+                { "uri": "base.png" },
+                { "uri": "normal.png" },
+                { "uri": "orm.png" },
+                { "uri": "emissive.png" }
+            ],
+            "textures": [
+                { "source": 0 }, { "source": 1 }, { "source": 2 }, { "source": 3 }
+            ],
+            "materials": [{
+                "name": "four_maps",
+                "pbrMetallicRoughness": {
+                    "baseColorTexture": { "index": 0 },
+                    "metallicRoughnessTexture": { "index": 2 },
+                    "roughnessFactor": 0.25,
+                    "metallicFactor": 0.75
+                },
+                "normalTexture": { "index": 1 },
+                "emissiveTexture": { "index": 3 },
+                "emissiveFactor": [1.0, 0.5, 0.25]
+            }]
+        }"#;
+        let Ok(gltf) = gltf::Gltf::from_slice(&glb(document)) else {
+            panic!("the document is valid glTF");
+        };
+        let materials = import_materials(&gltf);
+
+        let material = &materials[0];
+        assert_eq!(material.name, "four_maps");
+        assert_eq!(material.base_color_texture, Some(0), "base colour is image 0");
+        assert_eq!(material.normal_texture, Some(1), "normal is image 1");
+        assert_eq!(material.orm_texture, Some(2), "ORM is image 2");
+        assert_eq!(material.emissive_texture, Some(3), "emissive is image 3");
+
+        // The constants come across too. They are not replaced by the maps — glTF's
+        // convention is that the metallic-roughness texture *scales* these factors, which is
+        // why the renderer's neutral ORM fallback is white rather than a baked default.
+        assert_eq!(material.roughness, 0.25);
+        assert_eq!(material.metallic, 0.75);
+        assert_eq!(material.emissive.x, 1.0);
+
+        // And every slot is reported for validation, so none of them can point past the end
+        // of the texture array unnoticed.
+        let named: Vec<_> = material.texture_indices().collect();
+        assert_eq!(
+            named,
+            vec![
+                ("base_color", 0),
+                ("normal", 1),
+                ("orm", 2),
+                ("emissive", 3),
+            ],
+            "the slots are reported in the renderer's descriptor order"
+        );
+    }
+
+    #[test]
+    fn an_image_a_material_samples_as_colour_is_marked_srgb_and_data_maps_are_not() {
+        // The classification the renderer's view format is built from. Base colour and
+        // emissive are colour and are linearized on read; normal and ORM are data and must
+        // not be. Getting it backwards is the classic washed-out or muddy import, and it has
+        // no other symptom.
+        let document = r#"{
+            "asset": { "version": "2.0" },
+            "images": [
+                { "uri": "base.png" },
+                { "uri": "normal.png" },
+                { "uri": "orm.png" },
+                { "uri": "emissive.png" }
+            ],
+            "textures": [
+                { "source": 0 }, { "source": 1 }, { "source": 2 }, { "source": 3 }
+            ],
+            "materials": [{
+                "pbrMetallicRoughness": {
+                    "baseColorTexture": { "index": 0 },
+                    "metallicRoughnessTexture": { "index": 2 }
+                },
+                "normalTexture": { "index": 1 },
+                "emissiveTexture": { "index": 3 }
+            }]
+        }"#;
+        let Ok(gltf) = gltf::Gltf::from_slice(&glb(document)) else {
+            panic!("the document is valid glTF");
+        };
+
+        // The same walk `import_textures` performs, isolated from the image decoding it
+        // otherwise does — the decode needs real PNG bytes and the classification does not.
+        let mut srgb = vec![false; gltf.images().len()];
+        for material in gltf.materials() {
+            let pbr = material.pbr_metallic_roughness();
+            if let Some(info) = pbr.base_color_texture()
+                && let Some(slot) = srgb.get_mut(info.texture().source().index())
+            {
+                *slot = true;
+            }
+            if let Some(info) = material.emissive_texture()
+                && let Some(slot) = srgb.get_mut(info.texture().source().index())
+            {
+                *slot = true;
+            }
+        }
+        assert_eq!(
+            srgb,
+            vec![true, false, false, true],
+            "base colour and emissive are sRGB; normal and ORM are data"
+        );
     }
 
     #[test]

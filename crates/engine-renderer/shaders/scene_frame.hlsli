@@ -89,15 +89,17 @@ cbuffer Frame : register(b0)
     float4 filter_lod;
 };
 
-// The material constants and the base colour map, shared with the depth-only shadow
-// pipeline — which reads the alpha cutoff out of the same layout.
+// The material constants and the four-texture material set, shared with the depth-only
+// shadow pipeline — which reads the alpha cutoff out of the same layout.
+//
+// The material set owns t0..t3, so every texture below starts at t4.
 #include "material.hlsli"
 
 // The one shadow atlas: every cascade, every spot light and every point-light face.
 // Sampled through a *comparison* sampler, so the hardware performs the depth test and the
 // bilinear filter together — which is what makes a 3x3 kernel nine taps rather than
 // thirty-six.
-Texture2D<float> shadow_atlas : register(t1);
+Texture2D<float> shadow_atlas : register(t4);
 SamplerComparisonState shadow_sampler : register(s1);
 
 // One bitmask per cluster: bit i means local light i reaches it. See light_cluster.rs.
@@ -105,17 +107,17 @@ SamplerComparisonState shadow_sampler : register(s1);
 // A buffer rather than part of `cbuffer Frame`, which is where it lived first: 13.5 KB of
 // masks in the constant buffer made every read of that buffer slower, cascade matrices
 // included, and cost more than the lighting the grid exists to save.
-ByteAddressBuffer cluster_light_mask : register(t3);
+ByteAddressBuffer cluster_light_mask : register(t6);
 
 // What the contact-shadow pass wrote: red the shadow factor, green the view distance the ray
 // started from. Half the camera's width and height by default - see shadow/contact.rs and
 // `contact_shadow_at` below for why that is affordable and how the green channel makes it
 // look like it is not.
-Texture2D<float2> contact_shadows : register(t4);
+Texture2D<float2> contact_shadows : register(t7);
 
 // Last frame's... no: *this* frame's depth, from the prepass, for the contact-shadow march.
 // Bound to a 1x1 texture when contact shadows are off, so the pipeline needs no permutation.
-Texture2D<float> scene_depth : register(t2);
+Texture2D<float> scene_depth : register(t5);
 SamplerState depth_sampler : register(s2);
 
 // ---------------------------------------------------------------------------------------
@@ -872,6 +874,19 @@ float4 shade_surface(
         // The shadow factor alone, on a neutral surface: what the cascades, the filter and
         // the biases are actually producing, with albedo and lighting out of the way.
         return float4(shadow.xxx, 1.0);
+    }
+    if (debug_mode >= 4u)
+    {
+        // The material maps, raw: 4 base colour, 5 normal, 6 ORM, 7 emissive. What proves
+        // the descriptor range really carries four distinct resources in the frozen order,
+        // at a milestone where the lighting model reads only the first of them. No shading
+        // is applied, deliberately — this is a resource-binding probe, not a preview of a
+        // later lighting model.
+        if (debug_mode == 4u)
+        {
+            return float4(albedo.rgb, 1.0);
+        }
+        return float4(material_map_preview(debug_mode, uv), 1.0);
     }
 
     float3 diffuse = tinted * light_color * (light_intensity * lambert * shadow);

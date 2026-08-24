@@ -23,7 +23,10 @@ use crate::device::{BACKEND, RenderDevice, feature_level_name};
 use crate::error::RendererError;
 use crate::frame::{FrameRing, SyncStats};
 use crate::gpu_timer::{GpuTimer, SHADOW_PASS as SHADOW_PASS_QUERY};
-use crate::material::{Material, MaterialDesc};
+use crate::material::{
+    MATERIAL_TEXTURE_COUNT, Material, MaterialDesc, MaterialTextureSet, MaterialTextureSlot,
+    MaterialTextures,
+};
 use crate::mesh::{GpuMesh, MeshData, MeshVertex, SkinnedMeshData, SkinnedVertex, VertexStream};
 use crate::mesh_pipeline::{
     InstanceTransform, InstancedMeshPipeline, MeshPipeline, SkinnedMeshPipeline,
@@ -61,10 +64,16 @@ use engine_render_data::{
 
 /// How many shader-visible SRVs the renderer's one descriptor heap holds.
 ///
-/// One for the UI atlas, one per material texture. A thousand is roughly a hundred
-/// characters' worth of maps at ten each; the heap is a few tens of kilobytes and running
-/// out of it is a named error rather than corruption, so the number is generous on purpose.
-const MAX_TEXTURE_DESCRIPTORS: u32 = 1024;
+/// One for the UI atlas, one per uploaded texture, and four per material — a material's
+/// texture set is one contiguous four-SRV table, so it costs four descriptors whether or not
+/// it uses four distinct maps.
+///
+/// Four thousand rather than the thousand this was before the material set grew from one
+/// texture to four: at the old figure a scene of 200 materials over 200 textures spent 1000
+/// descriptors exactly, and the next material was a named error. The heap is 4096 x 32 bytes
+/// — 128 KB — so the headroom costs nothing worth measuring, and running out is still a
+/// named error rather than corruption.
+const MAX_TEXTURE_DESCRIPTORS: u32 = 4096;
 
 /// The height of a model's LOD0 geometry, in metres.
 ///
@@ -141,6 +150,16 @@ const MAX_UI_QUADS: usize = 65_536;
 pub struct TextureHandle(u32);
 
 impl TextureHandle {
+    /// A handle naming slot `index`.
+    ///
+    /// There is no check that the slot exists — the renderer performs that when the handle
+    /// is used, and naming a slot that does not exist is exactly what a test of that check
+    /// needs to be able to do.
+    #[must_use]
+    pub fn from_index(index: u32) -> Self {
+        Self(index)
+    }
+
     /// The slot this handle names.
     #[must_use]
     pub fn index(self) -> usize {
@@ -173,11 +192,34 @@ pub struct TextureImage<'a> {
 /// One struct rather than two parallel arrays, because the two have exactly the same
 /// lifetime: the descriptor points into the texture, so releasing either alone is the bug.
 struct UploadedTexture {
-    /// Held, not read: the descriptor below points into this texture, so dropping it would
-    /// leave a shader-visible SRV addressing released memory. Ownership *is* its purpose.
-    #[allow(dead_code, reason = "keeps the texture the descriptor points at alive")]
+    /// The resource every view of this texture points into. Read when a material writes it
+    /// into its own table, and held for ownership besides: dropping it would leave a
+    /// shader-visible SRV addressing released memory.
     texture: crate::resource::GpuTexture,
+    /// The view format, which carries the colour space. Kept because a material's table
+    /// holds its *own* SRV for each of its four maps rather than a copy of this one — the
+    /// D3D12 copy path needs a non-shader-visible source heap, and creating the view again
+    /// is cheaper than the staging heap that would avoid it.
+    format: windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT,
+    /// The standalone view, in the persistent region. Kept so a texture is addressable
+    /// without a material, which is what the UI atlas and the diagnostics need.
     descriptor: crate::descriptor::DescriptorHandle,
+}
+
+/// One material's texture set and the contiguous descriptor range that binds it.
+///
+/// The range is [`MATERIAL_TEXTURE_COUNT`] slots taken from the persistent region in a
+/// single allocation, because a root descriptor table has to be contiguous in the heap. The
+/// four SRVs are written into it in [`MaterialTextureSlot::ALL`] order — that ordering is
+/// the ABI, and it is applied in exactly one place so it cannot drift.
+struct MaterialTextureBinding {
+    /// Which texture each slot samples, by name. The renderer never indexes this
+    /// positionally; only the write of the table does, through
+    /// [`MaterialTextures::in_descriptor_order`].
+    textures: MaterialTextures,
+    /// The first descriptor of the range. Held so the range can be released with the
+    /// material, and so a test can read back where the table starts.
+    range: crate::descriptor::DescriptorHandle,
 }
 
 /// The batched game-UI pass.
@@ -319,11 +361,21 @@ pub struct Renderer {
     /// The shader-visible CBV/SRV/UAV heap every SRV lives in — material maps and the UI
     /// atlas alike. Bound once per frame in `begin_recording`.
     descriptors: GpuDescriptorHeap,
-    /// The 1×1 opaque white texture an untextured material samples.
+    /// The four shared 1×1 fallback maps, one per [`MaterialTextureSlot`].
     ///
-    /// One texture fetch that returns 1, instead of a second pipeline state, a second pair
-    /// of shaders and the branch that would choose between them.
-    white_texture: TextureHandle,
+    /// **Shared, not per material.** A material that provides no normal map points at the
+    /// same flat-normal texel every other such material points at; there is one texture per
+    /// slot in the whole renderer. Each is neutral for its slot, so binding a fallback is
+    /// arithmetically the same as having no map at all:
+    ///
+    /// ```text
+    /// base colour  (1, 1, 1, 1)      sRGB   multiplicative identity
+    /// normal       (0.5, 0.5, 1, 1)  linear the flat tangent-space normal, +Z
+    /// ORM          (1, 1, 1, 1)      linear glTF's identity: AO 1, and the roughness and
+    ///                                       metallic factors pass through unscaled
+    /// emissive     (0, 0, 0, 1)      sRGB   emits nothing
+    /// ```
+    fallback_textures: MaterialTextures,
     /// Materials created through [`Renderer::create_material`], indexed by handle.
     materials: Vec<Material>,
     /// The shadow stage: the atlas, what goes in it, and the passes that fill it.
@@ -331,13 +383,14 @@ pub struct Renderer {
     /// Declared before `context` like every other GPU-owning field, because it holds a
     /// texture and pipeline states that must be released before the device is.
     shadow: ShadowRenderer,
-    /// Each material's base colour map as a shader-visible handle, parallel to
-    /// [`Renderer::materials`].
+    /// The base of each material's four-descriptor table, indexed by material handle.
     ///
-    /// Resolved once at material creation rather than per batch. It exists because the
-    /// shadow pass needs the same lookup and cannot call a `&self` method while it holds a
-    /// `&mut` borrow of the renderer's shadow state — and having it as data rather than a
-    /// method also removes two indirections from the camera pass's inner loop.
+    /// The *bind-time* view of [`Renderer::material_bindings`], flattened to one GPU handle
+    /// per material because that is the only thing recording needs and because
+    /// [`crate::shadow::renderer::ShadowScene`] takes it as a slice — the shadow pass cannot
+    /// call a `&self` method while it holds a `&mut` borrow of the renderer's shadow state.
+    /// It is deliberately not four parallel arrays: what a descriptor *means* lives in
+    /// [`MaterialTextures`], and this array carries only where the table starts.
     material_tables: Vec<Option<windows::Win32::Graphics::Direct3D12::D3D12_GPU_DESCRIPTOR_HANDLE>>,
     /// This frame's local lights, copied out of the world by [`Renderer::prepare_shadows`].
     ///
@@ -365,12 +418,15 @@ pub struct Renderer {
     /// Separate from [`Renderer::skinned`], which is the camera's filtered copy: a character
     /// behind the camera casts into a cascade, so the shadow stage needs the whole list.
     shadow_skinned: SkinnedDrawList,
-    /// Which texture each material samples, parallel to [`Renderer::materials`].
+    /// Each material's texture set and the descriptor range that binds it, indexed by
+    /// material handle.
     ///
-    /// Parallel rather than a field on `Material`: a material's constants are a device
-    /// buffer it owns, and its texture is a descriptor the renderer owns. Keeping them apart
-    /// is what let the texture path be added without changing `Material`'s upload at all.
-    material_textures: Vec<TextureHandle>,
+    /// Separate from [`Renderer::materials`] rather than a field on `Material`: a material's
+    /// constants are a device buffer it owns, and its descriptors are heap slots the renderer
+    /// owns — and the offscreen paths build a `Material` with no heap at all. What matters is
+    /// that the *four maps* are one struct with named slots rather than four arrays whose
+    /// ordering has to stay synchronized.
+    material_bindings: Vec<MaterialTextureBinding>,
     /// Frustum culling: the visibility policy and what the last pass counted.
     culler: Culler,
     /// This frame's render list — what culling selected, in the compact form recording
@@ -560,9 +616,11 @@ impl Renderer {
             descriptors,
             // Replaced immediately below, once there is a `self` to upload through. The
             // placeholder names slot 0, which is exactly what the white texture becomes.
-            white_texture: TextureHandle(0),
+            // Replaced immediately below, once there is a `self` to upload through. Every
+            // slot names texture 0, which the constructor then creates as the white texel.
+            fallback_textures: MaterialTextures::uniform(TextureHandle(0)),
             materials: Vec::new(),
-            material_textures: Vec::new(),
+            material_bindings: Vec::new(),
             material_tables: Vec::new(),
             shadow,
             lights: Vec::new(),
@@ -611,16 +669,11 @@ impl Renderer {
         let mut renderer = renderer;
         // The first texture, so an untextured material has something to sample. Created here
         // rather than in the struct literal because uploading needs a `self`.
-        renderer.white_texture = renderer.create_texture(&TextureImage {
-            width: 1,
-            height: 1,
-            srgb: true,
-            texels: &[255, 255, 255, 255],
-        })?;
+        renderer.fallback_textures = renderer.create_fallback_textures()?;
         debug_assert_eq!(
-            renderer.white_texture.index(),
+            renderer.fallback_textures.base_color.index(),
             0,
-            "the white texture is the placeholder the struct literal assumed"
+            "the white texel is the placeholder the struct literal assumed"
         );
         renderer.log_startup_info();
         Ok(renderer)
@@ -1787,6 +1840,7 @@ impl Renderer {
         let index = self.textures.len() as u32;
         self.textures.push(UploadedTexture {
             texture,
+            format,
             descriptor,
         });
         Ok(TextureHandle(index))
@@ -1841,10 +1895,18 @@ impl Renderer {
                 // that did not shadow at all.
                 alpha_cutoff: material.alpha_cutoff,
             };
-            let texture = material
-                .base_color_texture
-                .and_then(|index| textures.get(index).copied());
-            materials.push(self.create_material_textured(desc, texture)?);
+            // Every map the asset carries, not just the base colour: an importer that
+            // dropped the normal and ORM maps here is what this milestone removes. A slot
+            // the asset leaves empty stays `None` and resolves to that slot's shared
+            // fallback inside `create_material_with_textures`.
+            let resolve = |index: Option<usize>| index.and_then(|index| textures.get(index).copied());
+            let set = MaterialTextureSet {
+                base_color: resolve(material.base_color_texture),
+                normal: resolve(material.normal_texture),
+                orm: resolve(material.orm_texture),
+                emissive: resolve(material.emissive_texture),
+            };
+            materials.push(self.create_material_with_textures(desc, set)?);
         }
 
         let mut lods = Vec::with_capacity(model.lods.len());
@@ -1856,7 +1918,12 @@ impl Renderer {
                         let vertices = vertices
                             .iter()
                             .map(|vertex| {
+                                // Tangent and colour come across unchanged: the asset crate
+                                // is where they are imported or generated, and the renderer
+                                // is not entitled to a second opinion about a mesh.
                                 MeshVertex::new(vertex.position, vertex.normal, vertex.uv)
+                                    .with_tangent(vertex.tangent)
+                                    .with_color(vertex.color)
                             })
                             .collect();
                         let data = MeshData::new(vertices, submesh.indices.clone())?;
@@ -1873,6 +1940,8 @@ impl Renderer {
                                     vertex.joints,
                                     vertex.weights,
                                 )
+                                .with_tangent(vertex.tangent)
+                                .with_color(vertex.color)
                             })
                             .collect();
                         let data = SkinnedMeshData::new(vertices, submesh.indices.clone())?;
@@ -2182,21 +2251,67 @@ impl Renderer {
         Ok(drawn)
     }
 
-    /// Uploads a material and returns a handle to it.
+    /// Uploads the four shared fallback maps and returns them as a texture set.
+    ///
+    /// One 1x1 texture per slot, created once at renderer construction and pointed at by
+    /// every material that leaves that slot empty. Creating one per absent map would
+    /// multiply a scene's texture count by the number of maps its artists did not author,
+    /// which is most of them.
+    ///
+    /// The texels and colour spaces come from [`MaterialTextureSlot`] rather than being
+    /// written here, so the offscreen paths build the identical set from the identical
+    /// definition — see [`MaterialTextureSlot::fallback_texel`] for what each one is and
+    /// why.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RendererError::Api`] if a D3D12 call fails.
+    fn create_fallback_textures(&mut self) -> Result<MaterialTextures, RendererError> {
+        let mut handles = [TextureHandle(0); MATERIAL_TEXTURE_COUNT as usize];
+        for slot in MaterialTextureSlot::ALL {
+            handles[slot.register() as usize] = self.create_texture(&TextureImage {
+                width: 1,
+                height: 1,
+                srgb: slot.is_srgb(),
+                texels: &slot.fallback_texel(),
+            })?;
+        }
+        Ok(MaterialTextures {
+            base_color: handles[MaterialTextureSlot::BaseColor.register() as usize],
+            normal: handles[MaterialTextureSlot::Normal.register() as usize],
+            orm: handles[MaterialTextureSlot::Orm.register() as usize],
+            emissive: handles[MaterialTextureSlot::Emissive.register() as usize],
+        })
+    }
+
+    /// The renderer's shared fallback maps, for tests and diagnostics.
+    ///
+    /// Public because "does a material with no normal map really sample the flat normal?" is
+    /// a question about the binding rather than about the picture, and answering it by
+    /// reading pixels would need a lighting model that consumes the map.
+    #[must_use]
+    pub fn fallback_textures(&self) -> MaterialTextures {
+        self.fallback_textures
+    }
+
+    /// Uploads a material with no maps of its own and returns a handle to it.
+    ///
+    /// Every slot resolves to its shared fallback, so the material still binds four valid
+    /// descriptors — there is no such thing as an untextured material at the ABI.
     ///
     /// # Errors
     ///
     /// Returns [`RendererError::InvalidConfig`] for out-of-range parameters, or
     /// [`RendererError::Api`] if a D3D12 call fails.
     pub fn create_material(&mut self, desc: MaterialDesc) -> Result<MaterialHandle, RendererError> {
-        self.create_material_textured(desc, None)
+        self.create_material_with_textures(desc, MaterialTextureSet::default())
     }
 
     /// Uploads a material that samples `texture` for its base colour.
     ///
-    /// `None` binds the shared 1×1 white texture, so every material takes one code path and
-    /// the shader needs no branch. The map *multiplies* the material's base colour rather
-    /// than replacing it, which is what lets one texture serve several tinted materials.
+    /// `None` binds the shared white texel. The map *multiplies* the material's base colour
+    /// rather than replacing it, which is what lets one texture serve several tinted
+    /// materials.
     ///
     /// # Errors
     ///
@@ -2207,36 +2322,171 @@ impl Renderer {
         desc: MaterialDesc,
         texture: Option<TextureHandle>,
     ) -> Result<MaterialHandle, RendererError> {
-        let texture = texture.unwrap_or(self.white_texture);
-        if texture.index() >= self.textures.len() {
-            return Err(RendererError::InvalidConfig {
-                reason: format!(
-                    "material names texture {}, and {} exist",
-                    texture.index(),
-                    self.textures.len()
-                ),
-            });
+        self.create_material_with_textures(
+            desc,
+            MaterialTextureSet {
+                base_color: texture,
+                ..MaterialTextureSet::default()
+            },
+        )
+    }
+
+    /// Uploads a material with a full texture set and returns a handle to it.
+    ///
+    /// Any slot left `None` resolves to that slot's shared fallback, so the material's
+    /// descriptor range always holds [`MATERIAL_TEXTURE_COUNT`] valid SRVs in
+    /// [`MaterialTextureSlot::ALL`] order. The range is one contiguous allocation out of the
+    /// persistent region, taken once here and never touched again — a texture's resource is
+    /// fixed at creation, so there is nothing to invalidate the table later.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RendererError::InvalidConfig`] for out-of-range parameters, a texture
+    /// handle that names nothing, or a full descriptor region; or [`RendererError::Api`] if
+    /// a D3D12 call fails.
+    pub fn create_material_with_textures(
+        &mut self,
+        desc: MaterialDesc,
+        textures: MaterialTextureSet,
+    ) -> Result<MaterialHandle, RendererError> {
+        for (slot, handle) in textures.named() {
+            if handle.index() >= self.textures.len() {
+                return Err(RendererError::InvalidConfig {
+                    reason: format!(
+                        "material names texture {} for its {} map, and {} exist",
+                        handle.index(),
+                        slot.name(),
+                        self.textures.len()
+                    ),
+                });
+            }
         }
+        let textures = textures.resolve(&self.fallback_textures);
+
+        // The constants first: a failure there must not leave a descriptor range allocated
+        // to a material that does not exist.
         let material = Material::new(&self.context, desc)?;
+        let range = self
+            .descriptors
+            .allocate_persistent_range(MATERIAL_TEXTURE_COUNT)?;
+        self.write_material_table(range, &textures);
+
         let index = self.materials.len() as u32;
         self.materials.push(material);
-        self.material_textures.push(texture);
-        // Resolved now, once: a texture's descriptor is fixed at creation and never moves,
-        // so there is nothing to invalidate it later.
-        self.material_tables.push(
-            self.textures
-                .get(texture.index())
-                .and_then(|uploaded| uploaded.descriptor.gpu),
-        );
+        self.material_bindings
+            .push(MaterialTextureBinding { textures, range });
+        self.material_tables.push(range.gpu);
         Ok(MaterialHandle::new(index, 1))
     }
 
-    /// The descriptor table to bind for `material`'s base colour map.
+    /// Writes one SRV per slot into `range`, in descriptor order.
     ///
-    /// Returns `None` for a material that was never created, or whose texture's descriptor
-    /// is somehow not shader visible — both of which are recording bugs rather than content
-    /// ones, and both of which the caller turns into a named error rather than a wrong
-    /// picture.
+    /// The **only** place the semantic texture set becomes positional. The view is created
+    /// afresh rather than copied from the texture's standalone descriptor because D3D12's
+    /// descriptor copy requires a non-shader-visible source heap, and a staging heap to
+    /// enable a copy costs more than calling `CreateShaderResourceView` a second time.
+    fn write_material_table(
+        &self,
+        range: crate::descriptor::DescriptorHandle,
+        textures: &MaterialTextures,
+    ) {
+        use windows::Win32::Graphics::Direct3D12::{
+            D3D12_CPU_DESCRIPTOR_HANDLE, D3D12_SHADER_RESOURCE_VIEW_DESC,
+            D3D12_SHADER_RESOURCE_VIEW_DESC_0, D3D12_SRV_DIMENSION_TEXTURE2D, D3D12_TEX2D_SRV,
+        };
+
+        let increment = self.descriptors.increment() as usize;
+        for slot in MaterialTextureSlot::ALL {
+            let handle = textures.slot(slot);
+            let Some(uploaded) = self.textures.get(handle.index()) else {
+                // Unreachable: every handle was range-checked or came from the fallback set,
+                // and both name a live texture. Skipping rather than panicking leaves the
+                // descriptor as the heap found it, which the debug layer names on use.
+                debug_assert!(false, "material table names texture {}", handle.index());
+                continue;
+            };
+            let desc = D3D12_SHADER_RESOURCE_VIEW_DESC {
+                Format: uploaded.format,
+                ViewDimension: D3D12_SRV_DIMENSION_TEXTURE2D,
+                // The default component mapping, spelled out: leaving it zero is an invalid
+                // encoding the debug layer rejects.
+                Shader4ComponentMapping: 0x1688,
+                Anonymous: D3D12_SHADER_RESOURCE_VIEW_DESC_0 {
+                    Texture2D: D3D12_TEX2D_SRV {
+                        MostDetailedMip: 0,
+                        MipLevels: 1,
+                        PlaneSlice: 0,
+                        ResourceMinLODClamp: 0.0,
+                    },
+                },
+            };
+            let cpu = D3D12_CPU_DESCRIPTOR_HANDLE {
+                ptr: range.cpu.ptr + slot.register() as usize * increment,
+            };
+            // SAFETY: FFI call. The texture outlives the renderer, and the handle addresses
+            // the `slot`-th descriptor of a range this renderer just allocated — the range
+            // is MATERIAL_TEXTURE_COUNT long and `slot.register()` is below that by
+            // construction.
+            unsafe {
+                self.context.device().CreateShaderResourceView(
+                    Some(crate::resource::TrackedResource::resource(
+                        &uploaded.texture,
+                    )),
+                    Some(&desc),
+                    cpu,
+                );
+            }
+        }
+    }
+
+    /// The texture set `material` samples, by slot.
+    ///
+    /// Public because the descriptor ABI is what this milestone freezes, and a test that
+    /// could only observe it through pixels would be a test of the lighting model instead.
+    #[must_use]
+    pub fn material_textures(&self, material: MaterialHandle) -> Option<MaterialTextures> {
+        self.material_bindings
+            .get(material.index())
+            .map(|binding| binding.textures)
+    }
+
+    /// The first heap slot of `material`'s four-descriptor table.
+    ///
+    /// The range is contiguous, so slot `n` of the set is at this index plus `n`. Public for
+    /// the same reason as [`Self::material_textures`].
+    #[must_use]
+    pub fn material_descriptor_range(&self, material: MaterialHandle) -> Option<u32> {
+        self.material_bindings
+            .get(material.index())
+            .map(|binding| binding.range.index)
+    }
+
+    /// The heap slot a texture's standalone view occupies.
+    ///
+    /// What lets a test say "the descriptor at `t1` of this material's table views the same
+    /// resource as texture N" without a GPU capture.
+    #[must_use]
+    pub fn texture_descriptor(&self, texture: TextureHandle) -> Option<u32> {
+        self.textures
+            .get(texture.index())
+            .map(|uploaded| uploaded.descriptor.index)
+    }
+
+    /// Usage of the shader-visible descriptor heap's persistent region.
+    ///
+    /// What answers "how many descriptors does a scene cost?" — one per uploaded texture,
+    /// [`MATERIAL_TEXTURE_COUNT`] per material, one for the UI atlas, and the shadow stage's
+    /// own views.
+    #[must_use]
+    pub fn descriptor_stats(&self) -> crate::descriptor::DescriptorStats {
+        self.descriptors.persistent_stats()
+    }
+
+    /// The descriptor table to bind for `material`'s texture set.
+    ///
+    /// Returns `None` for a material that was never created, or whose range is somehow not
+    /// shader visible — both of which are recording bugs rather than content ones, and both
+    /// of which the caller turns into a named error rather than a wrong picture.
     fn material_table(
         &self,
         material: MaterialHandle,

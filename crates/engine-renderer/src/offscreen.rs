@@ -30,7 +30,7 @@ use crate::command::{CommandContext, scissor_for, transition_barrier, viewport_f
 use crate::depth::{DEPTH_CLEAR, DepthBuffer};
 use crate::device::RenderDevice;
 use crate::error::RendererError;
-use crate::material::{Material, MaterialDesc};
+use crate::material::{MATERIAL_TEXTURE_COUNT, Material, MaterialDesc, MaterialTextureSlot};
 use crate::mesh::{GpuMesh, MeshData, SkinnedMeshData, VertexStream};
 use crate::mesh_pipeline::{
     InstanceTransform, InstancedMeshPipeline, MeshPipeline, SkinnedMeshPipeline,
@@ -48,21 +48,27 @@ use engine_render_data::{Lighting, MAX_PALETTE_BONES};
 /// Bytes per pixel of [`BACK_BUFFER_FORMAT`].
 pub const BYTES_PER_PIXEL: usize = 4;
 
-/// The 1×1 white base colour map both scene paths bind, and the heap holding its view.
+/// The four 1×1 fallback maps every offscreen material binds, and the heap holding them.
 ///
-/// Every mesh material samples a base colour map, and an unbound descriptor table is not a
+/// Every mesh material binds a four-descriptor table, and an unbound descriptor is not a
 /// validation error — it is a sample from whatever the heap happens to contain, which is why
-/// forgetting it here showed up as the two paths disagreeing about a thousand pixels rather
-/// than as a failure.
+/// forgetting one here showed up as the two paths disagreeing about a thousand pixels rather
+/// than as a failure. The whole range is written, not just `t0`, because the root signature
+/// declares four and a table that ran off the end of a one-slot heap would be a heap
+/// overread the moment a shader sampled `t1`.
 ///
-/// The heap and texture are returned so the caller can keep them alive until the submission
-/// completes; the handle is what gets bound.
-struct WhiteMap {
+/// The texels come from [`MaterialTextureSlot::fallback_texel`], the same definition the
+/// window path uses, so a pixel test here is evidence about that path rather than about a
+/// copy of it.
+///
+/// The heap and textures are returned so the caller can keep them alive until the submission
+/// completes; the handle is the base of the table that gets bound.
+struct FallbackMaps {
     heap: crate::descriptor::GpuDescriptorHeap,
-    /// Held, not read: the descriptor points into it, so dropping it would leave a
-    /// shader-visible SRV addressing released memory.
-    #[allow(dead_code, reason = "keeps the texture the descriptor points at alive")]
-    texture: crate::resource::GpuTexture,
+    /// Held, not read: the descriptors point into these, so dropping them would leave
+    /// shader-visible SRVs addressing released memory.
+    #[allow(dead_code, reason = "keeps the textures the descriptors point at alive")]
+    textures: Vec<crate::resource::GpuTexture>,
     table: windows::Win32::Graphics::Direct3D12::D3D12_GPU_DESCRIPTOR_HANDLE,
 }
 
@@ -101,86 +107,111 @@ fn drain_validation_messages(context: &RenderDevice) {
     }
 }
 
-/// Uploads the shared 1x1 white texture.
+/// Uploads the four 1x1 fallback textures, in descriptor order.
 ///
-/// Split from [`white_map`] so a path that owns its own descriptor heap — the shadowed one,
-/// which has to share a heap with the shadow atlas — can put the view somewhere else.
-fn white_texture(context: &RenderDevice) -> Result<crate::resource::GpuTexture, RendererError> {
+/// Split from [`fallback_maps`] so a path that owns its own descriptor heap — the shadowed
+/// one, which has to share a heap with the shadow atlas — can put the views somewhere else.
+fn fallback_textures(
+    context: &RenderDevice,
+) -> Result<Vec<crate::resource::GpuTexture>, RendererError> {
     use crate::resource::GpuTexture;
     use crate::upload::StagingUploader;
     use windows::Win32::Graphics::Direct3D12::D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
-    use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
 
-    let texture = GpuTexture::new(
-        context,
-        1,
-        1,
-        DXGI_FORMAT_R8G8B8A8_UNORM_SRGB,
-        D3D12_RESOURCE_STATE_COPY_DEST,
-    )?;
+    let mut textures = Vec::with_capacity(MaterialTextureSlot::ALL.len());
     let mut uploader = StagingUploader::new(context)?;
-    uploader.queue_texture(
-        context,
-        &texture,
-        &[255, 255, 255, 255],
-        D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-    )?;
+    for slot in MaterialTextureSlot::ALL {
+        let texture = GpuTexture::new(context, 1, 1, slot_format(slot), D3D12_RESOURCE_STATE_COPY_DEST)?;
+        uploader.queue_texture(
+            context,
+            &texture,
+            &slot.fallback_texel(),
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+        )?;
+        textures.push(texture);
+    }
     uploader.flush(context)?;
-    Ok(texture)
+    Ok(textures)
 }
 
-/// Writes the white texture's shader-resource view into `handle`.
-fn create_white_view(
-    context: &RenderDevice,
-    texture: &crate::resource::GpuTexture,
-    handle: crate::descriptor::DescriptorHandle,
-) {
-    use crate::resource::TrackedResource;
-    use windows::Win32::Graphics::Direct3D12::{
-        D3D12_SHADER_RESOURCE_VIEW_DESC, D3D12_SHADER_RESOURCE_VIEW_DESC_0,
-        D3D12_SRV_DIMENSION_TEXTURE2D, D3D12_TEX2D_SRV,
+/// The view format a slot's textures are read through. The colour space lives in the view,
+/// not the resource — the texels are the same bytes either way.
+fn slot_format(slot: MaterialTextureSlot) -> windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT {
+    use windows::Win32::Graphics::Dxgi::Common::{
+        DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_R8G8B8A8_UNORM_SRGB,
     };
-    use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
-
-    let desc = D3D12_SHADER_RESOURCE_VIEW_DESC {
-        Format: DXGI_FORMAT_R8G8B8A8_UNORM_SRGB,
-        ViewDimension: D3D12_SRV_DIMENSION_TEXTURE2D,
-        Shader4ComponentMapping: 0x1688,
-        Anonymous: D3D12_SHADER_RESOURCE_VIEW_DESC_0 {
-            Texture2D: D3D12_TEX2D_SRV {
-                MostDetailedMip: 0,
-                MipLevels: 1,
-                PlaneSlice: 0,
-                ResourceMinLODClamp: 0.0,
-            },
-        },
-    };
-    // SAFETY: FFI call. The texture outlives the submission, and the CPU handle addresses a
-    // slot the caller just allocated.
-    unsafe {
-        context.device().CreateShaderResourceView(
-            Some(TrackedResource::resource(texture)),
-            Some(&desc),
-            handle.cpu,
-        );
+    if slot.is_srgb() {
+        DXGI_FORMAT_R8G8B8A8_UNORM_SRGB
+    } else {
+        DXGI_FORMAT_R8G8B8A8_UNORM
     }
 }
 
-/// Creates the shared white map for one offscreen submission.
-fn white_map(context: &RenderDevice) -> Result<WhiteMap, RendererError> {
+/// Writes the four fallback views into the contiguous range starting at `range`.
+///
+/// `textures` must be in [`MaterialTextureSlot::ALL`] order, which is what
+/// [`fallback_textures`] returns — the order is the ABI, and this is the offscreen paths'
+/// one copy of the write that `Renderer::write_material_table` performs for the window.
+fn create_fallback_views(
+    context: &RenderDevice,
+    textures: &[crate::resource::GpuTexture],
+    range: crate::descriptor::DescriptorHandle,
+    increment: u32,
+) {
+    use crate::resource::TrackedResource;
+    use windows::Win32::Graphics::Direct3D12::{
+        D3D12_CPU_DESCRIPTOR_HANDLE, D3D12_SHADER_RESOURCE_VIEW_DESC,
+        D3D12_SHADER_RESOURCE_VIEW_DESC_0, D3D12_SRV_DIMENSION_TEXTURE2D, D3D12_TEX2D_SRV,
+    };
+
+    for slot in MaterialTextureSlot::ALL {
+        let Some(texture) = textures.get(slot.register() as usize) else {
+            continue;
+        };
+        let desc = D3D12_SHADER_RESOURCE_VIEW_DESC {
+            Format: slot_format(slot),
+            ViewDimension: D3D12_SRV_DIMENSION_TEXTURE2D,
+            Shader4ComponentMapping: 0x1688,
+            Anonymous: D3D12_SHADER_RESOURCE_VIEW_DESC_0 {
+                Texture2D: D3D12_TEX2D_SRV {
+                    MostDetailedMip: 0,
+                    MipLevels: 1,
+                    PlaneSlice: 0,
+                    ResourceMinLODClamp: 0.0,
+                },
+            },
+        };
+        let cpu = D3D12_CPU_DESCRIPTOR_HANDLE {
+            ptr: range.cpu.ptr + slot.register() as usize * increment as usize,
+        };
+        // SAFETY: FFI call. The texture outlives the submission, and the CPU handle
+        // addresses the `slot`-th descriptor of a range the caller just allocated with
+        // MATERIAL_TEXTURE_COUNT slots.
+        unsafe {
+            context.device().CreateShaderResourceView(
+                Some(TrackedResource::resource(texture)),
+                Some(&desc),
+                cpu,
+            );
+        }
+    }
+}
+
+/// Creates the shared fallback material table for one offscreen submission.
+fn fallback_maps(context: &RenderDevice) -> Result<FallbackMaps, RendererError> {
     use crate::descriptor::GpuDescriptorHeap;
 
-    let texture = white_texture(context)?;
-    let mut heap = GpuDescriptorHeap::new(context, 1, 0, 1)?;
-    let descriptor = heap.allocate_persistent()?;
-    create_white_view(context, &texture, descriptor);
+    let textures = fallback_textures(context)?;
+    let mut heap = GpuDescriptorHeap::new(context, MATERIAL_TEXTURE_COUNT, 0, 1)?;
+    let range = heap.allocate_persistent_range(MATERIAL_TEXTURE_COUNT)?;
+    create_fallback_views(context, &textures, range, heap.increment());
 
-    let table = descriptor.gpu.ok_or_else(|| RendererError::InvalidConfig {
-        reason: "the offscreen white map descriptor is not shader visible".to_owned(),
+    let table = range.gpu.ok_or_else(|| RendererError::InvalidConfig {
+        reason: "the offscreen fallback map range is not shader visible".to_owned(),
     })?;
-    Ok(WhiteMap {
+    Ok(FallbackMaps {
         heap,
-        texture,
+        textures,
         table,
     })
 }
@@ -320,7 +351,7 @@ pub fn render_skinned_scene(
             materials.push(Material::new(context, object.material)?);
         }
 
-        let white = white_map(context)?;
+        let white = fallback_maps(context)?;
         let frame = FrameConstants::new(camera.view_projection(), camera.position(), lighting);
         let frame_allocation = ring.write_constants(0, &frame)?;
         // An empty light grid. These paths have no local lights, so the shader never reads
@@ -427,7 +458,7 @@ pub fn render_scene(
             materials.push(Material::new(context, object.material)?);
         }
 
-        let white = white_map(context)?;
+        let white = fallback_maps(context)?;
         let frame = FrameConstants::new(camera.view_projection(), camera.position(), lighting);
         let frame_allocation = ring.write_constants(0, &frame)?;
         // An empty light grid. These paths have no local lights, so the shader never reads
@@ -473,6 +504,164 @@ pub fn render_scene(
 
         Ok(Box::new((pipeline, ring, meshes, materials, white)) as Box<dyn std::any::Any>)
     })
+}
+
+/// Renders one surface with a caller-supplied material texture set and reads it back.
+///
+/// What proves the four-descriptor material table reaches the GPU intact. `texels` is one
+/// straight-RGBA8 texel per slot, in [`MaterialTextureSlot::ALL`] order — base colour,
+/// normal, ORM, emissive — and each becomes its own 1x1 texture with its own SRV in one
+/// contiguous four-slot range, exactly as `Renderer::create_material_with_textures` builds
+/// one.
+///
+/// `debug_mode` selects which slot the shader returns raw: 4 base colour, 5 normal, 6 ORM,
+/// 7 emissive. The captured image is therefore the texel that slot's descriptor actually
+/// resolved to, with no lighting in the way.
+///
+/// This is a **binding** probe, not a shading test. Milestone 2 does not consume the normal
+/// or ORM maps in the lighting model, so the alternative to reading them here would be to
+/// prove the descriptors are right by writing the lighting model that reads them — which is
+/// a later milestone, and would make this evidence about that instead.
+///
+/// # Errors
+///
+/// Returns [`RendererError`] if any D3D12 call fails.
+pub fn render_material_maps(
+    width: u32,
+    height: u32,
+    texels: [[u8; 4]; MATERIAL_TEXTURE_COUNT as usize],
+    debug_mode: u32,
+) -> Result<CapturedImage, RendererError> {
+    use crate::descriptor::GpuDescriptorHeap;
+    use crate::resource::GpuTexture;
+    use engine_core::math::Vec3;
+    use crate::upload::StagingUploader;
+    use windows::Win32::Graphics::Direct3D12::D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+
+    // A quad filling the view, facing the camera. Its normal and UVs are what the shader
+    // samples with; the geometry itself is not what is under test.
+    let quad = MeshData::new(
+        vec![
+            crate::mesh::MeshVertex::new(
+                Vec3::new(-1.0, -1.0, 0.0),
+                Vec3::Z,
+                engine_core::math::Vec2::new(0.0, 1.0),
+            ),
+            crate::mesh::MeshVertex::new(
+                Vec3::new(1.0, -1.0, 0.0),
+                Vec3::Z,
+                engine_core::math::Vec2::new(1.0, 1.0),
+            ),
+            crate::mesh::MeshVertex::new(
+                Vec3::new(1.0, 1.0, 0.0),
+                Vec3::Z,
+                engine_core::math::Vec2::new(1.0, 0.0),
+            ),
+            crate::mesh::MeshVertex::new(
+                Vec3::new(-1.0, 1.0, 0.0),
+                Vec3::Z,
+                engine_core::math::Vec2::new(0.0, 0.0),
+            ),
+        ],
+        vec![0, 1, 2, 0, 2, 3],
+    )?;
+    let mut camera = Camera::new(engine_render_data::Projection::perspective(
+        width as f32 / height as f32,
+    ))
+    .map_err(|error| RendererError::InvalidConfig {
+        reason: error.to_string(),
+    })?;
+    camera.set_position(Vec3::new(0.0, 0.0, 2.0));
+
+    render_with(
+        width,
+        height,
+        [0.0, 0.0, 0.0, 1.0],
+        |context, commands, _, _| {
+            let list = commands.list();
+            let pipeline = MeshPipeline::new(context.device())?;
+            let mut ring = UploadRing::new(context, 1 << 20, 1)?;
+            ring.begin_frame(0);
+
+            let mesh = GpuMesh::upload(context, &quad)?;
+            let material = Material::new(context, MaterialDesc::default())?;
+
+            // One 1x1 texture per slot, with that slot's colour space, and one contiguous
+            // four-descriptor range holding their views in slot order. The same shape the
+            // renderer builds, so a failure here is a failure there.
+            let mut textures = Vec::with_capacity(MaterialTextureSlot::ALL.len());
+            let mut uploader = StagingUploader::new(context)?;
+            for slot in MaterialTextureSlot::ALL {
+                let texture = GpuTexture::new(
+                    context,
+                    1,
+                    1,
+                    slot_format(slot),
+                    D3D12_RESOURCE_STATE_COPY_DEST,
+                )?;
+                uploader.queue_texture(
+                    context,
+                    &texture,
+                    &texels[slot.register() as usize],
+                    D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                )?;
+                textures.push(texture);
+            }
+            uploader.flush(context)?;
+
+            let mut heap = GpuDescriptorHeap::new(context, MATERIAL_TEXTURE_COUNT, 0, 1)?;
+            let range = heap.allocate_persistent_range(MATERIAL_TEXTURE_COUNT)?;
+            create_fallback_views(context, &textures, range, heap.increment());
+            let table = range.gpu.ok_or_else(|| RendererError::InvalidConfig {
+                reason: "the material map range is not shader visible".to_owned(),
+            })?;
+
+            let mut frame = FrameConstants::new(
+                camera.view_projection(),
+                camera.position(),
+                Lighting::default(),
+            );
+            frame.set_camera(&camera);
+            frame.set_viewport(width, height);
+            frame.set_debug_mode(debug_mode);
+            let frame_allocation = ring.write_constants(0, &frame)?;
+            let cluster_allocation = empty_light_grid(&mut ring)?;
+            let constants = ObjectConstants::new(engine_core::math::Mat4::IDENTITY);
+            let object_allocation = ring.write_constants(0, &constants)?;
+
+            // SAFETY: FFI calls recording into the open list. Every referenced object is
+            // returned below and kept alive until the submission completes.
+            unsafe {
+                list.SetGraphicsRootSignature(pipeline.root_signature());
+                list.SetPipelineState(pipeline.pipeline_state());
+                list.SetDescriptorHeaps(&[Some(heap.heap().clone())]);
+                list.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+                list.SetGraphicsRootConstantBufferView(
+                    ROOT_FRAME_CBV,
+                    frame_allocation.gpu_address(),
+                );
+                list.SetGraphicsRootShaderResourceView(
+                    crate::scene::ROOT_CLUSTER_SRV,
+                    cluster_allocation.gpu_address(),
+                );
+                list.SetGraphicsRootDescriptorTable(ROOT_MATERIAL_TABLE, table);
+                // The contact table is never read here — `contact_target` is zero, so the
+                // lighting takes the branch that does not sample — but a declared root
+                // parameter is bound rather than left pointing at whatever the heap holds.
+                list.SetGraphicsRootDescriptorTable(crate::scene::ROOT_CONTACT_TABLE, table);
+                list.SetGraphicsRootConstantBufferView(ROOT_MATERIAL_CBV, material.gpu_address());
+                list.SetGraphicsRootConstantBufferView(
+                    ROOT_OBJECT_CBV,
+                    object_allocation.gpu_address(),
+                );
+                list.IASetVertexBuffers(0, Some(&[*mesh.vertex_view()]));
+                list.IASetIndexBuffer(Some(mesh.index_view()));
+                list.DrawIndexedInstanced(mesh.index_count(), 1, 0, 0, 0);
+            }
+
+            Ok(Box::new((pipeline, ring, mesh, material, textures, heap)) as Box<dyn std::any::Any>)
+        },
+    )
 }
 
 /// One object in a shadowed scene.
@@ -589,9 +778,9 @@ pub fn render_scene_shadowed_debug(
             // map, the shadow atlas and the depth copy. Only one such heap can be bound at a
             // time, which is exactly why the renderer has one and why this path must too.
             let mut descriptors = crate::descriptor::GpuDescriptorHeap::new(context, 16, 0, 1)?;
-            let white_texture = white_texture(context)?;
-            let white_handle = descriptors.allocate_persistent()?;
-            create_white_view(context, &white_texture, white_handle);
+            let white_texture = fallback_textures(context)?;
+            let white_handle = descriptors.allocate_persistent_range(MATERIAL_TEXTURE_COUNT)?;
+            create_fallback_views(context, &white_texture, white_handle, descriptors.increment());
 
             let mut shadow = crate::shadow::ShadowRenderer::new(
                 context,
@@ -976,7 +1165,7 @@ pub fn render_scene_instanced(
             materials.push(Material::new(context, object.material)?);
         }
 
-        let white = white_map(context)?;
+        let white = fallback_maps(context)?;
         let frame = FrameConstants::new(camera.view_projection(), camera.position(), lighting);
         let frame_allocation = ring.write_constants(0, &frame)?;
         // An empty light grid. These paths have no local lights, so the shader never reads
