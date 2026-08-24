@@ -175,7 +175,6 @@ pub struct FrameConstants {
     pub filter_lod: [f32; 4],
 }
 
-
 /// Written out rather than derived: `#[derive(Default)]` does not reach an array longer than
 /// thirty-two, and the cluster mask array is eight hundred and sixty-four `uint4`s. Every
 /// field is zero, which is what the shader reads as "no shadows, no lights, no grid".

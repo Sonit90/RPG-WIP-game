@@ -615,7 +615,7 @@ unsafe extern "system" fn window_proc(
                 x: MAX_WINDOW_EDGE,
                 y: MAX_WINDOW_EDGE,
             };
-            return LRESULT(0);
+            LRESULT(0)
         }
         WM_SIZE => {
             let (width, height) = size_from_lparam(lparam.0);

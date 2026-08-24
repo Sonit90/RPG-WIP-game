@@ -52,9 +52,13 @@ SamplerState base_color_sampler : register(s0);
 
 // One fragment's material, sampled and combined with the constants.
 //
-// The four fetches happen unconditionally. There is no "has a normal map" flag to branch on
-// and deliberately so: the alternative to a fallback texel is a shader permutation per absent
-// map, and a fetch that returns the identity is cheaper than the pipeline switch would be.
+// Three of the four fetches happen unconditionally; the normal map is behind
+// `MATERIAL_NORMAL_MAP`. Until M5 all four were unconditional, on the argument that a fetch
+// returning the identity texel is cheaper than a pipeline switch. Measurement said otherwise:
+// the fetch and the tangent frame it feeds cost 0.071 ms at 1440p, most of it on materials
+// that sample the flat fallback and get their own geometric normal back. A material without a
+// map now compiles the fetch out entirely and `normal_ts` is the packed flat normal, so
+// anything that still reads it sees +Z.
 struct MaterialSample
 {
     float4 base_color;   // Linear RGBA: the sRGB view decoded the texture, the factor is linear.
@@ -74,7 +78,13 @@ MaterialSample sample_material(float2 uv)
 {
     MaterialSample result;
     result.base_color = base_color * base_color_map.Sample(base_color_sampler, uv);
+#if MATERIAL_NORMAL_MAP
     result.normal_ts = normal_map.Sample(base_color_sampler, uv).rgb;
+#else
+    // The flat tangent-space normal, packed: what the shared fallback texel holds. No fetch,
+    // and `apply_normal_map` is not called on this path at all.
+    result.normal_ts = float3(0.5, 0.5, 1.0);
+#endif
 
     float3 orm = orm_map.Sample(base_color_sampler, uv).rgb;
     // glTF: `1 + strength * (sampled - 1)`. A strength of 1 is the map, 0 is no occlusion at
@@ -102,7 +112,14 @@ float3 material_map_preview(uint mode, float2 uv)
 {
     if (mode == 5u)
     {
+#if MATERIAL_NORMAL_MAP
         return normal_map.Sample(base_color_sampler, uv).rgb;
+#else
+        // A material with no normal map has nothing to preview, and compiling the fetch in for
+        // a debug view would put it back in every pixel's shader. The flat normal is what the
+        // fallback texel holds and what the shading uses.
+        return float3(0.5, 0.5, 1.0);
+#endif
     }
     if (mode == 6u)
     {

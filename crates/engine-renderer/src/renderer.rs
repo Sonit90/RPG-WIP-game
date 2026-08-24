@@ -34,9 +34,7 @@ use crate::material::{
     MaterialTextures,
 };
 use crate::mesh::{GpuMesh, MeshData, MeshVertex, SkinnedMeshData, SkinnedVertex, VertexStream};
-use crate::mesh_pipeline::{
-    InstanceTransform, InstancedMeshPipeline, MeshPipeline, SkinnedMeshPipeline,
-};
+use crate::mesh_pipeline::{InstanceTransform, MeshPipelines, PipelineVariant};
 use crate::mipmap::TextureKind;
 #[cfg(feature = "debug-overlay")]
 use crate::overlay::{OverlayBuffers, OverlayGeometry, OverlayMetrics};
@@ -49,6 +47,7 @@ use crate::scene::{
     ROOT_FRAME_CBV, ROOT_MATERIAL_CBV, ROOT_MATERIAL_TABLE, ROOT_OBJECT_CBV, ROOT_SHADOW_TABLE,
     ROOT_SKIN_CBV,
 };
+use crate::shader::ShaderFeatures;
 use crate::shadow::renderer::ShadowScene;
 use crate::shadow::{ShadowRenderer, ShadowSettings, ShadowStats};
 use crate::stress;
@@ -377,16 +376,15 @@ pub struct Renderer {
     pipeline: ScenePipeline,
     /// Depth target, the size of the back buffer.
     depth: DepthBuffer,
-    /// Root signature and pipeline state for `MeshVertex` geometry.
-    mesh_pipeline: MeshPipeline,
-    /// The same pipeline with wireframe fill, selected by [`Renderer::set_wireframe`].
-    mesh_pipeline_wireframe: MeshPipeline,
+    /// Every mesh pipeline state in use, keyed by shader permutation and fill mode.
+    ///
+    /// One cache rather than six fields, because the pixel shader is now chosen per draw
+    /// from what the material declares and per frame from whether shadows are on: the set of
+    /// states a frame needs is a property of the scene, not something startup can enumerate.
+    /// See [`MeshPipelines`].
+    pipelines: MeshPipelines,
     /// Whether `render_world` draws through the wireframe pipeline.
     wireframe: bool,
-    /// Root signature and pipeline state for skinned geometry.
-    skinned_pipeline: SkinnedMeshPipeline,
-    /// The same, with wireframe fill.
-    skinned_pipeline_wireframe: SkinnedMeshPipeline,
     /// Meshes created through [`Renderer::create_mesh`], indexed by handle.
     meshes: Vec<GpuMesh>,
     /// Skinned meshes created through [`Renderer::create_skinned_mesh`], indexed by handle.
@@ -460,6 +458,13 @@ pub struct Renderer {
     /// [`crate::shadow::renderer::ShadowScene`] takes it as a slice — the shadow pass cannot
     /// call a `&self` method while it holds a `&mut` borrow of the renderer's shadow state.
     /// It is deliberately not four parallel arrays: what a descriptor *means* lives in
+    /// Which shader permutation each material asks for, indexed by handle.
+    ///
+    /// Parallel to `materials`, and settled at creation: `pbr` is what the description
+    /// declares and `normal_map` is whether the caller supplied a normal map rather than
+    /// letting the slot resolve to the flat fallback. The shadow bit is not stored here -
+    /// it is global and per frame.
+    material_features: Vec<ShaderFeatures>,
     /// [`MaterialTextures`], and this array carries only where the table starts.
     material_tables: Vec<Option<windows::Win32::Graphics::Direct3D12::D3D12_GPU_DESCRIPTOR_HANDLE>>,
     /// This frame's local lights, copied out of the world by [`Renderer::prepare_shadows`].
@@ -519,10 +524,6 @@ pub struct Renderer {
     cull_scratch: Vec<RenderList>,
     /// Milliseconds the most recent grouping pass took.
     last_group_ms: f64,
-    /// Root signature and pipeline state for instanced mesh geometry.
-    instanced_pipeline: InstancedMeshPipeline,
-    /// The same, with wireframe fill.
-    instanced_pipeline_wireframe: InstancedMeshPipeline,
     /// Whether each batch is drawn as one instanced call.
     ///
     /// On by default. Milestone 17 measured it at 2.2x the frame rate at 100,000 objects
@@ -627,16 +628,9 @@ impl Renderer {
         let gpu_timer = GpuTimer::new(context.device(), context.queue(), frames_in_flight)?;
         let pipeline = ScenePipeline::new(context.device())?;
         let depth = DepthBuffer::new(&context, config.width, config.height)?;
-        let mesh_pipeline = MeshPipeline::new(context.device())?;
-        let mesh_pipeline_wireframe = MeshPipeline::wireframe(context.device())?;
-        let instanced_pipeline = InstancedMeshPipeline::new(context.device())?;
-        let instanced_pipeline_wireframe = InstancedMeshPipeline::wireframe(context.device())?;
         let mut scene_scratch = Vec::new();
         stress::build_grid(1, &mut scene_scratch);
         let scene = VertexStream::upload(&context, &scene_scratch)?;
-
-        let skinned_pipeline = SkinnedMeshPipeline::new(context.device())?;
-        let skinned_pipeline_wireframe = SkinnedMeshPipeline::wireframe(context.device())?;
 
         // One heap for every shader-visible SRV in the renderer: the UI atlas and one per
         // material texture. Bound once per frame; never switched.
@@ -676,11 +670,8 @@ impl Renderer {
             last_pass_ms: [None; MAX_TIMED_PASSES],
             pipeline,
             depth,
-            mesh_pipeline,
-            mesh_pipeline_wireframe,
+            pipelines: MeshPipelines::new(),
             wireframe: false,
-            skinned_pipeline,
-            skinned_pipeline_wireframe,
             meshes: Vec::new(),
             skinned_meshes: Vec::new(),
             textures: Vec::new(),
@@ -696,6 +687,7 @@ impl Renderer {
             fallback_textures: MaterialTextures::uniform(TextureHandle(0)),
             materials: Vec::new(),
             material_bindings: Vec::new(),
+            material_features: Vec::new(),
             material_tables: Vec::new(),
             shadow,
             lights: Vec::new(),
@@ -710,8 +702,6 @@ impl Renderer {
             last_cull_ms: 0.0,
             cull_scratch: Vec::new(),
             last_group_ms: 0.0,
-            instanced_pipeline,
-            instanced_pipeline_wireframe,
             instancing: true,
             instance_scratch: Vec::new(),
             skinned: engine_render_data::SkinnedDrawList::new(),
@@ -1466,13 +1456,22 @@ impl Renderer {
         self.gpu_timer
             .begin_pass(self.commands.list(), slot, SCENE_PASS);
 
-        let pipeline = if self.wireframe {
-            &self.mesh_pipeline_wireframe
-        } else {
-            &self.mesh_pipeline
-        };
-        self.commands
-            .set_pipeline(pipeline.root_signature(), pipeline.pipeline_state());
+        // The root signature first, before a single root argument is written.
+        //
+        // Every mesh permutation shares one signature object, so this is the only time it is
+        // bound in the camera pass and the per-batch pipeline switches below cannot discard
+        // what the next few lines write. Binding it *after* the frame constants - which is
+        // what happens if a batch is the first thing to bind a signature - throws them away
+        // and the first draw reads unbound root parameters, which the GPU reports as a
+        // removed device rather than as a validation error.
+        let mesh_root_signature = self
+            .pipelines
+            .root_signature(self.context.device())?
+            .clone();
+        self.commands.set_root_signature(&mesh_root_signature);
+
+        // The pipeline state is bound per batch below, from the material's permutation.
+        // The topology, the frame constants and the cluster grid are shared by all of them.
         self.commands
             .set_topology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         self.commands
@@ -1523,6 +1522,17 @@ impl Renderer {
                 });
             };
 
+            let variant = self.material_variant(batch.material);
+            let pipeline_state = self
+                .pipelines
+                .mesh(self.context.device(), variant)?
+                .pipeline_state()
+                .clone();
+            // State only: the signature was bound once above. The command context drops a
+            // redundant bind, so a run of batches sharing a permutation - which is nearly
+            // every scene - costs one PSO change, not one per batch.
+            self.commands.set_pipeline_state(&pipeline_state);
+
             self.commands
                 .set_root_cbv(ROOT_MATERIAL_CBV, material.gpu_address());
             self.commands
@@ -1566,14 +1576,6 @@ impl Renderer {
         slot: usize,
         back_buffer: usize,
     ) -> Result<(), RendererError> {
-        let pipeline = if self.wireframe {
-            &self.instanced_pipeline_wireframe
-        } else {
-            &self.instanced_pipeline
-        };
-        self.commands
-            .set_pipeline(pipeline.root_signature(), pipeline.pipeline_state());
-
         for batch in self.visible.batches() {
             let Some(mesh) = self.meshes.get(batch.mesh.index()) else {
                 return Err(RendererError::InvalidConfig {
@@ -1619,6 +1621,14 @@ impl Renderer {
                 });
             };
 
+            let variant = self.material_variant(batch.material);
+            let pipeline_state = self
+                .pipelines
+                .instanced(self.context.device(), variant)?
+                .pipeline_state()
+                .clone();
+            self.commands.set_pipeline_state(&pipeline_state);
+
             self.commands
                 .set_root_cbv(ROOT_MATERIAL_CBV, material.gpu_address());
             self.commands
@@ -1661,13 +1671,6 @@ impl Renderer {
             return Ok(0);
         }
 
-        let pipeline = if self.wireframe {
-            &self.skinned_pipeline_wireframe
-        } else {
-            &self.skinned_pipeline
-        };
-        self.commands
-            .set_pipeline(pipeline.root_signature(), pipeline.pipeline_state());
         self.commands
             .set_topology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 
@@ -1701,6 +1704,18 @@ impl Renderer {
                 });
             };
             let material_address = material.gpu_address();
+            let variant = self.material_variant(instance.material);
+            let pipeline_state = self
+                .pipelines
+                .skinned(self.context.device(), variant)?
+                .pipeline_state()
+                .clone();
+            // Per draw, like the rigid batches: a character whose skin has a normal map and
+            // a cloth that does not are two permutations, and the context skips the bind when
+            // consecutive submeshes agree. State only - the skinned pipelines share the
+            // signature the camera pass bound, and rebinding it here would discard the frame
+            // constants and the shadow tables the rigid batches are still using.
+            self.commands.set_pipeline_state(&pipeline_state);
             let Some(table) = self.material_table(instance.material) else {
                 return Err(RendererError::InvalidConfig {
                     reason: format!(
@@ -1778,6 +1793,24 @@ impl Renderer {
     #[must_use]
     pub fn skinned_draws_last_frame(&self) -> u32 {
         self.skinned_draws_last_frame
+    }
+
+    /// The shader permutation `material` asks for, with this frame's shadow state folded in.
+    ///
+    /// The material half was settled when the material was created; the shadow half is read
+    /// here, every frame, because F6 and the settings screen change it at runtime and a
+    /// variant chosen at startup would be the wrong one the moment a player does.
+    fn material_variant(&self, material: MaterialHandle) -> PipelineVariant {
+        let features = self
+            .material_features
+            .get(material.index())
+            .copied()
+            .unwrap_or(ShaderFeatures::ALL)
+            .with_shadows(self.shadow.settings().enabled);
+        PipelineVariant {
+            features,
+            wireframe: self.wireframe,
+        }
     }
 
     /// Binds the shadow atlas and the scene-depth copy for the camera pass.
@@ -2174,6 +2207,10 @@ impl Renderer {
                 // material that shadowed as an opaque rectangle would be worse than one
                 // that did not shadow at all.
                 alpha_cutoff: material.alpha_cutoff,
+                // Imported assets are Lambert like everything else until the game asks for
+                // the BRDF. The roughness, metallic and ORM map the importer read are still
+                // carried on the material - opting in is one call, not a re-import.
+                pbr: false,
             };
             // Every map the asset carries, not just the base colour: an importer that
             // dropped the normal and ORM maps here is what this milestone removes. A slot
@@ -2642,6 +2679,15 @@ impl Renderer {
                 });
             }
         }
+        // Before `resolve`, which replaces every empty slot with a fallback and so loses
+        // the one thing the permutation needs to know: whether this material actually has a
+        // normal map, or was about to sample the flat texel and get its own geometric normal
+        // back for 0.071 ms of tangent-frame work.
+        let features = ShaderFeatures {
+            pbr: desc.pbr,
+            normal_map: textures.normal.is_some(),
+            shadows: false,
+        };
         let textures = textures.resolve(&self.fallback_textures);
 
         // The constants first: a failure there must not leave a descriptor range allocated
@@ -2654,6 +2700,7 @@ impl Renderer {
 
         let index = self.materials.len() as u32;
         self.materials.push(material);
+        self.material_features.push(features);
         self.material_bindings
             .push(MaterialTextureBinding { textures, range });
         self.material_tables.push(range.gpu);

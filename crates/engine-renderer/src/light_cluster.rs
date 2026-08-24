@@ -179,7 +179,10 @@ impl LightClusters {
         self.stats = LightClusterStats::default();
 
         let Projection::Perspective {
-            fov_y, aspect, near, far,
+            fov_y,
+            aspect,
+            near,
+            far,
         } = camera.projection()
         else {
             self.disable();
@@ -208,7 +211,9 @@ impl LightClusters {
 
         let view = camera.view();
         for (index, light) in lights.iter().take(count).enumerate() {
-            self.assign(index, light, &view, tan_x, tan_y, near, far, z_scale, z_bias);
+            self.assign(
+                index, light, &view, tan_x, tan_y, near, far, z_scale, z_bias,
+            );
         }
 
         let (mut occupied, mut assignments, mut worst) = (0_u32, 0_u32, 0_u32);
@@ -294,7 +299,8 @@ impl LightClusters {
                     let ndc_right = 2.0 * ((tile_x + 1) as f32) / CLUSTERS_X as f32 - 1.0;
 
                     let x_low = (ndc_left * slice_near * tan_x).min(ndc_left * slice_far * tan_x);
-                    let x_high = (ndc_right * slice_near * tan_x).max(ndc_right * slice_far * tan_x);
+                    let x_high =
+                        (ndc_right * slice_near * tan_x).max(ndc_right * slice_far * tan_x);
                     let y_low =
                         (ndc_bottom * slice_near * tan_y).min(ndc_bottom * slice_far * tan_y);
                     let y_high = (ndc_top * slice_near * tan_y).max(ndc_top * slice_far * tan_y);
@@ -347,7 +353,6 @@ fn tile_of(ndc: f32, tiles: usize) -> usize {
     let normalized = (ndc * 0.5 + 0.5) * tiles as f32;
     (normalized.floor().max(0.0) as usize).min(tiles - 1)
 }
-
 
 #[cfg(test)]
 #[allow(
@@ -459,7 +464,11 @@ mod tests {
         for tile_y in 0..CLUSTERS_Y {
             for tile_x in 0..CLUSTERS_X {
                 let mask = mask_at(&clusters, cluster_index(tile_x, tile_y, 0));
-                assert_eq!(mask & 1, 1, "tile {tile_x},{tile_y} of the near slice is dark");
+                assert_eq!(
+                    mask & 1,
+                    1,
+                    "tile {tile_x},{tile_y} of the near slice is dark"
+                );
             }
         }
     }

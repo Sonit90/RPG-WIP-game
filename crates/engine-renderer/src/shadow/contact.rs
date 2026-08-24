@@ -28,17 +28,19 @@
 //! the bandwidth of a 32-bit target for a texture this pass is bandwidth-bound on.
 
 use windows::Win32::Graphics::Direct3D::D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
-use windows::Win32::Graphics::Direct3D12::{
-    D3D12_BLEND_DESC, D3D12_COLOR_WRITE_ENABLE_ALL, D3D12_CULL_MODE_NONE,
-    D3D12_DEPTH_STENCIL_DESC, D3D12_DESCRIPTOR_HEAP_TYPE_RTV, D3D12_FILL_MODE_SOLID,
-    D3D12_GRAPHICS_PIPELINE_STATE_DESC, D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE,
-    D3D12_RASTERIZER_DESC, D3D12_RENDER_TARGET_BLEND_DESC, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-    D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_SHADER_RESOURCE_VIEW_DESC,
-    D3D12_SHADER_RESOURCE_VIEW_DESC_0, D3D12_SRV_DIMENSION_TEXTURE2D, D3D12_TEX2D_SRV,
-    ID3D12Device, ID3D12PipelineState, ID3D12RootSignature,
-};
 use windows::Win32::Graphics::Direct3D12::D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT, DXGI_FORMAT_R16G16_FLOAT, DXGI_SAMPLE_DESC};
+use windows::Win32::Graphics::Direct3D12::{
+    D3D12_BLEND_DESC, D3D12_COLOR_WRITE_ENABLE_ALL, D3D12_CULL_MODE_NONE, D3D12_DEPTH_STENCIL_DESC,
+    D3D12_DESCRIPTOR_HEAP_TYPE_RTV, D3D12_FILL_MODE_SOLID, D3D12_GRAPHICS_PIPELINE_STATE_DESC,
+    D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE, D3D12_RASTERIZER_DESC, D3D12_RENDER_TARGET_BLEND_DESC,
+    D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET,
+    D3D12_SHADER_RESOURCE_VIEW_DESC, D3D12_SHADER_RESOURCE_VIEW_DESC_0,
+    D3D12_SRV_DIMENSION_TEXTURE2D, D3D12_TEX2D_SRV, ID3D12Device, ID3D12PipelineState,
+    ID3D12RootSignature,
+};
+use windows::Win32::Graphics::Dxgi::Common::{
+    DXGI_FORMAT, DXGI_FORMAT_R16G16_FLOAT, DXGI_SAMPLE_DESC,
+};
 
 use crate::command::CommandContext;
 use crate::descriptor::{CpuDescriptorHeap, DescriptorHandle, GpuDescriptorHeap};
@@ -83,7 +85,10 @@ pub const CONTACT_FORMAT: DXGI_FORMAT = DXGI_FORMAT_R16G16_FLOAT;
 pub struct ContactShadowTarget {
     texture: GpuTexture,
     /// Owned so the heap outlives the view that points into it.
-    #[allow(dead_code, reason = "keeps the heap the render-target view lives in alive")]
+    #[allow(
+        dead_code,
+        reason = "keeps the heap the render-target view lives in alive"
+    )]
     rtv_heap: CpuDescriptorHeap,
     rtv: DescriptorHandle,
     srv: DescriptorHandle,
@@ -196,7 +201,9 @@ impl ContactShadowTarget {
 
     /// The shader-visible handle the lighting pass binds.
     #[must_use]
-    pub fn table(&self) -> Option<windows::Win32::Graphics::Direct3D12::D3D12_GPU_DESCRIPTOR_HANDLE> {
+    pub fn table(
+        &self,
+    ) -> Option<windows::Win32::Graphics::Direct3D12::D3D12_GPU_DESCRIPTOR_HANDLE> {
         self.srv.gpu
     }
 

@@ -65,6 +65,7 @@ Surface make_surface(
     Surface surface;
     surface.normal = normal;
     surface.view = view;
+#if MATERIAL_PBR
     surface.diffuse_color = base_color * (1.0 - metallic);
     surface.f0 = lerp(float3(0.04, 0.04, 0.04), base_color, metallic);
     surface.roughness = clamp(roughness, MIN_ROUGHNESS, 1.0);
@@ -72,6 +73,18 @@ Surface make_surface(
     // Clamped away from zero rather than saturated to it: `n_dot_v` divides in the visibility
     // term, and a polygon seen edge-on is common enough to matter.
     surface.n_dot_v = max(dot(normal, view), 1e-4);
+#else
+    // The Lambert permutation has one lobe and no view dependence, so the split into a
+    // diffuse albedo and an F0 has nothing to split: the whole base colour diffuses. The
+    // remaining fields are written because the struct is shared, and nothing on this path
+    // reads them - `roughness` and `metallic` reach here already sampled, and the ORM fetch
+    // stays for the occlusion the ambient term does use.
+    surface.diffuse_color = base_color;
+    surface.f0 = float3(0.0, 0.0, 0.0);
+    surface.roughness = roughness;
+    surface.alpha = 0.0;
+    surface.n_dot_v = 0.0;
+#endif
     surface.occlusion = occlusion;
     return surface;
 }
@@ -123,6 +136,13 @@ float3 shade_light(Surface surface, float3 to_light)
         return float3(0.0, 0.0, 0.0);
     }
 
+#if !MATERIAL_PBR
+    // The Lambert permutation: one diffuse lobe, no half vector, no D/V/F. `distribution_ggx`,
+    // `visibility_smith` and `fresnel_schlick` are still defined above and are dropped by the
+    // compiler because nothing calls them - which is the point of the permutation. The
+    // specular lobe costs 0.150 ms at 1440p and the game does not yet author for it.
+    return surface.diffuse_color * n_dot_l;
+#else
     float3 half_vector = normalize(surface.view + to_light);
     float n_dot_h = saturate(dot(surface.normal, half_vector));
     float v_dot_h = saturate(dot(surface.view, half_vector));
@@ -140,6 +160,7 @@ float3 shade_light(Surface surface, float3 to_light)
     float3 diffuse = surface.diffuse_color * (1.0 - f);
 
     return (diffuse + specular) * n_dot_l;
+#endif
 }
 
 // Tangent-space normal mapping.

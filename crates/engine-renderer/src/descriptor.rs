@@ -189,7 +189,8 @@ impl FreeListAllocator {
             }
             if (position - run_start + 1) as u32 == count {
                 let base = sorted[run_start];
-                self.returned.retain(|slot| !(base..base + count).contains(slot));
+                self.returned
+                    .retain(|slot| !(base..base + count).contains(slot));
                 self.used += count;
                 self.peak = self.peak.max(self.used);
                 return Some(base);
@@ -681,8 +682,13 @@ mod tests {
         allocator.free_range(first, 4).expect("a run just taken");
         assert_eq!(allocator.stats().used, 4);
 
-        let reused = allocator.allocate_range(4).expect("the freed run is available again");
-        assert_eq!(reused, first, "the released run is what the next material takes");
+        let reused = allocator
+            .allocate_range(4)
+            .expect("the freed run is available again");
+        assert_eq!(
+            reused, first,
+            "the released run is what the next material takes"
+        );
         assert_eq!(second, 4);
     }
 
@@ -716,7 +722,11 @@ mod tests {
         let mut allocator = FreeListAllocator::new(4);
         assert_eq!(allocator.allocate_range(1), Some(0));
         assert_eq!(allocator.allocate(), Some(1));
-        assert_eq!(allocator.allocate_range(0), None, "a zero-slot table is not a table");
+        assert_eq!(
+            allocator.allocate_range(0),
+            None,
+            "a zero-slot table is not a table"
+        );
     }
 
     #[test]

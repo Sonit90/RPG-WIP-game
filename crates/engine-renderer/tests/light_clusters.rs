@@ -17,12 +17,12 @@
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
 use engine_core::math::{Quat, Vec3};
+use engine_core::transform::Transform;
 use engine_render_data::{Camera, Lighting, LocalLight, LocalLightKind, Projection, ShadowCasting};
 use engine_renderer::material::MaterialDesc;
 use engine_renderer::mesh::MeshData;
 use engine_renderer::offscreen::{CapturedImage, ShadowSceneObject, render_scene_shadowed};
 use engine_renderer::shadow::{ShadowPreset, ShadowSettings};
-use engine_core::transform::Transform;
 
 /// One device at a time: several of these render at once otherwise, and a second adapter
 /// open on the same queue is a source of flakiness rather than of coverage.
@@ -124,7 +124,9 @@ fn screen_of(x: f32, z: f32) -> (u32, u32) {
     let half_extent = 12.0 * (std::f32::consts::FRAC_PI_6).tan();
     let to_pixel = |value: f32| {
         let normalized = value / half_extent * 0.5 + 0.5;
-        (normalized * SIZE as f32).round().clamp(0.0, (SIZE - 5) as f32) as u32
+        (normalized * SIZE as f32)
+            .round()
+            .clamp(0.0, (SIZE - 5) as f32) as u32
     };
     (to_pixel(x), to_pixel(-z))
 }
@@ -261,14 +263,20 @@ fn a_light_lights_its_own_depth_and_not_another() {
         (0..SIZE - 4)
             .step_by(4)
             .map(|row| (row, patch(image, column, row) - patch(&dark, column, row)))
-            .fold((0_u32, f32::MIN), |best, next| {
-                if next.1 > best.1 { next } else { best }
-            })
+            .fold(
+                (0_u32, f32::MIN),
+                |best, next| {
+                    if next.1 > best.1 { next } else { best }
+                },
+            )
     };
 
     let (near_row, near_gain) = brightest_row(&near);
     let (far_row, far_gain) = brightest_row(&far);
-    assert!(near_gain > 20.0, "the near lamp lights nothing: {near_gain}");
+    assert!(
+        near_gain > 20.0,
+        "the near lamp lights nothing: {near_gain}"
+    );
     assert!(far_gain > 5.0, "the far lamp lights nothing: {far_gain}");
     // Further away is higher up the screen with this camera, so the far lamp's bright band
     // has to be above the near one's.

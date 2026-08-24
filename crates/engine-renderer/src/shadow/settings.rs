@@ -513,7 +513,11 @@ impl ShadowSettings {
         // two: the atlas lays tiles out by multiplication, the local tiles subdivide a
         // cascade tile an integer number of times at every value here, and the texel-snapping
         // arithmetic divides by the resolution rather than shifting by it.
-        self.resolution = self.resolution.clamp(256, 4096).next_multiple_of(256).min(4096);
+        self.resolution = self
+            .resolution
+            .clamp(256, 4096)
+            .next_multiple_of(256)
+            .min(4096);
         self.blend_fraction = if self.blend_fraction.is_finite() {
             self.blend_fraction.clamp(0.0, 0.5)
         } else {

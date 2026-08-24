@@ -59,6 +59,16 @@ pub struct MaterialDesc {
     /// shadow pass needs the same number the camera pass uses or a leaf's shadow is a
     /// rectangle.
     pub alpha_cutoff: f32,
+    /// Whether this surface is shaded with the metallic-roughness BRDF.
+    ///
+    /// Off by default, and off is Lambert: one diffuse lobe, no specular, `roughness` and
+    /// `metallic` carried but unread. The BRDF is 0.150 ms of a 0.351 ms frame at 1440p
+    /// (`docs/performance/shadows-off-permutation.md`) and nothing in the game is authored
+    /// for it yet, so a material pays for it only by asking.
+    ///
+    /// It selects a *shader permutation*, not a branch: a material without it is drawn with
+    /// a pixel shader that does not contain GGX, Smith or Fresnel at all.
+    pub pbr: bool,
 }
 
 impl Default for MaterialDesc {
@@ -73,6 +83,8 @@ impl Default for MaterialDesc {
             normal_scale: 1.0,
             occlusion_strength: 1.0,
             alpha_cutoff: 0.0,
+            // Lambert until a material asks otherwise. See the field.
+            pbr: false,
         }
     }
 }
@@ -105,6 +117,17 @@ impl MaterialDesc {
     #[must_use]
     pub fn with_emissive(mut self, emissive: Vec3) -> Self {
         self.emissive = emissive;
+        self
+    }
+
+    /// Returns the description shaded with the metallic-roughness BRDF.
+    ///
+    /// The one way to opt a material into PBR. Everything else about it is unchanged: the
+    /// same constants, the same maps, the same descriptor table - only the pixel shader
+    /// permutation the renderer binds for it differs.
+    #[must_use]
+    pub fn with_pbr(mut self, pbr: bool) -> Self {
+        self.pbr = pbr;
         self
     }
 

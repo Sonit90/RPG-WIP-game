@@ -38,9 +38,9 @@
 //! and the cheapest place to catch it is an assertion.
 
 pub mod atlas;
-pub mod contact;
 pub mod cascade;
 pub mod caster;
+pub mod contact;
 pub mod local;
 pub mod pipeline;
 pub mod renderer;
@@ -49,12 +49,12 @@ pub mod settings;
 pub mod stats;
 
 pub use atlas::{AtlasRect, ShadowAtlasLayout};
-pub use contact::{CONTACT_FORMAT, ContactShadowPipeline, ContactShadowTarget};
 pub use cascade::{
     CascadeSplit, CascadeView, build_cascades, cascade_blend, select_cascade, shadow_lod_for,
     split_cascades,
 };
 pub use caster::{ShadowCasterCollector, ShadowCullStats};
+pub use contact::{CONTACT_FORMAT, ContactShadowPipeline, ContactShadowTarget};
 pub use local::{LocalShadowView, SelectedLight, select_shadow_lights};
 pub use renderer::{ShadowRenderer, ShadowScene};
 pub use resources::{SHADOW_FORMAT, ShadowResources};

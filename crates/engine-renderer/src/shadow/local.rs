@@ -563,7 +563,8 @@ mod tests {
             ..spot_at(place, 0)
         };
         assert!(
-            shadow_importance(&bright, Vec3::ZERO, 40.0) > shadow_importance(&dim, Vec3::ZERO, 40.0)
+            shadow_importance(&bright, Vec3::ZERO, 40.0)
+                > shadow_importance(&dim, Vec3::ZERO, 40.0)
         );
     }
 
@@ -579,7 +580,8 @@ mod tests {
             ..spot_at(place, 0)
         };
         assert!(
-            shadow_importance(&large, Vec3::ZERO, 40.0) > shadow_importance(&small, Vec3::ZERO, 40.0)
+            shadow_importance(&large, Vec3::ZERO, 40.0)
+                > shadow_importance(&small, Vec3::ZERO, 40.0)
         );
     }
 
@@ -620,7 +622,10 @@ mod tests {
         let distant = spot_at(Vec3::new(0.0, 0.0, -38.0), 1);
         let (selected, _) = select(&[close, distant], &settings);
         assert_eq!(selected.len(), 1);
-        assert_eq!(selected[0].light, 0, "a distant priority light took the map");
+        assert_eq!(
+            selected[0].light, 0,
+            "a distant priority light took the map"
+        );
     }
 
     #[test]

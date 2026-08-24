@@ -234,7 +234,11 @@ fn the_presets_use_the_disc() {
     assert_eq!(ShadowPreset::High.settings().pcf, PcfKernel::Poisson4);
     assert_eq!(ShadowPreset::Medium.settings().pcf, PcfKernel::Poisson4);
     assert_eq!(ShadowPreset::Low.settings().pcf, PcfKernel::Single);
-    for preset in [ShadowPreset::Medium, ShadowPreset::High, ShadowPreset::Ultra] {
+    for preset in [
+        ShadowPreset::Medium,
+        ShadowPreset::High,
+        ShadowPreset::Ultra,
+    ] {
         let settings = preset.settings();
         assert!(settings.pcf.is_poisson());
         assert!(settings.pcf.taps() <= 8, "{} taps", settings.pcf.taps());

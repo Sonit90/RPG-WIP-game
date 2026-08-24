@@ -10,6 +10,21 @@
 // The CPU mirror of `cbuffer Frame` is `FrameConstants` in src/scene.rs, field for field. A
 // change here is a change there, and `scene.rs` carries the offset assertions that fail when
 // only one of the two is edited.
+//
+// # Permutations
+//
+// Three independent compile-time features, each a `-D` from build.rs and each selecting a
+// separate DXIL blob and pipeline state:
+//
+//   MATERIAL_PBR         the metallic-roughness BRDF, in pbr.hlsli. Off: one Lambert lobe.
+//   MATERIAL_NORMAL_MAP  the normal fetch and the tangent frame. Off: the geometric normal.
+//   ENABLE_SHADOWS       every shadow lookup below. Off: `shadow = 1.0`, and none of the
+//                        cascade selection, PCF or contact march is compiled in.
+//
+// The first two are per-material and chosen by what the material declares; the third is
+// global and chosen per frame from the shadow settings. All eight combinations compile; the
+// renderer creates the pipeline states it actually uses and no others. Every implementation
+// stays in the file it was in - a feature that is off is *not compiled*, not deleted.
 
 #ifndef SCENE_FRAME_HLSLI
 #define SCENE_FRAME_HLSLI
@@ -720,10 +735,12 @@ float3 local_light_contribution(
         }
 
         float shadow = 1.0;
+#if ENABLE_SHADOWS
         if (receives_shadow > 0.5)
         {
             shadow = local_light_shadow(light, world_position, normal, pixel);
         }
+#endif
 
         total += shaded * light_color_intensity[light].rgb
             * (light_color_intensity[light].w * attenuation * shadow);
@@ -862,15 +879,21 @@ float4 shade_surface(
         discard;
     }
 
-    // The shading normal, out of the tangent frame the vertex carries. A material with no
-    // normal map samples the flat fallback, and this is the interpolated normal again.
-    float3 normal =
-        apply_normal_map(world_normal, world_tangent, material.normal_ts, normal_scale);
-    float3 to_light = normalize(-light_direction);
     // The geometric normal is kept for the two things that want the surface itself rather
     // than what the map made of it: the early-out below, and the shadow bias, which offsets
     // along the surface and would push itself into a crevice if it followed a normal map.
     float3 geometric_normal = normalize(world_normal);
+#if MATERIAL_NORMAL_MAP
+    // The shading normal, out of the tangent frame the vertex carries.
+    float3 normal =
+        apply_normal_map(world_normal, world_tangent, material.normal_ts, normal_scale);
+#else
+    // No map on this material: the tangent frame, the fetch and the tangent-to-world
+    // transform are all compiled out and the shading normal is the interpolated one. That is
+    // the same value the fallback texel produced before M5, for 0.071 ms less.
+    float3 normal = geometric_normal;
+#endif
+    float3 to_light = normalize(-light_direction);
     float lambert = saturate(dot(normal, to_light));
     float3 tinted = albedo.rgb * tint.rgb;
     float view_distance = view_depth_of(world_position);
@@ -883,6 +906,7 @@ float4 shade_surface(
         normal, view, tinted, material.roughness, material.metallic, material.occlusion);
 
     float shadow = 1.0;
+#if ENABLE_SHADOWS
     if (receives_shadow > 0.5 && lambert > 0.0)
     {
         shadow = directional_shadow(
@@ -892,8 +916,10 @@ float4 shade_surface(
             shadow = min(shadow, contact_shadow_at(screen_position.xy, view_distance));
         }
     }
+#endif
 
     uint debug_mode = (uint)shadow_params.w;
+#if ENABLE_SHADOWS
     if (debug_mode == 3u)
     {
         float3 preview;
@@ -902,6 +928,7 @@ float4 shade_surface(
             return float4(preview, 1.0);
         }
     }
+#endif
     if (debug_mode == 2u)
     {
         // The shadow factor alone, on a neutral surface: what the cascades, the filter and
@@ -955,10 +982,12 @@ float4 shade_surface(
     float3 glow = material.emissive + tinted * emissive_scale;
 
     float3 color = direct + ambient + local + glow;
+#if ENABLE_SHADOWS
     if (debug_mode == 1u)
     {
         color *= cascade_debug_tint(view_distance);
     }
+#endif
     return float4(color, albedo.a * tint.a);
 }
 

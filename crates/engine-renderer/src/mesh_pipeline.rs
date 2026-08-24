@@ -5,6 +5,7 @@
 //! `RenderWorld`, the handle types, `Lighting` — is pure data and moved to
 //! `engine-render-data`; this is everything in the old file that genuinely needs a device.
 
+use std::collections::HashMap;
 use windows::Win32::Graphics::Direct3D::ID3DBlob;
 use windows::Win32::Graphics::Direct3D12::{
     D3D_ROOT_SIGNATURE_VERSION_1, D3D12_COMPARISON_FUNC_ALWAYS, D3D12_COMPARISON_FUNC_LESS_EQUAL,
@@ -28,6 +29,7 @@ use windows::Win32::Graphics::Dxgi::Common::{
     DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_R16G16B16A16_UINT, DXGI_FORMAT_R32G32_FLOAT,
     DXGI_FORMAT_R32G32B32_FLOAT, DXGI_FORMAT_R32G32B32A32_FLOAT, DXGI_SAMPLE_DESC,
 };
+
 use windows::core::s;
 
 use crate::depth::DEPTH_FORMAT;
@@ -36,10 +38,185 @@ use crate::mesh::{MeshVertex, SkinnedVertex};
 use crate::pipeline::{blend_desc, depth_stencil_desc, rasterizer_desc, wireframe_rasterizer_desc};
 use crate::scene::{ROOT_PARAMETER_REGISTERS, ROOT_SKIN_CBV};
 use crate::shader::{
-    MESH_INSTANCED_PS, MESH_INSTANCED_VS, MESH_PS, MESH_SKINNED_PS, MESH_SKINNED_VS, MESH_VS,
-    bytecode,
+    MESH_INSTANCED_VS, MESH_SKINNED_VS, MESH_VS, ShaderFeatures, bytecode,
+    mesh_instanced_pixel_shader, mesh_pixel_shader, mesh_skinned_pixel_shader,
 };
 use crate::swapchain::BACK_BUFFER_FORMAT;
+
+/// One pipeline state's identity: which shader permutation, and which fill mode.
+///
+/// The two are orthogonal and both are baked into a D3D12 PSO, so the pair is the key of the
+/// cache below rather than two nested ones.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct PipelineVariant {
+    /// Which optional features the pixel shader was compiled with.
+    pub features: ShaderFeatures,
+    /// Wireframe fill, from the F9 toggle.
+    pub wireframe: bool,
+}
+
+impl PipelineVariant {
+    /// The solid-fill variant of `features`.
+    #[must_use]
+    pub const fn solid(features: ShaderFeatures) -> Self {
+        Self {
+            features,
+            wireframe: false,
+        }
+    }
+}
+
+/// The mesh pipeline states this renderer has needed so far, one per variant.
+///
+/// **Created on first use, never released.** Eight feature permutations times two fill modes
+/// times three pipelines is forty-eight possible PSOs, and a scene uses a handful of them: a
+/// game whose materials are all Lambert with no normal map, running with shadows off, creates
+/// three. Creating all forty-eight at startup would cost milliseconds of PSO compilation for
+/// variants nothing draws, and creating them per frame would cost far more - so the first
+/// frame that needs a variant pays for it and every later frame finds it here.
+///
+/// The consequence to know about: toggling shadows or wireframe for the first time creates a
+/// PSO mid-frame. That is a few hundred microseconds on the frame it happens, once.
+#[derive(Default)]
+pub struct MeshPipelines {
+    /// The one root signature every mesh pipeline state in this cache is built against.
+    ///
+    /// **One object, not one per variant.** D3D12 discards every root argument when the
+    /// bound root signature *object* changes, and the frame constants, the cluster grid and
+    /// the shadow tables are bound once before the batch loop. A per-variant signature
+    /// therefore threw those bindings away at the first batch that switched permutation, and
+    /// the shader read unbound root parameters - which is a GPU fault, reported as
+    /// `DXGI_ERROR_DEVICE_REMOVED` when the command list is closed.
+    ///
+    /// Sharing it also means the renderer changes only the pipeline *state* between batches,
+    /// which is the cheaper of the two binds and the one this design intended.
+    root_signature: Option<ID3D12RootSignature>,
+    mesh: HashMap<PipelineVariant, MeshPipeline>,
+    instanced: HashMap<PipelineVariant, InstancedMeshPipeline>,
+    skinned: HashMap<PipelineVariant, SkinnedMeshPipeline>,
+}
+
+impl MeshPipelines {
+    /// An empty cache. The first frame fills it.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The shared root signature, created on first use.
+    ///
+    /// Bind this once per frame, before anything writes a root argument, and then change only
+    /// the pipeline state per batch. See the field for what happens otherwise.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RendererError::Api`] if the root signature cannot be created.
+    pub fn root_signature(
+        &mut self,
+        device: &ID3D12Device,
+    ) -> Result<&ID3D12RootSignature, RendererError> {
+        if self.root_signature.is_none() {
+            self.root_signature = Some(create_root_signature(device)?);
+        }
+        let Some(signature) = self.root_signature.as_ref() else {
+            return Err(RendererError::InvalidConfig {
+                reason: "the shared mesh root signature was just created and is missing".to_owned(),
+            });
+        };
+        Ok(signature)
+    }
+
+    /// The static mesh pipeline for `variant`, creating it if this is its first use.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RendererError::Api`] if the pipeline state cannot be created.
+    pub fn mesh(
+        &mut self,
+        device: &ID3D12Device,
+        variant: PipelineVariant,
+    ) -> Result<&MeshPipeline, RendererError> {
+        // Cloned out first: `root_signature` borrows the cache mutably, and the entry below
+        // borrows it again. The clone is a refcount bump on a COM pointer, once per variant.
+        let signature = self.root_signature(device)?.clone();
+        if let std::collections::hash_map::Entry::Vacant(entry) = self.mesh.entry(variant) {
+            let pipeline = if variant.wireframe {
+                MeshPipeline::wireframe_with_features(device, &signature, variant.features)?
+            } else {
+                MeshPipeline::with_features(device, &signature, variant.features)?
+            };
+            entry.insert(pipeline);
+        }
+        Ok(&self.mesh[&variant])
+    }
+
+    /// The instanced mesh pipeline for `variant`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RendererError::Api`] if the pipeline state cannot be created.
+    pub fn instanced(
+        &mut self,
+        device: &ID3D12Device,
+        variant: PipelineVariant,
+    ) -> Result<&InstancedMeshPipeline, RendererError> {
+        // Cloned out first: `root_signature` borrows the cache mutably, and the entry below
+        // borrows it again. The clone is a refcount bump on a COM pointer, once per variant.
+        let signature = self.root_signature(device)?.clone();
+        if let std::collections::hash_map::Entry::Vacant(entry) = self.instanced.entry(variant) {
+            let pipeline = if variant.wireframe {
+                InstancedMeshPipeline::wireframe_with_features(
+                    device,
+                    &signature,
+                    variant.features,
+                )?
+            } else {
+                InstancedMeshPipeline::with_features(device, &signature, variant.features)?
+            };
+            entry.insert(pipeline);
+        }
+        Ok(&self.instanced[&variant])
+    }
+
+    /// The skinned mesh pipeline for `variant`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RendererError::Api`] if the pipeline state cannot be created.
+    pub fn skinned(
+        &mut self,
+        device: &ID3D12Device,
+        variant: PipelineVariant,
+    ) -> Result<&SkinnedMeshPipeline, RendererError> {
+        // Cloned out first: `root_signature` borrows the cache mutably, and the entry below
+        // borrows it again. The clone is a refcount bump on a COM pointer, once per variant.
+        let signature = self.root_signature(device)?.clone();
+        if let std::collections::hash_map::Entry::Vacant(entry) = self.skinned.entry(variant) {
+            let pipeline = if variant.wireframe {
+                SkinnedMeshPipeline::wireframe_with_features(device, &signature, variant.features)?
+            } else {
+                SkinnedMeshPipeline::with_features(device, &signature, variant.features)?
+            };
+            entry.insert(pipeline);
+        }
+        Ok(&self.skinned[&variant])
+    }
+
+    /// How many pipeline states have been created, across all three kinds.
+    ///
+    /// For the overlay and for tests that assert a scene creates the variants it should and
+    /// no others.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.mesh.len() + self.instanced.len() + self.skinned.len()
+    }
+
+    /// Whether nothing has been created yet.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
 
 /// Root signature and pipeline state for [`MeshVertex`] geometry.
 pub struct MeshPipeline {
@@ -54,7 +231,25 @@ impl MeshPipeline {
     ///
     /// Returns [`RendererError::Api`] if a D3D12 call fails.
     pub fn new(device: &ID3D12Device) -> Result<Self, RendererError> {
-        Self::with_rasterizer(device, rasterizer_desc())
+        let root_signature = create_root_signature(device)?;
+        Self::with_features(device, &root_signature, ShaderFeatures::ALL)
+    }
+
+    /// Creates the solid-fill pipeline whose pixel shader was compiled with `features`.
+    ///
+    /// The pipeline state is identical in every other respect - input layout, root
+    /// signature, blend, depth, formats - so two variants differ only in the bytecode, and
+    /// a feature that is off is absent from that bytecode rather than branched around.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RendererError::Api`] if a D3D12 call fails.
+    pub fn with_features(
+        device: &ID3D12Device,
+        root_signature: &ID3D12RootSignature,
+        features: ShaderFeatures,
+    ) -> Result<Self, RendererError> {
+        Self::with_rasterizer(device, root_signature, rasterizer_desc(), features)
     }
 
     /// Creates the same pipeline with wireframe fill.
@@ -67,15 +262,38 @@ impl MeshPipeline {
     ///
     /// Returns [`RendererError::Api`] if a D3D12 call fails.
     pub fn wireframe(device: &ID3D12Device) -> Result<Self, RendererError> {
-        Self::with_rasterizer(device, wireframe_rasterizer_desc())
+        let root_signature = create_root_signature(device)?;
+        Self::wireframe_with_features(device, &root_signature, ShaderFeatures::ALL)
+    }
+
+    /// The wireframe pipeline whose pixel shader was compiled with `features`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RendererError::Api`] if a D3D12 call fails.
+    pub fn wireframe_with_features(
+        device: &ID3D12Device,
+        root_signature: &ID3D12RootSignature,
+        features: ShaderFeatures,
+    ) -> Result<Self, RendererError> {
+        Self::with_rasterizer(
+            device,
+            root_signature,
+            wireframe_rasterizer_desc(),
+            features,
+        )
     }
 
     /// Creates the pipeline with an explicit rasterizer state.
     fn with_rasterizer(
         device: &ID3D12Device,
+        root_signature: &ID3D12RootSignature,
         rasterizer: D3D12_RASTERIZER_DESC,
+        features: ShaderFeatures,
     ) -> Result<Self, RendererError> {
-        let root_signature = create_root_signature(device)?;
+        // Cloned, not created: the caller owns the one signature every mesh pipeline shares,
+        // and a PSO holds a reference of its own for as long as it lives.
+        let root_signature = root_signature.clone();
 
         let input_elements = mesh_vertex_elements();
 
@@ -88,7 +306,7 @@ impl MeshPipeline {
             // lives only for this call and the real reference is owned here.
             pRootSignature: unsafe { std::mem::transmute_copy(&root_signature) },
             VS: bytecode(MESH_VS),
-            PS: bytecode(MESH_PS),
+            PS: bytecode(mesh_pixel_shader(features)),
             RasterizerState: rasterizer,
             BlendState: blend_desc(),
             DepthStencilState: depth_stencil_desc(),
@@ -529,7 +747,25 @@ impl SkinnedMeshPipeline {
     ///
     /// Returns [`RendererError::Api`] if a D3D12 call fails.
     pub fn new(device: &ID3D12Device) -> Result<Self, RendererError> {
-        Self::with_rasterizer(device, rasterizer_desc())
+        let root_signature = create_root_signature(device)?;
+        Self::with_features(device, &root_signature, ShaderFeatures::ALL)
+    }
+
+    /// Creates the solid-fill pipeline whose pixel shader was compiled with `features`.
+    ///
+    /// The pipeline state is identical in every other respect - input layout, root
+    /// signature, blend, depth, formats - so two variants differ only in the bytecode, and
+    /// a feature that is off is absent from that bytecode rather than branched around.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RendererError::Api`] if a D3D12 call fails.
+    pub fn with_features(
+        device: &ID3D12Device,
+        root_signature: &ID3D12RootSignature,
+        features: ShaderFeatures,
+    ) -> Result<Self, RendererError> {
+        Self::with_rasterizer(device, root_signature, rasterizer_desc(), features)
     }
 
     /// The same pipeline with wireframe fill.
@@ -538,15 +774,38 @@ impl SkinnedMeshPipeline {
     ///
     /// Returns [`RendererError::Api`] if a D3D12 call fails.
     pub fn wireframe(device: &ID3D12Device) -> Result<Self, RendererError> {
-        Self::with_rasterizer(device, wireframe_rasterizer_desc())
+        let root_signature = create_root_signature(device)?;
+        Self::wireframe_with_features(device, &root_signature, ShaderFeatures::ALL)
+    }
+
+    /// The wireframe pipeline whose pixel shader was compiled with `features`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RendererError::Api`] if a D3D12 call fails.
+    pub fn wireframe_with_features(
+        device: &ID3D12Device,
+        root_signature: &ID3D12RootSignature,
+        features: ShaderFeatures,
+    ) -> Result<Self, RendererError> {
+        Self::with_rasterizer(
+            device,
+            root_signature,
+            wireframe_rasterizer_desc(),
+            features,
+        )
     }
 
     /// Creates the pipeline with an explicit rasterizer state.
     fn with_rasterizer(
         device: &ID3D12Device,
+        root_signature: &ID3D12RootSignature,
         rasterizer: D3D12_RASTERIZER_DESC,
+        features: ShaderFeatures,
     ) -> Result<Self, RendererError> {
-        let root_signature = create_root_signature(device)?;
+        // Cloned, not created: the caller owns the one signature every mesh pipeline shares,
+        // and a PSO holds a reference of its own for as long as it lives.
+        let root_signature = root_signature.clone();
         let input_elements = skinned_vertex_elements();
 
         let mut desc = D3D12_GRAPHICS_PIPELINE_STATE_DESC {
@@ -558,7 +817,7 @@ impl SkinnedMeshPipeline {
             // lives only for this call and the real reference is owned here.
             pRootSignature: unsafe { std::mem::transmute_copy(&root_signature) },
             VS: bytecode(MESH_SKINNED_VS),
-            PS: bytecode(MESH_SKINNED_PS),
+            PS: bytecode(mesh_skinned_pixel_shader(features)),
             RasterizerState: rasterizer,
             BlendState: blend_desc(),
             DepthStencilState: depth_stencil_desc(),
@@ -784,7 +1043,25 @@ impl InstancedMeshPipeline {
     ///
     /// Returns [`RendererError::Api`] if a D3D12 call fails.
     pub fn new(device: &ID3D12Device) -> Result<Self, RendererError> {
-        Self::with_rasterizer(device, rasterizer_desc())
+        let root_signature = create_root_signature(device)?;
+        Self::with_features(device, &root_signature, ShaderFeatures::ALL)
+    }
+
+    /// Creates the solid-fill pipeline whose pixel shader was compiled with `features`.
+    ///
+    /// The pipeline state is identical in every other respect - input layout, root
+    /// signature, blend, depth, formats - so two variants differ only in the bytecode, and
+    /// a feature that is off is absent from that bytecode rather than branched around.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RendererError::Api`] if a D3D12 call fails.
+    pub fn with_features(
+        device: &ID3D12Device,
+        root_signature: &ID3D12RootSignature,
+        features: ShaderFeatures,
+    ) -> Result<Self, RendererError> {
+        Self::with_rasterizer(device, root_signature, rasterizer_desc(), features)
     }
 
     /// The same pipeline with wireframe fill.
@@ -793,19 +1070,41 @@ impl InstancedMeshPipeline {
     ///
     /// Returns [`RendererError::Api`] if a D3D12 call fails.
     pub fn wireframe(device: &ID3D12Device) -> Result<Self, RendererError> {
-        Self::with_rasterizer(device, wireframe_rasterizer_desc())
+        let root_signature = create_root_signature(device)?;
+        Self::wireframe_with_features(device, &root_signature, ShaderFeatures::ALL)
+    }
+
+    /// The wireframe pipeline whose pixel shader was compiled with `features`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RendererError::Api`] if a D3D12 call fails.
+    pub fn wireframe_with_features(
+        device: &ID3D12Device,
+        root_signature: &ID3D12RootSignature,
+        features: ShaderFeatures,
+    ) -> Result<Self, RendererError> {
+        Self::with_rasterizer(
+            device,
+            root_signature,
+            wireframe_rasterizer_desc(),
+            features,
+        )
     }
 
     /// Creates the pipeline with an explicit rasterizer state.
     fn with_rasterizer(
         device: &ID3D12Device,
+        root_signature: &ID3D12RootSignature,
         rasterizer: D3D12_RASTERIZER_DESC,
+        features: ShaderFeatures,
     ) -> Result<Self, RendererError> {
-        // The same root signature as the non-instanced pipeline: same frame and material
-        // registers, same slot order. The object slot simply goes unused, which costs two
-        // DWORDs of root space and buys both pipelines one signature, one material upload
-        // path and one set of `ROOT_*` constants to keep correct.
-        let root_signature = create_root_signature(device)?;
+        // The same root signature as the non-instanced pipeline - literally the same object,
+        // handed in by the cache: same frame and material registers, same slot order. The
+        // object slot simply goes unused, which costs two DWORDs of root space and buys both
+        // pipelines one signature, one material upload path and one set of `ROOT_*` constants
+        // to keep correct.
+        let root_signature = root_signature.clone();
 
         let input_elements = instanced_vertex_elements();
 
@@ -818,7 +1117,7 @@ impl InstancedMeshPipeline {
             // lives only for this call and the real reference is owned here.
             pRootSignature: unsafe { std::mem::transmute_copy(&root_signature) },
             VS: bytecode(MESH_INSTANCED_VS),
-            PS: bytecode(MESH_INSTANCED_PS),
+            PS: bytecode(mesh_instanced_pixel_shader(features)),
             RasterizerState: rasterizer,
             BlendState: blend_desc(),
             DepthStencilState: depth_stencil_desc(),

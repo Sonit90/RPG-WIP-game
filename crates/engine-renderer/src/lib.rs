@@ -44,8 +44,8 @@ pub mod shader;
 pub mod shadow;
 pub mod stress;
 pub mod swapchain;
-pub mod texture_id;
 pub mod sync;
+pub mod texture_id;
 pub mod ui_atlas;
 pub mod ui_pipeline;
 pub mod upload;
@@ -57,6 +57,7 @@ pub use device::BACKEND;
 pub use error::RendererError;
 pub use frame::{DEFAULT_FRAMES_IN_FLIGHT, MAX_FRAMES_IN_FLIGHT, SyncStats};
 pub use instancing::{InstanceData, UNIT_TRIANGLE};
+pub use light_cluster::{LightClusterStats, LightClusters};
 pub use material::{
     MATERIAL_TEXTURE_COUNT, Material, MaterialConstants, MaterialDesc, MaterialTextureSet,
     MaterialTextureSlot, MaterialTextures,
@@ -70,7 +71,6 @@ pub use pipeline::{TRIANGLE_VERTICES, Vertex};
 pub use render_list::{RenderList, RenderListEntry};
 pub use renderer::{Renderer, TextureHandle, TextureImage};
 pub use scene::{FrameConstants, ObjectConstants};
-pub use light_cluster::{LightClusterStats, LightClusters};
 pub use shadow::{ShadowPreset, ShadowRenderer, ShadowSettings, ShadowStats};
 pub use ui_atlas::{AtlasUv, UiAtlas};
 pub use ui_pipeline::{UiBatchStats, UiBatcher, UiFrameConstants, UiPipeline, UiVertex};

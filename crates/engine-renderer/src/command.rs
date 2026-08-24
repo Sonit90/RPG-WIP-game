@@ -488,6 +488,40 @@ impl CommandContext {
         }
     }
 
+    /// Binds a root signature on its own, skipping it if already bound.
+    ///
+    /// For a pass that binds one signature and then changes pipeline *state* per draw. The
+    /// order matters and is the whole reason this is separate from [`CommandContext::
+    /// set_pipeline`]: D3D12 discards every root argument when the signature changes, so a
+    /// pass binds the signature first, then its frame-level root arguments, and only then
+    /// starts switching pipeline states.
+    pub fn set_root_signature(&mut self, root_signature: &ID3D12RootSignature) {
+        let root_id = root_signature.as_raw() as usize;
+        if BindingState::bind(&mut self.bound.root_signature, root_id) {
+            // SAFETY: FFI call on the open list with a live root signature.
+            unsafe { self.list.SetGraphicsRootSignature(root_signature) };
+            // See `set_pipeline`: the driver has just thrown away every root argument, so
+            // this context's memory of them is stale.
+            self.bound.root_cbv = [0; MAX_TRACKED_ROOT_SLOTS];
+        }
+    }
+
+    /// Binds a pipeline state without touching the root signature.
+    ///
+    /// The per-draw half of the pair above. A pipeline state built against the signature that
+    /// is already bound changes no root argument, so the frame's constants, its cluster grid
+    /// and its shadow tables survive a permutation switch between batches.
+    pub fn set_pipeline_state(&mut self, pipeline: &ID3D12PipelineState) {
+        let pipeline_id = pipeline.as_raw() as usize;
+        if BindingState::bind(&mut self.bound.pipeline, pipeline_id) {
+            // SAFETY: FFI call on the open list with a live pipeline state object.
+            unsafe { self.list.SetPipelineState(pipeline) };
+            self.stats.pipeline_changes += 1;
+        } else {
+            self.stats.redundant_pipeline_binds += 1;
+        }
+    }
+
     /// Sets the primitive topology, skipping it if already set.
     pub fn set_topology(&mut self, topology: D3D_PRIMITIVE_TOPOLOGY) {
         // The constant's value is only ever compared, never interpreted.

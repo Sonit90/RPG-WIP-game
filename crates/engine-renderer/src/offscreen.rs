@@ -40,6 +40,7 @@ use crate::scene::{
     FrameConstants, ObjectConstants, ROOT_FRAME_CBV, ROOT_MATERIAL_CBV, ROOT_MATERIAL_TABLE,
     ROOT_OBJECT_CBV, ROOT_SKIN_CBV,
 };
+use crate::shader::ShaderFeatures;
 use crate::swapchain::BACK_BUFFER_FORMAT;
 use crate::upload::UploadRing;
 use engine_render_data::Camera;
@@ -449,9 +450,42 @@ pub fn render_scene(
     camera: &Camera,
     lighting: Lighting,
 ) -> Result<CapturedImage, RendererError> {
+    render_scene_with_features(
+        width,
+        height,
+        clear_color,
+        objects,
+        camera,
+        lighting,
+        ShaderFeatures::ALL,
+    )
+}
+
+/// The same, through a pixel shader compiled with `features`.
+///
+/// What lets a test compare two permutations of one scene: the geometry, the materials, the
+/// camera and the lighting are identical, and only the shader the pipeline state carries
+/// differs. Everything else in this module renders with [`ShaderFeatures::ALL`], so a pixel
+/// test that does not ask for a permutation still measures the full shader.
+///
+/// # Errors
+///
+/// Returns [`RendererError`] if any D3D12 call fails or a material is invalid.
+pub fn render_scene_with_features(
+    width: u32,
+    height: u32,
+    clear_color: [f32; 4],
+    objects: &[SceneObject<'_>],
+    camera: &Camera,
+    lighting: Lighting,
+    features: ShaderFeatures,
+) -> Result<CapturedImage, RendererError> {
     render_with(width, height, clear_color, |context, commands, _, _| {
         let list = commands.list();
-        let pipeline = MeshPipeline::new(context.device())?;
+        // Its own root signature: this path owns exactly one pipeline, so there is nothing
+        // to share it with and nothing that could invalidate a root argument by changing it.
+        let root_signature = crate::mesh_pipeline::create_root_signature(context.device())?;
+        let pipeline = MeshPipeline::with_features(context.device(), &root_signature, features)?;
         // One frame slot: this path submits once and waits, so there is nothing to overlap.
         // A megabyte, not 64 KiB: one 256-byte object constant per draw, and the
         // environment tests place a whole arena. Exhausting the ring fails the frame with a

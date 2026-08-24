@@ -22,6 +22,13 @@ struct ShaderEntry {
     profile: &'static str,
     /// Name of the generated Rust constant.
     constant: &'static str,
+    /// Preprocessor symbols, passed as `-D NAME=1`.
+    ///
+    /// Two entries that differ only here are two different shaders from one source file, so
+    /// the defines are part of the output filename as well — without that the second
+    /// permutation would overwrite the first's DXIL and every variant would be the last one
+    /// compiled.
+    defines: &'static [&'static str],
 }
 
 /// Every shader the renderer contains.
@@ -34,115 +41,160 @@ const SHADERS: &[ShaderEntry] = &[
         entry: "VSMain",
         profile: "vs_6_0",
         constant: "TRIANGLE_VS",
+        defines: &[],
     },
     ShaderEntry {
         file: "triangle.hlsl",
         entry: "PSMain",
         profile: "ps_6_0",
         constant: "TRIANGLE_PS",
+        defines: &[],
     },
     ShaderEntry {
         file: "mesh.hlsl",
         entry: "VSMain",
         profile: "vs_6_0",
         constant: "MESH_VS",
-    },
-    ShaderEntry {
-        file: "mesh.hlsl",
-        entry: "PSMain",
-        profile: "ps_6_0",
-        constant: "MESH_PS",
+        defines: &[],
     },
     ShaderEntry {
         file: "mesh_instanced.hlsl",
         entry: "VSMain",
         profile: "vs_6_0",
         constant: "MESH_INSTANCED_VS",
-    },
-    ShaderEntry {
-        file: "mesh_instanced.hlsl",
-        entry: "PSMain",
-        profile: "ps_6_0",
-        constant: "MESH_INSTANCED_PS",
+        defines: &[],
     },
     ShaderEntry {
         file: "particle.hlsl",
         entry: "VSMain",
         profile: "vs_6_0",
         constant: "PARTICLE_VS",
+        defines: &[],
     },
     ShaderEntry {
         file: "particle.hlsl",
         entry: "PSMain",
         profile: "ps_6_0",
         constant: "PARTICLE_PS",
+        defines: &[],
     },
     ShaderEntry {
         file: "mesh_skinned.hlsl",
         entry: "VSMain",
         profile: "vs_6_0",
         constant: "MESH_SKINNED_VS",
-    },
-    ShaderEntry {
-        file: "mesh_skinned.hlsl",
-        entry: "PSMain",
-        profile: "ps_6_0",
-        constant: "MESH_SKINNED_PS",
+        defines: &[],
     },
     ShaderEntry {
         file: "ui.hlsl",
         entry: "VSMain",
         profile: "vs_6_0",
         constant: "UI_VS",
+        defines: &[],
     },
     ShaderEntry {
         file: "ui.hlsl",
         entry: "PSMain",
         profile: "ps_6_0",
         constant: "UI_PS",
+        defines: &[],
     },
     ShaderEntry {
         file: "shadow_depth.hlsl",
         entry: "VSInstanced",
         profile: "vs_6_0",
         constant: "SHADOW_DEPTH_INSTANCED_VS",
+        defines: &[],
     },
     ShaderEntry {
         file: "shadow_depth.hlsl",
         entry: "VSSkinned",
         profile: "vs_6_0",
         constant: "SHADOW_DEPTH_SKINNED_VS",
+        defines: &[],
     },
     ShaderEntry {
         file: "shadow_depth.hlsl",
         entry: "PSAlpha",
         profile: "ps_6_0",
         constant: "SHADOW_DEPTH_ALPHA_PS",
+        defines: &[],
     },
     ShaderEntry {
         file: "contact.hlsl",
         entry: "VSMain",
         profile: "vs_6_0",
         constant: "CONTACT_VS",
+        defines: &[],
     },
     ShaderEntry {
         file: "contact.hlsl",
         entry: "PSMain",
         profile: "ps_6_0",
         constant: "CONTACT_PS",
+        defines: &[],
     },
     ShaderEntry {
         file: "instanced.hlsl",
         entry: "VSMain",
         profile: "vs_6_0",
         constant: "INSTANCED_VS",
+        defines: &[],
     },
     ShaderEntry {
         file: "instanced.hlsl",
         entry: "PSMain",
         profile: "ps_6_0",
         constant: "INSTANCED_PS",
+        defines: &[],
     },
+];
+
+/// The mesh pixel shader's feature permutations.
+///
+/// Three independent compile-time features — `MATERIAL_PBR`, `MATERIAL_NORMAL_MAP` and
+/// `ENABLE_SHADOWS` — across the three mesh pipelines, so the renderer can bind a pipeline
+/// state that contains only the work a given material and the current shadow setting
+/// actually need. A feature that is off is not branched around at runtime: it is not in the
+/// bytecode.
+///
+/// Eight permutations per pipeline, twenty-four blobs. They are cheap to compile and cheap
+/// to embed (the largest is 45 KB), and enumerating them here rather than deriving the set
+/// from what the game happens to use keeps "which variants exist" answerable by reading one
+/// table. Which of them become *pipeline states* is a runtime decision: `renderer.rs`
+/// creates them on first use.
+const MESH_PERMUTATIONS: &[MeshPermutation] = &[
+    MeshPermutation {
+        file: "mesh.hlsl",
+        prefix: "MESH_PS",
+    },
+    MeshPermutation {
+        file: "mesh_instanced.hlsl",
+        prefix: "MESH_INSTANCED_PS",
+    },
+    MeshPermutation {
+        file: "mesh_skinned.hlsl",
+        prefix: "MESH_SKINNED_PS",
+    },
+];
+
+/// One mesh pixel shader, compiled once per feature combination.
+struct MeshPermutation {
+    /// File under `shaders/`.
+    file: &'static str,
+    /// Constant-name prefix. The suffix names the features that are on.
+    prefix: &'static str,
+}
+
+/// The three feature axes, in the order their suffixes are appended.
+///
+/// `(define, suffix)`. A permutation's constant is the prefix plus one `_SUFFIX` per feature
+/// that is on, so the all-off variant keeps the bare prefix — `MESH_PS` still means what it
+/// has always meant, the shader with nothing switched on.
+const MESH_FEATURES: [(&str, &str); 3] = [
+    ("MATERIAL_PBR", "PBR"),
+    ("MATERIAL_NORMAL_MAP", "NORMAL_MAP"),
+    ("ENABLE_SHADOWS", "SHADOWS"),
 ];
 
 /// The headers the shaders above include.
@@ -398,22 +450,32 @@ fn main() {
     );
 
     for shader in SHADERS {
-        let source = shader_dir.join(shader.file);
-        println!("cargo:rerun-if-changed={}", source.display());
+        compile_entry(&dxc, &shader_dir, &out_dir, shader, &mut generated);
+    }
 
-        let stem = shader.file.trim_end_matches(".hlsl");
-        let output = out_dir.join(format!("{stem}.{}.dxil", shader.entry));
-        compile(&dxc, &source, shader, &output);
-
-        generated.push_str(&format!(
-            "\n/// `{}` `{}` from `shaders/{}`, compiled to DXIL at build time.\n\
-             pub const {}: &[u8] = include_bytes!(r\"{}\");\n",
-            shader.entry,
-            shader.profile,
-            shader.file,
-            shader.constant,
-            output.display(),
-        ));
+    // The mesh pixel shaders, once per combination of the three feature defines. Same
+    // compile and the same generated constant as any other entry point; only the defines
+    // and the name differ.
+    for permutation in MESH_PERMUTATIONS {
+        for mask in 0..(1u32 << MESH_FEATURES.len()) {
+            let mut defines: Vec<&'static str> = Vec::new();
+            let mut constant = String::from(permutation.prefix);
+            for (bit, (define, suffix)) in MESH_FEATURES.iter().enumerate() {
+                if mask & (1 << bit) != 0 {
+                    defines.push(define);
+                    constant.push('_');
+                    constant.push_str(suffix);
+                }
+            }
+            let entry = ShaderEntry {
+                file: permutation.file,
+                entry: "PSMain",
+                profile: "ps_6_0",
+                constant: Box::leak(constant.into_boxed_str()),
+                defines: Box::leak(defines.into_boxed_slice()),
+            };
+            compile_entry(&dxc, &shader_dir, &out_dir, &entry, &mut generated);
+        }
     }
 
     std::fs::write(out_dir.join("shaders.rs"), generated)
@@ -529,6 +591,50 @@ fn env(name: &str) -> String {
 }
 
 /// Runs `dxc` for one entry point, failing the build with its diagnostic.
+/// Compiles one entry point and appends its generated constant.
+///
+/// The output filename carries the defines as well as the entry point: two permutations of
+/// one `PSMain` are two files, and without the suffix the second would silently overwrite
+/// the first and every variant would be whichever was compiled last.
+fn compile_entry(
+    dxc: &Path,
+    shader_dir: &Path,
+    out_dir: &Path,
+    shader: &ShaderEntry,
+    generated: &mut String,
+) {
+    let source = shader_dir.join(shader.file);
+    println!("cargo:rerun-if-changed={}", source.display());
+
+    let stem = shader.file.trim_end_matches(".hlsl");
+    let mut name = format!("{stem}.{}", shader.entry);
+    for define in shader.defines {
+        name.push('.');
+        name.push_str(&define.to_lowercase());
+    }
+    name.push_str(".dxil");
+    let output = out_dir.join(name);
+    compile(dxc, &source, shader, &output);
+
+    let features = if shader.defines.is_empty() {
+        String::from("no features")
+    } else {
+        shader.defines.join(", ")
+    };
+    generated.push_str(&format!(
+        "
+/// `{}` `{}` from `shaders/{}` ({}), compiled to DXIL at build time.
+         pub const {}: &[u8] = include_bytes!(r\"{}\");
+",
+        shader.entry,
+        shader.profile,
+        shader.file,
+        features,
+        shader.constant,
+        output.display(),
+    ));
+}
+
 fn compile(dxc: &Path, source: &Path, shader: &ShaderEntry, output: &Path) {
     // One set of flags for every build profile. Optimized-only means a shader bug
     // reproduces identically in debug and release, and the bytecode is the same bytes the
@@ -541,6 +647,12 @@ fn compile(dxc: &Path, source: &Path, shader: &ShaderEntry, output: &Path) {
         .arg(shader.entry)
         .arg("-O3")
         .arg("-WX")
+        .args(
+            shader
+                .defines
+                .iter()
+                .flat_map(|define| ["-D".to_string(), format!("{define}=1")]),
+        )
         .arg("-Fo")
         .arg(output)
         .arg(source)
