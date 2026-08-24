@@ -12,7 +12,7 @@
 
 use engine_render_data::ui::{TextAlign, UiColor, UiDrawList, UiRect, UiScale};
 
-use super::menu::{HeroItem, MenuScreen, MenuSystem, PauseItem};
+use super::menu::{GraphicsItem, HeroItem, MenuScreen, MenuSystem, PauseItem};
 use super::widget::{Slider, Widget, WidgetState};
 
 /// How the menus are coloured and sized.
@@ -157,6 +157,7 @@ pub fn push_menu(
         MenuScreen::Settings => push_settings(list, menu, theme, scratch, viewport, scale),
         MenuScreen::Heroes => push_heroes(list, menu, theme, viewport, scale),
         MenuScreen::Nameplates => push_nameplates(list, menu, theme, scratch, viewport, scale),
+        MenuScreen::Graphics => push_graphics(list, menu, theme, viewport, scale),
     }
 }
 
@@ -186,6 +187,35 @@ fn push_heroes(
         list.text_at(
             (rect.x + scale.px(48.0), rect.bottom() + scale.px(6.0)),
             hero.description(),
+            theme.text_disabled,
+            scale.text(0.8),
+        );
+    }
+}
+
+/// The graphics section: a tick per shadow level with a line saying what it buys.
+///
+/// The hero roster's painter, applied to a different question — a row, its tick, and a
+/// description read straight off the value rather than written down here. The two are
+/// separate functions only because the panel and the title differ.
+fn push_graphics(
+    list: &mut UiDrawList,
+    menu: &MenuSystem,
+    theme: &MenuTheme,
+    viewport: (u32, u32),
+    scale: UiScale,
+) {
+    let panel = menu.graphics_panel();
+    push_backdrop(list, theme, viewport, panel, "GRAPHICS", scale);
+    for (item, widget) in menu.graphics_screen().widgets() {
+        push_widget(list, widget, theme, scale);
+        let GraphicsItem::Shadows(quality) = item else {
+            continue;
+        };
+        let rect = widget.rect();
+        list.text_at(
+            (rect.x + scale.px(48.0), rect.bottom() + scale.px(6.0)),
+            quality.description(),
             theme.text_disabled,
             scale.text(0.8),
         );

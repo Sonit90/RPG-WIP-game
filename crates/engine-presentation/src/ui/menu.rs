@@ -25,8 +25,8 @@
 use engine_render_data::ui::{UiRect, UiScale};
 use engine_settings::{
     BindingScope, CAMERA_SENSITIVITY_MAX, CAMERA_SENSITIVITY_MIN, CAMERA_SENSITIVITY_STEP,
-    GameSettings, NameplateSetting, UI_SCALE_MAX, UI_SCALE_MIN, UI_SCALE_STEP, VOLUME_MAX,
-    VOLUME_MIN, VOLUME_STEP,
+    GameSettings, NameplateSetting, ShadowQuality, UI_SCALE_MAX, UI_SCALE_MIN, UI_SCALE_STEP,
+    VOLUME_MAX, VOLUME_MIN, VOLUME_STEP,
 };
 
 use engine_game::hero::Hero;
@@ -58,6 +58,12 @@ pub enum MenuScreen {
     /// column is taller than a 720p window, and the reference layout gives nameplates a page
     /// of their own for the same reason.
     Nameplates,
+    /// The graphics section of the settings: shadow quality, so far.
+    ///
+    /// Its own screen for the reason the nameplates have one, and for a second: choosing one
+    /// of five levels wants a row per level with a line saying what it buys, which is the
+    /// hero roster's shape and not a row on a list of sliders.
+    Graphics,
 }
 
 impl MenuScreen {
@@ -103,9 +109,24 @@ pub enum SettingsItem {
     AmbientVolume,
     /// Whether each character remembers its own bars.
     BindingScope,
+    /// Opens the graphics section.
+    Graphics,
     /// Opens the nameplate section.
     Nameplates,
     /// Returns to the pause menu.
+    Back,
+}
+
+/// The graphics screen's items, in layout order.
+///
+/// One row per shadow level plus a way back — the hero roster's shape, because it is the
+/// same question: pick exactly one of a short list. A checkbox per level rather than a
+/// dropdown, because a dropdown is a widget this framework does not have and five rows fit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GraphicsItem {
+    /// One of the five shadow levels. Ticked when it is the one in force.
+    Shadows(ShadowQuality),
+    /// Returns to the settings screen.
     Back,
 }
 
@@ -220,6 +241,35 @@ pub enum MenuAction {
     NameplateChanged(NameplateSetting, f32),
     /// A nameplate setting settled on this value. Apply it and persist it.
     NameplateCommitted(NameplateSetting, f32),
+    /// The graphics screen opened.
+    OpenedGraphics,
+    /// The graphics screen closed back to the settings screen.
+    ClosedGraphics,
+    /// The player chose a shadow quality. Apply it and persist it.
+    ///
+    /// Committed immediately — a row of ticks has no drag to settle — so there is one action
+    /// rather than the changed/committed pair the sliders need. Emitted even for the level
+    /// already in force: the menu reports what was pressed and the application decides that
+    /// nothing changed, which is the rule every other action here follows.
+    ///
+    /// Applying it is not free — the shadow atlas is recreated and the GPU is waited on —
+    /// which is exactly why it is a click and not a slider.
+    ShadowQualityCommitted(ShadowQuality),
+}
+
+/// What a shadow level's row is called.
+///
+/// Upper case like every other label in the menu, and the same word the file uses so a player
+/// reading `settings.cfg` sees what they clicked.
+#[must_use]
+fn shadow_label(quality: ShadowQuality) -> &'static str {
+    match quality {
+        ShadowQuality::Off => "SHADOWS: OFF",
+        ShadowQuality::Low => "SHADOWS: LOW",
+        ShadowQuality::Medium => "SHADOWS: MEDIUM",
+        ShadowQuality::High => "SHADOWS: HIGH",
+        ShadowQuality::Ultra => "SHADOWS: ULTRA",
+    }
 }
 
 /// The value one volume channel currently has.
@@ -364,6 +414,13 @@ pub struct MenuSystem {
     title: &'static str,
     pause: UiScreen<PauseItem>,
     settings: UiScreen<SettingsItem>,
+    graphics: UiScreen<GraphicsItem>,
+    /// The shadow level the ticks describe.
+    ///
+    /// Held for the reason [`MenuSystem::hero`] is: a row of checkboxes is one choice, and
+    /// the widget that was clicked is not the authority on what the choice now is — the
+    /// application is, because applying a level can fail and leave the old one running.
+    shadows: ShadowQuality,
     heroes: UiScreen<HeroItem>,
     nameplates: UiScreen<NameplateItem>,
     /// Which hero the roster shows a tick beside.
@@ -433,8 +490,21 @@ impl MenuSystem {
             Checkbox::new("KEYBINDS PER CHARACTER")
                 .checked(settings.binding_scope.is_per_character()),
         );
+        settings_screen.push(SettingsItem::Graphics, Button::new("GRAPHICS"));
         settings_screen.push(SettingsItem::Nameplates, Button::new("NAMEPLATES"));
         settings_screen.push(SettingsItem::Back, Button::new("BACK"));
+
+        // The graphics section. One row per shadow level, built from `ShadowQuality::ALL`,
+        // so a sixth level is an entry in that array and nothing here.
+        let mut graphics_screen = UiScreen::new();
+        for quality in ShadowQuality::ALL {
+            graphics_screen.push(
+                GraphicsItem::Shadows(quality),
+                Checkbox::new(shadow_label(quality))
+                    .checked(quality == settings.graphics.shadows),
+            );
+        }
+        graphics_screen.push(GraphicsItem::Back, Button::new("BACK"));
 
         // The roster. One row per hero, built from `Hero::ALL`, so a fourth playable
         // character is a row in that array and nothing here.
@@ -473,6 +543,8 @@ impl MenuSystem {
             settings: settings_screen,
             heroes: hero_screen,
             nameplates: nameplate_screen,
+            graphics: graphics_screen,
+            shadows: settings.graphics.shadows,
             hero: Hero::default(),
             actions: Vec::with_capacity(4),
             viewport: (0, 0),
@@ -547,6 +619,34 @@ impl MenuSystem {
         }
     }
 
+    /// The graphics screen's widgets, for drawing.
+    #[must_use]
+    pub fn graphics_screen(&self) -> &UiScreen<GraphicsItem> {
+        &self.graphics
+    }
+
+    /// The shadow level the graphics screen is showing as chosen.
+    #[must_use]
+    pub fn shadow_quality(&self) -> ShadowQuality {
+        self.shadows
+    }
+
+    /// Moves the tick to `quality` without emitting anything.
+    ///
+    /// What the application calls once it has actually applied a level. The menu never moves
+    /// its own tick on a click: applying a shadow level recreates the atlas and can fail, and
+    /// a screen that had already ticked the new row would be lying about what is running.
+    pub fn set_shadow_quality(&mut self, quality: ShadowQuality) {
+        self.shadows = quality;
+        for candidate in ShadowQuality::ALL {
+            if let Some(Widget::Checkbox(tick)) =
+                self.graphics.widget_mut(GraphicsItem::Shadows(candidate))
+            {
+                tick.set_checked(candidate == quality);
+            }
+        }
+    }
+
     /// The nameplate screen's widgets, for drawing.
     #[must_use]
     pub fn nameplate_screen(&self) -> &UiScreen<NameplateItem> {
@@ -592,6 +692,7 @@ impl MenuSystem {
                 slider.set_value(settings.nameplates.get(setting));
             }
         }
+        self.set_shadow_quality(settings.graphics.shadows);
         self.set_scale(UiScale::new(settings.ui_scale));
     }
 
@@ -667,6 +768,7 @@ impl MenuSystem {
         self.layout_settings(viewport);
         self.layout_heroes(viewport);
         self.layout_nameplates(viewport);
+        self.layout_graphics(viewport);
     }
 
     /// The panel the pause menu draws in.
@@ -701,14 +803,30 @@ impl MenuSystem {
         let slider = self.metrics.slider_label_height
             + self.metrics.track_height
             + self.metrics.slider_value_height;
-        // The sliders, then the one checkbox, then the two buttons: the checkbox is a row of
-        // button height like the two under it, and the panel has to reserve it or the box
-        // would be drawn off the bottom of the thing it belongs to.
+        // The sliders, then the one checkbox, then the three buttons: the checkbox is a row
+        // of button height like the ones under it, and the panel has to reserve every row or
+        // the last would be drawn off the bottom of the thing it belongs to.
         let content = self.metrics.title_height
             + slider * SLIDER_COUNT
             + self.metrics.group_gap
-            + self.metrics.button_height * 3.0
-            + self.metrics.button_gap * 2.0;
+            + self.metrics.button_height * 4.0
+            + self.metrics.button_gap * 3.0;
+        self.centred_panel(self.viewport, content + self.metrics.padding * 2.0)
+    }
+
+    /// The panel the graphics screen draws in.
+    ///
+    /// One row per shadow level with a line of description under each, then a separated
+    /// BACK — the hero roster's shape, because it answers the same kind of question.
+    #[must_use]
+    pub fn graphics_panel(&self) -> UiRect {
+        let row = self.metrics.button_height
+            + self.metrics.hero_description_height
+            + self.metrics.button_gap;
+        let content = self.metrics.title_height
+            + row * ShadowQuality::ALL.len() as f32
+            + self.metrics.group_gap
+            + self.metrics.button_height;
         self.centred_panel(self.viewport, content + self.metrics.padding * 2.0)
     }
 
@@ -796,11 +914,15 @@ impl MenuSystem {
             y += self.metrics.track_height + self.metrics.slider_value_height;
         }
 
-        // Where the bars are kept, then the way into the nameplate section, then the way out
-        // of the screen.
+        // Where the bars are kept, then the two sections, then the way out of the screen.
         let mut y = y + self.metrics.group_gap;
         self.settings.set_rect(
             SettingsItem::BindingScope,
+            UiRect::new(x, y, width, self.metrics.button_height),
+        );
+        y += self.metrics.button_height + self.metrics.button_gap;
+        self.settings.set_rect(
+            SettingsItem::Graphics,
             UiRect::new(x, y, width, self.metrics.button_height),
         );
         y += self.metrics.button_height + self.metrics.button_gap;
@@ -837,6 +959,36 @@ impl MenuSystem {
 
         self.heroes.set_rect(
             HeroItem::Back,
+            UiRect::new(
+                x,
+                y - self.metrics.button_gap + self.metrics.group_gap,
+                width,
+                self.metrics.button_height,
+            ),
+        );
+    }
+
+    fn layout_graphics(&mut self, viewport: (u32, u32)) {
+        self.viewport = viewport;
+        let panel = self.graphics_panel();
+        let x = panel.x + self.metrics.padding;
+        let width = panel.width - self.metrics.padding * 2.0;
+        let mut y = panel.y + self.metrics.padding + self.metrics.title_height;
+
+        for quality in ShadowQuality::ALL {
+            self.graphics.set_rect(
+                GraphicsItem::Shadows(quality),
+                UiRect::new(x, y, width, self.metrics.button_height),
+            );
+            // The description's line is reserved by the layout rather than borrowed from the
+            // next row by the painter, exactly as the hero roster does it.
+            y += self.metrics.button_height
+                + self.metrics.hero_description_height
+                + self.metrics.button_gap;
+        }
+
+        self.graphics.set_rect(
+            GraphicsItem::Back,
             UiRect::new(
                 x,
                 y - self.metrics.button_gap + self.metrics.group_gap,
@@ -893,6 +1045,7 @@ impl MenuSystem {
             MenuScreen::Settings => self.update_settings(input),
             MenuScreen::Heroes => self.update_heroes(input),
             MenuScreen::Nameplates => self.update_nameplates(input),
+            MenuScreen::Graphics => self.update_graphics(input),
         }
         &self.actions
     }
@@ -991,6 +1144,7 @@ impl MenuSystem {
         }
         let mut back = false;
         let mut open_nameplates = false;
+        let mut open_graphics = false;
         let mut binding_scope = None;
         // Collected first: the borrow of the screen's event buffer ends here, and the
         // actions below are pushed onto this system's own.
@@ -1001,6 +1155,7 @@ impl MenuSystem {
             match (item, event) {
                 (SettingsItem::Back, WidgetEvent::Activated) => back = true,
                 (SettingsItem::Nameplates, WidgetEvent::Activated) => open_nameplates = true,
+                (SettingsItem::Graphics, WidgetEvent::Activated) => open_graphics = true,
                 (SettingsItem::BindingScope, WidgetEvent::Toggled(checked)) => {
                     binding_scope = Some(BindingScope::from_per_character(*checked));
                 }
@@ -1057,6 +1212,13 @@ impl MenuSystem {
         if let Some(scope) = binding_scope {
             self.actions.push(MenuAction::BindingScopeCommitted(scope));
         }
+        if open_graphics {
+            self.screen = MenuScreen::Graphics;
+            self.settings.reset();
+            self.graphics.reset();
+            self.actions.push(MenuAction::OpenedGraphics);
+            return;
+        }
         if open_nameplates {
             self.screen = MenuScreen::Nameplates;
             self.settings.reset();
@@ -1111,6 +1273,51 @@ impl MenuSystem {
         if back {
             self.back_to_settings();
         }
+    }
+
+    /// The graphics section: one tick per shadow level, and a way back.
+    ///
+    /// The tick the click moved is put straight back where the application says it belongs,
+    /// exactly as the hero roster does: the screen reports what was pressed, and what is
+    /// actually running is not its to decide. Choosing a level does **not** close the menu —
+    /// unlike choosing a hero — because the whole point of the screen is to look at the
+    /// result and try the next one down if it is not fast enough.
+    fn update_graphics(&mut self, input: &UiInput) {
+        if input.cancel {
+            self.back_to_settings_from_graphics();
+            return;
+        }
+        let mut back = false;
+        let mut chosen = None;
+        for (item, event) in self.graphics.update(input) {
+            match (item, event) {
+                (GraphicsItem::Back, WidgetEvent::Activated) => back = true,
+                (
+                    GraphicsItem::Shadows(quality),
+                    WidgetEvent::Toggled(_) | WidgetEvent::Activated,
+                ) => {
+                    chosen = Some(*quality);
+                }
+                _ => {}
+            }
+        }
+        let current = self.shadows;
+        self.set_shadow_quality(current);
+        if let Some(quality) = chosen {
+            self.actions.push(MenuAction::ShadowQualityCommitted(quality));
+        }
+        if back {
+            self.back_to_settings_from_graphics();
+        }
+    }
+
+    /// Escape and BACK from the graphics section return to the settings screen, not to the
+    /// game — the rule every section of the settings follows.
+    fn back_to_settings_from_graphics(&mut self) {
+        self.screen = MenuScreen::Settings;
+        self.graphics.reset();
+        self.settings.reset();
+        self.actions.push(MenuAction::ClosedGraphics);
     }
 
     fn back_to_pause(&mut self) {
@@ -1902,6 +2109,198 @@ mod tests {
         assert!(
             menu.update(&at(0.0, 0.0)).is_empty(),
             "applying settings emitted"
+        );
+    }
+
+
+    fn centre_of_graphics(menu: &MenuSystem, item: GraphicsItem) -> (f32, f32) {
+        let rect = menu
+            .graphics_screen()
+            .widget(item)
+            .expect("the item exists")
+            .rect();
+        (rect.x + rect.width * 0.5, rect.y + rect.height * 0.5)
+    }
+
+    fn click_graphics(menu: &mut MenuSystem, item: GraphicsItem) -> Vec<MenuAction> {
+        let (x, y) = centre_of_graphics(menu, item);
+        menu.update(&press(x, y));
+        menu.update(&release(x, y)).to_vec()
+    }
+
+    fn open_graphics(menu: &mut MenuSystem) {
+        menu.open_pause();
+        click_pause(menu, PauseItem::Settings);
+        click_settings(menu, SettingsItem::Graphics);
+    }
+
+    fn settings_with_shadows(shadows: ShadowQuality) -> GameSettings {
+        GameSettings {
+            graphics: engine_settings::GraphicsSettings { shadows },
+            ..GameSettings::default()
+        }
+    }
+
+    fn is_ticked(menu: &MenuSystem, quality: ShadowQuality) -> bool {
+        match menu.graphics_screen().widget(GraphicsItem::Shadows(quality)) {
+            Some(Widget::Checkbox(tick)) => tick.checked,
+            _ => panic!("{} has no row", quality.as_str()),
+        }
+    }
+
+    #[test]
+    fn the_settings_screen_opens_the_graphics_section_and_escape_returns_to_it() {
+        let mut menu = menu();
+        menu.open_pause();
+        click_pause(&mut menu, PauseItem::Settings);
+
+        let opened = click_settings(&mut menu, SettingsItem::Graphics);
+        assert_eq!(opened, [MenuAction::OpenedGraphics]);
+        assert_eq!(menu.screen(), MenuScreen::Graphics);
+
+        // Escape goes back to the settings, not out to the game.
+        let closed = menu.update(&escape()).to_vec();
+        assert_eq!(closed, [MenuAction::ClosedGraphics]);
+        assert_eq!(menu.screen(), MenuScreen::Settings);
+
+        // And so does BACK.
+        click_settings(&mut menu, SettingsItem::Graphics);
+        let closed = click_graphics(&mut menu, GraphicsItem::Back);
+        assert_eq!(closed, [MenuAction::ClosedGraphics]);
+        assert_eq!(menu.screen(), MenuScreen::Settings);
+    }
+
+    #[test]
+    fn the_graphics_screen_offers_every_shadow_level_with_the_current_one_ticked() {
+        let mut menu = MenuSystem::new(settings_with_shadows(ShadowQuality::Medium), "0.1.0");
+        menu.layout((1280, 720));
+
+        for quality in ShadowQuality::ALL {
+            assert_eq!(
+                is_ticked(&menu, quality),
+                quality == ShadowQuality::Medium,
+                "{} is ticked wrongly",
+                quality.as_str()
+            );
+        }
+        assert_eq!(menu.shadow_quality(), ShadowQuality::Medium);
+    }
+
+    #[test]
+    fn choosing_a_level_reports_it_and_leaves_the_tick_where_the_game_says() {
+        // The rule the hero roster follows, and for a stronger reason: applying a shadow
+        // level recreates the atlas and can fail, so the screen must not tick a row it has
+        // no evidence is running.
+        let mut menu = menu();
+        open_graphics(&mut menu);
+        assert_eq!(menu.shadow_quality(), ShadowQuality::High);
+
+        let actions = click_graphics(&mut menu, GraphicsItem::Shadows(ShadowQuality::Ultra));
+        assert_eq!(
+            actions,
+            [MenuAction::ShadowQualityCommitted(ShadowQuality::Ultra)]
+        );
+        assert_eq!(
+            menu.shadow_quality(),
+            ShadowQuality::High,
+            "the menu moved its own tick before the application applied anything"
+        );
+        assert!(
+            !is_ticked(&menu, ShadowQuality::Ultra),
+            "the clicked row ticked itself"
+        );
+        assert!(is_ticked(&menu, ShadowQuality::High));
+
+        // Once the application has applied it, the tick moves.
+        menu.set_shadow_quality(ShadowQuality::Ultra);
+        assert_eq!(menu.shadow_quality(), ShadowQuality::Ultra);
+        assert!(is_ticked(&menu, ShadowQuality::Ultra));
+        assert!(!is_ticked(&menu, ShadowQuality::High));
+    }
+
+    #[test]
+    fn choosing_a_level_does_not_close_the_menu() {
+        // Unlike choosing a hero. The point of the screen is to look at the result and try
+        // the next level down if it is not fast enough, which a screen that closed itself
+        // would turn into five round trips through two menus.
+        let mut menu = menu();
+        open_graphics(&mut menu);
+        click_graphics(&mut menu, GraphicsItem::Shadows(ShadowQuality::Low));
+        assert_eq!(menu.screen(), MenuScreen::Graphics);
+    }
+
+    #[test]
+    fn choosing_the_level_already_in_force_still_reports_it() {
+        // The menu reports what was pressed; deciding that nothing changed is the
+        // application's, which is the division every other action here follows.
+        let mut menu = menu();
+        open_graphics(&mut menu);
+        let actions = click_graphics(&mut menu, GraphicsItem::Shadows(ShadowQuality::High));
+        assert_eq!(
+            actions,
+            [MenuAction::ShadowQualityCommitted(ShadowQuality::High)]
+        );
+    }
+
+    #[test]
+    fn loaded_settings_tick_the_level_they_name() {
+        let mut menu = menu();
+        menu.apply_settings(settings_with_shadows(ShadowQuality::Off));
+        assert_eq!(menu.shadow_quality(), ShadowQuality::Off);
+        assert!(is_ticked(&menu, ShadowQuality::Off));
+        assert!(!is_ticked(&menu, ShadowQuality::High));
+    }
+
+    #[test]
+    fn every_graphics_row_stays_inside_its_panel() {
+        let mut menu = menu();
+        for viewport in [(1280, 720), (1920, 1080), (3840, 2160), (640, 480)] {
+            menu.layout(viewport);
+            let panel = menu.graphics_panel();
+            for (item, widget) in menu.graphics_screen().widgets() {
+                let rect = widget.rect();
+                assert!(rect.x >= panel.x, "{item:?} escaped left");
+                assert!(
+                    rect.right() <= panel.right() + 0.01,
+                    "{item:?} escaped right"
+                );
+                assert!(
+                    rect.bottom() <= panel.bottom() + 0.01,
+                    "{item:?} escaped below"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_graphics_rows_are_listed_cheapest_first_and_do_not_overlap() {
+        // The order the player reads them in is the order they cost, so "the next one down"
+        // is the row above.
+        let menu = menu();
+        let mut previous_bottom: Option<f32> = None;
+        for quality in ShadowQuality::ALL {
+            let rect = menu
+                .graphics_screen()
+                .widget(GraphicsItem::Shadows(quality))
+                .expect("every level has a row")
+                .rect();
+            if let Some(bottom) = previous_bottom {
+                assert!(
+                    rect.y > bottom,
+                    "{} overlaps the row above it",
+                    quality.as_str()
+                );
+            }
+            previous_bottom = Some(rect.bottom());
+        }
+        let back = menu
+            .graphics_screen()
+            .widget(GraphicsItem::Back)
+            .expect("BACK exists")
+            .rect();
+        assert!(
+            back.y > previous_bottom.unwrap_or(0.0),
+            "BACK is not below the last level"
         );
     }
 

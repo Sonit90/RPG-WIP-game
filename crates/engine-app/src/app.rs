@@ -902,7 +902,12 @@ impl App {
             #[cfg(feature = "debug-overlay")]
             last_overlay_update: Instant::now(),
         };
-        app.apply_shadow_quality(shadow_quality);
+        let applied = app.apply_shadow_quality(shadow_quality);
+        // The settings screen shows what is running, which after a failed switch is not
+        // necessarily what the file asked for.
+        if applied {
+            app.menu.set_shadow_quality(shadow_quality);
+        }
         if let Some(enabled) = args.shadow_overrides.clusters {
             app.renderer.set_light_clustering(enabled);
             log::info!("light clustering: {}", if enabled { "on" } else { "off" });
@@ -1009,10 +1014,10 @@ impl App {
     /// restart — a quality key that only changed the frame would be a key that lies about
     /// what it did.
     fn cycle_shadow_quality(&mut self) {
-        let mut settings = self.settings.settings();
-        settings.graphics.shadows = settings.graphics.shadows.next();
-        self.settings.update(settings);
-        self.apply_shadow_quality(settings.graphics.shadows);
+        let next = self.settings.settings().graphics.shadows.next();
+        // Through the same path the settings screen uses, so the key and the screen cannot
+        // end up disagreeing about which level is running.
+        self.choose_shadow_quality(next);
     }
 
     /// Tells the renderer what a shadow quality level means.
@@ -1020,7 +1025,7 @@ impl App {
     /// The conversion from the player's word to the renderer's numbers, done here because
     /// the application is the one place that knows both `engine-settings` and
     /// `engine-renderer` — the same rule the scene's lighting follows.
-    fn apply_shadow_quality(&mut self, quality: engine_settings::ShadowQuality) {
+    fn apply_shadow_quality(&mut self, quality: engine_settings::ShadowQuality) -> bool {
         let preset = match quality {
             engine_settings::ShadowQuality::Off => ShadowPreset::Off,
             engine_settings::ShadowQuality::Low => ShadowPreset::Low,
@@ -1035,7 +1040,7 @@ impl App {
             // A quality change that fails leaves the previous configuration running, which
             // is a worse picture rather than a broken one.
             log::error!("shadows: could not switch to {}: {error}", quality.as_str());
-            return;
+            return false;
         }
         let (width, height) = settings.atlas_size();
         log::info!(
@@ -1061,6 +1066,37 @@ impl App {
                 String::new()
             },
         );
+        true
+    }
+
+    /// Applies a shadow level the player chose, and writes it to disk.
+    ///
+    /// The menu's tick is moved **here**, after the renderer has accepted the level, and not
+    /// by the click that asked for it: switching quality recreates the shadow atlas behind a
+    /// `wait_for_idle` and can fail, and a screen that had already ticked the new row would
+    /// be showing a level that is not running. On failure the setting goes back to what it
+    /// was, so the file and the frame never disagree either.
+    fn choose_shadow_quality(&mut self, quality: engine_settings::ShadowQuality) {
+        let previous = self.settings.settings().graphics.shadows;
+        if quality == previous {
+            // Still worth re-ticking: the click moved the checkbox the player pressed, and
+            // this is what puts it back.
+            self.menu.set_shadow_quality(previous);
+            return;
+        }
+
+        if self.apply_shadow_quality(quality) {
+            let mut settings = self.settings.settings();
+            settings.graphics.shadows = quality;
+            self.settings.update(settings);
+            if self.settings.save_if_dirty() {
+                log::info!("settings: shadows are now {}", quality.as_str());
+            }
+            self.menu.set_shadow_quality(quality);
+        } else {
+            // The renderer refused; the previous configuration is still the one running.
+            self.menu.set_shadow_quality(previous);
+        }
     }
 
     /// Puts the character at a numbered test station, or back at the start.
@@ -1709,6 +1745,18 @@ impl App {
                 }
                 MenuAction::NameplateCommitted(setting, value) => {
                     self.apply_nameplate(setting, value, true);
+                }
+                MenuAction::OpenedGraphics => {
+                    self.play_ui_sound(engine_audio::SoundId::UiClick);
+                    // The screen shows what is in the settings, not what it last showed.
+                    self.menu.apply_settings(self.settings.settings());
+                }
+                MenuAction::ClosedGraphics => {
+                    self.play_ui_sound(engine_audio::SoundId::UiCancel);
+                }
+                MenuAction::ShadowQualityCommitted(quality) => {
+                    self.play_ui_sound(engine_audio::SoundId::UiClick);
+                    self.choose_shadow_quality(quality);
                 }
             }
         }

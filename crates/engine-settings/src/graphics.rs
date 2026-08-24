@@ -13,7 +13,7 @@
 //! ShadowQuality::High   this module: a word the player picked
 //!        |              (the application converts, because it is the one place that knows
 //!        v               both this crate and the renderer)
-//! ShadowPreset::High    the renderer: three cascades at 2048, contact shadows on
+//! ShadowPreset::High    the renderer: three cascades at 1536, contact shadows on
 //! ```
 
 use serde::{Deserialize, Serialize};
@@ -27,17 +27,17 @@ use serde::{Deserialize, Serialize};
 pub enum ShadowQuality {
     /// No shadow rendering at all: no atlas, no depth passes, no sampling.
     Off,
-    /// Two cascades at 1024, a single filtered comparison, no local-light shadows.
+    /// Two cascades at 1024 over 35 m, a single filtered comparison, no local-light shadows.
     Low,
-    /// Three cascades at 1024, and two shadow maps for local lights.
+    /// Three cascades at 1024, a four-tap disc, and four local shadow views for spot lights.
     Medium,
-    /// Three cascades at 2048, four local shadow maps, and contact shadows.
+    /// Three cascades at 1536, a four-tap disc, eight local shadow views, contact shadows.
     ///
     /// The default. It is what the engine is tuned against, and it is affordable on the
     /// mid-range hardware this project targets.
     #[default]
     High,
-    /// Four cascades at 2048, a wider filter, eight local shadow maps.
+    /// Four cascades at 2048 over 320 m, a six-tap disc, sixteen local shadow views.
     Ultra,
 }
 
@@ -54,6 +54,23 @@ impl ShadowQuality {
             Self::Medium => "medium",
             Self::High => "high",
             Self::Ultra => "ultra",
+        }
+    }
+
+    /// One line saying what this level buys, for the settings screen to print under it.
+    ///
+    /// Written in what a player can see rather than in what the renderer does: "soft
+    /// shadows" and "shadows where things touch" are the difference they will notice, and
+    /// "three cascades at 1536 with a four-tap disc" is not. The numbers behind each word
+    /// live in `ShadowPreset::settings` in the renderer and nowhere else.
+    #[must_use]
+    pub fn description(self) -> &'static str {
+        match self {
+            Self::Off => "No shadows at all. The cheapest the game gets.",
+            Self::Low => "Hard shadows, close to the camera only.",
+            Self::Medium => "Soft shadows further out, and shadows from spot lights.",
+            Self::High => "Sharper shadows, and shadows where things touch the ground.",
+            Self::Ultra => "The longest range, the softest edges, and every kind of light.",
         }
     }
 
@@ -116,6 +133,21 @@ mod tests {
         // The level the engine is tuned against. A fresh install should look the way the
         // screenshots do.
         assert_eq!(GraphicsSettings::default().shadows, ShadowQuality::High);
+    }
+
+    #[test]
+    fn every_level_says_what_it_buys() {
+        // The settings screen prints these, so a level with nothing to say is a blank line
+        // under a row the player is being asked to choose between.
+        for quality in ShadowQuality::ALL {
+            let description = quality.description();
+            assert!(!description.is_empty(), "{} has no description", quality.as_str());
+            assert!(
+                description.len() < 70,
+                "{}'s description does not fit the panel: {description:?}",
+                quality.as_str()
+            );
+        }
     }
 
     #[test]

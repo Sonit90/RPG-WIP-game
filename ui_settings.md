@@ -518,3 +518,44 @@ screen showed 3.80.
 ### Milestones 24-27 - tests, manual verification, performance, regression - DONE
 
 Recorded in sections 10, 11 and 12 above.
+
+## Graphics section
+
+`ESC -> SETTINGS -> GRAPHICS`: one row per shadow level, cheapest first, with a line under
+each saying what it buys and a tick on the one in force.
+
+```text
++-------------------------------------+
+|              GRAPHICS               |
+|  [ ] SHADOWS: OFF                   |
+|      No shadows at all...           |
+|  [ ] SHADOWS: LOW                   |
+|      Hard shadows, close to...      |
+|  [ ] SHADOWS: MEDIUM                |
+|  [x] SHADOWS: HIGH                  |
+|  [ ] SHADOWS: ULTRA                 |
+|-------------------------------------|
+|                BACK                 |
++-------------------------------------+
+```
+
+Decisions worth stating, all of which follow rules this document already set:
+
+- **A row of checkboxes, not a dropdown.** The framework has no dropdown widget, five rows fit
+  in the panel, and the hero roster already answers "pick exactly one of a short list" this
+  way. A sixth level would be an entry in `ShadowQuality::ALL` and nothing else.
+- **Its own screen, like the nameplates.** The settings panel is seven rows already, and each
+  level wants a line of description under it — which is the hero roster's layout, not a list
+  of sliders'.
+- **The menu does not move its own tick.** The click emits `ShadowQualityCommitted`; the
+  application applies the level, and *then* calls `set_shadow_quality`. Applying a level
+  recreates the shadow atlas behind a `wait_for_idle` and can fail, and a screen that ticked
+  the row it was clicked on would be showing a level that is not running. The hero roster
+  follows the same rule for a weaker reason; here it is load-bearing.
+- **Choosing does not close the menu**, unlike choosing a hero. The player is looking at the
+  result and deciding whether to try the next level down.
+- **F6 goes through the same function**, so the developer key and the settings screen cannot
+  end up disagreeing about which level is running.
+
+The level itself, the file it lives in, and the words it is written as were all already there
+— `GraphicsSettings::shadows` in `engine-settings`. This section is the UI that was missing.

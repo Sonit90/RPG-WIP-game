@@ -397,9 +397,15 @@ configuration is never worth failing a frame over.
 The player's setting is `graphics.shadows` in `settings.cfg`, one of `off`, `low`, `medium`,
 `high`, `ultra`, persisted by the existing settings system and validated on load.
 
+**ESC → SETTINGS → GRAPHICS** is where a player changes it: one row per level, cheapest first,
+with a line under each saying what it buys, and a tick on the one that is running. Choosing a
+level does not close the menu — the point of the screen is to look at the result and try the
+next one down if it is not fast enough.
+
 | Control | What it does |
 | --- | --- |
-| `F6` | cycles the quality and **saves it**, the same as changing it on a settings screen |
+| the GRAPHICS screen | the player's way in: pick a level, it applies and saves |
+| `F6` | cycles the quality and **saves it** — the same code path the screen uses, so the key and the screen cannot disagree |
 | `F7` | cycles the debug view: off → cascade tint → shadow factor → the atlas → caster bounds |
 | `F5` | the developer overlay, which carries the shadow statistics block |
 | `--shadows <level>` | overrides the setting for one run **without** writing it back |
@@ -407,8 +413,11 @@ The player's setting is `graphics.shadows` in `settings.cfg`, one of `off`, `low
 `--shadows` deliberately does not persist: it is a measurement control, and a benchmark run
 must not change what the player sees next time they start the game.
 
-Changing quality recreates the atlas, which means `wait_for_idle()` — a stall. That is why it
-belongs on a settings screen and on F6, not on a slider that fires every frame.
+Changing quality recreates the atlas, which means `wait_for_idle()` — a stall. That is why the
+screen is a row of ticks and not a slider that would fire every frame while it was dragged,
+and why the **application** moves the tick after the renderer has accepted the level rather
+than the click moving it: switching can fail, and a screen that had already ticked the new row
+would be showing a level that is not running.
 
 ## Debugging
 
