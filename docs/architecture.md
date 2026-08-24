@@ -134,7 +134,8 @@ the shadow pass rebinds a PSO and nothing else.
 Which renderables cast and receive is data on the entity (`ShadowCasting` in
 `engine-render-data`), authored where the entity is spawned, so no part of the renderer needs
 to know that a particle is a particle. `docs/shadows.md` is the full account: cascades,
-biases, the atlas decision, the presets and what they cost.
+biases, the atlas decision, the presets and what they cost. `docs/textures.md` is the same for
+textures: mip chains, the per-kind filter, colour space, block compression and the sampler.
 
 What stayed in `engine-renderer` and why:
 
