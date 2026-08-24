@@ -37,6 +37,7 @@ use engine_renderer::device::RenderDevice;
 use engine_renderer::material::{
     MATERIAL_TEXTURE_COUNT, MaterialDesc, MaterialTextureSet, MaterialTextureSlot,
 };
+use engine_renderer::mipmap::TextureKind;
 use engine_renderer::offscreen::render_material_maps;
 use engine_renderer::{Renderer, RendererConfig, RendererError, TextureHandle, TextureImage};
 
@@ -73,11 +74,16 @@ fn renderer_for(title: &str) -> (Window, Renderer) {
 
 /// Uploads a 1x1 texture of the given colour.
 fn texel(renderer: &mut Renderer, rgba: [u8; 4], srgb: bool) -> TextureHandle {
+    let kind = if srgb {
+        TextureKind::Color
+    } else {
+        TextureKind::Data
+    };
     renderer
         .create_texture(&TextureImage {
             width: 1,
             height: 1,
-            srgb,
+            kind,
             texels: &rgba,
         })
         .expect("a 1x1 texture")

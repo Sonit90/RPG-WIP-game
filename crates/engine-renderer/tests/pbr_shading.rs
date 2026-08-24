@@ -391,6 +391,104 @@ fn occlusion_darkens_the_ambient_term_and_leaves_the_sun_alone() {
 }
 
 #[test]
+fn the_normal_scale_dials_a_normal_map_between_flat_and_exaggerated() {
+    let _guard = gpu_lock();
+
+    // glTF's `normalTexture.scale`. The light arrives edge-on to the geometric surface, so
+    // the only thing that can light this quad is the normal map — and how much of it lands is
+    // exactly what the scale controls. Zero must put the surface back where the geometry says
+    // it is, which is the assertion that catches a scale applied to all three components
+    // (where it would be undone by the renormalize and do nothing at all).
+    let lighting = sun(Vec3::new(-1.0, 0.0, 0.0));
+    let texels = with_texel(NORMAL, [255, 128, 200, 255]);
+
+    let Some(full) = shade(MaterialSurface {
+        material: MaterialDesc::default().with_normal_scale(1.0),
+        lighting,
+        ..MaterialSurface::new(texels, 0)
+    }) else {
+        return;
+    };
+    let half = shade(MaterialSurface {
+        material: MaterialDesc::default().with_normal_scale(0.35),
+        lighting,
+        ..MaterialSurface::new(texels, 0)
+    })
+    .expect("the device rendered");
+    let flat = shade(MaterialSurface {
+        material: MaterialDesc::default().with_normal_scale(0.0),
+        lighting,
+        ..MaterialSurface::new(texels, 0)
+    })
+    .expect("the device rendered");
+
+    assert!(
+        full[0] > 60,
+        "the map at full strength tilts into the light: {full:?}"
+    );
+    assert!(
+        half[0] < full[0] && half[0] > 0,
+        "a smaller scale must tilt it less, not differently: {half:?} against {full:?}"
+    );
+    assert_eq!(
+        flat[0], 0,
+        "a scale of zero is the geometric normal, which this light cannot see: {flat:?}"
+    );
+}
+
+#[test]
+fn the_occlusion_strength_dials_the_ambient_darkening() {
+    let _guard = gpu_lock();
+
+    // glTF's `occlusionTexture.strength`, and glTF's own formula: `1 + strength * (map - 1)`.
+    // A strength of zero must mean *no occlusion*, not "occlusion of zero" — the difference
+    // between an artist dialling a map back and the scene going black.
+    let occluded = with_texel(ORM, [64, 255, 255, 255]);
+    let lighting = ambient_only(0.5);
+
+    let Some(applied) = shade(MaterialSurface {
+        material: MaterialDesc::default().with_occlusion_strength(1.0),
+        lighting,
+        ..MaterialSurface::new(occluded, 0)
+    }) else {
+        return;
+    };
+    let ignored = shade(MaterialSurface {
+        material: MaterialDesc::default().with_occlusion_strength(0.0),
+        lighting,
+        ..MaterialSurface::new(occluded, 0)
+    })
+    .expect("the device rendered");
+    let unoccluded = shade(MaterialSurface {
+        material: MaterialDesc::default().with_occlusion_strength(1.0),
+        lighting,
+        ..MaterialSurface::new(IDENTITY, 0)
+    })
+    .expect("the device rendered");
+
+    assert!(
+        applied[0] < unoccluded[0] / 2,
+        "the map at full strength must darken the ambient: {applied:?} against {unoccluded:?}"
+    );
+    assert_eq!(
+        ignored, unoccluded,
+        "a strength of zero must be identical to having no occlusion map at all"
+    );
+
+    // And the occlusion debug view reports the value the shading used, strength included.
+    let view = shade(MaterialSurface {
+        material: MaterialDesc::default().with_occlusion_strength(0.5),
+        ..MaterialSurface::new(occluded, 11)
+    })
+    .expect("the device rendered");
+    // 1 + 0.5 * (64/255 - 1) = 0.626, which is 160 of 255.
+    assert!(
+        view[0].abs_diff(160) <= 3,
+        "half strength on a 64 texel should read about 160, got {view:?}"
+    );
+}
+
+#[test]
 fn the_emissive_map_scales_the_emissive_factor() {
     let _guard = gpu_lock();
 

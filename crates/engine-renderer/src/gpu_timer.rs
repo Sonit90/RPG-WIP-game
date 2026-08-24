@@ -50,12 +50,40 @@ const QUERIES_PER_FRAME: usize = 2 + 2 * MAX_TIMED_PASSES;
 
 /// How many passes inside a frame can be timed separately.
 ///
-/// One: the shadow stage. Raising it is a change to this constant and to nothing else — the
-/// heap, the readback buffer and the resolve are all sized from it.
-pub const MAX_TIMED_PASSES: usize = 1;
+/// Four, which is every stage the frame has: the shadow stage, the camera's mesh pass, the
+/// particles and the interface. Raising it is a change to this constant and to nothing else
+/// — the heap, the readback buffer and the resolve are all sized from it.
+///
+/// It went from one to four because "the frame got 0.13 ms slower at 800x450 and no slower
+/// at 1080p" is not a question one number can answer. A per-pass split says which stage
+/// moved, and a stage that did not move rules itself out.
+pub const MAX_TIMED_PASSES: usize = 4;
 
 /// The pass index the shadow stage's timestamps use.
+///
+/// Everything the shadow stage records: the atlas draws, the depth prepass and the contact
+/// pass. It brackets `record_shadow_stage`, which is where all three live.
 pub const SHADOW_PASS: usize = 0;
+
+/// The camera's opaque mesh pass: every static, instanced and skinned draw.
+///
+/// This is the one the material work lands in — the four texture fetches, the BRDF and the
+/// shadow *sampling* (as opposed to the atlas fill, which is [`SHADOW_PASS`]).
+pub const SCENE_PASS: usize = 1;
+
+/// The particle pass, drawn after the scene and before the interface.
+pub const PARTICLE_PASS: usize = 2;
+
+/// The interface: the debug overlay's geometry and the game UI's single batched draw.
+pub const UI_PASS: usize = 3;
+
+/// Every timed pass, in the order they are recorded, with a name for a report.
+pub const TIMED_PASSES: [(usize, &str); MAX_TIMED_PASSES] = [
+    (SHADOW_PASS, "shadow"),
+    (SCENE_PASS, "scene"),
+    (PARTICLE_PASS, "particles"),
+    (UI_PASS, "ui"),
+];
 
 /// Bytes per timestamp, which `ResolveQueryData` writes as `u64` ticks.
 const BYTES_PER_QUERY: usize = size_of::<u64>();

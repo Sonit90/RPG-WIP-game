@@ -9,15 +9,24 @@ use std::sync::OnceLock;
 use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{BLACK_BRUSH, ClientToScreen, GetStockObject, HBRUSH};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+/// The largest window edge, in pixels, that [`Window::set_client_size`] may ask for.
+///
+/// 16384 is D3D12's own maximum texture dimension at feature level 11_0, so a window this
+/// wide is the widest one whose swap chain could exist. It is a ceiling rather than a target:
+/// nothing asks for it, and its only job is to be larger than any resolution a benchmark
+/// names.
+const MAX_WINDOW_EDGE: i32 = 16384;
+
 use windows::Win32::UI::WindowsAndMessaging::{
     AdjustWindowRectEx, CREATESTRUCTW, CS_HREDRAW, CS_OWNDC, CS_VREDRAW, CW_USEDEFAULT,
-    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GWLP_USERDATA, GetClientRect,
-    GetSystemMetrics, GetWindowLongPtrW, IDC_ARROW, LoadCursorW, MSG, PM_REMOVE, PeekMessageW,
-    PostQuitMessage, RegisterClassExW, SIZE_MAXIMIZED, SIZE_MINIMIZED, SIZE_RESTORED, SM_CXSCREEN,
-    SM_CYSCREEN, SW_HIDE, SW_SHOW, SW_SHOWNOACTIVATE, SW_SHOWNORMAL, SetCursorPos,
-    SetWindowLongPtrW, SetWindowTextW,
-    ShowCursor, ShowWindow, TranslateMessage, WINDOW_EX_STYLE, WM_ACTIVATEAPP, WM_CLOSE,
-    WM_DESTROY, WM_ERASEBKGND, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN,
+    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GWL_EXSTYLE, GWL_STYLE,
+    GWLP_USERDATA, GetClientRect, GetSystemMetrics, GetWindowLongPtrW, IDC_ARROW, LoadCursorW,
+    MINMAXINFO, MSG, PM_REMOVE, PeekMessageW, PostQuitMessage, RegisterClassExW, SIZE_MAXIMIZED,
+    SIZE_MINIMIZED, SIZE_RESTORED, SM_CXSCREEN, SM_CYSCREEN, SW_HIDE, SW_SHOW, SW_SHOWNOACTIVATE,
+    SW_SHOWNORMAL, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOOWNERZORDER, SWP_NOZORDER, SetCursorPos,
+    SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowCursor, ShowWindow, TranslateMessage,
+    WINDOW_EX_STYLE, WINDOW_STYLE, WM_ACTIVATEAPP, WM_CLOSE, WM_DESTROY, WM_ERASEBKGND,
+    WM_GETMINMAXINFO, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN,
     WM_MBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCCREATE, WM_QUIT, WM_RBUTTONDOWN, WM_RBUTTONUP,
     WM_SIZE, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_XBUTTONDOWN, WM_XBUTTONUP, WNDCLASSEXW, WS_OVERLAPPED,
     WS_OVERLAPPEDWINDOW, WS_POPUP, WS_SYSMENU,
@@ -358,6 +367,68 @@ impl Window {
         self.activate
     }
 
+    /// Resizes the client area to `width` x `height`, in pixels.
+    ///
+    /// The window keeps its position, its z-order and its focus; only the size changes. The
+    /// outer size is computed from the client size through the same `AdjustWindowRectEx`
+    /// that sized the window at creation, so the *client* area — which is what the swap
+    /// chain matches — really becomes the requested size rather than that size minus a
+    /// border.
+    ///
+    /// This exists for the benchmark: measuring four resolutions used to mean four processes,
+    /// four scene loads and four sets of driver warm-up, and the numbers from separate
+    /// processes are not quite comparable. A window that can be resized at runtime turns that
+    /// into one process that resizes three times.
+    ///
+    /// The resize is not applied here. Windows delivers `WM_SIZE`, the next
+    /// [`Window::pump_events`] turns it into a [`crate::WindowEvent::Resized`], and the
+    /// application's own resize path recreates whatever depends on the size — which is the
+    /// same path a player dragging the window edge takes, and the reason this is a request
+    /// rather than a mutation.
+    ///
+    /// A hidden window is resized exactly like a visible one: `WM_SIZE` does not depend on
+    /// visibility, which is what lets `--hidden --benchmark` mean anything.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PlatformError::InvalidConfig`] for a zero dimension, or
+    /// [`PlatformError::Win32`] if `SetWindowPos` fails.
+    pub fn set_client_size(&self, width: u32, height: u32) -> Result<(), PlatformError> {
+        if width == 0 || height == 0 {
+            return Err(PlatformError::InvalidConfig {
+                reason: format!("a window cannot have a {width}x{height} client area"),
+            });
+        }
+
+        // SAFETY: `hwnd` is live. GWL_STYLE and GWL_EXSTYLE read the window's own styles,
+        // which is what the client-to-outer conversion has to be computed against — a
+        // borderless fullscreen popup and an ordinary framed window need different margins.
+        // SAFETY: FFI reads of a live window's own style words. GWL_STYLE and GWL_EXSTYLE are
+        // what the client-to-outer conversion has to be computed against — a borderless
+        // fullscreen popup and an ordinary framed window need different margins — and the
+        // low 32 bits are the whole of each style value.
+        let style = WINDOW_STYLE(unsafe { GetWindowLongPtrW(self.hwnd, GWL_STYLE) } as u32);
+        // SAFETY: as above.
+        let ex_style = WINDOW_EX_STYLE(unsafe { GetWindowLongPtrW(self.hwnd, GWL_EXSTYLE) } as u32);
+        let (outer_width, outer_height) = outer_size(width, height, style, ex_style)?;
+
+        // SAFETY: FFI call on a live window with no borrowed pointers. SWP_NOMOVE keeps the
+        // position, so the zeroed x and y are ignored; SWP_NOACTIVATE keeps a `--background`
+        // run from stealing focus the moment the benchmark changes resolution.
+        unsafe {
+            SetWindowPos(
+                self.hwnd,
+                None,
+                0,
+                0,
+                outer_width,
+                outer_height,
+                SWP_NOMOVE | SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_NOACTIVATE,
+            )
+        }
+        .map_err(|error| PlatformError::win32("SetWindowPos", error))
+    }
+
     fn state_ref(&self) -> &WindowState {
         // SAFETY: `state` was created by Box::into_raw in `new`, is never null, and is
         // only reclaimed in `drop`, so it is valid for the lifetime of `self`. The window
@@ -524,6 +595,28 @@ unsafe extern "system" fn window_proc(
     let state = unsafe { &mut *state };
 
     match message {
+        // How large the window is allowed to become.
+        //
+        // Windows defaults a resizable window's maximum *tracking* size to the monitor's work
+        // area, and enforces it on `SetWindowPos` as well as on a drag. A benchmark asking a
+        // window on a 1080p monitor for a 3840x2160 client area therefore got 1080p back,
+        // silently, and waited forever for a size that could never arrive.
+        //
+        // Raising the limit lets the window be larger than the screen. The part that hangs
+        // off the edge is not visible, and it does not need to be: the swap chain matches the
+        // client area, so the GPU renders every one of those pixels and the measurement is
+        // honest. A player never reaches this path — dragging is still bounded by the monitor
+        // — and no other engine behaviour depends on a maximum size existing.
+        WM_GETMINMAXINFO => {
+            // SAFETY: for WM_GETMINMAXINFO, `lparam` is a pointer to a MINMAXINFO owned by
+            // the caller and valid for the duration of the message.
+            let info = unsafe { &mut *(lparam.0 as *mut MINMAXINFO) };
+            info.ptMaxTrackSize = POINT {
+                x: MAX_WINDOW_EDGE,
+                y: MAX_WINDOW_EDGE,
+            };
+            return LRESULT(0);
+        }
         WM_SIZE => {
             let (width, height) = size_from_lparam(lparam.0);
             match wparam.0 as u32 {

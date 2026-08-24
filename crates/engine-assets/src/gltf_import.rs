@@ -446,6 +446,23 @@ fn import_materials(gltf: &gltf::Gltf) -> Vec<MaterialAsset> {
                 normal_texture: material
                     .normal_texture()
                     .map(|info| info.texture().source().index()),
+                // glTF's `normalTexture.scale`, and its default of 1 when the file omits it
+                // — which is also what a material with no normal map at all must carry, so
+                // that turning the map on later does not also change its strength.
+                //
+                // Not clamped above: an artist who exported a scale of 2 meant it, and the
+                // shader renormalizes afterwards so the frame stays valid. Negative is
+                // refused rather than honoured — it would invert the map's X and Y, which
+                // glTF has no way to mean.
+                normal_scale: material
+                    .normal_texture()
+                    .map_or(1.0, |info| info.scale())
+                    .max(0.0),
+                // glTF's `occlusionTexture.strength`, clamped to its stated [0, 1] range.
+                occlusion_strength: material
+                    .occlusion_texture()
+                    .map_or(1.0, |info| info.strength())
+                    .clamp(0.0, 1.0),
                 orm_texture: pbr
                     .metallic_roughness_texture()
                     .map(|info| info.texture().source().index()),
@@ -971,9 +988,7 @@ fn import_submeshes(
                                 Some(tangents) => {
                                     let source = tangents[at];
                                     let direction = matrix
-                                        .transform_vector(Vec3::new(
-                                            source.x, source.y, source.z,
-                                        ))
+                                        .transform_vector(Vec3::new(source.x, source.y, source.z))
                                         .normalize();
                                     vertex.with_tangent(Vec4::new(
                                         direction.x,
@@ -1192,7 +1207,11 @@ mod tests {
 
         let material = &materials[0];
         assert_eq!(material.name, "four_maps");
-        assert_eq!(material.base_color_texture, Some(0), "base colour is image 0");
+        assert_eq!(
+            material.base_color_texture,
+            Some(0),
+            "base colour is image 0"
+        );
         assert_eq!(material.normal_texture, Some(1), "normal is image 1");
         assert_eq!(material.orm_texture, Some(2), "ORM is image 2");
         assert_eq!(material.emissive_texture, Some(3), "emissive is image 3");
@@ -1216,6 +1235,89 @@ mod tests {
                 ("emissive", 3),
             ],
             "the slots are reported in the renderer's descriptor order"
+        );
+    }
+
+    #[test]
+    fn the_two_texture_parameters_are_imported_and_default_to_one_when_absent() {
+        // glTF puts `scale` on the normal texture reference and `strength` on the occlusion
+        // one, and both default to 1 - "apply the map as authored". A material that imported
+        // them as zero would silently switch off a map it does have, and the symptom would be
+        // flat lighting on exactly the assets that bothered to author a normal map.
+        let document = r#"{
+            "asset": { "version": "2.0" },
+            "images": [{ "uri": "normal.png" }, { "uri": "occlusion.png" }],
+            "textures": [{ "source": 0 }, { "source": 1 }],
+            "materials": [
+                {
+                    "name": "explicit",
+                    "normalTexture": { "index": 0, "scale": 2.5 },
+                    "occlusionTexture": { "index": 1, "strength": 0.25 }
+                },
+                {
+                    "name": "defaulted",
+                    "normalTexture": { "index": 0 },
+                    "occlusionTexture": { "index": 1 }
+                },
+                { "name": "no_maps_at_all" }
+            ]
+        }"#;
+        let Ok(gltf) = gltf::Gltf::from_slice(&glb(document)) else {
+            panic!("the document is valid glTF");
+        };
+        let materials = import_materials(&gltf);
+
+        assert_eq!(
+            materials[0].normal_scale, 2.5,
+            "an explicit scale is carried"
+        );
+        assert_eq!(
+            materials[0].occlusion_strength, 0.25,
+            "an explicit strength is carried"
+        );
+
+        assert_eq!(
+            materials[1].normal_scale, 1.0,
+            "a normal texture with no scale means glTF's default of 1"
+        );
+        assert_eq!(
+            materials[1].occlusion_strength, 1.0,
+            "an occlusion texture with no strength means glTF's default of 1"
+        );
+
+        // And a material with neither texture still carries 1, not 0: the values must not
+        // become "off" merely because the maps they scale are absent, or adding a map later
+        // would arrive with its strength already turned down.
+        assert_eq!(materials[2].normal_scale, 1.0);
+        assert_eq!(materials[2].occlusion_strength, 1.0);
+    }
+
+    #[test]
+    fn out_of_range_texture_parameters_are_brought_back_into_range() {
+        // glTF states occlusion strength is in [0, 1] and puts no ceiling on the normal
+        // scale. A negative scale would invert the map's X and Y, which glTF has no way to
+        // mean, so it is clamped away rather than honoured; a large positive one is an artist
+        // exaggerating a map and is kept.
+        let document = r#"{
+            "asset": { "version": "2.0" },
+            "images": [{ "uri": "normal.png" }],
+            "textures": [{ "source": 0 }],
+            "materials": [{
+                "normalTexture": { "index": 0, "scale": -3.0 },
+                "occlusionTexture": { "index": 0, "strength": 4.0 }
+            }]
+        }"#;
+        let Ok(gltf) = gltf::Gltf::from_slice(&glb(document)) else {
+            panic!("the document is valid glTF");
+        };
+        let materials = import_materials(&gltf);
+        assert_eq!(
+            materials[0].normal_scale, 0.0,
+            "a negative scale is refused"
+        );
+        assert_eq!(
+            materials[0].occlusion_strength, 1.0,
+            "a strength above one is clamped to glTF's range"
         );
     }
 

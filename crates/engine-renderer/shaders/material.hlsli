@@ -18,7 +18,12 @@ cbuffer Material : register(b2)
     // Below this alpha the fragment is discarded. Zero means the material is opaque and no
     // test is performed — which is the ordinary case, and costs one comparison.
     float alpha_cutoff;
-    float2 material_padding;
+    // glTF's normalTexture.scale: how hard the normal map pushes. 1 is the map as authored,
+    // 0 flattens it to the geometric normal. In what used to be padding, so the buffer's
+    // layout is unchanged - src/material.rs's MaterialConstants is the mirror.
+    float normal_scale;
+    // glTF's occlusionTexture.strength, applied by glTF's own formula below.
+    float occlusion_strength;
 };
 
 // The material texture set: one contiguous four-descriptor table at root parameter 3, read
@@ -72,7 +77,10 @@ MaterialSample sample_material(float2 uv)
     result.normal_ts = normal_map.Sample(base_color_sampler, uv).rgb;
 
     float3 orm = orm_map.Sample(base_color_sampler, uv).rgb;
-    result.occlusion = saturate(orm.r);
+    // glTF: `1 + strength * (sampled - 1)`. A strength of 1 is the map, 0 is no occlusion at
+    // all, and the interpolation is towards *unoccluded* rather than towards black - which is
+    // the difference between an artist dialling a map back and a scene going dark.
+    result.occlusion = saturate(1.0 + occlusion_strength * (saturate(orm.r) - 1.0));
     // Saturated, not just clamped by the BRDF later: a texture authored outside [0, 1] — a
     // float format, or a channel used for something else by mistake — would otherwise reach
     // `make_surface` as a roughness of 4 and produce a surface with no highlight at all

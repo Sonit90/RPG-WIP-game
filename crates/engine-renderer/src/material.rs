@@ -34,6 +34,19 @@ pub struct MaterialDesc {
     pub metallic: f32,
     /// Colour emitted regardless of lighting.
     pub emissive: Vec3,
+    /// How strongly the normal map perturbs the surface. glTF's `normalTexture.scale`.
+    ///
+    /// The sampled normal's X and Y are multiplied by it before the vector is renormalized:
+    /// 1 is the map as authored, 0 is the geometric normal, above 1 exaggerates. A material
+    /// with no normal map is unaffected by it, because the flat fallback's X and Y are zero
+    /// and scaling zero changes nothing.
+    pub normal_scale: f32,
+    /// How much of the ORM map's occlusion channel is applied. glTF's
+    /// `occlusionTexture.strength`.
+    ///
+    /// Blended towards "not occluded" by glTF's own formula, `1 + strength * (sampled - 1)`,
+    /// so 1 applies the map and 0 ignores it.
+    pub occlusion_strength: f32,
     /// Below this alpha a fragment is discarded, in both the camera pass and the shadow pass.
     ///
     /// Zero is an opaque material and performs no test, which is what nearly every surface
@@ -55,6 +68,10 @@ impl Default for MaterialDesc {
             roughness: 0.8,
             metallic: 0.0,
             emissive: Vec3::ZERO,
+            // Both are glTF's defaults, and both mean "apply the map as authored". A
+            // material that carried zero here would silently disable a map it does have.
+            normal_scale: 1.0,
+            occlusion_strength: 1.0,
             alpha_cutoff: 0.0,
         }
     }
@@ -88,6 +105,28 @@ impl MaterialDesc {
     #[must_use]
     pub fn with_emissive(mut self, emissive: Vec3) -> Self {
         self.emissive = emissive;
+        self
+    }
+
+    /// Returns the description with its normal-map scale replaced, clamped to non-negative.
+    #[must_use]
+    pub fn with_normal_scale(mut self, scale: f32) -> Self {
+        self.normal_scale = if scale.is_finite() {
+            scale.max(0.0)
+        } else {
+            1.0
+        };
+        self
+    }
+
+    /// Returns the description with its occlusion strength replaced, clamped to [0, 1].
+    #[must_use]
+    pub fn with_occlusion_strength(mut self, strength: f32) -> Self {
+        self.occlusion_strength = if strength.is_finite() {
+            strength.clamp(0.0, 1.0)
+        } else {
+            1.0
+        };
         self
     }
 
@@ -125,6 +164,8 @@ impl MaterialDesc {
             && self.roughness.is_finite()
             && self.metallic.is_finite()
             && self.alpha_cutoff.is_finite()
+            && self.normal_scale.is_finite()
+            && self.occlusion_strength.is_finite()
             && self.emissive.length_squared().is_finite();
         if !finite {
             return Err(RendererError::InvalidConfig {
@@ -136,6 +177,18 @@ impl MaterialDesc {
                 reason: format!(
                     "roughness and metallic must be in [0, 1], got {} and {}",
                     self.roughness, self.metallic
+                ),
+            });
+        }
+        // glTF states no upper bound on the normal scale and an exact [0, 1] for the
+        // occlusion strength, and this follows it: a scale of 2 is an artist exaggerating a
+        // map, an occlusion strength of 2 is a number with no meaning.
+        if self.normal_scale < 0.0 || !(0.0..=1.0).contains(&self.occlusion_strength) {
+            return Err(RendererError::InvalidConfig {
+                reason: format!(
+                    "the normal scale must be non-negative and the occlusion strength in \
+                     [0, 1], got {} and {}",
+                    self.normal_scale, self.occlusion_strength
                 ),
             });
         }
@@ -219,13 +272,27 @@ impl MaterialTextureSlot {
         }
     }
 
+    /// What a texture in this slot means, which decides its colour space and its mip filter.
+    ///
+    /// The one place the mapping lives. A normal map is not merely "not colour": its mips
+    /// have to be filtered as directions and renormalized, which is a third case that
+    /// `is_srgb` alone cannot express — see [`crate::mipmap::TextureKind`].
+    #[must_use]
+    pub fn texture_kind(self) -> crate::mipmap::TextureKind {
+        match self {
+            Self::BaseColor | Self::Emissive => crate::mipmap::TextureKind::Color,
+            Self::Normal => crate::mipmap::TextureKind::Normal,
+            Self::Orm => crate::mipmap::TextureKind::Data,
+        }
+    }
+
     /// Whether the slot's textures are read through an sRGB view.
     ///
     /// Colour is sRGB and data is not. Getting it backwards is the classic washed-out or
     /// muddy import, and it has no other symptom.
     #[must_use]
     pub fn is_srgb(self) -> bool {
-        matches!(self, Self::BaseColor | Self::Emissive)
+        self.texture_kind().is_srgb()
     }
 
     /// The slot's name, for diagnostics and test failure messages.
@@ -364,8 +431,13 @@ pub struct MaterialConstants {
     pub metallic: f32,
     /// Below this alpha a fragment is discarded. Zero is opaque.
     pub alpha_cutoff: f32,
-    /// Padding to a whole 16-byte register.
-    pub padding: [f32; 2],
+    /// glTF's `normalTexture.scale`.
+    ///
+    /// In what used to be the first padding float, so the buffer's layout and its size are
+    /// exactly what they were — the shader's `cbuffer` changed two names, not one offset.
+    pub normal_scale: f32,
+    /// glTF's `occlusionTexture.strength`, in what used to be the second padding float.
+    pub occlusion_strength: f32,
 }
 
 impl From<MaterialDesc> for MaterialConstants {
@@ -381,7 +453,8 @@ impl From<MaterialDesc> for MaterialConstants {
             roughness: desc.roughness,
             metallic: desc.metallic,
             alpha_cutoff: desc.alpha_cutoff,
-            padding: [0.0; 2],
+            normal_scale: desc.normal_scale,
+            occlusion_strength: desc.occlusion_strength,
         }
     }
 }

@@ -6,6 +6,7 @@
 mod app;
 mod args;
 mod audio_device;
+mod benchmark;
 
 use std::process::ExitCode;
 

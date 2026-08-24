@@ -30,6 +30,7 @@ pub mod light_cluster;
 pub mod material;
 pub mod mesh;
 pub mod mesh_pipeline;
+pub mod mipmap;
 pub mod offscreen;
 #[cfg(feature = "debug-overlay")]
 pub mod overlay;
@@ -43,6 +44,7 @@ pub mod shader;
 pub mod shadow;
 pub mod stress;
 pub mod swapchain;
+pub mod texture_id;
 pub mod sync;
 pub mod ui_atlas;
 pub mod ui_pipeline;

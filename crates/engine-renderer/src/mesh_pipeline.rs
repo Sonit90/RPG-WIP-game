@@ -9,14 +9,14 @@ use windows::Win32::Graphics::Direct3D::ID3DBlob;
 use windows::Win32::Graphics::Direct3D12::{
     D3D_ROOT_SIGNATURE_VERSION_1, D3D12_COMPARISON_FUNC_ALWAYS, D3D12_COMPARISON_FUNC_LESS_EQUAL,
     D3D12_DEPTH_STENCIL_DESC, D3D12_DESCRIPTOR_RANGE, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND,
-    D3D12_DESCRIPTOR_RANGE_TYPE_SRV, D3D12_FILTER_COMPARISON_MIN_MAG_LINEAR_MIP_POINT,
-    D3D12_FILTER_MIN_MAG_MIP_LINEAR, D3D12_FILTER_MIN_MAG_MIP_POINT, D3D12_FLOAT32_MAX,
-    D3D12_GRAPHICS_PIPELINE_STATE_DESC, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA,
-    D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, D3D12_INPUT_ELEMENT_DESC, D3D12_INPUT_LAYOUT_DESC,
-    D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE, D3D12_RASTERIZER_DESC, D3D12_ROOT_DESCRIPTOR,
-    D3D12_ROOT_DESCRIPTOR_TABLE, D3D12_ROOT_PARAMETER, D3D12_ROOT_PARAMETER_0,
-    D3D12_ROOT_PARAMETER_TYPE_CBV, D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE,
-    D3D12_ROOT_PARAMETER_TYPE_SRV,
+    D3D12_DESCRIPTOR_RANGE_TYPE_SRV, D3D12_FILTER_ANISOTROPIC,
+    D3D12_FILTER_COMPARISON_MIN_MAG_LINEAR_MIP_POINT, D3D12_FILTER_MIN_MAG_MIP_POINT,
+    D3D12_FLOAT32_MAX, D3D12_GRAPHICS_PIPELINE_STATE_DESC,
+    D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,
+    D3D12_INPUT_ELEMENT_DESC, D3D12_INPUT_LAYOUT_DESC, D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE,
+    D3D12_RASTERIZER_DESC, D3D12_ROOT_DESCRIPTOR, D3D12_ROOT_DESCRIPTOR_TABLE,
+    D3D12_ROOT_PARAMETER, D3D12_ROOT_PARAMETER_0, D3D12_ROOT_PARAMETER_TYPE_CBV,
+    D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE, D3D12_ROOT_PARAMETER_TYPE_SRV,
     D3D12_ROOT_SIGNATURE_DESC, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT,
     D3D12_SHADER_VISIBILITY_ALL, D3D12_SHADER_VISIBILITY_PIXEL, D3D12_SHADER_VISIBILITY_VERTEX,
     D3D12_STATIC_BORDER_COLOR_OPAQUE_BLACK, D3D12_STATIC_BORDER_COLOR_OPAQUE_WHITE,
@@ -26,8 +26,7 @@ use windows::Win32::Graphics::Direct3D12::{
 };
 use windows::Win32::Graphics::Dxgi::Common::{
     DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_R16G16B16A16_UINT, DXGI_FORMAT_R32G32_FLOAT,
-    DXGI_FORMAT_R32G32B32_FLOAT,
-    DXGI_FORMAT_R32G32B32A32_FLOAT, DXGI_SAMPLE_DESC,
+    DXGI_FORMAT_R32G32B32_FLOAT, DXGI_FORMAT_R32G32B32A32_FLOAT, DXGI_SAMPLE_DESC,
 };
 use windows::core::s;
 
@@ -471,20 +470,38 @@ fn depth_sampler() -> D3D12_STATIC_SAMPLER_DESC {
     }
 }
 
-/// The one sampler every material's base colour map is read through.
+/// How many samples the material sampler may take across a surface seen at a glancing angle.
 ///
-/// Trilinear with anisotropy would be the next step and needs a mip chain, which no texture
-/// in this phase has. Wrapping rather than clamping because a character's UVs run across a
-/// shared texture and a prism's cap lands exactly on a boundary; clamping would smear the
-/// edge texel across a face.
+/// Eight, which is the usual default and the one every desktop GPU of the last decade runs at
+/// full rate. Sixteen is available and is not chosen: the visible difference over eight is
+/// confined to ground planes at extreme angles, and this engine is meant to stay playable on
+/// weak hardware.
+///
+/// Anisotropy needs a mip chain to be worth anything — it is a rule for *choosing* between
+/// levels, and a texture with one level has nothing to choose. Milestone 4 gave every sampled
+/// texture a chain, which is what made this line worth changing.
+///
+/// D3D12 requires anisotropic filtering up to 16x at feature level 11_0, which this renderer
+/// already demands of an adapter before it will use it, so there is no device without it to
+/// fall back for. A driver that clamped the value would give fewer taps rather than an error.
+const MATERIAL_ANISOTROPY: u32 = 8;
+
+/// The one sampler every material map is read through.
+///
+/// Anisotropic, because the alternative on a floor seen at a glancing angle is a texture that
+/// blurs to nothing halfway to the horizon: trilinear picks a mip level for the *widest* axis
+/// of the pixel footprint, and on a receding plane that axis is many times the other one.
+///
+/// Wrapping rather than clamping because a character's UVs run across a shared texture and a
+/// prism's cap lands exactly on a boundary; clamping would smear the edge texel across a face.
 fn static_sampler() -> D3D12_STATIC_SAMPLER_DESC {
     D3D12_STATIC_SAMPLER_DESC {
-        Filter: D3D12_FILTER_MIN_MAG_MIP_LINEAR,
+        Filter: D3D12_FILTER_ANISOTROPIC,
         AddressU: D3D12_TEXTURE_ADDRESS_MODE_WRAP,
         AddressV: D3D12_TEXTURE_ADDRESS_MODE_WRAP,
         AddressW: D3D12_TEXTURE_ADDRESS_MODE_WRAP,
         MipLODBias: 0.0,
-        MaxAnisotropy: 1,
+        MaxAnisotropy: MATERIAL_ANISOTROPY,
         ComparisonFunc: D3D12_COMPARISON_FUNC_ALWAYS,
         BorderColor: D3D12_STATIC_BORDER_COLOR_OPAQUE_BLACK,
         MinLOD: 0.0,
@@ -991,7 +1008,10 @@ mod tests {
         let rigid = mesh_vertex_elements();
         let skinned = skinned_vertex_elements();
         for index in 0..rigid.len() {
-            assert_eq!(rigid[index].AlignedByteOffset, skinned[index].AlignedByteOffset);
+            assert_eq!(
+                rigid[index].AlignedByteOffset,
+                skinned[index].AlignedByteOffset
+            );
             assert_eq!(rigid[index].Format, skinned[index].Format);
             assert_eq!(rigid[index].SemanticIndex, skinned[index].SemanticIndex);
         }
@@ -1003,7 +1023,11 @@ mod tests {
         // layout that had not been widened with it would read the per-instance stream at the
         // wrong offset.
         let elements = instanced_vertex_elements();
-        assert_eq!(elements.len(), 11, "5 per-vertex + 4 matrix rows + tint + emissive");
+        assert_eq!(
+            elements.len(),
+            11,
+            "5 per-vertex + 4 matrix rows + tint + emissive"
+        );
         let per_vertex: Vec<u32> = elements
             .iter()
             .filter(|e| e.InputSlot == 0)

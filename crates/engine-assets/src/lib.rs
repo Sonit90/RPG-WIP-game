@@ -40,6 +40,7 @@
 #![deny(missing_docs)]
 
 pub mod animation;
+pub mod bc;
 pub mod character;
 pub mod disk;
 pub mod error;

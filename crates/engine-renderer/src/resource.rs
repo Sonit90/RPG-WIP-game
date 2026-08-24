@@ -250,6 +250,13 @@ pub struct GpuTexture {
     resource: ID3D12Resource,
     width: u32,
     height: u32,
+    /// Subresources in the chain, counting the full-size level. One for a render target, a
+    /// depth buffer or an unmipped upload; `mipmap::level_count` for a sampled texture.
+    ///
+    /// Kept on the texture because the uploader has to know how many subresources to fill
+    /// and the SRV has to say how many to read, and asking the resource description at each
+    /// of those points would be two places that could disagree with the third.
+    mip_levels: u32,
     format: DXGI_FORMAT,
     state: Cell<D3D12_RESOURCE_STATES>,
 }
@@ -271,6 +278,7 @@ impl GpuTexture {
             resource,
             width,
             height,
+            mip_levels: 1,
             format,
             state: Cell::new(state),
         }
@@ -295,6 +303,7 @@ impl GpuTexture {
         let resource = device.create_texture_2d(
             width,
             height,
+            1,
             format,
             D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET,
             D3D12_RESOURCE_STATE_RENDER_TARGET,
@@ -304,6 +313,7 @@ impl GpuTexture {
             resource,
             width,
             height,
+            mip_levels: 1,
             format,
             state: Cell::new(D3D12_RESOURCE_STATE_RENDER_TARGET),
         })
@@ -337,6 +347,7 @@ impl GpuTexture {
         let resource = device.create_texture_2d(
             width,
             height,
+            1,
             format,
             D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL,
             D3D12_RESOURCE_STATE_DEPTH_WRITE,
@@ -346,6 +357,7 @@ impl GpuTexture {
             resource,
             width,
             height,
+            mip_levels: 1,
             format,
             state: Cell::new(D3D12_RESOURCE_STATE_DEPTH_WRITE),
         })
@@ -387,6 +399,7 @@ impl GpuTexture {
         let resource = device.create_texture_2d(
             width,
             height,
+            1,
             DXGI_FORMAT_R32_TYPELESS,
             D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL,
             D3D12_RESOURCE_STATE_DEPTH_WRITE,
@@ -396,6 +409,7 @@ impl GpuTexture {
             resource,
             width,
             height,
+            mip_levels: 1,
             format: DXGI_FORMAT_R32_TYPELESS,
             state: Cell::new(D3D12_RESOURCE_STATE_DEPTH_WRITE),
         })
@@ -413,9 +427,32 @@ impl GpuTexture {
         format: DXGI_FORMAT,
         initial_state: D3D12_RESOURCE_STATES,
     ) -> Result<Self, RendererError> {
+        Self::with_mips(device, width, height, 1, format, initial_state)
+    }
+
+    /// Creates a plain texture with `mip_levels` subresources.
+    ///
+    /// The chain is *allocated* here and filled by
+    /// [`crate::upload::StagingUploader::queue_texture_mips`]. A texture whose lower levels
+    /// were never written samples garbage at distance rather than failing, so the two calls
+    /// belong together and the uploader checks the count it is given against this one.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RendererError::Api`] if the device rejects the request.
+    pub fn with_mips(
+        device: &RenderDevice,
+        width: u32,
+        height: u32,
+        mip_levels: u32,
+        format: DXGI_FORMAT,
+        initial_state: D3D12_RESOURCE_STATES,
+    ) -> Result<Self, RendererError> {
+        let mip_levels = mip_levels.max(1);
         let resource = device.create_texture_2d(
             width,
             height,
+            mip_levels,
             format,
             D3D12_RESOURCE_FLAG_NONE,
             initial_state,
@@ -425,9 +462,16 @@ impl GpuTexture {
             resource,
             width,
             height,
+            mip_levels,
             format,
             state: Cell::new(initial_state),
         })
+    }
+
+    /// Subresources in this texture's mip chain, counting the full-size level.
+    #[must_use]
+    pub fn mip_levels(&self) -> u32 {
+        self.mip_levels
     }
 
     /// Size in pixels.
@@ -450,16 +494,72 @@ impl GpuTexture {
     /// a size from a format it does not understand.
     #[must_use]
     pub fn bytes_per_texel(&self) -> Option<usize> {
+        self.layout()
+            .filter(|layout| layout.block == 1)
+            .map(|layout| layout.bytes)
+    }
+
+    /// How this texture's format is laid out in memory, or `None` for a format nothing
+    /// uploads through.
+    ///
+    /// Block-compressed formats do not have a bytes-per-texel at all — BC1 is eight bytes for
+    /// a 4x4 block whatever a single texel might mean — so the uploader asks this instead and
+    /// computes row pitches in blocks. Keeping the two in one table is what stops a new
+    /// format being added to one and forgotten in the other.
+    #[must_use]
+    pub fn layout(&self) -> Option<FormatLayout> {
         use windows::Win32::Graphics::Dxgi::Common::{
+            DXGI_FORMAT_BC1_UNORM, DXGI_FORMAT_BC1_UNORM_SRGB, DXGI_FORMAT_BC5_UNORM,
             DXGI_FORMAT_R8_UNORM, DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_R8G8B8A8_UNORM_SRGB,
         };
         match self.format {
-            DXGI_FORMAT_R8_UNORM => Some(1),
+            DXGI_FORMAT_R8_UNORM => Some(FormatLayout { block: 1, bytes: 1 }),
             // sRGB is the same four bytes; the colour space is in how the *view* reads them,
             // not in how many bytes a row occupies.
-            DXGI_FORMAT_R8G8B8A8_UNORM | DXGI_FORMAT_R8G8B8A8_UNORM_SRGB => Some(4),
+            DXGI_FORMAT_R8G8B8A8_UNORM | DXGI_FORMAT_R8G8B8A8_UNORM_SRGB => {
+                Some(FormatLayout { block: 1, bytes: 4 })
+            }
+            DXGI_FORMAT_BC1_UNORM | DXGI_FORMAT_BC1_UNORM_SRGB => {
+                Some(FormatLayout { block: 4, bytes: 8 })
+            }
+            DXGI_FORMAT_BC5_UNORM => Some(FormatLayout {
+                block: 4,
+                bytes: 16,
+            }),
             _ => None,
         }
+    }
+}
+
+/// How many bytes one block of a format occupies, and how many texels a block covers.
+///
+/// An uncompressed format is described as a block of one texel, so the row-pitch arithmetic
+/// is the same expression for both kinds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FormatLayout {
+    /// Texels along each edge of a block. 1 for an uncompressed format, 4 for BC.
+    pub block: u32,
+    /// Bytes one block occupies.
+    pub bytes: usize,
+}
+
+impl FormatLayout {
+    /// Bytes one row of blocks occupies for an image `width` texels across.
+    #[must_use]
+    pub fn row_pitch(&self, width: u32) -> usize {
+        width.div_ceil(self.block) as usize * self.bytes
+    }
+
+    /// Rows of blocks in an image `height` texels tall.
+    #[must_use]
+    pub fn rows(&self, height: u32) -> usize {
+        height.div_ceil(self.block) as usize
+    }
+
+    /// Bytes a whole image of this size occupies.
+    #[must_use]
+    pub fn image_size(&self, width: u32, height: u32) -> usize {
+        self.row_pitch(width) * self.rows(height)
     }
 }
 

@@ -81,6 +81,7 @@ use engine_settings::{NameplateSetting, SettingsManager};
 
 use crate::args::{Args, Scene};
 use crate::audio_device::AudioHost;
+use crate::benchmark::{Action, Boundary, FrameReport, ResolutionBenchmark};
 
 /// Clear colour of the back buffer: a dark blue-grey that reads as sky.
 const CLEAR_COLOR: [f32; 4] = [0.07, 0.09, 0.13, 1.0];
@@ -392,6 +393,12 @@ pub struct App {
     /// opening tenth of a second is a large enough share of it to move the number. The
     /// steady-state rate is measured from here instead.
     measured_from: Option<(Instant, u64)>,
+    /// The resolution matrix, when `--benchmark` asked for one.
+    ///
+    /// It drives the window: each stage asks for a size, waits for the renderer to report it,
+    /// discards warm-up frames and then measures. One process, one scene, one set of GPU
+    /// resources — see `crate::benchmark`.
+    benchmark: Option<ResolutionBenchmark>,
     /// The shadow stage's own GPU time, one sample per frame that resolved a query.
     ///
     /// The frame's total says the frame got slower; this says whether the shadow stage is
@@ -894,6 +901,22 @@ impl App {
             warmup_frames: args.warmup,
             shadow_overrides: args.shadow_overrides,
             measured_from: None,
+            benchmark: args.benchmark.as_ref().map(|resolutions| {
+                log::info!(
+                    "benchmark: {} resolution(s) x {} pass(es), {} warm-up + {} measured \
+                     frame(s) each, in one process",
+                    resolutions.len(),
+                    args.benchmark_passes,
+                    args.benchmark_warmup,
+                    args.benchmark_frames
+                );
+                ResolutionBenchmark::new(
+                    resolutions,
+                    args.benchmark_passes,
+                    args.benchmark_warmup,
+                    args.benchmark_frames,
+                )
+            }),
             shadow_gpu: engine_core::time::FrameStatsWindow::new(1024),
             last_report: Instant::now(),
             report: String::new(),
@@ -3159,7 +3182,11 @@ impl App {
             let span = started.elapsed().as_secs_f64();
             log::info!(
                 "measured window: {measured} frames in {span:.3} s ({:.0} FPS, warm-up {}                  frame(s) discarded)",
-                if span > 0.0 { measured as f64 / span } else { 0.0 },
+                if span > 0.0 {
+                    measured as f64 / span
+                } else {
+                    0.0
+                },
                 self.warmup_frames,
             );
         }
@@ -3220,6 +3247,74 @@ impl App {
                 gpu.max_ms,
                 gpu.count
             );
+        }
+    }
+    /// Advances the resolution benchmark by one frame, if one is running.
+    ///
+    /// Everything the benchmark needs about the frame is gathered here and handed over as
+    /// one report, so the state machine itself needs no opinion about the renderer. What
+    /// comes back is a window request, a metrics boundary, or the end of the matrix.
+    fn advance_benchmark(&mut self, ctx: &mut EngineContext) {
+        let Some(benchmark) = self.benchmark.as_mut() else {
+            return;
+        };
+
+        let descriptors = self.renderer.descriptor_stats();
+        let report = FrameReport {
+            // The swap chain's own size, not the window's: the render target is what was
+            // measured, and a window whose client area disagreed with it would be the bug
+            // this field exists to catch.
+            actual_size: self.renderer.size(),
+            pass_ms: self.renderer.last_pass_ms(),
+            draw_calls: self.renderer.draw_calls_last_frame(),
+            textures: self.renderer.texture_requests(),
+            unique_textures: self.renderer.texture_count(),
+            descriptors: (descriptors.used, descriptors.capacity),
+        };
+
+        let mut boundary = Boundary::None;
+        let action = benchmark.frame(&report, &mut boundary);
+
+        match boundary {
+            // The window opens here rather than at the resize, so the percentiles cover
+            // steady-state frames at this resolution and nothing else: no swap-chain
+            // recreation, no first-frame pipeline work, no timestamps still describing the
+            // previous size.
+            Boundary::OpenMeasurement => {
+                ctx.metrics_mut().clear();
+                self.shadow_gpu.clear();
+            }
+            Boundary::CloseMeasurement => {
+                // Recomputed rather than read from the cached summary, which can be a
+                // quarter of a second old — the same thing the end-of-run report does.
+                ctx.metrics_mut().refresh();
+                let summary = ctx.metrics().summary();
+                benchmark.record_engine_stats(
+                    summary.as_ref().map(|summary| summary.cpu),
+                    summary.and_then(|summary| summary.gpu),
+                );
+            }
+            Boundary::None => {}
+        }
+
+        match action {
+            Action::Resize(width, height) => {
+                // Asked of the window, not of the renderer: the resize then arrives as the
+                // ordinary `WM_SIZE`, through the ordinary event path, and recreates exactly
+                // what a player dragging the window edge would recreate.
+                if let Err(error) = self.window.set_client_size(width, height) {
+                    log::error!("benchmark: could not resize to {width}x{height}: {error}");
+                    ctx.request_exit();
+                }
+            }
+            Action::Continue => {}
+            Action::Finished => {
+                log::info!(
+                    "benchmark: the matrix is done\n{}",
+                    benchmark.report().trim_end()
+                );
+                ctx.request_exit();
+            }
         }
     }
 }
@@ -3564,6 +3659,7 @@ impl Application for App {
         if let Some(milliseconds) = self.renderer.shadow_stats().gpu_ms {
             self.shadow_gpu.record_ms(milliseconds);
         }
+        self.advance_benchmark(ctx);
         self.maybe_report(ctx);
         #[cfg(feature = "debug-overlay")]
         self.maybe_update_overlay(ctx);

@@ -415,13 +415,7 @@ impl StagingUploader {
             });
         }
 
-        if self.queued == 0 {
-            // SAFETY: the previous flush waited for the GPU, so no submission from this
-            // allocator is still executing — which is Reset's precondition.
-            unsafe { self.allocator.Reset() }
-                .map_err(|error| RendererError::api("ID3D12CommandAllocator::Reset", error))?;
-            self.context.begin(&self.allocator)?;
-        }
+        self.begin_if_idle()?;
 
         let staging = GpuBuffer::new_upload(device, bytes)?;
         staging.write(data)?;
@@ -472,54 +466,125 @@ impl StagingUploader {
         data: &[u8],
         final_state: D3D12_RESOURCE_STATES,
     ) -> Result<(), RendererError> {
-        let (width, height) = destination.size();
-        let Some(bytes_per_texel) = destination.bytes_per_texel() else {
+        self.queue_texture_mips(device, destination, &[data], final_state)
+    }
+
+    /// Queues a copy of a whole mip chain into a texture.
+    ///
+    /// `levels` is one buffer per subresource, largest first, and must be exactly as long as
+    /// the texture's mip count: a chain with a level missing leaves that subresource
+    /// uninitialized, and an uninitialized mip is sampled as whatever the heap held before —
+    /// which shows up as a distant surface flickering with someone else's texture rather
+    /// than as an error anywhere.
+    ///
+    /// Each level is staged into its own upload buffer, because each has its own row pitch
+    /// and D3D12 requires each row to start on a 256-byte boundary. One buffer holding all
+    /// of them with the right offsets is the optimisation this deliberately does not make:
+    /// uploads happen when content loads, and the code that would compute those offsets is
+    /// the code that gets a mip's footprint wrong.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RendererError::InvalidConfig`] if the level count or any level's byte count
+    /// does not match the destination, or [`RendererError::Api`] if a D3D12 call fails.
+    pub fn queue_texture_mips(
+        &mut self,
+        device: &RenderDevice,
+        destination: &GpuTexture,
+        levels: &[&[u8]],
+        final_state: D3D12_RESOURCE_STATES,
+    ) -> Result<(), RendererError> {
+        let (base_width, base_height) = destination.size();
+        if levels.len() != destination.mip_levels() as usize {
             return Err(RendererError::InvalidConfig {
                 reason: format!(
-                    "no texel size is known for format {:?}, so its row pitch cannot be computed",
+                    "{} mip level(s) supplied for a {base_width}x{base_height} texture with {}",
+                    levels.len(),
+                    destination.mip_levels()
+                ),
+            });
+        }
+
+        // The destination is transitioned once, not once per level: every copy below writes
+        // a different subresource of the same resource, and D3D12 transitions all
+        // subresources together unless a subresource index is named.
+        self.begin_if_idle()?;
+        self.context
+            .transition_to(destination, D3D12_RESOURCE_STATE_COPY_DEST);
+        self.context.flush_barriers();
+
+        for (level, data) in levels.iter().enumerate() {
+            self.queue_level(device, destination, level as u32, data)?;
+        }
+
+        self.context.transition_to(destination, final_state);
+        self.queued += 1;
+        Ok(())
+    }
+
+    /// Opens the upload list if this is the first copy since the last flush.
+    fn begin_if_idle(&mut self) -> Result<(), RendererError> {
+        if self.queued != 0 {
+            return Ok(());
+        }
+        // SAFETY: the previous flush waited for the GPU, so no submission from this
+        // allocator is still executing — which is Reset's precondition.
+        unsafe { self.allocator.Reset() }
+            .map_err(|error| RendererError::api("ID3D12CommandAllocator::Reset", error))?;
+        self.context.begin(&self.allocator)
+    }
+
+    /// Stages and copies one mip level. The caller has already transitioned the texture.
+    fn queue_level(
+        &mut self,
+        device: &RenderDevice,
+        destination: &GpuTexture,
+        level: u32,
+        data: &[u8],
+    ) -> Result<(), RendererError> {
+        let (base_width, base_height) = destination.size();
+        let (width, height) = crate::mipmap::level_size(base_width, base_height, level);
+        let Some(layout) = destination.layout() else {
+            return Err(RendererError::InvalidConfig {
+                reason: format!(
+                    "no layout is known for format {:?}, so its row pitch cannot be computed",
                     destination.format()
                 ),
             });
         };
-        let expected = width as usize * height as usize * bytes_per_texel;
+        let expected = layout.image_size(width, height);
         if data.len() != expected {
             return Err(RendererError::InvalidConfig {
                 reason: format!(
-                    "{} bytes supplied for a {width}x{height} texture at {bytes_per_texel} bytes a \
-                     texel, which needs {expected}",
-                    data.len()
+                    "{} bytes supplied for mip {level} of a {base_width}x{base_height} texture, \
+                     which is {width}x{height} in {:?} and needs {expected}",
+                    data.len(),
+                    destination.format()
                 ),
             });
         }
 
-        let source_pitch = width as usize * bytes_per_texel;
+        // In *blocks*, not texels: for an uncompressed format a block is one texel and this
+        // is the arithmetic it always was, and for BC1 or BC5 it is the only arithmetic that
+        // is right. A row pitch computed in texels would be four or eight times too small and
+        // would upload a texture that looks like diagonal noise.
+        let source_pitch = layout.row_pitch(width);
         let padded_pitch = source_pitch.next_multiple_of(TEXTURE_ROW_PITCH_ALIGNMENT);
-        let staging_size = padded_pitch * height as usize;
-
-        if self.queued == 0 {
-            // SAFETY: the previous flush waited for the GPU, so no submission from this
-            // allocator is still executing — which is Reset's precondition.
-            unsafe { self.allocator.Reset() }
-                .map_err(|error| RendererError::api("ID3D12CommandAllocator::Reset", error))?;
-            self.context.begin(&self.allocator)?;
-        }
+        let rows = layout.rows(height);
+        let staging_size = padded_pitch * rows;
 
         let staging = GpuBuffer::new_upload(device, staging_size)?;
         if padded_pitch == source_pitch {
             staging.write(data)?;
         } else {
             let mut padded = vec![0u8; staging_size];
-            for row in 0..height as usize {
+            for row in 0..rows {
                 let from = row * source_pitch;
                 let to = row * padded_pitch;
                 padded[to..to + source_pitch].copy_from_slice(&data[from..from + source_pitch]);
             }
             staging.write(&padded)?;
         }
-
-        self.context
-            .transition_to(destination, D3D12_RESOURCE_STATE_COPY_DEST);
-        self.context.flush_barriers();
 
         let source = D3D12_TEXTURE_COPY_LOCATION {
             // SAFETY: reinterprets the COM smart pointer as the raw interface pointer the
@@ -533,8 +598,13 @@ impl StagingUploader {
                     Offset: 0,
                     Footprint: D3D12_SUBRESOURCE_FOOTPRINT {
                         Format: destination.format(),
-                        Width: width,
-                        Height: height,
+                        // Rounded up to whole blocks: D3D12 requires a compressed
+                        // footprint's dimensions to be multiples of the block size, so the
+                        // 2x2 and 1x1 tail of a mip chain is described as a 4x4 footprint
+                        // holding one block. For an uncompressed format this rounds to
+                        // itself.
+                        Width: width.next_multiple_of(layout.block),
+                        Height: height.next_multiple_of(layout.block),
                         Depth: 1,
                         RowPitch: padded_pitch as u32,
                     },
@@ -547,7 +617,9 @@ impl StagingUploader {
             pResource: unsafe { std::mem::transmute_copy(destination.resource()) },
             Type: D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
             Anonymous: D3D12_TEXTURE_COPY_LOCATION_0 {
-                SubresourceIndex: 0,
+                // A 2D texture with one array slice numbers its subresources by mip level,
+                // so this index *is* the level.
+                SubresourceIndex: level,
             },
         };
 
@@ -560,10 +632,7 @@ impl StagingUploader {
                 .CopyTextureRegion(&target, 0, 0, 0, &source, None);
         }
 
-        self.context.transition_to(destination, final_state);
-
         self.staging.push(staging);
-        self.queued += 1;
         Ok(())
     }
 

@@ -156,7 +156,7 @@ float3 shade_light(Surface surface, float3 to_light)
 // A material with no normal map samples the shared flat-normal fallback, which unpacks to +Z,
 // so this returns the geometric normal to within a rounding error. One fetch and no branch,
 // which is the trade M2 made deliberately.
-float3 apply_normal_map(float3 world_normal, float4 world_tangent, float3 sampled)
+float3 apply_normal_map(float3 world_normal, float4 world_tangent, float3 sampled, float scale)
 {
     float3 n = normalize(world_normal);
     float3 t = world_tangent.xyz;
@@ -184,14 +184,31 @@ float3 apply_normal_map(float3 world_normal, float4 world_tangent, float3 sample
     // Scaling by 255/128 puts the zero exactly on 128 instead. The cost is that -1 is
     // reachable and +1 is not (255 decodes to 0.992), which is a rounding difference in the
     // most extreme texel a normal map can hold and is renormalized away below.
-    float3 tangent_normal = sampled * (255.0 / 128.0) - 1.0;
-    // A normal map's blue channel is >= 0.5 by construction, so a texel unpacking to a
-    // zero-length vector is a broken texture rather than a legal one. Falling back keeps the
-    // NaN out of the frame.
-    if (dot(tangent_normal, tangent_normal) < 1e-8)
-    {
-        return n;
-    }
+    // Z is *reconstructed*, not read.
+    //
+    // A normal map compressed to BC5 has only two channels — X and Y, at one byte a texel —
+    // and its blue channel decodes to zero. An uncompressed one still carries a blue channel,
+    // and for a unit normal it holds exactly what this computes. Reconstructing in both cases
+    // means one decode for both formats rather than a shader permutation per texture, and it
+    // is the reason a small procedural normal map (left uncompressed) and a large imported one
+    // (BC5) shade identically.
+    //
+    // The clamp under the square root is what stops a texel whose X and Y exceed the unit
+    // circle — quantization, or a map that was never normalized — from producing a NaN.
+    float2 tangent_xy = sampled.xy * (255.0 / 128.0) - 1.0;
+    // glTF's normalTexture.scale, applied the way glTF specifies: the tangent-space X and Y
+    // are scaled and Z is left alone, so the vector tilts further from or closer to the
+    // surface normal and the renormalize below keeps it a unit direction. Scaling all three
+    // would be a no-op after that renormalize, which is the mistake this comment exists to
+    // prevent.
+    // Z comes from the *unscaled* pair, which is glTF's formula:
+    // `normalize((sampled * 2 - 1) * float3(scale, scale, 1))`. Scaling first and then
+    // reconstructing would fold the scale into Z as well and dampen the effect rather than
+    // applying it.
+    float tangent_z = sqrt(saturate(1.0 - dot(tangent_xy, tangent_xy)));
+    float3 tangent_normal = float3(tangent_xy * scale, tangent_z);
+    // No zero-length guard is needed: Z is 1 wherever X and Y are zero, so the vector below
+    // always has a direction, and a scale of 0 gives exactly the geometric normal.
     float3 mapped = tangent_normal.x * t + tangent_normal.y * b + tangent_normal.z * n;
     return normalize(mapped);
 }

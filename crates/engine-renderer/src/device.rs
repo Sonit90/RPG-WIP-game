@@ -337,10 +337,19 @@ impl RenderDevice {
     ///
     /// Returns [`RendererError::Api`] if the device rejects the request, or
     /// [`RendererError::InvalidConfig`] if it succeeds without producing a resource.
+    // A thin wrapper over `CreateCommittedResource`, so its parameters are D3D12's: size,
+    // mip count, format, flags, state and an optional clear value. Grouping them into a
+    // struct would be a second description of `D3D12_RESOURCE_DESC` to keep in step with the
+    // first.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "these are D3D12's own parameters"
+    )]
     pub fn create_texture_2d(
         &self,
         width: u32,
         height: u32,
+        mip_levels: u32,
         format: DXGI_FORMAT,
         flags: D3D12_RESOURCE_FLAGS,
         initial_state: D3D12_RESOURCE_STATES,
@@ -362,7 +371,11 @@ impl RenderDevice {
             Width: u64::from(width),
             Height: height,
             DepthOrArraySize: 1,
-            MipLevels: 1,
+            // The count the caller asked for. Zero would mean "as many as fit", which is
+            // D3D12's own shorthand and deliberately not used: the uploader has to know how
+            // many subresources it is filling, and a resource that decided that for itself
+            // would be one the CPU side could only ask about after the fact.
+            MipLevels: mip_levels.max(1) as u16,
             Format: format,
             SampleDesc: DXGI_SAMPLE_DESC {
                 Count: 1,

@@ -35,15 +35,30 @@ pub struct MaterialAsset {
     /// `None` means the material is a flat colour, and the renderer binds a 1×1 white
     /// texture rather than compiling a second shader for the case.
     pub base_color_texture: Option<usize>,
-    /// Tangent-space normal map. Carried and validated; the Phase 5 shader does not yet
-    /// read it, because a normal map without tangents on the vertex is a wrong answer
-    /// rather than a cheap one.
+    /// Tangent-space normal map, applied through the vertex tangent frame.
     pub normal_texture: Option<usize>,
+    /// How strongly [`Self::normal_texture`] perturbs the surface. glTF's
+    /// `normalTexture.scale`.
+    ///
+    /// The X and Y of the sampled normal are multiplied by it before the vector is
+    /// renormalized, so 1 is the map as authored, 0 flattens it to the geometric normal, and
+    /// above 1 exaggerates it. Absent in the file means 1, which is glTF's default and the
+    /// value every material built any other way carries.
+    pub normal_scale: f32,
     /// Packed occlusion (R), roughness (G), metallic (B), the glTF convention.
     ///
     /// Each channel *scales* the matching field above rather than replacing it, which is what
     /// glTF specifies and what lets the shared white fallback stand in for an absent map.
     pub orm_texture: Option<usize>,
+    /// How much of the occlusion channel is applied. glTF's `occlusionTexture.strength`.
+    ///
+    /// The shader blends towards "not occluded" by it: `1 + strength * (sampled - 1)`, which
+    /// is glTF's own formula. 1 applies the map as authored, 0 ignores it. Absent means 1.
+    ///
+    /// It is a separate number from the map itself because glTF's occlusion texture is a
+    /// separate texture from its metallic-roughness one; this engine packs both into the ORM
+    /// slot, and the strength travels with the material either way.
+    pub occlusion_strength: f32,
     /// Emissive colour, sampled in sRGB and multiplied with [`Self::emissive`].
     ///
     /// glTF's `emissiveTexture`, and multiplied with the factor exactly as glTF says.
@@ -66,6 +81,8 @@ impl Default for MaterialAsset {
             roughness: 0.8,
             metallic: 0.0,
             emissive: Vec3::ZERO,
+            normal_scale: 1.0,
+            occlusion_strength: 1.0,
             base_color_texture: None,
             normal_texture: None,
             orm_texture: None,

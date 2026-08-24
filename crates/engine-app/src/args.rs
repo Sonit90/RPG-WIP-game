@@ -213,6 +213,12 @@ options:
                          an automated run that has to exercise the real render path.
                          Pair it with --frames.
   --frames <count>       exit after rendering this many frames
+  --benchmark            measure 800x450, 1280x720, 1920x1080 and 3840x2160 in one
+                         process, resizing between them, then report and exit
+  --benchmark-at <list>  the same, at a chosen list: 1280x720,1920x1080
+  --benchmark-passes <n> repeat the whole matrix this many times (default 1)
+  --benchmark-warmup <n> frames discarded after each resize (default 60)
+  --benchmark-frames <n> frames measured at each resolution (default 300)
   --lights <count>       extra local lights spread over the scene's floor, as a lighting
                          stress control (default 0)
   --shadow-lights <n>    how many of those extra lights ask for a shadow map (default 0).
@@ -295,7 +301,6 @@ options:
                          after the asset it stands for, as in 'pillar.001', and the
                          engine keeps saying what a pillar looks like
   -h, --help             print this help and exit";
-
 
 /// Individual shadow settings named on the command line, applied on top of a preset.
 ///
@@ -458,6 +463,48 @@ impl ShadowOverrides {
     }
 }
 
+/// Parses `1280x720,1920x1080` into a list of client sizes.
+///
+/// Separate from the parser above because it is the one option with structure inside it, and
+/// because a benchmark that silently measured 0x0 because of a typo would produce a report
+/// full of confident numbers about nothing.
+fn parse_resolutions(list: &str) -> Result<Vec<(u32, u32)>, ArgsError> {
+    let mut sizes = Vec::new();
+    for entry in list
+        .split(',')
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+    {
+        let Some((width, height)) = entry.split_once(['x', 'X']) else {
+            return Err(ArgsError::InvalidValue {
+                option: "--benchmark-at",
+                value: entry.to_owned(),
+            });
+        };
+        let (Ok(width), Ok(height)) = (width.trim().parse::<u32>(), height.trim().parse::<u32>())
+        else {
+            return Err(ArgsError::InvalidValue {
+                option: "--benchmark-at",
+                value: entry.to_owned(),
+            });
+        };
+        if width == 0 || height == 0 {
+            return Err(ArgsError::InvalidValue {
+                option: "--benchmark-at",
+                value: entry.to_owned(),
+            });
+        }
+        sizes.push((width, height));
+    }
+    if sizes.is_empty() {
+        return Err(ArgsError::InvalidValue {
+            option: "--benchmark-at",
+            value: list.to_owned(),
+        });
+    }
+    Ok(sizes)
+}
+
 /// Parsed command line.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Args {
@@ -494,6 +541,20 @@ pub struct Args {
     pub stress_shadow_lights: usize,
     /// Individual shadow fields named on the command line, applied on top of the preset.
     pub shadow_overrides: ShadowOverrides,
+    /// The resolution matrix to benchmark inside this one process, if any.
+    ///
+    /// `None` for an ordinary run. `Some(list)` makes the application drive its own window
+    /// through each size in turn, warming up and then measuring at each, and exit with a
+    /// report. One launch, one scene load, one set of GPU resources: the point is that four
+    /// resolutions cost one startup rather than four, and that the rows are comparable
+    /// because nothing between them was rebuilt.
+    pub benchmark: Option<Vec<(u32, u32)>>,
+    /// How many times the whole matrix is repeated.
+    pub benchmark_passes: u32,
+    /// Frames discarded at each resolution after the renderer reports the new size.
+    pub benchmark_warmup: u64,
+    /// Frames measured at each resolution once it is warm.
+    pub benchmark_frames: u64,
     /// Frames whose timings are discarded before the statistics window starts.
     ///
     /// The opening frames of a run include driver warm-up, pipeline creation and the first
@@ -575,6 +636,10 @@ impl Default for Args {
             focus: true,
             window: true,
             frames: None,
+            benchmark: None,
+            benchmark_passes: 1,
+            benchmark_warmup: crate::benchmark::DEFAULT_WARMUP_FRAMES,
+            benchmark_frames: crate::benchmark::DEFAULT_MEASURE_FRAMES,
             warmup: 0,
             stress_lights: 0,
             stress_shadow_lights: 0,
@@ -686,9 +751,25 @@ where
             "--background" => args.focus = false,
             "--hidden" => args.window = false,
             "--frames" => args.frames = Some(next_value(&mut iter, "--frames")?),
+            "--benchmark" => args.benchmark = Some(crate::benchmark::DEFAULT_RESOLUTIONS.to_vec()),
+            "--benchmark-at" => {
+                let list: String = next_value(&mut iter, "--benchmark-at")?;
+                args.benchmark = Some(parse_resolutions(&list)?);
+            }
+            "--benchmark-passes" => {
+                args.benchmark_passes = next_value(&mut iter, "--benchmark-passes")?;
+            }
+            "--benchmark-warmup" => {
+                args.benchmark_warmup = next_value(&mut iter, "--benchmark-warmup")?;
+            }
+            "--benchmark-frames" => {
+                args.benchmark_frames = next_value(&mut iter, "--benchmark-frames")?;
+            }
             "--warmup" => args.warmup = next_value(&mut iter, "--warmup")?,
             "--shadow-tweak" => {
-                let raw = iter.next().ok_or(ArgsError::MissingValue("--shadow-tweak"))?;
+                let raw = iter
+                    .next()
+                    .ok_or(ArgsError::MissingValue("--shadow-tweak"))?;
                 args.shadow_overrides.parse_into(raw.as_ref())?;
             }
             "--shadows" => {

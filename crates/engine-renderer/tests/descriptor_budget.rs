@@ -8,6 +8,12 @@
 //! This test measures the real figures against the real environment library rather than
 //! asserting an arithmetic identity, and prints them so the numbers in the milestone report
 //! come from a run rather than from a calculation.
+//!
+//! Milestone 4 changed what those figures are. Textures are deduplicated by content, so a
+//! library that names the same bark image from twelve materials uploads it once and spends
+//! one descriptor on it. The assertion below therefore counts *distinct* textures, and the
+//! saving is asserted rather than merely printed: a regression that broke deduplication
+//! would otherwise show up only as a number in a log that nobody diffs.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
@@ -55,12 +61,15 @@ fn the_whole_environment_library_fits_in_the_persistent_region_with_room_left() 
     let (_window, mut renderer) = renderer_for("descriptor budget");
 
     let baseline = renderer.descriptor_stats();
+    let baseline_textures = renderer.texture_count();
     println!(
-        "startup: {} of {} persistent descriptors ({:.1}%) — the four shared fallbacks, the \
-         UI atlas and the shadow stage's own views",
+        "startup: {} of {} persistent descriptors ({:.1}%) — the shared fallbacks, the \
+         UI atlas and the shadow stage's own views; {baseline_textures} distinct texture(s) \
+         from {} request(s)",
         baseline.used,
         baseline.capacity,
-        baseline.utilization() * 100.0
+        baseline.utilization() * 100.0,
+        renderer.texture_requests()
     );
 
     let mut materials = 0_u32;
@@ -77,12 +86,26 @@ fn the_whole_environment_library_fits_in_the_persistent_region_with_room_left() 
 
     let after = renderer.descriptor_stats();
     let spent = after.used - baseline.used;
+    let unique = (renderer.texture_count() - baseline_textures) as u32;
     println!(
-        "the environment library: {materials} materials, {textures} textures, {spent} \
-         descriptors — {} of {} used ({:.1}%)",
+        "the environment library: {materials} materials, {textures} texture reference(s) \
+         resolving to {unique} distinct image(s), {spent} descriptors — {} of {} used \
+         ({:.1}%)",
         after.used,
         after.capacity,
         after.utilization() * 100.0
+    );
+    println!(
+        "deduplication saved {} upload(s) and {} descriptor(s)",
+        textures - unique,
+        textures - unique
+    );
+    let (resident, naive) = renderer.texture_memory();
+    println!(
+        "texture memory: {} KB resident against {} KB for one uncompressed copy per          reference ({:.0}% saved)",
+        resident / 1024,
+        naive / 1024,
+        100.0 - (resident as f64 / naive as f64) * 100.0
     );
     println!(
         "before M2 the same library would have spent {} descriptors ({materials} materials \
@@ -101,11 +124,29 @@ fn the_whole_environment_library_fits_in_the_persistent_region_with_room_left() 
     );
 
     // The architectural cost, stated as an assertion so it cannot drift silently: one
-    // descriptor per uploaded texture plus MATERIAL_TEXTURE_COUNT per material.
+    // descriptor per *distinct* image plus MATERIAL_TEXTURE_COUNT per material.
     assert_eq!(
         spent,
-        textures + materials * MATERIAL_TEXTURE_COUNT,
-        "a scene costs one descriptor per texture and {MATERIAL_TEXTURE_COUNT} per material"
+        unique + materials * MATERIAL_TEXTURE_COUNT,
+        "a scene costs one descriptor per distinct texture and {MATERIAL_TEXTURE_COUNT} per \
+         material"
+    );
+
+    // And deduplication actually happened on this content. The environment library shares
+    // images across its assets by construction — the same ground, the same trim, the same
+    // packed ORM map — so a build where every reference produced its own upload would spend
+    // strictly more here, and this is the assertion that notices.
+    // And the memory that saving is made of. Deduplication alone accounts for it on this
+    // content — the library's textures are small enough that block compression declines them
+    // — so the assertion is against the naive figure rather than a compression ratio.
+    assert!(
+        resident < naive,
+        "sharing images must cost less memory than one copy per reference: {resident}          against {naive}"
+    );
+    assert!(
+        unique < textures,
+        "the library shares images between materials, so {textures} reference(s) must \
+         resolve to fewer than {textures} uploads, got {unique}"
     );
 
     // Headroom, not a tight fit. The heap is 4096 x 32 bytes = 128 KB, so being generous

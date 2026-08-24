@@ -22,7 +22,13 @@ use crate::descriptor::GpuDescriptorHeap;
 use crate::device::{BACKEND, RenderDevice, feature_level_name};
 use crate::error::RendererError;
 use crate::frame::{FrameRing, SyncStats};
-use crate::gpu_timer::{GpuTimer, SHADOW_PASS as SHADOW_PASS_QUERY};
+use std::collections::HashMap;
+
+use crate::gpu_timer::{
+    GpuTimer, MAX_TIMED_PASSES, PARTICLE_PASS, SCENE_PASS, SHADOW_PASS as SHADOW_PASS_QUERY,
+    UI_PASS,
+};
+use crate::light_cluster::{LightClusterStats, LightClusters};
 use crate::material::{
     MATERIAL_TEXTURE_COUNT, Material, MaterialDesc, MaterialTextureSet, MaterialTextureSlot,
     MaterialTextures,
@@ -31,6 +37,7 @@ use crate::mesh::{GpuMesh, MeshData, MeshVertex, SkinnedMeshData, SkinnedVertex,
 use crate::mesh_pipeline::{
     InstanceTransform, InstancedMeshPipeline, MeshPipeline, SkinnedMeshPipeline,
 };
+use crate::mipmap::TextureKind;
 #[cfg(feature = "debug-overlay")]
 use crate::overlay::{OverlayBuffers, OverlayGeometry, OverlayMetrics};
 use crate::particle_pipeline::{ParticleConstants, ParticlePipeline, ROOT_PARTICLE_FRAME_CBV};
@@ -39,19 +46,19 @@ use crate::render_list::RenderList;
 use crate::resource::DeferredReleaseQueue;
 use crate::scene::{
     FrameConstants, ObjectConstants, ROOT_CLUSTER_SRV, ROOT_CONTACT_TABLE, ROOT_DEPTH_TABLE,
-    ROOT_FRAME_CBV, ROOT_MATERIAL_CBV,
-    ROOT_MATERIAL_TABLE, ROOT_OBJECT_CBV, ROOT_SHADOW_TABLE, ROOT_SKIN_CBV,
+    ROOT_FRAME_CBV, ROOT_MATERIAL_CBV, ROOT_MATERIAL_TABLE, ROOT_OBJECT_CBV, ROOT_SHADOW_TABLE,
+    ROOT_SKIN_CBV,
 };
 use crate::shadow::renderer::ShadowScene;
 use crate::shadow::{ShadowRenderer, ShadowSettings, ShadowStats};
 use crate::stress;
 use crate::swapchain::SwapChain;
+use crate::texture_id::TextureKey;
 use crate::ui_atlas::UiAtlas;
 use crate::ui_pipeline::{
     ROOT_UI_ATLAS_TABLE, ROOT_UI_FRAME_CBV, UiBatchStats, UiBatcher, UiFrameConstants, UiPipeline,
     UiVertex,
 };
-use crate::light_cluster::{LightClusterStats, LightClusters};
 use crate::upload::{CONSTANT_BUFFER_ALIGNMENT, StagingUploader, UploadRing};
 use crate::{AdapterInfo, RendererConfig};
 use engine_core::math::Frustum;
@@ -178,13 +185,38 @@ pub struct TextureImage<'a> {
     pub width: u32,
     /// Height in texels.
     pub height: u32,
-    /// Whether the hardware should linearize on read.
+    /// What the image means: colour, data, or a tangent-space normal map.
     ///
-    /// True for base colour, false for normal maps and packed data. Getting this backwards
-    /// is the classic washed-out or muddy import, and it has no other symptom.
-    pub srgb: bool,
+    /// Two things follow from it, and both are wrong in a way that has no other symptom if
+    /// it is wrong here. The colour space — colour is read through an sRGB view, data is
+    /// not, and getting that backwards is the classic washed-out or muddy import. And the
+    /// mip filter: colour is averaged in linear space, data where it lies, and a normal map
+    /// is averaged as a direction and renormalized. See [`crate::mipmap`].
+    pub kind: TextureKind,
     /// Row-major RGBA8 texels.
     pub texels: &'a [u8],
+}
+
+impl TextureImage<'_> {
+    /// Whether the hardware linearizes this image on read.
+    #[must_use]
+    pub fn is_srgb(&self) -> bool {
+        self.kind.is_srgb()
+    }
+}
+
+/// What an RGBA8 image of this size costs with a full mip chain.
+///
+/// The baseline the texture-memory accounting compares against: four bytes a texel for every
+/// level. Level 0 is most of it — a chain adds a third — but the third is real and stating it
+/// keeps the comparison honest, since the chains did not exist before this milestone either.
+fn rgba_chain_bytes(width: u32, height: u32) -> usize {
+    (0..crate::mipmap::level_count(width, height))
+        .map(|level| {
+            let (level_width, level_height) = crate::mipmap::level_size(width, height, level);
+            level_width as usize * level_height as usize * 4
+        })
+        .sum()
 }
 
 /// A texture and the descriptor that addresses it.
@@ -192,6 +224,12 @@ pub struct TextureImage<'a> {
 /// One struct rather than two parallel arrays, because the two have exactly the same
 /// lifetime: the descriptor points into the texture, so releasing either alone is the bug.
 struct UploadedTexture {
+    /// How this texture was compressed, if it was.
+    ///
+    /// Stored rather than derived from the format so the answer to "was this compressed, and
+    /// as what" has one definition — the format is a `DXGI_FORMAT` and mapping it back would
+    /// be a second table to keep in step with the first.
+    compression: crate::mipmap::Compression,
     /// The resource every view of this texture points into. Read when a material writes it
     /// into its own table, and held for ownership besides: dropping it would leave a
     /// shader-visible SRV addressing released memory.
@@ -331,6 +369,10 @@ pub struct Renderer {
     /// Most recent GPU frame time in milliseconds, or `None` before the first slot has
     /// completed a full lap.
     last_gpu_frame_ms: Option<f64>,
+    /// The same frame's time, split by pass. Indexed by the `*_PASS` constants; `None` for a
+    /// pass whose timestamps have not been resolved yet, which is every pass for the first
+    /// few frames of a run.
+    last_pass_ms: [Option<f64>; MAX_TIMED_PASSES],
     /// Root signature and pipeline state, independent of the geometry.
     pipeline: ScenePipeline,
     /// Depth target, the size of the back buffer.
@@ -358,6 +400,34 @@ pub struct Renderer {
     /// Held for ownership: each one's SRV lives in [`Renderer::descriptors`] and would
     /// address a released resource if the texture were dropped.
     textures: Vec<UploadedTexture>,
+    /// Which uploaded texture holds a given image, keyed by content.
+    ///
+    /// The deduplication table. An environment library shares one bark image across every
+    /// tree and a glTF file hands the same packed ORM image to every material that uses it;
+    /// before this existed each of those became its own resource, its own upload and its own
+    /// descriptor. Keyed by the texels rather than by a path or an index, because the same
+    /// image arrives from two `.glb` files under two different indices and from a procedural
+    /// author with no path at all — see [`crate::texture_id`].
+    ///
+    /// Sharing needs no reference counting: `textures` is append-only and lives as long as
+    /// the renderer, so a handle two materials hold cannot be released out from under one of
+    /// them. When textures become releasable this table gains a count, and that is the
+    /// moment to add one — not before.
+    textures_by_content: HashMap<TextureKey, TextureHandle>,
+    /// Bytes of GPU memory the resident textures occupy, mip chains and compression included.
+    texture_bytes: usize,
+    /// What those same images would have cost as uncompressed RGBA8 with no deduplication:
+    /// one full chain per *request*.
+    ///
+    /// Against `texture_bytes`, what Milestone 4 saved. Counted rather than estimated because
+    /// both halves of the saving — sharing an image and compressing it — are decisions made
+    /// per texture, and a formula would drift from them.
+    texture_bytes_naive: usize,
+    /// How many times a texture was asked for, including the ones the table answered.
+    ///
+    /// Against `textures.len()`, this is the deduplication ratio, and it is the number the
+    /// benchmark reports.
+    texture_requests: usize,
     /// The shader-visible CBV/SRV/UAV heap every SRV lives in — material maps and the UI
     /// atlas alike. Bound once per frame in `begin_recording`.
     descriptors: GpuDescriptorHeap,
@@ -603,6 +673,7 @@ impl Renderer {
             execute_lists,
             gpu_timer,
             last_gpu_frame_ms: None,
+            last_pass_ms: [None; MAX_TIMED_PASSES],
             pipeline,
             depth,
             mesh_pipeline,
@@ -613,6 +684,10 @@ impl Renderer {
             meshes: Vec::new(),
             skinned_meshes: Vec::new(),
             textures: Vec::new(),
+            textures_by_content: HashMap::new(),
+            texture_bytes: 0,
+            texture_bytes_naive: 0,
+            texture_requests: 0,
             descriptors,
             // Replaced immediately below, once there is a `self` to upload through. The
             // placeholder names slot 0, which is exactly what the white texture becomes.
@@ -746,6 +821,18 @@ impl Renderer {
     #[must_use]
     pub fn last_gpu_frame_ms(&self) -> Option<f64> {
         self.last_gpu_frame_ms
+    }
+
+    /// The same frame's GPU time, split by pass.
+    ///
+    /// Indexed by [`crate::gpu_timer::SHADOW_PASS`] and its neighbours; the names are in
+    /// [`crate::gpu_timer::TIMED_PASSES`]. The parts do not have to sum to
+    /// [`Renderer::last_gpu_frame_ms`]: the frame's own pair also covers the clears, the
+    /// barriers and whatever the driver does between passes, and that difference is itself
+    /// worth reading — it is the frame's fixed overhead.
+    #[must_use]
+    pub fn last_pass_ms(&self) -> [Option<f64>; MAX_TIMED_PASSES] {
+        self.last_pass_ms
     }
 
     /// Timestamp ticks per second on the direct queue.
@@ -1373,6 +1460,12 @@ impl Renderer {
         self.gpu_timer
             .end_pass(self.commands.list(), slot, SHADOW_PASS_QUERY);
 
+        // Everything from here to `finish_recording` is the camera's mesh pass: the binds
+        // above, every batch below, and the skinned draws after them. Closed in
+        // `finish_recording`, which both the instanced and the non-instanced path reach.
+        self.gpu_timer
+            .begin_pass(self.commands.list(), slot, SCENE_PASS);
+
         let pipeline = if self.wireframe {
             &self.mesh_pipeline_wireframe
         } else {
@@ -1386,9 +1479,11 @@ impl Renderer {
             .set_root_cbv(ROOT_FRAME_CBV, allocation.gpu_address());
         // The cluster grid rides in the same upload ring as the constants, in its own
         // allocation: 13.5 KB of masks, bound as a root SRV and read by the lighting.
-        let clusters = self
-            .uploads
-            .write(slot, self.clusters.masks(), crate::upload::DEFAULT_ALIGNMENT)?;
+        let clusters = self.uploads.write(
+            slot,
+            self.clusters.masks(),
+            crate::upload::DEFAULT_ALIGNMENT,
+        )?;
         self.commands
             .set_root_srv(ROOT_CLUSTER_SRV, clusters.gpu_address());
         self.bind_shadow_tables();
@@ -1766,12 +1861,14 @@ impl Renderer {
         &mut self,
         image: &TextureImage<'_>,
     ) -> Result<TextureHandle, RendererError> {
+        use crate::mipmap::Compression;
         use windows::Win32::Graphics::Direct3D12::{
             D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
             D3D12_SHADER_RESOURCE_VIEW_DESC, D3D12_SHADER_RESOURCE_VIEW_DESC_0,
             D3D12_SRV_DIMENSION_TEXTURE2D, D3D12_TEX2D_SRV,
         };
         use windows::Win32::Graphics::Dxgi::Common::{
+            DXGI_FORMAT_BC1_UNORM, DXGI_FORMAT_BC1_UNORM_SRGB, DXGI_FORMAT_BC5_UNORM,
             DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_R8G8B8A8_UNORM_SRGB,
         };
 
@@ -1787,26 +1884,104 @@ impl Renderer {
             });
         }
 
-        // The *view* format carries the colour space, not the resource format: the texels
-        // are the same bytes either way, and it is the read that linearizes.
-        let format = if image.srgb {
-            DXGI_FORMAT_R8G8B8A8_UNORM_SRGB
-        } else {
-            DXGI_FORMAT_R8G8B8A8_UNORM
+        self.texture_requests += 1;
+        // What this request would have cost before Milestone 4: its own RGBA8 copy, with the
+        // mip chain it now has. Counted per request, so the deduplicated ones are counted too
+        // — they are exactly what the saving is made of.
+        self.texture_bytes_naive += rgba_chain_bytes(image.width, image.height);
+        let mip_levels = crate::mipmap::level_count(image.width, image.height);
+        let compression = crate::mipmap::compression_for(
+            image.kind,
+            image.width,
+            image.height,
+            crate::mipmap::has_transparency(image.texels),
+        );
+        let key = TextureKey::new(
+            image.texels,
+            image.width,
+            image.height,
+            image.kind,
+            mip_levels > 1,
+        );
+        // The whole point: the same image asked for twice is uploaded once. Checked before
+        // anything is allocated, so a hit costs one hash of the texels and no GPU work at
+        // all — no resource, no staging buffer, no descriptor, no flush.
+        if let Some(existing) = self.textures_by_content.get(&key) {
+            log::trace!(
+                "texture: reusing {} for a {}x{} image already resident",
+                existing.index(),
+                image.width,
+                image.height
+            );
+            return Ok(*existing);
+        }
+
+        // The *view* format carries the colour space for the uncompressed formats — the
+        // texels are the same bytes either way and it is the read that linearizes — and the
+        // compressed formats carry it in the format itself, because BC1 has an sRGB variant
+        // and BC5 does not need one.
+        let format = match (compression, image.is_srgb()) {
+            (Compression::Bc1, true) => DXGI_FORMAT_BC1_UNORM_SRGB,
+            (Compression::Bc1, false) => DXGI_FORMAT_BC1_UNORM,
+            (Compression::Bc5, _) => DXGI_FORMAT_BC5_UNORM,
+            (Compression::None, true) => DXGI_FORMAT_R8G8B8A8_UNORM_SRGB,
+            (Compression::None, false) => DXGI_FORMAT_R8G8B8A8_UNORM,
         };
 
-        let texture = crate::resource::GpuTexture::new(
+        let texture = crate::resource::GpuTexture::with_mips(
             &self.context,
             image.width,
             image.height,
+            mip_levels,
             format,
             D3D12_RESOURCE_STATE_COPY_DEST,
         )?;
+        // Filtered on the CPU at upload rather than generated on the GPU with a compute
+        // pass. Uploading content is not a per-frame cost, the filters differ per texture
+        // kind — a normal map's mips have to be renormalized — and a compute path would need
+        // a UAV on every sampled texture, which is a resource flag on all of them to save
+        // milliseconds that happen once.
+        let chain = crate::mipmap::generate(image.texels, image.width, image.height, image.kind);
+        let mut levels: Vec<&[u8]> = Vec::with_capacity(chain.len() + 1);
+        levels.push(image.texels);
+        levels.extend(chain.iter().map(Vec::as_slice));
+
+        // Block compression happens *after* the chain is filtered, level by level. Filtering
+        // compressed data would mean decompressing it first, and compressing level 0 and
+        // reducing that would compound the format's error down the chain.
+        let compressed: Vec<Vec<u8>> = match compression {
+            Compression::None => Vec::new(),
+            Compression::Bc1 | Compression::Bc5 => levels
+                .iter()
+                .enumerate()
+                .map(|(level, texels)| {
+                    let (width, height) =
+                        crate::mipmap::level_size(image.width, image.height, level as u32);
+                    match compression {
+                        Compression::Bc5 => engine_assets::bc::compress_bc5(texels, width, height),
+                        _ => engine_assets::bc::compress_bc1(texels, width, height),
+                    }
+                })
+                .collect(),
+        };
+        if !compressed.is_empty() {
+            levels = compressed.iter().map(Vec::as_slice).collect();
+            log::debug!(
+                "texture: {}x{} {:?} compressed to {:?}, {} KB against {} KB",
+                image.width,
+                image.height,
+                image.kind,
+                compression,
+                compressed.iter().map(Vec::len).sum::<usize>() / 1024,
+                (image.texels.len() * 4 / 3) / 1024
+            );
+        }
+
         let mut uploader = StagingUploader::new(&self.context)?;
-        uploader.queue_texture(
+        uploader.queue_texture_mips(
             &self.context,
             &texture,
-            image.texels,
+            &levels,
             D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
         )?;
         uploader.flush(&self.context)?;
@@ -1821,7 +1996,9 @@ impl Renderer {
             Anonymous: D3D12_SHADER_RESOURCE_VIEW_DESC_0 {
                 Texture2D: D3D12_TEX2D_SRV {
                     MostDetailedMip: 0,
-                    MipLevels: 1,
+                    // The whole chain. A view that named one level would leave the sampler
+                    // no level to fall to, and the mips would be memory nothing reads.
+                    MipLevels: mip_levels,
                     PlaneSlice: 0,
                     ResourceMinLODClamp: 0.0,
                 },
@@ -1839,11 +2016,67 @@ impl Renderer {
 
         let index = self.textures.len() as u32;
         self.textures.push(UploadedTexture {
+            compression,
             texture,
             format,
             descriptor,
         });
-        Ok(TextureHandle(index))
+        let handle = TextureHandle(index);
+        self.textures_by_content.insert(key, handle);
+        self.texture_bytes += levels.iter().map(|level| level.len()).sum::<usize>();
+        Ok(handle)
+    }
+
+    /// Bytes of GPU memory the resident textures occupy, and what the same images would have
+    /// cost as uncompressed RGBA8 with one copy per request.
+    ///
+    /// The pair is the Milestone 4 saving, measured rather than estimated: deduplication
+    /// removes whole copies and block compression shrinks the ones that remain.
+    #[must_use]
+    pub fn texture_memory(&self) -> (usize, usize) {
+        (self.texture_bytes, self.texture_bytes_naive)
+    }
+
+    /// How many times a texture has been asked for, deduplicated hits included.
+    #[must_use]
+    pub fn texture_requests(&self) -> usize {
+        self.texture_requests
+    }
+
+    /// How an uploaded texture was compressed, or `None` for a handle that names nothing.
+    ///
+    /// For tests and diagnostics. Compression is chosen from a texture's kind and size — see
+    /// [`crate::mipmap::compression_for`] — and this is how a test asks what was chosen
+    /// without a second copy of that policy.
+    #[must_use]
+    pub fn texture_compression(
+        &self,
+        texture: TextureHandle,
+    ) -> Option<crate::mipmap::Compression> {
+        self.textures
+            .get(texture.index())
+            .map(|entry| entry.compression)
+    }
+
+    /// How many mip levels an uploaded texture has, or `None` for a handle that names
+    /// nothing.
+    ///
+    /// For tests and diagnostics: "does this texture have a chain at all" is a question
+    /// about the resource rather than about the picture, and the picture cannot answer it
+    /// without a camera far enough away to select a lower level.
+    #[must_use]
+    pub fn texture_mip_levels(&self, texture: TextureHandle) -> Option<u32> {
+        self.textures
+            .get(texture.index())
+            .map(|entry| entry.texture.mip_levels())
+    }
+
+    /// How many distinct textures are resident on the GPU.
+    ///
+    /// Against [`Renderer::texture_requests`], the deduplication ratio.
+    #[must_use]
+    pub fn texture_count(&self) -> usize {
+        self.textures.len()
     }
 
     /// Uploads an [`engine_assets::ModelAsset`] and reports what it became.
@@ -1872,13 +2105,56 @@ impl Renderer {
             },
         )?;
 
+        // What each of the model's textures is *for*, worked out from the materials that
+        // name it before any of them is uploaded.
+        //
+        // The asset carries a colour space per texture and nothing else, which was enough
+        // while the colour space was all the upload needed. A mip chain needs more: a normal
+        // map's levels have to be averaged as directions and renormalized, and a texture the
+        // uploader thought was ordinary data would produce mips that flatten with distance.
+        // The material slots are the only place that knowledge exists, so the roles are
+        // collected here rather than guessed from the format.
+        //
+        // A texture named by two slots of different kinds — a normal map also used as an ORM
+        // map, which no exporter produces — resolves to the first role that claims it, and
+        // the log line says so rather than picking silently.
+        let mut kinds: Vec<TextureKind> = model
+            .textures
+            .iter()
+            .map(|texture| {
+                if texture.format.is_srgb() {
+                    TextureKind::Color
+                } else {
+                    TextureKind::Data
+                }
+            })
+            .collect();
+        for material in &model.materials {
+            if let Some(index) = material.normal_texture
+                && let Some(kind) = kinds.get_mut(index)
+            {
+                if *kind == TextureKind::Color {
+                    log::warn!(
+                        "{}: texture {index} is used as a normal map and marked as colour; \
+                         filtering it as a normal map",
+                        model.name
+                    );
+                }
+                *kind = TextureKind::Normal;
+            }
+        }
+
         // Textures first, then materials that name them, then geometry that names materials.
+        //
+        // Uploading is deduplicated by content inside `create_texture`, so a model whose
+        // materials share one image — an ORM map used by every material of a building — pays
+        // for one resource and one descriptor however many times it is named.
         let mut textures = Vec::with_capacity(model.textures.len());
-        for texture in &model.textures {
+        for (index, texture) in model.textures.iter().enumerate() {
             textures.push(self.create_texture(&TextureImage {
                 width: texture.width,
                 height: texture.height,
-                srgb: texture.format.is_srgb(),
+                kind: kinds[index],
                 texels: &texture.texels,
             })?);
         }
@@ -1890,6 +2166,10 @@ impl Renderer {
                 roughness: material.roughness,
                 metallic: material.metallic,
                 emissive: material.emissive,
+                // The two glTF texture parameters, which the importer reads and the shader
+                // applies. They ride in what used to be `MaterialConstants`' padding.
+                normal_scale: material.normal_scale,
+                occlusion_strength: material.occlusion_strength,
                 // Carried through to the shadow pass as well as the camera pass: a cutout
                 // material that shadowed as an opaque rectangle would be worse than one
                 // that did not shadow at all.
@@ -1899,7 +2179,8 @@ impl Renderer {
             // dropped the normal and ORM maps here is what this milestone removes. A slot
             // the asset leaves empty stays `None` and resolves to that slot's shared
             // fallback inside `create_material_with_textures`.
-            let resolve = |index: Option<usize>| index.and_then(|index| textures.get(index).copied());
+            let resolve =
+                |index: Option<usize>| index.and_then(|index| textures.get(index).copied());
             let set = MaterialTextureSet {
                 base_color: resolve(material.base_color_texture),
                 normal: resolve(material.normal_texture),
@@ -2272,7 +2553,7 @@ impl Renderer {
             handles[slot.register() as usize] = self.create_texture(&TextureImage {
                 width: 1,
                 height: 1,
-                srgb: slot.is_srgb(),
+                kind: slot.texture_kind(),
                 texels: &slot.fallback_texel(),
             })?;
         }
@@ -2583,6 +2864,11 @@ impl Renderer {
         // The shadow stage's own timestamps, resolved by the same call and read at the same
         // safe point. It lags by the same few frames the frame time does, which the overlay
         // says rather than pretending otherwise.
+        for (pass, entry) in self.last_pass_ms.iter_mut().enumerate() {
+            if let Some(milliseconds) = self.gpu_timer.read_pass_ms(slot, pass)? {
+                *entry = Some(milliseconds);
+            }
+        }
         let shadow_ms = self.gpu_timer.read_pass_ms(slot, SHADOW_PASS_QUERY)?;
         self.shadow.set_gpu_ms(shadow_ms);
 
@@ -2635,10 +2921,25 @@ impl Renderer {
 
     /// Closes a frame: draws the overlay, returns the back buffer to `PRESENT`, and submits.
     fn finish_recording(&mut self, slot: usize, back_buffer: usize) -> Result<(), RendererError> {
+        // The mesh pass ends here, wherever it was recorded from — the instanced path and
+        // the batch-by-batch path both arrive at this function and nowhere else.
+        self.gpu_timer
+            .end_pass(self.commands.list(), slot, SCENE_PASS);
+
         // Before the interface and after the scene: a blended particle has to see the opaque
         // world beneath it, and a health bar under a fireball is a health bar nobody can
         // read.
+        self.gpu_timer
+            .begin_pass(self.commands.list(), slot, PARTICLE_PASS);
         self.draw_particles(slot)?;
+        self.gpu_timer
+            .end_pass(self.commands.list(), slot, PARTICLE_PASS);
+
+        // The overlay and the game UI are one pass for timing: both draw screen-space
+        // triangles over the finished scene, and splitting them would say nothing the two
+        // vertex counts in `CommandStats` do not already.
+        self.gpu_timer
+            .begin_pass(self.commands.list(), slot, UI_PASS);
 
         #[cfg(feature = "debug-overlay")]
         let index = slot;
@@ -2701,6 +3002,7 @@ impl Renderer {
         // Last, and on top of everything: the UI blends, so it must see the finished scene
         // beneath it. One draw call for the whole interface.
         self.draw_ui(slot)?;
+        self.gpu_timer.end_pass(self.commands.list(), slot, UI_PASS);
 
         // Re-borrowed after `draw_ui`, which needs `&mut self`. The buffer is the same
         // resource either way; holding the earlier borrow across the call would only be a

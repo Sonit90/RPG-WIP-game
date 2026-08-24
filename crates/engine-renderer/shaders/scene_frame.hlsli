@@ -864,7 +864,8 @@ float4 shade_surface(
 
     // The shading normal, out of the tangent frame the vertex carries. A material with no
     // normal map samples the flat fallback, and this is the interpolated normal again.
-    float3 normal = apply_normal_map(world_normal, world_tangent, material.normal_ts);
+    float3 normal =
+        apply_normal_map(world_normal, world_tangent, material.normal_ts, normal_scale);
     float3 to_light = normalize(-light_direction);
     // The geometric normal is kept for the two things that want the surface itself rather
     // than what the map made of it: the early-out below, and the shadow bias, which offsets
