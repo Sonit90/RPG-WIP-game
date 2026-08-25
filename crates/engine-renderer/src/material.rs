@@ -18,6 +18,99 @@ use crate::upload::{CONSTANT_BUFFER_ALIGNMENT, StagingUploader};
 
 use windows::Win32::Graphics::Direct3D12::D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER;
 
+/// What a surface does to the pixels already in the render target.
+///
+/// The renderer's three surface classes, and the whole of its transparency vocabulary. It is
+/// an explicit field on the material rather than something inferred from an alpha value,
+/// because "this colour happens to have `a = 0.9`" and "this material is drawn in the blended
+/// phase" are different statements and only the second one can be answered by looking at the
+/// number. A stylized fantasy world has plenty of opaque surfaces whose base colour was
+/// authored with a stray alpha.
+///
+/// The class decides three things and nothing else: which phase the object is drawn in,
+/// whether the pipeline blends, and whether the pipeline writes depth. It selects no shader
+/// permutation — see [`crate::transparency`] for the contract in full.
+///
+/// ```text
+/// class        phase        depth test  depth write  blend
+/// Opaque       opaque       LESS_EQUAL  yes          none
+/// AlphaTest    opaque       LESS_EQUAL  yes          none  (fragments below the cutoff discard)
+/// Transparent  transparent  LESS_EQUAL  no           src.a / (1 - src.a)
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+pub enum SurfaceClass {
+    /// Every fragment replaces what is behind it. Nearly every surface in a scene.
+    #[default]
+    Opaque,
+    /// Every surviving fragment replaces what is behind it; fragments below
+    /// [`MaterialDesc::alpha_cutoff`] are discarded outright.
+    ///
+    /// Foliage, fences, grates. A hard edge, not a fade — which is why it can still be drawn
+    /// in the opaque phase, in any order, writing depth like everything else there.
+    AlphaTest,
+    /// The fragment is blended with what is behind it, and does not occlude what comes after.
+    ///
+    /// Particles' larger cousins: spell effects, ghosts, glass, water, force fields. Drawn in
+    /// its own phase after the opaque one, back to front, testing depth but not writing it.
+    Transparent,
+}
+
+impl SurfaceClass {
+    /// Every class, for tests and for iterating the pipeline permutations.
+    pub const ALL: [Self; 3] = [Self::Opaque, Self::AlphaTest, Self::Transparent];
+
+    /// Whether the pipeline blends this surface with the target.
+    ///
+    /// Only [`Self::Transparent`] does. An alpha-tested fragment either survives whole or
+    /// does not exist, which is the property that keeps it out of the sorted phase.
+    #[must_use]
+    pub fn is_blended(self) -> bool {
+        matches!(self, Self::Transparent)
+    }
+
+    /// Whether the pipeline writes depth for this surface.
+    ///
+    /// Opaque and alpha-tested surfaces do, and must: the depth buffer they leave behind is
+    /// what the transparent phase tests against. A transparent surface does not, because a
+    /// blended fragment is not an occluder — writing depth would make the nearest quad of an
+    /// effect hide every quad behind it and the effect would read as one flat card.
+    #[must_use]
+    pub fn writes_depth(self) -> bool {
+        !matches!(self, Self::Transparent)
+    }
+
+    /// Whether this surface is drawn in the sorted, blended phase rather than the opaque one.
+    #[must_use]
+    pub fn is_transparent(self) -> bool {
+        matches!(self, Self::Transparent)
+    }
+
+    /// The class's name, for diagnostics and test failure messages.
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Opaque => "opaque",
+            Self::AlphaTest => "alpha_test",
+            Self::Transparent => "transparent",
+        }
+    }
+}
+
+impl From<engine_assets::SurfaceClass> for SurfaceClass {
+    /// The asset-side class, as the renderer's.
+    ///
+    /// Written out variant by variant rather than transmuted from the discriminant: the two
+    /// enums agreeing is a fact about today's declarations, and a `match` that stops compiling
+    /// when one of them gains a variant is the point.
+    fn from(surface: engine_assets::SurfaceClass) -> Self {
+        match surface {
+            engine_assets::SurfaceClass::Opaque => Self::Opaque,
+            engine_assets::SurfaceClass::AlphaTest => Self::AlphaTest,
+            engine_assets::SurfaceClass::Transparent => Self::Transparent,
+        }
+    }
+}
+
 /// How a surface should look.
 ///
 /// `roughness` and `metallic` are here because the lighting model in Milestone 14 needs
@@ -69,6 +162,15 @@ pub struct MaterialDesc {
     /// It selects a *shader permutation*, not a branch: a material without it is drawn with
     /// a pixel shader that does not contain GGX, Smith or Fresnel at all.
     pub pbr: bool,
+    /// Which phase this material is drawn in, and with what blend and depth state.
+    ///
+    /// The one field the renderer reads to decide *when* a surface is drawn rather than what
+    /// it looks like. It is set explicitly — [`MaterialDesc::with_alpha_cutoff`] moves a
+    /// material to [`SurfaceClass::AlphaTest`], [`MaterialDesc::with_opacity`] and
+    /// [`MaterialDesc::with_surface`] to [`SurfaceClass::Transparent`] — and validated
+    /// against [`Self::alpha_cutoff`], because a material that claims to be opaque and also
+    /// carries a cutoff is two statements about one surface and one of them is a mistake.
+    pub surface: SurfaceClass,
 }
 
 impl Default for MaterialDesc {
@@ -85,6 +187,10 @@ impl Default for MaterialDesc {
             alpha_cutoff: 0.0,
             // Lambert until a material asks otherwise. See the field.
             pbr: false,
+            // Opaque until a material asks otherwise: the default has to be the class that
+            // needs no sorting and no blending, or a material built by `..Default::default()`
+            // would quietly join the transparent phase.
+            surface: SurfaceClass::Opaque,
         }
     }
 }
@@ -165,7 +271,54 @@ impl MaterialDesc {
         } else {
             0.0
         };
+        // The class follows the cutoff rather than being a second thing to remember. Every
+        // call site that predates [`SurfaceClass`] said "this is a cutout" by setting a
+        // threshold, and it still does.
+        self.surface = if self.alpha_cutoff > 0.0 {
+            SurfaceClass::AlphaTest
+        } else {
+            SurfaceClass::Opaque
+        };
         self
+    }
+
+    /// Returns the description in `surface`'s class.
+    ///
+    /// Moving *to* [`SurfaceClass::AlphaTest`] needs a threshold to test against, so one is
+    /// supplied — the glTF default, 0.5 — if the material carries none. Moving *away* from it
+    /// clears the cutoff, because a threshold on a surface that performs no test is a number
+    /// the shader reads and ignores, and the validator rejects it rather than let the two
+    /// disagree.
+    #[must_use]
+    pub fn with_surface(mut self, surface: SurfaceClass) -> Self {
+        self.surface = surface;
+        match surface {
+            SurfaceClass::AlphaTest if self.alpha_cutoff <= 0.0 => self.alpha_cutoff = 0.5,
+            SurfaceClass::Opaque | SurfaceClass::Transparent => self.alpha_cutoff = 0.0,
+            SurfaceClass::AlphaTest => {}
+        }
+        self
+    }
+
+    /// Returns the description as a transparent surface of the given opacity.
+    ///
+    /// The one call that makes a blended material: it sets the base colour's alpha and moves
+    /// the material into [`SurfaceClass::Transparent`], which is what puts it in the sorted
+    /// phase. `alpha` is clamped into [0, 1]; 1 is a fully covering surface that is still
+    /// drawn in the transparent phase, which is a legitimate thing to author — a ghost fading
+    /// in starts there.
+    ///
+    /// Alpha is *not* premultiplied. The mesh shader returns straight RGBA and the blend is
+    /// `src.a` over `1 - src.a`; premultiplying the colour here would darken the surface by
+    /// its own opacity twice.
+    #[must_use]
+    pub fn with_opacity(mut self, alpha: f32) -> Self {
+        self.base_color.w = if alpha.is_finite() {
+            alpha.clamp(0.0, 1.0)
+        } else {
+            1.0
+        };
+        self.with_surface(SurfaceClass::Transparent)
     }
 
     /// Whether this material needs the alpha test in the depth passes.
@@ -175,7 +328,16 @@ impl MaterialDesc {
     /// all and is markedly faster for it.
     #[must_use]
     pub fn is_alpha_tested(&self) -> bool {
-        self.alpha_cutoff > 0.0
+        self.surface == SurfaceClass::AlphaTest
+    }
+
+    /// Whether this material is drawn in the sorted, blended phase.
+    ///
+    /// What splits the render list in two. Everything else — opaque and alpha-tested alike —
+    /// stays in the opaque phase and keeps the depth behaviour it has always had.
+    #[must_use]
+    pub fn is_transparent(&self) -> bool {
+        self.surface == SurfaceClass::Transparent
     }
 
     /// Rejects values a shader cannot use.
@@ -206,6 +368,37 @@ impl MaterialDesc {
         // glTF states no upper bound on the normal scale and an exact [0, 1] for the
         // occlusion strength, and this follows it: a scale of 2 is an artist exaggerating a
         // map, an occlusion strength of 2 is a number with no meaning.
+        // The class and the cutoff are two statements about one surface and they have to
+        // agree. A "transparent" material carrying a cutoff would discard fragments it was
+        // meant to blend, and an "opaque" one carrying a cutoff would be drawn in the opaque
+        // phase and still punch holes in itself — both are the kind of mistake that looks
+        // like a shader bug rather than like a material one.
+        match self.surface {
+            SurfaceClass::AlphaTest if !(0.0..=1.0).contains(&self.alpha_cutoff) => {
+                return Err(RendererError::InvalidConfig {
+                    reason: format!(
+                        "an alpha-tested material needs a cutoff in (0, 1], got {}",
+                        self.alpha_cutoff
+                    ),
+                });
+            }
+            SurfaceClass::AlphaTest if self.alpha_cutoff <= 0.0 => {
+                return Err(RendererError::InvalidConfig {
+                    reason: "an alpha-tested material needs a cutoff above zero; a cutoff of                              zero discards nothing and is an opaque material"
+                        .to_owned(),
+                });
+            }
+            SurfaceClass::Opaque | SurfaceClass::Transparent if self.alpha_cutoff != 0.0 => {
+                return Err(RendererError::InvalidConfig {
+                    reason: format!(
+                        "a {} material must carry no alpha cutoff, got {}",
+                        self.surface.name(),
+                        self.alpha_cutoff
+                    ),
+                });
+            }
+            _ => {}
+        }
         if self.normal_scale < 0.0 || !(0.0..=1.0).contains(&self.occlusion_strength) {
             return Err(RendererError::InvalidConfig {
                 reason: format!(

@@ -612,3 +612,122 @@ mod grouping {
         assert_grouping_is_a_permutation(&list);
     }
 }
+
+/// The transparency split, joined to the pass above it.
+///
+/// ```text
+/// RenderWorld -> Culler -> RenderList -> split_transparent -> two lists
+/// ```
+///
+/// `render_list.rs` unit-tests the split against a hand-built list. This tests the join: that
+/// what a real cull produces survives being divided into the two phases with nothing lost,
+/// nothing duplicated, and each half in the order its phase needs.
+mod transparency {
+    use super::*;
+    use engine_renderer::material::SurfaceClass;
+
+    /// Material 1 is the transparent one; 0 and 2 are opaque.
+    fn surfaces() -> [SurfaceClass; 3] {
+        [
+            SurfaceClass::Opaque,
+            SurfaceClass::Transparent,
+            SurfaceClass::AlphaTest,
+        ]
+    }
+
+    /// Six visible entities at increasing distance from the camera, alternating materials.
+    fn world() -> RenderWorld {
+        let mut world = RenderWorld::new();
+        for index in 0..6_u32 {
+            let position = Vec3::new(0.0, 0.0, -(index as f32 + 2.0));
+            world.spawn(desc(position, index % 2, index % 3));
+        }
+        world
+    }
+
+    #[test]
+    fn the_two_phases_together_hold_every_visible_entity_exactly_once() {
+        // The property that makes the split safe: an object cannot be dropped by being in
+        // neither list, and cannot be drawn twice by being in both. Either failure is a
+        // rendering bug that no per-list test could see.
+        let world = world();
+        let mut opaque = RenderList::new();
+        let stats = cull(&world, &mut opaque);
+        let visible = opaque.len();
+
+        let mut transparent = RenderList::new();
+        opaque.split_transparent(&surfaces(), &mut transparent);
+
+        assert_eq!(stats.visible as usize, visible);
+        assert_eq!(opaque.len() + transparent.len(), visible);
+
+        let mut seen: Vec<usize> = opaque
+            .entities()
+            .iter()
+            .chain(transparent.entities())
+            .map(|entity| entity.index())
+            .collect();
+        seen.sort_unstable();
+        seen.dedup();
+        assert_eq!(
+            seen.len(),
+            visible,
+            "an entity landed in both lists or neither"
+        );
+    }
+
+    #[test]
+    fn the_opaque_half_still_groups_and_the_transparent_half_still_sorts() {
+        // Both halves have to be usable by their own phase after the split: the opaque one
+        // batched by material and mesh, the transparent one ordered farthest-first. A split
+        // that left either in a state its phase could not consume would fail at recording,
+        // which is much later and much harder to read.
+        let world = world();
+        let mut opaque = RenderList::new();
+        cull(&world, &mut opaque);
+
+        let mut transparent = RenderList::new();
+        opaque.split_transparent(&surfaces(), &mut transparent);
+
+        opaque.group_by_material_and_mesh(3, 2);
+        let batched: u32 = opaque.batches().iter().map(|batch| batch.count).sum();
+        assert_eq!(batched as usize, opaque.len());
+        for batch in opaque.batches() {
+            assert_ne!(
+                batch.material.index(),
+                1,
+                "a transparent material reached the opaque phase's batches"
+            );
+        }
+
+        // The camera is at the origin looking down -Z, so the entity with the most negative Z
+        // is farthest and must be recorded first.
+        transparent.sort_back_to_front(Vec3::ZERO);
+        assert_eq!(transparent.order().len(), transparent.len());
+        let mut previous = f32::INFINITY;
+        for &entry in transparent.order() {
+            let z = transparent.transforms()[entry as usize].translation.z;
+            assert!(
+                z >= previous - f32::EPSILON || previous == f32::INFINITY,
+                "the transparent phase must run from farthest to nearest"
+            );
+            previous = z;
+        }
+    }
+
+    #[test]
+    fn a_cull_that_rejects_everything_leaves_both_phases_empty() {
+        let mut world = RenderWorld::new();
+        world.spawn(desc(OUTSIDE, 0, 1));
+        let mut opaque = RenderList::new();
+        cull(&world, &mut opaque);
+
+        let mut transparent = RenderList::new();
+        opaque.split_transparent(&surfaces(), &mut transparent);
+        assert!(opaque.is_empty() && transparent.is_empty());
+
+        // And the sort of an empty phase is an empty order rather than a stale one.
+        transparent.sort_back_to_front(Vec3::ZERO);
+        assert!(transparent.order().is_empty());
+    }
+}

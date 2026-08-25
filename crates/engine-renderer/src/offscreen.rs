@@ -30,10 +30,12 @@ use crate::command::{CommandContext, scissor_for, transition_barrier, viewport_f
 use crate::depth::{DEPTH_CLEAR, DepthBuffer};
 use crate::device::RenderDevice;
 use crate::error::RendererError;
-use crate::material::{MATERIAL_TEXTURE_COUNT, Material, MaterialDesc, MaterialTextureSlot};
+use crate::material::{
+    MATERIAL_TEXTURE_COUNT, Material, MaterialDesc, MaterialTextureSlot, SurfaceClass,
+};
 use crate::mesh::{GpuMesh, MeshData, SkinnedMeshData, VertexStream};
 use crate::mesh_pipeline::{
-    InstanceTransform, InstancedMeshPipeline, MeshPipeline, SkinnedMeshPipeline,
+    InstanceTransform, InstancedMeshPipeline, MeshPipeline, PipelineVariant, SkinnedMeshPipeline,
 };
 use crate::pipeline::{ScenePipeline, TRIANGLE_VERTICES, Vertex};
 use crate::scene::{
@@ -546,6 +548,148 @@ pub fn render_scene_with_features(
         }
 
         Ok(Box::new((pipeline, ring, meshes, materials, white)) as Box<dyn std::any::Any>)
+    })
+}
+
+/// Renders a scene of mixed surface classes offscreen, in the phase order the renderer uses.
+///
+/// The headless counterpart of the window path's two mesh phases, and the one an automated
+/// pixel test can run:
+///
+/// 1. Every [`SurfaceClass::Opaque`] and [`SurfaceClass::AlphaTest`] object, in the order
+///    `objects` lists them, through a pipeline state that writes depth and does not blend.
+/// 2. Every [`SurfaceClass::Transparent`] object, farthest from `camera` first, through a
+///    pipeline state that tests depth, writes none, and blends `src.a` over `1 - src.a`.
+///
+/// The ordering is not reimplemented here: the transparent objects go into a
+/// [`RenderList`](crate::render_list::RenderList) and
+/// [`sort_back_to_front`](crate::render_list::RenderList::sort_back_to_front) decides the
+/// order, which is literally the function the renderer calls. A test built on this is
+/// therefore evidence about the shipped sort rather than about a copy of it that happens to
+/// agree today.
+///
+/// Both pipeline states come from [`MeshPipeline::for_variant`], the same constructor the
+/// renderer's pipeline cache uses, with [`ShaderFeatures::ALL`] so the full shader is measured.
+///
+/// # Errors
+///
+/// Returns [`RendererError`] if any D3D12 call fails or a material is invalid — including a
+/// material whose surface class and alpha cutoff disagree.
+pub fn render_surface_scene(
+    width: u32,
+    height: u32,
+    clear_color: [f32; 4],
+    objects: &[SceneObject<'_>],
+    camera: &Camera,
+    lighting: Lighting,
+) -> Result<CapturedImage, RendererError> {
+    render_with(width, height, clear_color, |context, commands, _, _| {
+        let list = commands.list();
+        let root_signature = crate::mesh_pipeline::create_root_signature(context.device())?;
+        // Two states, one signature - which is the arrangement the window path requires and so
+        // the arrangement this path should be evidence about. Both are created whether or not
+        // the scene uses them: creating one lazily would make a scene with no transparent
+        // object take a different code path from one that has them.
+        let opaque = MeshPipeline::for_variant(
+            context.device(),
+            &root_signature,
+            PipelineVariant::solid(ShaderFeatures::ALL),
+        )?;
+        let transparent = MeshPipeline::for_variant(
+            context.device(),
+            &root_signature,
+            PipelineVariant::solid(ShaderFeatures::ALL).with_surface(SurfaceClass::Transparent),
+        )?;
+
+        let mut ring = UploadRing::new(context, 1 << 20, 1)?;
+        ring.begin_frame(0);
+
+        let mut meshes = Vec::with_capacity(objects.len());
+        let mut materials = Vec::with_capacity(objects.len());
+        for object in objects {
+            meshes.push(GpuMesh::upload(context, object.mesh)?);
+            materials.push(Material::new(context, object.material)?);
+        }
+
+        let white = fallback_maps(context)?;
+        let frame = FrameConstants::new(camera.view_projection(), camera.position(), lighting);
+        let frame_allocation = ring.write_constants(0, &frame)?;
+        let cluster_allocation = empty_light_grid(&mut ring)?;
+
+        // SAFETY: FFI calls recording into the open list. Every referenced object is returned
+        // below and kept alive until the submission completes.
+        unsafe {
+            list.SetGraphicsRootSignature(opaque.root_signature());
+            list.SetDescriptorHeaps(&[Some(white.heap.heap().clone())]);
+            list.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+            list.SetGraphicsRootConstantBufferView(ROOT_FRAME_CBV, frame_allocation.gpu_address());
+            list.SetGraphicsRootShaderResourceView(
+                crate::scene::ROOT_CLUSTER_SRV,
+                cluster_allocation.gpu_address(),
+            );
+            list.SetGraphicsRootDescriptorTable(ROOT_MATERIAL_TABLE, white.table);
+            list.SetGraphicsRootDescriptorTable(crate::scene::ROOT_CONTACT_TABLE, white.table);
+        }
+
+        // One closure for both phases: the two differ in which pipeline state is bound and in
+        // which order the indices arrive, and in nothing else. Writing the draw twice is how
+        // the phases end up quietly disagreeing about a root argument.
+        let draw = |index: usize, ring: &mut UploadRing| -> Result<(), RendererError> {
+            let constants = ObjectConstants::new(objects[index].transform.matrix());
+            let allocation = ring.write_constants(0, &constants)?;
+            // SAFETY: as above.
+            unsafe {
+                list.SetGraphicsRootConstantBufferView(
+                    ROOT_MATERIAL_CBV,
+                    materials[index].gpu_address(),
+                );
+                list.SetGraphicsRootConstantBufferView(ROOT_OBJECT_CBV, allocation.gpu_address());
+                list.IASetVertexBuffers(0, Some(&[*meshes[index].vertex_view()]));
+                list.IASetIndexBuffer(Some(meshes[index].index_view()));
+                list.DrawIndexedInstanced(meshes[index].index_count(), 1, 0, 0, 0);
+            }
+            Ok(())
+        };
+
+        // SAFETY: FFI call binding a state owned for the duration of the submission.
+        unsafe { list.SetPipelineState(opaque.pipeline_state()) };
+        for (index, object) in objects.iter().enumerate() {
+            if object.material.surface.is_transparent() {
+                continue;
+            }
+            draw(index, &mut ring)?;
+        }
+
+        // The transparent phase, ordered by the renderer's own sort. The handles are indices
+        // into `objects`, which is all the list is used for here.
+        let mut sorted = crate::render_list::RenderList::new();
+        for (index, object) in objects.iter().enumerate() {
+            if !object.material.surface.is_transparent() {
+                continue;
+            }
+            sorted.push(
+                engine_render_data::RenderEntity::new(index as u32, 1),
+                object.transform,
+                engine_render_data::MeshHandle::new(index as u32, 1),
+                engine_render_data::MaterialHandle::new(index as u32, 1),
+                engine_render_data::InstanceStyle::NEUTRAL,
+                true,
+            );
+        }
+        if !sorted.is_empty() {
+            sorted.sort_back_to_front(camera.position());
+            // SAFETY: FFI call binding a state owned for the duration of the submission.
+            unsafe { list.SetPipelineState(transparent.pipeline_state()) };
+            for position in 0..sorted.order().len() {
+                let entry = sorted.order()[position] as usize;
+                draw(sorted.meshes()[entry].index(), &mut ring)?;
+            }
+        }
+
+        Ok(
+            Box::new((opaque, transparent, ring, meshes, materials, white))
+                as Box<dyn std::any::Any>,
+        )
     })
 }
 

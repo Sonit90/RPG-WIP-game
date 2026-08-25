@@ -79,8 +79,11 @@
 //! reached the scene's high-water mark and the build path allocates nothing at all — which
 //! is asserted by a test rather than assumed, and measured by `cull_bench`.
 
+use engine_core::math::Vec3;
 use engine_core::transform::Transform;
 use engine_render_data::{InstanceStyle, MaterialHandle, MeshHandle, RenderEntity};
+
+use crate::material::SurfaceClass;
 
 /// A run of entries sharing one mesh and one material.
 ///
@@ -159,6 +162,13 @@ pub struct RenderList {
     /// went unnoticed while the scene had nine materials and four meshes and showed up the
     /// moment the environment brought forty of each. `env_bench` counts it.
     starts: Vec<u32>,
+    /// `(squared distance from the eye, entry index)` for the depth sort, reused across
+    /// frames.
+    ///
+    /// Only the transparent list ever fills it. Held here rather than passed in so the sort
+    /// allocates nothing after the first frame that sees its high-water mark, exactly as the
+    /// counting sort's histogram does.
+    depth_keys: Vec<(f32, u32)>,
 }
 
 impl RenderList {
@@ -182,6 +192,7 @@ impl RenderList {
             batches: Vec::new(),
             counts: Vec::new(),
             starts: Vec::new(),
+            depth_keys: Vec::new(),
         }
     }
 
@@ -314,6 +325,152 @@ impl RenderList {
         self.materials.reserve(additional);
         self.styles.reserve(additional);
         self.receives_shadow.reserve(additional);
+    }
+
+    /// Moves every entry whose material is [`SurfaceClass::Transparent`] into `out`.
+    ///
+    /// The split that creates the two phases. What is left in `self` is the opaque phase -
+    /// opaque and alpha-tested surfaces, in the order the cull produced them, which is the
+    /// same order and the same content the list held before transparency existed. `out` is the
+    /// transparent phase, still unsorted; [`RenderList::sort_back_to_front`] is what orders it.
+    ///
+    /// # Why here and not in the cull
+    ///
+    /// The culler answers "is it on screen", which it can do from the world's bounds alone. It
+    /// has no material table and should not grow one: the class of a material is a fact the
+    /// renderer owns, and threading it into a parallel cull would put a shared lookup inside
+    /// the hot loop for a question that can be asked once afterwards, over the visible set
+    /// only.
+    ///
+    /// # Cost when nothing is transparent
+    ///
+    /// One predicate pass over the material handles and nothing else - no writes, no copy, no
+    /// allocation. A scene with no transparent materials pays a linear scan of an 8-byte-per-
+    /// entry array and leaves the opaque list byte-identical, which is what makes it safe to
+    /// call unconditionally every frame.
+    ///
+    /// Both lists' `order` and `batches` are invalidated, because the entries they index have
+    /// moved. Group or sort afterwards; recording reads neither until then.
+    pub fn split_transparent(&mut self, surfaces: &[SurfaceClass], out: &mut Self) {
+        out.clear();
+        self.order.clear();
+        self.batches.clear();
+
+        // A handle past the end of the table names a material that does not exist. It is
+        // classified opaque and left in place, so recording rejects it by name a moment later
+        // - a clear error beats a silently relocated draw.
+        let class = |material: MaterialHandle| {
+            surfaces
+                .get(material.index())
+                .copied()
+                .unwrap_or(SurfaceClass::Opaque)
+        };
+
+        if !self
+            .materials
+            .iter()
+            .any(|handle| class(*handle).is_transparent())
+        {
+            return;
+        }
+
+        let mut kept = 0;
+        for index in 0..self.len() {
+            if class(self.materials[index]).is_transparent() {
+                out.push(
+                    self.entities[index],
+                    self.transforms[index],
+                    self.meshes[index],
+                    self.materials[index],
+                    self.styles[index],
+                    self.receives_shadow[index],
+                );
+                continue;
+            }
+            if kept != index {
+                self.entities[kept] = self.entities[index];
+                self.transforms[kept] = self.transforms[index];
+                self.meshes[kept] = self.meshes[index];
+                self.materials[kept] = self.materials[index];
+                self.styles[kept] = self.styles[index];
+                self.receives_shadow[kept] = self.receives_shadow[index];
+            }
+            kept += 1;
+        }
+        self.truncate(kept);
+    }
+
+    /// Shortens every payload array to `length`, keeping the allocations.
+    fn truncate(&mut self, length: usize) {
+        self.entities.truncate(length);
+        self.transforms.truncate(length);
+        self.meshes.truncate(length);
+        self.materials.truncate(length);
+        self.styles.truncate(length);
+        self.receives_shadow.truncate(length);
+    }
+
+    /// Fills [`RenderList::order`] with the entries sorted farthest-first from `eye`.
+    ///
+    /// The transparent phase's whole ordering rule. Blending is not commutative - `a` over `b`
+    /// is a different colour from `b` over `a` - and the transparent pipeline writes no depth,
+    /// so nothing but paint order decides the result. Farthest first is what makes that order
+    /// the correct one.
+    ///
+    /// # The key is the object's origin, and that is a real limitation
+    ///
+    /// One distance per entry, from the entry's world-space translation. It is exact for the
+    /// things this phase is for - a particle-like card, a spell quad, a small effect volume -
+    /// and it is wrong for two cases that are worth naming rather than discovering:
+    ///
+    /// * **Intersecting transparent surfaces.** Two quads that pass through each other have no
+    ///   correct back-to-front order at all; per-object sorting picks one and the intersection
+    ///   shows a hard seam. Nothing short of per-fragment ordering fixes it.
+    /// * **Large or concave transparent meshes.** A single long transparent object can be both
+    ///   nearer and farther than another; its origin answers for the whole of it.
+    ///
+    /// Both are the accepted cost of the simplest correct back-to-front path. The alternatives
+    /// - sorting triangles, or an order-independent method - are deliberately not built.
+    ///
+    /// # Determinism
+    ///
+    /// The order is a pure function of the list's contents and `eye`: distances are compared
+    /// first and ties are broken by the entry's position in the list, so equal-distance
+    /// entries keep gather order and two runs of the same frame record the same draws. A
+    /// non-finite distance - which a NaN transform would produce - sorts as the farthest
+    /// possible value rather than making the comparison inconsistent, because a sort whose
+    /// comparator is not a total order can produce a different permutation on each run.
+    pub fn sort_back_to_front(&mut self, eye: Vec3) {
+        self.order.clear();
+        self.batches.clear();
+        if self.is_empty() {
+            return;
+        }
+
+        self.depth_keys.clear();
+        self.depth_keys.reserve(self.len());
+        for (index, transform) in self.transforms.iter().enumerate() {
+            let offset = transform.translation - eye;
+            let distance = offset.dot(offset);
+            // Squared, not the distance itself: the ordering is identical and a square root
+            // per visible transparent object buys nothing.
+            let distance = if distance.is_finite() {
+                distance
+            } else {
+                f32::MAX
+            };
+            self.depth_keys.push((distance, index as u32));
+        }
+
+        self.depth_keys.sort_unstable_by(|left, right| {
+            right
+                .0
+                .partial_cmp(&left.0)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then(left.1.cmp(&right.1))
+        });
+        self.order
+            .extend(self.depth_keys.iter().map(|(_, index)| *index));
     }
 
     /// Groups the list so entries sharing a material and a mesh are adjacent.
@@ -661,6 +818,219 @@ mod tests {
             capacity,
             "refilling to the same size must reuse the allocation"
         );
+    }
+
+    /// A material table where handle `index` is transparent iff `index` is in `transparent`.
+    fn surfaces(count: usize, transparent: &[usize]) -> Vec<SurfaceClass> {
+        (0..count)
+            .map(|index| {
+                if transparent.contains(&index) {
+                    SurfaceClass::Transparent
+                } else {
+                    SurfaceClass::Opaque
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_list_with_no_transparent_material_is_left_exactly_as_it_was() {
+        // The property the whole feature rests on: a scene that uses no transparency must be
+        // the scene it was before transparency existed, entry for entry and in the same order.
+        // A split that reordered or copied would change every opaque frame in the game.
+        let mut list = filled(37);
+        let before = list.clone();
+        let mut transparent = RenderList::new();
+
+        // `filled` uses materials 0..5, none of which is transparent.
+        list.split_transparent(&surfaces(5, &[]), &mut transparent);
+
+        assert!(transparent.is_empty(), "nothing should have moved");
+        assert_eq!(list.len(), before.len());
+        for index in 0..before.len() {
+            assert_eq!(list.entry(index), before.entry(index), "entry {index}");
+        }
+    }
+
+    #[test]
+    fn the_split_moves_exactly_the_transparent_entries_and_keeps_both_orders() {
+        // Material 2 is transparent; `filled` assigns material `index % 5`. Both halves must
+        // come out in gather order - the opaque phase's batching assumes it, and the
+        // transparent sort breaks its ties on it.
+        let mut list = filled(20);
+        let mut transparent = RenderList::new();
+        list.split_transparent(&surfaces(5, &[2]), &mut transparent);
+
+        assert_eq!(transparent.len(), 4, "20 entries, every fifth from index 2");
+        assert_eq!(list.len(), 16);
+
+        for handle in transparent.materials() {
+            assert_eq!(handle.index(), 2);
+        }
+        for handle in list.materials() {
+            assert_ne!(handle.index(), 2, "a transparent entry stayed behind");
+        }
+
+        let opaque_entities: Vec<_> = list.entities().iter().map(|e| e.index()).collect();
+        let mut sorted = opaque_entities.clone();
+        sorted.sort_unstable();
+        assert_eq!(
+            opaque_entities, sorted,
+            "the opaque half must keep gather order"
+        );
+
+        let moved: Vec<_> = transparent.entities().iter().map(|e| e.index()).collect();
+        assert_eq!(moved, vec![2, 7, 12, 17]);
+    }
+
+    #[test]
+    fn the_split_invalidates_the_order_and_the_batches() {
+        // Both index entries that have just moved. Leaving them in place would let a caller
+        // that forgot to regroup record last frame's permutation against this frame's arrays.
+        let mut list = filled(12);
+        list.group_by_material_and_mesh(5, 3);
+        assert!(!list.order().is_empty() && !list.batches().is_empty());
+
+        let mut transparent = RenderList::new();
+        list.split_transparent(&surfaces(5, &[1]), &mut transparent);
+        assert!(list.order().is_empty());
+        assert!(list.batches().is_empty());
+    }
+
+    #[test]
+    fn a_material_handle_past_the_table_is_treated_as_opaque() {
+        // Recording rejects an unknown material by name a moment later, which is a far better
+        // diagnostic than an object silently relocated into another phase.
+        let mut list = filled(6);
+        let mut transparent = RenderList::new();
+        list.split_transparent(&[], &mut transparent);
+        assert!(transparent.is_empty());
+        assert_eq!(list.len(), 6);
+    }
+
+    #[test]
+    fn the_sort_orders_entries_farthest_from_the_eye_first() {
+        // The ordering rule itself. Blending is not commutative and the transparent pipeline
+        // writes no depth, so this order *is* the picture.
+        let mut list = RenderList::new();
+        for (index, z) in [5.0_f32, 1.0, 3.0].into_iter().enumerate() {
+            list.push(
+                RenderEntity::new(index as u32, 1),
+                Transform::from_translation(Vec3::new(0.0, 0.0, z)),
+                MeshHandle::new(0, 1),
+                MaterialHandle::new(0, 1),
+                InstanceStyle::NEUTRAL,
+                true,
+            );
+        }
+
+        // An eye at the origin: the entry at z = 5 is farthest and must be drawn first.
+        list.sort_back_to_front(Vec3::ZERO);
+        assert_eq!(list.order(), &[0, 2, 1]);
+
+        // Move the eye past all three and the order reverses, which is what proves the key is
+        // the distance to the eye rather than a fixed axis.
+        list.sort_back_to_front(Vec3::new(0.0, 0.0, 10.0));
+        assert_eq!(list.order(), &[1, 2, 0]);
+    }
+
+    #[test]
+    fn the_sort_is_deterministic_and_breaks_ties_by_gather_order() {
+        // Two runs of one frame must record the same draws. Equal distances are broken by
+        // position in the list, so the answer is a pure function of the input rather than
+        // whatever the sort's internals happened to do.
+        let mut list = RenderList::new();
+        for index in 0..8_u32 {
+            list.push(
+                RenderEntity::new(index, 1),
+                // Every entry at the same distance from the eye below.
+                Transform::from_translation(Vec3::new(1.0, 0.0, 0.0)),
+                MeshHandle::new(0, 1),
+                MaterialHandle::new(0, 1),
+                InstanceStyle::NEUTRAL,
+                true,
+            );
+        }
+
+        list.sort_back_to_front(Vec3::ZERO);
+        let first: Vec<u32> = list.order().to_vec();
+        assert_eq!(first, (0..8).collect::<Vec<u32>>());
+
+        for _ in 0..8 {
+            list.sort_back_to_front(Vec3::ZERO);
+            assert_eq!(
+                list.order(),
+                first.as_slice(),
+                "the sort must be stable run to run"
+            );
+        }
+    }
+
+    #[test]
+    fn a_non_finite_transform_does_not_make_the_sort_inconsistent() {
+        // A NaN distance would make the comparator not a total order, and a sort with an
+        // inconsistent comparator can produce a different permutation on each run - which is a
+        // frame that flickers for reasons nothing in the renderer would explain.
+        let mut list = RenderList::new();
+        list.push(
+            RenderEntity::new(0, 1),
+            Transform::from_translation(Vec3::new(f32::NAN, 0.0, 0.0)),
+            MeshHandle::new(0, 1),
+            MaterialHandle::new(0, 1),
+            InstanceStyle::NEUTRAL,
+            true,
+        );
+        list.push(
+            RenderEntity::new(1, 1),
+            Transform::from_translation(Vec3::new(0.0, 0.0, 1.0)),
+            MeshHandle::new(0, 1),
+            MaterialHandle::new(0, 1),
+            InstanceStyle::NEUTRAL,
+            true,
+        );
+
+        list.sort_back_to_front(Vec3::ZERO);
+        // The NaN sorts as the farthest possible value, so it is drawn first and the finite
+        // entry follows. The point is that the answer exists and repeats, not which one it is.
+        assert_eq!(list.order(), &[0, 1]);
+        let first: Vec<u32> = list.order().to_vec();
+        list.sort_back_to_front(Vec3::ZERO);
+        assert_eq!(list.order(), first.as_slice());
+    }
+
+    #[test]
+    fn sorting_an_empty_list_produces_an_empty_order() {
+        let mut list = RenderList::new();
+        list.sort_back_to_front(Vec3::ZERO);
+        assert!(list.order().is_empty());
+    }
+
+    #[test]
+    fn the_split_and_the_sort_stop_allocating_once_warmed_up() {
+        // Both run every frame. If either kept allocating, the transparent phase would put a
+        // heap allocation in the frame for a list that is the same size as last frame's.
+        let mut list = filled(64);
+        let mut transparent = RenderList::new();
+        let table = surfaces(5, &[3]);
+
+        for _ in 0..4 {
+            list.split_transparent(&table, &mut transparent);
+            transparent.sort_back_to_front(Vec3::ZERO);
+            list = filled(64);
+        }
+        let capacity = transparent.capacity();
+        assert!(capacity > 0);
+
+        for _ in 0..8 {
+            list = filled(64);
+            list.split_transparent(&table, &mut transparent);
+            transparent.sort_back_to_front(Vec3::ZERO);
+            assert_eq!(
+                transparent.capacity(),
+                capacity,
+                "refilling to the same size must reuse the allocation"
+            );
+        }
     }
 
     #[test]

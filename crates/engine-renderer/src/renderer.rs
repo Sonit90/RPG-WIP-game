@@ -465,6 +465,14 @@ pub struct Renderer {
     /// letting the slot resolve to the flat fallback. The shadow bit is not stored here -
     /// it is global and per frame.
     material_features: Vec<ShaderFeatures>,
+    /// Which phase each material is drawn in, indexed by material handle.
+    ///
+    /// A parallel array beside `material_features` rather than a field read back out of the
+    /// `Material` - the split runs over the visible set every frame and wants a dense array of
+    /// one-byte classes, not a pointer chase into a type that owns a GPU buffer.
+    material_surfaces: Vec<crate::material::SurfaceClass>,
+    /// Objects the last frame's transparent phase drew.
+    transparent_draws_last_frame: u32,
     /// [`MaterialTextures`], and this array carries only where the table starts.
     material_tables: Vec<Option<windows::Win32::Graphics::Direct3D12::D3D12_GPU_DESCRIPTOR_HANDLE>>,
     /// This frame's local lights, copied out of the world by [`Renderer::prepare_shadows`].
@@ -508,6 +516,13 @@ pub struct Renderer {
     /// reads. Kept across frames so it stops allocating once the scene reaches its
     /// high-water mark.
     visible: RenderList,
+    /// This frame's transparent draws, sorted farthest-first.
+    ///
+    /// Split out of `visible` after the cull and before the grouping, so the opaque phase
+    /// never sees a blended surface and its batching is exactly what it always was. Owned
+    /// across frames for the same reason `visible` is: after the scene reaches its
+    /// high-water mark, building it allocates nothing.
+    transparent: RenderList,
     /// Whether `render_world` culls. Off makes the benchmark able to measure the same
     /// frame with one step removed rather than comparing two code paths.
     culling_enabled: bool,
@@ -688,6 +703,8 @@ impl Renderer {
             materials: Vec::new(),
             material_bindings: Vec::new(),
             material_features: Vec::new(),
+            material_surfaces: Vec::new(),
+            transparent_draws_last_frame: 0,
             material_tables: Vec::new(),
             shadow,
             lights: Vec::new(),
@@ -697,6 +714,7 @@ impl Renderer {
             shadow_skinned: SkinnedDrawList::new(),
             culler: Culler::new(),
             visible: RenderList::new(),
+            transparent: RenderList::new(),
             culling_enabled: true,
             cull_view_projection: None,
             last_cull_ms: 0.0,
@@ -1165,8 +1183,20 @@ impl Renderer {
         // work, it runs on the same CPU-only side of the seam, and attributing it to
         // recording would credit the sort with the saving it produces.
         let grouping = std::time::Instant::now();
+        // Before the grouping, deliberately. The counting sort's key is `(material, mesh)` and
+        // it must not see a transparent entry: the opaque phase's batches have to contain
+        // exactly what they contained before this feature, and a transparent object left in
+        // them would be drawn with depth writes on, in material order.
+        //
+        // A scene with no transparent material pays one predicate pass and nothing else.
+        self.visible
+            .split_transparent(&self.material_surfaces, &mut self.transparent);
         self.visible
             .group_by_material_and_mesh(self.materials.len(), self.meshes.len());
+        // Sorted from the camera the frame is drawn with, not from the cull camera: the cull
+        // view may be frozen for debugging (`cull_view_projection`), and freezing what is
+        // culled must not reorder what is drawn.
+        self.transparent.sort_back_to_front(camera.position());
         self.last_group_ms = grouping.elapsed().as_secs_f64() * 1e3;
 
         self.collect_skinned(world, &frustum);
@@ -1556,6 +1586,7 @@ impl Renderer {
         }
 
         self.draw_skinned(slot)?;
+        self.draw_transparent(slot)?;
         self.finish_recording(slot, back_buffer)
     }
 
@@ -1648,7 +1679,135 @@ impl Renderer {
         }
 
         self.draw_skinned(slot)?;
+        self.draw_transparent(slot)?;
         self.finish_recording(slot, back_buffer)
+    }
+
+    /// Records this frame's transparent draws, farthest first.
+    ///
+    /// ```text
+    /// shadow stage -> opaque batches -> skinned -> TRANSPARENT -> particles -> overlay -> UI
+    ///                                              ^^^^^^^^^^^ this function
+    /// ```
+    ///
+    /// Last of the mesh phases and before the particle pass, which is the only position that
+    /// works: it needs the opaque depth buffer finished to test against, and it must not be
+    /// separated from the particles it shares a screen with by anything that writes colour.
+    ///
+    /// # One draw per object, and no batching
+    ///
+    /// The opaque phase groups by `(material, mesh)` so it can bind once per run; this one
+    /// cannot, because its order is fixed by distance and grouping would reorder it. Two
+    /// entries that happen to be adjacent *and* share a mesh and material still cost only one
+    /// set of binds - [`crate::command::CommandContext`] drops a redundant bind - so the run
+    /// that a sort happens to produce is exploited without the order ever being changed to
+    /// produce one.
+    ///
+    /// Instancing is not used here for the same reason, even when the frame is otherwise
+    /// instanced: an instanced draw is one draw for many objects and gives the GPU no ordering
+    /// guarantee between them. The phase is small by construction - effects, not scenery.
+    ///
+    /// Returns how many objects were drawn.
+    fn draw_transparent(&mut self, slot: usize) -> Result<u32, RendererError> {
+        // Zeroed before the early return, not after it: a frame with nothing transparent must
+        // report zero rather than whatever the last frame that had some reported.
+        self.transparent_draws_last_frame = 0;
+        if self.transparent.is_empty() {
+            return Ok(0);
+        }
+
+        // The skinned pass may have left a different topology bound; the opaque batches set it
+        // once at the top of the frame and this phase cannot assume it survived.
+        self.commands
+            .set_topology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+
+        let mut drawn = 0;
+        for position in 0..self.transparent.order().len() {
+            let entry = self.transparent.order()[position] as usize;
+            let mesh_handle = self.transparent.meshes()[entry];
+            let material_handle = self.transparent.materials()[entry];
+
+            let Some(mesh) = self.meshes.get(mesh_handle.index()) else {
+                return Err(RendererError::InvalidConfig {
+                    reason: format!(
+                        "the transparent list names mesh {} which does not exist",
+                        mesh_handle.index()
+                    ),
+                });
+            };
+            let index_count = mesh.index_count();
+            let vertex_view = *mesh.vertex_view();
+            let index_view = *mesh.index_view();
+
+            let Some(material) = self.materials.get(material_handle.index()) else {
+                return Err(RendererError::InvalidConfig {
+                    reason: format!(
+                        "the transparent list names material {} which does not exist",
+                        material_handle.index()
+                    ),
+                });
+            };
+            let material_address = material.gpu_address();
+
+            let Some(table) = self.material_table(material_handle) else {
+                return Err(RendererError::InvalidConfig {
+                    reason: format!(
+                        "material {} has no shader-visible base colour map",
+                        material_handle.index()
+                    ),
+                });
+            };
+
+            // The same permutation the material would get in the opaque phase, with its class
+            // folded in - so a transparent surface is shaded by the identical pixel shader and
+            // differs only in the blend and depth state the PSO carries.
+            let variant = self.material_variant(material_handle);
+            let pipeline_state = self
+                .pipelines
+                .mesh(self.context.device(), variant)?
+                .pipeline_state()
+                .clone();
+            self.commands.set_pipeline_state(&pipeline_state);
+
+            self.commands
+                .set_root_cbv(ROOT_MATERIAL_CBV, material_address);
+            self.commands
+                .set_root_descriptor_table(ROOT_MATERIAL_TABLE, table);
+            self.commands.set_vertex_buffer(0, vertex_view);
+            self.commands.set_index_buffer(index_view);
+
+            let object = ObjectConstants::shadowed(
+                self.transparent.transforms()[entry].matrix(),
+                self.transparent.styles()[entry],
+                self.transparent.receives_shadow()[entry],
+            );
+            let allocation = self.uploads.write_constants(slot, &object)?;
+            self.commands
+                .set_root_cbv(ROOT_OBJECT_CBV, allocation.gpu_address());
+            self.commands.draw_indexed(index_count, 1, 0);
+            drawn += 1;
+        }
+
+        self.transparent_draws_last_frame = drawn;
+        Ok(drawn)
+    }
+
+    /// Objects drawn by the most recent frame's transparent phase.
+    ///
+    /// Reported separately from the opaque draw count so the cost of blended geometry is
+    /// attributable rather than folded into the scene's.
+    #[must_use]
+    pub fn transparent_draws_last_frame(&self) -> u32 {
+        self.transparent_draws_last_frame
+    }
+
+    /// This frame's transparent draws, in the order they will be recorded.
+    ///
+    /// For tests and diagnostics: it is how "the list really is sorted farthest-first" can be
+    /// asserted without a GPU, on the same list the recording walks rather than on a copy.
+    #[must_use]
+    pub fn transparent_list(&self) -> &RenderList {
+        &self.transparent
     }
 
     /// Records this frame's skinned characters, one draw per submesh.
@@ -1807,9 +1966,19 @@ impl Renderer {
             .copied()
             .unwrap_or(ShaderFeatures::ALL)
             .with_shadows(self.shadow.settings().enabled);
+        // The class was settled when the material was created and cannot change afterwards,
+        // so it is read here rather than passed in: both phases call this, and each gets the
+        // blend and depth state its own materials asked for without the call sites having to
+        // agree about which phase they are in.
+        let surface = self
+            .material_surfaces
+            .get(material.index())
+            .copied()
+            .unwrap_or(crate::material::SurfaceClass::Opaque);
         PipelineVariant {
             features,
             wireframe: self.wireframe,
+            surface,
         }
     }
 
@@ -2207,6 +2376,11 @@ impl Renderer {
                 // material that shadowed as an opaque rectangle would be worse than one
                 // that did not shadow at all.
                 alpha_cutoff: material.alpha_cutoff,
+                // glTF's alpha mode, carried through rather than re-derived: `BLEND` becomes a
+                // transparent material drawn in the sorted phase, `MASK` a cutout, `OPAQUE`
+                // neither. Before the transparent phase existed the importer had to turn
+                // `BLEND` into a cutout, which gave a window a hard edge instead of a fade.
+                surface: material.surface.into(),
                 // Imported assets are Lambert like everything else until the game asks for
                 // the BRDF. The roughness, metallic and ORM map the importer read are still
                 // carried on the material - opting in is one call, not a re-import.
@@ -2701,6 +2875,7 @@ impl Renderer {
         let index = self.materials.len() as u32;
         self.materials.push(material);
         self.material_features.push(features);
+        self.material_surfaces.push(desc.surface);
         self.material_bindings
             .push(MaterialTextureBinding { textures, range });
         self.material_tables.push(range.gpu);

@@ -8,15 +8,16 @@
 
 use windows::Win32::Graphics::Direct3D::ID3DBlob;
 use windows::Win32::Graphics::Direct3D12::{
-    D3D_ROOT_SIGNATURE_VERSION_1, D3D12_BLEND_DESC, D3D12_BLEND_ONE, D3D12_BLEND_OP_ADD,
-    D3D12_BLEND_ZERO, D3D12_COLOR_WRITE_ENABLE_ALL, D3D12_COMPARISON_FUNC_LESS_EQUAL,
-    D3D12_CULL_MODE_BACK, D3D12_CULL_MODE_NONE, D3D12_DEPTH_STENCIL_DESC,
-    D3D12_DEPTH_WRITE_MASK_ALL, D3D12_FILL_MODE_SOLID, D3D12_FILL_MODE_WIREFRAME,
-    D3D12_GRAPHICS_PIPELINE_STATE_DESC, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,
-    D3D12_INPUT_ELEMENT_DESC, D3D12_INPUT_LAYOUT_DESC, D3D12_LOGIC_OP_NOOP,
-    D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE, D3D12_RASTERIZER_DESC, D3D12_RENDER_TARGET_BLEND_DESC,
-    D3D12_ROOT_SIGNATURE_DESC, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT,
-    D3D12SerializeRootSignature, ID3D12Device, ID3D12PipelineState, ID3D12RootSignature,
+    D3D_ROOT_SIGNATURE_VERSION_1, D3D12_BLEND_DESC, D3D12_BLEND_INV_SRC_ALPHA, D3D12_BLEND_ONE,
+    D3D12_BLEND_OP_ADD, D3D12_BLEND_SRC_ALPHA, D3D12_BLEND_ZERO, D3D12_COLOR_WRITE_ENABLE_ALL,
+    D3D12_COMPARISON_FUNC_LESS_EQUAL, D3D12_CULL_MODE_BACK, D3D12_CULL_MODE_NONE,
+    D3D12_DEPTH_STENCIL_DESC, D3D12_DEPTH_WRITE_MASK_ALL, D3D12_DEPTH_WRITE_MASK_ZERO,
+    D3D12_FILL_MODE_SOLID, D3D12_FILL_MODE_WIREFRAME, D3D12_GRAPHICS_PIPELINE_STATE_DESC,
+    D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, D3D12_INPUT_ELEMENT_DESC, D3D12_INPUT_LAYOUT_DESC,
+    D3D12_LOGIC_OP_NOOP, D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE, D3D12_RASTERIZER_DESC,
+    D3D12_RENDER_TARGET_BLEND_DESC, D3D12_ROOT_SIGNATURE_DESC,
+    D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT, D3D12SerializeRootSignature,
+    ID3D12Device, ID3D12PipelineState, ID3D12RootSignature,
 };
 use windows::Win32::Graphics::Dxgi::Common::{
     DXGI_FORMAT_R32G32B32_FLOAT, DXGI_FORMAT_R32G32B32A32_FLOAT, DXGI_SAMPLE_DESC,
@@ -25,6 +26,7 @@ use windows::core::s;
 
 use crate::depth::DEPTH_FORMAT;
 use crate::error::RendererError;
+use crate::material::SurfaceClass;
 use crate::shader::{TRIANGLE_PS, TRIANGLE_VS, bytecode};
 use crate::swapchain::BACK_BUFFER_FORMAT;
 
@@ -267,6 +269,79 @@ pub(crate) fn wireframe_rasterizer_desc() -> D3D12_RASTERIZER_DESC {
     }
 }
 
+/// The depth state for a surface class.
+///
+/// The one place the classification becomes depth state. Opaque and alpha-tested surfaces get
+/// [`depth_stencil_desc`] unchanged - the same descriptor, byte for byte, that every mesh
+/// pipeline used before transparency existed, which is what "the opaque path is untouched"
+/// means concretely.
+pub(crate) fn depth_stencil_desc_for(surface: SurfaceClass) -> D3D12_DEPTH_STENCIL_DESC {
+    if surface.writes_depth() {
+        return depth_stencil_desc();
+    }
+    D3D12_DEPTH_STENCIL_DESC {
+        // Tested: a ghost behind a wall is behind the wall. This is the whole reason the
+        // transparent phase runs *after* the opaque one - it needs a finished depth buffer to
+        // test against.
+        DepthEnable: true.into(),
+        // Not written: a blended fragment is not an occluder. Two overlapping halves of one
+        // spell effect must both be visible, and the nearer one writing depth would reject
+        // the farther one outright - which reads as an effect that lost half its geometry.
+        //
+        // It is also what makes back-to-front ordering the *only* thing that decides the
+        // result: with no depth writes the phase is pure paint order.
+        DepthWriteMask: D3D12_DEPTH_WRITE_MASK_ZERO,
+        // LESS_EQUAL, matching the opaque pass: a transparent decal sitting exactly on a
+        // surface is not z-fought out of existence.
+        DepthFunc: D3D12_COMPARISON_FUNC_LESS_EQUAL,
+        StencilEnable: false.into(),
+        ..Default::default()
+    }
+}
+
+/// The blend state for a surface class.
+///
+/// Opaque and alpha-tested get [`blend_desc`], which blends nothing. Transparent gets
+/// straight (non-premultiplied) source-alpha blending, because that is what the mesh pixel
+/// shader returns: `shade_surface` ends with `float4(color, albedo.a * tint.a)` and has not
+/// multiplied the colour by that alpha.
+pub(crate) fn blend_desc_for(surface: SurfaceClass) -> D3D12_BLEND_DESC {
+    if surface.is_blended() {
+        transparent_blend_desc()
+    } else {
+        blend_desc()
+    }
+}
+
+/// Straight source-alpha blending: `src.rgb * src.a + dst.rgb * (1 - src.a)`.
+///
+/// **Not premultiplied**, which is the one way this differs from the particle pass. Particles
+/// premultiply in their pixel shader and blend with `ONE`; the mesh shader does not, so the
+/// source factor is `SRC_ALPHA`. Using `ONE` here instead would draw every transparent surface
+/// at full intensity over a correctly darkened background - a ghost that glows.
+///
+/// The alpha channel accumulates coverage, `src.a + dst.a * (1 - src.a)`, so the target's
+/// alpha is what a compositor would expect. Nothing in this renderer reads it; it costs
+/// nothing to be right.
+#[must_use]
+pub(crate) fn transparent_blend_desc() -> D3D12_BLEND_DESC {
+    let target = D3D12_RENDER_TARGET_BLEND_DESC {
+        BlendEnable: true.into(),
+        LogicOpEnable: false.into(),
+        SrcBlend: D3D12_BLEND_SRC_ALPHA,
+        DestBlend: D3D12_BLEND_INV_SRC_ALPHA,
+        BlendOp: D3D12_BLEND_OP_ADD,
+        SrcBlendAlpha: D3D12_BLEND_ONE,
+        DestBlendAlpha: D3D12_BLEND_INV_SRC_ALPHA,
+        BlendOpAlpha: D3D12_BLEND_OP_ADD,
+        LogicOp: D3D12_LOGIC_OP_NOOP,
+        RenderTargetWriteMask: D3D12_COLOR_WRITE_ENABLE_ALL.0 as u8,
+    };
+    let mut desc = blend_desc();
+    desc.RenderTarget[0] = target;
+    desc
+}
+
 /// Opaque rendering: no blending, write every channel.
 pub(crate) fn blend_desc() -> D3D12_BLEND_DESC {
     let target = D3D12_RENDER_TARGET_BLEND_DESC {
@@ -325,6 +400,59 @@ mod tests {
             "counter-clockwise vertices need FrontCounterClockwise = true"
         );
         assert_eq!(rasterizer_desc().CullMode, D3D12_CULL_MODE_BACK);
+    }
+
+    #[test]
+    fn the_opaque_depth_and_blend_state_is_unchanged_by_classification() {
+        // Requirement 6, as a test rather than as a claim: asking for the state of an opaque
+        // or alpha-tested surface must return exactly the descriptor the renderer used before
+        // surface classes existed. If this ever drifts, every opaque pixel in the game
+        // changes and nothing else in the suite would say so.
+        for surface in [SurfaceClass::Opaque, SurfaceClass::AlphaTest] {
+            let depth = depth_stencil_desc_for(surface);
+            assert!(depth.DepthEnable.as_bool());
+            assert_eq!(depth.DepthWriteMask, D3D12_DEPTH_WRITE_MASK_ALL);
+            assert_eq!(depth.DepthFunc, D3D12_COMPARISON_FUNC_LESS_EQUAL);
+            assert!(
+                !blend_desc_for(surface).RenderTarget[0]
+                    .BlendEnable
+                    .as_bool()
+            );
+        }
+    }
+
+    #[test]
+    fn a_transparent_surface_tests_depth_and_never_writes_it() {
+        // The two halves of the contract that live in the pipeline state. Losing the test
+        // puts effects through walls; gaining the write makes overlapping effects reject each
+        // other, which looks like missing geometry rather than like a depth setting.
+        let depth = depth_stencil_desc_for(SurfaceClass::Transparent);
+        assert!(
+            depth.DepthEnable.as_bool(),
+            "a transparent surface must be occluded by opaque geometry"
+        );
+        assert_eq!(
+            depth.DepthWriteMask, D3D12_DEPTH_WRITE_MASK_ZERO,
+            "a blended fragment is not an occluder"
+        );
+        assert_eq!(depth.DepthFunc, D3D12_COMPARISON_FUNC_LESS_EQUAL);
+    }
+
+    #[test]
+    fn the_transparent_blend_is_straight_source_alpha() {
+        // SRC_ALPHA and not ONE: the mesh pixel shader returns straight RGBA, so `ONE` would
+        // apply the surface at full intensity over a background already darkened by
+        // `1 - a` - a ghost that glows. The particle pass is the premultiplied one, and the
+        // two must not be confused.
+        let target = blend_desc_for(SurfaceClass::Transparent).RenderTarget[0];
+        assert!(target.BlendEnable.as_bool());
+        assert_eq!(target.SrcBlend, D3D12_BLEND_SRC_ALPHA);
+        assert_eq!(target.DestBlend, D3D12_BLEND_INV_SRC_ALPHA);
+        assert_eq!(target.BlendOp, D3D12_BLEND_OP_ADD);
+        assert_eq!(
+            target.RenderTargetWriteMask,
+            D3D12_COLOR_WRITE_ENABLE_ALL.0 as u8
+        );
     }
 
     #[test]

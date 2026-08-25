@@ -59,7 +59,7 @@ pub use animation::{AnimationClip, AnimationPlayer, BoneTrack, Playback};
 pub use character::{AnimationSlot, CharacterDef, ClipBindings};
 pub use error::AssetError;
 pub use library::{ModelId, ModelLibrary};
-pub use material::MaterialAsset;
+pub use material::{MaterialAsset, SurfaceClass};
 pub use mesh::{DEFAULT_VERTEX_COLOR, Geometry, MeshVertex, SkinVertex, SubMesh};
 pub use model::{ModelAsset, ModelLod};
 pub use skeleton::{Bone, Pose, Skeleton};

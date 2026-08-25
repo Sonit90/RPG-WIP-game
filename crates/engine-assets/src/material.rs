@@ -17,6 +17,29 @@
 
 use engine_core::math::{Vec3, Vec4};
 
+/// What a surface does to the pixels behind it: glTF's alpha mode, by another name.
+///
+/// The asset-side mirror of `engine_renderer::material::SurfaceClass`, and a separate type for
+/// the same reason [`MaterialAsset`] is separate from `MaterialDesc`: an asset must be
+/// describable without a device. The two enums have the same three variants in the same order,
+/// and `Renderer::create_model` maps one onto the other.
+///
+/// | glTF `alphaMode` | here |
+/// |---|---|
+/// | `OPAQUE` | [`SurfaceClass::Opaque`] |
+/// | `MASK` | [`SurfaceClass::AlphaTest`], with `alphaCutoff` |
+/// | `BLEND` | [`SurfaceClass::Transparent`] |
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+pub enum SurfaceClass {
+    /// Replaces what is behind it. glTF `OPAQUE`.
+    #[default]
+    Opaque,
+    /// Replaces what is behind it, with fragments below the cutoff discarded. glTF `MASK`.
+    AlphaTest,
+    /// Blended with what is behind it, in a sorted phase of its own. glTF `BLEND`.
+    Transparent,
+}
+
 /// How a surface looks.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MaterialAsset {
@@ -66,11 +89,16 @@ pub struct MaterialAsset {
     /// Below this alpha a fragment is discarded, in the camera pass and the shadow pass
     /// alike. Zero is an opaque material and performs no test.
     ///
-    /// This is glTF's `MASK` alpha mode and its `alphaCutoff`. `BLEND` is deliberately not
-    /// represented: the renderer draws no sorted transparent geometry, and importing a
-    /// blended material as a cutout is a closer answer than importing it as opaque — a leaf
-    /// card with a hard edge rather than a rectangle.
+    /// This is glTF's `alphaCutoff`, and it is meaningful only when [`Self::surface`] is
+    /// [`SurfaceClass::AlphaTest`].
     pub alpha_cutoff: f32,
+    /// Which phase the renderer draws this material in. glTF's `alphaMode`.
+    ///
+    /// Imported rather than inferred. `BLEND` used to be imported as a cutout, because the
+    /// renderer drew no sorted transparent geometry and a leaf card with a hard edge was a
+    /// closer answer than a rectangle; now that the transparent phase exists, a blended
+    /// material stays blended and a window fades instead of having a hard edge.
+    pub surface: SurfaceClass,
 }
 
 impl Default for MaterialAsset {
@@ -88,6 +116,7 @@ impl Default for MaterialAsset {
             orm_texture: None,
             emissive_texture: None,
             alpha_cutoff: 0.0,
+            surface: SurfaceClass::Opaque,
         }
     }
 }
@@ -136,13 +165,42 @@ impl MaterialAsset {
         } else {
             0.0
         };
+        // The class follows the cutoff, so every call site that said "this is a cutout" by
+        // setting a threshold still does.
+        self.surface = if self.alpha_cutoff > 0.0 {
+            SurfaceClass::AlphaTest
+        } else {
+            SurfaceClass::Opaque
+        };
+        self
+    }
+
+    /// Returns the material as a blended surface of the given opacity.
+    ///
+    /// glTF's `BLEND`: the renderer draws it in the sorted transparent phase, testing depth
+    /// and writing none. The cutoff is cleared, because a blended surface performs no test.
+    #[must_use]
+    pub fn with_opacity(mut self, alpha: f32) -> Self {
+        self.base_color.w = if alpha.is_finite() {
+            alpha.clamp(0.0, 1.0)
+        } else {
+            1.0
+        };
+        self.surface = SurfaceClass::Transparent;
+        self.alpha_cutoff = 0.0;
         self
     }
 
     /// Whether this material needs an alpha test.
     #[must_use]
     pub fn is_alpha_tested(&self) -> bool {
-        self.alpha_cutoff > 0.0
+        self.surface == SurfaceClass::AlphaTest
+    }
+
+    /// Whether this material is drawn in the sorted, blended phase.
+    #[must_use]
+    pub fn is_transparent(&self) -> bool {
+        self.surface == SurfaceClass::Transparent
     }
 
     /// The same material sampling `texture` for base colour.

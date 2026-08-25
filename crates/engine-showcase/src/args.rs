@@ -20,6 +20,10 @@ options:
                        builds; it costs several times the frame time)
   --preset <1-5>       object count to start with: 1=10, 2=100, 3=1000, 4=10000,
                        5=100000 (default 4). F3-F7 switch at runtime
+  --transparency       load the transparency debug scene instead of the arena: an opaque
+                       cube, an alpha-tested foliage cross, a cutout below its own
+                       threshold, and overlapping transparent quads. The same scene the
+                       renderer's pixel tests assert about
   --frames-in-flight <n>  frames the CPU may run ahead of the GPU, 1 to 3 (default 3).
                        One serializes CPU and GPU, which moves any back-pressure wait
                        from Present to the frame fence where it can be attributed
@@ -62,6 +66,11 @@ pub struct Args {
     pub frames: Option<u64>,
     /// Seconds between frame-time log lines. Zero disables them.
     pub report_interval_secs: f64,
+    /// Whether to load the transparency debug scene instead of the arena.
+    ///
+    /// A separate flag rather than a sixth preset: the presets are object counts of one scene
+    /// and this is a different scene, with six objects and nothing to stress.
+    pub transparency: bool,
     /// Whether `--help` was requested.
     pub help: bool,
 }
@@ -83,6 +92,7 @@ impl Default for Args {
             frames_in_flight: engine_renderer::DEFAULT_FRAMES_IN_FLIGHT,
             frames: None,
             report_interval_secs: 2.0,
+            transparency: false,
             help: false,
         }
     }
@@ -166,6 +176,7 @@ where
                 }
                 args.preset = number - 1;
             }
+            "--transparency" => args.transparency = true,
             "-h" | "--help" => args.help = true,
             other => return Err(ArgsError::Unknown(other.to_owned())),
         }
@@ -244,6 +255,10 @@ mod tests {
         );
         assert!(!parsed(&["--serial-cull"]).parallel_cull);
         assert!(!parsed(&["--no-instancing"]).instancing);
+        // The debug scene is opt-in: an ordinary run must still get the arena, or every
+        // performance number the showcase prints would describe six quads.
+        assert!(!Args::default().transparency);
+        assert!(parsed(&["--transparency"]).transparency);
         assert_eq!(args.frames, Some(500));
         assert!((args.report_interval_secs - 0.5).abs() < f64::EPSILON);
     }

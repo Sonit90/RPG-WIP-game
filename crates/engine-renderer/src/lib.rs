@@ -46,6 +46,7 @@ pub mod stress;
 pub mod swapchain;
 pub mod sync;
 pub mod texture_id;
+pub mod transparency;
 pub mod ui_atlas;
 pub mod ui_pipeline;
 pub mod upload;
@@ -60,7 +61,7 @@ pub use instancing::{InstanceData, UNIT_TRIANGLE};
 pub use light_cluster::{LightClusterStats, LightClusters};
 pub use material::{
     MATERIAL_TEXTURE_COUNT, Material, MaterialConstants, MaterialDesc, MaterialTextureSet,
-    MaterialTextureSlot, MaterialTextures,
+    MaterialTextureSlot, MaterialTextures, SurfaceClass,
 };
 pub use mesh::{GpuMesh, Index, MeshData, MeshVertex, VertexStream};
 pub use mesh_pipeline::MeshPipeline;

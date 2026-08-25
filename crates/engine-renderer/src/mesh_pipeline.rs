@@ -34,8 +34,11 @@ use windows::core::s;
 
 use crate::depth::DEPTH_FORMAT;
 use crate::error::RendererError;
+use crate::material::SurfaceClass;
 use crate::mesh::{MeshVertex, SkinnedVertex};
-use crate::pipeline::{blend_desc, depth_stencil_desc, rasterizer_desc, wireframe_rasterizer_desc};
+use crate::pipeline::{
+    blend_desc_for, depth_stencil_desc_for, rasterizer_desc, wireframe_rasterizer_desc,
+};
 use crate::scene::{ROOT_PARAMETER_REGISTERS, ROOT_SKIN_CBV};
 use crate::shader::{
     MESH_INSTANCED_VS, MESH_SKINNED_VS, MESH_VS, ShaderFeatures, bytecode,
@@ -53,15 +56,50 @@ pub struct PipelineVariant {
     pub features: ShaderFeatures,
     /// Wireframe fill, from the F9 toggle.
     pub wireframe: bool,
+    /// Which surface class this state's blend and depth descriptors were built for.
+    ///
+    /// Part of the key rather than a separate cache, for the same reason `wireframe` is: D3D12
+    /// bakes the blend and depth-stencil state into the PSO, so "opaque" and "transparent" are
+    /// two objects and the frame picks between them. It selects **no** shader bytecode -
+    /// [`SurfaceClass::Opaque`] and [`SurfaceClass::Transparent`] with the same `features`
+    /// carry the identical vertex and pixel shaders, and differ only in the two descriptors.
+    ///
+    /// [`SurfaceClass::AlphaTest`] produces the same state object as [`SurfaceClass::Opaque`]
+    /// and shares its cache entry: the cutout is a `discard` in the pixel shader driven by the
+    /// material's constant, not a pipeline setting. It is still a distinct key so that reading
+    /// a variant says which phase it belongs to.
+    pub surface: SurfaceClass,
 }
 
 impl PipelineVariant {
-    /// The solid-fill variant of `features`.
+    /// The solid-fill, opaque variant of `features`.
     #[must_use]
     pub const fn solid(features: ShaderFeatures) -> Self {
         Self {
             features,
             wireframe: false,
+            surface: SurfaceClass::Opaque,
+        }
+    }
+
+    /// The same variant drawn as `surface`.
+    #[must_use]
+    pub const fn with_surface(mut self, surface: SurfaceClass) -> Self {
+        self.surface = surface;
+        self
+    }
+
+    /// The rasterizer state this variant draws with.
+    ///
+    /// Fill mode only. Transparent surfaces are rasterized exactly as opaque ones are -
+    /// back-face culled, counter-clockwise front - because making them two-sided is a
+    /// different feature with its own cost, and a single-sided transparent quad viewed from
+    /// behind is the same thing an opaque one does.
+    fn rasterizer(self) -> D3D12_RASTERIZER_DESC {
+        if self.wireframe {
+            wireframe_rasterizer_desc()
+        } else {
+            rasterizer_desc()
         }
     }
 }
@@ -140,12 +178,7 @@ impl MeshPipelines {
         // borrows it again. The clone is a refcount bump on a COM pointer, once per variant.
         let signature = self.root_signature(device)?.clone();
         if let std::collections::hash_map::Entry::Vacant(entry) = self.mesh.entry(variant) {
-            let pipeline = if variant.wireframe {
-                MeshPipeline::wireframe_with_features(device, &signature, variant.features)?
-            } else {
-                MeshPipeline::with_features(device, &signature, variant.features)?
-            };
-            entry.insert(pipeline);
+            entry.insert(MeshPipeline::for_variant(device, &signature, variant)?);
         }
         Ok(&self.mesh[&variant])
     }
@@ -164,16 +197,9 @@ impl MeshPipelines {
         // borrows it again. The clone is a refcount bump on a COM pointer, once per variant.
         let signature = self.root_signature(device)?.clone();
         if let std::collections::hash_map::Entry::Vacant(entry) = self.instanced.entry(variant) {
-            let pipeline = if variant.wireframe {
-                InstancedMeshPipeline::wireframe_with_features(
-                    device,
-                    &signature,
-                    variant.features,
-                )?
-            } else {
-                InstancedMeshPipeline::with_features(device, &signature, variant.features)?
-            };
-            entry.insert(pipeline);
+            entry.insert(InstancedMeshPipeline::for_variant(
+                device, &signature, variant,
+            )?);
         }
         Ok(&self.instanced[&variant])
     }
@@ -192,12 +218,9 @@ impl MeshPipelines {
         // borrows it again. The clone is a refcount bump on a COM pointer, once per variant.
         let signature = self.root_signature(device)?.clone();
         if let std::collections::hash_map::Entry::Vacant(entry) = self.skinned.entry(variant) {
-            let pipeline = if variant.wireframe {
-                SkinnedMeshPipeline::wireframe_with_features(device, &signature, variant.features)?
-            } else {
-                SkinnedMeshPipeline::with_features(device, &signature, variant.features)?
-            };
-            entry.insert(pipeline);
+            entry.insert(SkinnedMeshPipeline::for_variant(
+                device, &signature, variant,
+            )?);
         }
         Ok(&self.skinned[&variant])
     }
@@ -249,7 +272,13 @@ impl MeshPipeline {
         root_signature: &ID3D12RootSignature,
         features: ShaderFeatures,
     ) -> Result<Self, RendererError> {
-        Self::with_rasterizer(device, root_signature, rasterizer_desc(), features)
+        Self::with_rasterizer(
+            device,
+            root_signature,
+            rasterizer_desc(),
+            features,
+            SurfaceClass::Opaque,
+        )
     }
 
     /// Creates the same pipeline with wireframe fill.
@@ -281,6 +310,30 @@ impl MeshPipeline {
             root_signature,
             wireframe_rasterizer_desc(),
             features,
+            SurfaceClass::Opaque,
+        )
+    }
+
+    /// Creates the pipeline state `variant` names: its shader permutation, its fill mode and
+    /// its surface class's blend and depth state.
+    ///
+    /// The one constructor the pipeline cache calls, so a variant is turned into a PSO in
+    /// exactly one place and the three axes cannot be combined differently by two callers.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RendererError::Api`] if a D3D12 call fails.
+    pub fn for_variant(
+        device: &ID3D12Device,
+        root_signature: &ID3D12RootSignature,
+        variant: PipelineVariant,
+    ) -> Result<Self, RendererError> {
+        Self::with_rasterizer(
+            device,
+            root_signature,
+            variant.rasterizer(),
+            variant.features,
+            variant.surface,
         )
     }
 
@@ -290,6 +343,7 @@ impl MeshPipeline {
         root_signature: &ID3D12RootSignature,
         rasterizer: D3D12_RASTERIZER_DESC,
         features: ShaderFeatures,
+        surface: SurfaceClass,
     ) -> Result<Self, RendererError> {
         // Cloned, not created: the caller owns the one signature every mesh pipeline shares,
         // and a PSO holds a reference of its own for as long as it lives.
@@ -308,8 +362,11 @@ impl MeshPipeline {
             VS: bytecode(MESH_VS),
             PS: bytecode(mesh_pixel_shader(features)),
             RasterizerState: rasterizer,
-            BlendState: blend_desc(),
-            DepthStencilState: depth_stencil_desc(),
+            // The two descriptors the surface class decides, and the only two. Opaque and
+            // alpha-tested surfaces get exactly what every mesh pipeline got before
+            // transparency existed.
+            BlendState: blend_desc_for(surface),
+            DepthStencilState: depth_stencil_desc_for(surface),
             DSVFormat: DEPTH_FORMAT,
             SampleMask: u32::MAX,
             PrimitiveTopologyType: D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE,
@@ -765,7 +822,13 @@ impl SkinnedMeshPipeline {
         root_signature: &ID3D12RootSignature,
         features: ShaderFeatures,
     ) -> Result<Self, RendererError> {
-        Self::with_rasterizer(device, root_signature, rasterizer_desc(), features)
+        Self::with_rasterizer(
+            device,
+            root_signature,
+            rasterizer_desc(),
+            features,
+            SurfaceClass::Opaque,
+        )
     }
 
     /// The same pipeline with wireframe fill.
@@ -793,6 +856,30 @@ impl SkinnedMeshPipeline {
             root_signature,
             wireframe_rasterizer_desc(),
             features,
+            SurfaceClass::Opaque,
+        )
+    }
+
+    /// Creates the pipeline state `variant` names: its shader permutation, its fill mode and
+    /// its surface class's blend and depth state.
+    ///
+    /// The one constructor the pipeline cache calls, so a variant is turned into a PSO in
+    /// exactly one place and the three axes cannot be combined differently by two callers.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RendererError::Api`] if a D3D12 call fails.
+    pub fn for_variant(
+        device: &ID3D12Device,
+        root_signature: &ID3D12RootSignature,
+        variant: PipelineVariant,
+    ) -> Result<Self, RendererError> {
+        Self::with_rasterizer(
+            device,
+            root_signature,
+            variant.rasterizer(),
+            variant.features,
+            variant.surface,
         )
     }
 
@@ -802,6 +889,7 @@ impl SkinnedMeshPipeline {
         root_signature: &ID3D12RootSignature,
         rasterizer: D3D12_RASTERIZER_DESC,
         features: ShaderFeatures,
+        surface: SurfaceClass,
     ) -> Result<Self, RendererError> {
         // Cloned, not created: the caller owns the one signature every mesh pipeline shares,
         // and a PSO holds a reference of its own for as long as it lives.
@@ -819,8 +907,11 @@ impl SkinnedMeshPipeline {
             VS: bytecode(MESH_SKINNED_VS),
             PS: bytecode(mesh_skinned_pixel_shader(features)),
             RasterizerState: rasterizer,
-            BlendState: blend_desc(),
-            DepthStencilState: depth_stencil_desc(),
+            // The two descriptors the surface class decides, and the only two. Opaque and
+            // alpha-tested surfaces get exactly what every mesh pipeline got before
+            // transparency existed.
+            BlendState: blend_desc_for(surface),
+            DepthStencilState: depth_stencil_desc_for(surface),
             DSVFormat: DEPTH_FORMAT,
             SampleMask: u32::MAX,
             PrimitiveTopologyType: D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE,
@@ -1061,7 +1152,13 @@ impl InstancedMeshPipeline {
         root_signature: &ID3D12RootSignature,
         features: ShaderFeatures,
     ) -> Result<Self, RendererError> {
-        Self::with_rasterizer(device, root_signature, rasterizer_desc(), features)
+        Self::with_rasterizer(
+            device,
+            root_signature,
+            rasterizer_desc(),
+            features,
+            SurfaceClass::Opaque,
+        )
     }
 
     /// The same pipeline with wireframe fill.
@@ -1089,6 +1186,30 @@ impl InstancedMeshPipeline {
             root_signature,
             wireframe_rasterizer_desc(),
             features,
+            SurfaceClass::Opaque,
+        )
+    }
+
+    /// Creates the pipeline state `variant` names: its shader permutation, its fill mode and
+    /// its surface class's blend and depth state.
+    ///
+    /// The one constructor the pipeline cache calls, so a variant is turned into a PSO in
+    /// exactly one place and the three axes cannot be combined differently by two callers.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RendererError::Api`] if a D3D12 call fails.
+    pub fn for_variant(
+        device: &ID3D12Device,
+        root_signature: &ID3D12RootSignature,
+        variant: PipelineVariant,
+    ) -> Result<Self, RendererError> {
+        Self::with_rasterizer(
+            device,
+            root_signature,
+            variant.rasterizer(),
+            variant.features,
+            variant.surface,
         )
     }
 
@@ -1098,6 +1219,7 @@ impl InstancedMeshPipeline {
         root_signature: &ID3D12RootSignature,
         rasterizer: D3D12_RASTERIZER_DESC,
         features: ShaderFeatures,
+        surface: SurfaceClass,
     ) -> Result<Self, RendererError> {
         // The same root signature as the non-instanced pipeline - literally the same object,
         // handed in by the cache: same frame and material registers, same slot order. The
@@ -1119,8 +1241,11 @@ impl InstancedMeshPipeline {
             VS: bytecode(MESH_INSTANCED_VS),
             PS: bytecode(mesh_instanced_pixel_shader(features)),
             RasterizerState: rasterizer,
-            BlendState: blend_desc(),
-            DepthStencilState: depth_stencil_desc(),
+            // The two descriptors the surface class decides, and the only two. Opaque and
+            // alpha-tested surfaces get exactly what every mesh pipeline got before
+            // transparency existed.
+            BlendState: blend_desc_for(surface),
+            DepthStencilState: depth_stencil_desc_for(surface),
             DSVFormat: DEPTH_FORMAT,
             SampleMask: u32::MAX,
             PrimitiveTopologyType: D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE,
