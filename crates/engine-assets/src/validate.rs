@@ -13,15 +13,25 @@
 //! broken rendering.** A model that fails validation is not uploaded, and the error names the
 //! model, the place inside it, and the numbers.
 //!
+//! # This is the runtime half of one validator
+//!
+//! The rules themselves live in [`crate::asset_validator`], which collects every finding and
+//! grades each one. This module is the runtime's view of that: the first Error becomes an
+//! [`AssetError`] and the load fails. It applies the structural rules and the budgets in
+//! [`ValidationLimits`], and deliberately not the art-direction rules of
+//! `docs/style/ASSET_LIMITATIONS.md` — those need to know whether the thing being loaded is
+//! a pebble or a cathedral, and this layer knows a file name. The asset pipeline runs the
+//! whole set; see [`crate::disk::load_glb_validated`].
+//!
 //! # Budgets
 //!
 //! [`ValidationLimits`] holds the project's numbers rather than universal truths. They are
 //! deliberately generous — roughly ten times what the Phase 5 assets use — because a budget
 //! that trips on ordinary content teaches people to raise the budget.
 
+use crate::asset_validator::{AssetLimits, AssetSpec, validate_asset};
 use crate::error::AssetError;
-use crate::mesh::{Geometry, SubMesh};
-use crate::model::{ModelAsset, ModelLod};
+use crate::model::ModelAsset;
 
 /// What a model is allowed to cost.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -48,6 +58,23 @@ impl Default for ValidationLimits {
             max_materials: 16,
             max_submeshes_per_lod: 32,
         }
+    }
+}
+
+impl ValidationLimits {
+    /// The same budgets, as the limits [`crate::asset_validator`] takes.
+    ///
+    /// The bridge between the runtime's four numbers and the validator's full table. It
+    /// turns the art-direction rules off, which is what makes this path enforce exactly what
+    /// it enforced before the validator existed.
+    #[must_use]
+    pub fn as_asset_limits(&self) -> AssetLimits {
+        AssetLimits::runtime(
+            self.max_triangles_per_lod,
+            self.max_texture_size,
+            self.max_materials,
+            self.max_submeshes_per_lod,
+        )
     }
 }
 
@@ -80,334 +107,30 @@ pub struct ModelReport {
 ///
 /// Returns the first [`AssetError`] found. First rather than all: a model with a dangling
 /// index is not going to be shipped with a second problem fixed, and a single precise
-/// message is more useful than a list.
+/// message is more useful than a list. Callers that want every finding at once — the asset
+/// pipeline and its command-line tool — call [`crate::asset_validator::validate_asset`]
+/// instead, which is the same rules without the fail-fast.
 pub fn validate_model(
     model: &ModelAsset,
     limits: &ValidationLimits,
 ) -> Result<ModelReport, AssetError> {
-    if model.lods.is_empty() {
-        return Err(AssetError::invalid(
-            &model.name,
-            "lods",
-            "a model needs at least one level of detail",
-        ));
+    let spec = AssetSpec::unclassified(&model.name);
+    let result = validate_asset(model, &spec, &limits.as_asset_limits());
+    if let Some(error) = result.first_error() {
+        return Err(error.to_asset_error(&model.name));
     }
-    let Some(lod0) = model.lods.first() else {
-        return Err(AssetError::invalid(&model.name, "lods", "LOD0 is missing"));
-    };
-    if lod0.min_distance != 0.0 {
-        return Err(AssetError::invalid(
-            &model.name,
-            "lods[0]",
-            format!(
-                "LOD0 must start at distance 0, not {}; nothing would be drawn up close",
-                lod0.min_distance
-            ),
-        ));
-    }
-    // Strictly increasing, so selection is unambiguous. Two levels at the same distance is a
-    // level that can never be selected, which is dead content nobody notices.
-    for pair in model.lods.windows(2) {
-        if pair[1].min_distance <= pair[0].min_distance {
-            return Err(AssetError::invalid(
-                &model.name,
-                "lods",
-                format!(
-                    "levels must be strictly increasing in distance, found {} after {}",
-                    pair[1].min_distance, pair[0].min_distance
-                ),
-            ));
-        }
-    }
-
-    validate_textures(model, limits)?;
-    validate_materials(model)?;
-
-    let bone_count = model.skeleton.as_ref().map_or(0, |skeleton| skeleton.len());
-    for (level, lod) in model.lods.iter().enumerate() {
-        validate_lod(model, lod, level, bone_count, limits)?;
-    }
-    validate_clips(model, bone_count)?;
-
-    if model.materials.len() as u64 > limits.max_materials {
-        return Err(AssetError::over_budget(
-            &model.name,
-            "material",
-            model.materials.len() as u64,
-            limits.max_materials,
-        ));
-    }
-
+    let statistics = result.statistics;
     Ok(ModelReport {
-        triangles: lod0.triangle_count() as u64,
-        vertices: lod0.vertex_count() as u64,
-        lods: model.lods.len() as u64,
-        submeshes: lod0.submeshes.len() as u64,
-        materials: model.materials.len() as u64,
-        textures: model.textures.len() as u64,
-        texture_bytes: model.texture_bytes() as u64,
-        bones: bone_count as u64,
-        clips: model.clips.len() as u64,
+        triangles: statistics.triangle_count,
+        vertices: statistics.vertex_count,
+        lods: statistics.lod_count,
+        submeshes: statistics.submesh_count,
+        materials: statistics.material_count,
+        textures: statistics.texture_count,
+        texture_bytes: statistics.texture_bytes,
+        bones: statistics.bone_count,
+        clips: statistics.clip_count,
     })
-}
-
-/// Every texture is well-formed and inside the resolution budget.
-fn validate_textures(model: &ModelAsset, limits: &ValidationLimits) -> Result<(), AssetError> {
-    for (index, texture) in model.textures.iter().enumerate() {
-        let expected =
-            texture.width as usize * texture.height as usize * texture.format.bytes_per_texel();
-        if texture.texels.len() != expected {
-            return Err(AssetError::invalid(
-                &model.name,
-                format!("texture {index} '{}'", texture.name),
-                format!(
-                    "{}x{} needs {expected} bytes, got {}",
-                    texture.width,
-                    texture.height,
-                    texture.texels.len()
-                ),
-            ));
-        }
-        let largest = texture.width.max(texture.height);
-        if largest > limits.max_texture_size {
-            return Err(AssetError::over_budget(
-                &model.name,
-                format!("texture '{}' resolution", texture.name),
-                u64::from(largest),
-                u64::from(limits.max_texture_size),
-            ));
-        }
-    }
-    Ok(())
-}
-
-/// Every material's texture slots point at a texture that exists.
-fn validate_materials(model: &ModelAsset) -> Result<(), AssetError> {
-    for (index, material) in model.materials.iter().enumerate() {
-        for (slot, texture) in material.texture_indices() {
-            if texture >= model.textures.len() {
-                return Err(AssetError::invalid(
-                    &model.name,
-                    format!("material {index} '{}' {slot}", material.name),
-                    format!(
-                        "names texture {texture}, and the model has {}",
-                        model.textures.len()
-                    ),
-                ));
-            }
-        }
-        if !material.roughness.is_finite() || !(0.0..=1.0).contains(&material.roughness) {
-            return Err(AssetError::invalid(
-                &model.name,
-                format!("material {index} '{}'", material.name),
-                format!("roughness {} is not in [0, 1]", material.roughness),
-            ));
-        }
-        if !material.metallic.is_finite() || !(0.0..=1.0).contains(&material.metallic) {
-            return Err(AssetError::invalid(
-                &model.name,
-                format!("material {index} '{}'", material.name),
-                format!("metallic {} is not in [0, 1]", material.metallic),
-            ));
-        }
-    }
-    Ok(())
-}
-
-/// One level of detail: geometry, indices, materials, and skinning data.
-fn validate_lod(
-    model: &ModelAsset,
-    lod: &ModelLod,
-    level: usize,
-    bone_count: usize,
-    limits: &ValidationLimits,
-) -> Result<(), AssetError> {
-    if lod.submeshes.is_empty() {
-        return Err(AssetError::invalid(
-            &model.name,
-            format!("lods[{level}]"),
-            "a level of detail with no submeshes draws nothing",
-        ));
-    }
-    if lod.submeshes.len() as u64 > limits.max_submeshes_per_lod {
-        return Err(AssetError::over_budget(
-            &model.name,
-            format!("lods[{level}] submesh"),
-            lod.submeshes.len() as u64,
-            limits.max_submeshes_per_lod,
-        ));
-    }
-    if lod.triangle_count() as u64 > limits.max_triangles_per_lod {
-        return Err(AssetError::over_budget(
-            &model.name,
-            format!("lods[{level}] triangle"),
-            lod.triangle_count() as u64,
-            limits.max_triangles_per_lod,
-        ));
-    }
-
-    for (index, submesh) in lod.submeshes.iter().enumerate() {
-        let where_ = format!("lods[{level}] submesh {index} '{}'", submesh.name);
-        validate_submesh(model, submesh, &where_, bone_count)?;
-    }
-    Ok(())
-}
-
-/// One submesh: indices in range, materials in range, weights and joints usable.
-fn validate_submesh(
-    model: &ModelAsset,
-    submesh: &SubMesh,
-    where_: &str,
-    bone_count: usize,
-) -> Result<(), AssetError> {
-    if submesh.geometry.is_empty() || submesh.indices.is_empty() {
-        return Err(AssetError::invalid(
-            &model.name,
-            where_,
-            "a submesh needs at least one vertex and one index",
-        ));
-    }
-    if submesh.indices.len() % 3 != 0 {
-        return Err(AssetError::invalid(
-            &model.name,
-            where_,
-            format!(
-                "a triangle list needs a multiple of three indices, got {}",
-                submesh.indices.len()
-            ),
-        ));
-    }
-    let vertices = submesh.geometry.len();
-    if let Some(bad) = submesh
-        .indices
-        .iter()
-        .find(|index| **index as usize >= vertices)
-    {
-        return Err(AssetError::invalid(
-            &model.name,
-            where_,
-            format!("index {bad} is past the end of {vertices} vertices"),
-        ));
-    }
-    if submesh.material >= model.materials.len() {
-        return Err(AssetError::invalid(
-            &model.name,
-            where_,
-            format!(
-                "names material {}, and the model has {}",
-                submesh.material,
-                model.materials.len()
-            ),
-        ));
-    }
-
-    match &submesh.geometry {
-        Geometry::Static(vertices) => {
-            for (index, vertex) in vertices.iter().enumerate() {
-                if !vertex.position.length_squared().is_finite() {
-                    return Err(AssetError::invalid(
-                        &model.name,
-                        where_,
-                        format!("vertex {index} has a non-finite position"),
-                    ));
-                }
-            }
-        }
-        Geometry::Skinned(vertices) => {
-            if bone_count == 0 {
-                return Err(AssetError::invalid(
-                    &model.name,
-                    where_,
-                    "skinned geometry needs a skeleton, and the model has none",
-                ));
-            }
-            for (index, vertex) in vertices.iter().enumerate() {
-                if !vertex.position.length_squared().is_finite() {
-                    return Err(AssetError::invalid(
-                        &model.name,
-                        where_,
-                        format!("vertex {index} has a non-finite position"),
-                    ));
-                }
-                if let Some(joint) = vertex
-                    .joints
-                    .iter()
-                    .find(|joint| **joint as usize >= bone_count)
-                {
-                    // Checked even where the weight is zero: the shader multiplies before
-                    // it adds, so it reads the palette entry either way.
-                    return Err(AssetError::invalid(
-                        &model.name,
-                        where_,
-                        format!(
-                            "vertex {index} is bound to bone {joint}, and the skeleton has {bone_count}"
-                        ),
-                    ));
-                }
-                let sum = vertex.weight_sum();
-                if !(0.99..=1.01).contains(&sum) {
-                    return Err(AssetError::invalid(
-                        &model.name,
-                        where_,
-                        format!(
-                            "vertex {index} has weights summing to {sum}, which deforms the \
-                             model towards the origin"
-                        ),
-                    ));
-                }
-            }
-        }
-    }
-    Ok(())
-}
-
-/// Every clip is bound to this model's skeleton and has usable keys.
-fn validate_clips(model: &ModelAsset, bone_count: usize) -> Result<(), AssetError> {
-    for (index, clip) in model.clips.iter().enumerate() {
-        let where_ = format!("clip {index} '{}'", clip.name);
-        if bone_count == 0 {
-            return Err(AssetError::invalid(
-                &model.name,
-                where_,
-                "an animation needs a skeleton, and the model has none",
-            ));
-        }
-        if !clip.duration.is_finite() || clip.duration < 0.0 {
-            return Err(AssetError::invalid(
-                &model.name,
-                where_,
-                format!("duration {} is not a length of time", clip.duration),
-            ));
-        }
-        for track in &clip.tracks {
-            if track.bone as usize >= bone_count {
-                return Err(AssetError::invalid(
-                    &model.name,
-                    &where_,
-                    format!(
-                        "a track animates bone {}, and the skeleton has {bone_count}",
-                        track.bone
-                    ),
-                ));
-            }
-            let times = track
-                .translation
-                .iter()
-                .map(|key| key.time)
-                .chain(track.rotation.iter().map(|key| key.time))
-                .chain(track.scale.iter().map(|key| key.time));
-            for time in times {
-                if !time.is_finite() || time < 0.0 {
-                    return Err(AssetError::invalid(
-                        &model.name,
-                        &where_,
-                        format!("a key is at time {time}"),
-                    ));
-                }
-            }
-        }
-    }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -415,7 +138,7 @@ mod tests {
     use super::*;
     use crate::animation::{AnimationClip, BoneTrack};
     use crate::material::MaterialAsset;
-    use crate::mesh::{MeshVertex, SkinVertex, SubMesh};
+    use crate::mesh::{Geometry, MeshVertex, SkinVertex, SubMesh};
     use crate::skeleton::{Bone, Skeleton};
     use crate::texture::{TextureAsset, TextureFormat};
     use engine_core::math::{Mat4, Vec2, Vec3};

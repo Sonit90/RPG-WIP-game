@@ -26,6 +26,7 @@ use engine_environment::object::default_collision;
 use engine_environment::scene_file::asset_named;
 use engine_environment::{EnvironmentObject, EnvironmentScene};
 
+use crate::asset_validator::{AssetLimits, AssetSpec, AssetValidationResult, validate_asset};
 use crate::error::AssetError;
 use crate::gltf_import::{LayoutNode, import_glb, import_layout};
 use crate::model::ModelAsset;
@@ -111,6 +112,105 @@ pub fn find_model(name: &str, file: &str) -> Result<Option<ModelAsset>, AssetErr
         return Ok(None);
     };
     load_glb(name, &path, &ValidationLimits::default()).map(Some)
+}
+
+/// Reads a `.glb` and checks it against the limits its category sets.
+///
+/// ```text
+///  source .glb ──► import ──► fit textures ──► validate_asset ──► ModelAsset
+///                                                    │
+///                                              errors: refused, nothing is uploaded
+///                                              warnings: logged, the model loads
+/// ```
+///
+/// The place in the pipeline the specification asks for: after import and normalization,
+/// before the model reaches a caller that could upload it. No GPU resource exists at this
+/// point, so an asset that fails here costs a file read and nothing else.
+///
+/// Textures are fitted to the runtime budget exactly as [`load_glb`] fits them, and the
+/// validation that follows sees the fitted sizes — a 4096 map an artist exported is reported
+/// by the tool that reads the *source* file ([`validate_file`]), not by the loader that has
+/// already resampled it.
+///
+/// # Errors
+///
+/// * [`AssetError::Malformed`] if the file cannot be read, or is not a glTF document.
+/// * The first error-severity finding, as an [`AssetError`], if the asset fails validation.
+pub fn load_glb_validated(
+    name: &str,
+    path: &Path,
+    spec: &AssetSpec,
+    limits: &AssetLimits,
+) -> Result<(ModelAsset, AssetValidationResult), AssetError> {
+    let bytes = std::fs::read(path).map_err(|error| AssetError::Malformed {
+        model: name.to_owned(),
+        reason: format!("{} could not be read: {error}", path.display()),
+    })?;
+    let mut model = import_glb(name, &bytes)?;
+    model.textures = model
+        .textures
+        .into_iter()
+        .map(|texture| texture.fitted_within(limits.max_texture_size))
+        .collect();
+    let result = validate_asset(&model, spec, limits);
+    log_result(&result);
+    if let Some(error) = result.first_error() {
+        return Err(error.to_asset_error(name));
+    }
+    Ok((model, result))
+}
+
+/// Checks the asset in `path` as the source file has it, and reports everything found.
+///
+/// Nothing is resampled and nothing is refused: this is what the asset-processing tool runs,
+/// and its job is to say what is wrong with the file on disk. A 4096 texture is reported at
+/// 4096 here and fitted to the runtime budget by [`load_glb`] later, which is the difference
+/// between "this asset is over budget" and "the runtime coped".
+///
+/// # Errors
+///
+/// [`AssetError::Malformed`] if the file cannot be read or is not a glTF document, and
+/// anything [`import_glb`] reports. A validation *failure* is a result, not an error.
+pub fn validate_file(
+    path: &Path,
+    spec: &AssetSpec,
+    limits: &AssetLimits,
+) -> Result<AssetValidationResult, AssetError> {
+    let name = path.file_stem().map_or_else(
+        || spec.asset_id.clone(),
+        |stem| stem.to_string_lossy().into(),
+    );
+    let bytes = std::fs::read(path).map_err(|error| AssetError::Malformed {
+        model: name.clone(),
+        reason: format!("{} could not be read: {error}", path.display()),
+    })?;
+    let model = import_glb(&name, &bytes)?;
+    Ok(validate_asset(&model, spec, limits))
+}
+
+/// Puts a validation result through the engine's log, worst first.
+///
+/// Actionable or not at all: every line names the asset, the place inside it and both
+/// numbers, because "asset invalid" costs somebody an afternoon.
+pub fn log_result(result: &AssetValidationResult) {
+    for diagnostic in result.errors() {
+        log::error!(
+            "{} [{}] {}: {}",
+            result.asset_id,
+            diagnostic.code,
+            diagnostic.subject,
+            diagnostic.message
+        );
+    }
+    for diagnostic in result.warnings() {
+        log::warn!(
+            "{} [{}] {}: {}",
+            result.asset_id,
+            diagnostic.code,
+            diagnostic.subject,
+            diagnostic.message
+        );
+    }
 }
 
 /// What a layout export contained, for the line the loader logs.

@@ -205,6 +205,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "engine-assetcheck"
+version = "0.1.0"
+dependencies = [
+ "engine-assets",
+ "engine-core",
+ "engine-environment",
+ "log",
+]
+
+[[package]]
 name = "engine-assets"
 version = "0.1.0"
 dependencies = [

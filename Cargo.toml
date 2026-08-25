@@ -39,6 +39,9 @@ members = [
     # Development-only: a visual test bed for the renderer. Nothing depends on it, and the
     # shipped game never links it.
     "crates/engine-showcase",
+    # The asset validator's command line. Development only: it reads content off disk and
+    # reports what breaks docs/style/ASSET_LIMITATIONS.md. The game never links it.
+    "crates/engine-assetcheck",
 ]
 
 [workspace.package]
@@ -76,6 +79,8 @@ engine-vfx = { path = "crates/engine-vfx" }
 engine-audio = { path = "crates/engine-audio" }
 # Settings the player changes and the game reloads next launch. No engine dependency.
 engine-settings = { path = "crates/engine-settings" }
+# The asset validator's command line. Nothing in the workspace depends on it.
+engine-assetcheck = { path = "crates/engine-assetcheck" }
 log = "0.4"
 windows = "0.62"
 # The settings file is JSON. A hand-written parser is exactly the sort of thing that turns a

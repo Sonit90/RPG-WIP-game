@@ -40,6 +40,7 @@
 #![deny(missing_docs)]
 
 pub mod animation;
+pub mod asset_validator;
 pub mod bc;
 pub mod character;
 pub mod disk;
@@ -56,6 +57,10 @@ pub mod texture;
 pub mod validate;
 
 pub use animation::{AnimationClip, AnimationPlayer, BoneTrack, Playback};
+pub use asset_validator::{
+    AssetCategory, AssetLimits, AssetSpec, AssetStatistics, AssetValidationResult, Diagnostic,
+    Severity, ValidationCode, validate_asset,
+};
 pub use character::{AnimationSlot, CharacterDef, ClipBindings};
 pub use error::AssetError;
 pub use library::{ModelId, ModelLibrary};
