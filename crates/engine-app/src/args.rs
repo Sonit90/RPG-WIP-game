@@ -300,6 +300,12 @@ options:
                          Only node *names* and transforms are read: name each object
                          after the asset it stands for, as in 'pillar.001', and the
                          engine keeps saying what a pillar looks like
+  --editor               start in the level editor rather than in the game (a build made
+                         with --features editor; F6 goes back and forth at any time).
+                         With --scene-file, a path that does not exist yet is a *new*
+                         empty level saved there by CTRL+S, so opening the editor on a
+                         level that has not been made yet is one command line rather
+                         than a file somebody has to write by hand first
   -h, --help             print this help and exit";
 
 /// Individual shadow settings named on the command line, applied on top of a preset.
@@ -618,6 +624,13 @@ pub struct Args {
     /// What makes an authored level playable: the layout functions stay as they are, and a
     /// file written by the editor replaces the objects, the spawn points and the light.
     pub scene_file: Option<String>,
+    /// Whether to open the level editor on the first frame.
+    ///
+    /// Development only, and it changes one more thing besides the opening frame: a
+    /// `--scene-file` naming a file that does not exist is a new empty level rather than a
+    /// startup failure. Editing a level that does not exist yet is the ordinary way a level
+    /// begins, and it must not require somebody to hand-write a JSON file first.
+    pub editor: bool,
     /// A Blender layout export to load instead of the built-in layout, if one was named.
     ///
     /// The same job as [`Args::scene_file`] from the other authoring direction. Naming both
@@ -658,6 +671,7 @@ impl Default for Args {
             audio: true,
             scene_file: None,
             layout: None,
+            editor: false,
             help: false,
         }
     }
@@ -807,6 +821,7 @@ where
                 let raw = iter.next().ok_or(ArgsError::MissingValue("--scene-file"))?;
                 args.scene_file = Some(raw.as_ref().to_owned());
             }
+            "--editor" => args.editor = true,
             "--layout" => {
                 let raw = iter.next().ok_or(ArgsError::MissingValue("--layout"))?;
                 args.layout = Some(raw.as_ref().to_owned());
@@ -963,6 +978,16 @@ mod tests {
 
         let layout = parse(["--layout", "assets/keep.glb"]).expect("valid");
         assert_eq!(layout.layout.as_deref(), Some("assets/keep.glb"));
+    }
+
+    #[test]
+    fn the_editor_is_off_unless_asked_for() {
+        assert!(!parse::<[&str; 0], &str>([]).expect("empty is valid").editor);
+        assert!(parse(["--editor"]).expect("--editor is valid").editor);
+        let both = parse(["--editor", "--scene-file", "assets/scenes/new.json"])
+            .expect("the editor and a scene file go together");
+        assert!(both.editor);
+        assert_eq!(both.scene_file.as_deref(), Some("assets/scenes/new.json"));
     }
 
     #[test]

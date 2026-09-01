@@ -114,6 +114,8 @@ pub struct Editor {
     save_path: PathBuf,
     /// The last thing that happened, printed under the palette.
     status: String,
+    /// The first object shown in the hierarchy list.
+    hierarchy_scroll: usize,
     scale: UiScale,
 }
 
@@ -145,6 +147,7 @@ impl Editor {
             undo: Vec::new(),
             save_path: PathBuf::from("assets/scenes/untitled.json"),
             status: String::new(),
+            hierarchy_scroll: 0,
             scale: UiScale::default(),
         }
     }
@@ -191,6 +194,21 @@ impl Editor {
         &self.status
     }
 
+    /// Which object is at the top of the hierarchy list.
+    #[must_use]
+    pub fn hierarchy_scroll(&self) -> usize {
+        self.hierarchy_scroll
+    }
+
+    /// Where `CTRL+S` writes from now on.
+    ///
+    /// The application sets this when a level was opened from a named file, so saving writes
+    /// back to the file it was opened from rather than to one named after the scene.
+    pub fn set_save_path(&mut self, path: PathBuf) {
+        self.status = format!("editing {}", path.display());
+        self.save_path = path;
+    }
+
     /// The interface scale the palette is laid out at.
     #[must_use]
     pub fn scale(&self) -> UiScale {
@@ -209,6 +227,7 @@ impl Editor {
         self.camera = FlyCamera::overlooking(focus);
         self.selection = None;
         self.drag = None;
+        self.hierarchy_scroll = 0;
         self.undo.clear();
         self.palette.reset();
         self.save_path = PathBuf::from(format!("assets/scenes/{scene_name}.json"));
@@ -271,16 +290,93 @@ impl Editor {
             return EditorOutcome::Idle;
         }
         let over_palette = self.palette.hovered().is_some();
+        // The two right-hand panels own the pointer over themselves, exactly as the palette
+        // does: a click on a hierarchy row selects that object and must never also place one
+        // in the world behind the panel.
+        let over_hierarchy = self.update_hierarchy(input, ui_input, scene, viewport);
 
         let mut changed = self.update_keys(input, scene);
-        if self.update_pointer(ui_input, scene, view_projection, viewport, over_palette) {
+        if self.update_pointer(
+            ui_input,
+            scene,
+            view_projection,
+            viewport,
+            over_palette || over_hierarchy,
+        ) {
             changed = true;
         }
+
+        // Whatever just happened, the selected object is worth seeing in the list.
+        self.reveal_selection(viewport);
 
         if changed {
             EditorOutcome::SceneChanged
         } else {
             EditorOutcome::Idle
+        }
+    }
+
+    /// The hierarchy list: scrolling it, and selecting out of it.
+    ///
+    /// Returns whether the pointer is over the hierarchy or the inspector, which is what
+    /// stops the same click from also placing an object in the world behind them.
+    fn update_hierarchy(
+        &mut self,
+        input: &InputState,
+        ui_input: &UiInput,
+        scene: &EnvironmentScene,
+        viewport: (u32, u32),
+    ) -> bool {
+        let hierarchy = ui::hierarchy_rect(self.scale, viewport);
+        let inspector = ui::inspector_rect(self.scale, viewport);
+        let (x, y) = ui_input.pointer;
+        let over_hierarchy = hierarchy.contains(x, y);
+        if !over_hierarchy && !inspector.contains(x, y) {
+            return false;
+        }
+
+        let visible = ui::hierarchy_visible_rows(self.scale, viewport);
+        // Scrolled by whole rows, and never past the end: a list that can be scrolled into
+        // emptiness looks like a list that has lost its contents.
+        let wheel = input.wheel_delta();
+        if over_hierarchy && wheel != 0.0 {
+            let last = scene.len().saturating_sub(visible);
+            let step = wheel.abs().max(1.0) as usize;
+            self.hierarchy_scroll = if wheel > 0.0 {
+                self.hierarchy_scroll.saturating_sub(step)
+            } else {
+                (self.hierarchy_scroll + step).min(last)
+            };
+        }
+        self.hierarchy_scroll = self.hierarchy_scroll.min(scene.len().saturating_sub(visible));
+
+        if over_hierarchy && ui_input.pointer_pressed {
+            for slot in 0..visible {
+                if !ui::hierarchy_row_rect(self.scale, viewport, slot).contains(x, y) {
+                    continue;
+                }
+                let index = self.hierarchy_scroll + slot;
+                if let Some(object) = scene.objects.get(index) {
+                    self.selection = Some(index);
+                    self.drag = None;
+                    self.status = format!("selected {} ({index})", object.asset.name());
+                }
+                break;
+            }
+        }
+        true
+    }
+
+    /// Keeps the selected object in view, so a keyboard verb's result is visible.
+    fn reveal_selection(&mut self, viewport: (u32, u32)) {
+        let Some(index) = self.selection else {
+            return;
+        };
+        let visible = ui::hierarchy_visible_rows(self.scale, viewport).max(1);
+        if index < self.hierarchy_scroll {
+            self.hierarchy_scroll = index;
+        } else if index >= self.hierarchy_scroll + visible {
+            self.hierarchy_scroll = index + 1 - visible;
         }
     }
 
@@ -524,7 +620,7 @@ impl Editor {
 }
 
 /// How far a placement is turned about +Y.
-fn yaw_of(transform: Transform) -> f32 {
+pub(crate) fn yaw_of(transform: Transform) -> f32 {
     let rotation = transform.rotation;
     let siny = 2.0 * (rotation.w * rotation.y + rotation.z * rotation.x);
     let cosy = 1.0 - 2.0 * (rotation.x * rotation.x + rotation.y * rotation.y);
@@ -620,6 +716,118 @@ mod tests {
         scene: &mut EnvironmentScene,
     ) -> EditorOutcome {
         editor.update(input, ui, scene, &overhead(), VIEWPORT, 1.0 / 60.0)
+    }
+
+    /// A frame whose wheel turned by `notches`.
+    fn wheeled(notches: f32) -> InputState {
+        let mut input = InputState::new();
+        input.apply(engine_core::input::InputEvent::MouseWheel { delta: notches });
+        input
+    }
+
+    /// The middle of hierarchy row `slot`.
+    fn hierarchy_point(editor: &Editor, slot: usize) -> (f32, f32) {
+        let rect = ui::hierarchy_row_rect(editor.scale(), VIEWPORT, slot);
+        (rect.x + rect.width * 0.5, rect.y + rect.height * 0.5)
+    }
+
+    /// A scene holding `count` rocks in a row, one metre apart and well away from the origin
+    /// so that a click in the middle of the screen lands on empty ground.
+    fn scene_of(count: usize) -> EnvironmentScene {
+        let mut scene = EnvironmentScene::with_capacity("test_level", count);
+        for index in 0..count {
+            scene.push(EnvironmentObject::decoration(
+                ROCK_SMALL,
+                Vec3::new(200.0 + index as f32, 0.0, 0.0),
+            ));
+        }
+        scene
+    }
+
+    #[test]
+    fn a_click_on_a_hierarchy_row_selects_that_object_and_places_nothing() {
+        let mut editor = editor();
+        let mut scene = scene_of(4);
+        let point = hierarchy_point(&editor, 2);
+
+        let outcome = update(&mut editor, &InputState::new(), &press(point), &mut scene);
+
+        assert_eq!(editor.selection(), Some(2));
+        assert_eq!(scene.len(), 4, "the click through the panel placed an object");
+        assert_eq!(outcome, EditorOutcome::Idle);
+    }
+
+    #[test]
+    fn the_hierarchy_scrolls_by_the_wheel_and_stops_at_both_ends() {
+        let mut editor = editor();
+        let visible = ui::hierarchy_visible_rows(editor.scale(), VIEWPORT);
+        let mut scene = scene_of(visible + 10);
+        let over = hierarchy_point(&editor, 0);
+        let hover = UiInput {
+            pointer: over,
+            ..UiInput::new()
+        };
+
+        // Down four notches, then far more than the list is long.
+        update(&mut editor, &wheeled(-4.0), &hover, &mut scene);
+        assert_eq!(editor.hierarchy_scroll(), 4);
+        update(&mut editor, &wheeled(-1_000.0), &hover, &mut scene);
+        assert_eq!(
+            editor.hierarchy_scroll(),
+            scene.len() - visible,
+            "the list scrolled past its own end"
+        );
+        update(&mut editor, &wheeled(1_000.0), &hover, &mut scene);
+        assert_eq!(editor.hierarchy_scroll(), 0);
+    }
+
+    #[test]
+    fn scrolling_the_hierarchy_selects_the_row_that_is_actually_under_the_cursor() {
+        let mut editor = editor();
+        let visible = ui::hierarchy_visible_rows(editor.scale(), VIEWPORT);
+        let mut scene = scene_of(visible + 5);
+        let over = hierarchy_point(&editor, 1);
+        let hover = UiInput {
+            pointer: over,
+            ..UiInput::new()
+        };
+        update(&mut editor, &wheeled(-3.0), &hover, &mut scene);
+
+        update(&mut editor, &InputState::new(), &press(over), &mut scene);
+        assert_eq!(editor.selection(), Some(4), "row 1 of a list scrolled by 3");
+    }
+
+    #[test]
+    fn the_wheel_outside_the_panel_scrolls_nothing() {
+        let mut editor = editor();
+        let visible = ui::hierarchy_visible_rows(editor.scale(), VIEWPORT);
+        let mut scene = scene_of(visible + 10);
+        let hover = UiInput {
+            pointer: centre(),
+            ..UiInput::new()
+        };
+        update(&mut editor, &wheeled(-5.0), &hover, &mut scene);
+        assert_eq!(editor.hierarchy_scroll(), 0);
+    }
+
+    #[test]
+    fn a_new_selection_below_the_window_scrolls_it_into_view() {
+        let mut editor = editor();
+        let visible = ui::hierarchy_visible_rows(editor.scale(), VIEWPORT);
+        let mut scene = scene_of(visible + 6);
+        // Place one more: it becomes the last object and the selection.
+        update(
+            &mut editor,
+            &InputState::new(),
+            &press(centre()),
+            &mut scene,
+        );
+        let last = scene.len() - 1;
+        assert_eq!(editor.selection(), Some(last));
+        assert!(
+            editor.hierarchy_scroll() + visible > last,
+            "the selected object is off the bottom of the list"
+        );
     }
 
     #[test]

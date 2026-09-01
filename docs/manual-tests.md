@@ -633,7 +633,7 @@ keep their silhouette, and the quality setting does what it says.
 5. Walk to the leaf screens on the near left. Look at their shadows on the ground.
 6. Walk into the colonnade on the near middle, under the spot lights.
 7. Walk into the ring of braziers on the near right and stand among the crates.
-8. Press F6 five times, pausing on each level, watching the same view.
+8. Press F4 five times, pausing on each level, watching the same view.
 9. Press F5 and read the shadow block.
 10. Quit, restart with `--scene shadows`, and check the quality is the one you left on.
 
@@ -649,7 +649,7 @@ crate, rock and pillar and nothing around the ground, and turning it off leaves 
 exactly as it was. The leaf screens cast a scatter of leaf shapes, not
 rectangles. The colonnade's pillars cast under the spot lights; at Medium the far one loses
 its shadow and at High it has it back. Standing among the braziers, the crates cast in
-several directions at once. F6 changes the picture visibly at each step and Off removes
+several directions at once. F4 changes the picture visibly at each step and Off removes
 shadows entirely without any other change to the scene. The overlay's shadow block reports a
 plausible atlas size and a sub-millisecond stage. The setting survives the restart.
 
@@ -668,7 +668,7 @@ bed built for it.
    braziers and look at the walls and floor around them.
 3. `.\target\release\mygame.exe --scene encounter --enemies 20` — pull the lot and watch the
    frame time in the F5 overlay while twenty enemies move.
-4. In each, press F6 to Off and back to High.
+4. In each, press F4 to Off and back to High.
 
 **Expected** — the character's shadow follows the animation rather than the bind pose, and
 stays attached to the feet. In the dungeon the braziers cast local shadows that move

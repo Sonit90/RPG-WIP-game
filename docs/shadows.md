@@ -405,7 +405,7 @@ next one down if it is not fast enough.
 | Control | What it does |
 | --- | --- |
 | the GRAPHICS screen | the player's way in: pick a level, it applies and saves |
-| `F6` | cycles the quality and **saves it** — the same code path the screen uses, so the key and the screen cannot disagree |
+| `F4` | cycles the quality and **saves it** — the same code path the screen uses, so the key and the screen cannot disagree |
 | `F7` | cycles the debug view: off → cascade tint → shadow factor → the atlas → caster bounds |
 | `F5` | the developer overlay, which carries the shadow statistics block |
 | `--shadows <level>` | overrides the setting for one run **without** writing it back |

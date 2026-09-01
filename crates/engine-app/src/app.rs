@@ -138,7 +138,12 @@ const COLLISION_DEBUG_KEY: KeyCode = KeyCode::F3;
 /// screen — the key writes the same field the file holds, so what it changes is what is
 /// saved. Changing it stalls for a GPU idle, which is why it is a key press rather than
 /// something a slider fires per frame.
-const SHADOW_QUALITY_KEY: KeyCode = KeyCode::F6;
+///
+/// F4 rather than F6: F6 opens and closes the level editor in a development build, and one
+/// press must not both open the editor and stall the GPU to rebuild the shadow atlas. The
+/// two are read in different places — the editor reads the input state, this is a key event —
+/// so a shared key is answered twice rather than once.
+const SHADOW_QUALITY_KEY: KeyCode = KeyCode::F4;
 
 /// Function key that cycles the debug views: the shadow ones, then the material ones.
 ///
@@ -217,6 +222,20 @@ pub struct App {
     /// editor is development scaffolding and must not ship inside the game.
     #[cfg(feature = "editor")]
     editor: engine_editor::Editor,
+    /// Whether the editor should open itself on the next frame, from `--editor`.
+    ///
+    /// A request rather than a call, because opening needs a viewport and a camera that the
+    /// constructor does not have yet: the first frame answers it through exactly the same
+    /// path F6 goes down, so "started in the editor" and "pressed F6" cannot drift apart.
+    #[cfg(feature = "editor")]
+    editor_open_requested: bool,
+    /// Where the editor saves, when `--scene-file` named a file.
+    ///
+    /// Without one the editor names its own file after the scene. With one, CTRL+S writes
+    /// back to the file the level was opened from, which is what makes opening, editing and
+    /// saving a level one path rather than a save-as every time.
+    #[cfg(feature = "editor")]
+    editor_save_path: Option<std::path::PathBuf>,
     /// The collision demo's stations and labels. `None` in the combat scene.
     demo: Option<DemoScene>,
     /// The collision demo's world-space labels. Its own draw list, because the demo scene
@@ -385,7 +404,7 @@ pub struct App {
     /// and none of which happen again - stay out of the percentiles.
     warmup_frames: u64,
     /// Individual shadow fields `--shadow-tweak` named, applied over whichever preset is
-    /// current - including the one F6 switches to.
+    /// current - including the one F4 switches to.
     shadow_overrides: crate::args::ShadowOverrides,
     /// When the measured window opened, and at which frame.
     ///
@@ -838,6 +857,10 @@ impl App {
             scene: args.scene,
             #[cfg(feature = "editor")]
             editor: engine_editor::Editor::new(),
+            #[cfg(feature = "editor")]
+            editor_open_requested: args.editor,
+            #[cfg(feature = "editor")]
+            editor_save_path: args.scene_file.as_deref().map(std::path::PathBuf::from),
             demo,
             collision_ui: UiDrawList::with_capacity(64, 1_024),
             #[cfg(feature = "debug-overlay")]
@@ -1068,7 +1091,7 @@ impl App {
             engine_settings::ShadowQuality::Ultra => ShadowPreset::Ultra,
         };
         // `--shadow-tweak` on top of the preset: a benchmark moves one field without
-        // inventing a quality level for it, and F6 still cycles the presets underneath.
+        // inventing a quality level for it, and F4 still cycles the presets underneath.
         let settings = self.shadow_overrides.apply(preset.settings());
         if let Err(error) = self.renderer.set_shadow_settings(settings) {
             // A quality change that fails leaves the previous configuration running, which
@@ -2239,6 +2262,28 @@ impl App {
         self.renderer.set_ui(self.game_ui.list());
     }
 
+    /// Rebuilds the static collision world from the environment scene as it stands now.
+    ///
+    /// The floor and the boundary first, then every blocking placement, then one broad-phase
+    /// build — the identical sequence `engine_game::arena::environment_arena` runs at load,
+    /// called rather than re-written, so an edited level is solid in exactly the way a loaded
+    /// one is. It costs one pass over a few hundred shapes and is paid on the frames an
+    /// author is editing, where nothing else is running.
+    #[cfg(feature = "editor")]
+    fn rebuild_environment_collision(&mut self) {
+        let Some(scene) = self.environment.as_ref() else {
+            return;
+        };
+        // Zero dummies: the configuration is read here only for the floor height and the
+        // boundary, and neither depends on how large the group is.
+        let config = ArenaConfig::from_environment(scene, 0);
+        let world = self.simulation.collision_world_mut();
+        arena::build_collision(world, &config);
+        let statics = arena::add_environment_collision(world, scene);
+        world.rebuild_broad_phase();
+        log::debug!("editor: collision rebuilt, {statics} shape(s) from the scene");
+    }
+
     /// One frame of the level editor. Returns whether it owned the frame.
     ///
     /// `F6` opens it and closes it. While it is open the simulation does not advance and no
@@ -2253,7 +2298,8 @@ impl App {
     fn update_editor(&mut self, ctx: &mut EngineContext) -> Result<bool, EngineError> {
         let viewport = self.renderer.size();
         if !self.editor.is_active() {
-            if !engine_editor::wants_to_enter(ctx.input()) {
+            let requested = std::mem::take(&mut self.editor_open_requested);
+            if !requested && !engine_editor::wants_to_enter(ctx.input()) {
                 return Ok(false);
             }
             let Some((name, count)) = self
@@ -2272,6 +2318,9 @@ impl App {
             self.cancel_mouse_look();
             self.editor.set_scale(self.game_ui.scale(), viewport);
             self.editor.enter(focus, &name, viewport);
+            if let Some(path) = self.editor_save_path.clone() {
+                self.editor.set_save_path(path);
+            }
             log::info!("editor: editing '{name}' ({count} objects); F6 goes back to playing");
             return Ok(true);
         }
@@ -2291,11 +2340,11 @@ impl App {
             ) {
                 engine_editor::EditorOutcome::SceneChanged => changed = true,
                 engine_editor::EditorOutcome::Left => {
-                    log::info!(
-                        "editor: back to playing. Collision still describes the level as it \
-                         was loaded — save with CTRL+S and relaunch with --scene-file to \
-                         walk into what you built"
-                    );
+                    // The static world is rebuilt on the way out as well as on every
+                    // change, so that leaving the editor lands the author in the level
+                    // they just built rather than in the one that was loaded.
+                    self.rebuild_environment_collision();
+                    log::info!("editor: back to playing; collision describes what is on screen");
                     return Ok(false);
                 }
                 engine_editor::EditorOutcome::Idle => {}
@@ -2311,6 +2360,11 @@ impl App {
             self.placer.clear(world);
             self.placer
                 .place(world, scene, controller_eye_guess(scene), LOD_BIAS);
+            // What is drawn and what is solid come from one description of the level, and
+            // they are rebuilt together. An author who places a wall and walks into it
+            // expects a wall; the alternative is an editor whose work can only be tested by
+            // relaunching the game.
+            self.rebuild_environment_collision();
         }
 
         let (width, height) = self.renderer.size();
@@ -3738,6 +3792,16 @@ fn load_authored_scene(
             "load both --scene-file and --layout; they are two ways to say what the level is",
         )),
         (Some(path), None) => {
+            // A level that does not exist yet, opened in the editor, is a *new* level. Only
+            // in the editor: a game told to load a level and quietly handed an empty one
+            // instead would look exactly like a level that failed to save.
+            if args.editor && !std::path::Path::new(path).is_file() {
+                let name = std::path::Path::new(path)
+                    .file_stem()
+                    .map_or_else(|| "untitled".to_owned(), |stem| stem.to_string_lossy().into_owned());
+                log::info!("scene file: {path} does not exist yet - starting a new empty level '{name}'");
+                return Ok(Some(engine_environment::EnvironmentScene::empty(name)));
+            }
             let scene = engine_environment::scene_file::load(path).map_err(|error| {
                 EngineError::unsupported("load the scene file").with_source(error)
             })?;
@@ -4204,7 +4268,7 @@ fn log_controls(args: &Args, demo: Option<&DemoScene>) {
             log::info!("                 into the bay: local shadows reach 40 m, so from here");
             log::info!("                 none of them are granted one");
             log::info!(
-                "  F6 cycles the quality, F7 cycles the debug views: cascade tint, shadow                  factor, the atlas, caster bounds, then the material - normal,                  roughness, metallic, occlusion"
+                "  F4 cycles the quality, F7 cycles the debug views: cascade tint, shadow                  factor, the atlas, caster bounds, then the material - normal,                  roughness, metallic, occlusion"
             );
         }
         None => log::info!("training arena: 1 dummy plus a group of {}", args.dummies),
@@ -4252,7 +4316,7 @@ fn log_controls(args: &Args, demo: Option<&DemoScene>) {
         log::info!("  BACKSPACE        put the fight back: enemies home and whole, you alive");
         log::info!("  G                interrupt the target's cast (developer control)");
     }
-    log::info!("  F6               shadow quality: off, low, medium, high, ultra");
+    log::info!("  F4               shadow quality: off, low, medium, high, ultra");
     log::info!(
         "  F7               debug views: the shadows, then the material - shading normal,          roughness, metallic, occlusion"
     );

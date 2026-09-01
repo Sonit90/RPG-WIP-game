@@ -30,3 +30,10 @@ Desktop.ini
 # checkout without one falls back to the procedural model. See assets/README.md.
 /assets/*
 !/assets/README.md
+# Levels are source, not art: a scene file is a few kilobytes of JSON that describes what a
+# designer built, and losing it loses the level. Everything else under assets/ is binary
+# content that lives beside the repository.
+!/assets/scenes/
+# Generated starter content is reproducible - `cargo run --bin asset_gen` writes all of it -
+# so it is treated as build output rather than as source.
+/assets/generated/

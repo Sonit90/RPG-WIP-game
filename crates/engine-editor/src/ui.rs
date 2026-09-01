@@ -25,7 +25,7 @@ use engine_render_data::ui::{UiDrawList, UiRect, UiScale};
 use crate::Editor;
 
 /// Layout constants, in logical pixels.
-mod layout {
+pub mod layout {
     /// Width of the palette panel.
     pub const PANEL_WIDTH: f32 = 168.0;
     /// Height of one palette row.
@@ -40,6 +40,73 @@ mod layout {
     pub const MARGIN: f32 = 12.0;
     /// Height reserved under the palette for the status lines.
     pub const STATUS_HEIGHT: f32 = 46.0;
+
+    /// Width of the hierarchy and inspector panels down the right-hand side.
+    pub const SIDE_WIDTH: f32 = 210.0;
+    /// Height of the inspector panel under the hierarchy.
+    pub const INSPECTOR_HEIGHT: f32 = 116.0;
+    /// Gap between the hierarchy panel and the inspector under it.
+    pub const PANEL_GAP: f32 = 8.0;
+    /// How much of the window's height the hierarchy list may take.
+    pub const HIERARCHY_FRACTION: f32 = 0.55;
+}
+
+/// Where the hierarchy panel sits, in physical pixels.
+///
+/// Down the right-hand side, opposite the palette: the palette answers "what am I about to
+/// place" and the hierarchy answers "what is already here", and an author reads them
+/// alternately rather than together.
+#[must_use]
+pub fn hierarchy_rect(scale: UiScale, viewport: (u32, u32)) -> UiRect {
+    let margin = scale.px(layout::MARGIN);
+    let width = scale.px(layout::SIDE_WIDTH);
+    let height = (viewport.1 as f32 * layout::HIERARCHY_FRACTION).max(scale.px(120.0));
+    UiRect::new(viewport.0 as f32 - margin - width, margin, width, height)
+}
+
+/// Where the inspector panel sits, in physical pixels: under the hierarchy.
+#[must_use]
+pub fn inspector_rect(scale: UiScale, viewport: (u32, u32)) -> UiRect {
+    let hierarchy = hierarchy_rect(scale, viewport);
+    UiRect::new(
+        hierarchy.x,
+        hierarchy.bottom() + scale.px(layout::PANEL_GAP),
+        hierarchy.width,
+        scale.px(layout::INSPECTOR_HEIGHT),
+    )
+}
+
+/// How many hierarchy rows fit in the panel.
+///
+/// A count rather than a scroll bar: the list scrolls with the wheel, and a scroll bar is a
+/// widget with a drag, a thumb and a track that buys nothing an author of a few hundred
+/// objects would notice.
+#[must_use]
+pub fn hierarchy_visible_rows(scale: UiScale, viewport: (u32, u32)) -> usize {
+    let panel = hierarchy_rect(scale, viewport);
+    let padding = scale.px(layout::PADDING);
+    let heading = scale.px(layout::HEADING);
+    let row = scale.px(layout::ROW_HEIGHT) + scale.px(layout::ROW_GAP);
+    if row <= 0.0 {
+        return 0;
+    }
+    (((panel.height - padding * 2.0 - heading) / row).floor().max(0.0)) as usize
+}
+
+/// Where one hierarchy row sits, counting from the top of the visible window.
+#[must_use]
+pub fn hierarchy_row_rect(scale: UiScale, viewport: (u32, u32), slot: usize) -> UiRect {
+    let panel = hierarchy_rect(scale, viewport);
+    let padding = scale.px(layout::PADDING);
+    let row = scale.px(layout::ROW_HEIGHT);
+    let gap = scale.px(layout::ROW_GAP);
+    let top = panel.y + padding + scale.px(layout::HEADING) + slot as f32 * (row + gap);
+    UiRect::new(
+        panel.x + padding,
+        top,
+        panel.width - padding * 2.0,
+        row,
+    )
 }
 
 /// Where the palette panel sits, in physical pixels.
@@ -164,25 +231,184 @@ pub fn push_editor(
         text,
     );
 
-    // The key list, bottom right, where a HUD is not.
+    push_hierarchy(list, editor, scene, theme, scratch, viewport);
+    push_inspector(list, editor, scene, theme, scratch, viewport);
+
+    // The key list, bottom left, out from under the two right-hand panels.
     let keys = [
         "LMB PLACE / SELECT   DRAG MOVE",
         "R YAW   T SIZE   X DELETE   C COPY",
         "Z UNDO   G GRID   TAB NEXT ASSET",
+        "WHEEL SCROLLS THE HIERARCHY",
         "CTRL+S SAVE   F6 BACK TO PLAYING",
     ];
     let line = text * 12.0;
     let bottom = viewport.1 as f32 - scale.px(layout::MARGIN);
     for (index, key) in keys.iter().enumerate() {
         let y = bottom - line * (keys.len() - index) as f32;
-        list.text_aligned(
-            (viewport.0 as f32 - scale.px(layout::MARGIN), y),
+        list.text_at(
+            (scale.px(layout::MARGIN), y),
             key,
             theme.text_disabled,
             text,
-            engine_render_data::ui::TextAlign::Right,
         );
     }
+}
+
+/// The hierarchy: every object in the level, in the order the file holds them.
+///
+/// Rows are painted rather than made of [`Button`](engine_presentation::ui::widget::Button)s
+/// because a row's label is `"12 PILLAR"` — a string built from the scene, which a widget's
+/// `&'static str` label cannot hold. The hit test lives in [`crate::Editor::update`] and uses
+/// [`hierarchy_row_rect`], so the rectangle a click is tested against and the rectangle drawn
+/// are one function.
+fn push_hierarchy(
+    list: &mut UiDrawList,
+    editor: &Editor,
+    scene: &EnvironmentScene,
+    theme: &MenuTheme,
+    scratch: &mut String,
+    viewport: (u32, u32),
+) {
+    let scale = editor.scale();
+    let panel = hierarchy_rect(scale, viewport);
+    let border = scale.px(theme.border_pixels);
+    let text = scale.text(theme.label_scale);
+    let padding = scale.px(layout::PADDING);
+
+    list.rect(panel, theme.panel);
+    list.outline(panel, border, theme.panel_border);
+
+    scratch.clear();
+    scratch.push_str("HIERARCHY ");
+    write_count(scratch, scene.len());
+    list.text_at(
+        (panel.x + padding, panel.y + padding),
+        scratch,
+        theme.title,
+        text,
+    );
+
+    let visible = hierarchy_visible_rows(scale, viewport);
+    let first = editor.hierarchy_scroll().min(scene.len());
+    for slot in 0..visible {
+        let Some(index) = first.checked_add(slot) else {
+            break;
+        };
+        let Some(object) = scene.objects.get(index) else {
+            break;
+        };
+        let rect = hierarchy_row_rect(scale, viewport, slot);
+        let selected = editor.selection() == Some(index);
+        if selected {
+            list.rect(rect, theme.panel_border);
+            list.outline(rect, border, theme.title);
+        }
+        scratch.clear();
+        write_count(scratch, index);
+        scratch.push(' ');
+        scratch.push_str(object.asset.name());
+        list.text_at(
+            (rect.x + padding * 0.5, rect.y + padding * 0.25),
+            scratch,
+            if selected { theme.title } else { theme.text },
+            text,
+        );
+    }
+
+    // Whether there is more list than window, said in words rather than with a scroll bar.
+    if scene.len() > visible {
+        scratch.clear();
+        write_count(scratch, first + visible.min(scene.len().saturating_sub(first)));
+        scratch.push_str(" OF ");
+        write_count(scratch, scene.len());
+        list.text_at(
+            (panel.x + padding, panel.bottom() - padding - text * 8.0),
+            scratch,
+            theme.text_disabled,
+            text,
+        );
+    }
+}
+
+/// The inspector: the selected object's transform, as numbers.
+///
+/// Read-only text and the keys that change it. A field an author types into needs a text
+/// caret, a parser and a commit rule; the keys already exist, and what was missing was being
+/// able to *see* what they did.
+fn push_inspector(
+    list: &mut UiDrawList,
+    editor: &Editor,
+    scene: &EnvironmentScene,
+    theme: &MenuTheme,
+    scratch: &mut String,
+    viewport: (u32, u32),
+) {
+    let scale = editor.scale();
+    let panel = inspector_rect(scale, viewport);
+    let border = scale.px(theme.border_pixels);
+    let text = scale.text(theme.label_scale);
+    let padding = scale.px(layout::PADDING);
+    let line = text * 10.0;
+
+    list.rect(panel, theme.panel);
+    list.outline(panel, border, theme.panel_border);
+    list.text_at(
+        (panel.x + padding, panel.y + padding),
+        "INSPECTOR",
+        theme.title,
+        text,
+    );
+
+    let row = |index: usize, out: &String, list: &mut UiDrawList| {
+        list.text_at(
+            (
+                panel.x + padding,
+                panel.y + padding + scale.px(layout::HEADING) + index as f32 * line,
+            ),
+            out,
+            theme.text,
+            text,
+        );
+    };
+
+    let Some(object) = editor
+        .selection()
+        .and_then(|index| scene.objects.get(index))
+    else {
+        scratch.clear();
+        scratch.push_str("NOTHING SELECTED");
+        row(0, scratch, list);
+        return;
+    };
+
+    scratch.clear();
+    scratch.push_str(object.asset.name());
+    row(0, scratch, list);
+
+    let position = object.transform.translation;
+    scratch.clear();
+    scratch.push_str("POS ");
+    write_metres(scratch, position.x);
+    scratch.push(' ');
+    write_metres(scratch, position.y);
+    scratch.push(' ');
+    write_metres(scratch, position.z);
+    row(1, scratch, list);
+
+    scratch.clear();
+    scratch.push_str("YAW ");
+    write_metres(scratch, crate::yaw_of(object.transform).to_degrees());
+    row(2, scratch, list);
+
+    scratch.clear();
+    scratch.push_str("SCALE ");
+    write_metres(scratch, object.transform.scale.x);
+    scratch.push(' ');
+    write_metres(scratch, object.transform.scale.y);
+    scratch.push(' ');
+    write_metres(scratch, object.transform.scale.z);
+    row(3, scratch, list);
 }
 
 /// Which palette row the editor's asset is.

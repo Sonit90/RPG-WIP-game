@@ -530,6 +530,23 @@ mod tests {
     }
 
     #[test]
+    fn a_new_empty_level_saves_and_reopens_as_an_empty_level() {
+        // What the editor writes the first time somebody makes a level and saves it before
+        // placing anything: a file with no objects in it must be a valid level, not a
+        // malformed one, or "new level" would be a state that cannot be saved.
+        let path = std::env::temp_dir()
+            .join("mygame_scene_tests")
+            .join("empty_level.json");
+        let original = EnvironmentScene::empty("new_level");
+        save(&original, &path).expect("an empty scene saves");
+        let restored = load(&path).expect("an empty scene loads");
+        assert!(restored.is_empty());
+        assert_eq!(restored.name, "new_level", "the level keeps its name, not the file stem");
+        assert_same_level(&restored, &original);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
     fn the_dungeon_itself_survives_the_round_trip() {
         // The real test of the format: 800-odd placements of eight assets, every one of them
         // carrying an authored collision box, written and read back.

@@ -84,6 +84,18 @@ pub struct EnvironmentScene {
 }
 
 impl EnvironmentScene {
+    /// A level with nothing in it.
+    ///
+    /// What the editor opens when a scene file does not exist yet. It is a real scene rather
+    /// than an absence of one: it has a floor height, a boundary and a sun, so a camera has
+    /// somewhere to stand and the first object placed in it lands on the same ground every
+    /// other object will. Nothing is placed, because a "new level" that quietly contained a
+    /// ground plane would be a level whose first object an author cannot delete.
+    #[must_use]
+    pub fn empty(name: impl Into<Cow<'static, str>>) -> Self {
+        Self::with_capacity(name, 0)
+    }
+
     /// An empty scene with room for `capacity` objects.
     #[must_use]
     pub fn with_capacity(name: impl Into<Cow<'static, str>>, capacity: usize) -> Self {
