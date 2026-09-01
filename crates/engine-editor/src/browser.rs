@@ -44,6 +44,12 @@ use engine_core::input::{InputState, KeyCode};
 use engine_environment::EnvironmentAsset;
 use engine_environment::asset::LIBRARY;
 
+/// How deep the tree is opened when a directory is first read.
+///
+/// Two, which is `generated/environment` — the grouping — with the leaf folders that hold the
+/// files closed under it. See [`AssetBrowser::scan`].
+pub const OPEN_TO_DEPTH: usize = 2;
+
 /// One line of the browser.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BrowserRow {
@@ -111,22 +117,41 @@ impl AssetBrowser {
         browser
     }
 
-    /// Reads `root` and opens the folders down to the first level.
+    /// Reads `root` and opens the tree down to where the assets actually are.
     ///
-    /// Everything is open at the top and closed below it: a tree that opens fully shows a
-    /// hundred rows the first time it is looked at, and a tree that opens nothing makes an
-    /// author click three times to find out whether anything is there at all.
+    /// The rule is [`OPEN_TO_DEPTH`] plus every folder that holds nothing but folders. A
+    /// content directory is two or three levels of grouping over one level of files —
+    /// `generated/environment/rocks/rock_small.glb` — so opening one level shows an author a
+    /// folder called `generated` and nothing else, and opening everything shows two hundred
+    /// rows. Opening the grouping and leaving the leaves closed shows the *categories*, which
+    /// is what somebody looking for a rock is looking for.
+    ///
+    /// The `builtin` folder starts closed, because it is eighteen rows of fallback in front
+    /// of the content the project actually has.
     pub fn scan(&mut self, root: impl Into<PathBuf>) {
         self.catalogue = AssetCatalogue::scan(root);
-        self.expanded = self
-            .catalogue
-            .folders()
-            .iter()
-            .map(|folder| folder.depth <= 1)
-            .collect();
+        self.expanded = self.default_expansion(|_| false);
+        self.builtin_expanded = false;
         self.scroll = 0;
         self.clamp_selection();
         self.rebuild_rows();
+    }
+
+    /// Which folders are open when nothing has said otherwise.
+    ///
+    /// `remembered` answers "was this folder open before", which a rescan uses to keep an
+    /// author's tree as they left it.
+    fn default_expansion(&self, remembered: impl Fn(&str) -> bool) -> Vec<bool> {
+        self.catalogue
+            .folders()
+            .iter()
+            .map(|folder| {
+                // A folder holding only folders is a grouping, not a place things are: opening
+                // it costs one row per child and saves a click on every one of them.
+                let grouping = folder.assets.is_empty() && !folder.children.is_empty();
+                remembered(&folder.path) || folder.depth <= OPEN_TO_DEPTH || grouping
+            })
+            .collect()
     }
 
     /// Reads the same directory again, keeping what is open and what is chosen.
@@ -145,12 +170,7 @@ impl AssetBrowser {
         let chosen = self.selected_id();
 
         self.catalogue.rescan();
-        self.expanded = self
-            .catalogue
-            .folders()
-            .iter()
-            .map(|folder| open.contains(&folder.path) || folder.depth <= 1)
-            .collect();
+        self.expanded = self.default_expansion(|path| open.contains(&path.to_owned()));
         // The chosen asset by *name*, so a rescan that renumbered the entries does not move
         // the selection to whatever happens to be in that slot now.
         if let Some(id) = chosen
@@ -281,8 +301,13 @@ impl AssetBrowser {
     }
 
     /// Chooses the next placeable asset, wrapping. What `TAB` does.
+    ///
+    /// It walks everything that *exists*, not everything that is on screen, and opens the
+    /// folders down to whatever it lands on. Walking the visible rows instead would make TAB
+    /// do nothing at all in a browser whose folders are closed, which is how the browser
+    /// starts.
     pub fn select_next(&mut self) {
-        let placeable: Vec<Selection> = self.placeable_rows();
+        let placeable = self.placeable_assets();
         if placeable.is_empty() {
             return;
         }
@@ -511,28 +536,50 @@ impl AssetBrowser {
         }
     }
 
-    /// Every row the next click could place, in the order they are drawn.
-    fn placeable_rows(&self) -> Vec<Selection> {
-        self.rows
+    /// Every asset that could be placed, whether or not its folder is open.
+    ///
+    /// The built-in library first, then the catalogue in the order it lists things, so `TAB`
+    /// walks a stable sequence that does not change when a folder is opened or closed.
+    fn placeable_assets(&self) -> Vec<Selection> {
+        let builtins = (0..LIBRARY.len()).map(Selection::Builtin);
+        let entries = self
+            .catalogue
+            .entries()
             .iter()
-            .filter_map(|row| match row {
-                BrowserRow::Builtin(index) => Some(Selection::Builtin(*index)),
-                BrowserRow::Entry(index) => self
-                    .catalogue
-                    .entries()
-                    .get(*index)
-                    .filter(|entry| entry.kind.is_placeable())
-                    .map(|_| Selection::Entry(*index)),
-                _ => None,
-            })
-            .collect()
+            .enumerate()
+            .filter(|(_, entry)| entry.kind.is_placeable())
+            .map(|(index, _)| Selection::Entry(index));
+        builtins.chain(entries).collect()
     }
 
-    /// Scrolls the chosen asset into view, opening nothing.
+    /// Opens whatever the chosen asset is inside and scrolls it into view.
+    ///
+    /// A selection that cannot be seen is a selection an author cannot check, and `TAB` is
+    /// most useful exactly when they have not opened the folder yet.
     fn reveal_selection(&mut self) {
+        match self.selection {
+            Selection::Builtin(_) => self.builtin_expanded = true,
+            Selection::Entry(index) => {
+                let mut folder = self.catalogue.entries().get(index).map(|entry| entry.folder);
+                while let Some(current) = folder {
+                    if let Some(open) = self.expanded.get_mut(current) {
+                        *open = true;
+                    }
+                    folder = self
+                        .catalogue
+                        .folders()
+                        .get(current)
+                        .and_then(|folder| folder.parent);
+                }
+            }
+        }
+        self.rebuild_rows();
+
         let Some(position) = self.rows.iter().position(|row| self.is_selected(*row)) else {
             return;
         };
+        // Only scrolled when it is above the window; how far *below* it is depends on how many
+        // rows the panel can show, which is the painter's business rather than the tree's.
         if position < self.scroll {
             self.scroll = position;
         }
@@ -655,18 +702,54 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_assets_directory_still_lists_the_builtin_library() {
+    fn an_empty_assets_directory_still_offers_the_builtin_library() {
         let root = tree("empty", &[]);
         std::fs::create_dir_all(&root).expect("the directory");
+        let mut browser = browser_over(&root);
+
+        // One row: the closed `builtin` folder. Opening it is the whole library.
+        assert_eq!(browser.rows(), [BrowserRow::BuiltinFolder]);
+        browser.toggle(BrowserRow::BuiltinFolder);
+        assert_eq!(browser.rows().len(), LIBRARY.len() + 1);
+        assert_eq!(browser.selected_asset(), LIBRARY[0]);
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn the_categories_of_a_content_directory_are_visible_without_a_click() {
+        // The shape the generator writes: two levels of grouping over the folders that hold
+        // the files. An author opening the editor must see `rocks` and `caves` without
+        // hunting for them.
+        let root = tree(
+            "categories",
+            &[
+                "generated/environment/rocks/rock_small.glb",
+                "generated/environment/caves/cave_entrance.glb",
+                "generated/environment/cliffs/cliff_overhang.glb",
+                "generated/materials/grass.json",
+            ],
+        );
         let browser = browser_over(&root);
 
-        assert_eq!(
-            browser.rows().len(),
-            LIBRARY.len() + 1,
-            "the builtin folder and its assets, and nothing else"
+        let visible: Vec<String> = browser
+            .rows()
+            .iter()
+            .map(|row| browser.label(*row).1)
+            .collect();
+        for wanted in ["- generated", "- environment", "+ rocks", "+ caves", "+ cliffs"] {
+            assert!(
+                visible.iter().any(|label| label == wanted),
+                "{wanted} is not on screen: {visible:?}"
+            );
+        }
+        assert!(
+            visible.iter().all(|label| label != "rock_small"),
+            "a leaf folder opened itself: {visible:?}"
         );
-        assert_eq!(browser.rows()[0], BrowserRow::BuiltinFolder);
-        assert_eq!(browser.selected_asset(), LIBRARY[0]);
+        assert!(
+            browser.rows().len() < 20,
+            "the tree opened far enough to need scrolling: {visible:?}"
+        );
         std::fs::remove_dir_all(&root).ok();
     }
 
@@ -674,14 +757,15 @@ mod tests {
     fn a_folder_opens_and_closes_and_takes_its_contents_with_it() {
         let root = tree(
             "expand",
-            &["generated/rocks/a.glb", "generated/rocks/b.glb"],
+            &[
+                "generated/environment/rocks/a.glb",
+                "generated/environment/rocks/b.glb",
+            ],
         );
         let mut browser = browser_over(&root);
-        browser.toggle(BrowserRow::BuiltinFolder);
 
-        // generated is open (depth 1), rocks is closed (depth 2).
+        // The leaf folder that holds the files starts closed.
         let rows = browser.rows().to_vec();
-        assert!(rows.contains(&BrowserRow::BuiltinFolder));
         let rocks = rows
             .iter()
             .find(|row| matches!(row, BrowserRow::Folder(index)
@@ -703,6 +787,15 @@ mod tests {
                 .filter(|row| matches!(row, BrowserRow::Entry(_)))
                 .count(),
             2
+        );
+
+        browser.toggle(rocks);
+        assert!(
+            !browser
+                .rows()
+                .iter()
+                .any(|row| matches!(row, BrowserRow::Entry(_))),
+            "closing the folder left its contents on screen"
         );
         std::fs::remove_dir_all(&root).ok();
     }
@@ -828,20 +921,87 @@ mod tests {
     }
 
     #[test]
-    fn tab_walks_every_placeable_row_and_skips_the_rest() {
+    fn tab_walks_every_placeable_asset_and_skips_the_rest() {
         let root = tree(
             "tab",
             &["props/one.glb", "materials/grass.json", "materials/grass.png"],
         );
         let mut browser = browser_over(&root);
-        browser.toggle(BrowserRow::BuiltinFolder);
 
-        // Only the model is placeable, so TAB lands on it and stays there.
+        // Every built-in, then the one model on disk, then round again. The material is never
+        // landed on, because placing one means nothing.
+        for expected in LIBRARY.into_iter().skip(1) {
+            browser.select_next();
+            assert_eq!(browser.selected_name(), expected.name());
+        }
         browser.select_next();
         assert_eq!(browser.selected_name(), "one");
         browser.select_next();
-        assert_eq!(browser.selected_name(), "one");
+        assert_eq!(
+            browser.selected_name(),
+            LIBRARY[0].name(),
+            "TAB did not wrap round to the start"
+        );
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn tab_works_in_a_browser_whose_folders_are_all_closed() {
+        // How the browser starts: the builtin folder closed and the leaf folders closed. TAB
+        // has to walk what exists rather than what is drawn, and open what it lands on.
+        let root = tree("tab_closed", &["generated/environment/rocks/only.glb"]);
+        let mut browser = browser_over(&root);
+        assert!(!browser.is_expanded(BrowserRow::BuiltinFolder));
+
+        browser.select_next();
+        assert_eq!(browser.selected_name(), LIBRARY[1].name());
+        assert!(
+            browser.is_expanded(BrowserRow::BuiltinFolder),
+            "TAB chose something inside a folder it did not open"
+        );
+        assert!(
+            browser.rows().iter().any(|row| browser.is_selected(*row)),
+            "the chosen asset is not on any row"
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn tab_onto_a_file_opens_every_folder_above_it() {
+        let root = tree("tab_deep", &["generated/environment/rocks/only.glb"]);
+        let mut browser = browser_over(&root);
+        // Walk past the whole built-in library onto the one file on disk.
+        for _ in 0..LIBRARY.len() {
+            browser.select_next();
+        }
+        assert_eq!(browser.selected_name(), "only");
+        assert!(
+            browser.rows().iter().any(|row| browser.is_selected(*row)),
+            "the file's folder was left closed, so the selection is invisible"
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn the_real_directory_shows_its_categories_when_the_editor_opens() {
+        let root = std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets"));
+        if !root.join("generated").is_dir() {
+            return;
+        }
+        let mut browser = AssetBrowser::new();
+        browser.scan(&root);
+        let labels: Vec<String> = browser
+            .rows()
+            .iter()
+            .map(|row| browser.label(*row).1)
+            .collect();
+        for wanted in ["+ caves", "+ cliffs", "+ rocks", "+ builtin"] {
+            assert!(labels.iter().any(|label| label == wanted), "{wanted}: {labels:?}");
+        }
+        assert!(
+            labels.len() < 24,
+            "the opening view needs scrolling to reach the categories: {labels:?}"
+        );
     }
 
     #[test]
@@ -859,6 +1019,8 @@ mod tests {
         let mut browser = AssetBrowser::new();
         browser.scan(std::env::temp_dir().join("mygame_no_such_assets"));
         assert!(browser.catalogue().report().root_missing);
+        assert_eq!(browser.rows(), [BrowserRow::BuiltinFolder]);
+        browser.toggle(BrowserRow::BuiltinFolder);
         assert_eq!(browser.rows().len(), LIBRARY.len() + 1);
         assert_eq!(browser.selected_asset(), LIBRARY[0]);
     }

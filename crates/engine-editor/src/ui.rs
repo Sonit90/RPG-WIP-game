@@ -566,7 +566,23 @@ mod tests {
         assert!(text.contains("ASSETS"), "the heading is missing: {text}");
         assert!(text.contains("builtin"), "the builtin folder is missing");
         assert!(
-            text.contains("ground_plain"),
+            !text.contains("ground_plain"),
+            "the builtin folder starts closed, so its assets are not drawn"
+        );
+
+        // Opened, the library is on screen.
+        editor.browser_mut().toggle(crate::browser::BrowserRow::BuiltinFolder);
+        list.clear();
+        push_editor(
+            &mut list,
+            &editor,
+            &EnvironmentScene::with_capacity("test", 0),
+            &MenuTheme::default(),
+            &mut scratch,
+            VIEWPORT,
+        );
+        assert!(
+            list.text().contains("ground_plain"),
             "the first library asset is not listed"
         );
     }

@@ -360,6 +360,37 @@ same answer the loader gives.
   `assets holds 25 model(s), 7 material(s), 0 texture(s), 0 level(s)` — the 24 generated
   models plus the one `.glb` that was already in the repository.
 
+### What the tree opens to, and why TAB walks what is not on screen
+
+Two things were wrong the first time an author opened the panel, and both are fixed:
+
+* The `builtin` folder was open, which put nineteen rows of fallback in front of the content
+  the project actually has and pushed `generated` off the bottom of the panel. It starts
+  closed now.
+* Disk folders opened only to depth 1, so `generated` was visible and `environment` — the
+  folder that holds `rocks`, `caves` and `cliffs` — was not. The rule is now **open to depth
+  2, plus any folder holding nothing but folders**. A content directory is two or three levels
+  of grouping over one level of files, so this shows the categories and leaves the leaves
+  closed. The opening view of the real directory is nineteen rows:
+
+```text
++ builtin
+firemage_1
+- generated
+    - environment
+        + caves      + cliffs   + ground
+        + props      + rocks    + vegetation   + water
+    - materials
+        cliff [MATERIAL]  dirt [MATERIAL]  …
+```
+
+`TAB` walked the *visible* rows, which meant it did nothing at all in a browser whose folders
+were closed — which is now how the browser starts. It walks every placeable asset that
+exists, in a stable order that does not change when a folder opens, and opens the folders down
+to whatever it lands on. A test asserts TAB works with everything collapsed, and the editor
+test that presses TAB until it reaches a pillar is now bounded, so a TAB that stops moving
+fails the test rather than hanging it.
+
 ### Not yet
 
 Placing a browser asset writes an interned id into the scene, and nothing uploads a model for

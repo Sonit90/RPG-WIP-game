@@ -161,6 +161,12 @@ impl Editor {
         &self.browser
     }
 
+    /// The asset browser, to open a folder or choose an asset from outside the editor's own
+    /// input handling. What a test uses, and what a future "reveal this asset" command would.
+    pub fn browser_mut(&mut self) -> &mut browser::AssetBrowser {
+        &mut self.browser
+    }
+
     /// Which asset the next click places.
     #[must_use]
     pub fn asset(&self) -> EnvironmentAsset {
@@ -924,6 +930,8 @@ mod tests {
         let mut editor = editor();
         let mut scene = scene();
         // The browser starts on ground_plain, which blocks nothing; TAB along to a pillar.
+        // Bounded, so a TAB that stops moving fails the test instead of hanging it.
+        let mut presses = 0;
         while editor.asset() != PILLAR {
             update(
                 &mut editor,
@@ -931,6 +939,8 @@ mod tests {
                 &UiInput::new(),
                 &mut scene,
             );
+            presses += 1;
+            assert!(presses < 256, "TAB never reached the pillar");
         }
         update(
             &mut editor,
@@ -1117,8 +1127,15 @@ mod tests {
         let mut scene = scene();
         editor.set_scale(UiScale::default(), VIEWPORT);
 
-        // Row 0 is the `builtin` folder and rows 1.. are the assets inside it, so row 4 is
-        // the fourth entry of the compiled library.
+        // Row 0 is the closed `builtin` folder: click it to open it, and rows 1.. are then
+        // the assets inside, so row 4 is the fourth entry of the compiled library.
+        let folder = ui::browser_row_rect(editor.scale(), VIEWPORT, 0);
+        update(
+            &mut editor,
+            &InputState::new(),
+            &press((folder.x + folder.width * 0.5, folder.y + folder.height * 0.5)),
+            &mut scene,
+        );
         let rect = ui::browser_row_rect(editor.scale(), VIEWPORT, 4);
         let pointer = (rect.x + rect.width * 0.5, rect.y + rect.height * 0.5);
         update(&mut editor, &InputState::new(), &press(pointer), &mut scene);
@@ -1143,8 +1160,8 @@ mod tests {
         update(&mut editor, &InputState::new(), &press(pointer), &mut scene);
 
         assert!(
-            editor.browser().rows().len() < before,
-            "clicking the builtin folder did not close it"
+            editor.browser().rows().len() > before,
+            "clicking the builtin folder did not open it"
         );
         assert!(scene.is_empty());
     }
