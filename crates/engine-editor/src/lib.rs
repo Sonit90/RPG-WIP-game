@@ -1051,10 +1051,16 @@ impl Editor {
         };
         self.snapshot(scene);
         let asset = self.asset();
-        // What it blocks is decided once, here, and written into the level: a built-in has an
-        // authored answer and a file gets a box around its geometry. The level carries it
-        // either way, so a placement keeps what it was placed with even if the rule changes.
-        let collision = self.browser.selected_collision();
+        // What it blocks is decided once, here, and written into the level. A built-in has an
+        // authored primitive; a file has whatever its sidecar says, or a box around its
+        // geometry. Several boxes are added to the scene's own shape table and named by
+        // index, which is what lets a cliff overhang block a wall and a slab with walkable
+        // space between them. The level carries it either way, so a placement keeps what it
+        // was placed with even if the rule changes.
+        let collision = match self.browser.selected_collision() {
+            browser::PlacementCollision::Simple(collision) => collision,
+            browser::PlacementCollision::Shape(shape) => scene.intern_collision(shape),
+        };
         scene.push(EnvironmentObject {
             asset,
             transform: Transform::from_translation(self.snap(ground)),

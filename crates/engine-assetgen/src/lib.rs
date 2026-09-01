@@ -45,6 +45,7 @@
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
+use engine_assets::collision_file::CollisionFile;
 use engine_assets::gltf_export::{encode_png_file, export_glb};
 use engine_assets::material_file::MaterialFile;
 use engine_assets::procedural::starter::{STARTER_LIBRARY, STARTER_MATERIALS};
@@ -148,29 +149,65 @@ pub fn run(options: &Options, out: &mut String) -> Outcome {
         if options.list_only {
             let _ = writeln!(out, "would write {}", path.display());
             outcome.written += 1;
+        } else if path.exists() && !options.force {
+            let _ = writeln!(out, "kept    {}", path.display());
+            outcome.skipped += 1;
+        } else {
+            let model = (asset.build)();
+            let triangles = model.triangle_count();
+            match export_glb(&model)
+                .map_err(|error| error.to_string())
+                .and_then(|bytes| write_file(&path, &bytes).map(|()| bytes.len()))
+            {
+                Ok(bytes) => {
+                    let _ = writeln!(
+                        out,
+                        "wrote   {} ({triangles} triangles, {:.1} KiB)",
+                        path.display(),
+                        bytes as f64 / 1024.0
+                    );
+                    outcome.written += 1;
+                }
+                Err(reason) => {
+                    let _ = writeln!(out, "FAILED  {}: {reason}", path.display());
+                    outcome.failed += 1;
+                }
+            }
+        }
+
+        // The collision sidecar, for the pieces a box around the geometry gets wrong: the
+        // overhang, the arch and every cave piece. Written beside the model, so an artist
+        // replacing the model can replace this with it — see `engine_assets::collision_file`.
+        //
+        // Handled whatever happened to the model above: a run that kept an artist's `.glb`
+        // must still be able to write the sidecar that was never there, or replacing a model
+        // would silently lose its collision.
+        let Some(shape) = asset.collision() else {
+            continue;
+        };
+        let sidecar = options.root.join(asset.collision_path());
+        if options.list_only {
+            let _ = writeln!(out, "would write {}", sidecar.display());
+            outcome.written += 1;
             continue;
         }
-        if path.exists() && !options.force {
-            let _ = writeln!(out, "kept    {}", path.display());
+        if sidecar.exists() && !options.force {
+            let _ = writeln!(out, "kept    {}", sidecar.display());
             outcome.skipped += 1;
             continue;
         }
-        let model = (asset.build)();
-        let triangles = model.triangle_count();
-        match export_glb(&model).map_err(|error| error.to_string()).and_then(
-            |bytes| write_file(&path, &bytes).map(|()| bytes.len()),
-        ) {
-            Ok(bytes) => {
+        match CollisionFile::from_shape(&shape).save(&sidecar) {
+            Ok(()) => {
                 let _ = writeln!(
                     out,
-                    "wrote   {} ({triangles} triangles, {:.1} KiB)",
-                    path.display(),
-                    bytes as f64 / 1024.0
+                    "wrote   {} ({} box(es))",
+                    sidecar.display(),
+                    shape.len()
                 );
                 outcome.written += 1;
             }
-            Err(reason) => {
-                let _ = writeln!(out, "FAILED  {}: {reason}", path.display());
+            Err(error) => {
+                let _ = writeln!(out, "FAILED  {}: {error}", sidecar.display());
                 outcome.failed += 1;
             }
         }
@@ -272,10 +309,15 @@ mod tests {
         let outcome = run(&options(root.clone()), &mut out);
 
         assert_eq!(outcome.failed, 0, "{out}");
+        let sidecars = STARTER_LIBRARY
+            .iter()
+            .filter(|asset| asset.collision().is_some())
+            .count();
+        assert!(sidecars >= 5, "{sidecars} pieces carry authored collision");
         assert_eq!(
             outcome.written,
-            STARTER_LIBRARY.len() + STARTER_MATERIALS.len() * 2,
-            "one .glb per asset, and a .png and a .json per material\n{out}"
+            STARTER_LIBRARY.len() + sidecars + STARTER_MATERIALS.len() * 2,
+            "one .glb per asset, a sidecar per hollow one, and two files per material\n{out}"
         );
         for asset in STARTER_LIBRARY {
             let path = root.join(asset.relative_path());
@@ -302,6 +344,18 @@ mod tests {
                 .unwrap_or_else(|error| panic!("{} does not import: {error}", asset.name));
             assert!(model.triangle_count() > 0, "{} is empty", asset.name);
         }
+        // What the hollow pieces are for: a sidecar the editor can read back.
+        for asset in STARTER_LIBRARY {
+            let Some(authored) = asset.collision() else {
+                continue;
+            };
+            let model = root.join(asset.relative_path());
+            let read = engine_assets::collision_file::CollisionFile::beside(&model)
+                .expect("the sidecar reads")
+                .expect("the sidecar is there");
+            assert_eq!(read, authored, "{} lost its collision", asset.name);
+        }
+
         for material in STARTER_MATERIALS {
             let path = root.join(format!("generated/materials/{}.json", material.name));
             let (file, texture) =
@@ -325,9 +379,13 @@ mod tests {
         let mut second = String::new();
         let outcome = run(&options(root.clone()), &mut second);
         assert_eq!(outcome.written, 0, "{second}");
+        let sidecars = STARTER_LIBRARY
+            .iter()
+            .filter(|asset| asset.collision().is_some())
+            .count();
         assert_eq!(
             outcome.skipped,
-            STARTER_LIBRARY.len() + STARTER_MATERIALS.len() * 2
+            STARTER_LIBRARY.len() + sidecars + STARTER_MATERIALS.len() * 2
         );
         assert_eq!(
             std::fs::read(&replaced).expect("still there"),

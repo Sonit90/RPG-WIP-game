@@ -12,6 +12,9 @@ publish.workspace = true
 # `engine-renderer`, `engine-render-data`, `engine-assets` or `engine-game`, and that is
 # checkable with `cargo tree -p engine-environment`.
 [dependencies]
+# The log, for the two places a level can be internally inconsistent: a collision shape a
+# placement names and the scene does not have, and a shape table that overflowed.
+log = { workspace = true }
 engine-core = { workspace = true }
 # The scene file, and only the scene file. A codec cannot reach a mesh or a collision world,
 # which is what the rule above is actually protecting.

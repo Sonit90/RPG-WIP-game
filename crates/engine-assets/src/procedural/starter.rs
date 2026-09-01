@@ -43,6 +43,7 @@
 //! tunnel is 3 m of headroom, which reads as tight but passable.
 
 use engine_core::math::{Vec2, Vec3};
+use engine_environment::object::{CollisionBox, CollisionShape};
 
 use crate::material::MaterialAsset;
 use crate::mesh::SubMesh;
@@ -82,6 +83,223 @@ impl StarterAsset {
     pub fn relative_path(&self) -> String {
         format!("generated/{}/{}.glb", self.folder, self.name)
     }
+
+    /// Where this asset's collision sidecar goes, relative to the assets root.
+    #[must_use]
+    pub fn collision_path(&self) -> String {
+        format!("generated/{}/{}.collision.json", self.folder, self.name)
+    }
+
+    /// What this asset blocks, or `None` to let a box around its geometry answer.
+    #[must_use]
+    pub fn collision(&self) -> Option<CollisionShape> {
+        starter_collision(self.name)
+    }
+}
+
+/// What a starter asset blocks, for the pieces a bounding box gets wrong.
+///
+/// ```text
+///  cliff_overhang     the wall and the slab, with the walk-under space between them
+///  cave_tunnel_*      floor, two walls and a roof around the cavity
+///  cave_entrance      the face either side of the opening, and the lintel over it
+///  cave_room_small    the shell of the room, doorways left open
+///  everything else    None: a box around the geometry is right for a rock
+/// ```
+///
+/// # Why this is authored and not derived
+///
+/// A bounding box is the correct answer for a boulder and the *worst possible* answer for a
+/// tunnel: it fills the cavity the piece exists to provide. Deriving the cavity from the mesh
+/// means convex decomposition, which is a large piece of machinery to get a result somebody
+/// can write down in six lines. So the pieces whose shape is their empty space say what they
+/// block, and everything else keeps the automatic box.
+///
+/// The numbers here are read off the same constants the geometry is built from, so a change
+/// to the module size moves the mesh and the collision together.
+#[must_use]
+pub fn starter_collision(name: &str) -> Option<CollisionShape> {
+    let half_width = TUNNEL_WIDTH * 0.5;
+    let outer = half_width + SHELL;
+    let cavity_top = SHELL + TUNNEL_HEIGHT;
+    let module = MODULE;
+
+    let tunnel_shell_boxes = |length: f32| {
+        vec![
+            // Floor.
+            CollisionBox::between(
+                Vec3::new(-outer, 0.0, -length),
+                Vec3::new(outer, SHELL, 0.0),
+            ),
+            // Left wall.
+            CollisionBox::between(
+                Vec3::new(-outer, SHELL, -length),
+                Vec3::new(-half_width, cavity_top, 0.0),
+            ),
+            // Right wall.
+            CollisionBox::between(
+                Vec3::new(half_width, SHELL, -length),
+                Vec3::new(outer, cavity_top, 0.0),
+            ),
+            // Roof.
+            CollisionBox::between(
+                Vec3::new(-outer, cavity_top, -length),
+                Vec3::new(outer, cavity_top + SHELL, 0.0),
+            ),
+        ]
+    };
+
+    let boxes = match name {
+        // The piece the whole cliff system exists for: a back wall, and a slab over the
+        // space in front of it. The space between them is what a player walks through.
+        "cliff_overhang" => vec![
+            CollisionBox::between(
+                Vec3::new(-module * 0.5, 0.0, -1.0),
+                Vec3::new(module * 0.5, CLIFF_HEIGHT, 0.0),
+            ),
+            CollisionBox::between(
+                Vec3::new(-module * 0.5, 3.5, -5.0),
+                Vec3::new(module * 0.5, 5.0, -1.0),
+            ),
+        ],
+        // Two legs and a span. The doorway between the legs stays open.
+        "cliff_arch" => vec![
+            CollisionBox::between(
+                Vec3::new(-module - 1.0, 0.0, -1.2),
+                Vec3::new(-module + 1.0, 4.0, 1.2),
+            ),
+            CollisionBox::between(
+                Vec3::new(module - 1.0, 0.0, -1.2),
+                Vec3::new(module + 1.0, 4.0, 1.2),
+            ),
+            CollisionBox::between(
+                Vec3::new(-module - 1.0, 4.0, -1.2),
+                Vec3::new(module + 1.0, 5.6, 1.2),
+            ),
+        ],
+        "cave_tunnel_straight" => tunnel_shell_boxes(module),
+        "cave_entrance" => {
+            let mut boxes = tunnel_shell_boxes(module);
+            // The face either side of the opening, and the lintel over it.
+            boxes.push(CollisionBox::between(
+                Vec3::new(-module, 0.0, -1.0),
+                Vec3::new(-half_width, CLIFF_HEIGHT, 0.0),
+            ));
+            boxes.push(CollisionBox::between(
+                Vec3::new(half_width, 0.0, -1.0),
+                Vec3::new(module, CLIFF_HEIGHT, 0.0),
+            ));
+            boxes.push(CollisionBox::between(
+                Vec3::new(-half_width, cavity_top, -1.0),
+                Vec3::new(half_width, CLIFF_HEIGHT, 0.0),
+            ));
+            boxes
+        }
+        "cave_tunnel_curve" => {
+            let reach = module;
+            vec![
+                // The floor of both legs.
+                CollisionBox::between(
+                    Vec3::new(-outer, 0.0, -reach),
+                    Vec3::new(outer, SHELL, 0.0),
+                ),
+                CollisionBox::between(
+                    Vec3::new(-outer, 0.0, -reach),
+                    Vec3::new(reach, SHELL, -reach + TUNNEL_WIDTH + SHELL),
+                ),
+                // The outer wall of the turn.
+                CollisionBox::between(
+                    Vec3::new(-outer, SHELL, -reach),
+                    Vec3::new(-half_width, cavity_top, 0.0),
+                ),
+                CollisionBox::between(
+                    Vec3::new(-outer, SHELL, -reach),
+                    Vec3::new(reach, cavity_top, -reach + SHELL),
+                ),
+                // The block the tunnel turns around.
+                CollisionBox::between(
+                    Vec3::new(half_width, SHELL, -reach + TUNNEL_WIDTH),
+                    Vec3::new(reach, cavity_top, 0.0),
+                ),
+                // The roof over both legs.
+                CollisionBox::between(
+                    Vec3::new(-outer, cavity_top, -reach),
+                    Vec3::new(outer, cavity_top + SHELL, 0.0),
+                ),
+                CollisionBox::between(
+                    Vec3::new(-outer, cavity_top, -reach),
+                    Vec3::new(reach, cavity_top + SHELL, -reach + TUNNEL_WIDTH + SHELL),
+                ),
+            ]
+        }
+        "cave_room_small" => {
+            let inner = 6.0_f32;
+            let outer_wall = inner + SHELL;
+            let height = 5.0;
+            let door = TUNNEL_WIDTH * 0.5;
+            let mut boxes = vec![
+                // Floor and roof.
+                CollisionBox::between(
+                    Vec3::new(-outer_wall, 0.0, -outer_wall),
+                    Vec3::new(outer_wall, SHELL, outer_wall),
+                ),
+                CollisionBox::between(
+                    Vec3::new(-outer_wall, SHELL + height, -outer_wall),
+                    Vec3::new(outer_wall, SHELL + height + SHELL, outer_wall),
+                ),
+            ];
+            // Four walls, each in two pieces with a doorway between them, and a lintel over
+            // the doorway. The same shape the mesh is built from, so what looks like a way
+            // through is a way through.
+            for (along_x, side) in [(true, -1.0_f32), (true, 1.0), (false, -1.0), (false, 1.0)] {
+                for end in [-1.0_f32, 1.0] {
+                    let (low, high) = if along_x {
+                        (
+                            Vec3::new(
+                                if end < 0.0 { -outer_wall } else { door },
+                                SHELL,
+                                side * inner,
+                            ),
+                            Vec3::new(
+                                if end < 0.0 { -door } else { outer_wall },
+                                SHELL + height,
+                                side * outer_wall,
+                            ),
+                        )
+                    } else {
+                        (
+                            Vec3::new(
+                                side * inner,
+                                SHELL,
+                                if end < 0.0 { -outer_wall } else { door },
+                            ),
+                            Vec3::new(
+                                side * outer_wall,
+                                SHELL + height,
+                                if end < 0.0 { -door } else { outer_wall },
+                            ),
+                        )
+                    };
+                    boxes.push(CollisionBox::between(low, high));
+                }
+                let (low, high) = if along_x {
+                    (
+                        Vec3::new(-door, SHELL + TUNNEL_HEIGHT, side * inner),
+                        Vec3::new(door, SHELL + height, side * outer_wall),
+                    )
+                } else {
+                    (
+                        Vec3::new(side * inner, SHELL + TUNNEL_HEIGHT, -door),
+                        Vec3::new(side * outer_wall, SHELL + height, door),
+                    )
+                };
+                boxes.push(CollisionBox::between(low, high));
+            }
+            boxes
+        }
+        _ => return None,
+    };
+    Some(CollisionShape::new(boxes))
 }
 
 /// Every starter model, in the order the generator writes them.
@@ -476,7 +694,7 @@ fn rock_spire() -> ModelAsset {
 // ---------------------------------------------------------------------------------------
 
 /// How tall one cliff module is.
-const CLIFF_HEIGHT: f32 = 6.0;
+pub const CLIFF_HEIGHT: f32 = 6.0;
 
 /// One straight length of cliff face: 4 m wide, 6 m tall, 3 m deep.
 ///
@@ -1153,6 +1371,126 @@ mod tests {
                 "{} is transparent and should not be",
                 material.name
             );
+        }
+    }
+
+    /// Whether any of a shape's boxes contains `point`, in the model's own space.
+    fn blocked(shape: &CollisionShape, point: Vec3) -> bool {
+        shape.boxes.iter().any(|shape| {
+            let low = shape.center - shape.half_extents;
+            let high = shape.center + shape.half_extents;
+            (low.x..=high.x).contains(&point.x)
+                && (low.y..=high.y).contains(&point.y)
+                && (low.z..=high.z).contains(&point.z)
+        })
+    }
+
+    #[test]
+    fn a_player_can_stand_under_the_overhang_and_not_inside_its_wall() {
+        // The requirement the whole cliff system exists for, as an assertion. A box around
+        // this piece's geometry would fail every line of it.
+        let shape = starter_collision("cliff_overhang").expect("the overhang is authored");
+        for height in [0.1_f32, 0.9, 1.8, 3.0] {
+            assert!(
+                !blocked(&shape, Vec3::new(0.0, height, -3.0)),
+                "the space under the overhang is solid at {height} m"
+            );
+        }
+        assert!(
+            blocked(&shape, Vec3::new(0.0, 4.2, -3.0)),
+            "the slab overhead is not solid"
+        );
+        assert!(
+            blocked(&shape, Vec3::new(0.0, 1.0, -0.5)),
+            "the wall at the back is not solid"
+        );
+    }
+
+    #[test]
+    fn a_tunnel_is_hollow_and_its_shell_is_not() {
+        for name in ["cave_tunnel_straight", "cave_entrance"] {
+            let shape = starter_collision(name).expect("authored");
+            // Down the middle, at head height and at knee height.
+            for z in [-0.5_f32, -2.0, -3.5] {
+                for height in [0.7_f32, 1.8, 2.8] {
+                    assert!(
+                        !blocked(&shape, Vec3::new(0.0, SHELL + height, z)),
+                        "{name} is solid inside at z {z}, {height} m up"
+                    );
+                }
+            }
+            // The floor, the walls and the roof.
+            assert!(blocked(&shape, Vec3::new(0.0, 0.25, -2.0)), "{name} floor");
+            assert!(
+                blocked(&shape, Vec3::new(TUNNEL_WIDTH * 0.5 + 0.25, 1.5, -2.0)),
+                "{name} wall"
+            );
+            assert!(
+                blocked(&shape, Vec3::new(0.0, SHELL + TUNNEL_HEIGHT + 0.25, -2.0)),
+                "{name} roof"
+            );
+        }
+    }
+
+    #[test]
+    fn a_room_has_a_floor_a_roof_and_four_doorways_that_are_open() {
+        let shape = starter_collision("cave_room_small").expect("authored");
+        assert!(blocked(&shape, Vec3::new(0.0, 0.25, 0.0)), "no floor");
+        assert!(blocked(&shape, Vec3::new(0.0, 5.75, 0.0)), "no roof");
+        assert!(
+            !blocked(&shape, Vec3::new(0.0, 2.0, 0.0)),
+            "the middle of the room is solid"
+        );
+        // The doorway in each wall, at head height.
+        for door in [
+            Vec3::new(0.0, 2.0, 6.3),
+            Vec3::new(0.0, 2.0, -6.3),
+            Vec3::new(6.3, 2.0, 0.0),
+            Vec3::new(-6.3, 2.0, 0.0),
+        ] {
+            assert!(!blocked(&shape, door), "the doorway at {door:?} is walled up");
+        }
+        // And the wall beside a doorway is not.
+        assert!(
+            blocked(&shape, Vec3::new(4.0, 2.0, 6.3)),
+            "the wall beside a doorway is missing"
+        );
+    }
+
+    #[test]
+    fn an_arch_can_be_walked_through_between_its_legs() {
+        let shape = starter_collision("cliff_arch").expect("authored");
+        assert!(
+            !blocked(&shape, Vec3::new(0.0, 1.8, 0.0)),
+            "the way through the arch is blocked"
+        );
+        assert!(blocked(&shape, Vec3::new(-MODULE, 1.8, 0.0)), "no left leg");
+        assert!(blocked(&shape, Vec3::new(MODULE, 1.8, 0.0)), "no right leg");
+        assert!(blocked(&shape, Vec3::new(0.0, 4.8, 0.0)), "no span");
+    }
+
+    #[test]
+    fn the_pieces_a_bounding_box_gets_right_are_left_to_it() {
+        // A rock, a crate, a pillar: solid things, where a box around the geometry is the
+        // right answer and authoring one by hand would be work with no result.
+        for name in ["rock_small", "boulder_large", "crate_wooden", "pillar"] {
+            assert!(
+                starter_collision(name).is_none(),
+                "{name} has hand-authored collision it does not need"
+            );
+        }
+    }
+
+    #[test]
+    fn every_authored_shape_has_boxes_with_volume() {
+        for asset in STARTER_LIBRARY {
+            let Some(shape) = asset.collision() else {
+                continue;
+            };
+            assert!(!shape.is_empty(), "{} has an empty shape", asset.name);
+            for shape in &shape.boxes {
+                assert!(shape.is_solid(), "{} has a flat box", asset.name);
+            }
         }
     }
 

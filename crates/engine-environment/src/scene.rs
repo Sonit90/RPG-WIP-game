@@ -85,6 +85,13 @@ pub struct EnvironmentScene {
     /// *with* terrain keeps it: the terrain covers part of the playable square and this is
     /// what holds up whatever is standing on the rest of it.
     pub ground_height: f32,
+    /// The compound collision shapes placements refer to by index.
+    ///
+    /// Empty in a level whose objects each block one box or nothing, which is most of them.
+    /// A cliff overhang or a cave piece names an entry here — see
+    /// [`EnvironmentCollision::Compound`](crate::EnvironmentCollision::Compound) for why the
+    /// boxes are here rather than in the object.
+    pub collision_shapes: Vec<crate::object::CollisionShape>,
     /// The shape of the ground, if this level has been given one.
     ///
     /// `None` is a flat level, which is every level built before terrain existed and every
@@ -118,6 +125,7 @@ impl EnvironmentScene {
             lights: Vec::new(),
             half_extent: 40.0,
             ground_height: 0.0,
+            collision_shapes: Vec::new(),
             terrain: None,
         }
     }
@@ -133,6 +141,71 @@ impl EnvironmentScene {
         match &self.terrain {
             Some(terrain) if terrain.contains(position) => terrain.height_at(position),
             _ => self.ground_height,
+        }
+    }
+
+    /// Adds a compound collision shape and returns the collision that names it.
+    ///
+    /// Shapes are shared: placing forty of the same cliff piece adds one entry and forty
+    /// references to it. A shape with no boxes in it blocks nothing and is answered with
+    /// [`EnvironmentCollision::None`] rather than with an entry nothing can be done with.
+    ///
+    /// Beyond `u16::MAX` distinct shapes the level gets `None` and a log line. A level with
+    /// sixty-five thousand *different* collision shapes is not a level anybody built by hand.
+    pub fn intern_collision(
+        &mut self,
+        shape: crate::object::CollisionShape,
+    ) -> crate::object::EnvironmentCollision {
+        use crate::object::EnvironmentCollision;
+        if shape.is_empty() {
+            return EnvironmentCollision::None;
+        }
+        if let Some(index) = self
+            .collision_shapes
+            .iter()
+            .position(|known| *known == shape)
+        {
+            return EnvironmentCollision::Compound(index as u16);
+        }
+        let Ok(index) = u16::try_from(self.collision_shapes.len()) else {
+            log::error!(
+                "scene '{}': more than {} distinct collision shapes; this one blocks nothing",
+                self.name,
+                u16::MAX
+            );
+            return EnvironmentCollision::None;
+        };
+        self.collision_shapes.push(shape);
+        EnvironmentCollision::Compound(index)
+    }
+
+    /// Every world-space box one placement blocks.
+    ///
+    /// The one place the three kinds of collision become the same thing: nothing, one box, or
+    /// the boxes of a shape this scene holds. Whatever builds a collision world walks this and
+    /// never asks which kind it was — which is what let compound shapes arrive without a
+    /// second code path in gameplay.
+    #[must_use]
+    pub fn world_boxes(&self, object: &EnvironmentObject) -> Vec<crate::object::WorldBox> {
+        use crate::object::EnvironmentCollision;
+        match object.collision {
+            EnvironmentCollision::None => Vec::new(),
+            EnvironmentCollision::Box { .. } => object.world_collision().into_iter().collect(),
+            EnvironmentCollision::Compound(index) => {
+                let Some(shape) = self.collision_shapes.get(index as usize) else {
+                    log::error!(
+                        "scene '{}': {} names collision shape {index}, which this level does                          not have; it blocks nothing",
+                        self.name,
+                        object.asset
+                    );
+                    return Vec::new();
+                };
+                shape
+                    .boxes
+                    .iter()
+                    .map(|shape| object.place_box(*shape))
+                    .collect()
+            }
         }
     }
 

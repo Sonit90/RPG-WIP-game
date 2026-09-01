@@ -590,3 +590,82 @@ what the separate outcome exists to avoid.
 A 41×41 sculpted level: `1 objects, 0 collision shapes, and terrain` →
 `terrain: 41 points a side, 3200 triangles`. Whole workspace green, clippy clean, and the
 non-editor build still compiles without any of it.
+
+## Phase 7 — modular cliffs, and walking underneath one
+
+The pieces existed since Phase 3. What did not was collision that describes them: a placed
+`.glb` got one box around its geometry, so the cliff overhang was a wall and the cave tunnel
+was a rock. The level looked right in a screenshot and was unwalkable in the game.
+
+### Compound collision, and why the boxes live in the scene
+
+`EnvironmentCollision` gained `Compound(u16)` — an index into
+`EnvironmentScene::collision_shapes`.
+
+One box is the overwhelmingly common case, and an `EnvironmentObject` is 44 bytes because of
+it. An overhang needs two boxes, a tunnel four, a room ten; a variant big enough for a room
+would put two hundred bytes into every rock in the level to hold nothing. So the boxes live in
+the scene and a placement names one. Two placements of the same cliff piece share an entry,
+the object stays `Copy`, and the scene file writes the table once however many placements
+refer to it.
+
+`EnvironmentScene::world_boxes(object)` is the one place the three kinds become the same
+thing — nothing, one box, or several. Gameplay walks that and never asks which it was, which
+is how compound shapes arrived without a second code path in the collision build.
+
+### Where the boxes come from: a sidecar
+
+```text
+cliff_overhang.glb              the geometry
+cliff_overhang.collision.json   the wall and the slab — and the gap between them
+```
+
+Three places this could have lived. Inside the `.glb` as a node-name convention, which every
+exporter must honour and every artist must remember. In the engine as a table keyed by asset
+name, which breaks the moment somebody adds an asset the build was not compiled with — the
+exact thing the asset catalogue exists to allow. Or beside the file.
+
+Beside the file wins: an artist delivering `arch.glb` can deliver `arch.collision.json` with
+it, the editor reads it when the asset is placed, and an asset without one keeps the automatic
+bounding box. No engine change, no exporter convention, nothing to remember for the assets
+that do not need it.
+
+The sidecar is an **authoring input**, not something the game loads. What ends up in the level
+is the boxes, written into the scene file — so a level built today keeps working if the
+sidecar changes tomorrow, and the game has no idea these files exist.
+
+A sidecar that is present and will not parse is reported and the asset falls back to its
+bounds: the asset stays placeable and the log says why it came out solid. Silently falling
+back would hide the typo behind a cave nobody can walk into.
+
+### What is authored, and what is not
+
+Six pieces carry sidecars: `cliff_overhang`, `cliff_arch`, `cave_entrance`,
+`cave_tunnel_straight`, `cave_tunnel_curve`, `cave_room_small`. Rocks, crates and pillars do
+not — a box around the geometry is right for a solid thing, and authoring one by hand would be
+work with no result.
+
+Deriving the cavity from the mesh instead would mean convex decomposition: a large piece of
+machinery to produce a result somebody can write down in six lines.
+
+### The acceptance test
+
+`engine-presentation/tests/walk_under_and_through.rs` walks a character through the **real
+controller** in a world built by the **real level loader**:
+
+| Test | What it proves |
+| --- | --- |
+| walks under the overhang | the space beneath the slab is walkable |
+| the wall behind it still stops | an overhang you walk *through* is not an overhang |
+| walks the length of a tunnel | the cavity is real, end to end |
+| the tunnel wall is solid | the shell is a shell |
+| a bounding box **fails** the walk-under | if this ever passes, compound collision has stopped being applied and the tests above are passing for the wrong reason |
+| the shape survives the scene file | the level is what the game loads |
+
+That last one is the guard that matters: it asserts the *old* behaviour still fails, so the
+other five cannot quietly start passing for a reason that has nothing to do with the feature.
+
+### Verification
+
+106 test binaries green, clippy clean, `asset_check` still 24 assets / 0 errors, and
+`asset_gen` writes six sidecars beside the six pieces that need them.

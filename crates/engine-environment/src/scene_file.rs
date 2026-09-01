@@ -130,6 +130,30 @@ pub enum CollisionRecord {
         /// Half-width, half-height, half-depth, in the model's local space.
         half_extents: [f32; 3],
     },
+    /// Several boxes, held once in the file's own table and named by index.
+    ///
+    /// What a cliff overhang and every cave piece carry: the shape is the *solid* parts, and
+    /// the space a player walks through is what is left between them.
+    Compound {
+        /// Which entry of [`SceneDocument::collision_shapes`] this names.
+        shape: usize,
+    },
+}
+
+/// One compound collision shape, as the file says it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CollisionShapeRecord {
+    /// The boxes, in the model's local space.
+    pub boxes: Vec<CollisionBoxRecord>,
+}
+
+/// One box of a compound shape, as the file says it.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct CollisionBoxRecord {
+    /// Centre, in the model's local space.
+    pub center: [f32; 3],
+    /// Half-width, half-height, half-depth, in the model's local space.
+    pub half_extents: [f32; 3],
 }
 
 /// Where the scene says things start.
@@ -183,6 +207,13 @@ pub struct SceneDocument {
     pub lighting: Option<LightingRecord>,
     /// Every placement, in draw order.
     pub objects: Vec<ObjectRecord>,
+    /// The compound collision shapes the objects name by index.
+    ///
+    /// Written once however many placements refer to it, which is what makes a hillside of
+    /// forty cliff pieces one shape and forty references rather than forty copies of the same
+    /// four boxes.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub collision_shapes: Vec<CollisionShapeRecord>,
     /// The shape of the ground, if the level has one.
     ///
     /// Absent in every level written before terrain existed, and absent in a level nobody has
@@ -273,6 +304,20 @@ impl SceneDocument {
                 group_center: array(scene.spawns.group_center),
                 group_spacing: scene.spawns.group_spacing,
             }),
+            collision_shapes: scene
+                .collision_shapes
+                .iter()
+                .map(|shape| CollisionShapeRecord {
+                    boxes: shape
+                        .boxes
+                        .iter()
+                        .map(|shape| CollisionBoxRecord {
+                            center: array(shape.center),
+                            half_extents: array(shape.half_extents),
+                        })
+                        .collect(),
+                })
+                .collect(),
             terrain: scene.terrain.as_ref().map(|terrain| TerrainRecord {
                 origin: array(terrain.origin),
                 cell_size: terrain.cell_size,
@@ -338,6 +383,24 @@ impl SceneDocument {
             };
         }
 
+        // The shape table first: an object that names a shape is checked against it below, and
+        // a table that arrived after the objects would be a table nothing could be checked
+        // against.
+        scene.collision_shapes = self
+            .collision_shapes
+            .iter()
+            .map(|record| crate::object::CollisionShape {
+                boxes: record
+                    .boxes
+                    .iter()
+                    .map(|shape| crate::object::CollisionBox {
+                        center: vector(shape.center),
+                        half_extents: vector(shape.half_extents),
+                    })
+                    .collect(),
+            })
+            .collect();
+
         if let Some(record) = &self.terrain {
             let terrain = crate::terrain::Terrain {
                 origin: vector(record.origin),
@@ -372,6 +435,14 @@ impl SceneDocument {
                 reason,
             };
             let asset = asset_from_file(&record.asset).map_err(&invalid)?;
+            if let Some(CollisionRecord::Compound { shape }) = record.collision
+                && shape >= scene.collision_shapes.len()
+            {
+                return Err(invalid(format!(
+                    "collision shape {shape} was named, and the level has {}",
+                    scene.collision_shapes.len()
+                )));
+            }
             let finite = record.position.iter().all(|value| value.is_finite())
                 && record.scale.iter().all(|value| value.is_finite())
                 && record.yaw.is_finite();
@@ -415,6 +486,9 @@ impl ObjectRecord {
                     center: array(center),
                     half_extents: array(half_extents),
                 },
+                EnvironmentCollision::Compound(shape) => CollisionRecord::Compound {
+                    shape: shape as usize,
+                },
             }),
         }
     }
@@ -438,6 +512,12 @@ impl ObjectRecord {
                     center: vector(center),
                     half_extents: vector(half_extents),
                 },
+                // Range-checked where the document is turned into a scene, which is the one
+                // place that knows how many shapes the file brought; here it is carried
+                // across as written.
+                Some(CollisionRecord::Compound { shape }) => {
+                    EnvironmentCollision::Compound(u16::try_from(shape).unwrap_or(u16::MAX))
+                }
                 // An object that says nothing about collision gets what the library says the
                 // asset blocks. That is what makes a hand-written or Blender-authored file
                 // short: `{"asset": "pillar", "position": [4, 0, 0]}` is a pillar you cannot
@@ -687,6 +767,7 @@ mod tests {
             ground_height: 0.0,
             spawns: None,
             lighting: None,
+            collision_shapes: Vec::new(),
             terrain: None,
             objects: vec![
                 ObjectRecord {
@@ -727,6 +808,7 @@ mod tests {
             ground_height: 0.0,
             spawns: None,
             lighting: None,
+            collision_shapes: Vec::new(),
             terrain: None,
             objects: vec![ObjectRecord {
                 asset: "   ".to_owned(),
@@ -796,6 +878,7 @@ mod tests {
             ground_height: 0.0,
             spawns: None,
             lighting: None,
+            collision_shapes: Vec::new(),
             terrain: None,
             objects: vec![ObjectRecord {
                 asset: "pillar".to_owned(),

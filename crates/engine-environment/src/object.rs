@@ -48,6 +48,21 @@ pub enum EnvironmentCollision {
         /// Half-width, half-height and half-depth, in the model's local space.
         half_extents: Vec3,
     },
+    /// Several boxes, held by the scene under this index.
+    ///
+    /// # Why an index and not the boxes
+    ///
+    /// One box is the overwhelmingly common case and an [`EnvironmentObject`] is 44 bytes
+    /// because of it. A cliff overhang needs two boxes, a tunnel four and a room ten — and a
+    /// variant big enough for a room would put two hundred bytes into every rock in the level
+    /// to hold nothing.
+    ///
+    /// So the boxes live in the scene, in [`EnvironmentScene::collision_shapes`], and a
+    /// placement names one. Two placements of the same cliff piece share an entry, and the
+    /// object stays `Copy` and small.
+    ///
+    /// [`EnvironmentScene::collision_shapes`]: crate::EnvironmentScene::collision_shapes
+    Compound(u16),
 }
 
 impl EnvironmentCollision {
@@ -64,9 +79,104 @@ impl EnvironmentCollision {
     }
 
     /// Whether this object blocks anything at all.
+    ///
+    /// A compound is taken at its word: an index the scene cannot resolve is a broken level
+    /// rather than a decoration, and the build reports it where the resolution happens.
     #[must_use]
     pub fn blocks(self) -> bool {
         !matches!(self, Self::None)
+    }
+
+    /// Which shape in the scene's table this names, if it names one.
+    #[must_use]
+    pub fn compound_index(self) -> Option<usize> {
+        match self {
+            Self::Compound(index) => Some(index as usize),
+            _ => None,
+        }
+    }
+}
+
+/// One box of a compound collision shape, in the model's local space.
+///
+/// The same two numbers [`EnvironmentCollision::Box`] carries. A separate type because a
+/// compound is a list of them and a list of two-field structs reads better than a list of
+/// enum variants that can only ever be one of them.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CollisionBox {
+    /// Centre, in the model's local space.
+    pub center: Vec3,
+    /// Half-width, half-height and half-depth, in the model's local space.
+    pub half_extents: Vec3,
+}
+
+impl CollisionBox {
+    /// A box.
+    #[must_use]
+    pub fn new(center: Vec3, half_extents: Vec3) -> Self {
+        Self {
+            center,
+            half_extents,
+        }
+    }
+
+    /// A box standing on the model's origin: a footprint and a height.
+    #[must_use]
+    pub fn standing(half_width: f32, height: f32, half_depth: f32) -> Self {
+        Self::new(
+            Vec3::new(0.0, height * 0.5, 0.0),
+            Vec3::new(half_width, height * 0.5, half_depth),
+        )
+    }
+
+    /// A box between two corners of the model's local space.
+    ///
+    /// The form a cliff or a cave piece is authored in: "the wall runs from here to here",
+    /// which is how somebody reads it off the geometry they just built.
+    #[must_use]
+    pub fn between(low: Vec3, high: Vec3) -> Self {
+        let min = low.min(high);
+        let max = low.max(high);
+        Self::new((min + max) * 0.5, (max - min) * 0.5)
+    }
+
+    /// Whether the box has volume. A flat one is a shape no query can ever touch.
+    #[must_use]
+    pub fn is_solid(&self) -> bool {
+        self.half_extents.x > 0.0 && self.half_extents.y > 0.0 && self.half_extents.z > 0.0
+    }
+}
+
+/// A named set of boxes: what one asset blocks, when one box is not enough to say it.
+///
+/// The whole reason this exists is the overhang. A cliff a player can walk under is a wall
+/// and a slab with air between them, and a single box around both is a wall the player walks
+/// into. The same is true of every cave piece: the cavity *is* the asset.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct CollisionShape {
+    /// The boxes, in the model's local space.
+    pub boxes: Vec<CollisionBox>,
+}
+
+impl CollisionShape {
+    /// A shape made of `boxes`, dropping any that have no volume.
+    #[must_use]
+    pub fn new(boxes: impl IntoIterator<Item = CollisionBox>) -> Self {
+        Self {
+            boxes: boxes.into_iter().filter(CollisionBox::is_solid).collect(),
+        }
+    }
+
+    /// How many boxes it holds.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.boxes.len()
+    }
+
+    /// Whether it holds none, which means it blocks nothing.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.boxes.is_empty()
     }
 }
 
@@ -148,15 +258,25 @@ impl EnvironmentObject {
         else {
             return None;
         };
-        Some(WorldBox {
-            center: self.transform.transform_point(center),
+        Some(self.place_box(CollisionBox::new(center, half_extents)))
+    }
+
+    /// One local-space box, carried through this object's transform.
+    ///
+    /// The half-extents are scaled by the object's own scale, so an asset authored once and
+    /// placed at 0.7 and at 1.6 gets two correctly-sized boxes without either number being
+    /// written down twice.
+    #[must_use]
+    pub fn place_box(&self, shape: CollisionBox) -> WorldBox {
+        WorldBox {
+            center: self.transform.transform_point(shape.center),
             half_extents: Vec3::new(
-                half_extents.x * self.transform.scale.x,
-                half_extents.y * self.transform.scale.y,
-                half_extents.z * self.transform.scale.z,
+                shape.half_extents.x * self.transform.scale.x,
+                shape.half_extents.y * self.transform.scale.y,
+                shape.half_extents.z * self.transform.scale.z,
             ),
             rotation: self.transform.rotation,
-        })
+        }
     }
 }
 

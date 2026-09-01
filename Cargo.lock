@@ -295,6 +295,7 @@ name = "engine-environment"
 version = "0.1.0"
 dependencies = [
  "engine-core",
+ "log",
  "serde",
  "serde_json",
 ]

@@ -44,7 +44,8 @@ use engine_core::input::{InputState, KeyCode};
 use engine_core::math::Vec3;
 use engine_environment::asset::LIBRARY;
 use engine_environment::object::default_collision;
-use engine_environment::{EnvironmentAsset, EnvironmentCollision};
+use engine_environment::object::CollisionShape;
+use engine_environment::{CollisionBox, EnvironmentAsset, EnvironmentCollision};
 
 /// How deep the tree is opened when a directory is first read.
 ///
@@ -88,12 +89,24 @@ pub struct AssetBrowser {
     /// Whether keystrokes are going into the filter rather than to the editor's verbs.
     typing: bool,
     selection: Selection,
-    /// What each file-backed asset blocks, worked out from its geometry the first time it is
-    /// placed.
+    /// What each file-backed asset blocks, worked out the first time it is placed.
     ///
-    /// A cache because the answer costs a `.glb` import, and because an author placing forty
-    /// rocks must not pay for forty of them.
-    collision: Vec<(String, EnvironmentCollision)>,
+    /// A cache because the answer costs a sidecar read and, failing that, a `.glb` import —
+    /// and because an author placing forty rocks must not pay for forty of them.
+    collision: Vec<(String, CollisionShape)>,
+}
+
+/// What a placement should block.
+///
+/// Two answers, because they come from different places and mean different things. A built-in
+/// carries an authored primitive that the library decided; a file carries a set of boxes that
+/// the level has to hold, because the level is what a scene file writes.
+#[derive(Debug, Clone, PartialEq)]
+pub enum PlacementCollision {
+    /// A primitive the caller can use as it is.
+    Simple(EnvironmentCollision),
+    /// Boxes the caller must add to the scene's shape table before a placement can name them.
+    Shape(CollisionShape),
 }
 
 impl Default for AssetBrowser {
@@ -298,32 +311,36 @@ impl AssetBrowser {
 
     /// What the chosen asset blocks when it is placed.
     ///
-    /// A built-in has an authored answer — a pine collides with its trunk and not its canopy,
-    /// which is a judgement no bounding box can make. A file has no author to ask, so the box
-    /// is the model's own bounds: solid, which is right for a rock, a crate and a cliff, and
-    /// wrong for the pieces whose whole point is the space inside them.
+    /// ```text
+    ///  a built-in            the library's authored primitive
+    ///  a file with a sidecar the boxes it names: the solid parts of a hollow piece
+    ///  a file without one    a box around its geometry
+    /// ```
     ///
-    /// # Caves and overhangs
+    /// A built-in has an authored answer no bounding box could produce — a pine collides with
+    /// its trunk and not its canopy. A file may have one too, in the `.collision.json` beside
+    /// it, and that is what makes a cliff overhang something a player can walk under and a
+    /// cave something a player can walk into: the sidecar says which parts are solid, and the
+    /// space between them is the cavity. Everything else falls back to the model's bounds,
+    /// which is right for a rock and a crate.
     ///
-    /// A tunnel wrapped in its own bounding box is a solid block a player cannot walk into.
-    /// The box is still what is written, because a wrong box an author can see and change
-    /// beats no box at all — and Phase 9 is where a cave piece gets collision that describes
-    /// its cavity. What matters here is that the collision is stored *in the level*, so
-    /// improving it later changes what the editor writes and not what the engine understands.
-    pub fn selected_collision(&mut self) -> EnvironmentCollision {
+    /// A sidecar that is present and will not parse is reported and the asset falls back to
+    /// its bounds — the asset is still placeable, and the log says why it is solid.
+    pub fn selected_collision(&mut self) -> PlacementCollision {
         let Selection::Entry(index) = self.selection else {
-            return default_collision(self.selected_asset());
+            return PlacementCollision::Simple(default_collision(self.selected_asset()));
         };
         let Some(entry) = self.catalogue.entries().get(index) else {
-            return EnvironmentCollision::None;
+            return PlacementCollision::Simple(EnvironmentCollision::None);
         };
         let id = entry.id.clone();
         if let Some((_, known)) = self.collision.iter().find(|(name, _)| *name == id) {
-            return *known;
+            return PlacementCollision::Shape(known.clone());
         }
-        let collision = bounds_collision(&entry.path).unwrap_or(EnvironmentCollision::None);
-        self.collision.push((id, collision));
-        collision
+        let path = entry.path.clone();
+        let shape = authored_collision(&path).unwrap_or_else(|| bounds_collision(&path));
+        self.collision.push((id, shape.clone()));
+        PlacementCollision::Shape(shape)
     }
 
     /// Where the file behind the chosen asset is, if there is one.
@@ -658,22 +675,45 @@ pub fn default_root() -> PathBuf {
     PathBuf::from("assets")
 }
 
+/// What the sidecar beside a model says it blocks, if there is one.
+///
+/// `None` means "nobody said", and the caller falls back to the geometry's bounds. A sidecar
+/// that is there and will not parse is reported and treated the same way: the asset stays
+/// placeable, and the log says why it came out solid.
+fn authored_collision(path: &Path) -> Option<CollisionShape> {
+    match engine_assets::collision_file::CollisionFile::beside(path) {
+        Ok(shape) => shape,
+        Err(error) => {
+            log::warn!(
+                "editor: the collision sidecar beside {} will not load, so a box around its \
+                 geometry is used instead: {error}",
+                path.display()
+            );
+            None
+        }
+    }
+}
+
 /// A box around everything in a model's level-0 geometry.
 ///
-/// Returns `None` for a file that will not import, which is reported rather than guessed at:
+/// An empty shape for a file that will not import, which is reported rather than guessed at:
 /// an asset nobody can load gets no collision, and the marker cube standing in its place is
 /// what tells the author to look at it.
-fn bounds_collision(path: &Path) -> Option<EnvironmentCollision> {
+fn bounds_collision(path: &Path) -> CollisionShape {
     let limits = engine_assets::ValidationLimits::default();
-    let name = path.file_stem()?.to_string_lossy().into_owned();
+    let name = path
+        .file_stem()
+        .map_or_else(String::new, |stem| stem.to_string_lossy().into_owned());
     let model = match engine_assets::disk::load_glb(&name, path, &limits) {
         Ok(model) => model,
         Err(error) => {
             log::warn!("editor: '{name}' has no collision because it did not load: {error}");
-            return None;
+            return CollisionShape::default();
         }
     };
-    let lod = model.lod0()?;
+    let Some(lod) = model.lod0() else {
+        return CollisionShape::default();
+    };
     let mut min = Vec3::splat(f32::MAX);
     let mut max = Vec3::splat(f32::MIN);
     for submesh in &lod.submeshes {
@@ -683,19 +723,11 @@ fn bounds_collision(path: &Path) -> Option<EnvironmentCollision> {
         }
     }
     if min.x > max.x {
-        return None;
+        return CollisionShape::default();
     }
-    let half = (max - min) * 0.5;
-    // A model with no thickness in some axis — a water plane, a decal card — is decoration:
-    // a zero-extent box is a shape every query tests and none can touch, and the collision
-    // world logs it as a mistake.
-    if half.x <= 0.001 || half.y <= 0.001 || half.z <= 0.001 {
-        return Some(EnvironmentCollision::None);
-    }
-    Some(EnvironmentCollision::Box {
-        center: (min + max) * 0.5,
-        half_extents: half,
-    })
+    // A model with no thickness in some axis — a water plane, a decal card — is decoration.
+    // `CollisionShape::new` drops the box, which is what makes that true without a branch.
+    CollisionShape::new([CollisionBox::new((min + max) * 0.5, (max - min) * 0.5)])
 }
 
 /// The keys that put a character into the filter.
@@ -1101,10 +1133,15 @@ mod tests {
             .position(|entry| entry.id.ends_with("rocks/boulder_large"))
             .expect("the generated library has a boulder");
         browser.choose(BrowserRow::Entry(boulder));
-        let EnvironmentCollision::Box { half_extents, .. } = browser.selected_collision() else {
-            panic!("a boulder a player can walk through");
+        let PlacementCollision::Shape(shape) = browser.selected_collision() else {
+            panic!("a file's collision is a shape the level holds");
         };
-        assert!(half_extents.y > 0.5, "{half_extents:?} is not boulder-sized");
+        assert_eq!(shape.len(), 1, "a boulder is one box");
+        assert!(
+            shape.boxes[0].half_extents.y > 0.5,
+            "{:?} is not boulder-sized",
+            shape.boxes[0]
+        );
 
         let water = browser
             .catalogue()
@@ -1113,10 +1150,37 @@ mod tests {
             .position(|entry| entry.id.ends_with("water/water_plane"))
             .expect("the generated library has water");
         browser.choose(BrowserRow::Entry(water));
-        assert_eq!(
-            browser.selected_collision(),
-            EnvironmentCollision::None,
-            "a flat sheet of water became a wall"
+        let PlacementCollision::Shape(shape) = browser.selected_collision() else {
+            panic!("a file's collision is a shape");
+        };
+        assert!(shape.is_empty(), "a flat sheet of water became a wall");
+    }
+
+    #[test]
+    fn a_piece_with_a_sidecar_is_placed_with_the_boxes_it_names() {
+        // The whole point of Phase 7: the overhang's collision is the wall and the slab, not
+        // one box around both — which is what makes the space under it walkable.
+        let root = std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets"));
+        if !root.join("generated/environment/cliffs").is_dir() {
+            return;
+        }
+        let mut browser = AssetBrowser::new();
+        browser.scan(&root);
+        let overhang = browser
+            .catalogue()
+            .entries()
+            .iter()
+            .position(|entry| entry.id.ends_with("cliffs/cliff_overhang"))
+            .expect("the generated library has an overhang");
+        browser.choose(BrowserRow::Entry(overhang));
+
+        let PlacementCollision::Shape(shape) = browser.selected_collision() else {
+            panic!("a file's collision is a shape");
+        };
+        assert!(
+            shape.len() >= 2,
+            "the overhang came out as {} box(es), so the space under it is filled in",
+            shape.len()
         );
     }
 
@@ -1131,7 +1195,7 @@ mod tests {
         browser.choose(BrowserRow::Builtin(pine));
         assert_eq!(
             browser.selected_collision(),
-            default_collision(LIBRARY[pine])
+            PlacementCollision::Simple(default_collision(LIBRARY[pine]))
         );
     }
 

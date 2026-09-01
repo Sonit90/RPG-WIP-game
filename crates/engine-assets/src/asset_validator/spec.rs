@@ -55,6 +55,30 @@ pub fn collision_primitives(collision: EnvironmentCollision) -> u64 {
     match collision {
         EnvironmentCollision::None => 0,
         EnvironmentCollision::Box { .. } => 1,
+        // A compound's boxes live in the scene, and this function is handed a placement's
+        // collision without one. The count is therefore what a caller with the scene passes
+        // in through `collision_primitives_of` — this arm is the answer for the caller that
+        // has only the enum, and one is the least it can be.
+        EnvironmentCollision::Compound(_) => 1,
+    }
+}
+
+/// How many collision primitives a placement is, given the scene that holds its shape table.
+///
+/// The honest count for a compound: a cave room is ten boxes and the specification's limit is
+/// about how many primitives an asset costs, not about how many enum variants it took to say
+/// so.
+#[must_use]
+pub fn collision_primitives_in(
+    scene: &engine_environment::EnvironmentScene,
+    collision: EnvironmentCollision,
+) -> u64 {
+    match collision.compound_index() {
+        Some(index) => scene
+            .collision_shapes
+            .get(index)
+            .map_or(0, |shape| shape.len() as u64),
+        None => collision_primitives(collision),
     }
 }
 

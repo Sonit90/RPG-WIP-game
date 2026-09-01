@@ -70,7 +70,7 @@ pub mod shadow_course;
 
 pub use asset::{EnvironmentAsset, LIBRARY};
 pub use lighting::{EnvironmentLighting, SceneLight, push_stress_lights};
-pub use object::{EnvironmentCollision, EnvironmentObject};
+pub use object::{CollisionBox, CollisionShape, EnvironmentCollision, EnvironmentObject};
 pub use scene::{EnvironmentScene, SpawnPoints};
 pub use terrain::{BrushMode, Terrain};
 pub use scene_file::{SceneDocument, SceneFileError};

@@ -305,37 +305,39 @@ pub fn add_environment_collision(
 
     let mut added = 0;
     for object in &scene.objects {
-        let Some(placed) = object.world_collision() else {
-            continue;
-        };
-        // A degenerate box would be a shape every query has to test and no query can ever
-        // touch. It means an author wrote a zero extent, which is worth a line in the log.
-        if placed.half_extents.x <= 0.0
-            || placed.half_extents.y <= 0.0
-            || placed.half_extents.z <= 0.0
-        {
-            log::warn!(
-                "environment object {} has a collision box with no volume: {:?}",
-                object.asset,
-                placed.half_extents
-            );
-            continue;
-        }
+        // Every box this placement blocks: nothing, one, or the several a compound names.
+        // The loop below cannot tell which it was, which is the point — a cliff overhang and
+        // a rock arrive here the same way.
+        for placed in scene.world_boxes(object) {
+            // A degenerate box would be a shape every query has to test and no query can ever
+            // touch. It means an author wrote a zero extent, which is worth a line in the log.
+            if placed.half_extents.x <= 0.0
+                || placed.half_extents.y <= 0.0
+                || placed.half_extents.z <= 0.0
+            {
+                log::warn!(
+                    "environment object {} has a collision box with no volume: {:?}",
+                    object.asset,
+                    placed.half_extents
+                );
+                continue;
+            }
 
-        let shape = if placed.rotation_magnitude() < YAW_EPSILON {
-            let (min, max) = placed.min_max();
-            Shape::box_between(min, max)
-        } else {
-            Shape::Obb(Obb::new(
-                placed.center,
-                placed.half_extents,
-                placed.rotation,
-            ))
-        };
-        // The asset's name, so the collision debug view and a contact report say *what* was
-        // hit rather than "a box". `&'static str` because an asset id already is one.
-        world.add_static(StaticDesc::new(shape).labelled(object.asset.name()));
-        added += 1;
+            let shape = if placed.rotation_magnitude() < YAW_EPSILON {
+                let (min, max) = placed.min_max();
+                Shape::box_between(min, max)
+            } else {
+                Shape::Obb(Obb::new(
+                    placed.center,
+                    placed.half_extents,
+                    placed.rotation,
+                ))
+            };
+            // The asset's name, so the collision debug view and a contact report say *what*
+            // was hit rather than "a box". `&'static str` because an asset id already is one.
+            world.add_static(StaticDesc::new(shape).labelled(object.asset.name()));
+            added += 1;
+        }
     }
     added
 }
