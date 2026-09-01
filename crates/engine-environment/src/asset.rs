@@ -49,6 +49,61 @@ impl EnvironmentAsset {
     }
 }
 
+/// Every name that has been interned, so one string is one id.
+///
+/// A `Mutex` around a `Vec` rather than a lock-free structure: interning happens when a level
+/// is loaded and when the editor scans a directory, which is a few hundred times per session
+/// and never in a frame.
+static INTERNED: std::sync::Mutex<Vec<&'static str>> = std::sync::Mutex::new(Vec::new());
+
+impl EnvironmentAsset {
+    /// The id for a name that is not known at compile time.
+    ///
+    /// A scene file carries names, and so does a directory of `.glb` files that nobody wrote
+    /// a constant for. Both have to become an [`EnvironmentAsset`], and an
+    /// [`EnvironmentAsset`] is a `&'static str` because it is `Copy`, compared once per
+    /// placement and stored in every object.
+    ///
+    /// So a name is *interned*: looked up in a table of names already seen, and leaked once
+    /// if it is new. The leak is bounded by the number of distinct assets a run touches — a
+    /// few hundred strings of a few dozen bytes — and it buys an id that costs nothing to
+    /// copy and nothing to compare.
+    ///
+    /// A name that already has a constant returns that constant's id, so `interned("pillar")`
+    /// and [`PILLAR`] are the same asset and compare equal.
+    ///
+    /// # Panics
+    ///
+    /// Never. A poisoned intern table is recovered from rather than propagated: the table is
+    /// append-only and a panic while holding it cannot leave it inconsistent.
+    #[must_use]
+    pub fn interned(name: &str) -> Self {
+        if let Some(known) = LIBRARY.into_iter().find(|asset| asset.name() == name) {
+            return known;
+        }
+        let mut table = INTERNED.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(known) = table.iter().find(|known| **known == name) {
+            return Self(known);
+        }
+        let leaked: &'static str = Box::leak(name.to_owned().into_boxed_str());
+        table.push(leaked);
+        Self(leaked)
+    }
+
+    /// How many distinct names have been interned this run. For tests and diagnostics.
+    ///
+    /// # Panics
+    ///
+    /// Never; see [`EnvironmentAsset::interned`].
+    #[must_use]
+    pub fn interned_count() -> usize {
+        INTERNED
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .len()
+    }
+}
+
 impl std::fmt::Display for EnvironmentAsset {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str(self.0)
@@ -193,6 +248,36 @@ pub const LIBRARY: [EnvironmentAsset; 18] = [
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_interned_name_is_the_same_id_every_time_it_is_asked_for() {
+        let first = EnvironmentAsset::interned("generated/environment/rocks/rock_small");
+        let second = EnvironmentAsset::interned("generated/environment/rocks/rock_small");
+        assert_eq!(first, second);
+        assert_eq!(first.name(), "generated/environment/rocks/rock_small");
+        assert_eq!(
+            first.name().as_ptr(),
+            second.name().as_ptr(),
+            "the name was leaked twice"
+        );
+    }
+
+    #[test]
+    fn interning_a_name_the_library_already_has_returns_the_librarys_own_id() {
+        assert_eq!(EnvironmentAsset::interned("pillar"), PILLAR);
+        assert_eq!(EnvironmentAsset::interned("sky_dome"), SKY_DOME);
+    }
+
+    #[test]
+    fn two_different_names_are_two_different_ids() {
+        let rock = EnvironmentAsset::interned("generated/environment/rocks/boulder_large");
+        let cliff = EnvironmentAsset::interned("generated/environment/cliffs/cliff_overhang");
+        assert_ne!(rock, cliff);
+        // Interning does not grow the table for a name it has already seen.
+        let before = EnvironmentAsset::interned_count();
+        let _ = EnvironmentAsset::interned("generated/environment/rocks/boulder_large");
+        assert_eq!(EnvironmentAsset::interned_count(), before);
+    }
 
     #[test]
     fn every_asset_in_the_library_is_named_once() {

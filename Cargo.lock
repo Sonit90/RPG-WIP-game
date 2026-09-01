@@ -282,6 +282,7 @@ dependencies = [
 name = "engine-editor"
 version = "0.1.0"
 dependencies = [
+ "engine-assets",
  "engine-core",
  "engine-environment",
  "engine-presentation",

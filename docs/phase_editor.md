@@ -273,3 +273,95 @@ exactly that: write, replace a file by hand, run again, assert the replacement s
 * `assets/scenes/` is **not** ignored — a level is source, not art. Losing it loses the level.
 * `assets/generated/` **is** ignored, explicitly: it is reproducible with one command, so it
   is build output.
+
+## Phase 4 — the recursive asset browser
+
+Three things had to exist before a browser could: a way for a name found on disk to become
+an asset id, something that reads the directory, and a panel that lists it.
+
+### An id for a name nobody compiled
+
+`EnvironmentAsset` wraps a `&'static str` — it is `Copy`, compared once per placement and
+stored in every object — so a name read from a directory could not become one.
+`EnvironmentAsset::interned(name)` looks the name up in a table of names already seen and
+leaks it once if it is new. The leak is bounded by the number of distinct assets a run
+touches. A name that already has a constant returns that constant, so `interned("pillar")`
+and `PILLAR` are the same id.
+
+### An unknown asset name is no longer a refusal
+
+`scene_file` used to refuse a name the compiled library did not have, and the reason was
+good: a typo should not become a missing wall the designer thinks is there. But the library
+stopped being the set of assets that exist the moment assets came from a directory — a build
+compiled last week does not know about a rock added this morning, and refusing to load a
+level over that would make every new asset a code change.
+
+The check moved rather than disappeared: whatever resolves an id to a *model* reports the
+name it cannot find, and the level shows the "missing asset" marker standing where the object
+should be, which is louder than a log line. An empty name is still refused.
+
+### `engine_assets::catalogue`
+
+`AssetCatalogue::scan(root)` walks a directory recursively into folders and entries.
+
+* An asset's **id is its path** with the extension removed:
+  `generated/environment/rocks/rock_small`. Unique by construction, says where the file is,
+  and is what a scene file stores — a level written on Windows opens anywhere.
+* `.glb`/`.gltf` are models, `.png`/`.jpg` are textures, `.json` is a material — or a
+  **scene**, if it is under `scenes/`, because both are JSON and only the folder says which.
+* A `grass.json` **claims** the `grass.png` beside it: one material, not two rows. A loose
+  image with no material file is still listed, because an artist dropping a folder of maps in
+  should see them.
+* Hidden and tool-owned directories (`.git`, `__pycache__`) are skipped.
+* Nothing is opened. A truncated `.glb` is listed and fails when something asks for its model.
+* A missing root is an empty catalogue that says so, not an error — a project nobody has put
+  anything in yet must still open.
+* Folders and assets are sorted, because `read_dir` promises no order and a browser whose
+  rows move between two scans of an unchanged directory is one nobody can point at.
+
+### The browser panel
+
+The palette is gone; the left-hand panel is the browser.
+
+```text
+ASSETS 25 MODELS
+- builtin              the assets compiled into this build, as a folder
+    ground_plain
+    pillar  …
+- generated
+  - environment
+    + rocks            click a folder row to open or close it
+    + cliffs
+  + materials          a material row is dimmed: it is content, but not placeable
+F FIND   F2 RESCAN
+```
+
+* `F` opens the filter and **owns the keyboard while it is open** — `W` types a w rather than
+  flying the camera, `X` types an x rather than deleting the selection. A test asserts exactly
+  that.
+* A filter flattens the tree: after typing `rock` an author wants every rock, not the three
+  folders they are spread across. Clearing it puts the tree back, because filtering never
+  touches the expansion state.
+* `F2` rescans, keeping open folders and the chosen asset — by *name*, so a rescan that
+  renumbered the entries does not move the selection to whatever is in that slot now. This is
+  what makes "drop a file in `assets/` and it appears" true without restarting the game.
+* Built-ins are shown as a `builtin` folder. They are not files, but a browser that hid them
+  would show nothing at all in a checkout where nobody has run the generator.
+* `TAB` walks placeable rows only.
+
+`engine-editor` gained a dependency on `engine-assets`. It is still device-free and
+gameplay-free; what it needs is the answer to "is this file an asset", and that has to be the
+same answer the loader gives.
+
+### Verification
+
+* 43 editor tests, 9 catalogue tests, 3 interner tests, whole workspace green, clippy clean.
+* Running the editor against the real directory logs:
+  `assets holds 25 model(s), 7 material(s), 0 texture(s), 0 level(s)` — the 24 generated
+  models plus the one `.glb` that was already in the repository.
+
+### Not yet
+
+Placing a browser asset writes an interned id into the scene, and nothing uploads a model for
+it yet, so it draws as the missing-asset marker. Uploading discovered models, and deriving
+collision for them, is Phase 5.

@@ -42,6 +42,7 @@
 pub mod animation;
 pub mod asset_validator;
 pub mod bc;
+pub mod catalogue;
 pub mod character;
 pub mod disk;
 pub mod error;
@@ -63,6 +64,7 @@ pub use asset_validator::{
     AssetCategory, AssetLimits, AssetSpec, AssetStatistics, AssetValidationResult, Diagnostic,
     Severity, ValidationCode, validate_asset,
 };
+pub use catalogue::{AssetCatalogue, AssetKind, CatalogueEntry, CatalogueFolder};
 pub use character::{AnimationSlot, CharacterDef, ClipBindings};
 pub use error::AssetError;
 pub use library::{ModelId, ModelLibrary};

@@ -18,16 +18,16 @@
 //! is still one batch and one draw call — see `engine_presentation::ui::paint`.
 
 use engine_environment::EnvironmentScene;
-use engine_presentation::ui::paint::{MenuTheme, push_widget};
-use engine_presentation::ui::screen::UiScreen;
+use engine_presentation::ui::paint::MenuTheme;
 use engine_render_data::ui::{UiDrawList, UiRect, UiScale};
 
 use crate::Editor;
+use crate::browser::BrowserRow;
 
 /// Layout constants, in logical pixels.
 pub mod layout {
-    /// Width of the palette panel.
-    pub const PANEL_WIDTH: f32 = 168.0;
+    /// Width of the asset browser panel.
+    pub const PANEL_WIDTH: f32 = 230.0;
     /// Height of one palette row.
     pub const ROW_HEIGHT: f32 = 22.0;
     /// Gap between rows.
@@ -38,8 +38,12 @@ pub mod layout {
     pub const HEADING: f32 = 22.0;
     /// Distance from the left and top edges of the screen.
     pub const MARGIN: f32 = 12.0;
-    /// Height reserved under the palette for the status lines.
-    pub const STATUS_HEIGHT: f32 = 46.0;
+    /// Height reserved under the browser for the filter and the status lines.
+    pub const STATUS_HEIGHT: f32 = 58.0;
+    /// How much of the window's height the asset browser may take.
+    pub const BROWSER_FRACTION: f32 = 0.72;
+    /// How far one level of nesting indents a browser row.
+    pub const INDENT: f32 = 10.0;
 
     /// Width of the hierarchy and inspector panels down the right-hand side.
     pub const SIDE_WIDTH: f32 = 210.0;
@@ -109,36 +113,55 @@ pub fn hierarchy_row_rect(scale: UiScale, viewport: (u32, u32), slot: usize) -> 
     )
 }
 
-/// Where the palette panel sits, in physical pixels.
+/// Where the asset browser sits, in physical pixels.
+///
+/// Down the left-hand side, opposite the hierarchy: the browser answers "what am I about to
+/// place" and the hierarchy answers "what is already here", and an author reads them
+/// alternately rather than together.
 #[must_use]
-pub fn panel_rect(scale: UiScale, viewport: (u32, u32)) -> UiRect {
-    let rows = engine_environment::asset::LIBRARY.len() as f32;
-    let height = scale.px(layout::PADDING * 2.0
-        + layout::HEADING
-        + rows * layout::ROW_HEIGHT
-        + (rows - 1.0) * layout::ROW_GAP
-        + layout::STATUS_HEIGHT);
-    let width = scale.px(layout::PANEL_WIDTH);
+pub fn browser_rect(scale: UiScale, viewport: (u32, u32)) -> UiRect {
     let margin = scale.px(layout::MARGIN);
-    // Clamped so the palette is reachable on a short window rather than hanging off the
-    // bottom of it — the same rule the HUD's own panels follow.
-    let height = height.min((viewport.1 as f32 - margin * 2.0).max(scale.px(120.0)));
+    let width = scale.px(layout::PANEL_WIDTH);
+    // Clamped so the panel is reachable on a short window rather than hanging off the bottom
+    // of it - the same rule the HUD's own panels follow.
+    let height = (viewport.1 as f32 * layout::BROWSER_FRACTION)
+        .max(scale.px(160.0))
+        .min((viewport.1 as f32 - margin * 2.0).max(scale.px(160.0)));
     UiRect::new(margin, margin, width, height)
 }
 
-/// Puts every palette button where it belongs for this scale and viewport.
-pub fn layout_palette(palette: &mut UiScreen<usize>, scale: UiScale, viewport: (u32, u32)) {
-    let panel = panel_rect(scale, viewport);
+/// Where the panel down the left sits. The browser's rectangle, under the name the rest of
+/// the editor knew it by when it held a palette.
+#[must_use]
+pub fn panel_rect(scale: UiScale, viewport: (u32, u32)) -> UiRect {
+    browser_rect(scale, viewport)
+}
+
+/// How many browser rows fit in the panel, above its filter and status lines.
+#[must_use]
+pub fn browser_visible_rows(scale: UiScale, viewport: (u32, u32)) -> usize {
+    let panel = browser_rect(scale, viewport);
+    let padding = scale.px(layout::PADDING);
+    let heading = scale.px(layout::HEADING);
+    let status = scale.px(layout::STATUS_HEIGHT);
+    let row = scale.px(layout::ROW_HEIGHT) + scale.px(layout::ROW_GAP);
+    if row <= 0.0 {
+        return 0;
+    }
+    (((panel.height - padding * 2.0 - heading - status) / row)
+        .floor()
+        .max(0.0)) as usize
+}
+
+/// Where one browser row sits, counting from the top of the visible window.
+#[must_use]
+pub fn browser_row_rect(scale: UiScale, viewport: (u32, u32), slot: usize) -> UiRect {
+    let panel = browser_rect(scale, viewport);
     let padding = scale.px(layout::PADDING);
     let row = scale.px(layout::ROW_HEIGHT);
     let gap = scale.px(layout::ROW_GAP);
-    let top = panel.y + padding + scale.px(layout::HEADING);
-    let width = panel.width - padding * 2.0;
-
-    for index in 0..engine_environment::asset::LIBRARY.len() {
-        let y = top + index as f32 * (row + gap);
-        palette.set_rect(index, UiRect::new(panel.x + padding, y, width, row));
-    }
+    let top = panel.y + padding + scale.px(layout::HEADING) + slot as f32 * (row + gap);
+    UiRect::new(panel.x + padding, top, panel.width - padding * 2.0, row)
 }
 
 /// Draws the editor: its palette, what is selected, and the keys.
@@ -164,24 +187,66 @@ pub fn push_editor(
 
     list.rect(panel, theme.panel);
     list.outline(panel, border, theme.panel_border);
+
+    // The heading counts what the scan found, so "the directory is empty" and "the scan found
+    // nothing" are two different things on screen rather than one blank panel.
+    let counts = editor.browser().catalogue().counts();
+    scratch.clear();
+    scratch.push_str("ASSETS ");
+    write_count(scratch, counts[0]);
+    scratch.push_str(" MODELS");
     list.text_at(
         (panel.x + padding, panel.y + padding),
-        "PLACE",
+        scratch,
         theme.title,
         text,
     );
 
-    for (index, widget) in editor.palette().widgets() {
-        push_widget(list, widget, theme, scale);
-        // The chosen asset is marked rather than merely hovered, because the palette has
-        // sixteen entries and "which one will the next click place" must be readable while
-        // the pointer is out in the world.
-        if index == asset_index(editor) {
-            list.outline(widget.rect(), border, theme.title);
+    let visible = browser_visible_rows(scale, viewport);
+    let first = editor.browser().scroll();
+    for slot in 0..visible {
+        let Some(row) = editor.browser().row(first + slot) else {
+            break;
+        };
+        let rect = browser_row_rect(scale, viewport, slot);
+        let selected = editor.browser().is_selected(row);
+        if selected {
+            list.rect(rect, theme.panel_border);
+            list.outline(rect, border, theme.title);
         }
+        let (depth, label) = editor.browser().label(row);
+        // A row that cannot be placed - a material, a texture, a level - is dimmed rather
+        // than hidden: it is content, and an author looking for it must be able to see that
+        // it arrived.
+        let placeable = match row {
+            BrowserRow::Builtin(_) => true,
+            BrowserRow::Entry(index) => editor
+                .browser()
+                .catalogue()
+                .entries()
+                .get(index)
+                .is_some_and(|entry| entry.kind.is_placeable()),
+            BrowserRow::Folder(_) | BrowserRow::BuiltinFolder => true,
+        };
+        let color = if selected {
+            theme.title
+        } else if placeable {
+            theme.text
+        } else {
+            theme.text_disabled
+        };
+        list.text_at(
+            (
+                rect.x + padding * 0.5 + scale.px(layout::INDENT) * depth as f32,
+                rect.y + padding * 0.25,
+            ),
+            &label,
+            color,
+            text,
+        );
     }
 
-    // Under the palette: what just happened, and what is selected.
+    // Under the browser: the filter, what just happened, and what is selected.
     let status_top = panel.bottom() - scale.px(layout::STATUS_HEIGHT);
     list.rect(
         UiRect::new(
@@ -192,8 +257,29 @@ pub fn push_editor(
         ),
         theme.separator,
     );
+    scratch.clear();
+    if editor.browser().is_typing() {
+        scratch.push_str("FIND: ");
+        scratch.push_str(editor.browser().filter());
+        scratch.push('_');
+    } else if editor.browser().filter().is_empty() {
+        scratch.push_str("F FIND   F2 RESCAN");
+    } else {
+        scratch.push_str("FIND: ");
+        scratch.push_str(editor.browser().filter());
+    }
     list.text_at(
         (panel.x + padding, status_top + padding * 0.5),
+        scratch,
+        if editor.browser().is_typing() {
+            theme.title
+        } else {
+            theme.text_disabled
+        },
+        text,
+    );
+    list.text_at(
+        (panel.x + padding, status_top + padding * 0.5 + text * 10.0),
         editor.status(),
         theme.text,
         text,
@@ -214,7 +300,7 @@ pub fn push_editor(
         None => scratch.push_str("nothing selected"),
     }
     list.text_at(
-        (panel.x + padding, status_top + padding * 0.5 + text * 10.0),
+        (panel.x + padding, status_top + padding * 0.5 + text * 20.0),
         scratch,
         theme.text_disabled,
         text,
@@ -225,7 +311,7 @@ pub fn push_editor(
     scratch.push_str("objects ");
     write_count(scratch, scene.len());
     list.text_at(
-        (panel.x + padding, status_top + padding * 0.5 + text * 20.0),
+        (panel.x + padding, status_top + padding * 0.5 + text * 30.0),
         scratch,
         theme.text_disabled,
         text,
@@ -239,7 +325,7 @@ pub fn push_editor(
         "LMB PLACE / SELECT   DRAG MOVE",
         "R YAW   T SIZE   X DELETE   C COPY",
         "Z UNDO   G GRID   TAB NEXT ASSET",
-        "WHEEL SCROLLS THE HIERARCHY",
+        "F FIND   F2 RESCAN ASSETS   WHEEL SCROLLS",
         "CTRL+S SAVE   F6 BACK TO PLAYING",
     ];
     let line = text * 12.0;
@@ -411,14 +497,6 @@ fn push_inspector(
     row(3, scratch, list);
 }
 
-/// Which palette row the editor's asset is.
-fn asset_index(editor: &Editor) -> usize {
-    engine_environment::asset::LIBRARY
-        .iter()
-        .position(|asset| *asset == editor.asset())
-        .unwrap_or(0)
-}
-
 /// A metre value with one decimal, without allocating.
 fn write_metres(out: &mut String, value: f32) {
     let rounded = (value * 10.0).round() / 10.0;
@@ -447,27 +525,50 @@ mod tests {
     const VIEWPORT: (u32, u32) = (1920, 1080);
 
     #[test]
-    fn every_palette_row_is_inside_the_panel_and_none_overlap() {
+    fn every_browser_row_is_inside_the_panel_and_none_overlap() {
         let mut editor = Editor::new();
         editor.enter(Vec3::ZERO, "test", VIEWPORT);
-        let panel = panel_rect(editor.scale(), VIEWPORT);
+        let scale = editor.scale();
+        let panel = browser_rect(scale, VIEWPORT);
+        let visible = browser_visible_rows(scale, VIEWPORT);
+        assert!(visible > 4, "the panel holds {visible} rows");
 
         let mut previous_bottom = panel.y;
-        for index in 0..engine_environment::asset::LIBRARY.len() {
-            let Some(widget) = editor.palette().widget(index) else {
-                panic!("row {index} exists");
-            };
-            let rect = widget.rect();
+        for slot in 0..visible {
+            let rect = browser_row_rect(scale, VIEWPORT, slot);
             assert!(
                 rect.x >= panel.x && rect.right() <= panel.right(),
                 "{rect:?}"
             );
-            assert!(
-                rect.y >= previous_bottom,
-                "row {index} overlaps the one above"
-            );
+            assert!(rect.y >= previous_bottom, "row {slot} overlaps the one above");
             previous_bottom = rect.bottom();
         }
+        // The last row stops above the filter and status lines rather than running under them.
+        let status_top = panel.bottom() - scale.px(layout::STATUS_HEIGHT);
+        assert!(previous_bottom <= status_top, "the list runs into the status");
+    }
+
+    #[test]
+    fn an_open_editor_draws_its_browser_rows() {
+        let mut editor = Editor::new();
+        editor.enter(Vec3::ZERO, "test", VIEWPORT);
+        let mut list = UiDrawList::new();
+        let mut scratch = String::new();
+        push_editor(
+            &mut list,
+            &editor,
+            &EnvironmentScene::with_capacity("test", 0),
+            &MenuTheme::default(),
+            &mut scratch,
+            VIEWPORT,
+        );
+        let text = list.text();
+        assert!(text.contains("ASSETS"), "the heading is missing: {text}");
+        assert!(text.contains("builtin"), "the builtin folder is missing");
+        assert!(
+            text.contains("ground_plain"),
+            "the first library asset is not listed"
+        );
     }
 
     #[test]

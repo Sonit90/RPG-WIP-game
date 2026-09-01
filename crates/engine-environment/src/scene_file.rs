@@ -190,13 +190,47 @@ fn unit_scale() -> [f32; 3] {
     [1.0, 1.0, 1.0]
 }
 
-/// The asset in the library called `name`.
+/// The asset in the built-in library called `name`.
 ///
 /// By name rather than by index so that adding an asset does not renumber every scene ever
 /// saved, and so a hand-edited file says `"pillar"` rather than `11`.
+///
+/// Returns `None` for a name the *compiled-in* library does not have, which since assets
+/// began arriving from disk is no longer the same question as "is this a real asset" — see
+/// [`asset_from_file`].
 #[must_use]
 pub fn asset_named(name: &str) -> Option<EnvironmentAsset> {
     LIBRARY.into_iter().find(|asset| asset.name() == name)
+}
+
+/// The asset id a scene file's name becomes.
+///
+/// A built-in library name resolves to its constant; anything else is interned, because it
+/// names a file under `assets/` that this build was not compiled with any knowledge of.
+///
+/// # Why an unknown name is no longer a refusal
+///
+/// It used to be, and the reason was good: a typo in a hand-edited level should not become a
+/// missing wall the designer thinks is there. But the library stopped being the set of assets
+/// that exist the moment assets came from a directory — a build compiled last week does not
+/// know about a rock added this morning, and refusing to load a level because of that would
+/// make every new asset a code change.
+///
+/// The check did not disappear; it moved to where the answer is actually known. Whatever
+/// resolves an id to a model reports a name it cannot find, and the level shows the "missing
+/// asset" marker standing where the object should be — which is louder than a log line and
+/// impossible to walk past.
+///
+/// An empty name is still refused here, because it names nothing that could ever exist.
+///
+/// # Errors
+///
+/// A message naming the problem, for a name that is empty or only whitespace.
+pub fn asset_from_file(name: &str) -> Result<EnvironmentAsset, String> {
+    if name.trim().is_empty() {
+        return Err("an object must name an asset".to_owned());
+    }
+    Ok(EnvironmentAsset::interned(name))
 }
 
 impl SceneDocument {
@@ -279,17 +313,7 @@ impl SceneDocument {
                 location: format!("objects[{index}]"),
                 reason,
             };
-            let Some(asset) = asset_named(&record.asset) else {
-                return Err(invalid(format!(
-                    "'{}' is not an asset this build knows; the library is {}",
-                    record.asset,
-                    LIBRARY
-                        .iter()
-                        .map(|asset| asset.name())
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                )));
-            };
+            let asset = asset_from_file(&record.asset).map_err(&invalid)?;
             let finite = record.position.iter().all(|value| value.is_finite())
                 && record.scale.iter().all(|value| value.is_finite())
                 && record.yaw.is_finite();
@@ -558,7 +582,7 @@ mod tests {
     }
 
     #[test]
-    fn an_asset_the_library_does_not_have_names_the_object_that_asked_for_it() {
+    fn an_asset_the_compiled_library_does_not_have_loads_as_an_interned_id() {
         let document = SceneDocument {
             version: FORMAT_VERSION,
             name: "broken".to_owned(),
@@ -575,7 +599,11 @@ mod tests {
                     collision: None,
                 },
                 ObjectRecord {
-                    asset: "obelisk_of_typos".to_owned(),
+                    // A name this build was not compiled with: a rock somebody added to
+                    // assets/ this morning, or a typo. The file cannot tell the two apart and
+                    // no longer tries — whatever resolves an id to a model reports the one it
+                    // cannot find, and the level shows a marker standing where it should be.
+                    asset: "generated/environment/rocks/added_this_morning".to_owned(),
                     position: [0.0; 3],
                     yaw: 0.0,
                     scale: unit_scale(),
@@ -583,12 +611,37 @@ mod tests {
                 },
             ],
         };
-        let Err(error) = document.to_scene("broken.json") else {
-            panic!("an unknown asset must not load as nothing");
+        let scene = document.to_scene("broken.json").expect("an unknown name still loads");
+        assert_eq!(scene.len(), 2);
+        assert_eq!(
+            scene.objects[1].asset.name(),
+            "generated/environment/rocks/added_this_morning"
+        );
+        assert_eq!(scene.objects[0].asset, crate::asset::PILLAR);
+    }
+
+    #[test]
+    fn an_object_that_names_no_asset_at_all_is_still_refused() {
+        let document = SceneDocument {
+            version: FORMAT_VERSION,
+            name: "broken".to_owned(),
+            half_extent: 40.0,
+            ground_height: 0.0,
+            spawns: None,
+            lighting: None,
+            objects: vec![ObjectRecord {
+                asset: "   ".to_owned(),
+                position: [0.0; 3],
+                yaw: 0.0,
+                scale: unit_scale(),
+                collision: None,
+            }],
         };
+        let error = document
+            .to_scene("broken.json")
+            .expect_err("an object with no asset names nothing that could exist");
         let message = error.to_string();
-        assert!(message.contains("objects[1]"), "{message}");
-        assert!(message.contains("obelisk_of_typos"), "{message}");
+        assert!(message.contains("objects[0]"), "{message}");
     }
 
     #[test]

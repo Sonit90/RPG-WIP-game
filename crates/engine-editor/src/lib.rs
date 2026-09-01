@@ -2,7 +2,7 @@
 //!
 //! ```text
 //!  F6 ──► Editing ───────────────► EditorOutcome
-//!   ▲        │  left click ground   place the palette's asset
+//!   ▲        │  left click ground   place the browser's asset
 //!   │        │  left click object   select it
 //!   │        │  drag                move it, snapped to the grid
 //!   │        │  R / SHIFT+R         yaw
@@ -10,6 +10,8 @@
 //!   │        │  X                   delete
 //!   │        │  C                   duplicate
 //!   │        │  Z                   undo
+//!   │        │  TAB                 next asset in the browser
+//!   │        │  F / F2              filter the browser / read assets/ again
 //!   │        │  CTRL+S              write assets/scenes/<name>.json
 //!   └────────┘  F6 / ESC            leave
 //! ```
@@ -22,13 +24,16 @@
 //! [`EditorOutcome::SceneChanged`], and the application answers that by re-placing the scene
 //! it already knows how to place.
 //!
+//! It does read a *directory*: [`browser::AssetBrowser`] lists what is under `assets/` so an
+//! author can pick from it. That is names and extensions, not meshes — see that module.
+//!
 //! That is what makes the whole thing testable. Every verb below has a test that clicks,
 //! drags or presses a key and asserts what the scene became, with no window open.
 //!
 //! # It is not in a player's build
 //!
 //! `engine-app` names this crate as an optional dependency behind its `editor` feature. A
-//! shipping build compiles none of it — no palette, no fly camera, no scene writer.
+//! shipping build compiles none of it — no asset browser, no fly camera, no scene writer.
 //!
 //! # Why the whole scene is the undo unit
 //!
@@ -39,6 +44,7 @@
 
 #![deny(missing_docs)]
 
+pub mod browser;
 pub mod camera;
 pub mod pick;
 pub mod ui;
@@ -48,12 +54,9 @@ use std::path::{Path, PathBuf};
 use engine_core::input::{InputState, KeyCode, MouseButton};
 use engine_core::math::{Mat4, Vec3};
 use engine_core::transform::Transform;
-use engine_environment::asset::LIBRARY;
 use engine_environment::object::default_collision;
 use engine_environment::{EnvironmentAsset, EnvironmentObject, EnvironmentScene, scene_file};
 use engine_presentation::ui::input::UiInput;
-use engine_presentation::ui::screen::UiScreen;
-use engine_presentation::ui::widget::{Button, WidgetEvent};
 use engine_render_data::{Camera, RenderDataError, UiScale};
 
 pub use camera::FlyCamera;
@@ -100,9 +103,8 @@ struct Drag {
 pub struct Editor {
     active: bool,
     camera: FlyCamera,
-    palette: UiScreen<usize>,
-    /// Which library asset the next click places.
-    asset: usize,
+    /// What is in `assets/`, and which of it the next click places.
+    browser: browser::AssetBrowser,
     /// Which placement is selected, if any.
     selection: Option<usize>,
     drag: Option<Drag>,
@@ -112,7 +114,7 @@ pub struct Editor {
     undo: Vec<Vec<EnvironmentObject>>,
     /// Where `CTRL+S` writes.
     save_path: PathBuf,
-    /// The last thing that happened, printed under the palette.
+    /// The last thing that happened, printed under the browser.
     status: String,
     /// The first object shown in the hierarchy list.
     hierarchy_scroll: usize,
@@ -126,21 +128,16 @@ impl Default for Editor {
 }
 
 impl Editor {
-    /// A closed editor with its palette built.
+    /// A closed editor with an empty browser.
     ///
     /// Built once, like every other screen in this project: entering the editor allocates
-    /// nothing, because a palette is a list of rectangles.
+    /// nothing: the directory is read when the editor is opened, not when it is built.
     #[must_use]
     pub fn new() -> Self {
-        let mut palette = UiScreen::new();
-        for (index, asset) in LIBRARY.into_iter().enumerate() {
-            palette.push(index, Button::new(asset.name()));
-        }
         Self {
             active: false,
             camera: FlyCamera::default(),
-            palette,
-            asset: 0,
+            browser: browser::AssetBrowser::new(),
             selection: None,
             drag: None,
             grid: 0,
@@ -158,16 +155,16 @@ impl Editor {
         self.active
     }
 
-    /// The palette, for drawing.
+    /// The asset browser, for drawing and for asking what is selected.
     #[must_use]
-    pub fn palette(&self) -> &UiScreen<usize> {
-        &self.palette
+    pub fn browser(&self) -> &browser::AssetBrowser {
+        &self.browser
     }
 
     /// Which asset the next click places.
     #[must_use]
     pub fn asset(&self) -> EnvironmentAsset {
-        LIBRARY[self.asset.min(LIBRARY.len() - 1)]
+        self.browser.selected_asset()
     }
 
     /// Which placement is selected.
@@ -209,16 +206,15 @@ impl Editor {
         self.save_path = path;
     }
 
-    /// The interface scale the palette is laid out at.
+    /// The interface scale the panels are laid out at.
     #[must_use]
     pub fn scale(&self) -> UiScale {
         self.scale
     }
 
-    /// Sets the interface scale and lays the palette out again.
-    pub fn set_scale(&mut self, scale: UiScale, viewport: (u32, u32)) {
+    /// Sets the interface scale the panels are laid out at.
+    pub fn set_scale(&mut self, scale: UiScale, _viewport: (u32, u32)) {
         self.scale = scale;
-        ui::layout_palette(&mut self.palette, scale, viewport);
     }
 
     /// Enters the editor, looking at `focus` and saving to a file named after the scene.
@@ -229,17 +225,31 @@ impl Editor {
         self.drag = None;
         self.hierarchy_scroll = 0;
         self.undo.clear();
-        self.palette.reset();
         self.save_path = PathBuf::from(format!("assets/scenes/{scene_name}.json"));
+        // The directory is read here rather than at startup, so an asset added between
+        // launching the game and pressing F6 is in the browser the first time it is opened.
+        let root = browser::default_root();
+        self.browser.scan(&root);
+        let counts = self.browser.catalogue().counts();
         self.status = format!("editing '{scene_name}'");
-        ui::layout_palette(&mut self.palette, self.scale, viewport);
+        log::info!(
+            "editor: {} holds {} model(s), {} material(s), {} texture(s), {} level(s)",
+            root.display(),
+            counts[0],
+            counts[1],
+            counts[2],
+            counts[3]
+        );
+        for problem in &self.browser.catalogue().report().unreadable {
+            log::warn!("editor: could not read {problem}");
+        }
+        let _ = viewport;
     }
 
     /// Leaves the editor. The scene keeps whatever was done to it.
     pub fn leave(&mut self) {
         self.active = false;
         self.drag = None;
-        self.palette.reset();
     }
 
     /// Writes this camera into the renderer's.
@@ -273,35 +283,29 @@ impl Editor {
             return EditorOutcome::Left;
         }
 
-        self.camera.update(input, seconds);
-        ui::layout_palette(&mut self.palette, self.scale, viewport);
+        // The browser reads the keyboard first, because while its filter is open every key
+        // belongs to the filter — including the ones that would otherwise fly the camera.
+        let browser_took_the_keys = self.browser.update_keys(input);
+        if !self.browser.is_typing() {
+            self.camera.update(input, seconds);
+        }
 
-        // The palette first: a click on a button is a choice of asset, never a placement in
-        // the world behind it.
-        let mut chose_asset = false;
-        for (index, event) in self.palette.update(ui_input) {
-            if *event == WidgetEvent::Activated {
-                self.asset = *index;
-                chose_asset = true;
-            }
-        }
-        if chose_asset {
-            self.status = format!("placing {}", self.asset().name());
-            return EditorOutcome::Idle;
-        }
-        let over_palette = self.palette.hovered().is_some();
-        // The two right-hand panels own the pointer over themselves, exactly as the palette
-        // does: a click on a hierarchy row selects that object and must never also place one
-        // in the world behind the panel.
+        // The panels own the pointer over themselves: a click on a browser row chooses an
+        // asset and must never also place one in the world behind the panel.
+        let over_browser = self.update_browser(input, ui_input, viewport);
         let over_hierarchy = self.update_hierarchy(input, ui_input, scene, viewport);
 
-        let mut changed = self.update_keys(input, scene);
+        let mut changed = if browser_took_the_keys || self.browser.is_typing() {
+            false
+        } else {
+            self.update_keys(input, scene)
+        };
         if self.update_pointer(
             ui_input,
             scene,
             view_projection,
             viewport,
-            over_palette || over_hierarchy,
+            over_browser || over_hierarchy,
         ) {
             changed = true;
         }
@@ -314,6 +318,55 @@ impl Editor {
         } else {
             EditorOutcome::Idle
         }
+    }
+
+    /// The asset browser: scrolling it, opening folders and choosing what to place.
+    ///
+    /// Returns whether the pointer is over the browser panel, which is what stops the same
+    /// click from also placing an object in the world behind it.
+    fn update_browser(
+        &mut self,
+        input: &InputState,
+        ui_input: &UiInput,
+        viewport: (u32, u32),
+    ) -> bool {
+        let panel = ui::browser_rect(self.scale, viewport);
+        let visible = ui::browser_visible_rows(self.scale, viewport);
+        self.browser.clamp_scroll(visible);
+
+        let (x, y) = ui_input.pointer;
+        if !panel.contains(x, y) {
+            return false;
+        }
+
+        let wheel = input.wheel_delta();
+        if wheel != 0.0 {
+            let step = wheel.abs().max(1.0) as i32;
+            self.browser.scroll_by(if wheel > 0.0 { -step } else { step }, visible);
+        }
+
+        if ui_input.pointer_pressed {
+            for slot in 0..visible {
+                if !ui::browser_row_rect(self.scale, viewport, slot).contains(x, y) {
+                    continue;
+                }
+                let Some(row) = self.browser.row(self.browser.scroll() + slot) else {
+                    break;
+                };
+                match row {
+                    browser::BrowserRow::Folder(_) | browser::BrowserRow::BuiltinFolder => {
+                        self.browser.toggle(row);
+                    }
+                    _ => {
+                        if self.browser.choose(row) {
+                            self.status = format!("placing {}", self.browser.selected_name());
+                        }
+                    }
+                }
+                break;
+            }
+        }
+        true
     }
 
     /// The hierarchy list: scrolling it, and selecting out of it.
@@ -401,8 +454,8 @@ impl Editor {
             return false;
         }
         if input.was_key_pressed(KeyCode::Tab) {
-            self.asset = (self.asset + 1) % LIBRARY.len();
-            self.status = format!("placing {}", self.asset().name());
+            self.browser.select_next();
+            self.status = format!("placing {}", self.browser.selected_name());
             return false;
         }
         if control && input.was_key_pressed(KeyCode::S) {
@@ -468,7 +521,7 @@ impl Editor {
         scene: &mut EnvironmentScene,
         view_projection: &Mat4,
         viewport: (u32, u32),
-        over_palette: bool,
+        over_panel: bool,
     ) -> bool {
         let ground = engine_presentation::ui::targeting::ground_under_cursor(
             ui_input.pointer,
@@ -511,7 +564,7 @@ impl Editor {
             return true;
         }
 
-        if !ui_input.pointer_pressed || over_palette {
+        if !ui_input.pointer_pressed || over_panel {
             return false;
         }
 
@@ -870,7 +923,7 @@ mod tests {
     fn a_placed_object_blocks_what_the_library_says_it_blocks() {
         let mut editor = editor();
         let mut scene = scene();
-        // The palette starts on ground_plain, which blocks nothing; move it to a pillar.
+        // The browser starts on ground_plain, which blocks nothing; TAB along to a pillar.
         while editor.asset() != PILLAR {
             update(
                 &mut editor,
@@ -1059,26 +1112,66 @@ mod tests {
     }
 
     #[test]
-    fn a_click_on_the_palette_chooses_an_asset_and_places_nothing() {
+    fn a_click_on_a_browser_row_chooses_an_asset_and_places_nothing() {
         let mut editor = editor();
         let mut scene = scene();
         editor.set_scale(UiScale::default(), VIEWPORT);
-        let Some(widget) = editor.palette().widget(3) else {
-            panic!("the palette has sixteen entries");
-        };
-        let rect = widget.rect();
+
+        // Row 0 is the `builtin` folder and rows 1.. are the assets inside it, so row 4 is
+        // the fourth entry of the compiled library.
+        let rect = ui::browser_row_rect(editor.scale(), VIEWPORT, 4);
         let pointer = (rect.x + rect.width * 0.5, rect.y + rect.height * 0.5);
-
         update(&mut editor, &InputState::new(), &press(pointer), &mut scene);
-        let release = UiInput {
-            pointer,
-            pointer_released: true,
-            ..UiInput::new()
-        };
-        update(&mut editor, &InputState::new(), &release, &mut scene);
 
-        assert_eq!(editor.asset(), LIBRARY[3], "the palette chose the asset");
+        assert_eq!(
+            editor.asset(),
+            engine_environment::asset::LIBRARY[3],
+            "the browser chose the asset"
+        );
         assert!(scene.is_empty(), "and put nothing in the world");
+    }
+
+    #[test]
+    fn a_click_on_a_browser_folder_opens_it_instead_of_choosing_anything() {
+        let mut editor = editor();
+        let mut scene = scene();
+        editor.set_scale(UiScale::default(), VIEWPORT);
+        let before = editor.browser().rows().len();
+
+        let rect = ui::browser_row_rect(editor.scale(), VIEWPORT, 0);
+        let pointer = (rect.x + rect.width * 0.5, rect.y + rect.height * 0.5);
+        update(&mut editor, &InputState::new(), &press(pointer), &mut scene);
+
+        assert!(
+            editor.browser().rows().len() < before,
+            "clicking the builtin folder did not close it"
+        );
+        assert!(scene.is_empty());
+    }
+
+    #[test]
+    fn the_browsers_filter_owns_the_keyboard_while_it_is_open() {
+        let mut editor = editor();
+        let mut scene = scene();
+        scene.push(EnvironmentObject::decoration(ROCK_SMALL, Vec3::ZERO));
+
+        // Select the rock, then open the filter and type an X. X deletes a selection when the
+        // filter is closed, and must not while it is open.
+        update(
+            &mut editor,
+            &InputState::new(),
+            &press(centre()),
+            &mut scene,
+        );
+        assert_eq!(editor.selection(), Some(0));
+
+        update(&mut editor, &keyed(KeyCode::F), &UiInput::new(), &mut scene);
+        assert!(editor.browser().is_typing());
+        let outcome = update(&mut editor, &keyed(KeyCode::X), &UiInput::new(), &mut scene);
+
+        assert_eq!(outcome, EditorOutcome::Idle);
+        assert_eq!(scene.len(), 1, "X deleted an object while typing a filter");
+        assert_eq!(editor.browser().filter(), "x");
     }
 
     #[test]

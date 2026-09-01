@@ -14,6 +14,11 @@ publish.workspace = true
 # that places a pillar be tested without a device.
 [dependencies]
 engine-core = { workspace = true }
+# What is in assets/: the recursive catalogue the asset browser lists. A directory of names
+# and extensions, read at the moment the editor is opened. It brings the importer with it,
+# which is the point — the editor is what decides whether a file on disk is an asset, and it
+# must answer that the same way the loader does. Still no device and no `windows`.
+engine-assets = { workspace = true }
 engine-environment = { workspace = true }
 engine-presentation = { workspace = true }
 engine-render-data = { workspace = true }
