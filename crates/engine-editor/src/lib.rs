@@ -54,7 +54,6 @@ use std::path::{Path, PathBuf};
 use engine_core::input::{InputState, KeyCode, MouseButton};
 use engine_core::math::{Mat4, Vec3};
 use engine_core::transform::Transform;
-use engine_environment::object::default_collision;
 use engine_environment::{EnvironmentAsset, EnvironmentObject, EnvironmentScene, scene_file};
 use engine_presentation::ui::input::UiInput;
 use engine_render_data::{Camera, RenderDataError, UiScale};
@@ -601,10 +600,14 @@ impl Editor {
         };
         self.snapshot(scene);
         let asset = self.asset();
+        // What it blocks is decided once, here, and written into the level: a built-in has an
+        // authored answer and a file gets a box around its geometry. The level carries it
+        // either way, so a placement keeps what it was placed with even if the rule changes.
+        let collision = self.browser.selected_collision();
         scene.push(EnvironmentObject {
             asset,
             transform: Transform::from_translation(self.snap(ground)),
-            collision: default_collision(asset),
+            collision,
         });
         self.selection = Some(scene.objects.len() - 1);
         self.status = format!("placed {}", asset.name());
@@ -708,6 +711,7 @@ pub fn owns_pointer(input: &InputState) -> bool {
 )]
 mod tests {
     use super::*;
+    use engine_environment::object::default_collision;
     use engine_environment::asset::{PILLAR, ROCK_SMALL};
     use engine_render_data::{Camera, Projection};
 

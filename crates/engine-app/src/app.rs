@@ -658,6 +658,12 @@ impl App {
             // because the extractor owns that entity and would keep a stale handle.
             let ground = extractor.ground();
             extractor.render_world_mut().set_visible(ground, false);
+            // Anything the level names that the library does not have: a `.glb` under
+            // assets/, or the marker for a name nothing answers to.
+            let extra = upload_missing_models(&mut renderer, placer.visuals_mut(), scene);
+            if extra > 0 {
+                log::info!("environment '{}': {extra} model(s) uploaded from disk", scene.name);
+            }
             placer.place(
                 extractor.render_world_mut(),
                 scene,
@@ -2356,6 +2362,11 @@ impl App {
         // actually editing, and an incremental spawn path is a second description of the
         // scene that can disagree with the first.
         if changed && let Some(scene) = self.environment.as_ref() {
+            // An asset placed from the browser has no model uploaded yet: the library went up
+            // at startup and this file was discovered afterwards. Uploading here rather than
+            // when the browser is scanned means a directory of two hundred assets costs
+            // nothing until one of them is actually placed.
+            upload_missing_models(&mut self.renderer, self.placer.visuals_mut(), scene);
             let world = self.extractor.render_world_mut();
             self.placer.clear(world);
             self.placer
@@ -3827,6 +3838,83 @@ fn load_authored_scene(
         }
         (None, None) => Ok(None),
     }
+}
+
+/// Makes sure a model is uploaded for every asset the scene names.
+///
+/// ```text
+///  "pillar"                                  -> the compiled library
+///  "generated/environment/rocks/rock_small"  -> assets/<id>.glb, through the importer
+///  neither                                   -> the grey "missing asset" marker
+/// ```
+///
+/// The library is uploaded at startup because a level made of it is the common case and one
+/// pass is cheaper than eighty lookups. Everything else arrives here: a level that names a
+/// file, or an author placing one in the editor while the game is running. Each asset is
+/// uploaded once and then shares its handles with every placement of it, exactly as a library
+/// asset does — the instancing story is unchanged.
+///
+/// A file that will not load is reported once and replaced by the marker, because an object
+/// that is simply not drawn is indistinguishable from one nobody placed. Returns how many
+/// models were uploaded.
+fn upload_missing_models(
+    renderer: &mut Renderer,
+    visuals: &mut engine_presentation::EnvironmentVisuals,
+    scene: &engine_environment::EnvironmentScene,
+) -> usize {
+    let mut uploaded = 0;
+    for asset in scene.distinct_assets() {
+        if visuals.get(asset).is_some() {
+            continue;
+        }
+        let model = match environment_model_for(asset) {
+            Some(model) => model,
+            None => continue,
+        };
+        match renderer.create_model(&model) {
+            Ok(binding) => {
+                visuals.insert(asset, binding);
+                uploaded += 1;
+            }
+            Err(error) => {
+                log::error!("environment: '{asset}' could not be uploaded: {error}");
+            }
+        }
+    }
+    uploaded
+}
+
+/// The model an asset id names, or `None` if even the marker could not be built.
+///
+/// An id with a separator in it is a *path*: the catalogue's ids are the file's path under
+/// the assets root with the extension taken off, so the file is found by putting one back.
+/// Anything else is a name in the compiled library, and `environment_model` answers an
+/// unknown one with the marker itself.
+fn environment_model_for(
+    asset: engine_environment::EnvironmentAsset,
+) -> Option<engine_assets::ModelAsset> {
+    let name = asset.name();
+    if !name.contains('/') {
+        return Some(engine_assets::procedural::environment_model(asset));
+    }
+    let limits = engine_assets::ValidationLimits::default();
+    for extension in ["glb", "gltf"] {
+        let Some(path) = engine_assets::disk::model_file(&format!("{name}.{extension}")) else {
+            continue;
+        };
+        match engine_assets::disk::load_glb(name, &path, &limits) {
+            Ok(model) => return Some(model),
+            Err(error) => {
+                // A file that is there and will not load is a content bug worth shouting
+                // about; the marker goes in its place so the level still shows where the
+                // object stands.
+                log::error!("environment: '{name}' did not load: {error}");
+                break;
+            }
+        }
+    }
+    log::warn!("environment: nothing on disk answers to '{name}'; drawing the missing marker");
+    Some(engine_assets::procedural::environment_model(asset))
 }
 
 /// Uploads every environment asset in the library, once.

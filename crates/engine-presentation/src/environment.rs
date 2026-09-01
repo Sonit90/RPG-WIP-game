@@ -162,6 +162,16 @@ impl EnvironmentPlacer {
         &self.visuals
     }
 
+    /// The uploaded models, to add one to.
+    ///
+    /// What the application uses when a level names an asset that was not in the library at
+    /// startup — a `.glb` discovered in `assets/`, or one placed by the editor while the game
+    /// is running. Placing is otherwise unchanged: the new binding is found by the same
+    /// lookup every other placement goes through.
+    pub fn visuals_mut(&mut self) -> &mut EnvironmentVisuals {
+        &mut self.visuals
+    }
+
     /// What the last pass did.
     #[must_use]
     pub fn stats(&self) -> EnvironmentStats {

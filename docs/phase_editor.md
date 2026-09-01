@@ -391,8 +391,52 @@ to whatever it lands on. A test asserts TAB works with everything collapsed, and
 test that presses TAB until it reaches a pillar is now bounded, so a TAB that stops moving
 fails the test rather than hanging it.
 
-### Not yet
+## Phase 5 — placing what the browser found
 
-Placing a browser asset writes an interned id into the scene, and nothing uploads a model for
-it yet, so it draws as the missing-asset marker. Uploading discovered models, and deriving
-collision for them, is Phase 5.
+The browser could name an asset and the level could store it, but nothing turned that name
+into geometry: a placed rock drew nothing at all, and so did a level file that named one.
+
+### A model is uploaded when something asks for it
+
+```text
+"pillar"                                  -> the compiled library
+"generated/environment/rocks/rock_small"  -> assets/<id>.glb, through the importer
+neither                                   -> the grey "missing asset" marker
+```
+
+`upload_missing_models` runs over a scene's distinct assets and uploads whatever is not
+uploaded already — at load, and again whenever the editor reports a change. The library still
+goes up in one pass at startup, because a level made of it is the common case; everything
+else arrives this way. An asset is uploaded once and then shares its handles with every
+placement of it, so the instancing story is unchanged, and a directory of two hundred assets
+costs nothing until one of them is actually placed.
+
+A file that will not load is reported once and replaced by the marker. An object that is
+simply not drawn is indistinguishable from one nobody placed — that was exactly the bug.
+
+### What a placed file blocks
+
+A built-in has an authored answer that no bounding box could produce: a pine collides with its
+trunk and not its canopy. A file has no author to ask, so the editor imports it once, takes a
+box around its level-0 geometry, and writes that into the level. A model with no thickness in
+some axis — the water plane — becomes `EnvironmentCollision::None` rather than a zero-extent
+box that every query tests and none can touch.
+
+The collision is stored **in the level**, not derived at load, so a placement keeps what it
+was placed with even if the rule changes later.
+
+**Caves and overhangs are wrong under this rule**, deliberately and visibly: a tunnel wrapped
+in its own bounding box is a solid block. A wrong box an author can see and edit beats no box
+at all, and Phase 9 is where a cave piece gets collision describing its cavity.
+
+### Verification
+
+A level naming one built-in, one generated file and one name that answers to nothing:
+
+```text
+environment 'probe': 2 model(s) uploaded from disk
+environment: nothing on disk answers to '…/does_not_exist'; drawing the missing marker
+environment 'probe': 4 objects, 4 render entities, 20 models uploaded
+```
+
+Four objects, four render entities — before this, three of them drew nothing.
