@@ -94,6 +94,13 @@ pub fn ray_vs_shape(ray: &Ray, shape: &Shape, max_distance: f32) -> Option<RayHi
         Shape::Plane(plane) => ray_vs_plane(ray, plane, max_distance),
         Shape::Aabb(bounds) => ray_vs_aabb(ray, bounds, max_distance),
         Shape::Obb(obb) => ray_vs_obb(ray, obb, max_distance),
+        // A field is tested as the box around it. A ray against terrain is asked by line of
+        // sight and by the editor's picking, and both want "is the ground in the way" rather
+        // than a surface point: walking the cells along the ray is a second traversal to keep
+        // correct, and the box answers the question every caller actually asks. A ray that
+        // needs the exact surface point would sample `Terrain::height_at` along itself, which
+        // is a level question rather than a collision one.
+        Shape::Heightfield(field) => ray_vs_aabb(ray, &field.bounds(), max_distance),
     }
 }
 

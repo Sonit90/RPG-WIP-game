@@ -265,7 +265,11 @@ impl Obb {
 /// An enum rather than a trait object: the narrow phase is a `match` over three variants in
 /// the hottest loop the character controller has, and a v-table call per candidate would
 /// cost more than every test in this crate put together.
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// `Clone` but not `Copy`: every variant but the height field is a handful of floats, and
+/// that one owns its grid. A world holds hundreds of boxes and at most a few fields, and the
+/// places that used to copy a shape now borrow it — which is what they wanted anyway, since a
+/// narrow-phase test reads a shape and never keeps it.
+#[derive(Debug, Clone, PartialEq)]
 pub enum Shape {
     /// An infinite plane. The floor, and anything else a character must never get under.
     Plane(Plane),
@@ -273,6 +277,12 @@ pub enum Shape {
     Aabb(Aabb),
     /// An oriented box. Ramps.
     Obb(Obb),
+    /// A grid of heights: the ground the terrain describes.
+    ///
+    /// Boxed because it owns a `Vec` and every other variant is a handful of floats — an
+    /// unboxed one would make every `Shape` in the world the size of the largest, and the
+    /// world holds hundreds of boxes and at most a few fields.
+    Heightfield(Box<crate::heightfield::Heightfield>),
 }
 
 impl Shape {
@@ -309,6 +319,12 @@ impl Shape {
         Self::Plane(Plane::new(Vec3::Y, -y))
     }
 
+    /// A grid of heights.
+    #[must_use]
+    pub fn heightfield(field: crate::heightfield::Heightfield) -> Self {
+        Self::Heightfield(Box::new(field))
+    }
+
     /// The axis-aligned box containing the shape.
     ///
     /// A plane has no finite bounds, so it reports `None` and is kept out of every spatial
@@ -319,6 +335,7 @@ impl Shape {
             Self::Plane(_) => None,
             Self::Aabb(aabb) => Some(*aabb),
             Self::Obb(obb) => Some(obb.bounds()),
+            Self::Heightfield(field) => Some(field.bounds()),
         }
     }
 }

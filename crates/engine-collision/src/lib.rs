@@ -67,6 +67,7 @@
 
 pub mod broad;
 pub mod contact;
+pub mod heightfield;
 pub mod controller;
 pub mod layer;
 pub mod narrow;

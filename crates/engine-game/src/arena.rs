@@ -88,7 +88,13 @@ impl ArenaConfig {
     pub fn from_environment(scene: &engine_environment::EnvironmentScene, count: usize) -> Self {
         let base = Self::with_group(count);
         Self {
-            player_spawn: scene.spawns.player,
+            // Lifted onto the terrain, if the level has one under the spawn: a spawn point
+            // authored at y = 0 on a level whose ground was later raised would otherwise put
+            // the player inside a hill.
+            player_spawn: {
+                let spawn = scene.spawns.player;
+                Vec3::new(spawn.x, spawn.y.max(scene.ground_at(spawn)), spawn.z)
+            },
             single_dummy: scene.spawns.featured_dummy,
             group_center: scene.spawns.group_center,
             group_spacing: scene.spawns.group_spacing,
@@ -219,6 +225,46 @@ pub fn build_collision(world: &mut engine_collision::world::CollisionWorld, conf
     world.rebuild_broad_phase();
 }
 
+/// Adds the level's terrain to a collision world, if it has one.
+///
+/// One shape for the whole surface: see `engine_collision::heightfield` for why that is a
+/// shape rather than a box per cell. The floor plane stays underneath it — the terrain covers
+/// part of the playable square and the plane holds up whatever is standing on the rest, and
+/// it is also what catches somebody who falls off the edge of the terrain rather than letting
+/// them drop forever.
+///
+/// Returns whether a surface was added. A terrain whose numbers do not describe one is
+/// reported and skipped: the level is playable on its floor plane, which is a great deal
+/// better than a panic on the first step somebody takes.
+pub fn add_terrain_collision(
+    world: &mut engine_collision::world::CollisionWorld,
+    scene: &engine_environment::EnvironmentScene,
+) -> bool {
+    use engine_collision::heightfield::Heightfield;
+    use engine_collision::shape::Shape;
+    use engine_collision::world::StaticDesc;
+
+    let Some(terrain) = scene.terrain.as_ref() else {
+        return false;
+    };
+    let Some(field) = Heightfield::new(
+        terrain.origin,
+        terrain.cell_size,
+        terrain.resolution,
+        terrain.heights.clone(),
+    ) else {
+        log::error!(
+            "terrain: {}x{} points at {} m is not a surface; the level keeps its floor plane",
+            terrain.resolution,
+            terrain.resolution,
+            terrain.cell_size
+        );
+        return false;
+    };
+    world.add_static(StaticDesc::new(Shape::heightfield(field)).labelled("TERRAIN"));
+    true
+}
+
 /// Adds every blocking environment object to a collision world.
 ///
 /// ```text
@@ -318,12 +364,14 @@ pub fn environment_arena(
     // the player sees. Two descriptions of the boundary, and they agree because
     // `ArenaConfig::from_environment` took its half-extent from the same scene.
     build_collision(world, &config);
+    let terrain = add_terrain_collision(world, scene);
     let statics = add_environment_collision(world, scene);
     world.rebuild_broad_phase();
     log::info!(
-        "environment '{}': {} objects, {statics} collision shapes",
+        "environment '{}': {} objects, {statics} collision shapes{}",
         scene.name,
-        scene.len()
+        scene.len(),
+        if terrain { ", and terrain" } else { "" }
     );
 
     simulation.set_player_entity(arena.player);
@@ -657,7 +705,7 @@ mod tests {
         assert_eq!(add_environment_collision(&mut world, &scene), 2);
         let shapes: Vec<_> = world
             .statics()
-            .filter_map(|id| world.shape(id).copied())
+            .filter_map(|id| world.shape(id).cloned())
             .collect();
         assert!(
             matches!(shapes[0], Shape::Aabb(_)),

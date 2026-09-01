@@ -183,6 +183,31 @@ pub struct SceneDocument {
     pub lighting: Option<LightingRecord>,
     /// Every placement, in draw order.
     pub objects: Vec<ObjectRecord>,
+    /// The shape of the ground, if the level has one.
+    ///
+    /// Absent in every level written before terrain existed, and absent in a level nobody has
+    /// sculpted, which is why it is optional rather than a version bump: a reader of this
+    /// format that has never heard of terrain reads such a file unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terrain: Option<TerrainRecord>,
+}
+
+/// The ground's shape, as the file says it.
+///
+/// The heights are a flat list of numbers, row-major in `z`, which is what they are in memory
+/// and what a person editing the file by hand would least mind looking at. A 129×129 terrain
+/// is 16 641 numbers; nothing else in this format is remotely that large, and it is still
+/// smaller than one texture.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TerrainRecord {
+    /// The corner the grid starts at, `[x, y, z]`, with `y` the base height.
+    pub origin: [f32; 3],
+    /// Metres between grid points.
+    pub cell_size: f32,
+    /// Grid points a side.
+    pub resolution: usize,
+    /// Height above the origin's `y`, one per grid point, row-major in `z`.
+    pub heights: Vec<f32>,
 }
 
 /// The default scale of a placement that does not name one.
@@ -248,6 +273,12 @@ impl SceneDocument {
                 group_center: array(scene.spawns.group_center),
                 group_spacing: scene.spawns.group_spacing,
             }),
+            terrain: scene.terrain.as_ref().map(|terrain| TerrainRecord {
+                origin: array(terrain.origin),
+                cell_size: terrain.cell_size,
+                resolution: terrain.resolution,
+                heights: terrain.heights.clone(),
+            }),
             lighting: Some(LightingRecord {
                 sun_direction: array(scene.lighting.sun_direction),
                 sun_color: array(scene.lighting.sun_color),
@@ -305,6 +336,33 @@ impl SceneDocument {
                 sky_zenith: vector(lighting.sky_zenith),
                 sky_horizon: vector(lighting.sky_horizon),
             };
+        }
+
+        if let Some(record) = &self.terrain {
+            let terrain = crate::terrain::Terrain {
+                origin: vector(record.origin),
+                cell_size: record.cell_size,
+                resolution: record.resolution,
+                heights: record.heights.clone(),
+            };
+            // Checked rather than trusted, because everything that reads a terrain indexes
+            // into its heights by its resolution: a file whose two numbers disagree would be
+            // a panic somewhere far away from the file that caused it.
+            if !terrain.is_valid() {
+                return Err(SceneFileError::Invalid {
+                    path: path.to_owned(),
+                    location: "terrain".to_owned(),
+                    reason: format!(
+                        "{}x{} points at {} m needs {} finite heights, and the file has {}",
+                        record.resolution,
+                        record.resolution,
+                        record.cell_size,
+                        record.resolution * record.resolution,
+                        record.heights.len()
+                    ),
+                });
+            }
+            scene.terrain = Some(terrain);
         }
 
         for (index, record) in self.objects.iter().enumerate() {
@@ -554,6 +612,45 @@ mod tests {
     }
 
     #[test]
+    fn a_terrain_survives_the_round_trip_height_for_height() {
+        let mut original = scene();
+        let mut terrain = crate::terrain::Terrain::flat(17, 2.0, 0.5);
+        terrain.apply_brush(Vec3::new(4.0, 0.0, 4.0), 8.0, 3.0, crate::BrushMode::Raise);
+        original.terrain = Some(terrain.clone());
+
+        let restored = SceneDocument::from_scene(&original)
+            .to_scene("memory")
+            .expect("the document is valid");
+        assert_eq!(restored.terrain, Some(terrain));
+    }
+
+    #[test]
+    fn a_level_with_no_terrain_writes_no_terrain_at_all() {
+        // The field is optional so that a file written before terrain existed still reads, and
+        // so that a flat level does not carry sixteen thousand zeroes for nothing.
+        let document = SceneDocument::from_scene(&scene());
+        assert!(document.terrain.is_none());
+        let text = serde_json::to_string(&document).expect("it serializes");
+        assert!(!text.contains("terrain"), "an absent terrain was written anyway");
+    }
+
+    #[test]
+    fn a_terrain_whose_numbers_disagree_is_refused_rather_than_indexed_into() {
+        let mut document = SceneDocument::from_scene(&scene());
+        document.terrain = Some(TerrainRecord {
+            origin: [0.0, 0.0, 0.0],
+            cell_size: 2.0,
+            resolution: 9,
+            heights: vec![0.0; 4],
+        });
+        let error = document
+            .to_scene("broken.json")
+            .expect_err("81 points and 4 heights is not a surface");
+        let message = error.to_string();
+        assert!(message.contains("terrain"), "{message}");
+    }
+
+    #[test]
     fn a_new_empty_level_saves_and_reopens_as_an_empty_level() {
         // What the editor writes the first time somebody makes a level and saves it before
         // placing anything: a file with no objects in it must be a valid level, not a
@@ -590,6 +687,7 @@ mod tests {
             ground_height: 0.0,
             spawns: None,
             lighting: None,
+            terrain: None,
             objects: vec![
                 ObjectRecord {
                     asset: "pillar".to_owned(),
@@ -629,6 +727,7 @@ mod tests {
             ground_height: 0.0,
             spawns: None,
             lighting: None,
+            terrain: None,
             objects: vec![ObjectRecord {
                 asset: "   ".to_owned(),
                 position: [0.0; 3],
@@ -697,6 +796,7 @@ mod tests {
             ground_height: 0.0,
             spawns: None,
             lighting: None,
+            terrain: None,
             objects: vec![ObjectRecord {
                 asset: "pillar".to_owned(),
                 position: [0.0; 3],

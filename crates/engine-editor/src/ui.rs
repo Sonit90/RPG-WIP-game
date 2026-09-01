@@ -326,7 +326,8 @@ pub fn push_editor(
         "ARROWS NUDGE   SHIFT+ARROWS UP/DOWN   L LOCAL",
         "R YAW   T SIZE   0 RESET   X DELETE   C COPY",
         "G GRID   SHIFT+G ROTATION STEP   CTRL+A ALL",
-        "Z UNDO   TAB NEXT ASSET   F FIND   F2 RESCAN",
+        "B SCULPT THE GROUND   Z UNDO   TAB NEXT ASSET",
+        "F FIND   F2 RESCAN ASSETS",
         "CTRL+S SAVE   F6 BACK TO PLAYING",
     ];
     let line = text * 12.0;
@@ -467,6 +468,31 @@ fn push_inspector(
             text,
         );
     };
+
+    // While sculpting, the brush replaces the transform settings: they are the numbers the
+    // pointer is about to use, and the grid does not apply to a brush stroke.
+    if editor.is_sculpting() {
+        scratch.clear();
+        scratch.push_str("BRUSH ");
+        scratch.push_str(editor.brush().as_str());
+        row(1, scratch, list);
+
+        scratch.clear();
+        scratch.push_str("SIZE ");
+        write_metres(scratch, editor.brush_radius());
+        scratch.push_str(" M   STRENGTH ");
+        write_metres(scratch, editor.brush_strength());
+        row(2, scratch, list);
+
+        scratch.clear();
+        scratch.push_str("TAB MODE  1 2 SIZE  3 4 STRENGTH");
+        row(3, scratch, list);
+
+        scratch.clear();
+        scratch.push_str("DRAG TO SHAPE THE GROUND");
+        row(0, scratch, list);
+        return;
+    }
 
     // The three settings every verb reads, always on screen: an author who cannot see the
     // grid step cannot predict what an arrow key will do.

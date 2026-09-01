@@ -17,6 +17,8 @@
 //!   │        │  Z                   undo
 //!   │        │  TAB                 next asset in the browser
 //!   │        │  F / F2              filter the browser / read assets/ again
+//!   │        │  B                   sculpt the ground; TAB cycles the brush
+//!   │        │  1 2 / 3 4           brush size / brush strength, while sculpting
 //!   │        │  CTRL+S              write assets/scenes/<name>.json
 //!   └────────┘  F6 / ESC            leave
 //! ```
@@ -59,6 +61,7 @@ use std::path::{Path, PathBuf};
 use engine_core::input::{InputState, KeyCode, MouseButton};
 use engine_core::math::{Mat4, Vec3};
 use engine_core::transform::Transform;
+use engine_environment::terrain::{BrushMode, Terrain};
 use engine_environment::{EnvironmentAsset, EnvironmentObject, EnvironmentScene, scene_file};
 use engine_presentation::ui::input::UiInput;
 use engine_render_data::{Camera, RenderDataError, UiScale};
@@ -67,6 +70,35 @@ pub use camera::FlyCamera;
 
 /// How many snapshots `Z` can walk back through.
 const UNDO_DEPTH: usize = 64;
+
+/// What `Z` puts back: everything an edit can change.
+///
+/// The placements *and* the ground. It used to be the placements alone, which was right while
+/// they were the only thing an author could change; a brush stroke is an edit like any other
+/// and has to be undoable the same way. A terrain is 66 KB at the shipping size and a
+/// snapshot is only taken when something changes, so sixty-four of them is a few megabytes in
+/// the editor and nothing at all in a shipping build, which has none of this.
+#[derive(Debug, Clone, PartialEq)]
+struct Snapshot {
+    objects: Vec<EnvironmentObject>,
+    terrain: Option<Terrain>,
+}
+
+impl Snapshot {
+    /// The scene as it is now.
+    fn of(scene: &EnvironmentScene) -> Self {
+        Self {
+            objects: scene.objects.clone(),
+            terrain: scene.terrain.clone(),
+        }
+    }
+
+    /// Puts this snapshot back into `scene`.
+    fn restore(self, scene: &mut EnvironmentScene) {
+        scene.objects = self.objects;
+        scene.terrain = self.terrain;
+    }
+}
 
 /// The grid sizes `G` cycles through, in metres. Zero is off.
 const GRID_STEPS: [f32; 5] = [1.0, 2.0, 4.0, 0.25, 0.0];
@@ -78,6 +110,13 @@ const GRID_STEPS: [f32; 5] = [1.0, 2.0, 4.0, 0.25, 0.0];
 /// most of the time.
 const YAW_STEPS: [f32; 5] = [90.0, 45.0, 22.5, 15.0, 5.0];
 
+/// How much one press changes the brush's size or strength.
+///
+/// Multiplied one way and divided the other, so the two keys are inverses: an author who
+/// presses "bigger" and then "smaller" gets the brush they started with, and one who scales by
+/// 1.25 and then by 0.75 does not.
+const BRUSH_SIZE_STEP: f32 = 1.25;
+
 /// How much one press of `T` changes an object's size.
 const SCALE_STEP: f32 = 1.1;
 
@@ -88,6 +127,13 @@ pub enum EditorOutcome {
     Idle,
     /// The scene changed: re-place it.
     SceneChanged,
+    /// The terrain changed: rebuild its mesh and its collision surface.
+    ///
+    /// Separate from [`EditorOutcome::SceneChanged`] because the answers are different sizes.
+    /// Re-placing a scene respawns a few hundred render entities; rebuilding a terrain is one
+    /// mesh upload. A brush stroke that reported "the scene changed" would pay the first cost
+    /// for the second thing, on every frame of a drag.
+    TerrainChanged,
     /// The author asked to go back to playing.
     Left,
 }
@@ -121,16 +167,27 @@ pub struct Editor {
     grid: usize,
     /// Index into [`YAW_STEPS`].
     yaw_step: usize,
+    /// Whether the terrain brush has the pointer instead of placement and selection.
+    sculpting: bool,
+    /// What the brush does.
+    brush: BrushMode,
+    /// How wide the brush is, in metres.
+    brush_radius: f32,
+    /// How much one stroke moves the ground, in metres.
+    brush_strength: f32,
     /// Whether a nudge runs along the object's own axes rather than the world's.
     local_space: bool,
     /// Snapshots for `Z`, oldest first.
-    undo: Vec<Vec<EnvironmentObject>>,
+    undo: Vec<Snapshot>,
     /// Where `CTRL+S` writes.
     save_path: PathBuf,
     /// The last thing that happened, printed under the browser.
     status: String,
     /// The first object shown in the hierarchy list.
     hierarchy_scroll: usize,
+    /// How long the last frame took, so a brush stroke moves the ground at the same rate
+    /// whatever the frame rate is.
+    last_seconds: f32,
     scale: UiScale,
 }
 
@@ -155,11 +212,16 @@ impl Editor {
             drag: None,
             grid: 0,
             yaw_step: 2,
+            sculpting: false,
+            brush: BrushMode::Raise,
+            brush_radius: 6.0,
+            brush_strength: 0.5,
             local_space: false,
             undo: Vec::new(),
             save_path: PathBuf::from("assets/scenes/untitled.json"),
             status: String::new(),
             hierarchy_scroll: 0,
+            last_seconds: 1.0 / 60.0,
             scale: UiScale::default(),
         }
     }
@@ -219,6 +281,30 @@ impl Editor {
     #[must_use]
     pub fn is_local_space(&self) -> bool {
         self.local_space
+    }
+
+    /// Whether the terrain brush has the pointer.
+    #[must_use]
+    pub fn is_sculpting(&self) -> bool {
+        self.sculpting
+    }
+
+    /// What the brush does.
+    #[must_use]
+    pub fn brush(&self) -> BrushMode {
+        self.brush
+    }
+
+    /// How wide the brush is, in metres.
+    #[must_use]
+    pub fn brush_radius(&self) -> f32 {
+        self.brush_radius
+    }
+
+    /// How far one stroke moves the ground, in metres.
+    #[must_use]
+    pub fn brush_strength(&self) -> f32 {
+        self.brush_strength
     }
 
     /// The snap step in metres. Zero means no snapping.
@@ -335,13 +421,32 @@ impl Editor {
         // belongs to the filter — including the ones that would otherwise fly the camera.
         let browser_took_the_keys = self.browser.update_keys(input);
         if !self.browser.is_typing() {
-            self.camera.update(input, seconds);
+            self.last_seconds = seconds;
+        self.camera.update(input, seconds);
         }
 
         // The panels own the pointer over themselves: a click on a browser row chooses an
         // asset and must never also place one in the world behind the panel.
         let over_browser = self.update_browser(input, ui_input, viewport);
         let over_hierarchy = self.update_hierarchy(input, ui_input, scene, viewport);
+
+        // Sculpting takes the world pointer and most of the keyboard; the panels keep theirs.
+        // A key the brush answered is *not* passed on: `B` cycles the brush while sculpting
+        // and switches modes while not, and one press must not do both.
+        if self.sculpting && !self.browser.is_typing() {
+            let (outcome, handled) = self.update_terrain(
+                input,
+                ui_input,
+                scene,
+                view_projection,
+                viewport,
+                over_browser || over_hierarchy,
+            );
+            if outcome != EditorOutcome::Idle || handled {
+                self.reveal_selection(viewport);
+                return outcome;
+            }
+        }
 
         let mut changed = if browser_took_the_keys || self.browser.is_typing() {
             false
@@ -369,6 +474,111 @@ impl Editor {
         } else {
             EditorOutcome::Idle
         }
+    }
+
+    /// One frame of the terrain brush.
+    ///
+    /// Returns [`EditorOutcome::TerrainChanged`] on a frame the ground moved, and `Idle`
+    /// otherwise — including on the frames the author is only changing the brush, which must
+    /// not cost a mesh rebuild — together with whether the brush answered this frame's key at
+    /// all, which is what stops that key from also meaning something to the editor behind it.
+    fn update_terrain(
+        &mut self,
+        input: &InputState,
+        ui_input: &UiInput,
+        scene: &mut EnvironmentScene,
+        view_projection: &Mat4,
+        viewport: (u32, u32),
+        over_panel: bool,
+    ) -> (EditorOutcome, bool) {
+        // The brush's own keys. Shared with nothing: while sculpting, `R` is not a rotation
+        // and `X` is not a delete, because there is no selection to rotate or delete. `B` is
+        // deliberately *not* one of them — it is the key that leaves, and a mode key that
+        // means something else once you are inside the mode is a key nobody can find their
+        // way out with. TAB cycles the brush, which is what TAB does in the other mode too:
+        // the next thing.
+        if input.was_key_pressed(KeyCode::Tab) {
+            self.brush = self.brush.next();
+            self.status = format!("brush {}", self.brush.as_str());
+            return (EditorOutcome::Idle, true);
+        }
+        if input.was_key_pressed(KeyCode::Digit1) {
+            self.brush_radius = (self.brush_radius / BRUSH_SIZE_STEP).max(1.0);
+            self.status = format!("brush {:.1} m", self.brush_radius);
+            return (EditorOutcome::Idle, true);
+        }
+        if input.was_key_pressed(KeyCode::Digit2) {
+            self.brush_radius = (self.brush_radius * BRUSH_SIZE_STEP).min(80.0);
+            self.status = format!("brush {:.1} m", self.brush_radius);
+            return (EditorOutcome::Idle, true);
+        }
+        if input.was_key_pressed(KeyCode::Digit3) {
+            self.brush_strength = (self.brush_strength / BRUSH_SIZE_STEP).max(0.05);
+            self.status = format!("strength {:.2} m", self.brush_strength);
+            return (EditorOutcome::Idle, true);
+        }
+        if input.was_key_pressed(KeyCode::Digit4) {
+            self.brush_strength = (self.brush_strength * BRUSH_SIZE_STEP).min(8.0);
+            self.status = format!("strength {:.2} m", self.brush_strength);
+            return (EditorOutcome::Idle, true);
+        }
+        if input.was_key_pressed(KeyCode::Z) {
+            // Undo can put back a scene whose objects *and* terrain are different, so the
+            // whole level is rebuilt rather than guessing which half moved.
+            let outcome = if self.undo(scene) {
+                EditorOutcome::SceneChanged
+            } else {
+                EditorOutcome::Idle
+            };
+            return (outcome, true);
+        }
+
+        // Nothing below is a key, so nothing below has answered one: a frame in which the
+        // brush is not painting leaves the keyboard to the editor.
+        if over_panel || !ui_input.pointer_down {
+            return (EditorOutcome::Idle, false);
+        }
+        let Some(ground) = engine_presentation::ui::targeting::ground_under_cursor(
+            ui_input.pointer,
+            view_projection,
+            viewport,
+        ) else {
+            return (EditorOutcome::Idle, false);
+        };
+
+        // A level with no terrain gets one the first time somebody paints on it. Sized to the
+        // level's own playable square, so the ground reaches as far as the walls do.
+        if scene.terrain.is_none() {
+            let cell = 2.0;
+            let resolution = ((scene.half_extent * 2.0 / cell).round() as usize + 1).max(9);
+            scene.terrain = Some(Terrain::flat(resolution, cell, scene.ground_height));
+            self.snapshot(scene);
+            self.status = format!("terrain created, {resolution} points a side");
+        }
+
+        // The snapshot is taken when a stroke *starts*, not on every frame of it: a drag is
+        // one edit, and an undo stack with sixty entries for one stroke is an undo stack
+        // nobody can walk back through.
+        if ui_input.pointer_pressed {
+            self.snapshot(scene);
+        }
+
+        let Some(terrain) = scene.terrain.as_mut() else {
+            return (EditorOutcome::Idle, false);
+        };
+        // Per second rather than per frame, so a stroke moves the ground by the same amount on
+        // a fast machine and a slow one.
+        let amount = self.brush_strength * self.last_seconds.clamp(0.0, 0.1) * 30.0;
+        if terrain.apply_brush(ground, self.brush_radius, amount, self.brush) {
+            self.status = format!(
+                "{} at {:.0} {:.0}",
+                self.brush.as_str(),
+                ground.x,
+                ground.z
+            );
+            return (EditorOutcome::TerrainChanged, true);
+        }
+        (EditorOutcome::Idle, true)
     }
 
     /// The asset browser: scrolling it, opening folders and choosing what to place.
@@ -542,6 +752,17 @@ impl Editor {
                     "grid off".to_owned()
                 };
             }
+            return false;
+        }
+        if input.was_key_pressed(KeyCode::B) {
+            self.sculpting = !self.sculpting;
+            self.selected.clear();
+            self.drag = None;
+            self.status = if self.sculpting {
+                "sculpting: drag to shape the ground".to_owned()
+            } else {
+                "placing".to_owned()
+            };
             return false;
         }
         if input.was_key_pressed(KeyCode::L) {
@@ -758,7 +979,7 @@ impl Editor {
             if !drag.moved {
                 // The snapshot is taken on the first movement, not on the press: a click
                 // that selects and does not drag must not fill the undo stack.
-                let before = scene.objects.clone();
+                let before = Snapshot::of(scene);
                 self.push_undo(before);
                 self.drag = Some(Drag {
                     moved: true,
@@ -863,25 +1084,25 @@ impl Editor {
 
     /// Remembers the scene as it is now, for `Z`.
     fn snapshot(&mut self, scene: &EnvironmentScene) {
-        let objects = scene.objects.clone();
-        self.push_undo(objects);
+        let snapshot = Snapshot::of(scene);
+        self.push_undo(snapshot);
     }
 
     /// Pushes a snapshot, dropping the oldest once the stack is full.
-    fn push_undo(&mut self, objects: Vec<EnvironmentObject>) {
+    fn push_undo(&mut self, snapshot: Snapshot) {
         if self.undo.len() == UNDO_DEPTH {
             self.undo.remove(0);
         }
-        self.undo.push(objects);
+        self.undo.push(snapshot);
     }
 
     /// Puts the last snapshot back. Returns whether anything changed.
     fn undo(&mut self, scene: &mut EnvironmentScene) -> bool {
-        let Some(objects) = self.undo.pop() else {
+        let Some(snapshot) = self.undo.pop() else {
             self.status = "nothing to undo".to_owned();
             return false;
         };
-        scene.objects = objects;
+        snapshot.restore(scene);
         self.selected.clear();
         self.drag = None;
         self.status = "undone".to_owned();
@@ -1755,6 +1976,172 @@ mod tests {
         for (index, object) in scene.objects.iter().enumerate() {
             assert_eq!(object.transform.translation, before[index], "object {index}");
         }
+    }
+
+    #[test]
+    fn b_puts_the_editor_in_and_out_of_sculpting_and_drops_the_selection() {
+        let mut editor = editor();
+        let mut scene = three_rocks();
+        update(
+            &mut editor,
+            &control_keyed(KeyCode::A),
+            &UiInput::new(),
+            &mut scene,
+        );
+        assert_eq!(editor.selected().len(), 3);
+
+        update(&mut editor, &keyed(KeyCode::B), &UiInput::new(), &mut scene);
+        assert!(editor.is_sculpting());
+        assert!(
+            editor.selected().is_empty(),
+            "a selection survived into sculpt mode, where its verbs no longer exist"
+        );
+
+        update(&mut editor, &keyed(KeyCode::B), &UiInput::new(), &mut scene);
+        assert!(!editor.is_sculpting(), "B did not come back out");
+    }
+
+    #[test]
+    fn a_stroke_on_a_level_with_no_terrain_makes_one_and_raises_it() {
+        let mut editor = editor();
+        let mut scene = scene();
+        assert!(scene.terrain.is_none());
+        update(&mut editor, &keyed(KeyCode::B), &UiInput::new(), &mut scene);
+
+        let outcome = update(
+            &mut editor,
+            &InputState::new(),
+            &press(centre()),
+            &mut scene,
+        );
+        assert_eq!(outcome, EditorOutcome::TerrainChanged);
+        let terrain = scene.terrain.as_ref().expect("a stroke made a terrain");
+        assert!(terrain.is_valid());
+        assert!(
+            terrain.height_at(Vec3::ZERO) > 0.0,
+            "the ground did not move under the brush"
+        );
+        assert_eq!(
+            terrain.height_at(Vec3::new(200.0, 0.0, 200.0)),
+            0.0,
+            "the stroke reached the far side of the level"
+        );
+    }
+
+    #[test]
+    fn a_stroke_reports_terrain_rather_than_scene_so_the_placements_are_left_alone() {
+        // The distinction the outcome exists for: re-placing a few hundred objects on every
+        // frame of a brush stroke is the cost TerrainChanged avoids.
+        let mut editor = editor();
+        let mut scene = three_rocks();
+        update(&mut editor, &keyed(KeyCode::B), &UiInput::new(), &mut scene);
+        let outcome = update(
+            &mut editor,
+            &InputState::new(),
+            &press(centre()),
+            &mut scene,
+        );
+        assert_eq!(outcome, EditorOutcome::TerrainChanged);
+        assert_eq!(scene.len(), 3, "a brush stroke changed the placements");
+    }
+
+    #[test]
+    fn the_brush_keys_change_the_brush_and_nothing_else() {
+        let mut editor = editor();
+        let mut scene = scene();
+        update(&mut editor, &keyed(KeyCode::B), &UiInput::new(), &mut scene);
+
+        let radius = editor.brush_radius();
+        let strength = editor.brush_strength();
+        assert_eq!(
+            update(
+                &mut editor,
+                &keyed(KeyCode::Digit2),
+                &UiInput::new(),
+                &mut scene
+            ),
+            EditorOutcome::Idle,
+            "changing the brush cost a rebuild"
+        );
+        assert!(editor.brush_radius() > radius);
+        update(
+            &mut editor,
+            &keyed(KeyCode::Digit1),
+            &UiInput::new(),
+            &mut scene,
+        );
+        assert!((editor.brush_radius() - radius).abs() < 1e-4, "1 and 2 disagree");
+
+        update(
+            &mut editor,
+            &keyed(KeyCode::Digit4),
+            &UiInput::new(),
+            &mut scene,
+        );
+        assert!(editor.brush_strength() > strength);
+        assert!(scene.terrain.is_none(), "a brush key made a terrain");
+    }
+
+    #[test]
+    fn the_brush_mode_cycles_while_sculpting() {
+        let mut editor = editor();
+        let mut scene = scene();
+        update(&mut editor, &keyed(KeyCode::B), &UiInput::new(), &mut scene);
+        assert_eq!(editor.brush(), BrushMode::Raise);
+        update(&mut editor, &keyed(KeyCode::Tab), &UiInput::new(), &mut scene);
+        assert_eq!(editor.brush(), BrushMode::Lower);
+        assert!(editor.is_sculpting(), "cycling the brush left sculpt mode");
+        // And B still leaves, from any brush.
+        update(&mut editor, &keyed(KeyCode::B), &UiInput::new(), &mut scene);
+        assert!(!editor.is_sculpting());
+    }
+
+    #[test]
+    fn one_stroke_is_one_undo_however_many_frames_it_lasted() {
+        let mut editor = editor();
+        let mut scene = scene();
+        update(&mut editor, &keyed(KeyCode::B), &UiInput::new(), &mut scene);
+
+        // A drag: one press and several held frames.
+        update(
+            &mut editor,
+            &InputState::new(),
+            &press(centre()),
+            &mut scene,
+        );
+        for _ in 0..5 {
+            update(&mut editor, &InputState::new(), &hold(centre()), &mut scene);
+        }
+        assert!(scene.terrain.as_ref().is_some_and(|terrain| {
+            terrain.height_at(Vec3::ZERO) > 0.0
+        }));
+
+        update(&mut editor, &keyed(KeyCode::Z), &UiInput::new(), &mut scene);
+        assert!(
+            scene.terrain.is_none()
+                || scene
+                    .terrain
+                    .as_ref()
+                    .is_some_and(|terrain| terrain.height_at(Vec3::ZERO).abs() < 1e-6),
+            "one undo did not take back the whole stroke"
+        );
+    }
+
+    #[test]
+    fn placement_verbs_do_nothing_while_the_brush_has_the_pointer() {
+        let mut editor = editor();
+        let mut scene = three_rocks();
+        update(&mut editor, &keyed(KeyCode::B), &UiInput::new(), &mut scene);
+
+        // A click in the world sculpts instead of placing.
+        update(
+            &mut editor,
+            &InputState::new(),
+            &press(centre()),
+            &mut scene,
+        );
+        assert_eq!(scene.len(), 3, "the brush placed an object");
+        assert!(editor.selection().is_none());
     }
 
     #[test]

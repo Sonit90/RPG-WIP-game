@@ -80,7 +80,18 @@ pub struct EnvironmentScene {
     /// Half-width of the square a character is confined to, in metres.
     pub half_extent: f32,
     /// The y the floor is at.
+    ///
+    /// The flat floor under everything, and what a level with no terrain stands on. A level
+    /// *with* terrain keeps it: the terrain covers part of the playable square and this is
+    /// what holds up whatever is standing on the rest of it.
     pub ground_height: f32,
+    /// The shape of the ground, if this level has been given one.
+    ///
+    /// `None` is a flat level, which is every level built before terrain existed and every
+    /// new one until somebody raises a hill. The broad shape only — hills, valleys, slopes,
+    /// plateaus. Anything that overhangs is a placed object, and the terrain does not know
+    /// those exist; see [`crate::terrain`].
+    pub terrain: Option<crate::terrain::Terrain>,
 }
 
 impl EnvironmentScene {
@@ -107,6 +118,21 @@ impl EnvironmentScene {
             lights: Vec::new(),
             half_extent: 40.0,
             ground_height: 0.0,
+            terrain: None,
+        }
+    }
+
+    /// The height of the ground under a world position.
+    ///
+    /// The terrain's surface where there is terrain, and [`EnvironmentScene::ground_height`]
+    /// everywhere else. One question with one answer, so nothing outside this crate has to
+    /// know whether the level has a heightmap — which is what lets a spawn point, a placement
+    /// and a debug marker all sit on the ground without three different rules.
+    #[must_use]
+    pub fn ground_at(&self, position: Vec3) -> f32 {
+        match &self.terrain {
+            Some(terrain) if terrain.contains(position) => terrain.height_at(position),
+            _ => self.ground_height,
         }
     }
 

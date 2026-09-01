@@ -198,6 +198,10 @@ impl CollisionDebug {
                 Shape::Obb(obb) => Transform::from_translation(obb.center)
                     .with_rotation(obb.rotation)
                     .with_scale(obb.half_extents * 2.0),
+                // The terrain is already the picture: it is drawn as itself, out of the same
+                // heights this shape was built from, so a wireframe box around the whole
+                // level would say nothing except that a terrain exists.
+                Shape::Heightfield(_) => continue,
             };
             self.push(
                 render,
@@ -395,6 +399,10 @@ impl CollisionDebug {
                 Shape::Obb(obb) => Transform::from_translation(obb.center)
                     .with_rotation(obb.rotation)
                     .with_scale(obb.half_extents * 2.0),
+                // The terrain is already the picture: it is drawn as itself, out of the same
+                // heights this shape was built from, so a highlighted box around the whole
+                // level would say nothing except that a terrain exists.
+                Shape::Heightfield(_) => return,
             };
             self.push(
                 render,

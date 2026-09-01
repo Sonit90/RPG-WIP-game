@@ -152,6 +152,13 @@ const SHADOW_QUALITY_KEY: KeyCode = KeyCode::F4;
 /// frame buffer rather than a second pass.
 const SHADOW_DEBUG_KEY: KeyCode = KeyCode::F7;
 
+/// Which of the generated materials the terrain is drawn with.
+///
+/// Named rather than chosen per level, because a blockout terrain is one surface and picking
+/// its material per level is a decision nobody has needed to make yet. When they do, it
+/// becomes a field on the terrain and this becomes its default.
+const TERRAIN_MATERIAL: &str = "grass";
+
 /// How far above the floor the targeting disc sits, in metres.
 ///
 /// Coplanar with the floor would be a depth-buffer tie and would flicker; a few centimetres
@@ -213,6 +220,12 @@ pub struct App {
     /// objects that share a frustum and half their materials with the fight in front of them.
     environment: Option<engine_environment::EnvironmentScene>,
     placer: engine_presentation::EnvironmentPlacer,
+    /// The render entity the level's terrain is drawn as, if it has one.
+    ///
+    /// One entity for the whole surface, respawned when the heights change. Not an
+    /// `EnvironmentObject`, because a terrain is not a placement: it has no asset id, no
+    /// transform an author can drag, and exactly one of it per level.
+    terrain_entity: Option<engine_render_data::RenderEntity>,
     bindings: Bindings,
     /// Which scenario is loaded. Chosen once, at startup, by `--scene`.
     scene: Scene,
@@ -661,6 +674,13 @@ impl App {
             // Anything the level names that the library does not have: a `.glb` under
             // assets/, or the marker for a name nothing answers to.
             let extra = upload_missing_models(&mut renderer, placer.visuals_mut(), scene);
+            if scene.terrain.is_some() {
+                log::info!(
+                    "environment '{}': terrain, {} points a side",
+                    scene.name,
+                    scene.terrain.as_ref().map_or(0, |terrain| terrain.resolution)
+                );
+            }
             if extra > 0 {
                 log::info!("environment '{}': {extra} model(s) uploaded from disk", scene.name);
             }
@@ -859,6 +879,7 @@ impl App {
             clear_color,
             environment,
             placer,
+            terrain_entity: None,
             bindings: Bindings::default(),
             scene: args.scene,
             #[cfg(feature = "editor")]
@@ -954,6 +975,12 @@ impl App {
             #[cfg(feature = "debug-overlay")]
             last_overlay_update: Instant::now(),
         };
+        // The ground, if the level has a shape for it. Built here rather than in the loop
+        // above because it is one mesh for the whole level and it needs the app's own
+        // renderer and world — the same call a brush stroke makes, so a loaded terrain and an
+        // edited one cannot end up drawn by two different paths.
+        app.rebuild_terrain();
+
         let applied = app.apply_shadow_quality(shadow_quality);
         // The settings screen shows what is running, which after a failed switch is not
         // necessarily what the file asked for.
@@ -2268,6 +2295,62 @@ impl App {
         self.renderer.set_ui(self.game_ui.list());
     }
 
+    /// Rebuilds the terrain's mesh and puts it in the world, replacing whatever was there.
+    ///
+    /// One upload and one entity. Called when a level loads and again after every brush
+    /// stroke, which is the only time the heights change — a stroke is a frame in the editor,
+    /// where nothing else is running, and a 65×65 terrain is 8 000 triangles.
+    ///
+    /// A terrain that will not upload is reported and left out: the level is playable without
+    /// its ground drawn, and a renderer error in the middle of a brush stroke must not take
+    /// the editor down with it.
+    fn rebuild_terrain(&mut self) {
+        if let Some(entity) = self.terrain_entity.take() {
+            self.extractor.render_world_mut().despawn(entity);
+        }
+        let Some(scene) = self.environment.as_ref() else {
+            return;
+        };
+        let Some(terrain) = scene.terrain.as_ref() else {
+            return;
+        };
+        let model = engine_assets::procedural::terrain::terrain_model(terrain, TERRAIN_MATERIAL);
+        if model.triangle_count() == 0 {
+            return;
+        }
+        let binding = match self.renderer.create_model(&model) {
+            Ok(binding) => binding,
+            Err(error) => {
+                log::error!("terrain: could not be uploaded: {error}");
+                return;
+            }
+        };
+        // One level of detail and one material, so one part: a terrain has no LOD chain and
+        // is drawn with the single surface material the level chose.
+        let Some(part) = binding.lods.first().and_then(|lod| lod.parts.first()) else {
+            return;
+        };
+        let engine_render_data::PartGeometry::Rigid(mesh) = part.geometry else {
+            log::error!("terrain: built as skinned geometry, which it never is");
+            return;
+        };
+        let bounds = binding.lods.first().map_or(part.bounds, |lod| lod.bounds);
+        let world = self.extractor.render_world_mut();
+        let entity = world.spawn(engine_render_data::RenderEntityDesc {
+            transform: engine_core::transform::Transform::IDENTITY,
+            mesh,
+            material: part.material,
+            bounds,
+            ..Default::default()
+        });
+        self.terrain_entity = Some(entity);
+        log::debug!(
+            "terrain: {} points a side, {} triangles",
+            terrain.resolution,
+            model.triangle_count()
+        );
+    }
+
     /// Rebuilds the static collision world from the environment scene as it stands now.
     ///
     /// The floor and the boundary first, then every blocking placement, then one broad-phase
@@ -2285,6 +2368,7 @@ impl App {
         let config = ArenaConfig::from_environment(scene, 0);
         let world = self.simulation.collision_world_mut();
         arena::build_collision(world, &config);
+        arena::add_terrain_collision(world, scene);
         let statics = arena::add_environment_collision(world, scene);
         world.rebuild_broad_phase();
         log::debug!("editor: collision rebuilt, {statics} shape(s) from the scene");
@@ -2335,6 +2419,7 @@ impl App {
         let view_projection = self.camera.view_projection();
         let seconds = ctx.time().real_delta().as_secs_f32();
         let mut changed = false;
+        let mut terrain_changed = false;
         if let Some(scene) = self.environment.as_mut() {
             match self.editor.update(
                 ctx.input(),
@@ -2345,6 +2430,10 @@ impl App {
                 seconds,
             ) {
                 engine_editor::EditorOutcome::SceneChanged => changed = true,
+                // The ground moved. One mesh and one collision surface, and none of the
+                // placements: re-placing a few hundred render entities on every frame of a
+                // brush stroke is the cost this outcome exists to avoid.
+                engine_editor::EditorOutcome::TerrainChanged => terrain_changed = true,
                 engine_editor::EditorOutcome::Left => {
                     // The static world is rebuilt on the way out as well as on every
                     // change, so that leaving the editor lands the author in the level
@@ -2375,6 +2464,11 @@ impl App {
             // they are rebuilt together. An author who places a wall and walks into it
             // expects a wall; the alternative is an editor whose work can only be tested by
             // relaunching the game.
+            self.rebuild_environment_collision();
+            self.rebuild_terrain();
+        }
+        if terrain_changed {
+            self.rebuild_terrain();
             self.rebuild_environment_collision();
         }
 

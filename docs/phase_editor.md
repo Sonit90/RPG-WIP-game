@@ -497,3 +497,96 @@ The inspector carries a line that is always visible — `GRID 1.0  ROT 22.5  WOR
 author who cannot see the grid step cannot predict what an arrow key will do. The hierarchy
 highlights every selected row and outlines only the primary one, and its heading shows `SEL n`
 when there is more than one.
+
+## Phase 6 — terrain
+
+The ground was a number: `EnvironmentScene::ground_height`, one float, flat everywhere. It is
+now optionally a heightmap, and the level can have hills, valleys, slopes and plateaus.
+
+### The division that makes a heightmap safe
+
+A heightmap has one height per point, so it cannot express a cave mouth, an arch, or a ledge
+with space under it. That is fine, because it is never asked to: **anything that overhangs is
+placed geometry standing on the terrain**, which is what `EnvironmentObject` has always been.
+The terrain does not know those exist.
+
+A player walks under a cliff because the cliff is a mesh standing on the ground, not because
+the ground was bent into something a heightmap cannot hold. The terrain is never asked to do
+the thing it cannot do, so it never has to become a voxel field to keep its promises.
+
+### Three descriptions, one set of numbers
+
+```text
+                 ┌─► terrain_model  (engine-assets)      the mesh, one render entity
+Terrain heights ─┼─► Heightfield    (engine-collision)   the surface, one collision shape
+                 └─► height_at      (engine-environment) where the ground is, for anything
+```
+
+The mesh and the collision surface split every cell along the same diagonal. That is asserted
+in `engine-presentation/tests/terrain_agreement.rs` — the only crate that can see both, since
+`engine-assets` has no collision world and `engine-collision` has no meshes. A terrain split
+two different ways would put a ridge where the picture shows a valley, half a cell wide, over
+the whole level: invisible in a screenshot and impossible to explain from one.
+
+### A new collision shape, and why it earned its place
+
+`engine-collision` had `Plane`, `Aabb` and `Obb`. A 129×129 terrain as boxes is 32 768 static
+shapes, all of them in the broad phase, and a hill made of boxes is a staircase a character
+catches on. So `Shape::Heightfield` is one shape that tests the cells under the capsule — the
+cost depends on the capsule's size, not the terrain's — using capsule-vs-triangle with the
+triangle's own normal, so a character on a slope is pushed along the surface instead of being
+nudged sideways at every triangle edge.
+
+`Shape` lost `Copy` for this: every other variant is a handful of floats and this one owns a
+`Vec`. The places that copied a shape now borrow it, which is what they wanted anyway.
+
+The field is a **surface, not a solid**: something far below it is falling through empty
+space, and the level's floor plane is what catches it. The plane stays under the terrain for
+exactly that reason, and because the terrain covers part of the playable square while the
+plane holds up whatever stands on the rest.
+
+### The brush
+
+`B` enters and leaves sculpt mode. While sculpting the pointer shapes the ground and `TAB`
+cycles the brush — the same "next thing" `TAB` means in placement mode.
+
+| | |
+|---|---|
+| drag | apply the brush |
+| `TAB` | RAISE → LOWER → FLATTEN → SMOOTH |
+| `1` / `2` | brush size, multiplied and divided by the same step so the keys are inverses |
+| `3` / `4` | brush strength |
+| `Z` | undo the whole stroke |
+
+Flatten takes its target from the height under the middle of the brush, so a plateau is a
+flatten stroke where the plateau should be rather than a number somebody types. The falloff is
+a smoothstep: a stroke with a hard edge leaves a cliff behind it, and cliffs are not this
+system's job.
+
+A level with no terrain gets one the first time somebody paints on it, sized to the level's own
+playable square.
+
+### Three bugs the tests caught
+
+* **`B` cycled the brush and left the mode in one press** — the brush answered the key and the
+  editor answered it again. A key the brush consumes is no longer passed on, and `B` is now
+  deliberately not one of the brush's keys: a mode key that means something else once you are
+  inside the mode is a key nobody can find their way out with.
+* **`1` and `2` were not inverses** (×0.75 then ×1.25 is 0.9375), so the brush drifted smaller
+  every time an author changed their mind.
+* **Undo did not restore the terrain.** The undo stack held `Vec<EnvironmentObject>` — right
+  while placements were the only thing an author could change. It holds a `Snapshot` of the
+  placements *and* the ground now, and one stroke is still one undo however many frames the
+  drag lasted, because the snapshot is taken when the stroke starts.
+
+### Cost
+
+A brush stroke reports `TerrainChanged`, which rebuilds one mesh and one collision shape.
+`SceneChanged` respawns a few hundred render entities; paying that on every frame of a drag is
+what the separate outcome exists to avoid.
+
+### Verification
+
+A 41×41 sculpted level: `1 objects, 0 collision shapes, and terrain` →
+`terrain: 41 points a side, 3200 triangles`. Whole workspace green, clippy clean, and the
+non-editor build still compiles without any of it.

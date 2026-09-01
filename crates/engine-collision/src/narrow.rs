@@ -46,6 +46,9 @@ pub fn capsule_vs_shape(capsule: &Capsule, shape: &Shape) -> Option<Contact> {
         Shape::Plane(plane) => capsule_vs_plane(capsule, plane),
         Shape::Aabb(aabb) => capsule_vs_aabb(capsule, aabb),
         Shape::Obb(obb) => capsule_vs_obb(capsule, obb),
+        Shape::Heightfield(field) => {
+            crate::heightfield::capsule_vs_heightfield(capsule, field)
+        }
     }
 }
 

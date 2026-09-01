@@ -55,7 +55,9 @@ impl StaticId {
 }
 
 /// What a caller supplies to add a static object.
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// `Clone` but not `Copy`, because [`Shape`] is: see its own note. A description is built
+/// once per static body at load and moved into the world.
+#[derive(Debug, Clone, PartialEq)]
 pub struct StaticDesc {
     /// The geometry.
     pub shape: Shape,

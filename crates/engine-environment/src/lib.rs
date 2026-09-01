@@ -65,12 +65,14 @@ pub mod los_course;
 pub mod object;
 pub mod scene;
 pub mod scene_file;
+pub mod terrain;
 pub mod shadow_course;
 
 pub use asset::{EnvironmentAsset, LIBRARY};
 pub use lighting::{EnvironmentLighting, SceneLight, push_stress_lights};
 pub use object::{EnvironmentCollision, EnvironmentObject};
 pub use scene::{EnvironmentScene, SpawnPoints};
+pub use terrain::{BrushMode, Terrain};
 pub use scene_file::{SceneDocument, SceneFileError};
 
 /// Deterministic value in `0..1` from a pair of integers.
