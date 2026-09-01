@@ -5,10 +5,15 @@
 //!   ▲        │  left click ground   place the browser's asset
 //!   │        │  left click object   select it
 //!   │        │  drag                move it, snapped to the grid
-//!   │        │  R / SHIFT+R         yaw
+//!   │        │  R / SHIFT+R         yaw, snapped to the rotation step
+//!   │        │  G / SHIFT+G         grid step / rotation step
 //!   │        │  T / SHIFT+T         scale
+//!   │        │  ARROWS / SHIFT      nudge by the grid, in X and Z / in Y
+//!   │        │  L                   nudge along world axes or the object's own
+//!   │        │  0                   reset rotation and scale
 //!   │        │  X                   delete
 //!   │        │  C                   duplicate
+//!   │        │  CTRL+click          add to the selection; CTRL+A takes everything
 //!   │        │  Z                   undo
 //!   │        │  TAB                 next asset in the browser
 //!   │        │  F / F2              filter the browser / read assets/ again
@@ -66,8 +71,12 @@ const UNDO_DEPTH: usize = 64;
 /// The grid sizes `G` cycles through, in metres. Zero is off.
 const GRID_STEPS: [f32; 5] = [1.0, 2.0, 4.0, 0.25, 0.0];
 
-/// How far one press of `R` turns an object: an eighth of a turn.
-const YAW_STEP: f32 = std::f32::consts::FRAC_PI_4 / 2.0;
+/// The rotation steps `SHIFT+G` cycles through, in degrees.
+///
+/// A blockout is built out of pieces that meet at right angles and at half-right angles, so
+/// the coarse steps come first: an author reaches for 15° when they want it, and wants 90°
+/// most of the time.
+const YAW_STEPS: [f32; 5] = [90.0, 45.0, 22.5, 15.0, 5.0];
 
 /// How much one press of `T` changes an object's size.
 const SCALE_STEP: f32 = 1.1;
@@ -104,11 +113,16 @@ pub struct Editor {
     camera: FlyCamera,
     /// What is in `assets/`, and which of it the next click places.
     browser: browser::AssetBrowser,
-    /// Which placement is selected, if any.
-    selection: Option<usize>,
+    /// Which placements are selected, in the order they were added. The last is the primary
+    /// one — what the inspector describes and what a verb reports on.
+    selected: Vec<usize>,
     drag: Option<Drag>,
     /// Index into [`GRID_STEPS`].
     grid: usize,
+    /// Index into [`YAW_STEPS`].
+    yaw_step: usize,
+    /// Whether a nudge runs along the object's own axes rather than the world's.
+    local_space: bool,
     /// Snapshots for `Z`, oldest first.
     undo: Vec<Vec<EnvironmentObject>>,
     /// Where `CTRL+S` writes.
@@ -137,9 +151,11 @@ impl Editor {
             active: false,
             camera: FlyCamera::default(),
             browser: browser::AssetBrowser::new(),
-            selection: None,
+            selected: Vec::new(),
             drag: None,
             grid: 0,
+            yaw_step: 2,
+            local_space: false,
             undo: Vec::new(),
             save_path: PathBuf::from("assets/scenes/untitled.json"),
             status: String::new(),
@@ -172,10 +188,37 @@ impl Editor {
         self.browser.selected_asset()
     }
 
-    /// Which placement is selected.
+    /// The primary selection: the placement the inspector describes.
+    ///
+    /// The *last* one added rather than the first, because the thing an author just clicked
+    /// on is the thing they are looking at.
     #[must_use]
     pub fn selection(&self) -> Option<usize> {
-        self.selection
+        self.selected.last().copied()
+    }
+
+    /// Every selected placement, in the order they were added.
+    #[must_use]
+    pub fn selected(&self) -> &[usize] {
+        &self.selected
+    }
+
+    /// Whether a placement is selected.
+    #[must_use]
+    pub fn is_selected(&self, index: usize) -> bool {
+        self.selected.contains(&index)
+    }
+
+    /// How far one press of `R` turns an object, in degrees.
+    #[must_use]
+    pub fn yaw_step(&self) -> f32 {
+        YAW_STEPS[self.yaw_step % YAW_STEPS.len()]
+    }
+
+    /// Whether a nudge runs along the object's own axes rather than the world's.
+    #[must_use]
+    pub fn is_local_space(&self) -> bool {
+        self.local_space
     }
 
     /// The snap step in metres. Zero means no snapping.
@@ -226,7 +269,7 @@ impl Editor {
     pub fn enter(&mut self, focus: Vec3, scene_name: &str, viewport: (u32, u32)) {
         self.active = true;
         self.camera = FlyCamera::overlooking(focus);
-        self.selection = None;
+        self.selected.clear();
         self.drag = None;
         self.hierarchy_scroll = 0;
         self.undo.clear();
@@ -305,12 +348,15 @@ impl Editor {
         } else {
             self.update_keys(input, scene)
         };
+        let add_to_selection =
+            input.is_key_down(KeyCode::LeftControl) || input.is_key_down(KeyCode::RightControl);
         if self.update_pointer(
             ui_input,
             scene,
             view_projection,
             viewport,
             over_browser || over_hierarchy,
+            add_to_selection,
         ) {
             changed = true;
         }
@@ -415,9 +461,19 @@ impl Editor {
                 }
                 let index = self.hierarchy_scroll + slot;
                 if let Some(object) = scene.objects.get(index) {
-                    self.selection = Some(index);
+                    let control = input.is_key_down(KeyCode::LeftControl)
+                        || input.is_key_down(KeyCode::RightControl);
+                    self.select(index, control);
                     self.drag = None;
-                    self.status = format!("selected {} ({index})", object.asset.name());
+                    self.status = format!(
+                        "selected {} ({index}){}",
+                        object.asset.name(),
+                        if self.selected.len() > 1 {
+                            format!(" of {}", self.selected.len())
+                        } else {
+                            String::new()
+                        }
+                    );
                 }
                 break;
             }
@@ -425,9 +481,34 @@ impl Editor {
         true
     }
 
+    /// Adds `index` to the selection, or replaces the selection with it.
+    ///
+    /// `add` is what CTRL does: it *toggles*, so control-clicking a selected object takes it
+    /// out again, which is the one gesture every editor agrees on.
+    fn select(&mut self, index: usize, add: bool) {
+        if !add {
+            self.selected.clear();
+            self.selected.push(index);
+            return;
+        }
+        if let Some(position) = self.selected.iter().position(|known| *known == index) {
+            self.selected.remove(position);
+        } else {
+            self.selected.push(index);
+        }
+    }
+
+    /// Drops selected indices that are past the end of the scene.
+    ///
+    /// Undo replaces the object list wholesale, so a selection made before it can point past
+    /// the end afterwards.
+    fn prune_selection(&mut self, scene: &EnvironmentScene) {
+        self.selected.retain(|index| *index < scene.objects.len());
+    }
+
     /// Keeps the selected object in view, so a keyboard verb's result is visible.
     fn reveal_selection(&mut self, viewport: (u32, u32)) {
-        let Some(index) = self.selection else {
+        let Some(index) = self.selection() else {
             return;
         };
         let visible = ui::hierarchy_visible_rows(self.scale, viewport).max(1);
@@ -445,22 +526,41 @@ impl Editor {
         let shift = input.is_key_down(KeyCode::LeftShift) || input.is_key_down(KeyCode::RightShift);
 
         if input.was_key_pressed(KeyCode::Escape) {
-            self.selection = None;
+            self.selected.clear();
             return false;
         }
         if input.was_key_pressed(KeyCode::G) {
-            self.grid = (self.grid + 1) % GRID_STEPS.len();
-            let step = self.grid();
-            self.status = if step > 0.0 {
-                format!("grid {step} m")
+            if shift {
+                self.yaw_step = (self.yaw_step + 1) % YAW_STEPS.len();
+                self.status = format!("rotate by {} deg", self.yaw_step());
             } else {
-                "grid off".to_owned()
+                self.grid = (self.grid + 1) % GRID_STEPS.len();
+                let step = self.grid();
+                self.status = if step > 0.0 {
+                    format!("grid {step} m")
+                } else {
+                    "grid off".to_owned()
+                };
+            }
+            return false;
+        }
+        if input.was_key_pressed(KeyCode::L) {
+            self.local_space = !self.local_space;
+            self.status = if self.local_space {
+                "local axes".to_owned()
+            } else {
+                "world axes".to_owned()
             };
             return false;
         }
         if input.was_key_pressed(KeyCode::Tab) {
             self.browser.select_next();
             self.status = format!("placing {}", self.browser.selected_name());
+            return false;
+        }
+        if control && input.was_key_pressed(KeyCode::A) {
+            self.selected = (0..scene.objects.len()).collect();
+            self.status = format!("selected {}", self.selected.len());
             return false;
         }
         if control && input.was_key_pressed(KeyCode::S) {
@@ -471,20 +571,22 @@ impl Editor {
             return self.undo(scene);
         }
 
-        // Everything below needs something selected.
-        let Some(index) = self.selection else {
-            return false;
-        };
-        if index >= scene.objects.len() {
-            self.selection = None;
+        // Everything below acts on the selection, and every one of them acts on *all* of it.
+        self.prune_selection(scene);
+        if self.selected.is_empty() {
             return false;
         }
 
         if input.was_key_pressed(KeyCode::X) {
             self.snapshot(scene);
-            scene.objects.remove(index);
-            self.selection = None;
-            self.status = "deleted".to_owned();
+            // Highest index first, so removing one does not move the next one under it.
+            let mut doomed = self.selected.clone();
+            doomed.sort_unstable();
+            for index in doomed.into_iter().rev() {
+                scene.objects.remove(index);
+            }
+            self.status = format!("deleted {}", self.selected.len());
+            self.selected.clear();
             return true;
         }
         if input.was_key_pressed(KeyCode::C) {
@@ -492,31 +594,132 @@ impl Editor {
             // Offset by one grid step, or a metre when the grid is off, so the copy is
             // visible instead of hiding exactly inside the original.
             let step = if self.grid() > 0.0 { self.grid() } else { 1.0 };
-            let mut copy = scene.objects[index];
-            copy.transform.translation += Vec3::new(step, 0.0, step);
-            scene.objects.push(copy);
-            self.selection = Some(scene.objects.len() - 1);
-            self.status = "duplicated".to_owned();
+            let mut copies = Vec::with_capacity(self.selected.len());
+            for index in &self.selected {
+                let Some(mut copy) = scene.objects.get(*index).copied() else {
+                    continue;
+                };
+                copy.transform.translation += Vec3::new(step, 0.0, step);
+                copies.push(scene.objects.len());
+                scene.objects.push(copy);
+            }
+            self.status = format!("duplicated {}", copies.len());
+            // The copies become the selection, so dragging straight afterwards moves the new
+            // ones rather than the originals.
+            self.selected = copies;
             return true;
         }
         if input.was_key_pressed(KeyCode::R) {
             self.snapshot(scene);
-            let step = if shift { -YAW_STEP } else { YAW_STEP };
-            let object = &mut scene.objects[index];
-            let yaw = yaw_of(object.transform) + step;
-            object.transform.rotation = engine_core::math::Quat::from_yaw_pitch_roll(yaw, 0.0, 0.0);
-            self.status = format!("yaw {:.0} deg", yaw.to_degrees());
+            let step = self.yaw_step().to_radians() * if shift { -1.0 } else { 1.0 };
+            let mut last = 0.0;
+            for index in self.selected.clone() {
+                let Some(object) = scene.objects.get_mut(index) else {
+                    continue;
+                };
+                // Snapped to a multiple of the step rather than added to: an object turned by
+                // hand and then stepped ends up aligned with everything else stepped by the
+                // same amount, which is the whole point of a rotation snap.
+                last = snap_angle(yaw_of(object.transform) + step, self.yaw_step().to_radians());
+                object.transform.rotation =
+                    engine_core::math::Quat::from_yaw_pitch_roll(last, 0.0, 0.0);
+            }
+            self.status = format!("yaw {:.0} deg", last.to_degrees());
             return true;
         }
         if input.was_key_pressed(KeyCode::T) {
             self.snapshot(scene);
             let factor = if shift { 1.0 / SCALE_STEP } else { SCALE_STEP };
-            let object = &mut scene.objects[index];
-            object.transform.scale *= factor;
-            self.status = format!("scale {:.2}", object.transform.scale.y);
+            let mut last = 1.0;
+            for index in self.selected.clone() {
+                let Some(object) = scene.objects.get_mut(index) else {
+                    continue;
+                };
+                object.transform.scale *= factor;
+                last = object.transform.scale.y;
+            }
+            self.status = format!("scale {last:.2}");
+            return true;
+        }
+        if input.was_key_pressed(KeyCode::Digit0) {
+            self.snapshot(scene);
+            for index in self.selected.clone() {
+                let Some(object) = scene.objects.get_mut(index) else {
+                    continue;
+                };
+                // Where it stands is what an author placed; how it is turned and how big it is
+                // are what they have been fiddling with. Reset means the second, not the first.
+                object.transform.rotation = engine_core::math::Quat::IDENTITY;
+                object.transform.scale = Vec3::ONE;
+            }
+            self.status = "transform reset".to_owned();
+            return true;
+        }
+        if let Some(step) = self.nudge(input, shift) {
+            self.snapshot(scene);
+            for index in self.selected.clone() {
+                let Some(object) = scene.objects.get_mut(index) else {
+                    continue;
+                };
+                // In local space the step runs along the object's own facing, so nudging a
+                // yawed wall moves it along the wall rather than along the world's X.
+                let moved = if self.local_space {
+                    let yaw = yaw_of(object.transform);
+                    let (sin, cos) = yaw.sin_cos();
+                    Vec3::new(
+                        step.x * cos + step.z * sin,
+                        step.y,
+                        -step.x * sin + step.z * cos,
+                    )
+                } else {
+                    step
+                };
+                object.transform.translation += moved;
+            }
+            self.status = format!(
+                "moved {:.2} {:.2} {:.2} ({})",
+                step.x,
+                step.y,
+                step.z,
+                if self.local_space { "local" } else { "world" }
+            );
             return true;
         }
         false
+    }
+
+    /// How far this frame's arrow keys move the selection, if any were pressed.
+    ///
+    /// The step is the grid, so nudging and dragging agree about what "one over" means. With
+    /// the grid off it is a tenth of a metre, which is the size of an adjustment somebody
+    /// makes with an arrow key rather than with the mouse.
+    ///
+    /// `SHIFT` moves in Y instead of Z, because a blockout is laid out in plan and lifted
+    /// occasionally — and because this engine's input state has no page keys to spend on it.
+    fn nudge(&self, input: &InputState, shift: bool) -> Option<Vec3> {
+        let step = if self.grid() > 0.0 { self.grid() } else { 0.1 };
+        let mut delta = Vec3::ZERO;
+        if input.was_key_pressed(KeyCode::ArrowLeft) {
+            delta.x -= step;
+        }
+        if input.was_key_pressed(KeyCode::ArrowRight) {
+            delta.x += step;
+        }
+        if input.was_key_pressed(KeyCode::ArrowUp) {
+            if shift {
+                delta.y += step;
+            } else {
+                delta.z -= step;
+            }
+        }
+        if input.was_key_pressed(KeyCode::ArrowDown) {
+            if shift {
+                delta.y -= step;
+            } else {
+                delta.z += step;
+            }
+        }
+        (delta != Vec3::ZERO).then_some(delta)
     }
 
     /// Selecting, placing and dragging. Returns whether the scene changed.
@@ -527,6 +730,7 @@ impl Editor {
         view_projection: &Mat4,
         viewport: (u32, u32),
         over_panel: bool,
+        add_to_selection: bool,
     ) -> bool {
         let ground = engine_presentation::ui::targeting::ground_under_cursor(
             ui_input.pointer,
@@ -561,11 +765,28 @@ impl Editor {
                     ..drag
                 });
             }
-            let Some(object) = scene.objects.get_mut(drag.index) else {
+            // Everything selected moves by the delta the dragged object moved by, so a group
+            // keeps its shape instead of collapsing onto the cursor.
+            let Some(dragged) = scene.objects.get(drag.index) else {
                 return false;
             };
-            object.transform.translation = moved;
-            self.status = "moved".to_owned();
+            let delta = moved - dragged.transform.translation;
+            for index in self.selected.clone() {
+                let Some(object) = scene.objects.get_mut(index) else {
+                    continue;
+                };
+                object.transform.translation += delta;
+            }
+            if !self.is_selected(drag.index)
+                && let Some(object) = scene.objects.get_mut(drag.index)
+            {
+                object.transform.translation = moved;
+            }
+            self.status = if self.selected.len() > 1 {
+                format!("moved {}", self.selected.len())
+            } else {
+                "moved".to_owned()
+            };
             return true;
         }
 
@@ -582,7 +803,12 @@ impl Editor {
         };
 
         if let Some(index) = pick::object_under_ray(scene, origin, direction) {
-            self.selection = Some(index);
+            // CTRL adds to the selection instead of replacing it; clicking an object that is
+            // already selected keeps the whole group, so a group can be dragged by any of its
+            // members rather than only by the last one clicked.
+            if !self.is_selected(index) {
+                self.select(index, add_to_selection);
+            }
             let object = scene.objects[index];
             self.drag = Some(Drag {
                 index,
@@ -590,7 +816,11 @@ impl Editor {
                 grabbed_at: ground.unwrap_or(object.transform.translation),
                 moved: false,
             });
-            self.status = format!("selected {}", object.asset.name());
+            self.status = if self.selected.len() > 1 {
+                format!("selected {} objects", self.selected.len())
+            } else {
+                format!("selected {}", object.asset.name())
+            };
             return false;
         }
 
@@ -609,7 +839,8 @@ impl Editor {
             transform: Transform::from_translation(self.snap(ground)),
             collision,
         });
-        self.selection = Some(scene.objects.len() - 1);
+        self.selected.clear();
+        self.selected.push(scene.objects.len() - 1);
         self.status = format!("placed {}", asset.name());
         true
     }
@@ -651,7 +882,7 @@ impl Editor {
             return false;
         };
         scene.objects = objects;
-        self.selection = None;
+        self.selected.clear();
         self.drag = None;
         self.status = "undone".to_owned();
         true
@@ -679,6 +910,18 @@ impl Editor {
             }
         }
     }
+}
+
+/// The nearest multiple of `step` to `angle`.
+///
+/// What makes rotation snapping mean "aligned with everything else" rather than "turned by
+/// the same amount as everything else": an object nudged to 7 degrees by hand and then
+/// stepped by 45 lands on 45, not on 52.
+fn snap_angle(angle: f32, step: f32) -> f32 {
+    if step <= 0.0 {
+        return angle;
+    }
+    (angle / step).round() * step
 }
 
 /// How far a placement is turned about +Y.
@@ -1193,6 +1436,325 @@ mod tests {
         assert_eq!(outcome, EditorOutcome::Idle);
         assert_eq!(scene.len(), 1, "X deleted an object while typing a filter");
         assert_eq!(editor.browser().filter(), "x");
+    }
+
+    /// A frame in which `key` went down with control held.
+    fn control_keyed(key: KeyCode) -> InputState {
+        let mut input = InputState::new();
+        input.apply(engine_core::input::InputEvent::KeyDown {
+            key: KeyCode::LeftControl,
+            repeat: false,
+        });
+        input.apply(engine_core::input::InputEvent::KeyDown { key, repeat: false });
+        input
+    }
+
+    /// A frame in which `key` went down with shift held.
+    fn shift_keyed(key: KeyCode) -> InputState {
+        let mut input = InputState::new();
+        input.apply(engine_core::input::InputEvent::KeyDown {
+            key: KeyCode::LeftShift,
+            repeat: false,
+        });
+        input.apply(engine_core::input::InputEvent::KeyDown { key, repeat: false });
+        input
+    }
+
+    /// A scene with three rocks in a row along X, at z = 0.
+    fn three_rocks() -> EnvironmentScene {
+        let mut scene = EnvironmentScene::with_capacity("test_level", 3);
+        for index in 0..3 {
+            scene.push(EnvironmentObject::decoration(
+                ROCK_SMALL,
+                Vec3::new(index as f32 * 4.0, 0.0, 0.0),
+            ));
+        }
+        scene
+    }
+
+    #[test]
+    fn control_clicking_a_hierarchy_row_adds_to_the_selection_and_takes_away_again() {
+        let mut editor = editor();
+        let mut scene = three_rocks();
+
+        let point = hierarchy_point(&editor, 0);
+        update(&mut editor, &InputState::new(), &press(point), &mut scene);
+        assert_eq!(editor.selected(), [0]);
+
+        let second = hierarchy_point(&editor, 2);
+        let control = {
+            let mut input = InputState::new();
+            input.apply(engine_core::input::InputEvent::KeyDown {
+                key: KeyCode::LeftControl,
+                repeat: false,
+            });
+            input
+        };
+        update(&mut editor, &control, &press(second), &mut scene);
+        assert_eq!(editor.selected(), [0, 2], "control did not add");
+        assert_eq!(editor.selection(), Some(2), "the last one clicked is primary");
+
+        update(&mut editor, &control, &press(second), &mut scene);
+        assert_eq!(editor.selected(), [0], "control did not toggle it back off");
+    }
+
+    #[test]
+    fn control_a_selects_everything_and_escape_drops_it() {
+        let mut editor = editor();
+        let mut scene = three_rocks();
+
+        update(
+            &mut editor,
+            &control_keyed(KeyCode::A),
+            &UiInput::new(),
+            &mut scene,
+        );
+        assert_eq!(editor.selected(), [0, 1, 2]);
+
+        update(
+            &mut editor,
+            &keyed(KeyCode::Escape),
+            &UiInput::new(),
+            &mut scene,
+        );
+        assert!(editor.selected().is_empty());
+    }
+
+    #[test]
+    fn a_verb_acts_on_every_selected_object() {
+        let mut editor = editor();
+        let mut scene = three_rocks();
+        update(
+            &mut editor,
+            &control_keyed(KeyCode::A),
+            &UiInput::new(),
+            &mut scene,
+        );
+
+        // Scale: all three grow.
+        update(&mut editor, &keyed(KeyCode::T), &UiInput::new(), &mut scene);
+        for object in &scene.objects {
+            assert!(object.transform.scale.y > 1.0, "one was left behind");
+        }
+
+        // Duplicate: three copies, and the copies are what is selected.
+        let outcome = update(&mut editor, &keyed(KeyCode::C), &UiInput::new(), &mut scene);
+        assert_eq!(outcome, EditorOutcome::SceneChanged);
+        assert_eq!(scene.len(), 6);
+        assert_eq!(editor.selected(), [3, 4, 5]);
+
+        // Delete: the copies go and the originals stay.
+        update(&mut editor, &keyed(KeyCode::X), &UiInput::new(), &mut scene);
+        assert_eq!(scene.len(), 3);
+        assert!(editor.selected().is_empty());
+    }
+
+    #[test]
+    fn deleting_several_objects_removes_the_ones_that_were_selected() {
+        let mut editor = editor();
+        let mut scene = three_rocks();
+        // The outer two, leaving the middle one behind: the case that goes wrong when indices
+        // are removed lowest-first.
+        scene.objects[1].transform.scale = Vec3::splat(2.0);
+        let first = hierarchy_point(&editor, 0);
+        let third = hierarchy_point(&editor, 2);
+        let control = control_keyed(KeyCode::LeftControl);
+        update(&mut editor, &InputState::new(), &press(first), &mut scene);
+        update(&mut editor, &control, &press(third), &mut scene);
+        assert_eq!(editor.selected(), [0, 2]);
+
+        update(&mut editor, &keyed(KeyCode::X), &UiInput::new(), &mut scene);
+        assert_eq!(scene.len(), 1);
+        assert_eq!(
+            scene.objects[0].transform.scale.y, 2.0,
+            "the wrong objects were removed"
+        );
+    }
+
+    #[test]
+    fn dragging_one_of_a_group_moves_all_of_it_by_the_same_amount() {
+        let mut editor = editor();
+        let mut scene = three_rocks();
+        // Everything selected, then a drag that starts on the rock at the origin.
+        update(
+            &mut editor,
+            &control_keyed(KeyCode::A),
+            &UiInput::new(),
+            &mut scene,
+        );
+        let before: Vec<Vec3> = scene
+            .objects
+            .iter()
+            .map(|object| object.transform.translation)
+            .collect();
+
+        update(
+            &mut editor,
+            &InputState::new(),
+            &press(centre()),
+            &mut scene,
+        );
+        let moved = (VIEWPORT.0 as f32 / 2.0 + 120.0, VIEWPORT.1 as f32 / 2.0);
+        update(&mut editor, &InputState::new(), &hold(moved), &mut scene);
+
+        let delta = scene.objects[0].transform.translation - before[0];
+        assert!(delta.length() > 0.5, "the drag moved nothing: {delta:?}");
+        for (index, object) in scene.objects.iter().enumerate() {
+            let moved = object.transform.translation - before[index];
+            assert!(
+                (moved - delta).length() < 1e-3,
+                "object {index} moved by {moved:?}, not by {delta:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_arrow_keys_nudge_by_the_grid_step() {
+        let mut editor = editor();
+        let mut scene = three_rocks();
+        assert_eq!(editor.grid(), 1.0, "the grid starts at a metre");
+        let point = hierarchy_point(&editor, 0);
+        update(&mut editor, &InputState::new(), &press(point), &mut scene);
+
+        update(
+            &mut editor,
+            &keyed(KeyCode::ArrowRight),
+            &UiInput::new(),
+            &mut scene,
+        );
+        assert_eq!(scene.objects[0].transform.translation.x, 1.0);
+
+        update(
+            &mut editor,
+            &keyed(KeyCode::ArrowUp),
+            &UiInput::new(),
+            &mut scene,
+        );
+        assert_eq!(scene.objects[0].transform.translation.z, -1.0, "up is -Z");
+
+        // SHIFT moves it in Y instead.
+        update(
+            &mut editor,
+            &shift_keyed(KeyCode::ArrowUp),
+            &UiInput::new(),
+            &mut scene,
+        );
+        assert_eq!(scene.objects[0].transform.translation.y, 1.0);
+    }
+
+    #[test]
+    fn a_local_nudge_follows_the_object_and_a_world_nudge_does_not() {
+        let mut editor = editor();
+        let mut scene = three_rocks();
+        // A quarter turn, so local +X is world -Z.
+        scene.objects[0].transform.rotation =
+            engine_core::math::Quat::from_yaw_pitch_roll(std::f32::consts::FRAC_PI_2, 0.0, 0.0);
+        let point = hierarchy_point(&editor, 0);
+        update(&mut editor, &InputState::new(), &press(point), &mut scene);
+
+        // World: +X moves along world X whatever the object is doing.
+        update(
+            &mut editor,
+            &keyed(KeyCode::ArrowRight),
+            &UiInput::new(),
+            &mut scene,
+        );
+        assert!(!editor.is_local_space());
+        assert!((scene.objects[0].transform.translation.x - 1.0).abs() < 1e-5);
+
+        // Local: the same key now runs along the object's own facing.
+        update(&mut editor, &keyed(KeyCode::L), &UiInput::new(), &mut scene);
+        assert!(editor.is_local_space());
+        let before = scene.objects[0].transform.translation;
+        update(
+            &mut editor,
+            &keyed(KeyCode::ArrowRight),
+            &UiInput::new(),
+            &mut scene,
+        );
+        let moved = scene.objects[0].transform.translation - before;
+        assert!(moved.x.abs() < 1e-5, "local +X still moved world X: {moved:?}");
+        assert!((moved.z + 1.0).abs() < 1e-5, "{moved:?}");
+    }
+
+    #[test]
+    fn rotation_snaps_to_the_step_rather_than_adding_to_whatever_was_there() {
+        let mut editor = editor();
+        let mut scene = three_rocks();
+        // Seven degrees, as if turned by hand or imported from somewhere.
+        scene.objects[0].transform.rotation =
+            engine_core::math::Quat::from_yaw_pitch_roll(7.0_f32.to_radians(), 0.0, 0.0);
+        let point = hierarchy_point(&editor, 0);
+        update(&mut editor, &InputState::new(), &press(point), &mut scene);
+
+        // The default step is 22.5 degrees: 7 + 22.5 snaps to 22.5, not to 29.5.
+        assert_eq!(editor.yaw_step(), 22.5);
+        update(&mut editor, &keyed(KeyCode::R), &UiInput::new(), &mut scene);
+        let yaw = yaw_of(scene.objects[0].transform).to_degrees();
+        assert!((yaw - 22.5).abs() < 0.01, "{yaw} degrees");
+
+        // SHIFT+G cycles the step, and it wraps.
+        update(
+            &mut editor,
+            &shift_keyed(KeyCode::G),
+            &UiInput::new(),
+            &mut scene,
+        );
+        assert_eq!(editor.yaw_step(), 15.0);
+        assert_eq!(editor.grid(), 1.0, "SHIFT+G moved the grid as well");
+    }
+
+    #[test]
+    fn zero_resets_the_rotation_and_the_size_and_leaves_the_position_alone() {
+        let mut editor = editor();
+        let mut scene = three_rocks();
+        scene.objects[0].transform.rotation =
+            engine_core::math::Quat::from_yaw_pitch_roll(1.0, 0.0, 0.0);
+        scene.objects[0].transform.scale = Vec3::splat(3.0);
+        let placed = scene.objects[0].transform.translation;
+        let point = hierarchy_point(&editor, 0);
+        update(&mut editor, &InputState::new(), &press(point), &mut scene);
+
+        let outcome = update(
+            &mut editor,
+            &keyed(KeyCode::Digit0),
+            &UiInput::new(),
+            &mut scene,
+        );
+        assert_eq!(outcome, EditorOutcome::SceneChanged);
+        let transform = scene.objects[0].transform;
+        assert!(yaw_of(transform).abs() < 1e-6, "the rotation survived");
+        assert_eq!(transform.scale, Vec3::ONE);
+        assert_eq!(transform.translation, placed, "reset moved it");
+    }
+
+    #[test]
+    fn undo_puts_back_a_multiple_selection_edit_in_one_step() {
+        let mut editor = editor();
+        let mut scene = three_rocks();
+        let before: Vec<Vec3> = scene
+            .objects
+            .iter()
+            .map(|object| object.transform.translation)
+            .collect();
+        update(
+            &mut editor,
+            &control_keyed(KeyCode::A),
+            &UiInput::new(),
+            &mut scene,
+        );
+        update(
+            &mut editor,
+            &keyed(KeyCode::ArrowRight),
+            &UiInput::new(),
+            &mut scene,
+        );
+        assert_ne!(scene.objects[0].transform.translation, before[0]);
+
+        update(&mut editor, &keyed(KeyCode::Z), &UiInput::new(), &mut scene);
+        for (index, object) in scene.objects.iter().enumerate() {
+            assert_eq!(object.transform.translation, before[index], "object {index}");
+        }
     }
 
     #[test]

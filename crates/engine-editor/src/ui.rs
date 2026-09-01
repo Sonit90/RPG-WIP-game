@@ -48,7 +48,7 @@ pub mod layout {
     /// Width of the hierarchy and inspector panels down the right-hand side.
     pub const SIDE_WIDTH: f32 = 210.0;
     /// Height of the inspector panel under the hierarchy.
-    pub const INSPECTOR_HEIGHT: f32 = 116.0;
+    pub const INSPECTOR_HEIGHT: f32 = 134.0;
     /// Gap between the hierarchy panel and the inspector under it.
     pub const PANEL_GAP: f32 = 8.0;
     /// How much of the window's height the hierarchy list may take.
@@ -322,10 +322,11 @@ pub fn push_editor(
 
     // The key list, bottom left, out from under the two right-hand panels.
     let keys = [
-        "LMB PLACE / SELECT   DRAG MOVE",
-        "R YAW   T SIZE   X DELETE   C COPY",
-        "Z UNDO   G GRID   TAB NEXT ASSET",
-        "F FIND   F2 RESCAN ASSETS   WHEEL SCROLLS",
+        "LMB PLACE / SELECT   DRAG MOVE   CTRL+LMB ADD",
+        "ARROWS NUDGE   SHIFT+ARROWS UP/DOWN   L LOCAL",
+        "R YAW   T SIZE   0 RESET   X DELETE   C COPY",
+        "G GRID   SHIFT+G ROTATION STEP   CTRL+A ALL",
+        "Z UNDO   TAB NEXT ASSET   F FIND   F2 RESCAN",
         "CTRL+S SAVE   F6 BACK TO PLAYING",
     ];
     let line = text * 12.0;
@@ -368,6 +369,10 @@ fn push_hierarchy(
     scratch.clear();
     scratch.push_str("HIERARCHY ");
     write_count(scratch, scene.len());
+    if editor.selected().len() > 1 {
+        scratch.push_str("  SEL ");
+        write_count(scratch, editor.selected().len());
+    }
     list.text_at(
         (panel.x + padding, panel.y + padding),
         scratch,
@@ -385,10 +390,15 @@ fn push_hierarchy(
             break;
         };
         let rect = hierarchy_row_rect(scale, viewport, slot);
-        let selected = editor.selection() == Some(index);
+        let selected = editor.is_selected(index);
+        let primary = editor.selection() == Some(index);
         if selected {
             list.rect(rect, theme.panel_border);
-            list.outline(rect, border, theme.title);
+            // Only the primary selection is outlined: with a dozen rows highlighted, the one
+            // the inspector is describing has to be findable at a glance.
+            if primary {
+                list.outline(rect, border, theme.title);
+            }
         }
         scratch.clear();
         write_count(scratch, index);
@@ -458,6 +468,25 @@ fn push_inspector(
         );
     };
 
+    // The three settings every verb reads, always on screen: an author who cannot see the
+    // grid step cannot predict what an arrow key will do.
+    scratch.clear();
+    scratch.push_str("GRID ");
+    if editor.grid() > 0.0 {
+        write_metres(scratch, editor.grid());
+    } else {
+        scratch.push_str("OFF");
+    }
+    scratch.push_str("  ROT ");
+    write_metres(scratch, editor.yaw_step());
+    scratch.push_str("  ");
+    scratch.push_str(if editor.is_local_space() {
+        "LOCAL"
+    } else {
+        "WORLD"
+    });
+    row(4, scratch, list);
+
     let Some(object) = editor
         .selection()
         .and_then(|index| scene.objects.get(index))
@@ -470,6 +499,10 @@ fn push_inspector(
 
     scratch.clear();
     scratch.push_str(object.asset.name());
+    if editor.selected().len() > 1 {
+        scratch.push_str(" +");
+        write_count(scratch, editor.selected().len() - 1);
+    }
     row(0, scratch, list);
 
     let position = object.transform.translation;

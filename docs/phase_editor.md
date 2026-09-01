@@ -440,3 +440,60 @@ environment 'probe': 4 objects, 4 render entities, 20 models uploaded
 ```
 
 Four objects, four render entities — before this, three of them drew nothing.
+
+## Phase 5b — the transform toolset
+
+Placement without a way to adjust it is a level built by luck. The verbs that existed — drag,
+`R`, `T`, `X`, `C` — acted on one object; they now act on a selection, and there are enough of
+them to lay out a blockout.
+
+### A selection is a list
+
+`selection: Option<usize>` became `selected: Vec<usize>`, with the **last** entry as the
+primary one — the thing the inspector describes, because the thing an author just clicked is
+the thing they are looking at. `Editor::selection()` still answers the primary one, so nothing
+that only wanted "what is selected" changed.
+
+* `CTRL`+click **toggles** membership, in the world and in the hierarchy: control-clicking a
+  selected object takes it out again, which is the one gesture every editor agrees on.
+* `CTRL+A` takes everything, `ESC` drops it.
+* Every verb acts on the whole selection: `X` deletes it (highest index first, so removing one
+  does not move the next one under it), `C` duplicates it and selects **the copies**, `T`
+  scales each, `R` turns each about its own origin.
+* A drag moves everything by the delta the dragged object moved by, so a group keeps its
+  shape instead of collapsing onto the cursor.
+* Undo is unchanged and still one step: the whole object list is the undo unit, so a
+  twelve-object nudge comes back in one press.
+
+### Nudging, and what "along X" means
+
+Arrow keys move the selection by the grid step — the same step a drag snaps to, so nudging
+and dragging agree about what "one over" means. With the grid off it is 10 cm, which is the
+size of an adjustment somebody makes with a key rather than with the mouse. `SHIFT`+up/down
+moves in Y; this engine's input state has no page keys to spend on it.
+
+`L` switches between world and local axes. In local space the step runs along the object's own
+facing, so nudging a yawed wall moves it *along the wall*. Rotation is yaw-only in this
+engine, so the local basis is one sine and one cosine rather than a matrix.
+
+### Rotation snapping
+
+`SHIFT+G` cycles the rotation step: 90°, 45°, 22.5°, 15°, 5° — coarse first, because a
+blockout is built out of right angles and an author reaches for 15° when they specifically
+want it.
+
+`R` **snaps** rather than adds: an object sitting at 7° stepped by 22.5 lands on 22.5, not on
+29.5. That is what makes a rotation snap mean "aligned with everything else" rather than
+"turned by the same amount as everything else".
+
+### Reset
+
+`0` restores rotation and scale and leaves the position alone. Where a thing stands is what an
+author placed; how it is turned and how big it is are what they have been fiddling with.
+
+### On screen
+
+The inspector carries a line that is always visible — `GRID 1.0  ROT 22.5  WORLD` — because an
+author who cannot see the grid step cannot predict what an arrow key will do. The hierarchy
+highlights every selected row and outlines only the primary one, and its heading shows `SEL n`
+when there is more than one.
