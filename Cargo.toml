@@ -42,6 +42,9 @@ members = [
     # The asset validator's command line. Development only: it reads content off disk and
     # reports what breaks docs/style/ASSET_LIMITATIONS.md. The game never links it.
     "crates/engine-assetcheck",
+    # The procedural starter-content generator's command line. Development only: it writes
+    # assets/generated/** and the game never links it.
+    "crates/engine-assetgen",
 ]
 
 [workspace.package]
@@ -52,6 +55,7 @@ publish = false
 
 [workspace.dependencies]
 engine-core = { path = "crates/engine-core" }
+engine-assetgen = { path = "crates/engine-assetgen" }
 engine-platform = { path = "crates/engine-platform" }
 # Pure rendering data: what the game hands the renderer. No `windows`, no D3D12 — that
 # absence is the point, and it is what lets a future gameplay crate produce a RenderWorld.

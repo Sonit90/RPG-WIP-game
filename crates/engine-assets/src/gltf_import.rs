@@ -329,6 +329,23 @@ fn import_textures(
     Ok(textures)
 }
 
+/// Decodes a PNG file into straight RGBA8.
+///
+/// The public door onto the same decoder embedded images go through, for a texture that
+/// arrives as a file of its own rather than inside a `.glb` — a generated material's map, and
+/// anything else a content tool writes beside a model.
+///
+/// # Errors
+///
+/// [`AssetError::Malformed`] naming `name` if the bytes are not a PNG this decoder reads.
+pub fn decode_png_file(
+    name: &str,
+    format: TextureFormat,
+    bytes: &[u8],
+) -> Result<TextureAsset, AssetError> {
+    decode_png(name, name, format, bytes)
+}
+
 /// Decodes a PNG into straight RGBA8.
 fn decode_png(
     model: &str,

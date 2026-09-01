@@ -24,6 +24,11 @@ png = "0.17"
 # JPEG, which is what a DCC tool writes for a base colour map it has no alpha for. Decoder
 # only, pure Rust, no encoder and no other formats dragged along.
 zune-jpeg = "0.4"
+# The generated material files, and nothing else. A material's numbers are something a person
+# edits, so they live in a text file with a schema rather than inside a binary nobody can
+# open. The same pair `engine-environment` uses for the scene file, for the same reason.
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
 
 [lints]
 workspace = true

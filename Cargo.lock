@@ -215,6 +215,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "engine-assetgen"
+version = "0.1.0"
+dependencies = [
+ "engine-assets",
+ "engine-core",
+ "log",
+]
+
+[[package]]
 name = "engine-assets"
 version = "0.1.0"
 dependencies = [
@@ -223,6 +232,8 @@ dependencies = [
  "gltf",
  "log",
  "png 0.17.16",
+ "serde",
+ "serde_json",
  "zune-jpeg",
 ]
 

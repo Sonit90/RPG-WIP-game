@@ -25,6 +25,7 @@ pub mod dummy;
 pub mod environment;
 pub mod firemage;
 pub mod humanoid;
+pub mod starter;
 pub mod warrior;
 
 use engine_core::math::{Vec2, Vec3};
@@ -35,6 +36,7 @@ pub use druid::{druid, druid_character};
 pub use dummy::{DummyVariant, training_dummy};
 pub use environment::{environment_library, environment_model};
 pub use firemage::{fire_mage, fire_mage_character};
+pub use starter::{STARTER_LIBRARY, STARTER_MATERIALS, StarterAsset, StarterMaterial, starter_model};
 pub use warrior::{warrior, warrior_character};
 
 /// One corner of a generated face.
