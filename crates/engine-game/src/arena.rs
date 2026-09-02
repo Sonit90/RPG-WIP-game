@@ -173,6 +173,10 @@ pub fn training_arena(config: &ArenaConfig) -> Simulation {
     });
     let arena = populate(simulation.world_mut(), config);
     build_collision(simulation.collision_world_mut(), config);
+    // Where a respawn puts the player, from the level rather than from wherever they
+    // happened to be standing: the editor says where, and this is the one place that answer
+    // crosses into the runtime.
+    simulation.set_player_spawn(config.player_spawn, config.player_spawn_yaw);
     simulation.set_player_entity(arena.player);
     // In the party, because that is what a party heal reaches and what the party frames
     // draw: a friendly target standing in the room that no frame showed would be a target
@@ -392,6 +396,9 @@ pub fn environment_arena(
         );
     }
 
+    // Where a respawn puts the player: the level's spawn point, through `ArenaConfig`. This
+    // is the one place the editor's answer crosses into the runtime.
+    simulation.set_player_spawn(config.player_spawn, config.player_spawn_yaw);
     simulation.set_player_entity(arena.player);
     simulation.party_mut().join(arena.healing_dummy);
     simulation.select_nearest_target();
@@ -414,6 +421,7 @@ pub fn encounter_arena(config: &ArenaConfig, encounter: crate::encounter::Encoun
         ..SimConfig::default()
     });
     let arena = populate(simulation.world_mut(), config);
+    simulation.set_player_spawn(config.player_spawn, config.player_spawn_yaw);
     simulation.set_player_entity(arena.player);
     simulation.party_mut().join(arena.healing_dummy);
     build_collision(simulation.collision_world_mut(), config);

@@ -79,6 +79,19 @@ pub enum StatusKind {
     /// A poison. Nothing applies it in the shipping roster; it is what a dispel is written
     /// and tested against.
     Poisoned,
+    /// The twenty seconds after a respawn during which the player cannot be respawned again.
+    ///
+    /// The one status in the game that is not applied by an ability and does not belong to a
+    /// class: the player lifecycle applies it, and what it does is refuse the next respawn —
+    /// see `crate::sim::respawn`. It is here rather than as a flag on the player because a
+    /// timed effect the interface has to show is exactly what this module is, and a second
+    /// place that counts down seconds would be a second place that can disagree with this one.
+    ///
+    /// Its clock lives in the respawn system rather than in [`StatusSet::tick`], because
+    /// statuses do not tick on a corpse and this one has to run while the player is dead.
+    /// This is the *published view* of that clock: everything that asks whether the player is
+    /// protected asks the status, and only the respawn system writes it.
+    RespawnProtection,
 }
 
 /// How a harmful effect is classified for dispelling.
@@ -116,6 +129,7 @@ impl StatusKind {
     #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::RespawnProtection => "CANNOT BE RESPAWNED",
             Self::Burning => "BURNING",
             Self::Bleeding => "BLEEDING",
             Self::Recuperating => "RECUPERATING",
@@ -132,6 +146,38 @@ impl StatusKind {
             Self::AstralWrath => "ASTRAL WRATH",
             Self::WildRush => "WILD RUSH",
             Self::Poisoned => "POISONED",
+        }
+    }
+
+    /// The name this effect is shown to a player under.
+    ///
+    /// [`StatusKind::as_str`] is the *developer overlay's* name: uppercase, because that is
+    /// the font the overlay and the unit frames are drawn in. This is the effect's actual
+    /// name, in the case it is written in, for anything that needs to print it as prose.
+    ///
+    /// The two exist separately because "CANNOT BE RESPAWNED" and "Cannot be respawned" are
+    /// the same effect said to two audiences, and a single string would have to be wrong for
+    /// one of them.
+    #[must_use]
+    pub fn display_name(self) -> &'static str {
+        match self {
+            Self::RespawnProtection => "Cannot be respawned",
+            Self::Burning => "Burning",
+            Self::Bleeding => "Bleeding",
+            Self::Recuperating => "Recuperating",
+            Self::Recovering => "Recovering",
+            Self::Sundered => "Sundered",
+            Self::Moonfire => "Moonfire",
+            Self::Sunfire => "Sunfire",
+            Self::AstralSunfire => "Astral Sunfire",
+            Self::NaturesExposure => "Nature's Exposure",
+            Self::Rejuvenation => "Rejuvenation",
+            Self::Regrowth => "Regrowth",
+            Self::Lifebloom => "Lifebloom",
+            Self::WildGrowth => "Wild Growth",
+            Self::AstralWrath => "Astral Wrath",
+            Self::WildRush => "Wild Rush",
+            Self::Poisoned => "Poisoned",
         }
     }
 
@@ -161,6 +207,10 @@ impl StatusKind {
             | Self::Lifebloom
             | Self::WildGrowth
             | Self::AstralWrath
+            // Respawn protection is not something an enemy can take off the player: it is
+            // the lifecycle's own bookkeeping, and a dispel that removed it would be a
+            // dispel that could delete a player.
+            | Self::RespawnProtection
             | Self::WildRush => None,
         }
     }
@@ -178,6 +228,9 @@ impl StatusKind {
                 | Self::WildGrowth
                 | Self::AstralWrath
                 | Self::WildRush
+                // Not harmful: it is the thing standing between the player and being killed
+                // repeatedly, and it is over in twenty seconds.
+                | Self::RespawnProtection
         )
     }
 
@@ -218,6 +271,7 @@ impl StatusKind {
             | Self::WildGrowth
             | Self::AstralWrath
             | Self::WildRush
+            | Self::RespawnProtection
             | Self::Poisoned => DamageType::Nature,
         }
     }
@@ -245,6 +299,7 @@ impl StatusKind {
             | Self::WildGrowth
             | Self::AstralWrath
             | Self::WildRush
+            | Self::RespawnProtection
             | Self::Poisoned => 1,
         }
     }

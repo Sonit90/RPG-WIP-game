@@ -68,6 +68,7 @@ use crate::world::{EntityKind, GameWorld};
 pub mod druid_exec;
 /// Enemy brains, their attacks and their telegraphs: the combat half of the AI.
 pub mod enemy_exec;
+pub mod respawn;
 mod firemage_exec;
 /// Casting the Warrior: Deflection, the incoming-damage pipeline and the charge.
 mod warrior_exec;
@@ -341,6 +342,15 @@ pub struct Simulation {
     /// is always about the cast that just failed.
     last_los: Option<LineOfSightDebug>,
     player: Player,
+    /// Where the player comes back, and which way they face when they do.
+    ///
+    /// The level's answer, carried into the simulation at load — see
+    /// `engine_environment::spawn`. `None` for a simulation nobody gave a level to, which is
+    /// most tests and every benchmark: those respawn the player where they first stood, which
+    /// is the same place a level with no spawn point would have put them.
+    player_spawn: Option<(Vec3, f32)>,
+    /// When the player comes back, and whether they are allowed to yet.
+    respawn: respawn::Respawn,
     config: SimConfig,
     timestep: FixedTimestep,
     /// Movement intent, held between commands: a tick that falls between two frames of
@@ -482,6 +492,10 @@ impl Simulation {
             collision_buffers: QueryBuffers::with_capacity(16),
             last_move: MoveResult::default(),
             last_los: None,
+            // No level has been loaded yet, so a respawn puts the player back where they are.
+            // Whatever builds a level calls `set_player_spawn` and this becomes the level's.
+            player_spawn: None,
+            respawn: respawn::Respawn::new(),
             player: Player {
                 entity: EntityId::INVALID,
                 target: None,
@@ -1074,10 +1088,116 @@ impl Simulation {
         self.tick_regeneration(step);
         self.tick_spirit(step);
 
+        // Last of all, because it asks one question — is the player alive — and the answer
+        // has to be this tick's, after everything that could have killed them has run.
+        self.tick_respawn(step);
+
         let telemetry_started = Instant::now();
         self.flush_observations();
         self.sample_fire_counters(step);
         stats.telemetry += telemetry_started.elapsed();
+    }
+
+    /// One tick of the player's death-and-return clock.
+    ///
+    /// The clock decides *when*; this decides *how*, and the level decided *where*. See
+    /// [`crate::sim::respawn`] for why those three are kept apart.
+    fn tick_respawn(&mut self, step: f32) {
+        let alive = self.player_alive();
+        match self.respawn.step(step, alive) {
+            respawn::RespawnAction::Died => {
+                log::info!("player died; respawning in {} s", respawn::RESPAWN_DELAY);
+            }
+            respawn::RespawnAction::Respawn => self.respawn_player(),
+            respawn::RespawnAction::None => {}
+        }
+        self.publish_respawn_protection();
+    }
+
+    /// Writes the respawn clock's protection onto the player as an ordinary status.
+    ///
+    /// The status is the *published view* of a number this simulation owns — see
+    /// [`crate::sim::respawn`]. Everything else in the game and the whole of the interface
+    /// read the status and never the clock, which is what keeps "the player cannot be
+    /// respawned" a timed effect like every other rather than a special case threaded through
+    /// the gameplay code.
+    fn publish_respawn_protection(&mut self) {
+        let remaining = self.respawn.protection_remaining();
+        let player = self.player.entity;
+        let Some(statuses) = self.world.statuses_mut(player) else {
+            return;
+        };
+        let kind = respawn::Respawn::status_kind();
+        if remaining <= 0.0 {
+            statuses.consume(kind);
+            return;
+        }
+        let mut status = crate::status::Status::new(
+            kind,
+            player,
+            AbilityId::NONE,
+            respawn::RESPAWN_PROTECTION,
+            0.0,
+        );
+        // The remaining time comes from the clock rather than from the status's own countdown,
+        // because the status stops ticking on a corpse and this effect must not.
+        status.remaining = remaining;
+        statuses.apply(status);
+    }
+
+    /// Puts the player back at the level's spawn point, whole.
+    ///
+    /// [`Simulation::revive_player`] is what "whole" means and has been since long before
+    /// respawning existed: full health, no cast, no target, no statuses. This adds the one
+    /// thing a respawn is and a revive is not — being somewhere else.
+    fn respawn_player(&mut self) {
+        let player = self.player.entity;
+        self.revive_player();
+        // After the revive, because that clears every status the corpse was carrying and the
+        // protection is applied by `publish_respawn_protection` on this same tick.
+        if let Some((position, yaw)) = self.player_spawn
+            && let Some(body) = self.world.body_mut(player)
+        {
+            *body = crate::movement::Body::at(position);
+            body.facing_yaw = yaw;
+        }
+        log::info!(
+            "player respawned ({} this session); {} for {} s",
+            self.respawn.count(),
+            crate::status::StatusKind::RespawnProtection.display_name(),
+            respawn::RESPAWN_PROTECTION
+        );
+    }
+
+    /// Where the player comes back, and which way they face.
+    ///
+    /// Set by whatever built the level. A simulation nobody told respawns the player where
+    /// they are, which is what every test and benchmark that predates spawn points expects.
+    pub fn set_player_spawn(&mut self, position: Vec3, yaw: f32) {
+        self.player_spawn = Some((position, yaw));
+    }
+
+    /// The player's death-and-return clock, for the interface and for a test.
+    #[must_use]
+    pub fn respawn(&self) -> &respawn::Respawn {
+        &self.respawn
+    }
+
+    /// Kills the player through the ordinary damage path.
+    ///
+    /// **A development control**, and the only thing behind the F7 key: it exists so the death
+    /// and respawn path can be exercised without finding something to be killed by. It goes
+    /// through [`Simulation::slay`] rather than writing health to zero, so everything a real
+    /// death produces is produced — the death event, the cast coming down, the hazards going
+    /// out — and the respawn that follows is the shipping one and not a second path beside it.
+    ///
+    /// Pressing it while the player is already dead does nothing at all: `slay` refuses an
+    /// entity with no health left, so a key held down cannot queue up deaths.
+    pub fn kill_player(&mut self) {
+        if !self.player_alive() {
+            return;
+        }
+        self.slay(self.player.entity);
     }
 
     /// Records what Heat and Ignite looked like this tick.
@@ -1879,6 +1999,9 @@ impl Simulation {
             self.restore_enemy(entity);
         }
         self.revive_player();
+        // And the death clock, so a reset does not leave a respawn owed or twenty seconds of
+        // protection carried over from the attempt that was just taken down.
+        self.respawn.clear();
         // Ground left burning by anybody. A pool that survived a reset would be the one piece
         // of the last attempt still on the floor during the next one.
         self.clear_all_hazards();
@@ -2395,7 +2518,10 @@ mod tests {
         );
 
         simulation.world_mut().damage(player, 1e9);
-        simulation.step_many(600);
+        // Stopped short of `respawn::RESPAWN_DELAY`, because the player lifecycle brings a
+        // corpse back after three seconds now and this test is about regeneration: it asserts
+        // that *healing over time* never revives one, which is a different claim.
+        simulation.step_many(120);
         assert!(
             !simulation.player_alive(),
             "regeneration revived the player"

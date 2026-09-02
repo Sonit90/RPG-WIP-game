@@ -19,6 +19,7 @@
 //! would be a hole in the layout the player cannot aim at.
 
 use engine_render_data::ui::{TextAlign, UiColor, UiDrawList, UiRect, UiScale};
+use engine_game::status::StatusKind;
 use engine_settings::hud::HudPlacement;
 
 use crate::game_ui::{UiTheme, write_integer};
@@ -201,6 +202,12 @@ pub fn push_player_frame(
             TextAlign::Right,
         );
     }
+
+    // The respawn protection, along the bottom of the frame: it is a state of the player
+    // rather than a resource, so it goes where it cannot push the bars around, and it is drawn
+    // from the player's ordinary status list like any other timed effect. See
+    // `engine_game::sim::respawn` for why the clock behind it lives where it does.
+    push_respawn_protection(list, inner, factor, scale, player, theme, scratch);
 
     let mut y = inner.y + size::LINE * factor;
     let bar = size::BAR * factor;
@@ -535,6 +542,43 @@ pub fn push_target_frame(
             let _ = name;
         }
     }
+}
+
+/// Draws "CANNOT BE RESPAWNED" and its countdown, while the player has it.
+///
+/// The name comes from [`StatusKind::as_str`], which is the uppercase the whole interface is
+/// drawn in; the effect's own name in prose is `StatusKind::display_name`, and the two are
+/// deliberately separate — see that function.
+///
+/// Nothing is drawn when the status is not there, which is nearly always: an interface element
+/// that is present and empty is one a player learns to stop reading.
+fn push_respawn_protection(
+    list: &mut UiDrawList,
+    inner: UiRect,
+    factor: f32,
+    scale: f32,
+    player: &crate::snapshot::PlayerView,
+    theme: &UiTheme,
+    scratch: &mut FrameScratch,
+) {
+    let Some(status) = player
+        .statuses
+        .iter()
+        .find(|status| status.kind == StatusKind::RespawnProtection)
+    else {
+        return;
+    };
+    scratch.detail.clear();
+    scratch.detail.push_str(StatusKind::RespawnProtection.as_str());
+    scratch.detail.push(' ');
+    // Rounded up, so the last second reads "1" rather than "0" for a whole second.
+    write_integer(&mut scratch.detail, status.remaining.ceil() as i64);
+    list.text_at(
+        (inner.x, inner.bottom() - size::LINE * factor),
+        &scratch.detail,
+        theme.death_text,
+        scale,
+    );
 }
 
 /// Draws the party: one row per member, in roster order, local player first.

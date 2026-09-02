@@ -150,7 +150,19 @@ const SHADOW_QUALITY_KEY: KeyCode = KeyCode::F4;
 /// §18 asks for a visualization that needs no change to game content. This is it: the mesh
 /// shader already has every number the view needs, so a debug mode is a constant in the
 /// frame buffer rather than a second pass.
-const SHADOW_DEBUG_KEY: KeyCode = KeyCode::F7;
+///
+/// It was F7 until the player lifecycle needed that key. Moved rather than shared: a key that
+/// kills the player *and* cycles a shader constant is a key nobody can press with confidence.
+const SHADOW_DEBUG_KEY: KeyCode = KeyCode::F10;
+
+/// Function key that kills the player, for testing death and respawn.
+///
+/// **A developer control.** It is not a gameplay mechanic and nothing in the game binds it:
+/// it goes straight to `Simulation::kill_player`, which goes through the ordinary damage
+/// path, so what follows is the shipping death and the shipping respawn rather than a second
+/// path that only this key can reach. That is the whole point of it — a debug key that took a
+/// shortcut would be a debug key that tests nothing.
+const KILL_PLAYER_KEY: KeyCode = KeyCode::F7;
 
 /// Which of the generated materials the terrain is drawn with.
 ///
@@ -1056,6 +1068,16 @@ impl App {
                     log::info!("interrupted {}", target.index());
                 } else {
                     log::info!("nothing to interrupt on {}", target.index());
+                }
+            }
+            KILL_PLAYER_KEY => {
+                // Nothing is queued and nothing is bypassed: killing an already-dead player
+                // does nothing, so a held key cannot stack up deaths or corrupt the clock.
+                if self.simulation.player_alive() {
+                    self.simulation.kill_player();
+                    log::info!("F7: player killed");
+                } else {
+                    log::info!("F7: the player is already dead");
                 }
             }
             KeyCode::F8 => {
