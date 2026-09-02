@@ -735,6 +735,16 @@ const OUTLINE_PIXELS: f32 = 2.0;
 /// How thick a gizmo handle is, in logical pixels.
 const HANDLE_PIXELS: f32 = 3.0;
 
+/// The most quads one [`stroke`] may cost.
+///
+/// A line is drawn as a run of quads, so its cost is its length in pixels. A corner of a
+/// selection box that sits just in front of the near plane projects tens of thousands of
+/// pixels outside the window, and a wireframe drawn through it would be a draw list too big
+/// for the frame's upload slot - which is a fatal renderer error, not a drawing artefact.
+/// Segments are clipped to the window before they are stroked; this is the backstop for the
+/// callers that cannot clip, and it turns an impossible line into a dotted one.
+const STROKE_MAX_QUADS: f32 = 512.0;
+
 /// How wide the striped silhouette is when nothing about the object can be projected, in
 /// logical pixels. See [`push_offscreen`].
 const SILHOUETTE_MIN: f32 = 26.0;
@@ -876,12 +886,68 @@ fn push_wireframe(
     for (slot, corner) in corners.iter().enumerate() {
         screen[slot] = engine_presentation::nameplate::project(*corner, view_projection, viewport);
     }
+    // Clipped to the window before it is drawn. A box the camera is inside projects corners
+    // hundreds of thousands of pixels away, and stroking to one of those is a run of quads
+    // that long: what is off screen has to be dropped here rather than drawn and discarded.
+    let window = UiRect::new(
+        -thickness,
+        -thickness,
+        viewport.0 as f32 + thickness * 2.0,
+        viewport.1 as f32 + thickness * 2.0,
+    );
     for (from, to) in BOX_EDGES {
         let (Some(from), Some(to)) = (screen[from], screen[to]) else {
             continue;
         };
+        let Some((from, to)) = clip_segment(from, to, window) else {
+            continue;
+        };
         stroke(list, from, to, thickness, color);
     }
+}
+
+/// The part of the segment `from`-`to` that is inside `rect`, if any.
+///
+/// Liang-Barsky: the segment is a parameter range, and each edge of the rectangle trims one
+/// end of it. Returns `None` when the trimming leaves nothing, which is the whole point -
+/// a segment that misses the window entirely is not drawn at all.
+fn clip_segment(
+    from: (f32, f32),
+    to: (f32, f32),
+    rect: UiRect,
+) -> Option<((f32, f32), (f32, f32))> {
+    let (dx, dy) = (to.0 - from.0, to.1 - from.1);
+    let (mut enter, mut leave) = (0.0_f32, 1.0_f32);
+    for (direction, distance) in [
+        (-dx, from.0 - rect.x),
+        (dx, rect.right() - from.0),
+        (-dy, from.1 - rect.y),
+        (dy, rect.bottom() - from.1),
+    ] {
+        if direction == 0.0 {
+            // Parallel to this edge: either wholly inside it or wholly outside.
+            if distance < 0.0 {
+                return None;
+            }
+            continue;
+        }
+        let t = distance / direction;
+        if direction < 0.0 {
+            enter = enter.max(t);
+        } else {
+            leave = leave.min(t);
+        }
+        if enter > leave {
+            return None;
+        }
+    }
+    if !(enter.is_finite() && leave.is_finite()) {
+        return None;
+    }
+    Some((
+        (from.0 + dx * enter, from.1 + dy * enter),
+        (from.0 + dx * leave, from.1 + dy * leave),
+    ))
 }
 
 /// The rectangle that contains every projected point, if there are any.
@@ -1133,7 +1199,9 @@ fn stroke(list: &mut UiDrawList, from: (f32, f32), to: (f32, f32), thickness: f3
         );
         return;
     }
-    let steps = (length / (thickness * 0.7)).ceil().max(1.0);
+    let steps = (length / (thickness * 0.7))
+        .ceil()
+        .clamp(1.0, STROKE_MAX_QUADS);
     for step in 0..=(steps as usize) {
         let t = step as f32 / steps;
         let (x, y) = (from.0 + dx * t, from.1 + dy * t);
@@ -1223,6 +1291,21 @@ mod tests {
                 matches!(command, engine_render_data::ui::UiCommand::Rect { color: painted, .. } if *painted == color)
             })
             .count()
+    }
+
+    #[test]
+    fn an_outline_seen_from_inside_arms_length_stays_a_handful_of_quads() {
+        // A corner of the box a hair in front of the near plane projects hundreds of
+        // thousands of pixels away. Stroking to it unclipped is a run of one quad per two
+        // pixels - thirty thousand of them from this camera - which overran the frame's
+        // upload slot and killed the renderer rather than drawing badly.
+        let (editor, scene) = selected_pillar(Vec3::new(0.0, 0.5, 2.0), Vec3::ZERO);
+        let list = painted(&editor, &scene);
+        let quads = list.commands().len();
+        assert!(
+            quads < 4_000,
+            "the overlay is {quads} commands from one selected object"
+        );
     }
 
     #[test]
