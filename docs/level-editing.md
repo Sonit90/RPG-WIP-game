@@ -27,18 +27,57 @@ Grouped by what is being built rather than by key, which is how the editor print
 
 | Group | Keys |
 | --- | --- |
-| **Assets** | `LMB` place / select · `TAB` next asset · `CTRL+LMB` add to selection · `F` find · `F2` rescan |
+| **Placing** | drag a browser row into the world · double-click a row to place in front of the camera |
+| **Assets** | `TAB` next asset · `CTRL+LMB` add to selection · `F` find · `F2` rescan |
 | **Terrain** | `B` sculpt · `TAB` brush mode · `1` `2` brush size · `3` `4` strength |
 | **Caves** | `M` module snap — a 4 m grid and quarter turns |
 | **Water** | `V` pour a body under the cursor |
 | **Spawn points** | `P` put one down · `R` turns it |
-| **Edit** | drag to move · arrows nudge · `R` yaw · `T` size · `0` reset · `X` delete · `C` copy · `Z` undo · `L` local axes |
+| **Selecting** | `LMB` on an object selects it · `LMB` on empty ground drops the selection · `ESC` drops it too |
+| **Moving** | drag the `X` `Y` `Z` arms of the gizmo · arrows nudge · `R` yaw · `T` size · `0` reset · `X` delete · `C` copy · `Z` undo · `L` local axes |
 | **Grid** | `G` step · `SHIFT+G` rotation step · `CTRL+A` every object |
 | **File** | `CTRL+S` save · `F6` back to playing |
 
 Cliffs, rocks and trees have no controls of their own: they are **assets**, placed from the
 browser like everything else. That is the point — a piece added to `assets/` tomorrow is
 placed the same way, with no code change.
+
+### Placing and selecting are different gestures
+
+One mouse action means one thing. The order the editor resolves a press in is:
+
+1. a drag on a gizmo arm **transforms** what is selected;
+2. a click on something in the world **selects** it — it never places anything;
+3. a drag from a browser row into the world **places** one where it is dropped;
+4. a double click on a browser row **places** one in front of the camera;
+5. anything else belongs to the camera (right-drag to look, `WASD`/`QE` to fly).
+
+A click on empty ground used to place the browser's asset, which meant a click that missed the
+rock you were aiming at left a second rock behind it. Placing is now something you do *from the
+browser*, deliberately.
+
+### The gizmo
+
+Whatever is selected carries a three-armed gizmo — red `X`, green `Y`, blue `Z` — standing on
+its origin. Dragging an arm moves the selection along that axis and no other; everything
+selected moves with it. The arm you are about to grab lights up, the arms are drawn over the
+level with a dark edge so they read against any background, and a drag keeps the pointer even
+if it passes over a panel. The gizmo grows with distance so it is the same size on screen
+whether you are two metres from a rock or two hundred.
+
+The grid applies: an `X` or `Z` drag lands on the grid step `G` chose, and a `Y` drag snaps
+height to the same step — which is how a stack of blockout pieces lands on the same levels as
+the floor plan.
+
+Rotation and scaling still live on `R` and `T`. The gizmo is built to take them as further
+modes rather than as a second manipulator.
+
+### A selection you have turned away from
+
+If the camera moves so the selected object is off screen, the selection is not hidden: a
+**striped amber silhouette** appears at the edge of the window in the direction the object
+lies, labelled with what it is, sized as the object would be if you could see it. Turn back
+and it walks around the edge to meet the object's own cyan outline as it comes into view.
 
 ### The selection holds one kind at a time
 

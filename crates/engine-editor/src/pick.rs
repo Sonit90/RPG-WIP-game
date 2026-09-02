@@ -144,6 +144,23 @@ fn spawn_box(spawn: &SpawnPoint) -> (Vec3, Vec3, engine_core::math::Quat) {
     )
 }
 
+/// The box that stands for something selected, in world space: centre, half-extents, rotation.
+///
+/// The same box the ray is tested against, which is the point: what an author clicks on and
+/// what the editor draws a highlight around have to be the same shape, or the highlight is a
+/// second opinion about where the object is.
+#[must_use]
+pub fn selection_box(
+    scene: &EnvironmentScene,
+    what: Selected,
+) -> Option<(Vec3, Vec3, engine_core::math::Quat)> {
+    match what {
+        Selected::Object(index) => scene.objects.get(index).map(pick_box),
+        Selected::Water(index) => scene.water.get(index).map(water_box),
+        Selected::Spawn(index) => scene.spawn_points.get(index).map(spawn_box),
+    }
+}
+
 /// What a ray hits first: a placement, a body of water, a spawn point, or nothing.
 ///
 /// One function over both lists rather than two that a caller has to compare, because "which
@@ -290,7 +307,11 @@ mod tests {
                 .with_yaw(std::f32::consts::FRAC_PI_2),
         );
         // Ten metres out along Z, which the turned body spans and the unturned one does not.
-        let hit = under_ray(&scene, Vec3::new(20.0, 0.5, 10.0), Vec3::new(-1.0, 0.0, 0.0));
+        let hit = under_ray(
+            &scene,
+            Vec3::new(20.0, 0.5, 10.0),
+            Vec3::new(-1.0, 0.0, 0.0),
+        );
         assert_eq!(hit, Some(Selected::Water(0)));
 
         let miss = under_ray(&scene, Vec3::new(20.0, 0.5, 0.0), Vec3::new(0.0, 0.0, -1.0));

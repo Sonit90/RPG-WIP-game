@@ -2,9 +2,11 @@
 //!
 //! ```text
 //!  F6 ──► Editing ───────────────► EditorOutcome
-//!   ▲        │  left click ground   place the browser's asset
-//!   │        │  left click object   select it
-//!   │        │  drag                move it, snapped to the grid
+//!   ▲        │  left click object   select it, and never place anything
+//!   │        │  left click ground   drop the selection
+//!   │        │  drag from browser   place that asset where it is dropped
+//!   │        │  double click a row  place one in front of the camera
+//!   │        │  drag an X/Y/Z arm   move the selection along that axis
 //!   │        │  R / SHIFT+R         yaw, snapped to the rotation step
 //!   │        │  G / SHIFT+G         grid step / rotation step
 //!   │        │  T / SHIFT+T         scale
@@ -25,6 +27,22 @@
 //!   │        │  CTRL+S              write assets/scenes/<name>.json
 //!   └────────┘  F6 / ESC            leave
 //! ```
+//!
+//! # One gesture, one meaning
+//!
+//! Placing and selecting are different gestures, and neither can be mistaken for the other:
+//!
+//! 1. a drag on a gizmo arm transforms what is selected;
+//! 2. a click on something in the world selects it — it never places anything;
+//! 3. a drag from a browser row into the world places one there;
+//! 4. a double click on a browser row places one in front of the camera;
+//! 5. anything else is the camera's.
+//!
+//! It used to be that a click on empty ground placed the browser's asset, which made one
+//! button mean "place" or "select" depending on what happened to be under it — and a click
+//! that missed the rock an author was aiming at left a second rock behind it. Placing is now
+//! something an author does *from the browser*, deliberately, and the world's left button
+//! only ever selects.
 //!
 //! # It edits data, and nothing else
 //!
@@ -56,6 +74,7 @@
 
 pub mod browser;
 pub mod camera;
+pub mod gizmo;
 pub mod pick;
 pub mod ui;
 
@@ -64,8 +83,8 @@ use std::path::{Path, PathBuf};
 use engine_core::input::{InputState, KeyCode, MouseButton};
 use engine_core::math::{Mat4, Vec3};
 use engine_core::transform::Transform;
-use engine_environment::terrain::{BrushMode, Terrain};
 use engine_environment::spawn::SpawnPoint;
+use engine_environment::terrain::{BrushMode, Terrain};
 use engine_environment::water::WaterBody;
 use engine_environment::{EnvironmentAsset, EnvironmentObject, EnvironmentScene, scene_file};
 use engine_presentation::ui::input::UiInput;
@@ -247,19 +266,60 @@ impl Selected {
     }
 }
 
-/// A drag in progress: what is being dragged, and where the cursor caught it.
-#[derive(Debug, Clone, Copy, PartialEq)]
-struct Drag {
-    /// What is being dragged.
-    target: Selected,
-    /// Where the object stood when the drag began.
-    origin: Vec3,
-    /// Where the cursor was on the ground when the drag began.
-    grabbed_at: Vec3,
-    /// Whether the object has actually moved yet, so a click that does not move anything
+/// A drag of one gizmo handle, and everything it needs to be absolute.
+///
+/// # Why the gizmo is remembered rather than re-projected
+///
+/// The handles are projected from the selection's own origin, so a gizmo re-projected each
+/// frame moves with the thing being dragged — and then the metres one pixel of movement asks
+/// for changes under the author's hand mid-drag, which reads as the object accelerating away
+/// from the cursor. The projection taken at the moment of the press is the ruler for the whole
+/// drag.
+///
+/// # Why the origins are remembered
+///
+/// The drag is absolute: every frame asks "where should this be, given where the pointer
+/// started and where it is now", rather than accumulating a delta per frame. An accumulated
+/// drag drifts, because a snapped position feeds the next frame's delta back into itself.
+#[derive(Debug, Clone, PartialEq)]
+struct GizmoDrag {
+    /// Which handle was grabbed.
+    axis: gizmo::Axis,
+    /// Where the pointer went down, in physical pixels.
+    from: (f32, f32),
+    /// The gizmo as it stood at the press. See above.
+    screen: gizmo::GizmoScreen,
+    /// Where everything selected stood when the drag began.
+    origins: Vec<(Selected, Vec3)>,
+    /// Whether anything has actually moved yet, so a click on a handle that does not drag it
     /// does not push an undo snapshot.
     moved: bool,
 }
+
+/// A drag that began on a browser row: an asset on its way into the world.
+///
+/// It is only a *pending* placement until the button comes up somewhere that is not a panel.
+/// A press that goes back up over the browser chose an asset and placed nothing, which is what
+/// makes choosing and placing two gestures rather than one with a side effect.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct PlacementDrag {
+    /// Where the press happened, so a release that never left the row can be told from one
+    /// that was carried out into the level.
+    from: (f32, f32),
+}
+
+/// How long after a click a second one on the same row still counts as a double click.
+///
+/// A third of a second: the interval Windows itself defaults to, rounded to something a
+/// person types rather than to a platform constant this crate cannot read — it has no
+/// `windows` dependency and must not gain one.
+const DOUBLE_CLICK_SECONDS: f32 = 0.35;
+
+/// How far the pointer may wander between the press and the release and still be a click.
+///
+/// In logical pixels. A drag out of the panel is a placement; a hand that moved three pixels
+/// while double-clicking a row is still a double click.
+const CLICK_SLOP_PIXELS: f32 = 6.0;
 
 /// The editor.
 #[derive(Debug)]
@@ -271,7 +331,30 @@ pub struct Editor {
     /// What is selected, in the order it was added. The last is the primary one — what the
     /// inspector describes and what a verb reports on. One kind at a time; see [`Selected`].
     selected: Vec<Selected>,
-    drag: Option<Drag>,
+    /// What a drag on a handle means. One mode today; see [`gizmo::GizmoMode`].
+    gizmo_mode: gizmo::GizmoMode,
+    /// The handle being dragged, if one is.
+    gizmo_drag: Option<GizmoDrag>,
+    /// Which handle the cursor is over, so it can be drawn as the one that would be grabbed.
+    gizmo_hover: Option<gizmo::Axis>,
+    /// An asset dragged out of the browser and not yet dropped.
+    placement: Option<PlacementDrag>,
+    /// Whether a double click on a browser row asked for a placement in front of the camera.
+    ///
+    /// Set where the row is answered and read where the scene is in hand, because the browser
+    /// panel has no scene: it knows what was clicked and nothing about the level.
+    place_at_centre: bool,
+    /// The last browser row that was clicked and when, for the double click that places one.
+    last_row_click: Option<(browser::BrowserRow, f32)>,
+    /// Seconds since the editor was opened. The clock the double click is measured on: this
+    /// crate has no access to a wall clock and must not gain one — the frame time the
+    /// application already hands it is the only time it knows.
+    clock: f32,
+    /// This frame's view-projection, kept so the interface can draw the gizmo and the
+    /// silhouette from the same matrix the pointer was answered with.
+    view_projection: Mat4,
+    /// This frame's viewport, kept for the same reason.
+    viewport: (u32, u32),
     /// Index into [`GRID_STEPS`].
     grid: usize,
     /// Index into [`YAW_STEPS`].
@@ -336,7 +419,15 @@ impl Editor {
             camera: FlyCamera::default(),
             browser: browser::AssetBrowser::new(),
             selected: Vec::new(),
-            drag: None,
+            gizmo_mode: gizmo::GizmoMode::Translate,
+            gizmo_drag: None,
+            gizmo_hover: None,
+            placement: None,
+            place_at_centre: false,
+            last_row_click: None,
+            clock: 0.0,
+            view_projection: Mat4::IDENTITY,
+            viewport: (0, 0),
             grid: 0,
             yaw_step: 2,
             sculpting: false,
@@ -443,19 +534,28 @@ impl Editor {
     /// which is what stops an object verb from ever reaching water.
     #[must_use]
     fn selected_objects(&self) -> Vec<usize> {
-        self.selected.iter().filter_map(|what| what.object()).collect()
+        self.selected
+            .iter()
+            .filter_map(|what| what.object())
+            .collect()
     }
 
     /// Every selected body of water, in the order it was added.
     #[must_use]
     fn selected_waters(&self) -> Vec<usize> {
-        self.selected.iter().filter_map(|what| what.water()).collect()
+        self.selected
+            .iter()
+            .filter_map(|what| what.water())
+            .collect()
     }
 
     /// Every selected spawn point, in the order it was added.
     #[must_use]
     fn selected_spawns(&self) -> Vec<usize> {
-        self.selected.iter().filter_map(|what| what.spawn()).collect()
+        self.selected
+            .iter()
+            .filter_map(|what| what.spawn())
+            .collect()
     }
 
     /// How far one press of `R` turns an object, in degrees.
@@ -520,9 +620,11 @@ impl Editor {
     #[must_use]
     pub fn is_module_piece(name: &str) -> bool {
         let name = name.to_ascii_lowercase();
-        name.contains("/caves/") || name.rsplit('/').next().is_some_and(|leaf| {
-            leaf.starts_with("cave_")
-        })
+        name.contains("/caves/")
+            || name
+                .rsplit('/')
+                .next()
+                .is_some_and(|leaf| leaf.starts_with("cave_"))
     }
 
     /// Follows the browser's selection with the module grid, until somebody presses `M`.
@@ -584,7 +686,7 @@ impl Editor {
         self.active = true;
         self.camera = FlyCamera::overlooking(focus);
         self.selected.clear();
-        self.drag = None;
+        self.cancel_manipulation();
         self.hierarchy_scroll = 0;
         self.undo.clear();
         self.save_path = PathBuf::from(format!("assets/scenes/{scene_name}.json"));
@@ -611,7 +713,7 @@ impl Editor {
     /// Leaves the editor. The scene keeps whatever was done to it.
     pub fn leave(&mut self) {
         self.active = false;
-        self.drag = None;
+        self.cancel_manipulation();
     }
 
     /// Writes this camera into the renderer's.
@@ -645,13 +747,19 @@ impl Editor {
             return EditorOutcome::Left;
         }
         self.water_touched = false;
+        // Remembered so the interface can draw the gizmo and the silhouette from the same
+        // matrix the pointer was answered with, and so the double click has a clock to
+        // measure itself on.
+        self.view_projection = *view_projection;
+        self.viewport = viewport;
+        self.clock += seconds;
 
         // The browser reads the keyboard first, because while its filter is open every key
         // belongs to the filter — including the ones that would otherwise fly the camera.
         let browser_took_the_keys = self.browser.update_keys(input);
         if !self.browser.is_typing() {
             self.last_seconds = seconds;
-        self.camera.update(input, seconds);
+            self.camera.update(input, seconds);
         }
 
         // The panels own the pointer over themselves: a click on a browser row chooses an
@@ -709,6 +817,18 @@ impl Editor {
         } else {
             self.update_keys(input, scene)
         };
+        // An asset carried out of the browser, or asked for by a double click on a row. The
+        // only two ways anything is placed — see [`Editor::update_placement`].
+        if self.update_placement(
+            ui_input,
+            scene,
+            view_projection,
+            viewport,
+            over_browser || over_hierarchy,
+        ) {
+            changed = true;
+        }
+
         let add_to_selection =
             input.is_key_down(KeyCode::LeftControl) || input.is_key_down(KeyCode::RightControl);
         if self.update_pointer(
@@ -908,12 +1028,7 @@ impl Editor {
         // a fast machine and a slow one.
         let amount = self.brush_strength * self.last_seconds.clamp(0.0, 0.1) * 30.0;
         if terrain.apply_brush(ground, self.brush_radius, amount, self.brush) {
-            self.status = format!(
-                "{} at {:.0} {:.0}",
-                self.brush.as_str(),
-                ground.x,
-                ground.z
-            );
+            self.status = format!("{} at {:.0} {:.0}", self.brush.as_str(), ground.x, ground.z);
             return (EditorOutcome::TerrainChanged, true);
         }
         (EditorOutcome::Idle, true)
@@ -941,7 +1056,8 @@ impl Editor {
         let wheel = input.wheel_delta();
         if wheel != 0.0 {
             let step = wheel.abs().max(1.0) as i32;
-            self.browser.scroll_by(if wheel > 0.0 { -step } else { step }, visible);
+            self.browser
+                .scroll_by(if wheel > 0.0 { -step } else { step }, visible);
         }
 
         if ui_input.pointer_pressed {
@@ -959,6 +1075,21 @@ impl Editor {
                     _ => {
                         if self.browser.choose(row) {
                             self.status = format!("placing {}", self.browser.selected_name());
+                        }
+                        // A press on a row is the *start* of a placement, and nothing has been
+                        // placed yet: it becomes one only when the button comes up over the
+                        // world. A second press on the same row inside the double-click
+                        // interval means "put one in front of me" instead.
+                        let doubled = self.last_row_click.is_some_and(|(last, when)| {
+                            last == row && self.clock - when <= DOUBLE_CLICK_SECONDS
+                        });
+                        if doubled {
+                            self.place_at_centre = true;
+                            self.placement = None;
+                            self.last_row_click = None;
+                        } else {
+                            self.placement = Some(PlacementDrag { from: (x, y) });
+                            self.last_row_click = Some((row, self.clock));
                         }
                     }
                 }
@@ -1017,7 +1148,7 @@ impl Editor {
                 let control = input.is_key_down(KeyCode::LeftControl)
                     || input.is_key_down(KeyCode::RightControl);
                 self.select(what, control);
-                self.drag = None;
+                self.cancel_manipulation();
                 self.status = match what {
                     Selected::Object(index) => format!(
                         "selected {} ({index}){}",
@@ -1092,7 +1223,11 @@ impl Editor {
         let shift = input.is_key_down(KeyCode::LeftShift) || input.is_key_down(KeyCode::RightShift);
 
         if input.was_key_pressed(KeyCode::Escape) {
+            // The way out of everything in progress, not only the selection: an asset picked
+            // up from the browser and not yet dropped is a gesture an author has to be able
+            // to abandon, and the key that abandons things is this one.
             self.selected.clear();
+            self.cancel_manipulation();
             return false;
         }
         if input.was_key_pressed(KeyCode::G) {
@@ -1126,7 +1261,7 @@ impl Editor {
         if input.was_key_pressed(KeyCode::B) {
             self.sculpting = !self.sculpting;
             self.selected.clear();
-            self.drag = None;
+            self.cancel_manipulation();
             self.status = if self.sculpting {
                 "sculpting: drag to shape the ground".to_owned()
             } else {
@@ -1262,7 +1397,10 @@ impl Editor {
                 // Snapped to a multiple of the step rather than added to: an object turned by
                 // hand and then stepped ends up aligned with everything else stepped by the
                 // same amount, which is the whole point of a rotation snap.
-                last = snap_angle(yaw_of(object.transform) + step, self.yaw_step().to_radians());
+                last = snap_angle(
+                    yaw_of(object.transform) + step,
+                    self.yaw_step().to_radians(),
+                );
                 object.transform.rotation =
                     engine_core::math::Quat::from_yaw_pitch_roll(last, 0.0, 0.0);
             }
@@ -1409,7 +1547,100 @@ impl Editor {
         (delta != Vec3::ZERO).then_some(delta)
     }
 
-    /// Selecting, placing and dragging. Returns whether the scene changed.
+    /// Forgets any manipulation in progress: a handle being dragged, an asset being carried.
+    ///
+    /// One function rather than two fields cleared in eight places, because "the editor is no
+    /// longer in the middle of something" is one idea — and a gesture left half-finished by a
+    /// mode change is exactly how a click three frames later moves something nobody selected.
+    fn cancel_manipulation(&mut self) {
+        self.gizmo_drag = None;
+        self.placement = None;
+        self.gizmo_hover = None;
+        self.place_at_centre = false;
+    }
+
+    /// Where the gizmo stands: the primary selection's own position.
+    ///
+    /// The primary rather than the centre of the group, because the primary is the thing the
+    /// inspector describes and the thing every keyboard verb reports on. A gizmo at the
+    /// average of a hundred selected rocks stands in empty space.
+    #[must_use]
+    pub fn gizmo_origin(&self, scene: &EnvironmentScene) -> Option<Vec3> {
+        position_of(scene, self.selection()?)
+    }
+
+    /// The gizmo as the pointer sees it this frame, if there is one to see.
+    ///
+    /// `None` when nothing is selected, when the brush has the pointer — a gizmo an author
+    /// cannot grab is a lie about what a click will do — or when the selection is off screen,
+    /// which is the case the striped silhouette answers instead.
+    #[must_use]
+    pub fn gizmo(&self, scene: &EnvironmentScene) -> Option<gizmo::GizmoScreen> {
+        self.gizmo_with(scene, &self.view_projection, self.viewport)
+    }
+
+    /// [`Editor::gizmo`], against a matrix and a viewport the caller has rather than the
+    /// remembered ones. What the pointer code uses, since it is answered before the frame's
+    /// matrix has been remembered.
+    fn gizmo_with(
+        &self,
+        scene: &EnvironmentScene,
+        view_projection: &Mat4,
+        viewport: (u32, u32),
+    ) -> Option<gizmo::GizmoScreen> {
+        if self.sculpting {
+            return None;
+        }
+        let origin = self.gizmo_origin(scene)?;
+        let length = gizmo::length_for(origin, self.camera.position);
+        gizmo::project(self.gizmo_mode, origin, length, view_projection, viewport)
+    }
+
+    /// Which handle the cursor is over, or the one being dragged while a drag is on.
+    #[must_use]
+    pub fn gizmo_hover(&self) -> Option<gizmo::Axis> {
+        self.gizmo_drag
+            .as_ref()
+            .map(|drag| drag.axis)
+            .or(self.gizmo_hover)
+    }
+
+    /// Which handle is being dragged, if one is.
+    #[must_use]
+    pub fn gizmo_axis(&self) -> Option<gizmo::Axis> {
+        self.gizmo_drag.as_ref().map(|drag| drag.axis)
+    }
+
+    /// Whether an asset is being carried out of the browser and has not been dropped yet.
+    #[must_use]
+    pub fn is_placing(&self) -> bool {
+        self.placement.is_some()
+    }
+
+    /// Where the editor's eye is. What the overlay measures distances from.
+    #[must_use]
+    pub fn eye(&self) -> Vec3 {
+        self.camera.position
+    }
+
+    /// The view-projection the last frame was answered with. What the interface draws from.
+    #[must_use]
+    pub fn view_projection(&self) -> Mat4 {
+        self.view_projection
+    }
+
+    /// Selecting and manipulating. Returns whether the scene changed.
+    ///
+    /// The order is the whole point, and it is the order of the brief:
+    ///
+    /// 1. a gizmo drag in progress owns the pointer until the button comes up;
+    /// 2. a press on a handle starts one;
+    /// 3. a press on something in the world *selects it*, and never places anything;
+    /// 4. a press on empty ground drops the selection.
+    ///
+    /// Placing is not in this list. It is a drag out of the browser or a double click on a
+    /// browser row — see [`Editor::update_placement`] — which is what makes "click a rock"
+    /// mean one thing and never two.
     fn update_pointer(
         &mut self,
         ui_input: &UiInput,
@@ -1419,59 +1650,40 @@ impl Editor {
         over_panel: bool,
         add_to_selection: bool,
     ) -> bool {
-        let ground = engine_presentation::ui::targeting::ground_under_cursor(
-            ui_input.pointer,
-            view_projection,
-            viewport,
-        );
-
-        // A drag in progress owns the pointer until the button comes up.
-        if let Some(drag) = self.drag {
-            if !ui_input.pointer_down {
-                self.drag = None;
-                return false;
-            }
-            let Some(ground) = ground else {
-                return false;
-            };
-            // Where the dragged thing stands now, whichever list it lives in.
-            let Some(standing) = position_of(scene, drag.target) else {
-                self.drag = None;
-                return false;
-            };
-            let moved = self.snap(drag.origin + (ground - drag.grabbed_at));
-            if moved == standing {
-                return false;
-            }
-            if !drag.moved {
-                // The snapshot is taken on the first movement, not on the press: a click
-                // that selects and does not drag must not fill the undo stack.
-                let before = Snapshot::of(scene);
-                self.push_undo(before);
-                self.drag = Some(Drag {
-                    moved: true,
-                    ..drag
-                });
-            }
-            // Everything selected moves by the delta the dragged thing moved by, so a group
-            // keeps its shape instead of collapsing onto the cursor.
-            let delta = moved - standing;
-            for what in self.selected.clone() {
-                move_by(scene, what, delta);
-            }
-            if !self.is_selected(drag.target) {
-                move_by(scene, drag.target, delta);
-            }
-            self.water_touched = drag.target.object().is_none();
-            self.status = if self.selected.len() > 1 {
-                format!("moved {}", self.selected.len())
-            } else {
-                "moved".to_owned()
-            };
-            return true;
+        // A drag in progress owns the pointer until the button comes up, panels included: a
+        // handle dragged over the browser is still that handle being dragged.
+        if self.gizmo_drag.is_some() {
+            return self.drag_gizmo(ui_input, scene);
         }
 
+        let screen = self.gizmo_with(scene, view_projection, viewport);
+        let grab = self.scale.px(gizmo::GRAB_PIXELS);
+        self.gizmo_hover = if over_panel {
+            None
+        } else {
+            screen.and_then(|screen| screen.hit(ui_input.pointer, grab))
+        };
+
         if !ui_input.pointer_pressed || over_panel {
+            return false;
+        }
+
+        // A handle beats everything under it: the handles are drawn over the level, so what
+        // is behind one is not what the author was aiming at.
+        if let (Some(axis), Some(screen)) = (self.gizmo_hover, screen) {
+            let origins = self
+                .selected
+                .iter()
+                .filter_map(|what| position_of(scene, *what).map(|origin| (*what, origin)))
+                .collect();
+            self.gizmo_drag = Some(GizmoDrag {
+                axis,
+                from: ui_input.pointer,
+                screen,
+                origins,
+                moved: false,
+            });
+            self.status = format!("moving along {}", axis.label());
             return false;
         }
 
@@ -1483,40 +1695,168 @@ impl Editor {
             return false;
         };
 
-        if let Some(what) = pick::under_ray(scene, origin, direction) {
-            // CTRL adds to the selection instead of replacing it; clicking something that is
-            // already selected keeps the whole group, so a group can be dragged by any of its
-            // members rather than only by the last one clicked.
-            if !self.is_selected(what) {
-                self.select(what, add_to_selection);
+        let Some(what) = pick::under_ray(scene, origin, direction) else {
+            // Empty ground. Nothing is placed and nothing is moved: the selection is dropped,
+            // which is the one thing a click on nothing can mean without guessing.
+            if !self.selected.is_empty() {
+                self.selected.clear();
+                self.status = "selection cleared".to_owned();
             }
-            let Some(standing) = position_of(scene, what) else {
-                return false;
-            };
-            self.drag = Some(Drag {
-                target: what,
-                origin: standing,
-                grabbed_at: ground.unwrap_or(standing),
-                moved: false,
-            });
-            self.status = if self.selected.len() > 1 {
-                format!("selected {} objects", self.selected.len())
-            } else {
-                match what {
-                    Selected::Object(index) => {
-                        format!("selected {}", scene.objects[index].asset.name())
-                    }
-                    Selected::Water(index) => format!("selected water ({index})"),
-                    Selected::Spawn(index) => format!("selected spawn ({index})"),
-                }
-            };
-            return false;
-        }
-
-        // Nothing under the cursor: place.
-        let Some(ground) = ground else {
             return false;
         };
+
+        // CTRL toggles: control-clicking a selected object takes it out of the group again,
+        // which is the one gesture every editor agrees on. A plain click on something already
+        // selected keeps the group, so a group can be nudged or dragged by its gizmo without
+        // a stray click on one of its members dissolving it.
+        if add_to_selection || !self.is_selected(what) {
+            self.select(what, add_to_selection);
+        }
+        self.status = if self.selected.len() > 1 {
+            format!("selected {} objects", self.selected.len())
+        } else {
+            match what {
+                Selected::Object(index) => {
+                    format!("selected {}", scene.objects[index].asset.name())
+                }
+                Selected::Water(index) => format!("selected water ({index})"),
+                Selected::Spawn(index) => format!("selected spawn ({index})"),
+            }
+        };
+        // Selecting never changes the level. That is what "a single click on an existing
+        // object always means selection" costs: nothing.
+        false
+    }
+
+    /// One frame of a gizmo drag. Returns whether the scene changed.
+    fn drag_gizmo(&mut self, ui_input: &UiInput, scene: &mut EnvironmentScene) -> bool {
+        let Some(drag) = self.gizmo_drag.clone() else {
+            return false;
+        };
+        if !ui_input.pointer_down {
+            self.gizmo_drag = None;
+            return false;
+        }
+        let metres = drag.screen.metres(drag.axis, drag.from, ui_input.pointer);
+        let step = drag.axis.direction() * metres;
+
+        // Every target is worked out before anything moves, so the undo snapshot is the scene
+        // as it was before this frame and not as it was halfway through it.
+        let mut moves: Vec<(Selected, Vec3)> = Vec::new();
+        for (what, origin) in &drag.origins {
+            let Some(standing) = position_of(scene, *what) else {
+                continue;
+            };
+            let target = self.snap_along(drag.axis, *origin + step);
+            if target != standing {
+                moves.push((*what, target - standing));
+            }
+        }
+        if moves.is_empty() {
+            return false;
+        }
+        if !drag.moved {
+            // Taken on the first movement rather than on the press: a click on a handle that
+            // does not drag it must not fill the undo stack.
+            let before = Snapshot::of(scene);
+            self.push_undo(before);
+            self.gizmo_drag = Some(GizmoDrag {
+                moved: true,
+                ..drag.clone()
+            });
+        }
+        for (what, delta) in &moves {
+            move_by(scene, *what, *delta);
+        }
+        // A selection holds one kind, so this frame's edit reached the placements or the other
+        // two lists and never both — which is the answer the application needs.
+        self.water_touched = drag
+            .origins
+            .first()
+            .is_some_and(|(what, _)| what.object().is_none());
+        self.status = if drag.origins.len() > 1 {
+            format!("moved {} along {}", drag.origins.len(), drag.axis.label())
+        } else {
+            format!("moved {:.2} m along {}", metres, drag.axis.label())
+        };
+        true
+    }
+
+    /// An asset carried out of the browser, or asked for by a double click. Returns whether
+    /// the scene changed.
+    ///
+    /// The two explicit ways to place something, and the only two. Dropping is a press on a
+    /// browser row that comes up over the world; double-clicking a row places at the middle
+    /// of the view, because there is no cursor position in the world to use — the cursor is
+    /// over the panel.
+    fn update_placement(
+        &mut self,
+        ui_input: &UiInput,
+        scene: &mut EnvironmentScene,
+        view_projection: &Mat4,
+        viewport: (u32, u32),
+        over_panel: bool,
+    ) -> bool {
+        if std::mem::take(&mut self.place_at_centre) {
+            let centre = (viewport.0 as f32 * 0.5, viewport.1 as f32 * 0.5);
+            let position = engine_presentation::ui::targeting::ground_under_cursor(
+                centre,
+                view_projection,
+                viewport,
+            )
+            .unwrap_or_else(|| {
+                // Looking at the sky: the ground is not in front of the camera at all, so the
+                // asset goes down where the camera is standing rather than nowhere.
+                let ahead = self.camera.position + self.camera.forward() * 12.0;
+                Vec3::new(ahead.x, 0.0, ahead.z)
+            });
+            self.placement = None;
+            return self.place(scene, position);
+        }
+
+        let Some(drag) = self.placement else {
+            return false;
+        };
+        if !ui_input.pointer_down && !ui_input.pointer_released {
+            // The button came up in a frame this never saw. Nothing was carried anywhere.
+            self.placement = None;
+            return false;
+        }
+        if !ui_input.pointer_released {
+            return false;
+        }
+        self.placement = None;
+        if over_panel {
+            // Dropped back on the panel: the row chose an asset and placed nothing.
+            return false;
+        }
+        let travelled = {
+            let (dx, dy) = (
+                ui_input.pointer.0 - drag.from.0,
+                ui_input.pointer.1 - drag.from.1,
+            );
+            (dx * dx + dy * dy).sqrt()
+        };
+        if travelled < self.scale.px(CLICK_SLOP_PIXELS) {
+            // A click that started and ended in the same place is not a drag into the world.
+            return false;
+        }
+        let Some(ground) = engine_presentation::ui::targeting::ground_under_cursor(
+            ui_input.pointer,
+            view_projection,
+            viewport,
+        ) else {
+            self.status = "point at the ground to drop it".to_owned();
+            return false;
+        };
+        self.place(scene, ground)
+    }
+
+    /// Puts the browser's asset into the scene at `position` and selects it.
+    ///
+    /// One function for both ways of placing, so a dropped asset and a double-clicked one land
+    /// with the same collision, the same snapping and the same undo behind them.
+    fn place(&mut self, scene: &mut EnvironmentScene, position: Vec3) -> bool {
         self.snapshot(scene);
         let asset = self.asset();
         // What it blocks is decided once, here, and written into the level. A built-in has an
@@ -1531,7 +1871,7 @@ impl Editor {
         };
         scene.push(EnvironmentObject {
             asset,
-            transform: Transform::from_translation(self.snap(ground)),
+            transform: Transform::from_translation(self.snap(position)),
             collision,
         });
         self.selected.clear();
@@ -1539,6 +1879,26 @@ impl Editor {
             .push(Selected::Object(scene.objects.len() - 1));
         self.status = format!("placed {}", asset.name());
         true
+    }
+
+    /// `position`, with the component `axis` runs along snapped to the grid.
+    ///
+    /// Only that component: a drag along Y that also rounded X and Z would move an object in
+    /// two directions the author did not ask for, and a gizmo whose whole promise is "this
+    /// drag changes one axis" cannot do that. Height *is* snapped here, unlike a placement —
+    /// an author dragging the Y handle is deliberately choosing a height, and a stack of
+    /// blockout pieces wants to land on the same steps as the floor plan.
+    fn snap_along(&self, axis: gizmo::Axis, position: Vec3) -> Vec3 {
+        let step = self.grid();
+        if step <= 0.0 {
+            return position;
+        }
+        let round = |value: f32| (value / step).round() * step;
+        match axis {
+            gizmo::Axis::X => Vec3::new(round(position.x), position.y, position.z),
+            gizmo::Axis::Y => Vec3::new(position.x, round(position.y), position.z),
+            gizmo::Axis::Z => Vec3::new(position.x, position.y, round(position.z)),
+        }
     }
 
     /// A position on the grid, if there is one.
@@ -1579,7 +1939,7 @@ impl Editor {
         };
         snapshot.restore(scene);
         self.selected.clear();
-        self.drag = None;
+        self.cancel_manipulation();
         self.status = "undone".to_owned();
         true
     }
@@ -1721,8 +2081,8 @@ pub fn owns_pointer(input: &InputState) -> bool {
 )]
 mod tests {
     use super::*;
-    use engine_environment::object::default_collision;
     use engine_environment::asset::{PILLAR, ROCK_SMALL};
+    use engine_environment::object::default_collision;
     use engine_render_data::{Camera, Projection};
 
     const VIEWPORT: (u32, u32) = (1920, 1080);
@@ -1799,6 +2159,124 @@ mod tests {
         editor.update(input, ui, scene, &overhead(), VIEWPORT, 1.0 / 60.0)
     }
 
+    /// A frame answered against `view_projection` rather than the overhead camera.
+    ///
+    /// The overhead camera looks straight down, which points the Y axis at the eye: its
+    /// handle is a dot, and a dot cannot be dragged. A test about the Y handle needs a camera
+    /// that can see it.
+    fn update_seen_from(
+        editor: &mut Editor,
+        ui: &UiInput,
+        scene: &mut EnvironmentScene,
+        view_projection: &Mat4,
+    ) -> EditorOutcome {
+        editor.update(
+            &InputState::new(),
+            ui,
+            scene,
+            view_projection,
+            VIEWPORT,
+            1.0 / 60.0,
+        )
+    }
+
+    /// A camera at the same height as the level, looking along -Z: it can see all three axes.
+    fn side_on() -> Mat4 {
+        let mut camera =
+            Camera::new(Projection::perspective(16.0 / 9.0)).expect("a valid projection");
+        let eye = Vec3::new(6.0, 4.0, 22.0);
+        camera.set_position(eye);
+        camera
+            .look_at(eye, Vec3::ZERO, Vec3::new(0.0, 1.0, 0.0))
+            .expect("a valid view");
+        camera.view_projection()
+    }
+
+    /// A frame in which the button came up at `pointer`.
+    fn release(pointer: (f32, f32)) -> UiInput {
+        UiInput {
+            pointer,
+            pointer_released: true,
+            ..UiInput::new()
+        }
+    }
+
+    /// Where the browser row of the asset the editor would place sits, as a pointer position.
+    ///
+    /// The built-in library starts in a closed folder, so the row may not be listed yet: the
+    /// folder is opened first, exactly as an author would open it.
+    fn selected_row_point(editor: &mut Editor, scene: &mut EnvironmentScene) -> (f32, f32) {
+        if let Some(point) = visible_selected_row(editor) {
+            return point;
+        }
+        let folder = ui::browser_row_rect(editor.scale(), VIEWPORT, 0);
+        update(
+            editor,
+            &InputState::new(),
+            &press((
+                folder.x + folder.width * 0.5,
+                folder.y + folder.height * 0.5,
+            )),
+            scene,
+        );
+        visible_selected_row(editor).expect("the browser's own selection is not on screen")
+    }
+
+    /// The row rectangle of the browser's own selection, if it is listed.
+    fn visible_selected_row(editor: &Editor) -> Option<(f32, f32)> {
+        let visible = ui::browser_visible_rows(editor.scale(), VIEWPORT);
+        let first = editor.browser().scroll();
+        for slot in 0..visible {
+            let Some(row) = editor.browser().row(first + slot) else {
+                break;
+            };
+            if editor.browser().is_selected(row) {
+                let rect = ui::browser_row_rect(editor.scale(), VIEWPORT, slot);
+                return Some((rect.x + rect.width * 0.5, rect.y + rect.height * 0.5));
+            }
+        }
+        None
+    }
+
+    /// Drags the browser's current asset out of the panel and drops it at `pointer`.
+    ///
+    /// The gesture the editor now requires: a press on a row and a release out in the world.
+    /// Every test that used to place with one click in the middle of the screen places with
+    /// this, which is the point of the change — a click in the world never places anything.
+    fn drop_asset(
+        editor: &mut Editor,
+        scene: &mut EnvironmentScene,
+        pointer: (f32, f32),
+    ) -> EditorOutcome {
+        let row = selected_row_point(editor, scene);
+        update(editor, &InputState::new(), &press(row), scene);
+        update(editor, &InputState::new(), &release(pointer), scene)
+    }
+
+    /// Presses on a gizmo handle and drags it by `by` pixels. Returns the last outcome.
+    fn drag_handle(
+        editor: &mut Editor,
+        scene: &mut EnvironmentScene,
+        axis: gizmo::Axis,
+        by: (f32, f32),
+    ) -> EditorOutcome {
+        let handle = editor
+            .gizmo(scene)
+            .and_then(|screen| screen.handle(axis))
+            .expect("a handle for this axis");
+        let grab = (
+            (handle.from.0 + handle.to.0) * 0.5,
+            (handle.from.1 + handle.to.1) * 0.5,
+        );
+        update(editor, &InputState::new(), &press(grab), scene);
+        update(
+            editor,
+            &InputState::new(),
+            &hold((grab.0 + by.0, grab.1 + by.1)),
+            scene,
+        )
+    }
+
     /// A frame whose wheel turned by `notches`.
     fn wheeled(notches: f32) -> InputState {
         let mut input = InputState::new();
@@ -1852,12 +2330,19 @@ mod tests {
     fn choosing_a_cave_piece_snaps_to_the_module_grid_until_the_author_says_otherwise() {
         // Modular pieces meet on a face. Two tunnels four metres apart on a quarter-turn grid
         // join; two laid on a 22.5 degree grid leave a gap only visible from inside the cave.
-        assert!(Editor::is_module_piece("generated/environment/caves/cave_tunnel_straight"));
+        assert!(Editor::is_module_piece(
+            "generated/environment/caves/cave_tunnel_straight"
+        ));
         assert!(Editor::is_module_piece("cave_room_large"));
-        assert!(!Editor::is_module_piece("generated/environment/rocks/rock_small"));
+        assert!(!Editor::is_module_piece(
+            "generated/environment/rocks/rock_small"
+        ));
 
         let mut editor = editor();
-        assert!(!editor.is_module_snap(), "a rock does not want the cave grid");
+        assert!(
+            !editor.is_module_snap(),
+            "a rock does not want the cave grid"
+        );
 
         // While it is on, the grid and the rotation step are the module's, whatever `G` last
         // cycled to: that is the whole of what the mode does.
@@ -1884,7 +2369,10 @@ mod tests {
         let (mut editor, mut scene) = poured();
         assert_eq!(scene.water.len(), 1);
         let body = scene.water[0];
-        assert!(body.center.x.abs() < 0.01 && body.center.z.abs() < 0.01, "{body:?}");
+        assert!(
+            body.center.x.abs() < 0.01 && body.center.z.abs() < 0.01,
+            "{body:?}"
+        );
         assert!(body.is_valid(), "a poured body is a volume: {body:?}");
         assert_eq!(
             editor.selection(),
@@ -1905,16 +2393,10 @@ mod tests {
         // Grow, then turn, then nudge, then delete: the four verbs, in the order an author
         // would reach for them.
         let before = scene.water[0].half_extents;
-        let outcome = update(
-            &mut editor,
-            &keyed(KeyCode::T),
-            &UiInput::new(),
-            &mut scene,
-        );
+        let outcome = update(&mut editor, &keyed(KeyCode::T), &UiInput::new(), &mut scene);
         assert_eq!(outcome, EditorOutcome::WaterChanged);
         assert!(
-            scene.water[0].half_extents.x > before.x
-                && scene.water[0].half_extents.y > before.y,
+            scene.water[0].half_extents.x > before.x && scene.water[0].half_extents.y > before.y,
             "T did not grow the body"
         );
 
@@ -1977,14 +2459,15 @@ mod tests {
         let rock = scene.objects[0].transform.translation;
         let before = scene.water[0].center;
 
-        // Grab the body in the middle of the screen and drag towards the top of it.
-        update(&mut editor, &InputState::new(), &press(centre()), &mut scene);
-        let outcome = update(
+        // Select the body in the middle of the screen, then drag its X handle.
+        update(
             &mut editor,
             &InputState::new(),
-            &hold((centre().0, centre().1 - 200.0)),
+            &press(centre()),
             &mut scene,
         );
+        assert_eq!(editor.selected_water(), Some(0), "the click selected it");
+        let outcome = drag_handle(&mut editor, &mut scene, gizmo::Axis::X, (140.0, 0.0));
 
         assert_eq!(outcome, EditorOutcome::WaterChanged);
         assert!(
@@ -2019,11 +2502,21 @@ mod tests {
         );
 
         // Straightened, nudged, and taken away again.
-        update(&mut editor, &keyed(KeyCode::Digit0), &UiInput::new(), &mut scene);
+        update(
+            &mut editor,
+            &keyed(KeyCode::Digit0),
+            &UiInput::new(),
+            &mut scene,
+        );
         assert_eq!(scene.spawn_points[0].yaw, 0.0);
 
         let before = scene.spawn_points[0].position;
-        update(&mut editor, &keyed(KeyCode::ArrowRight), &UiInput::new(), &mut scene);
+        update(
+            &mut editor,
+            &keyed(KeyCode::ArrowRight),
+            &UiInput::new(),
+            &mut scene,
+        );
         assert!(scene.spawn_points[0].position.x > before.x);
 
         update(&mut editor, &keyed(KeyCode::X), &UiInput::new(), &mut scene);
@@ -2109,7 +2602,12 @@ mod tests {
             Vec3::new(200.0, 0.0, 0.0),
         ));
         let water_row = hierarchy_point(&editor, hierarchy_row_of(Selected::Water(0), &scene));
-        update(&mut editor, &InputState::new(), &press(water_row), &mut scene);
+        update(
+            &mut editor,
+            &InputState::new(),
+            &press(water_row),
+            &mut scene,
+        );
         assert_eq!(editor.selection(), Some(Selected::Water(0)));
         update(&mut editor, &keyed(KeyCode::X), &UiInput::new(), &mut scene);
         assert!(scene.water.is_empty(), "X did not delete the body");
@@ -2145,7 +2643,11 @@ mod tests {
         let outcome = update(&mut editor, &InputState::new(), &press(point), &mut scene);
 
         assert_eq!(editor.selected_object(), Some(2));
-        assert_eq!(scene.len(), 4, "the click through the panel placed an object");
+        assert_eq!(
+            scene.len(),
+            4,
+            "the click through the panel placed an object"
+        );
         assert_eq!(outcome, EditorOutcome::Idle);
     }
 
@@ -2186,7 +2688,11 @@ mod tests {
         update(&mut editor, &wheeled(-3.0), &hover, &mut scene);
 
         update(&mut editor, &InputState::new(), &press(over), &mut scene);
-        assert_eq!(editor.selected_object(), Some(4), "row 1 of a list scrolled by 3");
+        assert_eq!(
+            editor.selected_object(),
+            Some(4),
+            "row 1 of a list scrolled by 3"
+        );
     }
 
     #[test]
@@ -2208,12 +2714,7 @@ mod tests {
         let visible = ui::hierarchy_visible_rows(editor.scale(), VIEWPORT);
         let mut scene = scene_of(visible + 6);
         // Place one more: it becomes the last object and the selection.
-        update(
-            &mut editor,
-            &InputState::new(),
-            &press(centre()),
-            &mut scene,
-        );
+        drop_asset(&mut editor, &mut scene, centre());
         let last = scene.len() - 1;
         assert_eq!(editor.selected_object(), Some(last));
         assert!(
@@ -2237,9 +2738,15 @@ mod tests {
     }
 
     #[test]
-    fn a_click_on_empty_ground_places_the_palettes_asset_once() {
+    fn a_click_on_empty_ground_places_nothing_and_drops_the_selection() {
         let mut editor = editor();
         let mut scene = scene();
+        scene.push(EnvironmentObject::decoration(
+            ROCK_SMALL,
+            Vec3::new(60.0, 0.0, 0.0),
+        ));
+        editor.select(Selected::Object(0), false);
+
         let outcome = update(
             &mut editor,
             &InputState::new(),
@@ -2247,15 +2754,79 @@ mod tests {
             &mut scene,
         );
 
+        assert_eq!(outcome, EditorOutcome::Idle);
+        assert_eq!(scene.len(), 1, "a click on the ground placed something");
+        assert_eq!(
+            editor.selection(),
+            None,
+            "and it did not drop the selection"
+        );
+    }
+
+    #[test]
+    fn an_asset_dragged_out_of_the_browser_lands_where_it_was_dropped() {
+        let mut editor = editor();
+        let mut scene = scene();
+
+        let outcome = drop_asset(&mut editor, &mut scene, centre());
+
         assert_eq!(outcome, EditorOutcome::SceneChanged);
-        assert_eq!(scene.len(), 1, "exactly one placement per click");
+        assert_eq!(scene.len(), 1, "exactly one placement per drop");
         assert_eq!(scene.objects[0].asset, editor.asset());
         let position = scene.objects[0].position();
         assert!(
             position.x.abs() < 0.5 && position.z.abs() < 0.5,
-            "it went where the cursor was: {position:?}"
+            "it went where it was dropped: {position:?}"
         );
         assert_eq!(editor.selected_object(), Some(0), "and it is selected");
+    }
+
+    #[test]
+    fn a_press_on_a_browser_row_that_comes_up_on_the_panel_places_nothing() {
+        let mut editor = editor();
+        let mut scene = scene();
+        let row = selected_row_point(&mut editor, &mut scene);
+
+        update(&mut editor, &InputState::new(), &press(row), &mut scene);
+        let outcome = update(&mut editor, &InputState::new(), &release(row), &mut scene);
+
+        assert_eq!(outcome, EditorOutcome::Idle);
+        assert!(
+            scene.is_empty(),
+            "a click that never left the browser placed something"
+        );
+    }
+
+    #[test]
+    fn a_double_click_on_a_browser_row_places_one_in_front_of_the_camera() {
+        let mut editor = editor();
+        let mut scene = scene();
+        let row = selected_row_point(&mut editor, &mut scene);
+
+        update(&mut editor, &InputState::new(), &press(row), &mut scene);
+        update(&mut editor, &InputState::new(), &release(row), &mut scene);
+        let outcome = update(&mut editor, &InputState::new(), &press(row), &mut scene);
+
+        assert_eq!(outcome, EditorOutcome::SceneChanged);
+        assert_eq!(scene.len(), 1, "the second click placed one");
+        assert_eq!(editor.selected_object(), Some(0));
+    }
+
+    #[test]
+    fn two_clicks_far_apart_in_time_are_not_a_double_click() {
+        let mut editor = editor();
+        let mut scene = scene();
+        let row = selected_row_point(&mut editor, &mut scene);
+
+        update(&mut editor, &InputState::new(), &press(row), &mut scene);
+        update(&mut editor, &InputState::new(), &release(row), &mut scene);
+        // A second of frames in between, which is longer than the double-click interval.
+        for _ in 0..60 {
+            update(&mut editor, &InputState::new(), &UiInput::new(), &mut scene);
+        }
+        update(&mut editor, &InputState::new(), &press(row), &mut scene);
+
+        assert!(scene.is_empty(), "two slow clicks placed something");
     }
 
     #[test]
@@ -2275,16 +2846,248 @@ mod tests {
             presses += 1;
             assert!(presses < 256, "TAB never reached the pillar");
         }
+        drop_asset(&mut editor, &mut scene, centre());
+        assert!(
+            scene.objects[0].collision.blocks(),
+            "a pillar placed in the editor is a pillar you cannot walk through"
+        );
+    }
+
+    #[test]
+    fn the_gizmo_is_there_only_while_something_is_selected() {
+        let mut editor = editor();
+        let mut scene = scene();
+        scene.push(
+            EnvironmentObject::decoration(PILLAR, Vec3::ZERO)
+                .with_collision(default_collision(PILLAR)),
+        );
+
+        update(&mut editor, &InputState::new(), &UiInput::new(), &mut scene);
+        assert!(
+            editor.gizmo(&scene).is_none(),
+            "a gizmo with nothing selected is a handle nobody can explain"
+        );
+
         update(
             &mut editor,
             &InputState::new(),
             &press(centre()),
             &mut scene,
         );
+        let screen = editor.gizmo(&scene).expect("a gizmo on the selection");
         assert!(
-            scene.objects[0].collision.blocks(),
-            "a pillar placed in the editor is a pillar you cannot walk through"
+            screen.handle(gizmo::Axis::X).is_some() && screen.handle(gizmo::Axis::Z).is_some(),
+            "the gizmo has no handles to grab"
         );
+
+        update(
+            &mut editor,
+            &keyed(KeyCode::Escape),
+            &UiInput::new(),
+            &mut scene,
+        );
+        assert!(editor.gizmo(&scene).is_none(), "it outlived the selection");
+    }
+
+    #[test]
+    fn the_gizmo_follows_the_object_it_is_standing_on() {
+        let mut editor = editor();
+        let mut scene = scene();
+        scene.push(
+            EnvironmentObject::decoration(PILLAR, Vec3::ZERO)
+                .with_collision(default_collision(PILLAR)),
+        );
+        update(
+            &mut editor,
+            &InputState::new(),
+            &press(centre()),
+            &mut scene,
+        );
+        let before = editor.gizmo_origin(&scene).expect("an origin");
+
+        drag_handle(&mut editor, &mut scene, gizmo::Axis::X, (150.0, 0.0));
+        let after = editor.gizmo_origin(&scene).expect("an origin");
+
+        assert_eq!(after, scene.objects[0].position());
+        assert!(after.x > before.x, "the gizmo stayed behind: {after:?}");
+    }
+
+    #[test]
+    fn a_press_on_a_handle_that_never_drags_it_changes_nothing() {
+        let mut editor = editor();
+        let mut scene = scene();
+        scene.push(
+            EnvironmentObject::decoration(PILLAR, Vec3::ZERO)
+                .with_collision(default_collision(PILLAR)),
+        );
+        update(
+            &mut editor,
+            &InputState::new(),
+            &press(centre()),
+            &mut scene,
+        );
+        let before = scene.objects.clone();
+
+        let handle = editor
+            .gizmo(&scene)
+            .and_then(|screen| screen.handle(gizmo::Axis::X))
+            .expect("an X handle");
+        let grab = (
+            (handle.from.0 + handle.to.0) * 0.5,
+            (handle.from.1 + handle.to.1) * 0.5,
+        );
+        let outcome = update(&mut editor, &InputState::new(), &press(grab), &mut scene);
+        assert_eq!(outcome, EditorOutcome::Idle);
+        // The button comes up without the pointer ever moving.
+        update(&mut editor, &InputState::new(), &release(grab), &mut scene);
+
+        assert_eq!(scene.objects, before, "a click on a handle moved something");
+        let outcome = update(&mut editor, &keyed(KeyCode::Z), &UiInput::new(), &mut scene);
+        assert_eq!(outcome, EditorOutcome::Idle, "and it filled the undo stack");
+    }
+
+    #[test]
+    fn a_handle_beats_the_object_underneath_it() {
+        let mut editor = editor();
+        let mut scene = scene();
+        // A second placement out along +X, under the X handle, so a press on that handle is
+        // also a press on something selectable.
+        scene.push(
+            EnvironmentObject::decoration(PILLAR, Vec3::ZERO)
+                .with_collision(default_collision(PILLAR)),
+        );
+        scene.push(
+            EnvironmentObject::decoration(ROCK_SMALL, Vec3::new(2.5, 0.0, 0.0))
+                .with_collision(default_collision(PILLAR)),
+        );
+        update(
+            &mut editor,
+            &InputState::new(),
+            &press(centre()),
+            &mut scene,
+        );
+        assert_eq!(editor.selected_object(), Some(0));
+
+        drag_handle(&mut editor, &mut scene, gizmo::Axis::X, (140.0, 0.0));
+
+        assert_eq!(
+            editor.selected_object(),
+            Some(0),
+            "the press selected what was under the handle instead of grabbing it"
+        );
+        assert!(
+            scene.objects[0].position().x > 1.0,
+            "the pillar did not move"
+        );
+    }
+
+    #[test]
+    fn the_y_handle_lifts_the_selection_and_leaves_the_floor_plan_alone() {
+        let mut editor = editor();
+        let mut scene = scene();
+        scene.push(
+            EnvironmentObject::decoration(PILLAR, Vec3::ZERO)
+                .with_collision(default_collision(PILLAR)),
+        );
+        let seen_from = side_on();
+        editor.select(Selected::Object(0), false);
+        update_seen_from(&mut editor, &UiInput::new(), &mut scene, &seen_from);
+
+        let handle = editor
+            .gizmo(&scene)
+            .and_then(|screen| screen.handle(gizmo::Axis::Y))
+            .expect("a Y handle");
+        let grab = (
+            (handle.from.0 + handle.to.0) * 0.5,
+            (handle.from.1 + handle.to.1) * 0.5,
+        );
+        update_seen_from(&mut editor, &press(grab), &mut scene, &seen_from);
+        // Up the screen is up the Y axis.
+        let outcome = update_seen_from(
+            &mut editor,
+            &hold((grab.0, grab.1 - 120.0)),
+            &mut scene,
+            &seen_from,
+        );
+
+        assert_eq!(outcome, EditorOutcome::SceneChanged);
+        let moved = scene.objects[0].position();
+        assert!(moved.y > 0.5, "the pillar did not rise: {moved:?}");
+        assert!(
+            moved.x.abs() < 1e-3 && moved.z.abs() < 1e-3,
+            "a Y drag moved it across the ground: {moved:?}"
+        );
+    }
+
+    #[test]
+    fn a_gizmo_drag_keeps_the_pointer_when_it_passes_over_a_panel() {
+        let mut editor = editor();
+        let mut scene = scene();
+        scene.push(
+            EnvironmentObject::decoration(PILLAR, Vec3::ZERO)
+                .with_collision(default_collision(PILLAR)),
+        );
+        update(
+            &mut editor,
+            &InputState::new(),
+            &press(centre()),
+            &mut scene,
+        );
+        let handle = editor
+            .gizmo(&scene)
+            .and_then(|screen| screen.handle(gizmo::Axis::X))
+            .expect("an X handle");
+        let grab = (
+            (handle.from.0 + handle.to.0) * 0.5,
+            (handle.from.1 + handle.to.1) * 0.5,
+        );
+        update(&mut editor, &InputState::new(), &press(grab), &mut scene);
+
+        // Left, over the browser panel, and still dragging.
+        let panel = ui::browser_rect(editor.scale(), VIEWPORT);
+        let over_panel = (panel.x + panel.width * 0.5, panel.y + panel.height * 0.5);
+        let outcome = update(
+            &mut editor,
+            &InputState::new(),
+            &hold(over_panel),
+            &mut scene,
+        );
+
+        assert_eq!(outcome, EditorOutcome::SceneChanged);
+        assert!(
+            scene.objects[0].position().x < -0.5,
+            "the drag stopped at the edge of the panel: {:?}",
+            scene.objects[0].position()
+        );
+        assert_eq!(scene.len(), 1, "and the panel placed something mid-drag");
+    }
+
+    #[test]
+    fn turning_the_camera_never_moves_the_selection() {
+        let mut editor = editor();
+        let mut scene = scene();
+        scene.push(
+            EnvironmentObject::decoration(PILLAR, Vec3::ZERO)
+                .with_collision(default_collision(PILLAR)),
+        );
+        update(
+            &mut editor,
+            &InputState::new(),
+            &press(centre()),
+            &mut scene,
+        );
+        let before = scene.objects.clone();
+
+        // The right button turns the camera; the left one is what a gizmo answers.
+        let mut input = InputState::new();
+        input.apply(engine_core::input::InputEvent::MouseButtonDown {
+            button: MouseButton::Right,
+        });
+        input.apply(engine_core::input::InputEvent::MouseMoved { x: 400, y: 260 });
+        let outcome = update(&mut editor, &input, &UiInput::new(), &mut scene);
+
+        assert_eq!(outcome, EditorOutcome::Idle);
+        assert_eq!(scene.objects, before, "a camera turn moved the level");
     }
 
     #[test]
@@ -2308,7 +3111,7 @@ mod tests {
     }
 
     #[test]
-    fn dragging_a_selected_object_moves_that_object_and_nothing_else() {
+    fn dragging_a_handle_moves_the_selected_object_and_nothing_else() {
         let mut editor = editor();
         let mut scene = scene();
         scene.push(
@@ -2327,19 +3130,18 @@ mod tests {
             &press(centre()),
             &mut scene,
         );
-        let (x, y) = centre();
-        let outcome = update(
-            &mut editor,
-            &InputState::new(),
-            &hold((x + 160.0, y)),
-            &mut scene,
-        );
+        assert_eq!(scene.len(), 2, "the click on the pillar placed something");
+        let outcome = drag_handle(&mut editor, &mut scene, gizmo::Axis::X, (160.0, 0.0));
 
         assert_eq!(outcome, EditorOutcome::SceneChanged);
+        let moved = scene.objects[0].position();
         assert!(
-            scene.objects[0].position().x > 1.0,
-            "the pillar followed the cursor: {:?}",
-            scene.objects[0].position()
+            moved.x > 1.0,
+            "the pillar did not follow the handle: {moved:?}"
+        );
+        assert!(
+            moved.z.abs() < 1e-3 && moved.y.abs() < 1e-3,
+            "an X drag moved it off its own axis: {moved:?}"
         );
         assert_eq!(scene.objects[1], untouched, "the rock did not move");
     }
@@ -2409,12 +3211,7 @@ mod tests {
         ));
         let before = scene.objects.clone();
 
-        update(
-            &mut editor,
-            &InputState::new(),
-            &press(centre()),
-            &mut scene,
-        );
+        drop_asset(&mut editor, &mut scene, centre());
         assert_eq!(scene.len(), 2, "a placement happened");
 
         let outcome = update(&mut editor, &keyed(KeyCode::Z), &UiInput::new(), &mut scene);
@@ -2466,7 +3263,10 @@ mod tests {
         update(
             &mut editor,
             &InputState::new(),
-            &press((folder.x + folder.width * 0.5, folder.y + folder.height * 0.5)),
+            &press((
+                folder.x + folder.width * 0.5,
+                folder.y + folder.height * 0.5,
+            )),
             &mut scene,
         );
         let rect = ui::browser_row_rect(editor.scale(), VIEWPORT, 4);
@@ -2578,10 +3378,18 @@ mod tests {
         };
         update(&mut editor, &control, &press(second), &mut scene);
         assert_eq!(objects_of(&editor), [0, 2], "control did not add");
-        assert_eq!(editor.selected_object(), Some(2), "the last one clicked is primary");
+        assert_eq!(
+            editor.selected_object(),
+            Some(2),
+            "the last one clicked is primary"
+        );
 
         update(&mut editor, &control, &press(second), &mut scene);
-        assert_eq!(objects_of(&editor), [0], "control did not toggle it back off");
+        assert_eq!(
+            objects_of(&editor),
+            [0],
+            "control did not toggle it back off"
+        );
     }
 
     #[test]
@@ -2674,14 +3482,7 @@ mod tests {
             .map(|object| object.transform.translation)
             .collect();
 
-        update(
-            &mut editor,
-            &InputState::new(),
-            &press(centre()),
-            &mut scene,
-        );
-        let moved = (VIEWPORT.0 as f32 / 2.0 + 120.0, VIEWPORT.1 as f32 / 2.0);
-        update(&mut editor, &InputState::new(), &hold(moved), &mut scene);
+        drag_handle(&mut editor, &mut scene, gizmo::Axis::X, (120.0, 0.0));
 
         let delta = scene.objects[0].transform.translation - before[0];
         assert!(delta.length() > 0.5, "the drag moved nothing: {delta:?}");
@@ -2759,7 +3560,10 @@ mod tests {
             &mut scene,
         );
         let moved = scene.objects[0].transform.translation - before;
-        assert!(moved.x.abs() < 1e-5, "local +X still moved world X: {moved:?}");
+        assert!(
+            moved.x.abs() < 1e-5,
+            "local +X still moved world X: {moved:?}"
+        );
         assert!((moved.z + 1.0).abs() < 1e-5, "{moved:?}");
     }
 
@@ -2839,7 +3643,10 @@ mod tests {
 
         update(&mut editor, &keyed(KeyCode::Z), &UiInput::new(), &mut scene);
         for (index, object) in scene.objects.iter().enumerate() {
-            assert_eq!(object.transform.translation, before[index], "object {index}");
+            assert_eq!(
+                object.transform.translation, before[index],
+                "object {index}"
+            );
         }
     }
 
@@ -2935,7 +3742,10 @@ mod tests {
             &UiInput::new(),
             &mut scene,
         );
-        assert!((editor.brush_radius() - radius).abs() < 1e-4, "1 and 2 disagree");
+        assert!(
+            (editor.brush_radius() - radius).abs() < 1e-4,
+            "1 and 2 disagree"
+        );
 
         update(
             &mut editor,
@@ -2953,7 +3763,12 @@ mod tests {
         let mut scene = scene();
         update(&mut editor, &keyed(KeyCode::B), &UiInput::new(), &mut scene);
         assert_eq!(editor.brush(), BrushMode::Raise);
-        update(&mut editor, &keyed(KeyCode::Tab), &UiInput::new(), &mut scene);
+        update(
+            &mut editor,
+            &keyed(KeyCode::Tab),
+            &UiInput::new(),
+            &mut scene,
+        );
         assert_eq!(editor.brush(), BrushMode::Lower);
         assert!(editor.is_sculpting(), "cycling the brush left sculpt mode");
         // And B still leaves, from any brush.
@@ -2977,9 +3792,12 @@ mod tests {
         for _ in 0..5 {
             update(&mut editor, &InputState::new(), &hold(centre()), &mut scene);
         }
-        assert!(scene.terrain.as_ref().is_some_and(|terrain| {
-            terrain.height_at(Vec3::ZERO) > 0.0
-        }));
+        assert!(
+            scene
+                .terrain
+                .as_ref()
+                .is_some_and(|terrain| { terrain.height_at(Vec3::ZERO) > 0.0 })
+        );
 
         update(&mut editor, &keyed(KeyCode::Z), &UiInput::new(), &mut scene);
         assert!(
@@ -3045,12 +3863,7 @@ mod tests {
     fn f6_leaves_and_the_scene_keeps_what_was_done_to_it() {
         let mut editor = editor();
         let mut scene = scene();
-        update(
-            &mut editor,
-            &InputState::new(),
-            &press(centre()),
-            &mut scene,
-        );
+        drop_asset(&mut editor, &mut scene, centre());
         assert_eq!(scene.len(), 1);
 
         let outcome = update(

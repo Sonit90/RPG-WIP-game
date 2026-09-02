@@ -988,3 +988,84 @@ cargo run -p engine-app --features editor -- --scene-file assets/scenes/showcase
 
 See `docs/level-editing.md` for the controls, the level format, the asset directory and the
 development keys.
+
+---
+
+## Phase 15 — one gesture, one meaning: selection, the gizmo, and the silhouette
+
+### The problem
+
+The left button in the world meant *place* over empty ground and *select* over an object, and
+which one a click was depended on what happened to be under the cursor. A click that missed the
+rock an author was aiming at left a second rock behind it, and a click that landed on one and
+moved three pixels moved it. Placing, selecting and moving were one action with three outcomes.
+
+### The order a press is resolved in
+
+1. a drag on a gizmo arm transforms the selection;
+2. a click on something in the world selects it, and never places anything;
+3. a drag from a browser row into the world places one where it is dropped;
+4. a double click on a browser row places one in front of the camera;
+5. everything else is the camera's.
+
+A click on empty ground now drops the selection, which is the one thing a click on nothing can
+mean without guessing. `ESC` drops the selection and abandons an asset picked up and not yet
+dropped.
+
+The double click is measured on the frame clock the application already hands the editor, not
+on a wall clock: this crate has no `windows` dependency and must not gain one.
+
+### The gizmo (`crates/engine-editor/src/gizmo.rs`)
+
+Three axis handles projected from the selection's origin with the frame's view-projection, and
+drawn as lines in the interface layer — this crate has no renderer and cannot put a mesh in the
+world. That also gives the manipulator the property it wants for free: it is painted over the
+level, so a handle is never buried inside the object it belongs to.
+
+A handle stands for a number of metres along one world axis, so the metres a mouse movement asks
+for is that movement projected onto the handle: `dot(movement, handle) / dot(handle, handle) *
+length`. Movement across a handle contributes nothing, which *is* the axis constraint. The
+projection is taken at the press and used for the whole drag — a gizmo re-projected each frame
+moves with the object it is dragging, and the metres-per-pixel would change under the author's
+hand mid-drag.
+
+The drag is absolute — every frame asks where the selection should be, given where the pointer
+started and where it is now — because an accumulated per-frame delta drifts once a snapped
+position feeds back into the next frame's delta.
+
+The gizmo spans a constant *fraction of the distance to the eye*, clamped, so it is the same
+size on screen at two metres and at two hundred. `GizmoMode` is the seam for rotation and
+scaling: a variant, a projection and a second answer to "what does this drag mean", with nothing
+about selection, undo or the interaction order to change.
+
+### The selection is visible
+
+Selected things are outlined in cyan — the pickable box each already has, so what a click hits
+and what is drawn around it are one function (`pick::selection_box`). The primary selection gets
+its box as twelve lines; the rest of a group gets a quieter rectangle, and past a few dozen the
+outlines stop: `CTRL+A` on a finished level would otherwise be a screen of wire.
+
+### A selection off screen
+
+An object the camera has turned away from is reported rather than hidden: a striped amber
+silhouette at the edge of the window, in the direction the object lies, sized as the object would
+be — by projection when any of its corners still project, and by the camera's own focal length
+when it is behind the eye and projects nowhere. Stripes because it must be unmistakably *not the
+object*: a solid shape at the edge of the screen reads as something standing there. It is
+labelled with what it is, and it walks around the edge as the camera turns until it meets the
+object's own outline coming into view.
+
+### Verification
+
+```bash
+cargo test --workspace
+cargo clippy --workspace --all-targets
+cargo run -p engine-app --features editor -- --editor --scene-file assets/scenes/showcase.json
+```
+
+Twenty-odd tests cover the flow with no window open: a click on a rock selects it and places
+nothing, a click on empty ground drops the selection, a drag out of the browser places where it
+is dropped, a double click places in front of the camera, two slow clicks do not, each axis moves
+along itself and no other, a handle beats the object under it, a click on a handle that never
+drags it pushes no undo, a drag that passes over a panel keeps going, a camera turn moves
+nothing, and the painted list carries the handles, the outline and the striped silhouette.

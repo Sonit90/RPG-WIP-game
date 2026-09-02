@@ -43,8 +43,8 @@ use engine_assets::catalogue::AssetCatalogue;
 use engine_core::input::{InputState, KeyCode};
 use engine_core::math::Vec3;
 use engine_environment::asset::LIBRARY;
-use engine_environment::object::default_collision;
 use engine_environment::object::CollisionShape;
+use engine_environment::object::default_collision;
 use engine_environment::{CollisionBox, EnvironmentAsset, EnvironmentCollision};
 
 /// How deep the tree is opened when a directory is first read.
@@ -424,15 +424,11 @@ impl AssetBrowser {
         match row {
             BrowserRow::BuiltinFolder => (
                 0,
-                format!(
-                    "{} builtin",
-                    if self.builtin_expanded { "-" } else { "+" }
-                ),
+                format!("{} builtin", if self.builtin_expanded { "-" } else { "+" }),
             ),
-            BrowserRow::Builtin(index) => (
-                1,
-                LIBRARY[index.min(LIBRARY.len() - 1)].name().to_owned(),
-            ),
+            BrowserRow::Builtin(index) => {
+                (1, LIBRARY[index.min(LIBRARY.len() - 1)].name().to_owned())
+            }
             BrowserRow::Folder(index) => match self.catalogue.folders().get(index) {
                 Some(folder) => (
                     folder.depth.saturating_sub(1),
@@ -616,7 +612,11 @@ impl AssetBrowser {
         match self.selection {
             Selection::Builtin(_) => self.builtin_expanded = true,
             Selection::Entry(index) => {
-                let mut folder = self.catalogue.entries().get(index).map(|entry| entry.folder);
+                let mut folder = self
+                    .catalogue
+                    .entries()
+                    .get(index)
+                    .map(|entry| entry.folder);
                 while let Some(current) = folder {
                     if let Some(open) = self.expanded.get_mut(current) {
                         *open = true;
@@ -847,7 +847,13 @@ mod tests {
             .iter()
             .map(|row| browser.label(*row).1)
             .collect();
-        for wanted in ["- generated", "- environment", "+ rocks", "+ caves", "+ cliffs"] {
+        for wanted in [
+            "- generated",
+            "- environment",
+            "+ rocks",
+            "+ caves",
+            "+ cliffs",
+        ] {
             assert!(
                 visible.iter().any(|label| label == wanted),
                 "{wanted} is not on screen: {visible:?}"
@@ -879,8 +885,10 @@ mod tests {
         let rows = browser.rows().to_vec();
         let rocks = rows
             .iter()
-            .find(|row| matches!(row, BrowserRow::Folder(index)
-                if browser.catalogue().folders()[*index].name == "rocks"))
+            .find(|row| {
+                matches!(row, BrowserRow::Folder(index)
+                if browser.catalogue().folders()[*index].name == "rocks")
+            })
             .copied()
             .expect("the rocks folder is a row");
         assert!(!browser.is_expanded(rocks));
@@ -993,7 +1001,10 @@ mod tests {
     #[test]
     fn the_filter_owns_the_keys_that_would_otherwise_fly_the_camera() {
         let mut browser = AssetBrowser::new();
-        assert!(!browser.update_keys(&keyed(KeyCode::W)), "W is the camera's");
+        assert!(
+            !browser.update_keys(&keyed(KeyCode::W)),
+            "W is the camera's"
+        );
         browser.update_keys(&keyed(KeyCode::F));
         assert!(
             browser.update_keys(&keyed(KeyCode::W)),
@@ -1035,7 +1046,11 @@ mod tests {
     fn tab_walks_every_placeable_asset_and_skips_the_rest() {
         let root = tree(
             "tab",
-            &["props/one.glb", "materials/grass.json", "materials/grass.png"],
+            &[
+                "props/one.glb",
+                "materials/grass.json",
+                "materials/grass.png",
+            ],
         );
         let mut browser = browser_over(&root);
 
@@ -1107,7 +1122,10 @@ mod tests {
             .map(|row| browser.label(*row).1)
             .collect();
         for wanted in ["+ caves", "+ cliffs", "+ rocks", "+ builtin"] {
-            assert!(labels.iter().any(|label| label == wanted), "{wanted}: {labels:?}");
+            assert!(
+                labels.iter().any(|label| label == wanted),
+                "{wanted}: {labels:?}"
+            );
         }
         assert!(
             labels.len() < 24,

@@ -31,7 +31,11 @@ const SENSITIVITY: f32 = 0.0032;
 const PITCH_LIMIT: f32 = 1.5533;
 /// Vertical field of view, radians. Wider than the game's, because an editor is looking at a
 /// layout rather than at a fight.
-const FOV_Y: f32 = 1.20;
+///
+/// Public because the editor's own overlay has to size things the projection would have sized
+/// for it: a selected object behind the camera projects nowhere, and its silhouette is drawn
+/// at the size it *would* have been — which needs the same focal length the camera uses.
+pub const FOV_Y: f32 = 1.20;
 /// Near and far planes. The far plane is the game's, so what is drawn here is what is drawn
 /// there.
 const NEAR: f32 = 0.1;
