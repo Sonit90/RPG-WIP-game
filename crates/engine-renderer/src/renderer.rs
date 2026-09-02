@@ -41,7 +41,7 @@ use crate::overlay::{OverlayBuffers, OverlayGeometry, OverlayMetrics};
 use crate::particle_pipeline::{ParticleConstants, ParticlePipeline, ROOT_PARTICLE_FRAME_CBV};
 use crate::pipeline::{ScenePipeline, Vertex};
 use crate::render_list::RenderList;
-use crate::resource::DeferredReleaseQueue;
+use crate::resource::{BufferArena, BufferSource, DeferredReleaseQueue};
 use crate::scene::{
     FrameConstants, ObjectConstants, ROOT_CLUSTER_SRV, ROOT_CONTACT_TABLE, ROOT_DEPTH_TABLE,
     ROOT_FRAME_CBV, ROOT_MATERIAL_CBV, ROOT_MATERIAL_TABLE, ROOT_OBJECT_CBV, ROOT_SHADOW_TABLE,
@@ -354,6 +354,9 @@ struct OverlayState {
 pub struct Renderer {
     /// The open upload batch, if one is. See [`Renderer::begin_upload_batch`].
     bulk: Option<StagingUploader>,
+    /// Device-local memory every mesh and material is suballocated out of, so a model costs
+    /// a few offsets rather than a driver allocation per buffer.
+    geometry: BufferArena,
     /// What construction cost, for the application's startup report. Absent without the
     /// `startup-timing` feature.
     #[cfg(feature = "startup-timing")]
@@ -701,6 +704,9 @@ impl Renderer {
 
         let renderer = Self {
             bulk: None,
+            geometry: BufferArena::new(
+                windows::Win32::Graphics::Direct3D12::D3D12_RESOURCE_STATE_COMMON,
+            ),
             #[cfg(feature = "startup-timing")]
             startup: RendererStartup {
                 device_ms,
@@ -2134,16 +2140,26 @@ impl Renderer {
     /// it is being called at load time or in the middle of a session.
     fn queued<R>(
         &mut self,
-        queue: impl FnOnce(&RenderDevice, &mut StagingUploader) -> Result<R, RendererError>,
+        queue: impl FnOnce(
+            &RenderDevice,
+            &mut StagingUploader,
+            &mut BufferSource<'_>,
+        ) -> Result<R, RendererError>,
     ) -> Result<R, RendererError> {
         // Destructured rather than `self.bulk` and `self.context`, so the borrow checker can
-        // see that the uploader and the device are different fields.
-        let Self { context, bulk, .. } = self;
+        // see that the uploader, the device and the arena are three different fields.
+        let Self {
+            context,
+            bulk,
+            geometry,
+            ..
+        } = self;
+        let mut buffers = BufferSource::Arena(geometry);
         match bulk.as_mut() {
-            Some(uploader) => queue(context, uploader),
+            Some(uploader) => queue(context, uploader, &mut buffers),
             None => {
                 let mut uploader = StagingUploader::new(context)?;
-                let value = queue(context, &mut uploader)?;
+                let value = queue(context, &mut uploader, &mut buffers)?;
                 uploader.flush(context)?;
                 Ok(value)
             }
@@ -2156,7 +2172,9 @@ impl Renderer {
     ///
     /// Returns [`RendererError::Api`] if a D3D12 call fails.
     pub fn create_mesh(&mut self, data: &MeshData) -> Result<MeshHandle, RendererError> {
-        let mesh = self.queued(|device, uploader| GpuMesh::queue_into(device, uploader, data))?;
+        let mesh = self.queued(|device, uploader, buffers| {
+            GpuMesh::queue_into(device, uploader, buffers, data)
+        })?;
         let index = self.meshes.len() as u32;
         self.meshes.push(mesh);
         Ok(MeshHandle::new(index, 1))
@@ -2171,8 +2189,9 @@ impl Renderer {
         &mut self,
         data: &SkinnedMeshData,
     ) -> Result<SkinnedMeshHandle, RendererError> {
-        let mesh =
-            self.queued(|device, uploader| GpuMesh::queue_skinned_into(device, uploader, data))?;
+        let mesh = self.queued(|device, uploader, buffers| {
+            GpuMesh::queue_skinned_into(device, uploader, buffers, data)
+        })?;
         let index = self.skinned_meshes.len() as u32;
         self.skinned_meshes.push(mesh);
         Ok(SkinnedMeshHandle::new(index, 1))
@@ -2310,7 +2329,7 @@ impl Renderer {
             );
         }
 
-        self.queued(|device, uploader| {
+        self.queued(|device, uploader, _| {
             uploader.queue_texture_mips(
                 device,
                 &texture,
@@ -2997,8 +3016,9 @@ impl Renderer {
 
         // The constants first: a failure there must not leave a descriptor range allocated
         // to a material that does not exist.
-        let material =
-            self.queued(|device, uploader| Material::queue_into(device, uploader, desc))?;
+        let material = self.queued(|device, uploader, buffers| {
+            Material::queue_into(device, uploader, buffers, desc)
+        })?;
         let range = self
             .descriptors
             .allocate_persistent_range(MATERIAL_TEXTURE_COUNT)?;

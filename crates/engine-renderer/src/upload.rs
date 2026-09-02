@@ -37,7 +37,7 @@ use windows::core::Interface;
 use crate::command::CommandContext;
 use crate::device::RenderDevice;
 use crate::error::RendererError;
-use crate::resource::{GpuBuffer, GpuTexture, TrackedResource};
+use crate::resource::{BufferSlice, GpuBuffer, GpuTexture, TrackedResource};
 use crate::sync::GpuFence;
 
 /// Alignment D3D12 requires for the row pitch of a texture upload.
@@ -558,6 +558,76 @@ impl StagingUploader {
         }
 
         self.context.transition_to(destination, final_state);
+
+        self.queued += 1;
+        Ok(())
+    }
+
+    /// Queues a copy of `data` into part of a buffer, leaving the whole resource in
+    /// `final_state`.
+    ///
+    /// The state is the *resource's*, not the range's: D3D12 tracks a buffer's state whole,
+    /// so every slice of an arena chunk shares one, and the caller passes a state that suits
+    /// all of them — the renderer's geometry arena is read as vertices, indices and constants
+    /// at once.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RendererError::InvalidConfig`] if the data does not fit the slice, or
+    /// [`RendererError::Api`] if a D3D12 call fails.
+    pub fn queue_slice<T: Copy>(
+        &mut self,
+        device: &RenderDevice,
+        destination: &BufferSlice,
+        data: &[T],
+        final_state: D3D12_RESOURCE_STATES,
+    ) -> Result<(), RendererError> {
+        let bytes = std::mem::size_of_val(data);
+        if bytes == 0 {
+            return Ok(());
+        }
+        if bytes > destination.size() {
+            return Err(RendererError::InvalidConfig {
+                reason: format!(
+                    "{bytes} bytes do not fit in a {} byte slice",
+                    destination.size()
+                ),
+            });
+        }
+
+        self.begin_if_idle()?;
+
+        let span = self.staging.allocate(device, bytes, DEFAULT_ALIGNMENT)?;
+        // SAFETY: `data` is a slice of `T: Copy`, so its bytes are initialized and readable
+        // for `size_of_val` bytes; the view is read and dropped inside this call.
+        let bytes_of = unsafe { std::slice::from_raw_parts(data.as_ptr().cast::<u8>(), bytes) };
+        self.staging.write(span, bytes_of);
+
+        let Some(staging) = self.staging.buffer(span) else {
+            return Err(RendererError::InvalidConfig {
+                reason: "the staging arena lost the span it just reserved".to_owned(),
+            });
+        };
+
+        self.context
+            .transition_to(destination.buffer(), D3D12_RESOURCE_STATE_COPY_DEST);
+        self.context.flush_barriers();
+
+        // SAFETY: FFI call on the open list. The destination chunk is kept alive by the
+        // slice the caller holds, and the staging arena's chunks live as long as this
+        // uploader and are not reused until the flush has waited for the GPU.
+        unsafe {
+            self.context.list().CopyBufferRegion(
+                destination.buffer().resource(),
+                destination.offset() as u64,
+                staging.resource(),
+                span.offset as u64,
+                bytes as u64,
+            );
+        }
+
+        self.context
+            .transition_to(destination.buffer(), final_state);
 
         self.queued += 1;
         Ok(())

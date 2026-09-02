@@ -13,7 +13,7 @@ use engine_core::math::{Vec3, Vec4};
 use crate::device::RenderDevice;
 use crate::error::RendererError;
 use crate::renderer::TextureHandle;
-use crate::resource::GpuBuffer;
+use crate::resource::{BufferSlice, BufferSource, GpuBuffer};
 use crate::upload::{CONSTANT_BUFFER_ALIGNMENT, StagingUploader};
 
 use windows::Win32::Graphics::Direct3D12::D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER;
@@ -678,7 +678,7 @@ impl From<MaterialDesc> for MaterialConstants {
 /// A material with its constants resident on the GPU.
 pub struct Material {
     desc: MaterialDesc,
-    constants: GpuBuffer,
+    constants: BufferSlice,
 }
 
 impl Material {
@@ -690,7 +690,7 @@ impl Material {
     /// or [`RendererError::Api`] if a D3D12 call fails.
     pub fn new(device: &RenderDevice, desc: MaterialDesc) -> Result<Self, RendererError> {
         let mut uploader = StagingUploader::new(device)?;
-        let material = Self::queue(device, &mut uploader, desc)?;
+        let material = Self::queue(device, &mut uploader, &mut BufferSource::Dedicated, desc)?;
         uploader.flush(device)?;
         Ok(material)
     }
@@ -708,7 +708,12 @@ impl Material {
         let mut uploader = StagingUploader::new(device)?;
         let mut materials = Vec::with_capacity(descriptions.len());
         for desc in descriptions {
-            materials.push(Self::queue(device, &mut uploader, *desc)?);
+            materials.push(Self::queue(
+                device,
+                &mut uploader,
+                &mut BufferSource::Dedicated,
+                *desc,
+            )?);
         }
         uploader.flush(device)?;
         Ok(materials)
@@ -725,22 +730,28 @@ impl Material {
     pub fn queue_into(
         device: &RenderDevice,
         uploader: &mut StagingUploader,
+        buffers: &mut BufferSource<'_>,
         desc: MaterialDesc,
     ) -> Result<Self, RendererError> {
-        Self::queue(device, uploader, desc)
+        Self::queue(device, uploader, buffers, desc)
     }
 
     /// Creates the buffer and queues its copy, without flushing.
     fn queue(
         device: &RenderDevice,
         uploader: &mut StagingUploader,
+        buffers: &mut BufferSource<'_>,
         desc: MaterialDesc,
     ) -> Result<Self, RendererError> {
         desc.validate()?;
 
         // A constant buffer's *size* must be a 256-byte multiple, not just its address.
         // The struct is 48 bytes; the buffer is 256, and the slack is never read.
-        let constants = GpuBuffer::new_default(device, CONSTANT_BUFFER_ALIGNMENT)?;
+        // Aligned to 256 as well as sized to it: a constant-buffer view's *address* has to
+        // be a multiple of that, which matters now that constants share a chunk with
+        // geometry rather than starting a resource of their own.
+        let constants =
+            buffers.allocate(device, CONSTANT_BUFFER_ALIGNMENT, CONSTANT_BUFFER_ALIGNMENT)?;
         let mut padded = [0_u8; CONSTANT_BUFFER_ALIGNMENT];
         let value = MaterialConstants::from(desc);
         // SAFETY: `MaterialConstants` is `repr(C)` plain data with no padding bytes that
@@ -754,7 +765,7 @@ impl Material {
         };
         padded[..bytes.len()].copy_from_slice(bytes);
 
-        uploader.queue_buffer(
+        uploader.queue_slice(
             device,
             &constants,
             &padded,
@@ -782,9 +793,19 @@ impl Material {
         self.constants.gpu_address()
     }
 
-    /// The constant buffer, for diagnostics and for tests that read it back.
+    /// The resource the constants live in, for diagnostics and for tests that read it back.
+    ///
+    /// The whole resource, which is this material's own only when it was uploaded on its
+    /// own: a material out of the renderer's arena shares its chunk, and
+    /// [`Material::slice`] is the range that belongs to this material.
     #[must_use]
     pub fn buffer(&self) -> &GpuBuffer {
+        self.constants.buffer()
+    }
+
+    /// The range of [`Material::buffer`] this material's constants occupy.
+    #[must_use]
+    pub fn slice(&self) -> &BufferSlice {
         &self.constants
     }
 }

@@ -33,6 +33,7 @@
 //! push rather than a pipeline drain.
 
 use std::cell::Cell;
+use std::rc::Rc;
 
 use windows::Win32::Graphics::Direct3D12::{
     D3D12_CLEAR_VALUE, D3D12_CLEAR_VALUE_0, D3D12_DEPTH_STENCIL_VALUE, D3D12_HEAP_TYPE,
@@ -129,7 +130,7 @@ impl GpuBuffer {
         }
         let probe = crate::upload_timing::Probe::start();
         let resource = device.create_buffer(size, heap_type, initial_state)?;
-        probe.resource();
+        probe.buffer();
         // SAFETY: FFI call returning the resource's GPU address, valid while it lives.
         let gpu_address = unsafe { resource.GetGPUVirtualAddress() };
 
@@ -244,6 +245,193 @@ impl TrackedResource for GpuBuffer {
 
     fn set_state(&self, state: D3D12_RESOURCE_STATES) {
         self.state.set(state);
+    }
+}
+
+/// A range of a buffer: the whole of a dedicated one, or a suballocation out of an arena.
+///
+/// # Why a mesh no longer owns a resource
+///
+/// `CreateCommittedResource` is a driver allocation, measured at about half a millisecond on
+/// the reference machine. A model's geometry is two buffers per submesh per level of detail
+/// and one constant buffer per material, so a level's content was three hundred of them —
+/// 170 ms of a 500 ms launch, for about a megabyte of data. Static geometry and material
+/// constants are written once and never resized, which is exactly the shape suballocation
+/// suits: one resource per few megabytes, and a mesh is an offset into it.
+///
+/// The slice keeps the chunk alive, so a mesh released while others still live in its chunk
+/// releases nothing, and the last one out frees the whole resource.
+#[derive(Clone)]
+pub struct BufferSlice {
+    buffer: Rc<GpuBuffer>,
+    offset: usize,
+    size: usize,
+}
+
+impl BufferSlice {
+    /// The whole of a buffer nothing else shares.
+    ///
+    /// `Rc` and not `Arc` deliberately: a D3D12 resource handle is neither `Send` nor `Sync`,
+    /// every resource in this renderer belongs to the thread that owns the device, and an
+    /// atomic count would pay for sharing that cannot happen.
+    #[must_use]
+    pub fn whole(buffer: Rc<GpuBuffer>) -> Self {
+        let size = buffer.size();
+        Self {
+            buffer,
+            offset: 0,
+            size,
+        }
+    }
+
+    /// The resource this range lives in.
+    #[must_use]
+    pub fn buffer(&self) -> &GpuBuffer {
+        &self.buffer
+    }
+
+    /// Where the range starts inside the resource, in bytes.
+    #[must_use]
+    pub fn offset(&self) -> usize {
+        self.offset
+    }
+
+    /// How many bytes it covers.
+    #[must_use]
+    pub fn size(&self) -> usize {
+        self.size
+    }
+
+    /// The GPU virtual address of the range's first byte, for a view or a root descriptor.
+    #[must_use]
+    pub fn gpu_address(&self) -> u64 {
+        self.buffer.gpu_address() + self.offset as u64
+    }
+}
+
+/// How large one arena chunk is, in bytes.
+///
+/// Eight megabytes: a level's whole static geometry fits in one or two, and an asset larger
+/// than a chunk gets one of its own rather than being refused.
+const ARENA_CHUNK_BYTES: usize = 8 * 1024 * 1024;
+
+/// One chunk and how much of it is spoken for.
+struct ArenaChunk {
+    buffer: Rc<GpuBuffer>,
+    used: usize,
+}
+
+/// Device-local memory for data that is written once and lives as long as the content does.
+///
+/// Never freed piecemeal: a chunk is released when the last slice out of it is, and nothing
+/// is reused in between. That is the right trade for static geometry — a level is loaded and
+/// unloaded whole — and the wrong one for anything that changes size, which is why nothing
+/// per-frame goes through here. [`crate::upload::UploadRing`] is that path.
+pub struct BufferArena {
+    chunks: Vec<ArenaChunk>,
+    state: D3D12_RESOURCE_STATES,
+}
+
+impl BufferArena {
+    /// An arena whose chunks are created in `state`. No memory until the first allocation.
+    #[must_use]
+    pub fn new(state: D3D12_RESOURCE_STATES) -> Self {
+        Self {
+            chunks: Vec::new(),
+            state,
+        }
+    }
+
+    /// Reserves `size` bytes aligned to `alignment`, growing by a chunk when nothing fits.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RendererError::Api`] if a chunk cannot be created.
+    pub fn allocate(
+        &mut self,
+        device: &RenderDevice,
+        size: usize,
+        alignment: usize,
+    ) -> Result<BufferSlice, RendererError> {
+        if size == 0 {
+            return Err(RendererError::InvalidConfig {
+                reason: "a buffer slice needs a non-zero size".to_owned(),
+            });
+        }
+        let alignment = alignment.max(1);
+        for chunk in &mut self.chunks {
+            let offset = chunk.used.next_multiple_of(alignment);
+            if offset + size <= chunk.buffer.size() {
+                chunk.used = offset + size;
+                return Ok(BufferSlice {
+                    buffer: Rc::clone(&chunk.buffer),
+                    offset,
+                    size,
+                });
+            }
+        }
+
+        let bytes = ARENA_CHUNK_BYTES.max(size.next_multiple_of(alignment));
+        let buffer = Rc::new(GpuBuffer::new(
+            device,
+            bytes,
+            D3D12_HEAP_TYPE_DEFAULT,
+            self.state,
+        )?);
+        self.chunks.push(ArenaChunk {
+            buffer: Rc::clone(&buffer),
+            used: size,
+        });
+        Ok(BufferSlice {
+            buffer,
+            offset: 0,
+            size,
+        })
+    }
+
+    /// How many chunks have been created, and how many bytes they hold.
+    #[must_use]
+    pub fn stats(&self) -> (usize, usize) {
+        (
+            self.chunks.len(),
+            self.chunks.iter().map(|chunk| chunk.buffer.size()).sum(),
+        )
+    }
+}
+
+/// Where a buffer for a mesh or a material comes from.
+///
+/// Two callers, one code path: the renderer suballocates out of its arena, and a test or a
+/// one-off upload takes a resource of its own. Passing this rather than duplicating the
+/// upload functions is what keeps "how a mesh is uploaded" a single description.
+pub enum BufferSource<'a> {
+    /// A resource per buffer, owned by whatever the upload returns.
+    Dedicated,
+    /// A range of an arena chunk.
+    Arena(&'a mut BufferArena),
+}
+
+impl BufferSource<'_> {
+    /// Reserves `size` bytes aligned to `alignment`, however this source provides them.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RendererError::Api`] if a resource cannot be created.
+    pub fn allocate(
+        &mut self,
+        device: &RenderDevice,
+        size: usize,
+        alignment: usize,
+    ) -> Result<BufferSlice, RendererError> {
+        match self {
+            Self::Dedicated => Ok(BufferSlice::whole(Rc::new(GpuBuffer::new(
+                device,
+                size,
+                D3D12_HEAP_TYPE_DEFAULT,
+                D3D12_RESOURCE_STATE_COMMON,
+            )?))),
+            Self::Arena(arena) => arena.allocate(device, size, alignment),
+        }
     }
 }
 

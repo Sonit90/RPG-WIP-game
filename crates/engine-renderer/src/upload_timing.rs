@@ -17,6 +17,12 @@ static RESOURCES_NS: AtomicU64 = AtomicU64::new(0);
 /// How many resources that was.
 #[cfg(feature = "startup-timing")]
 static RESOURCES: AtomicU64 = AtomicU64::new(0);
+/// How many of them were buffers rather than textures, and what they cost.
+#[cfg(feature = "startup-timing")]
+static BUFFERS: AtomicU64 = AtomicU64::new(0);
+/// See [`BUFFERS`].
+#[cfg(feature = "startup-timing")]
+static BUFFERS_NS: AtomicU64 = AtomicU64::new(0);
 /// Nanoseconds spent compressing texture mips on the CPU.
 #[cfg(feature = "startup-timing")]
 static COMPRESSION_NS: AtomicU64 = AtomicU64::new(0);
@@ -56,6 +62,19 @@ impl Probe {
         }
     }
 
+    /// Adds the elapsed time to the resource total, and to the buffers' share of it.
+    #[inline]
+    pub fn buffer(self) {
+        #[cfg(feature = "startup-timing")]
+        {
+            let elapsed = self.0.elapsed().as_nanos() as u64;
+            RESOURCES_NS.fetch_add(elapsed, Ordering::Relaxed);
+            RESOURCES.fetch_add(1, Ordering::Relaxed);
+            BUFFERS_NS.fetch_add(elapsed, Ordering::Relaxed);
+            BUFFERS.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
     /// Adds the elapsed time to the compression total.
     #[inline]
     pub fn compression(self) {
@@ -81,10 +100,12 @@ pub fn report() {
     #[cfg(feature = "startup-timing")]
     {
         log::info!(
-            "[startup] uploads so far: {} resources created in {:.1} ms, {:.1} ms compressing, \
-             {:.1} ms copying into staging",
+            "[startup] uploads so far: {} resources created in {:.1} ms (of which {} buffers, \
+             {:.1} ms), {:.1} ms compressing, {:.1} ms copying into staging",
             RESOURCES.load(Ordering::Relaxed),
             RESOURCES_NS.load(Ordering::Relaxed) as f64 / 1e6,
+            BUFFERS.load(Ordering::Relaxed),
+            BUFFERS_NS.load(Ordering::Relaxed) as f64 / 1e6,
             COMPRESSION_NS.load(Ordering::Relaxed) as f64 / 1e6,
             COPY_NS.load(Ordering::Relaxed) as f64 / 1e6,
         );

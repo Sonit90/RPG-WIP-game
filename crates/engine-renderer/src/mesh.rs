@@ -12,14 +12,30 @@
 use engine_core::math::{Sphere, Vec2, Vec3, Vec4};
 use windows::Win32::Graphics::Direct3D12::{
     D3D12_INDEX_BUFFER_VIEW, D3D12_RESOURCE_STATE_INDEX_BUFFER,
-    D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER, D3D12_VERTEX_BUFFER_VIEW, ID3D12Resource,
+    D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER, D3D12_RESOURCE_STATES,
+    D3D12_VERTEX_BUFFER_VIEW, ID3D12Resource,
 };
 use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_R32_UINT;
 
 use crate::device::RenderDevice;
 use crate::error::RendererError;
-use crate::resource::{GpuBuffer, TrackedResource};
+use crate::resource::{BufferSlice, BufferSource, GpuBuffer, TrackedResource};
 use crate::upload::StagingUploader;
+
+/// The state static geometry is left in after its upload.
+///
+/// Vertices, indices and material constants share the renderer's arena chunks, and D3D12
+/// tracks a buffer's state whole — so the state has to cover every way a chunk is read. All
+/// three are read-only states and D3D12 allows them to be combined.
+const GEOMETRY_STATE: D3D12_RESOURCE_STATES = D3D12_RESOURCE_STATES(
+    D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER.0 | D3D12_RESOURCE_STATE_INDEX_BUFFER.0,
+);
+
+/// The alignment a suballocated geometry buffer starts on, in bytes.
+///
+/// Sixteen: enough for any vertex attribute this engine has, and a multiple of the index
+/// element, so neither a vertex nor an index ever straddles the alignment the hardware wants.
+const GEOMETRY_ALIGNMENT: usize = 16;
 
 /// The vertex colour a mesh gets when nothing authored one: opaque white.
 ///
@@ -634,10 +650,12 @@ impl MeshData {
 
 /// An indexed mesh in device-local memory.
 pub struct GpuMesh {
+    /// Kept alive because the view points into it. A range of the renderer's geometry arena
+    /// when the mesh came from there, and a whole resource when it did not — see
+    /// [`BufferSlice`].
+    vertex_buffer: BufferSlice,
     /// Kept alive because the view points into it.
-    vertex_buffer: GpuBuffer,
-    /// Kept alive because the view points into it.
-    index_buffer: GpuBuffer,
+    index_buffer: BufferSlice,
     vertex_view: D3D12_VERTEX_BUFFER_VIEW,
     index_view: D3D12_INDEX_BUFFER_VIEW,
     vertex_count: u32,
@@ -656,7 +674,7 @@ impl GpuMesh {
     /// Returns [`RendererError::Api`] if any D3D12 call fails.
     pub fn upload(device: &RenderDevice, data: &MeshData) -> Result<Self, RendererError> {
         let mut uploader = StagingUploader::new(device)?;
-        let mesh = Self::queue(device, &mut uploader, data)?;
+        let mesh = Self::queue(device, &mut uploader, &mut BufferSource::Dedicated, data)?;
         uploader.flush(device)?;
         Ok(mesh)
     }
@@ -673,7 +691,12 @@ impl GpuMesh {
         let mut uploader = StagingUploader::new(device)?;
         let mut uploaded = Vec::with_capacity(meshes.len());
         for data in meshes {
-            uploaded.push(Self::queue(device, &mut uploader, data)?);
+            uploaded.push(Self::queue(
+                device,
+                &mut uploader,
+                &mut BufferSource::Dedicated,
+                data,
+            )?);
         }
         uploader.flush(device)?;
         Ok(uploaded)
@@ -696,6 +719,7 @@ impl GpuMesh {
         let mesh = Self::queue_typed(
             device,
             &mut uploader,
+            &mut BufferSource::Dedicated,
             data.vertices(),
             data.indices(),
             data.bounds(),
@@ -716,9 +740,10 @@ impl GpuMesh {
     pub fn queue_into(
         device: &RenderDevice,
         uploader: &mut StagingUploader,
+        buffers: &mut BufferSource<'_>,
         data: &MeshData,
     ) -> Result<Self, RendererError> {
-        Self::queue(device, uploader, data)
+        Self::queue(device, uploader, buffers, data)
     }
 
     /// [`GpuMesh::queue_into`] for a skinned mesh.
@@ -729,11 +754,13 @@ impl GpuMesh {
     pub fn queue_skinned_into(
         device: &RenderDevice,
         uploader: &mut StagingUploader,
+        buffers: &mut BufferSource<'_>,
         data: &SkinnedMeshData,
     ) -> Result<Self, RendererError> {
         Self::queue_typed(
             device,
             uploader,
+            buffers,
             data.vertices(),
             data.indices(),
             data.bounds(),
@@ -744,11 +771,13 @@ impl GpuMesh {
     fn queue(
         device: &RenderDevice,
         uploader: &mut StagingUploader,
+        buffers: &mut BufferSource<'_>,
         data: &MeshData,
     ) -> Result<Self, RendererError> {
         Self::queue_typed(
             device,
             uploader,
+            buffers,
             data.vertices(),
             data.indices(),
             data.bounds(),
@@ -763,25 +792,27 @@ impl GpuMesh {
     fn queue_typed<V: Copy>(
         device: &RenderDevice,
         uploader: &mut StagingUploader,
+        buffers: &mut BufferSource<'_>,
         vertices: &[V],
         indices: &[Index],
         bounds: Sphere,
     ) -> Result<Self, RendererError> {
-        let vertex_buffer = GpuBuffer::new_default(device, std::mem::size_of_val(vertices))?;
-        uploader.queue_buffer(
+        // Aligned to the vertex stride, so an address is a whole number of vertices into the
+        // buffer whatever else shares the chunk. The index buffer is aligned to its own
+        // element for the same reason.
+        let vertex_buffer = buffers.allocate(
             device,
-            &vertex_buffer,
-            vertices,
-            D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER,
+            std::mem::size_of_val(vertices),
+            size_of::<V>().max(GEOMETRY_ALIGNMENT),
         )?;
+        uploader.queue_slice(device, &vertex_buffer, vertices, GEOMETRY_STATE)?;
 
-        let index_buffer = GpuBuffer::new_default(device, std::mem::size_of_val(indices))?;
-        uploader.queue_buffer(
+        let index_buffer = buffers.allocate(
             device,
-            &index_buffer,
-            indices,
-            D3D12_RESOURCE_STATE_INDEX_BUFFER,
+            std::mem::size_of_val(indices),
+            size_of::<Index>().max(GEOMETRY_ALIGNMENT),
         )?;
+        uploader.queue_slice(device, &index_buffer, indices, GEOMETRY_STATE)?;
 
         let vertex_view = D3D12_VERTEX_BUFFER_VIEW {
             BufferLocation: vertex_buffer.gpu_address(),
@@ -841,15 +872,31 @@ impl GpuMesh {
         self.bounds
     }
 
-    /// The vertex buffer, for diagnostics and for tests that read it back.
+    /// The resource the vertices live in, for diagnostics and for tests that read it back.
+    ///
+    /// The whole resource, which is the mesh's own only when it was uploaded on its own:
+    /// a mesh out of the renderer's arena shares its chunk, and
+    /// [`GpuMesh::vertex_slice`] is the range that belongs to this mesh.
     #[must_use]
     pub fn vertex_buffer(&self) -> &GpuBuffer {
+        self.vertex_buffer.buffer()
+    }
+
+    /// The range of [`GpuMesh::vertex_buffer`] this mesh's vertices occupy.
+    #[must_use]
+    pub fn vertex_slice(&self) -> &BufferSlice {
         &self.vertex_buffer
     }
 
-    /// The index buffer, for diagnostics and for tests that read it back.
+    /// The resource the indices live in. See [`GpuMesh::vertex_buffer`].
     #[must_use]
     pub fn index_buffer(&self) -> &GpuBuffer {
+        self.index_buffer.buffer()
+    }
+
+    /// The range of [`GpuMesh::index_buffer`] this mesh's indices occupy.
+    #[must_use]
+    pub fn index_slice(&self) -> &BufferSlice {
         &self.index_buffer
     }
 }
