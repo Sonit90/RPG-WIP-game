@@ -79,12 +79,18 @@ impl RenderDevice {
             factory_flags |= DXGI_CREATE_FACTORY_DEBUG;
         }
 
+        #[cfg(feature = "startup-timing")]
+        let started = std::time::Instant::now();
         // SAFETY: FFI call. The flags are valid and the returned interface is refcounted
         // by the `windows` crate.
         let factory: IDXGIFactory6 = unsafe { CreateDXGIFactory2(factory_flags) }
             .map_err(|error| RendererError::api("CreateDXGIFactory2", error))?;
+        #[cfg(feature = "startup-timing")]
+        let after_factory = std::time::Instant::now();
 
         let adapters = enumerate_adapters(&factory)?;
+        #[cfg(feature = "startup-timing")]
+        let after_adapters = std::time::Instant::now();
         let examined = adapters.len();
         let Some(index) = select_adapter(
             &adapters
@@ -124,6 +130,8 @@ impl RenderDevice {
             configure_info_queue(&device);
         }
 
+        #[cfg(feature = "startup-timing")]
+        let after_device = std::time::Instant::now();
         let feature_level = highest_feature_level(&device);
 
         let queue_desc = D3D12_COMMAND_QUEUE_DESC {
@@ -136,6 +144,16 @@ impl RenderDevice {
             .map_err(|error| RendererError::api("ID3D12Device::CreateCommandQueue", error))?;
 
         let allow_tearing = query_tearing_support(&factory);
+        #[cfg(feature = "startup-timing")]
+        log::info!(
+            "[startup] D3D12: factory {:.1} ms, {} adapter(s) enumerated {:.1} ms, \
+             D3D12CreateDevice {:.1} ms, queue and caps {:.1} ms",
+            (after_factory - started).as_secs_f64() * 1e3,
+            adapters.len(),
+            (after_adapters - after_factory).as_secs_f64() * 1e3,
+            (after_device - after_adapters).as_secs_f64() * 1e3,
+            after_device.elapsed().as_secs_f64() * 1e3,
+        );
 
         Ok(Self {
             factory,
@@ -560,5 +578,19 @@ mod tests {
             PROBED_FEATURE_LEVELS[PROBED_FEATURE_LEVELS.len() - 1],
             MINIMUM_FEATURE_LEVEL
         );
+    }
+}
+
+#[cfg(test)]
+mod thread_safety_probe {
+    /// Whether a D3D12 device handle can be moved between threads at all.
+    ///
+    /// Asked as a compile check rather than assumed: whether the startup path may create the
+    /// device on a worker thread while the main thread loads content depends on it.
+    #[test]
+    fn a_device_handle_is_send_and_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<windows::Win32::Graphics::Direct3D12::ID3D12Device>();
+        assert_send_sync::<windows::Win32::Graphics::Dxgi::IDXGIFactory6>();
     }
 }

@@ -776,11 +776,6 @@ impl App {
             );
         }
         crate::startup::stage("scene placement");
-        // Everything above queued its copies; this is the one wait. Nothing has been drawn
-        // yet, so nothing has read a resource that was still in flight.
-        let copies = renderer.end_upload_batch()?;
-        log::info!("startup: {copies} resource copies in one submission");
-        crate::startup::stage("GPU flush");
         extractor.extract(&simulation);
 
         // The collision course is only visible through the debug view, so in that scene the
@@ -1065,6 +1060,14 @@ impl App {
         // edited one cannot end up drawn by two different paths.
         app.rebuild_terrain();
         app.rebuild_water();
+        // Everything since `begin_upload_batch` queued its copies; this is the one wait. The
+        // ground and the water are inside it deliberately — they are a mesh each, and a mesh
+        // that waits for the GPU on its own is the cost this batch exists to avoid.
+        // Nothing has been drawn yet, so nothing has read a resource that was still in
+        // flight.
+        let copies = app.renderer.end_upload_batch()?;
+        log::info!("startup: {copies} resource copies in one submission");
+        crate::startup::stage("GPU flush");
 
         let applied = app.apply_shadow_quality(shadow_quality);
         // The settings screen shows what is running, which after a failed switch is not
@@ -2671,6 +2674,13 @@ impl App {
         // A few hundred respawns is a load-time-sized cost paid on the frames an author is
         // actually editing, and an incremental spawn path is a second description of the
         // scene that can disagree with the first.
+        // An edit re-places the level: models the browser has never uploaded, a terrain, a
+        // few quads of water, the spawn markers. One batch around the lot, for the reason
+        // startup has one — a mesh that waits for the GPU on its own is a stall an author
+        // feels on every placement.
+        if changed || terrain_changed || water_changed {
+            self.renderer.begin_upload_batch()?;
+        }
         if changed && let Some(scene) = self.environment.as_ref() {
             // An asset placed from the browser has no model uploaded yet: the library went up
             // at startup and this file was discovered afterwards. Uploading here rather than
@@ -2701,6 +2711,9 @@ impl App {
         }
         if changed {
             self.rebuild_spawn_markers(true);
+        }
+        if changed || terrain_changed || water_changed {
+            self.renderer.end_upload_batch()?;
         }
 
         let (width, height) = self.renderer.size();
@@ -4017,19 +4030,27 @@ impl Application for App {
     }
 
     fn render(&mut self, _ctx: &mut EngineContext) -> Result<(), EngineError> {
+        let first = self.renderer.frames_presented() == 0;
+        if first {
+            crate::startup::stage("frame 1: update");
+        }
         self.renderer.render_world(
             self.extractor.render_world(),
             &self.camera,
             self.lighting,
             self.clear_color,
         )?;
+        if first {
+            crate::startup::stage("frame 1: record");
+        }
         Ok(())
     }
 
     fn present(&mut self, _ctx: &mut EngineContext) -> Result<(), EngineError> {
         self.renderer.present()?;
         if self.renderer.frames_presented() == 1 {
-            crate::startup::stage("first frame");
+            crate::startup::stage("frame 1: present");
+            engine_renderer::log_pipeline_startup_counters();
             crate::startup::report();
         }
         // The window appears here, once, with a frame already in it. `--hidden` never takes

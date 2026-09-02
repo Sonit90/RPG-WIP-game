@@ -846,6 +846,7 @@ impl StagingUploader {
             return Ok(0);
         }
 
+        let probe = crate::upload_timing::Probe::start();
         self.context.close()?;
         let submission = [Some(
             self.context
@@ -864,6 +865,7 @@ impl StagingUploader {
         // again. The chunks themselves are kept: the whole point of the arena is that the
         // next batch does not pay to create them.
         self.staging.reset();
+        probe.flush();
         let copies = self.queued;
         self.queued = 0;
         self.total_copies += copies as u64;

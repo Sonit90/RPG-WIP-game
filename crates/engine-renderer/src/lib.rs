@@ -90,6 +90,17 @@ pub use engine_render_data::{
 pub use stress::STRESS_LEVELS;
 pub use swapchain::{BACK_BUFFER_FORMAT, FRAME_COUNT};
 
+/// Logs how many pipeline state objects have been created so far and what they cost.
+///
+/// Behind the `startup-timing` feature; without it this is an empty call. The application
+/// asks for it once, when the first frame is on screen, because mesh pipelines are created
+/// the first time a material variant is drawn and that is the frame it happens on.
+#[inline]
+pub fn log_pipeline_startup_counters() {
+    upload_timing::report_pipelines();
+    upload_timing::report();
+}
+
 /// How the renderer should be created.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RendererConfig {

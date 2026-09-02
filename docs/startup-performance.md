@@ -119,7 +119,15 @@ Together: **893 resources → 43**, and the buffers among them 329 → 11.
 or a one-off upload asks for a dedicated resource, and `GpuMesh::upload` and `Material::new`
 still mean what they did.
 
-### 3. The audio device was on the critical path for no reason
+### 3. Uploads that happened after the batch closed
+
+The terrain, the water and the editor's spawn markers are built after the level is placed, and
+the first version of the batch closed before them — so each of those meshes went up on its own
+and waited for the GPU, on the first frame, where it read as "rendering is slow". The batch now
+closes after them. The editor's re-place path is batched too, which is felt on every edit and
+not only at startup.
+
+### 4. The audio device was on the critical path for no reason
 
 Enumerating the default output device and synthesising the 8.5 MiB sound bank is about 120 ms,
 and nothing about the first frame depends on it: no cue plays until something happens in the
@@ -133,14 +141,65 @@ are applied. Because the system behind the mutex never changes identity, a volum
 or a listener move that happened meanwhile is not lost. On this machine the device is playing
 about 120 ms after the first frame is on screen.
 
+## The two things left, measured
+
+The first pass left two items nobody had looked inside: "D3D12 device" and "first frame".
+Both were opened with the same feature, and both answers were surprising enough to be worth
+writing down.
+
+### D3D12 device: 117 ms, of which `D3D12CreateDevice` is 102
+
+```text
+[startup] D3D12: factory 1.8 ms, 2 adapter(s) enumerated 0.1 ms,
+          D3D12CreateDevice 102.4 ms, queue and caps 4.5 ms
+```
+
+Creating the DXGI factory is 1.8 ms. Enumerating both adapters and reading their descriptions
+is 0.1 ms. Creating the command queue and asking for the highest feature level is 4.5 ms. The
+swap chain is the balance, about 9 ms. **`D3D12CreateDevice` alone is 102 ms**, and there is
+nothing of ours inside it: it is the D3D12 runtime and the vendor's user-mode driver being
+loaded and initialized on the first call in the process.
+
+That number cannot be reduced from here. It can only be *hidden*, and the ceiling on hiding it
+is however much of our own work can be made to happen alongside — see below.
+
+### First frame: 57 ms, and it was not what it looked like
+
+Split into the three stages the engine already has, the first frame was:
+
+| Stage | Cost |
+| --- | ---: |
+| update (events, simulation, extraction, the editor's first frame, the UI) | 33 ms |
+| record (the whole render list into a command list) | 12 ms |
+| present | 12 ms |
+
+The suspicion was pipeline state objects: mesh pipelines are created the first time a material
+variant is drawn, so a first frame pays for them. The counter says **7 pipelines, 12 ms in
+total for the whole process**, most of them at renderer init — so that was not it.
+
+What it actually was: the terrain mesh, the water quads and the editor's spawn markers are
+uploaded *after* the startup batch had already been closed, each one waiting for the GPU on
+its own. The counters show it plainly — 43 resources and 6 flushes at the end of the batch, 53
+resources and 14 flushes by the time the first frame was on screen.
+
+Closing the batch after the terrain and the water are built, rather than before, took the
+first frame's update from 33 ms to 13 ms. The editor's own re-place path — which runs on every
+edit, not only at startup — is batched the same way now, so placing an object no longer
+stalls once per mesh.
+
+Debug, editor + showcase: **347 ms → ~335 ms**, and the first frame is 37 ms of it: 13 update,
+12 record, 12 present. What is left there is command recording and the driver's first present,
+neither of which is a stall we are choosing.
+
 ## What the remaining ~330 ms is
 
 | Stage | Cost | Whose |
 | --- | ---: | --- |
-| D3D12 device, adapter, swap chain | ~110 ms | the driver |
+| `D3D12CreateDevice` | ~102 ms | the driver, on the first call in the process |
+| factory, adapters, queue, swap chain | ~15 ms | the driver |
 | pipelines, heaps, shadow atlas, UI atlas | ~40 ms | the driver, mostly PSO creation |
-| uploads (43 resources, compression, one wait) | ~45 ms | half driver, half ours |
-| first frame | 55–115 ms | the driver: mesh pipeline variants are created on first use |
+| uploads (44 resources, compression, one wait) | ~45 ms | half driver, half ours |
+| first frame (update, record, present) | ~37 ms | mostly the driver |
 | everything the game itself does | ~15 ms | ours |
 
 The game's own work — reading the scene, authoring models, building the simulation, settings,
@@ -156,6 +215,17 @@ D3D12 asking the driver for something.
   uploader and the handle tables all belong to the thread that owns the device. Worth
   revisiting only if content grows by an order of magnitude, at which point the compression
   is the part to move, not the uploading.
+* **Creating the device on a worker thread, to hide it behind our own loading.** A D3D12
+  device handle and a DXGI factory are both `Send` and `Sync` in `windows-rs` — there is a
+  compile-check test in `device.rs` that says so, because the answer decides whether this is
+  even possible. It is: a thread could call `RenderDevice::new` while the main thread creates
+  the window, reads the settings and the scene file, authors the environment library and the
+  hero models on the CPU, and imports the level's `.glb` files.
+  The ceiling is what that CPU work adds up to, because the main thread has to wait for the
+  device before it can upload any of it: about 20–25 ms of a 335 ms launch. It also means
+  reordering `App::new` so that authoring happens before uploading rather than interleaved
+  with it. Recorded rather than done: 7% for a restructure of the startup path is a trade
+  worth making deliberately, not in passing.
 * **Creating pipeline state objects in parallel.** The largest remaining item after device
   creation is the first frame, and most of it is mesh pipeline variants being created the
   first time a material needs one. `CreateGraphicsPipelineState` is free-threaded, so warming

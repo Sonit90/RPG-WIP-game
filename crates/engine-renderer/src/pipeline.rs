@@ -205,8 +205,15 @@ fn create_pipeline_state(
 
     // SAFETY: FFI call with a fully initialized descriptor whose referenced blobs and
     // input-element array outlive the call.
-    let state = unsafe { device.CreateGraphicsPipelineState(&desc) }
-        .map_err(|error| RendererError::api("ID3D12Device::CreateGraphicsPipelineState", error));
+    let state = unsafe {
+        {
+            let probe = crate::upload_timing::Probe::start();
+            let state = device.CreateGraphicsPipelineState(&desc);
+            probe.pipeline();
+            state
+        }
+    }
+    .map_err(|error| RendererError::api("ID3D12Device::CreateGraphicsPipelineState", error));
 
     // `desc.pRootSignature` is a non-owning copy of the interface pointer. `ManuallyDrop`
     // is what keeps it from releasing a reference it never took, so it must simply be

@@ -238,8 +238,15 @@ fn create_state(
 
     // SAFETY: FFI call with a fully initialized descriptor whose referenced bytecode and
     // input-element array outlive it.
-    unsafe { device.CreateGraphicsPipelineState(&desc) }
-        .map_err(|error| RendererError::api("CreateGraphicsPipelineState (particles)", error))
+    unsafe {
+        {
+            let probe = crate::upload_timing::Probe::start();
+            let state = device.CreateGraphicsPipelineState(&desc);
+            probe.pipeline();
+            state
+        }
+    }
+    .map_err(|error| RendererError::api("CreateGraphicsPipelineState (particles)", error))
 }
 
 /// The per-instance input elements, matching `engine_render_data::ParticleInstance`.

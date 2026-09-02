@@ -531,8 +531,15 @@ impl UiPipeline {
 
         // SAFETY: FFI call with a fully initialized descriptor whose borrowed root
         // signature, bytecode and input elements all outlive it.
-        let state: ID3D12PipelineState = unsafe { device.CreateGraphicsPipelineState(&desc) }
-            .map_err(|error| RendererError::api("CreateGraphicsPipelineState (ui)", error))?;
+        let state: ID3D12PipelineState = unsafe {
+            {
+                let probe = crate::upload_timing::Probe::start();
+                let state = device.CreateGraphicsPipelineState(&desc);
+                probe.pipeline();
+                state
+            }
+        }
+        .map_err(|error| RendererError::api("CreateGraphicsPipelineState (ui)", error))?;
 
         Ok(Self {
             root_signature,

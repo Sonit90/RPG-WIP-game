@@ -204,10 +204,15 @@ impl InstancedPipeline {
 
         // SAFETY: FFI call with a fully initialized descriptor whose referenced blobs and
         // input-element array outlive the call.
-        let pipeline_state =
-            unsafe { device.CreateGraphicsPipelineState(&desc) }.map_err(|error| {
-                RendererError::api("ID3D12Device::CreateGraphicsPipelineState", error)
-            })?;
+        let pipeline_state = unsafe {
+            {
+                let probe = crate::upload_timing::Probe::start();
+                let state = device.CreateGraphicsPipelineState(&desc);
+                probe.pipeline();
+                state
+            }
+        }
+        .map_err(|error| RendererError::api("ID3D12Device::CreateGraphicsPipelineState", error))?;
         // `desc.pRootSignature` is a borrowed copy in a ManuallyDrop; leaving it alone is
         // what keeps it from releasing a reference it never took.
 

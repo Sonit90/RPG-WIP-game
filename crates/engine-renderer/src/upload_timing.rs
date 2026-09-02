@@ -23,9 +23,21 @@ static BUFFERS: AtomicU64 = AtomicU64::new(0);
 /// See [`BUFFERS`].
 #[cfg(feature = "startup-timing")]
 static BUFFERS_NS: AtomicU64 = AtomicU64::new(0);
+/// Pipeline state objects created, and what they cost.
+#[cfg(feature = "startup-timing")]
+static PIPELINES: AtomicU64 = AtomicU64::new(0);
+/// See [`PIPELINES`].
+#[cfg(feature = "startup-timing")]
+static PIPELINES_NS: AtomicU64 = AtomicU64::new(0);
 /// Nanoseconds spent compressing texture mips on the CPU.
 #[cfg(feature = "startup-timing")]
 static COMPRESSION_NS: AtomicU64 = AtomicU64::new(0);
+/// Flushes: submissions that waited for the GPU to go idle.
+#[cfg(feature = "startup-timing")]
+static FLUSHES: AtomicU64 = AtomicU64::new(0);
+/// Nanoseconds those waits took.
+#[cfg(feature = "startup-timing")]
+static FLUSH_NS: AtomicU64 = AtomicU64::new(0);
 /// Nanoseconds spent writing into mapped staging memory.
 #[cfg(feature = "startup-timing")]
 static COPY_NS: AtomicU64 = AtomicU64::new(0);
@@ -75,12 +87,32 @@ impl Probe {
         }
     }
 
+    /// Adds the elapsed time to the pipeline-creation total.
+    #[inline]
+    pub fn pipeline(self) {
+        #[cfg(feature = "startup-timing")]
+        {
+            PIPELINES_NS.fetch_add(self.0.elapsed().as_nanos() as u64, Ordering::Relaxed);
+            PIPELINES.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
     /// Adds the elapsed time to the compression total.
     #[inline]
     pub fn compression(self) {
         #[cfg(feature = "startup-timing")]
         {
             COMPRESSION_NS.fetch_add(self.0.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        }
+    }
+
+    /// Adds the elapsed time to the flush total: a submission and a wait for the GPU.
+    #[inline]
+    pub fn flush(self) {
+        #[cfg(feature = "startup-timing")]
+        {
+            FLUSH_NS.fetch_add(self.0.elapsed().as_nanos() as u64, Ordering::Relaxed);
+            FLUSHES.fetch_add(1, Ordering::Relaxed);
         }
     }
 
@@ -94,6 +126,22 @@ impl Probe {
     }
 }
 
+/// Logs how many pipeline state objects have been created and what they cost.
+///
+/// Called when the first frame has been presented: mesh pipelines are created the first time
+/// a material variant is drawn, so most of them appear during that frame and nowhere else.
+#[inline]
+pub fn report_pipelines() {
+    #[cfg(feature = "startup-timing")]
+    {
+        log::info!(
+            "[startup] pipelines so far: {} created in {:.1} ms",
+            PIPELINES.load(Ordering::Relaxed),
+            PIPELINES_NS.load(Ordering::Relaxed) as f64 / 1e6,
+        );
+    }
+}
+
 /// Logs the totals so far. Called when an upload batch ends.
 #[inline]
 pub fn report() {
@@ -101,13 +149,16 @@ pub fn report() {
     {
         log::info!(
             "[startup] uploads so far: {} resources created in {:.1} ms (of which {} buffers, \
-             {:.1} ms), {:.1} ms compressing, {:.1} ms copying into staging",
+             {:.1} ms), {:.1} ms compressing, {:.1} ms copying into staging, {} flush(es) \
+             waiting {:.1} ms",
             RESOURCES.load(Ordering::Relaxed),
             RESOURCES_NS.load(Ordering::Relaxed) as f64 / 1e6,
             BUFFERS.load(Ordering::Relaxed),
             BUFFERS_NS.load(Ordering::Relaxed) as f64 / 1e6,
             COMPRESSION_NS.load(Ordering::Relaxed) as f64 / 1e6,
             COPY_NS.load(Ordering::Relaxed) as f64 / 1e6,
+            FLUSHES.load(Ordering::Relaxed),
+            FLUSH_NS.load(Ordering::Relaxed) as f64 / 1e6,
         );
     }
 }
