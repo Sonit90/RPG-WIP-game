@@ -27,13 +27,13 @@ Grouped by what is being built rather than by key, which is how the editor print
 
 | Group | Keys |
 | --- | --- |
-| **Placing** | drag a browser row into the world · double-click a row to place in front of the camera |
+| **Placing** | `N` placing mode: every `LMB` in the world puts one down · drag a browser row into the world · double-click a row to place in front of the camera |
 | **Assets** | `TAB` next asset · `CTRL+LMB` add to selection · `F` find · `F2` rescan |
 | **Terrain** | `B` sculpt · `TAB` brush mode · `1` `2` brush size · `3` `4` strength |
 | **Caves** | `M` module snap — a 4 m grid and quarter turns |
 | **Water** | `V` pour a body under the cursor |
 | **Spawn points** | `P` put one down · `R` turns it |
-| **Selecting** | `LMB` on an object selects it · `LMB` on empty ground drops the selection · `ESC` drops it too |
+| **Selecting** | `LMB` on an object selects it · `LMB` on empty ground drops the selection · `ESC` drops it, and leaves placing mode |
 | **Moving** | drag the `X` `Y` `Z` arms of the gizmo · arrows nudge · `R` yaw · `T` size · `0` reset · `X` delete · `C` copy · `Z` undo · `L` local axes |
 | **Grid** | `G` step · `SHIFT+G` rotation step · `CTRL+A` every object |
 | **File** | `CTRL+S` save · `F6` back to playing |
@@ -55,6 +55,21 @@ One mouse action means one thing. The order the editor resolves a press in is:
 A click on empty ground used to place the browser's asset, which meant a click that missed the
 rock you were aiming at left a second rock behind it. Placing is now something you do *from the
 browser*, deliberately.
+
+### Placing mode
+
+`N` suspends rule 2. While it is on, **every left click in the world puts an object down** —
+on top of whatever is already there — and nothing selects, drags or moves. Laying out a row of
+pillars is a dozen clicks rather than a dozen drags out of the browser, and a click that lands
+on the pillar you just placed does not turn into "you meant to pick that up".
+
+The gizmo disappears while the mode is on, because a handle you cannot grab is a lie about
+what a click will do, and the inspector's heading reads `INSPECTOR - PLACING (N)`. `N` again
+or `ESC` gives the left button back to selection. It is mutually exclusive with the terrain
+brush: `B` turns it off and it turns `B` off, since both want every press in the viewport.
+
+Everything that is not a click still works: `TAB` picks the next asset, `X` deletes what was
+just placed, `Z` takes it back, the arrows nudge it, `G` still decides the grid it lands on.
 
 ### The gizmo
 

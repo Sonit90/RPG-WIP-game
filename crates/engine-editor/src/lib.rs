@@ -4,6 +4,7 @@
 //!  F6 ──► Editing ───────────────► EditorOutcome
 //!   ▲        │  left click object   select it, and never place anything
 //!   │        │  left click ground   drop the selection
+//!   │        │  N                   placing mode: left click puts one down, every time
 //!   │        │  drag from browser   place that asset where it is dropped
 //!   │        │  double click a row  place one in front of the camera
 //!   │        │  drag an X/Y/Z arm   move the selection along that axis
@@ -37,6 +38,13 @@
 //! 3. a drag from a browser row into the world places one there;
 //! 4. a double click on a browser row places one in front of the camera;
 //! 5. anything else is the camera's.
+//!
+//! `N` puts the editor in **placing mode**, where rule 2 is suspended: every left click in
+//! the world puts an object down, on top of whatever is already there, and nothing selects or
+//! moves. Laying out a row of pillars is a dozen clicks rather than a dozen drags out of the
+//! browser, and an author doing that never wants a click to be interpreted as "you meant to
+//! pick up the pillar you just placed". `N` again, or `ESC`, and the left button means select
+//! once more.
 //!
 //! It used to be that a click on empty ground placed the browser's asset, which made one
 //! button mean "place" or "select" depending on what happened to be under it — and a click
@@ -361,6 +369,13 @@ pub struct Editor {
     yaw_step: usize,
     /// Whether the terrain brush has the pointer instead of placement and selection.
     sculpting: bool,
+    /// Whether a click in the world puts an object down rather than selecting one.
+    ///
+    /// Off by default, because a click that places is a click that cannot be taken back
+    /// without noticing it happened; on while an author is laying out a row of something.
+    /// Mutually exclusive with sculpting: both want the whole world pointer, and a mode that
+    /// is two modes is one nobody can predict.
+    placing: bool,
     /// What the brush does.
     brush: BrushMode,
     /// How wide the brush is, in metres.
@@ -431,6 +446,7 @@ impl Editor {
             grid: 0,
             yaw_step: 2,
             sculpting: false,
+            placing: false,
             brush: BrushMode::Raise,
             brush_radius: 6.0,
             brush_strength: 0.5,
@@ -585,6 +601,15 @@ impl Editor {
         self.sculpting
     }
 
+    /// Whether a click in the world puts an object down rather than selecting one.
+    ///
+    /// Not to be confused with [`Editor::is_placing`], which is one gesture in progress: an
+    /// asset dragged out of the browser and not yet dropped.
+    #[must_use]
+    pub fn is_place_mode(&self) -> bool {
+        self.placing
+    }
+
     /// What the brush does.
     #[must_use]
     pub fn brush(&self) -> BrushMode {
@@ -685,6 +710,8 @@ impl Editor {
     pub fn enter(&mut self, focus: Vec3, scene_name: &str, viewport: (u32, u32)) {
         self.active = true;
         self.camera = FlyCamera::overlooking(focus);
+        self.placing = false;
+        self.sculpting = false;
         self.selected.clear();
         self.cancel_manipulation();
         self.hierarchy_scroll = 0;
@@ -1225,9 +1252,14 @@ impl Editor {
         if input.was_key_pressed(KeyCode::Escape) {
             // The way out of everything in progress, not only the selection: an asset picked
             // up from the browser and not yet dropped is a gesture an author has to be able
-            // to abandon, and the key that abandons things is this one.
+            // to abandon, and a mode where every click puts something down is another. The
+            // key that abandons things is this one.
             self.selected.clear();
             self.cancel_manipulation();
+            if self.placing {
+                self.placing = false;
+                self.status = "select and move".to_owned();
+            }
             return false;
         }
         if input.was_key_pressed(KeyCode::G) {
@@ -1260,12 +1292,30 @@ impl Editor {
         }
         if input.was_key_pressed(KeyCode::B) {
             self.sculpting = !self.sculpting;
+            // The two world modes are exclusive: the brush and the placing click both want
+            // every press in the viewport, and an editor in both is an editor whose next
+            // click nobody can predict.
+            self.placing = false;
             self.selected.clear();
             self.cancel_manipulation();
             self.status = if self.sculpting {
                 "sculpting: drag to shape the ground".to_owned()
             } else {
-                "placing".to_owned()
+                "select and move".to_owned()
+            };
+            return false;
+        }
+        if input.was_key_pressed(KeyCode::N) {
+            self.placing = !self.placing;
+            self.sculpting = false;
+            self.cancel_manipulation();
+            self.status = if self.placing {
+                format!(
+                    "placing {}: click to put one down",
+                    self.browser.selected_name()
+                )
+            } else {
+                "select and move".to_owned()
             };
             return false;
         }
@@ -1588,7 +1638,9 @@ impl Editor {
         view_projection: &Mat4,
         viewport: (u32, u32),
     ) -> Option<gizmo::GizmoScreen> {
-        if self.sculpting {
+        // No handles in the two modes where the left button means something else: a gizmo
+        // an author cannot grab is a lie about what a click will do.
+        if self.sculpting || self.placing {
             return None;
         }
         let origin = self.gizmo_origin(scene)?;
@@ -1654,6 +1706,24 @@ impl Editor {
         // handle dragged over the browser is still that handle being dragged.
         if self.gizmo_drag.is_some() {
             return self.drag_gizmo(ui_input, scene);
+        }
+
+        // Placing mode: every press in the world puts one down, and nothing else happens.
+        // Deliberately *not* a ray against the scene first — an author laying out a row of
+        // pillars wants the next one where the cursor is, including on top of the last one.
+        if self.placing {
+            if !ui_input.pointer_pressed || over_panel {
+                return false;
+            }
+            let Some(ground) = engine_presentation::ui::targeting::ground_under_cursor(
+                ui_input.pointer,
+                view_projection,
+                viewport,
+            ) else {
+                self.status = "point at the ground to place".to_owned();
+                return false;
+            };
+            return self.place(scene, ground);
         }
 
         let screen = self.gizmo_with(scene, view_projection, viewport);
@@ -3088,6 +3158,169 @@ mod tests {
 
         assert_eq!(outcome, EditorOutcome::Idle);
         assert_eq!(scene.objects, before, "a camera turn moved the level");
+    }
+
+    #[test]
+    fn placing_mode_puts_one_down_on_every_click_and_never_selects() {
+        let mut editor = editor();
+        let mut scene = scene();
+
+        update(&mut editor, &keyed(KeyCode::N), &UiInput::new(), &mut scene);
+        assert!(editor.is_place_mode(), "N did not turn placing mode on");
+
+        let outcome = update(
+            &mut editor,
+            &InputState::new(),
+            &press(centre()),
+            &mut scene,
+        );
+        assert_eq!(outcome, EditorOutcome::SceneChanged);
+        assert_eq!(scene.len(), 1, "the click placed nothing");
+
+        // A second click on the same spot, which is now on top of the first object: it
+        // places another rather than selecting the one that is there.
+        let outcome = update(
+            &mut editor,
+            &InputState::new(),
+            &press(centre()),
+            &mut scene,
+        );
+        assert_eq!(outcome, EditorOutcome::SceneChanged);
+        assert_eq!(
+            scene.len(),
+            2,
+            "the second click selected instead of placing"
+        );
+        assert_eq!(editor.selected_object(), Some(1), "the new one is selected");
+    }
+
+    #[test]
+    fn placing_mode_never_moves_what_is_already_there() {
+        let mut editor = editor();
+        let mut scene = scene();
+        scene.push(
+            EnvironmentObject::decoration(PILLAR, Vec3::ZERO)
+                .with_collision(default_collision(PILLAR)),
+        );
+        let before = scene.objects[0];
+
+        update(&mut editor, &keyed(KeyCode::N), &UiInput::new(), &mut scene);
+        assert!(
+            editor.gizmo(&scene).is_none(),
+            "placing mode still offers a gizmo to drag"
+        );
+
+        // A press and a drag across the screen: in select mode this is how an object moves.
+        update(
+            &mut editor,
+            &InputState::new(),
+            &press(centre()),
+            &mut scene,
+        );
+        let (x, y) = centre();
+        update(
+            &mut editor,
+            &InputState::new(),
+            &hold((x + 200.0, y)),
+            &mut scene,
+        );
+
+        assert_eq!(
+            scene.objects[0], before,
+            "placing mode moved the object that was already there"
+        );
+    }
+
+    #[test]
+    fn leaving_placing_mode_gives_the_left_button_back_to_selection() {
+        let mut editor = editor();
+        let mut scene = scene();
+        scene.push(
+            EnvironmentObject::decoration(PILLAR, Vec3::ZERO)
+                .with_collision(default_collision(PILLAR)),
+        );
+
+        update(&mut editor, &keyed(KeyCode::N), &UiInput::new(), &mut scene);
+        update(&mut editor, &keyed(KeyCode::N), &UiInput::new(), &mut scene);
+        assert!(!editor.is_place_mode(), "N did not turn placing mode off");
+
+        let outcome = update(
+            &mut editor,
+            &InputState::new(),
+            &press(centre()),
+            &mut scene,
+        );
+
+        assert_eq!(outcome, EditorOutcome::Idle, "the click placed something");
+        assert_eq!(scene.len(), 1);
+        assert_eq!(
+            editor.selected_object(),
+            Some(0),
+            "the click did not select"
+        );
+        assert!(
+            editor.gizmo(&scene).is_some(),
+            "the gizmo did not come back"
+        );
+    }
+
+    #[test]
+    fn escape_leaves_placing_mode() {
+        let mut editor = editor();
+        let mut scene = scene();
+
+        update(&mut editor, &keyed(KeyCode::N), &UiInput::new(), &mut scene);
+        update(
+            &mut editor,
+            &keyed(KeyCode::Escape),
+            &UiInput::new(),
+            &mut scene,
+        );
+
+        assert!(!editor.is_place_mode(), "escape left the editor placing");
+        update(
+            &mut editor,
+            &InputState::new(),
+            &press(centre()),
+            &mut scene,
+        );
+        assert!(scene.is_empty(), "a click after escape placed something");
+    }
+
+    #[test]
+    fn placing_and_sculpting_are_never_both_on() {
+        let mut editor = editor();
+        let mut scene = scene();
+
+        update(&mut editor, &keyed(KeyCode::N), &UiInput::new(), &mut scene);
+        update(&mut editor, &keyed(KeyCode::B), &UiInput::new(), &mut scene);
+        assert!(editor.is_sculpting());
+        assert!(!editor.is_place_mode(), "the brush left placing mode on");
+
+        update(&mut editor, &keyed(KeyCode::N), &UiInput::new(), &mut scene);
+        assert!(editor.is_place_mode());
+        assert!(!editor.is_sculpting(), "placing mode left the brush on");
+    }
+
+    #[test]
+    fn placing_mode_ignores_a_click_on_a_panel() {
+        let mut editor = editor();
+        let mut scene = scene();
+        update(&mut editor, &keyed(KeyCode::N), &UiInput::new(), &mut scene);
+
+        let panel = ui::hierarchy_rect(editor.scale(), VIEWPORT);
+        let outcome = update(
+            &mut editor,
+            &InputState::new(),
+            &press((panel.x + panel.width * 0.5, panel.y + panel.height * 0.5)),
+            &mut scene,
+        );
+
+        assert_eq!(outcome, EditorOutcome::Idle);
+        assert!(
+            scene.is_empty(),
+            "a click on the hierarchy placed an object"
+        );
     }
 
     #[test]

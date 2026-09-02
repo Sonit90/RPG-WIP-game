@@ -350,15 +350,16 @@ pub fn push_editor(
     // does M do". Cliffs and rocks have no group of their own: they are assets, placed from
     // the browser like everything else, and saying so is the point.
     let keys = [
-        "PLACE    DRAG A ROW INTO THE WORLD   OR DOUBLE-CLICK IT",
+        "PLACE    N PLACING MODE: LMB PUTS ONE DOWN, EVERY CLICK",
+        "         OR DRAG A ROW INTO THE WORLD, OR DOUBLE-CLICK IT",
         "ASSETS   TAB NEXT   CTRL+LMB ADD   F FIND   F2 RESCAN",
         "TERRAIN  B SCULPT   TAB MODE   1 2 SIZE   3 4 STRENGTH",
         "CAVES    M MODULE SNAP: 4 M GRID, QUARTER TURNS",
         "WATER    V POUR ONE UNDER THE CURSOR",
         "SPAWN    P PUT ONE   R TURNS IT   FIRST ONE IS USED",
-        "SELECT   LMB PICKS ONE   ESC DROPS IT   CTRL+A ALL",
+        "SELECT   LMB PICKS ONE   ESC DROPS IT / LEAVES PLACING",
         "MOVE     DRAG THE X Y Z ARMS   ARROWS NUDGE   R YAW   T SIZE",
-        "         X DELETE   C COPY   Z UNDO   L LOCAL AXES",
+        "         X DELETE   C COPY   Z UNDO   L LOCAL AXES   CTRL+A ALL",
         "GRID     G STEP   SHIFT+G ROTATION   0 RESET TRANSFORM",
         "FILE     CTRL+S SAVE   F6 BACK TO PLAYING",
     ];
@@ -502,10 +503,21 @@ fn push_inspector(
 
     list.rect(panel, theme.panel);
     list.outline(panel, border, theme.panel_border);
+    // The heading says which mode the left button is in, because that is the one thing on
+    // this panel an author cannot work out by looking at the level. The rows below belong to
+    // whatever is selected, and a banner among them would be a line that comes and goes.
     list.text_at(
         (panel.x + padding, panel.y + padding),
-        "INSPECTOR",
-        theme.title,
+        if editor.is_place_mode() {
+            "INSPECTOR - PLACING (N)"
+        } else {
+            "INSPECTOR"
+        },
+        if editor.is_place_mode() {
+            theme.button_hovered
+        } else {
+            theme.title
+        },
         text,
     );
 
