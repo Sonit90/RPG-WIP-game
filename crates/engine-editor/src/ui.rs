@@ -339,17 +339,21 @@ pub fn push_editor(
     push_inspector(list, editor, scene, theme, scratch, viewport);
 
     // The key list, bottom left, out from under the two right-hand panels.
+    // Grouped by *what an author is building* rather than by key, because the question
+    // somebody has in front of a level editor is "how do I put a cave in this" and not "what
+    // does M do". Cliffs and rocks have no group of their own: they are assets, placed from
+    // the browser like everything else, and saying so is the point.
     let keys = [
-        "LMB PLACE / SELECT   DRAG MOVE   CTRL+LMB ADD",
-        "ARROWS NUDGE   SHIFT+ARROWS UP/DOWN   L LOCAL",
-        "R YAW   T SIZE   0 RESET   X DELETE   C COPY",
-        "G GRID   SHIFT+G ROTATION STEP   CTRL+A ALL",
-        "M MODULE SNAP FOR CAVE PIECES",
-        "V POUR WATER   P SPAWN POINT   B SCULPT GROUND",
-        "Z UNDO",
-        "TAB NEXT ASSET",
-        "F FIND   F2 RESCAN ASSETS",
-        "CTRL+S SAVE   F6 BACK TO PLAYING",
+        "ASSETS   LMB PLACE / SELECT   TAB NEXT   CTRL+LMB ADD",
+        "         F FIND   F2 RESCAN   (CLIFFS AND ROCKS LIVE HERE)",
+        "TERRAIN  B SCULPT   TAB MODE   1 2 SIZE   3 4 STRENGTH",
+        "CAVES    M MODULE SNAP: 4 M GRID, QUARTER TURNS",
+        "WATER    V POUR ONE UNDER THE CURSOR",
+        "SPAWN    P PUT ONE   R TURNS IT   FIRST ONE IS USED",
+        "EDIT     DRAG MOVE   ARROWS NUDGE   R YAW   T SIZE",
+        "         0 RESET   X DELETE   C COPY   Z UNDO   L LOCAL",
+        "GRID     G STEP   SHIFT+G ROTATION   CTRL+A ALL OBJECTS",
+        "FILE     CTRL+S SAVE   F6 BACK TO PLAYING",
     ];
     let line = text * 12.0;
     let bottom = viewport.1 as f32 - scale.px(layout::MARGIN);

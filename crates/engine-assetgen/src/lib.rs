@@ -42,6 +42,8 @@
 
 #![deny(missing_docs)]
 
+pub mod showcase;
+
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 

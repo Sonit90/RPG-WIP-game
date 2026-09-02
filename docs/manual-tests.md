@@ -628,7 +628,7 @@ keep their silhouette, and the quality setting does what it says.
    the pillar and at the small rock beside it.
 3. Walk to the middle bay and follow the line of rocks away from you, slowly, then back.
    Watch the ground and the rocks' shadows as you move.
-4. Press F7 once (cascade tint) and walk the same line again. Press F7 again (shadow
+4. Press F10 once (cascade tint) and walk the same line again. Press F10 again (shadow
    factor), again (the atlas), again (caster bounds), then again to turn it off.
 5. Walk to the leaf screens on the near left. Look at their shadows on the ground.
 6. Walk into the colonnade on the near middle, under the spot lights.
@@ -725,7 +725,8 @@ whose bars they are actually moves them.
 
 **Steps**
 
-1. `.	argetelease\mygame.exe --scene combat`
+1. `.	arget
+elease\mygame.exe --scene combat`
 2. ESC → swap hero → DRUID. Look at bar one, then quit with ESC → QUIT.
 3. Start the game again and look at bar one before touching anything.
 4. ESC → SETTINGS. Tick **KEYBINDS PER CHARACTER**, then close the menu.
@@ -740,3 +741,27 @@ Step 6 shows the Warrior's bar two empty of what the FireMage put there, and ste
 FireMage's slot exactly as it was left, key and all. Unticking the setting in step 8 changes
 nothing on screen and loses nothing: ticking it again brings each character's own bars back.
 Nothing about where the bars sit changes at any point in this test.
+
+## Death, respawn and the twenty seconds
+
+`cargo run -p engine-app --features editor -- --scene-file assets/scenes/showcase.json`
+
+1. Look at where you are standing: the level's spawn point. Walk well away from it.
+2. Press **F7**. Watch the player frame.
+3. Wait. Count three seconds.
+4. Look at where you are standing, and at the bottom line of the player frame.
+5. Press **F7** again straight away, and wait ten seconds.
+6. Keep waiting until the countdown on the player frame reaches zero.
+7. Press **F7** once more and wait three seconds.
+8. Hold **F7** down for ten seconds, then let go and wait.
+
+**Expected** — F7 kills you: the frame says DEAD and the health bar empties. Three seconds
+later you are back **at the spawn point you walked away from**, at full health, facing the way
+the spawn point points, and the bottom of the player frame reads `CANNOT BE RESPAWNED` with a
+countdown from 20. The second F7 kills you again and you **stay dead** — no respawn — until the
+countdown reaches zero, at which point you come back and a fresh 20 seconds begins. After that
+expires, F7 and a three-second wait respawn you normally again. Holding the key down brings you
+back once per twenty seconds rather than once per press, and leaves the player whole.
+
+The editor's spawn markers (a plinth with an arrow) are only visible with F6 held open; you
+should never see one while playing.

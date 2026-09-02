@@ -806,3 +806,185 @@ water: 2 bodies
 
 Workspace tests green, clippy clean, and both builds compile — `--features editor` and the
 shipping one, which still has no editor in it.
+
+## Phase 9 — caves
+
+The pieces existed since Phase 3 and got collision that describes their cavity in Phase 7. What
+was missing was the *set*: no way to branch, no room bigger than a corridor with headroom, and
+no way back to the surface except the mouth you came in by.
+
+Three pieces close it — `cave_junction`, `cave_room_large`, `cave_exit` — and the room's shape
+moves into one description that the mesh and the collision both read, so a doorway that is
+drawn open cannot be a wall.
+
+`cave_exit` is deliberately **not** a mirrored entrance. An entrance is a hole in a vertical
+rock face; rotating one already gives you the mirror, so a piece that was only that would have
+earned nothing. An exit is a mouth in a hillside: the roof stops half way and the floor steps
+down to ground level.
+
+### The bug the phase existed to find
+
+A tunnel's floor is `SHELL` — half a metre — above the ground the piece stands on. The character
+controller steps `MAX_STEP_HEIGHT`, which is 0.45. **Every cave in the game was a thing a player
+could see into and could not walk into**, and nothing about the geometry said so: it is correct
+in a screenshot and correct in a mesh viewer and wrong the moment somebody walks at it.
+
+`cave_entrance` gained a doorstep, drawn as well as blocked, so what is climbed is what is on
+screen. Two steps of a quarter metre are both under the limit.
+
+### Module snap
+
+Modular pieces meet on a face. Choosing a cave piece switches the grid to the 4 m module and the
+rotation to quarter turns; `M` takes the decision off the editor for good, in both directions,
+because an automatic behaviour has to stop the moment somebody disagrees with it. A piece counts
+as modular by folder or name, so one added to `caves/` tomorrow gets the grid with no code
+change.
+
+### The acceptance test
+
+`engine-presentation/tests/cave_route.rs` walks a character through the **real controller** over
+a level made only of generated pieces: in at the mouth, along a tunnel, through a junction, into
+a room, across it sideways, out the far end, and back again. Four of its eight cases failed on
+the first run — three were the doorstep, one was a piece I had rotated the wrong way.
+
+---
+
+## Phase 10 — spawn points
+
+`EnvironmentScene::spawns.player` has held one position since the arena was the only level in
+the game. It is a *field of the scene*: something a layout function filled in, that nothing
+could select, move or see, because there was nothing in the level to point at.
+
+A spawn point is now a record with a **position and a yaw**, in a list. The yaw is the half that
+could not be expressed before: which way a player is looking when they arrive.
+
+`EnvironmentScene::player_spawn()` is the one question with the one answer — the first authored
+spawn point, or `spawns.player` if there is none. So every level built before this starts a
+player exactly where it always did, and nothing outside the crate has to know which of the two
+it got. It arrives lifted onto the terrain, because a spawn authored at `y = 0` on ground that
+was raised afterwards would start the player inside a hill.
+
+This is the **third kind through the tagged selection** Phase 8 introduced, and the reason that
+refactor was done as a shape rather than as a special case for water. `P` puts one down, drag
+moves it, `R` turns it, `X` deletes it, `Z` takes it back, and no verb reaches across the kinds.
+
+A spawn point has no mesh and never will, so the editor draws a marker for it — plinth, post and
+an arrow along -Z — in the deliberately ugly `simple_test` material. It goes up with the editor
+and comes down with it, so a player never sees a signpost standing where they are about to
+appear. It is editor furniture and is **not** in `STARTER_LIBRARY`.
+
+A missing spawn point is not an error and neither is a broken one: the runtime steps over a
+spawn whose position is not a number, because a player put at NaN is a player nothing can find
+again.
+
+---
+
+## Phases 11–13 — the player lifecycle
+
+### F7, and the key it cost
+
+`F7` kills the player. It goes through `Simulation::slay` — the same path a monster takes — so
+what follows is the shipping death and the shipping respawn rather than a second path only the
+debug key can reach. A debug key that took a shortcut would be a debug key that tests nothing.
+
+It cost the shadow debug view its binding, which moved to `F10`. Moved rather than shared: a key
+that kills the player *and* cycles a shader constant is a key nobody can press with confidence.
+
+### Respawn
+
+A small state machine in `engine_game::sim::respawn`, and the split it is built around is the
+one the phases asked for:
+
+```text
+   the editor says WHERE   →   the level's spawn point
+   the runtime says WHEN   →   3 seconds after death, unless protected
+   the runtime says HOW    →   revive_player, which already existed
+```
+
+`revive_player` already knew how to make a player whole — full health, no cast, no target, no
+statuses — and is reused unchanged. **A respawn is a revive plus being somewhere else.**
+
+`RESPAWN_DELAY` is three seconds so that dying is a thing that happens rather than a frame
+nobody sees. A respawn on the same tick as the death is indistinguishable from not having died.
+
+### The twenty seconds
+
+`StatusKind::RespawnProtection`, an ordinary status like every burn and heal over time, so
+nothing in the gameplay code branches on it and the unit frame draws it the way it draws
+anything else. Its displayed name is `Cannot be respawned`; the interface prints
+`CANNOT BE RESPAWNED`, in the uppercase every status label in this game is drawn in.
+`StatusKind::display_name` and `StatusKind::as_str` are separate because those are the same
+effect said to two audiences and one string would have to be wrong for one of them.
+
+**The clock is not in the status**, and that is deliberate: `tick_statuses` skips the dead, and
+this timer has to run *while the player is dead* or somebody who died inside their protection
+would wait on a stopped clock. The clock lives in the respawn system and the status is its
+published view — one authority, one number, written in one place.
+
+A death during the protection **defers** the respawn rather than discarding it. The player is
+never left dead for ever; they come back the moment the protection runs out.
+
+### Two bugs the tests found
+
+Neither was visible in the reading:
+
+* The machine returned to idle after issuing a respawn, so a player the world had not put back
+  yet was handed another one three seconds later. Adding a state to wait for the world fixed
+  that and introduced the opposite bug — a dead player could sit in it for ever. The state is
+  now a one-tick grace that falls back to "died again", which cannot run away because every
+  death after a respawn lands inside the protection that respawn started.
+* `environment_arena` was never told where its spawn point was. A respawn landed the player in
+  the right place *by luck* — `world.restore` puts an entity back where it spawned — and facing
+  the wrong way, which is what the test actually caught.
+
+The unit tests drive the clock through a stand-in that applies what it asks for. Holding `alive`
+at `false` for ever, which is what they did first, tests a caller that ignores every respawn it
+is handed, and no real one does.
+
+---
+
+## Phase 14 — polish, and a level to prove it
+
+### The asset browser needed nothing
+
+Phase 4 had already built it: recursive scan, folders that expand and collapse, a filter,
+`F2` rescan, unreadable files reported without stopping the scan, a missing `assets/` directory
+treated as a project nobody has filled in yet, and interned asset ids so a level can name a file
+the build was never compiled with. The requirement was met; the work was checking that and not
+rewriting it.
+
+### The key list
+
+Regrouped by **what an author is building** rather than by key, because the question somebody
+has in front of a level editor is "how do I put a cave in this", not "what does M do". Cliffs
+and rocks are listed under Assets with no group of their own, which is the honest description:
+they are placed from the browser like everything else.
+
+### The showcase level
+
+`assets/scenes/showcase.json` — sculpted ground with a plateau and hills, a cliff run with an
+overhang, a seven-piece cave, a lake in a hollow, scattered rocks and trees, and a spawn point.
+
+It is **generated**, by `cargo run -p engine-assetgen --bin level_gen`. A level file is mostly
+numbers: its terrain alone is 3 700 heights and its cave collision is 53 shapes, and a
+hand-written file would go stale the moment a piece changed shape. The builder lives in the
+content-generation crate beside `asset_gen`, and neither is linked into the game — what ships is
+the file.
+
+`engine-presentation/tests/showcase_level.rs` reads that file **off disk** and walks a character
+through it. Every other test in the repository builds its level in memory; this one does not,
+because the file is what the game loads and a level that is correct in a builder function and
+broken on disk is broken.
+
+### Verification
+
+```bash
+cargo test --workspace
+cargo clippy --workspace --all-targets
+cargo build -p engine-app --features editor
+cargo build -p engine-app --no-default-features   # the shipping build has no editor in it
+cargo run -p engine-app --features editor -- --scene-file assets/scenes/showcase.json
+```
+
+See `docs/level-editing.md` for the controls, the level format, the asset directory and the
+development keys.

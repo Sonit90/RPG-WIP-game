@@ -15,11 +15,19 @@ publish.workspace = true
 engine-assets = { workspace = true }
 # The engine's logger, so a run's log lines look like every other log line in the project.
 engine-core = { workspace = true }
+# The level format, for the showcase level `level_gen` writes. A scene is data with no device
+# behind it, which is exactly what this crate is allowed to depend on.
+engine-environment = { workspace = true }
 log = { workspace = true }
+serde_json = { workspace = true }
 
 [[bin]]
 name = "asset_gen"
 path = "src/main.rs"
+
+[[bin]]
+name = "level_gen"
+path = "src/level_gen.rs"
 
 [lints]
 workspace = true
