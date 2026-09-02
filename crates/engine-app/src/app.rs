@@ -59,6 +59,7 @@ use engine_presentation::ui::action_bar::{self, ActionBarSet, SlotAddress};
 use engine_presentation::ui::character_menu::{
     CharacterMenu, CharacterMenuOutcome, CharacterTheme, push_character_menu,
 };
+use engine_presentation::ui::ground_decal::{DecalBand, GroundSurface};
 use engine_presentation::ui::hud_edit::{EditOutcome, HudEditor, push_hud_editor};
 use engine_presentation::ui::hud_layout::{HudElementId, HudLayout};
 use engine_presentation::ui::slot_menu::{SlotMenu, SlotMenuOutcome, push_slot_menu};
@@ -178,20 +179,31 @@ const TERRAIN_MATERIAL: &str = "grass";
 /// on the body rather than a second constant here.
 const WATER_MATERIAL: &str = "water";
 
-/// How far above the floor the targeting disc sits, in metres.
+/// How wide the targeting indicator's border is, in metres.
 ///
-/// Coplanar with the floor would be a depth-buffer tie and would flicker; a few centimetres
-/// reads as painted on the ground rather than hovering over it.
-const DECAL_HEIGHT: f32 = 0.03;
+/// Wide enough to read as a drawn line at the gameplay camera's distance, narrow enough that
+/// it marks a boundary rather than covering ground either side of it. Its *outer* rim is the
+/// ability's edge, so the line the player aims with is the boundary the executor tests.
+const DECAL_BORDER_WIDTH: f32 = 0.28;
 
-/// How far above the fill the indicator's ring sits, in metres.
-const DECAL_RING_LIFT: f32 = 0.02;
-
-/// How much larger the bright edge is drawn than the fill it outlines.
+/// How far above the ground the border sits, in metres.
 ///
-/// The rim that shows past the fill *is* the outline: the world pass is opaque, so an
-/// outline has to be geometry rather than a stroke.
-const DECAL_EDGE_SCALE: f32 = 1.06;
+/// Coplanar with the terrain would be a depth-buffer tie and would flicker; a few centimetres
+/// reads as painted on the ground rather than hovering over it, and is far below what the eye
+/// resolves at the camera's distance.
+const DECAL_BORDER_LIFT: f32 = 0.05;
+
+/// How wide the translucent band inside the border is, in metres.
+///
+/// The whole of the indicator's interior: everything further in is bare terrain. A band is
+/// what makes the enclosed area read as enclosed without an opaque disc hiding the ground the
+/// player is aiming at.
+const DECAL_GLOW_WIDTH: f32 = 0.85;
+
+/// How far above the ground the translucent band sits, in metres.
+///
+/// Below the border, so the two never tie for depth where they meet.
+const DECAL_GLOW_LIFT: f32 = 0.035;
 
 /// How far the cursor may travel during a left press and still count as a click.
 ///
@@ -362,6 +374,15 @@ pub struct App {
     /// shaded footprint and the ring is its bright edge, which is what makes the shape
     /// readable over grass, stone or a corpse.
     targeting_decal: Option<TargetingDecal>,
+    /// Scratch for the indicator's outline, reused every frame.
+    ///
+    /// The indicator is rebuilt whenever the cursor moves, which is most frames a player
+    /// spends aiming; owning the buffers here is what makes that rebuild allocation-free.
+    decal_scratch: engine_presentation::ui::ground_decal::DecalScratch,
+    /// Scratch for the border band's piece transforms.
+    decal_border: Vec<engine_core::transform::Transform>,
+    /// Scratch for the translucent band's piece transforms.
+    decal_glow: Vec<engine_core::transform::Transform>,
     /// The meshes and materials the indicator is drawn with.
     decal_visuals: DecalVisuals,
     /// Enemies inside the circle this frame. Reused; never freed.
@@ -999,6 +1020,9 @@ impl App {
             hovered_ability: None,
             hovered_slot: None,
             targeting_decal: None,
+            decal_scratch: engine_presentation::ui::ground_decal::DecalScratch::new(),
+            decal_border: Vec::new(),
+            decal_glow: Vec::new(),
             decal_visuals,
             affected: Vec::with_capacity(32),
             mouse_look: MouseLook::new(),
@@ -1484,9 +1508,19 @@ impl App {
         if self.targeting.is_active() {
             let caster = self.simulation.player_position();
             let view_projection = self.camera.view_projection();
+            // The level's own surface, so the cursor lands on the terrain the player is
+            // looking at rather than on the plane the arena used to be.
+            let terrain = self
+                .environment
+                .as_ref()
+                .and_then(|scene| scene.terrain.as_ref());
+            let ground = match terrain {
+                Some(terrain) => GroundSurface::Terrain(terrain),
+                None => GroundSurface::Plane(engine_presentation::ui::targeting::GROUND_HEIGHT),
+            };
             match self
                 .targeting
-                .update(&ui_input, &view_projection, viewport, caster)
+                .update(&ui_input, &view_projection, viewport, caster, &ground)
             {
                 TargetingOutcome::Confirmed { ability, position } => {
                     let command = match ability.bar_slot() {
@@ -2974,107 +3008,82 @@ impl App {
     fn update_targeting_decal(&mut self) {
         let Some(target) = self.targeting.active() else {
             if let Some(decal) = self.targeting_decal.take() {
-                self.extractor.render_world_mut().despawn(decal.fill);
-                self.extractor.render_world_mut().despawn(decal.edge);
+                let world = self.extractor.render_world_mut();
+                for entity in decal.border.into_iter().chain(decal.glow) {
+                    world.despawn(entity);
+                }
             }
             self.affected.clear();
             return;
         };
 
         let visuals = self.decal_visuals;
-        let (fill_material, ring_material) = if target.valid {
-            (visuals.fill_valid, visuals.ring_valid)
+        let (border_material, glow_material) = if target.valid {
+            (visuals.border_valid, visuals.glow_valid)
         } else {
-            (visuals.fill_invalid, visuals.ring_invalid)
+            (visuals.border_invalid, visuals.glow_invalid)
         };
 
-        // Three shapes, one system. A circle sits under the cursor; a cone and a line are
-        // anchored on the caster and rotated to where the player is pointing. All of them
-        // are a fixed size: an indicator that breathed would be lying about the area it
-        // covers.
-        use engine_presentation::ui::targeting::TargetShape;
-        let kind = DecalShape::of(target.shape);
-        let (fill_mesh, ring_mesh) = match kind {
-            DecalShape::Circle => (visuals.fill_mesh, visuals.ring_mesh),
-            DecalShape::Cone => (visuals.cone_mesh, visuals.cone_edge_mesh),
-            DecalShape::Line => (visuals.strip_mesh, visuals.strip_mesh),
-        };
-        let rotation = match kind {
-            DecalShape::Circle => engine_core::math::Quat::IDENTITY,
-            DecalShape::Cone | DecalShape::Line => {
-                engine_core::math::Quat::from_yaw_pitch_roll(target.facing, 0.0, 0.0)
-            }
-        };
-        let anchor = target.anchor;
-        // A line is the one shape whose two axes differ: it is as wide as the ability is
-        // wide and as long as it reaches.
-        let extent = match target.shape {
-            TargetShape::Line { width, length } => Vec3::new(width, 1.0, length),
-            TargetShape::Cone { range, .. } => Vec3::new(range, 1.0, range),
-            _ => Vec3::new(target.radius * 2.0, 1.0, target.radius * 2.0),
-        };
-        let flat = |grow: f32, height: f32| engine_core::transform::Transform {
-            translation: Vec3::new(anchor.x, height, anchor.z),
-            rotation,
-            scale: Vec3::new(extent.x * grow, 1.0, extent.z * grow),
-        };
-        // The bright shape is drawn slightly larger and *below* the fill, so its rim shows
-        // as an outline; the world pass is opaque, so an outline has to be geometry.
-        let fill_transform = flat(1.0, DECAL_HEIGHT + DECAL_RING_LIFT);
-        let ring_transform = flat(DECAL_EDGE_SCALE, DECAL_HEIGHT);
-        // Local bounds, scaled by the transform's largest axis before they are culled
-        // against. A circle and a cone are centred on their anchor; a strip is *anchored at
-        // one end* and runs a whole length forwards, so a sphere around the anchor would
-        // stop short of the far end and cull the indicator from exactly the angle the
-        // player is looking down it.
-        let bounds = match kind {
-            DecalShape::Line => engine_core::math::Sphere::new(Vec3::new(0.0, 0.0, -0.5), 0.9),
-            DecalShape::Circle | DecalShape::Cone => {
-                engine_core::math::Sphere::new(Vec3::ZERO, 0.75)
-            }
-        };
-
-        let world = self.extractor.render_world_mut();
-        // A shape change means different geometry, and geometry is fixed at spawn.
-        if let Some(decal) = self.targeting_decal
-            && decal.shape != kind
+        // The surface the outline is laid on. A level with a height field is sampled; one
+        // without gets an exact plane rather than an approximation of one.
+        let ground = match self
+            .environment
+            .as_ref()
+            .and_then(|scene| scene.terrain.as_ref())
         {
-            world.despawn(decal.fill);
-            world.despawn(decal.edge);
-            self.targeting_decal = None;
-        }
-        match self.targeting_decal {
-            Some(decal) => {
-                world.set_transform(decal.fill, fill_transform, bounds);
-                world.set_material(decal.fill, fill_material);
-                world.set_transform(decal.edge, ring_transform, bounds);
-                world.set_material(decal.edge, ring_material);
-            }
-            None => {
-                let mut spawn = |mesh, material, transform| {
-                    world.spawn(engine_render_data::RenderEntityDesc {
-                        transform,
-                        mesh,
-                        material,
-                        bounds,
-                        visible: true,
-                        style: engine_render_data::InstanceStyle::NEUTRAL,
-                        // The targeting indicator: a shape painted on the ground to say
-                        // where a spell will land. It is interface, not matter — it casts
-                        // nothing, and a shadow falling across it must not make the area it
-                        // marks harder to read.
-                        shadow: engine_render_data::ShadowCasting::NONE,
-                    })
-                };
-                let fill = spawn(fill_mesh, fill_material, fill_transform);
-                let edge = spawn(ring_mesh, ring_material, ring_transform);
-                self.targeting_decal = Some(TargetingDecal {
-                    fill,
-                    edge,
-                    shape: kind,
-                });
-            }
-        }
+            Some(terrain) => GroundSurface::Terrain(terrain),
+            None => GroundSurface::Plane(engine_presentation::ui::targeting::GROUND_HEIGHT),
+        };
+
+        // The border's outer rim is the ability's edge, so the line the player aims with is
+        // the boundary the executor tests. The band sits inside it, starting where the
+        // border ends, so the two touch without overlapping.
+        let border = DecalBand::edged(DECAL_BORDER_WIDTH, DECAL_BORDER_LIFT);
+        let glow = DecalBand::edged(DECAL_GLOW_WIDTH, DECAL_GLOW_LIFT)
+            .with_inset(DECAL_BORDER_WIDTH + DECAL_GLOW_WIDTH * 0.5);
+
+        // Three shapes, one system, and now one geometry too: a circle sits under the cursor
+        // while a cone and a line are anchored on the caster, and all of them are an outline
+        // resampled onto the ground. All are a fixed size - an indicator that breathed would
+        // be lying about the area it covers.
+        engine_presentation::ui::ground_decal::build_band(
+            target.shape,
+            target.anchor,
+            target.facing,
+            border,
+            &ground,
+            &mut self.decal_scratch,
+            &mut self.decal_border,
+        );
+        engine_presentation::ui::ground_decal::build_band(
+            target.shape,
+            target.anchor,
+            target.facing,
+            glow,
+            &ground,
+            &mut self.decal_scratch,
+            &mut self.decal_glow,
+        );
+
+        let mut decal = self.targeting_decal.take().unwrap_or_default();
+        let world = self.extractor.render_world_mut();
+        sync_decal_band(
+            world,
+            &mut decal.border,
+            &self.decal_border,
+            visuals.quad_mesh,
+            border_material,
+            visuals.quad_bounds,
+        );
+        sync_decal_band(
+            world,
+            &mut decal.glow,
+            &self.decal_glow,
+            visuals.quad_mesh,
+            glow_material,
+            visuals.quad_bounds,
+        );
+        self.targeting_decal = Some(decal);
 
         // Everything the shape currently covers, so the interface can mark it. The shape
         // decides, not the app: a future cone marks what a cone covers with no change here.
@@ -4504,118 +4513,138 @@ fn imported_character(
     definition
 }
 
-/// The two entities the ground indicator is drawn with, and which shape they were built for.
+/// The entities the ground indicator is drawn with: one per piece of each band.
 ///
-/// The render world has no way to change an entity's mesh, so switching between a circle and
-/// a cone respawns the pair rather than mutating them - which happens once per targeting
-/// press, not per frame.
-#[derive(Debug, Clone, Copy)]
+/// Two pools rather than two entities. The indicator is an *outline* laid on the terrain, cut
+/// into short pieces so each can sit at the height under it, and a pool is what lets the piece
+/// count change with the shape and the radius without respawning anything: a piece the current
+/// shape does not need is hidden, not despawned, and is reused the moment it is.
+#[derive(Debug, Default)]
 struct TargetingDecal {
-    /// The shaded footprint.
-    fill: engine_render_data::RenderEntity,
-    /// Its brighter edge.
-    edge: engine_render_data::RenderEntity,
-    /// Which shape it was built for.
-    shape: DecalShape,
+    /// The bright line around the footprint, one entity per piece.
+    border: Vec<engine_render_data::RenderEntity>,
+    /// The translucent band just inside it, one entity per piece.
+    glow: Vec<engine_render_data::RenderEntity>,
 }
 
-/// Which geometry the ground indicator is currently made of.
+/// The mesh and materials the ground indicator is drawn with.
 ///
-/// The render world cannot change an entity's mesh, so this is what decides when the pair
-/// has to be respawned - once per targeting press, never per frame.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum DecalShape {
-    /// A disc under the cursor.
-    Circle,
-    /// A wedge anchored on the caster.
-    Cone,
-    /// A strip anchored on the caster: a linear zone.
-    Line,
-}
-
-impl DecalShape {
-    /// Which geometry a targeting shape asks for.
-    fn of(shape: engine_presentation::ui::targeting::TargetShape) -> Self {
-        use engine_presentation::ui::targeting::TargetShape;
-        match shape {
-            TargetShape::Cone { .. } => Self::Cone,
-            TargetShape::Line { .. } | TargetShape::Rectangle { .. } => Self::Line,
-            TargetShape::Circle { .. } => Self::Circle,
-        }
-    }
-}
-
-/// The meshes and materials the ground indicator is drawn with.
+/// One mesh for the whole indicator. Every piece of every band and every shape is the same
+/// unit quad, turned and stretched by its transform - which is what collapses the opaque
+/// border into a single instanced draw however many pieces it has.
 #[derive(Debug, Clone, Copy)]
 struct DecalVisuals {
-    /// A unit disc, scaled to the ability's radius.
-    fill_mesh: MeshHandle,
-    /// A unit ring, scaled the same way.
-    ring_mesh: MeshHandle,
-    /// A unit cone wedge, for an ability aimed rather than placed.
-    cone_mesh: MeshHandle,
-    /// The same wedge, drawn larger and behind to give it an edge.
-    cone_edge_mesh: MeshHandle,
-    /// A unit strip, scaled to a linear zone's width and length.
-    strip_mesh: MeshHandle,
-    /// The footprint of a valid placement.
-    fill_valid: MaterialHandle,
-    /// Its edge.
-    ring_valid: MaterialHandle,
-    /// The footprint of a placement that would be refused.
-    fill_invalid: MaterialHandle,
-    /// Its edge.
-    ring_invalid: MaterialHandle,
+    /// A unit quad lying in XZ, facing up. One piece of a band.
+    quad_mesh: MeshHandle,
+    /// The quad's local bounds, for the cull.
+    quad_bounds: engine_core::math::Sphere,
+    /// The border of a valid placement: opaque, so it reads on any terrain material.
+    border_valid: MaterialHandle,
+    /// The border of a placement that would be refused.
+    border_invalid: MaterialHandle,
+    /// The translucent band inside a valid placement.
+    glow_valid: MaterialHandle,
+    /// The translucent band inside a refused one.
+    glow_invalid: MaterialHandle,
+}
+
+/// Points `pool` at `transforms`, spawning, reusing and hiding entities as the count changes.
+///
+/// The piece count of the indicator changes with the ability - a cone is not a circle, and a
+/// twelve-metre radius is not a five-metre one - and it changes while the level is being
+/// edited under it. Despawning and respawning on every change would churn render-world slots
+/// every frame a brush stroke moved the ground; a pool grows to the largest outline the
+/// session has drawn and then never allocates again. Surplus entities are hidden rather than
+/// removed, because the next shape is very likely to want them back.
+fn sync_decal_band(
+    world: &mut engine_render_data::RenderWorld,
+    pool: &mut Vec<engine_render_data::RenderEntity>,
+    transforms: &[engine_core::transform::Transform],
+    mesh: MeshHandle,
+    material: MaterialHandle,
+    bounds: engine_core::math::Sphere,
+) {
+    for (entity, transform) in pool.iter().zip(transforms) {
+        world.set_transform(*entity, *transform, bounds);
+        world.set_material(*entity, material);
+        world.set_visible(*entity, true);
+    }
+    for transform in transforms.iter().skip(pool.len()) {
+        pool.push(world.spawn(engine_render_data::RenderEntityDesc {
+            transform: *transform,
+            mesh,
+            material,
+            bounds,
+            visible: true,
+            style: engine_render_data::InstanceStyle::NEUTRAL,
+            // The targeting indicator: a shape painted on the ground to say where a spell
+            // will land. It is interface, not matter - it casts nothing, and a shadow
+            // falling across it must not make the area it marks harder to read.
+            shadow: engine_render_data::ShadowCasting::NONE,
+        }));
+    }
+    for entity in pool.iter().skip(transforms.len()) {
+        world.set_visible(*entity, false);
+    }
 }
 
 /// Uploads the ground indicator's geometry and colours.
 ///
-/// The fill is deliberately dark and the ring deliberately bright. The world pass is opaque,
-/// so "translucent" has to be expressed as a shade the ground reads through rather than as an
-/// alpha the renderer would ignore; the bright edge is what carries the shape.
+/// **One mesh.** A unit quad, one metre across and one metre long, lying in XZ and facing up.
+/// Every piece of the outline is an instance of it, so the shape of the indicator lives
+/// entirely in the transforms `engine_presentation::ui::ground_decal` produces and a new
+/// footprint needs no new geometry.
+///
+/// **Two surface classes, deliberately.** The border is opaque: it is a line the player has to
+/// read against grass, rock and shadow alike, it needs no blending to do that, and an opaque
+/// material is what lets every piece of it collapse into one instanced draw. The band inside
+/// it is transparent, because its whole job is to mark an area *without* hiding the ground -
+/// which is the one thing the opaque disc it replaces could not do.
 fn upload_decal_visuals(renderer: &mut Renderer) -> Result<DecalVisuals, EngineError> {
-    // Unit shapes: the transform scales them to whatever radius the ability has.
-    let fill_mesh = renderer.create_mesh(&MeshData::disc(0.5, 48))?;
-    let ring_mesh = renderer.create_mesh(&MeshData::ring(0.5, 0.035, 48))?;
-    // A unit-radius wedge with the cone's own half-angle, so the preview is the footprint.
-    let cone_half_angle = engine_game::sim::CONE_HALF_ANGLE;
-    let cone_mesh = renderer.create_mesh(&MeshData::sector(1.0, cone_half_angle, 32))?;
-    let cone_edge_mesh = renderer.create_mesh(&MeshData::sector(1.0, cone_half_angle, 32))?;
-    // A unit strip: one metre across, one metre long, running from the origin along -Z.
-    // Firestorm's line scales it to twenty by ten.
-    let strip_mesh = renderer.create_mesh(&MeshData::strip())?;
+    let quad = MeshData::plane(1.0);
+    let quad_bounds = quad.bounds();
+    let quad_mesh = renderer.create_mesh(&quad)?;
 
-    let fill_valid = renderer.create_material(
-        MaterialDesc::colored(0.35, 0.16, 0.05)
+    // **Colour in the emissive term, base colour near black.** The shader's lit and ambient
+    // contributions both scale with the base colour, so a band that carried its colour there
+    // would shade differently on every piece as the pieces tilted to the ground - a ring of
+    // facets on a slope - and would dim in a shadow exactly where the terrain is hardest to
+    // read. Emissive is added after the lighting, so the indicator is one flat colour
+    // whatever the ground under it is doing. Verified in an offscreen capture over rough
+    // ground, which is where the lit version faceted visibly.
+    let border_valid = renderer.create_material(
+        MaterialDesc::colored(0.02, 0.013, 0.005)
             .with_roughness(1.0)
-            .with_emissive(Vec3::new(0.16, 0.06, 0.01)),
+            .with_emissive(Vec3::new(1.15, 0.60, 0.17)),
     )?;
-    let ring_valid = renderer.create_material(
-        MaterialDesc::colored(1.0, 0.62, 0.18)
-            .with_roughness(0.4)
-            .with_emissive(Vec3::new(0.95, 0.45, 0.10)),
-    )?;
-    let fill_invalid = renderer.create_material(
-        MaterialDesc::colored(0.32, 0.06, 0.06)
+    let border_invalid = renderer.create_material(
+        MaterialDesc::colored(0.02, 0.005, 0.004)
             .with_roughness(1.0)
-            .with_emissive(Vec3::new(0.16, 0.02, 0.02)),
+            .with_emissive(Vec3::new(1.05, 0.14, 0.10)),
     )?;
-    let ring_invalid = renderer.create_material(
-        MaterialDesc::colored(0.95, 0.20, 0.18)
-            .with_roughness(0.4)
-            .with_emissive(Vec3::new(0.80, 0.08, 0.06)),
+    // Low enough that the terrain reads through it plainly. The number is the difference
+    // between "this area is marked" and "this area is covered": at this alpha the band adds
+    // about a fifth of its own colour over whatever the ground is.
+    let glow_valid = renderer.create_material(
+        MaterialDesc::colored(0.01, 0.006, 0.002)
+            .with_roughness(1.0)
+            .with_emissive(Vec3::new(0.95, 0.48, 0.13))
+            .with_opacity(0.22),
+    )?;
+    let glow_invalid = renderer.create_material(
+        MaterialDesc::colored(0.01, 0.003, 0.002)
+            .with_roughness(1.0)
+            .with_emissive(Vec3::new(0.88, 0.12, 0.09))
+            .with_opacity(0.22),
     )?;
 
     Ok(DecalVisuals {
-        fill_mesh,
-        ring_mesh,
-        cone_mesh,
-        cone_edge_mesh,
-        strip_mesh,
-        fill_valid,
-        ring_valid,
-        fill_invalid,
-        ring_invalid,
+        quad_mesh,
+        quad_bounds,
+        border_valid,
+        border_invalid,
+        glow_valid,
+        glow_invalid,
     })
 }
 
@@ -4882,11 +4911,16 @@ mod tests {
 
     #[test]
     fn every_aimed_ability_asks_for_geometry_the_indicator_can_draw() {
-        // Firestorm's linear zone is a third shape, and the decal has to know it exists:
-        // an ability whose shape fell through to a circle of radius zero would open a
-        // targeting state and draw nothing, which is exactly what a missing indicator
-        // looks like.
+        // An ability whose shape fell through to a circle of radius zero would open a
+        // targeting state and draw nothing, which is exactly what a missing indicator looks
+        // like. Both bands are checked, at the exact widths and lifts the app uses, because
+        // the band that gets its inset wrong is the band that collapses to a dot.
+        use engine_presentation::ui::ground_decal::{DecalScratch, GroundSurface, build_band};
         use engine_presentation::ui::targeting::TargetShape;
+
+        let ground = GroundSurface::Plane(0.0);
+        let mut scratch = DecalScratch::new();
+        let mut pieces = Vec::new();
 
         // Every hero's, not only the mage's: the Warrior's cleave and the Druid's Starfall
         // are aimed too, and an indicator that only knew about fire would draw nothing for
@@ -4897,13 +4931,30 @@ mod tests {
             }
             let shape = TargetShape::of(ability);
             assert!(shape.extent() > 0.0, "{ability:?} has nothing to draw");
-            let kind = DecalShape::of(shape);
-            match ability {
-                FireAbility::Firestorm => assert_eq!(kind, DecalShape::Line),
-                FireAbility::FlameCone => {
-                    assert_eq!(kind, DecalShape::Cone);
-                }
-                _ => assert_eq!(kind, DecalShape::Circle, "{ability:?}"),
+
+            let border = DecalBand::edged(DECAL_BORDER_WIDTH, DECAL_BORDER_LIFT);
+            let glow = DecalBand::edged(DECAL_GLOW_WIDTH, DECAL_GLOW_LIFT)
+                .with_inset(DECAL_BORDER_WIDTH + DECAL_GLOW_WIDTH * 0.5);
+            for (name, band) in [("border", border), ("glow", glow)] {
+                build_band(
+                    shape,
+                    Vec3::ZERO,
+                    0.0,
+                    band,
+                    &ground,
+                    &mut scratch,
+                    &mut pieces,
+                );
+                assert!(
+                    pieces.len() >= 4,
+                    "{ability:?}: the {name} band is {} pieces",
+                    pieces.len(),
+                );
+                assert!(
+                    pieces.len() <= engine_presentation::ui::ground_decal::MAX_SEGMENTS,
+                    "{ability:?}: the {name} band is over budget at {} pieces",
+                    pieces.len(),
+                );
             }
         }
     }

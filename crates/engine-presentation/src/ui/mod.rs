@@ -48,6 +48,8 @@
 pub mod action_bar;
 /// The character sheet: stats, fifteen equipment slots, and the bag.
 pub mod character_menu;
+/// The ground indicator's geometry: an outline laid onto the terrain surface.
+pub mod ground_decal;
 /// Edit HUD: the interface made draggable.
 pub mod hud_edit;
 /// Where every arrangeable interface element sits, at any resolution.
@@ -70,6 +72,9 @@ pub use action_bar::{
 pub use character_menu::{
     CharacterMenu, CharacterMenuOutcome, CharacterMetrics, CharacterTheme, Drag,
     push_character_menu, quality_color,
+};
+pub use ground_decal::{
+    DecalBand, DecalScratch, GroundSurface, MAX_SEGMENTS, SEGMENT_LENGTH, build_band,
 };
 pub use hud_edit::{EditItem, EditOutcome, HudEditor};
 pub use hud_layout::{HudElementId, HudLayout, MIN_VISIBLE_FRACTION, clamp_on_screen};

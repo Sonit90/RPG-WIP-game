@@ -901,6 +901,9 @@ impl Editor {
             ui_input.pointer,
             view_projection,
             viewport,
+            &engine_presentation::ui::ground_decal::GroundSurface::Plane(
+                engine_presentation::ui::targeting::GROUND_HEIGHT,
+            ),
         ) else {
             self.status = "point at the ground to put a spawn point".to_owned();
             return false;
@@ -940,6 +943,9 @@ impl Editor {
             ui_input.pointer,
             view_projection,
             viewport,
+            &engine_presentation::ui::ground_decal::GroundSurface::Plane(
+                engine_presentation::ui::targeting::GROUND_HEIGHT,
+            ),
         ) else {
             self.status = "point at the ground to pour water".to_owned();
             return false;
@@ -1027,6 +1033,9 @@ impl Editor {
             ui_input.pointer,
             view_projection,
             viewport,
+            &engine_presentation::ui::ground_decal::GroundSurface::Plane(
+                engine_presentation::ui::targeting::GROUND_HEIGHT,
+            ),
         ) else {
             return (EditorOutcome::Idle, false);
         };
@@ -1719,6 +1728,9 @@ impl Editor {
                 ui_input.pointer,
                 view_projection,
                 viewport,
+                &engine_presentation::ui::ground_decal::GroundSurface::Plane(
+                    engine_presentation::ui::targeting::GROUND_HEIGHT,
+                ),
             ) else {
                 self.status = "point at the ground to place".to_owned();
                 return false;
@@ -1873,6 +1885,9 @@ impl Editor {
                 centre,
                 view_projection,
                 viewport,
+                &engine_presentation::ui::ground_decal::GroundSurface::Plane(
+                    engine_presentation::ui::targeting::GROUND_HEIGHT,
+                ),
             )
             .unwrap_or_else(|| {
                 // Looking at the sky: the ground is not in front of the camera at all, so the
@@ -1915,6 +1930,9 @@ impl Editor {
             ui_input.pointer,
             view_projection,
             viewport,
+            &engine_presentation::ui::ground_decal::GroundSurface::Plane(
+                engine_presentation::ui::targeting::GROUND_HEIGHT,
+            ),
         ) else {
             self.status = "point at the ground to drop it".to_owned();
             return false;
