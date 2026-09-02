@@ -13,6 +13,10 @@ Reference hardware: Ryzen 7 5800X, Radeon RX 6700 XT, 1920x1080.
 **No frame-rate claim appears in this document unless it was measured.** Phase 0's goal
 is not to reach 480 FPS; it is to build a measurement system that can be trusted.
 
+**Startup time has its own file**: `docs/startup-performance.md` records what a launch spends
+its time on, what was done about it (1.4 s to 0.35 s on the reference machine) and what is
+left. This file is about the frame.
+
 ## Methodology
 
 * **CPU frame time** — implemented (M3). `engine_core::time::FrameClock` takes `Instant`
