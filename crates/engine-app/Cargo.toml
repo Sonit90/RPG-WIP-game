@@ -17,6 +17,11 @@ debug-overlay = ["engine-renderer/debug-overlay"]
 # palette, the fly camera or the scene writer, and `dep:` means the crate is not even
 # compiled without this. Development builds enable it with `--features editor`.
 editor = ["dep:engine-editor"]
+# Startup timing: the table printed after the first frame. Off by default, so a shipping
+# build contains no stopwatch, no stage names and no mutex — every function in `startup` is
+# an empty inline body without it. Development builds measure with
+# `--features startup-timing`.
+startup-timing = ["engine-renderer/startup-timing"]
 
 [dependencies]
 engine-assets = { workspace = true }

@@ -7,6 +7,7 @@ mod app;
 mod args;
 mod audio_device;
 mod benchmark;
+mod startup;
 
 use std::process::ExitCode;
 
@@ -15,6 +16,8 @@ use engine_core::application::{Engine, EngineConfig};
 use crate::app::App;
 
 fn main() -> ExitCode {
+    // First statement in the process: everything after it is measured against this instant.
+    startup::begin();
     if let Err(error) = engine_core::logging::init() {
         eprintln!("fatal: failed to install logger: {error}");
         return ExitCode::FAILURE;
@@ -42,6 +45,8 @@ fn main() -> ExitCode {
         eprintln!("error: {}\n\n{}", error.chain(), args::USAGE);
         return ExitCode::FAILURE;
     }
+
+    startup::stage("process entry");
 
     let config = EngineConfig::default().with_frame_budget(settings.frame_budget);
     let result = App::new(&settings, &args).and_then(|app| Engine::new(app, config).run());

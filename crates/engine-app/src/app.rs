@@ -503,6 +503,7 @@ impl App {
             .with_activate(args.focus)
             .with_visible(false);
         let window = Window::new(&window_config)?;
+        crate::startup::stage("window init");
         if !args.window {
             log::info!("window: --hidden; the game runs and renders with nothing on screen");
         }
@@ -515,6 +516,20 @@ impl App {
         renderer_config.break_on_validation_error =
             settings.renderer_validation && cfg!(debug_assertions);
         let mut renderer = Renderer::new(window.raw_handle(), &renderer_config)?;
+        {
+            // The renderer measured its own two halves; this puts them in the same table as
+            // everything else rather than in a second one.
+            let timings = renderer.startup();
+            crate::startup::stage_from(
+                "D3D12 device",
+                Instant::now() - Duration::from_secs_f64(timings.device_ms / 1e3),
+            );
+            crate::startup::stage_from(
+                "renderer objects",
+                Instant::now() - Duration::from_secs_f64(timings.objects_ms / 1e3),
+            );
+            crate::startup::stage("renderer init");
+        }
         #[cfg(feature = "debug-overlay")]
         renderer.set_overlay_enabled(settings.debug_overlay);
 
@@ -525,6 +540,7 @@ impl App {
         let vfx_visuals = upload_vfx_visuals(&mut renderer)?;
         #[cfg(feature = "debug-overlay")]
         let debug_visuals = upload_debug_visuals(&mut renderer)?;
+        crate::startup::stage("GPU upload: shared");
 
         // The level. Built before the simulation, because the simulation's arena bounds and
         // spawn points come out of it — the scene owns where there is room to stand, because
@@ -575,6 +591,8 @@ impl App {
                 args.stress_shadow_lights.min(args.stress_lights),
             );
         }
+
+        crate::startup::stage("scene loading");
 
         let (mut simulation, demo) = match args.scene {
             Scene::Combat => (
@@ -673,6 +691,7 @@ impl App {
                 (simulation, Some(scene))
             }
         };
+        crate::startup::stage("simulation build");
         // The environment library, uploaded once: sixteen `create_model` calls, whatever the
         // scene's object count is. Every placement of an asset then shares the mesh and
         // material handles that upload returned, which is the whole of the instancing
@@ -682,12 +701,15 @@ impl App {
             None => engine_presentation::EnvironmentVisuals::new(),
         });
 
+        crate::startup::stage("GPU upload: environment");
+
         let mut extractor = RenderExtractor::new(visuals, GROUND_HALF_EXTENT * 2.0);
         // The player's model, skeleton and clips. Every scene gets one, including the
         // collision course — a character test needs a character, and a capsule that walks is
         // easier to judge when it has legs.
         let heroes = HeroVisuals::upload(&mut renderer)?;
         extractor.set_player_visual(heroes.visual(simulation.hero())?);
+        crate::startup::stage("GPU upload: heroes");
         if args.scene.is_collision() {
             // The demo course brings its own floor: a slab whose top face is at y = 0. The
             // extractor's floor plane is at y = 0 too, and two coplanar surfaces are a
@@ -706,15 +728,22 @@ impl App {
             // Anything the level names that the library does not have: a `.glb` under
             // assets/, or the marker for a name nothing answers to.
             let extra = upload_missing_models(&mut renderer, placer.visuals_mut(), scene);
+            crate::startup::stage("models from disk");
             if scene.terrain.is_some() {
                 log::info!(
                     "environment '{}': terrain, {} points a side",
                     scene.name,
-                    scene.terrain.as_ref().map_or(0, |terrain| terrain.resolution)
+                    scene
+                        .terrain
+                        .as_ref()
+                        .map_or(0, |terrain| terrain.resolution)
                 );
             }
             if extra > 0 {
-                log::info!("environment '{}': {extra} model(s) uploaded from disk", scene.name);
+                log::info!(
+                    "environment '{}': {extra} model(s) uploaded from disk",
+                    scene.name
+                );
             }
             placer.place(
                 extractor.render_world_mut(),
@@ -742,6 +771,7 @@ impl App {
                 placer.visuals().len()
             );
         }
+        crate::startup::stage("scene placement");
         extractor.extract(&simulation);
 
         // The collision course is only visible through the debug view, so in that scene the
@@ -826,6 +856,8 @@ impl App {
                 .count()
         );
 
+        crate::startup::stage("settings and HUD");
+
         let mut controller = ThirdPersonCamera::following(simulation.player_position());
         controller.set_sensitivity(game_settings.settings().camera_sensitivity);
         let mut camera = Camera::new(Projection::perspective(aspect_of(width, height)))?;
@@ -868,6 +900,7 @@ impl App {
             log::info!("audio: --no-audio; no device will be opened");
             AudioHost::silent(crate::audio_device::FALLBACK_SAMPLE_RATE)
         };
+        crate::startup::stage("audio init");
         let audio_director = AudioDirector::new();
         apply_volumes(&audio, game_settings.settings());
         let settings_now = game_settings.settings();
@@ -900,6 +933,7 @@ impl App {
             .shadows
             .unwrap_or(game_settings.settings().graphics.shadows);
 
+        crate::startup::stage("app assembly");
         let mut app = Self {
             window,
             renderer,
@@ -2440,7 +2474,9 @@ impl App {
             // The centre and the yaw live here rather than in the mesh, so a body that is
             // moved or turned reuses the quad it already has.
             let transform = engine_core::transform::Transform::from_translation(body.center)
-                .with_rotation(engine_core::math::Quat::from_yaw_pitch_roll(body.yaw, 0.0, 0.0));
+                .with_rotation(engine_core::math::Quat::from_yaw_pitch_roll(
+                    body.yaw, 0.0, 0.0,
+                ));
             let world = self.extractor.render_world_mut();
             let entity = world.spawn(engine_render_data::RenderEntityDesc {
                 transform,
@@ -2497,7 +2533,9 @@ impl App {
         let bounds = binding.lods.first().map_or(part.bounds, |lod| lod.bounds);
         for spawn in &spawns {
             let transform = engine_core::transform::Transform::from_translation(spawn.position)
-                .with_rotation(engine_core::math::Quat::from_yaw_pitch_roll(spawn.yaw, 0.0, 0.0));
+                .with_rotation(engine_core::math::Quat::from_yaw_pitch_roll(
+                    spawn.yaw, 0.0, 0.0,
+                ));
             let world = self.extractor.render_world_mut();
             let entity = world.spawn(engine_render_data::RenderEntityDesc {
                 transform,
@@ -2566,7 +2604,9 @@ impl App {
                 engine_presentation::extract::interpolated_player_position(&self.simulation);
             self.cancel_mouse_look();
             self.editor.set_scale(self.game_ui.scale(), viewport);
+            let editor_started = Instant::now();
             self.editor.enter(focus, &name, viewport);
+            crate::startup::stage_from("editor init", editor_started);
             if let Some(path) = self.editor_save_path.clone() {
                 self.editor.set_save_path(path);
             }
@@ -3960,6 +4000,10 @@ impl Application for App {
 
     fn present(&mut self, _ctx: &mut EngineContext) -> Result<(), EngineError> {
         self.renderer.present()?;
+        if self.renderer.frames_presented() == 1 {
+            crate::startup::stage("first frame");
+            crate::startup::report();
+        }
         // The window appears here, once, with a frame already in it. `--hidden` never takes
         // this branch, which is what makes it a run that renders without a window rather
         // than a run that does not render.
@@ -4077,10 +4121,13 @@ fn load_authored_scene(
             // in the editor: a game told to load a level and quietly handed an empty one
             // instead would look exactly like a level that failed to save.
             if args.editor && !std::path::Path::new(path).is_file() {
-                let name = std::path::Path::new(path)
-                    .file_stem()
-                    .map_or_else(|| "untitled".to_owned(), |stem| stem.to_string_lossy().into_owned());
-                log::info!("scene file: {path} does not exist yet - starting a new empty level '{name}'");
+                let name = std::path::Path::new(path).file_stem().map_or_else(
+                    || "untitled".to_owned(),
+                    |stem| stem.to_string_lossy().into_owned(),
+                );
+                log::info!(
+                    "scene file: {path} does not exist yet - starting a new empty level '{name}'"
+                );
                 return Ok(Some(engine_environment::EnvironmentScene::empty(name)));
             }
             let scene = engine_environment::scene_file::load(path).map_err(|error| {
@@ -4203,11 +4250,23 @@ fn upload_environment(
     let mut visuals = engine_presentation::EnvironmentVisuals::new();
     let mut triangles = 0;
     let mut texture_bytes = 0;
+    // Startup timing: the library is *authored in code* and then uploaded, alternately, so
+    // the two costs cannot be told apart by a stage boundary. Two accumulators, reported as
+    // two rows of the same table.
+    let mut authoring = Duration::ZERO;
+    let mut uploading = Duration::ZERO;
+    let mut mark = Instant::now();
     for (asset, model) in engine_assets::procedural::environment_library() {
+        authoring += mark.elapsed();
+        mark = Instant::now();
         triangles += model.triangle_count();
         texture_bytes += model.texture_bytes();
         visuals.insert(asset, renderer.create_model(&model)?);
+        uploading += mark.elapsed();
+        mark = Instant::now();
     }
+    crate::startup::record("  env: authored in code", authoring);
+    crate::startup::record("  env: create_model", uploading);
     log::info!(
         "environment library: {} models, {triangles} triangles at LOD0, {:.0} KiB of textures",
         visuals.len(),
@@ -4278,9 +4337,16 @@ impl HeroVisuals {
         ];
 
         let mut entries = Vec::with_capacity(sources.len());
+        // Startup timing: as in `upload_environment`, building and uploading alternate.
+        let mut building = Duration::ZERO;
+        let mut uploading = Duration::ZERO;
         for (hero, file, build, character) in sources {
+            let mark = Instant::now();
             let (definition, model) = load_character(hero, file, build, character)?;
+            building += mark.elapsed();
+            let mark = Instant::now();
             let binding = renderer.create_model(&model)?;
+            uploading += mark.elapsed();
             entries.push(HeroVisual {
                 hero,
                 definition,
@@ -4288,6 +4354,8 @@ impl HeroVisuals {
                 binding,
             });
         }
+        crate::startup::record("  heroes: built/imported", building);
+        crate::startup::record("  heroes: create_model", uploading);
         Ok(Self { entries })
     }
 

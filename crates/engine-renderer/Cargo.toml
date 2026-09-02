@@ -11,6 +11,9 @@ default = ["debug-overlay"]
 # made with --no-default-features, which removes the font, the overlay geometry and the
 # per-frame upload buffers from the binary entirely.
 debug-overlay = []
+# Startup timing. Off by default, and off in a shipping build: with the feature absent the
+# two `Instant`s in `Renderer::new` and the numbers they produce are not compiled at all.
+startup-timing = []
 
 [dependencies]
 engine-core = { workspace = true }

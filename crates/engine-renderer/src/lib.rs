@@ -70,7 +70,7 @@ pub use overlay::OverlayMetrics;
 pub use particle_pipeline::{ParticleConstants, ParticlePipeline};
 pub use pipeline::{TRIANGLE_VERTICES, Vertex};
 pub use render_list::{RenderList, RenderListEntry};
-pub use renderer::{Renderer, TextureHandle, TextureImage};
+pub use renderer::{Renderer, RendererStartup, TextureHandle, TextureImage};
 pub use scene::{FrameConstants, ObjectConstants};
 pub use shadow::{ShadowPreset, ShadowRenderer, ShadowSettings, ShadowStats};
 pub use ui_atlas::{AtlasUv, UiAtlas};

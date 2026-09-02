@@ -352,6 +352,10 @@ struct OverlayState {
 /// the device while a swap chain or command list still lives crashes inside the driver
 /// on some adapters. `context` therefore comes last.
 pub struct Renderer {
+    /// What construction cost, for the application's startup report. Absent without the
+    /// `startup-timing` feature.
+    #[cfg(feature = "startup-timing")]
+    startup: RendererStartup,
     swap_chain: SwapChain,
     /// Frame slots, their allocators and the fence that paces them.
     frames: FrameRing,
@@ -598,6 +602,18 @@ pub struct Renderer {
     context: RenderDevice,
 }
 
+/// What [`Renderer::new`] spent its time on, in milliseconds.
+///
+/// Zero unless the `startup-timing` feature is on, which is how a shipping build carries no
+/// measurement: without the feature nothing writes these and nothing reads them.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct RendererStartup {
+    /// Creating the D3D12 device, its queue and the swap chain.
+    pub device_ms: f64,
+    /// Everything after that: pipelines, heaps, the shadow atlas, the UI atlas, buffers.
+    pub objects_ms: f64,
+}
+
 impl Renderer {
     /// Initializes D3D12 and creates a swap chain for `window_handle`.
     ///
@@ -624,10 +640,17 @@ impl Renderer {
             });
         }
 
+        // Startup timing: the device and the swap chain are the D3D12 half of "the renderer
+        // started", and everything after them is pipelines, heaps and buffers. Behind a
+        // feature, so a shipping build does not even take the clock — see `Renderer::startup`.
+        #[cfg(feature = "startup-timing")]
+        let device_started = std::time::Instant::now();
         let context =
             RenderDevice::new(config.enable_debug_layer, config.break_on_validation_error)?;
         let hwnd = HWND(window_handle as *mut std::ffi::c_void);
         let swap_chain = SwapChain::new(&context, hwnd, config.width, config.height, config.vsync)?;
+        #[cfg(feature = "startup-timing")]
+        let device_ms = device_started.elapsed().as_secs_f64() * 1e3;
 
         let frames = FrameRing::new(&context, config.frames_in_flight)?;
         let frames_in_flight = frames.frames_in_flight();
@@ -675,6 +698,11 @@ impl Renderer {
         };
 
         let renderer = Self {
+            #[cfg(feature = "startup-timing")]
+            startup: RendererStartup {
+                device_ms,
+                objects_ms: device_started.elapsed().as_secs_f64() * 1e3 - device_ms,
+            },
             swap_chain,
             frames,
             commands,
@@ -760,6 +788,23 @@ impl Renderer {
         );
         renderer.log_startup_info();
         Ok(renderer)
+    }
+
+    /// How long the two halves of [`Renderer::new`] took, in milliseconds.
+    ///
+    /// Read once, by the application's startup report. Two `f64`s rather than a profiler:
+    /// "why does a launch take a second" is answered by a handful of numbers, and this crate
+    /// has no business growing a measurement system to produce them.
+    #[must_use]
+    pub fn startup(&self) -> RendererStartup {
+        #[cfg(feature = "startup-timing")]
+        {
+            self.startup
+        }
+        #[cfg(not(feature = "startup-timing"))]
+        {
+            RendererStartup::default()
+        }
     }
 
     /// Logs the adapter, feature level, backend and resolution.
