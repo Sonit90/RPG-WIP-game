@@ -101,6 +101,24 @@ verb reaches exactly one kind. Selecting a body of water clears a selection of o
 reverse; `CTRL+A` takes every object and no water. A rule an author can predict beats a general
 one nobody can — `T` over a mixed selection would mean "scale these and resize those".
 
+### The ground, pits, and falling out of the world
+
+A level that brings a terrain has **no floor plane under it**. The terrain is the ground, all
+of it: sculpt a pit to -6 m and a character walks down into it. It used to be that an
+infinite plane sat at y = 0 beneath everything, so a hill worked and a pit was a hole with a
+lid on it at zero.
+
+The plane is kept for a level with no terrain at all, and for one whose terrain does not reach
+its own walls - a ring of level with nothing under it is a worse bug than a covered pit. A
+terrain the editor creates is sized to the playable square, so this only affects levels
+authored by hand.
+
+What the plane used to do, besides covering pits, was catch somebody who fell off the edge.
+That is now a clock: **ten seconds below the level's deepest ground, less 25 m, and the player
+dies** - through the ordinary death path, so the usual respawn brings them back at the spawn
+point. Standing at the bottom of the deepest pit you can dig is never counted as falling, and
+the clock resets the moment you are above the line again.
+
 ### Module snap
 
 Choosing a cave piece switches the grid to the 4 m module and the rotation step to quarter

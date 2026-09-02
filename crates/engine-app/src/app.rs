@@ -2581,6 +2581,9 @@ impl App {
         // Zero dummies: the configuration is read here only for the floor height and the
         // boundary, and neither depends on how large the group is.
         let config = ArenaConfig::from_environment(scene, 0);
+        // The level's ground may have moved: a brush stroke changes where the bottom of the
+        // world is, and with it what counts as having fallen out of it.
+        self.simulation.set_void_height(config.void_height);
         let world = self.simulation.collision_world_mut();
         arena::build_collision(world, &config);
         arena::add_terrain_collision(world, scene);

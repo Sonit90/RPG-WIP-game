@@ -27,6 +27,27 @@ use crate::world::{EntityDesc, EntityKind, GameWorld};
 /// How the arena is laid out.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ArenaConfig {
+    /// The y a solid plane holds everything up at, or `None` when the level's own ground is
+    /// the only ground.
+    ///
+    /// # Why a level with a terrain has none
+    ///
+    /// The plane is infinite and it sits under everything, the terrain included — so a pit
+    /// dug to −6 m is a pit whose floor is at 0, and an author who lowers the ground watches
+    /// the character walk across the hole they just dug. A level that brought a terrain
+    /// brought its ground with it; a level that did not still needs a floor, and that is what
+    /// this is.
+    ///
+    /// What used to make the plane load-bearing was catching somebody who walked off the
+    /// edge of the terrain. That is now [`ArenaConfig::void_height`]'s job, which answers it
+    /// without also filling in every hole in the level.
+    pub floor: Option<f32>,
+    /// Below this y, a body has fallen out of the world.
+    ///
+    /// Not a surface: nothing is held up by it. It is the height under which the simulation
+    /// stops believing the player is in the level at all — see
+    /// [`Simulation::set_void_height`](crate::sim::Simulation::set_void_height).
+    pub void_height: f32,
     /// Where the player starts.
     pub player_spawn: Vec3,
     /// Which way the player faces when they start, in radians about +Y.
@@ -62,6 +83,10 @@ pub struct ArenaConfig {
 impl Default for ArenaConfig {
     fn default() -> Self {
         Self {
+            // A layout with no level behind it — the training arena, the test beds, every
+            // benchmark — stands on a plane at zero, exactly as it always did.
+            floor: Some(0.0),
+            void_height: -VOID_MARGIN,
             player_spawn: Vec3::ZERO,
             player_spawn_yaw: 0.0,
             single_dummy: Vec3::new(0.0, 0.0, -12.0),
@@ -108,6 +133,13 @@ impl ArenaConfig {
             // it — in which case the group would otherwise be clamped into a heap against
             // the wall and an area ability would hit all of it.
             arena_half_extent: base.arena_half_extent.max(scene.half_extent),
+            // A level whose terrain reaches its own walls has no plane under it: the
+            // terrain *is* the ground, and a plane beneath it is what turns a pit into a hole
+            // with a lid. A level with no terrain — or with one that covers only part of the
+            // playable square — keeps the plane, because the alternative is a ring of level
+            // with nothing under it at all.
+            floor: (!terrain_covers_the_arena(scene)).then_some(scene.ground_height),
+            void_height: void_height_of(scene),
             ..base
         }
     }
@@ -194,6 +226,49 @@ const WALL_HEIGHT: f32 = 4.0;
 /// Thickness of the arena's boundary wall, in metres.
 const WALL_THICKNESS: f32 = 1.0;
 
+/// How far below the lowest ground a body has to be to have left the level, in metres.
+///
+/// Deep enough that no authored pit reaches it — a pit's floor is ground, and a character
+/// standing in one must never be counted as falling — and shallow enough that the fall is
+/// over in about a second rather than in ten.
+const VOID_MARGIN: f32 = 25.0;
+
+/// Whether the level's terrain reaches every corner of its playable square.
+///
+/// The question that decides whether the floor plane can be taken away. A terrain the editor
+/// created covers the square by construction — it is sized from `half_extent` — but a level
+/// authored by hand or written before that rule existed may not, and a ring of level with no
+/// ground under it is a worse bug than a pit with a lid on it.
+#[must_use]
+pub fn terrain_covers_the_arena(scene: &engine_environment::EnvironmentScene) -> bool {
+    let Some(terrain) = scene.terrain.as_ref() else {
+        return false;
+    };
+    let span = terrain.span();
+    let limit = scene.half_extent;
+    terrain.origin.x <= -limit
+        && terrain.origin.z <= -limit
+        && terrain.origin.x + span >= limit
+        && terrain.origin.z + span >= limit
+}
+
+/// The y under which a body has fallen out of `scene`.
+///
+/// The lowest ground the level has, less [`VOID_MARGIN`]: the terrain's deepest point where
+/// there is a terrain, and the floor plane's own height where there is not.
+#[must_use]
+pub fn void_height_of(scene: &engine_environment::EnvironmentScene) -> f32 {
+    let lowest = match scene.terrain.as_ref() {
+        Some(terrain) => terrain
+            .heights
+            .iter()
+            .copied()
+            .fold(scene.ground_height, f32::min),
+        None => scene.ground_height,
+    };
+    lowest - VOID_MARGIN
+}
+
 /// Gives the arena its floor and its four boundary walls.
 ///
 /// The floor was previously a number (`ground_height`) and the walls were a clamp on X and
@@ -205,7 +280,9 @@ const WALL_THICKNESS: f32 = 1.0;
 /// the arena it was measured in.
 pub fn build_collision(world: &mut engine_collision::world::CollisionWorld, config: &ArenaConfig) {
     world.clear();
-    world.add_ground(0.0, "ARENA FLOOR");
+    if let Some(floor) = config.floor {
+        world.add_ground(floor, "ARENA FLOOR");
+    }
 
     let limit = config.arena_half_extent;
     let outer = limit + WALL_THICKNESS;
@@ -369,6 +446,10 @@ pub fn environment_arena(
         ..SimConfig::default()
     });
     let arena = populate(simulation.world_mut(), &config);
+    // The level's own floor, so a character who walks off the edge of the terrain — or
+    // through a hole an author left in it — is eventually counted as having left the level
+    // rather than falling for the rest of the session.
+    simulation.set_void_height(config.void_height);
 
     let world = simulation.collision_world_mut();
     // The floor and the four boundary walls first, then everything the scene brought. The

@@ -77,6 +77,20 @@ pub use firemage_exec::{
     CONE_HALF_ANGLE, CastAim, DETONATE_FRACTION, FireCounters, horizontal_distance,
 };
 
+/// How long the player may be below the world before the fall is fatal, in seconds.
+///
+/// Ten. Long enough that nothing survivable trips it — there is no way to be under the level
+/// for ten seconds and come back — and short enough that a fall through a hole an author left
+/// is a death and a respawn rather than a session that has to be restarted.
+pub const VOID_KILL_SECONDS: f32 = 10.0;
+
+/// The void height a simulation has until a level tells it otherwise.
+///
+/// Far enough down that a layout with a floor plane at zero — the training arena, every test
+/// bed, every benchmark — can never reach it, so nothing that was built before levels had
+/// terrain can die of falling.
+pub const DEFAULT_VOID_HEIGHT: f32 = -10_000.0;
+
 /// How a simulation is configured: the tick rate, the character, and the random seed.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SimConfig {
@@ -352,6 +366,10 @@ pub struct Simulation {
     /// When the player comes back, and whether they are allowed to yet.
     respawn: respawn::Respawn,
     config: SimConfig,
+    /// Below this y the player has left the level. See [`Simulation::set_void_height`].
+    void_height: f32,
+    /// How long the player has been below it, in seconds.
+    void_seconds: f32,
     timestep: FixedTimestep,
     /// Movement intent, held between commands: a tick that falls between two frames of
     /// input still moves the character.
@@ -496,6 +514,8 @@ impl Simulation {
             // Whatever builds a level calls `set_player_spawn` and this becomes the level's.
             player_spawn: None,
             respawn: respawn::Respawn::new(),
+            void_height: DEFAULT_VOID_HEIGHT,
+            void_seconds: 0.0,
             player: Player {
                 entity: EntityId::INVALID,
                 target: None,
@@ -1088,6 +1108,10 @@ impl Simulation {
         self.tick_regeneration(step);
         self.tick_spirit(step);
 
+        // Before the respawn clock, because falling out of the world is one of the things
+        // that could have killed the player this tick.
+        self.tick_void(step);
+
         // Last of all, because it asks one question — is the player alive — and the answer
         // has to be this tick's, after everything that could have killed them has run.
         self.tick_respawn(step);
@@ -1096,6 +1120,69 @@ impl Simulation {
         self.flush_observations();
         self.sample_fire_counters(step);
         stats.telemetry += telemetry_started.elapsed();
+    }
+
+    /// Sets the y under which the player has fallen out of the world.
+    ///
+    /// The level's, because only the level knows how deep its ground goes: a pit dug to
+    /// −40 m is ground, and a character standing in it is standing, not falling. See
+    /// [`crate::arena::void_height_of`], which is where the number comes from.
+    pub fn set_void_height(&mut self, y: f32) {
+        self.void_height = y;
+        self.void_seconds = 0.0;
+    }
+
+    /// The y under which the player has fallen out of the world.
+    #[must_use]
+    pub fn void_height(&self) -> f32 {
+        self.void_height
+    }
+
+    /// How long the player has been below the world, in seconds. Zero whenever they are not.
+    #[must_use]
+    pub fn void_seconds(&self) -> f32 {
+        self.void_seconds
+    }
+
+    /// One tick of "has the player fallen out of the level".
+    ///
+    /// # Why a clock and not a plane
+    ///
+    /// A level's ground is its terrain, and a terrain has holes in it the moment an author
+    /// digs one — so there is no floor to catch a fall without also filling in every pit. The
+    /// answer is not to catch the fall but to notice it: below the level's own lowest ground
+    /// by a wide margin, for [`VOID_KILL_SECONDS`], is not somewhere a player can be.
+    ///
+    /// They are then killed rather than teleported, so the way back is the way back from any
+    /// other death — the respawn clock, the spawn point, the protection — instead of a second
+    /// mechanism that puts a living player somewhere they did not walk to.
+    ///
+    /// The clock resets the moment they are above the line again, so a jump down a shaft that
+    /// lands on something is a fall they survived.
+    fn tick_void(&mut self, step: f32) {
+        let player = self.player.entity;
+        if !self.world.is_alive(player) {
+            self.void_seconds = 0.0;
+            return;
+        }
+        let Some(body) = self.world.body(player) else {
+            return;
+        };
+        if body.position.y >= self.void_height {
+            self.void_seconds = 0.0;
+            return;
+        }
+        self.void_seconds += step;
+        if self.void_seconds < VOID_KILL_SECONDS {
+            return;
+        }
+        log::info!(
+            "player fell out of the world: {:.1} s below y = {:.1}",
+            self.void_seconds,
+            self.void_height
+        );
+        self.void_seconds = 0.0;
+        self.slay(player);
     }
 
     /// One tick of the player's death-and-return clock.
