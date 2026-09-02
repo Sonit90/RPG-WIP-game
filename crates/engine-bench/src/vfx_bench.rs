@@ -393,7 +393,12 @@ fn measure(scenario: &Scenario, frames: usize) -> Measurement {
         let _ = controller.apply(camera, ASPECT);
 
         let started = Instant::now();
-        director.update(simulation, FRAME_DELTA, extractor.render_world_mut());
+        director.update(
+            simulation,
+            FRAME_DELTA,
+            extractor.render_world_mut(),
+            &engine_presentation::ui::ground_decal::GroundSurface::Plane(0.0),
+        );
         let vfx = started.elapsed().as_secs_f64() * 1e6;
 
         let started = Instant::now();

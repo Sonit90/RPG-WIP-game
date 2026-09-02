@@ -60,18 +60,30 @@ pub enum VfxShape {
     Shell,
     /// A column one across and one tall, standing on the origin. Pillars and impact beams.
     Column,
+    /// A flat unit quad in XZ, one across and one long, centred, facing up.
+    ///
+    /// One piece of a footprint that has been laid onto the terrain. Nothing in the effect
+    /// library asks for this shape: presentation produces it when it cuts a ground footprint
+    /// into short pieces so each can sit at the height under it. It is in this list because
+    /// it is geometry the director has to have bound and pool like any other, and it is
+    /// *last* so no existing shape's index moves.
+    Quad,
 }
 
 impl VfxShape {
     /// Every shape, so presentation can bind them all in one loop.
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; Self::COUNT] = [
         Self::Disc,
         Self::Ring,
         Self::Cone,
         Self::Strip,
         Self::Shell,
         Self::Column,
+        Self::Quad,
     ];
+
+    /// How many shapes there are, for the arrays presentation indexes by shape.
+    pub const COUNT: usize = 7;
 
     /// Dense index, for an array of bound geometry.
     #[must_use]
@@ -89,13 +101,28 @@ impl VfxShape {
             Self::Strip => "strip",
             Self::Shell => "shell",
             Self::Column => "column",
+            Self::Quad => "quad",
         }
     }
 
     /// Whether the shape lies on the ground and should be drawn just above it.
+    ///
+    /// [`Self::Quad`] answers `false`: a piece of a laid-out footprint has already been put
+    /// exactly where it goes, and lifting it again would raise it twice.
     #[must_use]
     pub fn is_ground(self) -> bool {
         matches!(self, Self::Disc | Self::Ring | Self::Cone | Self::Strip)
+    }
+
+    /// Whether a ground footprint is the *edge* of an area rather than its interior.
+    ///
+    /// The distinction presentation needs to lay a footprint onto the terrain: an edge keeps
+    /// the thin band it always was, and an interior becomes a wider band inside the same
+    /// boundary rather than a plate over it. Meaningless for the shapes that stand up, which
+    /// answer `false`.
+    #[must_use]
+    pub fn is_edge(self) -> bool {
+        matches!(self, Self::Ring)
     }
 }
 

@@ -3945,10 +3945,21 @@ impl Application for App {
             let vfx_started = Instant::now();
             self.vfx.observe(&self.simulation);
             self.drive_vfx_stress(ctx.time().real_delta().as_secs_f32());
+            // The level's own surface, so a burning zone lies on the ground the player is
+            // standing on rather than on the plane it used to assume.
+            let ground = match self
+                .environment
+                .as_ref()
+                .and_then(|scene| scene.terrain.as_ref())
+            {
+                Some(terrain) => GroundSurface::Terrain(terrain),
+                None => GroundSurface::Plane(engine_presentation::ui::targeting::GROUND_HEIGHT),
+            };
             self.vfx.update(
                 &self.simulation,
                 ctx.time().real_delta().as_secs_f32(),
                 self.extractor.render_world_mut(),
+                &ground,
             );
             self.renderer.set_particles(self.vfx.particles());
             self.vfx_ms = vfx_started.elapsed().as_secs_f64() * 1e3;
@@ -4668,7 +4679,7 @@ fn upload_vfx_visuals(renderer: &mut Renderer) -> Result<VfxVisuals, EngineError
     )?;
     let mut visuals = VfxVisuals::new(material);
 
-    let shapes: [(VfxShape, MeshData); 6] = [
+    let shapes: [(VfxShape, MeshData); VfxShape::COUNT] = [
         (VfxShape::Disc, MeshData::disc(1.0, 48)),
         (VfxShape::Ring, MeshData::ring(1.0, 0.06, 48)),
         (
@@ -4678,6 +4689,11 @@ fn upload_vfx_visuals(renderer: &mut Renderer) -> Result<VfxVisuals, EngineError
         (VfxShape::Strip, MeshData::strip()),
         (VfxShape::Shell, MeshData::uv_sphere(1.0, 16, 12)),
         (VfxShape::Column, MeshData::cube(1.0)),
+        // One piece of a footprint laid onto the terrain. The four flat shapes above are the
+        // fallback the director uses only when a frame runs out of piece budget; this is what
+        // it draws the rest of the time, and every piece of every footprint in the frame is
+        // an instance of it.
+        (VfxShape::Quad, MeshData::plane(1.0)),
     ];
     for (shape, data) in shapes {
         let bounds = data.bounds();

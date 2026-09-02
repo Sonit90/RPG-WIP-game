@@ -434,7 +434,12 @@ fn measure(scenario: &Scenario, frames: usize) -> Measurement {
 
         let started = Instant::now();
         vfx.observe(simulation);
-        vfx.update(simulation, FRAME_DELTA, extractor.render_world_mut());
+        vfx.update(
+            simulation,
+            FRAME_DELTA,
+            extractor.render_world_mut(),
+            &engine_presentation::ui::ground_decal::GroundSurface::Plane(0.0),
+        );
         let vfx_time = started.elapsed().as_secs_f64() * 1e6;
 
         let started = Instant::now();

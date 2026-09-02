@@ -41,6 +41,29 @@
 //! becoming see-through. Everything that genuinely needs translucency — fire, embers, smoke
 //! — is a particle, and the particle pass blends. This is a real limitation and it is the
 //! reason the geometry is used for footprints and shells rather than for the fire itself.
+//!
+//! # A footprint is laid on the terrain, not on a plane
+//!
+//! Every flat shape — [`VfxShape::Disc`], [`VfxShape::Ring`], [`VfxShape::Cone`],
+//! [`VfxShape::Strip`] — used to be one horizontal quad or disc a few centimetres above the
+//! effect's own `y`. On real ground that is a plate: half of a burning zone buried in the
+//! hillside and the other half hanging over it. So a flat shape is no longer drawn as itself.
+//! It is handed to [`engine_presentation::ui::ground_decal`](crate::ui::ground_decal) — the
+//! same builder the targeting indicator uses — which walks its boundary, cuts it into short
+//! pieces, and puts each piece at the height under it, tilted to the slope it spans. Each
+//! piece is a [`VfxShape::Quad`] instance, and because the whole system shares one material
+//! every piece of every footprint in the frame collapses into a single instanced draw.
+//!
+//! **An interior becomes a band, not a plate.** A [`VfxShape::Ring`] was already an edge and
+//! stays one, at the thickness it always had. A disc, wedge or strip becomes a wide band just
+//! inside the same boundary, which leaves the ground it marks visible — the thing an opaque
+//! plate could never do, and the reason the fire itself is particles.
+//!
+//! **The budget is a frame, not an effect.** A footprint costs up to
+//! [`ground_decal::MAX_SEGMENTS`](crate::ui::ground_decal::MAX_SEGMENTS) pieces, and a busy
+//! fight can have thirty zones and telegraphs at once. Past [`MAX_BAND_PIECES`] in a frame the
+//! remaining footprints fall back to the old flat shape rather than being cut short: a plate
+//! on a hillside is wrong, and half an outline is worse.
 
 use engine_core::math::{Sphere, Vec3};
 use engine_core::transform::Transform;
@@ -55,12 +78,47 @@ use engine_render_data::{
 };
 use engine_vfx::{MeshDraw, VfxHandle, VfxId, VfxShape, VfxSpawn, VfxStats, VfxSystem};
 
+use crate::ui::ground_decal::{self, DecalBand, DecalScratch, GroundSurface};
+use crate::ui::targeting::TargetShape;
+
 /// How far above the ground a flat effect is drawn, in metres.
 ///
 /// Coplanar with the floor is a depth-buffer tie and flickers. Slightly higher than the
 /// targeting indicator's own lift, so an area that is burning draws over the circle that
 /// placed it rather than fighting it.
 const GROUND_LIFT: f32 = 0.06;
+
+/// The most pieces every footprint in one frame may use between them.
+///
+/// A per-frame budget rather than a per-effect one, because the cost that matters is the
+/// frame's: one zone is a hundred pieces and thirty zones would be three thousand. Past this
+/// the remaining footprints are drawn as the flat shapes they used to be — a whole plate that
+/// fits the ground badly, rather than a fraction of an outline that has a hole in it.
+///
+/// At a thousand, four burning zones and a handful of telegraphs are all laid properly, which
+/// is more than a fight has at once.
+pub const MAX_BAND_PIECES: usize = 1024;
+
+/// How thick an edge footprint's band is, as a fraction of its radius.
+///
+/// The ring mesh it replaces is an annulus of 6% of its own radius, so this is what keeps a
+/// ring the thickness it has always been at every size.
+const EDGE_BAND_FRACTION: f32 = 0.06;
+
+/// How thick an interior footprint's band is, as a fraction of its extent.
+///
+/// Wide enough to read as the area being marked rather than as a second outline, narrow
+/// enough to leave the middle of the zone showing the ground.
+const FILL_BAND_FRACTION: f32 = 0.22;
+
+/// The thinnest band, in metres, so a small footprint is still visible at all.
+const MIN_BAND_WIDTH: f32 = 0.18;
+
+/// The most of a footprint's own extent a band may take, as a fraction.
+///
+/// A band wider than this on a small footprint would close over the middle and be the opaque
+/// plate this whole path exists to stop drawing.
+const MAX_BAND_SHARE: f32 = 0.55;
 
 /// How fast a cosmetic bolt travels, in metres per second.
 ///
@@ -146,7 +204,7 @@ pub struct ShapeBinding {
 /// | `Column` | 1 across and 1 tall, centred on the origin |
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct VfxVisuals {
-    shapes: [Option<ShapeBinding>; 6],
+    shapes: [Option<ShapeBinding>; VfxShape::COUNT],
     material: MaterialHandle,
 }
 
@@ -155,7 +213,7 @@ impl VfxVisuals {
     #[must_use]
     pub fn new(material: MaterialHandle) -> Self {
         Self {
-            shapes: [None; 6],
+            shapes: [None; VfxShape::COUNT],
             material,
         }
     }
@@ -228,7 +286,14 @@ pub struct VfxDirector {
     /// Per shape because geometry is fixed at spawn: an entity that drew a disc last frame
     /// cannot draw a shell this frame without being despawned and respawned, which is the
     /// slot churn `InstanceStyle` exists to avoid.
-    pools: [Vec<RenderEntity>; 6],
+    pools: [Vec<RenderEntity>; VfxShape::COUNT],
+    /// Working buffers for laying a footprint onto the terrain, reused every frame.
+    ///
+    /// Owned here so a fight full of burning ground allocates nothing: they grow to the
+    /// largest footprint the session has drawn and then stay that size.
+    band_scratch: DecalScratch,
+    /// This footprint's piece transforms.
+    band_pieces: Vec<Transform>,
     /// This frame's particles, rebuilt every frame and never freed.
     particles: ParticleDrawList,
     bolts: Vec<Bolt>,
@@ -260,7 +325,9 @@ impl VfxDirector {
         Self {
             system: VfxSystem::default(),
             visuals,
-            pools: [const { Vec::new() }; 6],
+            pools: [const { Vec::new() }; VfxShape::COUNT],
+            band_scratch: DecalScratch::new(),
+            band_pieces: Vec::new(),
             particles: ParticleDrawList::default(),
             bolts: Vec::with_capacity(32),
             ignited: Vec::with_capacity(64),
@@ -797,7 +864,13 @@ impl VfxDirector {
     ///
     /// `delta` is real time, not simulation time: an effect is presentation and is expected
     /// to move every frame, which is what stops a 60 Hz simulation from looking like 60 FPS.
-    pub fn update(&mut self, simulation: &Simulation, delta: f32, world: &mut RenderWorld) {
+    pub fn update(
+        &mut self,
+        simulation: &Simulation,
+        delta: f32,
+        world: &mut RenderWorld,
+        ground: &GroundSurface<'_>,
+    ) {
         if !self.enabled {
             self.particles.clear();
             return;
@@ -819,7 +892,7 @@ impl VfxDirector {
 
         self.particles.clear();
         self.system.write_particles(&mut self.particles);
-        self.sync_entities(world);
+        self.sync_entities(world, ground);
     }
 
     /// Forgets the effects that ended without the director being told.
@@ -961,39 +1034,64 @@ impl VfxDirector {
     /// Entities are pooled per shape and *reused*: a frame with three discs and last frame's
     /// five leaves two hidden rather than despawning them, so a busy fight stops touching
     /// the `RenderWorld`'s slot allocator entirely.
-    fn sync_entities(&mut self, world: &mut RenderWorld) {
-        let mut used = [0_usize; 6];
+    fn sync_entities(&mut self, world: &mut RenderWorld, ground: &GroundSurface<'_>) {
+        let mut used = [0_usize; VfxShape::COUNT];
+        let quad = self.visuals.get(VfxShape::Quad);
         for index in 0..self.system.mesh_draws().len() {
             let draw = self.system.mesh_draws()[index];
-            let shape = draw.shape.index();
+            let style = style_of(&draw);
+
+            // A flat footprint is laid onto the ground as a band of pieces. Everything that
+            // stands up — a shell, a pillar — is one entity where it always was.
+            if let Some(quad) = quad
+                && draw.ground
+                && used[VfxShape::Quad.index()] < MAX_BAND_PIECES
+                && let Some(shape) = footprint_of(&draw)
+            {
+                ground_decal::build_band(
+                    shape,
+                    Vec3::new(draw.position.x, draw.position.y, draw.position.z),
+                    draw.yaw,
+                    band_of(&draw, shape),
+                    ground,
+                    &mut self.band_scratch,
+                    &mut self.band_pieces,
+                );
+                // Either the whole footprint is laid or none of it is. A band cut off halfway
+                // through the frame's budget would be an outline with a hole in it, which
+                // reads as "the fire stops here" — the one thing a footprint may not say.
+                let slot = &mut used[VfxShape::Quad.index()];
+                if *slot + self.band_pieces.len() <= MAX_BAND_PIECES {
+                    for piece in 0..self.band_pieces.len() {
+                        let transform = self.band_pieces[piece];
+                        place_pooled(
+                            world,
+                            &mut self.pools[VfxShape::Quad.index()],
+                            *slot + piece,
+                            transform,
+                            quad,
+                            self.visuals.material(),
+                            style,
+                        );
+                    }
+                    *slot += self.band_pieces.len();
+                    continue;
+                }
+            }
+
             let Some(binding) = self.visuals.get(draw.shape) else {
                 continue;
             };
-            let transform = transform_of(&draw);
-            let style = style_of(&draw);
-
-            let slot = used[shape];
-            if slot < self.pools[shape].len() {
-                let entity = self.pools[shape][slot];
-                world.set_transform(entity, transform, binding.bounds);
-                world.set_style(entity, style);
-                world.set_visible(entity, true);
-            } else {
-                let entity = world.spawn(RenderEntityDesc {
-                    transform,
-                    mesh: binding.mesh,
-                    material: self.visuals.material(),
-                    bounds: binding.bounds,
-                    visible: true,
-                    style,
-                    // An effect: a wedge of fire on the floor, a ring, a telegraph. It is
-                    // additive light rather than matter, so it casts nothing — a fireball
-                    // that cast a shadow would darken the ground it is supposed to be
-                    // lighting — and it is not shadowed either.
-                    shadow: engine_render_data::ShadowCasting::NONE,
-                });
-                self.pools[shape].push(entity);
-            }
+            let shape = draw.shape.index();
+            place_pooled(
+                world,
+                &mut self.pools[shape],
+                used[shape],
+                transform_of(&draw),
+                binding,
+                self.visuals.material(),
+                style,
+            );
             used[shape] += 1;
         }
 
@@ -1011,6 +1109,89 @@ enum SyncedAura {
     Shield,
     Mastery,
     Cast,
+}
+
+/// Puts one entity at `slot` of `pool`, reusing what is there or spawning if it is short.
+///
+/// Free rather than a method so the caller can hold `&mut` on one pool and read the visuals
+/// at the same time; the borrow checker sees two fields rather than one `self`.
+fn place_pooled(
+    world: &mut RenderWorld,
+    pool: &mut Vec<RenderEntity>,
+    slot: usize,
+    transform: Transform,
+    binding: ShapeBinding,
+    material: MaterialHandle,
+    style: InstanceStyle,
+) {
+    if slot < pool.len() {
+        let entity = pool[slot];
+        world.set_transform(entity, transform, binding.bounds);
+        world.set_style(entity, style);
+        world.set_visible(entity, true);
+        return;
+    }
+    let entity = world.spawn(RenderEntityDesc {
+        transform,
+        mesh: binding.mesh,
+        material,
+        bounds: binding.bounds,
+        visible: true,
+        style,
+        // An effect: a wedge of fire on the floor, a ring, a telegraph. It is additive light
+        // rather than matter, so it casts nothing — a fireball that cast a shadow would
+        // darken the ground it is supposed to be lighting — and it is not shadowed either.
+        shadow: engine_render_data::ShadowCasting::NONE,
+    });
+    pool.push(entity);
+}
+
+/// The boundary a flat effect shape covers, in the vocabulary the band builder speaks.
+///
+/// The *same* vocabulary the targeting indicator uses, which is the point: a burning zone and
+/// the circle that placed it are the same footprint laid the same way, so they cannot disagree
+/// about where the ground is.
+#[must_use]
+fn footprint_of(draw: &MeshDraw) -> Option<TargetShape> {
+    match draw.shape {
+        VfxShape::Disc | VfxShape::Ring => Some(TargetShape::Circle {
+            radius: draw.radius.max(0.05),
+        }),
+        // The executor's own spread, so a wedge of fire covers the wedge that burned.
+        VfxShape::Cone => Some(TargetShape::Cone {
+            range: draw.radius.max(0.05),
+            half_angle: engine_game::sim::CONE_HALF_ANGLE,
+        }),
+        VfxShape::Strip => Some(TargetShape::Line {
+            width: draw.radius.max(0.05),
+            length: draw.length.max(0.05),
+        }),
+        VfxShape::Shell | VfxShape::Column | VfxShape::Quad => None,
+    }
+}
+
+/// How thick a footprint's band is and how far inside its boundary it sits.
+///
+/// An edge keeps the thin annulus the ring mesh always was. An interior gets a wide band, so
+/// the area reads as marked without the middle of it being covered. Both put their *outer*
+/// rim on the boundary, which is what makes the fire's edge the edge that burned.
+#[must_use]
+fn band_of(draw: &MeshDraw, shape: TargetShape) -> DecalBand {
+    // What the band has to fit inside. A strip is as narrow as it is wide, whatever its
+    // length, so its own width is the limit — not the twenty metres it runs.
+    let extent = match shape {
+        TargetShape::Line { width, .. } => width * 0.5,
+        other => other.extent(),
+    };
+    let fraction = if draw.shape.is_edge() {
+        EDGE_BAND_FRACTION
+    } else {
+        FILL_BAND_FRACTION
+    };
+    let width = (extent * fraction)
+        .max(MIN_BAND_WIDTH)
+        .min(extent * MAX_BAND_SHARE);
+    DecalBand::edged(width.max(f32::MIN_POSITIVE), GROUND_LIFT)
 }
 
 /// Where and how big one piece of effect geometry is drawn.
@@ -1044,6 +1225,13 @@ fn transform_of(draw: &MeshDraw) -> Transform {
         VfxShape::Column => (
             draw.position + Vec3::new(0.0, draw.height * 0.5, 0.0),
             Vec3::new(draw.radius * 2.0, draw.height.max(0.1), draw.radius * 2.0),
+        ),
+        // A piece of a laid-out footprint never reaches here: the band builder produces its
+        // transform outright, and no effect in the library asks for the shape. Answering with
+        // the draw as it stands is what a fallback should do - nothing surprising.
+        VfxShape::Quad => (
+            draw.position,
+            Vec3::new(draw.radius.max(0.1), 1.0, draw.length.max(0.1)),
         ),
     };
     Transform {
@@ -1096,6 +1284,23 @@ mod tests {
         visuals
     }
 
+    /// The arena floor: a level with no height field.
+    fn flat_ground() -> GroundSurface<'static> {
+        GroundSurface::Plane(0.0)
+    }
+
+    /// A terrain that rises `slope` metres for every metre travelled along +X.
+    fn ramp(slope: f32) -> engine_environment::terrain::Terrain {
+        let mut terrain = engine_environment::terrain::Terrain::flat(129, 1.0, 0.0);
+        for z in 0..terrain.resolution {
+            for x in 0..terrain.resolution {
+                let world_x = terrain.origin.x + x as f32 * terrain.cell_size;
+                terrain.heights[z * terrain.resolution + x] = world_x * slope;
+            }
+        }
+        terrain
+    }
+
     fn arena(dummies: usize) -> Simulation {
         let mut simulation = arena::training_arena(&ArenaConfig::with_group(dummies));
         simulation.step_once();
@@ -1113,7 +1318,7 @@ mod tests {
         for _ in 0..frames {
             simulation.step_once();
             director.observe(simulation);
-            director.update(simulation, 1.0 / 60.0, world);
+            director.update(simulation, 1.0 / 60.0, world, &flat_ground());
         }
     }
 
@@ -1130,7 +1335,7 @@ mod tests {
         for _ in 0..70 {
             simulation.step_once();
             director.observe(&simulation);
-            director.update(&simulation, 1.0 / 60.0, &mut world);
+            director.update(&simulation, 1.0 / 60.0, &mut world, &flat_ground());
             seen_in_flight |= director.stats().bolts > 0;
         }
         assert!(seen_in_flight, "no bolt left the caster");
@@ -1154,7 +1359,7 @@ mod tests {
             .cast_at(FireAbility::Firestorm, aim)
             .expect("a line is always castable");
         director.observe(&simulation);
-        director.update(&simulation, 1.0 / 60.0, &mut world);
+        director.update(&simulation, 1.0 / 60.0, &mut world, &flat_ground());
         assert_eq!(director.areas.len(), 1, "the fire was not drawn");
 
         // Past the zone's duration: the gameplay zone ends, the event says so, and the
@@ -1163,6 +1368,203 @@ mod tests {
         assert!(
             director.areas.is_empty(),
             "the fire outlived the zone that was burning"
+        );
+    }
+
+    /// Every visible piece of a laid-out footprint, as a world transform.
+    fn laid_pieces(director: &VfxDirector, world: &RenderWorld) -> Vec<Transform> {
+        director.pools[VfxShape::Quad.index()]
+            .iter()
+            .filter_map(|entity| {
+                let slot = entity.index();
+                world.visible_flags()[slot].then(|| world.transforms()[slot])
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_burning_zone_is_laid_on_the_terrain_rather_than_on_a_plane() {
+        // The defect: a zone was one horizontal disc at the effect's own y, so on a slope
+        // half of it was buried and the other half hung in the air. Every piece of it now
+        // sits on the ground under that piece.
+        let slope = ramp(0.5);
+        let ground = GroundSurface::Terrain(&slope);
+        let mut director = VfxDirector::new(visuals());
+        let mut world = RenderWorld::new();
+        let simulation = arena(1);
+
+        director
+            .system_mut()
+            .spawn(VfxSpawn::at(VfxId::GroundArea, Vec3::new(4.0, 0.0, -3.0)).with_radius(6.0));
+        director.update(&simulation, 1.0 / 60.0, &mut world, &ground);
+
+        let pieces = laid_pieces(&director, &world);
+        assert!(pieces.len() > 40, "only {} pieces", pieces.len());
+
+        let mut lowest = f32::MAX;
+        let mut highest = f32::MIN;
+        for piece in &pieces {
+            let under = ground.height_at(piece.translation.x, piece.translation.z);
+            let above = piece.translation.y - under;
+            assert!(
+                (above - GROUND_LIFT).abs() < 0.05,
+                "a piece sat {above} m over the ground rather than {GROUND_LIFT}",
+            );
+            lowest = lowest.min(piece.translation.y);
+            highest = highest.max(piece.translation.y);
+        }
+        // And it actually followed the slope: a flat disc would put every piece at one height.
+        assert!(
+            highest - lowest > 4.0,
+            "the footprint spanned only {} m of height on a slope",
+            highest - lowest,
+        );
+    }
+
+    #[test]
+    fn a_zone_marks_its_area_without_covering_the_ground_inside_it() {
+        // The other half of the brief: the interior is the terrain. The disc layer is a wide
+        // band just inside the boundary now, so the middle of a zone has nothing drawn over
+        // it and the fire there is the particles, which blend.
+        let mut director = VfxDirector::new(visuals());
+        let mut world = RenderWorld::new();
+        let simulation = arena(1);
+        let centre = Vec3::new(0.0, 0.0, 0.0);
+        let radius = 6.0_f32;
+
+        director
+            .system_mut()
+            .spawn(VfxSpawn::at(VfxId::GroundArea, centre).with_radius(radius));
+        director.update(&simulation, 1.0 / 60.0, &mut world, &flat_ground());
+
+        let pieces = laid_pieces(&director, &world);
+        assert!(!pieces.is_empty(), "the zone drew nothing");
+        let nearest = pieces.iter().fold(f32::MAX, |nearest, piece| {
+            let x = piece.translation.x - centre.x;
+            let z = piece.translation.z - centre.z;
+            nearest.min((x * x + z * z).sqrt())
+        });
+        assert!(
+            nearest > radius * 0.5,
+            "something was drawn {nearest} m from the centre of a {radius} m zone",
+        );
+        // Nothing is left of the old plate: no flat disc, wedge or strip is visible.
+        for shape in [
+            VfxShape::Disc,
+            VfxShape::Ring,
+            VfxShape::Cone,
+            VfxShape::Strip,
+        ] {
+            let flat = director.pools[shape.index()]
+                .iter()
+                .filter(|entity| world.visible_flags()[entity.index()])
+                .count();
+            assert_eq!(flat, 0, "{shape:?} was still drawn as a flat plate");
+        }
+    }
+
+    #[test]
+    fn an_enemy_telegraph_and_a_line_of_fire_are_laid_the_same_way() {
+        // One code path for every footprint: a circle under an incoming rock, a wedge, and a
+        // strip of burning ground all become pieces on the terrain.
+        let slope = ramp(0.35);
+        let ground = GroundSurface::Terrain(&slope);
+        for effect in [VfxId::Telegraph, VfxId::LineFire, VfxId::ConeWave] {
+            let mut director = VfxDirector::new(visuals());
+            let mut world = RenderWorld::new();
+            let simulation = arena(1);
+            director.system_mut().spawn(
+                VfxSpawn::at(effect, Vec3::new(-2.0, 0.0, 1.0))
+                    .with_radius(7.0)
+                    .with_length(12.0),
+            );
+            director.update(&simulation, 1.0 / 60.0, &mut world, &ground);
+
+            let pieces = laid_pieces(&director, &world);
+            assert!(!pieces.is_empty(), "{effect:?} drew no footprint");
+            for piece in &pieces {
+                let under = ground.height_at(piece.translation.x, piece.translation.z);
+                assert!(
+                    (piece.translation.y - under - GROUND_LIFT).abs() < 0.05,
+                    "{effect:?}: a piece left the ground at {:?}",
+                    piece.translation,
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_frame_full_of_zones_falls_back_to_the_flat_shape_rather_than_to_a_broken_outline() {
+        // The budget. Past it the remaining footprints are the plates they used to be, which
+        // fits the ground badly; cutting a band off partway would leave a hole in an outline
+        // instead, and a hole reads as "the fire stops here".
+        let mut director = VfxDirector::new(visuals());
+        let mut world = RenderWorld::new();
+        let simulation = arena(1);
+
+        for step in 0..40 {
+            let angle = step as f32 * 0.7;
+            director.system_mut().spawn(
+                VfxSpawn::at(
+                    VfxId::GroundArea,
+                    Vec3::new(angle.cos() * 30.0, 0.0, angle.sin() * 30.0),
+                )
+                .with_radius(8.0),
+            );
+        }
+        director.update(&simulation, 1.0 / 60.0, &mut world, &flat_ground());
+
+        let laid = laid_pieces(&director, &world).len();
+        assert!(
+            laid <= MAX_BAND_PIECES,
+            "{laid} pieces is over the frame budget of {MAX_BAND_PIECES}",
+        );
+        assert!(laid > MAX_BAND_PIECES / 2, "the budget went mostly unspent");
+        // The zones that missed out are still drawn, as their old flat selves.
+        let flat: usize = [VfxShape::Disc, VfxShape::Ring]
+            .into_iter()
+            .map(|shape| {
+                director.pools[shape.index()]
+                    .iter()
+                    .filter(|entity| world.visible_flags()[entity.index()])
+                    .count()
+            })
+            .sum();
+        assert!(flat > 0, "the zones past the budget vanished instead");
+    }
+
+    #[test]
+    fn laying_a_footprint_out_stops_allocating_once_the_buffers_have_grown() {
+        // The cost this has to not have: a zone is rebuilt every frame it burns, and a fight
+        // full of burning ground must not allocate for it.
+        let slope = ramp(0.4);
+        let ground = GroundSurface::Terrain(&slope);
+        let mut director = VfxDirector::new(visuals());
+        let mut world = RenderWorld::new();
+        let simulation = arena(1);
+
+        director.system_mut().spawn(
+            VfxSpawn::at(VfxId::GroundArea, Vec3::ZERO)
+                .with_radius(7.0)
+                .lasting(30.0),
+        );
+        for _ in 0..30 {
+            director.update(&simulation, 1.0 / 60.0, &mut world, &ground);
+        }
+        let pieces = director.band_pieces.capacity();
+        let entities = director.pools[VfxShape::Quad.index()].len();
+        for _ in 0..120 {
+            director.update(&simulation, 1.0 / 60.0, &mut world, &ground);
+        }
+        assert_eq!(
+            director.band_pieces.capacity(),
+            pieces,
+            "the piece buffer grew after it had settled",
+        );
+        assert_eq!(
+            director.pools[VfxShape::Quad.index()].len(),
+            entities,
+            "the entity pool churned instead of being reused",
         );
     }
 
@@ -1180,7 +1582,7 @@ mod tests {
             .cast_at(FireAbility::Firestorm, aim)
             .expect("castable");
         director.observe(&simulation);
-        director.update(&simulation, 1.0 / 60.0, &mut world);
+        director.update(&simulation, 1.0 / 60.0, &mut world, &flat_ground());
 
         let strip = director
             .system
@@ -1275,7 +1677,7 @@ mod tests {
         let before = director.stats().system.spawned;
         simulation.cast(FireAbility::Blink).expect("instant");
         director.observe(&simulation);
-        director.update(&simulation, 1.0 / 60.0, &mut world);
+        director.update(&simulation, 1.0 / 60.0, &mut world, &flat_ground());
         assert!(
             director.stats().system.spawned >= before + 2,
             "a teleport showed fewer than two effects"
@@ -1317,7 +1719,7 @@ mod tests {
         assert!(director.stats().system.instances > 0);
 
         director.set_enabled(false);
-        director.update(&simulation, 1.0 / 60.0, &mut world);
+        director.update(&simulation, 1.0 / 60.0, &mut world, &flat_ground());
         assert_eq!(director.stats().system.instances, 0);
         assert!(director.particles().is_empty());
 
@@ -1342,7 +1744,7 @@ mod tests {
         // Observed before the next step, because a step starts a new event batch and the
         // cast's own events belong to the batch it is sitting in.
         director.observe(&simulation);
-        director.update(&simulation, 1.0 / 60.0, &mut world);
+        director.update(&simulation, 1.0 / 60.0, &mut world, &flat_ground());
         run(&mut director, &mut simulation, &mut world, 30);
 
         assert_eq!(world.len(), 0, "geometry was drawn with no binding");
@@ -1355,6 +1757,8 @@ mod tests {
     #[test]
     fn a_ground_effect_is_lifted_clear_of_the_floor() {
         // Coplanar with the floor is a depth tie, which flickers across the whole area.
+        // This is the *fallback* geometry now - what a footprint is drawn as when a frame has
+        // run out of piece budget - so the lift still has to be right.
         let draw = MeshDraw {
             shape: VfxShape::Disc,
             position: Vec3::ZERO,

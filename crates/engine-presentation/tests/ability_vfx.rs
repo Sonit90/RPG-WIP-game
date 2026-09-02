@@ -58,11 +58,21 @@ fn play(
     // Observed before the first step too, because a cast made directly emits into the batch
     // that is sitting there, and the next step starts a new one.
     director.observe(simulation);
-    director.update(simulation, 1.0 / 60.0, world);
+    director.update(
+        simulation,
+        1.0 / 60.0,
+        world,
+        &engine_presentation::ui::ground_decal::GroundSurface::Plane(0.0),
+    );
     for _ in 0..frames {
         simulation.step_once();
         director.observe(simulation);
-        director.update(simulation, 1.0 / 60.0, world);
+        director.update(
+            simulation,
+            1.0 / 60.0,
+            world,
+            &engine_presentation::ui::ground_decal::GroundSurface::Plane(0.0),
+        );
     }
     director.stats().system.spawned - before
 }
@@ -141,7 +151,12 @@ fn an_area_ability_draws_the_area_it_hits() {
 
     // The telegraph is up while the rock falls, sized by the radius it will cover.
     director.observe(&simulation);
-    director.update(&simulation, 1.0 / 60.0, &mut world);
+    director.update(
+        &simulation,
+        1.0 / 60.0,
+        &mut world,
+        &engine_presentation::ui::ground_decal::GroundSurface::Plane(0.0),
+    );
     let ring = director
         .system_mut()
         .mesh_draws()
@@ -193,7 +208,12 @@ fn simultaneous_area_effects_all_get_drawn() {
         let aim = centre + Vec3::new(offset, 0.0, -6.0);
         let _ = simulation.cast_at(FireAbility::Firestorm, aim);
         director.observe(&simulation);
-        director.update(&simulation, 1.0 / 60.0, &mut world);
+        director.update(
+            &simulation,
+            1.0 / 60.0,
+            &mut world,
+            &engine_presentation::ui::ground_decal::GroundSurface::Plane(0.0),
+        );
         // Past the global cooldown, so the next one is allowed.
         play(&mut director, &mut simulation, &mut world, 45);
     }
