@@ -350,9 +350,6 @@ impl UploadRing {
     }
 }
 
-/// Batched one-off uploads of static data to device-local memory.
-///
-
 /// How large one chunk of staging memory is, in bytes.
 ///
 /// Four megabytes: a level's whole content is a few of these, and a single asset larger than
@@ -462,6 +459,8 @@ impl StagingArena {
     }
 }
 
+/// Batched one-off uploads of static data to device-local memory.
+///
 /// Queue several copies, then flush once. The alternative — a staging buffer, an allocator,
 /// a list and a GPU wait per resource — costs one full synchronization per mesh, which is
 /// what Phase 0's mesh upload did and what §14 asks to avoid.

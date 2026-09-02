@@ -29,6 +29,8 @@
 //! a measurement ever asked for one — `phase_audio.md` records it as deferred, and the
 //! benchmark measures the cost that would justify it.
 
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{Receiver, TryRecvError};
 use std::sync::{Arc, Mutex};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -38,10 +40,23 @@ use engine_audio::{AudioSystem, CHANNELS, SoundBank};
 /// The rate the bank is synthesised at when no device says otherwise.
 pub const FALLBACK_SAMPLE_RATE: u32 = 48_000;
 
+/// What the opening thread reports back once the device is running.
+#[derive(Debug, Clone, Copy)]
+pub struct AudioOpened {
+    /// Whether a device is actually playing the mix.
+    pub open: bool,
+    /// What the device runs at.
+    pub sample_rate: u32,
+    /// How many channels it takes.
+    pub channels: u16,
+}
+
 /// The runtime, and the stream feeding it to the hardware.
 pub struct AudioHost {
     system: Arc<Mutex<AudioSystem>>,
-    /// The output stream. `None` on a machine with no usable audio device.
+    /// The output stream. `None` on a machine with no usable audio device, and always `None`
+    /// when the device was opened in the background: a `cpal::Stream` is not `Send`, so the
+    /// thread that built it is the thread that holds it.
     ///
     /// Held only to keep the stream alive: dropping it stops playback.
     stream: Option<Stream>,
@@ -49,6 +64,27 @@ pub struct AudioHost {
     sample_rate: u32,
     /// How many channels the device takes.
     channels: u16,
+    /// Whether a background thread has a device playing this system's mix.
+    open_in_background: bool,
+    /// How the opening thread says it is ready. `None` when nothing is opening.
+    ready: Option<Receiver<AudioOpened>>,
+    /// Set on drop, so the opening thread lets its stream go and exits.
+    stop: Arc<AtomicBool>,
+    /// The opening thread, joined on drop.
+    worker: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Drop for AudioHost {
+    /// Lets the opening thread go, and waits for it to put the stream down.
+    ///
+    /// Joined rather than detached: the stream must stop before the process does, and a
+    /// thread that is only ever sleeping joins within one of its 50 ms naps.
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+    }
 }
 
 impl std::fmt::Debug for AudioHost {
@@ -64,58 +100,150 @@ impl std::fmt::Debug for AudioHost {
 }
 
 impl AudioHost {
-    /// Opens the default output device and starts mixing into it.
+    /// Starts opening the device on a background thread and returns a host that is silent
+    /// until it does.
     ///
-    /// Never fails: a machine with no device gets a runtime that is never asked for samples.
-    /// The bank is synthesised at the device's rate where there is one, so playback is a
-    /// copy rather than a resample.
+    /// # Why
+    ///
+    /// Opening the default device and synthesising the sound bank costs about 120 ms, and
+    /// none of it is anything the first frame needs: no cue is played until something
+    /// happens in the game. Measured against a launch of about 660 ms, it was the second
+    /// largest item on the critical path and the only one with no dependency on it at all.
+    ///
+    /// # How the swap is invisible
+    ///
+    /// The `AudioSystem` behind the mutex is built *here*, empty, and handed to the thread.
+    /// The thread synthesises the bank at the device's own rate and installs it into that
+    /// same system, so nothing the game did meanwhile — a volume the player changed, `F8`,
+    /// the listener's position — is lost, and no caller has to re-fetch anything.
+    ///
+    /// A cue played before the bank arrives is a cue with no samples: it is counted and
+    /// mixed as silence. That is the same behaviour a machine with no sound card gets, for
+    /// the fraction of a second it applies.
     #[must_use]
-    pub fn open() -> Self {
-        let Some((device, config, format)) = Self::choose_device() else {
-            log::warn!("audio: no output device; the game will run silently");
-            return Self::silent(FALLBACK_SAMPLE_RATE);
+    pub fn open_in_background() -> Self {
+        let system = Arc::new(Mutex::new(AudioSystem::with_bank(
+            SoundBank::empty(FALLBACK_SAMPLE_RATE),
+            FALLBACK_SAMPLE_RATE,
+            engine_audio::DEFAULT_MAX_VOICES,
+        )));
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let stop = Arc::new(AtomicBool::new(false));
+
+        let thread_system = Arc::clone(&system);
+        let thread_stop = Arc::clone(&stop);
+        let worker = std::thread::Builder::new()
+            .name("audio-open".to_owned())
+            .spawn(move || Self::open_on_this_thread(&thread_system, &sender, &thread_stop));
+
+        let worker = match worker {
+            Ok(worker) => Some(worker),
+            Err(error) => {
+                // A machine that will not give us a thread still plays the game, silently:
+                // the same answer as a machine with no sound card.
+                log::warn!("audio: could not start the opening thread ({error}); running silently");
+                None
+            }
         };
 
+        Self {
+            system,
+            stream: None,
+            sample_rate: FALLBACK_SAMPLE_RATE,
+            channels: CHANNELS as u16,
+            open_in_background: false,
+            ready: worker.is_some().then_some(receiver),
+            stop,
+            worker,
+        }
+    }
+
+    /// Opens the device, installs the bank, and holds the stream until asked to stop.
+    ///
+    /// Runs on the opening thread and never on the game thread. It keeps the stream because
+    /// `cpal::Stream` cannot be sent anywhere: dropping it stops playback, so the thread
+    /// stays alive for as long as the game wants sound.
+    fn open_on_this_thread(
+        system: &Arc<Mutex<AudioSystem>>,
+        sender: &std::sync::mpsc::Sender<AudioOpened>,
+        stop: &Arc<AtomicBool>,
+    ) {
+        let Some((device, config, format)) = Self::choose_device() else {
+            log::warn!("audio: no output device; the game will run silently");
+            let _ = sender.send(AudioOpened {
+                open: false,
+                sample_rate: FALLBACK_SAMPLE_RATE,
+                channels: CHANNELS as u16,
+            });
+            return;
+        };
         let sample_rate = config.sample_rate;
         let channels = config.channels;
+
         let started = std::time::Instant::now();
         let bank = SoundBank::synthesised(sample_rate);
         log::info!(
-            "audio: {} sound(s), {:.1} MiB synthesised in {:.1} ms at {sample_rate} Hz",
+            "audio: {} sound(s), {:.1} MiB synthesised in {:.1} ms at {sample_rate} Hz, off the \
+             critical path",
             engine_audio::SOUND_COUNT,
             bank.bytes() as f64 / (1024.0 * 1024.0),
             started.elapsed().as_secs_f64() * 1e3,
         );
-
-        let system = Arc::new(Mutex::new(AudioSystem::with_bank(
-            bank,
-            sample_rate,
-            engine_audio::DEFAULT_MAX_VOICES,
-        )));
-
-        let stream = Self::build_stream(&device, &config, format, Arc::clone(&system));
-        match stream {
-            Some(stream) => {
-                log::info!(
-                    "audio: {} at {sample_rate} Hz, {channels} channel(s), {format}",
-                    device
-                        .description()
-                        .map(|description| description.name().to_owned())
-                        .unwrap_or_else(|_| "output".to_owned()),
-                );
-                Self {
-                    system,
-                    stream: Some(stream),
-                    sample_rate,
-                    channels,
-                }
+        match system.lock() {
+            Ok(mut system) => system.install_bank(bank, sample_rate),
+            Err(_) => {
+                // The game thread panicked while holding the lock. There is nothing to play
+                // for any more.
+                log::warn!("audio: the runtime's lock is poisoned; the device is not opened");
+                return;
             }
-            None => Self {
-                system,
-                stream: None,
-                sample_rate,
-                channels,
-            },
+        }
+
+        let stream = Self::build_stream(&device, &config, format, Arc::clone(system));
+        let open = stream.is_some();
+        if open {
+            log::info!(
+                "audio: {} at {sample_rate} Hz, {channels} channel(s), {format}",
+                device
+                    .description()
+                    .map(|description| description.name().to_owned())
+                    .unwrap_or_else(|_| "output".to_owned()),
+            );
+        }
+        let _ = sender.send(AudioOpened {
+            open,
+            sample_rate,
+            channels,
+        });
+
+        // The stream lives here or it does not live at all. Parked in short sleeps rather
+        // than a condition variable: this thread wakes once, at shutdown, and a 50 ms delay
+        // in noticing that is 50 ms nobody is waiting on.
+        while !stop.load(Ordering::Relaxed) {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        drop(stream);
+    }
+
+    /// Takes the opening thread's report, if it has one yet.
+    ///
+    /// Returns `Some` exactly once per successful open, which is the moment the application
+    /// applies the player's volumes to the runtime that just gained a bank.
+    pub fn poll_opened(&mut self) -> Option<AudioOpened> {
+        let receiver = self.ready.as_ref()?;
+        match receiver.try_recv() {
+            Ok(opened) => {
+                self.sample_rate = opened.sample_rate;
+                self.channels = opened.channels;
+                self.open_in_background = opened.open;
+                self.ready = None;
+                Some(opened)
+            }
+            Err(TryRecvError::Empty) => None,
+            Err(TryRecvError::Disconnected) => {
+                self.ready = None;
+                None
+            }
         }
     }
 
@@ -135,6 +263,10 @@ impl AudioHost {
             stream: None,
             sample_rate,
             channels: CHANNELS as u16,
+            open_in_background: false,
+            ready: None,
+            stop: Arc::new(AtomicBool::new(false)),
+            worker: None,
         }
     }
 
@@ -145,21 +277,11 @@ impl AudioHost {
     }
 
     /// Whether a device is actually playing what the runtime mixes.
+    ///
+    /// True for a stream this host holds and for one an opening thread holds on its behalf.
     #[must_use]
     pub fn is_open(&self) -> bool {
-        self.stream.is_some()
-    }
-
-    /// What the device runs at.
-    #[must_use]
-    pub fn sample_rate(&self) -> u32 {
-        self.sample_rate
-    }
-
-    /// How many channels it takes.
-    #[must_use]
-    pub fn channels(&self) -> u16 {
-        self.channels
+        self.stream.is_some() || self.open_in_background
     }
 
     /// The default device and the format it prefers.

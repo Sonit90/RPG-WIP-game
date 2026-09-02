@@ -337,6 +337,23 @@ impl AudioSystem {
         }
     }
 
+    /// Replaces the bank and the rate the mix is produced at.
+    ///
+    /// For a system that was built before the device was known. Synthesising the bank takes
+    /// long enough to be worth doing off the critical path — see the application's audio
+    /// host — and the rate is the device's, so both arrive together or neither does.
+    ///
+    /// Every voice is stopped: a voice holds an asset out of the old bank and a step
+    /// computed against the old rate, and letting one carry on would play the previous
+    /// bank's samples at the new bank's pitch.
+    pub fn install_bank(&mut self, bank: SoundBank, sample_rate: u32) {
+        self.stop_all();
+        self.bank = bank;
+        if sample_rate != 0 {
+            self.sample_rate = sample_rate;
+        }
+    }
+
     /// The rate the mix is produced at.
     #[must_use]
     pub fn sample_rate(&self) -> u32 {

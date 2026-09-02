@@ -904,7 +904,11 @@ impl App {
         // control the performance audit compares against: cues are still made, limited and
         // counted, so the difference between the two runs is the mix and the hardware.
         let audio = if args.audio {
-            AudioHost::open()
+            // Opened on a thread of its own: enumerating the device and synthesising the
+            // bank is about 120 ms, and the first frame needs none of it. The runtime is
+            // real from this instant — it simply has no samples yet, which is the same
+            // thing a machine with no sound card has for the whole session.
+            AudioHost::open_in_background()
         } else {
             log::info!("audio: --no-audio; no device will be opened");
             AudioHost::silent(crate::audio_device::FALLBACK_SAMPLE_RATE)
@@ -914,10 +918,12 @@ impl App {
         apply_volumes(&audio, game_settings.settings());
         let settings_now = game_settings.settings();
         log::info!(
-            "audio: {} at {} Hz, {} channel(s) | master {:.2}, sfx {:.2}, ui {:.2}, ambient {:.2}",
-            if audio.is_open() { "playing" } else { "silent" },
-            audio.sample_rate(),
-            audio.channels(),
+            "audio: {} | master {:.2}, sfx {:.2}, ui {:.2}, ambient {:.2}",
+            if args.audio {
+                "opening in the background"
+            } else {
+                "silent"
+            },
             settings_now.master_volume,
             settings_now.sfx_volume,
             settings_now.ui_volume,
@@ -3708,6 +3714,19 @@ impl Application for App {
 
     /// Drains window messages and applies them.
     fn process_events(&mut self, ctx: &mut EngineContext) -> Result<(), EngineError> {
+        // The device the opening thread went to fetch, if it has arrived. Answered here
+        // rather than waited for at startup: the player's volumes reach the runtime the
+        // moment it has a bank to apply them to, and a frame or two of silence costs
+        // nothing that a launch is 120 ms shorter cannot pay for.
+        if let Some(opened) = self.audio.poll_opened() {
+            apply_volumes(&self.audio, self.settings.settings());
+            log::info!(
+                "audio: {} at {} Hz, {} channel(s)",
+                if opened.open { "playing" } else { "silent" },
+                opened.sample_rate,
+                opened.channels
+            );
+        }
         self.window.pump_events();
 
         while let Some(event) = self.window.poll_event() {
