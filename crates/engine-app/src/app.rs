@@ -1807,7 +1807,6 @@ impl App {
         for index in 0..self.menu_actions.len() {
             match self.menu_actions[index] {
                 MenuAction::Opened => {
-                    self.play_ui_sound(engine_audio::SoundId::UiSelect);
                     // The cursor has to come back so the player can click a button with it.
                     // The game itself keeps running: this is a multiplayer world, and it
                     // does not stop because one player opened a menu.
@@ -1816,7 +1815,6 @@ impl App {
                     log::info!("menu opened");
                 }
                 MenuAction::Closed => {
-                    self.play_ui_sound(engine_audio::SoundId::UiCancel);
                     log::info!("menu closed");
                 }
                 MenuAction::OpenedSettings => {

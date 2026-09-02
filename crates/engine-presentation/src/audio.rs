@@ -49,7 +49,7 @@ use engine_game::firemage::FireAbility;
 use engine_game::sim::{CastEnd, Simulation};
 use engine_render_data::Camera;
 
-use crate::vfx::{BOLT_MAX_FLIGHT, BOLT_MIN_FLIGHT, BOLT_SPEED, CHEST_FRACTION, LANDING_SPEED};
+use crate::vfx::{BOLT_MAX_FLIGHT, BOLT_MIN_FLIGHT, BOLT_SPEED, CHEST_FRACTION};
 
 /// Damage at or above this plays the heavy impact instead of the ordinary one.
 ///
@@ -65,9 +65,6 @@ pub const STRIDE: f32 = 1.9;
 
 /// Below this speed the character is standing still rather than walking, in metres/second.
 const WALK_SPEED: f32 = 0.6;
-
-/// How much louder a landing gets at the top of its range.
-const LANDING_FORCE: f32 = 1.6;
 
 /// A cosmetic bolt, and the impact waiting at the end of it.
 ///
@@ -429,24 +426,6 @@ impl AudioDirector {
             // catalogue so a pack on fire is a fire rather than a wall.
             CombatEvent::StatusApplied { target, .. } => self.ignite(target, simulation, audio),
             CombatEvent::StatusRemoved { target, .. } => self.extinguish(target, audio),
-            CombatEvent::Jumped { position, .. } => {
-                self.request(SoundCue::at(SoundId::Jump, position), audio);
-            }
-            // A hard landing is a different sound, not a louder one: the player should be
-            // able to tell a step down from a fall without watching.
-            CombatEvent::Landed {
-                position, speed, ..
-            } => {
-                let (sound, gain) = if speed >= LANDING_SPEED {
-                    (
-                        SoundId::LandHeavy,
-                        (speed / LANDING_SPEED).clamp(1.0, LANDING_FORCE),
-                    )
-                } else {
-                    (SoundId::Land, 1.0)
-                };
-                self.request(SoundCue::at(sound, position).with_gain(gain), audio);
-            }
             // The Warrior's defensive stream. Every cue here is an **existing** sound
             // chosen by shape, exactly as the Warrior's and the Druid's ability sounds are:
             // a block is a heavy impact, an attack that touched nothing is the fizzle that
@@ -488,7 +467,11 @@ impl AudioDirector {
             // seen rather than heard: this phase authors no new cues. A point of Deflection
             // is deliberately silent — it happens several times a second in a pack, and the
             // sound of the block that produced it has already played.
-            CombatEvent::Healing { .. }
+            // Jumping and landing are seen, not heard: the movement they belong to is
+            // constant, and a cue on every hop turns traversal into noise.
+            CombatEvent::Jumped { .. }
+            | CombatEvent::Landed { .. }
+            | CombatEvent::Healing { .. }
             | CombatEvent::PhaseChanged { .. }
             | CombatEvent::DeflectionGained { .. }
             | CombatEvent::AstralPowerGained { .. }
