@@ -704,6 +704,42 @@ impl GpuMesh {
         Ok(mesh)
     }
 
+    /// Creates both buffers and queues their copies into a caller's uploader.
+    ///
+    /// No flush and therefore no wait: the caller decides when the copies are submitted, so
+    /// a hundred meshes can share one synchronization instead of paying one each. That is
+    /// the whole of [`Renderer::begin_upload_batch`](crate::Renderer::begin_upload_batch).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RendererError::Api`] if any D3D12 call fails.
+    pub fn queue_into(
+        device: &RenderDevice,
+        uploader: &mut StagingUploader,
+        data: &MeshData,
+    ) -> Result<Self, RendererError> {
+        Self::queue(device, uploader, data)
+    }
+
+    /// [`GpuMesh::queue_into`] for a skinned mesh.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RendererError::Api`] if any D3D12 call fails.
+    pub fn queue_skinned_into(
+        device: &RenderDevice,
+        uploader: &mut StagingUploader,
+        data: &SkinnedMeshData,
+    ) -> Result<Self, RendererError> {
+        Self::queue_typed(
+            device,
+            uploader,
+            data.vertices(),
+            data.indices(),
+            data.bounds(),
+        )
+    }
+
     /// Creates both buffers and queues their copies, without flushing.
     fn queue(
         device: &RenderDevice,

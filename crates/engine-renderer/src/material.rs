@@ -714,6 +714,22 @@ impl Material {
         Ok(materials)
     }
 
+    /// Creates the buffer and queues its copy into a caller's uploader.
+    ///
+    /// No flush and therefore no wait; see [`GpuMesh::queue_into`](crate::GpuMesh::queue_into).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RendererError::InvalidConfig`] for out-of-range or non-finite parameters,
+    /// or [`RendererError::Api`] if a D3D12 call fails.
+    pub fn queue_into(
+        device: &RenderDevice,
+        uploader: &mut StagingUploader,
+        desc: MaterialDesc,
+    ) -> Result<Self, RendererError> {
+        Self::queue(device, uploader, desc)
+    }
+
     /// Creates the buffer and queues its copy, without flushing.
     fn queue(
         device: &RenderDevice,

@@ -127,7 +127,9 @@ impl GpuBuffer {
                 reason: "a buffer needs a non-zero size".to_owned(),
             });
         }
+        let probe = crate::upload_timing::Probe::start();
         let resource = device.create_buffer(size, heap_type, initial_state)?;
+        probe.resource();
         // SAFETY: FFI call returning the resource's GPU address, valid while it lives.
         let gpu_address = unsafe { resource.GetGPUVirtualAddress() };
 
@@ -449,6 +451,7 @@ impl GpuTexture {
         initial_state: D3D12_RESOURCE_STATES,
     ) -> Result<Self, RendererError> {
         let mip_levels = mip_levels.max(1);
+        let probe = crate::upload_timing::Probe::start();
         let resource = device.create_texture_2d(
             width,
             height,
@@ -458,6 +461,7 @@ impl GpuTexture {
             initial_state,
             None,
         )?;
+        probe.resource();
         Ok(Self {
             resource,
             width,

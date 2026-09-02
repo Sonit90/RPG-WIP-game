@@ -352,6 +352,8 @@ struct OverlayState {
 /// the device while a swap chain or command list still lives crashes inside the driver
 /// on some adapters. `context` therefore comes last.
 pub struct Renderer {
+    /// The open upload batch, if one is. See [`Renderer::begin_upload_batch`].
+    bulk: Option<StagingUploader>,
     /// What construction cost, for the application's startup report. Absent without the
     /// `startup-timing` feature.
     #[cfg(feature = "startup-timing")]
@@ -698,6 +700,7 @@ impl Renderer {
         };
 
         let renderer = Self {
+            bulk: None,
             #[cfg(feature = "startup-timing")]
             startup: RendererStartup {
                 device_ms,
@@ -2067,13 +2070,93 @@ impl Renderer {
         &self.visible
     }
 
+    /// Opens an upload batch: from here until [`Renderer::end_upload_batch`], every
+    /// resource created queues its copy into one staging uploader and **nothing waits for
+    /// the GPU**.
+    ///
+    /// # Why this exists
+    ///
+    /// Every `create_*` call used to build a staging uploader of its own, submit one copy
+    /// and then wait for the queue to go idle. That is a full CPU-GPU round trip per texture
+    /// and per buffer, and a level's worth of models is a hundred of them — measured at
+    /// roughly 800 ms of a 1.4 s launch, carrying about a megabyte in total. The copies were
+    /// never the cost; the waiting was.
+    ///
+    /// # What a caller has to know
+    ///
+    /// A resource created inside a batch is **not readable by the GPU until the batch ends**.
+    /// Descriptors, handles and material tables are all fine to build meanwhile — they name
+    /// the resource, they do not read it — so the rule in practice is: end the batch before
+    /// the frame that draws with it. The staging memory for everything queued stays alive
+    /// until then, which is why this is a load-time tool and not the per-frame path.
+    ///
+    /// Nesting is not supported: a second call while a batch is open is a no-op, so that a
+    /// helper that batches internally can be called from inside a larger batch without
+    /// closing it early.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RendererError::Api`] if the uploader's command list cannot be created.
+    pub fn begin_upload_batch(&mut self) -> Result<(), RendererError> {
+        if self.bulk.is_none() {
+            self.bulk = Some(StagingUploader::new(&self.context)?);
+        }
+        Ok(())
+    }
+
+    /// Submits everything the batch queued and waits once. Returns the number of copies.
+    ///
+    /// Harmless with no batch open, which is what makes it safe on an error path.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RendererError::Api`] if a D3D12 call fails.
+    pub fn end_upload_batch(&mut self) -> Result<usize, RendererError> {
+        let Some(mut uploader) = self.bulk.take() else {
+            return Ok(0);
+        };
+        let copies = uploader.flush(&self.context)?;
+        log::debug!("upload batch: {copies} copies in one submission");
+        crate::upload_timing::report();
+        Ok(copies)
+    }
+
+    /// Whether an upload batch is open.
+    #[must_use]
+    pub fn is_batching_uploads(&self) -> bool {
+        self.bulk.is_some()
+    }
+
+    /// Runs `queue` against the batch's uploader, or against a private one that is flushed
+    /// immediately when no batch is open.
+    ///
+    /// The one place the two modes differ, so every `create_*` below reads the same whether
+    /// it is being called at load time or in the middle of a session.
+    fn queued<R>(
+        &mut self,
+        queue: impl FnOnce(&RenderDevice, &mut StagingUploader) -> Result<R, RendererError>,
+    ) -> Result<R, RendererError> {
+        // Destructured rather than `self.bulk` and `self.context`, so the borrow checker can
+        // see that the uploader and the device are different fields.
+        let Self { context, bulk, .. } = self;
+        match bulk.as_mut() {
+            Some(uploader) => queue(context, uploader),
+            None => {
+                let mut uploader = StagingUploader::new(context)?;
+                let value = queue(context, &mut uploader)?;
+                uploader.flush(context)?;
+                Ok(value)
+            }
+        }
+    }
+
     /// Uploads a mesh and returns a handle to it.
     ///
     /// # Errors
     ///
     /// Returns [`RendererError::Api`] if a D3D12 call fails.
     pub fn create_mesh(&mut self, data: &MeshData) -> Result<MeshHandle, RendererError> {
-        let mesh = GpuMesh::upload(&self.context, data)?;
+        let mesh = self.queued(|device, uploader| GpuMesh::queue_into(device, uploader, data))?;
         let index = self.meshes.len() as u32;
         self.meshes.push(mesh);
         Ok(MeshHandle::new(index, 1))
@@ -2088,7 +2171,8 @@ impl Renderer {
         &mut self,
         data: &SkinnedMeshData,
     ) -> Result<SkinnedMeshHandle, RendererError> {
-        let mesh = GpuMesh::upload_skinned(&self.context, data)?;
+        let mesh =
+            self.queued(|device, uploader| GpuMesh::queue_skinned_into(device, uploader, data))?;
         let index = self.skinned_meshes.len() as u32;
         self.skinned_meshes.push(mesh);
         Ok(SkinnedMeshHandle::new(index, 1))
@@ -2196,6 +2280,7 @@ impl Renderer {
         // Block compression happens *after* the chain is filtered, level by level. Filtering
         // compressed data would mean decompressing it first, and compressing level 0 and
         // reducing that would compound the format's error down the chain.
+        let probe = crate::upload_timing::Probe::start();
         let compressed: Vec<Vec<u8>> = match compression {
             Compression::None => Vec::new(),
             Compression::Bc1 | Compression::Bc5 => levels
@@ -2211,6 +2296,7 @@ impl Renderer {
                 })
                 .collect(),
         };
+        probe.compression();
         if !compressed.is_empty() {
             levels = compressed.iter().map(Vec::as_slice).collect();
             log::debug!(
@@ -2224,14 +2310,14 @@ impl Renderer {
             );
         }
 
-        let mut uploader = StagingUploader::new(&self.context)?;
-        uploader.queue_texture_mips(
-            &self.context,
-            &texture,
-            &levels,
-            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-        )?;
-        uploader.flush(&self.context)?;
+        self.queued(|device, uploader| {
+            uploader.queue_texture_mips(
+                device,
+                &texture,
+                &levels,
+                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+            )
+        })?;
 
         let descriptor = self.descriptors.allocate_persistent()?;
         let desc = D3D12_SHADER_RESOURCE_VIEW_DESC {
@@ -2911,7 +2997,8 @@ impl Renderer {
 
         // The constants first: a failure there must not leave a descriptor range allocated
         // to a material that does not exist.
-        let material = Material::new(&self.context, desc)?;
+        let material =
+            self.queued(|device, uploader| Material::queue_into(device, uploader, desc))?;
         let range = self
             .descriptors
             .allocate_persistent_range(MATERIAL_TEXTURE_COUNT)?;

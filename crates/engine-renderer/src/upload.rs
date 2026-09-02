@@ -352,6 +352,116 @@ impl UploadRing {
 
 /// Batched one-off uploads of static data to device-local memory.
 ///
+
+/// How large one chunk of staging memory is, in bytes.
+///
+/// Four megabytes: a level's whole content is a few of these, and a single asset larger than
+/// one gets a chunk of its own rather than being refused.
+const STAGING_CHUNK_BYTES: usize = 4 * 1024 * 1024;
+
+/// Where in the arena a staged copy lives.
+#[derive(Debug, Clone, Copy)]
+struct StagingSpan {
+    chunk: usize,
+    offset: usize,
+}
+
+/// One permanently mapped upload buffer the queued copies are staged through.
+struct StagingChunk {
+    buffer: GpuBuffer,
+    base: std::ptr::NonNull<u8>,
+    used: usize,
+}
+
+/// Upload-heap memory for staging, suballocated rather than created per copy.
+///
+/// # Why
+///
+/// `CreateCommittedResource` is a driver allocation, and it was measured at roughly half a
+/// millisecond each on the reference machine. A model is a staging buffer per mesh buffer,
+/// per material and per mip level, so a level's worth of content was several hundred of them
+/// — 431 ms of a 1.0 s launch, for about a megabyte of data. A chunk is created once and
+/// reused for the life of the uploader; a copy is now a bump of an offset and a `memcpy`.
+struct StagingArena {
+    chunks: Vec<StagingChunk>,
+}
+
+impl StagingArena {
+    /// An arena with no memory yet. The first allocation creates the first chunk.
+    fn new() -> Self {
+        Self { chunks: Vec::new() }
+    }
+
+    /// Reserves `bytes` aligned to `alignment`, growing by a chunk when nothing fits.
+    fn allocate(
+        &mut self,
+        device: &RenderDevice,
+        bytes: usize,
+        alignment: usize,
+    ) -> Result<StagingSpan, RendererError> {
+        let alignment = alignment.max(1);
+        for (index, chunk) in self.chunks.iter_mut().enumerate() {
+            let offset = chunk.used.next_multiple_of(alignment);
+            if offset + bytes <= chunk.buffer.size() {
+                chunk.used = offset + bytes;
+                return Ok(StagingSpan {
+                    chunk: index,
+                    offset,
+                });
+            }
+        }
+
+        // Nothing fits: a new chunk, big enough for this request even if it is a large one.
+        let size = STAGING_CHUNK_BYTES.max(bytes.next_multiple_of(alignment));
+        let buffer = GpuBuffer::new_upload(device, size)?;
+        let base = buffer.map_persistent()?;
+        self.chunks.push(StagingChunk {
+            buffer,
+            base,
+            used: bytes,
+        });
+        Ok(StagingSpan {
+            chunk: self.chunks.len() - 1,
+            offset: 0,
+        })
+    }
+
+    /// Copies `data` into a span reserved for it.
+    ///
+    /// The caller reserved at least `data.len()` bytes at this span, which is the whole of
+    /// the safety argument — the pointer is inside a mapped buffer this arena owns and the
+    /// span cannot overlap another, because allocation only ever bumps forward.
+    fn write(&self, span: StagingSpan, data: &[u8]) {
+        let Some(chunk) = self.chunks.get(span.chunk) else {
+            debug_assert!(false, "a span names a chunk the arena does not have");
+            return;
+        };
+        debug_assert!(span.offset + data.len() <= chunk.buffer.size());
+        // SAFETY: the destination is `data.len()` bytes inside a chunk of mapped
+        // upload-heap memory reserved by `allocate` for exactly this write, and the source
+        // is a slice. Upload memory is write-combined: this writes forward and never reads.
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                data.as_ptr(),
+                chunk.base.as_ptr().add(span.offset),
+                data.len(),
+            );
+        }
+    }
+
+    /// The buffer a span lives in.
+    fn buffer(&self, span: StagingSpan) -> Option<&GpuBuffer> {
+        self.chunks.get(span.chunk).map(|chunk| &chunk.buffer)
+    }
+
+    /// Frees every reservation, keeping the memory. Called once the GPU has finished with it.
+    fn reset(&mut self) {
+        for chunk in &mut self.chunks {
+            chunk.used = 0;
+        }
+    }
+}
+
 /// Queue several copies, then flush once. The alternative — a staging buffer, an allocator,
 /// a list and a GPU wait per resource — costs one full synchronization per mesh, which is
 /// what Phase 0's mesh upload did and what §14 asks to avoid.
@@ -359,8 +469,8 @@ pub struct StagingUploader {
     context: CommandContext,
     allocator: windows::Win32::Graphics::Direct3D12::ID3D12CommandAllocator,
     fence: GpuFence,
-    /// Staging buffers for the copies queued so far, released after the flush completes.
-    staging: Vec<GpuBuffer>,
+    /// Upload-heap memory the queued copies are staged through, reused after each flush.
+    staging: StagingArena,
     queued: usize,
     /// Copies performed since creation, and flushes they cost.
     total_copies: u64,
@@ -380,7 +490,7 @@ impl StagingUploader {
             context,
             allocator,
             fence: GpuFence::new(device)?,
-            staging: Vec::new(),
+            staging: StagingArena::new(),
             queued: 0,
             total_copies: 0,
             total_flushes: 0,
@@ -417,29 +527,39 @@ impl StagingUploader {
 
         self.begin_if_idle()?;
 
-        let staging = GpuBuffer::new_upload(device, bytes)?;
-        staging.write(data)?;
+        let span = self.staging.allocate(device, bytes, DEFAULT_ALIGNMENT)?;
+        let probe = crate::upload_timing::Probe::start();
+        // SAFETY: `data` is a slice of `T: Copy`, so its bytes are initialized and readable
+        // for `size_of_val` bytes; the view is read and dropped inside this call.
+        let bytes_of = unsafe { std::slice::from_raw_parts(data.as_ptr().cast::<u8>(), bytes) };
+        self.staging.write(span, bytes_of);
+        probe.copy();
+
+        let Some(staging) = self.staging.buffer(span) else {
+            return Err(RendererError::InvalidConfig {
+                reason: "the staging arena lost the span it just reserved".to_owned(),
+            });
+        };
 
         self.context
             .transition_to(destination, D3D12_RESOURCE_STATE_COPY_DEST);
         self.context.flush_barriers();
 
         // SAFETY: FFI call on the open list. Both resources outlive the submission — the
-        // staging buffer is held in `self.staging` until the flush completes, and the
-        // destination is owned by the caller.
+        // arena's chunks live as long as this uploader and the flush waits for the GPU
+        // before anything is reused, and the destination is owned by the caller.
         unsafe {
             self.context.list().CopyBufferRegion(
                 destination.resource(),
                 0,
                 staging.resource(),
-                0,
+                span.offset as u64,
                 bytes as u64,
             );
         }
 
         self.context.transition_to(destination, final_state);
 
-        self.staging.push(staging);
         self.queued += 1;
         Ok(())
     }
@@ -573,9 +693,13 @@ impl StagingUploader {
         let rows = layout.rows(height);
         let staging_size = padded_pitch * rows;
 
-        let staging = GpuBuffer::new_upload(device, staging_size)?;
+        // 512-byte aligned: D3D12 requires the start of a placed texture footprint to be,
+        // and a span that is not produces a copy the debug layer rejects.
+        let span = self
+            .staging
+            .allocate(device, staging_size, TEXTURE_DATA_ALIGNMENT)?;
         if padded_pitch == source_pitch {
-            staging.write(data)?;
+            self.staging.write(span, data);
         } else {
             let mut padded = vec![0u8; staging_size];
             for row in 0..rows {
@@ -583,19 +707,24 @@ impl StagingUploader {
                 let to = row * padded_pitch;
                 padded[to..to + source_pitch].copy_from_slice(&data[from..from + source_pitch]);
             }
-            staging.write(&padded)?;
+            self.staging.write(span, &padded);
         }
+        let Some(staging) = self.staging.buffer(span) else {
+            return Err(RendererError::InvalidConfig {
+                reason: "the staging arena lost the span it just reserved".to_owned(),
+            });
+        };
 
         let source = D3D12_TEXTURE_COPY_LOCATION {
             // SAFETY: reinterprets the COM smart pointer as the raw interface pointer the
-            // copy location expects, without changing the reference count. The staging
-            // buffer is moved into `self.staging` below and released only after the flush
-            // has waited for the GPU, so it outlives the submission.
+            // copy location expects, without changing the reference count. The arena's
+            // chunks live as long as this uploader and are not reused until the flush has
+            // waited for the GPU, so the memory outlives the submission.
             pResource: unsafe { std::mem::transmute_copy(staging.resource()) },
             Type: D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT,
             Anonymous: D3D12_TEXTURE_COPY_LOCATION_0 {
                 PlacedFootprint: D3D12_PLACED_SUBRESOURCE_FOOTPRINT {
-                    Offset: 0,
+                    Offset: span.offset as u64,
                     Footprint: D3D12_SUBRESOURCE_FOOTPRINT {
                         Format: destination.format(),
                         // Rounded up to whole blocks: D3D12 requires a compressed
@@ -632,7 +761,6 @@ impl StagingUploader {
                 .CopyTextureRegion(&target, 0, 0, 0, &source, None);
         }
 
-        self.staging.push(staging);
         Ok(())
     }
 
@@ -663,9 +791,10 @@ impl StagingUploader {
 
         self.fence.wait_for_idle(device.queue())?;
 
-        // The wait proved every copy finished, so the staging buffers are safe to drop
-        // rather than being handed to the deferred release queue.
-        self.staging.clear();
+        // The wait proved every copy finished, so the staging memory is safe to hand out
+        // again. The chunks themselves are kept: the whole point of the arena is that the
+        // next batch does not pay to create them.
+        self.staging.reset();
         let copies = self.queued;
         self.queued = 0;
         self.total_copies += copies as u64;

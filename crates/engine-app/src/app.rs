@@ -535,6 +535,10 @@ impl App {
 
         renderer.set_ui_enabled(args.ui);
 
+        // Every resource the level needs goes up in one batch: one submission and one wait
+        // for the GPU at the end of it, rather than a full round trip per texture and per
+        // buffer. See `Renderer::begin_upload_batch` for what that was costing.
+        renderer.begin_upload_batch()?;
         let visuals = upload_visuals(&mut renderer)?;
         let decal_visuals = upload_decal_visuals(&mut renderer)?;
         let vfx_visuals = upload_vfx_visuals(&mut renderer)?;
@@ -772,6 +776,11 @@ impl App {
             );
         }
         crate::startup::stage("scene placement");
+        // Everything above queued its copies; this is the one wait. Nothing has been drawn
+        // yet, so nothing has read a resource that was still in flight.
+        let copies = renderer.end_upload_batch()?;
+        log::info!("startup: {copies} resource copies in one submission");
+        crate::startup::stage("GPU flush");
         extractor.extract(&simulation);
 
         // The collision course is only visible through the debug view, so in that scene the

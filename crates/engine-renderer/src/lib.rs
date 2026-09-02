@@ -50,6 +50,7 @@ pub mod transparency;
 pub mod ui_atlas;
 pub mod ui_pipeline;
 pub mod upload;
+mod upload_timing;
 
 pub use adapter::{AdapterInfo, select_adapter};
 pub use bench::{BenchHarness, BenchResult, DrawMode};
