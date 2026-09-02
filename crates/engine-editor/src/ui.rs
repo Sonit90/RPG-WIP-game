@@ -21,8 +21,8 @@ use engine_environment::EnvironmentScene;
 use engine_presentation::ui::paint::MenuTheme;
 use engine_render_data::ui::{UiDrawList, UiRect, UiScale};
 
-use crate::Editor;
 use crate::browser::BrowserRow;
+use crate::{Editor, Selected, hierarchy_len, hierarchy_row_at};
 
 /// Layout constants, in logical pixels.
 pub mod layout {
@@ -286,17 +286,26 @@ pub fn push_editor(
     );
 
     scratch.clear();
-    match editor
-        .selection()
-        .and_then(|index| scene.objects.get(index))
-    {
-        Some(object) => {
-            scratch.push_str(object.asset.name());
-            scratch.push_str(" @ ");
-            write_metres(scratch, object.position().x);
-            scratch.push(' ');
-            write_metres(scratch, object.position().z);
-        }
+    match editor.selection() {
+        Some(Selected::Object(index)) => match scene.objects.get(index) {
+            Some(object) => {
+                scratch.push_str(object.asset.name());
+                scratch.push_str(" @ ");
+                write_metres(scratch, object.position().x);
+                scratch.push(' ');
+                write_metres(scratch, object.position().z);
+            }
+            None => scratch.push_str("nothing selected"),
+        },
+        Some(Selected::Water(index)) => match scene.water.get(index) {
+            Some(body) => {
+                scratch.push_str("water @ ");
+                write_metres(scratch, body.center.x);
+                scratch.push(' ');
+                write_metres(scratch, body.center.z);
+            }
+            None => scratch.push_str("nothing selected"),
+        },
         None => scratch.push_str("nothing selected"),
     }
     list.text_at(
@@ -326,7 +335,8 @@ pub fn push_editor(
         "ARROWS NUDGE   SHIFT+ARROWS UP/DOWN   L LOCAL",
         "R YAW   T SIZE   0 RESET   X DELETE   C COPY",
         "G GRID   SHIFT+G ROTATION STEP   CTRL+A ALL",
-        "B SCULPT THE GROUND   Z UNDO   TAB NEXT ASSET",
+        "V POUR WATER   B SCULPT THE GROUND   Z UNDO",
+        "TAB NEXT ASSET",
         "F FIND   F2 RESCAN ASSETS",
         "CTRL+S SAVE   F6 BACK TO PLAYING",
     ];
@@ -369,7 +379,7 @@ fn push_hierarchy(
 
     scratch.clear();
     scratch.push_str("HIERARCHY ");
-    write_count(scratch, scene.len());
+    write_count(scratch, hierarchy_len(scene));
     if editor.selected().len() > 1 {
         scratch.push_str("  SEL ");
         write_count(scratch, editor.selected().len());
@@ -381,18 +391,22 @@ fn push_hierarchy(
         text,
     );
 
+    let rows = hierarchy_len(scene);
     let visible = hierarchy_visible_rows(scale, viewport);
-    let first = editor.hierarchy_scroll().min(scene.len());
+    let first = editor.hierarchy_scroll().min(rows);
     for slot in 0..visible {
-        let Some(index) = first.checked_add(slot) else {
+        let Some(row) = first.checked_add(slot) else {
             break;
         };
-        let Some(object) = scene.objects.get(index) else {
+        // One row index over both lists: the placements, and then the water. A body of water
+        // is a row like any other because it is a thing in the level an author points at,
+        // and hiding it would leave the only pond in a valley unfindable in plan view.
+        let Some(what) = hierarchy_row_at(row, scene) else {
             break;
         };
         let rect = hierarchy_row_rect(scale, viewport, slot);
-        let selected = editor.is_selected(index);
-        let primary = editor.selection() == Some(index);
+        let selected = editor.is_selected(what);
+        let primary = editor.selection() == Some(what);
         if selected {
             list.rect(rect, theme.panel_border);
             // Only the primary selection is outlined: with a dozen rows highlighted, the one
@@ -402,9 +416,19 @@ fn push_hierarchy(
             }
         }
         scratch.clear();
-        write_count(scratch, index);
-        scratch.push(' ');
-        scratch.push_str(object.asset.name());
+        match what {
+            Selected::Object(index) => {
+                write_count(scratch, index);
+                scratch.push(' ');
+                if let Some(object) = scene.objects.get(index) {
+                    scratch.push_str(object.asset.name());
+                }
+            }
+            Selected::Water(index) => {
+                write_count(scratch, index);
+                scratch.push_str(" WATER");
+            }
+        }
         list.text_at(
             (rect.x + padding * 0.5, rect.y + padding * 0.25),
             scratch,
@@ -414,11 +438,11 @@ fn push_hierarchy(
     }
 
     // Whether there is more list than window, said in words rather than with a scroll bar.
-    if scene.len() > visible {
+    if rows > visible {
         scratch.clear();
-        write_count(scratch, first + visible.min(scene.len().saturating_sub(first)));
+        write_count(scratch, first + visible.min(rows.saturating_sub(first)));
         scratch.push_str(" OF ");
-        write_count(scratch, scene.len());
+        write_count(scratch, rows);
         list.text_at(
             (panel.x + padding, panel.bottom() - padding - text * 8.0),
             scratch,
@@ -513,8 +537,40 @@ fn push_inspector(
     });
     row(4, scratch, list);
 
+    // A body of water is described by what it is, not by a transform: an author who cannot
+    // see the depth cannot tell a puddle from a lake looking down at it.
+    if let Some(body) = editor
+        .selected_water()
+        .and_then(|index| scene.water.get(index))
+    {
+        scratch.clear();
+        scratch.push_str("WATER");
+        row(0, scratch, list);
+
+        scratch.clear();
+        scratch.push_str("SURFACE ");
+        write_metres(scratch, body.center.y);
+        scratch.push_str(" M   DEPTH ");
+        write_metres(scratch, body.depth);
+        row(1, scratch, list);
+
+        scratch.clear();
+        scratch.push_str("SIZE ");
+        write_metres(scratch, body.half_extents.x * 2.0);
+        scratch.push_str(" X ");
+        write_metres(scratch, body.half_extents.y * 2.0);
+        scratch.push_str(" M");
+        row(2, scratch, list);
+
+        scratch.clear();
+        scratch.push_str("YAW ");
+        write_metres(scratch, body.yaw.to_degrees());
+        row(3, scratch, list);
+        return;
+    }
+
     let Some(object) = editor
-        .selection()
+        .selected_object()
         .and_then(|index| scene.objects.get(index))
     else {
         scratch.clear();

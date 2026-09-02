@@ -669,3 +669,140 @@ other five cannot quietly start passing for a reason that has nothing to do with
 
 106 test binaries green, clippy clean, `asset_check` still 24 assets / 0 errors, and
 `asset_gen` writes six sidecars beside the six pieces that need them.
+
+## Phase 8 — water
+
+The third thing a level *has*, after its terrain and its lights, and not something it places.
+
+### Why it is not a placement
+
+A placement is an asset id and a transform; the engine resolves the id to a mesh and draws it.
+Water has no asset — it has a size somebody dragged out, a height somebody chose, and one
+question gameplay asks of it. As a placement, "is the player in water" would have to be
+answered by searching the object list for meshes that happen to be transparent, and a pond
+would be a rock that happened to be flat and blue.
+
+So `EnvironmentScene` gained `water: Vec<WaterBody>` beside its `lights` and its `terrain`, and
+`WaterBody` is a rectangle with a yaw, a surface height and a depth:
+
+```text
+        yaw
+         ↻                     ~~~~~~~~~~~~~~~~~~~~~  surface, at center.y
+   ┌───────────┐               │                   │
+   │     •     │  half_extents │      depth        │
+   └───────────┘               └───────────────────┘  the volume the query answers about
+     seen in plan                    seen from the side
+```
+
+`is_submerged(point)` is the one question with one answer, in the spirit of `ground_at`: a
+caller never has to know how many bodies a level has or how each is shaped. **Nothing consumes
+it yet** — the lifecycle phases can when they need a second death trigger, and building one
+here would put the lifecycle in the wrong phase.
+
+The depth is not decoration. Without it, "under water" means "below this height anywhere in
+the level", which is true inside the hill next to the lake.
+
+### The one architectural change: a tagged selection
+
+The editor's selection was `Vec<usize>` into `scene.objects`. It is now `Vec<Selected>`:
+
+```rust
+pub enum Selected {
+    Object(usize),
+    Water(usize),
+}
+```
+
+That reaches the hierarchy panel, the inspector, `reveal_selection`, every verb in
+`update_keys`, the drag and `prune_selection`. It was worth doing as a shape rather than as a
+special case for water, because a spawn point in Phase 10 wants exactly the same thing: click
+to select, drag to move, `X` to delete, `Z` to take back.
+
+**A selection holds one kind at a time.** Selecting a body of water clears a selection of
+objects and the reverse; `CTRL+A` takes every object and no water. A rule an author can predict
+beats a general one nobody can — `T` over a mixed selection would mean "scale these and resize
+those", and the undo of that is a sentence rather than a gesture.
+
+The assertion the refactor lives or dies on is that the existing object tests pass unchanged,
+and they do: multi-select, group drag, duplicate, delete-highest-first, reset. Two new tests
+cover the boundary — an object and a body of water each selected in turn, with `X` deleting
+exactly the one that is, in both directions.
+
+### The editor
+
+| Key | What it does to a body of water |
+| --- | --- |
+| `V` | pours one where the cursor is: 8 m square, 2 m deep, at the height of the ground under it |
+| drag | moves it |
+| arrows | nudge by the grid step, along the world or along its own yaw |
+| `T` / `SHIFT+T` | grow / shrink its half-extents, never below a quarter of a metre |
+| `R` / `SHIFT+R` | turn it, snapped to the rotation step |
+| `0` | straighten it |
+| `X` | delete it |
+| `Z` | undo, the pour included |
+
+`SHIFT+T` stops at a quarter of a metre because a body with a zero extent is a volume nothing
+can be inside — and a level the scene loader would refuse to read back. The editor must not be
+able to author a file it cannot open.
+
+`Snapshot` grew a third field, so undo carries the water the way Phase 6 taught it to carry the
+terrain. The hierarchy lists the placements and then the water, one row index over both lists,
+so the number beside a placement is still its index in the file. The inspector shows a body's
+surface height, size, yaw and depth — an author who cannot see the depth cannot tell a puddle
+from a lake in plan view.
+
+Picking is against the **volume**, not the surface, so a pond can be clicked from underneath as
+well as from above; `pick::under_ray` answers over both lists at once, because "which is
+nearer, the rock or the pond" is precisely what a click asks and precisely what two separate
+answers cannot settle.
+
+### Rendering, and what was not built
+
+One transparent quad per body, through the pass that already existed (`docs/transparency.md`).
+The yaw is **not** baked into the mesh — it is on the render entity's transform, the way every
+placement's is, so a body that is turned reuses the quad it has. UVs are tiled by world metres
+using the terrain's `TEXTURE_METRES`, so a pond and a lake have the same texel density.
+
+`EditorOutcome::WaterChanged` exists for the reason `TerrainChanged` does: `SceneChanged`
+re-places every object in the level, and paying that on every frame of a drag that is resizing
+one quad is exactly the cost the separate outcome avoids.
+
+Not built, on purpose: swimming, buoyancy, drowning, waves, reflection, refraction, underwater
+fog, a material per body, and any collision at all. `engine-collision`'s layer bitmask has room
+for a `WATER` layer if water ever needs to be a queryable volume in the physics world; it is
+not needed for `is_submerged`, which reads the scene directly.
+
+### The acceptance test
+
+`engine-presentation/tests/water_is_not_a_wall.rs` moves a character through the **real
+controller** in a world built by the **real level loader**:
+
+| Test | What it proves |
+| --- | --- |
+| walks straight through a pond | water adds no collision — asserted by moving a character, not by counting shapes |
+| the level says wet exactly while the character is in it | the query and where the character actually stands agree |
+| a rock in the pond still stops it | water adds no collision and takes none away either |
+
+### A gap this phase did not dig, and one it did not fill
+
+Water is serialized from the start: a `WaterRecord` in `scene_file.rs`, optional and skipped
+when empty, validated on load with the error naming `water[n]`.
+
+`EnvironmentScene::lights` is **still not serialized**. There is no lights record, so a level
+authored in the editor loses every brazier's local light when it is saved. That is a real bug
+and it is not this phase's — fixing it means deciding how a light is *authored*, which is a
+phase of its own. It is written down here so the next person finds it.
+
+### Verification
+
+`assets/scenes/water_probe.json` is a level with two bodies at different heights and yaws.
+Loaded headless it reports:
+
+```text
+environment 'water_probe': 3 objects, 2 collision shapes
+environment 'water_probe': 2 water bodies
+water: 2 bodies
+```
+
+Workspace tests green, clippy clean, and both builds compile — `--features editor` and the
+shipping one, which still has no editor in it.

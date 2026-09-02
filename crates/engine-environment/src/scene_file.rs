@@ -221,6 +221,27 @@ pub struct SceneDocument {
     /// format that has never heard of terrain reads such a file unchanged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub terrain: Option<TerrainRecord>,
+    /// The bodies of water the level has, if any.
+    ///
+    /// Absent rather than empty in a level with no water, for the reason the terrain is
+    /// optional: a file written before water existed reads unchanged, and a level nobody has
+    /// poured water into carries no water key.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub water: Vec<WaterRecord>,
+}
+
+/// One body of water, as the file says it.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct WaterRecord {
+    /// The middle of the surface, `[x, y, z]`, with `y` the height the water sits at.
+    pub center: [f32; 3],
+    /// Half-width and half-depth of the rectangle, in metres, before rotation.
+    pub half_extents: [f32; 2],
+    /// Rotation about +Y, radians. Absent means none.
+    #[serde(default)]
+    pub yaw: f32,
+    /// How far the volume reaches below the surface, in metres.
+    pub depth: f32,
 }
 
 /// The ground's shape, as the file says it.
@@ -316,6 +337,16 @@ impl SceneDocument {
                             half_extents: array(shape.half_extents),
                         })
                         .collect(),
+                })
+                .collect(),
+            water: scene
+                .water
+                .iter()
+                .map(|body| WaterRecord {
+                    center: array(body.center),
+                    half_extents: [body.half_extents.x, body.half_extents.y],
+                    yaw: body.yaw,
+                    depth: body.depth,
                 })
                 .collect(),
             terrain: scene.terrain.as_ref().map(|terrain| TerrainRecord {
@@ -426,6 +457,32 @@ impl SceneDocument {
                 });
             }
             scene.terrain = Some(terrain);
+        }
+
+        for (index, record) in self.water.iter().enumerate() {
+            let body = crate::water::WaterBody {
+                center: vector(record.center),
+                half_extents: engine_core::math::Vec2::new(
+                    record.half_extents[0],
+                    record.half_extents[1],
+                ),
+                yaw: record.yaw,
+                depth: record.depth,
+            };
+            // A body with a zero extent or a zero depth is a volume nothing can be inside and
+            // a query that can never be true — a file that says so was edited by hand and got
+            // it wrong, and the loader is where that is worth saying.
+            if !body.is_valid() {
+                return Err(SceneFileError::Invalid {
+                    path: path.to_owned(),
+                    location: format!("water[{index}]"),
+                    reason: format!(
+                        "a body needs finite numbers, positive half-extents and a positive                          depth; this one is {} x {} at depth {}",
+                        record.half_extents[0], record.half_extents[1], record.depth
+                    ),
+                });
+            }
+            scene.push_water(body);
         }
 
         for (index, record) in self.objects.iter().enumerate() {
@@ -705,6 +762,58 @@ mod tests {
     }
 
     #[test]
+    fn water_survives_the_round_trip_and_an_empty_level_writes_none_of_it() {
+        use engine_core::math::Vec2;
+
+        let mut original = scene();
+        original.push_water(crate::water::WaterBody::new(
+            Vec3::new(4.0, -0.5, -6.0),
+            Vec2::new(9.0, 3.5),
+            2.5,
+        ));
+        original.push_water(
+            crate::water::WaterBody::new(Vec3::new(-20.0, 3.0, 8.0), Vec2::new(4.0, 4.0), 1.25)
+                .with_yaw(0.75),
+        );
+
+        let document = SceneDocument::from_scene(&original);
+        let text = serde_json::to_string(&document).expect("a level with water is writable");
+        assert!(text.contains("\"water\""), "the key is in the file");
+        let restored: SceneDocument = serde_json::from_str(&text).expect("and readable again");
+        let restored = restored.to_scene("memory").expect("and valid");
+        assert_eq!(restored.water, original.water);
+
+        // And a level with none of it carries no key at all, so a file written before water
+        // existed and a file written by this build of a level without any are the same file.
+        let dry = serde_json::to_string(&SceneDocument::from_scene(&scene())).expect("writable");
+        assert!(!dry.contains("water"), "an absent water list was written anyway");
+    }
+
+    #[test]
+    fn a_water_body_with_no_size_is_refused_and_the_message_names_it() {
+        let mut document = SceneDocument::from_scene(&scene());
+        document.water = vec![
+            WaterRecord {
+                center: [0.0, 0.0, 0.0],
+                half_extents: [4.0, 4.0],
+                yaw: 0.0,
+                depth: 2.0,
+            },
+            WaterRecord {
+                center: [0.0, 0.0, 0.0],
+                half_extents: [0.0, 4.0],
+                yaw: 0.0,
+                depth: 2.0,
+            },
+        ];
+        let error = document
+            .to_scene("memory")
+            .expect_err("a body with no width holds nothing");
+        let message = error.to_string();
+        assert!(message.contains("water[1]"), "{message}");
+    }
+
+    #[test]
     fn a_level_with_no_terrain_writes_no_terrain_at_all() {
         // The field is optional so that a file written before terrain existed still reads, and
         // so that a flat level does not carry sixteen thousand zeroes for nothing.
@@ -769,6 +878,7 @@ mod tests {
             lighting: None,
             collision_shapes: Vec::new(),
             terrain: None,
+            water: Vec::new(),
             objects: vec![
                 ObjectRecord {
                     asset: "pillar".to_owned(),
@@ -810,6 +920,7 @@ mod tests {
             lighting: None,
             collision_shapes: Vec::new(),
             terrain: None,
+            water: Vec::new(),
             objects: vec![ObjectRecord {
                 asset: "   ".to_owned(),
                 position: [0.0; 3],
@@ -880,6 +991,7 @@ mod tests {
             lighting: None,
             collision_shapes: Vec::new(),
             terrain: None,
+            water: Vec::new(),
             objects: vec![ObjectRecord {
                 asset: "pillar".to_owned(),
                 position: [0.0; 3],

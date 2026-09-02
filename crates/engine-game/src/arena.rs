@@ -375,6 +375,16 @@ pub fn environment_arena(
         scene.len(),
         if terrain { ", and terrain" } else { "" }
     );
+    // Said on its own line rather than folded into the one above, because water is not a
+    // collision shape and a count that included it would be a count that lies about what
+    // stops a character.
+    if !scene.water.is_empty() {
+        log::info!(
+            "environment '{}': {} water bodies",
+            scene.name,
+            scene.water.len()
+        );
+    }
 
     simulation.set_player_entity(arena.player);
     simulation.party_mut().join(arena.healing_dummy);

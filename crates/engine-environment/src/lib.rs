@@ -66,6 +66,7 @@ pub mod object;
 pub mod scene;
 pub mod scene_file;
 pub mod terrain;
+pub mod water;
 pub mod shadow_course;
 
 pub use asset::{EnvironmentAsset, LIBRARY};
@@ -73,6 +74,7 @@ pub use lighting::{EnvironmentLighting, SceneLight, push_stress_lights};
 pub use object::{CollisionBox, CollisionShape, EnvironmentCollision, EnvironmentObject};
 pub use scene::{EnvironmentScene, SpawnPoints};
 pub use terrain::{BrushMode, Terrain};
+pub use water::WaterBody;
 pub use scene_file::{SceneDocument, SceneFileError};
 
 /// Deterministic value in `0..1` from a pair of integers.

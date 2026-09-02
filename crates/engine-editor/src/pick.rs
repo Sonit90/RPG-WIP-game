@@ -14,9 +14,18 @@
 //! An object that blocks nothing has no box, and gets a small one around its origin so it can
 //! still be picked: a fern is decoration to the character controller and a placement like any
 //! other to the person arranging the level.
+//!
+//! # Water, which has no box at all
+//!
+//! Water blocks nothing and never will — see [`engine_environment::water`]. It is picked
+//! against its *volume*: the rectangle, turned by its yaw, reaching down by its depth. The
+//! same oriented-box test, given a box that exists only here.
 
 use engine_core::math::Vec3;
+use engine_environment::water::WaterBody;
 use engine_environment::{EnvironmentObject, EnvironmentScene};
+
+use crate::Selected;
 
 /// Half-extents given to an object with no collision box, in metres.
 ///
@@ -100,6 +109,49 @@ pub fn ray_box_distance(
     Some(enter.max(0.0))
 }
 
+/// The pickable box of a body of water: its volume, as centre, half-extents and rotation.
+///
+/// The volume rather than the surface, so a lake can be clicked on from under it as well as
+/// from above — an author looking up at a pond from a cave mouth is still pointing at it.
+fn water_box(body: &WaterBody) -> (Vec3, Vec3, engine_core::math::Quat) {
+    let half_height = body.depth * 0.5;
+    (
+        Vec3::new(body.center.x, body.center.y - half_height, body.center.z),
+        Vec3::new(body.half_extents.x, half_height, body.half_extents.y),
+        engine_core::math::Quat::from_yaw_pitch_roll(body.yaw, 0.0, 0.0),
+    )
+}
+
+/// What a ray hits first: a placement, a body of water, or nothing.
+///
+/// One function over both lists rather than two that a caller has to compare, because "which
+/// is nearer, the rock or the pond" is exactly the question a click asks and exactly the one
+/// two separate answers cannot settle. Ties go to the placement, which is the earlier list.
+#[must_use]
+pub fn under_ray(scene: &EnvironmentScene, origin: Vec3, direction: Vec3) -> Option<Selected> {
+    let mut best: Option<(Selected, f32)> = None;
+    let mut consider = |what: Selected, distance: f32| {
+        if best.is_none_or(|(_, nearest)| distance < nearest) {
+            best = Some((what, distance));
+        }
+    };
+    for (index, object) in scene.objects.iter().enumerate() {
+        let (center, half_extents, rotation) = pick_box(object);
+        if let Some(distance) = ray_box_distance(origin, direction, center, half_extents, rotation)
+        {
+            consider(Selected::Object(index), distance);
+        }
+    }
+    for (index, body) in scene.water.iter().enumerate() {
+        let (center, half_extents, rotation) = water_box(body);
+        if let Some(distance) = ray_box_distance(origin, direction, center, half_extents, rotation)
+        {
+            consider(Selected::Water(index), distance);
+        }
+    }
+    best.map(|(what, _)| what)
+}
+
 /// Which object a ray hits first, if any.
 ///
 /// Nearest wins, and ties go to the earlier placement — which is stable, because a scene's
@@ -167,6 +219,53 @@ mod tests {
             Some(2),
             "a fern the character walks through is still an object"
         );
+    }
+
+    #[test]
+    fn a_click_answers_with_whichever_of_the_two_lists_is_nearer() {
+        use engine_core::math::Vec2;
+
+        let mut scene = scene();
+        // A pond between the eye and the near pillar, and one behind the far one.
+        scene.push_water(WaterBody::new(
+            Vec3::new(0.0, 1.0, -5.0),
+            Vec2::new(3.0, 3.0),
+            2.0,
+        ));
+        scene.push_water(WaterBody::new(
+            Vec3::new(0.0, 1.0, -50.0),
+            Vec2::new(3.0, 3.0),
+            2.0,
+        ));
+
+        let hit = under_ray(&scene, Vec3::new(0.0, 0.5, 0.0), Vec3::new(0.0, 0.0, -1.0));
+        assert_eq!(
+            hit,
+            Some(Selected::Water(0)),
+            "the pond is nearer than the pillar behind it"
+        );
+
+        // Above the pond's surface and pointed at the pillar: the pond's volume is not in the
+        // way, so the placement wins. A pick that compared only footprints would say water.
+        let hit = under_ray(&scene, Vec3::new(0.0, 2.0, 0.0), Vec3::new(0.0, 0.0, -1.0));
+        assert_eq!(hit, Some(Selected::Object(0)));
+    }
+
+    #[test]
+    fn a_turned_body_of_water_is_picked_in_its_own_space() {
+        use engine_core::math::Vec2;
+
+        let mut scene = EnvironmentScene::empty("water_pick");
+        scene.push_water(
+            WaterBody::new(Vec3::new(0.0, 1.0, 0.0), Vec2::new(12.0, 2.0), 2.0)
+                .with_yaw(std::f32::consts::FRAC_PI_2),
+        );
+        // Ten metres out along Z, which the turned body spans and the unturned one does not.
+        let hit = under_ray(&scene, Vec3::new(20.0, 0.5, 10.0), Vec3::new(-1.0, 0.0, 0.0));
+        assert_eq!(hit, Some(Selected::Water(0)));
+
+        let miss = under_ray(&scene, Vec3::new(20.0, 0.5, 0.0), Vec3::new(0.0, 0.0, -1.0));
+        assert_eq!(miss, None, "ten metres out along X is past its end now");
     }
 
     #[test]

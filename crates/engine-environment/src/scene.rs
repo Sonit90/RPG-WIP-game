@@ -7,7 +7,8 @@
 //!  ├ spawns          player, featured dummy, dummy group centre and spacing
 //!  ├ lighting        sun, ambient, sky colours
 //!  ├ half_extent     how far from the origin the playable square reaches
-//!  └ ground_height   what y the floor is at
+//!  ├ ground_height   what y the floor is at
+//!  └ water[]         the bodies of water, if the level has any
 //! ```
 //!
 //! # Determinism
@@ -99,6 +100,13 @@ pub struct EnvironmentScene {
     /// plateaus. Anything that overhangs is a placed object, and the terrain does not know
     /// those exist; see [`crate::terrain`].
     pub terrain: Option<crate::terrain::Terrain>,
+    /// The bodies of water this level has.
+    ///
+    /// Empty in every level nobody has poured water into, which is most of them. Like the
+    /// terrain and unlike a placement: a body has no asset and no mesh of its own until
+    /// something builds one for it, and the question it answers is
+    /// [`EnvironmentScene::is_submerged`]. Water blocks nothing — see [`crate::water`].
+    pub water: Vec<crate::water::WaterBody>,
 }
 
 impl EnvironmentScene {
@@ -127,6 +135,7 @@ impl EnvironmentScene {
             ground_height: 0.0,
             collision_shapes: Vec::new(),
             terrain: None,
+            water: Vec::new(),
         }
     }
 
@@ -142,6 +151,31 @@ impl EnvironmentScene {
             Some(terrain) if terrain.contains(position) => terrain.height_at(position),
             _ => self.ground_height,
         }
+    }
+
+    /// Which body of water a point is inside, if any.
+    ///
+    /// The first one that contains it, in the order the level holds them. Two bodies that
+    /// overlap are an authoring accident rather than a case with a right answer, and picking
+    /// the first is at least the same answer every time.
+    #[must_use]
+    pub fn water_at(&self, point: Vec3) -> Option<usize> {
+        self.water.iter().position(|body| body.contains(point))
+    }
+
+    /// Whether a point is under water.
+    ///
+    /// The one question with one answer, in the same spirit as
+    /// [`EnvironmentScene::ground_at`]: a caller must not have to know how many bodies a
+    /// level has or how each of them is shaped.
+    #[must_use]
+    pub fn is_submerged(&self, point: Vec3) -> bool {
+        self.water.iter().any(|body| body.contains(point))
+    }
+
+    /// Adds a body of water.
+    pub fn push_water(&mut self, body: crate::water::WaterBody) {
+        self.water.push(body);
     }
 
     /// Adds a compound collision shape and returns the collision that names it.
@@ -373,6 +407,36 @@ mod tests {
         let mut swapped = scene();
         swapped.objects.swap(0, 1);
         assert_ne!(first.signature(), swapped.signature());
+    }
+
+    #[test]
+    fn a_level_answers_for_every_body_of_water_in_it_at_once() {
+        use engine_core::math::Vec2;
+        use crate::water::WaterBody;
+
+        let mut scene = scene();
+        // A pond at ground level and a reservoir up a hill, so "under water" cannot be
+        // answered by one height for the whole level.
+        scene.push_water(WaterBody::new(
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec2::new(5.0, 5.0),
+            2.0,
+        ));
+        scene.push_water(WaterBody::new(
+            Vec3::new(40.0, 12.0, 0.0),
+            Vec2::new(3.0, 3.0),
+            1.0,
+        ));
+
+        assert_eq!(scene.water_at(Vec3::new(0.0, -1.0, 0.0)), Some(0));
+        assert_eq!(scene.water_at(Vec3::new(40.0, 11.5, 0.0)), Some(1));
+        assert!(scene.is_submerged(Vec3::new(40.0, 11.5, 0.0)));
+
+        // The height of the second body over the position of the first, and the reverse:
+        // neither is in any water, and a query that only compared heights would say both are.
+        assert_eq!(scene.water_at(Vec3::new(0.0, 11.5, 0.0)), None);
+        assert_eq!(scene.water_at(Vec3::new(40.0, -1.0, 0.0)), None);
+        assert!(!scene.is_submerged(Vec3::new(100.0, -1.0, 0.0)));
     }
 
     #[test]

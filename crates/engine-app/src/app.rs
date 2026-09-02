@@ -159,6 +159,13 @@ const SHADOW_DEBUG_KEY: KeyCode = KeyCode::F7;
 /// becomes a field on the terrain and this becomes its default.
 const TERRAIN_MATERIAL: &str = "grass";
 
+/// Which of the generated materials a body of water is drawn with.
+///
+/// `"water"` is the only transparent entry in the starter library, and one surface serves the
+/// whole level for the reason the terrain's does: when somebody needs two, it becomes a field
+/// on the body rather than a second constant here.
+const WATER_MATERIAL: &str = "water";
+
 /// How far above the floor the targeting disc sits, in metres.
 ///
 /// Coplanar with the floor would be a depth-buffer tie and would flicker; a few centimetres
@@ -226,6 +233,12 @@ pub struct App {
     /// `EnvironmentObject`, because a terrain is not a placement: it has no asset id, no
     /// transform an author can drag, and exactly one of it per level.
     terrain_entity: Option<engine_render_data::RenderEntity>,
+    /// One render entity per body of water the level holds.
+    ///
+    /// Respawned together when any body changes, for the reason the terrain's single entity
+    /// is: a level has a handful of them, and rebuilding all of them costs less than working
+    /// out which one an author just dragged.
+    water_entities: Vec<engine_render_data::RenderEntity>,
     bindings: Bindings,
     /// Which scenario is loaded. Chosen once, at startup, by `--scene`.
     scene: Scene,
@@ -880,6 +893,7 @@ impl App {
             environment,
             placer,
             terrain_entity: None,
+            water_entities: Vec::new(),
             bindings: Bindings::default(),
             scene: args.scene,
             #[cfg(feature = "editor")]
@@ -980,6 +994,7 @@ impl App {
         // renderer and world — the same call a brush stroke makes, so a loaded terrain and an
         // edited one cannot end up drawn by two different paths.
         app.rebuild_terrain();
+        app.rebuild_water();
 
         let applied = app.apply_shadow_quality(shadow_quality);
         // The settings screen shows what is running, which after a failed switch is not
@@ -2351,6 +2366,67 @@ impl App {
         );
     }
 
+    /// Rebuilds the meshes the level's water is drawn as, replacing whatever was there.
+    ///
+    /// One upload and one entity per body. Called when a level loads and again whenever the
+    /// editor reports the water changed, which is a frame in the editor — a body is two
+    /// triangles, and a level has a handful of them.
+    ///
+    /// The yaw goes on the transform and not into the mesh, so a body that is only turned
+    /// still costs an upload here; making that incremental would mean keeping a second
+    /// description of which body owns which entity, and a handful of quads is not worth one.
+    ///
+    /// Water adds nothing to the collision world. A character walks through it because as far
+    /// as movement is concerned it is not there — see `engine_environment::water`.
+    fn rebuild_water(&mut self) {
+        for entity in self.water_entities.drain(..) {
+            self.extractor.render_world_mut().despawn(entity);
+        }
+        let Some(scene) = self.environment.as_ref() else {
+            return;
+        };
+        // Cloned so the borrow of the scene ends before the renderer is touched: uploading a
+        // model needs `&mut self`, and the bodies are forty bytes each.
+        let bodies = scene.water.clone();
+        for (index, body) in bodies.iter().enumerate() {
+            let model = engine_assets::procedural::water::water_model(body, WATER_MATERIAL);
+            if model.triangle_count() == 0 {
+                continue;
+            }
+            let binding = match self.renderer.create_model(&model) {
+                Ok(binding) => binding,
+                Err(error) => {
+                    log::error!("water[{index}]: could not be uploaded: {error}");
+                    continue;
+                }
+            };
+            let Some(part) = binding.lods.first().and_then(|lod| lod.parts.first()) else {
+                continue;
+            };
+            let engine_render_data::PartGeometry::Rigid(mesh) = part.geometry else {
+                log::error!("water[{index}]: built as skinned geometry, which it never is");
+                continue;
+            };
+            let bounds = binding.lods.first().map_or(part.bounds, |lod| lod.bounds);
+            // The centre and the yaw live here rather than in the mesh, so a body that is
+            // moved or turned reuses the quad it already has.
+            let transform = engine_core::transform::Transform::from_translation(body.center)
+                .with_rotation(engine_core::math::Quat::from_yaw_pitch_roll(body.yaw, 0.0, 0.0));
+            let world = self.extractor.render_world_mut();
+            let entity = world.spawn(engine_render_data::RenderEntityDesc {
+                transform,
+                mesh,
+                material: part.material,
+                bounds,
+                ..Default::default()
+            });
+            self.water_entities.push(entity);
+        }
+        if !self.water_entities.is_empty() {
+            log::debug!("water: {} bodies", self.water_entities.len());
+        }
+    }
+
     /// Rebuilds the static collision world from the environment scene as it stands now.
     ///
     /// The floor and the boundary first, then every blocking placement, then one broad-phase
@@ -2420,6 +2496,7 @@ impl App {
         let seconds = ctx.time().real_delta().as_secs_f32();
         let mut changed = false;
         let mut terrain_changed = false;
+        let mut water_changed = false;
         if let Some(scene) = self.environment.as_mut() {
             match self.editor.update(
                 ctx.input(),
@@ -2434,6 +2511,9 @@ impl App {
                 // placements: re-placing a few hundred render entities on every frame of a
                 // brush stroke is the cost this outcome exists to avoid.
                 engine_editor::EditorOutcome::TerrainChanged => terrain_changed = true,
+                // A quad moved, grew or arrived. Two triangles to upload, and none of the
+                // placements or the collision world to touch: water blocks nothing.
+                engine_editor::EditorOutcome::WaterChanged => water_changed = true,
                 engine_editor::EditorOutcome::Left => {
                     // The static world is rebuilt on the way out as well as on every
                     // change, so that leaving the editor lands the author in the level
@@ -2466,10 +2546,14 @@ impl App {
             // relaunching the game.
             self.rebuild_environment_collision();
             self.rebuild_terrain();
+            self.rebuild_water();
         }
         if terrain_changed {
             self.rebuild_terrain();
             self.rebuild_environment_collision();
+        }
+        if water_changed {
+            self.rebuild_water();
         }
 
         let (width, height) = self.renderer.size();

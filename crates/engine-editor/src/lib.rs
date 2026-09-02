@@ -13,6 +13,7 @@
 //!   │        │  0                   reset rotation and scale
 //!   │        │  X                   delete
 //!   │        │  C                   duplicate
+//!   │        │  V                   pour a body of water where the cursor is
 //!   │        │  CTRL+click          add to the selection; CTRL+A takes everything
 //!   │        │  Z                   undo
 //!   │        │  TAB                 next asset in the browser
@@ -62,6 +63,7 @@ use engine_core::input::{InputState, KeyCode, MouseButton};
 use engine_core::math::{Mat4, Vec3};
 use engine_core::transform::Transform;
 use engine_environment::terrain::{BrushMode, Terrain};
+use engine_environment::water::WaterBody;
 use engine_environment::{EnvironmentAsset, EnvironmentObject, EnvironmentScene, scene_file};
 use engine_presentation::ui::input::UiInput;
 use engine_render_data::{Camera, RenderDataError, UiScale};
@@ -73,15 +75,16 @@ const UNDO_DEPTH: usize = 64;
 
 /// What `Z` puts back: everything an edit can change.
 ///
-/// The placements *and* the ground. It used to be the placements alone, which was right while
-/// they were the only thing an author could change; a brush stroke is an edit like any other
-/// and has to be undoable the same way. A terrain is 66 KB at the shipping size and a
+/// The placements, the ground *and* the water. It used to be the placements alone, which was
+/// right while they were the only thing an author could change; a brush stroke is an edit like
+/// any other and has to be undoable the same way, and so is pouring a pond. A terrain is 66 KB at the shipping size and a
 /// snapshot is only taken when something changes, so sixty-four of them is a few megabytes in
 /// the editor and nothing at all in a shipping build, which has none of this.
 #[derive(Debug, Clone, PartialEq)]
 struct Snapshot {
     objects: Vec<EnvironmentObject>,
     terrain: Option<Terrain>,
+    water: Vec<WaterBody>,
 }
 
 impl Snapshot {
@@ -90,6 +93,7 @@ impl Snapshot {
         Self {
             objects: scene.objects.clone(),
             terrain: scene.terrain.clone(),
+            water: scene.water.clone(),
         }
     }
 
@@ -97,6 +101,7 @@ impl Snapshot {
     fn restore(self, scene: &mut EnvironmentScene) {
         scene.objects = self.objects;
         scene.terrain = self.terrain;
+        scene.water = self.water;
     }
 }
 
@@ -120,6 +125,21 @@ const BRUSH_SIZE_STEP: f32 = 1.25;
 /// How much one press of `T` changes an object's size.
 const SCALE_STEP: f32 = 1.1;
 
+/// Half-width and half-depth of the body `V` pours, in metres: an eight-metre square.
+///
+/// Big enough to see from the editor camera and small enough to be the thing an author grows
+/// rather than the thing they immediately have to shrink.
+const WATER_HALF_EXTENT: f32 = 4.0;
+
+/// How deep the body `V` pours reaches below its surface, in metres.
+const WATER_DEPTH: f32 = 2.0;
+
+/// The smallest a body of water may be shrunk to, in metres.
+///
+/// A body with no extent is a volume nothing can be inside — refused by the scene loader —
+/// so `SHIFT+T` stops here rather than producing a level that cannot be read back.
+const WATER_MIN_HALF_EXTENT: f32 = 0.25;
+
 /// What the application should do about the frame the editor just read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EditorOutcome {
@@ -134,15 +154,73 @@ pub enum EditorOutcome {
     /// mesh upload. A brush stroke that reported "the scene changed" would pay the first cost
     /// for the second thing, on every frame of a drag.
     TerrainChanged,
+    /// The water changed: rebuild its meshes.
+    ///
+    /// Separate from [`EditorOutcome::SceneChanged`] for the reason
+    /// [`EditorOutcome::TerrainChanged`] is: re-placing a scene respawns a few hundred render
+    /// entities, and resizing one quad is one upload. A drag that reported "the scene changed"
+    /// would pay the first cost for the second thing on every frame of it.
+    WaterChanged,
     /// The author asked to go back to playing.
     Left,
 }
 
-/// A drag in progress: which object, and where the cursor caught it.
+/// What is selected: a placement, or a body of water.
+///
+/// # Why a tag rather than two lists
+///
+/// The selection used to be a `Vec<usize>` into `scene.objects`, which was right while
+/// placements were the only thing a level held that an author could point at. Water is the
+/// second, and a spawn point will be the third — and every one of them wants the same verbs:
+/// click to select, drag to move, `X` to delete, `Z` to take it back. Two parallel selections
+/// would be two copies of each verb that can disagree about which one a key press meant.
+///
+/// A selection holds one kind at a time. Selecting a body of water clears a selection of
+/// objects and the reverse, because a rule an author can predict beats a general one nobody
+/// can: `T` on a mixed selection would mean "scale these and resize those", and the undo of
+/// that is a sentence rather than a gesture.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Selected {
+    /// A placement, by its index into `scene.objects`.
+    Object(usize),
+    /// A body of water, by its index into `scene.water`.
+    Water(usize),
+}
+
+impl Selected {
+    /// The object index, if this is an object.
+    #[must_use]
+    pub fn object(self) -> Option<usize> {
+        match self {
+            Self::Object(index) => Some(index),
+            Self::Water(_) => None,
+        }
+    }
+
+    /// The water index, if this is a body of water.
+    #[must_use]
+    pub fn water(self) -> Option<usize> {
+        match self {
+            Self::Water(index) => Some(index),
+            Self::Object(_) => None,
+        }
+    }
+
+    /// Whether two selections name the same kind of thing.
+    #[must_use]
+    fn same_kind(self, other: Self) -> bool {
+        matches!(
+            (self, other),
+            (Self::Object(_), Self::Object(_)) | (Self::Water(_), Self::Water(_))
+        )
+    }
+}
+
+/// A drag in progress: what is being dragged, and where the cursor caught it.
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct Drag {
-    /// The object being dragged.
-    index: usize,
+    /// What is being dragged.
+    target: Selected,
     /// Where the object stood when the drag began.
     origin: Vec3,
     /// Where the cursor was on the ground when the drag began.
@@ -159,9 +237,9 @@ pub struct Editor {
     camera: FlyCamera,
     /// What is in `assets/`, and which of it the next click places.
     browser: browser::AssetBrowser,
-    /// Which placements are selected, in the order they were added. The last is the primary
-    /// one — what the inspector describes and what a verb reports on.
-    selected: Vec<usize>,
+    /// What is selected, in the order it was added. The last is the primary one — what the
+    /// inspector describes and what a verb reports on. One kind at a time; see [`Selected`].
+    selected: Vec<Selected>,
     drag: Option<Drag>,
     /// Index into [`GRID_STEPS`].
     grid: usize,
@@ -177,6 +255,12 @@ pub struct Editor {
     brush_strength: f32,
     /// Whether a nudge runs along the object's own axes rather than the world's.
     local_space: bool,
+    /// Whether what changed this frame was water rather than the placements.
+    ///
+    /// Which of the two "something changed" answers the application gets. A selection holds
+    /// one kind at a time, so the frame's edit reached one list or the other and never both —
+    /// see [`Selected`].
+    water_touched: bool,
     /// Snapshots for `Z`, oldest first.
     undo: Vec<Snapshot>,
     /// Where `CTRL+S` writes.
@@ -217,6 +301,7 @@ impl Editor {
             brush_radius: 6.0,
             brush_strength: 0.5,
             local_space: false,
+            water_touched: false,
             undo: Vec::new(),
             save_path: PathBuf::from("assets/scenes/untitled.json"),
             status: String::new(),
@@ -250,25 +335,64 @@ impl Editor {
         self.browser.selected_asset()
     }
 
-    /// The primary selection: the placement the inspector describes.
+    /// The primary selection: what the inspector describes.
     ///
     /// The *last* one added rather than the first, because the thing an author just clicked
     /// on is the thing they are looking at.
     #[must_use]
-    pub fn selection(&self) -> Option<usize> {
+    pub fn selection(&self) -> Option<Selected> {
         self.selected.last().copied()
     }
 
-    /// Every selected placement, in the order they were added.
+    /// Everything selected, in the order it was added.
     #[must_use]
-    pub fn selected(&self) -> &[usize] {
+    pub fn selected(&self) -> &[Selected] {
         &self.selected
+    }
+
+    /// Whether something is selected.
+    #[must_use]
+    pub fn is_selected(&self, what: Selected) -> bool {
+        self.selected.contains(&what)
     }
 
     /// Whether a placement is selected.
     #[must_use]
-    pub fn is_selected(&self, index: usize) -> bool {
-        self.selected.contains(&index)
+    pub fn is_object_selected(&self, index: usize) -> bool {
+        self.is_selected(Selected::Object(index))
+    }
+
+    /// Whether a body of water is selected.
+    #[must_use]
+    pub fn is_water_selected(&self, index: usize) -> bool {
+        self.is_selected(Selected::Water(index))
+    }
+
+    /// The primary selection, if it is a placement.
+    #[must_use]
+    pub fn selected_object(&self) -> Option<usize> {
+        self.selection().and_then(Selected::object)
+    }
+
+    /// The primary selection, if it is a body of water.
+    #[must_use]
+    pub fn selected_water(&self) -> Option<usize> {
+        self.selection().and_then(Selected::water)
+    }
+
+    /// Every selected placement, in the order it was added.
+    ///
+    /// Empty when a body of water is selected, because a selection holds one kind at a time —
+    /// which is what stops an object verb from ever reaching water.
+    #[must_use]
+    fn selected_objects(&self) -> Vec<usize> {
+        self.selected.iter().filter_map(|what| what.object()).collect()
+    }
+
+    /// Every selected body of water, in the order it was added.
+    #[must_use]
+    fn selected_waters(&self) -> Vec<usize> {
+        self.selected.iter().filter_map(|what| what.water()).collect()
     }
 
     /// How far one press of `R` turns an object, in degrees.
@@ -416,6 +540,7 @@ impl Editor {
             self.leave();
             return EditorOutcome::Left;
         }
+        self.water_touched = false;
 
         // The browser reads the keyboard first, because while its filter is open every key
         // belongs to the filter — including the ones that would otherwise fly the camera.
@@ -443,9 +568,28 @@ impl Editor {
                 over_browser || over_hierarchy,
             );
             if outcome != EditorOutcome::Idle || handled {
-                self.reveal_selection(viewport);
+                self.reveal_selection(scene, viewport);
                 return outcome;
             }
+        }
+
+        // `V` pours water where the cursor is, and it needs the ray the pointer verbs use
+        // rather than only the keyboard — so it is answered here, before the keyboard verbs,
+        // and its key is not passed on to them.
+        if !browser_took_the_keys
+            && !self.browser.is_typing()
+            && input.was_key_pressed(KeyCode::V)
+            && !self.sculpting
+        {
+            let poured =
+                self.pour_water(ui_input, scene, view_projection, viewport, over_browser
+                    || over_hierarchy);
+            self.reveal_selection(scene, viewport);
+            return if poured {
+                EditorOutcome::WaterChanged
+            } else {
+                EditorOutcome::Idle
+            };
         }
 
         let mut changed = if browser_took_the_keys || self.browser.is_typing() {
@@ -466,14 +610,57 @@ impl Editor {
             changed = true;
         }
 
-        // Whatever just happened, the selected object is worth seeing in the list.
-        self.reveal_selection(viewport);
+        // Whatever just happened, what is selected is worth seeing in the list.
+        self.reveal_selection(scene, viewport);
 
-        if changed {
-            EditorOutcome::SceneChanged
-        } else {
-            EditorOutcome::Idle
+        match (changed, self.water_touched) {
+            // Water changed and no placement did: one or two quads to rebuild, and none of
+            // the level's render entities to respawn.
+            (true, true) => EditorOutcome::WaterChanged,
+            (true, false) => EditorOutcome::SceneChanged,
+            (false, _) => EditorOutcome::Idle,
         }
+    }
+
+    /// Pours a body of water on the ground under the cursor. Returns whether one arrived.
+    ///
+    /// Eight metres square and two deep, at the height of the ground it was poured onto — the
+    /// size of a thing an author grows rather than one they immediately have to shrink. It is
+    /// a snapshot like any other edit, so `Z` takes the pour back.
+    fn pour_water(
+        &mut self,
+        ui_input: &UiInput,
+        scene: &mut EnvironmentScene,
+        view_projection: &Mat4,
+        viewport: (u32, u32),
+        over_panel: bool,
+    ) -> bool {
+        if over_panel {
+            return false;
+        }
+        let Some(ground) = engine_presentation::ui::targeting::ground_under_cursor(
+            ui_input.pointer,
+            view_projection,
+            viewport,
+        ) else {
+            self.status = "point at the ground to pour water".to_owned();
+            return false;
+        };
+        self.snapshot(scene);
+        // At the height of the ground under the cursor rather than at the level's floor: a
+        // pond poured into a valley belongs to the valley, and one poured on a plateau to the
+        // plateau.
+        let surface = Vec3::new(ground.x, scene.ground_at(ground), ground.z);
+        scene.push_water(WaterBody::new(
+            self.snap(surface),
+            engine_core::math::Vec2::new(WATER_HALF_EXTENT, WATER_HALF_EXTENT),
+            WATER_DEPTH,
+        ));
+        self.selected.clear();
+        self.selected.push(Selected::Water(scene.water.len() - 1));
+        self.water_touched = true;
+        self.status = format!("poured water at {:.0} {:.0}", surface.x, surface.z);
+        true
     }
 
     /// One frame of the terrain brush.
@@ -650,11 +837,12 @@ impl Editor {
         }
 
         let visible = ui::hierarchy_visible_rows(self.scale, viewport);
+        let rows = hierarchy_len(scene);
         // Scrolled by whole rows, and never past the end: a list that can be scrolled into
         // emptiness looks like a list that has lost its contents.
         let wheel = input.wheel_delta();
         if over_hierarchy && wheel != 0.0 {
-            let last = scene.len().saturating_sub(visible);
+            let last = rows.saturating_sub(visible);
             let step = wheel.abs().max(1.0) as usize;
             self.hierarchy_scroll = if wheel > 0.0 {
                 self.hierarchy_scroll.saturating_sub(step)
@@ -662,29 +850,35 @@ impl Editor {
                 (self.hierarchy_scroll + step).min(last)
             };
         }
-        self.hierarchy_scroll = self.hierarchy_scroll.min(scene.len().saturating_sub(visible));
+        self.hierarchy_scroll = self.hierarchy_scroll.min(rows.saturating_sub(visible));
 
         if over_hierarchy && ui_input.pointer_pressed {
             for slot in 0..visible {
                 if !ui::hierarchy_row_rect(self.scale, viewport, slot).contains(x, y) {
                     continue;
                 }
-                let index = self.hierarchy_scroll + slot;
-                if let Some(object) = scene.objects.get(index) {
-                    let control = input.is_key_down(KeyCode::LeftControl)
-                        || input.is_key_down(KeyCode::RightControl);
-                    self.select(index, control);
-                    self.drag = None;
-                    self.status = format!(
+                // The list is the objects and then the water, so one row index answers for
+                // both — which is what keeps the hit test one rectangle per row rather than
+                // two lists with a boundary between them.
+                let Some(what) = hierarchy_row_at(self.hierarchy_scroll + slot, scene) else {
+                    break;
+                };
+                let control = input.is_key_down(KeyCode::LeftControl)
+                    || input.is_key_down(KeyCode::RightControl);
+                self.select(what, control);
+                self.drag = None;
+                self.status = match what {
+                    Selected::Object(index) => format!(
                         "selected {} ({index}){}",
-                        object.asset.name(),
+                        scene.objects[index].asset.name(),
                         if self.selected.len() > 1 {
                             format!(" of {}", self.selected.len())
                         } else {
                             String::new()
                         }
-                    );
-                }
+                    ),
+                    Selected::Water(index) => format!("selected water ({index})"),
+                };
                 break;
             }
         }
@@ -695,16 +889,22 @@ impl Editor {
     ///
     /// `add` is what CTRL does: it *toggles*, so control-clicking a selected object takes it
     /// out again, which is the one gesture every editor agrees on.
-    fn select(&mut self, index: usize, add: bool) {
-        if !add {
+    fn select(&mut self, what: Selected, add: bool) {
+        // A selection holds one kind at a time: adding water to a selection of objects
+        // replaces it rather than mixing the two. See [`Selected`] for why.
+        let mixing = self
+            .selected
+            .first()
+            .is_some_and(|first| !first.same_kind(what));
+        if !add || mixing {
             self.selected.clear();
-            self.selected.push(index);
+            self.selected.push(what);
             return;
         }
-        if let Some(position) = self.selected.iter().position(|known| *known == index) {
+        if let Some(position) = self.selected.iter().position(|known| *known == what) {
             self.selected.remove(position);
         } else {
-            self.selected.push(index);
+            self.selected.push(what);
         }
     }
 
@@ -713,12 +913,15 @@ impl Editor {
     /// Undo replaces the object list wholesale, so a selection made before it can point past
     /// the end afterwards.
     fn prune_selection(&mut self, scene: &EnvironmentScene) {
-        self.selected.retain(|index| *index < scene.objects.len());
+        self.selected.retain(|what| match what {
+            Selected::Object(index) => *index < scene.objects.len(),
+            Selected::Water(index) => *index < scene.water.len(),
+        });
     }
 
-    /// Keeps the selected object in view, so a keyboard verb's result is visible.
-    fn reveal_selection(&mut self, viewport: (u32, u32)) {
-        let Some(index) = self.selection() else {
+    /// Keeps the selected thing in view, so a keyboard verb's result is visible.
+    fn reveal_selection(&mut self, scene: &EnvironmentScene, viewport: (u32, u32)) {
+        let Some(index) = self.selection().map(|what| hierarchy_row_of(what, scene)) else {
             return;
         };
         let visible = ui::hierarchy_visible_rows(self.scale, viewport).max(1);
@@ -780,7 +983,9 @@ impl Editor {
             return false;
         }
         if control && input.was_key_pressed(KeyCode::A) {
-            self.selected = (0..scene.objects.len()).collect();
+            // Every object, and no water: `CTRL+A` on a level with a lake would otherwise
+            // put two kinds in one selection, which is the one thing the tag forbids.
+            self.selected = (0..scene.objects.len()).map(Selected::Object).collect();
             self.status = format!("selected {}", self.selected.len());
             return false;
         }
@@ -797,16 +1002,28 @@ impl Editor {
         if self.selected.is_empty() {
             return false;
         }
+        // A selection holds one kind, so whatever the verb below turns out to be, this is the
+        // list it will reach — which is how the application is told a quad moved rather than
+        // the level.
+        self.water_touched = !self.selected_waters().is_empty();
 
         if input.was_key_pressed(KeyCode::X) {
             self.snapshot(scene);
-            // Highest index first, so removing one does not move the next one under it.
-            let mut doomed = self.selected.clone();
-            doomed.sort_unstable();
-            for index in doomed.into_iter().rev() {
+            let count = self.selected.len();
+            // Highest index first, so removing one does not move the next one under it. Each
+            // kind is removed from its own list, and a selection holds one kind, so a delete
+            // never reaches the other.
+            let mut objects = self.selected_objects();
+            objects.sort_unstable();
+            for index in objects.into_iter().rev() {
                 scene.objects.remove(index);
             }
-            self.status = format!("deleted {}", self.selected.len());
+            let mut waters = self.selected_waters();
+            waters.sort_unstable();
+            for index in waters.into_iter().rev() {
+                scene.water.remove(index);
+            }
+            self.status = format!("deleted {count}");
             self.selected.clear();
             return true;
         }
@@ -816,13 +1033,21 @@ impl Editor {
             // visible instead of hiding exactly inside the original.
             let step = if self.grid() > 0.0 { self.grid() } else { 1.0 };
             let mut copies = Vec::with_capacity(self.selected.len());
-            for index in &self.selected {
-                let Some(mut copy) = scene.objects.get(*index).copied() else {
+            for index in self.selected_objects() {
+                let Some(mut copy) = scene.objects.get(index).copied() else {
                     continue;
                 };
                 copy.transform.translation += Vec3::new(step, 0.0, step);
-                copies.push(scene.objects.len());
+                copies.push(Selected::Object(scene.objects.len()));
                 scene.objects.push(copy);
+            }
+            for index in self.selected_waters() {
+                let Some(mut copy) = scene.water.get(index).copied() else {
+                    continue;
+                };
+                copy.center += Vec3::new(step, 0.0, step);
+                copies.push(Selected::Water(scene.water.len()));
+                scene.water.push(copy);
             }
             self.status = format!("duplicated {}", copies.len());
             // The copies become the selection, so dragging straight afterwards moves the new
@@ -834,7 +1059,14 @@ impl Editor {
             self.snapshot(scene);
             let step = self.yaw_step().to_radians() * if shift { -1.0 } else { 1.0 };
             let mut last = 0.0;
-            for index in self.selected.clone() {
+            for index in self.selected_waters() {
+                let Some(body) = scene.water.get_mut(index) else {
+                    continue;
+                };
+                last = snap_angle(body.yaw + step, self.yaw_step().to_radians());
+                body.yaw = last;
+            }
+            for index in self.selected_objects() {
                 let Some(object) = scene.objects.get_mut(index) else {
                     continue;
                 };
@@ -852,19 +1084,36 @@ impl Editor {
             self.snapshot(scene);
             let factor = if shift { 1.0 / SCALE_STEP } else { SCALE_STEP };
             let mut last = 1.0;
-            for index in self.selected.clone() {
+            for index in self.selected_objects() {
                 let Some(object) = scene.objects.get_mut(index) else {
                     continue;
                 };
                 object.transform.scale *= factor;
                 last = object.transform.scale.y;
             }
-            self.status = format!("scale {last:.2}");
+            // A body of water has no scale: it has a size, in metres, and growing it is what
+            // `T` means for one. Never past the point where it stops being a volume, because
+            // a body with no extent is a level the scene loader refuses to read back.
+            let mut resized = false;
+            for index in self.selected_waters() {
+                let Some(body) = scene.water.get_mut(index) else {
+                    continue;
+                };
+                body.half_extents.x = (body.half_extents.x * factor).max(WATER_MIN_HALF_EXTENT);
+                body.half_extents.y = (body.half_extents.y * factor).max(WATER_MIN_HALF_EXTENT);
+                last = body.half_extents.x;
+                resized = true;
+            }
+            self.status = if resized {
+                format!("water {last:.1} m")
+            } else {
+                format!("scale {last:.2}")
+            };
             return true;
         }
         if input.was_key_pressed(KeyCode::Digit0) {
             self.snapshot(scene);
-            for index in self.selected.clone() {
+            for index in self.selected_objects() {
                 let Some(object) = scene.objects.get_mut(index) else {
                     continue;
                 };
@@ -873,29 +1122,45 @@ impl Editor {
                 object.transform.rotation = engine_core::math::Quat::IDENTITY;
                 object.transform.scale = Vec3::ONE;
             }
+            for index in self.selected_waters() {
+                let Some(body) = scene.water.get_mut(index) else {
+                    continue;
+                };
+                // The same rule, said about water: the yaw is what was fiddled with, and the
+                // size is what somebody dragged out on purpose.
+                body.yaw = 0.0;
+            }
             self.status = "transform reset".to_owned();
             return true;
         }
         if let Some(step) = self.nudge(input, shift) {
             self.snapshot(scene);
-            for index in self.selected.clone() {
+            let local = self.local_space;
+            // In local space the step runs along the thing's own facing, so nudging a yawed
+            // wall moves it along the wall rather than along the world's X. Written once, so
+            // a yawed pond obeys the same rule a yawed wall does.
+            let along = |yaw: f32| {
+                if !local {
+                    return step;
+                }
+                let (sin, cos) = yaw.sin_cos();
+                Vec3::new(
+                    step.x * cos + step.z * sin,
+                    step.y,
+                    -step.x * sin + step.z * cos,
+                )
+            };
+            for index in self.selected_objects() {
                 let Some(object) = scene.objects.get_mut(index) else {
                     continue;
                 };
-                // In local space the step runs along the object's own facing, so nudging a
-                // yawed wall moves it along the wall rather than along the world's X.
-                let moved = if self.local_space {
-                    let yaw = yaw_of(object.transform);
-                    let (sin, cos) = yaw.sin_cos();
-                    Vec3::new(
-                        step.x * cos + step.z * sin,
-                        step.y,
-                        -step.x * sin + step.z * cos,
-                    )
-                } else {
-                    step
+                object.transform.translation += along(yaw_of(object.transform));
+            }
+            for index in self.selected_waters() {
+                let Some(body) = scene.water.get_mut(index) else {
+                    continue;
                 };
-                object.transform.translation += moved;
+                body.center += along(body.yaw);
             }
             self.status = format!(
                 "moved {:.2} {:.2} {:.2} ({})",
@@ -968,12 +1233,13 @@ impl Editor {
             let Some(ground) = ground else {
                 return false;
             };
-            let Some(object) = scene.objects.get_mut(drag.index) else {
+            // Where the dragged thing stands now, whichever list it lives in.
+            let Some(standing) = position_of(scene, drag.target) else {
                 self.drag = None;
                 return false;
             };
             let moved = self.snap(drag.origin + (ground - drag.grabbed_at));
-            if moved == object.transform.translation {
+            if moved == standing {
                 return false;
             }
             if !drag.moved {
@@ -986,23 +1252,16 @@ impl Editor {
                     ..drag
                 });
             }
-            // Everything selected moves by the delta the dragged object moved by, so a group
+            // Everything selected moves by the delta the dragged thing moved by, so a group
             // keeps its shape instead of collapsing onto the cursor.
-            let Some(dragged) = scene.objects.get(drag.index) else {
-                return false;
-            };
-            let delta = moved - dragged.transform.translation;
-            for index in self.selected.clone() {
-                let Some(object) = scene.objects.get_mut(index) else {
-                    continue;
-                };
-                object.transform.translation += delta;
+            let delta = moved - standing;
+            for what in self.selected.clone() {
+                move_by(scene, what, delta);
             }
-            if !self.is_selected(drag.index)
-                && let Some(object) = scene.objects.get_mut(drag.index)
-            {
-                object.transform.translation = moved;
+            if !self.is_selected(drag.target) {
+                move_by(scene, drag.target, delta);
             }
+            self.water_touched = drag.target.water().is_some();
             self.status = if self.selected.len() > 1 {
                 format!("moved {}", self.selected.len())
             } else {
@@ -1023,24 +1282,31 @@ impl Editor {
             return false;
         };
 
-        if let Some(index) = pick::object_under_ray(scene, origin, direction) {
-            // CTRL adds to the selection instead of replacing it; clicking an object that is
+        if let Some(what) = pick::under_ray(scene, origin, direction) {
+            // CTRL adds to the selection instead of replacing it; clicking something that is
             // already selected keeps the whole group, so a group can be dragged by any of its
             // members rather than only by the last one clicked.
-            if !self.is_selected(index) {
-                self.select(index, add_to_selection);
+            if !self.is_selected(what) {
+                self.select(what, add_to_selection);
             }
-            let object = scene.objects[index];
+            let Some(standing) = position_of(scene, what) else {
+                return false;
+            };
             self.drag = Some(Drag {
-                index,
-                origin: object.transform.translation,
-                grabbed_at: ground.unwrap_or(object.transform.translation),
+                target: what,
+                origin: standing,
+                grabbed_at: ground.unwrap_or(standing),
                 moved: false,
             });
             self.status = if self.selected.len() > 1 {
                 format!("selected {} objects", self.selected.len())
             } else {
-                format!("selected {}", object.asset.name())
+                match what {
+                    Selected::Object(index) => {
+                        format!("selected {}", scene.objects[index].asset.name())
+                    }
+                    Selected::Water(index) => format!("selected water ({index})"),
+                }
             };
             return false;
         }
@@ -1067,7 +1333,8 @@ impl Editor {
             collision,
         });
         self.selected.clear();
-        self.selected.push(scene.objects.len() - 1);
+        self.selected
+            .push(Selected::Object(scene.objects.len() - 1));
         self.status = format!("placed {}", asset.name());
         true
     }
@@ -1136,6 +1403,66 @@ impl Editor {
                 self.status = format!("COULD NOT SAVE: {error}");
             }
         }
+    }
+}
+
+/// Where something stands, whichever of the level's lists it lives in.
+///
+/// `None` for an index that is past the end of its list, which is what a drag whose target
+/// was deleted under it looks like.
+#[must_use]
+fn position_of(scene: &EnvironmentScene, what: Selected) -> Option<Vec3> {
+    match what {
+        Selected::Object(index) => scene
+            .objects
+            .get(index)
+            .map(|object| object.transform.translation),
+        Selected::Water(index) => scene.water.get(index).map(|body| body.center),
+    }
+}
+
+/// Moves something by `delta`, whichever list it lives in.
+fn move_by(scene: &mut EnvironmentScene, what: Selected, delta: Vec3) {
+    match what {
+        Selected::Object(index) => {
+            if let Some(object) = scene.objects.get_mut(index) {
+                object.transform.translation += delta;
+            }
+        }
+        Selected::Water(index) => {
+            if let Some(body) = scene.water.get_mut(index) {
+                body.center += delta;
+            }
+        }
+    }
+}
+
+/// How many rows the hierarchy has: every placement, and then every body of water.
+///
+/// Water after the objects rather than interleaved, because an object's row is its index into
+/// the level's object list and renumbering that to make room for a pond would make the number
+/// on screen disagree with the number in the file.
+#[must_use]
+pub fn hierarchy_len(scene: &EnvironmentScene) -> usize {
+    scene.objects.len() + scene.water.len()
+}
+
+/// What the hierarchy's `row`th line names, if it names anything.
+#[must_use]
+pub fn hierarchy_row_at(row: usize, scene: &EnvironmentScene) -> Option<Selected> {
+    if row < scene.objects.len() {
+        return Some(Selected::Object(row));
+    }
+    let water = row - scene.objects.len();
+    (water < scene.water.len()).then_some(Selected::Water(water))
+}
+
+/// Which hierarchy row names `what`. The inverse of [`hierarchy_row_at`].
+#[must_use]
+pub fn hierarchy_row_of(what: Selected, scene: &EnvironmentScene) -> usize {
+    match what {
+        Selected::Object(index) => index,
+        Selected::Water(index) => scene.objects.len() + index,
     }
 }
 
@@ -1238,6 +1565,14 @@ mod tests {
         input
     }
 
+    /// Which placements are selected, as plain indices.
+    ///
+    /// The selection is tagged now — see [`Selected`] — and every assertion below is about
+    /// objects, so this is where the tag is taken off rather than in twenty assertions.
+    fn objects_of(editor: &Editor) -> Vec<usize> {
+        editor.selected_objects()
+    }
+
     fn centre() -> (f32, f32) {
         (VIEWPORT.0 as f32 / 2.0, VIEWPORT.1 as f32 / 2.0)
     }
@@ -1277,6 +1612,206 @@ mod tests {
         scene
     }
 
+    /// A frame in which the pointer is at `pointer` and no button is down.
+    fn hover(pointer: (f32, f32)) -> UiInput {
+        UiInput {
+            pointer,
+            ..UiInput::new()
+        }
+    }
+
+    /// A frame in which `key` went down and the pointer is at `pointer`.
+    fn keyed_at(key: KeyCode, pointer: (f32, f32)) -> (InputState, UiInput) {
+        (keyed(key), hover(pointer))
+    }
+
+    /// An editor with one body of water in the level, poured at the origin.
+    fn poured() -> (Editor, EnvironmentScene) {
+        let mut editor = editor();
+        let mut scene = scene();
+        let (input, ui) = keyed_at(KeyCode::V, centre());
+        let outcome = update(&mut editor, &input, &ui, &mut scene);
+        assert_eq!(outcome, EditorOutcome::WaterChanged);
+        (editor, scene)
+    }
+
+    #[test]
+    fn v_pours_a_body_of_water_where_the_cursor_is_and_z_takes_it_back() {
+        let (mut editor, mut scene) = poured();
+        assert_eq!(scene.water.len(), 1);
+        let body = scene.water[0];
+        assert!(body.center.x.abs() < 0.01 && body.center.z.abs() < 0.01, "{body:?}");
+        assert!(body.is_valid(), "a poured body is a volume: {body:?}");
+        assert_eq!(
+            editor.selection(),
+            Some(Selected::Water(0)),
+            "what was just poured is what the next verb acts on"
+        );
+
+        // Pouring is an edit like any other, so it is on the undo stack. Phase 6 learned this
+        // about brush strokes and the lesson is the same one.
+        update(&mut editor, &keyed(KeyCode::Z), &UiInput::new(), &mut scene);
+        assert!(scene.water.is_empty(), "the pour was not undoable");
+    }
+
+    #[test]
+    fn a_body_of_water_moves_grows_turns_and_is_deleted_by_the_keys_that_do_that() {
+        let (mut editor, mut scene) = poured();
+
+        // Grow, then turn, then nudge, then delete: the four verbs, in the order an author
+        // would reach for them.
+        let before = scene.water[0].half_extents;
+        let outcome = update(
+            &mut editor,
+            &keyed(KeyCode::T),
+            &UiInput::new(),
+            &mut scene,
+        );
+        assert_eq!(outcome, EditorOutcome::WaterChanged);
+        assert!(
+            scene.water[0].half_extents.x > before.x
+                && scene.water[0].half_extents.y > before.y,
+            "T did not grow the body"
+        );
+
+        update(&mut editor, &keyed(KeyCode::R), &UiInput::new(), &mut scene);
+        assert!(
+            (scene.water[0].yaw - editor.yaw_step().to_radians()).abs() < 1e-4,
+            "R turned it by {} rad",
+            scene.water[0].yaw
+        );
+
+        let center = scene.water[0].center;
+        update(
+            &mut editor,
+            &keyed(KeyCode::ArrowRight),
+            &UiInput::new(),
+            &mut scene,
+        );
+        assert!(
+            scene.water[0].center.x > center.x,
+            "an arrow key did not move the body"
+        );
+
+        update(&mut editor, &keyed(KeyCode::X), &UiInput::new(), &mut scene);
+        assert!(scene.water.is_empty(), "X did not delete the body");
+        assert!(editor.selection().is_none());
+    }
+
+    #[test]
+    fn a_body_of_water_never_shrinks_to_something_the_loader_would_refuse() {
+        let (mut editor, mut scene) = poured();
+        let mut input = keyed(KeyCode::T);
+        input.apply(engine_core::input::InputEvent::KeyDown {
+            key: KeyCode::LeftShift,
+            repeat: false,
+        });
+        // Far more presses than it takes to reach the floor, because the assertion is about
+        // the floor and not about how many steps away it was.
+        for _ in 0..200 {
+            update(&mut editor, &input, &UiInput::new(), &mut scene);
+        }
+        assert!(
+            scene.water[0].is_valid(),
+            "shrinking made a body no level could hold: {:?}",
+            scene.water[0]
+        );
+    }
+
+    #[test]
+    fn dragging_a_body_of_water_moves_it_and_leaves_the_placements_alone() {
+        let mut editor = editor();
+        let mut scene = scene();
+        // A rock well away from the middle of the screen, so the drag below cannot reach it.
+        scene.push(EnvironmentObject::decoration(
+            ROCK_SMALL,
+            Vec3::new(200.0, 0.0, 0.0),
+        ));
+        let (input, ui) = keyed_at(KeyCode::V, centre());
+        update(&mut editor, &input, &ui, &mut scene);
+
+        let rock = scene.objects[0].transform.translation;
+        let before = scene.water[0].center;
+
+        // Grab the body in the middle of the screen and drag towards the top of it.
+        update(&mut editor, &InputState::new(), &press(centre()), &mut scene);
+        let outcome = update(
+            &mut editor,
+            &InputState::new(),
+            &hold((centre().0, centre().1 - 200.0)),
+            &mut scene,
+        );
+
+        assert_eq!(outcome, EditorOutcome::WaterChanged);
+        assert!(
+            (scene.water[0].center - before).length() > 0.5,
+            "the drag did not move the body"
+        );
+        assert_eq!(
+            scene.objects[0].transform.translation, rock,
+            "dragging water moved a placement"
+        );
+    }
+
+    #[test]
+    fn a_verb_reaches_the_kind_that_is_selected_and_never_the_other() {
+        // The assertion the tagged selection exists for: one object and one body of water in
+        // the same level, each selectable, and `X` deleting exactly the one that is.
+        let mut editor = editor();
+        let mut scene = scene();
+        scene.push(EnvironmentObject::decoration(
+            ROCK_SMALL,
+            Vec3::new(200.0, 0.0, 0.0),
+        ));
+        let (input, ui) = keyed_at(KeyCode::V, centre());
+        update(&mut editor, &input, &ui, &mut scene);
+        assert_eq!(editor.selection(), Some(Selected::Water(0)));
+
+        // Selecting the rock from the hierarchy clears the water selection rather than
+        // adding to it: a selection holds one kind at a time.
+        let point = hierarchy_point(&editor, 0);
+        update(&mut editor, &InputState::new(), &press(point), &mut scene);
+        assert_eq!(editor.selection(), Some(Selected::Object(0)));
+        assert!(editor.selected_waters().is_empty());
+
+        update(&mut editor, &keyed(KeyCode::X), &UiInput::new(), &mut scene);
+        assert!(scene.objects.is_empty(), "X did not delete the rock");
+        assert_eq!(scene.water.len(), 1, "X reached the water as well");
+
+        // And the other way: the water row is the one after the objects, and deleting from
+        // there leaves the level's placements alone.
+        scene.push(EnvironmentObject::decoration(
+            ROCK_SMALL,
+            Vec3::new(200.0, 0.0, 0.0),
+        ));
+        let water_row = hierarchy_point(&editor, hierarchy_row_of(Selected::Water(0), &scene));
+        update(&mut editor, &InputState::new(), &press(water_row), &mut scene);
+        assert_eq!(editor.selection(), Some(Selected::Water(0)));
+        update(&mut editor, &keyed(KeyCode::X), &UiInput::new(), &mut scene);
+        assert!(scene.water.is_empty(), "X did not delete the body");
+        assert_eq!(scene.objects.len(), 1, "X reached a placement as well");
+    }
+
+    #[test]
+    fn control_a_takes_every_object_and_no_water() {
+        let mut editor = editor();
+        let mut scene = scene_of(3);
+        let (input, ui) = keyed_at(KeyCode::V, centre());
+        update(&mut editor, &input, &ui, &mut scene);
+
+        let mut input = keyed(KeyCode::A);
+        input.apply(engine_core::input::InputEvent::KeyDown {
+            key: KeyCode::LeftControl,
+            repeat: false,
+        });
+        update(&mut editor, &input, &UiInput::new(), &mut scene);
+        assert_eq!(objects_of(&editor), [0, 1, 2]);
+        assert!(
+            editor.selected_waters().is_empty(),
+            "CTRL+A put two kinds in one selection"
+        );
+    }
+
     #[test]
     fn a_click_on_a_hierarchy_row_selects_that_object_and_places_nothing() {
         let mut editor = editor();
@@ -1285,7 +1820,7 @@ mod tests {
 
         let outcome = update(&mut editor, &InputState::new(), &press(point), &mut scene);
 
-        assert_eq!(editor.selection(), Some(2));
+        assert_eq!(editor.selected_object(), Some(2));
         assert_eq!(scene.len(), 4, "the click through the panel placed an object");
         assert_eq!(outcome, EditorOutcome::Idle);
     }
@@ -1327,7 +1862,7 @@ mod tests {
         update(&mut editor, &wheeled(-3.0), &hover, &mut scene);
 
         update(&mut editor, &InputState::new(), &press(over), &mut scene);
-        assert_eq!(editor.selection(), Some(4), "row 1 of a list scrolled by 3");
+        assert_eq!(editor.selected_object(), Some(4), "row 1 of a list scrolled by 3");
     }
 
     #[test]
@@ -1356,7 +1891,7 @@ mod tests {
             &mut scene,
         );
         let last = scene.len() - 1;
-        assert_eq!(editor.selection(), Some(last));
+        assert_eq!(editor.selected_object(), Some(last));
         assert!(
             editor.hierarchy_scroll() + visible > last,
             "the selected object is off the bottom of the list"
@@ -1396,7 +1931,7 @@ mod tests {
             position.x.abs() < 0.5 && position.z.abs() < 0.5,
             "it went where the cursor was: {position:?}"
         );
-        assert_eq!(editor.selection(), Some(0), "and it is selected");
+        assert_eq!(editor.selected_object(), Some(0), "and it is selected");
     }
 
     #[test]
@@ -1445,7 +1980,7 @@ mod tests {
         );
         assert_eq!(outcome, EditorOutcome::Idle, "selecting is not a change");
         assert_eq!(scene.len(), 1, "nothing was placed on top of it");
-        assert_eq!(editor.selection(), Some(0));
+        assert_eq!(editor.selected_object(), Some(0));
     }
 
     #[test]
@@ -1537,7 +2072,7 @@ mod tests {
         let outcome = update(&mut editor, &keyed(KeyCode::X), &UiInput::new(), &mut scene);
         assert_eq!(outcome, EditorOutcome::SceneChanged);
         assert!(scene.is_empty());
-        assert_eq!(editor.selection(), None, "the selection went with it");
+        assert_eq!(editor.selected_object(), None, "the selection went with it");
     }
 
     #[test]
@@ -1654,7 +2189,7 @@ mod tests {
             &press(centre()),
             &mut scene,
         );
-        assert_eq!(editor.selection(), Some(0));
+        assert_eq!(editor.selected_object(), Some(0));
 
         update(&mut editor, &keyed(KeyCode::F), &UiInput::new(), &mut scene);
         assert!(editor.browser().is_typing());
@@ -1706,7 +2241,7 @@ mod tests {
 
         let point = hierarchy_point(&editor, 0);
         update(&mut editor, &InputState::new(), &press(point), &mut scene);
-        assert_eq!(editor.selected(), [0]);
+        assert_eq!(objects_of(&editor), [0]);
 
         let second = hierarchy_point(&editor, 2);
         let control = {
@@ -1718,11 +2253,11 @@ mod tests {
             input
         };
         update(&mut editor, &control, &press(second), &mut scene);
-        assert_eq!(editor.selected(), [0, 2], "control did not add");
-        assert_eq!(editor.selection(), Some(2), "the last one clicked is primary");
+        assert_eq!(objects_of(&editor), [0, 2], "control did not add");
+        assert_eq!(editor.selected_object(), Some(2), "the last one clicked is primary");
 
         update(&mut editor, &control, &press(second), &mut scene);
-        assert_eq!(editor.selected(), [0], "control did not toggle it back off");
+        assert_eq!(objects_of(&editor), [0], "control did not toggle it back off");
     }
 
     #[test]
@@ -1736,7 +2271,7 @@ mod tests {
             &UiInput::new(),
             &mut scene,
         );
-        assert_eq!(editor.selected(), [0, 1, 2]);
+        assert_eq!(objects_of(&editor), [0, 1, 2]);
 
         update(
             &mut editor,
@@ -1768,7 +2303,7 @@ mod tests {
         let outcome = update(&mut editor, &keyed(KeyCode::C), &UiInput::new(), &mut scene);
         assert_eq!(outcome, EditorOutcome::SceneChanged);
         assert_eq!(scene.len(), 6);
-        assert_eq!(editor.selected(), [3, 4, 5]);
+        assert_eq!(objects_of(&editor), [3, 4, 5]);
 
         // Delete: the copies go and the originals stay.
         update(&mut editor, &keyed(KeyCode::X), &UiInput::new(), &mut scene);
@@ -1788,7 +2323,7 @@ mod tests {
         let control = control_keyed(KeyCode::LeftControl);
         update(&mut editor, &InputState::new(), &press(first), &mut scene);
         update(&mut editor, &control, &press(third), &mut scene);
-        assert_eq!(editor.selected(), [0, 2]);
+        assert_eq!(objects_of(&editor), [0, 2]);
 
         update(&mut editor, &keyed(KeyCode::X), &UiInput::new(), &mut scene);
         assert_eq!(scene.len(), 1);
