@@ -67,7 +67,10 @@ fn a_level_with_no_spawn_point_starts_the_player_where_it_always_did() {
         (position.x + 5.0).abs() < 0.5 && (position.z - 3.0).abs() < 0.5,
         "the player started at {position:?} rather than at the layout's own spawn"
     );
-    assert_eq!(facing, 0.0, "an unauthored start faces the way it always did");
+    assert_eq!(
+        facing, 0.0,
+        "an unauthored start faces the way it always did"
+    );
 }
 
 #[test]

@@ -828,7 +828,10 @@ mod tests {
         // And a level with none of it carries no key at all, so a file written before water
         // existed and a file written by this build of a level without any are the same file.
         let dry = serde_json::to_string(&SceneDocument::from_scene(&scene())).expect("writable");
-        assert!(!dry.contains("water"), "an absent water list was written anyway");
+        assert!(
+            !dry.contains("water"),
+            "an absent water list was written anyway"
+        );
     }
 
     #[test]
@@ -844,7 +847,10 @@ mod tests {
         assert_eq!(restored.spawn_points, original.spawn_points);
 
         let dry = serde_json::to_string(&SceneDocument::from_scene(&scene())).expect("writable");
-        assert!(!dry.contains("spawn_points"), "an absent list was written anyway");
+        assert!(
+            !dry.contains("spawn_points"),
+            "an absent list was written anyway"
+        );
     }
 
     #[test]
@@ -897,7 +903,10 @@ mod tests {
         let document = SceneDocument::from_scene(&scene());
         assert!(document.terrain.is_none());
         let text = serde_json::to_string(&document).expect("it serializes");
-        assert!(!text.contains("terrain"), "an absent terrain was written anyway");
+        assert!(
+            !text.contains("terrain"),
+            "an absent terrain was written anyway"
+        );
     }
 
     #[test]
@@ -928,7 +937,10 @@ mod tests {
         save(&original, &path).expect("an empty scene saves");
         let restored = load(&path).expect("an empty scene loads");
         assert!(restored.is_empty());
-        assert_eq!(restored.name, "new_level", "the level keeps its name, not the file stem");
+        assert_eq!(
+            restored.name, "new_level",
+            "the level keeps its name, not the file stem"
+        );
         assert_same_level(&restored, &original);
         std::fs::remove_file(&path).ok();
     }
@@ -978,7 +990,9 @@ mod tests {
                 },
             ],
         };
-        let scene = document.to_scene("broken.json").expect("an unknown name still loads");
+        let scene = document
+            .to_scene("broken.json")
+            .expect("an unknown name still loads");
         assert_eq!(scene.len(), 2);
         assert_eq!(
             scene.objects[1].asset.name(),

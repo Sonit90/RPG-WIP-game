@@ -30,8 +30,8 @@
 use engine_core::math::Vec3;
 
 use crate::ability::AbilityId;
-use crate::druid::tuning::*;
 use crate::druid::Druid;
+use crate::druid::tuning::*;
 use crate::entity::EntityId;
 use crate::event::CombatEvent;
 use crate::firemage::{AbilityError, FireAbility, TargetMode, ZoneShape};
@@ -131,9 +131,7 @@ impl Simulation {
     #[must_use]
     pub fn swiftmend_victim(&self, target: EntityId) -> Option<StatusKind> {
         let statuses = self.world.statuses(target)?;
-        SWIFTMEND_ORDER
-            .into_iter()
-            .find(|kind| statuses.has(*kind))
+        SWIFTMEND_ORDER.into_iter().find(|kind| statuses.has(*kind))
     }
 
     /// How many of the Druid's heals over time are on `target`.
@@ -298,7 +296,13 @@ impl Simulation {
         let mut affected = 0;
         for index in 0..self.hits.len() {
             let target = self.hits[index];
-            self.strike(target, definition.base_damage(&stats) * scale, ability, true, 0.0);
+            self.strike(
+                target,
+                definition.base_damage(&stats) * scale,
+                ability,
+                true,
+                0.0,
+            );
             if !self.world.is_alive(target) {
                 continue;
             }
@@ -357,7 +361,13 @@ impl Simulation {
         let mut affected = 0;
         for index in 0..self.hits.len() {
             let target = self.hits[index];
-            self.strike(target, definition.base_damage(&stats) * scale, ability, true, 0.0);
+            self.strike(
+                target,
+                definition.base_damage(&stats) * scale,
+                ability,
+                true,
+                0.0,
+            );
             if !self.world.is_alive(target) {
                 continue;
             }
@@ -521,8 +531,7 @@ impl Simulation {
     /// Lifebloom: fifteen seconds of healing, and a bloom when it runs out.
     fn cast_lifebloom(&mut self) -> u32 {
         let ability = FireAbility::Lifebloom;
-        let bloom = ability.definition().druid.bloom_coefficient
-            * self.mage.stats().spell_power;
+        let bloom = ability.definition().druid.bloom_coefficient * self.mage.stats().spell_power;
         self.apply_druid_hot(ability, StatusKind::Lifebloom, bloom)
     }
 
@@ -779,9 +788,12 @@ impl Simulation {
         let ability = FireAbility::Tranquility;
         let definition = *ability.definition();
         let stats = self.mage.stats();
-        let amount = definition.base_tick_damage(&stats)
-            * Druid::heal_scale(self.druid.channel.empowered);
-        let origin = self.world.position(self.player.entity).unwrap_or(Vec3::ZERO);
+        let amount =
+            definition.base_tick_damage(&stats) * Druid::heal_scale(self.druid.channel.empowered);
+        let origin = self
+            .world
+            .position(self.player.entity)
+            .unwrap_or(Vec3::ZERO);
         self.hits.clear();
         self.collect_friendly_in_shape(
             origin,
@@ -919,7 +931,12 @@ impl Simulation {
     /// this path, the mark is only ever read for damage dealt **to** its bearer, and the
     /// re-entrancy guard refuses a second conversion inside the first. The last is belt and
     /// braces for a future effect that turns healing into damage.
-    pub(super) fn convert_astral_sunfire(&mut self, source: EntityId, target: EntityId, dealt: f32) {
+    pub(super) fn convert_astral_sunfire(
+        &mut self,
+        source: EntityId,
+        target: EntityId,
+        dealt: f32,
+    ) {
         if self.converting || dealt <= 0.0 {
             return;
         }

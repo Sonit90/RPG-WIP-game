@@ -282,7 +282,9 @@ impl AssetCatalogue {
         let mut files: Vec<(String, String, PathBuf)> = Vec::new();
         for item in listing.flatten() {
             let path = item.path();
-            let Some(name) = path.file_name().map(|name| name.to_string_lossy().into_owned())
+            let Some(name) = path
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
             else {
                 continue;
             };
@@ -396,7 +398,9 @@ mod tests {
 
     /// Builds a directory tree under a fresh temporary root.
     fn tree(name: &str, files: &[&str]) -> PathBuf {
-        let root = std::env::temp_dir().join("mygame_catalogue_tests").join(name);
+        let root = std::env::temp_dir()
+            .join("mygame_catalogue_tests")
+            .join(name);
         std::fs::remove_dir_all(&root).ok();
         for file in files {
             let path = root.join(file);
@@ -534,7 +538,11 @@ mod tests {
 
         assert_eq!(catalogue.search("").len(), 3, "an empty search matches all");
         assert_eq!(catalogue.search("ROCK").len(), 2, "case is ignored");
-        assert_eq!(catalogue.search("cliffs/").len(), 1, "a folder can be typed");
+        assert_eq!(
+            catalogue.search("cliffs/").len(),
+            1,
+            "a folder can be typed"
+        );
         assert!(catalogue.search("nothing_like_this").is_empty());
         std::fs::remove_dir_all(&root).ok();
     }
@@ -582,7 +590,10 @@ mod tests {
         // and this one is about the real directory.
         let root = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets"));
         let catalogue = AssetCatalogue::scan(&root);
-        if catalogue.entry("generated/environment/rocks/rock_small").is_none() {
+        if catalogue
+            .entry("generated/environment/rocks/rock_small")
+            .is_none()
+        {
             return;
         }
         let [models, materials, _, _] = catalogue.counts();

@@ -38,10 +38,12 @@ pub use druid::{druid, druid_character};
 pub use dummy::{DummyVariant, training_dummy};
 pub use environment::{environment_library, environment_model};
 pub use firemage::{fire_mage, fire_mage_character};
+pub use starter::{
+    STARTER_LIBRARY, STARTER_MATERIALS, StarterAsset, StarterMaterial, starter_model,
+};
 pub use terrain::terrain_model;
-pub use water::water_model;
-pub use starter::{STARTER_LIBRARY, STARTER_MATERIALS, StarterAsset, StarterMaterial, starter_model};
 pub use warrior::{warrior, warrior_character};
+pub use water::water_model;
 
 /// One corner of a generated face.
 pub type Corner = (Vec3, Vec3, Vec2);

@@ -448,7 +448,11 @@ impl UiTheme {
     /// What colour the Astral Power bar is, armed or not.
     #[must_use]
     pub fn astral_color(&self, armed: bool) -> UiColor {
-        if armed { self.astral_armed } else { self.astral }
+        if armed {
+            self.astral_armed
+        } else {
+            self.astral
+        }
     }
 
     /// What colour the Deflection bar is at `value`.
@@ -1087,8 +1091,7 @@ impl GameUi {
         if druid.armed {
             // The armed bar is outlined as well as recoloured: the state changes what the
             // *next* cast does, and it has to be findable without looking for it.
-            self.list
-                .outline(astral_rect, 3.0, self.theme.astral_armed);
+            self.list.outline(astral_rect, 3.0, self.theme.astral_armed);
         }
         self.title.clear();
         self.title.push_str("ASTRAL POWER ");

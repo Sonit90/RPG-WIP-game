@@ -179,10 +179,7 @@ mod tests {
         let large = water_model(&body(40.0, 40.0), "water");
         let density = |model: &ModelAsset, metres: f32| {
             let uv = uvs(model);
-            let span = uv
-                .iter()
-                .map(|value| value.x)
-                .fold(f32::MIN, f32::max)
+            let span = uv.iter().map(|value| value.x).fold(f32::MIN, f32::max)
                 - uv.iter().map(|value| value.x).fold(f32::MAX, f32::min);
             span / metres
         };

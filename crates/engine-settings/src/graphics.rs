@@ -141,7 +141,11 @@ mod tests {
         // under a row the player is being asked to choose between.
         for quality in ShadowQuality::ALL {
             let description = quality.description();
-            assert!(!description.is_empty(), "{} has no description", quality.as_str());
+            assert!(
+                !description.is_empty(),
+                "{} has no description",
+                quality.as_str()
+            );
             assert!(
                 description.len() < 70,
                 "{}'s description does not fit the panel: {description:?}",

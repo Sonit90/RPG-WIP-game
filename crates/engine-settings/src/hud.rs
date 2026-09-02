@@ -1013,8 +1013,14 @@ mod tests {
         config.heroes.push(HeroBindingsConfig::new("druid"));
 
         let config = config.validated();
-        assert_eq!(config.heroes.len(), 1, "the nameless and the duplicate stayed");
-        let kept = config.hero_bindings("druid").expect("the first druid record");
+        assert_eq!(
+            config.heroes.len(),
+            1,
+            "the nameless and the duplicate stayed"
+        );
+        let kept = config
+            .hero_bindings("druid")
+            .expect("the first druid record");
         assert_eq!(kept.bars.len(), ACTION_BARS);
         assert_eq!(kept.bars[0].slots.len(), ACTION_BAR_SLOTS);
         assert_eq!(kept.bars[0].slots[0].key.as_deref(), Some("DIGIT1"));

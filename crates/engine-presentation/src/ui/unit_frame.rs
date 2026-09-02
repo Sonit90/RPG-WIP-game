@@ -18,8 +18,8 @@
 //! its empty state rather than disappearing: a target frame that vanished between targets
 //! would be a hole in the layout the player cannot aim at.
 
-use engine_render_data::ui::{TextAlign, UiColor, UiDrawList, UiRect, UiScale};
 use engine_game::status::StatusKind;
+use engine_render_data::ui::{TextAlign, UiColor, UiDrawList, UiRect, UiScale};
 use engine_settings::hud::HudPlacement;
 
 use crate::game_ui::{UiTheme, write_integer};
@@ -569,7 +569,9 @@ fn push_respawn_protection(
         return;
     };
     scratch.detail.clear();
-    scratch.detail.push_str(StatusKind::RespawnProtection.as_str());
+    scratch
+        .detail
+        .push_str(StatusKind::RespawnProtection.as_str());
     scratch.detail.push(' ');
     // Rounded up, so the last second reads "1" rather than "0" for a whole second.
     write_integer(&mut scratch.detail, status.remaining.ceil() as i64);

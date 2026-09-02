@@ -94,7 +94,11 @@ fn ground(scene: &mut EnvironmentScene) {
 fn cliffs(scene: &mut EnvironmentScene) {
     let front = -24.0;
     for (index, x) in [-8.0_f32, -4.0, 8.0, 12.0].into_iter().enumerate() {
-        let piece = if index == 1 { "cliff_corner" } else { "cliff_straight" };
+        let piece = if index == 1 {
+            "cliff_corner"
+        } else {
+            "cliff_straight"
+        };
         place(scene, "cliffs", piece, Vec3::new(x, 0.0, front), 0.0);
     }
     // The overhang, in the gap in the run: the thing the whole cliff system exists for.
@@ -212,7 +216,13 @@ fn scatter(scene: &mut EnvironmentScene) {
         place(scene, "vegetation", piece, at, yaw);
     }
 
-    place(scene, "props", "crate_wooden", Vec3::new(4.0, 0.0, 15.0), 0.4);
+    place(
+        scene,
+        "props",
+        "crate_wooden",
+        Vec3::new(4.0, 0.0, 15.0),
+        0.4,
+    );
     place(scene, "props", "pillar", Vec3::new(-6.0, 0.0, -14.0), 0.0);
 }
 

@@ -54,10 +54,10 @@ pub use character::{
 pub use gameplay::GameplaySettings;
 pub use graphics::{GraphicsSettings, ShadowQuality};
 pub use hud::{
-    ACTION_BAR_SLOTS, ACTION_BARS, ActionBarConfig, BindingScope, HUD_FILE_NAME,
-    HUD_OFFSET_LIMIT, HUD_SCALE_DEFAULT, HUD_SCALE_MAX, HUD_SCALE_MIN, HUD_SCALE_STEP,
-    HeroBindingsConfig, HudAnchor, HudBarBindings, HudConfig, HudConfigManager, HudFrames,
-    HudOrientation, HudPlacement, HudSlotConfig,
+    ACTION_BAR_SLOTS, ACTION_BARS, ActionBarConfig, BindingScope, HUD_FILE_NAME, HUD_OFFSET_LIMIT,
+    HUD_SCALE_DEFAULT, HUD_SCALE_MAX, HUD_SCALE_MIN, HUD_SCALE_STEP, HeroBindingsConfig, HudAnchor,
+    HudBarBindings, HudConfig, HudConfigManager, HudFrames, HudOrientation, HudPlacement,
+    HudSlotConfig,
 };
 pub use nameplate::{NameplateSetting, NameplateSettings};
 

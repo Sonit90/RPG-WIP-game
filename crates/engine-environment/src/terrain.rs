@@ -265,13 +265,7 @@ impl Terrain {
     ///
     /// Returns whether anything moved, so a caller can skip an undo snapshot for a stroke
     /// that fell outside the terrain.
-    pub fn apply_brush(
-        &mut self,
-        center: Vec3,
-        radius: f32,
-        amount: f32,
-        mode: BrushMode,
-    ) -> bool {
+    pub fn apply_brush(&mut self, center: Vec3, radius: f32, amount: f32, mode: BrushMode) -> bool {
         if radius <= 0.0 || !self.is_valid() {
             return false;
         }
@@ -467,7 +461,10 @@ mod tests {
             terrain.apply_brush(Vec3::ZERO, 8.0, 1.0, BrushMode::Smooth);
         }
         let after = terrain.height_at(Vec3::ZERO) - terrain.height_at(Vec3::new(-2.0, 0.0, 0.0));
-        assert!(after < before, "the step is no gentler: {before} -> {after}");
+        assert!(
+            after < before,
+            "the step is no gentler: {before} -> {after}"
+        );
     }
 
     #[test]
@@ -497,7 +494,10 @@ mod tests {
         terrain.apply_brush(Vec3::new(-8.0, 0.0, 0.0), 10.0, 6.0, BrushMode::Raise);
         let normal = terrain.normal_at(Vec3::ZERO);
         assert!(normal.y > 0.0, "a normal pointing into the ground");
-        assert!(normal.x > 0.01, "the slope rises to -X so the normal tilts to +X: {normal:?}");
+        assert!(
+            normal.x > 0.01,
+            "the slope rises to -X so the normal tilts to +X: {normal:?}"
+        );
     }
 
     #[test]

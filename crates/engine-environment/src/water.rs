@@ -122,7 +122,12 @@ impl WaterBody {
                 self.center.z - x * sin + z * cos,
             )
         };
-        [place(-hx, hz), place(hx, hz), place(hx, -hz), place(-hx, -hz)]
+        [
+            place(-hx, hz),
+            place(hx, hz),
+            place(hx, -hz),
+            place(-hx, -hz),
+        ]
     }
 
     /// The box containing the rotated rectangle and everything under it.

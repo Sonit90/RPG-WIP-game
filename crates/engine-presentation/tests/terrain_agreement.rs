@@ -118,6 +118,9 @@ fn the_surface_faces_the_sky_in_both_descriptions() {
         let b = vertices[triangle[1] as usize].position;
         let c = vertices[triangle[2] as usize].position;
         let normal = (b - a).cross(c - a);
-        assert!(normal.y > 0.0, "a terrain triangle faces downwards: {normal:?}");
+        assert!(
+            normal.y > 0.0,
+            "a terrain triangle faces downwards: {normal:?}"
+        );
     }
 }

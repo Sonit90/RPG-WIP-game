@@ -65,12 +65,7 @@ fn world_of(scene: &EnvironmentScene) -> CollisionWorld {
 
 /// Walks a character from `from` towards `to`, calling `watch` with every position it passed
 /// through, and reports where it ended up.
-fn walk(
-    world: &CollisionWorld,
-    from: Vec3,
-    to: Vec3,
-    mut watch: impl FnMut(Vec3),
-) -> Vec3 {
+fn walk(world: &CollisionWorld, from: Vec3, to: Vec3, mut watch: impl FnMut(Vec3)) -> Vec3 {
     let config = CharacterConfig::default();
     let mut state = CharacterState::at(from);
     let mut buffers = QueryBuffers::new();

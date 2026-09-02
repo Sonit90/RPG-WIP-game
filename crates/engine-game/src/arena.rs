@@ -493,7 +493,8 @@ pub fn populate(world: &mut GameWorld, config: &ArenaConfig) -> Arena {
         body.facing_yaw = config.player_spawn_yaw;
     }
     let single_dummy = world.spawn(EntityDesc::dummy(config.single_dummy, config.dummy_health));
-    let healing_dummy = spawn_healing_dummy(world, config.healing_dummy, config.healing_dummy_health);
+    let healing_dummy =
+        spawn_healing_dummy(world, config.healing_dummy, config.healing_dummy_health);
     let mut group = Vec::with_capacity(config.group_count);
     spawn_group(world, config, &mut group);
 
@@ -576,7 +577,11 @@ mod tests {
         assert!(simulation.party().contains(healing));
         let health = world.health(healing).expect("it has health");
         assert!((health.max() - config.healing_dummy_health).abs() < 1.0);
-        assert!((health.fraction() - 0.5).abs() < 1e-3, "{}", health.fraction());
+        assert!(
+            (health.fraction() - 0.5).abs() < 1e-3,
+            "{}",
+            health.fraction()
+        );
         assert_eq!(
             world.kind(simulation.player().entity),
             Some(EntityKind::Player)

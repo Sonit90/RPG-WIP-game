@@ -187,7 +187,10 @@ fn describe(event: &CombatEvent) -> String {
             value,
             tick,
             ..
-        } => format!("astral +{amount} to {value} for {} at {tick}", entity.index()),
+        } => format!(
+            "astral +{amount} to {value} for {} at {tick}",
+            entity.index()
+        ),
         CombatEvent::AstralPowerArmed {
             entity,
             value,
@@ -199,7 +202,10 @@ fn describe(event: &CombatEvent) -> String {
             value,
             tick,
             ..
-        } => format!("astral -{amount} to {value} for {} at {tick}", entity.index()),
+        } => format!(
+            "astral -{amount} to {value} for {} at {tick}",
+            entity.index()
+        ),
         CombatEvent::ManaSpent {
             entity,
             amount,

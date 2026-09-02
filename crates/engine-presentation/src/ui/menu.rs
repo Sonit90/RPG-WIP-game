@@ -500,8 +500,7 @@ impl MenuSystem {
         for quality in ShadowQuality::ALL {
             graphics_screen.push(
                 GraphicsItem::Shadows(quality),
-                Checkbox::new(shadow_label(quality))
-                    .checked(quality == settings.graphics.shadows),
+                Checkbox::new(shadow_label(quality)).checked(quality == settings.graphics.shadows),
             );
         }
         graphics_screen.push(GraphicsItem::Back, Button::new("BACK"));
@@ -1304,7 +1303,8 @@ impl MenuSystem {
         let current = self.shadows;
         self.set_shadow_quality(current);
         if let Some(quality) = chosen {
-            self.actions.push(MenuAction::ShadowQualityCommitted(quality));
+            self.actions
+                .push(MenuAction::ShadowQualityCommitted(quality));
         }
         if back {
             self.back_to_settings_from_graphics();
@@ -1738,7 +1738,8 @@ mod tests {
             binding_scope: BindingScope::Character,
             ..GameSettings::default()
         });
-        let Some(Widget::Checkbox(checkbox)) = menu.settings_screen().widget(SettingsItem::BindingScope)
+        let Some(Widget::Checkbox(checkbox)) =
+            menu.settings_screen().widget(SettingsItem::BindingScope)
         else {
             panic!("the settings screen has no keybind box");
         };
@@ -2112,7 +2113,6 @@ mod tests {
         );
     }
 
-
     fn centre_of_graphics(menu: &MenuSystem, item: GraphicsItem) -> (f32, f32) {
         let rect = menu
             .graphics_screen()
@@ -2142,7 +2142,10 @@ mod tests {
     }
 
     fn is_ticked(menu: &MenuSystem, quality: ShadowQuality) -> bool {
-        match menu.graphics_screen().widget(GraphicsItem::Shadows(quality)) {
+        match menu
+            .graphics_screen()
+            .widget(GraphicsItem::Shadows(quality))
+        {
             Some(Widget::Checkbox(tick)) => tick.checked,
             _ => panic!("{} has no row", quality.as_str()),
         }

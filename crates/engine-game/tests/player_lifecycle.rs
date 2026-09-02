@@ -25,10 +25,10 @@
 )]
 
 use engine_core::math::Vec3;
-use engine_environment::spawn::SpawnPoint;
 use engine_environment::EnvironmentScene;
-use engine_game::sim::respawn::{RESPAWN_DELAY, RESPAWN_PROTECTION};
+use engine_environment::spawn::SpawnPoint;
 use engine_game::sim::Simulation;
+use engine_game::sim::respawn::{RESPAWN_DELAY, RESPAWN_PROTECTION};
 use engine_game::status::StatusKind;
 
 /// Ticks the simulation for `seconds` of simulated time.
@@ -141,7 +141,10 @@ fn the_protection_is_an_ordinary_status_the_rest_of_the_game_can_read() {
         StatusKind::RespawnProtection.display_name(),
         "Cannot be respawned"
     );
-    assert_eq!(StatusKind::RespawnProtection.as_str(), "CANNOT BE RESPAWNED");
+    assert_eq!(
+        StatusKind::RespawnProtection.as_str(),
+        "CANNOT BE RESPAWNED"
+    );
 }
 
 #[test]
@@ -158,7 +161,11 @@ fn the_protection_expires_after_exactly_twenty_seconds_and_respawning_works_agai
         "the protection ended early"
     );
     run(&mut simulation, 2.0);
-    assert_eq!(protection(&simulation), None, "the protection outlived itself");
+    assert_eq!(
+        protection(&simulation),
+        None,
+        "the protection outlived itself"
+    );
 
     // And a death afterwards respawns normally.
     let before = simulation.respawn().count();
@@ -252,7 +259,10 @@ fn a_reset_takes_the_protection_and_the_owed_respawn_with_it() {
     simulation.step_once();
 
     assert!(simulation.player_alive());
-    assert_eq!(protection(&simulation), None, "the protection survived a reset");
+    assert_eq!(
+        protection(&simulation),
+        None,
+        "the protection survived a reset"
+    );
     assert_eq!(simulation.respawn().count(), 0);
 }
-

@@ -665,7 +665,11 @@ mod tests {
 
         let mut mage = ActionBarSet::with_default_bindings(Hero::FireMage);
         assert!(mage.assign_spell(SlotAddress::new(1, 0), Some(FireAbility::Blink)));
-        assert!(mage.assign_key(SlotAddress::new(1, 0), KeyChord::plain(KeyCode::Y), &bindings));
+        assert!(mage.assign_key(
+            SlotAddress::new(1, 0),
+            KeyChord::plain(KeyCode::Y),
+            &bindings
+        ));
         mage.store(&mut config, BindingScope::Character, Hero::FireMage);
 
         let mut warrior = ActionBarSet::with_default_bindings(Hero::Warrior);

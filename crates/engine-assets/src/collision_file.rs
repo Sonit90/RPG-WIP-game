@@ -215,7 +215,10 @@ mod tests {
     fn an_asset_with_no_sidecar_says_so_rather_than_failing() {
         let model = temporary("no_sidecar_here.glb");
         std::fs::remove_file(CollisionFile::path_for(&model)).ok();
-        assert_eq!(CollisionFile::beside(&model).expect("no sidecar is fine"), None);
+        assert_eq!(
+            CollisionFile::beside(&model).expect("no sidecar is fine"),
+            None
+        );
     }
 
     #[test]
@@ -235,7 +238,8 @@ mod tests {
             1.0, 2.0, 1.0,
         )]));
         file.version = FORMAT_VERSION + 1;
-        file.save(&CollisionFile::path_for(&model)).expect("it writes");
+        file.save(&CollisionFile::path_for(&model))
+            .expect("it writes");
         let error = CollisionFile::beside(&model).expect_err("a future version is refused");
         assert!(format!("{error}").contains("collision format"), "{error}");
         std::fs::remove_file(CollisionFile::path_for(&model)).ok();

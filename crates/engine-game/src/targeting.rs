@@ -100,7 +100,9 @@ impl TargetQuery {
         };
 
         for candidate in world.entities() {
-            if candidate == from || !world.is_alive(candidate) || !Self::is_combatant(world, candidate)
+            if candidate == from
+                || !world.is_alive(candidate)
+                || !Self::is_combatant(world, candidate)
             {
                 continue;
             }
@@ -138,7 +140,9 @@ impl TargetQuery {
         let mut best: Option<(f32, EntityId)> = None;
 
         for candidate in world.entities() {
-            if candidate == from || !world.is_alive(candidate) || !Self::is_combatant(world, candidate)
+            if candidate == from
+                || !world.is_alive(candidate)
+                || !Self::is_combatant(world, candidate)
             {
                 continue;
             }

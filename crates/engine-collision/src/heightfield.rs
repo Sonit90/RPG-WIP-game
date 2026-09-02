@@ -338,7 +338,10 @@ mod tests {
     /// A capsule standing with its feet at `feet`.
     fn standing(feet: Vec3) -> Capsule {
         Capsule::new(
-            Segment::new(feet + Vec3::new(0.0, 0.4, 0.0), feet + Vec3::new(0.0, 1.4, 0.0)),
+            Segment::new(
+                feet + Vec3::new(0.0, 0.4, 0.0),
+                feet + Vec3::new(0.0, 1.4, 0.0),
+            ),
             0.4,
         )
     }
@@ -423,7 +426,11 @@ mod tests {
         );
         let contact = capsule_vs_heightfield(&capsule, &field).expect("a contact");
         assert!(contact.normal.y < -0.9, "{:?}", contact.normal);
-        assert!((contact.penetration - 0.1).abs() < 1e-3, "{}", contact.penetration);
+        assert!(
+            (contact.penetration - 0.1).abs() < 1e-3,
+            "{}",
+            contact.penetration
+        );
     }
 
     #[test]
@@ -449,8 +456,8 @@ mod tests {
         }
         let field = Heightfield::new(Vec3::new(-2.0, 0.0, -2.0), cell, resolution, heights)
             .expect("a valid field");
-        let contact = capsule_vs_heightfield(&standing(Vec3::new(0.0, 0.5, 0.0)), &field)
-            .expect("a contact");
+        let contact =
+            capsule_vs_heightfield(&standing(Vec3::new(0.0, 0.5, 0.0)), &field).expect("a contact");
         assert!(contact.penetration > 0.0);
     }
 
@@ -475,12 +482,18 @@ mod tests {
         ];
         // Over the face.
         let inside = closest_point_on_triangle(&triangle, Vec3::new(0.5, 3.0, 0.5));
-        assert!((inside - Vec3::new(0.5, 0.0, 0.5)).length() < 1e-5, "{inside:?}");
+        assert!(
+            (inside - Vec3::new(0.5, 0.0, 0.5)).length() < 1e-5,
+            "{inside:?}"
+        );
         // Past a vertex.
         let vertex = closest_point_on_triangle(&triangle, Vec3::new(-4.0, 1.0, -4.0));
         assert!((vertex - triangle[0]).length() < 1e-5, "{vertex:?}");
         // Beside an edge.
         let edge = closest_point_on_triangle(&triangle, Vec3::new(1.0, 1.0, -4.0));
-        assert!((edge - Vec3::new(1.0, 0.0, 0.0)).length() < 1e-5, "{edge:?}");
+        assert!(
+            (edge - Vec3::new(1.0, 0.0, 0.0)).length() < 1e-5,
+            "{edge:?}"
+        );
     }
 }

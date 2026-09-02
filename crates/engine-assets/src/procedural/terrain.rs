@@ -64,10 +64,7 @@ pub fn terrain_model(terrain: &Terrain, material: &str) -> ModelAsset {
             // The normal from the heights around the point rather than from the two triangles
             // that meet at it: a per-face normal makes a smooth hill look like a folded map.
             let normal = terrain.normal_at(position);
-            let uv = Vec2::new(
-                position.x / TEXTURE_METRES,
-                position.z / TEXTURE_METRES,
-            );
+            let uv = Vec2::new(position.x / TEXTURE_METRES, position.z / TEXTURE_METRES);
             vertices.push(MeshVertex::new(position, normal, uv));
         }
     }
@@ -125,7 +122,10 @@ mod tests {
         };
         assert_eq!(vertices.len(), 9 * 9);
         for vertex in vertices {
-            assert!(vertex.normal.y > 0.99, "a flat terrain has a leaning normal");
+            assert!(
+                vertex.normal.y > 0.99,
+                "a flat terrain has a leaning normal"
+            );
             assert_eq!(vertex.position.y, 0.0);
         }
     }

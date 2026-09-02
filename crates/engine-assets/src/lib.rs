@@ -43,8 +43,8 @@ pub mod animation;
 pub mod asset_validator;
 pub mod bc;
 pub mod catalogue;
-pub mod collision_file;
 pub mod character;
+pub mod collision_file;
 pub mod disk;
 pub mod error;
 pub mod gltf_export;
@@ -66,8 +66,8 @@ pub use asset_validator::{
     Severity, ValidationCode, validate_asset,
 };
 pub use catalogue::{AssetCatalogue, AssetKind, CatalogueEntry, CatalogueFolder};
-pub use collision_file::CollisionFile;
 pub use character::{AnimationSlot, CharacterDef, ClipBindings};
+pub use collision_file::CollisionFile;
 pub use error::AssetError;
 pub use library::{ModelId, ModelLibrary};
 pub use material::{MaterialAsset, SurfaceClass};

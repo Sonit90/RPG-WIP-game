@@ -81,7 +81,9 @@ impl EnvironmentAsset {
         if let Some(known) = LIBRARY.into_iter().find(|asset| asset.name() == name) {
             return known;
         }
-        let mut table = INTERNED.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut table = INTERNED
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         if let Some(known) = table.iter().find(|known| **known == name) {
             return Self(known);
         }

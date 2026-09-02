@@ -171,7 +171,9 @@ pub fn export_glb(model: &ModelAsset) -> Result<Vec<u8>, AssetError> {
             submesh.indices.len()
         ));
 
-        let material = submesh.material.min(model.materials.len().saturating_sub(1));
+        let material = submesh
+            .material
+            .min(model.materials.len().saturating_sub(1));
         let mesh = meshes.len();
         meshes.push(format!(
             "{{\"name\":{},\"primitives\":[{{\"attributes\":{{\"POSITION\":{position_accessor},\
@@ -333,9 +335,7 @@ impl Views {
                 "{{\"buffer\":0,\"byteOffset\":{offset},\"byteLength\":{length},\
                  \"target\":{target}}}"
             ),
-            None => format!(
-                "{{\"buffer\":0,\"byteOffset\":{offset},\"byteLength\":{length}}}"
-            ),
+            None => format!("{{\"buffer\":0,\"byteOffset\":{offset},\"byteLength\":{length}}}"),
         });
         index
     }
@@ -354,7 +354,14 @@ fn assemble(json: &str, bin: &[u8]) -> Vec<u8> {
         bin_bytes.push(0);
     }
 
-    let total = 12 + 8 + json_bytes.len() + if bin_bytes.is_empty() { 0 } else { 8 + bin_bytes.len() };
+    let total = 12
+        + 8
+        + json_bytes.len()
+        + if bin_bytes.is_empty() {
+            0
+        } else {
+            8 + bin_bytes.len()
+        };
     let mut out = Vec::with_capacity(total);
     out.extend_from_slice(&MAGIC.to_le_bytes());
     out.extend_from_slice(&2u32.to_le_bytes());
@@ -520,7 +527,8 @@ mod tests {
         let source = original.lod0().expect("geometry").submeshes[0].clone();
         let target = restored.lod0().expect("geometry").submeshes[0].clone();
         assert_eq!(target.indices, source.indices);
-        let (Geometry::Static(before), Geometry::Static(after)) = (&source.geometry, &target.geometry)
+        let (Geometry::Static(before), Geometry::Static(after)) =
+            (&source.geometry, &target.geometry)
         else {
             panic!("both are static geometry");
         };
@@ -530,7 +538,10 @@ mod tests {
                 (after.position - before.position).length() < 1e-5,
                 "vertex {index} moved"
             );
-            assert!((after.normal - before.normal).length() < 1e-5, "normal {index}");
+            assert!(
+                (after.normal - before.normal).length() < 1e-5,
+                "normal {index}"
+            );
             assert!((after.uv - before.uv).length() < 1e-5, "uv {index}");
         }
     }
@@ -558,7 +569,10 @@ mod tests {
     fn the_container_is_a_valid_glb_header() {
         let bytes = export_glb(&quad_model("header")).expect("the model exports");
         assert_eq!(&bytes[0..4], b"glTF");
-        assert_eq!(u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]), 2);
+        assert_eq!(
+            u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]),
+            2
+        );
         assert_eq!(
             u32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]) as usize,
             bytes.len(),

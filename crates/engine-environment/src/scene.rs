@@ -455,8 +455,8 @@ mod tests {
 
     #[test]
     fn a_level_answers_for_every_body_of_water_in_it_at_once() {
-        use engine_core::math::Vec2;
         use crate::water::WaterBody;
+        use engine_core::math::Vec2;
 
         let mut scene = scene();
         // A pond at ground level and a reservoir up a hill, so "under water" cannot be

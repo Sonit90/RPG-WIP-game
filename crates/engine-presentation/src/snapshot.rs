@@ -18,6 +18,7 @@ use engine_game::EntityId;
 use engine_game::ability::AbilityId;
 use engine_game::character::equipment::INVENTORY_SLOTS;
 use engine_game::character::{EquipSlot, ItemSlot, ItemStack, Stat, StatBlock};
+use engine_game::druid::tuning::{ASTRAL_MAXIMUM, ASTRAL_SPEND};
 use engine_game::enemy::EnemyAbility;
 use engine_game::enemy::brain::AiState;
 use engine_game::firemage::{
@@ -27,7 +28,6 @@ use engine_game::firemage::{
 use engine_game::hero::Hero;
 use engine_game::sim::Simulation;
 use engine_game::status::StatusKind;
-use engine_game::druid::tuning::{ASTRAL_MAXIMUM, ASTRAL_SPEND};
 use engine_game::warrior::{DEFLECTION_MAXIMUM, DEFLECTION_SPEND};
 use engine_game::world::EntityKind;
 
@@ -1396,7 +1396,11 @@ mod tests {
         ] {
             let view = snapshot.ability_view(ability).expect("a druid ability");
             assert!(view.spends_astral, "{ability:?} did not light up");
-            assert_eq!(view.availability, SlotAvailability::Empowered, "{ability:?}");
+            assert_eq!(
+                view.availability,
+                SlotAvailability::Empowered,
+                "{ability:?}"
+            );
         }
         for ability in [FireAbility::NaturesCleanse, FireAbility::WildRush] {
             let view = snapshot.ability_view(ability).expect("a druid ability");

@@ -178,11 +178,8 @@ impl MaterialFile {
             model: image.display().to_string(),
             reason: error.to_string(),
         })?;
-        let texture = crate::gltf_import::decode_png_file(
-            &file.name,
-            TextureFormat::Rgba8Srgb,
-            &bytes,
-        )?;
+        let texture =
+            crate::gltf_import::decode_png_file(&file.name, TextureFormat::Rgba8Srgb, &bytes)?;
         Ok((file, Some(texture)))
     }
 }
@@ -198,7 +195,9 @@ mod tests {
     use crate::procedural::starter::STARTER_MATERIALS;
 
     fn temp(name: &str) -> PathBuf {
-        std::env::temp_dir().join("mygame_material_tests").join(name)
+        std::env::temp_dir()
+            .join("mygame_material_tests")
+            .join(name)
     }
 
     #[test]

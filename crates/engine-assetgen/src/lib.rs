@@ -291,7 +291,9 @@ mod tests {
     use engine_assets::gltf_import::import_glb;
 
     fn temporary(name: &str) -> PathBuf {
-        let path = std::env::temp_dir().join("mygame_assetgen_tests").join(name);
+        let path = std::env::temp_dir()
+            .join("mygame_assetgen_tests")
+            .join(name);
         std::fs::remove_dir_all(&path).ok();
         path
     }
@@ -432,7 +434,10 @@ mod tests {
 
     #[test]
     fn the_command_line_says_what_it_means() {
-        assert_eq!(parse::<&str>(&[]).expect("no arguments"), Options::default());
+        assert_eq!(
+            parse::<&str>(&[]).expect("no arguments"),
+            Options::default()
+        );
         let parsed = parse(&["--root", "somewhere", "--force"]).expect("valid");
         assert_eq!(parsed.root, PathBuf::from("somewhere"));
         assert!(parsed.force);

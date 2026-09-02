@@ -54,7 +54,13 @@ impl Drop for TempDir {
 /// The application's own save: the layout owns where things are, the bars own what is in
 /// them, and the two are merged into one file.
 fn save(manager: &mut HudConfigManager, layout: &HudLayout, bars: &ActionBarSet) {
-    save_as(manager, layout, bars, BindingScope::Account, Hero::default());
+    save_as(
+        manager,
+        layout,
+        bars,
+        BindingScope::Account,
+        Hero::default(),
+    );
 }
 
 /// The same save, told who is playing and where they keep their bars.
@@ -341,7 +347,13 @@ fn a_restart_after_a_hero_swap_finds_this_characters_own_spells_on_bar_one() {
 
     // A session that ended as the Druid.
     let druid = ActionBarSet::with_default_bindings(Hero::Druid);
-    save_as(&mut manager, &layout, &druid, BindingScope::Account, Hero::Druid);
+    save_as(
+        &mut manager,
+        &layout,
+        &druid,
+        BindingScope::Account,
+        Hero::Druid,
+    );
 
     // The next launch, which starts as the FireMage.
     let manager = HudConfigManager::load(dir.file());
@@ -354,7 +366,9 @@ fn a_restart_after_a_hero_swap_finds_this_characters_own_spells_on_bar_one() {
             "bar one slot {slot} is not the FireMage's"
         );
         assert!(
-            contents.ability.is_some_and(|ability| Hero::FireMage.has(ability)),
+            contents
+                .ability
+                .is_some_and(|ability| Hero::FireMage.has(ability)),
             "bar one slot {slot} holds a spell the FireMage cannot cast"
         );
     }
@@ -428,7 +442,10 @@ fn turning_per_character_bars_off_and_on_again_loses_nothing() {
         Hero::FireMage,
     );
     let manager = HudConfigManager::load(dir.file());
-    assert_eq!(launch(&manager, BindingScope::Account, Hero::FireMage), mage);
+    assert_eq!(
+        launch(&manager, BindingScope::Account, Hero::FireMage),
+        mage
+    );
 
     // And on again: the Warrior's own arrangement was never thrown away.
     assert_eq!(

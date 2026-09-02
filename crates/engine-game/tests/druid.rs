@@ -180,10 +180,7 @@ fn mana_is_paid_by_the_heals_and_never_by_wrath() {
     assert_eq!(full, MANA_MAXIMUM);
 
     cast_through(&mut simulation, FireAbility::Wrath);
-    assert!(
-        simulation.druid().mana.current() >= full,
-        "wrath cost mana"
-    );
+    assert!(simulation.druid().mana.current() >= full, "wrath cost mana");
     assert_eq!(FireAbility::Wrath.definition().druid.mana_cost, 0.0);
 
     simulation.player_mut().target = Some(healing_dummy(&simulation));
@@ -329,8 +326,8 @@ fn moonfire_hits_and_then_burns_for_eighteen_seconds() {
     simulation.step_many(19 * 60);
     assert!(!has(&simulation, victim, StatusKind::Moonfire), "it stayed");
     let burnt = after - health(&simulation, victim);
-    let per_tick = FireAbility::Moonfire.definition().tick_coefficient
-        * simulation.mage().stats().spell_power;
+    let per_tick =
+        FireAbility::Moonfire.definition().tick_coefficient * simulation.mage().stats().spell_power;
     // Eighteen seconds at one tick every two.
     assert!(
         (burnt - per_tick * 9.0).abs() < per_tick * 0.5,
@@ -370,10 +367,7 @@ fn an_astral_moonfire_hits_half_again_as_hard_and_never_expires() {
         .statuses(victim)
         .and_then(|statuses| statuses.get(StatusKind::Moonfire))
         .map(|status| status.damage_per_tick);
-    let (plain_tick, astral_tick) = (
-        plain_tick.expect("a burn"),
-        astral_tick.expect("a burn"),
-    );
+    let (plain_tick, astral_tick) = (plain_tick.expect("a burn"), astral_tick.expect("a burn"));
     assert!((astral_tick / plain_tick - 1.5).abs() < 1e-3);
 
     // Five minutes later it is still there and still ticking.
@@ -515,7 +509,10 @@ fn the_conversion_never_feeds_itself() {
     let before = health(&simulation, player);
     simulation.apply_damage(player, victim, 100.0, AbilityId::NONE, DamageType::Nature);
     let healed = health(&simulation, player) - before;
-    assert!((healed - 100.0 * ASTRAL_SUNFIRE_CONVERSION).abs() < 1.0, "{healed}");
+    assert!(
+        (healed - 100.0 * ASTRAL_SUNFIRE_CONVERSION).abs() < 1.0,
+        "{healed}"
+    );
     // **One conversion per party member per instance of damage, and no more.** A loop would
     // pay out again and again for the one hit; healing is not damage, so nothing the
     // conversion produced can come back round and start another.
@@ -565,7 +562,13 @@ fn natures_exposure_amplifies_nature_and_arcane_from_any_source() {
     let plain = {
         simulation.step_many(1);
         let before = health(&simulation, victim);
-        simulation.apply_damage(attacker, victim, 1_000.0, AbilityId::NONE, DamageType::Nature);
+        simulation.apply_damage(
+            attacker,
+            victim,
+            1_000.0,
+            AbilityId::NONE,
+            DamageType::Nature,
+        );
         before - health(&simulation, victim)
     };
 

@@ -204,10 +204,7 @@ pub fn starter_collision(name: &str) -> Option<CollisionShape> {
             let reach = module;
             vec![
                 // The floor of both legs.
-                CollisionBox::between(
-                    Vec3::new(-outer, 0.0, -reach),
-                    Vec3::new(outer, SHELL, 0.0),
-                ),
+                CollisionBox::between(Vec3::new(-outer, 0.0, -reach), Vec3::new(outer, SHELL, 0.0)),
                 CollisionBox::between(
                     Vec3::new(-outer, 0.0, -reach),
                     Vec3::new(reach, SHELL, -reach + TUNNEL_WIDTH + SHELL),
@@ -257,37 +254,141 @@ pub fn starter_collision(name: &str) -> Option<CollisionShape> {
 
 /// Every starter model, in the order the generator writes them.
 pub const STARTER_LIBRARY: [StarterAsset; 27] = [
-    StarterAsset { name: "rock_small", folder: "environment/rocks", build: rock_small },
-    StarterAsset { name: "rock_medium", folder: "environment/rocks", build: rock_medium },
-    StarterAsset { name: "boulder_large", folder: "environment/rocks", build: boulder_large },
-    StarterAsset { name: "rock_spire", folder: "environment/rocks", build: rock_spire },
-    StarterAsset { name: "cliff_straight", folder: "environment/cliffs", build: cliff_straight },
-    StarterAsset { name: "cliff_corner", folder: "environment/cliffs", build: cliff_corner },
-    StarterAsset { name: "cliff_end", folder: "environment/cliffs", build: cliff_end },
-    StarterAsset { name: "cliff_slope", folder: "environment/cliffs", build: cliff_slope },
-    StarterAsset { name: "cliff_overhang", folder: "environment/cliffs", build: cliff_overhang },
-    StarterAsset { name: "cliff_arch", folder: "environment/cliffs", build: cliff_arch },
-    StarterAsset { name: "ground_tile", folder: "environment/ground", build: ground_tile },
-    StarterAsset { name: "platform_square", folder: "environment/ground", build: platform_square },
-    StarterAsset { name: "ramp_square", folder: "environment/ground", build: ramp_square },
-    StarterAsset { name: "stone_cube", folder: "environment/props", build: stone_cube },
-    StarterAsset { name: "pillar", folder: "environment/props", build: pillar },
-    StarterAsset { name: "arch", folder: "environment/props", build: arch },
-    StarterAsset { name: "crate_wooden", folder: "environment/props", build: crate_wooden },
-    StarterAsset { name: "bush_round", folder: "environment/vegetation", build: bush_round },
-    StarterAsset { name: "tree_simple", folder: "environment/vegetation", build: tree_simple },
-    StarterAsset { name: "cave_entrance", folder: "environment/caves", build: cave_entrance },
+    StarterAsset {
+        name: "rock_small",
+        folder: "environment/rocks",
+        build: rock_small,
+    },
+    StarterAsset {
+        name: "rock_medium",
+        folder: "environment/rocks",
+        build: rock_medium,
+    },
+    StarterAsset {
+        name: "boulder_large",
+        folder: "environment/rocks",
+        build: boulder_large,
+    },
+    StarterAsset {
+        name: "rock_spire",
+        folder: "environment/rocks",
+        build: rock_spire,
+    },
+    StarterAsset {
+        name: "cliff_straight",
+        folder: "environment/cliffs",
+        build: cliff_straight,
+    },
+    StarterAsset {
+        name: "cliff_corner",
+        folder: "environment/cliffs",
+        build: cliff_corner,
+    },
+    StarterAsset {
+        name: "cliff_end",
+        folder: "environment/cliffs",
+        build: cliff_end,
+    },
+    StarterAsset {
+        name: "cliff_slope",
+        folder: "environment/cliffs",
+        build: cliff_slope,
+    },
+    StarterAsset {
+        name: "cliff_overhang",
+        folder: "environment/cliffs",
+        build: cliff_overhang,
+    },
+    StarterAsset {
+        name: "cliff_arch",
+        folder: "environment/cliffs",
+        build: cliff_arch,
+    },
+    StarterAsset {
+        name: "ground_tile",
+        folder: "environment/ground",
+        build: ground_tile,
+    },
+    StarterAsset {
+        name: "platform_square",
+        folder: "environment/ground",
+        build: platform_square,
+    },
+    StarterAsset {
+        name: "ramp_square",
+        folder: "environment/ground",
+        build: ramp_square,
+    },
+    StarterAsset {
+        name: "stone_cube",
+        folder: "environment/props",
+        build: stone_cube,
+    },
+    StarterAsset {
+        name: "pillar",
+        folder: "environment/props",
+        build: pillar,
+    },
+    StarterAsset {
+        name: "arch",
+        folder: "environment/props",
+        build: arch,
+    },
+    StarterAsset {
+        name: "crate_wooden",
+        folder: "environment/props",
+        build: crate_wooden,
+    },
+    StarterAsset {
+        name: "bush_round",
+        folder: "environment/vegetation",
+        build: bush_round,
+    },
+    StarterAsset {
+        name: "tree_simple",
+        folder: "environment/vegetation",
+        build: tree_simple,
+    },
+    StarterAsset {
+        name: "cave_entrance",
+        folder: "environment/caves",
+        build: cave_entrance,
+    },
     StarterAsset {
         name: "cave_tunnel_straight",
         folder: "environment/caves",
         build: cave_tunnel_straight,
     },
-    StarterAsset { name: "cave_tunnel_curve", folder: "environment/caves", build: cave_tunnel_curve },
-    StarterAsset { name: "cave_room_small", folder: "environment/caves", build: cave_room_small },
-    StarterAsset { name: "cave_room_large", folder: "environment/caves", build: cave_room_large },
-    StarterAsset { name: "cave_junction", folder: "environment/caves", build: cave_junction },
-    StarterAsset { name: "cave_exit", folder: "environment/caves", build: cave_exit },
-    StarterAsset { name: "water_plane", folder: "environment/water", build: water_plane },
+    StarterAsset {
+        name: "cave_tunnel_curve",
+        folder: "environment/caves",
+        build: cave_tunnel_curve,
+    },
+    StarterAsset {
+        name: "cave_room_small",
+        folder: "environment/caves",
+        build: cave_room_small,
+    },
+    StarterAsset {
+        name: "cave_room_large",
+        folder: "environment/caves",
+        build: cave_room_large,
+    },
+    StarterAsset {
+        name: "cave_junction",
+        folder: "environment/caves",
+        build: cave_junction,
+    },
+    StarterAsset {
+        name: "cave_exit",
+        folder: "environment/caves",
+        build: cave_exit,
+    },
+    StarterAsset {
+        name: "water_plane",
+        folder: "environment/water",
+        build: water_plane,
+    },
 ];
 
 /// The starter model called `name`, if the library has one.
@@ -1354,10 +1455,16 @@ fn junction_blocks() -> Vec<(Vec3, Vec3)> {
     // this a crossing rather than a room with four holes in it.
     for (sx, sz) in [(-1.0_f32, -1.0_f32), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)] {
         blocks.push((
-            Vec3::new(sx * half_width, SHELL, sz * half_width)
-                .min(Vec3::new(sx * outer, cavity_top, sz * outer)),
-            Vec3::new(sx * half_width, SHELL, sz * half_width)
-                .max(Vec3::new(sx * outer, cavity_top, sz * outer)),
+            Vec3::new(sx * half_width, SHELL, sz * half_width).min(Vec3::new(
+                sx * outer,
+                cavity_top,
+                sz * outer,
+            )),
+            Vec3::new(sx * half_width, SHELL, sz * half_width).max(Vec3::new(
+                sx * outer,
+                cavity_top,
+                sz * outer,
+            )),
         ));
     }
     blocks
@@ -1387,10 +1494,7 @@ fn cave_exit_blocks() -> Vec<(Vec3, Vec3)> {
     let mid = -MODULE * 0.5;
     let mut blocks = vec![
         // The roofed half: an ordinary length of tunnel.
-        (
-            Vec3::new(-outer, 0.0, mid),
-            Vec3::new(outer, SHELL, 0.0),
-        ),
+        (Vec3::new(-outer, 0.0, mid), Vec3::new(outer, SHELL, 0.0)),
         (
             Vec3::new(-outer, SHELL, mid),
             Vec3::new(-half_width, cavity_top, 0.0),
@@ -1414,10 +1518,16 @@ fn cave_exit_blocks() -> Vec<(Vec3, Vec3)> {
     // tunnel with the lights on.
     for side in [-1.0_f32, 1.0] {
         blocks.push((
-            Vec3::new(side * half_width, THRESHOLD_STEP, -MODULE)
-                .min(Vec3::new(side * outer, cavity_top, mid)),
-            Vec3::new(side * half_width, THRESHOLD_STEP, -MODULE)
-                .max(Vec3::new(side * outer, cavity_top, mid)),
+            Vec3::new(side * half_width, THRESHOLD_STEP, -MODULE).min(Vec3::new(
+                side * outer,
+                cavity_top,
+                mid,
+            )),
+            Vec3::new(side * half_width, THRESHOLD_STEP, -MODULE).max(Vec3::new(
+                side * outer,
+                cavity_top,
+                mid,
+            )),
         ));
     }
     blocks
@@ -1525,13 +1635,17 @@ mod tests {
     fn every_material_generates_the_texture_it_says_it_does() {
         for material in STARTER_MATERIALS {
             let texture = material.texture();
-            assert_eq!((texture.width, texture.height), (TEXTURE_SIZE, TEXTURE_SIZE));
+            assert_eq!(
+                (texture.width, texture.height),
+                (TEXTURE_SIZE, TEXTURE_SIZE)
+            );
             assert_eq!(
                 texture.texels.len(),
                 (TEXTURE_SIZE * TEXTURE_SIZE * 4) as usize
             );
             assert_eq!(
-                texture, material.texture(),
+                texture,
+                material.texture(),
                 "{} is not the same texture twice",
                 material.name
             );
@@ -1625,7 +1739,10 @@ mod tests {
             Vec3::new(6.3, 2.0, 0.0),
             Vec3::new(-6.3, 2.0, 0.0),
         ] {
-            assert!(!blocked(&shape, door), "the doorway at {door:?} is walled up");
+            assert!(
+                !blocked(&shape, door),
+                "the doorway at {door:?} is walled up"
+            );
         }
         // And the wall beside a doorway is not.
         assert!(

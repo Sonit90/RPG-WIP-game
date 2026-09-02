@@ -47,6 +47,7 @@ use crate::character::stat::{Stat, health_from_stamina};
 use crate::character::{CharacterSheet, ItemSlot, MoveError, Roster};
 use crate::combat::DamageType;
 use crate::command::{CommandBuffer, PlayerCommand};
+use crate::druid::Druid;
 use crate::enemy::EnemyKind;
 use crate::enemy::brain::EnemyBrain;
 use crate::entity::EntityId;
@@ -59,7 +60,6 @@ use crate::party::Party;
 use crate::status::StatusOutcome;
 use crate::targeting::TargetQuery;
 use crate::telemetry::CombatMeter;
-use crate::druid::Druid;
 use crate::warrior::Warrior;
 use crate::world::{EntityKind, GameWorld};
 
@@ -68,8 +68,8 @@ use crate::world::{EntityKind, GameWorld};
 pub mod druid_exec;
 /// Enemy brains, their attacks and their telegraphs: the combat half of the AI.
 pub mod enemy_exec;
-pub mod respawn;
 mod firemage_exec;
+pub mod respawn;
 /// Casting the Warrior: Deflection, the incoming-damage pipeline and the charge.
 mod warrior_exec;
 

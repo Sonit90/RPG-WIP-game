@@ -139,11 +139,7 @@ fn the_wall_of_a_tunnel_is_solid() {
     let scene = level_with("cave_tunnel_straight", Vec3::ZERO, 0.0);
     let world = world_of(&scene);
 
-    let ended = walk(
-        &world,
-        Vec3::new(0.0, 0.5, -2.0),
-        Vec3::new(8.0, 0.5, -2.0),
-    );
+    let ended = walk(&world, Vec3::new(0.0, 0.5, -2.0), Vec3::new(8.0, 0.5, -2.0));
     assert!(
         ended.x < 2.0,
         "the character walked out through the side of the tunnel to x {:.2}",

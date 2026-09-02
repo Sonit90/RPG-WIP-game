@@ -236,7 +236,6 @@ pub fn push_stress_lights(scene: &mut EnvironmentScene, count: usize, casting: u
     }
 }
 
-
 #[cfg(test)]
 mod stress_light_tests {
     use super::*;

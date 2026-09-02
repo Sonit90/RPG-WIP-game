@@ -73,7 +73,12 @@ fn test_cave() -> EnvironmentScene {
     );
     // The room is 13 m across the outside, so it is not module-sized; its doorways are on the
     // centre line, which is the thing that has to align.
-    place(&mut scene, "cave_room_small", Vec3::new(0.0, 0.0, -22.5), 0.0);
+    place(
+        &mut scene,
+        "cave_room_small",
+        Vec3::new(0.0, 0.0, -22.5),
+        0.0,
+    );
     place(
         &mut scene,
         "cave_tunnel_straight",
@@ -347,5 +352,3 @@ fn the_cave_survives_being_written_and_read_back() {
         ended.z
     );
 }
-
-

@@ -53,10 +53,7 @@ impl SpawnPoint {
     /// A spawn point facing along -Z, which is the way the camera looks.
     #[must_use]
     pub fn new(position: Vec3) -> Self {
-        Self {
-            position,
-            yaw: 0.0,
-        }
+        Self { position, yaw: 0.0 }
     }
 
     /// The same spawn point, turned.
