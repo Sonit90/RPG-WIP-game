@@ -107,6 +107,14 @@ pub struct EnvironmentScene {
     /// something builds one for it, and the question it answers is
     /// [`EnvironmentScene::is_submerged`]. Water blocks nothing — see [`crate::water`].
     pub water: Vec<crate::water::WaterBody>,
+    /// Where a player can start, and which way they face when they do.
+    ///
+    /// Empty in every level authored before spawn points existed and in every built-in
+    /// layout, which is why [`SpawnPoints::player`] is still here: see
+    /// [`EnvironmentScene::player_spawn`], which is the one question with the one answer.
+    /// A *list* because a spawn point is a thing an author places rather than a field of the
+    /// level — see [`crate::spawn`].
+    pub spawn_points: Vec<crate::spawn::SpawnPoint>,
 }
 
 impl EnvironmentScene {
@@ -136,6 +144,7 @@ impl EnvironmentScene {
             collision_shapes: Vec::new(),
             terrain: None,
             water: Vec::new(),
+            spawn_points: Vec::new(),
         }
     }
 
@@ -151,6 +160,41 @@ impl EnvironmentScene {
             Some(terrain) if terrain.contains(position) => terrain.height_at(position),
             _ => self.ground_height,
         }
+    }
+
+    /// Where the player starts, and which way they look.
+    ///
+    /// The level's first spawn point if it has one, and [`SpawnPoints::player`] if it does
+    /// not — so a level authored before spawn points existed still starts a player in the
+    /// place it always did, and nothing outside this crate has to know which of the two it
+    /// got. The height is lifted onto the terrain, for the reason
+    /// [`EnvironmentScene::ground_at`] exists: a spawn authored at `y = 0` on a level whose
+    /// ground was raised afterwards would otherwise start the player inside a hill.
+    ///
+    /// The *first* rather than a random one, because a level has to start the same way twice.
+    /// When something needs more than one — a team, a checkpoint, a dungeon's entrance — it
+    /// reads [`EnvironmentScene::spawn_points`] directly and decides for itself.
+    #[must_use]
+    pub fn player_spawn(&self) -> crate::spawn::SpawnPoint {
+        let authored = self
+            .spawn_points
+            .iter()
+            .copied()
+            .find(crate::spawn::SpawnPoint::is_valid);
+        let spawn = authored.unwrap_or_else(|| crate::spawn::SpawnPoint::new(self.spawns.player));
+        crate::spawn::SpawnPoint {
+            position: Vec3::new(
+                spawn.position.x,
+                spawn.position.y.max(self.ground_at(spawn.position)),
+                spawn.position.z,
+            ),
+            yaw: spawn.yaw,
+        }
+    }
+
+    /// Adds a spawn point.
+    pub fn push_spawn(&mut self, spawn: crate::spawn::SpawnPoint) {
+        self.spawn_points.push(spawn);
     }
 
     /// Which body of water a point is inside, if any.
@@ -437,6 +481,39 @@ mod tests {
         assert_eq!(scene.water_at(Vec3::new(0.0, 11.5, 0.0)), None);
         assert_eq!(scene.water_at(Vec3::new(40.0, -1.0, 0.0)), None);
         assert!(!scene.is_submerged(Vec3::new(100.0, -1.0, 0.0)));
+    }
+
+    #[test]
+    fn a_level_with_no_spawn_point_still_starts_the_player_where_it_always_did() {
+        let mut scene = scene();
+        scene.spawns.player = Vec3::new(5.0, 0.0, -7.0);
+        let fallback = scene.player_spawn();
+        assert_eq!(fallback.position, Vec3::new(5.0, 0.0, -7.0));
+        assert_eq!(fallback.yaw, 0.0);
+
+        // An authored one wins, and brings its facing with it.
+        scene.push_spawn(crate::spawn::SpawnPoint::new(Vec3::new(-2.0, 0.0, 3.0)).with_yaw(1.5));
+        let authored = scene.player_spawn();
+        assert_eq!(authored.position, Vec3::new(-2.0, 0.0, 3.0));
+        assert!((authored.yaw - 1.5).abs() < 1e-6);
+
+        // The first of several, so a level starts the same way twice.
+        scene.push_spawn(crate::spawn::SpawnPoint::new(Vec3::new(40.0, 0.0, 40.0)));
+        assert_eq!(scene.player_spawn().position, Vec3::new(-2.0, 0.0, 3.0));
+    }
+
+    #[test]
+    fn a_spawn_point_is_lifted_onto_the_ground_under_it() {
+        // A spawn authored at zero on a level whose ground was raised afterwards would start
+        // the player inside the hill. The same rule `ground_at` exists for.
+        let mut scene = scene();
+        let mut terrain = crate::terrain::Terrain::flat(17, 2.0, 0.0);
+        terrain.apply_brush(Vec3::ZERO, 10.0, 4.0, crate::BrushMode::Raise);
+        scene.terrain = Some(terrain);
+        scene.push_spawn(crate::spawn::SpawnPoint::new(Vec3::ZERO));
+
+        let spawn = scene.player_spawn();
+        assert!(spawn.position.y > 0.5, "{:?}", spawn.position);
     }
 
     #[test]

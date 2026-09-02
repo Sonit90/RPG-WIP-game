@@ -1243,6 +1243,54 @@ fn room_boxes(inner: f32, height: f32) -> Vec<CollisionBox> {
     boxes
 }
 
+/// The marker an editor draws where a player will start.
+///
+/// ```text
+///        ▲     the arrow, pointing along -Z: the way a player faces at yaw zero
+///        │
+///       [█]    the post
+///      ▂▂▂▂▂   the plinth
+/// ```
+///
+/// **Not in [`STARTER_LIBRARY`]**, and that is the point: it is editor furniture rather than
+/// content. A level does not contain one — a level contains a
+/// [`SpawnPoint`](engine_environment::spawn::SpawnPoint), which has no mesh — and nothing in a
+/// player's build ever asks for this. It lives here because this is where the geometry
+/// helpers are, and because an editor that drew its own meshes would be an editor that needs
+/// a device to be tested.
+///
+/// The arrow is along -Z so the marker points where a spawn point at yaw zero points, which is
+/// where the camera looks. Turning the spawn turns the entity, exactly as it does for water.
+///
+/// It uses `simple_test` — the one deliberately ugly material — because a marker has to be
+/// impossible to mistake for the level.
+#[must_use]
+pub fn spawn_marker() -> ModelAsset {
+    let mut builder = MeshBuilder::new();
+    // The plinth, so the marker reads as standing on the ground rather than floating.
+    block(
+        &mut builder,
+        Vec3::new(-0.6, 0.0, -0.6),
+        Vec3::new(0.6, 0.12, 0.6),
+    );
+    // The post, roughly a person's height, so an author can see it over a rock.
+    block(
+        &mut builder,
+        Vec3::new(-0.12, 0.12, -0.12),
+        Vec3::new(0.12, 1.8, 0.12),
+    );
+    // The arrow: a horizontal prism that tapers to a point along -Z. A prism between two
+    // arbitrary points, which is what lets this one lie down when every other one stands up.
+    tapered(
+        &mut builder,
+        Vec3::new(0.0, 0.9, -0.2),
+        Vec3::new(0.0, 0.9, -1.1),
+        Vec2::new(0.45, 0.09),
+        Vec2::new(0.02, 0.02),
+    );
+    single("spawn_marker", builder, &material_named("simple_test"))
+}
+
 /// The step outside a cave mouth, drawn by [`cave_entrance`] and blocked beside it.
 ///
 /// Outside the piece rather than inside it, so the climb happens on open ground where the

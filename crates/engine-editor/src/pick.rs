@@ -15,13 +15,21 @@
 //! still be picked: a fern is decoration to the character controller and a placement like any
 //! other to the person arranging the level.
 //!
-//! # Water, which has no box at all
+//! # Things with no geometry at all
+//!
+//! Water and a spawn point are both picked against a box that exists only here: water's is its
+//! volume, and a spawn point's is a person-sized box standing on it. A spawn point has no mesh
+//! and never will — what an author clicks on is the marker drawn for it, and the box is that
+//! marker's size.
+//!
+//! # Water
 //!
 //! Water blocks nothing and never will — see [`engine_environment::water`]. It is picked
 //! against its *volume*: the rectangle, turned by its yaw, reaching down by its depth. The
 //! same oriented-box test, given a box that exists only here.
 
 use engine_core::math::Vec3;
+use engine_environment::spawn::SpawnPoint;
 use engine_environment::water::WaterBody;
 use engine_environment::{EnvironmentObject, EnvironmentScene};
 
@@ -122,7 +130,21 @@ fn water_box(body: &WaterBody) -> (Vec3, Vec3, engine_core::math::Quat) {
     )
 }
 
-/// What a ray hits first: a placement, a body of water, or nothing.
+/// The pickable box of a spawn point: roughly the person who will stand on it.
+///
+/// A metre across and two tall, which is the character controller's own capsule rounded to
+/// something an author can hit at a working distance. It is turned by the spawn's yaw so that
+/// clicking a marker that has been turned still hits it.
+fn spawn_box(spawn: &SpawnPoint) -> (Vec3, Vec3, engine_core::math::Quat) {
+    const HALF: Vec3 = Vec3::new(0.5, 1.0, 0.5);
+    (
+        spawn.position + Vec3::new(0.0, HALF.y, 0.0),
+        HALF,
+        engine_core::math::Quat::from_yaw_pitch_roll(spawn.yaw, 0.0, 0.0),
+    )
+}
+
+/// What a ray hits first: a placement, a body of water, a spawn point, or nothing.
 ///
 /// One function over both lists rather than two that a caller has to compare, because "which
 /// is nearer, the rock or the pond" is exactly the question a click asks and exactly the one
@@ -147,6 +169,13 @@ pub fn under_ray(scene: &EnvironmentScene, origin: Vec3, direction: Vec3) -> Opt
         if let Some(distance) = ray_box_distance(origin, direction, center, half_extents, rotation)
         {
             consider(Selected::Water(index), distance);
+        }
+    }
+    for (index, spawn) in scene.spawn_points.iter().enumerate() {
+        let (center, half_extents, rotation) = spawn_box(spawn);
+        if let Some(distance) = ray_box_distance(origin, direction, center, half_extents, rotation)
+        {
+            consider(Selected::Spawn(index), distance);
         }
     }
     best.map(|(what, _)| what)
@@ -266,6 +295,19 @@ mod tests {
 
         let miss = under_ray(&scene, Vec3::new(20.0, 0.5, 0.0), Vec3::new(0.0, 0.0, -1.0));
         assert_eq!(miss, None, "ten metres out along X is past its end now");
+    }
+
+    #[test]
+    fn a_spawn_point_can_be_clicked_on_even_though_it_has_no_mesh() {
+        let mut scene = EnvironmentScene::empty("spawn_pick");
+        scene.push_spawn(SpawnPoint::new(Vec3::new(0.0, 0.0, -10.0)));
+        let hit = under_ray(&scene, Vec3::new(0.0, 1.0, 0.0), Vec3::new(0.0, 0.0, -1.0));
+        assert_eq!(hit, Some(Selected::Spawn(0)));
+
+        // And it is only as big as the marker: a click well to the side of it hits nothing,
+        // rather than a spawn point swallowing every click in its half of the level.
+        let miss = under_ray(&scene, Vec3::new(4.0, 1.0, 0.0), Vec3::new(0.0, 0.0, -1.0));
+        assert_eq!(miss, None);
     }
 
     #[test]

@@ -29,6 +29,11 @@ use crate::world::{EntityDesc, EntityKind, GameWorld};
 pub struct ArenaConfig {
     /// Where the player starts.
     pub player_spawn: Vec3,
+    /// Which way the player faces when they start, in radians about +Y.
+    ///
+    /// Authored on the level's spawn point — see `engine_environment::spawn` — and zero for
+    /// every layout that does not say, which faces -Z, the way the camera looks.
+    pub player_spawn_yaw: f32,
     /// Where the lone dummy stands.
     pub single_dummy: Vec3,
     /// Centre of the dummy group.
@@ -58,6 +63,7 @@ impl Default for ArenaConfig {
     fn default() -> Self {
         Self {
             player_spawn: Vec3::ZERO,
+            player_spawn_yaw: 0.0,
             single_dummy: Vec3::new(0.0, 0.0, -12.0),
             group_center: Vec3::new(14.0, 0.0, -18.0),
             group_count: 4,
@@ -88,13 +94,13 @@ impl ArenaConfig {
     pub fn from_environment(scene: &engine_environment::EnvironmentScene, count: usize) -> Self {
         let base = Self::with_group(count);
         Self {
-            // Lifted onto the terrain, if the level has one under the spawn: a spawn point
-            // authored at y = 0 on a level whose ground was later raised would otherwise put
-            // the player inside a hill.
-            player_spawn: {
-                let spawn = scene.spawns.player;
-                Vec3::new(spawn.x, spawn.y.max(scene.ground_at(spawn)), spawn.z)
-            },
+            // The level's own spawn point if it has one, and the layout's `spawns.player` if
+            // it does not — one question with one answer, and it is the scene's, not this
+            // crate's. It arrives already lifted onto the terrain, because a spawn authored
+            // at y = 0 on a level whose ground was later raised would put the player inside
+            // a hill.
+            player_spawn: scene.player_spawn().position,
+            player_spawn_yaw: scene.player_spawn().yaw,
             single_dummy: scene.spawns.featured_dummy,
             group_center: scene.spawns.group_center,
             group_spacing: scene.spawns.group_spacing,
@@ -472,6 +478,12 @@ pub fn populate(world: &mut GameWorld, config: &ArenaConfig) -> Arena {
     world.clear();
 
     let player = world.spawn(EntityDesc::player(config.player_spawn));
+    // Turned to face the way the level's spawn point points. Set on the body rather than
+    // passed to `spawn`, because facing is movement state and `EntityDesc` describes what an
+    // entity *is* rather than which way it happens to be looking.
+    if let Some(body) = world.body_mut(player) {
+        body.facing_yaw = config.player_spawn_yaw;
+    }
     let single_dummy = world.spawn(EntityDesc::dummy(config.single_dummy, config.dummy_health));
     let healing_dummy = spawn_healing_dummy(world, config.healing_dummy, config.healing_dummy_health);
     let mut group = Vec::with_capacity(config.group_count);

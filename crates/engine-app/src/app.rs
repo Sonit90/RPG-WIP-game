@@ -239,6 +239,13 @@ pub struct App {
     /// is: a level has a handful of them, and rebuilding all of them costs less than working
     /// out which one an author just dragged.
     water_entities: Vec<engine_render_data::RenderEntity>,
+    /// The markers drawn over the level's spawn points, while the editor is open.
+    ///
+    /// Editor furniture, and empty in a build without one: a spawn point has no mesh, and the
+    /// thing an author clicks on is this. They are despawned on the way out of the editor, so
+    /// a player never sees a signpost standing where they are about to appear.
+    #[cfg(feature = "editor")]
+    spawn_marker_entities: Vec<engine_render_data::RenderEntity>,
     bindings: Bindings,
     /// Which scenario is loaded. Chosen once, at startup, by `--scene`.
     scene: Scene,
@@ -894,6 +901,8 @@ impl App {
             placer,
             terrain_entity: None,
             water_entities: Vec::new(),
+            #[cfg(feature = "editor")]
+            spawn_marker_entities: Vec::new(),
             bindings: Bindings::default(),
             scene: args.scene,
             #[cfg(feature = "editor")]
@@ -2427,6 +2436,60 @@ impl App {
         }
     }
 
+    /// Rebuilds the markers standing on the level's spawn points.
+    ///
+    /// One entity per spawn point while the editor is open, and none at all otherwise — which
+    /// is what `shown` says. A spawn point has no mesh of its own, so this is the only thing
+    /// there is to click on and the only thing there is to see.
+    ///
+    /// The model is uploaded once and reused by every marker: a level with eight spawn points
+    /// is eight entities sharing one mesh, the same way eight rocks of one kind are.
+    #[cfg(feature = "editor")]
+    fn rebuild_spawn_markers(&mut self, shown: bool) {
+        for entity in self.spawn_marker_entities.drain(..) {
+            self.extractor.render_world_mut().despawn(entity);
+        }
+        if !shown {
+            return;
+        }
+        let Some(scene) = self.environment.as_ref() else {
+            return;
+        };
+        let spawns = scene.spawn_points.clone();
+        if spawns.is_empty() {
+            return;
+        }
+        let model = engine_assets::procedural::starter::spawn_marker();
+        let binding = match self.renderer.create_model(&model) {
+            Ok(binding) => binding,
+            Err(error) => {
+                log::error!("spawn markers: could not be uploaded: {error}");
+                return;
+            }
+        };
+        let Some(part) = binding.lods.first().and_then(|lod| lod.parts.first()) else {
+            return;
+        };
+        let engine_render_data::PartGeometry::Rigid(mesh) = part.geometry else {
+            log::error!("spawn markers: built as skinned geometry, which they never are");
+            return;
+        };
+        let bounds = binding.lods.first().map_or(part.bounds, |lod| lod.bounds);
+        for spawn in &spawns {
+            let transform = engine_core::transform::Transform::from_translation(spawn.position)
+                .with_rotation(engine_core::math::Quat::from_yaw_pitch_roll(spawn.yaw, 0.0, 0.0));
+            let world = self.extractor.render_world_mut();
+            let entity = world.spawn(engine_render_data::RenderEntityDesc {
+                transform,
+                mesh,
+                material: part.material,
+                bounds,
+                ..Default::default()
+            });
+            self.spawn_marker_entities.push(entity);
+        }
+    }
+
     /// Rebuilds the static collision world from the environment scene as it stands now.
     ///
     /// The floor and the boundary first, then every blocking placement, then one broad-phase
@@ -2488,6 +2551,8 @@ impl App {
                 self.editor.set_save_path(path);
             }
             log::info!("editor: editing '{name}' ({count} objects); F6 goes back to playing");
+            // The signposts go up with the editor and come down with it.
+            self.rebuild_spawn_markers(true);
             return Ok(true);
         }
 
@@ -2519,6 +2584,7 @@ impl App {
                     // change, so that leaving the editor lands the author in the level
                     // they just built rather than in the one that was loaded.
                     self.rebuild_environment_collision();
+                    self.rebuild_spawn_markers(false);
                     log::info!("editor: back to playing; collision describes what is on screen");
                     return Ok(false);
                 }
@@ -2554,6 +2620,12 @@ impl App {
         }
         if water_changed {
             self.rebuild_water();
+            // The same outcome carries a spawn point that moved: both are level furniture with
+            // one or two entities behind them, and telling them apart would buy nothing.
+            self.rebuild_spawn_markers(true);
+        }
+        if changed {
+            self.rebuild_spawn_markers(true);
         }
 
         let (width, height) = self.renderer.size();

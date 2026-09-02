@@ -15,6 +15,7 @@
 //!   │        │  C                   duplicate
 //!   │        │  V                   pour a body of water where the cursor is
 //!   │        │  M                   module snap: the cave grid, on and off
+//!   │        │  P                   put a spawn point where the cursor is
 //!   │        │  CTRL+click          add to the selection; CTRL+A takes everything
 //!   │        │  Z                   undo
 //!   │        │  TAB                 next asset in the browser
@@ -64,6 +65,7 @@ use engine_core::input::{InputState, KeyCode, MouseButton};
 use engine_core::math::{Mat4, Vec3};
 use engine_core::transform::Transform;
 use engine_environment::terrain::{BrushMode, Terrain};
+use engine_environment::spawn::SpawnPoint;
 use engine_environment::water::WaterBody;
 use engine_environment::{EnvironmentAsset, EnvironmentObject, EnvironmentScene, scene_file};
 use engine_presentation::ui::input::UiInput;
@@ -86,6 +88,7 @@ struct Snapshot {
     objects: Vec<EnvironmentObject>,
     terrain: Option<Terrain>,
     water: Vec<WaterBody>,
+    spawn_points: Vec<SpawnPoint>,
 }
 
 impl Snapshot {
@@ -95,6 +98,7 @@ impl Snapshot {
             objects: scene.objects.clone(),
             terrain: scene.terrain.clone(),
             water: scene.water.clone(),
+            spawn_points: scene.spawn_points.clone(),
         }
     }
 
@@ -103,6 +107,7 @@ impl Snapshot {
         scene.objects = self.objects;
         scene.terrain = self.terrain;
         scene.water = self.water;
+        scene.spawn_points = self.spawn_points;
     }
 }
 
@@ -198,6 +203,8 @@ pub enum Selected {
     Object(usize),
     /// A body of water, by its index into `scene.water`.
     Water(usize),
+    /// A spawn point, by its index into `scene.spawn_points`.
+    Spawn(usize),
 }
 
 impl Selected {
@@ -206,7 +213,7 @@ impl Selected {
     pub fn object(self) -> Option<usize> {
         match self {
             Self::Object(index) => Some(index),
-            Self::Water(_) => None,
+            _ => None,
         }
     }
 
@@ -215,7 +222,16 @@ impl Selected {
     pub fn water(self) -> Option<usize> {
         match self {
             Self::Water(index) => Some(index),
-            Self::Object(_) => None,
+            _ => None,
+        }
+    }
+
+    /// The spawn index, if this is a spawn point.
+    #[must_use]
+    pub fn spawn(self) -> Option<usize> {
+        match self {
+            Self::Spawn(index) => Some(index),
+            _ => None,
         }
     }
 
@@ -224,7 +240,9 @@ impl Selected {
     fn same_kind(self, other: Self) -> bool {
         matches!(
             (self, other),
-            (Self::Object(_), Self::Object(_)) | (Self::Water(_), Self::Water(_))
+            (Self::Object(_), Self::Object(_))
+                | (Self::Water(_), Self::Water(_))
+                | (Self::Spawn(_), Self::Spawn(_))
         )
     }
 }
@@ -280,7 +298,7 @@ pub struct Editor {
     /// turns it on and choosing a rock turns it off, which is right nearly always and is the
     /// kind of automatic behaviour that must stop the moment somebody disagrees with it.
     module_snap_pinned: bool,
-    /// Whether what changed this frame was water rather than the placements.
+    /// Whether what changed this frame was water or a spawn point rather than a placement.
     ///
     /// Which of the two "something changed" answers the application gets. A selection holds
     /// one kind at a time, so the frame's edit reached one list or the other and never both —
@@ -395,6 +413,18 @@ impl Editor {
         self.is_selected(Selected::Water(index))
     }
 
+    /// Whether a spawn point is selected.
+    #[must_use]
+    pub fn is_spawn_selected(&self, index: usize) -> bool {
+        self.is_selected(Selected::Spawn(index))
+    }
+
+    /// The primary selection, if it is a spawn point.
+    #[must_use]
+    pub fn selected_spawn(&self) -> Option<usize> {
+        self.selection().and_then(Selected::spawn)
+    }
+
     /// The primary selection, if it is a placement.
     #[must_use]
     pub fn selected_object(&self) -> Option<usize> {
@@ -420,6 +450,12 @@ impl Editor {
     #[must_use]
     fn selected_waters(&self) -> Vec<usize> {
         self.selected.iter().filter_map(|what| what.water()).collect()
+    }
+
+    /// Every selected spawn point, in the order it was added.
+    #[must_use]
+    fn selected_spawns(&self) -> Vec<usize> {
+        self.selected.iter().filter_map(|what| what.spawn()).collect()
     }
 
     /// How far one press of `R` turns an object, in degrees.
@@ -646,20 +682,26 @@ impl Editor {
         // `V` pours water where the cursor is, and it needs the ray the pointer verbs use
         // rather than only the keyboard — so it is answered here, before the keyboard verbs,
         // and its key is not passed on to them.
-        if !browser_took_the_keys
-            && !self.browser.is_typing()
-            && input.was_key_pressed(KeyCode::V)
-            && !self.sculpting
-        {
-            let poured =
-                self.pour_water(ui_input, scene, view_projection, viewport, over_browser
-                    || over_hierarchy);
-            self.reveal_selection(scene, viewport);
-            return if poured {
-                EditorOutcome::WaterChanged
+        if !browser_took_the_keys && !self.browser.is_typing() && !self.sculpting {
+            let over_panel = over_browser || over_hierarchy;
+            // Both of these need the ray the pointer verbs use rather than only the keyboard,
+            // so they are answered here — before the keyboard verbs, and their key is not
+            // passed on to them.
+            let placed = if input.was_key_pressed(KeyCode::V) {
+                Some(self.pour_water(ui_input, scene, view_projection, viewport, over_panel))
+            } else if input.was_key_pressed(KeyCode::P) {
+                Some(self.put_spawn(ui_input, scene, view_projection, viewport, over_panel))
             } else {
-                EditorOutcome::Idle
+                None
             };
+            if let Some(placed) = placed {
+                self.reveal_selection(scene, viewport);
+                return if placed {
+                    EditorOutcome::WaterChanged
+                } else {
+                    EditorOutcome::Idle
+                };
+            }
         }
 
         let mut changed = if browser_took_the_keys || self.browser.is_typing() {
@@ -690,6 +732,45 @@ impl Editor {
             (true, false) => EditorOutcome::SceneChanged,
             (false, _) => EditorOutcome::Idle,
         }
+    }
+
+    /// Puts a spawn point on the ground under the cursor. Returns whether one arrived.
+    ///
+    /// Facing whatever the last one was turned to, or -Z on the first: an author laying out a
+    /// row of starts is nearly always laying out a row that faces the same way, and `R` turns
+    /// the one that does not.
+    fn put_spawn(
+        &mut self,
+        ui_input: &UiInput,
+        scene: &mut EnvironmentScene,
+        view_projection: &Mat4,
+        viewport: (u32, u32),
+        over_panel: bool,
+    ) -> bool {
+        if over_panel {
+            return false;
+        }
+        let Some(ground) = engine_presentation::ui::targeting::ground_under_cursor(
+            ui_input.pointer,
+            view_projection,
+            viewport,
+        ) else {
+            self.status = "point at the ground to put a spawn point".to_owned();
+            return false;
+        };
+        self.snapshot(scene);
+        let yaw = scene.spawn_points.last().map_or(0.0, |last| last.yaw);
+        // On the ground the level actually has under the cursor, so a spawn on a plateau
+        // belongs to the plateau — the same rule water is poured with.
+        let standing = self.snap(ground);
+        let position = Vec3::new(standing.x, scene.ground_at(standing), standing.z);
+        scene.push_spawn(SpawnPoint { position, yaw });
+        self.selected.clear();
+        self.selected
+            .push(Selected::Spawn(scene.spawn_points.len() - 1));
+        self.water_touched = true;
+        self.status = format!("spawn point at {:.0} {:.0}", position.x, position.z);
+        true
     }
 
     /// Pours a body of water on the ground under the cursor. Returns whether one arrived.
@@ -948,6 +1029,7 @@ impl Editor {
                         }
                     ),
                     Selected::Water(index) => format!("selected water ({index})"),
+                    Selected::Spawn(index) => format!("selected spawn ({index})"),
                 };
                 break;
             }
@@ -986,6 +1068,7 @@ impl Editor {
         self.selected.retain(|what| match what {
             Selected::Object(index) => *index < scene.objects.len(),
             Selected::Water(index) => *index < scene.water.len(),
+            Selected::Spawn(index) => *index < scene.spawn_points.len(),
         });
     }
 
@@ -1088,7 +1171,8 @@ impl Editor {
         // A selection holds one kind, so whatever the verb below turns out to be, this is the
         // list it will reach — which is how the application is told a quad moved rather than
         // the level.
-        self.water_touched = !self.selected_waters().is_empty();
+        self.water_touched =
+            !self.selected_waters().is_empty() || !self.selected_spawns().is_empty();
 
         if input.was_key_pressed(KeyCode::X) {
             self.snapshot(scene);
@@ -1105,6 +1189,11 @@ impl Editor {
             waters.sort_unstable();
             for index in waters.into_iter().rev() {
                 scene.water.remove(index);
+            }
+            let mut spawns = self.selected_spawns();
+            spawns.sort_unstable();
+            for index in spawns.into_iter().rev() {
+                scene.spawn_points.remove(index);
             }
             self.status = format!("deleted {count}");
             self.selected.clear();
@@ -1132,6 +1221,14 @@ impl Editor {
                 copies.push(Selected::Water(scene.water.len()));
                 scene.water.push(copy);
             }
+            for index in self.selected_spawns() {
+                let Some(mut copy) = scene.spawn_points.get(index).copied() else {
+                    continue;
+                };
+                copy.position += Vec3::new(step, 0.0, step);
+                copies.push(Selected::Spawn(scene.spawn_points.len()));
+                scene.spawn_points.push(copy);
+            }
             self.status = format!("duplicated {}", copies.len());
             // The copies become the selection, so dragging straight afterwards moves the new
             // ones rather than the originals.
@@ -1148,6 +1245,15 @@ impl Editor {
                 };
                 last = snap_angle(body.yaw + step, self.yaw_step().to_radians());
                 body.yaw = last;
+            }
+            // Turning a spawn point is turning the player who starts on it, which is the one
+            // thing about a spawn point that is not obvious from where it stands.
+            for index in self.selected_spawns() {
+                let Some(spawn) = scene.spawn_points.get_mut(index) else {
+                    continue;
+                };
+                last = snap_angle(spawn.yaw + step, self.yaw_step().to_radians());
+                spawn.yaw = last;
             }
             for index in self.selected_objects() {
                 let Some(object) = scene.objects.get_mut(index) else {
@@ -1213,6 +1319,12 @@ impl Editor {
                 // size is what somebody dragged out on purpose.
                 body.yaw = 0.0;
             }
+            for index in self.selected_spawns() {
+                let Some(spawn) = scene.spawn_points.get_mut(index) else {
+                    continue;
+                };
+                spawn.yaw = 0.0;
+            }
             self.status = "transform reset".to_owned();
             return true;
         }
@@ -1244,6 +1356,12 @@ impl Editor {
                     continue;
                 };
                 body.center += along(body.yaw);
+            }
+            for index in self.selected_spawns() {
+                let Some(spawn) = scene.spawn_points.get_mut(index) else {
+                    continue;
+                };
+                spawn.position += along(spawn.yaw);
             }
             self.status = format!(
                 "moved {:.2} {:.2} {:.2} ({})",
@@ -1344,7 +1462,7 @@ impl Editor {
             if !self.is_selected(drag.target) {
                 move_by(scene, drag.target, delta);
             }
-            self.water_touched = drag.target.water().is_some();
+            self.water_touched = drag.target.object().is_none();
             self.status = if self.selected.len() > 1 {
                 format!("moved {}", self.selected.len())
             } else {
@@ -1389,6 +1507,7 @@ impl Editor {
                         format!("selected {}", scene.objects[index].asset.name())
                     }
                     Selected::Water(index) => format!("selected water ({index})"),
+                    Selected::Spawn(index) => format!("selected spawn ({index})"),
                 }
             };
             return false;
@@ -1501,6 +1620,7 @@ fn position_of(scene: &EnvironmentScene, what: Selected) -> Option<Vec3> {
             .get(index)
             .map(|object| object.transform.translation),
         Selected::Water(index) => scene.water.get(index).map(|body| body.center),
+        Selected::Spawn(index) => scene.spawn_points.get(index).map(|spawn| spawn.position),
     }
 }
 
@@ -1517,6 +1637,11 @@ fn move_by(scene: &mut EnvironmentScene, what: Selected, delta: Vec3) {
                 body.center += delta;
             }
         }
+        Selected::Spawn(index) => {
+            if let Some(spawn) = scene.spawn_points.get_mut(index) {
+                spawn.position += delta;
+            }
+        }
     }
 }
 
@@ -1527,7 +1652,7 @@ fn move_by(scene: &mut EnvironmentScene, what: Selected, delta: Vec3) {
 /// on screen disagree with the number in the file.
 #[must_use]
 pub fn hierarchy_len(scene: &EnvironmentScene) -> usize {
-    scene.objects.len() + scene.water.len()
+    scene.objects.len() + scene.water.len() + scene.spawn_points.len()
 }
 
 /// What the hierarchy's `row`th line names, if it names anything.
@@ -1537,7 +1662,11 @@ pub fn hierarchy_row_at(row: usize, scene: &EnvironmentScene) -> Option<Selected
         return Some(Selected::Object(row));
     }
     let water = row - scene.objects.len();
-    (water < scene.water.len()).then_some(Selected::Water(water))
+    if water < scene.water.len() {
+        return Some(Selected::Water(water));
+    }
+    let spawn = water - scene.water.len();
+    (spawn < scene.spawn_points.len()).then_some(Selected::Spawn(spawn))
 }
 
 /// Which hierarchy row names `what`. The inverse of [`hierarchy_row_at`].
@@ -1546,6 +1675,7 @@ pub fn hierarchy_row_of(what: Selected, scene: &EnvironmentScene) -> usize {
     match what {
         Selected::Object(index) => index,
         Selected::Water(index) => scene.objects.len() + index,
+        Selected::Spawn(index) => scene.objects.len() + scene.water.len() + index,
     }
 }
 
@@ -1865,6 +1995,86 @@ mod tests {
             scene.objects[0].transform.translation, rock,
             "dragging water moved a placement"
         );
+    }
+
+    #[test]
+    fn p_puts_a_spawn_point_down_and_every_verb_reaches_it() {
+        let mut editor = editor();
+        let mut scene = scene();
+        let (input, ui) = keyed_at(KeyCode::P, centre());
+        let outcome = update(&mut editor, &input, &ui, &mut scene);
+
+        assert_eq!(outcome, EditorOutcome::WaterChanged);
+        assert_eq!(scene.spawn_points.len(), 1);
+        assert_eq!(editor.selection(), Some(Selected::Spawn(0)));
+        assert!(scene.spawn_points[0].is_valid());
+
+        // Turning it is the one thing about a spawn point that is not obvious from where it
+        // stands, so it is the verb worth asserting first.
+        update(&mut editor, &keyed(KeyCode::R), &UiInput::new(), &mut scene);
+        assert!(
+            (scene.spawn_points[0].yaw - editor.yaw_step().to_radians()).abs() < 1e-4,
+            "R did not turn the spawn point: {}",
+            scene.spawn_points[0].yaw
+        );
+
+        // Straightened, nudged, and taken away again.
+        update(&mut editor, &keyed(KeyCode::Digit0), &UiInput::new(), &mut scene);
+        assert_eq!(scene.spawn_points[0].yaw, 0.0);
+
+        let before = scene.spawn_points[0].position;
+        update(&mut editor, &keyed(KeyCode::ArrowRight), &UiInput::new(), &mut scene);
+        assert!(scene.spawn_points[0].position.x > before.x);
+
+        update(&mut editor, &keyed(KeyCode::X), &UiInput::new(), &mut scene);
+        assert!(scene.spawn_points.is_empty(), "X did not delete it");
+
+        // And putting one down is an edit like any other.
+        update(&mut editor, &keyed(KeyCode::Z), &UiInput::new(), &mut scene);
+        assert_eq!(scene.spawn_points.len(), 1, "the delete was not undoable");
+    }
+
+    #[test]
+    fn a_second_spawn_point_faces_the_way_the_last_one_did() {
+        // An author laying out a row of starts is nearly always laying out a row that faces
+        // the same way, and turning each one by hand is the kind of work a tool should not ask
+        // for.
+        let mut editor = editor();
+        let mut scene = scene();
+        let (input, ui) = keyed_at(KeyCode::P, centre());
+        update(&mut editor, &input, &ui, &mut scene);
+        update(&mut editor, &keyed(KeyCode::R), &UiInput::new(), &mut scene);
+        let turned = scene.spawn_points[0].yaw;
+
+        update(&mut editor, &input, &ui, &mut scene);
+        assert_eq!(scene.spawn_points.len(), 2);
+        assert!(
+            (scene.spawn_points[1].yaw - turned).abs() < 1e-6,
+            "the second spawn point faced {} rather than {turned}",
+            scene.spawn_points[1].yaw
+        );
+    }
+
+    #[test]
+    fn a_spawn_point_and_a_body_of_water_are_told_apart_by_every_verb() {
+        // The third kind through the tagged selection, and the assertion that adding one did
+        // not let a verb reach across the kinds.
+        let mut editor = editor();
+        let mut scene = scene();
+        let (pour, ui) = keyed_at(KeyCode::V, centre());
+        update(&mut editor, &pour, &ui, &mut scene);
+        let (put, _) = keyed_at(KeyCode::P, centre());
+        update(&mut editor, &put, &ui, &mut scene);
+
+        assert_eq!(editor.selection(), Some(Selected::Spawn(0)));
+        assert!(
+            editor.selected_waters().is_empty(),
+            "putting a spawn point kept the water selected"
+        );
+
+        update(&mut editor, &keyed(KeyCode::X), &UiInput::new(), &mut scene);
+        assert!(scene.spawn_points.is_empty(), "X did not delete the spawn");
+        assert_eq!(scene.water.len(), 1, "X reached the water as well");
     }
 
     #[test]

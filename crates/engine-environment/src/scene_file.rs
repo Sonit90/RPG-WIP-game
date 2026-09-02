@@ -228,6 +228,23 @@ pub struct SceneDocument {
     /// poured water into carries no water key.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub water: Vec<WaterRecord>,
+    /// Where a player can start, if the level says.
+    ///
+    /// Absent rather than empty in a level that does not, for the reason the water list is:
+    /// a file written before spawn points existed reads unchanged, and a level that leans on
+    /// the old `spawns.player` carries no key it does not use.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub spawn_points: Vec<SpawnPointRecord>,
+}
+
+/// One spawn point, as the file says it.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct SpawnPointRecord {
+    /// Where the player stands, `[x, y, z]`, with `y` their feet.
+    pub position: [f32; 3],
+    /// Which way they face, radians about +Y. Absent means along -Z.
+    #[serde(default)]
+    pub yaw: f32,
 }
 
 /// One body of water, as the file says it.
@@ -337,6 +354,14 @@ impl SceneDocument {
                             half_extents: array(shape.half_extents),
                         })
                         .collect(),
+                })
+                .collect(),
+            spawn_points: scene
+                .spawn_points
+                .iter()
+                .map(|spawn| SpawnPointRecord {
+                    position: array(spawn.position),
+                    yaw: spawn.yaw,
                 })
                 .collect(),
             water: scene
@@ -483,6 +508,23 @@ impl SceneDocument {
                 });
             }
             scene.push_water(body);
+        }
+
+        for (index, record) in self.spawn_points.iter().enumerate() {
+            let spawn = crate::spawn::SpawnPoint {
+                position: vector(record.position),
+                yaw: record.yaw,
+            };
+            // Everything that reads one puts a character at it, and a character at a position
+            // that is not a number is a character nothing can find again.
+            if !spawn.is_valid() {
+                return Err(SceneFileError::Invalid {
+                    path: path.to_owned(),
+                    location: format!("spawn_points[{index}]"),
+                    reason: "a spawn point needs a finite position and a finite yaw".to_owned(),
+                });
+            }
+            scene.push_spawn(spawn);
         }
 
         for (index, record) in self.objects.iter().enumerate() {
@@ -790,6 +832,41 @@ mod tests {
     }
 
     #[test]
+    fn spawn_points_survive_the_round_trip_and_an_empty_level_writes_none_of_them() {
+        let mut original = scene();
+        original.push_spawn(crate::spawn::SpawnPoint::new(Vec3::new(2.0, 1.0, -3.0)).with_yaw(0.5));
+        original.push_spawn(crate::spawn::SpawnPoint::new(Vec3::new(-8.0, 0.0, 12.0)));
+
+        let text = serde_json::to_string(&SceneDocument::from_scene(&original)).expect("writable");
+        assert!(text.contains("spawn_points"), "the key is in the file");
+        let restored: SceneDocument = serde_json::from_str(&text).expect("readable");
+        let restored = restored.to_scene("memory").expect("and valid");
+        assert_eq!(restored.spawn_points, original.spawn_points);
+
+        let dry = serde_json::to_string(&SceneDocument::from_scene(&scene())).expect("writable");
+        assert!(!dry.contains("spawn_points"), "an absent list was written anyway");
+    }
+
+    #[test]
+    fn a_spawn_point_that_is_not_a_place_is_refused_and_the_message_names_it() {
+        let mut document = SceneDocument::from_scene(&scene());
+        document.spawn_points = vec![
+            SpawnPointRecord {
+                position: [0.0, 0.0, 0.0],
+                yaw: 0.0,
+            },
+            SpawnPointRecord {
+                position: [0.0, f32::NAN, 0.0],
+                yaw: 0.0,
+            },
+        ];
+        let error = document
+            .to_scene("memory")
+            .expect_err("a spawn point at nowhere is refused");
+        assert!(error.to_string().contains("spawn_points[1]"), "{error}");
+    }
+
+    #[test]
     fn a_water_body_with_no_size_is_refused_and_the_message_names_it() {
         let mut document = SceneDocument::from_scene(&scene());
         document.water = vec![
@@ -879,6 +956,7 @@ mod tests {
             collision_shapes: Vec::new(),
             terrain: None,
             water: Vec::new(),
+            spawn_points: Vec::new(),
             objects: vec![
                 ObjectRecord {
                     asset: "pillar".to_owned(),
@@ -921,6 +999,7 @@ mod tests {
             collision_shapes: Vec::new(),
             terrain: None,
             water: Vec::new(),
+            spawn_points: Vec::new(),
             objects: vec![ObjectRecord {
                 asset: "   ".to_owned(),
                 position: [0.0; 3],
@@ -992,6 +1071,7 @@ mod tests {
             collision_shapes: Vec::new(),
             terrain: None,
             water: Vec::new(),
+            spawn_points: Vec::new(),
             objects: vec![ObjectRecord {
                 asset: "pillar".to_owned(),
                 position: [0.0; 3],

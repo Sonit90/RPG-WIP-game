@@ -306,6 +306,15 @@ pub fn push_editor(
             }
             None => scratch.push_str("nothing selected"),
         },
+        Some(Selected::Spawn(index)) => match scene.spawn_points.get(index) {
+            Some(spawn) => {
+                scratch.push_str("spawn @ ");
+                write_metres(scratch, spawn.position.x);
+                scratch.push(' ');
+                write_metres(scratch, spawn.position.z);
+            }
+            None => scratch.push_str("nothing selected"),
+        },
         None => scratch.push_str("nothing selected"),
     }
     list.text_at(
@@ -336,7 +345,8 @@ pub fn push_editor(
         "R YAW   T SIZE   0 RESET   X DELETE   C COPY",
         "G GRID   SHIFT+G ROTATION STEP   CTRL+A ALL",
         "M MODULE SNAP FOR CAVE PIECES",
-        "V POUR WATER   B SCULPT THE GROUND   Z UNDO",
+        "V POUR WATER   P SPAWN POINT   B SCULPT GROUND",
+        "Z UNDO",
         "TAB NEXT ASSET",
         "F FIND   F2 RESCAN ASSETS",
         "CTRL+S SAVE   F6 BACK TO PLAYING",
@@ -428,6 +438,12 @@ fn push_hierarchy(
             Selected::Water(index) => {
                 write_count(scratch, index);
                 scratch.push_str(" WATER");
+            }
+            Selected::Spawn(index) => {
+                write_count(scratch, index);
+                // The one the runtime actually starts the player on is the first, and an
+                // author with three of them has to be able to see which that is.
+                scratch.push_str(if index == 0 { " SPAWN *" } else { " SPAWN" });
             }
         }
         list.text_at(
@@ -570,6 +586,39 @@ fn push_inspector(
         scratch.clear();
         scratch.push_str("YAW ");
         write_metres(scratch, body.yaw.to_degrees());
+        row(3, scratch, list);
+        return;
+    }
+
+    if let Some(spawn) = editor
+        .selected_spawn()
+        .and_then(|index| scene.spawn_points.get(index))
+    {
+        scratch.clear();
+        scratch.push_str(if editor.selected_spawn() == Some(0) {
+            "SPAWN POINT (THE ONE USED)"
+        } else {
+            "SPAWN POINT"
+        });
+        row(0, scratch, list);
+
+        scratch.clear();
+        scratch.push_str("POS ");
+        write_metres(scratch, spawn.position.x);
+        scratch.push(' ');
+        write_metres(scratch, spawn.position.y);
+        scratch.push(' ');
+        write_metres(scratch, spawn.position.z);
+        row(1, scratch, list);
+
+        scratch.clear();
+        scratch.push_str("FACING ");
+        write_metres(scratch, spawn.yaw.to_degrees());
+        scratch.push_str(" DEG");
+        row(2, scratch, list);
+
+        scratch.clear();
+        scratch.push_str("R TURNS IT   X DELETES IT");
         row(3, scratch, list);
         return;
     }
