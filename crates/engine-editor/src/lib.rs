@@ -14,6 +14,7 @@
 //!   │        │  X                   delete
 //!   │        │  C                   duplicate
 //!   │        │  V                   pour a body of water where the cursor is
+//!   │        │  M                   module snap: the cave grid, on and off
 //!   │        │  CTRL+click          add to the selection; CTRL+A takes everything
 //!   │        │  Z                   undo
 //!   │        │  TAB                 next asset in the browser
@@ -124,6 +125,18 @@ const BRUSH_SIZE_STEP: f32 = 1.25;
 
 /// How much one press of `T` changes an object's size.
 const SCALE_STEP: f32 = 1.1;
+
+/// The grid the modular cave pieces are built on, in metres.
+///
+/// Read from the library that builds them rather than written down again here, so a change to
+/// the module size moves the geometry and the grid an author aligns it on together.
+const MODULE_GRID: f32 = engine_assets::procedural::starter::MODULE;
+
+/// The rotation step module snap uses, in degrees.
+///
+/// A quarter turn, because a modular piece meets its neighbour on a face and there are four
+/// of them. Anything finer produces a join with a gap in it.
+const MODULE_YAW: f32 = 90.0;
 
 /// Half-width and half-depth of the body `V` pours, in metres: an eight-metre square.
 ///
@@ -255,6 +268,18 @@ pub struct Editor {
     brush_strength: f32,
     /// Whether a nudge runs along the object's own axes rather than the world's.
     local_space: bool,
+    /// Whether the grid is the cave module rather than whatever `G` last chose.
+    ///
+    /// Modular pieces meet on a face: two tunnels laid four metres apart on a quarter-turn
+    /// grid join, and two laid 3.7 m apart on a 22.5° grid leave a gap somebody has to see
+    /// from inside the cave to notice. So the pieces bring their own grid with them.
+    module_snap: bool,
+    /// Whether the author has pressed `M` and taken the decision off the editor.
+    ///
+    /// Until they do, module snap follows what is about to be placed: choosing a cave piece
+    /// turns it on and choosing a rock turns it off, which is right nearly always and is the
+    /// kind of automatic behaviour that must stop the moment somebody disagrees with it.
+    module_snap_pinned: bool,
     /// Whether what changed this frame was water rather than the placements.
     ///
     /// Which of the two "something changed" answers the application gets. A selection holds
@@ -301,6 +326,8 @@ impl Editor {
             brush_radius: 6.0,
             brush_strength: 0.5,
             local_space: false,
+            module_snap: false,
+            module_snap_pinned: false,
             water_touched: false,
             undo: Vec::new(),
             save_path: PathBuf::from("assets/scenes/untitled.json"),
@@ -398,7 +425,16 @@ impl Editor {
     /// How far one press of `R` turns an object, in degrees.
     #[must_use]
     pub fn yaw_step(&self) -> f32 {
+        if self.module_snap {
+            return MODULE_YAW;
+        }
         YAW_STEPS[self.yaw_step % YAW_STEPS.len()]
+    }
+
+    /// Whether the grid is the cave module rather than the one `G` chose.
+    #[must_use]
+    pub fn is_module_snap(&self) -> bool {
+        self.module_snap
     }
 
     /// Whether a nudge runs along the object's own axes rather than the world's.
@@ -434,7 +470,39 @@ impl Editor {
     /// The snap step in metres. Zero means no snapping.
     #[must_use]
     pub fn grid(&self) -> f32 {
+        if self.module_snap {
+            return MODULE_GRID;
+        }
         GRID_STEPS[self.grid % GRID_STEPS.len()]
+    }
+
+    /// Whether `name` is one of the modular cave pieces.
+    ///
+    /// By where it lives and what it is called, because that is all the editor knows about an
+    /// asset — it reads a directory, not a library. A piece somebody adds to `caves/`
+    /// tomorrow gets the module grid without a code change, which is the point.
+    #[must_use]
+    pub fn is_module_piece(name: &str) -> bool {
+        let name = name.to_ascii_lowercase();
+        name.contains("/caves/") || name.rsplit('/').next().is_some_and(|leaf| {
+            leaf.starts_with("cave_")
+        })
+    }
+
+    /// Follows the browser's selection with the module grid, until somebody presses `M`.
+    fn follow_module_snap(&mut self) {
+        if self.module_snap_pinned {
+            return;
+        }
+        let wanted = Self::is_module_piece(self.browser.selected_name());
+        if wanted != self.module_snap {
+            self.module_snap = wanted;
+            self.status = if wanted {
+                format!("module snap {MODULE_GRID} m / {MODULE_YAW} deg")
+            } else {
+                "module snap off".to_owned()
+            };
+        }
     }
 
     /// Where `CTRL+S` writes.
@@ -553,6 +621,8 @@ impl Editor {
         // The panels own the pointer over themselves: a click on a browser row chooses an
         // asset and must never also place one in the world behind the panel.
         let over_browser = self.update_browser(input, ui_input, viewport);
+        // What is about to be placed decides the grid, until somebody says otherwise.
+        self.follow_module_snap();
         let over_hierarchy = self.update_hierarchy(input, ui_input, scene, viewport);
 
         // Sculpting takes the world pointer and most of the keyboard; the panels keep theirs.
@@ -955,6 +1025,19 @@ impl Editor {
                     "grid off".to_owned()
                 };
             }
+            return false;
+        }
+        if input.was_key_pressed(KeyCode::M) {
+            // Pressing it takes the decision off the editor for the rest of the session: an
+            // author who has said what they want must not have it changed under them by the
+            // next asset they click on.
+            self.module_snap = !self.module_snap;
+            self.module_snap_pinned = true;
+            self.status = if self.module_snap {
+                format!("module snap {MODULE_GRID} m / {MODULE_YAW} deg")
+            } else {
+                "module snap off".to_owned()
+            };
             return false;
         }
         if input.was_key_pressed(KeyCode::B) {
@@ -1633,6 +1716,37 @@ mod tests {
         let outcome = update(&mut editor, &input, &ui, &mut scene);
         assert_eq!(outcome, EditorOutcome::WaterChanged);
         (editor, scene)
+    }
+
+    #[test]
+    fn choosing_a_cave_piece_snaps_to_the_module_grid_until_the_author_says_otherwise() {
+        // Modular pieces meet on a face. Two tunnels four metres apart on a quarter-turn grid
+        // join; two laid on a 22.5 degree grid leave a gap only visible from inside the cave.
+        assert!(Editor::is_module_piece("generated/environment/caves/cave_tunnel_straight"));
+        assert!(Editor::is_module_piece("cave_room_large"));
+        assert!(!Editor::is_module_piece("generated/environment/rocks/rock_small"));
+
+        let mut editor = editor();
+        assert!(!editor.is_module_snap(), "a rock does not want the cave grid");
+
+        // While it is on, the grid and the rotation step are the module's, whatever `G` last
+        // cycled to: that is the whole of what the mode does.
+        editor.module_snap = true;
+        assert!((editor.grid() - MODULE_GRID).abs() < 1e-6);
+        assert!((editor.yaw_step() - MODULE_YAW).abs() < 1e-6);
+
+        // `M` takes the decision off the editor for good. The browser has a rock selected, so
+        // following it would turn the mode off; after `M` it must not, in either direction.
+        let mut scene = scene();
+        update(&mut editor, &keyed(KeyCode::M), &UiInput::new(), &mut scene);
+        assert!(editor.module_snap_pinned, "M did not pin the choice");
+        let pinned_to = editor.is_module_snap();
+        editor.follow_module_snap();
+        assert_eq!(
+            editor.is_module_snap(),
+            pinned_to,
+            "the browser overrode an author who had already decided"
+        );
     }
 
     #[test]

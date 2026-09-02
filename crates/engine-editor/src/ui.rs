@@ -335,6 +335,7 @@ pub fn push_editor(
         "ARROWS NUDGE   SHIFT+ARROWS UP/DOWN   L LOCAL",
         "R YAW   T SIZE   0 RESET   X DELETE   C COPY",
         "G GRID   SHIFT+G ROTATION STEP   CTRL+A ALL",
+        "M MODULE SNAP FOR CAVE PIECES",
         "V POUR WATER   B SCULPT THE GROUND   Z UNDO",
         "TAB NEXT ASSET",
         "F FIND   F2 RESCAN ASSETS",
@@ -521,7 +522,11 @@ fn push_inspector(
     // The three settings every verb reads, always on screen: an author who cannot see the
     // grid step cannot predict what an arrow key will do.
     scratch.clear();
-    scratch.push_str("GRID ");
+    scratch.push_str(if editor.is_module_snap() {
+        "MODULE "
+    } else {
+        "GRID "
+    });
     if editor.grid() > 0.0 {
         write_metres(scratch, editor.grid());
     } else {

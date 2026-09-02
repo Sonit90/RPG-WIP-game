@@ -103,7 +103,9 @@ impl StarterAsset {
 ///  cliff_overhang     the wall and the slab, with the walk-under space between them
 ///  cave_tunnel_*      floor, two walls and a roof around the cavity
 ///  cave_entrance      the face either side of the opening, and the lintel over it
-///  cave_room_small    the shell of the room, doorways left open
+///  cave_room_*        the shell of the room, doorways left open
+///  cave_junction      floor, roof and the four corners between the doorways
+///  cave_exit          the roofed half, the step down, and the banks either side
 ///  everything else    None: a box around the geometry is right for a rock
 /// ```
 ///
@@ -193,6 +195,9 @@ pub fn starter_collision(name: &str) -> Option<CollisionShape> {
                 Vec3::new(-half_width, cavity_top, -1.0),
                 Vec3::new(half_width, CLIFF_HEIGHT, 0.0),
             ));
+            // And the doorstep, from the same function the mesh draws it with.
+            let (low, high) = entrance_threshold();
+            boxes.push(CollisionBox::between(low, high));
             boxes
         }
         "cave_tunnel_curve" => {
@@ -232,78 +237,26 @@ pub fn starter_collision(name: &str) -> Option<CollisionShape> {
                 ),
             ]
         }
-        "cave_room_small" => {
-            let inner = 6.0_f32;
-            let outer_wall = inner + SHELL;
-            let height = 5.0;
-            let door = TUNNEL_WIDTH * 0.5;
-            let mut boxes = vec![
-                // Floor and roof.
-                CollisionBox::between(
-                    Vec3::new(-outer_wall, 0.0, -outer_wall),
-                    Vec3::new(outer_wall, SHELL, outer_wall),
-                ),
-                CollisionBox::between(
-                    Vec3::new(-outer_wall, SHELL + height, -outer_wall),
-                    Vec3::new(outer_wall, SHELL + height + SHELL, outer_wall),
-                ),
-            ];
-            // Four walls, each in two pieces with a doorway between them, and a lintel over
-            // the doorway. The same shape the mesh is built from, so what looks like a way
-            // through is a way through.
-            for (along_x, side) in [(true, -1.0_f32), (true, 1.0), (false, -1.0), (false, 1.0)] {
-                for end in [-1.0_f32, 1.0] {
-                    let (low, high) = if along_x {
-                        (
-                            Vec3::new(
-                                if end < 0.0 { -outer_wall } else { door },
-                                SHELL,
-                                side * inner,
-                            ),
-                            Vec3::new(
-                                if end < 0.0 { -door } else { outer_wall },
-                                SHELL + height,
-                                side * outer_wall,
-                            ),
-                        )
-                    } else {
-                        (
-                            Vec3::new(
-                                side * inner,
-                                SHELL,
-                                if end < 0.0 { -outer_wall } else { door },
-                            ),
-                            Vec3::new(
-                                side * outer_wall,
-                                SHELL + height,
-                                if end < 0.0 { -door } else { outer_wall },
-                            ),
-                        )
-                    };
-                    boxes.push(CollisionBox::between(low, high));
-                }
-                let (low, high) = if along_x {
-                    (
-                        Vec3::new(-door, SHELL + TUNNEL_HEIGHT, side * inner),
-                        Vec3::new(door, SHELL + height, side * outer_wall),
-                    )
-                } else {
-                    (
-                        Vec3::new(side * inner, SHELL + TUNNEL_HEIGHT, -door),
-                        Vec3::new(side * outer_wall, SHELL + height, door),
-                    )
-                };
-                boxes.push(CollisionBox::between(low, high));
-            }
-            boxes
-        }
+        "cave_room_small" => room_boxes(6.0, 5.0),
+        "cave_room_large" => room_boxes(10.0, 7.0),
+        // The crossing and the mouth are each described once and read twice: the mesh draws
+        // the list, and this blocks it. A piece whose two descriptions were written out
+        // separately is a piece they can drift apart in.
+        "cave_junction" => junction_blocks()
+            .into_iter()
+            .map(|(low, high)| CollisionBox::between(low, high))
+            .collect(),
+        "cave_exit" => cave_exit_blocks()
+            .into_iter()
+            .map(|(low, high)| CollisionBox::between(low, high))
+            .collect(),
         _ => return None,
     };
     Some(CollisionShape::new(boxes))
 }
 
 /// Every starter model, in the order the generator writes them.
-pub const STARTER_LIBRARY: [StarterAsset; 24] = [
+pub const STARTER_LIBRARY: [StarterAsset; 27] = [
     StarterAsset { name: "rock_small", folder: "environment/rocks", build: rock_small },
     StarterAsset { name: "rock_medium", folder: "environment/rocks", build: rock_medium },
     StarterAsset { name: "boulder_large", folder: "environment/rocks", build: boulder_large },
@@ -331,6 +284,9 @@ pub const STARTER_LIBRARY: [StarterAsset; 24] = [
     },
     StarterAsset { name: "cave_tunnel_curve", folder: "environment/caves", build: cave_tunnel_curve },
     StarterAsset { name: "cave_room_small", folder: "environment/caves", build: cave_room_small },
+    StarterAsset { name: "cave_room_large", folder: "environment/caves", build: cave_room_large },
+    StarterAsset { name: "cave_junction", folder: "environment/caves", build: cave_junction },
+    StarterAsset { name: "cave_exit", folder: "environment/caves", build: cave_exit },
     StarterAsset { name: "water_plane", folder: "environment/water", build: water_plane },
 ];
 
@@ -1176,74 +1132,247 @@ fn cave_entrance() -> ModelAsset {
     // A short length of tunnel behind it, so the opening reads as a hole rather than as a
     // painted rectangle.
     tunnel_shell(&mut builder, MODULE);
+    // The doorstep. Without it the mouth is half a metre up, the controller steps 0.45, and
+    // the cave is a thing a player can see into and cannot walk into — see [`THRESHOLD_STEP`].
+    let (min, max) = entrance_threshold();
+    block(&mut builder, min, max);
     single("cave_entrance", builder, &material_named("cliff"))
+}
+
+/// How high the doorstep outside a cave mouth is, in metres.
+///
+/// A tunnel's floor is [`SHELL`] above the ground the piece stands on, and the character
+/// controller walks over `engine_core::tuning::character::MAX_STEP_HEIGHT` — 0.45 m — and no
+/// more. Half a metre is *just* over that, so a mouth without a step is a cave a player can
+/// see into and cannot walk into. Two steps of a quarter of a metre are both under the limit,
+/// and the step is in the mesh as well as in the collision so what is climbed is what is
+/// drawn.
+pub const THRESHOLD_STEP: f32 = SHELL * 0.5;
+
+/// The mesh of a room: a floor, a roof, four walls with a doorway in each, and a lintel.
+///
+/// Shared by the small and the large room so the two cannot drift apart, and written in terms
+/// of [`room_wall`] and [`room_lintel`] so the boxes [`room_boxes`] hands out are the same
+/// rectangles somebody sees. A doorway that is a hole in the mesh and a wall in the collision
+/// is a room a player can look out of and not walk out of.
+fn room_mesh(builder: &mut MeshBuilder, inner: f32, height: f32) {
+    let outer = inner + SHELL;
+    block(
+        builder,
+        Vec3::new(-outer, 0.0, -outer),
+        Vec3::new(outer, SHELL, outer),
+    );
+    block(
+        builder,
+        Vec3::new(-outer, SHELL + height, -outer),
+        Vec3::new(outer, SHELL + height + SHELL, outer),
+    );
+    for (along_x, side) in [(true, -1.0_f32), (true, 1.0), (false, -1.0), (false, 1.0)] {
+        for end in [-1.0_f32, 1.0] {
+            let (min, max) = room_wall(inner, height, along_x, side, end);
+            block(builder, min, max);
+        }
+        let (min, max) = room_lintel(inner, height, along_x, side);
+        block(builder, min, max);
+    }
+}
+
+/// One half of one wall of a room: from a corner to the edge of the doorway.
+fn room_wall(inner: f32, height: f32, along_x: bool, side: f32, end: f32) -> (Vec3, Vec3) {
+    let outer = inner + SHELL;
+    let door = TUNNEL_WIDTH * 0.5;
+    if along_x {
+        (
+            Vec3::new(if end < 0.0 { -outer } else { door }, SHELL, side * inner),
+            Vec3::new(
+                if end < 0.0 { -door } else { outer },
+                SHELL + height,
+                side * outer,
+            ),
+        )
+    } else {
+        (
+            Vec3::new(side * inner, SHELL, if end < 0.0 { -outer } else { door }),
+            Vec3::new(
+                side * outer,
+                SHELL + height,
+                if end < 0.0 { -door } else { outer },
+            ),
+        )
+    }
+}
+
+/// The lintel over one of a room's four doorways.
+fn room_lintel(inner: f32, height: f32, along_x: bool, side: f32) -> (Vec3, Vec3) {
+    let outer = inner + SHELL;
+    let door = TUNNEL_WIDTH * 0.5;
+    if along_x {
+        (
+            Vec3::new(-door, SHELL + TUNNEL_HEIGHT, side * inner),
+            Vec3::new(door, SHELL + height, side * outer),
+        )
+    } else {
+        (
+            Vec3::new(side * inner, SHELL + TUNNEL_HEIGHT, -door),
+            Vec3::new(side * outer, SHELL + height, door),
+        )
+    }
+}
+
+/// The boxes a room blocks: the same floor, roof, walls and lintels the mesh is built from.
+fn room_boxes(inner: f32, height: f32) -> Vec<CollisionBox> {
+    let outer = inner + SHELL;
+    let mut boxes = vec![
+        CollisionBox::between(
+            Vec3::new(-outer, 0.0, -outer),
+            Vec3::new(outer, SHELL, outer),
+        ),
+        CollisionBox::between(
+            Vec3::new(-outer, SHELL + height, -outer),
+            Vec3::new(outer, SHELL + height + SHELL, outer),
+        ),
+    ];
+    for (along_x, side) in [(true, -1.0_f32), (true, 1.0), (false, -1.0), (false, 1.0)] {
+        for end in [-1.0_f32, 1.0] {
+            let (low, high) = room_wall(inner, height, along_x, side, end);
+            boxes.push(CollisionBox::between(low, high));
+        }
+        let (low, high) = room_lintel(inner, height, along_x, side);
+        boxes.push(CollisionBox::between(low, high));
+    }
+    boxes
+}
+
+/// The step outside a cave mouth, drawn by [`cave_entrance`] and blocked beside it.
+///
+/// Outside the piece rather than inside it, so the climb happens on open ground where the
+/// controller has room to take it rather than in the doorway where it is also being pushed
+/// sideways by the jambs.
+fn entrance_threshold() -> (Vec3, Vec3) {
+    let reach = TUNNEL_WIDTH * 0.5 + SHELL;
+    (
+        Vec3::new(-reach, 0.0, 0.0),
+        Vec3::new(reach, THRESHOLD_STEP, THRESHOLD_STEP * 3.0),
+    )
 }
 
 /// A room: 12 m square inside, with 5 m of headroom and a doorway on each side.
 fn cave_room_small() -> ModelAsset {
     let mut builder = MeshBuilder::new();
-    let inner = 6.0_f32;
-    let outer = inner + SHELL;
-    let height = 5.0;
-    let door = TUNNEL_WIDTH * 0.5;
+    room_mesh(&mut builder, 6.0, 5.0);
+    single("cave_room_small", builder, &material_named("cliff"))
+}
 
-    block(
-        &mut builder,
-        Vec3::new(-outer, 0.0, -outer),
-        Vec3::new(outer, SHELL, outer),
-    );
-    block(
-        &mut builder,
-        Vec3::new(-outer, SHELL + height, -outer),
-        Vec3::new(outer, SHELL + height + SHELL, outer),
-    );
-    // Four walls, each in two pieces with a doorway between them, plus a lintel over it.
-    for (along_x, side) in [(true, -1.0_f32), (true, 1.0), (false, -1.0), (false, 1.0)] {
-        for end in [-1.0_f32, 1.0] {
-            let (min, max) = if along_x {
-                (
-                    Vec3::new(
-                        if end < 0.0 { -outer } else { door },
-                        SHELL,
-                        side * inner,
-                    ),
-                    Vec3::new(
-                        if end < 0.0 { -door } else { outer },
-                        SHELL + height,
-                        side * outer,
-                    ),
-                )
-            } else {
-                (
-                    Vec3::new(
-                        side * inner,
-                        SHELL,
-                        if end < 0.0 { -outer } else { door },
-                    ),
-                    Vec3::new(
-                        side * outer,
-                        SHELL + height,
-                        if end < 0.0 { -door } else { outer },
-                    ),
-                )
-            };
-            block(&mut builder, min, max);
-        }
-        // The lintel over the doorway.
-        let (min, max) = if along_x {
-            (
-                Vec3::new(-door, SHELL + TUNNEL_HEIGHT, side * inner),
-                Vec3::new(door, SHELL + height, side * outer),
-            )
-        } else {
-            (
-                Vec3::new(side * inner, SHELL + TUNNEL_HEIGHT, -door),
-                Vec3::new(side * outer, SHELL + height, door),
-            )
-        };
+/// The same room, 20 m square inside and 7 m tall: where a fight happens rather than where a
+/// corridor turns.
+fn cave_room_large() -> ModelAsset {
+    let mut builder = MeshBuilder::new();
+    room_mesh(&mut builder, 10.0, 7.0);
+    single("cave_room_large", builder, &material_named("cliff"))
+}
+
+/// A four-way crossing: tunnels arrive on all four sides of one module.
+///
+/// The piece a cave needs in order to branch. Its four openings line up with
+/// [`cave_tunnel_straight`], so a junction and four tunnels laid on the module grid meet
+/// without an offset.
+fn cave_junction() -> ModelAsset {
+    let mut builder = MeshBuilder::new();
+    for (min, max) in junction_blocks() {
         block(&mut builder, min, max);
     }
-    single("cave_room_small", builder, &material_named("cliff"))
+    single("cave_junction", builder, &material_named("cliff"))
+}
+
+/// The floor, the roof and the four corners of a [`cave_junction`].
+///
+/// One list, read by the mesh and by the collision, because a crossing whose corners are
+/// drawn in one place and blocked in another is a crossing with an invisible wall in it.
+fn junction_blocks() -> Vec<(Vec3, Vec3)> {
+    let half_width = TUNNEL_WIDTH * 0.5;
+    let outer = half_width + SHELL;
+    let cavity_top = SHELL + TUNNEL_HEIGHT;
+    let mut blocks = vec![
+        (
+            Vec3::new(-outer, 0.0, -outer),
+            Vec3::new(outer, SHELL, outer),
+        ),
+        (
+            Vec3::new(-outer, cavity_top, -outer),
+            Vec3::new(outer, cavity_top + SHELL, outer),
+        ),
+    ];
+    // The four corners between the doorways. Everything else is open, which is what makes
+    // this a crossing rather than a room with four holes in it.
+    for (sx, sz) in [(-1.0_f32, -1.0_f32), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)] {
+        blocks.push((
+            Vec3::new(sx * half_width, SHELL, sz * half_width)
+                .min(Vec3::new(sx * outer, cavity_top, sz * outer)),
+            Vec3::new(sx * half_width, SHELL, sz * half_width)
+                .max(Vec3::new(sx * outer, cavity_top, sz * outer)),
+        ));
+    }
+    blocks
+}
+
+/// Where a cave comes back out onto open ground.
+///
+/// Not a mirrored [`cave_entrance`]: that is a hole in a vertical rock face, and this is a
+/// mouth in a hillside. The roof stops half way along and the floor steps down to ground level
+/// by one [`THRESHOLD_STEP`], so a player walks out onto the plain rather than off a lip they
+/// cannot climb back up.
+///
+/// It connects at `z = 0` like every other tunnel piece and opens along -Z.
+fn cave_exit() -> ModelAsset {
+    let mut builder = MeshBuilder::new();
+    for (min, max) in cave_exit_blocks() {
+        block(&mut builder, min, max);
+    }
+    single("cave_exit", builder, &material_named("cliff"))
+}
+
+/// The blocks a [`cave_exit`] is made of, drawn and blocked from one list.
+fn cave_exit_blocks() -> Vec<(Vec3, Vec3)> {
+    let half_width = TUNNEL_WIDTH * 0.5;
+    let outer = half_width + SHELL;
+    let cavity_top = SHELL + TUNNEL_HEIGHT;
+    let mid = -MODULE * 0.5;
+    let mut blocks = vec![
+        // The roofed half: an ordinary length of tunnel.
+        (
+            Vec3::new(-outer, 0.0, mid),
+            Vec3::new(outer, SHELL, 0.0),
+        ),
+        (
+            Vec3::new(-outer, SHELL, mid),
+            Vec3::new(-half_width, cavity_top, 0.0),
+        ),
+        (
+            Vec3::new(half_width, SHELL, mid),
+            Vec3::new(outer, cavity_top, 0.0),
+        ),
+        (
+            Vec3::new(-outer, cavity_top, mid),
+            Vec3::new(outer, cavity_top + SHELL, 0.0),
+        ),
+        // The step down out of the mouth, half the shell high so it is inside the controller's
+        // step limit.
+        (
+            Vec3::new(-outer, 0.0, -MODULE),
+            Vec3::new(outer, THRESHOLD_STEP, mid),
+        ),
+    ];
+    // Banks either side of the open half, with no roof over them: a mouth rather than a
+    // tunnel with the lights on.
+    for side in [-1.0_f32, 1.0] {
+        blocks.push((
+            Vec3::new(side * half_width, THRESHOLD_STEP, -MODULE)
+                .min(Vec3::new(side * outer, cavity_top, mid)),
+            Vec3::new(side * half_width, THRESHOLD_STEP, -MODULE)
+                .max(Vec3::new(side * outer, cavity_top, mid)),
+        ));
+    }
+    blocks
 }
 
 // ---------------------------------------------------------------------------------------
