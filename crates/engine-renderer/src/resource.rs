@@ -32,8 +32,8 @@
 //! has passed. [`DeferredReleaseQueue`] does the second, so releasing a resource costs a
 //! push rather than a pipeline drain.
 
-use std::cell::Cell;
-use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicI32, Ordering};
 
 use windows::Win32::Graphics::Direct3D12::{
     D3D12_CLEAR_VALUE, D3D12_CLEAR_VALUE_0, D3D12_DEPTH_STENCIL_VALUE, D3D12_HEAP_TYPE,
@@ -67,12 +67,95 @@ pub trait TrackedResource {
     fn set_state(&self, state: D3D12_RESOURCE_STATES);
 }
 
+/// A pointer into a permanently mapped upload buffer.
+///
+/// # Why this exists rather than a bare `NonNull<u8>`
+///
+/// A raw pointer is not `Send`, and the renderer is: it is built on the thread that starts
+/// the game and moved to the one that records frames. Every mapped pointer the renderer
+/// holds points into an upload-heap resource the renderer itself owns, so moving the
+/// renderer moves the buffer and the pointer together — which is exactly the property the
+/// automatic `!Send` on a raw pointer exists to make the author state.
+///
+/// # Safety
+///
+/// The invariant this asserts, and which every construction site must uphold:
+///
+/// * the address comes from `ID3D12Resource::Map` on a buffer owned by the same object that
+///   owns this pointer, so it cannot outlive its mapping;
+/// * the mapping is never released while the pointer lives — there is no matching `Unmap`,
+///   the mapping ends with the resource;
+/// * the memory is only ever dereferenced by the thread that owns the renderer, one thread
+///   at a time. This type is deliberately **not** `Sync`: sharing it between threads would
+///   need synchronization this asserts nothing about.
+#[derive(Debug, Clone, Copy)]
+pub struct MappedPtr(std::ptr::NonNull<u8>);
+
+// SAFETY: see the invariant above. The pointee is owned by the same object as the pointer
+// and travels with it, so a move across threads moves the whole mapping.
+unsafe impl Send for MappedPtr {}
+
+impl MappedPtr {
+    /// Wraps a freshly mapped address.
+    ///
+    /// # Safety
+    ///
+    /// `pointer` must satisfy the invariant documented on the type.
+    #[must_use]
+    pub const unsafe fn new(pointer: std::ptr::NonNull<u8>) -> Self {
+        Self(pointer)
+    }
+
+    /// The address, for a write.
+    #[must_use]
+    pub fn as_ptr(self) -> *mut u8 {
+        self.0.as_ptr()
+    }
+
+    /// The address `bytes` further into the same mapping.
+    ///
+    /// # Safety
+    ///
+    /// `bytes` must stay within the mapped length, or the result addresses memory outside
+    /// the allocation the pointer came from.
+    #[must_use]
+    pub unsafe fn add(self, bytes: usize) -> Self {
+        // SAFETY: the caller guarantees the offset stays inside the mapping, which is the
+        // same allocation `self.0` came from.
+        Self(unsafe { std::ptr::NonNull::new_unchecked(self.0.as_ptr().add(bytes)) })
+    }
+}
+
+/// A resource's current state, tracked on the CPU so a barrier can be elided.
+///
+/// An atomic rather than a `Cell` because the renderer is `Send`: it is created on the
+/// thread that starts the game and handed to the one that records frames. Only ever one
+/// thread at a time touches a resource — the barrier bookkeeping is single-threaded by
+/// construction, since the command list is — so `Relaxed` is the whole ordering that is
+/// needed. What the atomic buys is `Sync`, not synchronization.
+#[derive(Debug)]
+struct ResourceState(AtomicI32);
+
+impl ResourceState {
+    fn new(state: D3D12_RESOURCE_STATES) -> Self {
+        Self(AtomicI32::new(state.0))
+    }
+
+    fn get(&self) -> D3D12_RESOURCE_STATES {
+        D3D12_RESOURCE_STATES(self.0.load(Ordering::Relaxed))
+    }
+
+    fn set(&self, state: D3D12_RESOURCE_STATES) {
+        self.0.store(state.0, Ordering::Relaxed);
+    }
+}
+
 /// A GPU buffer: vertices, indices, constants or instance data.
 pub struct GpuBuffer {
     resource: ID3D12Resource,
     size: usize,
     heap_type: D3D12_HEAP_TYPE,
-    state: Cell<D3D12_RESOURCE_STATES>,
+    state: ResourceState,
     gpu_address: u64,
 }
 
@@ -138,7 +221,7 @@ impl GpuBuffer {
             resource,
             size,
             heap_type,
-            state: Cell::new(initial_state),
+            state: ResourceState::new(initial_state),
             gpu_address,
         })
     }
@@ -172,7 +255,7 @@ impl GpuBuffer {
     ///
     /// Returns [`RendererError::InvalidConfig`] if this is not an upload buffer, or
     /// [`RendererError::Api`] if mapping fails.
-    pub fn map_persistent(&self) -> Result<std::ptr::NonNull<u8>, RendererError> {
+    pub fn map_persistent(&self) -> Result<MappedPtr, RendererError> {
         if !self.is_upload() {
             return Err(RendererError::InvalidConfig {
                 reason: "only an upload-heap buffer can be mapped".to_owned(),
@@ -188,9 +271,15 @@ impl GpuBuffer {
         unsafe { self.resource.Map(0, Some(&read_range), Some(&mut mapped)) }
             .map_err(|error| RendererError::api("ID3D12Resource::Map", error))?;
 
-        std::ptr::NonNull::new(mapped.cast::<u8>()).ok_or_else(|| RendererError::InvalidConfig {
-            reason: "mapping an upload buffer produced a null pointer".to_owned(),
-        })
+        let pointer = std::ptr::NonNull::new(mapped.cast::<u8>()).ok_or_else(|| {
+            RendererError::InvalidConfig {
+                reason: "mapping an upload buffer produced a null pointer".to_owned(),
+            }
+        })?;
+        // SAFETY: the address was just returned by `Map` on `self.resource`, which this
+        // buffer owns and never unmaps — the mapping ends with the resource. That is the
+        // invariant `MappedPtr` documents.
+        Ok(unsafe { MappedPtr::new(pointer) })
     }
 
     /// Copies `data` into an upload-heap buffer.
@@ -263,7 +352,7 @@ impl TrackedResource for GpuBuffer {
 /// releases nothing, and the last one out frees the whole resource.
 #[derive(Clone)]
 pub struct BufferSlice {
-    buffer: Rc<GpuBuffer>,
+    buffer: Arc<GpuBuffer>,
     offset: usize,
     size: usize,
 }
@@ -271,11 +360,12 @@ pub struct BufferSlice {
 impl BufferSlice {
     /// The whole of a buffer nothing else shares.
     ///
-    /// `Rc` and not `Arc` deliberately: a D3D12 resource handle is neither `Send` nor `Sync`,
-    /// every resource in this renderer belongs to the thread that owns the device, and an
-    /// atomic count would pay for sharing that cannot happen.
+    /// `Arc` and not `Rc`: the renderer is moved to the thread that records frames, so
+    /// everything reachable from it has to be `Send`. The COM handles themselves already are
+    /// — asserted in `device.rs` — and the count is touched when content is loaded and
+    /// released, not per frame, so the atomic costs nothing a frame can measure.
     #[must_use]
-    pub fn whole(buffer: Rc<GpuBuffer>) -> Self {
+    pub fn whole(buffer: Arc<GpuBuffer>) -> Self {
         let size = buffer.size();
         Self {
             buffer,
@@ -317,7 +407,7 @@ const ARENA_CHUNK_BYTES: usize = 8 * 1024 * 1024;
 
 /// One chunk and how much of it is spoken for.
 struct ArenaChunk {
-    buffer: Rc<GpuBuffer>,
+    buffer: Arc<GpuBuffer>,
     used: usize,
 }
 
@@ -364,7 +454,7 @@ impl BufferArena {
             if offset + size <= chunk.buffer.size() {
                 chunk.used = offset + size;
                 return Ok(BufferSlice {
-                    buffer: Rc::clone(&chunk.buffer),
+                    buffer: Arc::clone(&chunk.buffer),
                     offset,
                     size,
                 });
@@ -372,14 +462,14 @@ impl BufferArena {
         }
 
         let bytes = ARENA_CHUNK_BYTES.max(size.next_multiple_of(alignment));
-        let buffer = Rc::new(GpuBuffer::new(
+        let buffer = Arc::new(GpuBuffer::new(
             device,
             bytes,
             D3D12_HEAP_TYPE_DEFAULT,
             self.state,
         )?);
         self.chunks.push(ArenaChunk {
-            buffer: Rc::clone(&buffer),
+            buffer: Arc::clone(&buffer),
             used: size,
         });
         Ok(BufferSlice {
@@ -424,7 +514,7 @@ impl BufferSource<'_> {
         alignment: usize,
     ) -> Result<BufferSlice, RendererError> {
         match self {
-            Self::Dedicated => Ok(BufferSlice::whole(Rc::new(GpuBuffer::new(
+            Self::Dedicated => Ok(BufferSlice::whole(Arc::new(GpuBuffer::new(
                 device,
                 size,
                 D3D12_HEAP_TYPE_DEFAULT,
@@ -448,7 +538,7 @@ pub struct GpuTexture {
     /// of those points would be two places that could disagree with the third.
     mip_levels: u32,
     format: DXGI_FORMAT,
-    state: Cell<D3D12_RESOURCE_STATES>,
+    state: ResourceState,
 }
 
 impl GpuTexture {
@@ -470,7 +560,7 @@ impl GpuTexture {
             height,
             mip_levels: 1,
             format,
-            state: Cell::new(state),
+            state: ResourceState::new(state),
         }
     }
 
@@ -505,7 +595,7 @@ impl GpuTexture {
             height,
             mip_levels: 1,
             format,
-            state: Cell::new(D3D12_RESOURCE_STATE_RENDER_TARGET),
+            state: ResourceState::new(D3D12_RESOURCE_STATE_RENDER_TARGET),
         })
     }
 
@@ -549,7 +639,7 @@ impl GpuTexture {
             height,
             mip_levels: 1,
             format,
-            state: Cell::new(D3D12_RESOURCE_STATE_DEPTH_WRITE),
+            state: ResourceState::new(D3D12_RESOURCE_STATE_DEPTH_WRITE),
         })
     }
 
@@ -601,7 +691,7 @@ impl GpuTexture {
             height,
             mip_levels: 1,
             format: DXGI_FORMAT_R32_TYPELESS,
-            state: Cell::new(D3D12_RESOURCE_STATE_DEPTH_WRITE),
+            state: ResourceState::new(D3D12_RESOURCE_STATE_DEPTH_WRITE),
         })
     }
 
@@ -656,7 +746,7 @@ impl GpuTexture {
             height,
             mip_levels,
             format,
-            state: Cell::new(initial_state),
+            state: ResourceState::new(initial_state),
         })
     }
 

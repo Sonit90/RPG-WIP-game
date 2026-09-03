@@ -453,7 +453,7 @@ impl OverlayBuffers {
 /// ever written, never read back, so no cache invalidation is required.
 struct MappedVertexBuffer {
     resource: ID3D12Resource,
-    mapped: *mut u8,
+    mapped: crate::resource::MappedPtr,
     capacity_vertices: usize,
     gpu_address: u64,
 }
@@ -515,7 +515,19 @@ impl MappedVertexBuffer {
 
         Ok(Self {
             resource,
-            mapped: mapped.cast::<u8>(),
+            // SAFETY: the address was just returned by `Map` on `resource`, which this
+            // struct owns and unmaps only in its own `Drop`. That is the invariant
+            // `MappedPtr` documents.
+            mapped: unsafe {
+                crate::resource::MappedPtr::new(
+                    std::ptr::NonNull::new(mapped.cast::<u8>()).ok_or_else(|| {
+                        RendererError::InvalidConfig {
+                            reason: "mapping the overlay vertex buffer produced a null pointer"
+                                .to_owned(),
+                        }
+                    })?,
+                )
+            },
             capacity_vertices,
             gpu_address,
         })
@@ -534,7 +546,11 @@ impl MappedVertexBuffer {
         // distinct allocations, and the GPU is not reading this slot's buffer — the
         // renderer waited on that slot's fence before recording this frame.
         unsafe {
-            std::ptr::copy_nonoverlapping(vertices.as_ptr().cast::<u8>(), self.mapped, bytes);
+            std::ptr::copy_nonoverlapping(
+                vertices.as_ptr().cast::<u8>(),
+                self.mapped.as_ptr(),
+                bytes,
+            );
         }
 
         Some(D3D12_VERTEX_BUFFER_VIEW {

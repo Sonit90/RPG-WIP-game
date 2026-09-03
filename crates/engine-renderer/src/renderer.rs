@@ -3654,3 +3654,18 @@ impl Drop for Renderer {
         );
     }
 }
+
+/// The renderer must be movable to the thread that records frames.
+///
+/// A compile check rather than a comment, and the reason three things in this crate are
+/// what they are: `BufferSlice` holds an `Arc` and not an `Rc`, a resource's tracked state
+/// is an atomic and not a `Cell`, and a mapped upload pointer is a [`crate::resource::MappedPtr`]
+/// and not a bare `NonNull`. Any of the three reverting would break this line rather than
+/// being discovered when the render thread refuses to compile.
+///
+/// **`Send`, deliberately not `Sync`.** One thread owns the renderer at a time. Sharing it
+/// would need synchronization nothing here provides.
+const _: () = {
+    const fn assert_send<T: Send>() {}
+    assert_send::<Renderer>();
+};

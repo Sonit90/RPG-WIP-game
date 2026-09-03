@@ -66,7 +66,7 @@ pub const DEFAULT_ALIGNMENT: usize = 16;
 #[derive(Debug, Clone, Copy)]
 pub struct UploadAllocation {
     /// Where the CPU writes.
-    pointer: std::ptr::NonNull<u8>,
+    pointer: crate::resource::MappedPtr,
     /// Where the GPU reads.
     gpu_address: u64,
     /// Byte offset within the slot's buffer, for `CopyBufferRegion`.
@@ -148,7 +148,7 @@ impl UploadStats {
 struct UploadSlot {
     /// Kept alive because `pointer` maps it and `gpu_base` addresses it.
     buffer: GpuBuffer,
-    pointer: std::ptr::NonNull<u8>,
+    pointer: crate::resource::MappedPtr,
     gpu_base: u64,
     cursor: usize,
     capacity: usize,
@@ -187,7 +187,7 @@ impl UploadSlot {
 
         // SAFETY: `start` is below `capacity`, which is the mapped length, so the offset
         // stays inside the allocation the pointer came from.
-        let pointer = unsafe { std::ptr::NonNull::new_unchecked(self.pointer.as_ptr().add(start)) };
+        let pointer = unsafe { self.pointer.add(start) };
         Some(UploadAllocation {
             pointer,
             gpu_address: self.gpu_base + start as u64,
@@ -366,7 +366,7 @@ struct StagingSpan {
 /// One permanently mapped upload buffer the queued copies are staged through.
 struct StagingChunk {
     buffer: GpuBuffer,
-    base: std::ptr::NonNull<u8>,
+    base: crate::resource::MappedPtr,
     used: usize,
 }
 
