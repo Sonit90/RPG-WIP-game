@@ -58,6 +58,13 @@ pub struct ShadowStats {
     pub lod_counts: [u32; 4],
     /// Milliseconds the CPU spent culling and recording the shadow passes.
     pub cpu_ms: f64,
+    /// Milliseconds of `cpu_ms` that were the caster collection and grouping, before any
+    /// command was recorded.
+    ///
+    /// Split out because the two halves move for different reasons and are fixed by
+    /// different work: preparation is a pure pass over the world, once per view, and
+    /// recording is driver calls. A single `cpu_ms` cannot say which one grew.
+    pub prepare_ms: f64,
     /// Milliseconds the GPU spent on them, or `None` before the first slot has completed a
     /// full lap. Lags by the same number of frames the frame timer does.
     pub gpu_ms: Option<f64>,

@@ -1114,3 +1114,128 @@ Three measurement controls were added to the game binary and are worth knowing a
 `--warmup <n>`, `--shadow-tweak <k=v,…>` and `--lights <n> --shadow-lights <n>`. The driver is
 `tools/bench/shadow_matrix.ps1`, which interleaves its repetitions because the machine drifts
 enough over a few minutes to move a 4K number by 20 %.
+
+# Phase 8 — where the frame actually goes, and the passes that were parallelized
+
+## The question that started it
+
+GPU utilization sat at 67 % with the CPU at 4 % of 24 logical processors — one core saturated
+and the rest idle, which is what a single-threaded frame loop looks like from Task Manager.
+
+## Milestone 25 — attribution
+
+Two thirds of the frame had never been attributed to anything. `mygame` now reports the stage
+split every report interval, and the shadow stage reports its preparation separately from its
+recording (`ShadowStats::prepare_ms`). Recording is derived as
+`render − cull − group − shadow prep`; wrapping it in a second `Instant` pair would time the
+same span twice.
+
+`--scene combat`, 1920×1080 windowed, release, vsync off, 4000 frames after 500 warm-up:
+
+| Stage | Mean |
+| --- | ---: |
+| events | 0.001 ms |
+| update | 0.017 ms |
+| render | 0.117 ms |
+| — of which cull | 0.002 ms |
+| — of which group | 0.004 ms |
+| — of which shadow prep | 0.009 ms |
+| — of which recording | 0.103 ms |
+| present | 0.163 ms |
+| **CPU frame** | **0.403 ms** |
+| GPU frame | 0.317 ms |
+
+**`Present` is the largest single item in the frame and recording is the second.** Everything
+the gameplay pipeline does — simulation, extraction, VFX, audio, culling, UI — is 0.037 ms
+together, or 9 % of the frame. That is the number every parallelization decision below is
+measured against.
+
+It also settles what GPU utilization can be: it is `gpu_ms / frame_ms`, and the GPU cannot
+saturate until GPU time is the longest stage. With `Present` alone imposing 0.5 ms fullscreen
+(Milestone 17), no amount of CPU threading saturates a 0.27 ms GPU frame at this workload.
+Saturating it needs more GPU work, not less CPU work.
+
+## Milestone 25 — the job system reaches the game
+
+`engine-app` had no `JobSystem` at all: `Culler::cull_parallel` and `Renderer::render_world_parallel`
+had been built and tested in Milestone 17 and only the showcase ever called them. The game now
+owns a pool of `recommended_worker_count() - 1` workers and takes the parallel path, with
+`--serial-jobs` forcing the serial one for A/B and determinism.
+
+Interleaved, 3 runs each, `--hidden`, 3000 frames after 500 warm-up:
+
+| Path | CPU p50 |
+| --- | ---: |
+| parallel | 0.304, 0.305, 0.312 ms |
+| `--serial-jobs` | 0.305, 0.303, 0.304 ms |
+
+**No change, which is the pass criterion.** At ~1000 objects `cull_parallel` falls through to
+serial at its own chunk threshold, exactly as designed. This is infrastructure for a scene ten
+times larger, not an optimization of this one.
+
+## Milestone 25 — passes made parallel, and the thresholds that keep them serial
+
+`docs/threading.md` measures the job break-even between 0.1 µs and 12 µs of work per job, so a
+fan-out needs ~12 µs *per chunk* — roughly 50 µs of total pass before a 4-way split wins. Each
+pass below therefore carries a size threshold and stays on the calling thread beneath it.
+
+| Pass | Measured today | Threshold | Runs parallel today? |
+| --- | ---: | --- | --- |
+| UI batching (`UiBatcher::build_with`) | 13–42 µs | 2048 work units (~95 µs) | no |
+| Particle integration (`ParticlePool::update_with`) | part of 17 µs | 8192 particles | no |
+| Particle write (`ParticlePool::write_with`) | part of 17 µs | 8192 particles | no |
+| Frustum culling (Milestone 17) | 2–4 µs | 4096 slots per chunk | no |
+
+Every one is written so the serial and parallel paths share the same body — `build_range`,
+`integrate_chunk`, `write_range`, `cull_range` — and each has a determinism test asserting
+byte-identical output at 0, 1, 2, 4, 8 and 16 workers
+(`crates/engine-renderer/tests/ui_batch_parallel.rs`,
+`crates/engine-vfx/tests/particle_parallel.rs`).
+
+Two things the split cost and had to be paid back:
+
+* The UI merge copied the whole vertex buffer even for one chunk, which put ~4 µs on the serial
+  path. A single chunk now swaps its buffer out instead of copying it: 13.9 / 24.0 / 26.4 /
+  34.7 µs against the 13.7 / 23.4 / 26.7 / 35.4 µs baseline, 3 runs.
+* Splitting particle integration from compaction means two passes over the arrays where there
+  was one. Measured neutral at combat sizes, 3 interleaved runs.
+
+**Not built**: parallel extraction and parallel AI perception. Both are real splits and both
+are provably zero at any scene this game can currently produce — extraction is 8 µs in the game
+and 57 µs at 1,000 dummies, AI perception is sub-microsecond inside a 7 µs tick — and both
+would restructure code whose correctness rests on ordering (`RenderWorld`'s free list, the AI
+think/execute sequence). The triggers to revisit: 5,000 extracted entities, and 500 enemies —
+where a spatial grid is the better answer anyway, because it changes the complexity class.
+
+## Milestone 25 — a 4× VFX regression, found by measuring
+
+`cd3fe69` laid every ground footprint on the terrain as a band of quad pieces instead of one
+flat plate. It cost far more than intended, and nothing had measured it.
+
+`vfx_bench`, interleaved against a build of `cd3fe69~1`, 3 runs each, median:
+
+| Scenario | vfx, before | vfx, after the commit | cull | total frame |
+| --- | ---: | ---: | ---: | ---: |
+| ultimate, 50 | 16.2 µs | 78.7 µs | 1.5 → 10.1 µs | 22.8 → 96 µs |
+| worst case, 100 | 17.2 µs | 79.0 µs | 2.7 → 11.1 µs | 29.3 → 100 µs |
+
+Instrumenting `sync_entities` found 52 µs of the 77: **`build_band` 41.5 µs, placement 9.9 µs,
+for 5.8 footprints cut into 565 pieces every frame** — about 73 ns of `atan2`, `tan` and
+quaternion construction per piece. Every static burning zone was recomputing an identical band
+each frame.
+
+**The fix is a cache, not a thread.** A band is keyed on `(shape, anchor, yaw, band)` and
+rebuilt only when one of them changes; the ground is the one input the key cannot see, so the
+level says when it has moved (`VfxDirector::invalidate_ground`, called from `rebuild_terrain`).
+
+| Scenario | vfx before fix | vfx after fix | total frame |
+| --- | ---: | ---: | ---: |
+| ultimate, 50 | 78.7 µs | **46.1 µs** | 96 → 61.8 µs |
+| worst case, 100 | 79.0 µs | **46.9 µs** | 100 → 67.6 µs |
+
+Median of 3 interleaved runs. The residual against the parent build is inherent to the design
+rather than to the cache: ~565 render entities per frame instead of one plate, which is 10 µs
+of placement and 8 µs of extra culling, plus the rebuilds of footprints that genuinely move.
+The next lever, if it is ever wanted, is `place`'s two `atan2`s and `Quat::from_yaw_pitch_roll`
+per piece — worth a few microseconds and not worth the risk of getting a rotation subtly wrong
+without a test that would catch it.

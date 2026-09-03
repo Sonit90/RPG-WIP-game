@@ -84,3 +84,30 @@ The break-even is somewhere between 0.1 µs and 12 µs of work per job on this m
   address contention that only appears with many small jobs, which is the case the guidance
   above avoids anyway.
 * Re-run `cpu_bench` before and after any change to this system, and update this table.
+
+## What uses the job system
+
+| Caller | Threshold below which it stays serial | Determinism test |
+| --- | --- | --- |
+| `Culler::cull_parallel` | 4096 slots per chunk | `engine-renderer/tests/render_list_pipeline.rs` |
+| `UiBatcher::build_with` | 2048 work units, ~95 µs | `engine-renderer/tests/ui_batch_parallel.rs` |
+| `ParticlePool::update_with` | 8192 particles | `engine-vfx/tests/particle_parallel.rs` |
+| `ParticlePool::write_with` | 8192 particles | `engine-vfx/tests/particle_parallel.rs` |
+
+`engine-app` owns one pool of `recommended_worker_count() - 1` workers — one core is the game
+thread's, and it runs a chunk itself rather than idling. `--serial-jobs` starts the game with
+no pool at all, which is the A/B control and the determinism configuration.
+
+**None of these run parallel in the game today.** Every one of them measures under the
+break-even above at the scenes the game currently produces, and the thresholds are what keep
+them serial rather than paying submission overhead to save nothing. They engage on their own
+when a scene grows past them. See `docs/performance.md`, Milestone 25, for the measurements
+each threshold was derived from.
+
+Two rules the split has to obey, both learned from the passes above:
+
+* **The serial path calls the same body.** `cull_range`, `build_range`, `integrate_chunk`,
+  `write_range` — one implementation, reached two ways. Two implementations drift.
+* **The merge must not cost the serial path anything.** The UI batcher's one-chunk merge swaps
+  its buffer rather than copying it; before that it put ~4 µs on every serial frame, which is
+  the serial path paying for a parallel path it never takes.

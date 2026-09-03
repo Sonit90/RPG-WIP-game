@@ -498,6 +498,7 @@ impl ShadowRenderer {
         scene: &ShadowScene<'_>,
     ) -> Result<(), RendererError> {
         self.stats.cpu_ms = self.prepare_ms;
+        self.stats.prepare_ms = self.prepare_ms;
         if !self.settings.enabled {
             return Ok(());
         }

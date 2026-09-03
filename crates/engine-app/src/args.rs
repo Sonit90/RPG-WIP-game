@@ -236,6 +236,10 @@ options:
                          creation and the first upload all land in the opening frames,
                          and a p95 that includes them describes the load, not the frame.
   --report <seconds>     frame-time report interval (default 1.0, 0 disables)
+  --serial-jobs          run every frame pass on the main thread instead of across the
+                         job system's workers. The parallel passes are on by default and
+                         each falls back to serial below its own size threshold; this
+                         forces serial at any size, for A/B measurement and determinism
   --overlay              start with the debug overlay visible (F5 toggles it at any
                          time; hidden by default because it costs frame time)
   --dummies <count>      training dummies in the group, on top of the single dummy
@@ -599,6 +603,13 @@ pub struct Args {
     /// way, so what the flag removes is the device and the mix, and the difference between
     /// two runs is what audio actually costs.
     pub audio: bool,
+    /// Whether the frame's pure-CPU passes may run across the job system's workers.
+    ///
+    /// On by default. Every parallel pass carries its own size threshold and falls back to
+    /// the serial path below it, so this flag is a measurement control rather than a
+    /// quality one: `--serial-jobs` forces the serial path at any size, which is what an
+    /// A/B run and a determinism check need. Mirrors `--serial-cull` in the showcase.
+    pub parallel_jobs: bool,
     /// Whether to open a borderless fullscreen window.
     pub fullscreen: bool,
     /// Whether the renderer's validation layer was explicitly requested.
@@ -669,6 +680,7 @@ impl Default for Args {
             vfx_stress: 0.0,
             enemies: 0,
             audio: true,
+            parallel_jobs: true,
             scene_file: None,
             layout: None,
             editor: false,
@@ -827,6 +839,7 @@ where
                 args.layout = Some(raw.as_ref().to_owned());
             }
             "--no-audio" => args.audio = false,
+            "--serial-jobs" => args.parallel_jobs = false,
             "--no-ui" => args.ui = false,
             "-h" | "--help" => args.help = true,
             other => return Err(ArgsError::Unknown(other.to_owned())),

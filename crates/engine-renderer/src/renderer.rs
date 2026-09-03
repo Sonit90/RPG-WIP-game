@@ -2705,10 +2705,23 @@ impl Renderer {
     /// Batching happens here rather than during recording so its cost is attributable and
     /// so `render` stays a function of data that is already prepared.
     pub fn set_ui(&mut self, list: &engine_render_data::UiDrawList) {
+        self.set_ui_with(list, None);
+    }
+
+    /// [`Renderer::set_ui`] with the expansion optionally spread across `jobs`' workers.
+    ///
+    /// The vertex buffer is identical either way; only the time changes. Below the
+    /// batcher's own size threshold the expansion stays on the calling thread whatever is
+    /// passed here.
+    pub fn set_ui_with(
+        &mut self,
+        list: &engine_render_data::UiDrawList,
+        jobs: Option<&engine_core::jobs::JobSystem>,
+    ) {
         let started = std::time::Instant::now();
         self.ui.list.clear();
         self.ui.list.append(list);
-        self.ui.batcher.build(&self.ui.list);
+        self.ui.batcher.build_with(&self.ui.list, jobs);
         self.ui.stats = self.ui.batcher.stats();
         self.ui.build_ms = started.elapsed().as_secs_f64() * 1e3;
     }
@@ -2723,8 +2736,13 @@ impl Renderer {
 
     /// Batches whatever is currently in the UI list.
     pub fn batch_ui(&mut self) {
+        self.batch_ui_with(None);
+    }
+
+    /// [`Renderer::batch_ui`] with the expansion optionally spread across `jobs`' workers.
+    pub fn batch_ui_with(&mut self, jobs: Option<&engine_core::jobs::JobSystem>) {
         let started = std::time::Instant::now();
-        self.ui.batcher.build(&self.ui.list);
+        self.ui.batcher.build_with(&self.ui.list, jobs);
         self.ui.stats = self.ui.batcher.stats();
         self.ui.build_ms = started.elapsed().as_secs_f64() * 1e3;
     }

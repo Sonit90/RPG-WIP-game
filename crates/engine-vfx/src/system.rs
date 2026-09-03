@@ -456,7 +456,21 @@ impl VfxSystem {
     /// `anchor_of` answers where an attached effect's owner is now; `None` means the owner
     /// has gone, and the effect ends rather than hanging in the air where the target used to
     /// stand.
-    pub fn update(&mut self, seconds: f32, mut anchor_of: impl FnMut(u32) -> Option<Vec3>) {
+    pub fn update(&mut self, seconds: f32, anchor_of: impl FnMut(u32) -> Option<Vec3>) {
+        self.update_with(seconds, anchor_of, None);
+    }
+
+    /// [`VfxSystem::update`] with the particle integration optionally spread across `jobs`.
+    ///
+    /// Only the per-particle step is parallel: the instance loop above it retires effects
+    /// and touches shared state, and it is a few dozen instances against thousands of
+    /// particles.
+    pub fn update_with(
+        &mut self,
+        seconds: f32,
+        mut anchor_of: impl FnMut(u32) -> Option<Vec3>,
+        jobs: Option<&engine_core::jobs::JobSystem>,
+    ) {
         self.meshes.clear();
         if seconds < 0.0 {
             return;
@@ -500,7 +514,7 @@ impl VfxSystem {
         }
 
         self.particles
-            .update(seconds, &self.motion, &self.generations);
+            .update_with(seconds, &self.motion, &self.generations, jobs);
         for motion in &mut self.motion {
             *motion = Vec3::ZERO;
         }
@@ -509,6 +523,18 @@ impl VfxSystem {
     /// Appends every live particle to `list`.
     pub fn write_particles(&self, list: &mut ParticleDrawList) {
         self.particles.write(list);
+    }
+
+    /// [`VfxSystem::write_particles`], optionally interpolated across `jobs`' workers.
+    ///
+    /// `scratch` is the caller's and is kept across frames; see [`ParticlePool::write_with`].
+    pub fn write_particles_with(
+        &self,
+        list: &mut ParticleDrawList,
+        jobs: Option<&engine_core::jobs::JobSystem>,
+        scratch: &mut Vec<ParticleDrawList>,
+    ) {
+        self.particles.write_with(list, jobs, scratch);
     }
 
     /// Frees a slot, making every handle to it stale.

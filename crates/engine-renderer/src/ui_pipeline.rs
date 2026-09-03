@@ -48,6 +48,7 @@ use windows::Win32::Graphics::Dxgi::Common::{
 };
 use windows::core::s;
 
+use engine_core::jobs::JobSystem;
 use engine_render_data::ui::{TextAlign, UiCommand, UiDrawList, UiRect};
 
 use crate::error::RendererError;
@@ -183,6 +184,20 @@ pub struct UiBatcher {
     vertices: Vec<UiVertex>,
     max_quads: usize,
     stats: UiBatchStats,
+    /// One output slot per worker, kept across frames so a parallel build allocates
+    /// nothing once the peak has been seen — the same reason `vertices` is kept.
+    chunks: Vec<UiChunk>,
+}
+
+/// One worker's share of a build: the vertices it produced and what it produced them from.
+///
+/// Separate slots rather than one shared buffer because that is what makes the pass
+/// parallel at all; they are concatenated in command order afterwards, so the merged buffer
+/// is the one the serial path would have written.
+#[derive(Debug, Default)]
+struct UiChunk {
+    vertices: Vec<UiVertex>,
+    stats: UiBatchStats,
 }
 
 impl UiBatcher {
@@ -193,6 +208,7 @@ impl UiBatcher {
             vertices: Vec::with_capacity(max_quads * VERTICES_PER_QUAD),
             max_quads,
             stats: UiBatchStats::default(),
+            chunks: Vec::new(),
         }
     }
 
@@ -220,249 +236,436 @@ impl UiBatcher {
     /// [`UiBatchStats::dropped`] rather than growing the buffer, so a runaway UI degrades
     /// visibly instead of allocating without bound in the frame path.
     pub fn build(&mut self, list: &UiDrawList) -> &[UiVertex] {
-        self.vertices.clear();
-        let mut stats = UiBatchStats {
-            commands: list.len(),
-            ..UiBatchStats::default()
-        };
+        self.build_with(list, None)
+    }
 
-        for command in list.commands() {
-            match *command {
-                UiCommand::Rect { rect, color } => {
-                    self.push_solid(rect, color, &mut stats);
+    /// [`UiBatcher::build`], optionally expanded across `jobs`' workers.
+    ///
+    /// `None` expands on the calling thread. `Some` splits the command list into contiguous
+    /// runs, expands each into its own buffer and concatenates them **in command order**, so
+    /// the vertex buffer is byte-identical to the serial one — paint order is what a user
+    /// interface is, and a parallel build that reordered it would be a rendering change
+    /// dressed as an optimization.
+    ///
+    /// Stays serial below [`MIN_TOTAL_UNITS`] of work, or when the split would give a worker
+    /// less than [`MIN_CHUNK_UNITS`].
+    pub fn build_with(&mut self, list: &UiDrawList, jobs: Option<&JobSystem>) -> &[UiVertex] {
+        let chunk_count = jobs.map_or(1, |jobs| {
+            chunk_count_for(work_units(list), jobs.worker_count())
+        });
+        // Bound together: a chunk count above one is only ever produced from a job system,
+        // and taking both out of the same `if let` is what says so without an `expect`.
+        if let Some(jobs) = jobs.filter(|_| chunk_count > 1) {
+            let commands = list.commands();
+            let chunk_size = commands.len().div_ceil(chunk_count);
+            if self.chunks.len() < chunk_count {
+                self.chunks.resize_with(chunk_count, UiChunk::default);
+            }
+            let max_quads = self.max_quads;
+            let active = &mut self.chunks[..chunk_count];
+            let result = jobs.map_chunks(active, |index, out| {
+                let start = index * chunk_size;
+                let end = (start + chunk_size).min(commands.len());
+                build_range(list, &commands[start..end], max_quads, out);
+            });
+            match result {
+                Ok(()) => {
+                    self.merge(chunk_count);
+                    return &self.vertices;
                 }
-                UiCommand::RadialFill {
+                // A half-expanded interface would draw half a HUD, so the frame is expanded
+                // again serially rather than submitted as it stands.
+                Err(error) => {
+                    log::error!("parallel UI build failed, falling back to serial: {error}");
+                }
+            }
+        }
+
+        {
+            // One chunk is the serial path, and it is the *same* path: the whole list goes
+            // through `build_range` and then through the same merge, so "serial" and
+            // "parallel with one worker" cannot produce different pixels.
+            if self.chunks.is_empty() {
+                self.chunks.push(UiChunk::default());
+            }
+            let mut chunk = std::mem::take(&mut self.chunks[0]);
+            build_range(list, list.commands(), self.max_quads, &mut chunk);
+            self.chunks[0] = chunk;
+            self.merge(1);
+        }
+        &self.vertices
+    }
+
+    /// Concatenates the first `chunk_count` chunks in command order, enforcing the budget.
+    ///
+    /// The budget is applied here rather than per chunk because "the frame's first
+    /// `max_quads` quads survive" is a statement about paint order, and only the merge knows
+    /// the order. A chunk that overflowed on its own already counted its own drops.
+    fn merge(&mut self, chunk_count: usize) {
+        // One chunk is the whole list, and its own budget is the frame's budget, so the
+        // merge is the identity: take its buffer rather than copying it. Copying 900 quads
+        // out of a scratch buffer and into another one costs several microseconds of a pass
+        // that measures tens, which would make the serial path pay for the parallel one.
+        if chunk_count == 1 {
+            std::mem::swap(&mut self.vertices, &mut self.chunks[0].vertices);
+            self.stats = self.chunks[0].stats;
+            self.stats.vertices = self.vertices.len();
+            return;
+        }
+
+        self.vertices.clear();
+        let mut stats = UiBatchStats::default();
+        for chunk in &self.chunks[..chunk_count] {
+            let room = self.max_quads - stats.quads;
+            let taken = chunk.stats.quads.min(room);
+            self.vertices
+                .extend_from_slice(&chunk.vertices[..taken * VERTICES_PER_QUAD]);
+            stats.commands += chunk.stats.commands;
+            stats.quads += taken;
+            // What this chunk itself refused, plus what the merge had no room for.
+            stats.dropped += chunk.stats.dropped + (chunk.stats.quads - taken);
+            stats.glyphs += chunk.stats.glyphs;
+            stats.icons += chunk.stats.icons;
+        }
+        stats.vertices = self.vertices.len();
+        self.stats = stats;
+    }
+}
+
+/// Appends an untextured rectangle, sampling the atlas's opaque texel.
+fn push_solid(
+    vertices: &mut Vec<UiVertex>,
+    max_quads: usize,
+    rect: UiRect,
+    color: [f32; 4],
+    stats: &mut UiBatchStats,
+) {
+    if !rect.is_visible() {
+        return;
+    }
+    push_quad(vertices, max_quads, rect, UiAtlas::solid_uv(), color, stats);
+}
+
+/// Appends a radial sweep as a triangle fan from the centre, filling `rect`.
+///
+/// Swept clockwise from twelve o'clock, which is the direction every cooldown in the
+/// genre runs. Each triangle is emitted as a degenerate quad so the whole pass stays one
+/// buffer and one draw call.
+///
+/// ## The sweep reaches the edges, not a radius
+///
+/// This was a circle inscribed in `rect`, which on a square ability slot left the four
+/// corners uncovered: a cooling ability kept a bright triangle of art in each corner, and
+/// a full sweep never darkened the whole button. A radius large enough to reach the
+/// corners would instead bulge a tenth of the slot past every edge and spill into the
+/// neighbouring one, because this pass has no clipping.
+///
+/// So the sweep follows the **rectangle's own border**: every ray runs to wherever it
+/// leaves `rect`. A full sweep covers `rect` exactly, with nothing outside it.
+///
+/// That also makes it cheaper. The border is four straight lines, so the only vertices
+/// that matter are the two ends of the sweep and whichever corners fall between them —
+/// at most six, against the sixteen segments the arc used to be approximated with. There
+/// is no arc left to be smooth, so there is nothing to trade off.
+fn push_radial(
+    vertices: &mut Vec<UiVertex>,
+    max_quads: usize,
+    rect: UiRect,
+    start: f32,
+    fraction: f32,
+    color: [f32; 4],
+    stats: &mut UiBatchStats,
+) {
+    if !rect.is_visible() || fraction <= 0.0 {
+        return;
+    }
+    let fraction = fraction.min(1.0);
+    let centre = (rect.x + rect.width * 0.5, rect.y + rect.height * 0.5);
+    let (half_width, half_height) = (rect.width * 0.5, rect.height * 0.5);
+    let sweep = fraction * std::f32::consts::TAU;
+    let origin = start * std::f32::consts::TAU;
+
+    // Where the ray at `angle` leaves the rectangle. Zero is straight up and the sweep
+    // runs clockwise, so the direction is `(sin, -cos)` — screen y grows downward.
+    let edge = |angle: f32| {
+        let (dx, dy) = (angle.sin(), -angle.cos());
+        // How far along the ray the left/right edges are, and how far the top/bottom
+        // ones are; the nearer is the edge actually crossed. A zero component never
+        // limits, and dividing by it would produce the infinity that says exactly that.
+        let to_side = half_width / dx.abs();
+        let to_cap = half_height / dy.abs();
+        let distance = to_side.min(to_cap);
+        (centre.0 + dx * distance, centre.1 + dy * distance)
+    };
+
+    // The sweep's two ends, plus every corner strictly between them. A fixed array
+    // rather than a `Vec`: four corners and two ends is the most there can ever be, and
+    // this runs once per cooling ability per frame.
+    let mut angles = [origin; MAX_SWEEP_ANGLES];
+    let mut count = 1;
+    for corner in corner_angles(half_width, half_height) {
+        // Lift the corner into the turn the sweep is in. A corner exactly at the start
+        // is skipped: it is already the first vertex.
+        let mut angle = corner + (origin / std::f32::consts::TAU).floor() * std::f32::consts::TAU;
+        while angle <= origin {
+            angle += std::f32::consts::TAU;
+        }
+        if angle < origin + sweep {
+            angles[count] = angle;
+            count += 1;
+        }
+    }
+    angles[1..count].sort_by(f32::total_cmp);
+    angles[count] = origin + sweep;
+    count += 1;
+
+    let uv = UiAtlas::solid_uv();
+    let vertex = |position: (f32, f32)| UiVertex {
+        position: [position.0, position.1],
+        uv: [uv.u0, uv.v0],
+        color,
+    };
+    let hub = vertex(centre);
+
+    for pair in angles[..count].windows(2) {
+        // Counted per segment rather than once for the whole abandoned sweep. A sweep is a
+        // run of quads like any other, and a drop count that depends on *where* in the list
+        // the budget ran out is a count two builds of the same list can disagree on — which
+        // is exactly what the parallel merge, deciding the budget after the fact, would.
+        if stats.quads >= max_quads {
+            stats.dropped += 1;
+            continue;
+        }
+        let b = vertex(edge(pair[0]));
+        let c = vertex(edge(pair[1]));
+        // Six vertices per triangle, like a quad, so the buffer stays uniform.
+        vertices.extend_from_slice(&[hub, b, c, hub, b, c]);
+        stats.quads += 1;
+    }
+}
+
+/// Appends one quad as two triangles.
+fn push_quad(
+    vertices: &mut Vec<UiVertex>,
+    max_quads: usize,
+    rect: UiRect,
+    uv: AtlasUv,
+    color: [f32; 4],
+    stats: &mut UiBatchStats,
+) {
+    if stats.quads >= max_quads {
+        stats.dropped += 1;
+        return;
+    }
+
+    let (left, top) = (rect.x, rect.y);
+    let (right, bottom) = (rect.right(), rect.bottom());
+    let corners = [
+        UiVertex {
+            position: [left, top],
+            uv: [uv.u0, uv.v0],
+            color,
+        },
+        UiVertex {
+            position: [right, top],
+            uv: [uv.u1, uv.v0],
+            color,
+        },
+        UiVertex {
+            position: [left, bottom],
+            uv: [uv.u0, uv.v1],
+            color,
+        },
+        UiVertex {
+            position: [right, bottom],
+            uv: [uv.u1, uv.v1],
+            color,
+        },
+    ];
+    // Two triangles wound so they survive the rasterizer's front-face rule. Culling is
+    // off for this pass, so the winding is documentation rather than load-bearing.
+    vertices.extend_from_slice(&[
+        corners[0], corners[2], corners[1], corners[1], corners[2], corners[3],
+    ]);
+    stats.quads += 1;
+}
+
+/// Expands one contiguous run of commands into `out`.
+///
+/// The body every path shares: the serial build calls it once over the whole list and a
+/// parallel build calls it once per chunk. Two expansions that could drift would be two
+/// interfaces, so there is only ever this one.
+///
+/// `max_quads` bounds this chunk alone. That is the same bound the merged buffer has, so a
+/// chunk large enough to hit it is a chunk that fills the frame's whole budget by itself —
+/// exactly what the serial path would have done at the same point in paint order.
+fn build_range(list: &UiDrawList, commands: &[UiCommand], max_quads: usize, out: &mut UiChunk) {
+    out.vertices.clear();
+    out.stats = UiBatchStats {
+        commands: commands.len(),
+        ..UiBatchStats::default()
+    };
+    for command in commands {
+        match *command {
+            UiCommand::Rect { rect, color } => {
+                push_solid(&mut out.vertices, max_quads, rect, color, &mut out.stats);
+            }
+            UiCommand::RadialFill {
+                rect,
+                start,
+                fraction,
+                color,
+            } => {
+                push_radial(
+                    &mut out.vertices,
+                    max_quads,
                     rect,
                     start,
                     fraction,
                     color,
-                } => {
-                    self.push_radial(rect, start, fraction, color, &mut stats);
-                }
-                UiCommand::Outline {
+                    &mut out.stats,
+                );
+            }
+            UiCommand::Outline {
+                rect,
+                thickness,
+                color,
+            } => {
+                // Four bars rather than a stroked rectangle: the top and bottom span the
+                // full width and the sides fill what is left, so the corners are covered
+                // exactly once. Overlapping them would double the alpha at each corner,
+                // which is visible the moment the outline is translucent.
+                let inner_height = (rect.height - thickness * 2.0).max(0.0);
+                push_solid(
+                    &mut out.vertices,
+                    max_quads,
+                    UiRect::new(rect.x, rect.y, rect.width, thickness),
+                    color,
+                    &mut out.stats,
+                );
+                push_solid(
+                    &mut out.vertices,
+                    max_quads,
+                    UiRect::new(rect.x, rect.bottom() - thickness, rect.width, thickness),
+                    color,
+                    &mut out.stats,
+                );
+                push_solid(
+                    &mut out.vertices,
+                    max_quads,
+                    UiRect::new(rect.x, rect.y + thickness, thickness, inner_height),
+                    color,
+                    &mut out.stats,
+                );
+                push_solid(
+                    &mut out.vertices,
+                    max_quads,
+                    UiRect::new(
+                        rect.right() - thickness,
+                        rect.y + thickness,
+                        thickness,
+                        inner_height,
+                    ),
+                    color,
+                    &mut out.stats,
+                );
+            }
+            UiCommand::Icon { rect, icon, tint } => {
+                // One quad, like a glyph. What makes it an icon rather than a letter is
+                // only where in the atlas it reads from, which is also what tells the
+                // pixel shader to filter it smoothly.
+                //
+                // The rectangle's own width is the size the icon is about to occupy, so
+                // the atlas can pick the size variant nearest it. Nothing upstream has
+                // to know that variants exist — the layout asks for an icon in a box.
+                push_quad(
+                    &mut out.vertices,
+                    max_quads,
                     rect,
-                    thickness,
-                    color,
-                } => {
-                    // Four bars rather than a stroked rectangle: the top and bottom span the
-                    // full width and the sides fill what is left, so the corners are covered
-                    // exactly once. Overlapping them would double the alpha at each corner,
-                    // which is visible the moment the outline is translucent.
-                    let inner_height = (rect.height - thickness * 2.0).max(0.0);
-                    self.push_solid(
-                        UiRect::new(rect.x, rect.y, rect.width, thickness),
-                        color,
-                        &mut stats,
-                    );
-                    self.push_solid(
-                        UiRect::new(rect.x, rect.bottom() - thickness, rect.width, thickness),
-                        color,
-                        &mut stats,
-                    );
-                    self.push_solid(
-                        UiRect::new(rect.x, rect.y + thickness, thickness, inner_height),
-                        color,
-                        &mut stats,
-                    );
-                    self.push_solid(
-                        UiRect::new(
-                            rect.right() - thickness,
-                            rect.y + thickness,
-                            thickness,
-                            inner_height,
-                        ),
-                        color,
-                        &mut stats,
-                    );
-                }
-                UiCommand::Icon { rect, icon, tint } => {
-                    // One quad, like a glyph. What makes it an icon rather than a letter is
-                    // only where in the atlas it reads from, which is also what tells the
-                    // pixel shader to filter it smoothly.
-                    //
-                    // The rectangle's own width is the size the icon is about to occupy, so
-                    // the atlas can pick the size variant nearest it. Nothing upstream has
-                    // to know that variants exist — the layout asks for an icon in a box.
-                    self.push_quad(rect, UiAtlas::icon_uv(icon, rect.width), tint, &mut stats);
-                    stats.icons += 1;
-                }
-                UiCommand::Text {
-                    origin,
-                    range,
-                    color,
-                    scale,
-                    align,
-                } => {
-                    let text = list.text_of(range);
-                    let width = text_width(text, scale);
-                    let x = match align {
-                        TextAlign::Left => origin.0,
-                        TextAlign::Center => origin.0 - width * 0.5,
-                        TextAlign::Right => origin.0 - width,
-                    };
-                    let mut pen = x;
-                    for character in text.chars() {
-                        if !UiAtlas::is_blank(character) {
-                            let rect = UiRect::new(
-                                pen,
-                                origin.1,
-                                GLYPH_WIDTH as f32 * scale,
-                                GLYPH_HEIGHT as f32 * scale,
-                            );
-                            self.push_quad(rect, UiAtlas::glyph_uv(character), color, &mut stats);
-                            stats.glyphs += 1;
-                        }
-                        pen += GLYPH_ADVANCE as f32 * scale;
+                    UiAtlas::icon_uv(icon, rect.width),
+                    tint,
+                    &mut out.stats,
+                );
+                out.stats.icons += 1;
+            }
+            UiCommand::Text {
+                origin,
+                range,
+                color,
+                scale,
+                align,
+            } => {
+                let text = list.text_of(range);
+                let width = text_width(text, scale);
+                let x = match align {
+                    TextAlign::Left => origin.0,
+                    TextAlign::Center => origin.0 - width * 0.5,
+                    TextAlign::Right => origin.0 - width,
+                };
+                let mut pen = x;
+                for character in text.chars() {
+                    if !UiAtlas::is_blank(character) {
+                        let rect = UiRect::new(
+                            pen,
+                            origin.1,
+                            GLYPH_WIDTH as f32 * scale,
+                            GLYPH_HEIGHT as f32 * scale,
+                        );
+                        push_quad(
+                            &mut out.vertices,
+                            max_quads,
+                            rect,
+                            UiAtlas::glyph_uv(character),
+                            color,
+                            &mut out.stats,
+                        );
+                        out.stats.glyphs += 1;
                     }
+                    pen += GLYPH_ADVANCE as f32 * scale;
                 }
             }
         }
-
-        stats.vertices = self.vertices.len();
-        self.stats = stats;
-        &self.vertices
     }
 
-    /// Appends an untextured rectangle, sampling the atlas's opaque texel.
-    fn push_solid(&mut self, rect: UiRect, color: [f32; 4], stats: &mut UiBatchStats) {
-        if !rect.is_visible() {
-            return;
-        }
-        self.push_quad(rect, UiAtlas::solid_uv(), color, stats);
+    out.stats.vertices = out.vertices.len();
+}
+
+/// Smallest amount of work worth handing to a worker, in the units [`work_units`] counts.
+///
+/// `docs/threading.md` measured the job break-even near 12 us, and `ui_bench` measures the
+/// combat HUD at ~46 ns per unit — 905 quads in 42 us. Five hundred units is ~24 us: over
+/// the line with margin, because a unit is an estimate and a chunk that lands under it
+/// costs more to submit than to run.
+const MIN_CHUNK_UNITS: usize = 512;
+
+/// Smallest whole build worth splitting at all.
+///
+/// Two thousand units is ~95 us. Below it the submission overhead is a visible share of the
+/// pass however it is divided, so the whole build stays on the calling thread. The combat
+/// HUD measures 13-42 us, which is why this pass is serial in the game today and parallel
+/// only when the interface grows several times over.
+const MIN_TOTAL_UNITS: usize = 2048;
+
+/// How much work a draw list is, in units of roughly one quad.
+///
+/// One per command plus one per byte of text, because text is the term that dominates: a
+/// glyph is a quad and a nameplate is a few hundred of them, while a rectangle is one.
+/// Bytes rather than characters — the strings are ASCII and `len()` does not walk them.
+#[must_use]
+fn work_units(list: &UiDrawList) -> usize {
+    list.len() + list.text().len()
+}
+
+/// How many chunks `units` of work should be split into across `workers`.
+///
+/// Never more than one chunk per worker, never smaller than [`MIN_CHUNK_UNITS`], and one —
+/// the caller's signal to stay serial — below [`MIN_TOTAL_UNITS`].
+#[must_use]
+fn chunk_count_for(units: usize, workers: usize) -> usize {
+    if workers <= 1 || units < MIN_TOTAL_UNITS {
+        return 1;
     }
-
-    /// Appends a radial sweep as a triangle fan from the centre, filling `rect`.
-    ///
-    /// Swept clockwise from twelve o'clock, which is the direction every cooldown in the
-    /// genre runs. Each triangle is emitted as a degenerate quad so the whole pass stays one
-    /// buffer and one draw call.
-    ///
-    /// ## The sweep reaches the edges, not a radius
-    ///
-    /// This was a circle inscribed in `rect`, which on a square ability slot left the four
-    /// corners uncovered: a cooling ability kept a bright triangle of art in each corner, and
-    /// a full sweep never darkened the whole button. A radius large enough to reach the
-    /// corners would instead bulge a tenth of the slot past every edge and spill into the
-    /// neighbouring one, because this pass has no clipping.
-    ///
-    /// So the sweep follows the **rectangle's own border**: every ray runs to wherever it
-    /// leaves `rect`. A full sweep covers `rect` exactly, with nothing outside it.
-    ///
-    /// That also makes it cheaper. The border is four straight lines, so the only vertices
-    /// that matter are the two ends of the sweep and whichever corners fall between them —
-    /// at most six, against the sixteen segments the arc used to be approximated with. There
-    /// is no arc left to be smooth, so there is nothing to trade off.
-    fn push_radial(
-        &mut self,
-        rect: UiRect,
-        start: f32,
-        fraction: f32,
-        color: [f32; 4],
-        stats: &mut UiBatchStats,
-    ) {
-        if !rect.is_visible() || fraction <= 0.0 {
-            return;
-        }
-        let fraction = fraction.min(1.0);
-        let centre = (rect.x + rect.width * 0.5, rect.y + rect.height * 0.5);
-        let (half_width, half_height) = (rect.width * 0.5, rect.height * 0.5);
-        let sweep = fraction * std::f32::consts::TAU;
-        let origin = start * std::f32::consts::TAU;
-
-        // Where the ray at `angle` leaves the rectangle. Zero is straight up and the sweep
-        // runs clockwise, so the direction is `(sin, -cos)` — screen y grows downward.
-        let edge = |angle: f32| {
-            let (dx, dy) = (angle.sin(), -angle.cos());
-            // How far along the ray the left/right edges are, and how far the top/bottom
-            // ones are; the nearer is the edge actually crossed. A zero component never
-            // limits, and dividing by it would produce the infinity that says exactly that.
-            let to_side = half_width / dx.abs();
-            let to_cap = half_height / dy.abs();
-            let distance = to_side.min(to_cap);
-            (centre.0 + dx * distance, centre.1 + dy * distance)
-        };
-
-        // The sweep's two ends, plus every corner strictly between them. A fixed array
-        // rather than a `Vec`: four corners and two ends is the most there can ever be, and
-        // this runs once per cooling ability per frame.
-        let mut angles = [origin; MAX_SWEEP_ANGLES];
-        let mut count = 1;
-        for corner in corner_angles(half_width, half_height) {
-            // Lift the corner into the turn the sweep is in. A corner exactly at the start
-            // is skipped: it is already the first vertex.
-            let mut angle =
-                corner + (origin / std::f32::consts::TAU).floor() * std::f32::consts::TAU;
-            while angle <= origin {
-                angle += std::f32::consts::TAU;
-            }
-            if angle < origin + sweep {
-                angles[count] = angle;
-                count += 1;
-            }
-        }
-        angles[1..count].sort_by(f32::total_cmp);
-        angles[count] = origin + sweep;
-        count += 1;
-
-        let uv = UiAtlas::solid_uv();
-        let vertex = |position: (f32, f32)| UiVertex {
-            position: [position.0, position.1],
-            uv: [uv.u0, uv.v0],
-            color,
-        };
-        let hub = vertex(centre);
-
-        for pair in angles[..count].windows(2) {
-            if stats.quads >= self.max_quads {
-                stats.dropped += 1;
-                return;
-            }
-            let b = vertex(edge(pair[0]));
-            let c = vertex(edge(pair[1]));
-            // Six vertices per triangle, like a quad, so the buffer stays uniform.
-            self.vertices.extend_from_slice(&[hub, b, c, hub, b, c]);
-            stats.quads += 1;
-        }
-    }
-
-    /// Appends one quad as two triangles.
-    fn push_quad(&mut self, rect: UiRect, uv: AtlasUv, color: [f32; 4], stats: &mut UiBatchStats) {
-        if stats.quads >= self.max_quads {
-            stats.dropped += 1;
-            return;
-        }
-
-        let (left, top) = (rect.x, rect.y);
-        let (right, bottom) = (rect.right(), rect.bottom());
-        let corners = [
-            UiVertex {
-                position: [left, top],
-                uv: [uv.u0, uv.v0],
-                color,
-            },
-            UiVertex {
-                position: [right, top],
-                uv: [uv.u1, uv.v0],
-                color,
-            },
-            UiVertex {
-                position: [left, bottom],
-                uv: [uv.u0, uv.v1],
-                color,
-            },
-            UiVertex {
-                position: [right, bottom],
-                uv: [uv.u1, uv.v1],
-                color,
-            },
-        ];
-        // Two triangles wound so they survive the rasterizer's front-face rule. Culling is
-        // off for this pass, so the winding is documentation rather than load-bearing.
-        self.vertices.extend_from_slice(&[
-            corners[0], corners[2], corners[1], corners[1], corners[2], corners[3],
-        ]);
-        stats.quads += 1;
-    }
+    (units / MIN_CHUNK_UNITS).min(workers).max(1)
 }
 
 /// How wide a run of text is, in pixels.

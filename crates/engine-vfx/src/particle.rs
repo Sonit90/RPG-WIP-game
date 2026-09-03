@@ -70,6 +70,132 @@ pub struct ParticleSpawn {
     pub owner_generation: u32,
 }
 
+/// Smallest run of particles worth handing to a worker.
+///
+/// `docs/threading.md` measured the job break-even near 12 us and the integration below
+/// costs a few nanoseconds per particle, so four thousand is the low end of worthwhile —
+/// the same figure and the same reasoning as `MIN_CHUNK` in the renderer's culler.
+const MIN_CHUNK_PARTICLES: usize = 4096;
+
+/// Smallest pool worth splitting at all.
+///
+/// `vfx_bench` measures the worst case the game can currently produce at 2,618 particles
+/// and 17.8 us for the whole VFX step, which is under the break-even however it is divided.
+/// This threshold is what keeps the pass serial there, and it is deliberately above
+/// anything combat reaches: the parallel path is for a scene several times larger.
+const MIN_TOTAL_PARTICLES: usize = 8192;
+
+/// How many chunks `particles` should be split into across `workers`.
+///
+/// One — the caller's signal to stay serial — below [`MIN_TOTAL_PARTICLES`], never more
+/// than one chunk per worker, and never chunks smaller than [`MIN_CHUNK_PARTICLES`].
+#[must_use]
+fn chunk_count_for(particles: usize, workers: usize) -> usize {
+    if workers <= 1 || particles < MIN_TOTAL_PARTICLES {
+        return 1;
+    }
+    (particles / MIN_CHUNK_PARTICLES).min(workers).max(1)
+}
+
+/// One worker's slice of the pool during integration.
+///
+/// The four arrays a step writes are `&mut`, the six it only reads are `&`. Splitting the
+/// arrays this way is what makes the pass parallel *and* is what the borrow checker uses to
+/// prove no two chunks can name the same particle.
+struct ParticleChunk<'a> {
+    position: &'a mut [Vec3],
+    velocity: &'a mut [Vec3],
+    rotation: &'a mut [f32],
+    age: &'a mut [f32],
+    lifetime: &'a [f32],
+    gravity: &'a [f32],
+    drag: &'a [f32],
+    spin: &'a [f32],
+    owner: &'a [u32],
+    owner_generation: &'a [u32],
+}
+
+impl<'a> ParticleChunk<'a> {
+    /// Splits the whole pool into runs of at most `chunk_size` particles.
+    fn split(pool: &'a mut ParticlePool, chunk_size: usize) -> Vec<Self> {
+        pool.position
+            .chunks_mut(chunk_size)
+            .zip(pool.velocity.chunks_mut(chunk_size))
+            .zip(pool.rotation.chunks_mut(chunk_size))
+            .zip(pool.age.chunks_mut(chunk_size))
+            .zip(pool.lifetime.chunks(chunk_size))
+            .zip(pool.gravity.chunks(chunk_size))
+            .zip(pool.drag.chunks(chunk_size))
+            .zip(pool.spin.chunks(chunk_size))
+            .zip(pool.owner.chunks(chunk_size))
+            .zip(pool.owner_generation.chunks(chunk_size))
+            .map(
+                |(
+                    (
+                        (
+                            ((((((position, velocity), rotation), age), lifetime), gravity), drag),
+                            spin,
+                        ),
+                        owner,
+                    ),
+                    owner_generation,
+                )| Self {
+                    position,
+                    velocity,
+                    rotation,
+                    age,
+                    lifetime,
+                    gravity,
+                    drag,
+                    spin,
+                    owner,
+                    owner_generation,
+                },
+            )
+            .collect()
+    }
+}
+
+/// Ages and integrates every particle in `chunk`.
+///
+/// The body both paths share. Expired particles are aged but not integrated — exactly what
+/// the fused loop did, where reaching the lifetime removed the particle before the step —
+/// and are taken out afterwards by [`ParticlePool::retire_expired`].
+fn integrate_chunk(
+    chunk: &mut ParticleChunk<'_>,
+    seconds: f32,
+    owner_motion: &[Vec3],
+    owner_generations: &[u32],
+) {
+    for index in 0..chunk.position.len() {
+        chunk.age[index] += seconds;
+        if chunk.age[index] >= chunk.lifetime[index] {
+            continue;
+        }
+
+        // Gravity, then drag, then the step. Drag as a fraction shed per second and
+        // clamped, so a large `drag` on a long frame stops the particle rather than
+        // reversing it.
+        let mut velocity = chunk.velocity[index];
+        velocity.y -= chunk.gravity[index] * seconds;
+        let shed = (1.0 - chunk.drag[index] * seconds).clamp(0.0, 1.0);
+        velocity *= shed;
+
+        let mut position = chunk.position[index] + velocity * seconds;
+        let owner = chunk.owner[index];
+        if owner != NO_OWNER
+            && let Some(motion) = owner_motion.get(owner as usize)
+            && owner_generations.get(owner as usize) == Some(&chunk.owner_generation[index])
+        {
+            position += *motion;
+        }
+
+        chunk.velocity[index] = velocity;
+        chunk.position[index] = position;
+        chunk.rotation[index] += chunk.spin[index] * seconds;
+    }
+}
+
 /// Every live particle, in parallel arrays.
 #[derive(Debug, Clone)]
 pub struct ParticlePool {
@@ -197,38 +323,93 @@ impl ParticlePool {
     /// been reused by a different effect — is left where it is and continues under its own
     /// velocity.
     pub fn update(&mut self, seconds: f32, owner_motion: &[Vec3], owner_generations: &[u32]) {
+        self.update_with(seconds, owner_motion, owner_generations, None);
+    }
+
+    /// [`ParticlePool::update`], optionally integrated across `jobs`' workers.
+    ///
+    /// Same particles, same order, same arithmetic — only the time changes. The pass is
+    /// split in two to make that possible: every particle is aged and integrated first,
+    /// which is per-particle and independent, and the expired ones are then compacted out
+    /// serially, which is not — `swap_remove` moves a particle another chunk would have
+    /// been holding.
+    ///
+    /// Stays serial below [`MIN_TOTAL_PARTICLES`], which is every scene the game has today.
+    pub fn update_with(
+        &mut self,
+        seconds: f32,
+        owner_motion: &[Vec3],
+        owner_generations: &[u32],
+        jobs: Option<&engine_core::jobs::JobSystem>,
+    ) {
         if seconds <= 0.0 {
             return;
         }
+
+        let chunk_count = jobs.map_or(1, |jobs| {
+            chunk_count_for(self.position.len(), jobs.worker_count())
+        });
+        // Bound together: a chunk count above one is only ever produced from a job system,
+        // and taking both out of the same `if let` is what says so without an `expect`.
+        let mut integrated = false;
+        if let Some(jobs) = jobs.filter(|_| chunk_count > 1) {
+            let chunk_size = self.position.len().div_ceil(chunk_count);
+            // One `Vec` of chunk views per parallel frame. It is the only allocation on this
+            // path and it is bounded by the worker count, not the particle count — and the
+            // path itself only runs past `MIN_TOTAL_PARTICLES`, where the pass it is
+            // dividing costs tens of microseconds. The serial path, which is the one every
+            // scene in the game takes, still allocates nothing.
+            let mut chunks: Vec<ParticleChunk<'_>> = ParticleChunk::split(self, chunk_size);
+            let result = jobs.map_chunks(&mut chunks, |_, chunk| {
+                integrate_chunk(chunk, seconds, owner_motion, owner_generations);
+            });
+            match result {
+                Ok(()) => integrated = true,
+                // A half-integrated pool would draw particles a frame behind their own
+                // effect, so the whole pass is redone on this thread.
+                Err(error) => {
+                    log::error!("parallel particle update failed, falling back to serial: {error}");
+                }
+            }
+        }
+        if !integrated {
+            let mut chunk = self.whole();
+            integrate_chunk(&mut chunk, seconds, owner_motion, owner_generations);
+        }
+
+        self.retire_expired();
+    }
+
+    /// Every particle as one chunk, for the serial path and the fallback.
+    fn whole(&mut self) -> ParticleChunk<'_> {
+        ParticleChunk {
+            position: &mut self.position,
+            velocity: &mut self.velocity,
+            rotation: &mut self.rotation,
+            age: &mut self.age,
+            lifetime: &self.lifetime,
+            gravity: &self.gravity,
+            drag: &self.drag,
+            spin: &self.spin,
+            owner: &self.owner,
+            owner_generation: &self.owner_generation,
+        }
+    }
+
+    /// Removes every particle whose age has reached its lifetime.
+    ///
+    /// The exact removal sequence the fused loop used: scan from the front, swap the last
+    /// one into the hole, and look at the hole again. Order is not meaningful to anything
+    /// that reads the pool, but two builds of the same frame producing two different
+    /// orderings would make the draw list depend on how many workers a machine has.
+    fn retire_expired(&mut self) {
         let mut index = 0;
         while index < self.position.len() {
-            self.age[index] += seconds;
             if self.age[index] >= self.lifetime[index] {
                 self.remove(index);
-                continue;
+            } else {
+                index += 1;
             }
-
-            // Gravity, then drag, then the step. Drag as a fraction shed per second and
-            // clamped, so a large `drag` on a long frame stops the particle rather than
-            // reversing it.
-            let mut velocity = self.velocity[index];
-            velocity.y -= self.gravity[index] * seconds;
-            let shed = (1.0 - self.drag[index] * seconds).clamp(0.0, 1.0);
-            velocity *= shed;
-
-            let mut position = self.position[index] + velocity * seconds;
-            let owner = self.owner[index];
-            if owner != NO_OWNER
-                && let Some(motion) = owner_motion.get(owner as usize)
-                && owner_generations.get(owner as usize) == Some(&self.owner_generation[index])
-            {
-                position += *motion;
-            }
-
-            self.velocity[index] = velocity;
-            self.position[index] = position;
-            self.rotation[index] += self.spin[index] * seconds;
-            index += 1;
         }
     }
 
@@ -256,7 +437,70 @@ impl ParticlePool {
 
     /// Appends every live particle to `list`, interpolated to where it is now.
     pub fn write(&self, list: &mut ParticleDrawList) {
-        for index in 0..self.position.len() {
+        self.write_range(0..self.position.len(), list);
+    }
+
+    /// [`ParticlePool::write`], optionally interpolated across `jobs`' workers.
+    ///
+    /// `scratch` is the caller's, kept across frames for the same reason the pool's arrays
+    /// are: after the first few frames it allocates nothing. It is resized to the chunk
+    /// count here.
+    ///
+    /// Each chunk writes its own list and the lists are appended in chunk order, so the
+    /// result is the one the serial pass would have produced — including which particles a
+    /// full list drops, which is a statement about order.
+    pub fn write_with(
+        &self,
+        list: &mut ParticleDrawList,
+        jobs: Option<&engine_core::jobs::JobSystem>,
+        scratch: &mut Vec<ParticleDrawList>,
+    ) {
+        let chunk_count = jobs.map_or(1, |jobs| {
+            chunk_count_for(self.position.len(), jobs.worker_count())
+        });
+        // Bound together, as in `update_with`: a chunk count above one is only ever produced
+        // from a job system.
+        if let Some(jobs) = jobs.filter(|_| chunk_count > 1) {
+            let chunk_size = self.position.len().div_ceil(chunk_count);
+            if scratch.len() < chunk_count {
+                scratch.resize_with(chunk_count, || {
+                    ParticleDrawList::with_capacity(self.capacity)
+                });
+            }
+            // Only the chunks that will be used, so a pool that shrank does not merge last
+            // frame's leftovers.
+            let active = &mut scratch[..chunk_count];
+            let result = jobs.map_chunks(active, |index, out| {
+                out.clear();
+                let start = index * chunk_size;
+                let end = (start + chunk_size).min(self.position.len());
+                self.write_range(start..end, out);
+            });
+            match result {
+                Ok(()) => {
+                    for chunk in active.iter() {
+                        for blend in [ParticleBlend::Additive, ParticleBlend::Alpha] {
+                            for instance in chunk.of(blend) {
+                                list.push(blend, *instance);
+                            }
+                        }
+                    }
+                    return;
+                }
+                Err(error) => {
+                    log::error!("parallel particle write failed, falling back to serial: {error}");
+                }
+            }
+        }
+
+        self.write(list);
+    }
+
+    /// Writes one contiguous run of particles into `list`.
+    ///
+    /// The body both paths share, so a serial and a parallel write cannot drift.
+    fn write_range(&self, range: std::ops::Range<usize>, list: &mut ParticleDrawList) {
+        for index in range {
             let life = self.lifetime[index];
             let fraction = if life > 0.0 {
                 (self.age[index] / life).clamp(0.0, 1.0)

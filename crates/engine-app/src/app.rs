@@ -442,6 +442,13 @@ pub struct App {
     audio: AudioHost,
     /// Combat turned into sound: the audio twin of `vfx`, observing the same events.
     audio_director: AudioDirector,
+    /// The worker pool the frame's pure-CPU passes fan out across.
+    ///
+    /// `None` under `--serial-jobs`, which is the A/B control: every parallel pass has a
+    /// serial path it falls back to below its size threshold anyway, so `None` simply takes
+    /// that path at every size. The workers are started once and joined at shutdown; a pass
+    /// that is too small to split never touches them.
+    jobs: Option<engine_core::jobs::JobSystem>,
     /// What this frame's cues and listener update cost, in milliseconds.
     ///
     /// The *game thread's* share only. Mixing happens on the device's own thread and is
@@ -946,6 +953,30 @@ impl App {
             settings_now.ambient_volume,
         );
 
+        // The worker pool, started before the first frame so no frame pays for spawning
+        // threads. One worker per logical processor bar the one this thread is on: the game
+        // thread does not idle while a fan-out runs, it runs a chunk itself.
+        let jobs = if args.parallel_jobs {
+            match engine_core::jobs::JobSystem::with_workers(
+                engine_core::threading::recommended_worker_count().saturating_sub(1),
+            ) {
+                Ok(jobs) => {
+                    log::info!("job system: {} worker(s)", jobs.worker_count());
+                    Some(jobs)
+                }
+                // A machine that cannot start a thread still gets a game: every parallel
+                // pass has a serial path, and this is exactly the state `--serial-jobs`
+                // asks for on purpose.
+                Err(error) => {
+                    log::warn!("job system unavailable, every pass stays serial: {error}");
+                    None
+                }
+            }
+        } else {
+            log::info!("job system: --serial-jobs; every pass runs on the game thread");
+            None
+        };
+
         // Built before the first frame so the UI never sees a default-constructed snapshot.
         let snapshot = UiSnapshot::build(&simulation);
 
@@ -1041,6 +1072,7 @@ impl App {
             vfx: VfxDirector::new(vfx_visuals),
             audio,
             audio_director,
+            jobs,
             audio_ms: 0.0,
             audio_demo_selection: 0,
             vfx_stress: args.vfx_stress.max(0.0),
@@ -2281,7 +2313,8 @@ impl App {
                 viewport,
             );
             self.ui_ms = started.elapsed().as_secs_f64() * 1e3;
-            self.renderer.set_ui(&self.collision_ui);
+            self.renderer
+                .set_ui_with(&self.collision_ui, self.jobs.as_ref());
             return;
         }
         // The plate's box is measured from the same glyph scale the text inside it is drawn
@@ -2422,7 +2455,8 @@ impl App {
             viewport,
         );
         self.ui_ms = started.elapsed().as_secs_f64() * 1e3;
-        self.renderer.set_ui(self.game_ui.list());
+        self.renderer
+            .set_ui_with(self.game_ui.list(), self.jobs.as_ref());
     }
 
     /// Rebuilds the terrain's mesh and puts it in the world, replacing whatever was there.
@@ -2435,6 +2469,10 @@ impl App {
     /// its ground drawn, and a renderer error in the middle of a brush stroke must not take
     /// the editor down with it.
     fn rebuild_terrain(&mut self) {
+        // Every ground footprint was laid on the heights this is about to replace, and the
+        // director keeps them rather than rebuilding a hundred pieces of trigonometry per
+        // zone per frame. Moving the ground is the one thing that invalidates them.
+        self.vfx.invalidate_ground();
         if let Some(entity) = self.terrain_entity.take() {
             self.extractor.render_world_mut().despawn(entity);
         }
@@ -3235,6 +3273,49 @@ impl App {
             self.renderer.skinned_draws_last_frame(),
             self.renderer.triangles_last_frame(),
         );
+        // Where the frame's CPU time actually went, on its own line. The stage totals come
+        // from the engine loop; the render stage is then broken down into the pure-CPU
+        // passes that have their own timers and the recording that is what is left. Without
+        // this line the frame is one number with two thirds of it unattributed, and every
+        // decision about what to make faster is a guess.
+        let stages = ctx.stage_timings();
+        let render_ms = stages.render.as_secs_f64() * 1e3;
+        let cull_ms = self.renderer.last_cull_ms();
+        let group_ms = self.renderer.last_group_ms();
+        let shadow_prepare_ms = self.renderer.shadow_stats().prepare_ms;
+        // Subtraction, not a timer: wrapping the recording calls in another `Instant` pair
+        // would measure the same span twice. Clamped because the passes are timed inside
+        // the render stage and rounding can put the sum a nanosecond over it.
+        let record_ms = (render_ms - cull_ms - group_ms - shadow_prepare_ms).max(0.0);
+        let _ = write!(
+            report,
+            "
+  frame: events {:.3} | update {:.3} | render {:.3} (cull {:.3} + group {:.3} +              shadow prep {:.3} + record {:.3}) | present {:.3} ms",
+            stages.events.as_secs_f64() * 1e3,
+            stages.update.as_secs_f64() * 1e3,
+            render_ms,
+            cull_ms,
+            group_ms,
+            shadow_prepare_ms,
+            record_ms,
+            stages.present.as_secs_f64() * 1e3,
+        );
+        // The present stage as a distribution rather than a mean: it is the one stage whose
+        // p99 is several times its p50, because it is where the CPU waits for the display
+        // pipeline — and windowed, that pipeline includes DWM.
+        if let Some(present) = self.renderer.present_stats() {
+            let _ = write!(
+                report,
+                "
+  present: mean {:.3} | p50 {:.3} | p99 {:.3} | max {:.3} ms | n={} |                  fence signal {:.3} ms",
+                present.mean_ms,
+                present.p50_ms,
+                present.p99_ms,
+                present.max_ms,
+                present.count,
+                self.renderer.last_fence_signal_ms(),
+            );
+        }
         // The light grid on the same line as the lights it culls: "how many lights" and
         // "how many does a pixel actually evaluate" are the pair that says whether the
         // clustering is doing anything, and either alone says nothing.
@@ -3955,11 +4036,12 @@ impl Application for App {
                 Some(terrain) => GroundSurface::Terrain(terrain),
                 None => GroundSurface::Plane(engine_presentation::ui::targeting::GROUND_HEIGHT),
             };
-            self.vfx.update(
+            self.vfx.update_with(
                 &self.simulation,
                 ctx.time().real_delta().as_secs_f32(),
                 self.extractor.render_world_mut(),
                 &ground,
+                self.jobs.as_ref(),
             );
             self.renderer.set_particles(self.vfx.particles());
             self.vfx_ms = vfx_started.elapsed().as_secs_f64() * 1e3;
@@ -4057,12 +4139,23 @@ impl Application for App {
         if first {
             crate::startup::stage("frame 1: update");
         }
-        self.renderer.render_world(
-            self.extractor.render_world(),
-            &self.camera,
-            self.lighting,
-            self.clear_color,
-        )?;
+        match &self.jobs {
+            // The cull falls back to serial on its own below `culling::MIN_CHUNK`, so
+            // handing it the pool costs a comparison in a scene too small to split.
+            Some(jobs) => self.renderer.render_world_parallel(
+                self.extractor.render_world(),
+                &self.camera,
+                self.lighting,
+                self.clear_color,
+                jobs,
+            )?,
+            None => self.renderer.render_world(
+                self.extractor.render_world(),
+                &self.camera,
+                self.lighting,
+                self.clear_color,
+            )?,
+        }
         if first {
             crate::startup::stage("frame 1: record");
         }

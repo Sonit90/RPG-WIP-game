@@ -292,10 +292,18 @@ pub struct VfxDirector {
     /// Owned here so a fight full of burning ground allocates nothing: they grow to the
     /// largest footprint the session has drawn and then stay that size.
     band_scratch: DecalScratch,
-    /// This footprint's piece transforms.
-    band_pieces: Vec<Transform>,
+    /// Last frame's laid bands, by position in the frame's draw order.
+    ///
+    /// A footprint that has not moved produces the same pieces over the same ground, and
+    /// building them is trigonometry per piece over a hundred pieces per zone. Kept across
+    /// frames and never freed, like every other scratch here.
+    band_cache: Vec<CachedBand>,
     /// This frame's particles, rebuilt every frame and never freed.
     particles: ParticleDrawList,
+    /// One draw list per worker, for a parallel particle write. Kept across frames so the
+    /// pass allocates nothing once the peak has been seen; empty while the write is serial,
+    /// which it is in every scene the game has today.
+    particle_scratch: Vec<ParticleDrawList>,
     bolts: Vec<Bolt>,
     /// The burn playing on each target, by entity slot.
     ignited: Vec<Option<(u32, VfxHandle)>>,
@@ -327,8 +335,9 @@ impl VfxDirector {
             visuals,
             pools: [const { Vec::new() }; VfxShape::COUNT],
             band_scratch: DecalScratch::new(),
-            band_pieces: Vec::new(),
+            band_cache: Vec::new(),
             particles: ParticleDrawList::default(),
+            particle_scratch: Vec::new(),
             bolts: Vec::with_capacity(32),
             ignited: Vec::with_capacity(64),
             areas: Vec::with_capacity(16),
@@ -871,6 +880,21 @@ impl VfxDirector {
         world: &mut RenderWorld,
         ground: &GroundSurface<'_>,
     ) {
+        self.update_with(simulation, delta, world, ground, None);
+    }
+
+    /// [`VfxDirector::update`] with the per-particle passes optionally spread across `jobs`.
+    ///
+    /// Both of them stay on the calling thread below the pool's own size threshold, which
+    /// every scene the game has today is under.
+    pub fn update_with(
+        &mut self,
+        simulation: &Simulation,
+        delta: f32,
+        world: &mut RenderWorld,
+        ground: &GroundSurface<'_>,
+        jobs: Option<&engine_core::jobs::JobSystem>,
+    ) {
         if !self.enabled {
             self.particles.clear();
             return;
@@ -882,17 +906,35 @@ impl VfxDirector {
         // Where an attached effect's owner is now. An entity that has gone answers `None`,
         // and the effect riding it ends rather than hanging over an empty patch of floor.
         let game = simulation.world();
-        self.system.update(delta, |key| {
-            let id = game.id_at(key as usize)?;
-            if !game.is_alive(id) {
-                return None;
-            }
-            game.position(id)
-        });
+        self.system.update_with(
+            delta,
+            |key| {
+                let id = game.id_at(key as usize)?;
+                if !game.is_alive(id) {
+                    return None;
+                }
+                game.position(id)
+            },
+            jobs,
+        );
 
         self.particles.clear();
-        self.system.write_particles(&mut self.particles);
+        self.system
+            .write_particles_with(&mut self.particles, jobs, &mut self.particle_scratch);
         self.sync_entities(world, ground);
+    }
+
+    /// Forgets every laid band, so the next frame rebuilds them against the ground as it
+    /// now is.
+    ///
+    /// The band cache keys on the footprint, not on the terrain: a height field has no
+    /// version to compare and hashing one per frame would cost more than the rebuild it
+    /// saves. So the level tells the director when it has moved the ground — which happens
+    /// when a level loads and when an author edits the terrain, and never during play.
+    pub fn invalidate_ground(&mut self) {
+        for band in &mut self.band_cache {
+            band.key = None;
+        }
     }
 
     /// Forgets the effects that ended without the director being told.
@@ -1036,6 +1078,11 @@ impl VfxDirector {
     /// the `RenderWorld`'s slot allocator entirely.
     fn sync_entities(&mut self, world: &mut RenderWorld, ground: &GroundSurface<'_>) {
         let mut used = [0_usize; VfxShape::COUNT];
+        // How many ground bands this frame has laid, which is the cache slot each one uses.
+        // Position in the frame's draw order rather than an effect id, because a mesh draw
+        // does not carry one. An effect retiring shifts the ones behind it by a slot and
+        // they rebuild once; the key is what makes that correct rather than merely likely.
+        let mut bands = 0_usize;
         let quad = self.visuals.get(VfxShape::Quad);
         for index in 0..self.system.mesh_draws().len() {
             let draw = self.system.mesh_draws()[index];
@@ -1048,22 +1095,54 @@ impl VfxDirector {
                 && used[VfxShape::Quad.index()] < MAX_BAND_PIECES
                 && let Some(shape) = footprint_of(&draw)
             {
-                ground_decal::build_band(
+                let anchor = Vec3::new(draw.position.x, draw.position.y, draw.position.z);
+                let band = band_of(&draw, shape);
+                let key = BandKey {
                     shape,
-                    Vec3::new(draw.position.x, draw.position.y, draw.position.z),
-                    draw.yaw,
-                    band_of(&draw, shape),
-                    ground,
-                    &mut self.band_scratch,
-                    &mut self.band_pieces,
-                );
+                    anchor,
+                    yaw: draw.yaw,
+                    band,
+                };
+                // A footprint that has not moved lays the same pieces on the same ground, so
+                // it is built once and read from here on. Burning zones and telegraphs stand
+                // still for their whole life, and rebuilding a hundred pieces of trigonometry
+                // per zone per frame to arrive at last frame's answer was the largest single
+                // cost in this director.
+                let slot_index = bands;
+                bands += 1;
+                if self.band_cache.len() <= slot_index {
+                    // Reserved to the frame's whole piece budget, so a slot reused by a
+                    // bigger footprint next frame does not grow its buffer in the frame path.
+                    // `build_band` cuts to `MAX_SEGMENTS` pieces but each edge rounds up
+                    // independently, so the count is near it rather than bounded by it. The
+                    // whole point of the cache is to stop doing work once a frame;
+                    // allocating once a frame instead would be a poor trade.
+                    self.band_cache.push(CachedBand {
+                        key: None,
+                        pieces: Vec::with_capacity(MAX_BAND_PIECES),
+                    });
+                }
+                let cached = &mut self.band_cache[slot_index];
+                if cached.key != Some(key) {
+                    ground_decal::build_band(
+                        shape,
+                        anchor,
+                        draw.yaw,
+                        band,
+                        ground,
+                        &mut self.band_scratch,
+                        &mut cached.pieces,
+                    );
+                    cached.key = Some(key);
+                }
+                let pieces = &self.band_cache[slot_index].pieces;
                 // Either the whole footprint is laid or none of it is. A band cut off halfway
                 // through the frame's budget would be an outline with a hole in it, which
                 // reads as "the fire stops here" — the one thing a footprint may not say.
                 let slot = &mut used[VfxShape::Quad.index()];
-                if *slot + self.band_pieces.len() <= MAX_BAND_PIECES {
-                    for piece in 0..self.band_pieces.len() {
-                        let transform = self.band_pieces[piece];
+                if *slot + pieces.len() <= MAX_BAND_PIECES {
+                    for piece in 0..pieces.len() {
+                        let transform = self.band_cache[slot_index].pieces[piece];
                         place_pooled(
                             world,
                             &mut self.pools[VfxShape::Quad.index()],
@@ -1074,7 +1153,7 @@ impl VfxDirector {
                             style,
                         );
                     }
-                    *slot += self.band_pieces.len();
+                    *slot += self.band_cache[slot_index].pieces.len();
                     continue;
                 }
             }
@@ -1101,6 +1180,26 @@ impl VfxDirector {
             }
         }
     }
+}
+
+/// What a laid band was built from.
+///
+/// Every input [`ground_decal::build_band`] reads except the ground itself, which changes
+/// only when the level does — see [`VfxDirector::invalidate_ground`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct BandKey {
+    shape: TargetShape,
+    anchor: Vec3,
+    yaw: f32,
+    band: DecalBand,
+}
+
+/// One footprint's pieces and the inputs they were built from.
+#[derive(Debug, Default)]
+struct CachedBand {
+    /// `None` until the slot has been built once.
+    key: Option<BandKey>,
+    pieces: Vec<Transform>,
 }
 
 /// Which state-driven effect is being synchronised.
@@ -1494,6 +1593,115 @@ mod tests {
     }
 
     #[test]
+    fn a_footprint_that_has_not_moved_is_laid_where_it_was() {
+        // The cache. A zone standing still must produce the same pieces on frame two as on
+        // frame one — the whole saving is only allowed if the answer does not change.
+        let slope = ramp(0.35);
+        let ground = GroundSurface::Terrain(&slope);
+        let mut director = VfxDirector::new(visuals());
+        let mut world = RenderWorld::new();
+        let simulation = arena(1);
+        director
+            .system_mut()
+            .spawn(VfxSpawn::at(VfxId::GroundArea, Vec3::new(-2.0, 0.0, 1.0)).with_radius(7.0));
+
+        director.update(&simulation, 1.0 / 60.0, &mut world, &ground);
+        let first = laid_pieces(&director, &world);
+        assert!(!first.is_empty(), "the fixture must lay a footprint");
+
+        for _ in 0..4 {
+            director.update(&simulation, 1.0 / 60.0, &mut world, &ground);
+        }
+        let later = laid_pieces(&director, &world);
+        assert_eq!(later.len(), first.len(), "the band changed size on its own");
+        for (index, (a, b)) in later.iter().zip(&first).enumerate() {
+            assert_eq!(
+                (a.translation, a.scale),
+                (b.translation, b.scale),
+                "piece {index} moved without the footprint moving"
+            );
+        }
+    }
+
+    #[test]
+    fn moving_the_ground_relays_every_footprint() {
+        // The one input the cache key cannot see. A terrain edit moves the surface under a
+        // band that has not moved itself, and the level says so rather than the director
+        // hashing a height field every frame.
+        let flat = flat_ground();
+        let slope = ramp(0.35);
+        let mut director = VfxDirector::new(visuals());
+        let mut world = RenderWorld::new();
+        let simulation = arena(1);
+        director
+            .system_mut()
+            .spawn(VfxSpawn::at(VfxId::GroundArea, Vec3::new(-2.0, 0.0, 1.0)).with_radius(7.0));
+
+        director.update(&simulation, 1.0 / 60.0, &mut world, &flat);
+        let on_the_plane = laid_pieces(&director, &world);
+
+        director.invalidate_ground();
+        director.update(
+            &simulation,
+            1.0 / 60.0,
+            &mut world,
+            &GroundSurface::Terrain(&slope),
+        );
+        let on_the_slope = laid_pieces(&director, &world);
+
+        assert_eq!(on_the_slope.len(), on_the_plane.len());
+        assert!(
+            on_the_slope
+                .iter()
+                .zip(&on_the_plane)
+                .any(|(a, b)| a.translation.y != b.translation.y),
+            "every piece stayed at the plane's height after the ground moved"
+        );
+        for piece in &on_the_slope {
+            let under = slope.height_at(Vec3::new(piece.translation.x, 0.0, piece.translation.z));
+            assert!(
+                (piece.translation.y - under - GROUND_LIFT).abs() < 0.05,
+                "a piece was left on the old ground at {:?}",
+                piece.translation,
+            );
+        }
+    }
+
+    #[test]
+    fn a_footprint_that_moved_is_relaid() {
+        // The other half of the key: a band whose anchor changed must not be reused, or a
+        // zone would stay drawn where it was cast rather than where it is.
+        let ground = flat_ground();
+        let mut director = VfxDirector::new(visuals());
+        let mut world = RenderWorld::new();
+        let simulation = arena(1);
+        let handle = director
+            .system_mut()
+            .spawn(VfxSpawn::at(VfxId::GroundArea, Vec3::new(0.0, 0.0, 0.0)).with_radius(7.0))
+            .expect("the effect must spawn");
+
+        director.update(&simulation, 1.0 / 60.0, &mut world, &ground);
+        let before = laid_pieces(&director, &world);
+
+        assert!(
+            director
+                .system_mut()
+                .set_position(handle, Vec3::new(20.0, 0.0, 0.0))
+        );
+        director.update(&simulation, 1.0 / 60.0, &mut world, &ground);
+        let after = laid_pieces(&director, &world);
+
+        assert_eq!(after.len(), before.len());
+        assert!(
+            after
+                .iter()
+                .zip(&before)
+                .all(|(a, b)| a.translation.x != b.translation.x),
+            "the band stayed where the zone used to be"
+        );
+    }
+
+    #[test]
     fn a_frame_full_of_zones_falls_back_to_the_flat_shape_rather_than_to_a_broken_outline() {
         // The budget. Past it the remaining footprints are the plates they used to be, which
         // fits the ground badly; cutting a band off partway would leave a hole in an outline
@@ -1551,15 +1759,23 @@ mod tests {
         for _ in 0..30 {
             director.update(&simulation, 1.0 / 60.0, &mut world, &ground);
         }
-        let pieces = director.band_pieces.capacity();
+        let pieces: usize = director
+            .band_cache
+            .iter()
+            .map(|band| band.pieces.capacity())
+            .sum();
         let entities = director.pools[VfxShape::Quad.index()].len();
         for _ in 0..120 {
             director.update(&simulation, 1.0 / 60.0, &mut world, &ground);
         }
         assert_eq!(
-            director.band_pieces.capacity(),
+            director
+                .band_cache
+                .iter()
+                .map(|band| band.pieces.capacity())
+                .sum::<usize>(),
             pieces,
-            "the piece buffer grew after it had settled",
+            "the piece buffers grew after they had settled",
         );
         assert_eq!(
             director.pools[VfxShape::Quad.index()].len(),
