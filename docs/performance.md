@@ -1239,3 +1239,71 @@ of placement and 8 µs of extra culling, plus the rebuilds of footprints that ge
 The next lever, if it is ever wanted, is `place`'s two `atan2`s and `Quat::from_yaw_pitch_roll`
 per piece — worth a few microseconds and not worth the risk of getting a rotation subtly wrong
 without a test that would catch it.
+
+## Milestone 26 — presenting on another thread, and why it was reverted
+
+`Present` is the largest single item in the frame (Milestone 25), and it is a wait rather
+than work, so the obvious move is to take it off the thread that records frames: a worker
+calls `Present` and signals the frame's fence, and the game thread carries on. The renderer
+was made `Send` for it and the worker was built. **It does not work, and the reason is worth
+keeping.**
+
+### What happened
+
+The device was removed at **exactly the third frame**, every run, windowed and fullscreen:
+
+```
+IDXGISwapChain3::Present failed: 0x887a0005 (DXGI_ERROR_DEVICE_REMOVED)
+```
+
+Three is the back-buffer count. Frame 3 is the first one that comes back around to buffer
+zero, and it was recording into a buffer DXGI had not released.
+
+### Why the fence is not enough
+
+The frame ring's fence proves **GPU execution order**: slot `i` is not reused until the work
+recorded from it has completed. It says nothing about **DXGI buffer ownership**. What
+enforced that was `Present` itself — a synchronous `Present` blocks once every back buffer is
+spoken for, and *that block is the back-pressure*. Moving `Present` to another thread removes
+it, and nothing in the fence takes its place.
+
+This is worth stating plainly because the design looked sound: the ordering argument (present
+then signal, in queue order, waited on before the slot is reused) is correct as far as it
+goes, and it is not far enough.
+
+### The supported replacement, and why it did not hold either
+
+DXGI's answer is a frame-latency waitable object:
+`DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT`, `SetMaximumFrameLatency(2)`, and a wait
+at the top of each frame. Implemented, the game **hung** instead — the waitable object stopped
+being signalled after the first two frames and never recovered. Waiting with a 200 ms timeout
+instead of `INFINITE` produced `WAIT_TIMEOUT` and then, on the very next present, the same
+`DEVICE_REMOVED`.
+
+So the waitable object was not delivering the back-pressure in this configuration — windowed,
+composited, `Present(0, ALLOW_TEARING)`, and a window that is not the foreground one — and
+proceeding without it corrupts the chain immediately. Whether that is the tearing flag, DWM
+composition, or occlusion was not chased further, because of what the payoff turned out to be.
+
+### The payoff, weighed
+
+The most a present thread can buy is overlapping the frame's CPU work with the display's
+wait: `max(0.14 ms of update and recording, 0.163 ms of present)` instead of their sum. That
+is a real change — 0.40 ms to roughly 0.20 ms — but the frame is already at 2,500–3,000 FPS
+against a 480 FPS stretch target, and the cost of buying it is a swap-chain flag that can hang
+the game when its window is covered. That is not a trade worth making for headroom nothing is
+currently asking for.
+
+**Reverted**, except for the part that stands on its own: the renderer is `Send`
+(Milestone 25's `refactor(renderer)`), asserted by a `const` block, so whoever picks this up
+does not have to do that half again.
+
+### What a future attempt has to answer first
+
+1. Why the waitable object stops signalling. Reproduce it in the showcase with tearing off,
+   with the window focused, and fullscreen, and find which of the three it is.
+2. What happens when the window is occluded. An engine that stops producing frames because
+   its window is covered is worse than one that presents on the frame's own thread.
+3. Whether the same overlap is reachable without touching presentation at all — the render
+   thread of the original Phase 5 plan moves recording off the game thread instead, and its
+   back-pressure is the fence it already has.
