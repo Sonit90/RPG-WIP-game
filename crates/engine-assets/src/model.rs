@@ -27,7 +27,7 @@ use engine_core::math::Sphere;
 use crate::animation::AnimationClip;
 use crate::material::MaterialAsset;
 use crate::mesh::{Geometry, SubMesh};
-use crate::skeleton::Skeleton;
+use crate::skeleton::{Pose, Skeleton};
 use crate::texture::TextureAsset;
 
 /// One level of detail: the submeshes to draw, and how far away to start drawing them.
@@ -220,21 +220,35 @@ impl ModelAsset {
     /// pose cannot be composed, reports zero and leaves the caller to decide what that means.
     #[must_use]
     pub fn bind_pose_height(&self) -> f32 {
+        match self.skeleton.as_ref() {
+            Some(skeleton) => self.posed_height(&skeleton.rest_pose()),
+            None => self.measure_height(&[]),
+        }
+    }
+
+    /// How tall LOD0 stands in `pose`, measured as [`ModelAsset::bind_pose_height`] is.
+    ///
+    /// What proves an imported clip poses the character it was authored for: a clip that
+    /// loses the rig's unit conversion or its up-axis turn changes this by a factor of a
+    /// hundred or lays the character down, and a bind-pose measurement sees neither.
+    ///
+    /// A rigid model ignores `pose`. A pose for a different skeleton reports zero.
+    #[must_use]
+    pub fn posed_height(&self, pose: &Pose) -> f32 {
+        let Some(skeleton) = self.skeleton.as_ref() else {
+            return self.measure_height(&[]);
+        };
+        let mut palette = Vec::with_capacity(skeleton.len());
+        if skeleton.skinning_matrices(pose, &mut palette).is_err() {
+            return 0.0;
+        }
+        self.measure_height(&palette)
+    }
+
+    /// LOD0's vertical extent with its skinned vertices moved by `palette`.
+    fn measure_height(&self, palette: &[engine_core::math::Mat4]) -> f32 {
         let Some(lod) = self.lod0() else {
             return 0.0;
-        };
-        let palette = match self.skeleton.as_ref() {
-            Some(skeleton) => {
-                let mut palette = Vec::with_capacity(skeleton.len());
-                if skeleton
-                    .skinning_matrices(&skeleton.rest_pose(), &mut palette)
-                    .is_err()
-                {
-                    return 0.0;
-                }
-                palette
-            }
-            None => Vec::new(),
         };
 
         let mut lowest = f32::MAX;

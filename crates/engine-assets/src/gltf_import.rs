@@ -154,6 +154,16 @@ struct ImportedSkin {
     /// the clothing means "joint 3 *of that skin*". Without this table those indices would
     /// be read against the merged bone list and the garment would be sewn to the wrong bones.
     skin_bones: Vec<Vec<u16>>,
+    /// What lies between each bone and its parent bone, by bone index: the un-skinned nodes
+    /// a glTF file is free to put there, or `None` where the joint's parent *is* the parent
+    /// bone.
+    ///
+    /// The rest pose absorbs these nodes, but an animation channel is keyed in the joint
+    /// node's own parent space and replaces the rest transform outright. Without re-applying
+    /// the pivot to every key, a Blender export — whose `Armature` object carries the
+    /// rig's 0.01 scale and its Z-up to Y-up turn — stands correctly in its bind pose and
+    /// plays its clips a hundred times too large and lying on its back.
+    pivots: Vec<Option<Transform>>,
 }
 
 impl ImportedSkin {
@@ -600,6 +610,7 @@ fn import_skeleton(
         .collect();
 
     let mut bones = Vec::with_capacity(joint_nodes.len());
+    let mut pivots = Vec::with_capacity(joint_nodes.len());
     for node in joint_nodes.iter().copied() {
         // Nearest rather than immediate ancestor: an un-skinned pivot in the middle of a
         // chain is not a break in the skeleton, and treating it as one detaches half the
@@ -624,6 +635,18 @@ fn import_skeleton(
             },
             None => world,
         };
+
+        // The same composition as `rest`, stopping at the joint's own parent node.
+        let parent_bone_node = parent.map(|parent| joint_nodes[parent as usize]);
+        pivots.push(match parent_of[node] {
+            Some(direct) if Some(direct) != parent_bone_node => Some(decompose(
+                match parent_bone_node.and_then(|bone_node| worlds[bone_node].inverse()) {
+                    Some(inverse) => inverse * worlds[direct],
+                    None => worlds[direct],
+                },
+            )),
+            _ => None,
+        });
 
         bones.push(Bone {
             name: names[node].clone().unwrap_or_else(|| format!("bone{node}")),
@@ -656,6 +679,7 @@ fn import_skeleton(
         skeleton: Skeleton::new(bones)?,
         joint_nodes,
         skin_bones,
+        pivots,
     }))
 }
 
@@ -1070,6 +1094,7 @@ fn import_clips(
                 });
             };
             let times: Vec<f32> = times.collect();
+            let pivot = skin.pivots.get(bone as usize).copied().flatten();
 
             let track = match tracks.iter().position(|track| track.bone == bone) {
                 Some(existing) => &mut tracks[existing],
@@ -1086,7 +1111,11 @@ fn import_clips(
                         .iter()
                         .zip(values)
                         .map(|(time, value)| {
-                            Key::new(*time, Vec3::new(value[0], value[1], value[2]))
+                            let value = Vec3::new(value[0], value[1], value[2]);
+                            Key::new(
+                                *time,
+                                pivot.map_or(value, |pivot| pivot.transform_point(value)),
+                            )
                         })
                         .collect();
                 }
@@ -1095,10 +1124,9 @@ fn import_clips(
                         .iter()
                         .zip(values.into_f32())
                         .map(|(time, value)| {
-                            Key::new(
-                                *time,
-                                Quat::new(value[0], value[1], value[2], value[3]).normalize(),
-                            )
+                            let value = Quat::new(value[0], value[1], value[2], value[3]);
+                            let value = pivot.map_or(value, |pivot| pivot.rotation * value);
+                            Key::new(*time, value.normalize())
                         })
                         .collect();
                 }
@@ -1107,7 +1135,15 @@ fn import_clips(
                         .iter()
                         .zip(values)
                         .map(|(time, value)| {
-                            Key::new(*time, Vec3::new(value[0], value[1], value[2]))
+                            let value = Vec3::new(value[0], value[1], value[2]);
+                            let value = pivot.map_or(value, |pivot| {
+                                Vec3::new(
+                                    pivot.scale.x * value.x,
+                                    pivot.scale.y * value.y,
+                                    pivot.scale.z * value.z,
+                                )
+                            });
+                            Key::new(*time, value)
                         })
                         .collect();
                 }
@@ -1485,6 +1521,102 @@ mod tests {
             panic!("arbitrary bytes are not an image");
         };
         assert!(error.to_string().contains("broken"), "{error}");
+    }
+
+    #[test]
+    fn a_clip_keyed_under_an_unskinned_armature_node_keeps_that_nodes_transform() {
+        // The regression: Blender writes a Mixamo rig under an `Armature` node carrying a
+        // 0.01 scale and a quarter turn. The rest pose absorbed it, the clips did not, and
+        // the character played its idle a hundred times too large and lying on its back.
+        //
+        // The clip keys the hips exactly where the file's own rest transform puts them, so
+        // a correct import samples to the rest pose.
+        let floats: [f32; 16] = [
+            0.0, 1.0, // times
+            0.0, 100.0, 0.0, 0.0, 100.0, 0.0, // translations
+            0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, // rotations
+        ];
+        let bin: Vec<u8> = floats
+            .iter()
+            .flat_map(|value| value.to_le_bytes())
+            .collect();
+        let json = r#"{
+            "asset": {"version": "2.0"},
+            "nodes": [
+                {"name": "Armature", "children": [1],
+                 "rotation": [0.70710677, 0.0, 0.0, 0.70710677], "scale": [0.01, 0.01, 0.01]},
+                {"name": "Hips", "translation": [0.0, 100.0, 0.0]}
+            ],
+            "skins": [{"joints": [1]}],
+            "buffers": [{"byteLength": 64}],
+            "bufferViews": [
+                {"buffer": 0, "byteOffset": 0, "byteLength": 8},
+                {"buffer": 0, "byteOffset": 8, "byteLength": 24},
+                {"buffer": 0, "byteOffset": 32, "byteLength": 32}
+            ],
+            "accessors": [
+                {"bufferView": 0, "componentType": 5126, "count": 2, "type": "SCALAR",
+                 "min": [0.0], "max": [1.0]},
+                {"bufferView": 1, "componentType": 5126, "count": 2, "type": "VEC3"},
+                {"bufferView": 2, "componentType": 5126, "count": 2, "type": "VEC4"}
+            ],
+            "animations": [{
+                "name": "idle",
+                "samplers": [{"input": 0, "output": 1}, {"input": 0, "output": 2}],
+                "channels": [
+                    {"sampler": 0, "target": {"node": 1, "path": "translation"}},
+                    {"sampler": 1, "target": {"node": 1, "path": "rotation"}}
+                ]
+            }]
+        }"#;
+        let bytes = glb_with_bin(json, &bin);
+        let Ok(gltf) = gltf::Gltf::from_slice(&bytes) else {
+            panic!("the fixture must parse");
+        };
+        let Ok(buffers) = resolve_buffers("test", &gltf) else {
+            panic!("the fixture's buffer must resolve");
+        };
+        let Ok(Some(skin)) = import_skeleton("test", &gltf, &buffers) else {
+            panic!("the fixture has a skin");
+        };
+        let Ok(clips) = import_clips("test", &gltf, &buffers, &skin) else {
+            panic!("the fixture's clip must import");
+        };
+
+        let rest = skin.skeleton.rest_pose();
+        let mut posed = skin.skeleton.rest_pose();
+        assert!(clips[0].sample(0.5, &mut posed).is_ok());
+        let (want, got) = (rest.locals()[0], posed.locals()[0]);
+        assert!(
+            (want.translation - got.translation).length() < 1e-4,
+            "{want:?} vs {got:?}"
+        );
+        assert!(
+            (want.scale - got.scale).length() < 1e-6,
+            "{want:?} vs {got:?}"
+        );
+        let probe = Vec3::new(0.0, 1.0, 0.0);
+        assert!(
+            (want.rotation.rotate(probe) - got.rotation.rotate(probe)).length() < 1e-4,
+            "{want:?} vs {got:?}"
+        );
+        // And the rest pose is the upright, metre-scale hips the Armature node describes.
+        assert!((want.translation - Vec3::new(0.0, 0.0, 1.0)).length() < 1e-4);
+    }
+
+    /// A GLB carrying `json` and `bin` as its binary chunk.
+    fn glb_with_bin(json: &str, bin: &[u8]) -> Vec<u8> {
+        let mut bytes = glb(json);
+        let mut chunk = bin.to_vec();
+        while chunk.len() % 4 != 0 {
+            chunk.push(0);
+        }
+        bytes.extend_from_slice(&(chunk.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(b"BIN\0");
+        bytes.extend_from_slice(&chunk);
+        let total = bytes.len() as u32;
+        bytes[8..12].copy_from_slice(&total.to_le_bytes());
+        bytes
     }
 
     /// A minimal 1×1 8-bit greyscale PNG, encoded here so the test needs no fixture file.

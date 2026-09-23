@@ -376,6 +376,21 @@ mod tests {
             "a humanoid measures about two metres posed, not {height} - the rig's unit \
              conversion was dropped"
         );
+
+        // Every clip must stand the character up at about its bind-pose height. A clip keyed
+        // under the rig's conversion node that lost the conversion draws the character a
+        // hundred times too large, or lying down.
+        for clip in &model.clips {
+            let mut pose = skeleton.rest_pose();
+            assert!(clip.sample(clip.duration * 0.5, &mut pose).is_ok());
+            let posed = model.posed_height(&pose);
+            assert!(
+                (0.6 * height..1.4 * height).contains(&posed),
+                "'{}' poses the character {posed} tall against {height} at rest - the clip \
+                 lost the rig's conversion node",
+                clip.name
+            );
+        }
     }
 
     fn node(name: &str, x: f32, z: f32) -> LayoutNode {
