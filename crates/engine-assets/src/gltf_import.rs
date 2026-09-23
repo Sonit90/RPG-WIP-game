@@ -748,7 +748,7 @@ fn node_worlds(gltf: &gltf::Gltf, parent_of: &[Option<usize>]) -> Vec<Mat4> {
 /// Shear is not representable and is dropped: a skewed bone is not something a rig should
 /// contain, and the alternative is carrying a matrix per bone through the whole animation
 /// system to preserve something no exporter intends.
-fn decompose(matrix: Mat4) -> Transform {
+pub(crate) fn decompose(matrix: Mat4) -> Transform {
     let values = matrix.to_cols_array();
     let axis = |column: usize| {
         Vec3::new(
@@ -1159,9 +1159,29 @@ fn import_clips(
             .collect();
         // glTF says nothing about looping, so every imported clip loops and the character
         // definition's slot decides otherwise. `AnimationSlot::loops` is where that lives.
-        clips.push(AnimationClip::new(name, true, tracks));
+        let mut clip = AnimationClip::new(name, true, tracks);
+        if let Some(seconds) = clip_extra(&animation, "release") {
+            clip = clip.with_release(seconds);
+        }
+        if let Some(speed) = clip_extra(&animation, "speed") {
+            clip = clip.with_speed(speed);
+        }
+        clips.push(clip);
     }
     Ok(clips)
+}
+
+/// A number an animation's extras carry under `key`.
+///
+/// How an export annotates a clip — Blender writes an action's custom properties here:
+/// `release`, the seconds at which a cast clip's spell leaves the hands, and `speed`, the
+/// metres per second a locomotion clip was authored moving at. Anything else in the
+/// extras, or extras that are not an object, is not this importer's concern.
+fn clip_extra(animation: &gltf::Animation<'_>, key: &str) -> Option<f32> {
+    let raw = animation.extras().as_ref()?;
+    let value: serde_json::Value = serde_json::from_str(raw.get()).ok()?;
+    let number = value.get(key)?.as_f64()? as f32;
+    number.is_finite().then_some(number)
 }
 
 #[cfg(test)]
@@ -1562,6 +1582,7 @@ mod tests {
             ],
             "animations": [{
                 "name": "idle",
+                "extras": {"release": 0.25},
                 "samplers": [{"input": 0, "output": 1}, {"input": 0, "output": 2}],
                 "channels": [
                     {"sampler": 0, "target": {"node": 1, "path": "translation"}},
@@ -1582,6 +1603,9 @@ mod tests {
         let Ok(clips) = import_clips("test", &gltf, &buffers, &skin) else {
             panic!("the fixture's clip must import");
         };
+
+        // The release moment an export writes into the extras reaches the clip.
+        assert_eq!(clips[0].release, Some(0.25));
 
         let rest = skin.skeleton.rest_pose();
         let mut posed = skin.skeleton.rest_pose();

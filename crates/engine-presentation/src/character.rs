@@ -105,6 +105,24 @@ impl CastVisual {
     }
 }
 
+/// Which way the character is moving relative to the way it faces.
+///
+/// The camera pins a character's facing while it strafes and backpedals, so speed alone
+/// cannot say which cycle to play: a character sidestepping at a run and one running
+/// forwards have the same speed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Heading {
+    /// The way it faces, or near enough — a diagonal forwards reads as forwards.
+    #[default]
+    Forward,
+    /// Away from the way it faces.
+    Backward,
+    /// Sideways, to the character's own left.
+    Left,
+    /// Sideways, to the character's own right.
+    Right,
+}
+
 /// What the simulation says the character is doing, this frame.
 ///
 /// A snapshot with no authority: it is built from the simulation, read by the controller,
@@ -117,6 +135,10 @@ pub struct CharacterState {
     pub facing_yaw: f32,
     /// Horizontal speed, metres per second.
     pub speed: f32,
+    /// Which way the character is moving relative to its facing. Chooses the directional
+    /// cycle a model has for it, and without one plays the forward cycle — in reverse when
+    /// backpedalling, so the feet step backwards instead of moonwalking.
+    pub heading: Heading,
     /// Whether the feet are on the ground.
     pub grounded: bool,
     /// Whether the character is rising rather than falling. Only read when airborne.
@@ -127,6 +149,19 @@ pub struct CharacterState {
     pub height: f32,
     /// A cast in progress, if there is one.
     pub cast: Option<CastVisual>,
+    /// How far through the cast in progress, 0 to 1. The cast clip is placed at this
+    /// fraction of its wind-up, so its release lands as gameplay completes the cast.
+    pub cast_progress: f32,
+    /// The tick of the latest cast this character started, from the event stream.
+    ///
+    /// A tick rather than a flag so a new cast is recognised however it arrives — including
+    /// one queued behind the last, which starts on the tick the previous one lands and so
+    /// never shows a frame without a cast — and so a frame that sees the same event twice
+    /// does not restart the clip twice.
+    pub cast_started: Option<u64>,
+    /// The tick of the latest ability this character used — a cast completing, or an
+    /// instant going off. The cast clip's follow-through plays from here.
+    pub released: Option<u64>,
 }
 
 impl Default for CharacterState {
@@ -135,10 +170,14 @@ impl Default for CharacterState {
             position: Vec3::ZERO,
             facing_yaw: 0.0,
             speed: 0.0,
+            heading: Heading::Forward,
             grounded: true,
             rising: false,
             height: 1.8,
             cast: None,
+            cast_progress: 0.0,
+            cast_started: None,
+            released: None,
         }
     }
 }
@@ -166,8 +205,16 @@ pub struct CharacterVisual {
     land_remaining: f32,
     /// Whether the character was off the ground last frame, so a landing can be detected.
     was_airborne: bool,
-    /// A cast that was showing last frame, so a repeat of the same spell restarts the clip.
+    /// The cast that was showing last frame, so a completing cast knows which clip to
+    /// follow through with.
     was_casting: Option<CastVisual>,
+    /// The last [`CharacterState::cast_started`] acted on.
+    last_cast_started: Option<u64>,
+    /// The last [`CharacterState::released`] acted on.
+    last_released: Option<u64>,
+    /// The cast clip playing out after its spell has fired, until it ends or the character
+    /// moves. The part of a cast gameplay has no state for, like a landing.
+    follow_through: Option<AnimationSlot>,
     /// Where the level of detail was last selected, for diagnostics.
     lod: usize,
     /// A role the character is held in regardless of what it is doing.
@@ -215,6 +262,9 @@ impl CharacterVisual {
             land_remaining: 0.0,
             was_airborne: false,
             was_casting: None,
+            last_cast_started: None,
+            last_released: None,
+            follow_through: None,
             lod: 0,
             forced: None,
         })
@@ -253,6 +303,12 @@ impl CharacterVisual {
         &self.def
     }
 
+    /// The state the last update was given.
+    #[must_use]
+    pub fn state(&self) -> &CharacterState {
+        &self.state
+    }
+
     /// The bone palette from the last update.
     #[must_use]
     pub fn palette(&self) -> &[Mat4] {
@@ -288,22 +344,62 @@ impl CharacterVisual {
         self.was_airborne = !state.grounded;
         self.land_remaining = (self.land_remaining - dt).max(0.0);
 
-        let (slot, fade) = self.choose_slot();
-        // A second cast of the same spell is the same slot, so `play` would correctly decide
-        // nothing changed. It really does want the animation from the top.
-        let recast = matches!(state.cast, Some(cast) if self.was_casting != Some(cast));
+        // New casts and releases, each acted on once however many frames report it.
+        let started = state.cast_started.is_some() && state.cast_started != self.last_cast_started;
+        self.last_cast_started = state.cast_started.or(self.last_cast_started);
+        let released = state.released.is_some() && state.released != self.last_released;
+        self.last_released = state.released.or(self.last_released);
+
+        if started || !state.grounded || state.speed > IDLE_SPEED {
+            // A new cast, a jump or a step all cut the follow-through short.
+            self.follow_through = None;
+        }
+        if released && state.cast.is_none() && state.grounded && state.speed <= IDLE_SPEED {
+            // The spell left the hands: the rest of the clip plays out. A cast that was
+            // showing follows through with its own clip; an instant has none and borrows the
+            // ordinary cast's.
+            let slot = self
+                .was_casting
+                .map_or(AnimationSlot::Cast, CastVisual::slot);
+            if self.has_follow_through(slot) {
+                self.follow_through = Some(slot);
+            }
+        }
         self.was_casting = state.cast;
 
+        let (slot, fade) = self.choose_slot();
         if let Some(clip) = self.clip_for(slot) {
             let changed = self.slot != slot;
             self.player.play(clip, fade);
-            if recast && !changed {
-                self.player.restart();
+            let release = self
+                .asset
+                .clips
+                .get(clip)
+                .map_or(0.0, |clip| clip.release_time());
+            if state.cast.is_some() && self.forced.is_none() {
+                // The wind-up is driven by the cast, not the clock: however long the cast
+                // takes, the release lands as it completes. A new cast of the same spell is
+                // the same clip, and this is what takes it back to the top.
+                if started && !changed {
+                    self.player.restart();
+                }
+                self.player
+                    .seek(state.cast_progress.clamp(0.0, 1.0) * release);
+            } else if released && self.follow_through == Some(slot) {
+                self.player.seek(release);
             }
         }
         self.slot = slot;
-        self.player.set_speed(self.playback_speed(slot));
+        let speed = if state.cast.is_some() && self.forced.is_none() {
+            0.0
+        } else {
+            self.playback_speed(slot)
+        };
+        self.player.set_speed(speed);
         self.player.update(dt, &self.asset.clips)?;
+        if self.follow_through == Some(slot) && self.player.is_finished() {
+            self.follow_through = None;
+        }
 
         if let Some(skeleton) = self.asset.skeleton.as_ref() {
             skeleton.skinning_matrices(self.player.pose(), &mut self.palette)?;
@@ -316,7 +412,8 @@ impl CharacterVisual {
     /// The order is the priority order, and it is the whole state machine:
     ///
     /// ```text
-    /// casting  >  airborne (rising -> Jump, falling -> Fall)  >  landing  >  locomotion
+    /// casting  >  airborne (rising -> Jump, falling -> Fall)  >  follow-through
+    ///          >  landing  >  locomotion
     /// ```
     ///
     /// Casting wins over locomotion because the abilities that have a cast time also root
@@ -337,16 +434,42 @@ impl CharacterVisual {
             };
             return (slot, AIR_FADE);
         }
+        if let Some(slot) = self.follow_through {
+            return (slot, CAST_FADE);
+        }
         if self.land_remaining > 0.0 {
             return (AnimationSlot::Land, AIR_FADE);
         }
-        if self.state.speed >= self.def.run_speed {
-            return (AnimationSlot::Run, LOCOMOTION_FADE);
+        if self.state.speed <= IDLE_SPEED {
+            return (AnimationSlot::Idle, LOCOMOTION_FADE);
         }
-        if self.state.speed > IDLE_SPEED {
-            return (AnimationSlot::Walk, LOCOMOTION_FADE);
+        (self.locomotion_slot(), LOCOMOTION_FADE)
+    }
+
+    /// Which locomotion cycle to play, by pace and heading.
+    ///
+    /// A directional cycle the model has wins. One it lacks falls back to the forward cycle
+    /// for the same pace — reversed by [`CharacterVisual::playback_speed`] when backpedalling —
+    /// which is exactly what a character without any directional clips always does.
+    fn locomotion_slot(&self) -> AnimationSlot {
+        let running = self.state.speed >= self.def.run_speed;
+        let forward = if running {
+            AnimationSlot::Run
+        } else {
+            AnimationSlot::Walk
+        };
+        let directional = match self.state.heading {
+            Heading::Forward => return forward,
+            Heading::Backward if running => AnimationSlot::RunBackward,
+            Heading::Backward => AnimationSlot::WalkBackward,
+            Heading::Left => AnimationSlot::StrafeLeft,
+            Heading::Right => AnimationSlot::StrafeRight,
+        };
+        if self.clips.get(directional).is_some() {
+            directional
+        } else {
+            forward
         }
-        (AnimationSlot::Idle, LOCOMOTION_FADE)
     }
 
     /// The clip filling `slot`, with the one fallback the character is allowed.
@@ -363,6 +486,16 @@ impl CharacterVisual {
         }
     }
 
+    /// Whether `slot`'s clip has anything after its release to play once the spell fires.
+    ///
+    /// A clip with no release moment releases on its last frame, and following through
+    /// from there would flash its final pose for a frame on every instant.
+    fn has_follow_through(&self, slot: AnimationSlot) -> bool {
+        self.clip_for(slot)
+            .and_then(|index| self.asset.clips.get(index))
+            .is_some_and(|clip| clip.release_time() < clip.duration - 1e-3)
+    }
+
     /// How fast to play the current clip.
     ///
     /// Locomotion is scaled by how fast the character is actually moving, relative to the
@@ -372,17 +505,33 @@ impl CharacterVisual {
     ///
     /// Clamped, because a character crawling at a tenth of walking speed should not play a
     /// tenth-speed walk — it should walk slowly, and there is a floor below which it reads
-    /// as broken.
+    /// as broken. Backpedalling plays the same rate in reverse.
+    ///
+    /// A cast in progress is not played at a rate at all — it is placed at the cast's
+    /// progress every frame — so this is only its follow-through, at the authored rate.
     fn playback_speed(&self, slot: AnimationSlot) -> f32 {
-        let authored = match slot {
-            AnimationSlot::Walk => self.def.walk_speed,
-            AnimationSlot::Run => self.def.run_speed,
+        let pace = match slot {
+            AnimationSlot::Walk | AnimationSlot::WalkBackward => self.def.walk_speed,
+            AnimationSlot::Run
+            | AnimationSlot::RunBackward
+            | AnimationSlot::StrafeLeft
+            | AnimationSlot::StrafeRight => self.def.run_speed,
             _ => return 1.0,
         };
+        // The speed the clip itself says it was authored at, when its export says so, is
+        // better than the definition's guess: a jogging strafe and a sprint differ.
+        let authored = self
+            .clip_for(slot)
+            .and_then(|index| self.asset.clips.get(index))
+            .and_then(|clip| clip.speed)
+            .unwrap_or(pace);
         if authored <= 1e-3 {
             return 1.0;
         }
-        (self.state.speed / authored).clamp(MIN_PLAYBACK_RATE, MAX_PLAYBACK_RATE)
+        let rate = (self.state.speed / authored).clamp(MIN_PLAYBACK_RATE, MAX_PLAYBACK_RATE);
+        let reversed = self.state.heading == Heading::Backward
+            && matches!(slot, AnimationSlot::Walk | AnimationSlot::Run);
+        if reversed { -rate } else { rate }
     }
 
     /// Adds this character's submeshes to `world`'s skinned draw list.
@@ -545,8 +694,8 @@ mod tests {
         for (hero, mut visual) in every_hero() {
             assert_eq!(hero.model_name(), visual.def().model.as_str(), "{hero:?}");
             assert_eq!(
-                visual.def().clips.len(),
-                AnimationSlot::ALL.len(),
+                visual.clips.len(),
+                AnimationSlot::REQUIRED.len(),
                 "{hero:?} does not fill every animation slot"
             );
             let Ok(()) = visual.update(0.016, CharacterState::default()) else {
@@ -715,6 +864,268 @@ mod tests {
         };
         assert_eq!(visual.playback_speed(AnimationSlot::Run), MAX_PLAYBACK_RATE);
         assert_eq!(visual.playback_speed(AnimationSlot::Idle), 1.0);
+    }
+
+    /// The mage, delivered with a left strafe (authored at 4 m/s) and a backwards walk.
+    fn mage_with_directions() -> CharacterVisual {
+        let Ok(mut model) = fire_mage() else {
+            panic!("the FireMage must build");
+        };
+        let Some(walk) = model.clip_index("walk") else {
+            panic!("the FireMage has a walk");
+        };
+        let mut strafe = model.clips[walk].clone().with_speed(4.0);
+        strafe.name = "strafe_left".to_owned();
+        let mut back = model.clips[walk].clone();
+        back.name = "walk_back".to_owned();
+        model.clips.push(strafe);
+        model.clips.push(back);
+        let def = fire_mage_character();
+        assert!(matches!(def.mirror_missing(&mut model), Ok(1)));
+        let model = Arc::new(model);
+        let binding = binding(&model);
+        match CharacterVisual::new(def, model, binding) {
+            Ok(visual) => visual,
+            Err(error) => panic!("the FireMage's own definition must resolve: {error}"),
+        }
+    }
+
+    fn heading(speed: f32, heading: Heading) -> CharacterState {
+        CharacterState {
+            speed,
+            heading,
+            ..CharacterState::default()
+        }
+    }
+
+    #[test]
+    fn a_directional_clip_the_model_has_is_played_for_its_heading() {
+        let mut visual = mage_with_directions();
+        let walk = visual.def().walk_speed;
+        let run = visual.def().run_speed;
+        let cases = [
+            (heading(walk, Heading::Left), AnimationSlot::StrafeLeft),
+            (heading(run + 1.0, Heading::Left), AnimationSlot::StrafeLeft),
+            (heading(walk, Heading::Right), AnimationSlot::StrafeRight),
+            (
+                heading(walk, Heading::Backward),
+                AnimationSlot::WalkBackward,
+            ),
+            // No run_back: running backwards falls back to the run, reversed.
+            (heading(run + 1.0, Heading::Backward), AnimationSlot::Run),
+            (heading(walk, Heading::Forward), AnimationSlot::Walk),
+        ];
+        for (state, expected) in cases {
+            let Ok(()) = visual.update(0.016, state) else {
+                panic!("the update must succeed");
+            };
+            assert_eq!(
+                visual.slot(),
+                expected,
+                "{:?} at {}",
+                state.heading,
+                state.speed
+            );
+        }
+        // A backwards walk plays forwards; only a borrowed forward cycle is reversed.
+        let Ok(()) = visual.update(0.016, heading(run + 1.0, Heading::Backward)) else {
+            panic!("the update must succeed");
+        };
+        assert!(visual.playback_speed(AnimationSlot::Run) < 0.0);
+        let Ok(()) = visual.update(0.016, heading(walk, Heading::Backward)) else {
+            panic!("the update must succeed");
+        };
+        assert!(visual.playback_speed(AnimationSlot::WalkBackward) > 0.0);
+    }
+
+    #[test]
+    fn a_strafe_plays_against_the_speed_it_was_authored_at() {
+        let mut visual = mage_with_directions();
+        let Ok(()) = visual.update(0.016, heading(4.0, Heading::Left)) else {
+            panic!("the update must succeed");
+        };
+        assert!((visual.playback_speed(AnimationSlot::StrafeLeft) - 1.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn a_model_without_directional_clips_moves_as_it_always_did() {
+        let mut visual = mage();
+        let walk = visual.def().walk_speed;
+        for direction in [Heading::Left, Heading::Right, Heading::Backward] {
+            let Ok(()) = visual.update(0.016, heading(walk, direction)) else {
+                panic!("the update must succeed");
+            };
+            assert_eq!(visual.slot(), AnimationSlot::Walk, "{direction:?}");
+        }
+        let Ok(()) = visual.update(0.016, heading(walk, Heading::Left)) else {
+            panic!("the update must succeed");
+        };
+        assert!(
+            visual.playback_speed(AnimationSlot::Walk) > 0.0,
+            "a strafe is not reversed"
+        );
+    }
+
+    #[test]
+    fn backpedalling_plays_the_walk_in_reverse() {
+        // Facing pinned by the camera while moving the other way: stepping backwards, not
+        // moonwalking on a forward walk.
+        let mut visual = mage();
+        let walk_speed = visual.def().walk_speed;
+        let state = CharacterState {
+            speed: walk_speed,
+            heading: Heading::Backward,
+            ..CharacterState::default()
+        };
+        let Ok(()) = visual.update(0.016, state) else {
+            panic!("the update must succeed");
+        };
+        assert_eq!(visual.slot(), AnimationSlot::Walk);
+        assert!((visual.playback_speed(AnimationSlot::Walk) + 1.0).abs() < 1e-4);
+    }
+
+    /// The mage, with its cast clip releasing halfway through.
+    fn mage_with_release() -> CharacterVisual {
+        let Ok(mut model) = fire_mage() else {
+            panic!("the FireMage must build");
+        };
+        let Some(index) = model.clip_index("cast") else {
+            panic!("the FireMage has a cast clip");
+        };
+        let half = model.clips[index].duration * 0.5;
+        model.clips[index].release = Some(half);
+        let model = Arc::new(model);
+        let binding = binding(&model);
+        match CharacterVisual::new(fire_mage_character(), model, binding) {
+            Ok(visual) => visual,
+            Err(error) => panic!("the FireMage's own definition must resolve: {error}"),
+        }
+    }
+
+    fn casting(progress: f32, started: u64) -> CharacterState {
+        CharacterState {
+            cast: Some(CastVisual::Normal),
+            cast_progress: progress,
+            cast_started: Some(started),
+            ..CharacterState::default()
+        }
+    }
+
+    fn cast_clip(visual: &CharacterVisual) -> &engine_assets::AnimationClip {
+        match visual.clip_for(AnimationSlot::Cast) {
+            Some(index) => &visual.asset.clips[index],
+            None => panic!("the mage has a cast clip"),
+        }
+    }
+
+    #[test]
+    fn a_cast_is_placed_at_its_progress_so_the_release_lands_as_it_completes() {
+        // However long the cast, the wind-up fills it: the clip never reaches its release
+        // early and plays its recovery while the cast bar is still filling.
+        let mut visual = mage_with_release();
+        let release = cast_clip(&visual).release_time();
+        for progress in [0.25, 0.5, 0.99] {
+            let Ok(()) = visual.update(0.5, casting(progress, 1)) else {
+                panic!("the update must succeed");
+            };
+            assert!(
+                (visual.player.time() - progress * release).abs() < 1e-4,
+                "at {progress} the clip is at {}",
+                visual.player.time()
+            );
+        }
+    }
+
+    #[test]
+    fn a_cast_queued_behind_the_last_starts_its_clip_from_the_top() {
+        // Spamming a spell: the next cast begins on the tick the last one lands, so there is
+        // never a frame without a cast and the cast kind never changes.
+        let mut visual = mage_with_release();
+        let Ok(()) = visual.update(0.016, casting(0.95, 10)) else {
+            panic!("the update must succeed");
+        };
+        let Ok(()) = visual.update(0.016, casting(0.02, 70)) else {
+            panic!("the update must succeed");
+        };
+        assert_eq!(visual.slot(), AnimationSlot::Cast);
+        let release = cast_clip(&visual).release_time();
+        assert!((visual.player.time() - 0.02 * release).abs() < 1e-4);
+    }
+
+    #[test]
+    fn a_completed_cast_follows_through_and_moving_cuts_it_short() {
+        let mut visual = mage_with_release();
+        let Ok(()) = visual.update(0.016, casting(0.98, 1)) else {
+            panic!("the update must succeed");
+        };
+        // The cast lands: no cast any more, and the ability went off.
+        let landed = CharacterState {
+            cast_started: Some(1),
+            released: Some(60),
+            ..CharacterState::default()
+        };
+        let Ok(()) = visual.update(0.016, landed) else {
+            panic!("the update must succeed");
+        };
+        assert_eq!(visual.slot(), AnimationSlot::Cast, "the recovery plays out");
+        let release = cast_clip(&visual).release_time();
+        assert!(visual.player.time() >= release);
+
+        // The same event seen again next frame does not start it over.
+        let Ok(()) = visual.update(0.1, landed) else {
+            panic!("the update must succeed");
+        };
+        assert!(visual.player.time() > release + 0.05);
+
+        // A step cuts it short.
+        let Ok(()) = visual.update(
+            0.016,
+            CharacterState {
+                speed: 3.0,
+                ..landed
+            },
+        ) else {
+            panic!("the update must succeed");
+        };
+        assert_eq!(visual.slot(), AnimationSlot::Walk);
+    }
+
+    #[test]
+    fn a_follow_through_ends_with_its_clip() {
+        let mut visual = mage_with_release();
+        let landed = CharacterState {
+            released: Some(5),
+            ..CharacterState::default()
+        };
+        let Ok(()) = visual.update(0.016, landed) else {
+            panic!("the update must succeed");
+        };
+        assert_eq!(
+            visual.slot(),
+            AnimationSlot::Cast,
+            "an instant borrows the cast clip"
+        );
+        let Ok(()) = visual.update(10.0, landed) else {
+            panic!("the update must succeed");
+        };
+        let Ok(()) = visual.update(0.016, landed) else {
+            panic!("the update must succeed");
+        };
+        assert_eq!(visual.slot(), AnimationSlot::Idle);
+    }
+
+    #[test]
+    fn a_clip_with_no_release_has_no_follow_through() {
+        // Otherwise every instant would flash the cast's last frame.
+        let mut visual = mage();
+        let landed = CharacterState {
+            released: Some(5),
+            ..CharacterState::default()
+        };
+        let Ok(()) = visual.update(0.016, landed) else {
+            panic!("the update must succeed");
+        };
+        assert_eq!(visual.slot(), AnimationSlot::Idle);
     }
 
     #[test]

@@ -895,7 +895,7 @@ mod tests {
                 ..Style::default()
             };
             let clips = clips(&style);
-            assert_eq!(clips.len(), AnimationSlot::ALL.len());
+            assert_eq!(clips.len(), AnimationSlot::REQUIRED.len());
             for name in [
                 "idle",
                 "walk",

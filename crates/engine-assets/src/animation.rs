@@ -182,6 +182,17 @@ pub struct AnimationClip {
     pub looping: bool,
     /// One entry per animated bone. Bones with no track keep their rest transform.
     pub tracks: Vec<BoneTrack>,
+    /// Seconds in at which the action lands — the moment a spell leaves the hands.
+    ///
+    /// What lets a cast clip follow gameplay rather than race it: everything before this is
+    /// wind-up, stretched over however long the cast takes, and everything after is the
+    /// follow-through, played once the spell has actually fired. `None` for a clip with no
+    /// such moment, which a cast then treats as releasing on its last frame.
+    pub release: Option<f32>,
+    /// Metres per second the clip was authored moving at, for a locomotion clip whose export
+    /// says so. Playback is scaled against it, so the feet keep pace with the ground; `None`
+    /// leaves the character definition's walk or run speed to stand in.
+    pub speed: Option<f32>,
 }
 
 impl AnimationClip {
@@ -200,7 +211,29 @@ impl AnimationClip {
             duration,
             looping,
             tracks,
+            release: None,
+            speed: None,
         }
+    }
+
+    /// The same clip with the speed it was authored moving at. Zero or less is no speed.
+    #[must_use]
+    pub fn with_speed(mut self, metres_per_second: f32) -> Self {
+        self.speed = (metres_per_second > 1e-3).then_some(metres_per_second);
+        self
+    }
+
+    /// The same clip with its release moment set, clamped into the clip.
+    #[must_use]
+    pub fn with_release(mut self, seconds: f32) -> Self {
+        self.release = Some(seconds.clamp(0.0, self.duration));
+        self
+    }
+
+    /// When the action lands: [`AnimationClip::release`], or the end of the clip.
+    #[must_use]
+    pub fn release_time(&self) -> f32 {
+        self.release.unwrap_or(self.duration)
     }
 
     /// Wraps or clamps `time` into the clip, according to whether it loops.
@@ -313,10 +346,11 @@ impl AnimationPlayer {
 
     /// Sets the playback rate.
     ///
-    /// Negative rates are clamped to zero. Playing a clip backwards is a feature nothing
-    /// asks for, and the wrap arithmetic for it is a separate decision.
+    /// A negative rate plays the clip backwards, which is how a character backpedals with
+    /// its forward walk. A looping clip wraps either way; a one-shot clip played backwards
+    /// runs to its first frame and holds it.
     pub fn set_speed(&mut self, speed: f32) {
-        self.speed = speed.max(0.0);
+        self.speed = if speed.is_finite() { speed } else { 0.0 };
     }
 
     /// Whether a non-looping clip has reached its end.
@@ -356,6 +390,16 @@ impl AnimationPlayer {
         self.finished = false;
     }
 
+    /// Jumps to `time` seconds into the current clip without a fade.
+    ///
+    /// How a cast clip is driven by the cast rather than by the clock: every frame the
+    /// visual layer places the clip at the cast's progress, so the release lands exactly as
+    /// gameplay completes the cast however long it takes.
+    pub fn seek(&mut self, time: f32) {
+        self.time = time.max(0.0);
+        self.finished = false;
+    }
+
     /// Restarts the current clip from its beginning without a fade.
     ///
     /// What a repeated cast of the same spell needs: [`AnimationPlayer::play`] would
@@ -387,8 +431,14 @@ impl AnimationPlayer {
         };
 
         self.time += dt * self.speed;
-        if !clip.looping && self.time >= clip.duration {
+        if clip.looping {
+            // Kept inside the clip so a long session going backwards never loses precision.
+            self.time = clip.wrap(self.time);
+        } else if self.time >= clip.duration {
             self.time = clip.duration;
+            self.finished = true;
+        } else if self.time <= 0.0 && self.speed < 0.0 {
+            self.time = 0.0;
             self.finished = true;
         }
 
@@ -559,7 +609,7 @@ mod tests {
     }
 
     #[test]
-    fn speed_scales_time_and_cannot_run_backwards() {
+    fn speed_scales_time() {
         let skeleton = two_bones();
         let clips = [slide_clip(true)];
         let mut player = AnimationPlayer::new(&skeleton);
@@ -568,8 +618,35 @@ mod tests {
         assert!(player.update(0.25, &clips).is_ok());
         assert_eq!(player.time(), 0.5);
 
-        player.set_speed(-3.0);
+        player.set_speed(f32::NAN);
         assert_eq!(player.speed(), 0.0);
+    }
+
+    #[test]
+    fn a_negative_speed_plays_a_looping_clip_backwards_and_wraps() {
+        // How a character backpedals: its forward walk, played in reverse.
+        let skeleton = two_bones();
+        let clips = [slide_clip(true)];
+        let mut player = AnimationPlayer::new(&skeleton);
+        player.set_speed(-1.0);
+        player.play(0, 0.0);
+        assert!(player.update(0.25, &clips).is_ok());
+        assert!((player.time() - 0.75).abs() < 1e-5, "{}", player.time());
+        assert!((player.pose().locals()[1].translation.x - 7.5).abs() < 1e-4);
+        assert!(!player.is_finished());
+    }
+
+    #[test]
+    fn a_one_shot_clip_played_backwards_holds_its_first_frame() {
+        let skeleton = two_bones();
+        let clips = [slide_clip(false)];
+        let mut player = AnimationPlayer::new(&skeleton);
+        player.play(0, 0.0);
+        assert!(player.update(0.5, &clips).is_ok());
+        player.set_speed(-1.0);
+        assert!(player.update(2.0, &clips).is_ok());
+        assert_eq!(player.time(), 0.0);
+        assert!(player.is_finished());
     }
 
     #[test]

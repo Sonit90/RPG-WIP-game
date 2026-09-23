@@ -53,6 +53,7 @@ pub mod library;
 pub mod material;
 pub mod material_file;
 pub mod mesh;
+pub mod mirror;
 pub mod model;
 pub mod procedural;
 pub mod skeleton;

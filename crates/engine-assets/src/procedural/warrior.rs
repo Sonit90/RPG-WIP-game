@@ -467,6 +467,7 @@ pub fn warrior_character() -> CharacterDef {
         .with_clip(AnimationSlot::Land, "land")
         .with_clip(AnimationSlot::Cast, "cast")
         .with_clip(AnimationSlot::CastHeavy, "cast_heavy")
+        .with_directional_clips()
 }
 
 #[cfg(test)]

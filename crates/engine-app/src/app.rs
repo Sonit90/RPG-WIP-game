@@ -2813,7 +2813,7 @@ impl App {
     /// for its edge, both scaled to the ability's own radius so what is shown is exactly
     /// what will be hit. The ring breathes slowly, which is what makes it read as a live
     /// indicator rather than as a decal somebody left on the floor.
-    /// Character test scene only: keys 1 to 6 hold the character in one animation.
+    /// Character test scene only: keys 1 to 9 hold the character in one animation.
     ///
     /// The point of the scene. Judging a run cycle by running means chasing the character
     /// with the camera while it covers ground; holding it in the run animation on the spot
@@ -2822,7 +2822,7 @@ impl App {
     fn update_animation_override(&mut self, ctx: &mut EngineContext) {
         use engine_assets::AnimationSlot;
 
-        const BINDINGS: [(KeyCode, Option<AnimationSlot>); 8] = [
+        const BINDINGS: [(KeyCode, Option<AnimationSlot>); 10] = [
             (KeyCode::Digit1, Some(AnimationSlot::Idle)),
             (KeyCode::Digit2, Some(AnimationSlot::Walk)),
             (KeyCode::Digit3, Some(AnimationSlot::Run)),
@@ -2830,6 +2830,8 @@ impl App {
             (KeyCode::Digit5, Some(AnimationSlot::Cast)),
             (KeyCode::Digit6, Some(AnimationSlot::CastHeavy)),
             (KeyCode::Digit7, Some(AnimationSlot::Fall)),
+            (KeyCode::Digit8, Some(AnimationSlot::StrafeLeft)),
+            (KeyCode::Digit9, Some(AnimationSlot::StrafeRight)),
             (KeyCode::Digit0, None),
         ];
 
@@ -4574,7 +4576,18 @@ fn load_character(
                 model.texture_bytes() / 1024,
                 model.bind_pose_height(),
             );
-            Ok((imported_character(&model, character()), model))
+            let mut model = model;
+            // A strafe delivered for one side only is mirrored to the other before the
+            // definition checks which clips the export carries.
+            let mirrored = character().mirror_missing(&mut model).map_err(|error| {
+                EngineError::unsupported("mirror a hero's animations").with_source(error)
+            })?;
+            if mirrored > 0 {
+                log::info!("{name}: mirrored {mirrored} one-sided clip(s) to the other side");
+            }
+            let definition = imported_character(&model, character());
+            definition.apply_playback(&mut model);
+            Ok((definition, model))
         }
         Ok(None) => Ok((
             character(),
@@ -4602,18 +4615,36 @@ fn imported_character(
     if height > 1e-3 {
         definition.model_height = height;
     }
-    let before = definition.clips.len();
+    let required = |clips: &[(engine_assets::AnimationSlot, String)]| {
+        clips.iter().filter(|(slot, _)| !slot.is_optional()).count()
+    };
+    let before = required(&definition.clips);
     definition
         .clips
         .retain(|(_, name)| model.clip_index(name).is_some());
-    if definition.clips.len() < before {
+    let carried = required(&definition.clips);
+    if carried < before {
         log::warn!(
-            "{}: the export carries {} of the {before} clips the character wants; the rest \
-             fall back to the bind pose",
+            "{}: the export carries {carried} of the {before} clips the character needs; the \
+             rest fall back to the bind pose",
             definition.name,
-            definition.clips.len(),
         );
     }
+    let optional: Vec<&str> = definition
+        .clips
+        .iter()
+        .filter(|(slot, _)| slot.is_optional())
+        .map(|(_, name)| name.as_str())
+        .collect();
+    log::info!(
+        "{}: optional clips: {}",
+        definition.name,
+        if optional.is_empty() {
+            "none - strafing and backpedalling use the forward cycle".to_owned()
+        } else {
+            optional.join(", ")
+        },
+    );
     definition
 }
 

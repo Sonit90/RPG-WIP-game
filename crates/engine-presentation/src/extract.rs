@@ -33,7 +33,7 @@ use engine_render_data::{
     PartGeometry, RenderEntity, RenderEntityDesc, RenderWorld, ShadowCasting,
 };
 
-use crate::character::{CastVisual, CharacterState, CharacterVisual};
+use crate::character::{CastVisual, CharacterState, CharacterVisual, Heading};
 
 /// Which mesh and material each kind of thing is drawn with.
 ///
@@ -272,6 +272,38 @@ pub fn lerp_position(previous: Vec3, current: Vec3, alpha: f32) -> Vec3 {
     previous + (current - previous) * alpha
 }
 
+/// How much of its speed a body must spend moving against its facing to count as
+/// backpedalling. Below this — a strafe, or a strafe drifting slightly back — the forward
+/// or sideways cycle still reads better than a backwards one.
+const BACKPEDAL_SHARE: f32 = 0.3;
+
+/// How much of its speed a body must spend moving sideways to count as strafing. A diagonal
+/// forwards (about 0.71 each way) stays a forward run, which is what it looks like.
+const STRAFE_SHARE: f32 = 0.8;
+
+/// Which way `velocity` goes relative to a body facing `yaw`.
+///
+/// Yaw zero faces -Z with +X on the right. Backwards wins over sideways, so a diagonal
+/// backwards backpedals rather than sidestepping.
+fn heading(velocity: Vec3, yaw: f32) -> Heading {
+    let speed = velocity.x.hypot(velocity.z);
+    if speed <= 1e-4 {
+        return Heading::Forward;
+    }
+    let (sin, cos) = yaw.sin_cos();
+    let forward = -velocity.x * sin - velocity.z * cos;
+    let right = velocity.x * cos - velocity.z * sin;
+    if forward < -BACKPEDAL_SHARE * speed {
+        Heading::Backward
+    } else if right >= STRAFE_SHARE * speed {
+        Heading::Right
+    } else if right <= -STRAFE_SHARE * speed {
+        Heading::Left
+    } else {
+        Heading::Forward
+    }
+}
+
 /// Blends two yaw angles by `alpha`, taking the short way round.
 ///
 /// A plain lerp on angles spins a character the long way round whenever it crosses the
@@ -327,6 +359,14 @@ pub fn player_teleported(simulation: &Simulation) -> bool {
         .events()
         .iter()
         .any(|event| matches!(event, CombatEvent::Teleported { entity, .. } if *entity == player))
+}
+
+/// The tick of the latest event this frame that `pick` recognises.
+///
+/// Ticks rather than booleans: the stream is per advance, and a frame that draws without
+/// advancing sees the same events again. A tick lets the reader act on each one once.
+fn last_tick(simulation: &Simulation, pick: impl Fn(&CombatEvent) -> Option<u64>) -> Option<u64> {
+    simulation.events().iter().rev().find_map(pick)
 }
 
 /// Which model an entity is drawn with.
@@ -669,19 +709,30 @@ impl RenderExtractor {
         let position = lerp_position(previous.position, body.position, alpha);
         let facing_yaw = lerp_angle(previous.facing_yaw, body.facing_yaw, alpha);
 
+        let speed = body.horizontal_speed();
+        let heading = heading(body.velocity, body.facing_yaw);
+        let cast = simulation.casting();
         let state = CharacterState {
             position,
             facing_yaw,
-            speed: body.horizontal_speed(),
+            speed,
+            heading,
             grounded: body.grounded,
             // From the movement state the simulation already derives, rather than from a
             // second look at the velocity: two sources for "am I falling" is exactly what
             // `MovementState`'s own documentation says not to have.
             rising: body.state == MovementState::Jumping,
             height: game.height(player),
-            cast: simulation
-                .casting()
-                .map(|cast| CastVisual::for_duration(cast.duration)),
+            cast: cast.map(|cast| CastVisual::for_duration(cast.duration)),
+            cast_progress: cast.map_or(0.0, |cast| cast.fraction()),
+            cast_started: last_tick(simulation, |event| match event {
+                CombatEvent::CastStarted { source, tick, .. } if *source == player => Some(*tick),
+                _ => None,
+            }),
+            released: last_tick(simulation, |event| match event {
+                CombatEvent::AbilityUsed { source, tick, .. } if *source == player => Some(*tick),
+                _ => None,
+            }),
         };
 
         if let Err(error) = visual.update(self.view.delta_seconds, state) {
@@ -1115,6 +1166,52 @@ mod tests {
             transform.translation.z < 0.0,
             "moving forward should still have carried it down -Z: {transform:?}"
         );
+    }
+
+    #[test]
+    fn moving_under_a_camera_pinned_facing_reports_which_way_it_goes() {
+        let run = |forward: f32, right: f32| {
+            let mut simulation = arena_sim();
+            simulation.push_command(PlayerCommand::Move {
+                forward,
+                right,
+                yaw: 0.0,
+                face_camera: true,
+            });
+            simulation.step_many(30);
+            let mut extractor = extractor();
+            extractor.extract(&simulation);
+            extractor
+                .player_visual()
+                .expect("the scene set one up")
+                .state()
+                .heading
+        };
+        assert_eq!(run(-1.0, 0.0), Heading::Backward);
+        assert_eq!(run(1.0, 0.0), Heading::Forward);
+        assert_eq!(run(0.0, 1.0), Heading::Right);
+        assert_eq!(run(0.0, -1.0), Heading::Left);
+        assert_eq!(
+            run(1.0, 1.0),
+            Heading::Forward,
+            "a diagonal forwards runs forwards"
+        );
+        assert_eq!(
+            run(-1.0, 1.0),
+            Heading::Backward,
+            "a diagonal backwards backpedals"
+        );
+    }
+
+    #[test]
+    fn heading_turns_with_the_facing() {
+        // Facing +X, which is what `face_movement` makes of moving +X: moving +X is then
+        // forwards, +Z is the character's right and -Z its left.
+        let yaw = -std::f32::consts::FRAC_PI_2;
+        assert_eq!(heading(Vec3::new(1.0, 0.0, 0.0), yaw), Heading::Forward);
+        assert_eq!(heading(Vec3::new(0.0, 0.0, -1.0), yaw), Heading::Left);
+        assert_eq!(heading(Vec3::new(0.0, 0.0, 1.0), yaw), Heading::Right);
+        assert_eq!(heading(Vec3::ZERO, yaw), Heading::Forward);
     }
 
     #[test]

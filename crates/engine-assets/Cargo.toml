@@ -17,7 +17,7 @@ log.workspace = true
 # representation at load, never touched by a frame. Default features are off because the
 # `import` feature drags in an image decoder and a filesystem walker for a job this crate
 # does itself.
-gltf = { version = "1", default-features = false, features = ["utils", "names"] }
+gltf = { version = "1", default-features = false, features = ["utils", "names", "extras"] }
 # The two containers glTF allows an embedded image to be in. See `texture.rs` for why the
 # runtime format is uncompressed RGBA and a container is only ever a delivery mechanism.
 png = "0.17"

@@ -50,11 +50,37 @@ pub enum AnimationSlot {
     /// Casting something big — the variation the phase asks to *prepare*, not to fill in for
     /// all ten abilities.
     CastHeavy,
+    /// Stepping backwards at walking pace. Optional: without it the walk plays in reverse.
+    WalkBackward,
+    /// Moving backwards at running pace. Optional: without it the run plays in reverse.
+    RunBackward,
+    /// Moving sideways to the character's left. Optional: mirrored from [`Self::StrafeRight`]
+    /// if only that exists, and the forward walk or run if neither does.
+    StrafeLeft,
+    /// Moving sideways to the character's right. Optional, as [`Self::StrafeLeft`].
+    StrafeRight,
 }
 
 impl AnimationSlot {
     /// Every slot, in a stable order. The array [`ClipBindings`] is indexed by.
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 12] = [
+        Self::Idle,
+        Self::Walk,
+        Self::Run,
+        Self::Jump,
+        Self::Fall,
+        Self::Land,
+        Self::Cast,
+        Self::CastHeavy,
+        Self::WalkBackward,
+        Self::RunBackward,
+        Self::StrafeLeft,
+        Self::StrafeRight,
+    ];
+
+    /// The slots every character is expected to fill. The rest are refinements a character
+    /// may add and the visual layer falls back from: a model without them still moves.
+    pub const REQUIRED: [Self; 8] = [
         Self::Idle,
         Self::Walk,
         Self::Run,
@@ -64,6 +90,9 @@ impl AnimationSlot {
         Self::Cast,
         Self::CastHeavy,
     ];
+
+    /// The pairs of slots that are each other's mirror image, left first.
+    pub const MIRRORED: [(Self, Self); 1] = [(Self::StrafeLeft, Self::StrafeRight)];
 
     /// This slot's position in [`AnimationSlot::ALL`].
     #[must_use]
@@ -77,6 +106,10 @@ impl AnimationSlot {
             Self::Land => 5,
             Self::Cast => 6,
             Self::CastHeavy => 7,
+            Self::WalkBackward => 8,
+            Self::RunBackward => 9,
+            Self::StrafeLeft => 10,
+            Self::StrafeRight => 11,
         }
     }
 
@@ -92,7 +125,17 @@ impl AnimationSlot {
             Self::Land => "LAND",
             Self::Cast => "CAST",
             Self::CastHeavy => "CAST+",
+            Self::WalkBackward => "WALK BACK",
+            Self::RunBackward => "RUN BACK",
+            Self::StrafeLeft => "STRAFE L",
+            Self::StrafeRight => "STRAFE R",
         }
+    }
+
+    /// Whether a character may leave this slot empty.
+    #[must_use]
+    pub fn is_optional(self) -> bool {
+        !Self::REQUIRED.contains(&self)
     }
 
     /// Whether a clip in this slot should repeat.
@@ -102,13 +145,23 @@ impl AnimationSlot {
     /// could get wrong.
     #[must_use]
     pub fn loops(self) -> bool {
-        matches!(self, Self::Idle | Self::Walk | Self::Run | Self::Fall)
+        matches!(
+            self,
+            Self::Idle
+                | Self::Walk
+                | Self::Run
+                | Self::Fall
+                | Self::WalkBackward
+                | Self::RunBackward
+                | Self::StrafeLeft
+                | Self::StrafeRight
+        )
     }
 }
 
 /// Which clip index fills each slot, for one character.
 ///
-/// An array rather than a map: eight slots, resolved once, read every frame.
+/// An array rather than a map: a dozen slots, resolved once, read every frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct ClipBindings {
     clips: [Option<usize>; AnimationSlot::ALL.len()],
@@ -199,6 +252,19 @@ impl CharacterDef {
         self
     }
 
+    /// The same definition asking for the optional directional clips by their conventional
+    /// names: `walk_back`, `run_back`, `strafe_left`, `strafe_right`.
+    ///
+    /// Asking costs nothing: a model without them resolves anyway and the visual layer falls
+    /// back. A model delivered with them is picked up without a code change.
+    #[must_use]
+    pub fn with_directional_clips(self) -> Self {
+        self.with_clip(AnimationSlot::WalkBackward, "walk_back")
+            .with_clip(AnimationSlot::RunBackward, "run_back")
+            .with_clip(AnimationSlot::StrafeLeft, "strafe_left")
+            .with_clip(AnimationSlot::StrafeRight, "strafe_right")
+    }
+
     /// The same definition with its locomotion speeds replaced.
     #[must_use]
     pub fn with_speeds(mut self, walk: f32, run: f32) -> Self {
@@ -218,6 +284,10 @@ impl CharacterDef {
         let mut bindings = ClipBindings::default();
         for (slot, name) in &self.clips {
             let Some(index) = model.clip_index(name) else {
+                if slot.is_optional() {
+                    // A refinement this model does not carry: the visual layer falls back.
+                    continue;
+                }
                 return Err(AssetError::invalid(
                     &self.name,
                     format!("{} clip", slot.as_str()),
@@ -227,6 +297,56 @@ impl CharacterDef {
             bindings.set(*slot, index);
         }
         Ok(bindings)
+    }
+
+    /// Adds the missing half of every mirrored pair this definition binds.
+    ///
+    /// A model delivered with a left strafe and no right one gets the left strafe mirrored
+    /// under the name the definition gives the right, and the other way round. A model with
+    /// both, or neither, or no skeleton, is left as it is. Returns how many clips were made.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AssetError::Invalid`] if a clip was not made for the model's skeleton.
+    pub fn mirror_missing(&self, model: &mut ModelAsset) -> Result<usize, AssetError> {
+        let name_of = |slot: AnimationSlot| {
+            self.clips
+                .iter()
+                .find(|(bound, _)| *bound == slot)
+                .map(|(_, name)| name.clone())
+        };
+        let mut made = 0;
+        for (left, right) in AnimationSlot::MIRRORED {
+            let (Some(left), Some(right)) = (name_of(left), name_of(right)) else {
+                continue;
+            };
+            let (source, missing) = match (model.clip_index(&left), model.clip_index(&right)) {
+                (Some(source), None) => (source, right),
+                (None, Some(source)) => (source, left),
+                _ => continue,
+            };
+            let Some(skeleton) = model.skeleton.as_ref() else {
+                continue;
+            };
+            let clip = crate::mirror::mirrored(&model.clips[source], skeleton, missing)?;
+            model.clips.push(clip);
+            made += 1;
+        }
+        Ok(made)
+    }
+
+    /// Makes every clip this definition binds loop or play once, as its slot says.
+    ///
+    /// glTF has no notion of looping, so an importer marks every clip as looping. Left that
+    /// way, a cast replays for as long as the cast lasts and a landing restarts before it
+    /// is over. A procedural model already builds its clips this way, so applying it there
+    /// changes nothing.
+    pub fn apply_playback(&self, model: &mut ModelAsset) {
+        for (slot, name) in &self.clips {
+            if let Some(index) = model.clip_index(name) {
+                model.clips[index].looping = slot.loops();
+            }
+        }
     }
 
     /// The uniform scale that makes this character `height` metres tall.
@@ -283,6 +403,84 @@ mod tests {
             seen.push(slot.index());
         }
         assert_eq!(seen.len(), AnimationSlot::ALL.len());
+    }
+
+    #[test]
+    fn an_imported_one_shot_clip_stops_looping_once_its_slot_is_applied() {
+        // An importer marks every clip looping; the slot is what knows better.
+        let mut model = model_with_clips(&["idle", "cast"]);
+        let def = CharacterDef::new("test", ModelId::new("test"), 1.8)
+            .with_clip(AnimationSlot::Idle, "idle")
+            .with_clip(AnimationSlot::Cast, "cast");
+        def.apply_playback(&mut model);
+        assert!(model.clips[0].looping);
+        assert!(!model.clips[1].looping);
+    }
+
+    #[test]
+    fn an_optional_clip_the_model_lacks_is_left_unbound_rather_than_refused() {
+        let model = model_with_clips(&["idle"]);
+        let def = CharacterDef::new("test", ModelId::new("test"), 1.8)
+            .with_clip(AnimationSlot::Idle, "idle")
+            .with_directional_clips();
+        let Ok(bindings) = def.resolve(&model) else {
+            panic!("optional clips must not block a model that lacks them");
+        };
+        assert_eq!(bindings.get(AnimationSlot::Idle), Some(0));
+        assert_eq!(bindings.get(AnimationSlot::StrafeLeft), None);
+    }
+
+    #[test]
+    fn a_required_clip_the_model_lacks_is_still_refused() {
+        let model = model_with_clips(&["idle"]);
+        let def = CharacterDef::new("test", ModelId::new("test"), 1.8)
+            .with_clip(AnimationSlot::Run, "run");
+        assert!(def.resolve(&model).is_err());
+    }
+
+    #[test]
+    fn a_strafe_delivered_for_one_side_is_mirrored_to_the_other() {
+        use crate::animation::{BoneTrack, Key};
+        use crate::skeleton::{Bone, Skeleton};
+        use engine_core::math::{Mat4, Quat};
+        use engine_core::transform::Transform;
+
+        let bone = |name: &str, parent: Option<u16>, x: f32| Bone {
+            name: name.to_owned(),
+            parent,
+            rest: Transform::from_translation(Vec3::new(x, 0.0, 0.0)),
+            inverse_bind: Mat4::IDENTITY,
+        };
+        let Ok(skeleton) = Skeleton::new(vec![
+            bone("root", None, 0.0),
+            bone("LeftLeg", Some(0), 0.2),
+            bone("RightLeg", Some(0), -0.2),
+        ]) else {
+            panic!("the test skeleton must build");
+        };
+        let step = AnimationClip::new(
+            "strafe_left",
+            true,
+            vec![
+                BoneTrack::new(1)
+                    .with_rotation(vec![Key::new(0.5, Quat::from_axis_angle(Vec3::Z, 0.4))]),
+            ],
+        )
+        .with_speed(4.0);
+        let mut model = model_with_clips(&[]).with_animation(skeleton, vec![step]);
+        let def = CharacterDef::new("test", ModelId::new("test"), 1.8).with_directional_clips();
+
+        assert!(matches!(def.mirror_missing(&mut model), Ok(1)));
+        let Some(right) = model.clip_index("strafe_right") else {
+            panic!("the right strafe must have been made");
+        };
+        assert_eq!(
+            model.clips[right].speed,
+            Some(4.0),
+            "the authored speed carries over"
+        );
+        // Both present now: a second pass makes nothing.
+        assert!(matches!(def.mirror_missing(&mut model), Ok(0)));
     }
 
     #[test]
