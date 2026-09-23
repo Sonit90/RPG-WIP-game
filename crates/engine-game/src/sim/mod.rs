@@ -1453,12 +1453,18 @@ impl Simulation {
             // Its own speed, and its current phase's scaling of it. Without this every enemy
             // walked at the player's top speed, which made "slower than the player" a number
             // in a table that nothing read — and a boss phase's `speed_scale` meaningless.
+            // And no backpedal penalty: that is a player convention, and an enemy that backs
+            // away to keep its target in front walks at the speed its brain was tuned for.
             let config = match runtime {
                 Some(runtime) => MovementConfig {
                     max_speed: runtime.brain.speed(),
+                    backpedal_speed: 1.0,
                     ..config
                 },
-                None => config,
+                None => MovementConfig {
+                    backpedal_speed: 1.0,
+                    ..config
+                },
             };
             if intent.direction.length() > 0.0 || intent.facing.is_some() {
                 // The same collided step the player takes: an enemy that walked through a

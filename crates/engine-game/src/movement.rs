@@ -70,6 +70,9 @@ impl MovementState {
 pub struct MovementConfig {
     /// Top horizontal speed, metres per second.
     pub max_speed: f32,
+    /// Fraction of [`MovementConfig::max_speed`] kept moving straight backwards while the
+    /// facing is pinned. 1 is no penalty; see [`backpedal_scale`].
+    pub backpedal_speed: f32,
     /// How fast the body reaches its intended velocity on the ground, m/s².
     pub acceleration: f32,
     /// How fast it stops when there is no intent, m/s².
@@ -99,6 +102,7 @@ impl Default for MovementConfig {
         use engine_core::tuning::movement as tuning;
         Self {
             max_speed: tuning::MAX_SPEED,
+            backpedal_speed: tuning::BACKPEDAL_SPEED,
             acceleration: tuning::ACCELERATION,
             deceleration: tuning::DECELERATION,
             air_control: tuning::AIR_CONTROL,
@@ -366,7 +370,8 @@ fn accelerate_horizontally(
     let flat = Vec3::new(intent.direction.x, 0.0, intent.direction.z);
     let has_intent = flat.length_squared() > f32::EPSILON;
     let desired = if has_intent {
-        flat.normalize() * config.max_speed
+        let direction = flat.normalize();
+        direction * config.max_speed * backpedal_scale(direction, intent.facing, config)
     } else {
         Vec3::ZERO
     };
@@ -394,6 +399,21 @@ fn accelerate_horizontally(
     let applied = delta.normalize() * change;
     body.velocity.x += applied.x;
     body.velocity.z += applied.z;
+}
+
+/// How much of top speed a body keeps moving along `direction` while facing `facing`.
+///
+/// Only a pinned facing backpedals: a body free to turn faces where it goes. The penalty
+/// grows with how directly backwards the direction points — full straight back, none for a
+/// sidestep — so sweeping the movement keys round never snaps the speed.
+fn backpedal_scale(direction: Vec3, facing: Option<f32>, config: &MovementConfig) -> f32 {
+    let Some(yaw) = facing else {
+        return 1.0;
+    };
+    // Yaw zero faces -Z.
+    let forward = Vec3::new(-yaw.sin(), 0.0, -yaw.cos());
+    let backwards = (-direction.dot(forward)).max(0.0);
+    1.0 - (1.0 - config.backpedal_speed.clamp(0.0, 1.0)) * backwards
 }
 
 /// Puts the body back on the floor if it went through it.
@@ -704,6 +724,35 @@ mod tests {
         step(&mut body, MoveIntent::moving(Vec3::X), &config, 0.0);
         assert_eq!(body, before, "the first frame has a zero delta");
     }
+    #[test]
+    fn backpedalling_is_slower_and_a_sidestep_or_a_free_turn_is_not() {
+        let config = MovementConfig::default();
+        let settle = |intent: MoveIntent| {
+            let mut body = Body::at(Vec3::ZERO);
+            for _ in 0..120 {
+                step(&mut body, intent, &config, 1.0 / 60.0);
+            }
+            body.horizontal_speed()
+        };
+        let top = config.max_speed;
+        // Facing -Z throughout.
+        let back = settle(MoveIntent::steered(Vec3::Z, 0.0));
+        assert!((back - top * config.backpedal_speed).abs() < 1e-3, "{back}");
+        let side = settle(MoveIntent::steered(Vec3::X, 0.0));
+        assert!(
+            (side - top).abs() < 1e-3,
+            "a sidestep is not a backpedal: {side}"
+        );
+        let diagonal = settle(MoveIntent::steered(Vec3::new(1.0, 0.0, 1.0), 0.0));
+        assert!(
+            diagonal > back && diagonal < top,
+            "a diagonal backwards pays part of it: {diagonal}"
+        );
+        // Not steered: the body turns round and runs away at full speed.
+        let free = settle(MoveIntent::moving(Vec3::Z));
+        assert!((free - top).abs() < 1e-3, "{free}");
+    }
+
     #[test]
     fn a_steered_body_faces_the_camera_while_it_walks_backwards() {
         // Holding the look button: retreating from something keeps it in front, which is

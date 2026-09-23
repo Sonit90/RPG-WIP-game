@@ -84,6 +84,12 @@ pub mod movement {
     /// kiting possible and what makes a telegraph escapable.
     pub const MAX_SPEED: f32 = 7.0;
 
+    /// Fraction of top speed the player keeps moving straight backwards while the camera
+    /// holds its facing. The genre's convention: backing away is slower than running away,
+    /// so turning to flee is a choice with a cost. A diagonal backwards pays part of it and a
+    /// sidestep none.
+    pub const BACKPEDAL_SPEED: f32 = 0.7;
+
     /// How fast the body reaches its intended velocity on the ground, m/s².
     pub const ACCELERATION: f32 = 60.0;
 
