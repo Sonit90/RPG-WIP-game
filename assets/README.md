@@ -23,6 +23,8 @@ nobody has delivered yet.
 | `firemage.glb` | The fire mage, `procedural::fire_mage` |
 | `warrior.glb` | The warrior, `procedural::warrior` |
 | `druid.glb` | The druid, `procedural::druid` |
+| `animations/*.fbx` | Nothing the game reads: the Mixamo animation downloads every character's `.glb` is built from |
+| `characters/<hero>.fbx` | Nothing the game reads: each hero rigged on Mixamo, the other input to its `.glb` |
 | `scenes/*.json` | A level's layout function. Load one with `--scene-file` |
 | `*.glb` layouts | The same, authored in Blender. Load one with `--layout` |
 

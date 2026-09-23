@@ -18,16 +18,16 @@ For a new hero, say the warrior:
 1. Export the model from Blender as **FBX** and upload it to [Mixamo](https://www.mixamo.com).
    Auto-rig it.
 2. With the character selected, download any animation as **FBX Binary, With Skin**. That
-   file is the character.
-3. Have the animation downloads (section 4) in one folder. They can be the same files the
-   mage was built from — they do not have to be downloaded again for the new character.
+   file is the character: save it as `assets/characters/<hero>.fbx`, beside the mage's
+   `assets/characters/firemage.fbx`.
+3. The animation downloads (section 4) are already in `assets/animations/` — the same files
+   the mage was built from. They do not have to be downloaded again for a new character.
 4. Run the script:
 
    ```bash
    "C:/Program Files/Blender Foundation/Blender 5.2/blender.exe" -b --factory-startup \
      --python tools/blender/mixamo_character.py -- \
-     --character "C:/Users/<you>/Downloads/<warrior with skin>.fbx" \
-     --animations "C:/Users/<you>/Downloads" \
+     --character assets/characters/warrior.fbx \
      --out assets/warrior.glb --blend assets/warrior.blend
    ```
 
@@ -77,7 +77,8 @@ Blender's glTF exporter is run in **Actions** mode. The NLA-tracks mode drops th
 ## 4. The animation table
 
 The `CLIPS` table at the top of the script. Clip names are what the game binds; file names
-are the Mixamo downloads in `--animations`. A file that is not there is skipped.
+are the Mixamo downloads in `assets/animations/` (or wherever `--animations` points). A file
+that is not there is skipped. A new animation goes into that folder and gets a row here.
 
 | Clip | File | Frames | Needed | Without it |
 | --- | --- | --- | --- | --- |
@@ -134,8 +135,18 @@ Most of a character is shared. What is not:
 | Druid | `assets/druid.glb` | the procedural stand-in |
 
 A file that is present but fails to load is a startup error, not a silent fall back.
-`assets/` is not in git (see `assets/README.md`), so **keep the Mixamo downloads somewhere
-safe**: they, not the `.glb`, are the source. The `.glb` can always be rebuilt from them.
+`assets/` is not in git (see `assets/README.md`), so **back up `assets/animations/` and
+`assets/characters/`**: they, not the `.glb`, are the source. The `.glb` can always be rebuilt
+from them. A lost character file can be recovered by rigging the model on Mixamo again; the
+script retargets onto whatever rig it is given.
+
+The mage, rebuilt:
+
+```bash
+"C:/Program Files/Blender Foundation/Blender 5.2/blender.exe" -b --factory-startup \
+  --python tools/blender/mixamo_character.py -- \
+  --character assets/characters/firemage.fbx --out assets/firemage.glb
+```
 
 ---
 

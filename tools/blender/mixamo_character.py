@@ -1,14 +1,16 @@
 """Builds a character's .glb: a Mixamo-rigged model plus the game's animations.
 
     blender -b --factory-startup --python tools/blender/mixamo_character.py --
-        --character "C:/Users/me/Downloads/Unarmed Run Forward.fbx"
-        --animations "C:/Users/me/Downloads"
+        --character assets/characters/firemage.fbx
         --out assets/firemage.glb [--blend assets/firemage.blend] [--height 1.8]
+        [--animations assets/animations]
 
 (one command; split here for reading)
 
---character  a Mixamo download of the character *With Skin* (any animation, it is discarded)
---animations the folder holding the animation downloads named in CLIPS below
+--character  the character: a Mixamo download *With Skin* (any animation, it is discarded),
+             kept as assets/characters/<hero>.fbx
+--animations the folder holding the animation downloads named in CLIPS below;
+             assets/animations in this repository unless given
 --out        the .glb the game loads (assets/<hero file name>)
 --blend      optional .blend to inspect the result in Blender
 --height     how tall the character stands, metres
@@ -24,7 +26,10 @@ import argparse, bpy, math, mathutils, os, sys
 
 parser = argparse.ArgumentParser(prog="mixamo_character.py")
 parser.add_argument("--character", required=True, help="Mixamo download of the character, With Skin")
-parser.add_argument("--animations", required=True, help="folder holding the animation downloads")
+# The shared animation downloads live beside the models, two directories up from this script.
+REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+parser.add_argument("--animations", default=os.path.join(REPO, "assets", "animations"),
+                    help="folder holding the animation downloads (default: assets/animations)")
 parser.add_argument("--out", required=True, help="the .glb to write")
 parser.add_argument("--blend", help="optional .blend to save alongside")
 parser.add_argument("--height", type=float, default=1.8, help="standing height, metres")
