@@ -27,16 +27,24 @@ Grouped by what is being built rather than by key, which is how the editor print
 
 | Group | Keys |
 | --- | --- |
-| **Placing** | `N` placing mode: every `LMB` in the world puts one down · drag a browser row into the world · double-click a row to place in front of the camera |
-| **Assets** | `TAB` next asset · `CTRL+LMB` add to selection · `F` find · `F2` rescan |
+| **Placing** | drag a browser row into the world · double-click a row to place in front of the camera · `N` placing mode: every `LMB` in the world puts one down. A drop lands on the terrain, or on top of the solid thing under the pointer |
+| **Assets** | `TAB` next asset · `CTRL+F` find (in the panel under the pointer) · `F2` rescan |
 | **Terrain** | `B` sculpt · `TAB` brush mode · `1` `2` brush size · `3` `4` strength |
 | **Caves** | `M` module snap — a 4 m grid and quarter turns |
-| **Water** | `V` pour a body under the cursor |
-| **Spawn points** | `P` put one down · `R` turns it |
-| **Selecting** | `LMB` on an object selects it · `LMB` on empty ground drops the selection · `ESC` drops it, and leaves placing mode |
-| **Moving** | drag the `X` `Y` `Z` arms of the gizmo · arrows nudge · `R` yaw · `T` size · `0` reset · `X` delete · `C` copy · `Z` undo · `L` local axes |
-| **Grid** | `G` step · `SHIFT+G` rotation step · `CTRL+A` every object |
-| **File** | `CTRL+S` save · `F6` back to playing |
+| **Put** | `V` water · `P` spawn point · `I` light — each under the cursor |
+| **Selecting** | `LMB` on something selects it · drag on empty ground draws a selection box · `CTRL+LMB` adds · `CTRL+A` every object · `ESC` drops it, and leaves placing mode |
+| **Gizmo** | `1` move · `2` turn · `3` scale · hold `CTRL` while dragging to turn snapping off |
+| **Editing** | arrows nudge (`SHIFT` for up/down) · `R` yaw · `T` size · `0` reset · `L` local axes · `X`/`DELETE` delete · `CTRL+D` duplicate · `CTRL+G` drop onto what is below · click an inspector number to type it, or use the wheel over it |
+| **Showing** | `H` hide the selection · `SHIFT+H` show everything · `K` lock the selection (clicks in the world pass through it) |
+| **Undo** | `CTRL+Z` undo · `CTRL+Y` or `CTRL+SHIFT+Z` redo |
+| **Grid** | `G` step · `SHIFT+G` rotation step |
+| **View** | right-drag look · `WASD`/`QE` fly (`SHIFT` faster) · `ALT`+left-drag orbit · wheel forward and back · `F`/`HOME` frame the selection (the whole level with nothing selected) · double-click a hierarchy row to frame it |
+| **File** | `CTRL+S` save · `CTRL+SHIFT+S` save as · double-click a level in the browser to open it · `F1` hide or show the key list · `F6` back to playing |
+
+Every edit is counted against the last save: the mode badge along the top says `UNSAVED` while
+they differ. Unsaved work is written to `<level>.autosave.json` beside the level every two
+minutes, on `F6`, and when the game closes, and a successful save removes the autosave. Undo
+survives `F6`, so walking through the level and coming back to fix it keeps your history.
 
 Cliffs, rocks and trees have no controls of their own: they are **assets**, placed from the
 browser like everything else. That is the point — a piece added to `assets/` tomorrow is
@@ -50,7 +58,8 @@ One mouse action means one thing. The order the editor resolves a press in is:
 2. a click on something in the world **selects** it — it never places anything;
 3. a drag from a browser row into the world **places** one where it is dropped;
 4. a double click on a browser row **places** one in front of the camera;
-5. anything else belongs to the camera (right-drag to look, `WASD`/`QE` to fly).
+5. a drag that starts on empty ground **draws a selection box**;
+6. anything else belongs to the camera (right-drag to look, `WASD`/`QE` to fly).
 
 A click on empty ground used to place the browser's asset, which meant a click that missed the
 rock you were aiming at left a second rock behind it. Placing is now something you do *from the
@@ -64,12 +73,12 @@ pillars is a dozen clicks rather than a dozen drags out of the browser, and a cl
 on the pillar you just placed does not turn into "you meant to pick that up".
 
 The gizmo disappears while the mode is on, because a handle you cannot grab is a lie about
-what a click will do, and the inspector's heading reads `INSPECTOR - PLACING (N)`. `N` again
+what a click will do, and the mode badge along the top reads `PLACING`. `N` again
 or `ESC` gives the left button back to selection. It is mutually exclusive with the terrain
 brush: `B` turns it off and it turns `B` off, since both want every press in the viewport.
 
 Everything that is not a click still works: `TAB` picks the next asset, `X` deletes what was
-just placed, `Z` takes it back, the arrows nudge it, `G` still decides the grid it lands on.
+just placed, `CTRL+Z` takes it back, the arrows nudge it, `G` still decides the grid it lands on.
 
 ### The gizmo
 
@@ -84,8 +93,10 @@ The grid applies: an `X` or `Z` drag lands on the grid step `G` chose, and a `Y`
 height to the same step — which is how a stack of blockout pieces lands on the same levels as
 the floor plan.
 
-Rotation and scaling still live on `R` and `T`. The gizmo is built to take them as further
-modes rather than as a second manipulator.
+`2` turns the gizmo into a ring: dragging round it turns the selection about its primary, in
+rotation steps. `3` makes it a scale gizmo: its arms run along the object's *own* axes, so
+stretching a turned wall along its length is its `X` arm, and the square in the middle scales
+all three at once. `CTRL` held during any drag turns the snapping off. `R` and `T` still work.
 
 ### A selection you have turned away from
 
@@ -96,8 +107,9 @@ and it walks around the edge to meet the object's own cyan outline as it comes i
 
 ### The selection holds one kind at a time
 
-A level contains placements, bodies of water and spawn points, and the selection is tagged so a
-verb reaches exactly one kind. Selecting a body of water clears a selection of objects and the
+A level contains placements, bodies of water, spawn points and lights, and the selection is
+tagged so a verb reaches exactly one kind. A selection box that catches several kinds keeps the
+first in hierarchy order — placements first. Selecting a body of water clears a selection of objects and the
 reverse; `CTRL+A` takes every object and no water. A rule an author can predict beats a general
 one nobody can — `T` over a mixed selection would mean "scale these and resize those".
 
@@ -148,7 +160,8 @@ level has one, so a file written before a feature existed still loads.
   "collision_shapes": [ ... ],// compound shapes the objects name by index
   "terrain": { ... },         // origin, cell size, resolution, heights
   "water": [ ... ],           // centre, half extents, yaw, depth
-  "spawn_points": [ ... ]     // position, yaw
+  "spawn_points": [ ... ],    // position, yaw
+  "lights": [ ... ]           // position, colour, intensity, range; a cone for a spotlight
 }
 ```
 
@@ -163,11 +176,12 @@ level has one, so a file written before a feature existed still loads.
 
 Nothing here is required. An empty level is a valid level.
 
-### A known gap
+* **Lights** are a position, a colour, an intensity and a range, plus a direction and a cone
+  for a spotlight. The editor puts a warm point light with `I` and draws a diamond where each
+  one is, since a light has no mesh.
 
-`EnvironmentScene::lights` is **not serialized**. A level authored in the editor loses every
-brazier's local light when it is saved. Fixing it means deciding how a light is *authored*,
-which is a phase of its own.
+When the editor saves, compound collision shapes no placement uses any more are left out of the
+file.
 
 ---
 
@@ -191,7 +205,7 @@ assets/
 ```
 
 The browser reads this directory **recursively**, when the editor is opened. Folders expand and
-collapse, `F` filters, `F2` rescans. Arbitrary nesting works; the tree above is a convention,
+collapse, `CTRL+F` filters, `F2` rescans. Arbitrary nesting works; the tree above is a convention,
 not a rule. A file that cannot be read is reported and the rest of the scan continues, and a
 missing `assets/` directory is not an error — it is a project nobody has put anything in yet.
 

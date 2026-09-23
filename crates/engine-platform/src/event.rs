@@ -51,6 +51,12 @@ pub fn key_from_virtual_code(code: u16) -> KeyCode {
     const VK_RCONTROL: u16 = 0xA3;
     const VK_LMENU: u16 = 0xA4;
     const VK_RMENU: u16 = 0xA5;
+    const VK_HOME: u16 = 0x24;
+    const VK_DELETE: u16 = 0x2E;
+    const VK_SUBTRACT: u16 = 0x6D;
+    const VK_DECIMAL: u16 = 0x6E;
+    const VK_OEM_MINUS: u16 = 0xBD;
+    const VK_OEM_PERIOD: u16 = 0xBE;
 
     match code {
         VK_BACK => KeyCode::Backspace,
@@ -62,6 +68,10 @@ pub fn key_from_virtual_code(code: u16) -> KeyCode {
         VK_UP => KeyCode::ArrowUp,
         VK_RIGHT => KeyCode::ArrowRight,
         VK_DOWN => KeyCode::ArrowDown,
+        VK_HOME => KeyCode::Home,
+        VK_DELETE => KeyCode::Delete,
+        VK_OEM_MINUS | VK_SUBTRACT => KeyCode::Minus,
+        VK_OEM_PERIOD | VK_DECIMAL => KeyCode::Period,
         // The unsided modifier codes arrive when the side cannot be determined; they are
         // reported as the left-hand key rather than dropped.
         VK_SHIFT | VK_LSHIFT => KeyCode::LeftShift,

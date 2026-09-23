@@ -1,47 +1,49 @@
-//! The transform gizmo: the three axis handles an author drags a selection along.
+//! The transform gizmo: the handles an author drags a selection by.
 //!
 //! ```text
-//!            +Y (green)
-//!             |
-//!             |
-//!             O------ +X (red)
-//!            /
-//!          +Z (blue)
+//!   MOVE (1)              TURN (2)                SCALE (3)
+//!      +Y                   .-~~~-.                  +Y ■
+//!       |                 /         \                 |
+//!       O---- +X         |     O     |               ■---- ■ +X
+//!      /                  \         /               /
+//!    +Z                     `-...-'               ■ +Z      centre square: all three
 //! ```
 //!
 //! # Why it lives in screen space
 //!
 //! This crate has no renderer and no device — it edits data and paints a `UiDrawList`, which
-//! is what lets every verb be tested with no window open. So the gizmo is not three meshes in
-//! the world: it is the selection's origin and three world-space axis tips, projected with
+//! is what lets every verb be tested with no window open. So the gizmo is not meshes in the
+//! world: it is the selection's origin and a few world-space points around it, projected with
 //! the frame's view-projection and drawn as lines in the interface layer. That also gives it
 //! the property a manipulator wants for free — it is drawn *over* the level, so a handle is
 //! never buried inside the object it belongs to.
 //!
 //! # Dragging
 //!
-//! A handle is a segment on screen that stands for [`GizmoScreen::length`] metres along one
-//! world axis. The metres a mouse movement asks for is therefore the movement projected onto
-//! that segment: `dot(movement, handle) / dot(handle, handle) * length`. That is exactly what
-//! constrains a drag to one axis — movement across the handle contributes nothing.
+//! A move or scale handle is a segment on screen that stands for [`GizmoScreen::length`]
+//! metres along one axis. The metres a mouse movement asks for is therefore the movement
+//! projected onto that segment: `dot(movement, handle) / dot(handle, handle) * length`. That
+//! is exactly what constrains a drag to one axis — movement across the handle contributes
+//! nothing.
 //!
-//! # Room for rotation and scaling
+//! The turn ring is the circle the selection's yaw sweeps, and a drag on it turns by the angle
+//! the pointer sweeps around the gizmo's centre on screen. Rotation is yaw-only in this engine,
+//! so there is one ring and not three.
 //!
-//! [`GizmoMode`] is the seam. The editor holds a mode, this module projects the handles that
-//! mode has, and the pointer code asks the projection what is under the cursor. A rotation
-//! gizmo adds a variant, three rings to [`GizmoScreen`] and a second answer to "what does this
-//! drag mean"; nothing about selection, undo or the interaction order changes.
+//! The scale handles run along the *object's own* axes, because scale is a property of the
+//! object's own space: stretching a turned wall along its length means its X, whatever world
+//! direction that happens to be.
 
-use engine_core::math::{Mat4, Vec3};
+use engine_core::math::{Mat4, Quat, Vec3};
 
-/// One of the three world axes.
+/// One of the three axes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Axis {
-    /// World +X.
+    /// +X.
     X,
-    /// World +Y.
+    /// +Y.
     Y,
-    /// World +Z.
+    /// +Z.
     Z,
 }
 
@@ -49,13 +51,23 @@ impl Axis {
     /// The three of them, in the order they are drawn and hit-tested.
     pub const ALL: [Self; 3] = [Self::X, Self::Y, Self::Z];
 
-    /// The unit vector this axis moves along.
+    /// The unit vector this axis moves along, in world space.
     #[must_use]
     pub fn direction(self) -> Vec3 {
         match self {
             Self::X => Vec3::new(1.0, 0.0, 0.0),
             Self::Y => Vec3::new(0.0, 1.0, 0.0),
             Self::Z => Vec3::new(0.0, 0.0, 1.0),
+        }
+    }
+
+    /// Which slot of a `[_; 3]` this axis is.
+    #[must_use]
+    pub fn index(self) -> usize {
+        match self {
+            Self::X => 0,
+            Self::Y => 1,
+            Self::Z => 2,
         }
     }
 
@@ -81,14 +93,50 @@ impl Axis {
 }
 
 /// What the gizmo currently does with a drag.
-///
-/// One variant today. It exists so that rotation and scaling are a variant and a projection
-/// each rather than a second manipulator standing beside this one — see the module docs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum GizmoMode {
-    /// Dragging a handle moves the selection along that axis.
+    /// Dragging a handle moves the selection along that world axis.
     #[default]
     Translate,
+    /// Dragging the ring turns the selection about +Y.
+    Rotate,
+    /// Dragging a handle stretches the selection along its own axis; the centre, all three.
+    Scale,
+}
+
+impl GizmoMode {
+    /// What the mode badge says.
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Translate => "MOVE",
+            Self::Rotate => "TURN",
+            Self::Scale => "SCALE",
+        }
+    }
+}
+
+/// What part of the gizmo a press landed on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Handle {
+    /// One axis handle.
+    Axis(Axis),
+    /// The turn ring.
+    Ring,
+    /// The scale gizmo's centre: scale along all three at once.
+    Uniform,
+}
+
+impl Handle {
+    /// What the status line calls it.
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Axis(axis) => axis.label(),
+            Self::Ring => "YAW",
+            Self::Uniform => "XYZ",
+        }
+    }
 }
 
 /// One projected axis handle: where it starts and ends on screen.
@@ -127,6 +175,9 @@ impl GizmoHandle {
     }
 }
 
+/// How many straight pieces the turn ring is drawn and hit-tested as.
+pub const RING_SEGMENTS: usize = 48;
+
 /// The gizmo as this frame's pointer sees it.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct GizmoScreen {
@@ -136,8 +187,15 @@ pub struct GizmoScreen {
     pub origin: (f32, f32),
     /// How many metres one whole handle stands for.
     pub length: f32,
-    /// The handles, in [`Axis::ALL`] order. An axis whose tip is behind the eye has none.
+    /// The handles, in [`Axis::ALL`] order. An axis whose tip is behind the eye has none, and
+    /// the turn gizmo has none at all.
     pub handles: [Option<GizmoHandle>; 3],
+    /// The turn ring's points on screen, for the turn gizmo; `None` where a point is behind
+    /// the eye. Empty (all `None`) for the other two.
+    pub ring: [Option<(f32, f32)>; RING_SEGMENTS],
+    /// Whether the eye is above the ring's plane, which is which way round a clockwise drag
+    /// on screen turns the selection.
+    pub from_above: bool,
 }
 
 /// How much of the distance to the eye the gizmo spans.
@@ -165,45 +223,94 @@ pub fn length_for(origin: Vec3, eye: Vec3) -> f32 {
 /// How near the cursor must be to a handle to grab it, in logical pixels.
 pub const GRAB_PIXELS: f32 = 11.0;
 
+/// A point of the turn ring, `angle` radians round from -Z the way a positive yaw turns.
+fn ring_point(origin: Vec3, length: f32, angle: f32) -> Vec3 {
+    origin + Vec3::new(-angle.sin(), 0.0, -angle.cos()) * length
+}
+
 /// Where the handles are this frame, or `None` if the origin itself is not on screen.
 ///
-/// The origin being off screen is the case the striped silhouette answers — see
-/// [`crate::ui`]. There is nothing to grab when the thing being manipulated is behind the
-/// camera, and a handle projected from a point behind the eye points the wrong way.
+/// `rotation` is the selection's own rotation, which the scale handles run along; the move
+/// handles always run along the world's axes. The origin being off screen is the case the
+/// striped silhouette answers — see [`crate::ui`]. There is nothing to grab when the thing
+/// being manipulated is behind the camera, and a handle projected from a point behind the eye
+/// points the wrong way.
 #[must_use]
 pub fn project(
     mode: GizmoMode,
     origin: Vec3,
     length: f32,
+    rotation: Quat,
+    eye: Vec3,
     view_projection: &Mat4,
     viewport: (u32, u32),
 ) -> Option<GizmoScreen> {
     let screen = engine_presentation::nameplate::project(origin, view_projection, viewport)?;
     let mut handles = [None, None, None];
-    for (slot, axis) in Axis::ALL.into_iter().enumerate() {
-        let tip = origin + axis.direction() * length;
-        handles[slot] = engine_presentation::nameplate::project(tip, view_projection, viewport)
-            .map(|to| GizmoHandle {
-                axis,
-                from: screen,
-                to,
-            });
+    let mut ring = [None; RING_SEGMENTS];
+    match mode {
+        GizmoMode::Translate | GizmoMode::Scale => {
+            for (slot, axis) in Axis::ALL.into_iter().enumerate() {
+                let direction = if mode == GizmoMode::Scale {
+                    rotation.rotate(axis.direction())
+                } else {
+                    axis.direction()
+                };
+                let tip = origin + direction * length;
+                handles[slot] =
+                    engine_presentation::nameplate::project(tip, view_projection, viewport).map(
+                        |to| GizmoHandle {
+                            axis,
+                            from: screen,
+                            to,
+                        },
+                    );
+            }
+        }
+        GizmoMode::Rotate => {
+            for (slot, point) in ring.iter_mut().enumerate() {
+                let angle = slot as f32 / RING_SEGMENTS as f32 * std::f32::consts::TAU;
+                *point = engine_presentation::nameplate::project(
+                    ring_point(origin, length, angle),
+                    view_projection,
+                    viewport,
+                );
+            }
+        }
     }
     Some(GizmoScreen {
         mode,
         origin: screen,
         length,
         handles,
+        ring,
+        from_above: eye.y >= origin.y,
     })
 }
 
 impl GizmoScreen {
-    /// Which handle is under `pointer`, if any. The nearest wins.
+    /// Which part of the gizmo is under `pointer`, if any. The nearest wins.
     ///
     /// `tolerance` is in physical pixels, so the caller scales it — a handle that is eleven
     /// logical pixels wide has to be eleven logical pixels wide on a 150% display too.
     #[must_use]
-    pub fn hit(&self, pointer: (f32, f32), tolerance: f32) -> Option<Axis> {
+    pub fn hit(&self, pointer: (f32, f32), tolerance: f32) -> Option<Handle> {
+        match self.mode {
+            GizmoMode::Rotate => self.hit_ring(pointer, tolerance),
+            GizmoMode::Translate | GizmoMode::Scale => {
+                if self.mode == GizmoMode::Scale {
+                    let (dx, dy) = (pointer.0 - self.origin.0, pointer.1 - self.origin.1);
+                    if (dx * dx + dy * dy).sqrt() <= tolerance * 1.2 {
+                        return Some(Handle::Uniform);
+                    }
+                }
+                self.hit_axis(pointer, tolerance).map(Handle::Axis)
+            }
+        }
+    }
+
+    /// The nearest axis handle within `tolerance`.
+    fn hit_axis(&self, pointer: (f32, f32), tolerance: f32) -> Option<Axis> {
         let mut best: Option<(Axis, f32)> = None;
         for handle in self.handles.into_iter().flatten() {
             let Some((distance, along)) = handle.distance(pointer) else {
@@ -219,6 +326,31 @@ impl GizmoScreen {
             }
         }
         best.map(|(axis, _)| axis)
+    }
+
+    /// The ring, if the pointer is within `tolerance` of any piece of it.
+    fn hit_ring(&self, pointer: (f32, f32), tolerance: f32) -> Option<Handle> {
+        self.ring_segments()
+            .any(|(from, to)| {
+                let segment = GizmoHandle {
+                    axis: Axis::Y,
+                    from,
+                    to,
+                };
+                segment
+                    .distance(pointer)
+                    .is_some_and(|(distance, _)| distance <= tolerance)
+            })
+            .then_some(Handle::Ring)
+    }
+
+    /// The ring's pieces whose two ends both project.
+    pub fn ring_segments(&self) -> impl Iterator<Item = ((f32, f32), (f32, f32))> + '_ {
+        (0..RING_SEGMENTS).filter_map(|slot| {
+            let from = self.ring[slot]?;
+            let to = self.ring[(slot + 1) % RING_SEGMENTS]?;
+            Some((from, to))
+        })
     }
 
     /// The handle for one axis, if it has one this frame.
@@ -248,6 +380,36 @@ impl GizmoScreen {
         let (dx, dy) = (to.0 - from.0, to.1 - from.1);
         (dx * hx + dy * hy) / length_squared * self.length
     }
+
+    /// The pointer's angle about the gizmo's centre on screen, radians, counter-clockwise
+    /// with up as up — or `None` too near the centre to have a direction.
+    #[must_use]
+    pub fn pointer_angle(&self, pointer: (f32, f32)) -> Option<f32> {
+        let (dx, dy) = (pointer.0 - self.origin.0, self.origin.1 - pointer.1);
+        (dx * dx + dy * dy > 4.0).then(|| dy.atan2(dx))
+    }
+
+    /// How far the selection turns for the pointer sweeping `swept` radians on screen.
+    ///
+    /// Seen from above, counter-clockwise on screen is a positive yaw; seen from below the
+    /// same sweep is the other way round, and a ring that turned the object against the hand
+    /// is a ring nobody can use from inside a cave.
+    #[must_use]
+    pub fn yaw_for(&self, swept: f32) -> f32 {
+        if self.from_above { swept } else { -swept }
+    }
+}
+
+/// `angle` brought into `(-PI, PI]`: the short way round.
+#[must_use]
+pub fn wrap_angle(angle: f32) -> f32 {
+    let tau = std::f32::consts::TAU;
+    let wrapped = (angle + std::f32::consts::PI).rem_euclid(tau) - std::f32::consts::PI;
+    if wrapped <= -std::f32::consts::PI {
+        wrapped + tau
+    } else {
+        wrapped
+    }
 }
 
 #[cfg(test)]
@@ -276,15 +438,21 @@ mod tests {
         camera.view_projection()
     }
 
-    fn gizmo() -> GizmoScreen {
+    fn gizmo_in(mode: GizmoMode) -> GizmoScreen {
         project(
-            GizmoMode::Translate,
+            mode,
             Vec3::new(0.0, 2.0, 0.0),
             2.0,
+            Quat::IDENTITY,
+            Vec3::new(0.0, 2.0, 12.0),
             &looking_at_origin(),
             VIEWPORT,
         )
         .expect("a gizmo in front of the camera")
+    }
+
+    fn gizmo() -> GizmoScreen {
+        gizmo_in(GizmoMode::Translate)
     }
 
     #[test]
@@ -304,7 +472,7 @@ mod tests {
         let gizmo = gizmo();
         let x = gizmo.handle(Axis::X).expect("an X handle");
         let midpoint = ((x.from.0 + x.to.0) * 0.5, (x.from.1 + x.to.1) * 0.5);
-        assert_eq!(gizmo.hit(midpoint, 12.0), Some(Axis::X));
+        assert_eq!(gizmo.hit(midpoint, 12.0), Some(Handle::Axis(Axis::X)));
         assert_eq!(gizmo.hit(gizmo.origin, 12.0), None);
     }
 
@@ -336,5 +504,73 @@ mod tests {
         assert_eq!(Axis::X.direction(), Vec3::new(1.0, 0.0, 0.0));
         assert_eq!(Axis::Y.direction(), Vec3::new(0.0, 1.0, 0.0));
         assert_eq!(Axis::Z.direction(), Vec3::new(0.0, 0.0, 1.0));
+    }
+
+    #[test]
+    fn the_scale_gizmo_has_a_centre_that_means_all_three() {
+        let gizmo = gizmo_in(GizmoMode::Scale);
+        assert_eq!(gizmo.hit(gizmo.origin, 12.0), Some(Handle::Uniform));
+        let x = gizmo.handle(Axis::X).expect("an X handle");
+        assert_eq!(gizmo.hit(x.to, 12.0), Some(Handle::Axis(Axis::X)));
+    }
+
+    #[test]
+    fn the_scale_handles_follow_the_objects_own_axes() {
+        let turned = project(
+            GizmoMode::Scale,
+            Vec3::new(0.0, 2.0, 0.0),
+            2.0,
+            Quat::from_yaw_pitch_roll(std::f32::consts::FRAC_PI_2, 0.0, 0.0),
+            Vec3::new(0.0, 2.0, 12.0),
+            &looking_at_origin(),
+            VIEWPORT,
+        )
+        .expect("a gizmo");
+        let x = turned.handle(Axis::X).expect("an X handle");
+        // A quarter turn puts the object's X along the world's Z, which from this camera is
+        // nearly straight at the eye: a short handle, not the long horizontal one.
+        assert!(x.pixels() < gizmo().handle(Axis::X).expect("world X").pixels() * 0.5);
+    }
+
+    #[test]
+    fn the_turn_gizmo_is_a_ring_and_its_centre_is_not_on_it() {
+        // From above: seen edge-on, a ring is a line through its own centre.
+        let eye = Vec3::new(0.0, 12.0, 8.0);
+        let mut camera =
+            Camera::new(Projection::perspective(16.0 / 9.0)).expect("a valid projection");
+        camera.set_position(eye);
+        camera
+            .look_at(eye, Vec3::new(0.0, 2.0, 0.0), Vec3::new(0.0, 1.0, 0.0))
+            .expect("a camera that looks somewhere");
+        let gizmo = project(
+            GizmoMode::Rotate,
+            Vec3::new(0.0, 2.0, 0.0),
+            2.0,
+            Quat::IDENTITY,
+            eye,
+            &camera.view_projection(),
+            VIEWPORT,
+        )
+        .expect("a gizmo in front of the camera");
+        assert!(gizmo.handles.iter().all(Option::is_none));
+        let (from, _) = gizmo.ring_segments().next().expect("a ring on screen");
+        assert_eq!(gizmo.hit(from, 12.0), Some(Handle::Ring));
+        assert_eq!(gizmo.hit(gizmo.origin, 12.0), None);
+    }
+
+    #[test]
+    fn a_sweep_seen_from_below_turns_the_other_way() {
+        let mut gizmo = gizmo_in(GizmoMode::Rotate);
+        assert!(gizmo.yaw_for(0.5) > 0.0);
+        gizmo.from_above = false;
+        assert!(gizmo.yaw_for(0.5) < 0.0);
+    }
+
+    #[test]
+    fn an_angle_is_wrapped_the_short_way_round() {
+        use std::f32::consts::PI;
+        assert!((wrap_angle(1.5 * PI) + 0.5 * PI).abs() < 1e-5);
+        assert!((wrap_angle(-1.5 * PI) - 0.5 * PI).abs() < 1e-5);
+        assert!((wrap_angle(0.25) - 0.25).abs() < 1e-6);
     }
 }

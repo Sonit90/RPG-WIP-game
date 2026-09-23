@@ -77,6 +77,27 @@ A reproducible timing run:
 cargo run --release --bin mygame -- --frames 60000 --report 1
 ```
 
+## Level editor
+
+The in-game level editor is behind the `editor` Cargo feature, so a normal build does not
+contain it. Build with the feature, then press **F6** in game to enter and leave it:
+
+```powershell
+cargo run --bin mygame --features editor
+```
+
+Open a level directly in the editor. A `--scene-file` path that does not exist yet starts a
+new, empty level that **CTRL+S** saves to that path:
+
+```powershell
+cargo run --bin mygame --features editor -- --editor --scene-file assets/scenes/showcase.json
+cargo run --bin mygame --features editor -- --editor --scene-file assets/scenes/my_level.json
+```
+
+Without `--editor`, `--scene-file` plays the level instead of editing it. The editor lists its
+keys on screen (**F1** hides them). See [`docs/level-editing.md`](docs/level-editing.md) for
+the full controls and the level format.
+
 ## Benchmark
 
 ```powershell

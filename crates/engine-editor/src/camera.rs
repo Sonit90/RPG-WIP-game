@@ -6,7 +6,13 @@
 //!   Q/E  down and up, in world space, always
 //!  SHIFT four times the speed
 //!  right-drag  turn
+//!  ALT+left-drag  orbit round the selection, or round what is in the middle of the view
+//!  wheel       forward and back
+//!  F           frame the selection
 //! ```
+//!
+//! `W`/`A`/`S`/`D` stay still while `CTRL` or `ALT` is held, because those are chords:
+//! `CTRL+S` saves the level, and must not also fly the camera backwards while it does.
 //!
 //! # Why not the third-person camera
 //!
@@ -101,6 +107,43 @@ impl FlyCamera {
         self.pitch = (self.pitch - delta_y * SENSITIVITY).clamp(-PITCH_LIMIT, PITCH_LIMIT);
     }
 
+    /// Puts the camera where it sees a thing of `radius` metres standing at `target`, whole,
+    /// from the direction it is already looking.
+    ///
+    /// The direction is kept because it is the one thing about the view the author chose: a
+    /// frame that also swung the camera round would lose the side of the object they were
+    /// working on.
+    pub fn frame(&mut self, target: Vec3, radius: f32) {
+        let radius = radius.max(0.5);
+        let distance = (radius / (FOV_Y * 0.5).tan() * 1.25).max(3.0);
+        self.position = target - self.forward() * distance;
+    }
+
+    /// Turns the camera round `pivot` by a mouse movement, keeping its distance to it.
+    ///
+    /// The camera ends up looking at the pivot whatever it was looking at before, which is
+    /// what orbiting is: the thing the author is circling stays in the middle of the view.
+    pub fn orbit(&mut self, pivot: Vec3, delta_x: f32, delta_y: f32) {
+        let offset = self.position - pivot;
+        let distance = offset.length().max(0.5);
+        if offset.length_squared() > 1e-6 {
+            let direction = -offset * (1.0 / offset.length());
+            self.yaw = (-direction.x).atan2(-direction.z);
+            self.pitch = direction
+                .y
+                .clamp(-1.0, 1.0)
+                .asin()
+                .clamp(-PITCH_LIMIT, PITCH_LIMIT);
+        }
+        self.turn(delta_x, delta_y);
+        self.position = pivot - self.forward() * distance;
+    }
+
+    /// Moves the camera along where it is looking by `metres`.
+    pub fn dolly(&mut self, metres: f32) {
+        self.position += self.forward() * metres;
+    }
+
     /// Applies one frame of input.
     ///
     /// Looking is on the **right** button, the same button that turns the camera during play,
@@ -110,6 +153,13 @@ impl FlyCamera {
         if input.is_mouse_button_down(MouseButton::Right) {
             let (dx, dy) = input.mouse_delta();
             self.turn(dx as f32, dy as f32);
+        }
+
+        // A chord is not a flight: CTRL+S saves and CTRL+D duplicates, and neither may also
+        // move the camera the author is looking through.
+        let modifiers = input.modifiers();
+        if modifiers.ctrl() || modifiers.alt() {
+            return;
         }
 
         let mut motion = Vec3::ZERO;
@@ -210,6 +260,40 @@ mod tests {
             (camera.right().y).abs() < 1e-4,
             "the right vector stays level whatever the pitch"
         );
+    }
+
+    #[test]
+    fn framing_keeps_the_direction_and_puts_the_target_in_the_middle() {
+        let mut camera = FlyCamera::default();
+        let forward = camera.forward();
+        let target = Vec3::new(40.0, 2.0, -12.0);
+        camera.frame(target, 2.0);
+        assert!(
+            (camera.forward() - forward).length() < 1e-6,
+            "the view did not turn"
+        );
+        let to_target = target - camera.position;
+        let along = to_target.dot(forward);
+        assert!(along > 3.0, "the target is in front");
+        assert!(
+            (to_target - forward * along).length() < 1e-3,
+            "and in the middle"
+        );
+    }
+
+    #[test]
+    fn orbiting_keeps_the_distance_and_ends_up_looking_at_the_pivot() {
+        let mut camera = FlyCamera {
+            position: Vec3::new(0.0, 5.0, 20.0),
+            yaw: 0.3,
+            pitch: 0.0,
+        };
+        let pivot = Vec3::new(0.0, 1.0, 0.0);
+        let before = (camera.position - pivot).length();
+        camera.orbit(pivot, 120.0, 30.0);
+        assert!(((camera.position - pivot).length() - before).abs() < 1e-3);
+        let to_pivot = (pivot - camera.position) * (1.0 / before);
+        assert!((camera.forward() - to_pivot).length() < 1e-3);
     }
 
     #[test]

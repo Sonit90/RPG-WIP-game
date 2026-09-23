@@ -412,6 +412,33 @@ impl AssetBrowser {
         changed
     }
 
+    /// Whether a row can be placed in a level: a built-in, or a model file.
+    #[must_use]
+    pub fn is_placeable(&self, row: BrowserRow) -> bool {
+        match row {
+            BrowserRow::Builtin(_) => true,
+            BrowserRow::Entry(index) => self
+                .catalogue
+                .entries()
+                .get(index)
+                .is_some_and(|entry| entry.kind.is_placeable()),
+            BrowserRow::Folder(_) | BrowserRow::BuiltinFolder => false,
+        }
+    }
+
+    /// The file behind a row, if the row is a level.
+    #[must_use]
+    pub fn scene_path(&self, row: BrowserRow) -> Option<&Path> {
+        let BrowserRow::Entry(index) = row else {
+            return None;
+        };
+        self.catalogue
+            .entries()
+            .get(index)
+            .filter(|entry| entry.kind == engine_assets::catalogue::AssetKind::Scene)
+            .map(|entry| entry.path.as_path())
+    }
+
     /// The row at `index` in the visible list.
     #[must_use]
     pub fn row(&self, index: usize) -> Option<BrowserRow> {
@@ -485,7 +512,8 @@ impl AssetBrowser {
             return true;
         }
         if !self.typing {
-            if input.was_key_pressed(KeyCode::F) {
+            // CTRL+F, the find every program has. A plain `F` frames the selection.
+            if input.modifiers().ctrl() && input.was_key_pressed(KeyCode::F) {
                 self.typing = true;
                 return true;
             }
@@ -502,7 +530,9 @@ impl AssetBrowser {
             }
             return true;
         }
-        if input.was_key_pressed(KeyCode::Enter) || input.was_key_pressed(KeyCode::F) {
+        if input.was_key_pressed(KeyCode::Enter)
+            || (input.modifiers().ctrl() && input.was_key_pressed(KeyCode::F))
+        {
             self.typing = false;
             return true;
         }
@@ -806,6 +836,21 @@ mod tests {
         input
     }
 
+    /// CTRL+F: what opens the filter.
+    fn find() -> InputState {
+        let mut input = InputState::new();
+        input.apply(engine_core::input::InputEvent::KeyDown {
+            key: KeyCode::LeftControl,
+            repeat: false,
+        });
+        input.begin_frame();
+        input.apply(engine_core::input::InputEvent::KeyDown {
+            key: KeyCode::F,
+            repeat: false,
+        });
+        input
+    }
+
     fn browser_over(root: &Path) -> AssetBrowser {
         let mut browser = AssetBrowser::new();
         browser.scan(root);
@@ -971,7 +1016,7 @@ mod tests {
         let mut browser = browser_over(&root);
         let before = browser.rows().len();
 
-        assert!(browser.update_keys(&keyed(KeyCode::F)));
+        assert!(browser.update_keys(&find()));
         assert!(browser.is_typing());
         for key in [KeyCode::R, KeyCode::O, KeyCode::C, KeyCode::K] {
             assert!(browser.update_keys(&keyed(key)), "the filter took the key");
@@ -1005,7 +1050,11 @@ mod tests {
             !browser.update_keys(&keyed(KeyCode::W)),
             "W is the camera's"
         );
-        browser.update_keys(&keyed(KeyCode::F));
+        assert!(
+            !browser.update_keys(&keyed(KeyCode::F)),
+            "a plain F frames the selection and opens nothing"
+        );
+        browser.update_keys(&find());
         assert!(
             browser.update_keys(&keyed(KeyCode::W)),
             "W must be the filter's while it is open"

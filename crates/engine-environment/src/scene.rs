@@ -257,6 +257,49 @@ impl EnvironmentScene {
         EnvironmentCollision::Compound(index)
     }
 
+    /// Drops every compound shape no placement names, renumbering the ones that are left.
+    ///
+    /// Deleting a cave piece leaves its shape in the table; interning keeps the table from
+    /// growing per placement but nothing ever shrinks it. What the editor writes goes through
+    /// this, so a level file carries the shapes its placements use and no others. Returns how
+    /// many were dropped.
+    pub fn prune_collision_shapes(&mut self) -> usize {
+        use crate::object::EnvironmentCollision;
+        let mut used = vec![false; self.collision_shapes.len()];
+        for object in &self.objects {
+            if let EnvironmentCollision::Compound(index) = object.collision
+                && let Some(slot) = used.get_mut(index as usize)
+            {
+                *slot = true;
+            }
+        }
+        if used.iter().all(|used| *used) {
+            return 0;
+        }
+        // Old index -> new index, for the shapes that survive.
+        let mut remap = vec![u16::MAX; used.len()];
+        let mut kept = Vec::with_capacity(used.len());
+        for (index, shape) in std::mem::take(&mut self.collision_shapes)
+            .into_iter()
+            .enumerate()
+        {
+            if used[index] {
+                remap[index] = kept.len() as u16;
+                kept.push(shape);
+            }
+        }
+        let dropped = used.len() - kept.len();
+        self.collision_shapes = kept;
+        for object in &mut self.objects {
+            if let EnvironmentCollision::Compound(index) = &mut object.collision
+                && let Some(new) = remap.get(*index as usize)
+            {
+                *index = *new;
+            }
+        }
+        dropped
+    }
+
     /// Every world-space box one placement blocks.
     ///
     /// The one place the three kinds of collision become the same thing: nothing, one box, or

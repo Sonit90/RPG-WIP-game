@@ -3,62 +3,59 @@
 //! ```text
 //!  F6 ──► Editing ───────────────► EditorOutcome
 //!   ▲        │  left click object   select it, and never place anything
-//!   │        │  left click ground   drop the selection
+//!   │        │  left drag on ground box-select; a click on ground drops the selection
 //!   │        │  N                   placing mode: left click puts one down, every time
-//!   │        │  drag from browser   place that asset where it is dropped
-//!   │        │  double click a row  place one in front of the camera
-//!   │        │  drag an X/Y/Z arm   move the selection along that axis
+//!   │        │  drag from browser   place that asset where it is dropped, on what is there
+//!   │        │  double click a row  place one in front of the camera / open a level
+//!   │        │  1 / 2 / 3           gizmo: move / turn / scale
+//!   │        │  drag a handle       move, turn or scale the selection (CTRL: no snapping)
 //!   │        │  R / SHIFT+R         yaw, snapped to the rotation step
 //!   │        │  G / SHIFT+G         grid step / rotation step
 //!   │        │  T / SHIFT+T         scale
 //!   │        │  ARROWS / SHIFT      nudge by the grid, in X and Z / in Y
 //!   │        │  L                   nudge along world axes or the object's own
 //!   │        │  0                   reset rotation and scale
-//!   │        │  X                   delete
-//!   │        │  C                   duplicate
-//!   │        │  V                   pour a body of water where the cursor is
+//!   │        │  X / DELETE          delete
+//!   │        │  CTRL+D              duplicate
+//!   │        │  CTRL+G              drop the selection onto what is under it
+//!   │        │  H / SHIFT+H         hide the selection / show everything
+//!   │        │  K                   lock the selection: the world's clicks pass through it
+//!   │        │  V / P / I           pour water / put a spawn point / put a light
 //!   │        │  M                   module snap: the cave grid, on and off
-//!   │        │  P                   put a spawn point where the cursor is
 //!   │        │  CTRL+click          add to the selection; CTRL+A takes everything
-//!   │        │  Z                   undo
+//!   │        │  CTRL+Z / CTRL+Y     undo / redo
 //!   │        │  TAB                 next asset in the browser
-//!   │        │  F / F2              filter the browser / read assets/ again
+//!   │        │  CTRL+F / F2         filter the panel under the pointer / read assets/ again
+//!   │        │  F / HOME            frame the selection
+//!   │        │  ALT+drag / wheel    orbit / fly forward and back
 //!   │        │  B                   sculpt the ground; TAB cycles the brush
 //!   │        │  1 2 / 3 4           brush size / brush strength, while sculpting
-//!   │        │  CTRL+S              write assets/scenes/<name>.json
-//!   └────────┘  F6 / ESC            leave
+//!   │        │  CTRL+S / +SHIFT     save / save as
+//!   └────────┘  F6                  leave
 //! ```
 //!
 //! # One gesture, one meaning
 //!
 //! Placing and selecting are different gestures, and neither can be mistaken for the other:
 //!
-//! 1. a drag on a gizmo arm transforms what is selected;
+//! 1. a drag on a gizmo handle transforms what is selected;
 //! 2. a click on something in the world selects it — it never places anything;
 //! 3. a drag from a browser row into the world places one there;
 //! 4. a double click on a browser row places one in front of the camera;
-//! 5. anything else is the camera's.
+//! 5. a drag that starts on empty ground draws a selection box;
+//! 6. anything else is the camera's.
 //!
 //! `N` puts the editor in **placing mode**, where rule 2 is suspended: every left click in
 //! the world puts an object down, on top of whatever is already there, and nothing selects or
 //! moves. Laying out a row of pillars is a dozen clicks rather than a dozen drags out of the
-//! browser, and an author doing that never wants a click to be interpreted as "you meant to
-//! pick up the pillar you just placed". `N` again, or `ESC`, and the left button means select
-//! once more.
-//!
-//! It used to be that a click on empty ground placed the browser's asset, which made one
-//! button mean "place" or "select" depending on what happened to be under it — and a click
-//! that missed the rock an author was aiming at left a second rock behind it. Placing is now
-//! something an author does *from the browser*, deliberately, and the world's left button
-//! only ever selects.
+//! browser. `N` again, or `ESC`, and the left button means select once more.
 //!
 //! # It edits data, and nothing else
 //!
-//! The editor's whole world is an [`EnvironmentScene`] — a `Vec` of placements. It never
-//! touches a mesh, a device, a render entity or a collision world, and it cannot: this crate
-//! depends on neither `engine-renderer` nor `engine-game`. What it returns is
-//! [`EditorOutcome::SceneChanged`], and the application answers that by re-placing the scene
-//! it already knows how to place.
+//! The editor's whole world is an [`EnvironmentScene`]. It never touches a mesh, a device, a
+//! render entity or a collision world, and it cannot: this crate depends on neither
+//! `engine-renderer` nor `engine-game`. What it returns is an [`EditorOutcome`], and the
+//! application answers that by re-placing the scene it already knows how to place.
 //!
 //! It does read a *directory*: [`browser::AssetBrowser`] lists what is under `assets/` so an
 //! author can pick from it. That is names and extensions, not meshes — see that module.
@@ -73,68 +70,92 @@
 //!
 //! # Why the whole scene is the undo unit
 //!
-//! `Z` restores the previous `Vec<EnvironmentObject>` wholesale rather than inverting the last
-//! verb. A scene is a few hundred 44-byte records, so a snapshot is a few kilobytes and a
-//! memcpy; inverting verbs means a second implementation of every verb, written backwards,
-//! which is where undo bugs live.
+//! `CTRL+Z` restores the previous scene wholesale rather than inverting the last verb. A
+//! scene is a few hundred 44-byte records and a terrain, so a snapshot is a memcpy; inverting
+//! verbs means a second implementation of every verb, written backwards, which is where undo
+//! bugs live. Redo is the same thing the other way.
+//!
+//! # Work is not lost
+//!
+//! The editor counts edits against the last save, says `UNSAVED` while they differ, and
+//! writes `<level>.autosave.json` beside the level every couple of minutes, on the way out
+//! with F6 and when the game closes. Undo survives F6: leaving to walk through a level and
+//! coming back to fix what was wrong with it is the loop an editor exists for.
 
 #![deny(missing_docs)]
 
 pub mod browser;
 pub mod camera;
+pub mod field;
 pub mod gizmo;
+pub mod inspector;
 pub mod pick;
 pub mod ui;
 
 use std::path::{Path, PathBuf};
 
 use engine_core::input::{InputState, KeyCode, MouseButton};
-use engine_core::math::{Mat4, Vec3};
+use engine_core::math::{Mat4, Quat, Vec3};
 use engine_core::transform::Transform;
+use engine_environment::lighting::SceneLight;
 use engine_environment::spawn::SpawnPoint;
 use engine_environment::terrain::{BrushMode, Terrain};
 use engine_environment::water::WaterBody;
 use engine_environment::{EnvironmentAsset, EnvironmentObject, EnvironmentScene, scene_file};
+use engine_presentation::ui::ground_decal::GroundSurface;
 use engine_presentation::ui::input::UiInput;
+use engine_presentation::ui::targeting::{cursor_ray, ground_under_cursor};
 use engine_render_data::{Camera, RenderDataError, UiScale};
 
 pub use camera::FlyCamera;
 
-/// How many snapshots `Z` can walk back through.
+/// How many snapshots `CTRL+Z` can walk back through.
 const UNDO_DEPTH: usize = 64;
 
-/// What `Z` puts back: everything an edit can change.
+/// How long unsaved work may sit before it is written to the autosave file, in seconds.
+const AUTOSAVE_SECONDS: f32 = 120.0;
+
+/// A placement's hidden flag. See [`Editor::hide`].
+const HIDDEN: u8 = 1;
+/// A placement's locked flag. See [`Editor::update_keys`].
+const LOCKED: u8 = 2;
+
+/// What `CTRL+Z` puts back: everything an edit can change.
 ///
-/// The placements, the ground *and* the water. It used to be the placements alone, which was
-/// right while they were the only thing an author could change; a brush stroke is an edit like
-/// any other and has to be undoable the same way, and so is pouring a pond. A terrain is 66 KB at the shipping size and a
-/// snapshot is only taken when something changes, so sixty-four of them is a few megabytes in
-/// the editor and nothing at all in a shipping build, which has none of this.
+/// The placements, the ground, the water, the spawn points and the lights — and the editor's
+/// own hide and lock flags, which are kept beside the placements they describe so that
+/// deleting one and taking the delete back brings its flags back with it.
 #[derive(Debug, Clone, PartialEq)]
 struct Snapshot {
     objects: Vec<EnvironmentObject>,
     terrain: Option<Terrain>,
     water: Vec<WaterBody>,
     spawn_points: Vec<SpawnPoint>,
+    lights: Vec<SceneLight>,
+    flags: Vec<u8>,
 }
 
 impl Snapshot {
     /// The scene as it is now.
-    fn of(scene: &EnvironmentScene) -> Self {
+    fn of(scene: &EnvironmentScene, flags: &[u8]) -> Self {
         Self {
             objects: scene.objects.clone(),
             terrain: scene.terrain.clone(),
             water: scene.water.clone(),
             spawn_points: scene.spawn_points.clone(),
+            lights: scene.lights.clone(),
+            flags: flags.to_vec(),
         }
     }
 
-    /// Puts this snapshot back into `scene`.
-    fn restore(self, scene: &mut EnvironmentScene) {
+    /// Puts this snapshot back into `scene`, and returns the flags it carried.
+    fn restore(self, scene: &mut EnvironmentScene) -> Vec<u8> {
         scene.objects = self.objects;
         scene.terrain = self.terrain;
         scene.water = self.water;
         scene.spawn_points = self.spawn_points;
+        scene.lights = self.lights;
+        self.flags
     }
 }
 
@@ -185,6 +206,22 @@ const WATER_DEPTH: f32 = 2.0;
 /// so `SHIFT+T` stops here rather than producing a level that cannot be read back.
 const WATER_MIN_HALF_EXTENT: f32 = 0.25;
 
+/// How high above the ground `I` puts a light, in metres: about a brazier's flame.
+const LIGHT_HEIGHT: f32 = 2.0;
+
+/// How far one notch of the wheel flies the camera, in metres. `SHIFT` makes it four.
+const DOLLY_METRES: f32 = 3.0;
+
+/// How far the pointer must move for a drag on empty ground to be a selection box rather
+/// than a click, in logical pixels.
+const BOX_SLOP_PIXELS: f32 = 6.0;
+
+/// How many pixels of vertical movement double a uniform scale, in logical pixels.
+const UNIFORM_SCALE_PIXELS: f32 = 150.0;
+
+/// What a scale drag rounds to when snapping is on.
+const SCALE_SNAP: f32 = 0.05;
+
 /// What the application should do about the frame the editor just read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EditorOutcome {
@@ -199,26 +236,23 @@ pub enum EditorOutcome {
     /// mesh upload. A brush stroke that reported "the scene changed" would pay the first cost
     /// for the second thing, on every frame of a drag.
     TerrainChanged,
-    /// The water changed: rebuild its meshes.
+    /// The water or a spawn point changed: rebuild their meshes and markers.
     ///
     /// Separate from [`EditorOutcome::SceneChanged`] for the reason
     /// [`EditorOutcome::TerrainChanged`] is: re-placing a scene respawns a few hundred render
-    /// entities, and resizing one quad is one upload. A drag that reported "the scene changed"
-    /// would pay the first cost for the second thing on every frame of it.
+    /// entities, and resizing one quad is one upload.
     WaterChanged,
     /// The author asked to go back to playing.
     Left,
 }
 
-/// What is selected: a placement, or a body of water.
+/// What is selected: a placement, a body of water, a spawn point or a light.
 ///
-/// # Why a tag rather than two lists
+/// # Why a tag rather than several lists
 ///
-/// The selection used to be a `Vec<usize>` into `scene.objects`, which was right while
-/// placements were the only thing a level held that an author could point at. Water is the
-/// second, and a spawn point will be the third — and every one of them wants the same verbs:
-/// click to select, drag to move, `X` to delete, `Z` to take it back. Two parallel selections
-/// would be two copies of each verb that can disagree about which one a key press meant.
+/// Every kind wants the same verbs: click to select, drag to move, `X` to delete, `CTRL+Z` to
+/// take it back. Parallel selections would be copies of each verb that can disagree about
+/// which one a key press meant.
 ///
 /// A selection holds one kind at a time. Selecting a body of water clears a selection of
 /// objects and the reverse, because a rule an author can predict beats a general one nobody
@@ -232,6 +266,8 @@ pub enum Selected {
     Water(usize),
     /// A spawn point, by its index into `scene.spawn_points`.
     Spawn(usize),
+    /// A local light, by its index into `scene.lights`.
+    Light(usize),
 }
 
 impl Selected {
@@ -262,16 +298,38 @@ impl Selected {
         }
     }
 
+    /// The light index, if this is a light.
+    #[must_use]
+    pub fn light(self) -> Option<usize> {
+        match self {
+            Self::Light(index) => Some(index),
+            _ => None,
+        }
+    }
+
     /// Whether two selections name the same kind of thing.
     #[must_use]
     fn same_kind(self, other: Self) -> bool {
-        matches!(
-            (self, other),
-            (Self::Object(_), Self::Object(_))
-                | (Self::Water(_), Self::Water(_))
-                | (Self::Spawn(_), Self::Spawn(_))
-        )
+        std::mem::discriminant(&self) == std::mem::discriminant(&other)
     }
+
+    /// Whether an edit to this kind is answered by re-placing the level rather than by
+    /// rebuilding the water and the spawn markers.
+    fn is_scene_kind(self) -> bool {
+        matches!(self, Self::Object(_) | Self::Light(_))
+    }
+}
+
+/// Where something stands, how it is turned and how big it is — whichever kind it is.
+///
+/// What a gizmo drag remembers at the press and writes back each frame. Water keeps its size
+/// in `scale` (half-width, depth, half-length), a light its range in all three, and a spawn
+/// point has no size at all.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Pose {
+    position: Vec3,
+    yaw: f32,
+    scale: Vec3,
 }
 
 /// A drag of one gizmo handle, and everything it needs to be absolute.
@@ -280,27 +338,32 @@ impl Selected {
 ///
 /// The handles are projected from the selection's own origin, so a gizmo re-projected each
 /// frame moves with the thing being dragged — and then the metres one pixel of movement asks
-/// for changes under the author's hand mid-drag, which reads as the object accelerating away
-/// from the cursor. The projection taken at the moment of the press is the ruler for the whole
-/// drag.
+/// for changes under the author's hand mid-drag. The projection taken at the moment of the
+/// press is the ruler for the whole drag.
 ///
-/// # Why the origins are remembered
+/// # Why the starting poses are remembered
 ///
 /// The drag is absolute: every frame asks "where should this be, given where the pointer
 /// started and where it is now", rather than accumulating a delta per frame. An accumulated
-/// drag drifts, because a snapped position feeds the next frame's delta back into itself.
+/// drag drifts, because a snapped value feeds the next frame's delta back into itself.
 #[derive(Debug, Clone, PartialEq)]
 struct GizmoDrag {
-    /// Which handle was grabbed.
-    axis: gizmo::Axis,
+    /// Which part of the gizmo was grabbed.
+    handle: gizmo::Handle,
     /// Where the pointer went down, in physical pixels.
     from: (f32, f32),
     /// The gizmo as it stood at the press. See above.
     screen: gizmo::GizmoScreen,
-    /// Where everything selected stood when the drag began.
-    origins: Vec<(Selected, Vec3)>,
-    /// Whether anything has actually moved yet, so a click on a handle that does not drag it
-    /// does not push an undo snapshot.
+    /// How everything selected stood when the drag began.
+    starts: Vec<(Selected, Pose)>,
+    /// What a turn turns about: the primary's position at the press.
+    pivot: Vec3,
+    /// The pointer's angle round the gizmo last frame, for the turn ring.
+    last_angle: Option<f32>,
+    /// How far the pointer has swept round the gizmo since the press, radians.
+    swept: f32,
+    /// Whether anything has actually changed yet, so a click on a handle that does not drag
+    /// it does not push an undo snapshot.
     moved: bool,
 }
 
@@ -314,6 +377,36 @@ struct PlacementDrag {
     /// Where the press happened, so a release that never left the row can be told from one
     /// that was carried out into the level.
     from: (f32, f32),
+}
+
+/// A selection box being dragged out over the world.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Marquee {
+    /// Where the press was, in physical pixels.
+    pub from: (f32, f32),
+    /// Where the pointer is now.
+    pub to: (f32, f32),
+    /// Whether it adds to the selection (`CTRL`) rather than replacing it.
+    add: bool,
+}
+
+impl Marquee {
+    /// The rectangle, whichever way it was dragged.
+    #[must_use]
+    pub fn rect(&self) -> engine_render_data::ui::UiRect {
+        let (left, right) = (self.from.0.min(self.to.0), self.from.0.max(self.to.0));
+        let (top, bottom) = (self.from.1.min(self.to.1), self.from.1.max(self.to.1));
+        engine_render_data::ui::UiRect::new(left, top, right - left, bottom - top)
+    }
+}
+
+/// A number being typed into the inspector.
+#[derive(Debug, Clone, PartialEq)]
+pub struct InspectorEdit {
+    /// Which number.
+    pub property: inspector::Property,
+    /// What has been typed.
+    pub field: field::TextField,
 }
 
 /// How long after a click a second one on the same row still counts as a double click.
@@ -339,24 +432,25 @@ pub struct Editor {
     /// What is selected, in the order it was added. The last is the primary one — what the
     /// inspector describes and what a verb reports on. One kind at a time; see [`Selected`].
     selected: Vec<Selected>,
-    /// What a drag on a handle means. One mode today; see [`gizmo::GizmoMode`].
+    /// What a drag on a handle means: move, turn or scale.
     gizmo_mode: gizmo::GizmoMode,
     /// The handle being dragged, if one is.
     gizmo_drag: Option<GizmoDrag>,
     /// Which handle the cursor is over, so it can be drawn as the one that would be grabbed.
-    gizmo_hover: Option<gizmo::Axis>,
+    gizmo_hover: Option<gizmo::Handle>,
     /// An asset dragged out of the browser and not yet dropped.
     placement: Option<PlacementDrag>,
+    /// A selection box being dragged out, if one is.
+    marquee: Option<Marquee>,
+    /// What an `ALT` drag is orbiting round, while one is.
+    orbit_pivot: Option<Vec3>,
     /// Whether a double click on a browser row asked for a placement in front of the camera.
-    ///
-    /// Set where the row is answered and read where the scene is in hand, because the browser
-    /// panel has no scene: it knows what was clicked and nothing about the level.
     place_at_centre: bool,
     /// The last browser row that was clicked and when, for the double click that places one.
     last_row_click: Option<(browser::BrowserRow, f32)>,
-    /// Seconds since the editor was opened. The clock the double click is measured on: this
-    /// crate has no access to a wall clock and must not gain one — the frame time the
-    /// application already hands it is the only time it knows.
+    /// The last hierarchy row that was clicked and when, for the double click that frames it.
+    last_hierarchy_click: Option<(Selected, f32)>,
+    /// Seconds since the editor was opened. The clock the double click is measured on.
     clock: f32,
     /// This frame's view-projection, kept so the interface can draw the gizmo and the
     /// silhouette from the same matrix the pointer was answered with.
@@ -370,11 +464,6 @@ pub struct Editor {
     /// Whether the terrain brush has the pointer instead of placement and selection.
     sculpting: bool,
     /// Whether a click in the world puts an object down rather than selecting one.
-    ///
-    /// Off by default, because a click that places is a click that cannot be taken back
-    /// without noticing it happened; on while an author is laying out a row of something.
-    /// Mutually exclusive with sculpting: both want the whole world pointer, and a mode that
-    /// is two modes is one nobody can predict.
     placing: bool,
     /// What the brush does.
     brush: BrushMode,
@@ -385,31 +474,50 @@ pub struct Editor {
     /// Whether a nudge runs along the object's own axes rather than the world's.
     local_space: bool,
     /// Whether the grid is the cave module rather than whatever `G` last chose.
-    ///
-    /// Modular pieces meet on a face: two tunnels laid four metres apart on a quarter-turn
-    /// grid join, and two laid 3.7 m apart on a 22.5° grid leave a gap somebody has to see
-    /// from inside the cave to notice. So the pieces bring their own grid with them.
     module_snap: bool,
     /// Whether the author has pressed `M` and taken the decision off the editor.
-    ///
-    /// Until they do, module snap follows what is about to be placed: choosing a cave piece
-    /// turns it on and choosing a rock turns it off, which is right nearly always and is the
-    /// kind of automatic behaviour that must stop the moment somebody disagrees with it.
     module_snap_pinned: bool,
     /// Whether what changed this frame was water or a spawn point rather than a placement.
-    ///
-    /// Which of the two "something changed" answers the application gets. A selection holds
-    /// one kind at a time, so the frame's edit reached one list or the other and never both —
-    /// see [`Selected`].
     water_touched: bool,
-    /// Snapshots for `Z`, oldest first.
+    /// Snapshots for `CTRL+Z`, oldest first.
     undo: Vec<Snapshot>,
+    /// Snapshots for `CTRL+Y`, the most recently undone last.
+    redo: Vec<Snapshot>,
+    /// Which level the undo history belongs to, so re-entering the same level keeps it and
+    /// entering a different one does not offer to undo edits it never had.
+    history_of: Option<String>,
+    /// How many edits have been made since the editor first opened this level.
+    revision: u64,
+    /// The revision the level file on disk holds.
+    saved_revision: u64,
+    /// The revision the autosave file holds.
+    autosaved_revision: u64,
+    /// Seconds unsaved work has been waiting for the autosave.
+    since_autosave: f32,
+    /// Hidden and locked, one byte per placement, parallel to `scene.objects`.
+    flags: Vec<u8>,
     /// Where `CTRL+S` writes.
     save_path: PathBuf,
+    /// The Save As prompt, while it is open.
+    save_as: Option<field::TextField>,
+    /// A level the author asked to open, for the application to load.
+    open_request: Option<PathBuf>,
+    /// A level whose opening is waiting for the author to confirm losing unsaved work.
+    confirm_open: Option<PathBuf>,
+    /// A number being typed into the inspector.
+    inspector_edit: Option<InspectorEdit>,
+    /// The last property the wheel changed and when, so a run of notches is one undo.
+    wheel_run: Option<(inspector::Property, f32)>,
+    /// What the hierarchy is filtered by.
+    hierarchy_filter: String,
+    /// The hierarchy filter, while it is being typed.
+    hierarchy_typing: Option<field::TextField>,
     /// The last thing that happened, printed under the browser.
     status: String,
-    /// The first object shown in the hierarchy list.
+    /// The first row shown in the hierarchy list.
     hierarchy_scroll: usize,
+    /// Whether the key list is on screen. `F1` puts it away and brings it back.
+    show_keys: bool,
     /// How long the last frame took, so a brush stroke moves the ground at the same rate
     /// whatever the frame rate is.
     last_seconds: f32,
@@ -438,8 +546,11 @@ impl Editor {
             gizmo_drag: None,
             gizmo_hover: None,
             placement: None,
+            marquee: None,
+            orbit_pivot: None,
             place_at_centre: false,
             last_row_click: None,
+            last_hierarchy_click: None,
             clock: 0.0,
             view_projection: Mat4::IDENTITY,
             viewport: (0, 0),
@@ -455,9 +566,24 @@ impl Editor {
             module_snap_pinned: false,
             water_touched: false,
             undo: Vec::new(),
+            redo: Vec::new(),
+            history_of: None,
+            revision: 0,
+            saved_revision: 0,
+            autosaved_revision: 0,
+            since_autosave: 0.0,
+            flags: Vec::new(),
             save_path: PathBuf::from("assets/scenes/untitled.json"),
+            save_as: None,
+            open_request: None,
+            confirm_open: None,
+            inspector_edit: None,
+            wheel_run: None,
+            hierarchy_filter: String::new(),
+            hierarchy_typing: None,
             status: String::new(),
             hierarchy_scroll: 0,
+            show_keys: true,
             last_seconds: 1.0 / 60.0,
             scale: UiScale::default(),
         }
@@ -544,33 +670,18 @@ impl Editor {
         self.selection().and_then(Selected::water)
     }
 
+    /// The primary selection, if it is a light.
+    #[must_use]
+    pub fn selected_light(&self) -> Option<usize> {
+        self.selection().and_then(Selected::light)
+    }
+
     /// Every selected placement, in the order it was added.
-    ///
-    /// Empty when a body of water is selected, because a selection holds one kind at a time —
-    /// which is what stops an object verb from ever reaching water.
     #[must_use]
     fn selected_objects(&self) -> Vec<usize> {
         self.selected
             .iter()
             .filter_map(|what| what.object())
-            .collect()
-    }
-
-    /// Every selected body of water, in the order it was added.
-    #[must_use]
-    fn selected_waters(&self) -> Vec<usize> {
-        self.selected
-            .iter()
-            .filter_map(|what| what.water())
-            .collect()
-    }
-
-    /// Every selected spawn point, in the order it was added.
-    #[must_use]
-    fn selected_spawns(&self) -> Vec<usize> {
-        self.selected
-            .iter()
-            .filter_map(|what| what.spawn())
             .collect()
     }
 
@@ -608,6 +719,12 @@ impl Editor {
     #[must_use]
     pub fn is_place_mode(&self) -> bool {
         self.placing
+    }
+
+    /// What a drag on the gizmo does.
+    #[must_use]
+    pub fn gizmo_mode(&self) -> gizmo::GizmoMode {
+        self.gizmo_mode
     }
 
     /// What the brush does.
@@ -674,16 +791,111 @@ impl Editor {
         &self.save_path
     }
 
+    /// Where unsaved work is written while it waits: `<level>.autosave.json` beside the level.
+    #[must_use]
+    pub fn autosave_path(&self) -> PathBuf {
+        let stem = self
+            .save_path
+            .file_stem()
+            .map_or_else(|| "untitled".into(), |stem| stem.to_string_lossy());
+        self.save_path
+            .with_file_name(format!("{stem}.autosave.json"))
+    }
+
+    /// Whether there are edits the level file on disk does not have.
+    #[must_use]
+    pub fn is_dirty(&self) -> bool {
+        self.revision != self.saved_revision
+    }
+
     /// The last thing that happened, for the status line.
     #[must_use]
     pub fn status(&self) -> &str {
         &self.status
     }
 
-    /// Which object is at the top of the hierarchy list.
+    /// Which row is at the top of the hierarchy list.
     #[must_use]
     pub fn hierarchy_scroll(&self) -> usize {
         self.hierarchy_scroll
+    }
+
+    /// Whether the key list is on screen.
+    #[must_use]
+    pub fn shows_keys(&self) -> bool {
+        self.show_keys
+    }
+
+    /// What the hierarchy is filtered by; empty for everything.
+    #[must_use]
+    pub fn hierarchy_filter(&self) -> &str {
+        &self.hierarchy_filter
+    }
+
+    /// Whether the hierarchy's filter is being typed.
+    #[must_use]
+    pub fn is_filtering_hierarchy(&self) -> bool {
+        self.hierarchy_typing.is_some()
+    }
+
+    /// The number being typed into the inspector, if one is.
+    #[must_use]
+    pub fn inspector_edit(&self) -> Option<&InspectorEdit> {
+        self.inspector_edit.as_ref()
+    }
+
+    /// The Save As name being typed, if the prompt is open.
+    #[must_use]
+    pub fn save_as_text(&self) -> Option<&str> {
+        self.save_as.as_ref().map(field::TextField::text)
+    }
+
+    /// The selection box being dragged, if one is.
+    #[must_use]
+    pub fn marquee(&self) -> Option<Marquee> {
+        self.marquee
+    }
+
+    /// Whether a placement is hidden: not drawn and not pickable in the world.
+    #[must_use]
+    pub fn is_hidden(&self, index: usize) -> bool {
+        self.flags
+            .get(index)
+            .is_some_and(|flags| flags & HIDDEN != 0)
+    }
+
+    /// Whether a placement is locked: drawn, but the world's clicks pass through it.
+    #[must_use]
+    pub fn is_locked(&self, index: usize) -> bool {
+        self.flags
+            .get(index)
+            .is_some_and(|flags| flags & LOCKED != 0)
+    }
+
+    /// Whether anything is hidden.
+    #[must_use]
+    pub fn has_hidden(&self) -> bool {
+        self.flags.iter().any(|flags| flags & HIDDEN != 0)
+    }
+
+    /// The scene as it should be *drawn*: without what the author has hidden.
+    ///
+    /// `None` when nothing is hidden, so the application draws the scene it already has and
+    /// pays for no copy. Hiding is an editor view: the level, its collision and its file keep
+    /// every placement.
+    #[must_use]
+    pub fn visible_scene(&self, scene: &EnvironmentScene) -> Option<EnvironmentScene> {
+        if !self.active || !self.has_hidden() {
+            return None;
+        }
+        let mut visible = scene.clone();
+        let mut index = 0;
+        visible.objects.retain(|_| {
+            let keep = !self.is_hidden(index);
+            index += 1;
+            keep
+        });
+        Some(visible)
     }
 
     /// Where `CTRL+S` writes from now on.
@@ -693,6 +905,45 @@ impl Editor {
     pub fn set_save_path(&mut self, path: PathBuf) {
         self.status = format!("editing {}", path.display());
         self.save_path = path;
+    }
+
+    /// The level the author asked to open, if they did — for the application to load and
+    /// hand back with [`Editor::opened`].
+    pub fn take_open_request(&mut self) -> Option<PathBuf> {
+        self.open_request.take()
+    }
+
+    /// Starts editing a level the application has just loaded from `path`.
+    ///
+    /// Everything that described the previous level goes: its history, its selection, its
+    /// flags and its unsaved count. The file it came from is where `CTRL+S` writes.
+    pub fn opened(&mut self, scene: &EnvironmentScene, path: PathBuf) {
+        self.reset_history(&scene.name);
+        self.flags = vec![0; scene.objects.len()];
+        self.selected.clear();
+        self.cancel_manipulation();
+        self.hierarchy_scroll = 0;
+        self.status = format!("opened {}", path.display());
+        self.save_path = path;
+        if let Some(pivot) = scene.objects.first().map(|object| object.position()) {
+            self.camera = FlyCamera::overlooking(pivot);
+        }
+    }
+
+    /// Says why a level the author asked to open could not be.
+    pub fn open_failed(&mut self, error: &str) {
+        self.status = format!("COULD NOT OPEN: {error}");
+    }
+
+    /// Forgets the undo history and the unsaved count, for a level the editor has not seen.
+    fn reset_history(&mut self, name: &str) {
+        self.undo.clear();
+        self.redo.clear();
+        self.history_of = Some(name.to_owned());
+        self.revision = 0;
+        self.saved_revision = 0;
+        self.autosaved_revision = 0;
+        self.since_autosave = 0.0;
     }
 
     /// The interface scale the panels are laid out at.
@@ -706,7 +957,12 @@ impl Editor {
         self.scale = scale;
     }
 
-    /// Enters the editor, looking at `focus` and saving to a file named after the scene.
+    /// Enters the editor, looking at `focus`.
+    ///
+    /// Re-entering the level the editor was last in keeps its undo history, its unsaved count
+    /// and the file it saves to: leaving to walk through a level and coming back to fix it is
+    /// the loop an editor exists for, and it must not cost the author their undo. A different
+    /// level starts clean and saves to a file named after it.
     pub fn enter(&mut self, focus: Vec3, scene_name: &str, viewport: (u32, u32)) {
         self.active = true;
         self.camera = FlyCamera::overlooking(focus);
@@ -715,8 +971,11 @@ impl Editor {
         self.selected.clear();
         self.cancel_manipulation();
         self.hierarchy_scroll = 0;
-        self.undo.clear();
-        self.save_path = PathBuf::from(format!("assets/scenes/{scene_name}.json"));
+        if self.history_of.as_deref() != Some(scene_name) {
+            self.reset_history(scene_name);
+            self.flags.clear();
+            self.save_path = PathBuf::from(format!("assets/scenes/{scene_name}.json"));
+        }
         // The directory is read here rather than at startup, so an asset added between
         // launching the game and pressing F6 is in the browser the first time it is opened.
         let root = browser::default_root();
@@ -734,6 +993,12 @@ impl Editor {
         for problem in &self.browser.catalogue().report().unreadable {
             log::warn!("editor: could not read {problem}");
         }
+        if self.autosave_path().is_file() && !self.is_dirty() {
+            self.status = format!(
+                "an autosave is waiting: {} (open it from the browser)",
+                self.autosave_path().display()
+            );
+        }
         let _ = viewport;
     }
 
@@ -741,6 +1006,9 @@ impl Editor {
     pub fn leave(&mut self) {
         self.active = false;
         self.cancel_manipulation();
+        self.inspector_edit = None;
+        self.save_as = None;
+        self.hierarchy_typing = None;
     }
 
     /// Writes this camera into the renderer's.
@@ -750,6 +1018,27 @@ impl Editor {
     /// [`RenderDataError::InvalidConfig`] for a degenerate aspect ratio.
     pub fn apply_camera(&self, camera: &mut Camera, aspect: f32) -> Result<(), RenderDataError> {
         self.camera.apply(camera, aspect)
+    }
+
+    /// Keeps the hide and lock flags as long as the object list, whatever changed it.
+    fn sync_flags(&mut self, scene: &EnvironmentScene) {
+        self.flags.resize(scene.objects.len(), 0);
+    }
+
+    /// Whether the world's pointer can reach `what`: not hidden, not locked.
+    fn pickable(&self, what: Selected) -> bool {
+        match what {
+            Selected::Object(index) => self.flags.get(index).is_none_or(|flags| *flags == 0),
+            _ => true,
+        }
+    }
+
+    /// Whether the pointer is over any of the panels.
+    fn over_panels(&self, pointer: (f32, f32), viewport: (u32, u32)) -> bool {
+        let (x, y) = pointer;
+        ui::browser_rect(self.scale, viewport).contains(x, y)
+            || ui::hierarchy_rect(self.scale, viewport).contains(x, y)
+            || ui::inspector_rect(self.scale, viewport).contains(x, y)
     }
 
     /// Applies one frame of input to `scene`.
@@ -769,7 +1058,11 @@ impl Editor {
         if !self.active {
             return EditorOutcome::Idle;
         }
+        self.sync_flags(scene);
         if input.was_key_pressed(KeyCode::F6) {
+            // The last chance before the author walks into the level: whatever they did is
+            // written somewhere, even if they never pressed CTRL+S.
+            self.autosave(scene);
             self.leave();
             return EditorOutcome::Left;
         }
@@ -780,13 +1073,69 @@ impl Editor {
         self.view_projection = *view_projection;
         self.viewport = viewport;
         self.clock += seconds;
+        self.tick_autosave(scene, seconds);
 
-        // The browser reads the keyboard first, because while its filter is open every key
+        // The two prompts own the whole keyboard and nothing else happens while they are
+        // open: a name half typed into Save As is not a set of camera keys.
+        if self.save_as.is_some() {
+            self.update_save_as(input, scene);
+            return EditorOutcome::Idle;
+        }
+        if self.hierarchy_typing.is_some() {
+            self.update_hierarchy_filter(input);
+            return EditorOutcome::Idle;
+        }
+
+        let over_panel = self.over_panels(ui_input.pointer, viewport);
+        let control = input.modifiers().ctrl();
+
+        // CTRL+F finds in the panel under the pointer: the hierarchy's filter over the
+        // hierarchy, the browser's everywhere else.
+        if control
+            && input.was_key_pressed(KeyCode::F)
+            && ui::hierarchy_rect(self.scale, viewport)
+                .contains(ui_input.pointer.0, ui_input.pointer.1)
+        {
+            // Typing adds to the filter that is there rather than replacing it.
+            self.hierarchy_typing = Some(field::TextField::appending(
+                &self.hierarchy_filter,
+                field::Charset::FileName,
+            ));
+            return EditorOutcome::Idle;
+        }
+
+        let mut changed = false;
+        // A number being typed owns the keyboard; the pointer carries on, and a click that
+        // lands anywhere else commits it first.
+        let field_took_the_keys = self.inspector_edit.is_some();
+        if field_took_the_keys {
+            changed |= self.update_inspector_edit(input, scene);
+        }
+
+        // The browser reads the keyboard next, because while its filter is open every key
         // belongs to the filter — including the ones that would otherwise fly the camera.
-        let browser_took_the_keys = self.browser.update_keys(input);
-        if !self.browser.is_typing() {
+        let browser_took_the_keys = !field_took_the_keys && self.browser.update_keys(input);
+        let typing = field_took_the_keys || self.browser.is_typing();
+        if !typing {
             self.last_seconds = seconds;
             self.camera.update(input, seconds);
+        }
+
+        // ALT+drag orbits, and while it does the left button is the camera's.
+        if self.update_orbit(
+            input,
+            ui_input,
+            scene,
+            view_projection,
+            viewport,
+            over_panel,
+        ) {
+            return EditorOutcome::Idle;
+        }
+        let wheel = input.wheel_delta();
+        if wheel != 0.0 && !over_panel && !typing {
+            let fast = if input.modifiers().shift() { 4.0 } else { 1.0 };
+            self.camera.dolly(wheel * DOLLY_METRES * fast);
         }
 
         // The panels own the pointer over themselves: a click on a browser row chooses an
@@ -795,18 +1144,22 @@ impl Editor {
         // What is about to be placed decides the grid, until somebody says otherwise.
         self.follow_module_snap();
         let over_hierarchy = self.update_hierarchy(input, ui_input, scene, viewport);
+        if self.update_inspector_pointer(input, ui_input, scene, viewport) {
+            changed = true;
+        }
+        let over_panel = over_panel || over_browser || over_hierarchy;
 
         // Sculpting takes the world pointer and most of the keyboard; the panels keep theirs.
         // A key the brush answered is *not* passed on: `B` cycles the brush while sculpting
         // and switches modes while not, and one press must not do both.
-        if self.sculpting && !self.browser.is_typing() {
+        if self.sculpting && !typing {
             let (outcome, handled) = self.update_terrain(
                 input,
                 ui_input,
                 scene,
                 view_projection,
                 viewport,
-                over_browser || over_hierarchy,
+                over_panel,
             );
             if outcome != EditorOutcome::Idle || handled {
                 self.reveal_selection(scene, viewport);
@@ -814,57 +1167,47 @@ impl Editor {
             }
         }
 
-        // `V` pours water where the cursor is, and it needs the ray the pointer verbs use
-        // rather than only the keyboard — so it is answered here, before the keyboard verbs,
-        // and its key is not passed on to them.
-        if !browser_took_the_keys && !self.browser.is_typing() && !self.sculpting {
-            let over_panel = over_browser || over_hierarchy;
-            // Both of these need the ray the pointer verbs use rather than only the keyboard,
-            // so they are answered here — before the keyboard verbs, and their key is not
-            // passed on to them.
-            let placed = if input.was_key_pressed(KeyCode::V) {
+        // `V`, `P` and `I` put something where the cursor is, so they need the ray the
+        // pointer verbs use rather than only the keyboard — answered here, before the keyboard
+        // verbs, and their key is not passed on to them.
+        if !browser_took_the_keys && !typing && !self.sculpting && !control {
+            let put = if input.was_key_pressed(KeyCode::V) {
                 Some(self.pour_water(ui_input, scene, view_projection, viewport, over_panel))
             } else if input.was_key_pressed(KeyCode::P) {
                 Some(self.put_spawn(ui_input, scene, view_projection, viewport, over_panel))
+            } else if input.was_key_pressed(KeyCode::I) {
+                Some(self.put_light(ui_input, scene, view_projection, viewport, over_panel))
             } else {
                 None
             };
-            if let Some(placed) = placed {
+            if let Some(put) = put {
                 self.reveal_selection(scene, viewport);
-                return if placed {
-                    EditorOutcome::WaterChanged
-                } else {
-                    EditorOutcome::Idle
+                return match (put, self.water_touched) {
+                    (false, _) => EditorOutcome::Idle,
+                    (true, true) => EditorOutcome::WaterChanged,
+                    (true, false) => EditorOutcome::SceneChanged,
                 };
             }
         }
 
-        let mut changed = if browser_took_the_keys || self.browser.is_typing() {
-            false
-        } else {
-            self.update_keys(input, scene)
-        };
+        if !(browser_took_the_keys || typing) && self.update_keys(input, scene) {
+            changed = true;
+        }
         // An asset carried out of the browser, or asked for by a double click on a row. The
         // only two ways anything is placed — see [`Editor::update_placement`].
-        if self.update_placement(
-            ui_input,
-            scene,
-            view_projection,
-            viewport,
-            over_browser || over_hierarchy,
-        ) {
+        if self.update_placement(ui_input, scene, view_projection, viewport, over_panel) {
             changed = true;
         }
 
-        let add_to_selection =
-            input.is_key_down(KeyCode::LeftControl) || input.is_key_down(KeyCode::RightControl);
+        let precise = control;
         if self.update_pointer(
             ui_input,
             scene,
             view_projection,
             viewport,
-            over_browser || over_hierarchy,
-            add_to_selection,
+            over_panel,
+            control,
+            precise,
         ) {
             changed = true;
         }
@@ -879,6 +1222,91 @@ impl Editor {
             (true, false) => EditorOutcome::SceneChanged,
             (false, _) => EditorOutcome::Idle,
         }
+    }
+
+    /// One frame of the Save As prompt.
+    fn update_save_as(&mut self, input: &InputState, scene: &mut EnvironmentScene) {
+        let Some(field) = self.save_as.as_mut() else {
+            return;
+        };
+        match field.update(input) {
+            field::FieldAnswer::Editing => {}
+            field::FieldAnswer::Cancel => {
+                self.save_as = None;
+                self.status = "save as: cancelled".to_owned();
+            }
+            field::FieldAnswer::Commit | field::FieldAnswer::CommitNext => {
+                let name = field.text().trim_matches(['-', '_']).to_owned();
+                self.save_as = None;
+                if name.is_empty() {
+                    self.status = "save as: a level needs a name".to_owned();
+                    return;
+                }
+                let directory = self
+                    .save_path
+                    .parent()
+                    .map_or_else(|| PathBuf::from("assets/scenes"), Path::to_path_buf);
+                self.save_path = directory.join(format!("{name}.json"));
+                // The level is called what its file is called from now on, and its history
+                // goes with it: the undo stack is still this level's.
+                scene.name = name.clone().into();
+                self.history_of = Some(name);
+                self.save(scene);
+            }
+        }
+    }
+
+    /// One frame of the hierarchy filter being typed.
+    fn update_hierarchy_filter(&mut self, input: &InputState) {
+        let Some(typing) = self.hierarchy_typing.as_mut() else {
+            return;
+        };
+        let answer = typing.update(input);
+        self.hierarchy_filter = typing.text().to_owned();
+        self.hierarchy_scroll = 0;
+        match answer {
+            field::FieldAnswer::Editing => {}
+            field::FieldAnswer::Commit | field::FieldAnswer::CommitNext => {
+                self.hierarchy_typing = None;
+            }
+            field::FieldAnswer::Cancel => {
+                self.hierarchy_typing = None;
+                self.hierarchy_filter.clear();
+            }
+        }
+    }
+
+    /// `ALT` + left drag: orbit round the selection, or round the ground in the middle of the
+    /// view. Returns whether the camera had the pointer this frame.
+    fn update_orbit(
+        &mut self,
+        input: &InputState,
+        ui_input: &UiInput,
+        scene: &EnvironmentScene,
+        view_projection: &Mat4,
+        viewport: (u32, u32),
+        over_panel: bool,
+    ) -> bool {
+        if !ui_input.pointer_down {
+            self.orbit_pivot = None;
+            return false;
+        }
+        if self.orbit_pivot.is_none() {
+            if !(ui_input.pointer_pressed && input.modifiers().alt() && !over_panel) {
+                return false;
+            }
+            let centre = (viewport.0 as f32 * 0.5, viewport.1 as f32 * 0.5);
+            self.orbit_pivot = self
+                .gizmo_origin(scene)
+                .or_else(|| ground_under(centre, view_projection, viewport, scene))
+                .or(Some(self.camera.position + self.camera.forward() * 20.0));
+            self.cancel_manipulation();
+        }
+        if let Some(pivot) = self.orbit_pivot {
+            let (dx, dy) = input.mouse_delta();
+            self.camera.orbit(pivot, dx as f32, dy as f32);
+        }
+        true
     }
 
     /// Puts a spawn point on the ground under the cursor. Returns whether one arrived.
@@ -897,14 +1325,7 @@ impl Editor {
         if over_panel {
             return false;
         }
-        let Some(ground) = engine_presentation::ui::targeting::ground_under_cursor(
-            ui_input.pointer,
-            view_projection,
-            viewport,
-            &engine_presentation::ui::ground_decal::GroundSurface::Plane(
-                engine_presentation::ui::targeting::GROUND_HEIGHT,
-            ),
-        ) else {
+        let Some(ground) = ground_under(ui_input.pointer, view_projection, viewport, scene) else {
             self.status = "point at the ground to put a spawn point".to_owned();
             return false;
         };
@@ -923,11 +1344,43 @@ impl Editor {
         true
     }
 
+    /// Puts a warm point light above the ground under the cursor. Returns whether one arrived.
+    fn put_light(
+        &mut self,
+        ui_input: &UiInput,
+        scene: &mut EnvironmentScene,
+        view_projection: &Mat4,
+        viewport: (u32, u32),
+        over_panel: bool,
+    ) -> bool {
+        if over_panel {
+            return false;
+        }
+        let Some(ground) = self.drop_point(ui_input.pointer, scene, view_projection, viewport)
+        else {
+            self.status = "point at the ground to put a light".to_owned();
+            return false;
+        };
+        self.snapshot(scene);
+        let standing = self.snap(ground);
+        let position = Vec3::new(standing.x, ground.y + LIGHT_HEIGHT, standing.z);
+        // Like the last light, so a row of torches is a row of the same torch.
+        let light = scene.lights.last().map_or_else(
+            || SceneLight::brazier(position, 10.0),
+            |last| SceneLight { position, ..*last },
+        );
+        scene.push_light(light);
+        self.selected.clear();
+        self.selected.push(Selected::Light(scene.lights.len() - 1));
+        self.status = format!("light at {:.0} {:.0}", position.x, position.z);
+        true
+    }
+
     /// Pours a body of water on the ground under the cursor. Returns whether one arrived.
     ///
     /// Eight metres square and two deep, at the height of the ground it was poured onto — the
     /// size of a thing an author grows rather than one they immediately have to shrink. It is
-    /// a snapshot like any other edit, so `Z` takes the pour back.
+    /// a snapshot like any other edit, so `CTRL+Z` takes the pour back.
     fn pour_water(
         &mut self,
         ui_input: &UiInput,
@@ -939,14 +1392,7 @@ impl Editor {
         if over_panel {
             return false;
         }
-        let Some(ground) = engine_presentation::ui::targeting::ground_under_cursor(
-            ui_input.pointer,
-            view_projection,
-            viewport,
-            &engine_presentation::ui::ground_decal::GroundSurface::Plane(
-                engine_presentation::ui::targeting::GROUND_HEIGHT,
-            ),
-        ) else {
+        let Some(ground) = ground_under(ui_input.pointer, view_projection, viewport, scene) else {
             self.status = "point at the ground to pour water".to_owned();
             return false;
         };
@@ -988,6 +1434,7 @@ impl Editor {
         // means something else once you are inside the mode is a key nobody can find their
         // way out with. TAB cycles the brush, which is what TAB does in the other mode too:
         // the next thing.
+        let modifiers = input.modifiers();
         if input.was_key_pressed(KeyCode::Tab) {
             self.brush = self.brush.next();
             self.status = format!("brush {}", self.brush.as_str());
@@ -1013,10 +1460,18 @@ impl Editor {
             self.status = format!("strength {:.2} m", self.brush_strength);
             return (EditorOutcome::Idle, true);
         }
-        if input.was_key_pressed(KeyCode::Z) {
+        let redo = modifiers.ctrl()
+            && (input.was_key_pressed(KeyCode::Y)
+                || (modifiers.shift() && input.was_key_pressed(KeyCode::Z)));
+        if redo || (modifiers.ctrl() && input.was_key_pressed(KeyCode::Z)) {
             // Undo can put back a scene whose objects *and* terrain are different, so the
             // whole level is rebuilt rather than guessing which half moved.
-            let outcome = if self.undo(scene) {
+            let done = if redo {
+                self.redo(scene)
+            } else {
+                self.undo(scene)
+            };
+            let outcome = if done {
                 EditorOutcome::SceneChanged
             } else {
                 EditorOutcome::Idle
@@ -1029,14 +1484,7 @@ impl Editor {
         if over_panel || !ui_input.pointer_down {
             return (EditorOutcome::Idle, false);
         }
-        let Some(ground) = engine_presentation::ui::targeting::ground_under_cursor(
-            ui_input.pointer,
-            view_projection,
-            viewport,
-            &engine_presentation::ui::ground_decal::GroundSurface::Plane(
-                engine_presentation::ui::targeting::GROUND_HEIGHT,
-            ),
-        ) else {
+        let Some(ground) = ground_under(ui_input.pointer, view_projection, viewport, scene) else {
             return (EditorOutcome::Idle, false);
         };
 
@@ -1045,15 +1493,13 @@ impl Editor {
         if scene.terrain.is_none() {
             let cell = 2.0;
             let resolution = ((scene.half_extent * 2.0 / cell).round() as usize + 1).max(9);
-            scene.terrain = Some(Terrain::flat(resolution, cell, scene.ground_height));
             self.snapshot(scene);
+            scene.terrain = Some(Terrain::flat(resolution, cell, scene.ground_height));
             self.status = format!("terrain created, {resolution} points a side");
-        }
-
-        // The snapshot is taken when a stroke *starts*, not on every frame of it: a drag is
-        // one edit, and an undo stack with sixty entries for one stroke is an undo stack
-        // nobody can walk back through.
-        if ui_input.pointer_pressed {
+        } else if ui_input.pointer_pressed {
+            // The snapshot is taken when a stroke *starts*, not on every frame of it: a drag
+            // is one edit, and an undo stack with sixty entries for one stroke is an undo
+            // stack nobody can walk back through.
             self.snapshot(scene);
         }
 
@@ -1104,9 +1550,30 @@ impl Editor {
                 let Some(row) = self.browser.row(self.browser.scroll() + slot) else {
                     break;
                 };
+                let doubled = self.last_row_click.is_some_and(|(last, when)| {
+                    last == row && self.clock - when <= DOUBLE_CLICK_SECONDS
+                });
                 match row {
                     browser::BrowserRow::Folder(_) | browser::BrowserRow::BuiltinFolder => {
                         self.browser.toggle(row);
+                    }
+                    _ if self.browser.scene_path(row).is_some() => {
+                        // A level is not placed: a double click opens it.
+                        if doubled {
+                            let path = self.browser.scene_path(row).map(Path::to_path_buf);
+                            self.last_row_click = None;
+                            if let Some(path) = path {
+                                self.request_open(path);
+                            }
+                        } else {
+                            self.last_row_click = Some((row, self.clock));
+                            self.status = "double-click a level to open it".to_owned();
+                        }
+                    }
+                    _ if !self.browser.is_placeable(row) => {
+                        // A material or a texture: something to look at, and nothing to carry
+                        // into the world — carrying it would drop whatever was chosen before.
+                        self.last_row_click = None;
                     }
                     _ => {
                         if self.browser.choose(row) {
@@ -1116,9 +1583,6 @@ impl Editor {
                         // placed yet: it becomes one only when the button comes up over the
                         // world. A second press on the same row inside the double-click
                         // interval means "put one in front of me" instead.
-                        let doubled = self.last_row_click.is_some_and(|(last, when)| {
-                            last == row && self.clock - when <= DOUBLE_CLICK_SECONDS
-                        });
                         if doubled {
                             self.place_at_centre = true;
                             self.placement = None;
@@ -1135,7 +1599,54 @@ impl Editor {
         true
     }
 
-    /// The hierarchy list: scrolling it, and selecting out of it.
+    /// Asks the application to open `path`, unless that would throw away unsaved work the
+    /// author has not confirmed losing.
+    fn request_open(&mut self, path: PathBuf) {
+        if self.is_dirty() && self.confirm_open.as_ref() != Some(&path) {
+            self.status = format!(
+                "UNSAVED CHANGES: CTRL+S first, or double-click {} again to discard them",
+                path.file_stem()
+                    .map_or_else(Default::default, |stem| stem.to_string_lossy())
+            );
+            self.confirm_open = Some(path);
+            return;
+        }
+        self.confirm_open = None;
+        self.status = format!("opening {}", path.display());
+        self.open_request = Some(path);
+    }
+
+    /// The hierarchy's rows, after its filter: every placement, then the water, the spawn
+    /// points and the lights.
+    #[must_use]
+    pub fn hierarchy_rows(&self, scene: &EnvironmentScene) -> Vec<Selected> {
+        let needle = self.hierarchy_filter.trim().to_ascii_lowercase();
+        let everything = (0..scene.objects.len())
+            .map(Selected::Object)
+            .chain((0..scene.water.len()).map(Selected::Water))
+            .chain((0..scene.spawn_points.len()).map(Selected::Spawn))
+            .chain((0..scene.lights.len()).map(Selected::Light));
+        if needle.is_empty() {
+            return everything.collect();
+        }
+        everything
+            .filter(|what| {
+                let name = match what {
+                    Selected::Object(index) => scene
+                        .objects
+                        .get(*index)
+                        .map_or("", |object| object.asset.name()),
+                    Selected::Water(_) => "water",
+                    Selected::Spawn(_) => "spawn",
+                    Selected::Light(_) => "light",
+                };
+                name.to_ascii_lowercase().contains(&needle)
+            })
+            .collect()
+    }
+
+    /// The hierarchy list: scrolling it, selecting out of it, and framing what is
+    /// double-clicked in it.
     ///
     /// Returns whether the pointer is over the hierarchy or the inspector, which is what
     /// stops the same click from also placing an object in the world behind them.
@@ -1155,7 +1666,8 @@ impl Editor {
         }
 
         let visible = ui::hierarchy_visible_rows(self.scale, viewport);
-        let rows = hierarchy_len(scene);
+        let list = self.hierarchy_rows(scene);
+        let rows = list.len();
         // Scrolled by whole rows, and never past the end: a list that can be scrolled into
         // emptiness looks like a list that has lost its contents.
         let wheel = input.wheel_delta();
@@ -1175,14 +1687,21 @@ impl Editor {
                 if !ui::hierarchy_row_rect(self.scale, viewport, slot).contains(x, y) {
                     continue;
                 }
-                // The list is the objects and then the water, so one row index answers for
-                // both — which is what keeps the hit test one rectangle per row rather than
-                // two lists with a boundary between them.
-                let Some(what) = hierarchy_row_at(self.hierarchy_scroll + slot, scene) else {
+                let Some(what) = list.get(self.hierarchy_scroll + slot).copied() else {
                     break;
                 };
-                let control = input.is_key_down(KeyCode::LeftControl)
-                    || input.is_key_down(KeyCode::RightControl);
+                let control = input.modifiers().ctrl();
+                let doubled = self.last_hierarchy_click.is_some_and(|(last, when)| {
+                    last == what && self.clock - when <= DOUBLE_CLICK_SECONDS
+                });
+                if doubled && !control {
+                    self.selected.clear();
+                    self.selected.push(what);
+                    self.frame_selection(scene);
+                    self.last_hierarchy_click = None;
+                    break;
+                }
+                self.last_hierarchy_click = Some((what, self.clock));
                 self.select(what, control);
                 self.cancel_manipulation();
                 self.status = match what {
@@ -1197,6 +1716,7 @@ impl Editor {
                     ),
                     Selected::Water(index) => format!("selected water ({index})"),
                     Selected::Spawn(index) => format!("selected spawn ({index})"),
+                    Selected::Light(index) => format!("selected light ({index})"),
                 };
                 break;
             }
@@ -1204,7 +1724,144 @@ impl Editor {
         true
     }
 
-    /// Adds `index` to the selection, or replaces the selection with it.
+    /// The inspector's numbers: a click on one starts typing into it, and the wheel over one
+    /// steps it. Returns whether the scene changed.
+    fn update_inspector_pointer(
+        &mut self,
+        input: &InputState,
+        ui_input: &UiInput,
+        scene: &mut EnvironmentScene,
+        viewport: (u32, u32),
+    ) -> bool {
+        let (x, y) = ui_input.pointer;
+        let Some(primary) = self.selection() else {
+            return false;
+        };
+        let under = inspector::rows(primary)
+            .iter()
+            .enumerate()
+            .find_map(|(row, line)| {
+                line.properties
+                    .iter()
+                    .enumerate()
+                    .find(|(column, _)| {
+                        ui::inspector_cell_rect(self.scale, viewport, row, *column).contains(x, y)
+                    })
+                    .map(|(_, property)| *property)
+            });
+
+        let mut changed = false;
+        if ui_input.pointer_pressed {
+            // A click anywhere commits what was being typed, as leaving a field does in every
+            // program with fields in it.
+            if self.inspector_edit.is_some() {
+                changed |= self.commit_inspector_edit(scene);
+            }
+            if let Some(property) = under {
+                let value = inspector::get(scene, primary, property).unwrap_or(0.0);
+                self.inspector_edit = Some(InspectorEdit {
+                    property,
+                    field: field::TextField::new(&format_value(value), field::Charset::Number),
+                });
+                self.status = "type a number: ENTER sets it, TAB the next, ESC cancels".to_owned();
+            }
+        }
+
+        let wheel = input.wheel_delta();
+        if wheel != 0.0
+            && let Some(property) = under
+            && self.inspector_edit.is_none()
+            && let Some(value) = inspector::get(scene, primary, property)
+        {
+            let step = property.wheel_step(self.grid(), self.yaw_step());
+            let fast = if input.modifiers().shift() { 10.0 } else { 1.0 };
+            // A run of notches on one number is one edit, not one per notch.
+            let continuing = self
+                .wheel_run
+                .is_some_and(|(last, when)| last == property && self.clock - when < 0.6);
+            if !continuing {
+                self.snapshot(scene);
+            }
+            self.wheel_run = Some((property, self.clock));
+            let selection = self.selected.clone();
+            if inspector::set(
+                scene,
+                &selection,
+                primary,
+                property,
+                value + wheel * step * fast,
+            ) {
+                self.water_touched = !primary.is_scene_kind();
+                changed = true;
+            }
+        }
+        changed
+    }
+
+    /// One frame of typing into the inspector. Returns whether the scene changed.
+    fn update_inspector_edit(&mut self, input: &InputState, scene: &mut EnvironmentScene) -> bool {
+        let Some(edit) = self.inspector_edit.as_mut() else {
+            return false;
+        };
+        match edit.field.update(input) {
+            field::FieldAnswer::Editing => false,
+            field::FieldAnswer::Cancel => {
+                self.inspector_edit = None;
+                self.status = "not changed".to_owned();
+                false
+            }
+            field::FieldAnswer::Commit => self.commit_inspector_edit(scene),
+            field::FieldAnswer::CommitNext => {
+                let property = edit.property;
+                let changed = self.commit_inspector_edit(scene);
+                // On to the next number in reading order, wrapping, the way TAB moves through
+                // any form.
+                if let Some(primary) = self.selection() {
+                    let all: Vec<_> = inspector::properties(primary).collect();
+                    let next = all
+                        .iter()
+                        .position(|known| *known == property)
+                        .map_or(0, |at| (at + 1) % all.len().max(1));
+                    if let Some(property) = all.get(next).copied() {
+                        let value = inspector::get(scene, primary, property).unwrap_or(0.0);
+                        self.inspector_edit = Some(InspectorEdit {
+                            property,
+                            field: field::TextField::new(
+                                &format_value(value),
+                                field::Charset::Number,
+                            ),
+                        });
+                    }
+                }
+                changed
+            }
+        }
+    }
+
+    /// Sets the number being typed, if it is one. Returns whether the scene changed.
+    fn commit_inspector_edit(&mut self, scene: &mut EnvironmentScene) -> bool {
+        let Some(edit) = self.inspector_edit.take() else {
+            return false;
+        };
+        let Some(primary) = self.selection() else {
+            return false;
+        };
+        let Some(value) = edit.field.number() else {
+            self.status = format!("'{}' is not a number", edit.field.text());
+            return false;
+        };
+        let before = Snapshot::of(scene, &self.flags);
+        let selection = self.selected.clone();
+        if !inspector::set(scene, &selection, primary, edit.property, value) {
+            return false;
+        }
+        self.push_undo(before);
+        self.water_touched = !primary.is_scene_kind();
+        self.status = format!("set to {}", format_value(value));
+        true
+    }
+
+    /// Adds `what` to the selection, or replaces the selection with it.
     ///
     /// `add` is what CTRL does: it *toggles*, so control-clicking a selected object takes it
     /// out again, which is the one gesture every editor agrees on.
@@ -1236,12 +1893,20 @@ impl Editor {
             Selected::Object(index) => *index < scene.objects.len(),
             Selected::Water(index) => *index < scene.water.len(),
             Selected::Spawn(index) => *index < scene.spawn_points.len(),
+            Selected::Light(index) => *index < scene.lights.len(),
         });
     }
 
     /// Keeps the selected thing in view, so a keyboard verb's result is visible.
     fn reveal_selection(&mut self, scene: &EnvironmentScene, viewport: (u32, u32)) {
-        let Some(index) = self.selection().map(|what| hierarchy_row_of(what, scene)) else {
+        let Some(primary) = self.selection() else {
+            return;
+        };
+        let Some(index) = self
+            .hierarchy_rows(scene)
+            .iter()
+            .position(|row| *row == primary)
+        else {
             return;
         };
         let visible = ui::hierarchy_visible_rows(self.scale, viewport).max(1);
@@ -1252,11 +1917,41 @@ impl Editor {
         }
     }
 
+    /// Moves the camera to see the selection whole — or the whole level, with nothing
+    /// selected.
+    fn frame_selection(&mut self, scene: &EnvironmentScene) {
+        let targets: Vec<Selected> = if self.selected.is_empty() {
+            pick::inside_screen_rect(scene, |_| true, |_| true)
+        } else {
+            self.selected.clone()
+        };
+        let mut low = Vec3::splat(f32::INFINITY);
+        let mut high = Vec3::splat(f32::NEG_INFINITY);
+        for what in &targets {
+            if let Some((center, half_extents, _)) = pick::selection_box(scene, *what) {
+                let reach = Vec3::splat(half_extents.length());
+                low = low.min(center - reach);
+                high = high.max(center + reach);
+            }
+        }
+        if !(low.x.is_finite() && high.x.is_finite()) {
+            self.status = "nothing to frame".to_owned();
+            return;
+        }
+        let center = (low + high) * 0.5;
+        let radius = ((high - low) * 0.5).length();
+        self.camera.frame(center, radius);
+        self.status = if self.selected.is_empty() {
+            "framed the level".to_owned()
+        } else {
+            format!("framed {}", self.selected.len())
+        };
+    }
+
     /// The keyboard verbs. Returns whether the scene changed.
     fn update_keys(&mut self, input: &InputState, scene: &mut EnvironmentScene) -> bool {
-        let control =
-            input.is_key_down(KeyCode::LeftControl) || input.is_key_down(KeyCode::RightControl);
-        let shift = input.is_key_down(KeyCode::LeftShift) || input.is_key_down(KeyCode::RightShift);
+        let modifiers = input.modifiers();
+        let (control, shift) = (modifiers.ctrl(), modifiers.shift());
 
         if input.was_key_pressed(KeyCode::Escape) {
             // The way out of everything in progress, not only the selection: an asset picked
@@ -1265,10 +1960,22 @@ impl Editor {
             // key that abandons things is this one.
             self.selected.clear();
             self.cancel_manipulation();
+            self.confirm_open = None;
             if self.placing {
                 self.placing = false;
                 self.status = "select and move".to_owned();
             }
+            return false;
+        }
+        if control {
+            return self.update_chords(input, scene, shift);
+        }
+        if input.was_key_pressed(KeyCode::F1) {
+            self.show_keys = !self.show_keys;
+            return false;
+        }
+        if input.was_key_pressed(KeyCode::F) || input.was_key_pressed(KeyCode::Home) {
+            self.frame_selection(scene);
             return false;
         }
         if input.was_key_pressed(KeyCode::G) {
@@ -1342,19 +2049,26 @@ impl Editor {
             self.status = format!("placing {}", self.browser.selected_name());
             return false;
         }
-        if control && input.was_key_pressed(KeyCode::A) {
-            // Every object, and no water: `CTRL+A` on a level with a lake would otherwise
-            // put two kinds in one selection, which is the one thing the tag forbids.
-            self.selected = (0..scene.objects.len()).map(Selected::Object).collect();
-            self.status = format!("selected {}", self.selected.len());
-            return false;
+        for (key, mode) in [
+            (KeyCode::Digit1, gizmo::GizmoMode::Translate),
+            (KeyCode::Digit2, gizmo::GizmoMode::Rotate),
+            (KeyCode::Digit3, gizmo::GizmoMode::Scale),
+        ] {
+            if input.was_key_pressed(key) {
+                self.gizmo_mode = mode;
+                self.cancel_manipulation();
+                self.status = format!("gizmo: {}", mode.label().to_ascii_lowercase());
+                return false;
+            }
         }
-        if control && input.was_key_pressed(KeyCode::S) {
-            self.save(scene);
-            return false;
-        }
-        if input.was_key_pressed(KeyCode::Z) {
-            return self.undo(scene);
+        if input.was_key_pressed(KeyCode::H) && shift {
+            let any = self.has_hidden();
+            for flags in &mut self.flags {
+                *flags &= !HIDDEN;
+            }
+            self.status = "everything shown".to_owned();
+            // Nothing in the level changed, but what is drawn did.
+            return any;
         }
 
         // Everything below acts on the selection, and every one of them acts on *all* of it.
@@ -1365,103 +2079,84 @@ impl Editor {
         // A selection holds one kind, so whatever the verb below turns out to be, this is the
         // list it will reach — which is how the application is told a quad moved rather than
         // the level.
-        self.water_touched =
-            !self.selected_waters().is_empty() || !self.selected_spawns().is_empty();
+        self.water_touched = self.selected.iter().all(|what| !what.is_scene_kind());
 
-        if input.was_key_pressed(KeyCode::X) {
+        if input.was_key_pressed(KeyCode::H) {
+            let objects = self.selected_objects();
+            for index in &objects {
+                if let Some(flags) = self.flags.get_mut(*index) {
+                    *flags |= HIDDEN;
+                }
+            }
+            self.selected.clear();
+            self.water_touched = false;
+            self.status = format!("hid {} (SHIFT+H shows them)", objects.len());
+            return !objects.is_empty();
+        }
+        if input.was_key_pressed(KeyCode::K) {
+            let objects = self.selected_objects();
+            let lock = objects.iter().any(|index| !self.is_locked(*index));
+            for index in &objects {
+                if let Some(flags) = self.flags.get_mut(*index) {
+                    if lock {
+                        *flags |= LOCKED;
+                    } else {
+                        *flags &= !LOCKED;
+                    }
+                }
+            }
+            self.status = if lock {
+                format!("locked {}: clicks in the world pass through", objects.len())
+            } else {
+                format!("unlocked {}", objects.len())
+            };
+            return false;
+        }
+        if input.was_key_pressed(KeyCode::X) || input.was_key_pressed(KeyCode::Delete) {
             self.snapshot(scene);
             let count = self.selected.len();
             // Highest index first, so removing one does not move the next one under it. Each
             // kind is removed from its own list, and a selection holds one kind, so a delete
             // never reaches the other.
-            let mut objects = self.selected_objects();
-            objects.sort_unstable();
-            for index in objects.into_iter().rev() {
-                scene.objects.remove(index);
-            }
-            let mut waters = self.selected_waters();
-            waters.sort_unstable();
-            for index in waters.into_iter().rev() {
-                scene.water.remove(index);
-            }
-            let mut spawns = self.selected_spawns();
-            spawns.sort_unstable();
-            for index in spawns.into_iter().rev() {
-                scene.spawn_points.remove(index);
+            let mut doomed = self.selected.clone();
+            doomed.sort_unstable_by_key(|what| std::cmp::Reverse(index_of(*what)));
+            for what in doomed {
+                match what {
+                    Selected::Object(index) => {
+                        scene.objects.remove(index);
+                        if index < self.flags.len() {
+                            self.flags.remove(index);
+                        }
+                    }
+                    Selected::Water(index) => {
+                        scene.water.remove(index);
+                    }
+                    Selected::Spawn(index) => {
+                        scene.spawn_points.remove(index);
+                    }
+                    Selected::Light(index) => {
+                        scene.lights.remove(index);
+                    }
+                }
             }
             self.status = format!("deleted {count}");
             self.selected.clear();
-            return true;
-        }
-        if input.was_key_pressed(KeyCode::C) {
-            self.snapshot(scene);
-            // Offset by one grid step, or a metre when the grid is off, so the copy is
-            // visible instead of hiding exactly inside the original.
-            let step = if self.grid() > 0.0 { self.grid() } else { 1.0 };
-            let mut copies = Vec::with_capacity(self.selected.len());
-            for index in self.selected_objects() {
-                let Some(mut copy) = scene.objects.get(index).copied() else {
-                    continue;
-                };
-                copy.transform.translation += Vec3::new(step, 0.0, step);
-                copies.push(Selected::Object(scene.objects.len()));
-                scene.objects.push(copy);
-            }
-            for index in self.selected_waters() {
-                let Some(mut copy) = scene.water.get(index).copied() else {
-                    continue;
-                };
-                copy.center += Vec3::new(step, 0.0, step);
-                copies.push(Selected::Water(scene.water.len()));
-                scene.water.push(copy);
-            }
-            for index in self.selected_spawns() {
-                let Some(mut copy) = scene.spawn_points.get(index).copied() else {
-                    continue;
-                };
-                copy.position += Vec3::new(step, 0.0, step);
-                copies.push(Selected::Spawn(scene.spawn_points.len()));
-                scene.spawn_points.push(copy);
-            }
-            self.status = format!("duplicated {}", copies.len());
-            // The copies become the selection, so dragging straight afterwards moves the new
-            // ones rather than the originals.
-            self.selected = copies;
             return true;
         }
         if input.was_key_pressed(KeyCode::R) {
             self.snapshot(scene);
             let step = self.yaw_step().to_radians() * if shift { -1.0 } else { 1.0 };
             let mut last = 0.0;
-            for index in self.selected_waters() {
-                let Some(body) = scene.water.get_mut(index) else {
-                    continue;
-                };
-                last = snap_angle(body.yaw + step, self.yaw_step().to_radians());
-                body.yaw = last;
-            }
-            // Turning a spawn point is turning the player who starts on it, which is the one
-            // thing about a spawn point that is not obvious from where it stands.
-            for index in self.selected_spawns() {
-                let Some(spawn) = scene.spawn_points.get_mut(index) else {
-                    continue;
-                };
-                last = snap_angle(spawn.yaw + step, self.yaw_step().to_radians());
-                spawn.yaw = last;
-            }
-            for index in self.selected_objects() {
-                let Some(object) = scene.objects.get_mut(index) else {
-                    continue;
-                };
+            for what in self.selected.clone() {
                 // Snapped to a multiple of the step rather than added to: an object turned by
                 // hand and then stepped ends up aligned with everything else stepped by the
                 // same amount, which is the whole point of a rotation snap.
-                last = snap_angle(
-                    yaw_of(object.transform) + step,
-                    self.yaw_step().to_radians(),
-                );
-                object.transform.rotation =
-                    engine_core::math::Quat::from_yaw_pitch_roll(last, 0.0, 0.0);
+                let Some(mut pose) = pose_of(scene, what) else {
+                    continue;
+                };
+                last = snap_angle(pose.yaw + step, self.yaw_step().to_radians());
+                pose.yaw = last;
+                set_pose(scene, what, pose);
             }
             self.status = format!("yaw {:.0} deg", last.to_degrees());
             return true;
@@ -1470,57 +2165,43 @@ impl Editor {
             self.snapshot(scene);
             let factor = if shift { 1.0 / SCALE_STEP } else { SCALE_STEP };
             let mut last = 1.0;
-            for index in self.selected_objects() {
-                let Some(object) = scene.objects.get_mut(index) else {
+            for what in self.selected.clone() {
+                let Some(mut pose) = pose_of(scene, what) else {
                     continue;
                 };
-                object.transform.scale *= factor;
-                last = object.transform.scale.y;
-            }
-            // A body of water has no scale: it has a size, in metres, and growing it is what
-            // `T` means for one. Never past the point where it stops being a volume, because
-            // a body with no extent is a level the scene loader refuses to read back.
-            let mut resized = false;
-            for index in self.selected_waters() {
-                let Some(body) = scene.water.get_mut(index) else {
-                    continue;
+                // A body of water has no scale: it has a size, in metres, and growing it is
+                // what `T` means for one — its footprint, not its depth. A light's size is how
+                // far it reaches.
+                pose.scale = match what {
+                    Selected::Water(_) => {
+                        Vec3::new(pose.scale.x * factor, pose.scale.y, pose.scale.z * factor)
+                    }
+                    _ => pose.scale * factor,
                 };
-                body.half_extents.x = (body.half_extents.x * factor).max(WATER_MIN_HALF_EXTENT);
-                body.half_extents.y = (body.half_extents.y * factor).max(WATER_MIN_HALF_EXTENT);
-                last = body.half_extents.x;
-                resized = true;
+                last = pose.scale.x;
+                set_pose(scene, what, pose);
             }
-            self.status = if resized {
-                format!("water {last:.1} m")
-            } else {
-                format!("scale {last:.2}")
+            self.status = match self.selection() {
+                Some(Selected::Water(_)) => format!("water {last:.1} m"),
+                Some(Selected::Light(_)) => format!("range {last:.1} m"),
+                _ => format!("scale {last:.2}"),
             };
             return true;
         }
         if input.was_key_pressed(KeyCode::Digit0) {
             self.snapshot(scene);
-            for index in self.selected_objects() {
-                let Some(object) = scene.objects.get_mut(index) else {
+            for what in self.selected.clone() {
+                let Some(mut pose) = pose_of(scene, what) else {
                     continue;
                 };
                 // Where it stands is what an author placed; how it is turned and how big it is
-                // are what they have been fiddling with. Reset means the second, not the first.
-                object.transform.rotation = engine_core::math::Quat::IDENTITY;
-                object.transform.scale = Vec3::ONE;
-            }
-            for index in self.selected_waters() {
-                let Some(body) = scene.water.get_mut(index) else {
-                    continue;
-                };
-                // The same rule, said about water: the yaw is what was fiddled with, and the
-                // size is what somebody dragged out on purpose.
-                body.yaw = 0.0;
-            }
-            for index in self.selected_spawns() {
-                let Some(spawn) = scene.spawn_points.get_mut(index) else {
-                    continue;
-                };
-                spawn.yaw = 0.0;
+                // are what they have been fiddling with. Reset means the second, not the
+                // first — except for water, whose size is what somebody dragged out on purpose.
+                pose.yaw = 0.0;
+                if let Selected::Object(_) = what {
+                    pose.scale = Vec3::ONE;
+                }
+                set_pose(scene, what, pose);
             }
             self.status = "transform reset".to_owned();
             return true;
@@ -1542,23 +2223,11 @@ impl Editor {
                     -step.x * sin + step.z * cos,
                 )
             };
-            for index in self.selected_objects() {
-                let Some(object) = scene.objects.get_mut(index) else {
+            for what in self.selected.clone() {
+                let Some(pose) = pose_of(scene, what) else {
                     continue;
                 };
-                object.transform.translation += along(yaw_of(object.transform));
-            }
-            for index in self.selected_waters() {
-                let Some(body) = scene.water.get_mut(index) else {
-                    continue;
-                };
-                body.center += along(body.yaw);
-            }
-            for index in self.selected_spawns() {
-                let Some(spawn) = scene.spawn_points.get_mut(index) else {
-                    continue;
-                };
-                spawn.position += along(spawn.yaw);
+                move_by(scene, what, along(pose.yaw));
             }
             self.status = format!(
                 "moved {:.2} {:.2} {:.2} ({})",
@@ -1568,6 +2237,120 @@ impl Editor {
                 if self.local_space { "local" } else { "world" }
             );
             return true;
+        }
+        false
+    }
+
+    /// The `CTRL` chords. Returns whether the scene changed.
+    fn update_chords(
+        &mut self,
+        input: &InputState,
+        scene: &mut EnvironmentScene,
+        shift: bool,
+    ) -> bool {
+        if input.was_key_pressed(KeyCode::S) {
+            if shift {
+                let stem = self
+                    .save_path
+                    .file_stem()
+                    .map_or_else(String::new, |stem| stem.to_string_lossy().into_owned());
+                self.save_as = Some(field::TextField::new(&stem, field::Charset::FileName));
+                self.status = "save as: type a name, ENTER saves".to_owned();
+            } else {
+                self.save(scene);
+            }
+            return false;
+        }
+        if input.was_key_pressed(KeyCode::Y) || (shift && input.was_key_pressed(KeyCode::Z)) {
+            return self.redo(scene);
+        }
+        if input.was_key_pressed(KeyCode::Z) {
+            return self.undo(scene);
+        }
+        if input.was_key_pressed(KeyCode::A) {
+            // Every object, and no water: `CTRL+A` on a level with a lake would otherwise
+            // put two kinds in one selection, which is the one thing the tag forbids. Hidden
+            // and locked objects are left out, for the reason a click passes through them.
+            self.selected = (0..scene.objects.len())
+                .map(Selected::Object)
+                .filter(|what| self.pickable(*what))
+                .collect();
+            self.status = format!("selected {}", self.selected.len());
+            return false;
+        }
+
+        self.prune_selection(scene);
+        if self.selected.is_empty() {
+            return false;
+        }
+        self.water_touched = self.selected.iter().all(|what| !what.is_scene_kind());
+
+        if input.was_key_pressed(KeyCode::D) {
+            self.snapshot(scene);
+            // Offset by one grid step, or a metre when the grid is off, so the copy is
+            // visible instead of hiding exactly inside the original.
+            let step = if self.grid() > 0.0 { self.grid() } else { 1.0 };
+            let offset = Vec3::new(step, 0.0, step);
+            let mut copies = Vec::with_capacity(self.selected.len());
+            for what in self.selected.clone() {
+                let copy = match what {
+                    Selected::Object(index) => scene.objects.get(index).copied().map(|mut copy| {
+                        copy.transform.translation += offset;
+                        scene.objects.push(copy);
+                        self.flags.push(0);
+                        Selected::Object(scene.objects.len() - 1)
+                    }),
+                    Selected::Water(index) => scene.water.get(index).copied().map(|mut copy| {
+                        copy.center += offset;
+                        scene.water.push(copy);
+                        Selected::Water(scene.water.len() - 1)
+                    }),
+                    Selected::Spawn(index) => {
+                        scene.spawn_points.get(index).copied().map(|mut copy| {
+                            copy.position += offset;
+                            scene.spawn_points.push(copy);
+                            Selected::Spawn(scene.spawn_points.len() - 1)
+                        })
+                    }
+                    Selected::Light(index) => scene.lights.get(index).copied().map(|mut copy| {
+                        copy.position += offset;
+                        scene.lights.push(copy);
+                        Selected::Light(scene.lights.len() - 1)
+                    }),
+                };
+                copies.extend(copy);
+            }
+            self.status = format!("duplicated {}", copies.len());
+            // The copies become the selection, so dragging straight afterwards moves the new
+            // ones rather than the originals.
+            self.selected = copies;
+            return true;
+        }
+        if input.was_key_pressed(KeyCode::G) {
+            // Down onto whatever is under each one: a crate lifted by the Y handle comes back
+            // to the floor, and a rock buried by a brush stroke comes back up out of the hill.
+            self.snapshot(scene);
+            let moving = self.selected_objects();
+            let mut moved = 0;
+            for what in self.selected.clone() {
+                let Some(position) = position_of(scene, what) else {
+                    continue;
+                };
+                let ground = scene.ground_at(position);
+                let rest = match what {
+                    Selected::Object(_) => {
+                        pick::rest_below(scene, position, ground, |index| moving.contains(&index))
+                    }
+                    Selected::Light(_) => continue,
+                    _ => ground,
+                };
+                if (rest - position.y).abs() > 1e-4 {
+                    move_by(scene, what, Vec3::new(0.0, rest - position.y, 0.0));
+                    moved += 1;
+                }
+            }
+            self.status = format!("dropped {moved} onto what is under them");
+            return moved > 0;
         }
         false
     }
@@ -1606,15 +2389,17 @@ impl Editor {
         (delta != Vec3::ZERO).then_some(delta)
     }
 
-    /// Forgets any manipulation in progress: a handle being dragged, an asset being carried.
+    /// Forgets any manipulation in progress: a handle being dragged, an asset being carried,
+    /// a box being drawn.
     ///
-    /// One function rather than two fields cleared in eight places, because "the editor is no
+    /// One function rather than fields cleared in eight places, because "the editor is no
     /// longer in the middle of something" is one idea — and a gesture left half-finished by a
     /// mode change is exactly how a click three frames later moves something nobody selected.
     fn cancel_manipulation(&mut self) {
         self.gizmo_drag = None;
         self.placement = None;
         self.gizmo_hover = None;
+        self.marquee = None;
         self.place_at_centre = false;
     }
 
@@ -1652,24 +2437,36 @@ impl Editor {
         if self.sculpting || self.placing {
             return None;
         }
-        let origin = self.gizmo_origin(scene)?;
+        let primary = self.selection()?;
+        let origin = position_of(scene, primary)?;
+        let rotation = pose_of(scene, primary).map_or(Quat::IDENTITY, |pose| {
+            Quat::from_yaw_pitch_roll(pose.yaw, 0.0, 0.0)
+        });
         let length = gizmo::length_for(origin, self.camera.position);
-        gizmo::project(self.gizmo_mode, origin, length, view_projection, viewport)
+        gizmo::project(
+            self.gizmo_mode,
+            origin,
+            length,
+            rotation,
+            self.camera.position,
+            view_projection,
+            viewport,
+        )
     }
 
     /// Which handle the cursor is over, or the one being dragged while a drag is on.
     #[must_use]
-    pub fn gizmo_hover(&self) -> Option<gizmo::Axis> {
+    pub fn gizmo_hover(&self) -> Option<gizmo::Handle> {
         self.gizmo_drag
             .as_ref()
-            .map(|drag| drag.axis)
+            .map(|drag| drag.handle)
             .or(self.gizmo_hover)
     }
 
     /// Which handle is being dragged, if one is.
     #[must_use]
-    pub fn gizmo_axis(&self) -> Option<gizmo::Axis> {
-        self.gizmo_drag.as_ref().map(|drag| drag.axis)
+    pub fn gizmo_axis(&self) -> Option<gizmo::Handle> {
+        self.gizmo_drag.as_ref().map(|drag| drag.handle)
     }
 
     /// Whether an asset is being carried out of the browser and has not been dropped yet.
@@ -1692,16 +2489,21 @@ impl Editor {
 
     /// Selecting and manipulating. Returns whether the scene changed.
     ///
-    /// The order is the whole point, and it is the order of the brief:
+    /// The order is the whole point:
     ///
-    /// 1. a gizmo drag in progress owns the pointer until the button comes up;
-    /// 2. a press on a handle starts one;
+    /// 1. a gizmo drag or a selection box in progress owns the pointer until the button
+    ///    comes up;
+    /// 2. a press on a handle starts a drag;
     /// 3. a press on something in the world *selects it*, and never places anything;
-    /// 4. a press on empty ground drops the selection.
+    /// 4. a press on empty ground drops the selection and starts a selection box.
     ///
     /// Placing is not in this list. It is a drag out of the browser or a double click on a
     /// browser row — see [`Editor::update_placement`] — which is what makes "click a rock"
     /// mean one thing and never two.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one call site; the arguments are one frame's input"
+    )]
     fn update_pointer(
         &mut self,
         ui_input: &UiInput,
@@ -1710,28 +2512,27 @@ impl Editor {
         viewport: (u32, u32),
         over_panel: bool,
         add_to_selection: bool,
+        precise: bool,
     ) -> bool {
         // A drag in progress owns the pointer until the button comes up, panels included: a
         // handle dragged over the browser is still that handle being dragged.
         if self.gizmo_drag.is_some() {
-            return self.drag_gizmo(ui_input, scene);
+            return self.drag_gizmo(ui_input, scene, precise);
+        }
+        if self.marquee.is_some() {
+            self.drag_marquee(ui_input, scene, view_projection, viewport);
+            return false;
         }
 
         // Placing mode: every press in the world puts one down, and nothing else happens.
-        // Deliberately *not* a ray against the scene first — an author laying out a row of
+        // Deliberately *not* a pick against the scene first — an author laying out a row of
         // pillars wants the next one where the cursor is, including on top of the last one.
         if self.placing {
             if !ui_input.pointer_pressed || over_panel {
                 return false;
             }
-            let Some(ground) = engine_presentation::ui::targeting::ground_under_cursor(
-                ui_input.pointer,
-                view_projection,
-                viewport,
-                &engine_presentation::ui::ground_decal::GroundSurface::Plane(
-                    engine_presentation::ui::targeting::GROUND_HEIGHT,
-                ),
-            ) else {
+            let Some(ground) = self.drop_point(ui_input.pointer, scene, view_projection, viewport)
+            else {
                 self.status = "point at the ground to place".to_owned();
                 return false;
             };
@@ -1752,38 +2553,53 @@ impl Editor {
 
         // A handle beats everything under it: the handles are drawn over the level, so what
         // is behind one is not what the author was aiming at.
-        if let (Some(axis), Some(screen)) = (self.gizmo_hover, screen) {
-            let origins = self
+        if let (Some(handle), Some(screen)) = (self.gizmo_hover, screen) {
+            let starts: Vec<(Selected, Pose)> = self
                 .selected
                 .iter()
-                .filter_map(|what| position_of(scene, *what).map(|origin| (*what, origin)))
+                .filter_map(|what| pose_of(scene, *what).map(|pose| (*what, pose)))
                 .collect();
+            let pivot = self
+                .selection()
+                .and_then(|primary| position_of(scene, primary))
+                .unwrap_or(Vec3::ZERO);
             self.gizmo_drag = Some(GizmoDrag {
-                axis,
+                handle,
                 from: ui_input.pointer,
                 screen,
-                origins,
+                starts,
+                pivot,
+                last_angle: screen.pointer_angle(ui_input.pointer),
+                swept: 0.0,
                 moved: false,
             });
-            self.status = format!("moving along {}", axis.label());
+            self.status = format!(
+                "{} {}",
+                self.gizmo_mode.label().to_ascii_lowercase(),
+                handle.label()
+            );
             return false;
         }
 
-        let Some((origin, direction)) = engine_presentation::ui::targeting::cursor_ray(
-            ui_input.pointer,
-            view_projection,
-            viewport,
-        ) else {
+        let Some((origin, direction)) = cursor_ray(ui_input.pointer, view_projection, viewport)
+        else {
             return false;
         };
 
-        let Some(what) = pick::under_ray(scene, origin, direction) else {
+        let hit = pick::under_ray_where(scene, origin, direction, |what| self.pickable(what));
+        let Some(what) = hit else {
             // Empty ground. Nothing is placed and nothing is moved: the selection is dropped,
-            // which is the one thing a click on nothing can mean without guessing.
-            if !self.selected.is_empty() {
+            // which is the one thing a click on nothing can mean without guessing — and the
+            // press is the start of a selection box, if the pointer goes on to draw one.
+            if !add_to_selection && !self.selected.is_empty() {
                 self.selected.clear();
                 self.status = "selection cleared".to_owned();
             }
+            self.marquee = Some(Marquee {
+                from: ui_input.pointer,
+                to: ui_input.pointer,
+                add: add_to_selection,
+            });
             return false;
         };
 
@@ -1795,7 +2611,7 @@ impl Editor {
             self.select(what, add_to_selection);
         }
         self.status = if self.selected.len() > 1 {
-            format!("selected {} objects", self.selected.len())
+            format!("selected {}", self.selected.len())
         } else {
             match what {
                 Selected::Object(index) => {
@@ -1803,6 +2619,7 @@ impl Editor {
                 }
                 Selected::Water(index) => format!("selected water ({index})"),
                 Selected::Spawn(index) => format!("selected spawn ({index})"),
+                Selected::Light(index) => format!("selected light ({index})"),
             }
         };
         // Selecting never changes the level. That is what "a single click on an existing
@@ -1810,57 +2627,202 @@ impl Editor {
         false
     }
 
+    /// One frame of a selection box being dragged; on release, selects what is inside it.
+    fn drag_marquee(
+        &mut self,
+        ui_input: &UiInput,
+        scene: &EnvironmentScene,
+        view_projection: &Mat4,
+        viewport: (u32, u32),
+    ) {
+        let Some(mut marquee) = self.marquee else {
+            return;
+        };
+        marquee.to = ui_input.pointer;
+        if ui_input.pointer_down {
+            self.marquee = Some(marquee);
+            return;
+        }
+        self.marquee = None;
+        let rect = marquee.rect();
+        let slop = self.scale.px(BOX_SLOP_PIXELS);
+        if rect.width < slop && rect.height < slop {
+            // A click, not a box: the press already dropped the selection.
+            return;
+        }
+        let inside = pick::inside_screen_rect(
+            scene,
+            |point| {
+                engine_presentation::nameplate::project(point, view_projection, viewport)
+                    .is_some_and(|(x, y)| rect.contains(x, y))
+            },
+            |what| self.pickable(what),
+        );
+        // One kind, as always: the kind the selection already is when adding to it, and
+        // otherwise the first kind the box caught, in hierarchy order — placements first.
+        let kind = if marquee.add {
+            self.selected.first().copied()
+        } else {
+            None
+        }
+        .or_else(|| inside.first().copied());
+        let Some(kind) = kind else {
+            self.status = "nothing inside the box".to_owned();
+            return;
+        };
+        if !marquee.add {
+            self.selected.clear();
+        }
+        for what in inside {
+            if what.same_kind(kind) && !self.selected.contains(&what) {
+                self.selected.push(what);
+            }
+        }
+        self.status = format!("selected {}", self.selected.len());
+    }
+
     /// One frame of a gizmo drag. Returns whether the scene changed.
-    fn drag_gizmo(&mut self, ui_input: &UiInput, scene: &mut EnvironmentScene) -> bool {
-        let Some(drag) = self.gizmo_drag.clone() else {
+    ///
+    /// `precise` (`CTRL` held) turns the snapping off for this frame, for the placement that
+    /// has to sit between two grid lines.
+    fn drag_gizmo(
+        &mut self,
+        ui_input: &UiInput,
+        scene: &mut EnvironmentScene,
+        precise: bool,
+    ) -> bool {
+        let Some(mut drag) = self.gizmo_drag.clone() else {
             return false;
         };
         if !ui_input.pointer_down {
             self.gizmo_drag = None;
             return false;
         }
-        let metres = drag.screen.metres(drag.axis, drag.from, ui_input.pointer);
-        let step = drag.axis.direction() * metres;
+        let primary = self.selection();
+        let primary_start = drag
+            .starts
+            .iter()
+            .find(|(what, _)| Some(*what) == primary)
+            .map(|(_, pose)| *pose);
 
         // Every target is worked out before anything moves, so the undo snapshot is the scene
         // as it was before this frame and not as it was halfway through it.
-        let mut moves: Vec<(Selected, Vec3)> = Vec::new();
-        for (what, origin) in &drag.origins {
-            let Some(standing) = position_of(scene, *what) else {
-                continue;
-            };
-            let target = self.snap_along(drag.axis, *origin + step);
-            if target != standing {
-                moves.push((*what, target - standing));
+        let mut targets: Vec<(Selected, Pose)> = Vec::with_capacity(drag.starts.len());
+        let describe;
+        match (self.gizmo_mode, drag.handle) {
+            (gizmo::GizmoMode::Rotate, _) => {
+                if let (Some(last), Some(now)) =
+                    (drag.last_angle, drag.screen.pointer_angle(ui_input.pointer))
+                {
+                    drag.swept += gizmo::wrap_angle(now - last);
+                    drag.last_angle = Some(now);
+                } else if drag.last_angle.is_none() {
+                    drag.last_angle = drag.screen.pointer_angle(ui_input.pointer);
+                }
+                let mut turn = drag.screen.yaw_for(drag.swept);
+                if !precise && let Some(start) = primary_start {
+                    let step = self.yaw_step().to_radians();
+                    turn = snap_angle(start.yaw + turn, step) - start.yaw;
+                }
+                let rotation = Quat::from_yaw_pitch_roll(turn, 0.0, 0.0);
+                for (what, start) in &drag.starts {
+                    targets.push((
+                        *what,
+                        Pose {
+                            position: drag.pivot + rotation.rotate(start.position - drag.pivot),
+                            yaw: start.yaw + turn,
+                            ..*start
+                        },
+                    ));
+                }
+                describe = format!("turned {:.1} deg", turn.to_degrees());
+            }
+            (gizmo::GizmoMode::Scale, handle) => {
+                let factor = match handle {
+                    gizmo::Handle::Axis(axis) => {
+                        let metres = drag.screen.metres(axis, drag.from, ui_input.pointer);
+                        1.0 + metres / drag.screen.length.max(1e-3)
+                    }
+                    _ => {
+                        let rise = drag.from.1 - ui_input.pointer.1;
+                        2.0_f32.powf(rise / self.scale.px(UNIFORM_SCALE_PIXELS).max(1.0))
+                    }
+                }
+                .max(0.01);
+                for (what, start) in &drag.starts {
+                    let component = |value: f32| {
+                        let scaled = (value * factor).max(0.01);
+                        if precise {
+                            scaled
+                        } else {
+                            ((scaled / SCALE_SNAP).round() * SCALE_SNAP).max(SCALE_SNAP)
+                        }
+                    };
+                    let mut scale = start.scale;
+                    match (handle, what) {
+                        // A light's size is one number, whichever handle stretches it.
+                        (gizmo::Handle::Axis(axis), Selected::Object(_) | Selected::Water(_)) => {
+                            match axis {
+                                gizmo::Axis::X => scale.x = component(scale.x),
+                                gizmo::Axis::Y => scale.y = component(scale.y),
+                                gizmo::Axis::Z => scale.z = component(scale.z),
+                            }
+                        }
+                        _ => {
+                            scale = Vec3::new(
+                                component(scale.x),
+                                component(scale.y),
+                                component(scale.z),
+                            );
+                        }
+                    }
+                    targets.push((*what, Pose { scale, ..*start }));
+                }
+                describe = format!("scaled x{factor:.2} along {}", handle.label());
+            }
+            (gizmo::GizmoMode::Translate, handle) => {
+                let gizmo::Handle::Axis(axis) = handle else {
+                    return false;
+                };
+                let metres = drag.screen.metres(axis, drag.from, ui_input.pointer);
+                let step = axis.direction() * metres;
+                for (what, start) in &drag.starts {
+                    let moved = start.position + step;
+                    let position = if precise {
+                        moved
+                    } else {
+                        self.snap_along(axis, moved)
+                    };
+                    targets.push((*what, Pose { position, ..*start }));
+                }
+                describe = if drag.starts.len() > 1 {
+                    format!("moved {} along {}", drag.starts.len(), axis.label())
+                } else {
+                    format!("moved {metres:.2} m along {}", axis.label())
+                };
             }
         }
-        if moves.is_empty() {
+
+        targets.retain(|(what, target)| pose_of(scene, *what) != Some(*target));
+        if targets.is_empty() {
+            self.gizmo_drag = Some(drag);
             return false;
         }
         if !drag.moved {
             // Taken on the first movement rather than on the press: a click on a handle that
             // does not drag it must not fill the undo stack.
-            let before = Snapshot::of(scene);
+            let before = Snapshot::of(scene, &self.flags);
             self.push_undo(before);
-            self.gizmo_drag = Some(GizmoDrag {
-                moved: true,
-                ..drag.clone()
-            });
+            drag.moved = true;
         }
-        for (what, delta) in &moves {
-            move_by(scene, *what, *delta);
+        for (what, pose) in &targets {
+            set_pose(scene, *what, *pose);
         }
-        // A selection holds one kind, so this frame's edit reached the placements or the other
-        // two lists and never both — which is the answer the application needs.
-        self.water_touched = drag
-            .origins
-            .first()
-            .is_some_and(|(what, _)| what.object().is_none());
-        self.status = if drag.origins.len() > 1 {
-            format!("moved {} along {}", drag.origins.len(), drag.axis.label())
-        } else {
-            format!("moved {:.2} m along {}", metres, drag.axis.label())
-        };
+        // A selection holds one kind, so this frame's edit reached the placements and lights
+        // or the other two lists and never both — which is the answer the application needs.
+        self.water_touched = drag.starts.iter().all(|(what, _)| !what.is_scene_kind());
+        self.status = describe;
+        self.gizmo_drag = Some(drag);
         true
     }
 
@@ -1881,20 +2843,15 @@ impl Editor {
     ) -> bool {
         if std::mem::take(&mut self.place_at_centre) {
             let centre = (viewport.0 as f32 * 0.5, viewport.1 as f32 * 0.5);
-            let position = engine_presentation::ui::targeting::ground_under_cursor(
-                centre,
-                view_projection,
-                viewport,
-                &engine_presentation::ui::ground_decal::GroundSurface::Plane(
-                    engine_presentation::ui::targeting::GROUND_HEIGHT,
-                ),
-            )
-            .unwrap_or_else(|| {
-                // Looking at the sky: the ground is not in front of the camera at all, so the
-                // asset goes down where the camera is standing rather than nowhere.
-                let ahead = self.camera.position + self.camera.forward() * 12.0;
-                Vec3::new(ahead.x, 0.0, ahead.z)
-            });
+            let position = self
+                .drop_point(centre, scene, view_projection, viewport)
+                .unwrap_or_else(|| {
+                    // Looking at the sky: the ground is not in front of the camera at all, so
+                    // the asset goes down in front of where the camera is standing rather
+                    // than nowhere.
+                    let ahead = self.camera.position + self.camera.forward() * 12.0;
+                    Vec3::new(ahead.x, scene.ground_at(ahead), ahead.z)
+                });
             self.placement = None;
             return self.place(scene, position);
         }
@@ -1926,23 +2883,35 @@ impl Editor {
             // A click that started and ended in the same place is not a drag into the world.
             return false;
         }
-        let Some(ground) = engine_presentation::ui::targeting::ground_under_cursor(
-            ui_input.pointer,
-            view_projection,
-            viewport,
-            &engine_presentation::ui::ground_decal::GroundSurface::Plane(
-                engine_presentation::ui::targeting::GROUND_HEIGHT,
-            ),
-        ) else {
+        let Some(ground) = self.drop_point(ui_input.pointer, scene, view_projection, viewport)
+        else {
             self.status = "point at the ground to drop it".to_owned();
             return false;
         };
         self.place(scene, ground)
     }
 
+    /// What something put down under `pointer` stands on: the top of a solid thing if the
+    /// pointer is over one, and the ground — the terrain where the level has one — otherwise.
+    fn drop_point(
+        &self,
+        pointer: (f32, f32),
+        scene: &EnvironmentScene,
+        view_projection: &Mat4,
+        viewport: (u32, u32),
+    ) -> Option<Vec3> {
+        let ground = ground_under(pointer, view_projection, viewport, scene);
+        let Some((origin, direction)) = cursor_ray(pointer, view_projection, viewport) else {
+            return ground;
+        };
+        pick::surface_under(scene, origin, direction, ground, |index| {
+            self.is_hidden(index)
+        })
+    }
+
     /// Puts the browser's asset into the scene at `position` and selects it.
     ///
-    /// One function for both ways of placing, so a dropped asset and a double-clicked one land
+    /// One function for every way of placing, so a dropped asset and a double-clicked one land
     /// with the same collision, the same snapping and the same undo behind them.
     fn place(&mut self, scene: &mut EnvironmentScene, position: Vec3) -> bool {
         self.snapshot(scene);
@@ -1962,6 +2931,7 @@ impl Editor {
             transform: Transform::from_translation(self.snap(position)),
             collision,
         });
+        self.flags.push(0);
         self.selected.clear();
         self.selected
             .push(Selected::Object(scene.objects.len() - 1));
@@ -1991,7 +2961,7 @@ impl Editor {
 
     /// A position on the grid, if there is one.
     ///
-    /// Height is never snapped: everything in this game stands on the ground, and rounding
+    /// Height is never snapped: everything in this game stands on something, and rounding
     /// `y` would lift a floor two centimetres above the plain onto it.
     fn snap(&self, position: Vec3) -> Vec3 {
         let step = self.grid();
@@ -2005,18 +2975,23 @@ impl Editor {
         )
     }
 
-    /// Remembers the scene as it is now, for `Z`.
+    /// Remembers the scene as it is now, for `CTRL+Z`.
     fn snapshot(&mut self, scene: &EnvironmentScene) {
-        let snapshot = Snapshot::of(scene);
+        let snapshot = Snapshot::of(scene, &self.flags);
         self.push_undo(snapshot);
     }
 
     /// Pushes a snapshot, dropping the oldest once the stack is full.
+    ///
+    /// Every edit comes through here, which makes it the one place an edit is counted, and
+    /// the one place a new edit throws away what could have been redone.
     fn push_undo(&mut self, snapshot: Snapshot) {
         if self.undo.len() == UNDO_DEPTH {
             self.undo.remove(0);
         }
         self.undo.push(snapshot);
+        self.redo.clear();
+        self.revision += 1;
     }
 
     /// Puts the last snapshot back. Returns whether anything changed.
@@ -2025,11 +3000,34 @@ impl Editor {
             self.status = "nothing to undo".to_owned();
             return false;
         };
-        snapshot.restore(scene);
-        self.selected.clear();
-        self.cancel_manipulation();
-        self.status = "undone".to_owned();
+        self.redo.push(Snapshot::of(scene, &self.flags));
+        self.flags = snapshot.restore(scene);
+        self.after_history_step(scene);
+        self.status = format!("undone ({} more)", self.undo.len());
         true
+    }
+
+    /// Puts back what the last undo took away. Returns whether anything changed.
+    fn redo(&mut self, scene: &mut EnvironmentScene) -> bool {
+        let Some(snapshot) = self.redo.pop() else {
+            self.status = "nothing to redo".to_owned();
+            return false;
+        };
+        self.undo.push(Snapshot::of(scene, &self.flags));
+        self.flags = snapshot.restore(scene);
+        self.after_history_step(scene);
+        self.status = format!("redone ({} more)", self.redo.len());
+        true
+    }
+
+    /// What every step through the history leaves behind: a new revision, a selection that
+    /// may no longer point at anything, and no gesture in progress.
+    fn after_history_step(&mut self, scene: &EnvironmentScene) {
+        self.revision += 1;
+        self.sync_flags(scene);
+        self.prune_selection(scene);
+        self.cancel_manipulation();
+        self.inspector_edit = None;
     }
 
     /// Writes the scene, and says so in the status line.
@@ -2038,7 +3036,7 @@ impl Editor {
     /// in the level with the file dialog they do not have, and the useful thing is to see
     /// "could not save" on screen immediately. It is logged as an error too.
     fn save(&mut self, scene: &EnvironmentScene) {
-        match scene_file::save(scene, &self.save_path) {
+        match write_scene(scene, &self.save_path) {
             Ok(()) => {
                 log::info!(
                     "editor: wrote {} ({} objects) to {}",
@@ -2046,13 +3044,120 @@ impl Editor {
                     scene.len(),
                     self.save_path.display()
                 );
+                self.saved_revision = self.revision;
+                self.autosaved_revision = self.revision;
                 self.status = format!("saved {}", self.save_path.display());
+                // The autosave is older than what was just written, and an autosave that is
+                // older than the level is a trap for whoever finds it next.
+                let autosave = self.autosave_path();
+                if autosave.is_file() {
+                    std::fs::remove_file(&autosave).ok();
+                }
             }
             Err(error) => {
                 log::error!("editor: could not save: {error}");
                 self.status = format!("COULD NOT SAVE: {error}");
             }
         }
+    }
+
+    /// Writes unsaved work to [`Editor::autosave_path`], if there is any the autosave does not
+    /// already hold. Returns whether it wrote.
+    ///
+    /// Called on the way out with F6, every couple of minutes while there is unsaved work,
+    /// and by the application when the game closes.
+    pub fn autosave(&mut self, scene: &EnvironmentScene) -> bool {
+        if !self.is_dirty() || self.autosaved_revision == self.revision {
+            return false;
+        }
+        let path = self.autosave_path();
+        match write_scene(scene, &path) {
+            Ok(()) => {
+                self.autosaved_revision = self.revision;
+                self.since_autosave = 0.0;
+                log::info!("editor: unsaved work autosaved to {}", path.display());
+                true
+            }
+            Err(error) => {
+                log::error!("editor: could not autosave: {error}");
+                false
+            }
+        }
+    }
+
+    /// Counts how long unsaved work has waited, and autosaves it when it has waited too long.
+    fn tick_autosave(&mut self, scene: &EnvironmentScene, seconds: f32) {
+        if !self.is_dirty() || self.autosaved_revision == self.revision {
+            self.since_autosave = 0.0;
+            return;
+        }
+        self.since_autosave += seconds;
+        if self.since_autosave >= AUTOSAVE_SECONDS && self.autosave(scene) {
+            self.status = format!("autosaved to {}", self.autosave_path().display());
+        }
+    }
+}
+
+/// Writes `scene` to `path` as the editor writes every level: without the collision shapes
+/// no placement names any more.
+fn write_scene(scene: &EnvironmentScene, path: &Path) -> Result<(), scene_file::SceneFileError> {
+    let mut written = scene.clone();
+    let dropped = written.prune_collision_shapes();
+    if dropped > 0 {
+        log::debug!("editor: {dropped} unused collision shape(s) left out of the file");
+    }
+    scene_file::save(&written, path)
+}
+
+/// The ground under a screen point: the terrain where the level has one and the pointer is
+/// over it, and the level's floor everywhere else.
+///
+/// The terrain is marched rather than intersected, so a ray that would clear a ridge stops on
+/// it — the author is pointing at the ground they can see, which on a hill is not where a flat
+/// plane at the floor's height would put it.
+fn ground_under(
+    pointer: (f32, f32),
+    view_projection: &Mat4,
+    viewport: (u32, u32),
+    scene: &EnvironmentScene,
+) -> Option<Vec3> {
+    if let Some(terrain) = scene.terrain.as_ref()
+        && let Some(hit) = ground_under_cursor(
+            pointer,
+            view_projection,
+            viewport,
+            &GroundSurface::Terrain(terrain),
+        )
+        && terrain.contains(hit)
+    {
+        return Some(hit);
+    }
+    ground_under_cursor(
+        pointer,
+        view_projection,
+        viewport,
+        &GroundSurface::Plane(scene.ground_height),
+    )
+}
+
+/// A number as the inspector writes it: as few decimals as it needs, at most three.
+fn format_value(value: f32) -> String {
+    let text = format!("{value:.3}");
+    let text = text.trim_end_matches('0').trim_end_matches('.');
+    if text == "-0" {
+        "0".to_owned()
+    } else {
+        text.to_owned()
+    }
+}
+
+/// The index a selection names in its own list.
+fn index_of(what: Selected) -> usize {
+    match what {
+        Selected::Object(index)
+        | Selected::Water(index)
+        | Selected::Spawn(index)
+        | Selected::Light(index) => index,
     }
 }
 
@@ -2061,7 +3166,7 @@ impl Editor {
 /// `None` for an index that is past the end of its list, which is what a drag whose target
 /// was deleted under it looks like.
 #[must_use]
-fn position_of(scene: &EnvironmentScene, what: Selected) -> Option<Vec3> {
+pub(crate) fn position_of(scene: &EnvironmentScene, what: Selected) -> Option<Vec3> {
     match what {
         Selected::Object(index) => scene
             .objects
@@ -2069,11 +3174,12 @@ fn position_of(scene: &EnvironmentScene, what: Selected) -> Option<Vec3> {
             .map(|object| object.transform.translation),
         Selected::Water(index) => scene.water.get(index).map(|body| body.center),
         Selected::Spawn(index) => scene.spawn_points.get(index).map(|spawn| spawn.position),
+        Selected::Light(index) => scene.lights.get(index).map(|light| light.position),
     }
 }
 
 /// Moves something by `delta`, whichever list it lives in.
-fn move_by(scene: &mut EnvironmentScene, what: Selected, delta: Vec3) {
+pub(crate) fn move_by(scene: &mut EnvironmentScene, what: Selected, delta: Vec3) {
     match what {
         Selected::Object(index) => {
             if let Some(object) = scene.objects.get_mut(index) {
@@ -2090,20 +3196,99 @@ fn move_by(scene: &mut EnvironmentScene, what: Selected, delta: Vec3) {
                 spawn.position += delta;
             }
         }
+        Selected::Light(index) => {
+            if let Some(light) = scene.lights.get_mut(index) {
+                light.position += delta;
+            }
+        }
     }
 }
 
-/// How many rows the hierarchy has: every placement, and then every body of water.
-///
-/// Water after the objects rather than interleaved, because an object's row is its index into
-/// the level's object list and renumbering that to make room for a pond would make the number
-/// on screen disagree with the number in the file.
-#[must_use]
-pub fn hierarchy_len(scene: &EnvironmentScene) -> usize {
-    scene.objects.len() + scene.water.len() + scene.spawn_points.len()
+/// How something stands. See [`Pose`].
+fn pose_of(scene: &EnvironmentScene, what: Selected) -> Option<Pose> {
+    Some(match what {
+        Selected::Object(index) => {
+            let object = scene.objects.get(index)?;
+            Pose {
+                position: object.transform.translation,
+                yaw: yaw_of(object.transform),
+                scale: object.transform.scale,
+            }
+        }
+        Selected::Water(index) => {
+            let body = scene.water.get(index)?;
+            Pose {
+                position: body.center,
+                yaw: body.yaw,
+                scale: Vec3::new(body.half_extents.x, body.depth, body.half_extents.y),
+            }
+        }
+        Selected::Spawn(index) => {
+            let spawn = scene.spawn_points.get(index)?;
+            Pose {
+                position: spawn.position,
+                yaw: spawn.yaw,
+                scale: Vec3::ONE,
+            }
+        }
+        Selected::Light(index) => {
+            let light = scene.lights.get(index)?;
+            Pose {
+                position: light.position,
+                yaw: 0.0,
+                scale: Vec3::splat(light.range),
+            }
+        }
+    })
 }
 
-/// What the hierarchy's `row`th line names, if it names anything.
+/// Makes something stand as `pose` says, within what its kind can be.
+///
+/// Nothing is ever shrunk to where the loader would refuse it: a placement keeps a scale, a
+/// body of water keeps a footprint and a depth, a light keeps a reach.
+fn set_pose(scene: &mut EnvironmentScene, what: Selected, pose: Pose) {
+    match what {
+        Selected::Object(index) => {
+            if let Some(object) = scene.objects.get_mut(index) {
+                object.transform.translation = pose.position;
+                object.transform.rotation = Quat::from_yaw_pitch_roll(pose.yaw, 0.0, 0.0);
+                object.transform.scale = pose.scale.max(Vec3::splat(0.01));
+            }
+        }
+        Selected::Water(index) => {
+            if let Some(body) = scene.water.get_mut(index) {
+                body.center = pose.position;
+                body.yaw = pose.yaw;
+                body.half_extents.x = pose.scale.x.max(WATER_MIN_HALF_EXTENT);
+                body.half_extents.y = pose.scale.z.max(WATER_MIN_HALF_EXTENT);
+                body.depth = pose.scale.y.max(0.1);
+            }
+        }
+        Selected::Spawn(index) => {
+            if let Some(spawn) = scene.spawn_points.get_mut(index) {
+                spawn.position = pose.position;
+                spawn.yaw = pose.yaw;
+            }
+        }
+        Selected::Light(index) => {
+            if let Some(light) = scene.lights.get_mut(index) {
+                light.position = pose.position;
+                light.range = pose.scale.x.max(0.1);
+            }
+        }
+    }
+}
+
+/// How many rows the unfiltered hierarchy has: every placement, the water, the spawn points
+/// and the lights.
+#[must_use]
+pub fn hierarchy_len(scene: &EnvironmentScene) -> usize {
+    scene.objects.len() + scene.water.len() + scene.spawn_points.len() + scene.lights.len()
+}
+
+/// What the unfiltered hierarchy's `row`th line names, if it names anything.
+///
+/// Placements first, so an object's row is its index in the file.
 #[must_use]
 pub fn hierarchy_row_at(row: usize, scene: &EnvironmentScene) -> Option<Selected> {
     if row < scene.objects.len() {
@@ -2114,16 +3299,23 @@ pub fn hierarchy_row_at(row: usize, scene: &EnvironmentScene) -> Option<Selected
         return Some(Selected::Water(water));
     }
     let spawn = water - scene.water.len();
-    (spawn < scene.spawn_points.len()).then_some(Selected::Spawn(spawn))
+    if spawn < scene.spawn_points.len() {
+        return Some(Selected::Spawn(spawn));
+    }
+    let light = spawn - scene.spawn_points.len();
+    (light < scene.lights.len()).then_some(Selected::Light(light))
 }
 
-/// Which hierarchy row names `what`. The inverse of [`hierarchy_row_at`].
+/// Which unfiltered hierarchy row names `what`. The inverse of [`hierarchy_row_at`].
 #[must_use]
 pub fn hierarchy_row_of(what: Selected, scene: &EnvironmentScene) -> usize {
     match what {
         Selected::Object(index) => index,
         Selected::Water(index) => scene.objects.len() + index,
         Selected::Spawn(index) => scene.objects.len() + scene.water.len() + index,
+        Selected::Light(index) => {
+            scene.objects.len() + scene.water.len() + scene.spawn_points.len() + index
+        }
     }
 }
 
@@ -2175,6 +3367,16 @@ mod tests {
 
     const VIEWPORT: (u32, u32) = (1920, 1080);
 
+    impl Editor {
+        /// Every selected body of water, in the order it was added.
+        fn selected_waters(&self) -> Vec<usize> {
+            self.selected
+                .iter()
+                .filter_map(|what| what.water())
+                .collect()
+        }
+    }
+
     /// A camera looking straight down from twenty metres, so a click in the middle of the
     /// screen lands on the origin and the arithmetic in a test is obvious.
     fn overhead() -> Mat4 {
@@ -2198,7 +3400,25 @@ mod tests {
     fn editor() -> Editor {
         let mut editor = Editor::new();
         editor.enter(Vec3::ZERO, "test_level", VIEWPORT);
+        // Never the repository: F6 autosaves, and a test that leaves the editor would
+        // otherwise write a level into the crate's own directory.
+        editor.save_path = scratch_path("test_level.json");
         editor
+    }
+
+    /// A file in a directory of this test run's own, so parallel tests never share one.
+    fn scratch_path(name: &str) -> PathBuf {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
+        let directory = std::env::temp_dir()
+            .join("mygame_editor_tests")
+            .join(format!(
+                "{}_{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            ));
+        std::fs::create_dir_all(&directory).expect("a temp directory");
+        directory.join(name)
     }
 
     /// A frame in which the pointer is at `pointer` and the left button went down.
@@ -2470,7 +3690,12 @@ mod tests {
 
         // Pouring is an edit like any other, so it is on the undo stack. Phase 6 learned this
         // about brush strokes and the lesson is the same one.
-        update(&mut editor, &keyed(KeyCode::Z), &UiInput::new(), &mut scene);
+        update(
+            &mut editor,
+            &control_keyed(KeyCode::Z),
+            &UiInput::new(),
+            &mut scene,
+        );
         assert!(scene.water.is_empty(), "the pour was not undoable");
     }
 
@@ -2611,7 +3836,12 @@ mod tests {
         assert!(scene.spawn_points.is_empty(), "X did not delete it");
 
         // And putting one down is an edit like any other.
-        update(&mut editor, &keyed(KeyCode::Z), &UiInput::new(), &mut scene);
+        update(
+            &mut editor,
+            &control_keyed(KeyCode::Z),
+            &UiInput::new(),
+            &mut scene,
+        );
         assert_eq!(scene.spawn_points.len(), 1, "the delete was not undoable");
     }
 
@@ -3030,7 +4260,12 @@ mod tests {
         update(&mut editor, &InputState::new(), &release(grab), &mut scene);
 
         assert_eq!(scene.objects, before, "a click on a handle moved something");
-        let outcome = update(&mut editor, &keyed(KeyCode::Z), &UiInput::new(), &mut scene);
+        let outcome = update(
+            &mut editor,
+            &control_keyed(KeyCode::Z),
+            &UiInput::new(),
+            &mut scene,
+        );
         assert_eq!(outcome, EditorOutcome::Idle, "and it filled the undo stack");
     }
 
@@ -3465,12 +4700,22 @@ mod tests {
         drop_asset(&mut editor, &mut scene, centre());
         assert_eq!(scene.len(), 2, "a placement happened");
 
-        let outcome = update(&mut editor, &keyed(KeyCode::Z), &UiInput::new(), &mut scene);
+        let outcome = update(
+            &mut editor,
+            &control_keyed(KeyCode::Z),
+            &UiInput::new(),
+            &mut scene,
+        );
         assert_eq!(outcome, EditorOutcome::SceneChanged);
         assert_eq!(scene.objects, before, "the placement was taken back");
 
         // And an empty stack is not an error.
-        let outcome = update(&mut editor, &keyed(KeyCode::Z), &UiInput::new(), &mut scene);
+        let outcome = update(
+            &mut editor,
+            &control_keyed(KeyCode::Z),
+            &UiInput::new(),
+            &mut scene,
+        );
         assert_eq!(outcome, EditorOutcome::Idle);
         assert_eq!(scene.objects, before);
     }
@@ -3566,7 +4811,12 @@ mod tests {
         );
         assert_eq!(editor.selected_object(), Some(0));
 
-        update(&mut editor, &keyed(KeyCode::F), &UiInput::new(), &mut scene);
+        update(
+            &mut editor,
+            &control_keyed(KeyCode::F),
+            &UiInput::new(),
+            &mut scene,
+        );
         assert!(editor.browser().is_typing());
         let outcome = update(&mut editor, &keyed(KeyCode::X), &UiInput::new(), &mut scene);
 
@@ -3683,7 +4933,12 @@ mod tests {
         }
 
         // Duplicate: three copies, and the copies are what is selected.
-        let outcome = update(&mut editor, &keyed(KeyCode::C), &UiInput::new(), &mut scene);
+        let outcome = update(
+            &mut editor,
+            &control_keyed(KeyCode::D),
+            &UiInput::new(),
+            &mut scene,
+        );
         assert_eq!(outcome, EditorOutcome::SceneChanged);
         assert_eq!(scene.len(), 6);
         assert_eq!(objects_of(&editor), [3, 4, 5]);
@@ -3892,7 +5147,12 @@ mod tests {
         );
         assert_ne!(scene.objects[0].transform.translation, before[0]);
 
-        update(&mut editor, &keyed(KeyCode::Z), &UiInput::new(), &mut scene);
+        update(
+            &mut editor,
+            &control_keyed(KeyCode::Z),
+            &UiInput::new(),
+            &mut scene,
+        );
         for (index, object) in scene.objects.iter().enumerate() {
             assert_eq!(
                 object.transform.translation, before[index],
@@ -4050,7 +5310,12 @@ mod tests {
                 .is_some_and(|terrain| { terrain.height_at(Vec3::ZERO) > 0.0 })
         );
 
-        update(&mut editor, &keyed(KeyCode::Z), &UiInput::new(), &mut scene);
+        update(
+            &mut editor,
+            &control_keyed(KeyCode::Z),
+            &UiInput::new(),
+            &mut scene,
+        );
         assert!(
             scene.terrain.is_none()
                 || scene
@@ -4139,5 +5404,601 @@ mod tests {
         }
         assert!(seen.contains(&0.0), "one step of the cycle is 'off'");
         assert_eq!(editor.grid(), seen[0], "and it comes back round");
+    }
+
+    // -----------------------------------------------------------------------------------
+    // The usability pass: terrain-aware pointing, history, saving, and the new tools.
+    // -----------------------------------------------------------------------------------
+
+    /// A frame in which every one of `keys` went down together.
+    fn chord(keys: &[KeyCode]) -> InputState {
+        let mut input = InputState::new();
+        for key in keys {
+            input.apply(engine_core::input::InputEvent::KeyDown {
+                key: *key,
+                repeat: false,
+            });
+        }
+        input
+    }
+
+    /// Where a world point is on screen from the overhead camera.
+    fn on_screen(point: Vec3) -> (f32, f32) {
+        engine_presentation::nameplate::project(point, &overhead(), VIEWPORT)
+            .expect("the point is in view")
+    }
+
+    /// Selects the object under the middle of the overhead camera.
+    fn click_centre(editor: &mut Editor, scene: &mut EnvironmentScene) {
+        update(editor, &InputState::new(), &press(centre()), scene);
+        update(editor, &InputState::new(), &release(centre()), scene);
+    }
+
+    #[test]
+    fn an_asset_dropped_on_a_hill_lands_on_the_hill_where_the_cursor_points() {
+        let mut editor = editor();
+        let mut scene = scene();
+        // A plateau ten metres up, eighty wide: the flat plane at the floor's height is
+        // twenty metres from the eye and the plateau ten, so a slanted ray meets the plateau
+        // half as far out.
+        scene.terrain = Some(Terrain::flat(41, 2.0, 10.0));
+        let pointer = (centre().0 + 300.0, centre().1);
+        let floor = ground_under_cursor(pointer, &overhead(), VIEWPORT, &GroundSurface::Plane(0.0))
+            .expect("the floor is under the pointer");
+
+        drop_asset(&mut editor, &mut scene, pointer);
+        let placed = scene.objects[0].position();
+        assert!((placed.y - 10.0).abs() < 0.01, "buried at {placed:?}");
+        assert!(
+            (placed.x - floor.x * 0.5).abs() < 0.6,
+            "landed at {placed:?}, not under the cursor (the floor says {floor:?})"
+        );
+    }
+
+    #[test]
+    fn an_asset_dropped_on_a_pillar_stands_on_top_of_it() {
+        let mut editor = editor();
+        let mut scene = scene();
+        scene.push(
+            EnvironmentObject::decoration(PILLAR, Vec3::ZERO)
+                .with_collision(default_collision(PILLAR)),
+        );
+        drop_asset(&mut editor, &mut scene, centre());
+        let placed = scene.objects[1].position();
+        assert!(
+            placed.y > 1.0,
+            "the drop fell through the pillar to {placed:?}"
+        );
+    }
+
+    #[test]
+    fn control_g_drops_the_selection_onto_what_is_under_it() {
+        let mut editor = editor();
+        let mut scene = scene();
+        scene.push(EnvironmentObject::decoration(
+            ROCK_SMALL,
+            Vec3::new(0.0, 5.0, 0.0),
+        ));
+        editor.select(Selected::Object(0), false);
+        let outcome = update(
+            &mut editor,
+            &control_keyed(KeyCode::G),
+            &UiInput::new(),
+            &mut scene,
+        );
+        assert_eq!(outcome, EditorOutcome::SceneChanged);
+        assert!(scene.objects[0].position().y.abs() < 1e-4);
+    }
+
+    #[test]
+    fn undo_and_redo_walk_both_ways_and_a_new_edit_forgets_what_could_be_redone() {
+        let mut editor = editor();
+        let mut scene = scene();
+        drop_asset(&mut editor, &mut scene, centre());
+        assert_eq!(scene.len(), 1);
+
+        update(
+            &mut editor,
+            &control_keyed(KeyCode::Z),
+            &UiInput::new(),
+            &mut scene,
+        );
+        assert_eq!(scene.len(), 0);
+        let outcome = update(
+            &mut editor,
+            &control_keyed(KeyCode::Y),
+            &UiInput::new(),
+            &mut scene,
+        );
+        assert_eq!(outcome, EditorOutcome::SceneChanged);
+        assert_eq!(scene.len(), 1, "CTRL+Y put nothing back");
+
+        update(
+            &mut editor,
+            &control_keyed(KeyCode::Z),
+            &UiInput::new(),
+            &mut scene,
+        );
+        drop_asset(&mut editor, &mut scene, centre());
+        let outcome = update(
+            &mut editor,
+            &control_keyed(KeyCode::Y),
+            &UiInput::new(),
+            &mut scene,
+        );
+        assert_eq!(
+            outcome,
+            EditorOutcome::Idle,
+            "a new edit left something to redo"
+        );
+    }
+
+    #[test]
+    fn a_plain_z_or_c_is_not_an_edit() {
+        // One slip of the hand used to undo or duplicate. They are chords now.
+        let mut editor = editor();
+        let mut scene = scene();
+        drop_asset(&mut editor, &mut scene, centre());
+        update(&mut editor, &keyed(KeyCode::Z), &UiInput::new(), &mut scene);
+        update(&mut editor, &keyed(KeyCode::C), &UiInput::new(), &mut scene);
+        assert_eq!(scene.len(), 1);
+    }
+
+    #[test]
+    fn leaving_to_play_and_coming_back_keeps_the_undo_history() {
+        let mut editor = editor();
+        let mut scene = scene();
+        drop_asset(&mut editor, &mut scene, centre());
+        update(
+            &mut editor,
+            &keyed(KeyCode::F6),
+            &UiInput::new(),
+            &mut scene,
+        );
+        assert!(!editor.is_active());
+
+        editor.enter(Vec3::ZERO, "test_level", VIEWPORT);
+        assert!(editor.is_dirty(), "the unsaved edit was forgotten");
+        update(
+            &mut editor,
+            &control_keyed(KeyCode::Z),
+            &UiInput::new(),
+            &mut scene,
+        );
+        assert_eq!(
+            scene.len(),
+            0,
+            "the placement from before F6 could not be undone"
+        );
+
+        // A different level starts clean.
+        editor.enter(Vec3::ZERO, "another_level", VIEWPORT);
+        assert!(!editor.is_dirty());
+        assert!(editor.undo.is_empty());
+    }
+
+    #[test]
+    fn unsaved_work_is_counted_saved_and_autosaved_on_the_way_out() {
+        let mut editor = editor();
+        let mut scene = scene();
+        assert!(!editor.is_dirty());
+        drop_asset(&mut editor, &mut scene, centre());
+        assert!(editor.is_dirty());
+
+        update(
+            &mut editor,
+            &control_keyed(KeyCode::S),
+            &UiInput::new(),
+            &mut scene,
+        );
+        assert!(!editor.is_dirty(), "{}", editor.status());
+
+        drop_asset(&mut editor, &mut scene, (centre().0 + 200.0, centre().1));
+        update(
+            &mut editor,
+            &keyed(KeyCode::F6),
+            &UiInput::new(),
+            &mut scene,
+        );
+        let autosave = editor.autosave_path();
+        let saved = scene_file::load(&autosave).expect("F6 wrote the autosave");
+        assert_eq!(saved.len(), 2);
+
+        // Saving makes the autosave stale, and a stale autosave is removed.
+        editor.enter(Vec3::ZERO, "test_level", VIEWPORT);
+        update(
+            &mut editor,
+            &control_keyed(KeyCode::S),
+            &UiInput::new(),
+            &mut scene,
+        );
+        assert!(
+            !autosave.is_file(),
+            "an autosave older than the level was left behind"
+        );
+    }
+
+    #[test]
+    fn a_saved_level_carries_only_the_collision_shapes_its_placements_use() {
+        let mut editor = editor();
+        let mut scene = scene();
+        let unused = engine_environment::object::CollisionShape::new([
+            engine_environment::CollisionBox::new(Vec3::ZERO, Vec3::ONE),
+        ]);
+        scene.intern_collision(unused);
+        scene.push(EnvironmentObject::decoration(PILLAR, Vec3::ZERO));
+        update(
+            &mut editor,
+            &control_keyed(KeyCode::S),
+            &UiInput::new(),
+            &mut scene,
+        );
+        let saved = scene_file::load(editor.save_path()).expect("the level saved");
+        assert!(saved.collision_shapes.is_empty());
+        assert_eq!(
+            scene.collision_shapes.len(),
+            1,
+            "the level being edited is untouched"
+        );
+    }
+
+    #[test]
+    fn save_as_writes_a_new_file_and_renames_the_level() {
+        let mut editor = editor();
+        let mut scene = scene();
+        scene.push(EnvironmentObject::decoration(PILLAR, Vec3::ZERO));
+        update(
+            &mut editor,
+            &chord(&[KeyCode::LeftControl, KeyCode::LeftShift, KeyCode::S]),
+            &UiInput::new(),
+            &mut scene,
+        );
+        assert!(editor.save_as_text().is_some(), "the prompt did not open");
+        // Typing replaces the name it opened with, and W does not fly the camera.
+        let eye = editor.eye();
+        for key in [
+            KeyCode::W,
+            KeyCode::E,
+            KeyCode::S,
+            KeyCode::T,
+            KeyCode::Enter,
+        ] {
+            update(&mut editor, &keyed(key), &UiInput::new(), &mut scene);
+        }
+        assert_eq!(editor.eye(), eye);
+        assert_eq!(scene.name, "west");
+        assert_eq!(
+            editor
+                .save_path()
+                .file_name()
+                .and_then(|name| name.to_str()),
+            Some("west.json")
+        );
+        assert!(editor.save_path().is_file());
+    }
+
+    #[test]
+    fn control_s_saves_without_flying_the_camera_backwards() {
+        let mut editor = editor();
+        let mut scene = scene();
+        let eye = editor.eye();
+        update(
+            &mut editor,
+            &control_keyed(KeyCode::S),
+            &UiInput::new(),
+            &mut scene,
+        );
+        assert_eq!(editor.eye(), eye);
+    }
+
+    #[test]
+    fn opening_another_level_over_unsaved_work_asks_first() {
+        let mut editor = editor();
+        let mut scene = scene();
+        drop_asset(&mut editor, &mut scene, centre());
+        let path = PathBuf::from("assets/scenes/elsewhere.json");
+        editor.request_open(path.clone());
+        assert_eq!(editor.take_open_request(), None);
+        assert!(editor.status().contains("UNSAVED"), "{}", editor.status());
+        editor.request_open(path.clone());
+        assert_eq!(editor.take_open_request(), Some(path.clone()));
+
+        // And the editor starts the opened level clean.
+        editor.opened(&EnvironmentScene::empty("elsewhere"), path.clone());
+        assert!(!editor.is_dirty());
+        assert_eq!(editor.save_path(), path.as_path());
+    }
+
+    #[test]
+    fn a_hidden_object_is_not_drawn_or_picked_and_shift_h_brings_it_back() {
+        let mut editor = editor();
+        let mut scene = three_rocks();
+        editor.select(Selected::Object(0), false);
+        let outcome = update(&mut editor, &keyed(KeyCode::H), &UiInput::new(), &mut scene);
+        assert_eq!(
+            outcome,
+            EditorOutcome::SceneChanged,
+            "what is drawn changed"
+        );
+        assert!(editor.is_hidden(0));
+        assert_eq!(scene.len(), 3, "hiding is a view, not a delete");
+        assert_eq!(
+            editor.visible_scene(&scene).map(|visible| visible.len()),
+            Some(2)
+        );
+
+        click_centre(&mut editor, &mut scene);
+        assert_eq!(
+            editor.selection(),
+            None,
+            "a click landed on something hidden"
+        );
+
+        update(
+            &mut editor,
+            &shift_keyed(KeyCode::H),
+            &UiInput::new(),
+            &mut scene,
+        );
+        assert!(!editor.has_hidden());
+        assert!(editor.visible_scene(&scene).is_none());
+    }
+
+    #[test]
+    fn a_locked_object_lets_clicks_through_but_stays_in_the_hierarchy() {
+        let mut editor = editor();
+        let mut scene = three_rocks();
+        editor.select(Selected::Object(0), false);
+        update(&mut editor, &keyed(KeyCode::K), &UiInput::new(), &mut scene);
+        assert!(editor.is_locked(0));
+        editor.selected.clear();
+
+        click_centre(&mut editor, &mut scene);
+        assert_eq!(editor.selection(), None);
+        assert!(editor.hierarchy_rows(&scene).contains(&Selected::Object(0)));
+    }
+
+    #[test]
+    fn a_box_dragged_over_empty_ground_selects_what_is_inside_it() {
+        let mut editor = editor();
+        let mut scene = three_rocks();
+        let from = on_screen(Vec3::new(-2.0, 0.0, -2.0));
+        let to = on_screen(Vec3::new(6.0, 0.0, 2.0));
+        update(&mut editor, &InputState::new(), &press(from), &mut scene);
+        assert!(editor.marquee().is_some(), "the press did not start a box");
+        update(&mut editor, &InputState::new(), &hold(to), &mut scene);
+        update(&mut editor, &InputState::new(), &release(to), &mut scene);
+        assert_eq!(
+            objects_of(&editor),
+            vec![0, 1],
+            "the rock at x = 8 is outside the box"
+        );
+        assert!(editor.marquee().is_none());
+    }
+
+    #[test]
+    fn the_turn_ring_turns_the_selection_by_snapped_steps_and_undoes_in_one() {
+        let mut editor = editor();
+        let mut scene = scene_of(1);
+        scene.objects[0].transform.translation = Vec3::ZERO;
+        editor.select(Selected::Object(0), false);
+        update(
+            &mut editor,
+            &keyed(KeyCode::Digit2),
+            &UiInput::new(),
+            &mut scene,
+        );
+        // One frame so the gizmo is projected from this frame's camera.
+        update(
+            &mut editor,
+            &InputState::new(),
+            &hover(centre()),
+            &mut scene,
+        );
+
+        let gizmo = editor.gizmo(&scene).expect("a gizmo");
+        let (grab, _) = gizmo.ring_segments().next().expect("a ring");
+        let (dx, dy) = (grab.0 - gizmo.origin.0, grab.1 - gizmo.origin.1);
+        // Forty-five degrees counter-clockwise on screen, in small steps as a hand would.
+        let mut turned = grab;
+        update(&mut editor, &InputState::new(), &press(grab), &mut scene);
+        for step in 1..=9 {
+            let angle = (step as f32 * 5.0).to_radians();
+            let (sin, cos) = angle.sin_cos();
+            turned = (
+                gizmo.origin.0 + dx * cos + dy * sin,
+                gizmo.origin.1 - dx * sin + dy * cos,
+            );
+            update(&mut editor, &InputState::new(), &hold(turned), &mut scene);
+        }
+        let _ = turned;
+        let yaw = yaw_of(scene.objects[0].transform).to_degrees();
+        assert!((yaw.abs() - 45.0).abs() < 0.01, "turned to {yaw}");
+        assert!(
+            (yaw / editor.yaw_step()).fract().abs() < 1e-3,
+            "{yaw} is not a multiple of the step"
+        );
+
+        update(
+            &mut editor,
+            &InputState::new(),
+            &release(turned),
+            &mut scene,
+        );
+        update(
+            &mut editor,
+            &control_keyed(KeyCode::Z),
+            &UiInput::new(),
+            &mut scene,
+        );
+        assert!(yaw_of(scene.objects[0].transform).abs() < 1e-4);
+    }
+
+    #[test]
+    fn a_scale_handle_stretches_one_axis_and_the_centre_all_three() {
+        let mut editor = editor();
+        let mut scene = scene_of(1);
+        scene.objects[0].transform.translation = Vec3::ZERO;
+        editor.select(Selected::Object(0), false);
+        update(
+            &mut editor,
+            &keyed(KeyCode::Digit3),
+            &UiInput::new(),
+            &mut scene,
+        );
+        update_seen_from(&mut editor, &hover(centre()), &mut scene, &side_on());
+
+        let gizmo = editor.gizmo(&scene).expect("a gizmo");
+        let handle = gizmo.handle(gizmo::Axis::X).expect("an X handle");
+        let grab = (
+            (handle.from.0 + handle.to.0) * 0.5,
+            (handle.from.1 + handle.to.1) * 0.5,
+        );
+        let by = (handle.to.0 - handle.from.0, handle.to.1 - handle.from.1);
+        update_seen_from(&mut editor, &press(grab), &mut scene, &side_on());
+        update_seen_from(
+            &mut editor,
+            &hold((grab.0 + by.0, grab.1 + by.1)),
+            &mut scene,
+            &side_on(),
+        );
+        let scale = scene.objects[0].transform.scale;
+        assert!((scale.x - 2.0).abs() < 0.06, "stretched to {scale:?}");
+        assert_eq!((scale.y, scale.z), (1.0, 1.0), "the other two moved");
+        update_seen_from(&mut editor, &release(grab), &mut scene, &side_on());
+
+        // The centre: up the screen grows all three.
+        let origin = gizmo.origin;
+        update_seen_from(&mut editor, &press(origin), &mut scene, &side_on());
+        update_seen_from(
+            &mut editor,
+            &hold((origin.0, origin.1 - 150.0)),
+            &mut scene,
+            &side_on(),
+        );
+        let grown = scene.objects[0].transform.scale;
+        assert!(
+            grown.y > 1.5 && grown.z > 1.5 && grown.x > scale.x,
+            "{grown:?}"
+        );
+    }
+
+    #[test]
+    fn a_number_typed_into_the_inspector_sets_it_and_one_undo_takes_it_back() {
+        let mut editor = editor();
+        let mut scene = scene_of(1);
+        editor.select(Selected::Object(0), false);
+        let cell = ui::inspector_cell_rect(editor.scale(), VIEWPORT, 0, 0);
+        let point = (cell.x + cell.width * 0.5, cell.y + cell.height * 0.5);
+        update(&mut editor, &InputState::new(), &press(point), &mut scene);
+        assert!(
+            editor.inspector_edit().is_some(),
+            "the click did not open the field"
+        );
+
+        for key in [KeyCode::Minus, KeyCode::Digit1, KeyCode::Digit2] {
+            update(&mut editor, &keyed(key), &hover(point), &mut scene);
+        }
+        let outcome = update(
+            &mut editor,
+            &keyed(KeyCode::Enter),
+            &hover(point),
+            &mut scene,
+        );
+        assert_eq!(outcome, EditorOutcome::SceneChanged);
+        assert_eq!(scene.objects[0].position().x, -12.0);
+        assert!(editor.inspector_edit().is_none());
+
+        update(
+            &mut editor,
+            &control_keyed(KeyCode::Z),
+            &UiInput::new(),
+            &mut scene,
+        );
+        assert_eq!(scene.objects[0].position().x, 200.0);
+    }
+
+    #[test]
+    fn the_wheel_over_an_inspector_number_steps_it() {
+        let mut editor = editor();
+        let mut scene = scene_of(1);
+        editor.select(Selected::Object(0), false);
+        // Row 1 is the yaw.
+        let cell = ui::inspector_cell_rect(editor.scale(), VIEWPORT, 1, 0);
+        let point = (cell.x + cell.width * 0.5, cell.y + cell.height * 0.5);
+        let outcome = update(&mut editor, &wheeled(2.0), &hover(point), &mut scene);
+        assert_eq!(outcome, EditorOutcome::SceneChanged);
+        let yaw = yaw_of(scene.objects[0].transform).to_degrees();
+        assert!((yaw - 2.0 * editor.yaw_step()).abs() < 1e-3, "yaw {yaw}");
+    }
+
+    #[test]
+    fn f_frames_the_selection_from_where_the_camera_is_looking() {
+        let mut editor = editor();
+        let mut scene = scene_of(1);
+        editor.select(Selected::Object(0), false);
+        update(&mut editor, &keyed(KeyCode::F), &UiInput::new(), &mut scene);
+        let distance = (editor.eye() - scene.objects[0].position()).length();
+        assert!(distance < 30.0, "still {distance} m away");
+    }
+
+    #[test]
+    fn i_puts_a_light_where_the_cursor_is_and_every_verb_reaches_it() {
+        let mut editor = editor();
+        let mut scene = scene();
+        let (input, ui) = keyed_at(KeyCode::I, centre());
+        let outcome = update(&mut editor, &input, &ui, &mut scene);
+        assert_eq!(
+            outcome,
+            EditorOutcome::SceneChanged,
+            "a light is re-placed with the level"
+        );
+        assert_eq!(scene.lights.len(), 1);
+        assert_eq!(editor.selection(), Some(Selected::Light(0)));
+        assert!(
+            scene.lights[0].position.y > 1.0,
+            "a light on the floor lights nothing"
+        );
+
+        let range = scene.lights[0].range;
+        update(&mut editor, &keyed(KeyCode::T), &UiInput::new(), &mut scene);
+        assert!(scene.lights[0].range > range, "T reaches a light's range");
+        update(
+            &mut editor,
+            &control_keyed(KeyCode::D),
+            &UiInput::new(),
+            &mut scene,
+        );
+        assert_eq!(scene.lights.len(), 2);
+        update(
+            &mut editor,
+            &keyed(KeyCode::Delete),
+            &UiInput::new(),
+            &mut scene,
+        );
+        assert_eq!(scene.lights.len(), 1);
+    }
+
+    #[test]
+    fn control_f_over_the_hierarchy_filters_it_by_name() {
+        let mut editor = editor();
+        let mut scene = three_rocks();
+        scene.push(EnvironmentObject::decoration(PILLAR, Vec3::ZERO));
+        let over = hierarchy_point(&editor, 0);
+        update(
+            &mut editor,
+            &control_keyed(KeyCode::F),
+            &hover(over),
+            &mut scene,
+        );
+        assert!(editor.is_filtering_hierarchy());
+        for key in [KeyCode::P, KeyCode::I, KeyCode::L, KeyCode::Enter] {
+            update(&mut editor, &keyed(key), &hover(over), &mut scene);
+        }
+        assert!(!editor.is_filtering_hierarchy());
+        assert_eq!(editor.hierarchy_rows(&scene), vec![Selected::Object(3)]);
+        // And the one row left is the one a click on the first slot selects.
+        update(&mut editor, &InputState::new(), &press(over), &mut scene);
+        assert_eq!(editor.selection(), Some(Selected::Object(3)));
     }
 }

@@ -1069,3 +1069,70 @@ is dropped, a double click places in front of the camera, two slow clicks do not
 along itself and no other, a handle beats the object under it, a click on a handle that never
 drags it pushes no undo, a drag that passes over a panel keeps going, a camera turn moves
 nothing, and the painted list carries the handles, the outline and the striped silhouette.
+
+---
+
+## Phase 16 — usability: the ground under the pointer, work that is not lost, and the tools
+
+A review of the editor as an author uses it found one bug and a list of friction. In the order
+they were fixed:
+
+### Pointing at a hill
+
+Everything "under the cursor" — a drop, placing mode, the brush, `V`, `P` — aimed at a flat plane
+at the floor's height. On a hill the brush painted somewhere behind where the pointer was and a
+dropped rock landed at `y = 0`, inside the hill. `ground_under` now marches the terrain where the
+level has one (the same `GroundSurface::Terrain` the game's own targeting uses) and falls back to
+the floor elsewhere. A drop also lands on the **top** of the solid thing under the pointer, so a
+crate goes on a crate; only an upward face counts, so a drop aimed at a wall lands in front of it.
+`CTRL+G` drops the selection onto whatever is below it.
+
+### Work is not lost
+
+* **Undo survives `F6`.** `enter` only clears the history when the level is a different one.
+* **Redo** (`CTRL+Y`, `CTRL+SHIFT+Z`): a second stack, cleared by any new edit.
+* **An unsaved count.** Every edit already went through `push_undo`, so that is where it is
+  counted; the mode badge says `UNSAVED`.
+* **Autosave** to `<level>.autosave.json` every two minutes of unsaved work, on `F6`, and in the
+  application's `shutdown`. A successful save deletes it.
+* **Unused collision shapes** are pruned from what is written (`prune_collision_shapes`), on a
+  copy, so undo snapshots that name old indices stay valid.
+* **Lights are serialized** (`LightRecord`), closing the gap Phase 8 wrote down.
+
+### Keys an author already knows
+
+Undo was `Z` and duplicate `C` — one slip undid or copied. They are `CTRL+Z` and `CTRL+D` now,
+and the fly camera ignores `WASD` while `CTRL` or `ALT` is held so `CTRL+S` no longer flies the
+camera backwards while it saves. The browser's find moved to `CTRL+F` (over the hierarchy it
+filters the hierarchy), which freed `F` to **frame** the selection. `ALT`+drag orbits and the wheel
+dollies. The engine gained `Minus`, `Period`, `Delete` and `Home` keys for this.
+
+### Tools
+
+* **Turn and scale gizmos** (`1` `2` `3`). The ring's sweep is measured round the gizmo's centre on
+  screen, and flips sign seen from below. Scale arms follow the object's own axes. Poses are
+  remembered at the press, as the move drag already did, and `CTRL` turns snapping off.
+* **An editable inspector.** Click a number to type it, `TAB` to the next, the wheel steps it. A
+  position typed into a group moves the group; anything else is set on each member.
+* **Box selection** from a drag on empty ground.
+* **Hide and lock** (`H`, `SHIFT+H`, `K`), kept as editor flags parallel to the placements and
+  carried in undo snapshots. Hidden placements are left out of what is drawn (`visible_scene`)
+  and nothing else — collision and the file keep them.
+* **Lights** as a fourth selectable kind (`I`), with a marker, since they have no mesh.
+* **Save As** (`CTRL+SHIFT+S`) and **opening** a level by double-clicking it in the browser; with
+  unsaved work the first double-click warns and the second discards.
+* A **mode badge** along the top, and `F1` to put the key list away.
+
+### Verification
+
+```bash
+cargo test --workspace --no-fail-fast
+cargo clippy --workspace --all-targets
+cargo build -p engine-app --no-default-features
+```
+
+Twenty-one new editor tests, among them: a drop on a plateau lands on it under the cursor, and
+fails with the old plane; a drop onto a pillar stands on it; undo across `F6`; redo; the autosave
+on the way out and its removal on save; Save As; the confirm before opening over unsaved work; hide,
+lock and the box; the turn ring in snapped steps; scaling one axis and all three; typing into the
+inspector and the wheel over it.

@@ -38,7 +38,7 @@ use engine_core::math::{Quat, Vec3};
 use engine_core::transform::Transform;
 
 use crate::asset::{EnvironmentAsset, LIBRARY};
-use crate::lighting::EnvironmentLighting;
+use crate::lighting::{EnvironmentLighting, SceneLight};
 use crate::object::{EnvironmentCollision, EnvironmentObject};
 use crate::scene::{EnvironmentScene, SpawnPoints};
 
@@ -235,6 +235,83 @@ pub struct SceneDocument {
     /// the old `spawns.player` carries no key it does not use.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub spawn_points: Vec<SpawnPointRecord>,
+    /// The level's own lights: braziers, torches, shafts down a stairwell.
+    ///
+    /// Absent in a level that has none, for the reason the water list is. Before this field
+    /// existed a level authored in the editor lost every local light it had when it was saved.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub lights: Vec<LightRecord>,
+}
+
+/// One local light, as the file says it.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct LightRecord {
+    /// Where it is, `[x, y, z]`.
+    pub position: [f32; 3],
+    /// Linear colour.
+    pub color: [f32; 3],
+    /// Strength at the light itself.
+    pub intensity: f32,
+    /// How far it reaches, in metres.
+    pub range: f32,
+    /// Which way a cone points. Absent for a point light.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub direction: Option<[f32; 3]>,
+    /// A cone's inner and outer half-angles, radians. Absent for a point light.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cone_radians: Option<[f32; 2]>,
+    /// Whether it asks for a shadow map.
+    #[serde(default)]
+    pub casts_shadow: bool,
+    /// Which lights win the shadow budget. Higher is better.
+    #[serde(default)]
+    pub priority: i16,
+}
+
+impl LightRecord {
+    /// The record a light is written as.
+    #[must_use]
+    pub fn from_light(light: &SceneLight) -> Self {
+        Self {
+            position: array(light.position),
+            color: array(light.color),
+            intensity: light.intensity,
+            range: light.range,
+            direction: light.cone_radians.map(|_| array(light.direction)),
+            cone_radians: light.cone_radians.map(|(inner, outer)| [inner, outer]),
+            casts_shadow: light.casts_shadow,
+            priority: light.priority,
+        }
+    }
+
+    /// The light this record describes.
+    #[must_use]
+    pub fn to_light(&self) -> SceneLight {
+        SceneLight {
+            position: vector(self.position),
+            direction: self
+                .direction
+                .map_or(SceneLight::default().direction, vector),
+            color: vector(self.color),
+            intensity: self.intensity,
+            range: self.range,
+            cone_radians: self.cone_radians.map(|[inner, outer]| (inner, outer)),
+            casts_shadow: self.casts_shadow,
+            priority: self.priority,
+        }
+    }
+
+    /// Whether every number is one a renderer can use.
+    fn is_valid(&self) -> bool {
+        self.position
+            .iter()
+            .chain(&self.color)
+            .all(|value| value.is_finite())
+            && self.intensity.is_finite()
+            && self.intensity >= 0.0
+            && self.range.is_finite()
+            && self.range > 0.0
+    }
 }
 
 /// One spawn point, as the file says it.
@@ -364,6 +441,7 @@ impl SceneDocument {
                     yaw: spawn.yaw,
                 })
                 .collect(),
+            lights: scene.lights.iter().map(LightRecord::from_light).collect(),
             water: scene
                 .water
                 .iter()
@@ -525,6 +603,19 @@ impl SceneDocument {
                 });
             }
             scene.push_spawn(spawn);
+        }
+
+        for (index, record) in self.lights.iter().enumerate() {
+            if !record.is_valid() {
+                return Err(SceneFileError::Invalid {
+                    path: path.to_owned(),
+                    location: format!("lights[{index}]"),
+                    reason: "a light needs finite numbers, a positive range and an intensity \
+                             that is not negative"
+                        .to_owned(),
+                });
+            }
+            scene.push_light(record.to_light());
         }
 
         for (index, record) in self.objects.iter().enumerate() {
@@ -854,6 +945,40 @@ mod tests {
     }
 
     #[test]
+    fn lights_survive_the_round_trip_and_an_empty_level_writes_none_of_them() {
+        let mut original = scene();
+        original.push_light(SceneLight::brazier(Vec3::new(3.0, 1.5, -2.0), 9.0));
+        original.push_light(SceneLight::spot(
+            Vec3::new(0.0, 6.0, 0.0),
+            Vec3::new(0.0, -1.0, 0.0),
+            12.0,
+            0.6,
+        ));
+
+        let text = serde_json::to_string(&SceneDocument::from_scene(&original)).expect("writable");
+        assert!(text.contains("\"lights\""), "the key is in the file");
+        let restored: SceneDocument = serde_json::from_str(&text).expect("readable");
+        let restored = restored.to_scene("memory").expect("and valid");
+        assert_eq!(restored.lights, original.lights);
+
+        let dry = serde_json::to_string(&SceneDocument::from_scene(&scene())).expect("writable");
+        assert!(!dry.contains("lights"), "an absent list was written anyway");
+    }
+
+    #[test]
+    fn a_light_with_no_reach_is_refused_and_the_message_names_it() {
+        let mut document = SceneDocument::from_scene(&scene());
+        document.lights = vec![LightRecord::from_light(&SceneLight {
+            range: 0.0,
+            ..SceneLight::default()
+        })];
+        let error = document
+            .to_scene("memory")
+            .expect_err("a light reaching nowhere is refused");
+        assert!(error.to_string().contains("lights[0]"), "{error}");
+    }
+
+    #[test]
     fn a_spawn_point_that_is_not_a_place_is_refused_and_the_message_names_it() {
         let mut document = SceneDocument::from_scene(&scene());
         document.spawn_points = vec![
@@ -969,6 +1094,7 @@ mod tests {
             terrain: None,
             water: Vec::new(),
             spawn_points: Vec::new(),
+            lights: Vec::new(),
             objects: vec![
                 ObjectRecord {
                     asset: "pillar".to_owned(),
@@ -1014,6 +1140,7 @@ mod tests {
             terrain: None,
             water: Vec::new(),
             spawn_points: Vec::new(),
+            lights: Vec::new(),
             objects: vec![ObjectRecord {
                 asset: "   ".to_owned(),
                 position: [0.0; 3],
@@ -1086,6 +1213,7 @@ mod tests {
             terrain: None,
             water: Vec::new(),
             spawn_points: Vec::new(),
+            lights: Vec::new(),
             objects: vec![ObjectRecord {
                 asset: "pillar".to_owned(),
                 position: [0.0; 3],

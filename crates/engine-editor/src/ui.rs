@@ -1,25 +1,27 @@
-//! What the editor looks like: a palette down the left, a status line, and a key list.
+//! What the editor looks like: a browser down the left, the hierarchy and the inspector down
+//! the right, a mode badge along the top, and a key list.
 //!
 //! ```text
-//!  ┌──────────────┐
-//!  │ PLACE        │   the sixteen library assets, the current one highlighted
-//!  │ ground_plain │
-//!  │ arena_floor  │
-//!  │ ...          │
-//!  ├──────────────┤
-//!  │ placed pillar│   what just happened
-//!  │ grid 1 m     │
-//!  └──────────────┘
-//!                              LMB select · drag a row in to place · X/Y/Z arms move
-//!                              X delete · C copy · Z undo · G grid · CTRL+S save · F6 play
+//!  ┌──────────────┐        SELECT · MOVE   GRID 1.0  ROT 22.5  WORLD   UNSAVED        ┌ HIERARCHY ┐
+//!  │ ASSETS       │                                                                   │ 0 PILLAR  │
+//!  │ + builtin    │                                                                   │ 1 ROCK    │
+//!  │ - generated  │                                                                   └───────────┘
+//!  │ ...          │                                                                   ┌ INSPECTOR ┐
+//!  ├──────────────┤                                                                   │ POS [][][]│
+//!  │ placed pillar│   what just happened                                              │ YAW []    │
+//!  └──────────────┘                                                                   └───────────┘
+//!  F1 KEYS ...
 //! ```
 //!
-//! It also paints the *world* overlay: what is selected, the gizmo standing on it, and — when
-//! the camera has turned away from the selection — a striped silhouette at the edge of the
-//! window saying where it went. See [`push_world_overlay`].
+//! It also paints the *world* overlay: what is selected, the gizmo standing on it, a marker
+//! for every light, the selection box being dragged, and — when the camera has turned away
+//! from the selection — a striped silhouette at the edge of the window saying where it went.
+//! See [`push_world_overlay`].
 //!
 //! It paints into the same [`UiDrawList`] the HUD and the menus use, so the whole interface
 //! is still one batch and one draw call — see `engine_presentation::ui::paint`.
+
+use std::fmt::Write as _;
 
 use engine_core::math::{Quat, Vec3};
 use engine_environment::EnvironmentScene;
@@ -27,7 +29,7 @@ use engine_presentation::ui::paint::MenuTheme;
 use engine_render_data::ui::{UiColor, UiDrawList, UiRect, UiScale};
 
 use crate::browser::BrowserRow;
-use crate::{Editor, Selected, hierarchy_len, hierarchy_row_at, pick};
+use crate::{Editor, Selected, inspector, pick};
 
 /// Layout constants, in logical pixels.
 pub mod layout {
@@ -51,18 +53,24 @@ pub mod layout {
     pub const INDENT: f32 = 10.0;
 
     /// Width of the hierarchy and inspector panels down the right-hand side.
-    pub const SIDE_WIDTH: f32 = 210.0;
+    ///
+    /// Wide enough for the inspector's three numbers a row, each with room for `-123.45`.
+    pub const SIDE_WIDTH: f32 = 290.0;
     /// Height of the inspector panel under the hierarchy.
-    pub const INSPECTOR_HEIGHT: f32 = 134.0;
+    pub const INSPECTOR_HEIGHT: f32 = 150.0;
     /// Gap between the hierarchy panel and the inspector under it.
     pub const PANEL_GAP: f32 = 8.0;
     /// How much of the window's height the hierarchy list may take.
     pub const HIERARCHY_FRACTION: f32 = 0.55;
+    /// Height of one inspector line.
+    pub const INSPECTOR_LINE: f32 = 20.0;
+    /// Width of an inspector row's label, before its numbers.
+    pub const LABEL_WIDTH: f32 = 64.0;
 }
 
 /// Where the hierarchy panel sits, in physical pixels.
 ///
-/// Down the right-hand side, opposite the palette: the palette answers "what am I about to
+/// Down the right-hand side, opposite the browser: the browser answers "what am I about to
 /// place" and the hierarchy answers "what is already here", and an author reads them
 /// alternately rather than together.
 #[must_use]
@@ -82,6 +90,38 @@ pub fn inspector_rect(scale: UiScale, viewport: (u32, u32)) -> UiRect {
         hierarchy.bottom() + scale.px(layout::PANEL_GAP),
         hierarchy.width,
         scale.px(layout::INSPECTOR_HEIGHT),
+    )
+}
+
+/// Where inspector line `line` starts, counting the heading as none and the name as line 0.
+fn inspector_line_y(scale: UiScale, viewport: (u32, u32), line: usize) -> f32 {
+    let panel = inspector_rect(scale, viewport);
+    panel.y
+        + scale.px(layout::PADDING)
+        + scale.px(layout::HEADING)
+        + line as f32 * scale.px(layout::INSPECTOR_LINE)
+}
+
+/// Where one of the inspector's numbers sits: property row `row` (the first under the name is
+/// row 0), cell `column`.
+///
+/// The rectangle a click is tested against and the one that is drawn, from one function.
+#[must_use]
+pub fn inspector_cell_rect(
+    scale: UiScale,
+    viewport: (u32, u32),
+    row: usize,
+    column: usize,
+) -> UiRect {
+    let panel = inspector_rect(scale, viewport);
+    let padding = scale.px(layout::PADDING);
+    let label = scale.px(layout::LABEL_WIDTH);
+    let width = (panel.width - padding * 2.0 - label) / 3.0;
+    UiRect::new(
+        panel.x + padding + label + column as f32 * width,
+        inspector_line_y(scale, viewport, row + 1) - scale.px(2.0),
+        width - scale.px(4.0),
+        scale.px(layout::INSPECTOR_LINE) - scale.px(2.0),
     )
 }
 
@@ -166,7 +206,29 @@ pub fn browser_row_rect(scale: UiScale, viewport: (u32, u32), slot: usize) -> Ui
     UiRect::new(panel.x + padding, top, panel.width - padding * 2.0, row)
 }
 
-/// Draws the editor: its palette, what is selected, and the keys.
+/// The key list, grouped by what an author is building rather than by key: the question
+/// somebody has in front of a level editor is "how do I put a cave in this", not "what does
+/// M do". Cliffs and rocks have no group of their own: they are assets, placed from the
+/// browser like everything else, and saying so is the point.
+const KEYS: [&str; 15] = [
+    "PLACE    DRAG A ROW INTO THE WORLD, OR DOUBLE-CLICK IT   N PLACING MODE",
+    "ASSETS   TAB NEXT   CTRL+F FIND (PANEL UNDER POINTER)   F2 RESCAN",
+    "TERRAIN  B SCULPT   TAB MODE   1 2 SIZE   3 4 STRENGTH",
+    "CAVES    M MODULE SNAP: 4 M GRID, QUARTER TURNS",
+    "PUT      V WATER   P SPAWN (FIRST IS USED)   I LIGHT",
+    "SELECT   LMB PICK   DRAG BOX   CTRL+LMB ADD   CTRL+A ALL   ESC NONE",
+    "GIZMO    1 MOVE   2 TURN   3 SCALE   CTRL WHILE DRAGGING: NO SNAP",
+    "EDIT     ARROWS NUDGE   R YAW   T SIZE   0 RESET   L LOCAL AXES",
+    "         X DEL   CTRL+D COPY   CTRL+G DROP DOWN   CLICK INSPECTOR TO TYPE",
+    "SHOW     H HIDE   SHIFT+H SHOW ALL   K LOCK",
+    "UNDO     CTRL+Z UNDO   CTRL+Y REDO",
+    "GRID     G STEP   SHIFT+G ROTATION STEP",
+    "VIEW     RMB LOOK   WASD QE FLY   ALT+LMB ORBIT   WHEEL   F FRAME",
+    "FILE     CTRL+S SAVE   CTRL+SHIFT+S SAVE AS   DOUBLE-CLICK A LEVEL TO OPEN",
+    "         F6 BACK TO PLAYING   F1 HIDE THIS LIST",
+];
+
+/// Draws the editor: its browser, what is selected, the mode it is in, and the keys.
 ///
 /// Nothing is drawn when the editor is closed, so the application can call this
 /// unconditionally and a shipping build simply never has it to call.
@@ -221,22 +283,15 @@ pub fn push_editor(
             list.outline(rect, border, theme.title);
         }
         let (depth, label) = editor.browser().label(row);
-        // A row that cannot be placed - a material, a texture, a level - is dimmed rather
-        // than hidden: it is content, and an author looking for it must be able to see that
-        // it arrived.
-        let placeable = match row {
-            BrowserRow::Builtin(_) => true,
-            BrowserRow::Entry(index) => editor
-                .browser()
-                .catalogue()
-                .entries()
-                .get(index)
-                .is_some_and(|entry| entry.kind.is_placeable()),
-            BrowserRow::Folder(_) | BrowserRow::BuiltinFolder => true,
-        };
+        // A row that cannot be placed - a material, a texture - is dimmed rather than hidden:
+        // it is content, and an author looking for it must be able to see that it arrived. A
+        // level is not placed either, but it can be opened, so it is not dimmed.
+        let usable = matches!(row, BrowserRow::Folder(_) | BrowserRow::BuiltinFolder)
+            || editor.browser().is_placeable(row)
+            || editor.browser().scene_path(row).is_some();
         let color = if selected {
             theme.title
-        } else if placeable {
+        } else if usable {
             theme.text
         } else {
             theme.text_disabled
@@ -269,7 +324,7 @@ pub fn push_editor(
         scratch.push_str(editor.browser().filter());
         scratch.push('_');
     } else if editor.browser().filter().is_empty() {
-        scratch.push_str("F FIND   F2 RESCAN");
+        scratch.push_str("CTRL+F FIND   F2 RESCAN");
     } else {
         scratch.push_str("FIND: ");
         scratch.push_str(editor.browser().filter());
@@ -292,35 +347,17 @@ pub fn push_editor(
     );
 
     scratch.clear();
-    match editor.selection() {
-        Some(Selected::Object(index)) => match scene.objects.get(index) {
-            Some(object) => {
-                scratch.push_str(object.asset.name());
-                scratch.push_str(" @ ");
-                write_metres(scratch, object.position().x);
-                scratch.push(' ');
-                write_metres(scratch, object.position().z);
-            }
-            None => scratch.push_str("nothing selected"),
-        },
-        Some(Selected::Water(index)) => match scene.water.get(index) {
-            Some(body) => {
-                scratch.push_str("water @ ");
-                write_metres(scratch, body.center.x);
-                scratch.push(' ');
-                write_metres(scratch, body.center.z);
-            }
-            None => scratch.push_str("nothing selected"),
-        },
-        Some(Selected::Spawn(index)) => match scene.spawn_points.get(index) {
-            Some(spawn) => {
-                scratch.push_str("spawn @ ");
-                write_metres(scratch, spawn.position.x);
-                scratch.push(' ');
-                write_metres(scratch, spawn.position.z);
-            }
-            None => scratch.push_str("nothing selected"),
-        },
+    match editor
+        .selection()
+        .and_then(|what| crate::position_of(scene, what).map(|at| (what, at)))
+    {
+        Some((what, at)) => {
+            scratch.push_str(&kind_name(scene, what));
+            scratch.push_str(" @ ");
+            write_metres(scratch, at.x);
+            scratch.push(' ');
+            write_metres(scratch, at.z);
+        }
         None => scratch.push_str("nothing selected"),
     }
     list.text_at(
@@ -343,40 +380,189 @@ pub fn push_editor(
 
     push_hierarchy(list, editor, scene, theme, scratch, viewport);
     push_inspector(list, editor, scene, theme, scratch, viewport);
+    push_mode_badge(list, editor, theme, scratch, viewport);
 
-    // The key list, bottom left, out from under the two right-hand panels.
-    // Grouped by *what an author is building* rather than by key, because the question
-    // somebody has in front of a level editor is "how do I put a cave in this" and not "what
-    // does M do". Cliffs and rocks have no group of their own: they are assets, placed from
-    // the browser like everything else, and saying so is the point.
-    let keys = [
-        "PLACE    N PLACING MODE: LMB PUTS ONE DOWN, EVERY CLICK",
-        "         OR DRAG A ROW INTO THE WORLD, OR DOUBLE-CLICK IT",
-        "ASSETS   TAB NEXT   CTRL+LMB ADD   F FIND   F2 RESCAN",
-        "TERRAIN  B SCULPT   TAB MODE   1 2 SIZE   3 4 STRENGTH",
-        "CAVES    M MODULE SNAP: 4 M GRID, QUARTER TURNS",
-        "WATER    V POUR ONE UNDER THE CURSOR",
-        "SPAWN    P PUT ONE   R TURNS IT   FIRST ONE IS USED",
-        "SELECT   LMB PICKS ONE   ESC DROPS IT / LEAVES PLACING",
-        "MOVE     DRAG THE X Y Z ARMS   ARROWS NUDGE   R YAW   T SIZE",
-        "         X DELETE   C COPY   Z UNDO   L LOCAL AXES   CTRL+A ALL",
-        "GRID     G STEP   SHIFT+G ROTATION   0 RESET TRANSFORM",
-        "FILE     CTRL+S SAVE   F6 BACK TO PLAYING",
-    ];
+    // The key list, along the bottom between the browser and the right-hand panels, so it
+    // never runs under either.
     let line = text * 12.0;
     let bottom = viewport.1 as f32 - scale.px(layout::MARGIN);
-    for (index, key) in keys.iter().enumerate() {
-        let y = bottom - line * (keys.len() - index) as f32;
+    let left = panel.right() + scale.px(layout::MARGIN);
+    if editor.shows_keys() {
+        for (index, key) in KEYS.iter().enumerate() {
+            let y = bottom - line * (KEYS.len() - index) as f32;
+            list.text_at((left, y), key, theme.text_disabled, text);
+        }
+    } else {
         list.text_at(
-            (scale.px(layout::MARGIN), y),
-            key,
+            (left, bottom - line),
+            "F1 KEYS   CTRL+S SAVE   F6 PLAY",
             theme.text_disabled,
             text,
         );
     }
+
+    push_save_as(list, editor, theme, scratch, viewport);
 }
 
-/// The hierarchy: every object in the level, in the order the file holds them.
+/// What a selected thing is called in a status line: its asset's own name, or its kind.
+fn kind_name(scene: &EnvironmentScene, what: Selected) -> String {
+    match what {
+        Selected::Object(index) => scene.objects.get(index).map_or_else(
+            || "object".to_owned(),
+            |object| leaf(object.asset.name()).to_owned(),
+        ),
+        Selected::Water(_) => "water".to_owned(),
+        Selected::Spawn(_) => "spawn".to_owned(),
+        Selected::Light(_) => "light".to_owned(),
+    }
+}
+
+/// The last part of an asset id: `rock_small` for `generated/environment/rocks/rock_small`.
+///
+/// What a row has room for. The folders are the browser's business; the hierarchy says what
+/// a thing is.
+fn leaf(name: &str) -> &str {
+    name.rsplit('/').next().unwrap_or(name)
+}
+
+/// The strip along the top that says what the left button does right now, what the grid is,
+/// and whether there is work to save.
+///
+/// The status line under the browser says what just *happened* and the next action replaces
+/// it; this says what *will* happen, and stays.
+fn push_mode_badge(
+    list: &mut UiDrawList,
+    editor: &Editor,
+    theme: &MenuTheme,
+    scratch: &mut String,
+    viewport: (u32, u32),
+) {
+    let scale = editor.scale();
+    let text = scale.text(theme.label_scale);
+    let padding = scale.px(layout::PADDING);
+
+    scratch.clear();
+    let accent = if editor.is_sculpting() {
+        scratch.push_str("SCULPT ");
+        scratch.push_str(editor.brush().as_str());
+        scratch.push_str("  ");
+        write_metres(scratch, editor.brush_radius());
+        scratch.push_str(" M");
+        [0.95, 0.62, 0.25, 1.0]
+    } else if editor.is_place_mode() {
+        scratch.push_str("PLACING ");
+        scratch.push_str(&leaf(editor.browser().selected_name()).to_ascii_uppercase());
+        [0.45, 0.95, 0.45, 1.0]
+    } else if editor.marquee().is_some() {
+        scratch.push_str("BOX SELECT");
+        SELECTION_COLOR
+    } else {
+        scratch.push_str("SELECT - ");
+        scratch.push_str(editor.gizmo_mode().label());
+        theme.title
+    };
+    scratch.push_str("   ");
+    scratch.push_str(if editor.is_module_snap() {
+        "MODULE "
+    } else {
+        "GRID "
+    });
+    if editor.grid() > 0.0 {
+        write_metres(scratch, editor.grid());
+    } else {
+        scratch.push_str("OFF");
+    }
+    scratch.push_str("  ROT ");
+    write_metres(scratch, editor.yaw_step());
+    scratch.push_str(if editor.is_local_space() {
+        "  LOCAL"
+    } else {
+        "  WORLD"
+    });
+    scratch.push_str("   ");
+    let file = editor
+        .save_path()
+        .file_name()
+        .map_or_else(String::new, |name| name.to_string_lossy().into_owned());
+    scratch.push_str(&file);
+    if editor.is_dirty() {
+        scratch.push_str("  UNSAVED");
+    }
+
+    // The font advances six of its own pixels a character.
+    let width = scratch.chars().count() as f32 * 6.0 * text + padding * 2.0;
+    let browser = browser_rect(scale, viewport);
+    let hierarchy = hierarchy_rect(scale, viewport);
+    // Centred in the gap between the two side panels, so it never sits on either.
+    let middle = (browser.right() + hierarchy.x) * 0.5;
+    let rect = UiRect::new(
+        (middle - width * 0.5).max(browser.right() + padding),
+        scale.px(layout::MARGIN),
+        width,
+        scale.px(layout::HEADING) + padding,
+    );
+    list.rect(rect, theme.panel);
+    list.outline(rect, scale.px(theme.border_pixels), accent);
+    list.text_at(
+        (rect.x + padding, rect.y + padding * 0.75),
+        scratch,
+        if editor.is_dirty() {
+            theme.title
+        } else {
+            theme.text
+        },
+        text,
+    );
+}
+
+/// The Save As prompt, over everything, while it is open.
+fn push_save_as(
+    list: &mut UiDrawList,
+    editor: &Editor,
+    theme: &MenuTheme,
+    scratch: &mut String,
+    viewport: (u32, u32),
+) {
+    let Some(name) = editor.save_as_text() else {
+        return;
+    };
+    let scale = editor.scale();
+    let text = scale.text(theme.label_scale);
+    let padding = scale.px(layout::PADDING);
+    let width = scale.px(520.0);
+    let height = scale.px(72.0);
+    let rect = UiRect::new(
+        (viewport.0 as f32 - width) * 0.5,
+        (viewport.1 as f32 - height) * 0.4,
+        width,
+        height,
+    );
+    list.rect(rect, theme.panel);
+    list.outline(rect, scale.px(theme.border_pixels), theme.title);
+    scratch.clear();
+    scratch.push_str("SAVE AS  ");
+    if let Some(folder) = editor.save_path().parent() {
+        scratch.push_str(&folder.display().to_string().replace('\\', "/"));
+        scratch.push('/');
+    }
+    scratch.push_str(name);
+    scratch.push_str("_.json");
+    list.text_at(
+        (rect.x + padding, rect.y + padding),
+        scratch,
+        theme.title,
+        text,
+    );
+    list.text_at(
+        (rect.x + padding, rect.y + padding + text * 14.0),
+        "LETTERS, DIGITS, - AND _    ENTER SAVES    ESC CANCELS",
+        theme.text_disabled,
+        text,
+    );
+}
+
+/// The hierarchy: every object in the level, in the order the file holds them, then the
+/// water, the spawn points and the lights — narrowed by the filter when there is one.
 ///
 /// Rows are painted rather than made of [`Button`](engine_presentation::ui::widget::Button)s
 /// because a row's label is `"12 PILLAR"` — a string built from the scene, which a widget's
@@ -400,9 +586,22 @@ fn push_hierarchy(
     list.rect(panel, theme.panel);
     list.outline(panel, border, theme.panel_border);
 
+    let rows_list = editor.hierarchy_rows(scene);
+    let rows = rows_list.len();
+
     scratch.clear();
-    scratch.push_str("HIERARCHY ");
-    write_count(scratch, hierarchy_len(scene));
+    if editor.is_filtering_hierarchy() || !editor.hierarchy_filter().is_empty() {
+        scratch.push_str("FIND: ");
+        scratch.push_str(editor.hierarchy_filter());
+        if editor.is_filtering_hierarchy() {
+            scratch.push('_');
+        }
+        scratch.push_str("  ");
+        write_count(scratch, rows);
+    } else {
+        scratch.push_str("HIERARCHY ");
+        write_count(scratch, rows);
+    }
     if editor.selected().len() > 1 {
         scratch.push_str("  SEL ");
         write_count(scratch, editor.selected().len());
@@ -414,17 +613,10 @@ fn push_hierarchy(
         text,
     );
 
-    let rows = hierarchy_len(scene);
     let visible = hierarchy_visible_rows(scale, viewport);
     let first = editor.hierarchy_scroll().min(rows);
     for slot in 0..visible {
-        let Some(row) = first.checked_add(slot) else {
-            break;
-        };
-        // One row index over both lists: the placements, and then the water. A body of water
-        // is a row like any other because it is a thing in the level an author points at,
-        // and hiding it would leave the only pond in a valley unfindable in plan view.
-        let Some(what) = hierarchy_row_at(row, scene) else {
+        let Some(what) = rows_list.get(first + slot).copied() else {
             break;
         };
         let rect = hierarchy_row_rect(scale, viewport, slot);
@@ -439,12 +631,20 @@ fn push_hierarchy(
             }
         }
         scratch.clear();
+        let mut dimmed = false;
         match what {
             Selected::Object(index) => {
                 write_count(scratch, index);
                 scratch.push(' ');
                 if let Some(object) = scene.objects.get(index) {
-                    scratch.push_str(object.asset.name());
+                    scratch.push_str(leaf(object.asset.name()));
+                }
+                if editor.is_hidden(index) {
+                    scratch.push_str(" (H)");
+                    dimmed = true;
+                }
+                if editor.is_locked(index) {
+                    scratch.push_str(" (L)");
                 }
             }
             Selected::Water(index) => {
@@ -457,11 +657,21 @@ fn push_hierarchy(
                 // author with three of them has to be able to see which that is.
                 scratch.push_str(if index == 0 { " SPAWN *" } else { " SPAWN" });
             }
+            Selected::Light(index) => {
+                write_count(scratch, index);
+                scratch.push_str(" LIGHT");
+            }
         }
         list.text_at(
             (rect.x + padding * 0.5, rect.y + padding * 0.25),
             scratch,
-            if selected { theme.title } else { theme.text },
+            if selected {
+                theme.title
+            } else if dimmed {
+                theme.text_disabled
+            } else {
+                theme.text
+            },
             text,
         );
     }
@@ -481,11 +691,8 @@ fn push_hierarchy(
     }
 }
 
-/// The inspector: the selected object's transform, as numbers.
-///
-/// Read-only text and the keys that change it. A field an author types into needs a text
-/// caret, a parser and a commit rule; the keys already exist, and what was missing was being
-/// able to *see* what they did.
+/// The inspector: the selected thing's numbers, each of which can be clicked and typed into
+/// or stepped with the wheel — or the brush's, while sculpting.
 fn push_inspector(
     list: &mut UiDrawList,
     editor: &Editor,
@@ -499,194 +706,124 @@ fn push_inspector(
     let border = scale.px(theme.border_pixels);
     let text = scale.text(theme.label_scale);
     let padding = scale.px(layout::PADDING);
-    let line = text * 10.0;
 
     list.rect(panel, theme.panel);
     list.outline(panel, border, theme.panel_border);
-    // The heading says which mode the left button is in, because that is the one thing on
-    // this panel an author cannot work out by looking at the level. The rows below belong to
-    // whatever is selected, and a banner among them would be a line that comes and goes.
     list.text_at(
         (panel.x + padding, panel.y + padding),
-        if editor.is_place_mode() {
-            "INSPECTOR - PLACING (N)"
-        } else {
-            "INSPECTOR"
-        },
-        if editor.is_place_mode() {
-            theme.button_hovered
-        } else {
-            theme.title
-        },
+        "INSPECTOR",
+        theme.title,
         text,
     );
 
-    let row = |index: usize, out: &String, list: &mut UiDrawList| {
+    let line_at = |line: usize, out: &str, color: UiColor, list: &mut UiDrawList| {
         list.text_at(
-            (
-                panel.x + padding,
-                panel.y + padding + scale.px(layout::HEADING) + index as f32 * line,
-            ),
+            (panel.x + padding, inspector_line_y(scale, viewport, line)),
             out,
-            theme.text,
+            color,
             text,
         );
     };
 
-    // While sculpting, the brush replaces the transform settings: they are the numbers the
-    // pointer is about to use, and the grid does not apply to a brush stroke.
+    // While sculpting, the brush replaces the transform: its numbers are the ones the pointer
+    // is about to use.
     if editor.is_sculpting() {
+        line_at(0, "DRAG TO SHAPE THE GROUND", theme.text, list);
         scratch.clear();
         scratch.push_str("BRUSH ");
         scratch.push_str(editor.brush().as_str());
-        row(1, scratch, list);
-
+        line_at(1, scratch, theme.text, list);
         scratch.clear();
         scratch.push_str("SIZE ");
         write_metres(scratch, editor.brush_radius());
         scratch.push_str(" M   STRENGTH ");
         write_metres(scratch, editor.brush_strength());
-        row(2, scratch, list);
-
-        scratch.clear();
-        scratch.push_str("TAB MODE  1 2 SIZE  3 4 STRENGTH");
-        row(3, scratch, list);
-
-        scratch.clear();
-        scratch.push_str("DRAG TO SHAPE THE GROUND");
-        row(0, scratch, list);
+        line_at(2, scratch, theme.text, list);
+        line_at(
+            3,
+            "TAB MODE  1 2 SIZE  3 4 STRENGTH",
+            theme.text_disabled,
+            list,
+        );
         return;
     }
 
-    // The three settings every verb reads, always on screen: an author who cannot see the
-    // grid step cannot predict what an arrow key will do.
-    scratch.clear();
-    scratch.push_str(if editor.is_module_snap() {
-        "MODULE "
-    } else {
-        "GRID "
-    });
-    if editor.grid() > 0.0 {
-        write_metres(scratch, editor.grid());
-    } else {
-        scratch.push_str("OFF");
-    }
-    scratch.push_str("  ROT ");
-    write_metres(scratch, editor.yaw_step());
-    scratch.push_str("  ");
-    scratch.push_str(if editor.is_local_space() {
-        "LOCAL"
-    } else {
-        "WORLD"
-    });
-    row(4, scratch, list);
-
-    // A body of water is described by what it is, not by a transform: an author who cannot
-    // see the depth cannot tell a puddle from a lake looking down at it.
-    if let Some(body) = editor
-        .selected_water()
-        .and_then(|index| scene.water.get(index))
-    {
-        scratch.clear();
-        scratch.push_str("WATER");
-        row(0, scratch, list);
-
-        scratch.clear();
-        scratch.push_str("SURFACE ");
-        write_metres(scratch, body.center.y);
-        scratch.push_str(" M   DEPTH ");
-        write_metres(scratch, body.depth);
-        row(1, scratch, list);
-
-        scratch.clear();
-        scratch.push_str("SIZE ");
-        write_metres(scratch, body.half_extents.x * 2.0);
-        scratch.push_str(" X ");
-        write_metres(scratch, body.half_extents.y * 2.0);
-        scratch.push_str(" M");
-        row(2, scratch, list);
-
-        scratch.clear();
-        scratch.push_str("YAW ");
-        write_metres(scratch, body.yaw.to_degrees());
-        row(3, scratch, list);
-        return;
-    }
-
-    if let Some(spawn) = editor
-        .selected_spawn()
-        .and_then(|index| scene.spawn_points.get(index))
-    {
-        scratch.clear();
-        scratch.push_str(if editor.selected_spawn() == Some(0) {
-            "SPAWN POINT (THE ONE USED)"
-        } else {
-            "SPAWN POINT"
-        });
-        row(0, scratch, list);
-
-        scratch.clear();
-        scratch.push_str("POS ");
-        write_metres(scratch, spawn.position.x);
-        scratch.push(' ');
-        write_metres(scratch, spawn.position.y);
-        scratch.push(' ');
-        write_metres(scratch, spawn.position.z);
-        row(1, scratch, list);
-
-        scratch.clear();
-        scratch.push_str("FACING ");
-        write_metres(scratch, spawn.yaw.to_degrees());
-        scratch.push_str(" DEG");
-        row(2, scratch, list);
-
-        scratch.clear();
-        scratch.push_str("R TURNS IT   X DELETES IT");
-        row(3, scratch, list);
-        return;
-    }
-
-    let Some(object) = editor
-        .selected_object()
-        .and_then(|index| scene.objects.get(index))
-    else {
-        scratch.clear();
-        scratch.push_str("NOTHING SELECTED");
-        row(0, scratch, list);
+    let Some(primary) = editor.selection() else {
+        line_at(0, "NOTHING SELECTED", theme.text_disabled, list);
+        line_at(
+            1,
+            "CLICK SOMETHING, OR DRAG A BOX",
+            theme.text_disabled,
+            list,
+        );
         return;
     };
 
     scratch.clear();
-    scratch.push_str(object.asset.name());
+    match primary {
+        Selected::Spawn(0) => scratch.push_str("SPAWN POINT (THE ONE USED)"),
+        other => scratch.push_str(&kind_name(scene, other).to_ascii_uppercase()),
+    }
     if editor.selected().len() > 1 {
         scratch.push_str(" +");
         write_count(scratch, editor.selected().len() - 1);
     }
-    row(0, scratch, list);
+    line_at(0, scratch, theme.title, list);
 
-    let position = object.transform.translation;
-    scratch.clear();
-    scratch.push_str("POS ");
-    write_metres(scratch, position.x);
-    scratch.push(' ');
-    write_metres(scratch, position.y);
-    scratch.push(' ');
-    write_metres(scratch, position.z);
-    row(1, scratch, list);
-
-    scratch.clear();
-    scratch.push_str("YAW ");
-    write_metres(scratch, crate::yaw_of(object.transform).to_degrees());
-    row(2, scratch, list);
-
-    scratch.clear();
-    scratch.push_str("SCALE ");
-    write_metres(scratch, object.transform.scale.x);
-    scratch.push(' ');
-    write_metres(scratch, object.transform.scale.y);
-    scratch.push(' ');
-    write_metres(scratch, object.transform.scale.z);
-    row(3, scratch, list);
+    let editing = editor.inspector_edit();
+    for (row, line) in inspector::rows(primary).iter().enumerate() {
+        line_at(row + 1, line.label, theme.text_disabled, list);
+        for (column, property) in line.properties.iter().enumerate() {
+            let cell = inspector_cell_rect(scale, viewport, row, column);
+            scratch.clear();
+            let active = editing.filter(|edit| edit.property == *property);
+            if let Some(edit) = active {
+                list.rect(cell, theme.panel_border);
+                list.outline(cell, border, theme.title);
+                scratch.push_str(edit.field.text());
+                scratch.push('_');
+            } else {
+                list.outline(cell, border, theme.separator);
+                let value = inspector::get(scene, primary, *property).unwrap_or(0.0);
+                let decimals = match property {
+                    inspector::Property::ScaleX
+                    | inspector::Property::ScaleY
+                    | inspector::Property::ScaleZ
+                    | inspector::Property::Intensity
+                    | inspector::Property::Red
+                    | inspector::Property::Green
+                    | inspector::Property::Blue => 2,
+                    _ => 1,
+                };
+                let _ = write!(scratch, "{value:.decimals$}");
+            }
+            list.text_at(
+                (cell.x + scale.px(3.0), cell.y + scale.px(3.0)),
+                scratch,
+                if active.is_some() {
+                    theme.title
+                } else {
+                    theme.text
+                },
+                text,
+            );
+        }
+    }
+    if editing.is_none() {
+        line_at(
+            4,
+            "CLICK A NUMBER TO TYPE  WHEEL STEPS",
+            theme.text_disabled,
+            list,
+        );
+    } else {
+        line_at(
+            4,
+            "ENTER SET  TAB NEXT  ESC CANCEL",
+            theme.text_disabled,
+            list,
+        );
+    }
 }
 
 /// A metre value with one decimal, without allocating.
@@ -848,7 +985,87 @@ fn push_world_overlay(
         }
     }
 
+    push_lights(list, editor, scene, viewport);
     push_gizmo(list, editor, scene);
+
+    // The selection box, over everything in the world it is selecting from.
+    if let Some(marquee) = editor.marquee() {
+        let rect = marquee.rect();
+        list.rect(rect, [0.20, 0.95, 1.00, 0.10]);
+        list.outline(rect, scale.px(1.0), SELECTION_COLOR);
+    }
+}
+
+/// What a light's marker is drawn in: warm, like the light it stands for.
+const LIGHT_COLOR: UiColor = [1.00, 0.82, 0.35, 0.95];
+
+/// Draws a marker where every light in the level is.
+///
+/// A light has no mesh and never will, so without this an author could only find one by
+/// what it lights — which is nothing at noon. A diamond at the light, and a line down to the
+/// ground under it so its height reads at a glance.
+fn push_lights(
+    list: &mut UiDrawList,
+    editor: &Editor,
+    scene: &EnvironmentScene,
+    viewport: (u32, u32),
+) {
+    let scale = editor.scale();
+    let view_projection = editor.view_projection();
+    let size = scale.px(7.0);
+    for (index, light) in scene.lights.iter().enumerate() {
+        let Some(at) =
+            engine_presentation::nameplate::project(light.position, &view_projection, viewport)
+        else {
+            continue;
+        };
+        let floor = Vec3::new(
+            light.position.x,
+            scene.ground_at(light.position),
+            light.position.z,
+        );
+        if let Some(down) =
+            engine_presentation::nameplate::project(floor, &view_projection, viewport)
+            && let Some((from, to)) = clip_segment(
+                at,
+                down,
+                UiRect::new(0.0, 0.0, viewport.0 as f32, viewport.1 as f32),
+            )
+        {
+            stroke(list, from, to, scale.px(1.0), [1.0, 0.82, 0.35, 0.45]);
+        }
+        let selected = editor.is_selected(Selected::Light(index));
+        let color = if selected {
+            SELECTION_COLOR
+        } else {
+            LIGHT_COLOR
+        };
+        // A diamond, as four short strokes: a square would read as a selection handle.
+        let points = [
+            (at.0, at.1 - size),
+            (at.0 + size, at.1),
+            (at.0, at.1 + size),
+            (at.0 - size, at.1),
+        ];
+        for corner in 0..4 {
+            stroke(
+                list,
+                points[corner],
+                points[(corner + 1) % 4],
+                scale.px(2.0),
+                color,
+            );
+        }
+        list.rect(
+            UiRect::new(
+                at.0 - scale.px(1.5),
+                at.1 - scale.px(1.5),
+                scale.px(3.0),
+                scale.px(3.0),
+            ),
+            color,
+        );
+    }
 }
 
 /// The eight corners of an oriented box, in world space.
@@ -1049,6 +1266,7 @@ fn push_offscreen(
         },
         Selected::Water(_) => scratch.push_str("WATER"),
         Selected::Spawn(_) => scratch.push_str("SPAWN"),
+        Selected::Light(_) => scratch.push_str("LIGHT"),
     }
     list.text_at(
         (rect.x, rect.bottom() + scale.px(2.0)),
@@ -1116,7 +1334,11 @@ fn stripes(list: &mut UiDrawList, rect: UiRect, spacing: f32, thickness: f32, co
     }
 }
 
-/// Draws the three axis handles of the selection's gizmo.
+/// The colour a hovered or grabbed handle is drawn in.
+const HANDLE_ACTIVE: UiColor = [1.0, 0.95, 0.35, 1.0];
+
+/// Draws the selection's gizmo: three arrows to move it, a ring to turn it, or three
+/// box-ended handles and a centre square to scale it.
 fn push_gizmo(list: &mut UiDrawList, editor: &Editor, scene: &EnvironmentScene) {
     let Some(screen) = editor.gizmo(scene) else {
         return;
@@ -1124,42 +1346,63 @@ fn push_gizmo(list: &mut UiDrawList, editor: &Editor, scene: &EnvironmentScene) 
     let scale = editor.scale();
     let thickness = scale.px(HANDLE_PIXELS);
     let hovered = editor.gizmo_hover();
+    let shadow = [0.0, 0.0, 0.0, 0.65];
 
-    // A dark line under every handle, one pixel wider. That is the whole of "readable against
-    // any background": a red axis over a red rock is invisible, and a red axis with a black
-    // edge is not.
-    for handle in screen.handles.into_iter().flatten() {
-        stroke(
-            list,
-            handle.from,
-            handle.to,
-            thickness + scale.px(2.0),
-            [0.0, 0.0, 0.0, 0.65],
-        );
-    }
-    for handle in screen.handles.into_iter().flatten() {
-        let active = hovered == Some(handle.axis);
-        let color = if active {
-            [1.0, 0.95, 0.35, 1.0]
+    if screen.mode == crate::gizmo::GizmoMode::Rotate {
+        let color = if hovered == Some(crate::gizmo::Handle::Ring) {
+            HANDLE_ACTIVE
         } else {
-            handle.axis.color()
+            crate::gizmo::Axis::Y.color()
         };
-        stroke(list, handle.from, handle.to, thickness, color);
-        // A square at the tip: the thing to aim at, and what makes the end of the handle a
-        // target rather than a place where a line stops.
-        let cap = thickness * 2.4;
-        let tip = UiRect::new(handle.to.0 - cap * 0.5, handle.to.1 - cap * 0.5, cap, cap);
-        list.rect(tip, color);
-        list.text_at(
-            (handle.to.0 + cap, handle.to.1 - cap),
-            handle.axis.label(),
-            color,
-            scale.text(1.0),
-        );
+        for (from, to) in screen.ring_segments() {
+            stroke(list, from, to, thickness + scale.px(2.0), shadow);
+        }
+        for (from, to) in screen.ring_segments() {
+            stroke(list, from, to, thickness, color);
+        }
+    } else {
+        // A dark line under every handle, one pixel wider. That is the whole of "readable
+        // against any background": a red axis over a red rock is invisible, and a red axis
+        // with a black edge is not.
+        for handle in screen.handles.into_iter().flatten() {
+            stroke(
+                list,
+                handle.from,
+                handle.to,
+                thickness + scale.px(2.0),
+                shadow,
+            );
+        }
+        let square = screen.mode == crate::gizmo::GizmoMode::Scale;
+        for handle in screen.handles.into_iter().flatten() {
+            let active = hovered == Some(crate::gizmo::Handle::Axis(handle.axis));
+            let color = if active {
+                HANDLE_ACTIVE
+            } else {
+                handle.axis.color()
+            };
+            stroke(list, handle.from, handle.to, thickness, color);
+            // A cap at the tip: the thing to aim at, and what makes the end of the handle a
+            // target rather than a place where a line stops. A scale handle's is a bigger
+            // block, the convention every package uses to tell the two apart.
+            let cap = thickness * if square { 3.4 } else { 2.4 };
+            let tip = UiRect::new(handle.to.0 - cap * 0.5, handle.to.1 - cap * 0.5, cap, cap);
+            if square {
+                list.rect(tip.inset(-scale.px(1.0)), shadow);
+            }
+            list.rect(tip, color);
+            list.text_at(
+                (handle.to.0 + cap, handle.to.1 - cap),
+                handle.axis.label(),
+                color,
+                scale.text(1.0),
+            );
+        }
     }
     // The origin, so the gizmo has a centre even when an axis points at the eye and its handle
-    // is a dot.
-    let pip = thickness * 2.0;
+    // is a dot. The scale gizmo's centre is a handle of its own: all three axes at once.
+    let uniform = screen.mode == crate::gizmo::GizmoMode::Scale;
+    let pip = thickness * if uniform { 3.6 } else { 2.0 };
     list.rect(
         UiRect::new(
             screen.origin.0 - pip * 0.5,
@@ -1167,7 +1410,11 @@ fn push_gizmo(list: &mut UiDrawList, editor: &Editor, scene: &EnvironmentScene) 
             pip,
             pip,
         ),
-        [1.0, 1.0, 1.0, 0.9],
+        if uniform && hovered == Some(crate::gizmo::Handle::Uniform) {
+            HANDLE_ACTIVE
+        } else {
+            [1.0, 1.0, 1.0, 0.9]
+        },
     );
 }
 

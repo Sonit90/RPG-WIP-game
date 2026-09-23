@@ -161,13 +161,21 @@ pub enum KeyCode {
     LeftAlt,
     /// Right alt.
     RightAlt,
+    /// `-`, on the main block or the number pad.
+    Minus,
+    /// `.`, on the main block or the number pad.
+    Period,
+    /// `Delete`.
+    Delete,
+    /// `Home`.
+    Home,
     /// A key the engine does not name. Kept so it can be logged, never bound.
     Unknown,
 }
 
 impl KeyCode {
     /// Every key code, in discriminant order.
-    pub const ALL: [Self; 63] = [
+    pub const ALL: [Self; 67] = [
         Self::A,
         Self::B,
         Self::C,
@@ -231,6 +239,10 @@ impl KeyCode {
         Self::RightControl,
         Self::LeftAlt,
         Self::RightAlt,
+        Self::Minus,
+        Self::Period,
+        Self::Delete,
+        Self::Home,
     ];
 
     /// Number of distinct key codes, including [`KeyCode::Unknown`].
@@ -359,6 +371,10 @@ impl KeyCode {
             "RIGHTCONTROL",
             "LEFTALT",
             "RIGHTALT",
+            "MINUS",
+            "PERIOD",
+            "DELETE",
+            "HOME",
         ];
         NAMES.get(self.index()).copied()
     }
@@ -404,6 +420,10 @@ impl KeyCode {
             Self::RightControl => "RCT",
             Self::LeftAlt => "LAL",
             Self::RightAlt => "RAL",
+            Self::Minus => "-",
+            Self::Period => ".",
+            Self::Delete => "DEL",
+            Self::Home => "HOM",
             // Letters and function keys already read as themselves.
             other => other.name().unwrap_or(""),
         }

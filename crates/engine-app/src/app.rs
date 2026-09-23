@@ -2700,8 +2700,21 @@ impl App {
             let editor_started = Instant::now();
             self.editor.enter(focus, &name, viewport);
             crate::startup::stage_from("editor init", editor_started);
-            if let Some(path) = self.editor_save_path.clone() {
+            // Once: after the first entry the editor keeps its own save path, which Save As
+            // and opening a level change, and re-entering must not put the command line's
+            // file back under the author.
+            if let Some(path) = self.editor_save_path.take() {
                 self.editor.set_save_path(path);
+            }
+            // What the author hid last time stays hidden when they come back.
+            if self.editor.has_hidden()
+                && let Some(scene) = self.environment.as_ref()
+                && let Some(visible) = self.editor.visible_scene(scene)
+            {
+                let world = self.extractor.render_world_mut();
+                self.placer.clear(world);
+                self.placer
+                    .place(world, &visible, controller_eye_guess(scene), LOD_BIAS);
             }
             log::info!("editor: editing '{name}' ({count} objects); F6 goes back to playing");
             // The signposts go up with the editor and come down with it.
@@ -2733,6 +2746,13 @@ impl App {
                 // placements or the collision world to touch: water blocks nothing.
                 engine_editor::EditorOutcome::WaterChanged => water_changed = true,
                 engine_editor::EditorOutcome::Left => {
+                    // Hiding is an editor view: the game draws every placement.
+                    if self.editor.has_hidden() {
+                        let world = self.extractor.render_world_mut();
+                        self.placer.clear(world);
+                        self.placer
+                            .place(world, scene, controller_eye_guess(scene), LOD_BIAS);
+                    }
                     // The static world is rebuilt on the way out as well as on every
                     // change, so that leaving the editor lands the author in the level
                     // they just built rather than in the one that was loaded.
@@ -2742,6 +2762,29 @@ impl App {
                     return Ok(false);
                 }
                 engine_editor::EditorOutcome::Idle => {}
+            }
+        }
+
+        // A level double-clicked in the browser. Loaded here because the editor has no
+        // business reading a level into the running game; it hands back a path and is told
+        // what came of it.
+        if let Some(path) = self.editor.take_open_request() {
+            match engine_environment::scene_file::load(&path) {
+                Ok(scene) => {
+                    log::info!(
+                        "editor: opened '{}' from {} - {} objects",
+                        scene.name,
+                        path.display(),
+                        scene.len()
+                    );
+                    self.editor.opened(&scene, path);
+                    self.environment = Some(scene);
+                    changed = true;
+                }
+                Err(error) => {
+                    log::error!("editor: could not open {}: {error}", path.display());
+                    self.editor.open_failed(&error.to_string());
+                }
             }
         }
 
@@ -2764,8 +2807,15 @@ impl App {
             upload_missing_models(&mut self.renderer, self.placer.visuals_mut(), scene);
             let world = self.extractor.render_world_mut();
             self.placer.clear(world);
-            self.placer
-                .place(world, scene, controller_eye_guess(scene), LOD_BIAS);
+            // What the author has hidden is left out of what is drawn, and nothing else: the
+            // collision below is built from the whole level.
+            let visible = self.editor.visible_scene(scene);
+            self.placer.place(
+                world,
+                visible.as_ref().unwrap_or(scene),
+                controller_eye_guess(scene),
+                LOD_BIAS,
+            );
             // What is drawn and what is solid come from one description of the level, and
             // they are rebuilt together. An author who places a wall and walks into it
             // expects a wall; the alternative is an editor whose work can only be tested by
@@ -4221,6 +4271,17 @@ impl Application for App {
         // The same last chance for the interface layout: a drag interrupted by a crash-free
         // quit, or a write that failed earlier.
         self.save_hud_layout();
+        // And for a level being edited: work nobody saved goes to the autosave beside it
+        // rather than nowhere.
+        #[cfg(feature = "editor")]
+        if let Some(scene) = self.environment.as_ref()
+            && self.editor.autosave(scene)
+        {
+            log::warn!(
+                "editor: the level had unsaved changes; they are in {}",
+                self.editor.autosave_path().display()
+            );
+        }
         self.report_final(ctx);
     }
 }
