@@ -71,13 +71,14 @@ impl Axis {
         }
     }
 
-    /// What the handle is painted: the colours every 3D package agrees on.
+    /// What the handle is painted: the colours every 3D package agrees on, in the editor's
+    /// quieter shades of them.
     #[must_use]
     pub fn color(self) -> [f32; 4] {
         match self {
-            Self::X => [0.94, 0.26, 0.26, 1.0],
-            Self::Y => [0.36, 0.90, 0.36, 1.0],
-            Self::Z => [0.34, 0.56, 1.00, 1.0],
+            Self::X => crate::theme::AXIS_X,
+            Self::Y => crate::theme::AXIS_Y,
+            Self::Z => crate::theme::AXIS_Z,
         }
     }
 

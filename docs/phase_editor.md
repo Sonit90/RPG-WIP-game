@@ -1136,3 +1136,54 @@ fails with the old plane; a drop onto a pillar stands on it; undo across `F6`; r
 on the way out and its removal on save; Save As; the confirm before opening over unsaved work; hide,
 lock and the box; the turn ring in snapped steps; scaling one axis and all three; typing into the
 inspector and the wheel over it.
+
+---
+
+## Phase 17 — the interface: from a debug overlay to an editor
+
+The editor worked and looked like an engine's debug window: fourteen-pixel capitals everywhere,
+translucent lists over the level, the game's HUD still drawn underneath, and fifteen lines of
+key help across the bottom of the viewport. This phase replaced the presentation and left the
+editing model — the scene, selection, gizmo, undo, the file format — as it was.
+
+### What it is built from
+
+* `theme.rs` — one palette (dark neutrals, one blue accent, amber for attention), one set of
+  measurements, and exact text measurement for the 5×7 font, so every label is fitted rather
+  than spilled.
+* `icons.rs` — 43 nine-by-nine pixel icons written as text in the source and drawn as one
+  rectangle per run of lit pixels, in the same grid as the font. The game's icon atlas is left
+  alone.
+* `widgets.rs` — panels, headers, buttons, fields, checkboxes, chips, key caps, tooltips.
+* `layout.rs` — the docked layout (toolbar, browser, viewport, hierarchy over inspector, status
+  bar) with draggable splitters, minimum widths and a viewport that never disappears; the scale
+  follows the window's height.
+* `panels.rs` — what each panel holds this frame, *with its rectangles*: toolbar items, menu
+  entries, hierarchy rows, inspector elements, tiles, dialogs. The painter and the input code
+  both read it, which is how a thing drawn and a thing clicked stay the same thing.
+* `commands.rs` — every action as a `Command`, carried out in one place, so a key, a toolbar
+  button, a menu item and a context-menu item are the same verb with the same undo.
+* `interaction.rs` — the panels' input: menus, dialogs, splitters, browser, hierarchy,
+  inspector, context menus, hover.
+
+### Two engine fixes it needed
+
+* **The font** gained `[ ] < > | * ' ! ? " & ; ^ ~ @ # $ \` — the asset browser used to print
+  `[MATERIAL]` as two boxes.
+* **Button messages carry the pointer.** The window only reported where the cursor was on
+  `WM_MOUSEMOVE`, so a click with no move before it — the first click after focus — landed where
+  the pointer last was. Button messages now report their position first, only when it changed,
+  so the event stream the platform tests pin down is unchanged.
+
+### What was not built, on purpose
+
+Rename, parenting and hierarchy drag-and-drop: the scene format has no names and no parents,
+and inventing them is a format change this phase was told not to make. Thumbnails: nothing
+renders previews yet, so tiles use the type icons. Loading states: models load synchronously.
+
+### Verification
+
+Screenshots of the running editor at 1280×720, 1920×1080 and 2560×1440 through a capture script,
+and tests for the toolbar, menus, context menus, splitters, copy and paste, range selection,
+group folding and hiding, inspector sections and scrubbing, the centre pivot, tile navigation,
+dialogs and tooltips.

@@ -1148,6 +1148,19 @@ impl App {
     /// [`Bindings::write_commands`], so the simulation sees commands rather than events and
     /// a replay can supply the same commands without a keyboard.
     fn handle_key(&mut self, key: KeyCode) {
+        // In the editor the keyboard is the editor's: `H` hides the selection there, and a
+        // key that also interrupted a dummy's cast or killed the player behind the panels
+        // would be two actions from one press. The rendering switches stay, because a level
+        // is built by looking at it in wireframe and with its collision drawn.
+        #[cfg(feature = "editor")]
+        if self.editor.is_active()
+            && !matches!(
+                key,
+                KeyCode::F3 | KeyCode::F4 | KeyCode::F5 | KeyCode::F8 | KeyCode::F9 | KeyCode::F10
+            )
+        {
+            return;
+        }
         match key {
             #[cfg(feature = "debug-overlay")]
             OVERLAY_TOGGLE_KEY => {
@@ -2315,6 +2328,34 @@ impl App {
             self.ui_ms = started.elapsed().as_secs_f64() * 1e3;
             self.renderer
                 .set_ui_with(&self.collision_ui, self.jobs.as_ref());
+            return;
+        }
+        // In the editor the game's HUD is not drawn at all: health bars, nameplates and an
+        // action bar over a level being built are noise, and they sat under the editor's own
+        // panels as a second interface nobody could use.
+        #[cfg(feature = "editor")]
+        if self.editor.is_active() {
+            self.game_ui.list_mut().clear();
+            if let Some(scene) = self.environment.as_ref() {
+                engine_editor::ui::push_editor(
+                    self.game_ui.list_mut(),
+                    &self.editor,
+                    scene,
+                    &self.menu_theme,
+                    &mut self.hud_scratch,
+                    viewport,
+                );
+            }
+            engine_presentation::ui::push_menu(
+                self.game_ui.list_mut(),
+                &self.menu,
+                &self.menu_theme,
+                &mut self.menu_scratch,
+                viewport,
+            );
+            self.ui_ms = started.elapsed().as_secs_f64() * 1e3;
+            self.renderer
+                .set_ui_with(self.game_ui.list(), self.jobs.as_ref());
             return;
         }
         // The plate's box is measured from the same glyph scale the text inside it is drawn

@@ -4,7 +4,7 @@
 //! in a font loader, a rasterizer or a UI framework. Each glyph is seven rows of five
 //! bits, most significant bit leftmost, so `0b10001` is a pixel at each edge.
 //!
-//! Only uppercase letters, digits and the punctuation the overlay actually uses are
+//! Only uppercase letters, digits and the punctuation the interface actually uses are
 //! defined. Text is upper-cased before lookup, and anything unknown renders as a hollow
 //! box so a missing glyph is visible rather than silently blank.
 
@@ -176,6 +176,60 @@ pub fn glyph(character: char) -> Option<[u8; GLYPH_HEIGHT]> {
         '_' => [
             0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b11111,
         ],
+        '[' => [
+            0b01110, 0b01000, 0b01000, 0b01000, 0b01000, 0b01000, 0b01110,
+        ],
+        ']' => [
+            0b01110, 0b00010, 0b00010, 0b00010, 0b00010, 0b00010, 0b01110,
+        ],
+        '<' => [
+            0b00010, 0b00100, 0b01000, 0b10000, 0b01000, 0b00100, 0b00010,
+        ],
+        '>' => [
+            0b01000, 0b00100, 0b00010, 0b00001, 0b00010, 0b00100, 0b01000,
+        ],
+        '|' => [
+            0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100,
+        ],
+        '*' => [
+            0b00000, 0b00100, 0b10101, 0b01110, 0b10101, 0b00100, 0b00000,
+        ],
+        '\'' => [
+            0b00100, 0b00100, 0b01000, 0b00000, 0b00000, 0b00000, 0b00000,
+        ],
+        '!' => [
+            0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00000, 0b00100,
+        ],
+        '?' => [
+            0b01110, 0b10001, 0b00001, 0b00010, 0b00100, 0b00000, 0b00100,
+        ],
+        '"' => [
+            0b01010, 0b01010, 0b01010, 0b00000, 0b00000, 0b00000, 0b00000,
+        ],
+        '&' => [
+            0b01100, 0b10010, 0b10100, 0b01000, 0b10101, 0b10010, 0b01101,
+        ],
+        ';' => [
+            0b00000, 0b01100, 0b01100, 0b00000, 0b01100, 0b00100, 0b01000,
+        ],
+        '^' => [
+            0b00100, 0b01010, 0b10001, 0b00000, 0b00000, 0b00000, 0b00000,
+        ],
+        '~' => [
+            0b00000, 0b00000, 0b01000, 0b10101, 0b00010, 0b00000, 0b00000,
+        ],
+        '@' => [
+            0b01110, 0b10001, 0b10111, 0b10101, 0b10111, 0b10000, 0b01110,
+        ],
+        '#' => [
+            0b01010, 0b01010, 0b11111, 0b01010, 0b11111, 0b01010, 0b01010,
+        ],
+        '$' => [
+            0b00100, 0b01111, 0b10100, 0b01110, 0b00101, 0b11110, 0b00100,
+        ],
+        '\\' => [
+            0b10000, 0b10000, 0b01000, 0b00100, 0b00010, 0b00001, 0b00001,
+        ],
         _ => UNKNOWN,
     })
 }
@@ -214,7 +268,7 @@ mod tests {
 
     #[test]
     fn every_glyph_row_fits_in_five_bits() {
-        let sample = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ.,:-+/()%=_";
+        let sample = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ.,:-+/()%=_[]<>|*'!?\"&;^~@#$";
         for character in sample.chars() {
             let rows = glyph(character).expect("sample characters all have glyphs");
             for (index, row) in rows.into_iter().enumerate() {
@@ -235,7 +289,7 @@ mod tests {
     #[test]
     fn unknown_characters_render_as_a_visible_box() {
         assert_eq!(glyph('\u{2764}'), Some(UNKNOWN));
-        assert_eq!(glyph('#'), Some(UNKNOWN));
+        assert_eq!(glyph('\u{00e9}'), Some(UNKNOWN));
     }
 
     #[test]

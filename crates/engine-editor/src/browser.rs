@@ -412,6 +412,112 @@ impl AssetBrowser {
         changed
     }
 
+    /// Chooses the asset a level calls `name`, opens the folders down to it and scrolls it
+    /// into view. Returns whether the browser has it.
+    pub fn reveal_named(&mut self, name: &str) -> bool {
+        let found = LIBRARY
+            .iter()
+            .position(|asset| asset.name() == name)
+            .map(Selection::Builtin)
+            .or_else(|| {
+                self.catalogue
+                    .entries()
+                    .iter()
+                    .position(|entry| entry.id == name)
+                    .map(Selection::Entry)
+            });
+        let Some(selection) = found else {
+            return false;
+        };
+        if !self.filter.is_empty() {
+            self.filter.clear();
+        }
+        self.selection = selection;
+        self.reveal_selection();
+        true
+    }
+
+    /// Chooses `row` if it is placeable, as a click on it does.
+    pub fn choose_row(&mut self, row: BrowserRow) -> bool {
+        self.choose(row)
+    }
+
+    /// Replaces the filter, as typing into the search field does.
+    pub fn set_filter(&mut self, filter: &str) {
+        if self.filter != filter {
+            self.filter = filter.to_owned();
+            self.rebuild_rows();
+        }
+    }
+
+    /// Starts or stops the filter owning the keyboard.
+    pub fn set_typing(&mut self, typing: bool) {
+        self.typing = typing;
+    }
+
+    /// Whether the built-in folder is open.
+    #[must_use]
+    pub fn is_builtin_open(&self) -> bool {
+        self.builtin_expanded
+    }
+
+    /// How far a row is indented in the tree, in levels.
+    #[must_use]
+    pub fn depth(&self, row: BrowserRow) -> usize {
+        if !self.filter.trim().is_empty() {
+            // A filtered list is flat: every match at the same level, folders gone.
+            return 0;
+        }
+        match row {
+            BrowserRow::BuiltinFolder => 0,
+            BrowserRow::Builtin(_) => 1,
+            BrowserRow::Folder(index) => self
+                .catalogue
+                .folders()
+                .get(index)
+                .map_or(0, |folder| folder.depth.saturating_sub(1)),
+            BrowserRow::Entry(index) => self
+                .catalogue
+                .entries()
+                .get(index)
+                .and_then(|entry| self.catalogue.folders().get(entry.folder))
+                .map_or(0, |folder| folder.depth),
+        }
+    }
+
+    /// What a row is called, as a person reads it: a folder's name, an asset's.
+    #[must_use]
+    pub fn name(&self, row: BrowserRow) -> String {
+        match row {
+            BrowserRow::BuiltinFolder => "Built-in".to_owned(),
+            BrowserRow::Builtin(index) => {
+                crate::theme::display_name(LIBRARY[index.min(LIBRARY.len() - 1)].name())
+            }
+            BrowserRow::Folder(index) => self
+                .catalogue
+                .folders()
+                .get(index)
+                .map_or_else(String::new, |folder| {
+                    crate::theme::display_name(&folder.name)
+                }),
+            BrowserRow::Entry(index) => self
+                .catalogue
+                .entries()
+                .get(index)
+                .map_or_else(String::new, |entry| crate::theme::display_name(&entry.name)),
+        }
+    }
+
+    /// The selection a row would make, if it is an asset row.
+    #[must_use]
+    pub fn selection_of(row: BrowserRow) -> Option<Selection> {
+        match row {
+            BrowserRow::Builtin(index) => Some(Selection::Builtin(index)),
+            BrowserRow::Entry(index) => Some(Selection::Entry(index)),
+            _ => None,
+        }
+    }
+
     /// Whether a row can be placed in a level: a built-in, or a model file.
     #[must_use]
     pub fn is_placeable(&self, row: BrowserRow) -> bool {

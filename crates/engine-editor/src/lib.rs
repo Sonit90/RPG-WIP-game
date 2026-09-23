@@ -86,11 +86,18 @@
 
 pub mod browser;
 pub mod camera;
+pub mod commands;
 pub mod field;
 pub mod gizmo;
+pub mod icons;
 pub mod inspector;
+mod interaction;
+pub mod layout;
+pub mod panels;
 pub mod pick;
+pub mod theme;
 pub mod ui;
+pub mod widgets;
 
 use std::path::{Path, PathBuf};
 
@@ -422,6 +429,55 @@ const DOUBLE_CLICK_SECONDS: f32 = 0.35;
 /// while double-clicking a row is still a double click.
 const CLICK_SLOP_PIXELS: f32 = 6.0;
 
+/// A dialog that has the editor's full attention until it is answered.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Modal {
+    /// Every key the editor answers, grouped by what it is for.
+    Shortcuts,
+    /// Opening another level would throw away unsaved work: save, discard or stay.
+    Unsaved {
+        /// The level that was asked for.
+        path: PathBuf,
+    },
+}
+
+/// A drag on an inspector number's tag, changing it by how far the pointer moves.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct Scrub {
+    /// Which number.
+    property: inspector::Property,
+    /// Where the pointer went down.
+    from: f32,
+    /// What the number was then.
+    start: f32,
+    /// Whether it has changed yet, so a click without a drag types instead.
+    moved: bool,
+}
+
+/// A splitter being dragged.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct Resize {
+    /// Which.
+    splitter: layout::Splitter,
+    /// Where the pointer went down.
+    from: (f32, f32),
+    /// The sizes then.
+    start: layout::PanelSizes,
+}
+
+/// The tooltip the pointer is resting on, and since when.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct Tip {
+    /// Which control, so moving to another one restarts the delay.
+    key: u32,
+    /// What it says.
+    pub(crate) title: String,
+    /// The key that does the same thing.
+    pub(crate) shortcut: &'static str,
+    /// When the pointer arrived.
+    since: f32,
+}
+
 /// The editor.
 #[derive(Debug)]
 pub struct Editor {
@@ -432,8 +488,10 @@ pub struct Editor {
     /// What is selected, in the order it was added. The last is the primary one — what the
     /// inspector describes and what a verb reports on. One kind at a time; see [`Selected`].
     selected: Vec<Selected>,
-    /// What a drag on a handle means: move, turn or scale.
-    gizmo_mode: gizmo::GizmoMode,
+    /// What the left button does to the selection: select, move, rotate or scale.
+    tool: commands::Tool,
+    /// What a turn and the gizmo stand on when several things are selected.
+    pivot: commands::Pivot,
     /// The handle being dragged, if one is.
     gizmo_drag: Option<GizmoDrag>,
     /// Which handle the cursor is over, so it can be drawn as the one that would be grabbed.
@@ -446,19 +504,27 @@ pub struct Editor {
     orbit_pivot: Option<Vec3>,
     /// Whether a double click on a browser row asked for a placement in front of the camera.
     place_at_centre: bool,
-    /// The last browser row that was clicked and when, for the double click that places one.
+    /// The last browser row or tile that was clicked and when, for the double click.
     last_row_click: Option<(browser::BrowserRow, f32)>,
     /// The last hierarchy row that was clicked and when, for the double click that frames it.
     last_hierarchy_click: Option<(Selected, f32)>,
+    /// The last thing clicked in the viewport and when, for the double click that frames it.
+    last_viewport_click: Option<(Selected, f32)>,
+    /// Where a shift-click in the hierarchy selects from.
+    hierarchy_anchor: Option<Selected>,
     /// Seconds since the editor was opened. The clock the double click is measured on.
     clock: f32,
     /// This frame's view-projection, kept so the interface can draw the gizmo and the
     /// silhouette from the same matrix the pointer was answered with.
     view_projection: Mat4,
-    /// This frame's viewport, kept for the same reason.
+    /// This frame's window size, kept for the same reason.
     viewport: (u32, u32),
+    /// Where the pointer is.
+    pointer: (f32, f32),
     /// Index into [`GRID_STEPS`].
     grid: usize,
+    /// Whether moves snap to the grid.
+    snap: bool,
     /// Index into [`YAW_STEPS`].
     yaw_step: usize,
     /// Whether the terrain brush has the pointer instead of placement and selection.
@@ -475,7 +541,7 @@ pub struct Editor {
     local_space: bool,
     /// Whether the grid is the cave module rather than whatever `G` last chose.
     module_snap: bool,
-    /// Whether the author has pressed `M` and taken the decision off the editor.
+    /// Whether the author has taken the module decision off the editor.
     module_snap_pinned: bool,
     /// Whether what changed this frame was water or a spawn point rather than a placement.
     water_touched: bool,
@@ -483,8 +549,7 @@ pub struct Editor {
     undo: Vec<Snapshot>,
     /// Snapshots for `CTRL+Y`, the most recently undone last.
     redo: Vec<Snapshot>,
-    /// Which level the undo history belongs to, so re-entering the same level keeps it and
-    /// entering a different one does not offer to undo edits it never had.
+    /// Which level the undo history belongs to.
     history_of: Option<String>,
     /// How many edits have been made since the editor first opened this level.
     revision: u64,
@@ -502,25 +567,74 @@ pub struct Editor {
     save_as: Option<field::TextField>,
     /// A level the author asked to open, for the application to load.
     open_request: Option<PathBuf>,
-    /// A level whose opening is waiting for the author to confirm losing unsaved work.
-    confirm_open: Option<PathBuf>,
     /// A number being typed into the inspector.
     inspector_edit: Option<InspectorEdit>,
     /// The last property the wheel changed and when, so a run of notches is one undo.
     wheel_run: Option<(inspector::Property, f32)>,
+    /// A drag on an inspector tag, while one is on.
+    scrub: Option<Scrub>,
+    /// How far the inspector is scrolled, in pixels.
+    inspector_scroll: f32,
+    /// Which inspector sections are folded away.
+    collapsed_sections: u8,
     /// What the hierarchy is filtered by.
     hierarchy_filter: String,
     /// The hierarchy filter, while it is being typed.
     hierarchy_typing: Option<field::TextField>,
-    /// The last thing that happened, printed under the browser.
+    /// Which hierarchy groups are folded away.
+    collapsed_groups: u16,
+    /// The last primary selection the hierarchy scrolled to, so it scrolls once per change
+    /// rather than every frame.
+    revealed: Option<Selected>,
+    /// The last thing that happened, for the status bar.
     status: String,
+    /// The status as it was last frame, to notice when it changes.
+    status_seen: String,
+    /// When the status last changed, so it gives way to a hint after a few seconds.
+    status_at: f32,
     /// The first row shown in the hierarchy list.
     hierarchy_scroll: usize,
-    /// Whether the key list is on screen. `F1` puts it away and brings it back.
-    show_keys: bool,
+    /// How the browser shows a folder.
+    browser_view: commands::BrowserView,
+    /// Which folder the browser's tile view is in.
+    tile_folder: panels::TileFolder,
+    /// The first row of tiles shown.
+    tile_scroll: usize,
+    /// How wide the panels are.
+    panels: layout::PanelSizes,
+    /// A splitter being dragged.
+    resizing: Option<Resize>,
+    /// The popup menu that is open, if one is.
+    menu: Option<panels::OpenMenu>,
+    /// Where the menu was opened, for the commands that act *there*: paste, add a light.
+    menu_origin: Option<(f32, f32)>,
+    /// A dialog, if one is up.
+    modal: Option<Modal>,
+    /// Whether a button or a menu asked to go back to the game.
+    leave_requested: bool,
+    /// Whether the debug overlay is on.
+    show_debug: bool,
+    /// What is on the clipboard.
+    clipboard: Vec<commands::Clip>,
+    /// The tooltip the pointer is resting on.
+    tip: Option<Tip>,
+    /// Last frame's tooltip, so resting on the same control keeps counting towards the delay.
+    tip_last: Option<Tip>,
+    /// What the pointer is over in the viewport, for the hover outline.
+    hovered: Option<Selected>,
+    /// Where the right button went down and when, so a click can open a menu and a drag can
+    /// turn the camera.
+    right_press: Option<((f32, f32), f32)>,
+    /// The ground under the pointer, for the status bar.
+    cursor_world: Option<Vec3>,
+    /// Frames per second, smoothed, for the debug overlay.
+    fps: f32,
     /// How long the last frame took, so a brush stroke moves the ground at the same rate
     /// whatever the frame rate is.
     last_seconds: f32,
+    /// The interface scale the player chose; the editor lays itself out at this or more.
+    settings_scale: UiScale,
+    /// The scale the editor is laid out at this frame.
     scale: UiScale,
 }
 
@@ -542,7 +656,8 @@ impl Editor {
             camera: FlyCamera::default(),
             browser: browser::AssetBrowser::new(),
             selected: Vec::new(),
-            gizmo_mode: gizmo::GizmoMode::Translate,
+            tool: commands::Tool::Move,
+            pivot: commands::Pivot::Active,
             gizmo_drag: None,
             gizmo_hover: None,
             placement: None,
@@ -551,10 +666,14 @@ impl Editor {
             place_at_centre: false,
             last_row_click: None,
             last_hierarchy_click: None,
+            last_viewport_click: None,
+            hierarchy_anchor: None,
             clock: 0.0,
             view_projection: Mat4::IDENTITY,
             viewport: (0, 0),
+            pointer: (0.0, 0.0),
             grid: 0,
+            snap: true,
             yaw_step: 2,
             sculpting: false,
             placing: false,
@@ -576,15 +695,38 @@ impl Editor {
             save_path: PathBuf::from("assets/scenes/untitled.json"),
             save_as: None,
             open_request: None,
-            confirm_open: None,
             inspector_edit: None,
             wheel_run: None,
+            scrub: None,
+            inspector_scroll: 0.0,
+            collapsed_sections: 0,
             hierarchy_filter: String::new(),
             hierarchy_typing: None,
+            collapsed_groups: 0,
+            revealed: None,
             status: String::new(),
+            status_seen: String::new(),
+            status_at: 0.0,
             hierarchy_scroll: 0,
-            show_keys: true,
+            browser_view: commands::BrowserView::List,
+            tile_folder: panels::TileFolder::Root,
+            tile_scroll: 0,
+            panels: layout::PanelSizes::default(),
+            resizing: None,
+            menu: None,
+            menu_origin: None,
+            modal: None,
+            leave_requested: false,
+            show_debug: false,
+            clipboard: Vec::new(),
+            tip: None,
+            tip_last: None,
+            hovered: None,
+            right_press: None,
+            cursor_world: None,
+            fps: 60.0,
             last_seconds: 1.0 / 60.0,
+            settings_scale: UiScale::default(),
             scale: UiScale::default(),
         }
     }
@@ -721,10 +863,206 @@ impl Editor {
         self.placing
     }
 
-    /// What a drag on the gizmo does.
+    /// What the left button does to the selection.
     #[must_use]
-    pub fn gizmo_mode(&self) -> gizmo::GizmoMode {
-        self.gizmo_mode
+    pub fn tool(&self) -> commands::Tool {
+        self.tool
+    }
+
+    /// What the gizmo does with a drag, if the tool shows one.
+    #[must_use]
+    pub fn gizmo_mode(&self) -> Option<gizmo::GizmoMode> {
+        self.tool.gizmo()
+    }
+
+    /// What a turn and the gizmo stand on.
+    #[must_use]
+    pub fn pivot(&self) -> commands::Pivot {
+        self.pivot
+    }
+
+    /// Whether moves snap to the grid.
+    #[must_use]
+    pub fn is_snapping(&self) -> bool {
+        self.module_snap || (self.snap && GRID_STEPS[self.grid % GRID_STEPS.len()] > 0.0)
+    }
+
+    /// The grid size chosen, whether or not snapping is on.
+    #[must_use]
+    pub fn grid_size(&self) -> f32 {
+        if self.snap {
+            GRID_STEPS[self.grid % GRID_STEPS.len()]
+        } else {
+            0.0
+        }
+    }
+
+    /// Which of the grid sizes is chosen.
+    #[must_use]
+    pub fn grid_index(&self) -> usize {
+        self.grid % GRID_STEPS.len()
+    }
+
+    /// Which of the rotation steps is chosen.
+    #[must_use]
+    pub fn yaw_step_index(&self) -> usize {
+        self.yaw_step % YAW_STEPS.len()
+    }
+
+    /// Whether there is anything to undo.
+    #[must_use]
+    pub fn can_undo(&self) -> bool {
+        !self.undo.is_empty()
+    }
+
+    /// Whether there is anything to redo.
+    #[must_use]
+    pub fn can_redo(&self) -> bool {
+        !self.redo.is_empty()
+    }
+
+    /// Whether the clipboard holds anything.
+    #[must_use]
+    pub fn can_paste(&self) -> bool {
+        !self.clipboard.is_empty()
+    }
+
+    /// Whether the debug overlay is on.
+    #[must_use]
+    pub fn shows_debug(&self) -> bool {
+        self.show_debug
+    }
+
+    /// Whether the keyboard shortcuts window is up.
+    #[must_use]
+    pub fn shows_shortcuts(&self) -> bool {
+        self.modal == Some(Modal::Shortcuts)
+    }
+
+    /// The dialog that is up, if one is.
+    #[must_use]
+    pub fn modal(&self) -> Option<&Modal> {
+        self.modal.as_ref()
+    }
+
+    /// The popup menu that is open, if one is.
+    #[must_use]
+    pub fn open_menu(&self) -> Option<&panels::OpenMenu> {
+        self.menu.as_ref()
+    }
+
+    /// How the browser shows a folder.
+    #[must_use]
+    pub fn browser_view(&self) -> commands::BrowserView {
+        self.browser_view
+    }
+
+    /// Which folder the browser's tile view is in.
+    #[must_use]
+    pub fn tile_folder(&self) -> panels::TileFolder {
+        self.tile_folder
+    }
+
+    /// The first row of tiles shown.
+    #[must_use]
+    pub fn tile_scroll(&self) -> usize {
+        self.tile_scroll
+    }
+
+    /// How far the inspector is scrolled, in pixels.
+    #[must_use]
+    pub fn inspector_scroll(&self) -> f32 {
+        self.inspector_scroll
+    }
+
+    /// Which inspector sections are folded away, one bit each.
+    #[must_use]
+    pub fn collapsed_sections(&self) -> u8 {
+        self.collapsed_sections
+    }
+
+    /// Whether a hierarchy group is folded away.
+    #[must_use]
+    pub fn is_group_collapsed(&self, group: panels::Group) -> bool {
+        self.collapsed_groups & group.bit() != 0
+    }
+
+    /// What the pointer is over in the viewport.
+    #[must_use]
+    pub fn hovered(&self) -> Option<Selected> {
+        self.hovered
+    }
+
+    /// Where the pointer is.
+    #[must_use]
+    pub fn pointer(&self) -> (f32, f32) {
+        self.pointer
+    }
+
+    /// The ground under the pointer, when it is over the viewport.
+    #[must_use]
+    pub fn cursor_world(&self) -> Option<Vec3> {
+        self.cursor_world
+    }
+
+    /// Seconds since the editor opened.
+    #[must_use]
+    pub fn clock(&self) -> f32 {
+        self.clock
+    }
+
+    /// Frames per second, smoothed.
+    #[must_use]
+    pub fn fps(&self) -> f32 {
+        self.fps
+    }
+
+    /// How many steps `CTRL+Z` can take back, and `CTRL+Y` forward.
+    #[must_use]
+    pub fn history_depth(&self) -> (usize, usize) {
+        (self.undo.len(), self.redo.len())
+    }
+
+    /// The tooltip to show, once the pointer has rested long enough.
+    #[must_use]
+    pub fn tooltip(&self) -> Option<(&str, &str)> {
+        self.tip
+            .as_ref()
+            .filter(|tip| self.clock - tip.since >= theme::metrics::TOOLTIP_DELAY)
+            .map(|tip| (tip.title.as_str(), tip.shortcut))
+    }
+
+    /// The camera's yaw and pitch, for the axis indicator in the corner of the viewport.
+    #[must_use]
+    pub fn camera_angles(&self) -> (f32, f32) {
+        (self.camera.yaw, self.camera.pitch)
+    }
+
+    /// The panel layout for a window of `viewport` pixels at this frame's scale.
+    #[must_use]
+    pub fn layout_for(&self, viewport: (u32, u32)) -> layout::Layout {
+        layout::Layout::new(self.scale, viewport, self.panels)
+    }
+
+    /// The panel layout this frame was answered with.
+    #[must_use]
+    pub fn layout(&self) -> layout::Layout {
+        self.layout_for(self.viewport)
+    }
+
+    /// Whether a gizmo drag, a box or an asset carried out of the browser is in progress.
+    #[must_use]
+    pub fn is_dragging(&self) -> bool {
+        self.gizmo_drag.is_some() || self.marquee.is_some() || self.placement.is_some()
+    }
+
+    /// A short readout of the gizmo drag in progress: how far, how much.
+    #[must_use]
+    pub fn drag_readout(&self) -> Option<&str> {
+        self.gizmo_drag
+            .as_ref()
+            .filter(|drag| drag.moved)
+            .map(|_| self.status.as_str())
     }
 
     /// What the brush does.
@@ -750,6 +1088,9 @@ impl Editor {
     pub fn grid(&self) -> f32 {
         if self.module_snap {
             return MODULE_GRID;
+        }
+        if !self.snap {
+            return 0.0;
         }
         GRID_STEPS[self.grid % GRID_STEPS.len()]
     }
@@ -814,16 +1155,18 @@ impl Editor {
         &self.status
     }
 
+    /// The last thing that happened, if it happened in the last few seconds — after that the
+    /// status bar goes back to saying what can be done next.
+    #[must_use]
+    pub fn recent_status(&self) -> Option<&str> {
+        (!self.status.is_empty() && self.clock - self.status_at < 5.0)
+            .then_some(self.status.as_str())
+    }
+
     /// Which row is at the top of the hierarchy list.
     #[must_use]
     pub fn hierarchy_scroll(&self) -> usize {
         self.hierarchy_scroll
-    }
-
-    /// Whether the key list is on screen.
-    #[must_use]
-    pub fn shows_keys(&self) -> bool {
-        self.show_keys
     }
 
     /// What the hierarchy is filtered by; empty for everything.
@@ -952,9 +1295,11 @@ impl Editor {
         self.scale
     }
 
-    /// Sets the interface scale the panels are laid out at.
-    pub fn set_scale(&mut self, scale: UiScale, _viewport: (u32, u32)) {
-        self.scale = scale;
+    /// Sets the interface scale the player chose. The editor lays itself out at this, or at
+    /// more on a tall window.
+    pub fn set_scale(&mut self, scale: UiScale, viewport: (u32, u32)) {
+        self.settings_scale = scale;
+        self.scale = theme::scale_for(scale, viewport);
     }
 
     /// Enters the editor, looking at `focus`.
@@ -1009,6 +1354,10 @@ impl Editor {
         self.inspector_edit = None;
         self.save_as = None;
         self.hierarchy_typing = None;
+        self.menu = None;
+        self.modal = None;
+        self.scrub = None;
+        self.resizing = None;
     }
 
     /// Writes this camera into the renderer's.
@@ -1033,19 +1382,18 @@ impl Editor {
         }
     }
 
-    /// Whether the pointer is over any of the panels.
-    fn over_panels(&self, pointer: (f32, f32), viewport: (u32, u32)) -> bool {
-        let (x, y) = pointer;
-        ui::browser_rect(self.scale, viewport).contains(x, y)
-            || ui::hierarchy_rect(self.scale, viewport).contains(x, y)
-            || ui::inspector_rect(self.scale, viewport).contains(x, y)
-    }
-
     /// Applies one frame of input to `scene`.
     ///
     /// `view_projection` must be this frame's, from the camera [`Editor::apply_camera`]
     /// wrote — a ray built from last frame's matrix places objects where the cursor was, not
     /// where it is.
+    ///
+    /// # The order input is answered in
+    ///
+    /// A dialog, then an open menu, then a text field that owns the keyboard, then a splitter
+    /// being dragged, then the toolbar and the three panels, and only then the viewport. Each
+    /// layer that answers the pointer stops it reaching the layers under it, which is what
+    /// keeps a click on a menu item from also selecting the rock behind the menu.
     pub fn update(
         &mut self,
         input: &InputState,
@@ -1059,7 +1407,7 @@ impl Editor {
             return EditorOutcome::Idle;
         }
         self.sync_flags(scene);
-        if input.was_key_pressed(KeyCode::F6) {
+        if input.was_key_pressed(KeyCode::F6) || std::mem::take(&mut self.leave_requested) {
             // The last chance before the author walks into the level: whatever they did is
             // written somewhere, even if they never pressed CTRL+S.
             self.autosave(scene);
@@ -1072,35 +1420,61 @@ impl Editor {
         // measure itself on.
         self.view_projection = *view_projection;
         self.viewport = viewport;
+        self.pointer = ui_input.pointer;
         self.clock += seconds;
+        if seconds > 0.0 {
+            self.fps += (1.0 / seconds - self.fps) * 0.1;
+        }
+        self.scale = theme::scale_for(self.settings_scale, viewport);
+        let layout = self.layout_for(viewport);
         self.tick_autosave(scene, seconds);
+        self.tip_last = self.tip.take();
+        if self.status != self.status_seen {
+            self.status_seen.clone_from(&self.status);
+            self.status_at = self.clock;
+        }
 
-        // The two prompts own the whole keyboard and nothing else happens while they are
-        // open: a name half typed into Save As is not a set of camera keys.
+        // Dialogs own everything while they are up.
         if self.save_as.is_some() {
-            self.update_save_as(input, scene);
+            self.update_save_as(input, ui_input, scene, &layout);
             return EditorOutcome::Idle;
+        }
+        if self.modal.is_some() {
+            let changed = self.update_modal(input, ui_input, scene, &layout);
+            return self.outcome(changed);
+        }
+        if self.menu.is_some() {
+            let (answered, changed) = self.update_menu(input, ui_input, scene, &layout);
+            if answered {
+                return self.outcome(changed);
+            }
         }
         if self.hierarchy_typing.is_some() {
-            self.update_hierarchy_filter(input);
-            return EditorOutcome::Idle;
+            if ui_input.pointer_pressed
+                && !layout
+                    .hierarchy_search
+                    .contains(ui_input.pointer.0, ui_input.pointer.1)
+            {
+                // A click anywhere else is done with the filter, and still lands.
+                self.hierarchy_typing = None;
+            } else {
+                self.update_hierarchy_filter(input);
+                return EditorOutcome::Idle;
+            }
         }
 
-        let over_panel = self.over_panels(ui_input.pointer, viewport);
-        let control = input.modifiers().ctrl();
+        let modifiers = input.modifiers();
+        let control = modifiers.ctrl();
+        let pointer = ui_input.pointer;
+        let over_viewport = layout.viewport.contains(pointer.0, pointer.1);
 
         // CTRL+F finds in the panel under the pointer: the hierarchy's filter over the
         // hierarchy, the browser's everywhere else.
         if control
             && input.was_key_pressed(KeyCode::F)
-            && ui::hierarchy_rect(self.scale, viewport)
-                .contains(ui_input.pointer.0, ui_input.pointer.1)
+            && layout.hierarchy.contains(pointer.0, pointer.1)
         {
-            // Typing adds to the filter that is there rather than replacing it.
-            self.hierarchy_typing = Some(field::TextField::appending(
-                &self.hierarchy_filter,
-                field::Charset::FileName,
-            ));
+            self.start_hierarchy_filter();
             return EditorOutcome::Idle;
         }
 
@@ -1121,6 +1495,11 @@ impl Editor {
             self.camera.update(input, seconds);
         }
 
+        // A splitter being dragged owns the pointer until the button comes up.
+        if self.update_splitters(ui_input, &layout) {
+            return self.outcome(changed);
+        }
+
         // ALT+drag orbits, and while it does the left button is the camera's.
         if self.update_orbit(
             input,
@@ -1128,26 +1507,31 @@ impl Editor {
             scene,
             view_projection,
             viewport,
-            over_panel,
+            !over_viewport,
         ) {
             return EditorOutcome::Idle;
         }
         let wheel = input.wheel_delta();
-        if wheel != 0.0 && !over_panel && !typing {
-            let fast = if input.modifiers().shift() { 4.0 } else { 1.0 };
+        if wheel != 0.0 && over_viewport && !typing {
+            let fast = if modifiers.shift() { 4.0 } else { 1.0 };
             self.camera.dolly(wheel * DOLLY_METRES * fast);
         }
 
-        // The panels own the pointer over themselves: a click on a browser row chooses an
-        // asset and must never also place one in the world behind the panel.
-        let over_browser = self.update_browser(input, ui_input, viewport);
-        // What is about to be placed decides the grid, until somebody says otherwise.
-        self.follow_module_snap();
-        let over_hierarchy = self.update_hierarchy(input, ui_input, scene, viewport);
-        if self.update_inspector_pointer(input, ui_input, scene, viewport) {
-            changed = true;
+        // The toolbar and the panels own the pointer over themselves: a click on a browser row
+        // chooses an asset and must never also place one in the world behind the panel.
+        let drag_in_progress = self.gizmo_drag.is_some() || self.marquee.is_some();
+        if !drag_in_progress {
+            changed |= self.update_toolbar(ui_input, scene, &layout);
+            self.update_browser_panel(input, ui_input, &layout);
+            // What is about to be placed decides the grid, until somebody says otherwise.
+            self.follow_module_snap();
+            changed |= self.update_hierarchy_panel(input, ui_input, scene, &layout);
+            changed |= self.update_inspector_panel(input, ui_input, scene, &layout);
         }
-        let over_panel = over_panel || over_browser || over_hierarchy;
+        if self.update_context_menu(input, scene, &layout) {
+            return self.outcome(changed);
+        }
+        let over_panel = !over_viewport;
 
         // Sculpting takes the world pointer and most of the keyboard; the panels keep theirs.
         // A key the brush answered is *not* passed on: `B` cycles the brush while sculpting
@@ -1162,7 +1546,7 @@ impl Editor {
                 over_panel,
             );
             if outcome != EditorOutcome::Idle || handled {
-                self.reveal_selection(scene, viewport);
+                self.reveal_selection(scene, &layout);
                 return outcome;
             }
         }
@@ -1181,7 +1565,7 @@ impl Editor {
                 None
             };
             if let Some(put) = put {
-                self.reveal_selection(scene, viewport);
+                self.reveal_selection(scene, &layout);
                 return match (put, self.water_touched) {
                     (false, _) => EditorOutcome::Idle,
                     (true, true) => EditorOutcome::WaterChanged,
@@ -1211,10 +1595,15 @@ impl Editor {
         ) {
             changed = true;
         }
+        self.update_hover(ui_input, scene, view_projection, viewport, over_viewport);
 
         // Whatever just happened, what is selected is worth seeing in the list.
-        self.reveal_selection(scene, viewport);
+        self.reveal_selection(scene, &layout);
+        self.outcome(changed)
+    }
 
+    /// What a frame that did or did not change the level tells the application.
+    fn outcome(&self, changed: bool) -> EditorOutcome {
         match (changed, self.water_touched) {
             // Water changed and no placement did: one or two quads to rebuild, and none of
             // the level's render entities to respawn.
@@ -1225,11 +1614,39 @@ impl Editor {
     }
 
     /// One frame of the Save As prompt.
-    fn update_save_as(&mut self, input: &InputState, scene: &mut EnvironmentScene) {
+    fn update_save_as(
+        &mut self,
+        input: &InputState,
+        ui_input: &UiInput,
+        scene: &mut EnvironmentScene,
+        layout: &layout::Layout,
+    ) {
+        let dialog = panels::dialog(layout, panels::DialogKind::SaveAs);
+        let (x, y) = ui_input.pointer;
+        let clicked = if ui_input.pointer_pressed {
+            if dialog.close.contains(x, y) || !dialog.panel.contains(x, y) {
+                Some(field::FieldAnswer::Cancel)
+            } else {
+                dialog
+                    .buttons
+                    .iter()
+                    .find(|(rect, ..)| rect.contains(x, y))
+                    .map(|(_, button, ..)| match button {
+                        panels::DialogButton::Save => field::FieldAnswer::Commit,
+                        _ => field::FieldAnswer::Cancel,
+                    })
+            }
+        } else {
+            None
+        };
         let Some(field) = self.save_as.as_mut() else {
             return;
         };
-        match field.update(input) {
+        let answer = match clicked {
+            Some(answer) => answer,
+            None => field.update(input),
+        };
+        match answer {
             field::FieldAnswer::Editing => {}
             field::FieldAnswer::Cancel => {
                 self.save_as = None;
@@ -1516,286 +1933,14 @@ impl Editor {
         (EditorOutcome::Idle, true)
     }
 
-    /// The asset browser: scrolling it, opening folders and choosing what to place.
-    ///
-    /// Returns whether the pointer is over the browser panel, which is what stops the same
-    /// click from also placing an object in the world behind it.
-    fn update_browser(
-        &mut self,
-        input: &InputState,
-        ui_input: &UiInput,
-        viewport: (u32, u32),
-    ) -> bool {
-        let panel = ui::browser_rect(self.scale, viewport);
-        let visible = ui::browser_visible_rows(self.scale, viewport);
-        self.browser.clamp_scroll(visible);
-
-        let (x, y) = ui_input.pointer;
-        if !panel.contains(x, y) {
-            return false;
-        }
-
-        let wheel = input.wheel_delta();
-        if wheel != 0.0 {
-            let step = wheel.abs().max(1.0) as i32;
-            self.browser
-                .scroll_by(if wheel > 0.0 { -step } else { step }, visible);
-        }
-
-        if ui_input.pointer_pressed {
-            for slot in 0..visible {
-                if !ui::browser_row_rect(self.scale, viewport, slot).contains(x, y) {
-                    continue;
-                }
-                let Some(row) = self.browser.row(self.browser.scroll() + slot) else {
-                    break;
-                };
-                let doubled = self.last_row_click.is_some_and(|(last, when)| {
-                    last == row && self.clock - when <= DOUBLE_CLICK_SECONDS
-                });
-                match row {
-                    browser::BrowserRow::Folder(_) | browser::BrowserRow::BuiltinFolder => {
-                        self.browser.toggle(row);
-                    }
-                    _ if self.browser.scene_path(row).is_some() => {
-                        // A level is not placed: a double click opens it.
-                        if doubled {
-                            let path = self.browser.scene_path(row).map(Path::to_path_buf);
-                            self.last_row_click = None;
-                            if let Some(path) = path {
-                                self.request_open(path);
-                            }
-                        } else {
-                            self.last_row_click = Some((row, self.clock));
-                            self.status = "double-click a level to open it".to_owned();
-                        }
-                    }
-                    _ if !self.browser.is_placeable(row) => {
-                        // A material or a texture: something to look at, and nothing to carry
-                        // into the world — carrying it would drop whatever was chosen before.
-                        self.last_row_click = None;
-                    }
-                    _ => {
-                        if self.browser.choose(row) {
-                            self.status = format!("placing {}", self.browser.selected_name());
-                        }
-                        // A press on a row is the *start* of a placement, and nothing has been
-                        // placed yet: it becomes one only when the button comes up over the
-                        // world. A second press on the same row inside the double-click
-                        // interval means "put one in front of me" instead.
-                        if doubled {
-                            self.place_at_centre = true;
-                            self.placement = None;
-                            self.last_row_click = None;
-                        } else {
-                            self.placement = Some(PlacementDrag { from: (x, y) });
-                            self.last_row_click = Some((row, self.clock));
-                        }
-                    }
-                }
-                break;
-            }
-        }
-        true
-    }
-
-    /// Asks the application to open `path`, unless that would throw away unsaved work the
-    /// author has not confirmed losing.
-    fn request_open(&mut self, path: PathBuf) {
-        if self.is_dirty() && self.confirm_open.as_ref() != Some(&path) {
-            self.status = format!(
-                "UNSAVED CHANGES: CTRL+S first, or double-click {} again to discard them",
-                path.file_stem()
-                    .map_or_else(Default::default, |stem| stem.to_string_lossy())
-            );
-            self.confirm_open = Some(path);
+    /// Asks the application to open `path` — or, over unsaved work, asks the author first.
+    pub(crate) fn request_open(&mut self, path: PathBuf) {
+        if self.is_dirty() {
+            self.modal = Some(Modal::Unsaved { path });
             return;
         }
-        self.confirm_open = None;
-        self.status = format!("opening {}", path.display());
+        self.status = format!("Opening {}", path.display());
         self.open_request = Some(path);
-    }
-
-    /// The hierarchy's rows, after its filter: every placement, then the water, the spawn
-    /// points and the lights.
-    #[must_use]
-    pub fn hierarchy_rows(&self, scene: &EnvironmentScene) -> Vec<Selected> {
-        let needle = self.hierarchy_filter.trim().to_ascii_lowercase();
-        let everything = (0..scene.objects.len())
-            .map(Selected::Object)
-            .chain((0..scene.water.len()).map(Selected::Water))
-            .chain((0..scene.spawn_points.len()).map(Selected::Spawn))
-            .chain((0..scene.lights.len()).map(Selected::Light));
-        if needle.is_empty() {
-            return everything.collect();
-        }
-        everything
-            .filter(|what| {
-                let name = match what {
-                    Selected::Object(index) => scene
-                        .objects
-                        .get(*index)
-                        .map_or("", |object| object.asset.name()),
-                    Selected::Water(_) => "water",
-                    Selected::Spawn(_) => "spawn",
-                    Selected::Light(_) => "light",
-                };
-                name.to_ascii_lowercase().contains(&needle)
-            })
-            .collect()
-    }
-
-    /// The hierarchy list: scrolling it, selecting out of it, and framing what is
-    /// double-clicked in it.
-    ///
-    /// Returns whether the pointer is over the hierarchy or the inspector, which is what
-    /// stops the same click from also placing an object in the world behind them.
-    fn update_hierarchy(
-        &mut self,
-        input: &InputState,
-        ui_input: &UiInput,
-        scene: &EnvironmentScene,
-        viewport: (u32, u32),
-    ) -> bool {
-        let hierarchy = ui::hierarchy_rect(self.scale, viewport);
-        let inspector = ui::inspector_rect(self.scale, viewport);
-        let (x, y) = ui_input.pointer;
-        let over_hierarchy = hierarchy.contains(x, y);
-        if !over_hierarchy && !inspector.contains(x, y) {
-            return false;
-        }
-
-        let visible = ui::hierarchy_visible_rows(self.scale, viewport);
-        let list = self.hierarchy_rows(scene);
-        let rows = list.len();
-        // Scrolled by whole rows, and never past the end: a list that can be scrolled into
-        // emptiness looks like a list that has lost its contents.
-        let wheel = input.wheel_delta();
-        if over_hierarchy && wheel != 0.0 {
-            let last = rows.saturating_sub(visible);
-            let step = wheel.abs().max(1.0) as usize;
-            self.hierarchy_scroll = if wheel > 0.0 {
-                self.hierarchy_scroll.saturating_sub(step)
-            } else {
-                (self.hierarchy_scroll + step).min(last)
-            };
-        }
-        self.hierarchy_scroll = self.hierarchy_scroll.min(rows.saturating_sub(visible));
-
-        if over_hierarchy && ui_input.pointer_pressed {
-            for slot in 0..visible {
-                if !ui::hierarchy_row_rect(self.scale, viewport, slot).contains(x, y) {
-                    continue;
-                }
-                let Some(what) = list.get(self.hierarchy_scroll + slot).copied() else {
-                    break;
-                };
-                let control = input.modifiers().ctrl();
-                let doubled = self.last_hierarchy_click.is_some_and(|(last, when)| {
-                    last == what && self.clock - when <= DOUBLE_CLICK_SECONDS
-                });
-                if doubled && !control {
-                    self.selected.clear();
-                    self.selected.push(what);
-                    self.frame_selection(scene);
-                    self.last_hierarchy_click = None;
-                    break;
-                }
-                self.last_hierarchy_click = Some((what, self.clock));
-                self.select(what, control);
-                self.cancel_manipulation();
-                self.status = match what {
-                    Selected::Object(index) => format!(
-                        "selected {} ({index}){}",
-                        scene.objects[index].asset.name(),
-                        if self.selected.len() > 1 {
-                            format!(" of {}", self.selected.len())
-                        } else {
-                            String::new()
-                        }
-                    ),
-                    Selected::Water(index) => format!("selected water ({index})"),
-                    Selected::Spawn(index) => format!("selected spawn ({index})"),
-                    Selected::Light(index) => format!("selected light ({index})"),
-                };
-                break;
-            }
-        }
-        true
-    }
-
-    /// The inspector's numbers: a click on one starts typing into it, and the wheel over one
-    /// steps it. Returns whether the scene changed.
-    fn update_inspector_pointer(
-        &mut self,
-        input: &InputState,
-        ui_input: &UiInput,
-        scene: &mut EnvironmentScene,
-        viewport: (u32, u32),
-    ) -> bool {
-        let (x, y) = ui_input.pointer;
-        let Some(primary) = self.selection() else {
-            return false;
-        };
-        let under = inspector::rows(primary)
-            .iter()
-            .enumerate()
-            .find_map(|(row, line)| {
-                line.properties
-                    .iter()
-                    .enumerate()
-                    .find(|(column, _)| {
-                        ui::inspector_cell_rect(self.scale, viewport, row, *column).contains(x, y)
-                    })
-                    .map(|(_, property)| *property)
-            });
-
-        let mut changed = false;
-        if ui_input.pointer_pressed {
-            // A click anywhere commits what was being typed, as leaving a field does in every
-            // program with fields in it.
-            if self.inspector_edit.is_some() {
-                changed |= self.commit_inspector_edit(scene);
-            }
-            if let Some(property) = under {
-                let value = inspector::get(scene, primary, property).unwrap_or(0.0);
-                self.inspector_edit = Some(InspectorEdit {
-                    property,
-                    field: field::TextField::new(&format_value(value), field::Charset::Number),
-                });
-                self.status = "type a number: ENTER sets it, TAB the next, ESC cancels".to_owned();
-            }
-        }
-
-        let wheel = input.wheel_delta();
-        if wheel != 0.0
-            && let Some(property) = under
-            && self.inspector_edit.is_none()
-            && let Some(value) = inspector::get(scene, primary, property)
-        {
-            let step = property.wheel_step(self.grid(), self.yaw_step());
-            let fast = if input.modifiers().shift() { 10.0 } else { 1.0 };
-            // A run of notches on one number is one edit, not one per notch.
-            let continuing = self
-                .wheel_run
-                .is_some_and(|(last, when)| last == property && self.clock - when < 0.6);
-            if !continuing {
-                self.snapshot(scene);
-            }
-            self.wheel_run = Some((property, self.clock));
-            let selection = self.selected.clone();
-            if inspector::set(
-                scene,
-                &selection,
-                primary,
-                property,
-                value + wheel * step * fast,
-            ) {
-                self.water_touched = !primary.is_scene_kind();
-                changed = true;
-            }
-        }
-        changed
     }
 
     /// One frame of typing into the inspector. Returns whether the scene changed.
@@ -1897,26 +2042,6 @@ impl Editor {
         });
     }
 
-    /// Keeps the selected thing in view, so a keyboard verb's result is visible.
-    fn reveal_selection(&mut self, scene: &EnvironmentScene, viewport: (u32, u32)) {
-        let Some(primary) = self.selection() else {
-            return;
-        };
-        let Some(index) = self
-            .hierarchy_rows(scene)
-            .iter()
-            .position(|row| *row == primary)
-        else {
-            return;
-        };
-        let visible = ui::hierarchy_visible_rows(self.scale, viewport).max(1);
-        if index < self.hierarchy_scroll {
-            self.hierarchy_scroll = index;
-        } else if index >= self.hierarchy_scroll + visible {
-            self.hierarchy_scroll = index + 1 - visible;
-        }
-    }
-
     /// Moves the camera to see the selection whole — or the whole level, with nothing
     /// selected.
     fn frame_selection(&mut self, scene: &EnvironmentScene) {
@@ -1949,408 +2074,127 @@ impl Editor {
     }
 
     /// The keyboard verbs. Returns whether the scene changed.
+    ///
+    /// Every verb is a [`commands::Command`]: a key here, a toolbar button and a menu item
+    /// all end up in [`Editor::execute`].
     fn update_keys(&mut self, input: &InputState, scene: &mut EnvironmentScene) -> bool {
+        use commands::{Command, Tool};
         let modifiers = input.modifiers();
         let (control, shift) = (modifiers.ctrl(), modifiers.shift());
+        let pressed = |key: KeyCode| input.was_key_pressed(key);
 
-        if input.was_key_pressed(KeyCode::Escape) {
+        if pressed(KeyCode::Escape) {
             // The way out of everything in progress, not only the selection: an asset picked
             // up from the browser and not yet dropped is a gesture an author has to be able
-            // to abandon, and a mode where every click puts something down is another. The
-            // key that abandons things is this one.
+            // to abandon, and a mode where every click puts something down is another.
             self.selected.clear();
             self.cancel_manipulation();
-            self.confirm_open = None;
             if self.placing {
                 self.placing = false;
-                self.status = "select and move".to_owned();
+                self.status = "Select and move".to_owned();
             }
             return false;
+        }
+        if pressed(KeyCode::F1) {
+            return self.execute(Command::ToggleShortcuts, scene);
+        }
+        if pressed(KeyCode::F3) {
+            return self.execute(Command::ToggleDebug, scene);
         }
         if control {
-            return self.update_chords(input, scene, shift);
+            let command = if pressed(KeyCode::S) {
+                Some(if shift {
+                    Command::SaveAs
+                } else {
+                    Command::Save
+                })
+            } else if pressed(KeyCode::Y) || (shift && pressed(KeyCode::Z)) {
+                Some(Command::Redo)
+            } else if pressed(KeyCode::Z) {
+                Some(Command::Undo)
+            } else if pressed(KeyCode::A) {
+                Some(Command::SelectAll)
+            } else if pressed(KeyCode::D) {
+                Some(Command::Duplicate)
+            } else if pressed(KeyCode::C) {
+                Some(Command::Copy)
+            } else if pressed(KeyCode::V) {
+                Some(Command::Paste)
+            } else if pressed(KeyCode::G) {
+                Some(Command::DropToGround)
+            } else {
+                None
+            };
+            return command.is_some_and(|command| self.execute(command, scene));
         }
-        if input.was_key_pressed(KeyCode::F1) {
-            self.show_keys = !self.show_keys;
-            return false;
+
+        let command = if pressed(KeyCode::F) || pressed(KeyCode::Home) {
+            Some(Command::Frame)
+        } else if pressed(KeyCode::M) {
+            Some(Command::ToggleModule)
+        } else if pressed(KeyCode::B) {
+            Some(Command::ToggleSculpt)
+        } else if pressed(KeyCode::N) {
+            Some(Command::TogglePlacing)
+        } else if pressed(KeyCode::L) {
+            Some(Command::ToggleSpace)
+        } else if pressed(KeyCode::Digit1) {
+            Some(Command::SetTool(Tool::Move))
+        } else if pressed(KeyCode::Digit2) {
+            Some(Command::SetTool(Tool::Turn))
+        } else if pressed(KeyCode::Digit3) {
+            Some(Command::SetTool(Tool::Scale))
+        } else if pressed(KeyCode::H) {
+            Some(if shift {
+                Command::ShowAll
+            } else {
+                Command::Hide
+            })
+        } else if pressed(KeyCode::K) {
+            Some(Command::ToggleLock)
+        } else if pressed(KeyCode::X) || pressed(KeyCode::Delete) {
+            Some(Command::Delete)
+        } else if pressed(KeyCode::Digit0) {
+            Some(Command::ResetTransform)
+        } else {
+            None
+        };
+        if let Some(command) = command {
+            return self.execute(command, scene);
         }
-        if input.was_key_pressed(KeyCode::F) || input.was_key_pressed(KeyCode::Home) {
-            self.frame_selection(scene);
-            return false;
-        }
-        if input.was_key_pressed(KeyCode::G) {
+
+        if pressed(KeyCode::G) {
             if shift {
                 self.yaw_step = (self.yaw_step + 1) % YAW_STEPS.len();
-                self.status = format!("rotate by {} deg", self.yaw_step());
+                self.status = format!("Rotate by {} degrees", self.yaw_step());
             } else {
                 self.grid = (self.grid + 1) % GRID_STEPS.len();
+                self.snap = true;
                 let step = self.grid();
                 self.status = if step > 0.0 {
-                    format!("grid {step} m")
+                    format!("Grid {step} m")
                 } else {
-                    "grid off".to_owned()
+                    "Grid off".to_owned()
                 };
             }
             return false;
         }
-        if input.was_key_pressed(KeyCode::M) {
-            // Pressing it takes the decision off the editor for the rest of the session: an
-            // author who has said what they want must not have it changed under them by the
-            // next asset they click on.
-            self.module_snap = !self.module_snap;
-            self.module_snap_pinned = true;
-            self.status = if self.module_snap {
-                format!("module snap {MODULE_GRID} m / {MODULE_YAW} deg")
-            } else {
-                "module snap off".to_owned()
-            };
-            return false;
-        }
-        if input.was_key_pressed(KeyCode::B) {
-            self.sculpting = !self.sculpting;
-            // The two world modes are exclusive: the brush and the placing click both want
-            // every press in the viewport, and an editor in both is an editor whose next
-            // click nobody can predict.
-            self.placing = false;
-            self.selected.clear();
-            self.cancel_manipulation();
-            self.status = if self.sculpting {
-                "sculpting: drag to shape the ground".to_owned()
-            } else {
-                "select and move".to_owned()
-            };
-            return false;
-        }
-        if input.was_key_pressed(KeyCode::N) {
-            self.placing = !self.placing;
-            self.sculpting = false;
-            self.cancel_manipulation();
-            self.status = if self.placing {
-                format!(
-                    "placing {}: click to put one down",
-                    self.browser.selected_name()
-                )
-            } else {
-                "select and move".to_owned()
-            };
-            return false;
-        }
-        if input.was_key_pressed(KeyCode::L) {
-            self.local_space = !self.local_space;
-            self.status = if self.local_space {
-                "local axes".to_owned()
-            } else {
-                "world axes".to_owned()
-            };
-            return false;
-        }
-        if input.was_key_pressed(KeyCode::Tab) {
+        if pressed(KeyCode::Tab) {
             self.browser.select_next();
-            self.status = format!("placing {}", self.browser.selected_name());
+            self.status = format!(
+                "Placing {}",
+                theme::display_name(self.browser.selected_name())
+            );
             return false;
         }
-        for (key, mode) in [
-            (KeyCode::Digit1, gizmo::GizmoMode::Translate),
-            (KeyCode::Digit2, gizmo::GizmoMode::Rotate),
-            (KeyCode::Digit3, gizmo::GizmoMode::Scale),
-        ] {
-            if input.was_key_pressed(key) {
-                self.gizmo_mode = mode;
-                self.cancel_manipulation();
-                self.status = format!("gizmo: {}", mode.label().to_ascii_lowercase());
-                return false;
-            }
+        if pressed(KeyCode::R) {
+            return self.turn_step(scene, shift);
         }
-        if input.was_key_pressed(KeyCode::H) && shift {
-            let any = self.has_hidden();
-            for flags in &mut self.flags {
-                *flags &= !HIDDEN;
-            }
-            self.status = "everything shown".to_owned();
-            // Nothing in the level changed, but what is drawn did.
-            return any;
-        }
-
-        // Everything below acts on the selection, and every one of them acts on *all* of it.
-        self.prune_selection(scene);
-        if self.selected.is_empty() {
-            return false;
-        }
-        // A selection holds one kind, so whatever the verb below turns out to be, this is the
-        // list it will reach — which is how the application is told a quad moved rather than
-        // the level.
-        self.water_touched = self.selected.iter().all(|what| !what.is_scene_kind());
-
-        if input.was_key_pressed(KeyCode::H) {
-            let objects = self.selected_objects();
-            for index in &objects {
-                if let Some(flags) = self.flags.get_mut(*index) {
-                    *flags |= HIDDEN;
-                }
-            }
-            self.selected.clear();
-            self.water_touched = false;
-            self.status = format!("hid {} (SHIFT+H shows them)", objects.len());
-            return !objects.is_empty();
-        }
-        if input.was_key_pressed(KeyCode::K) {
-            let objects = self.selected_objects();
-            let lock = objects.iter().any(|index| !self.is_locked(*index));
-            for index in &objects {
-                if let Some(flags) = self.flags.get_mut(*index) {
-                    if lock {
-                        *flags |= LOCKED;
-                    } else {
-                        *flags &= !LOCKED;
-                    }
-                }
-            }
-            self.status = if lock {
-                format!("locked {}: clicks in the world pass through", objects.len())
-            } else {
-                format!("unlocked {}", objects.len())
-            };
-            return false;
-        }
-        if input.was_key_pressed(KeyCode::X) || input.was_key_pressed(KeyCode::Delete) {
-            self.snapshot(scene);
-            let count = self.selected.len();
-            // Highest index first, so removing one does not move the next one under it. Each
-            // kind is removed from its own list, and a selection holds one kind, so a delete
-            // never reaches the other.
-            let mut doomed = self.selected.clone();
-            doomed.sort_unstable_by_key(|what| std::cmp::Reverse(index_of(*what)));
-            for what in doomed {
-                match what {
-                    Selected::Object(index) => {
-                        scene.objects.remove(index);
-                        if index < self.flags.len() {
-                            self.flags.remove(index);
-                        }
-                    }
-                    Selected::Water(index) => {
-                        scene.water.remove(index);
-                    }
-                    Selected::Spawn(index) => {
-                        scene.spawn_points.remove(index);
-                    }
-                    Selected::Light(index) => {
-                        scene.lights.remove(index);
-                    }
-                }
-            }
-            self.status = format!("deleted {count}");
-            self.selected.clear();
-            return true;
-        }
-        if input.was_key_pressed(KeyCode::R) {
-            self.snapshot(scene);
-            let step = self.yaw_step().to_radians() * if shift { -1.0 } else { 1.0 };
-            let mut last = 0.0;
-            for what in self.selected.clone() {
-                // Snapped to a multiple of the step rather than added to: an object turned by
-                // hand and then stepped ends up aligned with everything else stepped by the
-                // same amount, which is the whole point of a rotation snap.
-                let Some(mut pose) = pose_of(scene, what) else {
-                    continue;
-                };
-                last = snap_angle(pose.yaw + step, self.yaw_step().to_radians());
-                pose.yaw = last;
-                set_pose(scene, what, pose);
-            }
-            self.status = format!("yaw {:.0} deg", last.to_degrees());
-            return true;
-        }
-        if input.was_key_pressed(KeyCode::T) {
-            self.snapshot(scene);
-            let factor = if shift { 1.0 / SCALE_STEP } else { SCALE_STEP };
-            let mut last = 1.0;
-            for what in self.selected.clone() {
-                let Some(mut pose) = pose_of(scene, what) else {
-                    continue;
-                };
-                // A body of water has no scale: it has a size, in metres, and growing it is
-                // what `T` means for one — its footprint, not its depth. A light's size is how
-                // far it reaches.
-                pose.scale = match what {
-                    Selected::Water(_) => {
-                        Vec3::new(pose.scale.x * factor, pose.scale.y, pose.scale.z * factor)
-                    }
-                    _ => pose.scale * factor,
-                };
-                last = pose.scale.x;
-                set_pose(scene, what, pose);
-            }
-            self.status = match self.selection() {
-                Some(Selected::Water(_)) => format!("water {last:.1} m"),
-                Some(Selected::Light(_)) => format!("range {last:.1} m"),
-                _ => format!("scale {last:.2}"),
-            };
-            return true;
-        }
-        if input.was_key_pressed(KeyCode::Digit0) {
-            self.snapshot(scene);
-            for what in self.selected.clone() {
-                let Some(mut pose) = pose_of(scene, what) else {
-                    continue;
-                };
-                // Where it stands is what an author placed; how it is turned and how big it is
-                // are what they have been fiddling with. Reset means the second, not the
-                // first — except for water, whose size is what somebody dragged out on purpose.
-                pose.yaw = 0.0;
-                if let Selected::Object(_) = what {
-                    pose.scale = Vec3::ONE;
-                }
-                set_pose(scene, what, pose);
-            }
-            self.status = "transform reset".to_owned();
-            return true;
+        if pressed(KeyCode::T) {
+            return self.scale_step(scene, shift);
         }
         if let Some(step) = self.nudge(input, shift) {
-            self.snapshot(scene);
-            let local = self.local_space;
-            // In local space the step runs along the thing's own facing, so nudging a yawed
-            // wall moves it along the wall rather than along the world's X. Written once, so
-            // a yawed pond obeys the same rule a yawed wall does.
-            let along = |yaw: f32| {
-                if !local {
-                    return step;
-                }
-                let (sin, cos) = yaw.sin_cos();
-                Vec3::new(
-                    step.x * cos + step.z * sin,
-                    step.y,
-                    -step.x * sin + step.z * cos,
-                )
-            };
-            for what in self.selected.clone() {
-                let Some(pose) = pose_of(scene, what) else {
-                    continue;
-                };
-                move_by(scene, what, along(pose.yaw));
-            }
-            self.status = format!(
-                "moved {:.2} {:.2} {:.2} ({})",
-                step.x,
-                step.y,
-                step.z,
-                if self.local_space { "local" } else { "world" }
-            );
-            return true;
-        }
-        false
-    }
-
-    /// The `CTRL` chords. Returns whether the scene changed.
-    fn update_chords(
-        &mut self,
-        input: &InputState,
-        scene: &mut EnvironmentScene,
-        shift: bool,
-    ) -> bool {
-        if input.was_key_pressed(KeyCode::S) {
-            if shift {
-                let stem = self
-                    .save_path
-                    .file_stem()
-                    .map_or_else(String::new, |stem| stem.to_string_lossy().into_owned());
-                self.save_as = Some(field::TextField::new(&stem, field::Charset::FileName));
-                self.status = "save as: type a name, ENTER saves".to_owned();
-            } else {
-                self.save(scene);
-            }
-            return false;
-        }
-        if input.was_key_pressed(KeyCode::Y) || (shift && input.was_key_pressed(KeyCode::Z)) {
-            return self.redo(scene);
-        }
-        if input.was_key_pressed(KeyCode::Z) {
-            return self.undo(scene);
-        }
-        if input.was_key_pressed(KeyCode::A) {
-            // Every object, and no water: `CTRL+A` on a level with a lake would otherwise
-            // put two kinds in one selection, which is the one thing the tag forbids. Hidden
-            // and locked objects are left out, for the reason a click passes through them.
-            self.selected = (0..scene.objects.len())
-                .map(Selected::Object)
-                .filter(|what| self.pickable(*what))
-                .collect();
-            self.status = format!("selected {}", self.selected.len());
-            return false;
-        }
-
-        self.prune_selection(scene);
-        if self.selected.is_empty() {
-            return false;
-        }
-        self.water_touched = self.selected.iter().all(|what| !what.is_scene_kind());
-
-        if input.was_key_pressed(KeyCode::D) {
-            self.snapshot(scene);
-            // Offset by one grid step, or a metre when the grid is off, so the copy is
-            // visible instead of hiding exactly inside the original.
-            let step = if self.grid() > 0.0 { self.grid() } else { 1.0 };
-            let offset = Vec3::new(step, 0.0, step);
-            let mut copies = Vec::with_capacity(self.selected.len());
-            for what in self.selected.clone() {
-                let copy = match what {
-                    Selected::Object(index) => scene.objects.get(index).copied().map(|mut copy| {
-                        copy.transform.translation += offset;
-                        scene.objects.push(copy);
-                        self.flags.push(0);
-                        Selected::Object(scene.objects.len() - 1)
-                    }),
-                    Selected::Water(index) => scene.water.get(index).copied().map(|mut copy| {
-                        copy.center += offset;
-                        scene.water.push(copy);
-                        Selected::Water(scene.water.len() - 1)
-                    }),
-                    Selected::Spawn(index) => {
-                        scene.spawn_points.get(index).copied().map(|mut copy| {
-                            copy.position += offset;
-                            scene.spawn_points.push(copy);
-                            Selected::Spawn(scene.spawn_points.len() - 1)
-                        })
-                    }
-                    Selected::Light(index) => scene.lights.get(index).copied().map(|mut copy| {
-                        copy.position += offset;
-                        scene.lights.push(copy);
-                        Selected::Light(scene.lights.len() - 1)
-                    }),
-                };
-                copies.extend(copy);
-            }
-            self.status = format!("duplicated {}", copies.len());
-            // The copies become the selection, so dragging straight afterwards moves the new
-            // ones rather than the originals.
-            self.selected = copies;
-            return true;
-        }
-        if input.was_key_pressed(KeyCode::G) {
-            // Down onto whatever is under each one: a crate lifted by the Y handle comes back
-            // to the floor, and a rock buried by a brush stroke comes back up out of the hill.
-            self.snapshot(scene);
-            let moving = self.selected_objects();
-            let mut moved = 0;
-            for what in self.selected.clone() {
-                let Some(position) = position_of(scene, what) else {
-                    continue;
-                };
-                let ground = scene.ground_at(position);
-                let rest = match what {
-                    Selected::Object(_) => {
-                        pick::rest_below(scene, position, ground, |index| moving.contains(&index))
-                    }
-                    Selected::Light(_) => continue,
-                    _ => ground,
-                };
-                if (rest - position.y).abs() > 1e-4 {
-                    move_by(scene, what, Vec3::new(0.0, rest - position.y, 0.0));
-                    moved += 1;
-                }
-            }
-            self.status = format!("dropped {moved} onto what is under them");
-            return moved > 0;
+            return self.nudge_by(scene, step);
         }
         false
     }
@@ -2403,14 +2247,11 @@ impl Editor {
         self.place_at_centre = false;
     }
 
-    /// Where the gizmo stands: the primary selection's own position.
-    ///
-    /// The primary rather than the centre of the group, because the primary is the thing the
-    /// inspector describes and the thing every keyboard verb reports on. A gizmo at the
-    /// average of a hundred selected rocks stands in empty space.
+    /// Where the gizmo stands: the primary selection, or the middle of the selection when the
+    /// pivot says so.
     #[must_use]
     pub fn gizmo_origin(&self, scene: &EnvironmentScene) -> Option<Vec3> {
-        position_of(scene, self.selection()?)
+        self.pivot_point(scene)
     }
 
     /// The gizmo as the pointer sees it this frame, if there is one to see.
@@ -2432,22 +2273,19 @@ impl Editor {
         view_projection: &Mat4,
         viewport: (u32, u32),
     ) -> Option<gizmo::GizmoScreen> {
-        // No handles in the two modes where the left button means something else: a gizmo
-        // an author cannot grab is a lie about what a click will do.
+        // No handles in the two modes where the left button means something else, nor for
+        // the select tool: a gizmo an author cannot grab is a lie about what a click will do.
         if self.sculpting || self.placing {
             return None;
         }
-        let primary = self.selection()?;
-        let origin = position_of(scene, primary)?;
-        let rotation = pose_of(scene, primary).map_or(Quat::IDENTITY, |pose| {
-            Quat::from_yaw_pitch_roll(pose.yaw, 0.0, 0.0)
-        });
+        let mode = self.tool.gizmo()?;
+        let origin = self.pivot_point(scene)?;
         let length = gizmo::length_for(origin, self.camera.position);
         gizmo::project(
-            self.gizmo_mode,
+            mode,
             origin,
             length,
-            rotation,
+            self.primary_rotation(scene),
             self.camera.position,
             view_projection,
             viewport,
@@ -2559,10 +2397,7 @@ impl Editor {
                 .iter()
                 .filter_map(|what| pose_of(scene, *what).map(|pose| (*what, pose)))
                 .collect();
-            let pivot = self
-                .selection()
-                .and_then(|primary| position_of(scene, primary))
-                .unwrap_or(Vec3::ZERO);
+            let pivot = self.pivot_point(scene).unwrap_or(Vec3::ZERO);
             self.gizmo_drag = Some(GizmoDrag {
                 handle,
                 from: ui_input.pointer,
@@ -2573,11 +2408,7 @@ impl Editor {
                 swept: 0.0,
                 moved: false,
             });
-            self.status = format!(
-                "{} {}",
-                self.gizmo_mode.label().to_ascii_lowercase(),
-                handle.label()
-            );
+            self.status = format!("{} {}", self.tool.label(), handle.label());
             return false;
         }
 
@@ -2610,17 +2441,21 @@ impl Editor {
         if add_to_selection || !self.is_selected(what) {
             self.select(what, add_to_selection);
         }
+        // A double click frames what was clicked: the quickest way from "that rock over
+        // there" to looking at it.
+        let doubled = self
+            .last_viewport_click
+            .is_some_and(|(last, when)| last == what && self.clock - when <= DOUBLE_CLICK_SECONDS);
+        self.last_viewport_click = Some((what, self.clock));
+        if doubled && !add_to_selection {
+            self.last_viewport_click = None;
+            self.frame_selection(scene);
+            return false;
+        }
         self.status = if self.selected.len() > 1 {
-            format!("selected {}", self.selected.len())
+            format!("{} selected", self.selected.len())
         } else {
-            match what {
-                Selected::Object(index) => {
-                    format!("selected {}", scene.objects[index].asset.name())
-                }
-                Selected::Water(index) => format!("selected water ({index})"),
-                Selected::Spawn(index) => format!("selected spawn ({index})"),
-                Selected::Light(index) => format!("selected light ({index})"),
-            }
+            format!("Selected {}", panels::item_name(scene, what))
         };
         // Selecting never changes the level. That is what "a single click on an existing
         // object always means selection" costs: nothing.
@@ -2709,7 +2544,7 @@ impl Editor {
         // as it was before this frame and not as it was halfway through it.
         let mut targets: Vec<(Selected, Pose)> = Vec::with_capacity(drag.starts.len());
         let describe;
-        match (self.gizmo_mode, drag.handle) {
+        match (drag.screen.mode, drag.handle) {
             (gizmo::GizmoMode::Rotate, _) => {
                 if let (Some(last), Some(now)) =
                     (drag.last_angle, drag.screen.pointer_angle(ui_input.pointer))
@@ -2735,7 +2570,7 @@ impl Editor {
                         },
                     ));
                 }
-                describe = format!("turned {:.1} deg", turn.to_degrees());
+                describe = format!("Rotate {:+.1} degrees", turn.to_degrees());
             }
             (gizmo::GizmoMode::Scale, handle) => {
                 let factor = match handle {
@@ -2778,7 +2613,18 @@ impl Editor {
                     }
                     targets.push((*what, Pose { scale, ..*start }));
                 }
-                describe = format!("scaled x{factor:.2} along {}", handle.label());
+                // The scale the primary ended up at, snapped, rather than the raw factor.
+                let shown = targets
+                    .iter()
+                    .find(|(what, _)| Some(*what) == primary)
+                    .or(targets.first())
+                    .map_or(Vec3::ONE, |(_, pose)| pose.scale);
+                describe = match handle {
+                    gizmo::Handle::Axis(gizmo::Axis::X) => format!("Scale X {:.2}", shown.x),
+                    gizmo::Handle::Axis(gizmo::Axis::Y) => format!("Scale Y {:.2}", shown.y),
+                    gizmo::Handle::Axis(gizmo::Axis::Z) => format!("Scale Z {:.2}", shown.z),
+                    _ => format!("Scale {:.2} {:.2} {:.2}", shown.x, shown.y, shown.z),
+                };
             }
             (gizmo::GizmoMode::Translate, handle) => {
                 let gizmo::Handle::Axis(axis) = handle else {
@@ -2795,10 +2641,21 @@ impl Editor {
                     };
                     targets.push((*what, Pose { position, ..*start }));
                 }
+                // What was actually applied, snapped, rather than how far the hand moved.
+                let applied = targets.iter().zip(&drag.starts).next().map_or(
+                    0.0,
+                    |((_, target), (_, start))| {
+                        (target.position - start.position).dot(axis.direction())
+                    },
+                );
                 describe = if drag.starts.len() > 1 {
-                    format!("moved {} along {}", drag.starts.len(), axis.label())
+                    format!(
+                        "{} {applied:+.2} m ({} items)",
+                        axis.label(),
+                        drag.starts.len()
+                    )
                 } else {
-                    format!("moved {metres:.2} m along {}", axis.label())
+                    format!("{} {applied:+.2} m", axis.label())
                 };
             }
         }
@@ -2935,7 +2792,7 @@ impl Editor {
         self.selected.clear();
         self.selected
             .push(Selected::Object(scene.objects.len() - 1));
-        self.status = format!("placed {}", asset.name());
+        self.status = format!("Placed {}", theme::display_name(asset.name()));
         true
     }
 
@@ -3517,7 +3374,7 @@ mod tests {
         if let Some(point) = visible_selected_row(editor) {
             return point;
         }
-        let folder = ui::browser_row_rect(editor.scale(), VIEWPORT, 0);
+        let folder = editor.layout_for(VIEWPORT).browser_row(0);
         update(
             editor,
             &InputState::new(),
@@ -3532,14 +3389,14 @@ mod tests {
 
     /// The row rectangle of the browser's own selection, if it is listed.
     fn visible_selected_row(editor: &Editor) -> Option<(f32, f32)> {
-        let visible = ui::browser_visible_rows(editor.scale(), VIEWPORT);
+        let visible = editor.layout_for(VIEWPORT).browser_rows();
         let first = editor.browser().scroll();
         for slot in 0..visible {
             let Some(row) = editor.browser().row(first + slot) else {
                 break;
             };
             if editor.browser().is_selected(row) {
-                let rect = ui::browser_row_rect(editor.scale(), VIEWPORT, slot);
+                let rect = editor.layout_for(VIEWPORT).browser_row(slot);
                 return Some((rect.x + rect.width * 0.5, rect.y + rect.height * 0.5));
             }
         }
@@ -3594,7 +3451,7 @@ mod tests {
 
     /// The middle of hierarchy row `slot`.
     fn hierarchy_point(editor: &Editor, slot: usize) -> (f32, f32) {
-        let rect = ui::hierarchy_row_rect(editor.scale(), VIEWPORT, slot);
+        let rect = editor.layout_for(VIEWPORT).hierarchy_row(slot);
         (rect.x + rect.width * 0.5, rect.y + rect.height * 0.5)
     }
 
@@ -3904,7 +3761,7 @@ mod tests {
 
         // Selecting the rock from the hierarchy clears the water selection rather than
         // adding to it: a selection holds one kind at a time.
-        let point = hierarchy_point(&editor, 0);
+        let point = item_point(&editor, &scene, Selected::Object(0));
         update(&mut editor, &InputState::new(), &press(point), &mut scene);
         assert_eq!(editor.selection(), Some(Selected::Object(0)));
         assert!(editor.selected_waters().is_empty());
@@ -3919,7 +3776,7 @@ mod tests {
             ROCK_SMALL,
             Vec3::new(200.0, 0.0, 0.0),
         ));
-        let water_row = hierarchy_point(&editor, hierarchy_row_of(Selected::Water(0), &scene));
+        let water_row = item_point(&editor, &scene, Selected::Water(0));
         update(
             &mut editor,
             &InputState::new(),
@@ -3956,7 +3813,7 @@ mod tests {
     fn a_click_on_a_hierarchy_row_selects_that_object_and_places_nothing() {
         let mut editor = editor();
         let mut scene = scene_of(4);
-        let point = hierarchy_point(&editor, 2);
+        let point = item_point(&editor, &scene, Selected::Object(2));
 
         let outcome = update(&mut editor, &InputState::new(), &press(point), &mut scene);
 
@@ -3972,21 +3829,22 @@ mod tests {
     #[test]
     fn the_hierarchy_scrolls_by_the_wheel_and_stops_at_both_ends() {
         let mut editor = editor();
-        let visible = ui::hierarchy_visible_rows(editor.scale(), VIEWPORT);
-        let mut scene = scene_of(visible + 10);
+        let visible = editor.layout_for(VIEWPORT).hierarchy_rows();
+        let mut scene = scene_of(visible + 30);
         let over = hierarchy_point(&editor, 0);
         let hover = UiInput {
             pointer: over,
             ..UiInput::new()
         };
 
-        // Down four notches, then far more than the list is long.
+        // Down four notches — three rows each — then far more than the list is long.
         update(&mut editor, &wheeled(-4.0), &hover, &mut scene);
-        assert_eq!(editor.hierarchy_scroll(), 4);
+        assert_eq!(editor.hierarchy_scroll(), 12);
         update(&mut editor, &wheeled(-1_000.0), &hover, &mut scene);
+        // Every rock is in one group, so the list is the objects and one heading.
         assert_eq!(
             editor.hierarchy_scroll(),
-            scene.len() - visible,
+            scene.len() + 1 - visible,
             "the list scrolled past its own end"
         );
         update(&mut editor, &wheeled(1_000.0), &hover, &mut scene);
@@ -3996,8 +3854,8 @@ mod tests {
     #[test]
     fn scrolling_the_hierarchy_selects_the_row_that_is_actually_under_the_cursor() {
         let mut editor = editor();
-        let visible = ui::hierarchy_visible_rows(editor.scale(), VIEWPORT);
-        let mut scene = scene_of(visible + 5);
+        let visible = editor.layout_for(VIEWPORT).hierarchy_rows();
+        let mut scene = scene_of(visible + 20);
         let over = hierarchy_point(&editor, 1);
         let hover = UiInput {
             pointer: over,
@@ -4006,17 +3864,20 @@ mod tests {
         update(&mut editor, &wheeled(-3.0), &hover, &mut scene);
 
         update(&mut editor, &InputState::new(), &press(over), &mut scene);
+        // Three notches is nine rows; row 1 under the pointer is the tenth line, and the
+        // first line is the group's heading.
+        assert_eq!(editor.hierarchy_scroll(), 9);
         assert_eq!(
             editor.selected_object(),
-            Some(4),
-            "row 1 of a list scrolled by 3"
+            Some(9),
+            "row 1 of a list scrolled by 9"
         );
     }
 
     #[test]
     fn the_wheel_outside_the_panel_scrolls_nothing() {
         let mut editor = editor();
-        let visible = ui::hierarchy_visible_rows(editor.scale(), VIEWPORT);
+        let visible = editor.layout_for(VIEWPORT).hierarchy_rows();
         let mut scene = scene_of(visible + 10);
         let hover = UiInput {
             pointer: centre(),
@@ -4029,15 +3890,20 @@ mod tests {
     #[test]
     fn a_new_selection_below_the_window_scrolls_it_into_view() {
         let mut editor = editor();
-        let visible = ui::hierarchy_visible_rows(editor.scale(), VIEWPORT);
+        let visible = editor.layout_for(VIEWPORT).hierarchy_rows();
         let mut scene = scene_of(visible + 6);
         // Place one more: it becomes the last object and the selection.
         drop_asset(&mut editor, &mut scene, centre());
         let last = scene.len() - 1;
         assert_eq!(editor.selected_object(), Some(last));
+        let row = editor
+            .hierarchy_view(&scene)
+            .iter()
+            .position(|row| *row == panels::HierarchyRow::Item(Selected::Object(last)))
+            .expect("listed");
         assert!(
-            editor.hierarchy_scroll() + visible > last,
-            "the selected object is off the bottom of the list"
+            row >= editor.hierarchy_scroll() && row < editor.hierarchy_scroll() + visible,
+            "the selected object is outside the visible part of the list"
         );
     }
 
@@ -4367,7 +4233,7 @@ mod tests {
         update(&mut editor, &InputState::new(), &press(grab), &mut scene);
 
         // Left, over the browser panel, and still dragging.
-        let panel = ui::browser_rect(editor.scale(), VIEWPORT);
+        let panel = editor.layout_for(VIEWPORT).left;
         let over_panel = (panel.x + panel.width * 0.5, panel.y + panel.height * 0.5);
         let outcome = update(
             &mut editor,
@@ -4561,7 +4427,7 @@ mod tests {
         let mut scene = scene();
         update(&mut editor, &keyed(KeyCode::N), &UiInput::new(), &mut scene);
 
-        let panel = ui::hierarchy_rect(editor.scale(), VIEWPORT);
+        let panel = editor.layout_for(VIEWPORT).hierarchy;
         let outcome = update(
             &mut editor,
             &InputState::new(),
@@ -4755,7 +4621,7 @@ mod tests {
 
         // Row 0 is the closed `builtin` folder: click it to open it, and rows 1.. are then
         // the assets inside, so row 4 is the fourth entry of the compiled library.
-        let folder = ui::browser_row_rect(editor.scale(), VIEWPORT, 0);
+        let folder = editor.layout_for(VIEWPORT).browser_row(0);
         update(
             &mut editor,
             &InputState::new(),
@@ -4765,7 +4631,7 @@ mod tests {
             )),
             &mut scene,
         );
-        let rect = ui::browser_row_rect(editor.scale(), VIEWPORT, 4);
+        let rect = editor.layout_for(VIEWPORT).browser_row(4);
         let pointer = (rect.x + rect.width * 0.5, rect.y + rect.height * 0.5);
         update(&mut editor, &InputState::new(), &press(pointer), &mut scene);
 
@@ -4784,7 +4650,7 @@ mod tests {
         editor.set_scale(UiScale::default(), VIEWPORT);
         let before = editor.browser().rows().len();
 
-        let rect = ui::browser_row_rect(editor.scale(), VIEWPORT, 0);
+        let rect = editor.layout_for(VIEWPORT).browser_row(0);
         let pointer = (rect.x + rect.width * 0.5, rect.y + rect.height * 0.5);
         update(&mut editor, &InputState::new(), &press(pointer), &mut scene);
 
@@ -4864,11 +4730,11 @@ mod tests {
         let mut editor = editor();
         let mut scene = three_rocks();
 
-        let point = hierarchy_point(&editor, 0);
+        let point = item_point(&editor, &scene, Selected::Object(0));
         update(&mut editor, &InputState::new(), &press(point), &mut scene);
         assert_eq!(objects_of(&editor), [0]);
 
-        let second = hierarchy_point(&editor, 2);
+        let second = item_point(&editor, &scene, Selected::Object(2));
         let control = {
             let mut input = InputState::new();
             input.apply(engine_core::input::InputEvent::KeyDown {
@@ -4956,8 +4822,8 @@ mod tests {
         // The outer two, leaving the middle one behind: the case that goes wrong when indices
         // are removed lowest-first.
         scene.objects[1].transform.scale = Vec3::splat(2.0);
-        let first = hierarchy_point(&editor, 0);
-        let third = hierarchy_point(&editor, 2);
+        let first = item_point(&editor, &scene, Selected::Object(0));
+        let third = item_point(&editor, &scene, Selected::Object(2));
         let control = control_keyed(KeyCode::LeftControl);
         update(&mut editor, &InputState::new(), &press(first), &mut scene);
         update(&mut editor, &control, &press(third), &mut scene);
@@ -5006,7 +4872,7 @@ mod tests {
         let mut editor = editor();
         let mut scene = three_rocks();
         assert_eq!(editor.grid(), 1.0, "the grid starts at a metre");
-        let point = hierarchy_point(&editor, 0);
+        let point = item_point(&editor, &scene, Selected::Object(0));
         update(&mut editor, &InputState::new(), &press(point), &mut scene);
 
         update(
@@ -5042,7 +4908,7 @@ mod tests {
         // A quarter turn, so local +X is world -Z.
         scene.objects[0].transform.rotation =
             engine_core::math::Quat::from_yaw_pitch_roll(std::f32::consts::FRAC_PI_2, 0.0, 0.0);
-        let point = hierarchy_point(&editor, 0);
+        let point = item_point(&editor, &scene, Selected::Object(0));
         update(&mut editor, &InputState::new(), &press(point), &mut scene);
 
         // World: +X moves along world X whatever the object is doing.
@@ -5080,7 +4946,7 @@ mod tests {
         // Seven degrees, as if turned by hand or imported from somewhere.
         scene.objects[0].transform.rotation =
             engine_core::math::Quat::from_yaw_pitch_roll(7.0_f32.to_radians(), 0.0, 0.0);
-        let point = hierarchy_point(&editor, 0);
+        let point = item_point(&editor, &scene, Selected::Object(0));
         update(&mut editor, &InputState::new(), &press(point), &mut scene);
 
         // The default step is 22.5 degrees: 7 + 22.5 snaps to 22.5, not to 29.5.
@@ -5108,7 +4974,7 @@ mod tests {
             engine_core::math::Quat::from_yaw_pitch_roll(1.0, 0.0, 0.0);
         scene.objects[0].transform.scale = Vec3::splat(3.0);
         let placed = scene.objects[0].transform.translation;
-        let point = hierarchy_point(&editor, 0);
+        let point = item_point(&editor, &scene, Selected::Object(0));
         update(&mut editor, &InputState::new(), &press(point), &mut scene);
 
         let outcome = update(
@@ -5410,6 +5276,39 @@ mod tests {
     // The usability pass: terrain-aware pointing, history, saving, and the new tools.
     // -----------------------------------------------------------------------------------
 
+    /// The middle of the inspector's field for `property`.
+    fn value_point(
+        editor: &Editor,
+        scene: &EnvironmentScene,
+        property: inspector::Property,
+    ) -> (f32, f32) {
+        let layout = editor.layout_for(VIEWPORT);
+        panels::inspector(editor, scene, &layout)
+            .into_iter()
+            .find_map(|element| match element {
+                panels::Element::Value {
+                    rect,
+                    property: shown,
+                } if shown == property => {
+                    Some((rect.x + rect.width * 0.5, rect.y + rect.height * 0.5))
+                }
+                _ => None,
+            })
+            .expect("the inspector shows that number")
+    }
+
+    /// The middle of the hierarchy row that lists `what`.
+    fn item_point(editor: &Editor, scene: &EnvironmentScene, what: Selected) -> (f32, f32) {
+        let slot = editor
+            .hierarchy_view(scene)
+            .iter()
+            .position(|row| *row == panels::HierarchyRow::Item(what))
+            .expect("the hierarchy lists it")
+            - editor.hierarchy_scroll();
+        let rect = editor.layout_for(VIEWPORT).hierarchy_row(slot);
+        (rect.x + rect.width * 0.5, rect.y + rect.height * 0.5)
+    }
+
     /// A frame in which every one of `keys` went down together.
     fn chord(keys: &[KeyCode]) -> InputState {
         let mut input = InputState::new();
@@ -5699,8 +5598,23 @@ mod tests {
         let path = PathBuf::from("assets/scenes/elsewhere.json");
         editor.request_open(path.clone());
         assert_eq!(editor.take_open_request(), None);
-        assert!(editor.status().contains("UNSAVED"), "{}", editor.status());
-        editor.request_open(path.clone());
+        assert_eq!(editor.modal(), Some(&Modal::Unsaved { path: path.clone() }));
+
+        // Discard is the button that opens without saving.
+        let layout = editor.layout_for(VIEWPORT);
+        let dialog = panels::dialog(&layout, panels::DialogKind::Unsaved);
+        let (discard, ..) = dialog
+            .buttons
+            .iter()
+            .find(|(_, button, ..)| *button == panels::DialogButton::Discard)
+            .copied()
+            .expect("a discard button");
+        let point = (
+            discard.x + discard.width * 0.5,
+            discard.y + discard.height * 0.5,
+        );
+        update(&mut editor, &InputState::new(), &press(point), &mut scene);
+        assert!(editor.modal().is_none());
         assert_eq!(editor.take_open_request(), Some(path.clone()));
 
         // And the editor starts the opened level clean.
@@ -5755,7 +5669,11 @@ mod tests {
 
         click_centre(&mut editor, &mut scene);
         assert_eq!(editor.selection(), None);
-        assert!(editor.hierarchy_rows(&scene).contains(&Selected::Object(0)));
+        assert!(
+            editor
+                .hierarchy_items(&scene)
+                .contains(&Selected::Object(0))
+        );
     }
 
     #[test]
@@ -5888,8 +5806,7 @@ mod tests {
         let mut editor = editor();
         let mut scene = scene_of(1);
         editor.select(Selected::Object(0), false);
-        let cell = ui::inspector_cell_rect(editor.scale(), VIEWPORT, 0, 0);
-        let point = (cell.x + cell.width * 0.5, cell.y + cell.height * 0.5);
+        let point = value_point(&editor, &scene, inspector::Property::PositionX);
         update(&mut editor, &InputState::new(), &press(point), &mut scene);
         assert!(
             editor.inspector_edit().is_some(),
@@ -5923,9 +5840,7 @@ mod tests {
         let mut editor = editor();
         let mut scene = scene_of(1);
         editor.select(Selected::Object(0), false);
-        // Row 1 is the yaw.
-        let cell = ui::inspector_cell_rect(editor.scale(), VIEWPORT, 1, 0);
-        let point = (cell.x + cell.width * 0.5, cell.y + cell.height * 0.5);
+        let point = value_point(&editor, &scene, inspector::Property::Yaw);
         let outcome = update(&mut editor, &wheeled(2.0), &hover(point), &mut scene);
         assert_eq!(outcome, EditorOutcome::SceneChanged);
         let yaw = yaw_of(scene.objects[0].transform).to_degrees();
@@ -5984,7 +5899,7 @@ mod tests {
         let mut editor = editor();
         let mut scene = three_rocks();
         scene.push(EnvironmentObject::decoration(PILLAR, Vec3::ZERO));
-        let over = hierarchy_point(&editor, 0);
+        let over = item_point(&editor, &scene, Selected::Object(0));
         update(
             &mut editor,
             &control_keyed(KeyCode::F),
@@ -5996,9 +5911,484 @@ mod tests {
             update(&mut editor, &keyed(key), &hover(over), &mut scene);
         }
         assert!(!editor.is_filtering_hierarchy());
-        assert_eq!(editor.hierarchy_rows(&scene), vec![Selected::Object(3)]);
-        // And the one row left is the one a click on the first slot selects.
-        update(&mut editor, &InputState::new(), &press(over), &mut scene);
+        assert_eq!(editor.hierarchy_items(&scene), vec![Selected::Object(3)]);
+        // And the one row left is the one a click on it selects: under its group's heading.
+        let row = item_point(&editor, &scene, Selected::Object(3));
+        update(&mut editor, &InputState::new(), &press(row), &mut scene);
         assert_eq!(editor.selection(), Some(Selected::Object(3)));
+    }
+
+    // -----------------------------------------------------------------------------------
+    // The editor's interface: toolbar, menus, panels, dialogs.
+    // -----------------------------------------------------------------------------------
+
+    fn middle(rect: engine_render_data::ui::UiRect) -> (f32, f32) {
+        (rect.x + rect.width * 0.5, rect.y + rect.height * 0.5)
+    }
+
+    /// The toolbar control whose tooltip is `tip`.
+    fn tool_rect(editor: &Editor, tip: &str) -> engine_render_data::ui::UiRect {
+        panels::toolbar(editor, &editor.layout_for(VIEWPORT))
+            .into_iter()
+            .find(|item| item.tip == tip)
+            .map(|item| item.rect)
+            .expect("that control is on the toolbar")
+    }
+
+    /// A right click at `pointer`: the press in one frame, the release in the next.
+    fn right_click(editor: &mut Editor, scene: &mut EnvironmentScene, pointer: (f32, f32)) {
+        let mut input = InputState::new();
+        input.apply(engine_core::input::InputEvent::MouseButtonDown {
+            button: MouseButton::Right,
+        });
+        update(editor, &input, &hover(pointer), scene);
+        input.begin_frame();
+        input.apply(engine_core::input::InputEvent::MouseButtonUp {
+            button: MouseButton::Right,
+        });
+        update(editor, &input, &hover(pointer), scene);
+    }
+
+    #[test]
+    fn a_toolbar_button_picks_its_tool_and_the_select_tool_has_no_handles() {
+        let mut editor = editor();
+        let mut scene = three_rocks();
+        editor.select(Selected::Object(0), false);
+        let rotate = tool_rect(&editor, "Rotate about the vertical axis");
+        update(
+            &mut editor,
+            &InputState::new(),
+            &press(middle(rotate)),
+            &mut scene,
+        );
+        assert_eq!(editor.tool(), commands::Tool::Turn);
+        assert_eq!(scene.len(), 3, "a toolbar click reached the level");
+
+        let select = tool_rect(&editor, "Select: click objects, no handles");
+        update(
+            &mut editor,
+            &InputState::new(),
+            &press(middle(select)),
+            &mut scene,
+        );
+        assert_eq!(editor.tool(), commands::Tool::Select);
+        assert!(editor.gizmo(&scene).is_none());
+    }
+
+    #[test]
+    fn a_menu_opens_from_the_toolbar_and_its_item_runs_its_command() {
+        let mut editor = editor();
+        let mut scene = three_rocks();
+        let edit = tool_rect(&editor, "Undo, duplicate, delete, select");
+        update(
+            &mut editor,
+            &InputState::new(),
+            &press(middle(edit)),
+            &mut scene,
+        );
+        let menu = editor.open_menu().cloned().expect("the Edit menu is open");
+        assert_eq!(menu.kind, panels::MenuKind::Edit);
+
+        let layout = editor.layout_for(VIEWPORT);
+        let entries = panels::menu_entries(menu.kind, &editor, &scene);
+        let (_, rects) = panels::menu_rects(&layout, menu.origin, &entries);
+        let at = entries
+            .iter()
+            .position(|entry| entry.label == "Select All")
+            .expect("Select All is in Edit");
+        update(
+            &mut editor,
+            &InputState::new(),
+            &press(middle(rects[at])),
+            &mut scene,
+        );
+        assert!(
+            editor.open_menu().is_none(),
+            "choosing an item closes the menu"
+        );
+        assert_eq!(objects_of(&editor), vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn a_disabled_menu_item_does_nothing_and_escape_closes_the_menu() {
+        let mut editor = editor();
+        let mut scene = three_rocks();
+        let edit = tool_rect(&editor, "Undo, duplicate, delete, select");
+        update(
+            &mut editor,
+            &InputState::new(),
+            &press(middle(edit)),
+            &mut scene,
+        );
+        let menu = editor.open_menu().cloned().expect("open");
+        let layout = editor.layout_for(VIEWPORT);
+        let entries = panels::menu_entries(menu.kind, &editor, &scene);
+        let (_, rects) = panels::menu_rects(&layout, menu.origin, &entries);
+        let delete = entries
+            .iter()
+            .position(|entry| entry.label == "Delete")
+            .expect("Delete");
+        assert!(!entries[delete].enabled, "nothing is selected to delete");
+        update(
+            &mut editor,
+            &InputState::new(),
+            &press(middle(rects[delete])),
+            &mut scene,
+        );
+        assert!(
+            editor.open_menu().is_some(),
+            "a disabled item is not a click"
+        );
+        assert_eq!(scene.len(), 3);
+        update(
+            &mut editor,
+            &keyed(KeyCode::Escape),
+            &UiInput::new(),
+            &mut scene,
+        );
+        assert!(editor.open_menu().is_none());
+    }
+
+    #[test]
+    fn a_right_click_on_an_object_selects_it_and_offers_what_can_be_done_to_it() {
+        let mut editor = editor();
+        let mut scene = three_rocks();
+        right_click(&mut editor, &mut scene, centre());
+        assert_eq!(editor.selection(), Some(Selected::Object(0)));
+        assert_eq!(
+            editor.open_menu().map(|menu| menu.kind),
+            Some(panels::MenuKind::Object)
+        );
+
+        // And on empty ground, what can be done there.
+        editor.menu = None;
+        right_click(&mut editor, &mut scene, (centre().0, centre().1 + 300.0));
+        assert_eq!(
+            editor.open_menu().map(|menu| menu.kind),
+            Some(panels::MenuKind::Viewport)
+        );
+    }
+
+    #[test]
+    fn a_right_drag_turns_the_camera_and_opens_nothing() {
+        let mut editor = editor();
+        let mut scene = three_rocks();
+        let mut input = InputState::new();
+        input.apply(engine_core::input::InputEvent::MouseButtonDown {
+            button: MouseButton::Right,
+        });
+        update(&mut editor, &input, &hover(centre()), &mut scene);
+        input.begin_frame();
+        input.apply(engine_core::input::InputEvent::MouseButtonUp {
+            button: MouseButton::Right,
+        });
+        update(
+            &mut editor,
+            &input,
+            &hover((centre().0 + 80.0, centre().1)),
+            &mut scene,
+        );
+        assert!(editor.open_menu().is_none());
+    }
+
+    #[test]
+    fn dragging_a_splitter_widens_the_browser_and_the_viewport_gives_way() {
+        let mut editor = editor();
+        let mut scene = scene();
+        let before = editor.layout_for(VIEWPORT);
+        let grab = middle(before.splitter(layout::Splitter::Left));
+        update(&mut editor, &InputState::new(), &press(grab), &mut scene);
+        update(
+            &mut editor,
+            &InputState::new(),
+            &hold((grab.0 + 100.0, grab.1)),
+            &mut scene,
+        );
+        update(
+            &mut editor,
+            &InputState::new(),
+            &release((grab.0 + 100.0, grab.1)),
+            &mut scene,
+        );
+        let after = editor.layout_for(VIEWPORT);
+        assert!((after.left.width - before.left.width - 100.0).abs() < 1.0);
+        assert_eq!(after.viewport.x, after.left.right());
+        assert!(scene.is_empty(), "the drag reached the level");
+    }
+
+    #[test]
+    fn copy_and_paste_put_a_copy_under_the_pointer_and_select_it() {
+        let mut editor = editor();
+        let mut scene = three_rocks();
+        editor.select(Selected::Object(1), false);
+        update(
+            &mut editor,
+            &control_keyed(KeyCode::C),
+            &hover(centre()),
+            &mut scene,
+        );
+        assert!(editor.can_paste());
+        let outcome = update(
+            &mut editor,
+            &control_keyed(KeyCode::V),
+            &hover(centre()),
+            &mut scene,
+        );
+        assert_eq!(outcome, EditorOutcome::SceneChanged);
+        assert_eq!(scene.len(), 4);
+        assert_eq!(editor.selection(), Some(Selected::Object(3)));
+        let pasted = scene.objects[3].position();
+        assert!(
+            pasted.x.abs() < 0.6 && pasted.z.abs() < 0.6,
+            "pasted at {pasted:?}, not under the pointer"
+        );
+    }
+
+    #[test]
+    fn shift_click_in_the_hierarchy_selects_everything_between() {
+        let mut editor = editor();
+        let mut scene = three_rocks();
+        let first = item_point(&editor, &scene, Selected::Object(0));
+        update(&mut editor, &InputState::new(), &press(first), &mut scene);
+        let last = item_point(&editor, &scene, Selected::Object(2));
+        update(
+            &mut editor,
+            &shift_keyed(KeyCode::Unknown),
+            &press(last),
+            &mut scene,
+        );
+        let mut chosen = objects_of(&editor);
+        chosen.sort_unstable();
+        assert_eq!(chosen, vec![0, 1, 2]);
+        assert_eq!(
+            editor.selection(),
+            Some(Selected::Object(2)),
+            "the one clicked is the primary"
+        );
+    }
+
+    #[test]
+    fn a_group_folds_away_and_its_eye_hides_everything_in_it() {
+        let mut editor = editor();
+        let mut scene = three_rocks();
+        let heading = hierarchy_point(&editor, 0);
+        update(&mut editor, &InputState::new(), &press(heading), &mut scene);
+        assert_eq!(
+            editor.hierarchy_view(&scene).len(),
+            1,
+            "the group did not fold"
+        );
+
+        let layout = editor.layout_for(VIEWPORT);
+        let (eye, _) = panels::row_toggles(&layout, layout.hierarchy_row(0));
+        let outcome = update(
+            &mut editor,
+            &InputState::new(),
+            &press(middle(eye)),
+            &mut scene,
+        );
+        assert_eq!(outcome, EditorOutcome::SceneChanged);
+        assert!((0..3).all(|index| editor.is_hidden(index)));
+    }
+
+    #[test]
+    fn an_inspector_section_folds_and_its_numbers_go_with_it() {
+        let mut editor = editor();
+        let mut scene = scene_of(1);
+        editor.select(Selected::Object(0), false);
+        let layout = editor.layout_for(VIEWPORT);
+        let section = panels::inspector(&editor, &scene, &layout)
+            .into_iter()
+            .find_map(|element| match element {
+                panels::Element::Section {
+                    rect,
+                    section: panels::Section::Transform,
+                    ..
+                } => Some(rect),
+                _ => None,
+            })
+            .expect("a Transform section");
+        update(
+            &mut editor,
+            &InputState::new(),
+            &press(middle(section)),
+            &mut scene,
+        );
+        let shown = panels::inspector(&editor, &scene, &layout);
+        assert!(!shown.iter().any(|element| matches!(
+            element,
+            panels::Element::Value {
+                property: inspector::Property::PositionX,
+                ..
+            }
+        )));
+    }
+
+    #[test]
+    fn dragging_a_numbers_tag_scrubs_it_and_one_undo_takes_the_whole_drag_back() {
+        let mut editor = editor();
+        let mut scene = scene_of(1);
+        editor.select(Selected::Object(0), false);
+        let layout = editor.layout_for(VIEWPORT);
+        let tag = panels::inspector(&editor, &scene, &layout)
+            .into_iter()
+            .find_map(|element| match element {
+                panels::Element::Tag {
+                    rect,
+                    property: inspector::Property::PositionX,
+                    ..
+                } => Some(rect),
+                _ => None,
+            })
+            .expect("an X tag");
+        let from = middle(tag);
+        update(&mut editor, &InputState::new(), &press(from), &mut scene);
+        for step in 1..=4 {
+            update(
+                &mut editor,
+                &InputState::new(),
+                &hold((from.0 + step as f32 * 20.0, from.1)),
+                &mut scene,
+            );
+        }
+        update(
+            &mut editor,
+            &InputState::new(),
+            &release((from.0 + 80.0, from.1)),
+            &mut scene,
+        );
+        let x = scene.objects[0].position().x;
+        assert!(x > 200.5, "the scrub moved it to {x}");
+        update(
+            &mut editor,
+            &control_keyed(KeyCode::Z),
+            &UiInput::new(),
+            &mut scene,
+        );
+        assert_eq!(scene.objects[0].position().x, 200.0);
+    }
+
+    #[test]
+    fn a_centre_pivot_stands_the_gizmo_in_the_middle_of_the_selection() {
+        let mut editor = editor();
+        let mut scene = three_rocks();
+        update(
+            &mut editor,
+            &control_keyed(KeyCode::A),
+            &UiInput::new(),
+            &mut scene,
+        );
+        editor.execute(commands::Command::TogglePivot, &mut scene);
+        let origin = editor.gizmo_origin(&scene).expect("a gizmo");
+        assert!((origin.x - 4.0).abs() < 1e-4, "{origin:?}");
+    }
+
+    #[test]
+    fn the_tile_view_opens_a_folder_and_the_breadcrumb_goes_back() {
+        let mut editor = editor();
+        let mut scene = scene();
+        editor.execute(
+            commands::Command::SetBrowserView(commands::BrowserView::Tiles),
+            &mut scene,
+        );
+        let layout = editor.layout_for(VIEWPORT);
+        // The first tile at the root is the built-in library.
+        update(
+            &mut editor,
+            &InputState::new(),
+            &press(middle(layout.tile(0))),
+            &mut scene,
+        );
+        assert_eq!(editor.tile_folder(), panels::TileFolder::Builtin);
+        let crumbs = layout.crumbs();
+        update(
+            &mut editor,
+            &InputState::new(),
+            &press((crumbs.x + layout.px(10.0), crumbs.y + crumbs.height * 0.5)),
+            &mut scene,
+        );
+        assert_eq!(editor.tile_folder(), panels::TileFolder::Root);
+    }
+
+    #[test]
+    fn save_as_can_be_cancelled_with_its_button() {
+        let mut editor = editor();
+        let mut scene = scene();
+        editor.execute(commands::Command::SaveAs, &mut scene);
+        assert!(editor.save_as_text().is_some());
+        let layout = editor.layout_for(VIEWPORT);
+        let dialog = panels::dialog(&layout, panels::DialogKind::SaveAs);
+        let (cancel, ..) = dialog
+            .buttons
+            .iter()
+            .find(|(_, button, ..)| *button == panels::DialogButton::Cancel)
+            .copied()
+            .expect("a cancel button");
+        update(
+            &mut editor,
+            &InputState::new(),
+            &press(middle(cancel)),
+            &mut scene,
+        );
+        assert!(editor.save_as_text().is_none());
+    }
+
+    #[test]
+    fn f1_opens_the_shortcuts_and_escape_closes_them() {
+        let mut editor = editor();
+        let mut scene = scene();
+        update(
+            &mut editor,
+            &keyed(KeyCode::F1),
+            &UiInput::new(),
+            &mut scene,
+        );
+        assert!(editor.shows_shortcuts());
+        update(
+            &mut editor,
+            &keyed(KeyCode::Escape),
+            &UiInput::new(),
+            &mut scene,
+        );
+        assert!(!editor.shows_shortcuts());
+    }
+
+    #[test]
+    fn resting_on_a_toolbar_button_shows_its_tooltip_after_a_moment() {
+        let mut editor = editor();
+        let mut scene = scene();
+        let save = middle(tool_rect(&editor, "Save the level"));
+        editor.update(
+            &InputState::new(),
+            &hover(save),
+            &mut scene,
+            &overhead(),
+            VIEWPORT,
+            0.1,
+        );
+        assert!(
+            editor.tooltip().is_none(),
+            "a tooltip that appears at once is in the way"
+        );
+        for _ in 0..6 {
+            editor.update(
+                &InputState::new(),
+                &hover(save),
+                &mut scene,
+                &overhead(),
+                VIEWPORT,
+                0.1,
+            );
+        }
+        assert_eq!(editor.tooltip(), Some(("Save the level", "Ctrl+S")));
+        editor.update(
+            &InputState::new(),
+            &hover(centre()),
+            &mut scene,
+            &overhead(),
+            VIEWPORT,
+            0.1,
+        );
+        assert!(editor.tooltip().is_none());
     }
 }

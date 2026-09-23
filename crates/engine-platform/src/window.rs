@@ -63,6 +63,9 @@ struct WindowState {
     /// hide and once to show leaves the cursor hidden. Keeping the desired state here means
     /// the counter only ever moves between 0 and -1.
     cursor_visible: bool,
+    /// Where the last pointer message said the cursor was, so a button message only reports
+    /// a position when it is news.
+    last_cursor: Option<(i32, i32)>,
 }
 
 /// A native Windows window.
@@ -132,6 +135,7 @@ impl Window {
         // pointer in GWLP_USERDATA, is delivered from inside CreateWindowExW.
         let state = Box::into_raw(Box::new(WindowState {
             events: EventQueue::new(),
+            last_cursor: None,
             client_width: client.0,
             client_height: client.1,
             minimized: false,
@@ -674,6 +678,7 @@ unsafe extern "system" fn window_proc(
         }
         WM_MOUSEMOVE => {
             let (x, y) = cursor_from_lparam(lparam.0);
+            state.last_cursor = Some((x, y));
             state
                 .events
                 .push(WindowEvent::Input(InputEvent::MouseMoved { x, y }));
@@ -686,6 +691,16 @@ unsafe extern "system" fn window_proc(
                 WM_MBUTTONDOWN => MouseButton::Middle,
                 _ => x_button_from_wparam(wparam.0),
             };
+            // A button message carries where the pointer is. Reported first, so a click that
+            // arrives with no move before it — the first click after the window takes focus,
+            // a tablet tap — lands where it was made rather than where the pointer last was.
+            let (x, y) = cursor_from_lparam(lparam.0);
+            if state.last_cursor != Some((x, y)) {
+                state.last_cursor = Some((x, y));
+                state
+                    .events
+                    .push(WindowEvent::Input(InputEvent::MouseMoved { x, y }));
+            }
             state
                 .events
                 .push(WindowEvent::Input(InputEvent::MouseButtonDown { button }));
@@ -699,6 +714,13 @@ unsafe extern "system" fn window_proc(
                 WM_MBUTTONUP => MouseButton::Middle,
                 _ => x_button_from_wparam(wparam.0),
             };
+            let (x, y) = cursor_from_lparam(lparam.0);
+            if state.last_cursor != Some((x, y)) {
+                state.last_cursor = Some((x, y));
+                state
+                    .events
+                    .push(WindowEvent::Input(InputEvent::MouseMoved { x, y }));
+            }
             state
                 .events
                 .push(WindowEvent::Input(InputEvent::MouseButtonUp { button }));

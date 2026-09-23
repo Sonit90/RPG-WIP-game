@@ -19,6 +19,53 @@ contains none of the editor: no palette, no fly camera, no scene writer.
 The editor edits **data**. It never touches a mesh, a device or a collision world, which is
 what lets every one of its verbs be tested with no window open.
 
+### The screen
+
+```text
+┌ File Edit View Help │ tools │ place sculpt │ World Active │ snap grid rotation module │ undo redo save ─ ⌨ 📈 Play ┐
+├──────────────┬─────────────────────────────────────────────────────┬───────────────┤
+│ Assets       │ Perspective - World                  Grid 1 m - Snap │ Hierarchy     │
+│ [search]     │                                                     │ [search]      │
+│ tree / tiles │                     viewport                        ├───────────────┤
+│              │ Rock Small                                    X Y Z │ Inspector     │
+├──────────────┴─────────────────────────────────────────────────────┴───────────────┤
+│ tool │ selection │ snap │ what just happened / what you can do next   X Y Z │ file ● │
+└────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+* **Toolbar** — the menus, the Select / Move / Rotate / Scale tools, placing and sculpting,
+  world or local axes, the pivot (the active object or the centre of the selection), snapping,
+  the grid and rotation steps, module snap, undo, redo, save, the shortcuts window, the debug
+  overlay, and **Play**. Every control has a tooltip naming its key.
+* **Assets** — a tree or tiles (the two buttons in its header), a search field, type icons and
+  readable names. Drag an asset into the viewport to place it — a footprint shows where it will
+  land — or double-click it to place one in front of the camera. Double-click a level to open it.
+* **Hierarchy** — the level grouped by kind (ground, cliffs, caves, rocks, vegetation, props,
+  water, spawn points, lights). Groups fold; the eye and lock on a row hide it or make clicks in
+  the viewport pass through it. Click, `CTRL`-click, `SHIFT`-click for a range, double-click to
+  frame. Right-click for actions.
+* **Inspector** — folding sections: Transform (numbers you can type, step with the wheel, or
+  scrub by dragging the coloured X/Y/Z tag; reset buttons for rotation and scale), then Asset,
+  Water, Light or Spawn, and Editor (hidden and locked).
+* **Viewport** — only what matters: the view and snap chips at the top, what is selected at the
+  bottom left, the camera's axes at the bottom right, and a banner while placing or sculpting.
+  The object under the pointer is outlined faintly before you click it; a drag shows how far it
+  has moved, snapped.
+* **Status bar** — the tool, the selection, snapping, the last thing that happened (for a few
+  seconds) or a hint for what you can do next, the ground under the pointer, and whether the file
+  is saved.
+* **Right-click** an object for Focus, Duplicate, Copy, Paste, Delete, Reset Transform, Drop to
+  Ground, Select All of This Asset, Show in Browser, Hide and Lock; right-click empty ground to
+  paste or add a light, water or a spawn point there.
+* **Splitters** between the panels drag to resize them; *View → Reset Panel Layout* puts them
+  back. The editor lays itself out larger on tall windows and follows the interface-scale
+  setting.
+* **F1** opens the keyboard shortcuts; **F3** the debug overlay (frame rate, counts, history,
+  camera, the autosave path) together with the level's collision drawn in the world.
+
+While the editor is open the game's own HUD is not drawn, and gameplay keys (the dev interrupt on
+`H`, the kill key) are ignored; the rendering switches (`F4`, `F5`, `F8`, `F9`, `F10`) still work.
+
 ---
 
 ## 2. The controls
@@ -32,17 +79,18 @@ Grouped by what is being built rather than by key, which is how the editor print
 | **Terrain** | `B` sculpt · `TAB` brush mode · `1` `2` brush size · `3` `4` strength |
 | **Caves** | `M` module snap — a 4 m grid and quarter turns |
 | **Put** | `V` water · `P` spawn point · `I` light — each under the cursor |
-| **Selecting** | `LMB` on something selects it · drag on empty ground draws a selection box · `CTRL+LMB` adds · `CTRL+A` every object · `ESC` drops it, and leaves placing mode |
-| **Gizmo** | `1` move · `2` turn · `3` scale · hold `CTRL` while dragging to turn snapping off |
-| **Editing** | arrows nudge (`SHIFT` for up/down) · `R` yaw · `T` size · `0` reset · `L` local axes · `X`/`DELETE` delete · `CTRL+D` duplicate · `CTRL+G` drop onto what is below · click an inspector number to type it, or use the wheel over it |
+| **Selecting** | `LMB` on something selects it · double-click frames it · drag on empty ground draws a selection box · `CTRL+LMB` adds · `SHIFT+LMB` in the hierarchy selects a range · `CTRL+A` every object · `ESC` drops it, and leaves placing mode · right-click for actions |
+| **Gizmo** | `1` move · `2` rotate · `3` scale · the Select tool on the toolbar hides the handles · hold `CTRL` while dragging to turn snapping off |
+| **Editing** | arrows nudge (`SHIFT` for up/down) · `R` yaw · `T` size · `0` reset · `L` local axes · `X`/`DELETE` delete · `CTRL+D` duplicate · `CTRL+C`/`CTRL+V` copy and paste (under the pointer) · `CTRL+G` drop onto what is below · click an inspector number to type it, use the wheel over it, or drag its tag |
 | **Showing** | `H` hide the selection · `SHIFT+H` show everything · `K` lock the selection (clicks in the world pass through it) |
 | **Undo** | `CTRL+Z` undo · `CTRL+Y` or `CTRL+SHIFT+Z` redo |
 | **Grid** | `G` step · `SHIFT+G` rotation step |
 | **View** | right-drag look · `WASD`/`QE` fly (`SHIFT` faster) · `ALT`+left-drag orbit · wheel forward and back · `F`/`HOME` frame the selection (the whole level with nothing selected) · double-click a hierarchy row to frame it |
-| **File** | `CTRL+S` save · `CTRL+SHIFT+S` save as · double-click a level in the browser to open it · `F1` hide or show the key list · `F6` back to playing |
+| **File** | `CTRL+S` save · `CTRL+SHIFT+S` save as · double-click a level in the browser to open it · `F1` keyboard shortcuts · `F3` debug overlay · `F6` back to playing |
 
-Every edit is counted against the last save: the mode badge along the top says `UNSAVED` while
-they differ. Unsaved work is written to `<level>.autosave.json` beside the level every two
+Every edit is counted against the last save: the status bar says `Unsaved`, and the save button
+carries a dot, while they differ. Opening another level over unsaved work asks whether to save,
+discard or stay. Unsaved work is written to `<level>.autosave.json` beside the level every two
 minutes, on `F6`, and when the game closes, and a successful save removes the autosave. Undo
 survives `F6`, so walking through the level and coming back to fix it keeps your history.
 

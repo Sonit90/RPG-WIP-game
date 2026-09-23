@@ -94,8 +94,8 @@ cargo run --bin mygame --features editor -- --editor --scene-file assets/scenes/
 cargo run --bin mygame --features editor -- --editor --scene-file assets/scenes/my_level.json
 ```
 
-Without `--editor`, `--scene-file` plays the level instead of editing it. The editor lists its
-keys on screen (**F1** hides them). See [`docs/level-editing.md`](docs/level-editing.md) for
+Without `--editor`, `--scene-file` plays the level instead of editing it. Every toolbar
+button has a tooltip naming its key, and **F1** opens the full list of shortcuts. See [`docs/level-editing.md`](docs/level-editing.md) for
 the full controls and the level format.
 
 ## Benchmark
