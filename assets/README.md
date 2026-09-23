@@ -20,7 +20,9 @@ nobody has delivered yet.
 
 | File | What it replaces |
 |---|---|
-| `firemage.glb` | The player character, `procedural::fire_mage` |
+| `firemage.glb` | The fire mage, `procedural::fire_mage` |
+| `warrior.glb` | The warrior, `procedural::warrior` |
+| `druid.glb` | The druid, `procedural::druid` |
 | `scenes/*.json` | A level's layout function. Load one with `--scene-file` |
 | `*.glb` layouts | The same, authored in Blender. Load one with `--layout` |
 
@@ -54,7 +56,7 @@ does not.
 
 * **`.glb`, or a `.gltf` with everything embedded.** Sidecar `.bin` and image files are refused
   with a message saying so — there is no asset resolver inside the importer.
-* **PNG textures only.** A JPEG-textured export is refused.
+* **PNG or JPEG textures.**
 * **At most four influences per vertex.** `JOINTS_1` is refused rather than truncated, because
   dropping the fifth influence unnormalizes the weights and deflates the mesh.
 * **No cubic spline interpolation** — refused rather than resampled, which would change the
@@ -65,6 +67,11 @@ does not.
   2048 are halved until they fit rather than refused.
 
 **Animation clips are matched by name.** A character binds the clips `idle`, `walk`, `run`,
-`jump`, `fall`, `land`, `cast` and `cast_heavy`; a name the export does not carry falls back to
-the bind pose, and the startup log says how many were found. An export with no usable clips
+`jump`, `fall`, `land`, `cast` and `cast_heavy`, and optionally `walk_back`, `run_back`,
+`strafe_left` and `strafe_right`; a required name the export does not carry falls back to the
+bind pose, and the startup log says how many were found. An export with no usable clips
 renders as a character standing still, which is a delivery state, not a bug.
+
+**Building a character from Mixamo:** `docs/character-animation.md`. One script,
+`tools/blender/mixamo_character.py`, turns a rigged model and the animation downloads into
+the `.glb` above.
