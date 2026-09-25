@@ -40,6 +40,7 @@ pub mod game_ui;
 pub mod hud;
 /// The developer readout for targeted-ability line of sight.
 pub mod los_debug;
+pub mod monster_visual;
 pub mod mouse_look;
 pub mod nameplate;
 /// Where nameplates end up once they are not allowed to overlap.
@@ -66,6 +67,7 @@ pub use extract::{
 };
 pub use game_ui::{GameUi, UiTheme};
 pub use hud::{HudModel, write_lines};
+pub use monster_visual::{MonsterModel, MonsterVisuals};
 pub use mouse_look::{LOOK_BUTTON, LookChange, MouseLook, RelativeMotion};
 pub use nameplate::{
     MAX_NAMEPLATES, NAMEPLATE_MAX_DISTANCE, Nameplate, NameplateConfig, NameplateSet,

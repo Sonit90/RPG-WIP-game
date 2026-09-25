@@ -34,6 +34,7 @@ use engine_render_data::{
 };
 
 use crate::character::{CastVisual, CharacterState, CharacterVisual, Heading};
+use crate::monster_visual::{MonsterFrame, MonsterModel, MonsterVisuals};
 
 /// Which mesh and material each kind of thing is drawn with.
 ///
@@ -197,6 +198,18 @@ impl Default for ViewParams {
 /// exist for every model in the game.
 const DEAD_TINT: [f32; 4] = [0.34, 0.31, 0.28, 1.0];
 
+/// What a monster's corpse is drawn at: dimmed, not greyed, because its own model still says
+/// what it was.
+const CORPSE_TINT: [f32; 4] = [0.62, 0.60, 0.58, 1.0];
+
+/// How far a monster model is washed towards its table colour. The stand-in took the whole
+/// colour from the tint; a model with its own textures takes a hint of it.
+const MONSTER_TINT_WASH: f32 = 0.2;
+
+/// How dark a nearly dead monster model gets. Lighter than the stand-in's floor: a model's
+/// textures are already darker than a flat dummy.
+const MONSTER_HEALTH_FLOOR: f32 = 0.7;
+
 /// Builds and maintains a `RenderWorld` from a [`Simulation`].
 pub struct RenderExtractor {
     world: RenderWorld,
@@ -226,6 +239,9 @@ pub struct RenderExtractor {
     featured_dummy: Option<EntityId>,
     /// This frame's camera and detail settings.
     view: ViewParams,
+    /// Monsters drawn as animated characters, where their table row names a model there is
+    /// one of. The rest are drawn with the rigid stand-in.
+    monsters: MonsterVisuals,
 }
 
 /// Height above the floor the target marker floats at, in metres.
@@ -453,7 +469,20 @@ impl RenderExtractor {
             player_visual: None,
             featured_dummy: None,
             view: ViewParams::default(),
+            monsters: MonsterVisuals::new(),
         }
+    }
+
+    /// Gives the monsters their models: every enemy whose table row names one of these is
+    /// drawn with it, animated, from the next frame.
+    pub fn set_monster_models(&mut self, models: Vec<MonsterModel>) {
+        self.monsters.set_models(models);
+    }
+
+    /// The monsters' animated visuals, for the developer overlay and the test scene.
+    #[must_use]
+    pub fn monsters(&self) -> &MonsterVisuals {
+        &self.monsters
     }
 
     /// Gives the player a character visual.
@@ -568,6 +597,7 @@ impl RenderExtractor {
         // The skinned list is transient: it holds this frame's characters and is rebuilt
         // from scratch, so it is cleared before anything submits into it.
         self.world.skinned_mut().clear();
+        self.monsters.observe(simulation);
 
         for slot in 0..self.mapped.len() {
             let id = game.id_at(slot);
@@ -582,6 +612,15 @@ impl RenderExtractor {
                     }
 
                     let alive = game.is_alive(id);
+                    // A monster with a model is a skinned character, like the player, and
+                    // holds no `RenderWorld` slot.
+                    if let Some(model) = self.monster_model(simulation, id) {
+                        self.despawn_parts(slot, &mut stats);
+                        self.drive_monster(simulation, id, model, alive);
+                        stats.extracted += 1;
+                        continue;
+                    }
+                    self.monsters.forget(slot);
                     let transform = self.transform_for(simulation, id, alive);
                     let style = self.style_for(simulation, id, alive);
                     let lod = self.select_lod(simulation, id);
@@ -647,7 +686,10 @@ impl RenderExtractor {
                     }
                     stats.extracted += 1;
                 }
-                None => self.despawn_parts(slot, &mut stats),
+                None => {
+                    self.despawn_parts(slot, &mut stats);
+                    self.monsters.forget(slot);
+                }
             }
         }
 
@@ -655,6 +697,82 @@ impl RenderExtractor {
         self.update_marker(simulation);
         self.stats = stats;
         &self.world
+    }
+
+    /// The monster model enemy `id` is drawn with, if its table row names one there is.
+    fn monster_model(&self, simulation: &Simulation, id: EntityId) -> Option<usize> {
+        if simulation.world().kind(id) != Some(EntityKind::Enemy) {
+            return None;
+        }
+        let look = simulation.brain(id)?.archetype().look;
+        self.monsters.model_index(look.model)
+    }
+
+    /// Animates and draws one monster from its body, its brain and this frame's events.
+    fn drive_monster(&mut self, simulation: &Simulation, id: EntityId, model: usize, alive: bool) {
+        let game = simulation.world();
+        let Some(body) = game.body(id) else {
+            return;
+        };
+        let alpha = simulation.timestep().alpha();
+        let previous = game.previous_body(id).unwrap_or(body);
+        let cast = simulation
+            .brain(id)
+            .and_then(|brain| brain.cast())
+            .filter(|_| alive);
+        let frame = MonsterFrame {
+            position: lerp_position(previous.position, body.position, alpha),
+            facing_yaw: lerp_angle(previous.facing_yaw, body.facing_yaw, alpha),
+            speed: if alive { body.horizontal_speed() } else { 0.0 },
+            heading: heading(body.velocity, body.facing_yaw),
+            grounded: body.grounded || !alive,
+            rising: body.state == MovementState::Jumping,
+            height: game.height(id),
+            cast: cast.map(|cast| (cast.duration, cast.fraction())),
+            dead: !alive,
+        };
+        let style = self.monster_style(simulation, id, alive);
+        self.monsters.drive(
+            id,
+            model,
+            frame,
+            self.view.delta_seconds,
+            style,
+            &mut self.world,
+            self.view.camera_position,
+            self.view.lod_bias,
+        );
+    }
+
+    /// [`RenderExtractor::style_for`] for a monster drawn with its own model.
+    ///
+    /// The model carries its own colours, so the table's tint is only a wash over them — a
+    /// fifth of the way — where on the shared stand-in it *was* the colour. A corpse dims
+    /// rather than greys: it is still that monster, lying there.
+    fn monster_style(&self, simulation: &Simulation, id: EntityId, alive: bool) -> InstanceStyle {
+        if !alive {
+            return InstanceStyle {
+                tint: CORPSE_TINT,
+                emissive: 0.0,
+            };
+        }
+        let look = simulation.brain(id).map(|brain| brain.archetype().look);
+        let fraction = simulation
+            .world()
+            .health(id)
+            .map_or(1.0, |health| health.fraction().clamp(0.0, 1.0));
+        let shade = MONSTER_HEALTH_FLOOR + (1.0 - MONSTER_HEALTH_FLOOR) * fraction;
+        let tint = look.map_or([1.0; 3], |look| look.tint);
+        let wash = |channel: f32| shade * (1.0 + (channel - 1.0) * MONSTER_TINT_WASH);
+        let mut style = InstanceStyle {
+            tint: [wash(tint[0]), wash(tint[1]), wash(tint[2]), 1.0],
+            emissive: look.map_or(0.0, |look| look.glow * EMPOWERED_GLOW),
+        };
+        if simulation.player().target == Some(id) {
+            style.emissive += TARGET_GLOW;
+        }
+        self.apply_hit_flash(simulation, id, &mut style);
+        style
     }
 
     /// Removes every render entity standing in for gameplay slot `slot`.
@@ -736,6 +854,8 @@ impl RenderExtractor {
                 CombatEvent::AbilityUsed { source, tick, .. } if *source == player => Some(*tick),
                 _ => None,
             }),
+            // The hero has no death clip; a dead player keeps standing, as before.
+            dead: false,
         };
 
         if let Err(error) = visual.update(self.view.delta_seconds, state) {
@@ -809,6 +929,13 @@ impl RenderExtractor {
             style.emissive += TARGET_GLOW;
         }
 
+        self.apply_hit_flash(simulation, id, &mut style);
+
+        style
+    }
+
+    /// Lifts `style` towards white while `id`'s last hit is still flashing.
+    fn apply_hit_flash(&self, simulation: &Simulation, id: EntityId, style: &mut InstanceStyle) {
         // A recent hit flashes white. Driven from simulation time, so the flash lasts the
         // same wall-clock duration at 60 FPS and at 1,400.
         if let Some(hit) = self.hits.get(id.index()).copied().flatten()
@@ -833,8 +960,6 @@ impl RenderExtractor {
                 ];
             }
         }
-
-        style
     }
 
     /// Records that an entity was damaged at a simulation time, for the hit flash.

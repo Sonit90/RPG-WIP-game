@@ -119,7 +119,9 @@ impl Simulation {
     pub(super) fn refresh_warrior_health(&mut self) {
         let stats = self.character_stats();
         let base = health_from_stamina(stats.get(Stat::Stamina));
-        let max = base * self.warrior_health_multiplier();
+        let max = self
+            .health_override
+            .unwrap_or(base * self.warrior_health_multiplier());
         self.world
             .set_max_health_keeping_current(self.player.entity, max);
     }

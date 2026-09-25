@@ -88,6 +88,14 @@ pub enum Scene {
     /// `assets/scenes/graveyard_crypt.json` when that file exists — which is what the editor
     /// saves — and from the built-in layout otherwise.
     Graveyard,
+    /// The monster test bed: a flat floor, a player with a million health, and a panel that
+    /// spawns any monster in the game in front of them.
+    ///
+    /// Separate from the encounter bed because that one is a *fight* someone designed, and
+    /// this is a question about one monster: does it look like itself, does it walk, swing,
+    /// cast and die the way it should, does its kit do what its table row says. Answering it
+    /// in the crypt means walking to where that monster stands and surviving what is with it.
+    Monsters,
 }
 
 impl Scene {
@@ -106,6 +114,7 @@ impl Scene {
             Self::Dungeon => "DUNGEON",
             Self::Shadows => "SHADOWS",
             Self::Graveyard => "GRAVEYARD",
+            Self::Monsters => "MONSTERS",
         }
     }
 
@@ -174,6 +183,12 @@ impl Scene {
         matches!(self, Self::Graveyard)
     }
 
+    /// Whether this is the monster test bed.
+    #[must_use]
+    pub fn is_monsters(self) -> bool {
+        matches!(self, Self::Monsters)
+    }
+
     /// Whether this is the line-of-sight test bed.
     #[must_use]
     pub fn is_line_of_sight(self) -> bool {
@@ -203,6 +218,7 @@ impl FromStr for Scene {
             "los" | "line-of-sight" | "sight" | "LOS" => Ok(Self::LineOfSight),
             "shadows" | "shadow" | "SHADOWS" => Ok(Self::Shadows),
             "graveyard" | "crypt" | "graveyard_crypt" | "GRAVEYARD" => Ok(Self::Graveyard),
+            "monsters" | "monster" | "bestiary" | "lab" | "MONSTERS" => Ok(Self::Monsters),
             _ => Err(()),
         }
     }
@@ -264,7 +280,9 @@ options:
                          (default 4, combat scene only)
   --scene <name>         which scenario to load: combat (default), collision,
                          character, environment, vfx, audio, encounter, los,
-                         dungeon, graveyard or shadows. The graveyard scene is the
+                         dungeon, graveyard, monsters or shadows. The monsters scene
+                         is the monster lab: a panel that spawns any monster in front
+                         of a player with a million health. The graveyard scene is the
                          Graveyard Crypt, loaded from assets/scenes/graveyard_crypt.json
                          when it exists (the editor saves it) - a branching dungeon whose
                          boss is sealed until 100% completion. The shadows scene is the shadow test
@@ -345,6 +363,10 @@ options:
   --open-map             open the full-screen dungeon map once the level has loaded
   --map-select <n>       select the n-th encounter on it (0 is the first pack)
   --map-expand           open every card and ability of that selection
+  --spawn <ids>          monster lab: stand these monsters in a passive line in front
+                         of you at start, by table id (skeleton_warrior,crypt_ghoul) or
+                         all
+  --spawn-hostile        the --spawn line-up fights instead of waiting to be hit
   --screenshot <p.png>   write frame --screenshot-frame (default 30), interface and all,
                          to a PNG: visual QA at any --width/--height, with --hidden
   -h, --help             print this help and exit";
@@ -706,6 +728,11 @@ pub struct Args {
     pub map_select: Option<usize>,
     /// Open every monster card and ability of the selection. For screenshots.
     pub map_expand: bool,
+    /// Monsters the monster lab stands in a passive line in front of the player at start,
+    /// by table id: `skeleton_warrior`, `crypt_steward`, or `all`.
+    pub spawn: Vec<String>,
+    /// Whether the `--spawn` line-up fights rather than waiting to be attacked.
+    pub spawn_hostile: bool,
     /// Override how the minimap turns, for this run only: `rotating` or `north_up`.
     pub minimap: Option<String>,
     /// A Blender layout export to load instead of the built-in layout, if one was named.
@@ -757,6 +784,8 @@ impl Default for Args {
             screenshot_frame: 30,
             open_map: false,
             map_select: None,
+            spawn: Vec::new(),
+            spawn_hostile: false,
             map_expand: false,
             minimap: None,
             help: false,
@@ -797,6 +826,7 @@ impl Args {
                 Scene::LineOfSight => "myGame — line-of-sight course".to_owned(),
                 Scene::Shadows => "myGame — shadow course".to_owned(),
                 Scene::Graveyard => "myGame — the Graveyard Crypt".to_owned(),
+                Scene::Monsters => "myGame — monster lab".to_owned(),
             },
         }
     }
@@ -923,6 +953,16 @@ where
             "--open-map" => args.open_map = true,
             "--map-expand" => args.map_expand = true,
             "--map-select" => args.map_select = Some(next_value(&mut iter, "--map-select")?),
+            "--spawn-hostile" => args.spawn_hostile = true,
+            "--spawn" => {
+                let raw = iter.next().ok_or(ArgsError::MissingValue("--spawn"))?;
+                args.spawn = raw
+                    .as_ref()
+                    .split(',')
+                    .map(|id| id.trim().to_owned())
+                    .filter(|id| !id.is_empty())
+                    .collect();
+            }
             "--minimap" => {
                 let raw = iter.next().ok_or(ArgsError::MissingValue("--minimap"))?;
                 args.minimap = Some(raw.as_ref().to_owned());
@@ -1168,6 +1208,27 @@ mod tests {
         assert!(Scene::Environment.has_environment());
         assert!(!Scene::Collision.has_environment());
         assert!(!Scene::Character.has_environment());
+    }
+
+    #[test]
+    fn the_monster_lab_parses_with_its_line_up() {
+        for name in ["monsters", "monster", "bestiary", "lab"] {
+            let args = parse(["--scene", name]).expect("a monster lab name is valid");
+            assert_eq!(args.scene, Scene::Monsters);
+            assert!(args.scene.is_monsters());
+            assert!(!args.scene.has_environment(), "the lab is a bare floor");
+        }
+        let args = parse([
+            "--scene",
+            "monsters",
+            "--spawn",
+            "skeleton_warrior, crypt_ghoul,",
+            "--spawn-hostile",
+        ])
+        .expect("valid");
+        assert_eq!(args.spawn, vec!["skeleton_warrior", "crypt_ghoul"]);
+        assert!(args.spawn_hostile);
+        assert_eq!(Scene::Monsters.as_str(), "MONSTERS");
     }
 
     #[test]

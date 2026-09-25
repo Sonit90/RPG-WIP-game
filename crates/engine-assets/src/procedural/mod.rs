@@ -25,6 +25,7 @@ pub mod dummy;
 pub mod environment;
 pub mod firemage;
 pub mod humanoid;
+pub mod monsters;
 pub mod starter;
 pub mod terrain;
 pub mod warrior;
@@ -38,6 +39,7 @@ pub use druid::{druid, druid_character};
 pub use dummy::{DummyVariant, training_dummy};
 pub use environment::{environment_library, environment_model};
 pub use firemage::{fire_mage, fire_mage_character};
+pub use monsters::{MONSTER_MODELS, monster_character, monster_model};
 pub use starter::{
     STARTER_LIBRARY, STARTER_MATERIALS, StarterAsset, StarterMaterial, starter_model,
 };

@@ -162,6 +162,9 @@ pub struct CharacterState {
     /// The tick of the latest ability this character used — a cast completing, or an
     /// instant going off. The cast clip's follow-through plays from here.
     pub released: Option<u64>,
+    /// Whether the character is dead. A model with a death clip plays it and holds its last
+    /// frame; one without stands where it was, as every character did before deaths.
+    pub dead: bool,
 }
 
 impl Default for CharacterState {
@@ -178,6 +181,7 @@ impl Default for CharacterState {
             cast_progress: 0.0,
             cast_started: None,
             released: None,
+            dead: false,
         }
     }
 }
@@ -224,6 +228,12 @@ pub struct CharacterVisual {
     /// sets it, and it is checked *before* everything else in `choose_slot`, which is what
     /// makes it an override rather than a hint.
     forced: Option<AnimationSlot>,
+    /// Whether an instant plays its cast clip from the top rather than from its release.
+    ///
+    /// A hero's instant is a flick — the spell is already gone, and the follow-through is
+    /// all there is to show. A monster's instant is a *blow*, and a blow the player cannot
+    /// see coming is exactly what its wind-up is for; see [`CharacterVisual::with_whole_instants`].
+    whole_instants: bool,
 }
 
 impl CharacterVisual {
@@ -267,7 +277,16 @@ impl CharacterVisual {
             follow_through: None,
             lod: 0,
             forced: None,
+            whole_instants: false,
         })
+    }
+
+    /// The same visual, playing an instant's whole cast clip — wind-up and all — rather than
+    /// only what follows its release. For monsters, whose instants are blows.
+    #[must_use]
+    pub fn with_whole_instants(mut self) -> Self {
+        self.whole_instants = true;
+        self
     }
 
     /// The role the character is in right now.
@@ -350,11 +369,15 @@ impl CharacterVisual {
         let released = state.released.is_some() && state.released != self.last_released;
         self.last_released = state.released.or(self.last_released);
 
-        if started || !state.grounded || state.speed > IDLE_SPEED {
+        // A monster's blow is not cut short by the step it is taken on: it swings while it
+        // closes, and a swing that vanished on the first frame of movement was never seen.
+        let stepping = state.speed > IDLE_SPEED && !self.whole_instants;
+        if started || !state.grounded || stepping {
             // A new cast, a jump or a step all cut the follow-through short.
             self.follow_through = None;
         }
-        if released && state.cast.is_none() && state.grounded && state.speed <= IDLE_SPEED {
+        let instant = self.was_casting.is_none();
+        if released && state.cast.is_none() && state.grounded && !stepping {
             // The spell left the hands: the rest of the clip plays out. A cast that was
             // showing follows through with its own clip; an instant has none and borrows the
             // ordinary cast's.
@@ -368,6 +391,13 @@ impl CharacterVisual {
         self.was_casting = state.cast;
 
         let (slot, fade) = self.choose_slot();
+        // The first clip a controller plays is cut to, not faded into: fading from the rest
+        // pose is a T-pose flash on every monster that spawns.
+        let fade = if self.player.current().is_none() {
+            0.0
+        } else {
+            fade
+        };
         if let Some(clip) = self.clip_for(slot) {
             let changed = self.slot != slot;
             self.player.play(clip, fade);
@@ -386,7 +416,13 @@ impl CharacterVisual {
                 self.player
                     .seek(state.cast_progress.clamp(0.0, 1.0) * release);
             } else if released && self.follow_through == Some(slot) {
-                self.player.seek(release);
+                if instant && self.whole_instants {
+                    // The same clip twice in a row is not a new `play`; the blow still has
+                    // to start from its wind-up.
+                    self.player.restart();
+                } else {
+                    self.player.seek(release);
+                }
             }
         }
         self.slot = slot;
@@ -422,6 +458,9 @@ impl CharacterVisual {
     fn choose_slot(&self) -> (AnimationSlot, f32) {
         if let Some(forced) = self.forced {
             return (forced, LOCOMOTION_FADE);
+        }
+        if self.state.dead && self.clips.get(AnimationSlot::Death).is_some() {
+            return (AnimationSlot::Death, CAST_FADE);
         }
         if let Some(cast) = self.state.cast {
             return (cast.slot(), CAST_FADE);
@@ -543,6 +582,18 @@ impl CharacterVisual {
     /// A character whose palette does not fit the shader's array is **not drawn**, rather
     /// than drawn with someone else's bones.
     pub fn submit(&mut self, world: &mut RenderWorld, camera: Vec3, lod_bias: f32) {
+        self.submit_styled(world, camera, lod_bias, InstanceStyle::NEUTRAL);
+    }
+
+    /// [`CharacterVisual::submit`], drawn with `style`: a monster's tint, its hit flash and
+    /// the glow of being targeted, which a hero does not have.
+    pub fn submit_styled(
+        &mut self,
+        world: &mut RenderWorld,
+        camera: Vec3,
+        lod_bias: f32,
+        style: InstanceStyle,
+    ) {
         let transform = self.transform();
         // Distance to the character's middle rather than its feet: a character at the bottom
         // of the screen is closer at the feet than at the head, and picking a level from the
@@ -572,7 +623,7 @@ impl CharacterVisual {
                 mesh,
                 material: part.material,
                 bounds,
-                style: InstanceStyle::NEUTRAL,
+                style,
                 palette_start,
                 palette_len,
                 // A character is the shadow the player looks at. Nothing here opts out.

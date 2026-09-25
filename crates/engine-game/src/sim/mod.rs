@@ -515,6 +515,12 @@ pub struct Simulation {
     /// events, sixty floating numbers and a line in the damage meter for every second the
     /// player spends walking.
     regen_elapsed: f32,
+    /// A maximum health that replaces the character sheet's, for a test scene.
+    ///
+    /// The monster test bed gives the player a million so a boss can be watched through every
+    /// phase without the watcher dying; the stat path and the Warrior's multipliers would
+    /// otherwise put the number back on the next refresh.
+    health_override: Option<f32>,
 }
 
 impl Simulation {
@@ -590,6 +596,7 @@ impl Simulation {
             outcomes: Vec::with_capacity(16),
             observed: 0,
             regen_elapsed: 0.0,
+            health_override: None,
             tick: 0,
             time: 0.0,
             stats: SimStats::default(),
@@ -763,10 +770,9 @@ impl Simulation {
         // Warrior's Deflection bonus and Last Stand. The *fraction* is preserved here
         // because this is the gear path — see `refresh_warrior_health` for the buff path,
         // which keeps the absolute health instead.
-        self.world.set_max_health(
-            self.player.entity,
-            health_from_stamina(stats.get(Stat::Stamina)) * self.warrior_health_multiplier(),
-        );
+        let max = health_from_stamina(stats.get(Stat::Stamina)) * self.warrior_health_multiplier();
+        self.world
+            .set_max_health(self.player.entity, self.health_override.unwrap_or(max));
 
         // The bridge between the character sheet and the class. Gear is stated as what is
         // *added* to the class's base, and the base main stat is the base spell power, so
@@ -778,6 +784,28 @@ impl Simulation {
             crit_chance: stats.percent(Stat::CriticalStrike),
             crit_damage: 0.0,
         };
+    }
+
+    /// Replaces the player's maximum health with `max`, or gives it back to the character
+    /// sheet with `None`. The player is healed to full either way.
+    ///
+    /// For a test scene: nothing in the game calls it.
+    pub fn set_player_health_override(&mut self, max: Option<f32>) {
+        self.health_override = max.filter(|max| max.is_finite() && *max > 0.0);
+        self.refresh_character();
+        let entity = self.player.entity;
+        if let Some(health) = self.world.health(entity) {
+            let missing = health.max() - health.current();
+            if missing > 0.0 {
+                self.world.heal(entity, missing);
+            }
+        }
+    }
+
+    /// The maximum health a test scene has fixed the player at, if it has.
+    #[must_use]
+    pub fn player_health_override(&self) -> Option<f32> {
+        self.health_override
     }
 
     /// The FireMage: abilities, resources, Ignite, zones and talents.
@@ -2622,6 +2650,48 @@ mod tests {
         simulation.step_once();
         simulation.select_nearest_target();
         simulation
+    }
+
+    #[test]
+    fn a_health_override_survives_the_character_sheet_and_can_be_given_back() {
+        let mut simulation = arena();
+        let player = simulation.player().entity;
+        let natural = simulation
+            .world()
+            .health(player)
+            .map_or(0.0, |health| health.max());
+
+        simulation.set_player_health_override(Some(1_000_000.0));
+        let health = |simulation: &Simulation| {
+            simulation
+                .world()
+                .health(player)
+                .map_or((0.0, 0.0), |health| (health.current(), health.max()))
+        };
+        assert_eq!(
+            health(&simulation),
+            (1_000_000.0, 1_000_000.0),
+            "set, and full"
+        );
+
+        // Everything that recomputes maximum health from the sheet: a refresh, a hero swap —
+        // the Warrior's multipliers included.
+        simulation.refresh_character();
+        assert_eq!(health(&simulation).1, 1_000_000.0);
+        assert!(simulation.set_hero(Hero::Warrior));
+        for _ in 0..30 {
+            simulation.step_once();
+        }
+        assert_eq!(
+            health(&simulation).1,
+            1_000_000.0,
+            "the Warrior keeps the override"
+        );
+
+        simulation.set_player_health_override(None);
+        assert!(simulation.set_hero(Hero::FireMage));
+        assert!((health(&simulation).1 - natural).abs() < 1e-3, "given back");
+        assert_eq!(simulation.player_health_override(), None);
     }
 
     fn dummy_health(simulation: &Simulation, id: EntityId) -> f32 {

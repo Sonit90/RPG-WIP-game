@@ -60,6 +60,7 @@ pub mod input;
 /// The dungeon map's design tokens: colour, type, spacing, radii, motion.
 pub mod map_style;
 pub mod menu;
+pub mod monster_lab;
 pub mod paint;
 pub mod screen;
 /// What a right click on an action bar slot opens.

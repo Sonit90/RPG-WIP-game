@@ -258,6 +258,12 @@ pub enum CastStyle {
     Swing,
     /// Both hands rise and push forward. The Druid.
     Channel,
+    /// A bow raised in the left hand and drawn to the cheek with the right. The Crypt Archer.
+    Bow,
+    /// Both fists raised overhead and brought down together in front. The Grave Brute.
+    Slam,
+    /// A lunge and a raking swipe of the claws. The Crypt Ghoul.
+    Claw,
 }
 
 /// Everything a character is allowed to change about the shared animation set.
@@ -742,6 +748,9 @@ fn cast(style: &Style) -> AnimationClip {
                 ],
             ),
         ],
+        CastStyle::Bow => bow_draw(style, false),
+        CastStyle::Slam => slam(style, false),
+        CastStyle::Claw => claw(style, false),
     };
     AnimationClip::new("cast", false, tracks)
 }
@@ -827,8 +836,510 @@ fn cast_heavy(style: &Style) -> AnimationClip {
                 ],
             ),
         ],
+        CastStyle::Bow => bow_draw(style, true),
+        CastStyle::Slam => slam(style, true),
+        CastStyle::Claw => claw(style, true),
     };
     AnimationClip::new("cast_heavy", false, tracks)
+}
+
+/// The bow: raised in the left hand, drawn to the cheek with the right, loosed.
+///
+/// The left arm points forward by turning 90 degrees about the vertical; the right arm
+/// reaches forward and its forearm folds back, which is what brings the drawing hand to the
+/// shoulder. The heavy version aims into the sky — a volley, a rain of arrows — by rolling
+/// both arms up and leaning back.
+fn bow_draw(style: &Style, heavy: bool) -> Vec<BoneTrack> {
+    let (aim, lean) = if heavy { (38.0, 10.0) } else { (4.0, 0.0) };
+    let (draw, loose, end) = if heavy {
+        (0.45, 0.80, 1.15)
+    } else {
+        (0.28, 0.48, 0.80)
+    };
+    vec![
+        rotation(
+            SHOULDER_L,
+            &[
+                (0.0, 0.0, 0.0, style.arm_down_l),
+                (draw, 88.0, 0.0, aim),
+                (loose, 88.0, 0.0, aim),
+                (end, 0.0, 0.0, style.arm_down_l),
+            ],
+        ),
+        rotation(
+            FOREARM_L,
+            // The twist about the forearm that stands the bow upright: it is carried
+            // across the body at rest and has to turn a quarter to be drawn.
+            &[
+                (0.0, 0.0, 0.0, -12.0),
+                (draw, 0.0, 90.0, 0.0),
+                (loose, 0.0, 90.0, 0.0),
+                (end, 0.0, 0.0, -12.0),
+            ],
+        ),
+        rotation(
+            SHOULDER_R,
+            &[
+                (0.0, 0.0, 0.0, style.arm_down_r),
+                (draw * 0.5, -40.0, 0.0, style.arm_down_r - 40.0),
+                (draw, -72.0, 0.0, -aim),
+                (loose, -72.0, 0.0, -aim),
+                (loose + 0.08, -92.0, 0.0, -aim - 10.0),
+                (end, 0.0, 0.0, style.arm_down_r),
+            ],
+        ),
+        rotation(
+            FOREARM_R,
+            &[
+                (0.0, 0.0, 0.0, 12.0),
+                (draw, 150.0, 0.0, 0.0),
+                (loose, 158.0, 0.0, 0.0),
+                (loose + 0.08, 60.0, 0.0, 0.0),
+                (end, 0.0, 0.0, 12.0),
+            ],
+        ),
+        // Side-on to the target, as an archer stands.
+        rotation(
+            CHEST,
+            &[
+                (0.0, 0.0, 0.0, 0.0),
+                (draw, 18.0, lean, 0.0),
+                (loose, 18.0, lean, 0.0),
+                (end, 0.0, 0.0, 0.0),
+            ],
+        ),
+        rotation(
+            HEAD,
+            &[
+                (0.0, 0.0, 0.0, 0.0),
+                (draw, -16.0, 0.0, 0.0),
+                (end, 0.0, 0.0, 0.0),
+            ],
+        ),
+    ]
+}
+
+/// The slam: both fists up and back over the head, then down together in front.
+fn slam(style: &Style, heavy: bool) -> Vec<BoneTrack> {
+    let (lift, hold, strike, end) = if heavy {
+        (0.50, 0.70, 0.86, 1.30)
+    } else {
+        (0.30, 0.36, 0.46, 0.90)
+    };
+    let drop = if heavy { 0.16 } else { 0.08 };
+    vec![
+        rotation(
+            SHOULDER_L,
+            &[
+                (0.0, 0.0, 0.0, style.arm_down_l),
+                (lift, 0.0, 24.0, 88.0),
+                (hold, 0.0, 30.0, 92.0),
+                (strike, 0.0, 70.0, style.arm_down_l),
+                (end, 0.0, 0.0, style.arm_down_l),
+            ],
+        ),
+        rotation(
+            SHOULDER_R,
+            &[
+                (0.0, 0.0, 0.0, style.arm_down_r),
+                (lift, 0.0, 24.0, -88.0),
+                (hold, 0.0, 30.0, -92.0),
+                (strike, 0.0, 70.0, style.arm_down_r),
+                (end, 0.0, 0.0, style.arm_down_r),
+            ],
+        ),
+        rotation(
+            FOREARM_L,
+            &[
+                (0.0, 0.0, 0.0, -12.0),
+                (lift, 0.0, 0.0, 20.0),
+                (strike, 0.0, 0.0, -4.0),
+                (end, 0.0, 0.0, -12.0),
+            ],
+        ),
+        rotation(
+            FOREARM_R,
+            &[
+                (0.0, 0.0, 0.0, 12.0),
+                (lift, 0.0, 0.0, -20.0),
+                (strike, 0.0, 0.0, 4.0),
+                (end, 0.0, 0.0, 12.0),
+            ],
+        ),
+        // Back on the lift, over and down on the strike: the weight is in the spine.
+        rotation(
+            SPINE,
+            &[
+                (0.0, 0.0, 0.0, 0.0),
+                (lift, 0.0, 12.0, 0.0),
+                (hold, 0.0, 14.0, 0.0),
+                (strike, 0.0, -30.0, 0.0),
+                (end, 0.0, 0.0, 0.0),
+            ],
+        ),
+        translation(
+            HIPS,
+            &[
+                (0.0, 0.0, HIPS_REST_Y, 0.0),
+                (lift, 0.0, HIPS_REST_Y + 0.03, 0.0),
+                (strike, 0.0, HIPS_REST_Y - drop, 0.0),
+                (end, 0.0, HIPS_REST_Y, 0.0),
+            ],
+        ),
+        rotation(
+            THIGH_L,
+            &[
+                (0.0, 0.0, 0.0, 0.0),
+                (strike, 0.0, 26.0, 0.0),
+                (end, 0.0, 0.0, 0.0),
+            ],
+        ),
+        rotation(
+            THIGH_R,
+            &[
+                (0.0, 0.0, 0.0, 0.0),
+                (strike, 0.0, 20.0, 0.0),
+                (end, 0.0, 0.0, 0.0),
+            ],
+        ),
+        rotation(
+            SHIN_L,
+            &[
+                (0.0, 0.0, 0.0, 0.0),
+                (strike, 0.0, -40.0, 0.0),
+                (end, 0.0, 0.0, 0.0),
+            ],
+        ),
+        rotation(
+            SHIN_R,
+            &[
+                (0.0, 0.0, 0.0, 0.0),
+                (strike, 0.0, -34.0, 0.0),
+                (end, 0.0, 0.0, 0.0),
+            ],
+        ),
+    ]
+}
+
+/// The claw: a lunge, and a raking swipe across the front — right, then left on the heavy
+/// version, which pounces.
+fn claw(style: &Style, heavy: bool) -> Vec<BoneTrack> {
+    let (wind, rake, end) = if heavy {
+        (0.30, 0.52, 0.95)
+    } else {
+        (0.14, 0.24, 0.50)
+    };
+    let second = if heavy { rake + 0.14 } else { end };
+    let mut tracks = vec![
+        rotation(
+            SHOULDER_R,
+            &[
+                (0.0, 0.0, 0.0, style.arm_down_r),
+                (wind, 0.0, -10.0, style.arm_down_r - 120.0),
+                (rake, 40.0, 80.0, style.arm_down_r - 10.0),
+                (end, 0.0, 0.0, style.arm_down_r),
+            ],
+        ),
+        rotation(
+            FOREARM_R,
+            &[
+                (0.0, 0.0, 0.0, 12.0),
+                (wind, 0.0, -30.0, 30.0),
+                (rake, 0.0, 0.0, 6.0),
+                (end, 0.0, 0.0, 12.0),
+            ],
+        ),
+        rotation(
+            CHEST,
+            &[
+                (0.0, 0.0, 0.0, 0.0),
+                (wind, 24.0, 0.0, 0.0),
+                (rake, -26.0, -10.0, 0.0),
+                (end, 0.0, 0.0, 0.0),
+            ],
+        ),
+        // The lunge: down and forward through the hips as the claw comes across.
+        translation(
+            HIPS,
+            &[
+                (0.0, 0.0, HIPS_REST_Y, 0.0),
+                (wind, 0.0, HIPS_REST_Y - 0.03, 0.0),
+                (rake, 0.0, HIPS_REST_Y - 0.08, -0.12),
+                (end, 0.0, HIPS_REST_Y, 0.0),
+            ],
+        ),
+    ];
+    let left = if heavy {
+        rotation(
+            SHOULDER_L,
+            &[
+                (0.0, 0.0, 0.0, style.arm_down_l),
+                (wind, 0.0, -10.0, style.arm_down_l + 120.0),
+                (rake, 0.0, -10.0, style.arm_down_l + 110.0),
+                (second, -40.0, 80.0, style.arm_down_l + 10.0),
+                (end, 0.0, 0.0, style.arm_down_l),
+            ],
+        )
+    } else {
+        rotation(
+            SHOULDER_L,
+            &[
+                (0.0, 0.0, 0.0, style.arm_down_l),
+                (wind, 0.0, 20.0, style.arm_down_l + 20.0),
+                (rake, 0.0, -20.0, style.arm_down_l + 10.0),
+                (end, 0.0, 0.0, style.arm_down_l),
+            ],
+        )
+    };
+    tracks.push(left);
+    if heavy {
+        tracks.push(rotation(
+            SPINE,
+            &[
+                (0.0, 0.0, 0.0, 0.0),
+                (wind, 0.0, 10.0, 0.0),
+                (rake, 0.0, -24.0, 0.0),
+                (end, 0.0, 0.0, 0.0),
+            ],
+        ));
+    }
+    tracks
+}
+
+/// Where in each cast clip the blow lands — the moment the wind-up is placed against the
+/// cast's progress, and the moment an instant attack's follow-through plays out from.
+///
+/// `(cast, cast_heavy)`, in seconds.
+#[must_use]
+pub fn release_times(style: CastStyle) -> (f32, f32) {
+    match style {
+        CastStyle::Swing => (0.38, 0.86),
+        CastStyle::Channel => (0.42, 0.72),
+        CastStyle::Bow => (0.48, 0.80),
+        CastStyle::Slam => (0.46, 0.86),
+        CastStyle::Claw => (0.24, 0.52),
+    }
+}
+
+/// Dying: the knees go, the body slumps, and it falls back to lie on the ground.
+///
+/// The fall is a rotation of the root about the feet, which is what keeps the body lying
+/// where the monster stood; the root rises a hand's breadth as it goes, so the back comes to
+/// rest on the floor instead of half inside it. One-shot, and it holds its last frame.
+#[must_use]
+pub fn death(style: &Style) -> AnimationClip {
+    let (buckle, down, end) = (0.30, 0.85, 1.05);
+    AnimationClip::new(
+        "death",
+        false,
+        vec![
+            rotation(
+                ROOT,
+                &[
+                    (0.0, 0.0, 0.0, 0.0),
+                    (buckle, 0.0, 6.0, 0.0),
+                    (down, 0.0, 84.0, 0.0),
+                    (end, 0.0, 88.0, 0.0),
+                ],
+            ),
+            translation(
+                ROOT,
+                &[
+                    (0.0, 0.0, 0.0, 0.0),
+                    (buckle, 0.0, 0.0, 0.0),
+                    (down, 0.0, 0.10, 0.0),
+                    (end, 0.0, 0.12, 0.0),
+                ],
+            ),
+            translation(
+                HIPS,
+                &[
+                    (0.0, 0.0, HIPS_REST_Y, 0.0),
+                    (buckle, 0.0, HIPS_REST_Y - 0.16, 0.0),
+                    (end, 0.0, HIPS_REST_Y - 0.04, 0.0),
+                ],
+            ),
+            rotation(
+                SPINE,
+                &[
+                    (0.0, 0.0, 0.0, 0.0),
+                    (buckle, 0.0, -18.0, 0.0),
+                    (end, 0.0, 6.0, 0.0),
+                ],
+            ),
+            rotation(
+                HEAD,
+                &[
+                    (0.0, 0.0, 0.0, 0.0),
+                    (buckle, 0.0, -20.0, 0.0),
+                    (end, 18.0, 16.0, 0.0),
+                ],
+            ),
+            rotation(
+                THIGH_L,
+                &[
+                    (0.0, 0.0, 0.0, 0.0),
+                    (buckle, 0.0, 32.0, 0.0),
+                    (end, 0.0, 14.0, 4.0),
+                ],
+            ),
+            rotation(
+                THIGH_R,
+                &[
+                    (0.0, 0.0, 0.0, 0.0),
+                    (buckle, 0.0, 26.0, 0.0),
+                    (end, 0.0, 6.0, -6.0),
+                ],
+            ),
+            rotation(
+                SHIN_L,
+                &[
+                    (0.0, 0.0, 0.0, 0.0),
+                    (buckle, 0.0, -58.0, 0.0),
+                    (end, 0.0, -30.0, 0.0),
+                ],
+            ),
+            rotation(
+                SHIN_R,
+                &[
+                    (0.0, 0.0, 0.0, 0.0),
+                    (buckle, 0.0, -50.0, 0.0),
+                    (end, 0.0, -12.0, 0.0),
+                ],
+            ),
+            rotation(
+                SHOULDER_L,
+                &[
+                    (0.0, 0.0, 0.0, style.arm_down_l),
+                    (buckle, 0.0, 20.0, style.arm_down_l + 20.0),
+                    (end, 0.0, -10.0, style.arm_down_l + 58.0),
+                ],
+            ),
+            rotation(
+                SHOULDER_R,
+                &[
+                    (0.0, 0.0, 0.0, style.arm_down_r),
+                    (buckle, 0.0, 26.0, style.arm_down_r - 16.0),
+                    (end, 0.0, -14.0, style.arm_down_r - 64.0),
+                ],
+            ),
+        ],
+    )
+}
+
+/// How a monster stands: offsets laid over every clip, so a ghoul walks, casts and dies
+/// crouched and a brute does all three hunched.
+///
+/// The rig and the cycles stay shared — the module documentation's rule — and this is the
+/// one thing a monster adds: a *rest pose* different from a hero's upright one. It is
+/// applied to the finished clips rather than written into each, so every clip agrees about
+/// it, including the ones written before the monster existed.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct Posture {
+    /// Degrees the lower back bends forward.
+    pub hunch: f32,
+    /// Degrees the upper back bends forward, on top of the hunch.
+    pub chest: f32,
+    /// Degrees the head tips *back*, to look ahead out of a hunch rather than at the floor.
+    pub head_up: f32,
+    /// Degrees the thighs come forward in a crouch. The knees bend to keep the feet under
+    /// the hips, and the hips drop by exactly what that costs in height.
+    pub crouch: f32,
+    /// Degrees the arms hang forward of the body.
+    pub arms_forward: f32,
+}
+
+impl Posture {
+    /// The knee angle and the hip drop a crouch of `self.crouch` degrees takes.
+    ///
+    /// The thigh swings forward by the crouch and the shin back until the foot is under the
+    /// hip again, so a crouched monster neither leans off its feet nor slides forward.
+    #[must_use]
+    pub fn crouch_geometry(&self) -> (f32, f32) {
+        const THIGH: f32 = 0.45;
+        const SHIN: f32 = 0.40;
+        let thigh = self.crouch.clamp(0.0, 60.0).to_radians();
+        let shin = ((THIGH / SHIN) * thigh.sin()).clamp(-1.0, 1.0).asin();
+        let knee = -(thigh + shin).to_degrees();
+        let drop = THIGH * (1.0 - thigh.cos()) + SHIN * (1.0 - shin.cos());
+        (knee, drop)
+    }
+
+    /// Lays this posture over every clip.
+    pub fn apply(&self, clips: &mut [AnimationClip]) {
+        let (knee, drop) = self.crouch_geometry();
+        // Bones that point up lean forward with a negative pitch; the thighs, which point
+        // down, come forward with a positive one — the same sign the walk cycle uses.
+        let offsets = [
+            (SPINE, ypr(0.0, -self.hunch, 0.0)),
+            (CHEST, ypr(0.0, -self.chest, 0.0)),
+            (NECK, ypr(0.0, self.head_up * 0.5, 0.0)),
+            (HEAD, ypr(0.0, self.head_up * 0.5, 0.0)),
+            (THIGH_L, ypr(0.0, self.crouch, 0.0)),
+            (THIGH_R, ypr(0.0, self.crouch, 0.0)),
+            (SHIN_L, ypr(0.0, knee, 0.0)),
+            (SHIN_R, ypr(0.0, knee, 0.0)),
+            (SHOULDER_L, ypr(0.0, self.arms_forward, 0.0)),
+            (SHOULDER_R, ypr(0.0, self.arms_forward, 0.0)),
+        ];
+        for clip in clips.iter_mut() {
+            for (bone, offset) in offsets {
+                if offset == Quat::IDENTITY {
+                    continue;
+                }
+                match clip.tracks.iter_mut().find(|track| track.bone == bone) {
+                    Some(track) if !track.rotation.is_empty() => {
+                        for key in &mut track.rotation {
+                            key.value = offset * key.value;
+                        }
+                    }
+                    Some(track) => track.rotation = vec![Key::new(0.0, offset)],
+                    None => clip
+                        .tracks
+                        .push(BoneTrack::new(bone).with_rotation(vec![Key::new(0.0, offset)])),
+                }
+            }
+            if drop > 1e-4 {
+                let lowered = Vec3::new(0.0, -drop, 0.0);
+                match clip.tracks.iter_mut().find(|track| track.bone == HIPS) {
+                    Some(track) if !track.translation.is_empty() => {
+                        for key in &mut track.translation {
+                            key.value += lowered;
+                        }
+                    }
+                    Some(track) => {
+                        track.translation =
+                            vec![Key::new(0.0, Vec3::new(0.0, HIPS_REST_Y, 0.0) + lowered)];
+                    }
+                    None => {
+                        clip.tracks
+                            .push(BoneTrack::new(HIPS).with_translation(vec![Key::new(
+                                0.0,
+                                Vec3::new(0.0, HIPS_REST_Y, 0.0) + lowered,
+                            )]))
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Every clip a monster built on this rig ships with: the hero set, a death, the blow's
+/// moment marked in both casts, and the monster's posture over all of it.
+#[must_use]
+pub fn monster_clips(style: &Style, posture: &Posture) -> Vec<AnimationClip> {
+    let (cast_release, heavy_release) = release_times(style.cast);
+    let mut clips: Vec<AnimationClip> = clips(style)
+        .into_iter()
+        .map(|clip| match clip.name.as_str() {
+            "cast" => clip.with_release(cast_release),
+            "cast_heavy" => clip.with_release(heavy_release),
+            _ => clip,
+        })
+        .collect();
+    clips.push(death(style));
+    posture.apply(&mut clips);
+    clips
 }
 
 /// Deterministic value in `0..1` from a pair of integers.

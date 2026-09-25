@@ -2142,6 +2142,16 @@ impl MonsterLook {
         glow: 0.0,
         model: "training_dummy",
     };
+
+    /// The hostile red, drawn with `model`: the Ashen Reliquary's monsters, which were
+    /// tinted dummies before the crypt's models existed and borrow them now.
+    #[must_use]
+    pub const fn hostile(model: &'static str) -> Self {
+        Self {
+            model,
+            ..Self::HOSTILE
+        }
+    }
 }
 
 /// What a monster's level multiplies its health and damage by.
@@ -2353,6 +2363,7 @@ pub static ARCHETYPES: [EnemyArchetype; ENEMY_KIND_COUNT] = [
         tier: MonsterTier::Normal,
         summary: "Closes and cleaves: the first lesson in where to stand.",
         completion: 4.0,
+        look: MonsterLook::hostile("grave_brute"),
         ..EnemyArchetype::BASE
     },
     EnemyArchetype {
@@ -2382,6 +2393,7 @@ pub static ARCHETYPES: [EnemyArchetype; ENEMY_KIND_COUNT] = [
         tier: MonsterTier::Normal,
         summary: "Keeps its distance and drops fire where you stand.",
         completion: 3.0,
+        look: MonsterLook::hostile("skeleton_bonecaster"),
         ..EnemyArchetype::BASE
     },
     // Stands further back than the Adept, so in a mixed pack reaching it is a decision.
@@ -2410,6 +2422,7 @@ pub static ARCHETYPES: [EnemyArchetype; ENEMY_KIND_COUNT] = [
         tier: MonsterTier::Normal,
         summary: "A three-second nova that must be interrupted.",
         completion: 4.0,
+        look: MonsterLook::hostile("grave_acolyte"),
         ..EnemyArchetype::BASE
     },
     // Closer in than the other casters: a healer that stands further back than everything it
@@ -2439,6 +2452,7 @@ pub static ARCHETYPES: [EnemyArchetype; ENEMY_KIND_COUNT] = [
         tier: MonsterTier::Normal,
         summary: "Heals whichever ally is worst off: kill it first.",
         completion: 4.0,
+        look: MonsterLook::hostile("grave_acolyte"),
         ..EnemyArchetype::BASE
     },
     EnemyArchetype {
@@ -2466,6 +2480,7 @@ pub static ARCHETYPES: [EnemyArchetype; ENEMY_KIND_COUNT] = [
         tier: MonsterTier::Normal,
         summary: "Leaves burning ground under the player.",
         completion: 3.0,
+        look: MonsterLook::hostile("skeleton_bonecaster"),
         ..EnemyArchetype::BASE
     },
     EnemyArchetype {
@@ -2494,6 +2509,7 @@ pub static ARCHETYPES: [EnemyArchetype; ENEMY_KIND_COUNT] = [
         tier: MonsterTier::Normal,
         summary: "An elite that changes at half health.",
         completion: 10.0,
+        look: MonsterLook::hostile("skeleton_warrior"),
         ..EnemyArchetype::BASE
     },
     EnemyArchetype {
@@ -2523,6 +2539,7 @@ pub static ARCHETYPES: [EnemyArchetype; ENEMY_KIND_COUNT] = [
         tier: MonsterTier::Boss,
         summary: "Three phases, each adding a mechanic.",
         completion: 0.0,
+        look: MonsterLook::hostile("lord_ashgrave"),
         ..EnemyArchetype::BASE
     },
     // ======================================================================================

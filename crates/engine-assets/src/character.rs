@@ -59,11 +59,14 @@ pub enum AnimationSlot {
     StrafeLeft,
     /// Moving sideways to the character's right. Optional, as [`Self::StrafeLeft`].
     StrafeRight,
+    /// Dying, ending on the ground. Optional: a monster has one, a hero does not — and a
+    /// character without it simply stops where it stood, which is what it did before.
+    Death,
 }
 
 impl AnimationSlot {
     /// Every slot, in a stable order. The array [`ClipBindings`] is indexed by.
-    pub const ALL: [Self; 12] = [
+    pub const ALL: [Self; 13] = [
         Self::Idle,
         Self::Walk,
         Self::Run,
@@ -76,6 +79,7 @@ impl AnimationSlot {
         Self::RunBackward,
         Self::StrafeLeft,
         Self::StrafeRight,
+        Self::Death,
     ];
 
     /// The slots every character is expected to fill. The rest are refinements a character
@@ -110,6 +114,7 @@ impl AnimationSlot {
             Self::RunBackward => 9,
             Self::StrafeLeft => 10,
             Self::StrafeRight => 11,
+            Self::Death => 12,
         }
     }
 
@@ -129,6 +134,7 @@ impl AnimationSlot {
             Self::RunBackward => "RUN BACK",
             Self::StrafeLeft => "STRAFE L",
             Self::StrafeRight => "STRAFE R",
+            Self::Death => "DEATH",
         }
     }
 
