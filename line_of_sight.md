@@ -12,9 +12,10 @@ One sentence of scope:
 > When a targeted ability explicitly requires line of sight, the caster must have an
 > unobstructed path to the selected target, or the ability is refused.
 
-It is **not** a visibility or perception system. Nothing here is called by enemy AI, by
-aggro, by threat, by patrol or by target acquisition, and there is no `can_see`. The only
-consumer is the targeted-ability validation path in `engine-game`.
+It is **not** a visibility or perception system: nothing here is called by aggro, by threat
+or by patrol, and there is no `can_see`. Its consumers are the player's targeted-ability
+validation and — since the navigation pass, see [navigation.md](navigation.md) — the same
+rule applied to monsters: nothing a monster aims at somebody is used through a wall.
 
 ---
 

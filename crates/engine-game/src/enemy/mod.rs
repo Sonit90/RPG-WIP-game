@@ -1292,7 +1292,8 @@ pub static ENEMY_ABILITIES: [EnemyAbilityDef; ENEMY_ABILITY_COUNT] = [
         description: "A charge at whoever stands furthest back.",
         counter: "Be ready for it",
         range: 25.0,
-        cast_time: 1.0,
+        // A charge is instant: no wind-up, it simply goes.
+        cast_time: 0.0,
         cooldown: 14.0,
         damage: 55.0,
         aim: EnemyAim::Caster,
@@ -1354,7 +1355,8 @@ pub static ENEMY_ABILITIES: [EnemyAbilityDef; ENEMY_ABILITY_COUNT] = [
         description: "A charge at a distant player.",
         counter: "Heal the one it is cast on",
         range: 30.0,
-        cast_time: 1.3,
+        // A charge is instant: no wind-up, it simply goes.
+        cast_time: 0.0,
         cooldown: 16.0,
         damage: 80.0,
         aim: EnemyAim::Caster,
@@ -1423,7 +1425,8 @@ pub static ENEMY_ABILITIES: [EnemyAbilityDef; ENEMY_ABILITY_COUNT] = [
         description: "A leap at a random player, landing in a circle.",
         counter: "Spread",
         range: 22.0,
-        cast_time: 0.7,
+        // A charge is instant: no wind-up, it simply goes.
+        cast_time: 0.0,
         cooldown: 14.0,
         damage: 50.0,
         aim: EnemyAim::Caster,
@@ -1605,7 +1608,8 @@ pub static ENEMY_ABILITIES: [EnemyAbilityDef; ENEMY_ABILITY_COUNT] = [
         name: "SHATTERING CHARGE",
         description: "A charge whose landing sends out a shockwave.",
         range: 25.0,
-        cast_time: 1.0,
+        // A charge is instant: no wind-up, it simply goes.
+        cast_time: 0.0,
         cooldown: 12.0,
         damage: 70.0,
         aim: EnemyAim::Caster,
@@ -1645,7 +1649,8 @@ pub static ENEMY_ABILITIES: [EnemyAbilityDef; ENEMY_ABILITY_COUNT] = [
         name: "DEVASTATING CHARGE",
         description: "A charge that leaves a burning trail.",
         range: 30.0,
-        cast_time: 1.3,
+        // A charge is instant: no wind-up, it simply goes.
+        cast_time: 0.0,
         cooldown: 14.0,
         damage: 90.0,
         aim: EnemyAim::Caster,
@@ -1695,7 +1700,8 @@ pub static ENEMY_ABILITIES: [EnemyAbilityDef; ENEMY_ABILITY_COUNT] = [
         name: "SAVAGE POUNCE",
         description: "A leap whose landing explodes, then explodes again.",
         range: 22.0,
-        cast_time: 0.7,
+        // A charge is instant: no wind-up, it simply goes.
+        cast_time: 0.0,
         cooldown: 12.0,
         damage: 70.0,
         aim: EnemyAim::Caster,
@@ -1783,7 +1789,8 @@ pub static ENEMY_ABILITIES: [EnemyAbilityDef; ENEMY_ABILITY_COUNT] = [
         description: "A charge through the room that leaves a trail.",
         counter: "Heal them; stay off the trail",
         range: 35.0,
-        cast_time: 1.5,
+        // A charge is instant: no wind-up, it simply goes.
+        cast_time: 0.0,
         cooldown: 22.0,
         damage: 70.0,
         aim: EnemyAim::Caster,
@@ -3115,12 +3122,19 @@ mod tests {
                 "{}",
                 definition.name
             );
-            // Anything that aims at more than one thing, lands later, runs, or channels
-            // needs a cast to plan it in: an instant has no plan.
+            // Anything that aims at more than one thing, lands later or channels needs a
+            // cast to plan it in: an instant has no plan. A charge is the exception — it is
+            // instant, and its run is started on the tick it is chosen.
             let planned = definition.zone_total() > 1
                 || definition.delay > 0.0
-                || definition.effect.is_charge()
                 || definition.effect.is_channel();
+            if definition.effect.is_charge() {
+                assert!(
+                    !definition.is_cast(),
+                    "{} is a charge with a wind-up",
+                    definition.name
+                );
+            }
             assert!(
                 !planned || definition.is_cast(),
                 "{} needs a cast to be planned",

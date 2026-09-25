@@ -19,7 +19,8 @@ who closes inside 7–9 m when they have nothing ready to cast. Melee monsters c
 length and use their **charges and leaps while closing** — a charge is only ever aimed at
 somebody at least 6–8 m away, never the one already in their face.
 
-**Charges are casts on a player**, not ground attacks: a cast bar, no telegraph on the floor.
+**Charges are instant and aimed at a player**, not ground attacks: no cast bar, no wind-up and no
+telegraph on the floor — the monster simply goes, and only at a player it can see.
 The monster runs at its target and *follows* them, hits them when it arrives, and slows them
 **50 % for 1 s**. It is answered by being ready (a heal, a defensive), not by stepping aside.
 Pounces keep a landing blast around the target.
@@ -73,7 +74,7 @@ pool** r 3 where each was aimed (22/s, 7 s).
 | Pri | Ability | Cast | CD | Damage | Shape / targeting | Answer |
 |---|---|---|---|---|---|---|
 | 1 | **Execution Strike** | **2.0 s** wind-up (kick) | 15 s | 130 | the tank | interrupt, or a defensive |
-| 2 | **Bone Charge** | 1.0 s | 14 s | 55 + 1 s slow | cast on the farthest player (≥ 7 m); runs at them and hits them | be ready for it |
+| 2 | **Bone Charge** | instant | 14 s | 55 + 1 s slow | cast on the farthest player (≥ 7 m); runs at them and hits them | be ready for it |
 | 3 | **Bone Cleave** | 1.3 s | 8 s | 70 | **120°** 7 m cone in front of it | tank faces it away; nobody else in front |
 | 4 | Bone Slash | instant | 1.6 s | 30 | tank | — |
 
@@ -86,7 +87,7 @@ the charged player has to leave.
 | Pri | Ability | Cast | CD | Damage | Shape / targeting | Answer |
 |---|---|---|---|---|---|---|
 | 1 | **Bone Quake** | 0.6 s | 18 s | 90 | **9 m ring** where it stood, lands **2.2 s** later | melee get out |
-| 2 | **Grave Charge** | 1.3 s | 16 s | 80 + 1 s slow | cast on the farthest player (≥ 8 m); runs at them and hits them | heal the one it is cast on |
+| 2 | **Grave Charge** | instant | 16 s | 80 + 1 s slow | cast on the farthest player (≥ 8 m); runs at them and hits them | heal the one it is cast on |
 | 3 | **Ground Slam** | 1.5 s | 10 s | 60 | 7 m circle around itself | step out |
 | 4 | Crushing Blow | instant | 3.2 s | 62 | tank | — |
 
@@ -98,7 +99,7 @@ Charge* — the charge leaves a **burning trail** (a 2 m pool every 3 m, 30/s fo
 | Pri | Ability | Cast | CD | Damage | Shape / targeting | Answer |
 |---|---|---|---|---|---|---|
 | 1 | **Blood Frenzy** | instant | 22 s | — | itself: **+60 % attack speed**, 8 s | burst it now |
-| 2 | **Pounce** | 0.7 s | 14 s | 50 + 1 s slow | leaps on a random player ≥ 6 m away; 4 m landing blast around them | spread |
+| 2 | **Pounce** | instant | 14 s | 50 + 1 s slow | leaps on a random player ≥ 6 m away; 4 m landing blast around them | spread |
 | 3 | **Rending Claws** | instant | 5 s | 14 + **bleed** 6/s per stack, 8 s, up to 8 | tank | heal through / kill it |
 | 4 | Ghoul Strike | instant | 1.0 s | 16 | tank | — |
 

@@ -94,13 +94,10 @@ pub fn ray_vs_shape(ray: &Ray, shape: &Shape, max_distance: f32) -> Option<RayHi
         Shape::Plane(plane) => ray_vs_plane(ray, plane, max_distance),
         Shape::Aabb(bounds) => ray_vs_aabb(ray, bounds, max_distance),
         Shape::Obb(obb) => ray_vs_obb(ray, obb, max_distance),
-        // A field is tested as the box around it. A ray against terrain is asked by line of
-        // sight and by the editor's picking, and both want "is the ground in the way" rather
-        // than a surface point: walking the cells along the ray is a second traversal to keep
-        // correct, and the box answers the question every caller actually asks. A ray that
-        // needs the exact surface point would sample `Terrain::height_at` along itself, which
-        // is a level question rather than a collision one.
-        Shape::Heightfield(field) => ray_vs_aabb(ray, &field.bounds(), max_distance),
+        // The surface itself, not the box around it: a box answers "blocked" for every ray
+        // that passes over a valley below the highest hill, which made line of sight across
+        // any terrain a wall, and a downward ray found the hilltop's height everywhere.
+        Shape::Heightfield(field) => ray_vs_heightfield(ray, field, max_distance),
     }
 }
 
@@ -201,6 +198,147 @@ pub fn ray_vs_aabb(ray: &Ray, bounds: &Aabb, max_distance: f32) -> Option<RayHit
     Some(RayHit {
         distance: near,
         point: ray.at(near),
+        normal,
+    })
+}
+
+/// The nearest point at which `ray` meets the surface of `field` within `max_distance`.
+///
+/// The ray is clipped to the field's box, and the cells under it are walked in order along
+/// the ray (a 2D grid traversal in `x`/`z`), testing the two triangles of each. Cells are
+/// visited nearest first, so the first cell with a hit holds the nearest hit. Either face
+/// counts: a ray from under the surface is stopped by it as surely as one from above.
+///
+/// Cost is the number of cells the ray crosses, not the size of the field.
+#[must_use]
+pub fn ray_vs_heightfield(
+    ray: &Ray,
+    field: &crate::heightfield::Heightfield,
+    max_distance: f32,
+) -> Option<RayHit> {
+    let bounds = field.bounds();
+    // A flat field has a box with no height; give it a sliver so the slab test can enter it.
+    let bounds = Aabb::new(
+        bounds.min - Vec3::new(0.0, 1e-3, 0.0),
+        bounds.max + Vec3::new(0.0, 1e-3, 0.0),
+    );
+    let (near, far) = slab_interval(ray, &bounds, max_distance)?;
+    let cell = field.cell_size;
+    let last = field.resolution.saturating_sub(2) as i64;
+    let start = ray.at(near);
+    let index = |value: f32, origin: f32| -> i64 {
+        (((value - origin) / cell).floor() as i64).clamp(0, last)
+    };
+    let mut x = index(start.x, field.origin.x);
+    let mut z = index(start.z, field.origin.z);
+
+    // Distance along the ray to the next cell boundary on each axis, and between boundaries.
+    let axis = |direction: f32, position: f32, origin: f32, current: i64| -> (i64, f32, f32) {
+        if direction.abs() <= PARALLEL_EPSILON {
+            return (0, f32::INFINITY, f32::INFINITY);
+        }
+        let step = if direction > 0.0 { 1 } else { -1 };
+        let boundary = origin + (current + i64::from(direction > 0.0)) as f32 * cell;
+        let next = near + (boundary - position) / direction;
+        (step, next.max(near), cell / direction.abs())
+    };
+    let (step_x, mut next_x, delta_x) = axis(ray.direction.x, start.x, field.origin.x, x);
+    let (step_z, mut next_z, delta_z) = axis(ray.direction.z, start.z, field.origin.z, z);
+
+    // Bounded: a ray can cross at most every column and every row once.
+    let limit = 2 * field.resolution + 2;
+    for _ in 0..limit {
+        let mut best: Option<RayHit> = None;
+        for triangle in field.triangles(x as usize, z as usize) {
+            if let Some(hit) = ray_vs_triangle(ray, &triangle, max_distance)
+                && best.is_none_or(|current| hit.distance < current.distance)
+            {
+                best = Some(hit);
+            }
+        }
+        if best.is_some() {
+            return best;
+        }
+        let exit = next_x.min(next_z);
+        if exit > far {
+            return None;
+        }
+        if next_x < next_z {
+            x += step_x;
+            next_x += delta_x;
+        } else {
+            z += step_z;
+            next_z += delta_z;
+        }
+        if x < 0 || z < 0 || x > last || z > last {
+            return None;
+        }
+    }
+    None
+}
+
+/// The part of `ray`, within `max_distance`, that is inside `bounds`: `(entry, exit)`.
+fn slab_interval(ray: &Ray, bounds: &Aabb, max_distance: f32) -> Option<(f32, f32)> {
+    let origin = [ray.origin.x, ray.origin.y, ray.origin.z];
+    let direction = [ray.direction.x, ray.direction.y, ray.direction.z];
+    let min = [bounds.min.x, bounds.min.y, bounds.min.z];
+    let max = [bounds.max.x, bounds.max.y, bounds.max.z];
+    let mut near = 0.0_f32;
+    let mut far = max_distance;
+    for index in 0..3 {
+        if direction[index].abs() <= PARALLEL_EPSILON {
+            if origin[index] < min[index] || origin[index] > max[index] {
+                return None;
+            }
+            continue;
+        }
+        let inverse = 1.0 / direction[index];
+        let mut entry = (min[index] - origin[index]) * inverse;
+        let mut exit = (max[index] - origin[index]) * inverse;
+        if entry > exit {
+            std::mem::swap(&mut entry, &mut exit);
+        }
+        near = near.max(entry);
+        far = far.min(exit);
+        if near > far {
+            return None;
+        }
+    }
+    Some((near, far))
+}
+
+/// Where `ray` meets `triangle` within `max_distance`, from either side (Möller–Trumbore).
+fn ray_vs_triangle(ray: &Ray, triangle: &[Vec3; 3], max_distance: f32) -> Option<RayHit> {
+    let [a, b, c] = *triangle;
+    let edge_one = b - a;
+    let edge_two = c - a;
+    let p = ray.direction.cross(edge_two);
+    let determinant = edge_one.dot(p);
+    if determinant.abs() <= 1e-9 {
+        return None;
+    }
+    let inverse = 1.0 / determinant;
+    let offset = ray.origin - a;
+    let u = offset.dot(p) * inverse;
+    if !(-1e-5..=1.0 + 1e-5).contains(&u) {
+        return None;
+    }
+    let q = offset.cross(edge_one);
+    let v = ray.direction.dot(q) * inverse;
+    if v < -1e-5 || u + v > 1.0 + 1e-5 {
+        return None;
+    }
+    let distance = edge_two.dot(q) * inverse;
+    if distance < 0.0 || distance > max_distance {
+        return None;
+    }
+    let mut normal = edge_one.cross(edge_two).normalize();
+    if normal.dot(ray.direction) > 0.0 {
+        normal *= -1.0;
+    }
+    Some(RayHit {
+        distance,
+        point: ray.at(distance),
         normal,
     })
 }
@@ -345,6 +483,41 @@ mod tests {
                 .map(|hit| (hit.distance * 100.0).round()),
             Some(700.0)
         );
+    }
+
+    /// A 5x5-point field on a 2 m grid: flat at zero, with a 4 m hill at its centre point.
+    fn hill() -> crate::heightfield::Heightfield {
+        let mut heights = vec![0.0; 25];
+        heights[2 * 5 + 2] = 4.0;
+        crate::heightfield::Heightfield::new(Vec3::ZERO, 2.0, 5, heights).expect("a field")
+    }
+
+    #[test]
+    fn a_ray_over_a_valley_is_not_stopped_by_the_hill_beside_it() {
+        let field = hill();
+        // One metre up, across the flat first row: the hill's box is 4 m tall, the ground
+        // under the ray is flat, and nothing is in the way.
+        let across = ray(Vec3::new(0.5, 1.0, 0.5), Vec3::X);
+        assert!(ray_vs_heightfield(&across, &field, 7.0).is_none());
+        // Straight through the hill, it is stopped.
+        let through = ray(Vec3::new(0.5, 1.0, 4.0), Vec3::X);
+        let hit = ray_vs_heightfield(&through, &field, 7.0).expect("the hill is in the way");
+        assert!(hit.distance > 1.0 && hit.distance < 3.5, "{hit:?}");
+    }
+
+    #[test]
+    fn a_ray_down_finds_the_surface_under_it() {
+        let field = hill();
+        let down = ray(Vec3::new(4.0, 10.0, 4.0), Vec3::new(0.0, -1.0, 0.0));
+        let hit = ray_vs_heightfield(&down, &field, 20.0).expect("the ground");
+        assert!((hit.point.y - 4.0).abs() < 1e-3, "{hit:?}");
+        assert!(hit.normal.y > 0.0, "the normal faces back up the ray");
+        let flat = ray(Vec3::new(0.7, 10.0, 7.3), Vec3::new(0.0, -1.0, 0.0));
+        let hit = ray_vs_heightfield(&flat, &field, 20.0).expect("the ground");
+        assert!(hit.point.y.abs() < 1e-3, "{hit:?}");
+        // Off the edge of the field there is nothing.
+        let outside = ray(Vec3::new(-3.0, 10.0, 4.0), Vec3::new(0.0, -1.0, 0.0));
+        assert!(ray_vs_heightfield(&outside, &field, 20.0).is_none());
     }
 
     #[test]

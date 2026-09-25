@@ -239,6 +239,9 @@ pub struct FloatingNumber {
     /// A hurried entry keeps rising where it was and fades out over [`HURRY_SECONDS`], so
     /// making room never makes a number jump or vanish.
     pub hurried: f32,
+    /// Which entry this is, unique among everything spawned by its set: how the drawing
+    /// recognises it from one frame to the next.
+    pub serial: u32,
 }
 
 /// The lane sequence ordinary hits take, one step per hit on a target.
@@ -482,6 +485,8 @@ pub struct FloatingNumbers {
     lanes: [Option<LaneSlot>; LANE_SLOTS],
     /// Entries dropped because the list was full, for diagnostics.
     dropped: usize,
+    /// The next entry's [`FloatingNumber::serial`].
+    serial: u32,
 }
 
 impl Default for FloatingNumbers {
@@ -498,6 +503,7 @@ impl FloatingNumbers {
             numbers: Vec::with_capacity(MAX_FLOATING_NUMBERS),
             lanes: [None; LANE_SLOTS],
             dropped: 0,
+            serial: 0,
         }
     }
 
@@ -753,7 +759,9 @@ impl FloatingNumbers {
             emphasized: now,
             merged: 1,
             hurried: f32::INFINITY,
+            serial: self.serial,
         });
+        self.serial = self.serial.wrapping_add(1);
     }
 
     /// Hurries the oldest ordinary entry on `target` to its end when it already carries its

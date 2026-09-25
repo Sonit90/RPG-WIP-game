@@ -98,6 +98,7 @@ pub mod input_map;
 pub mod los;
 pub mod los_course;
 pub mod movement;
+pub mod nav;
 /// Who the player is grouped with: the roster the party frames read.
 pub mod party;
 pub mod sim;

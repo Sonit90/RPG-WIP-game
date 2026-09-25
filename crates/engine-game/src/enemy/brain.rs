@@ -184,6 +184,12 @@ pub struct AiTarget {
     /// Edge to edge because every range test in this engine is: a wide body is in melee
     /// range when its side is, not when its centre is.
     pub distance: f32,
+    /// Whether nothing solid stands between the two: the same chest-to-chest ray the
+    /// player's own targeted abilities are refused on.
+    ///
+    /// An ability aimed at somebody is only used on somebody visible, and an enemy whose
+    /// victim is behind a wall closes in — around the wall — until they are not.
+    pub visible: bool,
 }
 
 /// What the brain decided to do.
@@ -982,8 +988,11 @@ impl EnemyBrain {
         let facing = yaw_towards(percept.position, target.position);
 
         // Out of position: close. A dead band on the outside, so an enemy sitting at exactly
-        // its preferred range does not twitch between two states.
-        let out_of_position = target.distance > archetype.preferred_range + archetype.range_slack;
+        // its preferred range does not twitch between two states. A victim out of sight is
+        // out of position however close: nothing is shot through a wall, so the enemy comes
+        // round it instead.
+        let out_of_position =
+            target.distance > archetype.preferred_range + archetype.range_slack || !target.visible;
 
         // The phase's list *is* the priority list: the first ability that is off cooldown,
         // in range, and has somebody to be used on is the one used. A boss with a rotation is
@@ -1024,6 +1033,11 @@ impl EnemyBrain {
                 // A frenzy is aimed at the enemy itself: it is ready whenever there is a fight.
                 if definition.effect.is_self() {
                     return Some((ability, recipient));
+                }
+                // Nothing aimed at somebody goes through a wall: not an arrow, not a swing,
+                // not a heal, not a charge.
+                if !recipient.visible {
+                    return None;
                 }
                 if recipient.distance < definition.min_range {
                     return None;
@@ -1337,6 +1351,7 @@ mod tests {
             entity: player(),
             position: Vec3::new(position.x, 0.0, position.z - distance),
             distance,
+            visible: true,
         };
         AiPercept {
             position,
@@ -1397,6 +1412,7 @@ mod tests {
                 entity: player(),
                 position: Vec3::new(0.0, 0.0, -30.0),
                 distance: 30.0,
+                visible: true,
             }),
             nearest: None,
             health_fraction: 1.0,

@@ -91,7 +91,8 @@ Pacing and feel still need a hand playtest; `--party 1` makes that possible solo
 * **Wipes keep progress.** Respawning after a death (or `BACKSPACE` while dead) resets only the
   monsters still standing; killed monsters stay dead and completion is kept
   (`Simulation::reset_after_wipe`). `BACKSPACE` while alive is still the full development reset.
-* **Charges are casts on a player**: no floor telegraph, the charger follows its target, hits
+* **Charges are instant, on a player** (since the navigation pass; they were casts): no floor
+  telegraph, the charger follows its target, hits
   them on arrival and slows them 50 % for 1 s (`EnemyEffect::Charge { slow, slow_duration }`).
 * **The crypt is brighter** — stronger moon and ambient, brighter and wider braziers, in the
   level file.

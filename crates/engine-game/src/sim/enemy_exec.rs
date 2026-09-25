@@ -66,6 +66,10 @@ const CHARGE_CONTACT: f32 = 0.6;
 /// forever against it. The same safety the Warrior's own Shield Charge has.
 const CHARGE_SLACK: f32 = 0.6;
 
+/// How many monsters may look for a new way in one tick. The rest follow the corners they
+/// have, and ask on a later tick: a pack pulled at once spreads its searches out.
+const MAX_SEARCHES_PER_TICK: u32 = 6;
+
 /// How far, edge to edge, a charge's target may be when it lands and still be hit, in metres.
 const CHARGE_REACH: f32 = 2.0;
 
@@ -99,6 +103,9 @@ pub struct EnemyRuntime {
     pub credited: bool,
     /// The name the level gave it, if the author gave it one.
     pub display_name: Option<String>,
+    /// The way it is walking somewhere it cannot walk straight at: round a corner, up a
+    /// ramp, back home through the room it was pulled out of.
+    pub nav: crate::nav::NavFollow,
 }
 
 impl EnemyRuntime {
@@ -114,6 +121,7 @@ impl EnemyRuntime {
             completion: kind.archetype().completion,
             credited: false,
             display_name: None,
+            nav: crate::nav::NavFollow::default(),
         }
     }
 }
@@ -144,6 +152,7 @@ impl Simulation {
         // Taken out of `self` so the loop can call `&mut self` methods; put back at the end,
         // keeping every allocation. The same pattern `apply_pending_commands` uses.
         let mut enemies = std::mem::take(&mut self.enemies);
+        let mut searches = 0;
         // Indexed rather than iterated: the body needs `&mut self` *and* a second look at
         // this slot after executing, and an iterator over `enemies` would hold a borrow
         // across both.
@@ -205,6 +214,40 @@ impl Simulation {
             let attacking = runtime.brain.target();
             let decision = runtime.brain.think(&percept, step);
             runtime.intent = decision.intent;
+            // The brain says where it is going; the navigator says which way that is. Only
+            // chasing and walking home go anywhere — backing off a step and standing to cast
+            // are straight lines by nature.
+            let destination = match runtime.brain.state() {
+                AiState::Chase => percept.victim().map(|victim| victim.position),
+                AiState::Returning => Some(runtime.brain.home()),
+                _ => None,
+            };
+            match destination {
+                Some(goal) if runtime.intent.direction.length() > 0.0 => {
+                    if runtime.nav.is_stale(goal) && searches < MAX_SEARCHES_PER_TICK {
+                        searches += 1;
+                        // Spread over the pack, so twelve monsters pulled together do not all
+                        // search again on the same tick forever after.
+                        let stagger = (slot % 8) as f32 * 0.05;
+                        runtime.nav.repath(
+                            &mut self.nav,
+                            &self.collision,
+                            percept.position,
+                            goal,
+                            stagger,
+                        );
+                    }
+                    if let Some((direction, rounding)) = runtime.nav.steer(percept.position, step) {
+                        runtime.intent.direction = direction;
+                        // Going round something, it looks where it walks; straight at its
+                        // victim, it keeps looking at them.
+                        if rounding {
+                            runtime.intent.facing = None;
+                        }
+                    }
+                }
+                _ => runtime.nav.clear(),
+            }
             self.announce_aggro(entity, attacking, &mut runtime.brain);
 
             let telegraphs = runtime.telegraphs;
@@ -222,6 +265,10 @@ impl Simulation {
                     if let EnemyEffect::Frenzy { duration, haste } = ability.definition().effect {
                         runtime.brain.frenzy(duration, haste);
                         self.announce_self_ability(entity, ability);
+                    } else if let EnemyEffect::Charge { .. } = ability.definition().effect {
+                        // A charge has no wind-up: the run starts on the tick it is chosen.
+                        let victim = recipient_of(ability, &percept);
+                        runtime.dash = self.begin_dash(entity, ability, victim);
                     } else {
                         let victim = recipient_of(ability, &percept);
                         let aim = cast_anchor(ability, entity, victim, self);
@@ -238,6 +285,27 @@ impl Simulation {
                     }
                 }
                 AiRequest::CompleteCast(ability) => {
+                    // A spell aimed at one victim who went behind a wall before it landed is
+                    // lost, exactly as the player's own would be. Area spells land where they
+                    // were telegraphed, and the walls between the blast and each victim are
+                    // `hit_shape`'s to account for.
+                    let lost = running.is_some_and(|cast| {
+                        let definition = cast.ability.definition();
+                        !definition.effect.is_self()
+                            && !cast.shape.is_area()
+                            && cast.target != entity
+                            && self.world.is_alive(cast.target)
+                            && !self.sees(entity, cast.target)
+                    });
+                    if lost {
+                        if let Some((first, count)) = telegraphs {
+                            let anchor = running.map_or(Vec3::ZERO, |cast| cast.anchor);
+                            self.end_telegraphs(first, count, anchor, false);
+                            runtime.telegraphs = None;
+                        }
+                        self.announce_cast_end(entity, ability, CastEnd::LineOfSightLost);
+                        continue;
+                    }
                     if let Some((first, count)) = telegraphs {
                         let anchor = running.map_or(Vec3::ZERO, |cast| cast.anchor);
                         self.end_telegraphs(first, count, anchor, true);
@@ -442,21 +510,14 @@ impl Simulation {
                 self.pay_channel(entity, cast, total, scale);
                 None
             }
-            EnemyEffect::Charge { speed, .. } => {
-                let origin = self.world.position(entity).unwrap_or(cast.anchor);
-                let target = cast.targets[0].filter(|target| self.world.is_alive(*target));
-                let destination = target
-                    .and_then(|target| self.world.position(target))
-                    .unwrap_or(cast.aims[0]);
-                let distance = horizontal_distance(origin, destination);
-                Some(EnemyDash {
-                    ability: cast.ability,
-                    target,
-                    origin,
-                    destination,
-                    elapsed: 0.0,
-                    timeout: distance / speed.max(1.0) + CHARGE_SLACK,
-                })
+            EnemyEffect::Charge { .. } => {
+                // Only a table that gave a charge a cast time reaches this; the roster's
+                // charges are instant and start in `tick_ai`.
+                let target = cast.targets[0]
+                    .filter(|target| self.world.is_alive(*target))
+                    .and_then(|target| self.describe_target(entity, target));
+                self.begin_dash(entity, cast.ability, target)
+                    .or_else(|| self.begin_dash_to(entity, cast.ability, None, cast.aims[0]))
             }
             EnemyEffect::Frenzy { .. } => None,
             EnemyEffect::Damage | EnemyEffect::Hazard { .. } => {
@@ -523,7 +584,9 @@ impl Simulation {
                     let Some(described) = self.describe_target(entity, target) else {
                         continue;
                     };
-                    if described.distance > definition.range + CHANNEL_LEASH {
+                    // A drain needs its victim in sight for every tick it takes: stepping
+                    // behind a wall is how it is broken without an interrupt.
+                    if described.distance > definition.range + CHANNEL_LEASH || !described.visible {
                         continue;
                     }
                     self.strike_one(entity, cast.ability, target, amount);
@@ -537,6 +600,42 @@ impl Simulation {
     /// Carries a charging body one step along its line, and lands it when it arrives.
     ///
     /// Returns the charge still running, or `None` once it has landed.
+    /// Starts a charge at `target`: the run itself, carried by [`Simulation::advance_dash`].
+    ///
+    /// `None` when there is nobody to run at.
+    fn begin_dash(
+        &mut self,
+        entity: EntityId,
+        ability: EnemyAbility,
+        target: Option<AiTarget>,
+    ) -> Option<EnemyDash> {
+        let target = target?;
+        self.begin_dash_to(entity, ability, Some(target.entity), target.position)
+    }
+
+    /// Starts a charge towards `destination`, following `target` if it names one.
+    fn begin_dash_to(
+        &mut self,
+        entity: EntityId,
+        ability: EnemyAbility,
+        target: Option<EntityId>,
+        destination: Vec3,
+    ) -> Option<EnemyDash> {
+        let EnemyEffect::Charge { speed, .. } = ability.definition().effect else {
+            return None;
+        };
+        let origin = self.world.position(entity)?;
+        let distance = horizontal_distance(origin, destination);
+        Some(EnemyDash {
+            ability,
+            target,
+            origin,
+            destination,
+            elapsed: 0.0,
+            timeout: distance / speed.max(1.0) + CHARGE_SLACK,
+        })
+    }
+
     fn advance_dash(
         &mut self,
         entity: EntityId,
@@ -813,7 +912,35 @@ impl Simulation {
             entity: candidate,
             position: target_position,
             distance: gap.max(0.0),
+            visible: self.sees(entity, candidate),
         })
+    }
+
+    /// Whether `entity` can see `candidate`: the chest-to-chest ray the player's targeted
+    /// abilities use, against the same blockers. Anything is visible to itself.
+    fn sees(&self, entity: EntityId, candidate: EntityId) -> bool {
+        entity == candidate
+            || crate::los::has_line_of_sight(&self.collision, &self.world, entity, candidate)
+    }
+
+    /// Whether a blast centred on `anchor` reaches `victim`, or a wall between them takes it.
+    ///
+    /// From a metre over the anchor — the anchor is on the floor, and a ray along the floor
+    /// is stopped by the first kerb — to the victim's chest.
+    fn blast_reaches(&self, anchor: Vec3, victim: EntityId) -> bool {
+        let Some(to) =
+            crate::los::combat_position(&self.world, victim, crate::los::CombatPoint::CHEST)
+        else {
+            return false;
+        };
+        let from = anchor + Vec3::new(0.0, crate::los::FALLBACK_COMBAT_HEIGHT, 0.0);
+        self.collision
+            .segment_blocked(
+                from,
+                to,
+                engine_collision::layer::CollisionMask::LINE_OF_SIGHT,
+            )
+            .is_none()
     }
 
     /// Whether `candidate` is a living combatant `entity` may attack.
@@ -936,7 +1063,8 @@ impl Simulation {
             let Some(described) = self.describe_target(entity, candidate) else {
                 continue;
             };
-            if described.distance > range {
+            // A charge runs at somebody it can see; the one behind the pillar is not a choice.
+            if described.distance > range || !described.visible {
                 continue;
             }
             if best.is_none_or(|current| described.distance > current.distance) {
@@ -971,7 +1099,7 @@ impl Simulation {
             let Some(described) = self.describe_target(entity, candidate) else {
                 continue;
             };
-            if described.distance > range {
+            if described.distance > range || !described.visible {
                 continue;
             }
             // Ties break towards the lower entity slot, which `<` gives for free: the scan
@@ -1083,6 +1211,10 @@ impl Simulation {
             .threat()
             .target(|candidate| self.legal_victim(entity, candidate));
 
+        let nearest_id = self.targets.nearest_hostile(&self.world, entity);
+        // Sight is only asked of a fighting mind: an idle one notices by its aggro radius,
+        // and a ray per idle monster per tick across a whole dungeon would buy nothing.
+        let fighting = brain.state().is_combat();
         let describe = |candidate: EntityId| -> Option<AiTarget> {
             let target_position = self.world.position(candidate)?;
             let gap = horizontal_distance(position, target_position)
@@ -1092,15 +1224,13 @@ impl Simulation {
                 entity: candidate,
                 position: target_position,
                 distance: gap.max(0.0),
+                visible: !fighting || self.sees(entity, candidate),
             })
         };
 
         // The nearest hostile is a separate question from the angriest: it is what pulls an
         // idle enemy that nobody has attacked yet.
-        let nearest = self
-            .targets
-            .nearest_hostile(&self.world, entity)
-            .and_then(describe);
+        let nearest = nearest_id.and_then(describe);
         let target = target.and_then(describe);
         let victim = target.or(nearest);
         let victim_bleeding = victim.is_some_and(|victim| {
@@ -1138,7 +1268,7 @@ impl Simulation {
             let Some(target) = target else {
                 return;
             };
-            if target.distance > definition.range {
+            if target.distance > definition.range || !target.visible {
                 return;
             }
             self.heal_entity(
@@ -1167,7 +1297,7 @@ impl Simulation {
                 // cast gets a little slack, because a caster that finished a two-second
                 // arrow does not miss a player who took one step back.
                 let slack = if definition.is_cast() { 2.0 } else { 0.0 };
-                if target.distance > definition.range + slack {
+                if target.distance > definition.range + slack || !target.visible {
                     return;
                 }
                 self.strike_one(source, ability, target.entity, definition.damage * scale);
@@ -1257,7 +1387,10 @@ impl Simulation {
                 let Some(position) = self.world.position(candidate) else {
                     continue;
                 };
-                if shape.contains(anchor, position, self.world.radius(candidate)) {
+                // Inside the shape, and not behind a wall from where it went off.
+                if shape.contains(anchor, position, self.world.radius(candidate))
+                    && self.blast_reaches(anchor, candidate)
+                {
                     hits.push(candidate);
                 }
             }

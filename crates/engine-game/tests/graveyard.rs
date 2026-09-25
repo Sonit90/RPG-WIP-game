@@ -687,14 +687,15 @@ fn a_skeleton_warrior_charges_a_distant_player_hits_them_and_slows_them() {
         }
     }
     assert!(charged, "the warrior never charged");
-    // Cast on the player: a cast bar, and nothing drawn on the floor.
+    // Instant: no cast bar and no wind-up — the run starts when it is chosen — and nothing
+    // drawn on the floor.
     assert!(
-        events.iter().any(|event| matches!(
+        !events.iter().any(|event| matches!(
             event,
             CombatEvent::CastStarted { source, ability, .. }
                 if *source == warrior && ability.enemy() == Some(EnemyAbility::BoneCharge)
         )),
-        "a charge is a cast"
+        "a charge is instant, not a cast"
     );
     assert!(
         !events.iter().any(|event| matches!(

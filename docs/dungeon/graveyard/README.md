@@ -165,7 +165,7 @@ Assumptions the tests hold the numbers to (`engine-game/tests/graveyard.rs`, *ba
 | Party single-target DPS | 180 | every trash pack dies in **10–40 s** |
 | Avoidable hit | — | **≤ 25 %** of a player (survivable once), **≥ 8 %** (worth avoiding); pools count 2 s of standing |
 | Warning | — | every avoidable (ground) ability gives **≥ 0.9 s** (cast + delay) |
-| Charges | — | cast on a player (cast bar, no floor telegraph), follow them, hit them and **slow 50 % for 1 s** |
+| Charges | — | instant, at a player in sight (no cast bar, no floor telegraph), follow them, hit them and **slow 50 % for 1 s** |
 | Movement | player 7 m/s | every crypt monster, every phase, slower |
 | Boss fight | boss + two largest adds | **1.5–3.5 min** at 180 DPS |
 

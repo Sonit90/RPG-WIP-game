@@ -21,7 +21,7 @@ the party has already learned, escalated.
 | Pri | Ability | Cast | CD | Damage | Shape / targeting | Answer |
 |---|---|---|---|---|---|---|
 | 1 | **Mark of the Host** | 1.0 s | 24 s | 110 Arcane | 6 m circle **following** a random non-tank, lands 5 s later | take it away from the party |
-| 2 | **Ghastly Waltz** | 1.5 s | 22 s | 70 + 1 s slow | cast on the **farthest** player (≥ 8 m): he runs at them and hits them, leaving a **trail** of pools (25/s, 5 s) | heal them; stay off the trail |
+| 2 | **Ghastly Waltz** | instant | 22 s | 70 + 1 s slow | cast on the **farthest** player (≥ 8 m): he runs at them and hits them, leaving a **trail** of pools (25/s, 5 s) | heal them; stay off the trail |
 | 3 | **Dance of Blades** | 2.2 s | 16 s | 95 | **8 m circle** around himself, uninterruptible | everyone out, including the tank |
 | 4 | **Garrote** | 0.6 s | 20 s | 20 + **bleed** 8/s per stack, 20 s, 2 stacks a use, up to 6 | a random **non-tank** | the healer's long problem |
 | 5 | **Gouging Riposte** | 1.2 s | 12 s | 90 + **50 % slow** 4 s | the tank | a defensive; expect to be slow for the next Dance |

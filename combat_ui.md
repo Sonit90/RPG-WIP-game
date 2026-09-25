@@ -55,6 +55,10 @@ Layout, so a fight stays readable:
   into one number with a fresh swell. Criticals and killing blows never merge.
 * **Per-target limit.** A target carries at most six readable numbers; past that the oldest
   ordinary one is hurried into a 0.18 s fade (never removed outright, so nothing blinks).
+* **No overlap.** After the motion places every entry, the entries are measured and placed in
+  order of importance — criticals, then the older — and any that would cover one already
+  placed moves up until it clears. Each keeps the room it was given and relaxes back down as
+  it frees up (rate 14/s), so nothing jumps. Entries can still cover a nameplate.
 * **Global cap.** 128 entries; the oldest drop first. Deterministic throughout: the same fight
   lays its numbers out identically, and nothing jitters between frames.
 

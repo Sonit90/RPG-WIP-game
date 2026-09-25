@@ -694,7 +694,45 @@ pub struct GameUi {
     minimap: Option<UiRect>,
     /// How floating combat text is sized and whether criticals are emphasised.
     combat_text: engine_settings::CombatTextSettings,
+    /// This frame's floating text, laid out and then moved apart. Reused; never freed.
+    combat_layout: Vec<PlacedText>,
+    /// How far each entry has been moved up to clear the others, eased from frame to frame so
+    /// a number that has to make room slides rather than jumps. Keyed by [`text_key`].
+    combat_nudges: Vec<(u64, f32)>,
+    /// The simulated time the nudges were last eased at.
+    combat_nudged_at: f32,
 }
+
+/// One floating entry, laid out for this frame: where it would be, and how big.
+#[derive(Debug, Clone, Copy)]
+struct PlacedText {
+    /// Which entry, in [`FloatingNumbers::numbers`].
+    index: usize,
+    /// Its identity across frames, for the eased nudge.
+    key: u64,
+    /// Its centre where the motion puts it, before any nudge.
+    center: (f32, f32),
+    /// Its size, in pixels per em.
+    size: f32,
+    /// Half its width and half its height, in pixels, with a little air.
+    half: (f32, f32),
+    /// How far up it has to go to clear what was placed before it.
+    push: f32,
+    /// Placed first when it matters more: criticals, then the older.
+    critical: bool,
+    born: f32,
+}
+
+/// An entry's identity from one frame to the next.
+fn text_key(number: &FloatingNumber) -> u64 {
+    u64::from(number.serial)
+}
+
+/// How quickly a nudge follows the room it needs, per second.
+const NUDGE_RATE: f32 = 14.0;
+
+/// How many passes the overlap resolution takes before it settles for what it has.
+const NUDGE_PASSES: usize = 6;
 
 impl GameUi {
     /// Creates a builder with room for a typical frame.
@@ -717,6 +755,9 @@ impl GameUi {
             tooltip_lines: Vec::with_capacity(8),
             minimap: None,
             combat_text: engine_settings::CombatTextSettings::default(),
+            combat_layout: Vec::with_capacity(crate::damage_numbers::MAX_FLOATING_NUMBERS),
+            combat_nudges: Vec::with_capacity(crate::damage_numbers::MAX_FLOATING_NUMBERS),
+            combat_nudged_at: 0.0,
         }
     }
 
@@ -2587,6 +2628,13 @@ impl GameUi {
     ///
     /// Criticals are drawn after everything else, so the number that matters most is never
     /// under an ordinary one.
+    ///
+    /// **Nothing is drawn on top of anything else if there is room to avoid it.** Every entry
+    /// is measured where its motion puts it, then the entries are placed in order of
+    /// importance — criticals first, then the older — and each one that would cover an
+    /// entry already placed is moved *up* until it clears, the way it is already moving. The
+    /// room each one needs is eased from frame to frame, so a number making way slides rather
+    /// than jumps, and one whose neighbour faded drifts back down.
     pub fn push_damage_numbers(
         &mut self,
         numbers: &FloatingNumbers,
@@ -2594,41 +2642,140 @@ impl GameUi {
         viewport: (u32, u32),
         now: f32,
     ) {
+        self.layout_combat_text(numbers, view_projection, viewport, now);
+        let layout = std::mem::take(&mut self.combat_layout);
         for critical_pass in [false, true] {
-            for number in numbers.numbers() {
-                if number.critical != critical_pass {
+            for placed in &layout {
+                if placed.critical != critical_pass {
                     continue;
                 }
-                self.push_combat_text(number, view_projection, viewport, now);
+                let Some(number) = numbers.numbers().get(placed.index) else {
+                    continue;
+                };
+                let nudge = self
+                    .combat_nudges
+                    .iter()
+                    .find(|(key, _)| *key == placed.key)
+                    .map_or(0.0, |(_, nudge)| *nudge);
+                self.push_combat_text(
+                    number,
+                    (placed.center.0, placed.center.1 - nudge),
+                    placed.size,
+                    now,
+                );
             }
         }
+        self.combat_layout = layout;
     }
 
-    /// One floating entry.
-    fn push_combat_text(
+    /// Measures every visible entry and works out how far up each has to go to clear the ones
+    /// placed before it; eases the stored nudges towards that.
+    fn layout_combat_text(
         &mut self,
-        number: &FloatingNumber,
+        numbers: &FloatingNumbers,
         view_projection: &Mat4,
         viewport: (u32, u32),
         now: f32,
     ) {
-        let Some((x, y)) = project(number.origin, view_projection, viewport) else {
-            return;
-        };
+        self.combat_layout.clear();
+        let emphasis = self.combat_text.critical_emphasis;
+        let scale = self.metrics.scale.factor() * self.combat_text.size_scale();
+        let (width, height) = (viewport.0 as f32, viewport.1 as f32);
+        for (index, number) in numbers.numbers().iter().enumerate() {
+            let Some((x, y)) = project(number.origin, view_projection, viewport) else {
+                continue;
+            };
+            let frame = number.frame(now, emphasis);
+            if frame.alpha <= 0.0 {
+                continue;
+            }
+            let size = number.design_size(emphasis) * frame.scale * scale;
+            let center = (x + frame.offset.0 * scale, y + frame.offset.1 * scale);
+            if center.0 < -size * 4.0
+                || center.0 > width + size * 4.0
+                || center.1 < -size
+                || center.1 > height + size
+            {
+                continue;
+            }
+            number.write_text(&mut self.title);
+            let text_width = UiFont::SemiBold.width(&self.title, size);
+            // A little air around each: two numbers touching read as one longer number.
+            let air = size * 0.1;
+            self.combat_layout.push(PlacedText {
+                index,
+                key: text_key(number),
+                center,
+                size,
+                half: (text_width * 0.5 + air, size * 0.45 + air),
+                push: 0.0,
+                critical: number.critical,
+                born: number.born,
+            });
+        }
+
+        // Each starts from where it was last frame, relaxing back towards its own place: a
+        // number that had to make room drifts down as the room frees up rather than dropping.
+        let elapsed = (now - self.combat_nudged_at).clamp(0.0, 0.25);
+        self.combat_nudged_at = now;
+        let relax = (-NUDGE_RATE * elapsed).exp();
+        for placed in &mut self.combat_layout {
+            placed.push = self
+                .combat_nudges
+                .iter()
+                .find(|(key, _)| *key == placed.key)
+                .map_or(0.0, |(_, nudge)| nudge * relax);
+        }
+
+        // Most important first: a critical keeps its place, and an older number is not
+        // shoved aside by one that just appeared.
+        self.combat_layout.sort_by(|a, b| {
+            b.critical
+                .cmp(&a.critical)
+                .then(a.born.total_cmp(&b.born))
+                .then(a.key.cmp(&b.key))
+        });
+        let count = self.combat_layout.len();
+        for current in 1..count {
+            for _ in 0..NUDGE_PASSES {
+                let mut moved = false;
+                for earlier in 0..current {
+                    let (a, b) = (self.combat_layout[earlier], self.combat_layout[current]);
+                    let (ax, ay) = (a.center.0, a.center.1 - a.push);
+                    let (bx, by) = (b.center.0, b.center.1 - b.push);
+                    let overlap_x = a.half.0 + b.half.0 - (ax - bx).abs();
+                    let overlap_y = a.half.1 + b.half.1 - (ay - by).abs();
+                    if overlap_x > 0.0 && overlap_y > 0.0 {
+                        // Up past the one it covers: its bottom to the other's top.
+                        let needed = (by + b.half.1) - (ay - a.half.1);
+                        self.combat_layout[current].push += needed.max(0.5);
+                        moved = true;
+                    }
+                }
+                if !moved {
+                    break;
+                }
+            }
+        }
+
+        // What was drawn is what is remembered.
+        self.combat_nudges.clear();
+        for placed in &self.combat_layout {
+            self.combat_nudges.push((placed.key, placed.push));
+        }
+    }
+
+    /// One floating entry, drawn centred on `center` at `size`.
+    fn push_combat_text(
+        &mut self,
+        number: &FloatingNumber,
+        center: (f32, f32),
+        size: f32,
+        now: f32,
+    ) {
         let emphasis = self.combat_text.critical_emphasis;
         let frame = number.frame(now, emphasis);
         if frame.alpha <= 0.0 {
-            return;
-        }
-        let scale = self.metrics.scale.factor() * self.combat_text.size_scale();
-        let size = number.design_size(emphasis) * frame.scale * scale;
-        let center = (x + frame.offset.0 * scale, y + frame.offset.1 * scale);
-        let (width, height) = (viewport.0 as f32, viewport.1 as f32);
-        if center.0 < -size * 4.0
-            || center.0 > width + size * 4.0
-            || center.1 < -size
-            || center.1 > height + size
-        {
             return;
         }
 
@@ -4004,6 +4151,83 @@ mod tests {
             "an old number has faded: {}",
             faded[0].1[3]
         );
+    }
+
+    /// Every styled label's box: text, left, top, width, height.
+    fn label_boxes(ui: &GameUi) -> Vec<(String, UiRect)> {
+        ui.list()
+            .commands()
+            .iter()
+            .filter_map(|command| match command {
+                UiCommand::StyledLabel {
+                    range,
+                    size,
+                    origin,
+                    font,
+                    ..
+                } => {
+                    let text = ui.list().text_of(*range).to_owned();
+                    let width = font.width(&text, *size);
+                    // Centred text: the origin is the middle; the cap band is about 0.72 em.
+                    Some((
+                        text,
+                        UiRect::new(
+                            origin.0 - width * 0.5,
+                            origin.1 + size * 0.2,
+                            width,
+                            size * 0.72,
+                        ),
+                    ))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_burst_of_numbers_on_two_neighbours_never_draws_one_over_another() {
+        let mut numbers = FloatingNumbers::new();
+        let origin = engine_core::math::Vec3::new(0.0, 1.0, -12.0);
+        let beside = engine_core::math::Vec3::new(0.4, 1.0, -12.0);
+        // Twelve hits in one instant on two enemies standing shoulder to shoulder: the worst
+        // pile the lanes and bursts cannot spread on their own.
+        for index in 0..6 {
+            let amount = 1000.0 + index as f32 * 111.0;
+            numbers.push(
+                engine_game::entity::EntityId::new(1, 1),
+                origin,
+                amount,
+                false,
+                index == 2,
+                0.0,
+            );
+            numbers.push(
+                engine_game::entity::EntityId::new(2, 1),
+                beside,
+                amount + 7.0,
+                false,
+                false,
+                0.0,
+            );
+        }
+        let mut ui = GameUi::new();
+        for frame in 1..=40 {
+            let now = frame as f32 / 60.0;
+            ui.begin();
+            ui.push_damage_numbers(&numbers, &view_projection(), VIEWPORT, now);
+            let boxes = label_boxes(&ui);
+            assert!(boxes.len() >= 10, "{}", boxes.len());
+            for (index, (text_a, a)) in boxes.iter().enumerate() {
+                for (text_b, b) in &boxes[index + 1..] {
+                    let overlap_x = a.x.max(b.x) < a.right().min(b.right()) - 0.5;
+                    let overlap_y = a.y.max(b.y) < a.bottom().min(b.bottom()) - 0.5;
+                    assert!(
+                        !(overlap_x && overlap_y),
+                        "frame {frame}: {text_a} {a:?} is over {text_b} {b:?}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]

@@ -348,6 +348,9 @@ pub struct Simulation {
     /// to be there for a headless test, a replay and a future server, none of which have a
     /// renderer to ask.
     collision: CollisionWorld,
+    /// How monsters find their way through `collision`: what it has learned about the ground,
+    /// forgotten whenever the geometry is handed out for editing.
+    nav: crate::nav::Navigator,
     /// Scratch space for collision queries. Reused; never freed.
     collision_buffers: QueryBuffers,
     /// What the player's last collided move did, for a developer readout.
@@ -543,6 +546,9 @@ impl Simulation {
         Self {
             world: GameWorld::new(),
             collision: CollisionWorld::with_capacity(64),
+            nav: crate::nav::Navigator::new(crate::nav::NavConfig::for_character(
+                &config.character,
+            )),
             // Sized for the worst corner in a level: a character standing where a floor,
             // two walls and a ramp meet. Past the first tick this never grows again.
             collision_buffers: QueryBuffers::with_capacity(16),
@@ -892,7 +898,15 @@ impl Simulation {
     /// [`CollisionWorld::rebuild_broad_phase`](engine_collision::world::CollisionWorld::rebuild_broad_phase)
     /// when it is done.
     pub fn collision_world_mut(&mut self) -> &mut CollisionWorld {
+        // Whatever is about to change, the ground monsters remember may be part of it.
+        self.nav.invalidate();
         &mut self.collision
+    }
+
+    /// How monsters find their way, for a readout.
+    #[must_use]
+    pub fn navigator(&self) -> &crate::nav::Navigator {
+        &self.nav
     }
 
     /// What the player's most recent collided move did.
