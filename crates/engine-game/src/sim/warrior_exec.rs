@@ -184,6 +184,7 @@ impl Simulation {
             FireAbility::Adrenaline => self.cast_adrenaline(),
             FireAbility::BattleTrance => self.cast_battle_trance(),
             FireAbility::SpellReflect => self.cast_spell_reflect(),
+            FireAbility::Taunt => self.cast_taunt(),
             FireAbility::LastStand => self.cast_last_stand(),
             _ => hits as u32,
         }
@@ -361,6 +362,39 @@ impl Simulation {
             });
         }
         1
+    }
+
+    /// Taunt: the target attacks the Warrior for the ability's duration.
+    ///
+    /// No damage and no Deflection. The enemy's threat table does the rest: the taunt forces
+    /// its target and lifts the Warrior to the top of its threat, and the switch itself is
+    /// announced by the AI the next time the enemy thinks, like every other change of target.
+    fn cast_taunt(&mut self) -> u32 {
+        let ability = FireAbility::Taunt;
+        let seconds = ability.definition().duration;
+        let source = self.player.entity;
+        let mut affected = 0;
+        for index in 0..self.hits.len() {
+            let target = self.hits[index];
+            if !self.is_enemy(target) || !self.world.is_alive(target) {
+                continue;
+            }
+            let Some(Some(runtime)) = self.enemies.get_mut(target.index()) else {
+                continue;
+            };
+            runtime.brain.taunt(source, seconds);
+            let tick = self.tick;
+            self.events.push(CombatEvent::ControlApplied {
+                source,
+                target,
+                control: ControlKind::Taunt,
+                seconds,
+                ability: AbilityId::from_fire(ability),
+                tick,
+            });
+            affected += 1;
+        }
+        affected
     }
 
     /// Shield Block: six seconds of Block, and no critical strikes taken.

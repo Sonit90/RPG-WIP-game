@@ -503,7 +503,9 @@ impl AudioDirector {
             | CombatEvent::ManaSpent { .. }
             | CombatEvent::ManaRestored { .. }
             | CombatEvent::DungeonProgress { .. }
-            | CombatEvent::Dispelled { .. } => {}
+            | CombatEvent::Dispelled { .. }
+            // Aggro is read, not heard: it is floating text over the enemy.
+            | CombatEvent::Aggro { .. } => {}
         }
     }
 
@@ -793,9 +795,10 @@ pub fn activation_sound(ability: FireAbility) -> Option<SoundId> {
         FireAbility::ShieldBash => Some(SoundId::HeavyImpact),
         FireAbility::ShieldBlock => Some(SoundId::FlameShieldActivate),
         FireAbility::PunctureBlood => Some(SoundId::HitCritical),
-        FireAbility::Adrenaline | FireAbility::BattleTrance | FireAbility::LastStand => {
-            Some(SoundId::FireMasteryActivate)
-        }
+        FireAbility::Adrenaline
+        | FireAbility::BattleTrance
+        | FireAbility::LastStand
+        | FireAbility::Taunt => Some(SoundId::FireMasteryActivate),
         FireAbility::SpellReflect => Some(SoundId::FlameShieldActivate),
         FireAbility::Moonfire | FireAbility::Wrath => Some(SoundId::FireboltCast),
         FireAbility::Sunfire => Some(SoundId::FlameConeCast),

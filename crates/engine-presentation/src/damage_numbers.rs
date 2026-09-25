@@ -1,4 +1,4 @@
-//! Floating damage numbers.
+//! Floating damage numbers, and the aggro text that floats with them.
 //!
 //! ```text
 //! CombatEvent::Damage  -->  FloatingNumbers::observe  -->  world position + age
@@ -13,6 +13,11 @@
 //! to produce one — which is the same arrangement that lets the meter, a future combat log
 //! and a network client all read one stream.
 //!
+//! Aggro text is the same kind of entry with words instead of a number:
+//! `CombatEvent::Aggro` about the local player becomes "AGGRO GAINED", "AGGRO LOST",
+//! "GAINING AGGRO" or "LOSING AGGRO" over the enemy concerned — the last two are the
+//! warning that the enemy is about to switch, which is the one a player can act on.
+//!
 //! ## Allocation
 //!
 //! A fixed-capacity ring. Numbers are written into a slot that is either free or holds the
@@ -22,7 +27,7 @@
 
 use engine_core::math::Vec3;
 use engine_game::entity::EntityId;
-use engine_game::event::CombatEvent;
+use engine_game::event::{AggroChange, CombatEvent};
 
 /// Numbers alive at once.
 ///
@@ -62,6 +67,9 @@ pub struct FloatingNumber {
     /// critical Firebolt or an ordinary Pyroblast, and a player who cannot tell the two
     /// apart cannot tell whether the build is working.
     pub critical: bool,
+    /// Set when this is not a number at all but aggro text: the local player gained or
+    /// lost an enemy's attention, or is about to. Drawn as words over the enemy.
+    pub aggro: Option<AggroChange>,
     /// Simulation time the number was created.
     pub born: f32,
     /// Which way it drifts: −1 or +1.
@@ -172,23 +180,80 @@ impl FloatingNumbers {
             return;
         }
 
+        self.insert(FloatingNumber {
+            target,
+            origin,
+            amount,
+            killed,
+            critical,
+            aggro: None,
+            born: now,
+            drift: self.next_drift,
+        });
+    }
+
+    /// Adds aggro text over `enemy`.
+    ///
+    /// No drift: it rises straight up from above the enemy, so it reads as belonging to that
+    /// enemy rather than as one more number in the spray of hits around it.
+    pub fn push_aggro(&mut self, enemy: EntityId, origin: Vec3, change: AggroChange, now: f32) {
+        self.insert(FloatingNumber {
+            target: enemy,
+            origin,
+            amount: 0.0,
+            killed: false,
+            critical: false,
+            aggro: Some(change),
+            born: now,
+            drift: 0.0,
+        });
+    }
+
+    /// Stores one entry, dropping the oldest when full.
+    fn insert(&mut self, number: FloatingNumber) {
         if self.numbers.len() >= MAX_FLOATING_NUMBERS {
             // Drop the oldest rather than the newest: the most recent hit is the one the
             // player is looking for.
             self.numbers.remove(0);
             self.dropped += 1;
         }
+        let drifts = number.drift != 0.0;
+        self.numbers.push(number);
+        if drifts {
+            self.next_drift = -self.next_drift;
+        }
+    }
 
-        self.numbers.push(FloatingNumber {
-            target,
-            origin,
-            amount,
-            killed,
-            critical,
-            born: now,
-            drift: self.next_drift,
-        });
-        self.next_drift = -self.next_drift;
+    /// Adds aggro text for every aggro event about `local`, the player at this screen.
+    ///
+    /// Only the local player's: a tank does not need to read that an enemy is about to leave
+    /// the healer for the mage, it needs to read that the enemy is about to leave *it*.
+    /// `position_of` maps the enemy to where its text should appear.
+    pub fn observe_aggro(
+        &mut self,
+        events: &[CombatEvent],
+        local: EntityId,
+        now: f32,
+        mut position_of: impl FnMut(EntityId) -> Option<Vec3>,
+    ) {
+        for event in events {
+            let CombatEvent::Aggro {
+                enemy,
+                entity,
+                change,
+                ..
+            } = *event
+            else {
+                continue;
+            };
+            if entity != local {
+                continue;
+            }
+            let Some(origin) = position_of(enemy) else {
+                continue;
+            };
+            self.push_aggro(enemy, origin, change, now);
+        }
     }
 
     /// Adds a number for every damage event in `events`.
@@ -371,6 +436,78 @@ mod tests {
         let mut numbers = FloatingNumbers::new();
         numbers.push(entity(), Vec3::ZERO, 999.0, true, false, 0.0);
         assert!(numbers.numbers()[0].killed);
+    }
+
+    fn aggro(enemy: EntityId, entity: EntityId, change: AggroChange) -> CombatEvent {
+        CombatEvent::Aggro {
+            enemy,
+            entity,
+            change,
+            tick: 1,
+        }
+    }
+
+    #[test]
+    fn aggro_about_the_local_player_becomes_text_over_the_enemy() {
+        let local = EntityId::new(1, 1);
+        let enemy = EntityId::new(9, 1);
+        let above = Vec3::new(0.0, 3.0, 0.0);
+        let mut numbers = FloatingNumbers::new();
+        numbers.observe_aggro(
+            &[
+                aggro(enemy, local, AggroChange::Gaining),
+                aggro(enemy, local, AggroChange::Gained),
+            ],
+            local,
+            0.0,
+            |id| (id == enemy).then_some(above),
+        );
+        let drawn: Vec<_> = numbers
+            .numbers()
+            .iter()
+            .map(|number| number.aggro)
+            .collect();
+        assert_eq!(
+            drawn,
+            [Some(AggroChange::Gaining), Some(AggroChange::Gained)]
+        );
+        let first = numbers.numbers()[0];
+        assert_eq!(first.target, enemy, "the text belongs to the enemy");
+        assert_eq!(first.origin, above);
+        assert_eq!(
+            first.position(1.0).x,
+            above.x,
+            "aggro text rises straight up rather than drifting"
+        );
+    }
+
+    #[test]
+    fn aggro_about_somebody_else_is_not_drawn_for_this_player() {
+        let local = EntityId::new(1, 1);
+        let other = EntityId::new(2, 1);
+        let enemy = EntityId::new(9, 1);
+        let mut numbers = FloatingNumbers::new();
+        numbers.observe_aggro(
+            &[
+                aggro(enemy, other, AggroChange::Losing),
+                aggro(enemy, other, AggroChange::Lost),
+            ],
+            local,
+            0.0,
+            |_| Some(Vec3::ZERO),
+        );
+        assert!(numbers.numbers().is_empty());
+    }
+
+    #[test]
+    fn aggro_text_does_not_disturb_the_drift_of_damage_numbers() {
+        let mut numbers = FloatingNumbers::new();
+        numbers.push(entity(), Vec3::ZERO, 10.0, false, false, 0.0);
+        numbers.push_aggro(entity(), Vec3::ZERO, AggroChange::Lost, 0.0);
+        numbers.push(entity(), Vec3::ZERO, 10.0, false, false, 0.0);
+        let first = numbers.numbers()[0].drift;
+        let second = numbers.numbers()[2].drift;
+        assert_eq!(first, -second, "the two numbers still drift apart");
     }
 
     #[test]

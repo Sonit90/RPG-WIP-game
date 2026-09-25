@@ -326,6 +326,15 @@ the one place damage is applied; the target is the highest-threat row the *world
 accepts as a victim. With one player it always names the player — and with a pet, a second
 player or a taunt it will not have to be rewritten.
 
+Each ability row carries a `ThreatScale`: threat per point of damage (FireMage 1, Warrior 2,
+more on the Warrior's threat tools) and per point of healing actually restored (0.5), which
+lands on every enemy already fighting whoever was healed. The Warrior's **Taunt** (the `F`
+button) forces its target onto the Warrior for three seconds and lifts the Warrior to the top
+of that enemy's table. Every change of target between two living victims is announced as
+`CombatEvent::Aggro` (`Gained` / `Lost`), and so is a challenger reaching 90 % of the
+holder's threat (`Gaining` / `Losing`, once until it falls back under 75 %). The floating
+combat text shows the ones about the local player over the enemy concerned.
+
 ## Combat audio (Phase 4, audio)
 
 ```text

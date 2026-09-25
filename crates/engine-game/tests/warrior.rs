@@ -1123,7 +1123,7 @@ fn the_warriors_threat_tools_generate_more_threat_than_the_damage_they_deal() {
     let threat = simulation.brain(victim).map_or(0.0, |brain| {
         brain.threat().threat(simulation.player().entity)
     });
-    let multiplier = FireAbility::WarStomp.definition().warrior.threat_multiplier;
+    let multiplier = FireAbility::WarStomp.definition().threat.damage;
     assert!(multiplier > 1.0, "War Stomp is not a threat tool");
     assert!(
         (threat - dealt * multiplier).abs() < 1.0,

@@ -608,6 +608,26 @@ impl EnemyBrain {
         self.threat.add(attacker, amount);
     }
 
+    /// Forces it to attack `taunter` for `seconds`, whatever its threat table says.
+    ///
+    /// Like [`EnemyBrain::add_threat`] it decides nothing by itself: the next think re-chooses
+    /// the target, and an idle enemy that was taunted is pulled by the row the taunt created.
+    pub fn taunt(&mut self, taunter: EntityId, seconds: f32) {
+        self.threat.taunt(taunter, seconds);
+    }
+
+    /// Whether somebody is about to take it off the one it is fighting.
+    ///
+    /// Only while it is fighting: an enemy walking home or still noticing is attacking
+    /// nobody yet, and has no aggro to lose. See [`super::threat::ThreatTable::watch`].
+    pub fn watch_aggro(
+        &mut self,
+        valid: impl FnMut(EntityId) -> bool,
+    ) -> Option<super::threat::AggroWarning> {
+        let holder = self.target.filter(|_| self.state.is_combat());
+        self.threat.watch(holder, valid)
+    }
+
     /// Puts it back exactly as it spawned: home, idle, full of nothing.
     ///
     /// Health is the world's business and is restored by the caller; everything the *brain*
@@ -827,6 +847,7 @@ impl EnemyBrain {
         self.stun = (self.stun - step).max(0.0);
         self.silence = (self.silence - step).max(0.0);
         self.frenzy = (self.frenzy - step).max(0.0);
+        self.threat.tick(step);
         for cooldown in &mut self.cooldowns {
             *cooldown = (*cooldown - step).max(0.0);
         }

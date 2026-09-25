@@ -902,6 +902,7 @@ impl Simulation {
             ability: AbilityId::from_fire(ability),
             tick,
         });
+        self.add_healing_threat(entity, entity, restored, AbilityId::from_fire(ability));
         1
     }
 

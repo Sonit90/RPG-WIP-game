@@ -793,7 +793,9 @@ impl VfxDirector {
             | CombatEvent::ManaRestored { .. }
             | CombatEvent::Dispelled { .. }
             | CombatEvent::DungeonProgress { .. }
-            | CombatEvent::Absorbed { .. } => {}
+            | CombatEvent::Absorbed { .. }
+            // Aggro is floating text, drawn by the damage numbers.
+            | CombatEvent::Aggro { .. } => {}
         }
     }
 

@@ -35,7 +35,7 @@ pub const ABILITY_SLOTS: usize = 10;
 ///
 /// One table for all three heroes rather than one each: see [`crate::hero`] for why a class
 /// is a slice of this table and not a system of its own.
-pub const ABILITY_COUNT: usize = 36;
+pub const ABILITY_COUNT: usize = 37;
 
 /// The furthest anything the class has can reach, in metres.
 ///
@@ -107,6 +107,8 @@ pub enum FireAbility {
     BattleTrance,
     /// Warrior: six seconds where enemy spells go back where they came from.
     SpellReflect,
+    /// Warrior: forces one enemy to attack the Warrior for a few seconds.
+    Taunt,
     /// Warrior: the emergency cooldown. More maximum health, a heal, and less damage taken.
     LastStand,
     /// Druid: the instant that leaves moonlight burning on one enemy.
@@ -168,6 +170,7 @@ impl FireAbility {
         Self::Adrenaline,
         Self::BattleTrance,
         Self::SpellReflect,
+        Self::Taunt,
         Self::LastStand,
         Self::Moonfire,
         Self::Sunfire,
@@ -289,6 +292,7 @@ impl FireAbility {
             Self::Adrenaline => "adrenaline",
             Self::BattleTrance => "battle_trance",
             Self::SpellReflect => "spell_reflect",
+            Self::Taunt => "taunt",
             Self::LastStand => "last_stand",
             Self::Moonfire => "moonfire",
             Self::Sunfire => "sunfire",
@@ -440,6 +444,58 @@ impl TargetMode {
 /// number per row would be a second thing to disagree with the mode beside it.
 pub const TARGET_CLEAVE_HALF_ANGLE: f32 = std::f32::consts::FRAC_PI_3;
 
+/// What one point of an ability's damage or healing is worth in an enemy's threat table.
+///
+/// A column on every row rather than a rule about the caster, so a tank's threat tool, a
+/// damage dealer's quiet spell and a healer's big heal are each tuned where they are
+/// defined. The three presets are the role defaults:
+///
+/// ```text
+///                  per damage   per healing
+/// DAMAGE_DEALER       1.0          0.5
+/// TANK                2.0          0.5
+/// HEALER              1.0          0.5
+/// ```
+///
+/// Healing threat lands on every enemy already fighting whoever was healed — see
+/// [`crate::enemy::threat`] for the rules the table applies.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ThreatScale {
+    /// Threat per point of damage dealt.
+    pub damage: f32,
+    /// Threat per point of healing actually restored. Overhealing generates none.
+    pub healing: f32,
+}
+
+impl ThreatScale {
+    /// One threat a point of damage: the FireMage.
+    pub const DAMAGE_DEALER: Self = Self {
+        damage: 1.0,
+        healing: 0.5,
+    };
+
+    /// Two a point: the Warrior, whose whole job is to be the one the enemy wants.
+    pub const TANK: Self = Self {
+        damage: 2.0,
+        healing: 0.5,
+    };
+
+    /// Half a point of threat a point of healing: the Druid.
+    pub const HEALER: Self = Self {
+        damage: 1.0,
+        healing: 0.5,
+    };
+
+    /// The same scale with a different damage rate: a threat tool.
+    #[must_use]
+    pub const fn with_damage(self, damage: f32) -> Self {
+        Self {
+            damage,
+            healing: self.healing,
+        }
+    }
+}
+
 /// The Warrior's columns of the ability table.
 ///
 /// Nested rather than eight more fields on every row, so the eighteen rows that are not the
@@ -454,12 +510,6 @@ pub struct WarriorRow {
     ///
     /// Twenty for every spender in the kit, as one number rather than nine.
     pub deflection_cost: f32,
-    /// What the damage this ability deals is multiplied by on its way into a threat table.
-    ///
-    /// One for everything that is not deliberately a threat tool. A column rather than a
-    /// Warrior-only threat system: the threat table, the one place threat is added and the
-    /// rule that only damage generates it are all unchanged — see [`crate::enemy::threat`].
-    pub threat_multiplier: f32,
     /// Impact damage as a fraction of the **caster's current** maximum health.
     ///
     /// Added to whatever [`AbilityDef::coefficient`] produced. `0.01` is "and 1 % of your
@@ -478,7 +528,6 @@ impl WarriorRow {
     /// What a row that is not the Warrior's says.
     pub const NONE: Self = Self {
         deflection_cost: 0.0,
-        threat_multiplier: 1.0,
         health_coefficient: 0.0,
         tick_health_coefficient: 0.0,
     };
@@ -593,7 +642,9 @@ pub struct AbilityDef {
     ///
     /// See `line_of_sight.md` for which abilities set it and why.
     pub requires_line_of_sight: bool,
-    /// The Warrior's columns: what it spends, what it threatens for, how it reads health.
+    /// How much threat each point of what it does is worth.
+    pub threat: ThreatScale,
+    /// The Warrior's columns: what it spends and how it reads health.
     pub warrior: WarriorRow,
     /// The Druid's columns: what it costs, what it generates, what Astral Power may do to
     /// it.
@@ -713,6 +764,7 @@ pub static ABILITIES: [AbilityDef; ABILITY_COUNT] = [
         requires_line_of_sight: true,
         cooldown_hasted: true,
         energy_cost: 0.0,
+        threat: ThreatScale::DAMAGE_DEALER,
         warrior: WarriorRow::NONE,
         druid: DruidRow::NONE,
     },
@@ -742,6 +794,7 @@ pub static ABILITIES: [AbilityDef; ABILITY_COUNT] = [
         requires_line_of_sight: true,
         cooldown_hasted: true,
         energy_cost: 0.0,
+        threat: ThreatScale::DAMAGE_DEALER,
         warrior: WarriorRow::NONE,
         druid: DruidRow::NONE,
     },
@@ -771,6 +824,7 @@ pub static ABILITIES: [AbilityDef; ABILITY_COUNT] = [
         requires_line_of_sight: false,
         cooldown_hasted: true,
         energy_cost: 0.0,
+        threat: ThreatScale::DAMAGE_DEALER,
         warrior: WarriorRow::NONE,
         druid: DruidRow::NONE,
     },
@@ -800,6 +854,7 @@ pub static ABILITIES: [AbilityDef; ABILITY_COUNT] = [
         requires_line_of_sight: false,
         cooldown_hasted: true,
         energy_cost: 0.0,
+        threat: ThreatScale::DAMAGE_DEALER,
         warrior: WarriorRow::NONE,
         druid: DruidRow::NONE,
     },
@@ -829,6 +884,7 @@ pub static ABILITIES: [AbilityDef; ABILITY_COUNT] = [
         requires_line_of_sight: true,
         cooldown_hasted: true,
         energy_cost: 0.0,
+        threat: ThreatScale::DAMAGE_DEALER,
         warrior: WarriorRow::NONE,
         druid: DruidRow::NONE,
     },
@@ -858,6 +914,7 @@ pub static ABILITIES: [AbilityDef; ABILITY_COUNT] = [
         requires_line_of_sight: false,
         cooldown_hasted: true,
         energy_cost: 0.0,
+        threat: ThreatScale::DAMAGE_DEALER,
         warrior: WarriorRow::NONE,
         druid: DruidRow::NONE,
     },
@@ -887,6 +944,7 @@ pub static ABILITIES: [AbilityDef; ABILITY_COUNT] = [
         requires_line_of_sight: true,
         cooldown_hasted: false,
         energy_cost: 0.0,
+        threat: ThreatScale::DAMAGE_DEALER,
         warrior: WarriorRow::NONE,
         druid: DruidRow::NONE,
     },
@@ -916,6 +974,7 @@ pub static ABILITIES: [AbilityDef; ABILITY_COUNT] = [
         requires_line_of_sight: false,
         cooldown_hasted: true,
         energy_cost: 0.0,
+        threat: ThreatScale::DAMAGE_DEALER,
         warrior: WarriorRow::NONE,
         druid: DruidRow::NONE,
     },
@@ -945,6 +1004,7 @@ pub static ABILITIES: [AbilityDef; ABILITY_COUNT] = [
         requires_line_of_sight: false,
         cooldown_hasted: true,
         energy_cost: 0.0,
+        threat: ThreatScale::DAMAGE_DEALER,
         warrior: WarriorRow::NONE,
         druid: DruidRow::NONE,
     },
@@ -974,6 +1034,7 @@ pub static ABILITIES: [AbilityDef; ABILITY_COUNT] = [
         requires_line_of_sight: false,
         cooldown_hasted: true,
         energy_cost: 0.0,
+        threat: ThreatScale::DAMAGE_DEALER,
         warrior: WarriorRow::NONE,
         druid: DruidRow::NONE,
     },
@@ -1003,6 +1064,7 @@ pub static ABILITIES: [AbilityDef; ABILITY_COUNT] = [
         requires_line_of_sight: false,
         cooldown_hasted: true,
         energy_cost: 100.0,
+        threat: ThreatScale::DAMAGE_DEALER,
         warrior: WarriorRow::NONE,
         druid: DruidRow::NONE,
     },
@@ -1032,9 +1094,9 @@ pub static ABILITIES: [AbilityDef; ABILITY_COUNT] = [
         requires_line_of_sight: true,
         cooldown_hasted: true,
         energy_cost: 0.0,
+        threat: ThreatScale::TANK,
         warrior: WarriorRow {
             deflection_cost: 0.0,
-            threat_multiplier: 1.0,
             health_coefficient: 0.0,
             tick_health_coefficient: 0.0,
         },
@@ -1066,9 +1128,9 @@ pub static ABILITIES: [AbilityDef; ABILITY_COUNT] = [
         requires_line_of_sight: false,
         cooldown_hasted: true,
         energy_cost: 0.0,
+        threat: ThreatScale::TANK.with_damage(3.0),
         warrior: WarriorRow {
             deflection_cost: 20.0,
-            threat_multiplier: 3.0,
             health_coefficient: 0.0,
             tick_health_coefficient: 0.0,
         },
@@ -1100,9 +1162,9 @@ pub static ABILITIES: [AbilityDef; ABILITY_COUNT] = [
         requires_line_of_sight: false,
         cooldown_hasted: true,
         energy_cost: 0.0,
+        threat: ThreatScale::TANK.with_damage(3.0),
         warrior: WarriorRow {
             deflection_cost: 20.0,
-            threat_multiplier: 3.0,
             health_coefficient: 0.01,
             tick_health_coefficient: 0.0075,
         },
@@ -1134,9 +1196,9 @@ pub static ABILITIES: [AbilityDef; ABILITY_COUNT] = [
         requires_line_of_sight: true,
         cooldown_hasted: true,
         energy_cost: 0.0,
+        threat: ThreatScale::TANK.with_damage(4.0),
         warrior: WarriorRow {
             deflection_cost: 20.0,
-            threat_multiplier: 4.0,
             health_coefficient: 0.0,
             tick_health_coefficient: 0.0,
         },
@@ -1168,9 +1230,9 @@ pub static ABILITIES: [AbilityDef; ABILITY_COUNT] = [
         requires_line_of_sight: true,
         cooldown_hasted: true,
         energy_cost: 0.0,
+        threat: ThreatScale::TANK.with_damage(3.0),
         warrior: WarriorRow {
             deflection_cost: 20.0,
-            threat_multiplier: 3.0,
             health_coefficient: 0.0,
             tick_health_coefficient: 0.0,
         },
@@ -1202,9 +1264,9 @@ pub static ABILITIES: [AbilityDef; ABILITY_COUNT] = [
         requires_line_of_sight: false,
         cooldown_hasted: true,
         energy_cost: 0.0,
+        threat: ThreatScale::TANK,
         warrior: WarriorRow {
             deflection_cost: 20.0,
-            threat_multiplier: 1.0,
             health_coefficient: 0.0,
             tick_health_coefficient: 0.0,
         },
@@ -1236,9 +1298,9 @@ pub static ABILITIES: [AbilityDef; ABILITY_COUNT] = [
         requires_line_of_sight: false,
         cooldown_hasted: true,
         energy_cost: 0.0,
+        threat: ThreatScale::TANK,
         warrior: WarriorRow {
             deflection_cost: 20.0,
-            threat_multiplier: 1.0,
             health_coefficient: 0.0,
             tick_health_coefficient: 0.0,
         },
@@ -1270,9 +1332,9 @@ pub static ABILITIES: [AbilityDef; ABILITY_COUNT] = [
         requires_line_of_sight: false,
         cooldown_hasted: true,
         energy_cost: 0.0,
+        threat: ThreatScale::TANK,
         warrior: WarriorRow {
             deflection_cost: 20.0,
-            threat_multiplier: 1.0,
             health_coefficient: 0.0,
             tick_health_coefficient: 0.0,
         },
@@ -1304,9 +1366,9 @@ pub static ABILITIES: [AbilityDef; ABILITY_COUNT] = [
         requires_line_of_sight: false,
         cooldown_hasted: true,
         energy_cost: 0.0,
+        threat: ThreatScale::TANK,
         warrior: WarriorRow {
             deflection_cost: 0.0,
-            threat_multiplier: 1.0,
             health_coefficient: 0.0,
             tick_health_coefficient: 0.0,
         },
@@ -1338,12 +1400,42 @@ pub static ABILITIES: [AbilityDef; ABILITY_COUNT] = [
         requires_line_of_sight: false,
         cooldown_hasted: true,
         energy_cost: 0.0,
+        threat: ThreatScale::TANK,
         warrior: WarriorRow {
             deflection_cost: 20.0,
-            threat_multiplier: 1.0,
             health_coefficient: 0.0,
             tick_health_coefficient: 0.0,
         },
+        druid: DruidRow::NONE,
+    },
+    AbilityDef {
+        hero: Hero::Warrior,
+        damage_type: DamageType::Physical,
+        id: FireAbility::Taunt,
+        name: "TAUNT",
+        description: "THE TARGET ATTACKS YOU FOR 3 S, AND YOUR THREAT RISES TO ITS HIGHEST",
+        target: TargetMode::Single,
+        cast_time: 0.0,
+        cooldown: 8.0,
+        charges: 1,
+        range: 25.0,
+        radius: 0.0,
+        width: 0.0,
+        duration: 3.0,
+        impact_delay: 0.0,
+        coefficient: 0.0,
+        tick_coefficient: 0.0,
+        tick_interval: 0.0,
+        ignite_bonus_per_stack: 0.0,
+        ignite_stacks: 0,
+        ignite_chance: 0.0,
+        heat: 0.0,
+        energy: 0.0,
+        requires_line_of_sight: true,
+        cooldown_hasted: true,
+        energy_cost: 0.0,
+        threat: ThreatScale::TANK,
+        warrior: WarriorRow::NONE,
         druid: DruidRow::NONE,
     },
     AbilityDef {
@@ -1372,9 +1464,9 @@ pub static ABILITIES: [AbilityDef; ABILITY_COUNT] = [
         requires_line_of_sight: false,
         cooldown_hasted: true,
         energy_cost: 0.0,
+        threat: ThreatScale::TANK,
         warrior: WarriorRow {
             deflection_cost: 20.0,
-            threat_multiplier: 1.0,
             health_coefficient: 0.0,
             tick_health_coefficient: 0.0,
         },
@@ -1406,6 +1498,7 @@ pub static ABILITIES: [AbilityDef; ABILITY_COUNT] = [
         requires_line_of_sight: true,
         cooldown_hasted: true,
         energy_cost: 0.0,
+        threat: ThreatScale::HEALER,
         warrior: WarriorRow::NONE,
         druid: DruidRow {
             mana_cost: MOONFIRE_MANA,
@@ -1440,6 +1533,7 @@ pub static ABILITIES: [AbilityDef; ABILITY_COUNT] = [
         requires_line_of_sight: true,
         cooldown_hasted: true,
         energy_cost: 0.0,
+        threat: ThreatScale::HEALER,
         warrior: WarriorRow::NONE,
         druid: DruidRow {
             mana_cost: SUNFIRE_MANA,
@@ -1474,6 +1568,7 @@ pub static ABILITIES: [AbilityDef; ABILITY_COUNT] = [
         requires_line_of_sight: true,
         cooldown_hasted: true,
         energy_cost: 0.0,
+        threat: ThreatScale::HEALER,
         warrior: WarriorRow::NONE,
         druid: DruidRow {
             mana_cost: 0.0,
@@ -1508,6 +1603,7 @@ pub static ABILITIES: [AbilityDef; ABILITY_COUNT] = [
         requires_line_of_sight: false,
         cooldown_hasted: true,
         energy_cost: 0.0,
+        threat: ThreatScale::HEALER,
         warrior: WarriorRow::NONE,
         druid: DruidRow {
             mana_cost: REJUVENATION_MANA,
@@ -1542,6 +1638,7 @@ pub static ABILITIES: [AbilityDef; ABILITY_COUNT] = [
         requires_line_of_sight: false,
         cooldown_hasted: true,
         energy_cost: 0.0,
+        threat: ThreatScale::HEALER,
         warrior: WarriorRow::NONE,
         druid: DruidRow {
             mana_cost: REGROWTH_MANA,
@@ -1576,6 +1673,7 @@ pub static ABILITIES: [AbilityDef; ABILITY_COUNT] = [
         requires_line_of_sight: false,
         cooldown_hasted: true,
         energy_cost: 0.0,
+        threat: ThreatScale::HEALER,
         warrior: WarriorRow::NONE,
         druid: DruidRow {
             mana_cost: LIFEBLOOM_MANA,
@@ -1610,6 +1708,7 @@ pub static ABILITIES: [AbilityDef; ABILITY_COUNT] = [
         requires_line_of_sight: false,
         cooldown_hasted: true,
         energy_cost: 0.0,
+        threat: ThreatScale::HEALER,
         warrior: WarriorRow::NONE,
         druid: DruidRow {
             mana_cost: WILD_GROWTH_MANA,
@@ -1644,6 +1743,7 @@ pub static ABILITIES: [AbilityDef; ABILITY_COUNT] = [
         requires_line_of_sight: false,
         cooldown_hasted: true,
         energy_cost: 0.0,
+        threat: ThreatScale::HEALER,
         warrior: WarriorRow::NONE,
         druid: DruidRow {
             mana_cost: SWIFTMEND_MANA,
@@ -1678,6 +1778,7 @@ pub static ABILITIES: [AbilityDef; ABILITY_COUNT] = [
         requires_line_of_sight: false,
         cooldown_hasted: true,
         energy_cost: 0.0,
+        threat: ThreatScale::HEALER,
         warrior: WarriorRow::NONE,
         druid: DruidRow {
             mana_cost: NOURISH_MANA,
@@ -1712,6 +1813,7 @@ pub static ABILITIES: [AbilityDef; ABILITY_COUNT] = [
         requires_line_of_sight: false,
         cooldown_hasted: true,
         energy_cost: 0.0,
+        threat: ThreatScale::HEALER,
         warrior: WarriorRow::NONE,
         druid: DruidRow {
             mana_cost: NATURES_CLEANSE_MANA,
@@ -1746,6 +1848,7 @@ pub static ABILITIES: [AbilityDef; ABILITY_COUNT] = [
         requires_line_of_sight: false,
         cooldown_hasted: true,
         energy_cost: 0.0,
+        threat: ThreatScale::HEALER,
         warrior: WarriorRow::NONE,
         druid: DruidRow {
             mana_cost: 0.0,
@@ -1780,6 +1883,7 @@ pub static ABILITIES: [AbilityDef; ABILITY_COUNT] = [
         requires_line_of_sight: false,
         cooldown_hasted: true,
         energy_cost: 0.0,
+        threat: ThreatScale::HEALER,
         warrior: WarriorRow::NONE,
         druid: DruidRow {
             mana_cost: 0.0,
@@ -1814,6 +1918,7 @@ pub static ABILITIES: [AbilityDef; ABILITY_COUNT] = [
         requires_line_of_sight: false,
         cooldown_hasted: true,
         energy_cost: 0.0,
+        threat: ThreatScale::HEALER,
         warrior: WarriorRow::NONE,
         druid: DruidRow {
             mana_cost: TRANQUILITY_MANA,
@@ -1848,6 +1953,7 @@ pub static ABILITIES: [AbilityDef; ABILITY_COUNT] = [
         requires_line_of_sight: false,
         cooldown_hasted: true,
         energy_cost: 0.0,
+        threat: ThreatScale::DAMAGE_DEALER,
         warrior: WarriorRow::NONE,
         druid: DruidRow::NONE,
     },

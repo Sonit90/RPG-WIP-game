@@ -241,6 +241,7 @@ impl Simulation {
             ability,
             tick,
         });
+        self.add_healing_threat(self.player.entity, target, restored, ability);
         restored
     }
 

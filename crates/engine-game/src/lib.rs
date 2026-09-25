@@ -122,7 +122,7 @@ pub use encounter::{Encounter, EncounterState, EnemySpawn};
 pub use enemy::brain::{AiState, EnemyBrain};
 pub use enemy::{EnemyAbility, EnemyKind, TelegraphShape};
 pub use entity::EntityId;
-pub use event::{CombatEvent, ControlKind, DamageEvent};
+pub use event::{AggroChange, CombatEvent, ControlKind, DamageEvent};
 pub use firemage::{AbilityError, FireAbility, FireMage, TalentId};
 pub use hero::Hero;
 pub use input_map::Bindings;

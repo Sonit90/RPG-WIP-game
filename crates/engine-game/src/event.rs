@@ -501,7 +501,7 @@ pub enum CombatEvent {
         /// The tick it happened on.
         tick: u64,
     },
-    /// An enemy was stunned or silenced.
+    /// An enemy was stunned, silenced or taunted.
     ControlApplied {
         /// Who did it.
         source: EntityId,
@@ -513,6 +513,21 @@ pub enum CombatEvent {
         seconds: f32,
         /// Which ability did it.
         ability: AbilityId,
+        /// The tick it happened on.
+        tick: u64,
+    },
+    /// An enemy changed who it attacks, or somebody is about to make it.
+    ///
+    /// One event per entity concerned: a switch from A to B is a `Lost` for A and a `Gained`
+    /// for B, and a warning is a `Losing` for the holder and a `Gaining` for the challenger,
+    /// so a reader interested in one character filters on `entity` and nothing else.
+    Aggro {
+        /// The enemy whose aggro it is.
+        enemy: EntityId,
+        /// Who gained, lost, or is about to gain or lose it.
+        entity: EntityId,
+        /// Which of the four.
+        change: AggroChange,
         /// The tick it happened on.
         tick: u64,
     },
@@ -602,6 +617,7 @@ impl CombatEvent {
             | Self::Absorbed { tick, .. }
             | Self::SpellReflected { tick, .. }
             | Self::ControlApplied { tick, .. }
+            | Self::Aggro { tick, .. }
             | Self::DungeonProgress { tick, .. }
             | Self::BossUnlocked { tick, .. }
             | Self::AddSummoned { tick, .. }
@@ -631,6 +647,8 @@ pub enum ControlKind {
     Stun,
     /// It may not start a cast.
     Silence,
+    /// It must attack whoever taunted it.
+    Taunt,
 }
 
 impl ControlKind {
@@ -640,6 +658,33 @@ impl ControlKind {
         match self {
             Self::Stun => "STUNNED",
             Self::Silence => "SILENCED",
+            Self::Taunt => "TAUNTED",
+        }
+    }
+}
+
+/// What happened to somebody's standing with one enemy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum AggroChange {
+    /// The enemy turned on them.
+    Gained,
+    /// The enemy turned away from them.
+    Lost,
+    /// They are close to pulling it off whoever it is attacking.
+    Gaining,
+    /// Somebody else is close to pulling it off them.
+    Losing,
+}
+
+impl AggroChange {
+    /// Short uppercase text, for floating combat text and the log.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Gained => "AGGRO GAINED",
+            Self::Lost => "AGGRO LOST",
+            Self::Gaining => "GAINING AGGRO",
+            Self::Losing => "LOSING AGGRO",
         }
     }
 }

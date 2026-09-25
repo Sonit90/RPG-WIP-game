@@ -1740,6 +1740,7 @@ impl Simulation {
                                     ability,
                                     tick,
                                 });
+                                self.add_healing_threat(source, id, restored, ability);
                             }
                             continue;
                         }
@@ -2365,17 +2366,14 @@ impl Simulation {
         // healing, from the one place the damage that actually landed is known.
         self.convert_astral_sunfire(source, target, result.applied);
 
-        // Being hit is what makes an enemy angry, and it is the only thing that does.
-        // Threat is fed here, in the one place damage lands, so no ability can deal damage
-        // without generating threat and none can generate threat without dealing damage.
-        // The ability's own threat multiplier, off its row. One for everything that is not
-        // deliberately a threat tool; three or four for the Warrior's, which is the whole of
-        // "the tank holds a pack" — no second threat system, no Warrior-only table, and
-        // still nothing but damage that generates any threat at all.
+        // Being hit is what makes an enemy angry. Threat is fed here, in the one place damage
+        // lands, so no ability can deal damage without generating threat. The rate is the
+        // ability's own, off its row: one for a damage dealer, two for the tank, more for
+        // the tank's threat tools. Anything that is not a player ability counts one for one.
         let threat = result.applied
             * ability
                 .fire()
-                .map_or(1.0, |fire| fire.definition().warrior.threat_multiplier);
+                .map_or(1.0, |fire| fire.definition().threat.damage);
         if let Some(Some(runtime)) = self.enemies.get_mut(target.index())
             && self.world.contains(target)
         {
@@ -2458,6 +2456,52 @@ impl Simulation {
                 tick,
             });
             self.flush_credits();
+        }
+    }
+
+    /// Credits the threat a heal generates.
+    ///
+    /// Every living enemy that is already fighting whoever was healed — has them in its
+    /// threat table — gets `restored` times the ability's healing rate for the healer.
+    /// Healing somebody no enemy has noticed pulls nothing, and neither does a heal that is
+    /// not a player ability: regeneration and an enemy mending its own pack are not the
+    /// party's doing.
+    ///
+    /// Called with what the heal actually restored, so overhealing generates no threat.
+    pub(super) fn add_healing_threat(
+        &mut self,
+        healer: EntityId,
+        healed: EntityId,
+        restored: f32,
+        ability: AbilityId,
+    ) {
+        let Some(fire) = ability.fire() else {
+            return;
+        };
+        let threat = restored * fire.definition().threat.healing;
+        if !threat.is_finite() || threat <= 0.0 {
+            return;
+        }
+        let Some(ours) = self.world.faction(healer) else {
+            return;
+        };
+        for slot in 0..self.enemies.len() {
+            let Some(runtime) = self.enemies[slot].as_mut() else {
+                continue;
+            };
+            let Some(entity) = self.world.id_at(slot) else {
+                continue;
+            };
+            if !self.world.is_alive(entity)
+                || !runtime.brain.threat().contains(healed)
+                || !self
+                    .world
+                    .faction(entity)
+                    .is_some_and(|theirs| theirs.is_hostile_to(ours))
+            {
+                continue;
+            }
+            runtime.brain.add_threat(healer, threat);
         }
     }
 

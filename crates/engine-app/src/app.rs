@@ -4877,6 +4877,15 @@ impl Application for App {
                     position + Vec3::new(0.0, world.height(id) * 0.7, 0.0)
                 })
             });
+            // Aggro text about the local player, over the enemy's head rather than its chest
+            // so it does not sit in the middle of that enemy's damage numbers.
+            let local = self.simulation.player().entity;
+            self.numbers
+                .observe_aggro(self.simulation.events(), local, time, |id| {
+                    world
+                        .position(id)
+                        .map(|position| position + Vec3::new(0.0, world.height(id) * 1.15, 0.0))
+                });
             self.numbers.retire(time);
             // What the extractor needs that the simulation does not have: where the camera
             // is, for level-of-detail selection, and how much *real* time passed, for

@@ -145,9 +145,9 @@ impl Hero {
                 FireAbility::Adrenaline,
                 FireAbility::BattleTrance,
                 FireAbility::SpellReflect,
-                // Eleven abilities on a ten-key bar: the eleventh is the hero's Ultimate,
-                // which is the `R` key beside the bar and already exists for the FireMage.
-                // See `Hero::ultimate` and `Hero::bar`.
+                // Twelve abilities on a ten-key bar. Taunt sits on the button beside it — see
+                // `Hero::extras` — and the twelfth is the Ultimate on `R`.
+                FireAbility::Taunt,
                 FireAbility::LastStand,
             ],
             Self::Druid => &[
@@ -361,18 +361,22 @@ mod tests {
         assert_eq!(FireAbility::WildRush.key_hint(), "F");
         assert_eq!(FireAbility::AstralPower.key_hint(), "G");
         assert_eq!(FireAbility::Tranquility.key_hint(), "R");
-        // The Warrior's eleventh is its Ultimate, so it has no extra buttons at all.
-        assert_eq!(Hero::Warrior.extras().count(), 0);
+        // The Warrior has one button beside the bar: Taunt, on `F`.
+        assert_eq!(
+            Hero::Warrior.extras().collect::<Vec<_>>(),
+            [FireAbility::Taunt]
+        );
+        assert_eq!(FireAbility::Taunt.key_hint(), "F");
     }
 
     #[test]
-    fn the_warrior_is_eleven_abilities_on_ten_keys_and_an_ultimate() {
-        assert_eq!(Hero::Warrior.abilities().len(), 11);
+    fn the_warrior_is_twelve_abilities_on_ten_keys_an_extra_and_an_ultimate() {
+        assert_eq!(Hero::Warrior.abilities().len(), 12);
         let bar = Hero::Warrior.bar();
         assert_eq!(bar.iter().filter(|slot| slot.is_some()).count(), 10);
         assert_eq!(Hero::Warrior.ultimate(), Some(FireAbility::LastStand));
-        // The eleventh is not on a digit, and asking for an eleventh slot answers nothing
-        // rather than the ability that lives beside the bar.
+        // The last two are not on a digit, and asking for an eleventh slot answers nothing
+        // rather than an ability that lives beside the bar.
         assert_eq!(Hero::Warrior.ability_at(ABILITY_SLOTS), None);
         assert!(FireAbility::LastStand.is_ultimate());
         assert!(!FireAbility::LastStand.is_disabled());

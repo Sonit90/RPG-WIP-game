@@ -240,7 +240,9 @@ impl CombatMeter {
                 | CombatEvent::AbsorbApplied { .. }
                 | CombatEvent::Absorbed { .. }
                 | CombatEvent::SpellReflected { .. }
-                | CombatEvent::ControlApplied { .. } => {}
+                | CombatEvent::ControlApplied { .. }
+                // Who an enemy is attacking moves no health.
+                | CombatEvent::Aggro { .. } => {}
             }
         }
     }

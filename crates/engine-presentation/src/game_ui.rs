@@ -18,6 +18,7 @@ use engine_render_data::ui::{TextAlign, UiColor, UiDrawList, UiIcon, UiRect, UiS
 use crate::damage_numbers::FloatingNumbers;
 use crate::nameplate::{Nameplate, NameplateConfig, project};
 use crate::snapshot::{AbilitySlotView, SlotAvailability, UiSnapshot};
+use engine_game::event::AggroChange;
 use engine_game::firemage::{ABILITY_SLOTS, FireAbility, HeatTier, INFERNO_DURATION};
 
 /// Layout constants for the combat HUD, in pixels at any resolution.
@@ -259,6 +260,10 @@ pub struct UiTheme {
     /// A third colour rather than a brighter shade of the first: a player mid-fight is
     /// distinguishing at a glance, and two shades of yellow are not a distinction.
     pub critical_number: UiColor,
+    /// Aggro floating text for gaining it, or being about to: an enemy turning on you.
+    pub aggro_gain_text: UiColor,
+    /// Aggro floating text for losing it, or being about to.
+    pub aggro_loss_text: UiColor,
     /// Glyph scale for HUD text.
     pub hud_text_scale: f32,
     /// Glyph scale for a damage number.
@@ -357,6 +362,8 @@ impl Default for UiTheme {
             damage_number: [1.0, 0.92, 0.55, 1.0],
             killing_number: [1.0, 0.45, 0.30, 1.0],
             critical_number: [1.0, 0.72, 0.16, 1.0],
+            aggro_gain_text: [1.0, 0.36, 0.26, 1.0],
+            aggro_loss_text: [0.52, 0.78, 1.0, 1.0],
             hud_text_scale: 2.0,
             damage_text_scale: 2.0,
             heat_low: [0.55, 0.55, 0.60, 1.0],
@@ -1947,6 +1954,17 @@ impl GameUi {
             if alpha <= 0.0 {
                 continue;
             }
+            if let Some(change) = number.aggro {
+                let mut color = match change {
+                    AggroChange::Gained | AggroChange::Gaining => self.theme.aggro_gain_text,
+                    AggroChange::Lost | AggroChange::Losing => self.theme.aggro_loss_text,
+                };
+                color[3] = alpha;
+                let scale = self.metrics.scale.text(self.theme.damage_text_scale);
+                self.list
+                    .text_aligned((x, y), change.as_str(), color, scale, TextAlign::Center);
+                continue;
+            }
             // A kill outranks a crit: the last number a target ever shows should read as
             // "it died", not as "that one was lucky".
             let mut color = if number.killed {
@@ -2023,6 +2041,8 @@ pub fn icon_for(ability: FireAbility) -> Option<UiIcon> {
         FireAbility::BattleTrance => Some(UiIcon::BattleTrance),
         FireAbility::SpellReflect => Some(UiIcon::SpellReflect),
         FireAbility::LastStand => Some(UiIcon::LastStand),
+        // No art yet: the slot shows the abbreviated name until an icon is drawn.
+        FireAbility::Taunt => None,
         FireAbility::Moonfire => Some(UiIcon::Moonfire),
         FireAbility::Sunfire => Some(UiIcon::Sunfire),
         FireAbility::Wrath => Some(UiIcon::Wrath),
@@ -3146,6 +3166,38 @@ mod tests {
             })
             .collect();
         assert!(faded[0] < 1.0, "an old number has faded: {}", faded[0]);
+    }
+
+    #[test]
+    fn aggro_text_is_drawn_as_words_in_its_own_colours() {
+        let mut numbers = FloatingNumbers::new();
+        let enemy = engine_game::entity::EntityId::new(1, 1);
+        let origin = engine_core::math::Vec3::new(0.0, 1.0, -12.0);
+        numbers.push_aggro(enemy, origin, AggroChange::Gaining, 0.0);
+        numbers.push_aggro(enemy, origin, AggroChange::Losing, 0.0);
+
+        let mut ui = GameUi::new();
+        ui.begin();
+        ui.push_damage_numbers(&numbers, &view_projection(), VIEWPORT, 0.0);
+        let drawn: Vec<(String, [f32; 4])> = ui
+            .list()
+            .commands()
+            .iter()
+            .filter_map(|command| match command {
+                UiCommand::Text { range, color, .. } => {
+                    Some((ui.list().text_of(*range).to_owned(), *color))
+                }
+                _ => None,
+            })
+            .collect();
+        let theme = ui.theme();
+        assert_eq!(
+            drawn,
+            [
+                ("GAINING AGGRO".to_owned(), theme.aggro_gain_text),
+                ("LOSING AGGRO".to_owned(), theme.aggro_loss_text),
+            ]
+        );
     }
 
     #[test]

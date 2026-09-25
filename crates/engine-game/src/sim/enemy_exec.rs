@@ -47,7 +47,7 @@ use crate::enemy::{
     EnemyAbility, EnemyAim, EnemyEffect, EnemyKind, EnemyRider, EnemyTarget, TelegraphShape,
 };
 use crate::entity::EntityId;
-use crate::event::CombatEvent;
+use crate::event::{AggroChange, CombatEvent};
 use crate::movement::MoveIntent;
 use crate::sim::CastEnd;
 use crate::status::{Status, StatusKind};
@@ -202,8 +202,10 @@ impl Simulation {
             // fall back to the table's neutral shape - a cone pointing wherever the table
             // said, which is not where the telegraph was drawn.
             let running = runtime.brain.cast();
+            let attacking = runtime.brain.target();
             let decision = runtime.brain.think(&percept, step);
             runtime.intent = decision.intent;
+            self.announce_aggro(entity, attacking, &mut runtime.brain);
 
             let telegraphs = runtime.telegraphs;
             let request = decision.request;
@@ -982,6 +984,66 @@ impl Simulation {
         best.map(|(_, target)| target)
     }
 
+    /// Whether `enemy` may attack `candidate`: alive, and on a side it is hostile to.
+    fn legal_victim(&self, enemy: EntityId, candidate: EntityId) -> bool {
+        self.world.is_alive(candidate)
+            && self.world.faction(enemy).is_some_and(|mine| {
+                self.world
+                    .faction(candidate)
+                    .is_some_and(|theirs| mine.is_hostile_to(theirs))
+            })
+    }
+
+    /// Announces what one enemy's think did to who it is attacking.
+    ///
+    /// A switch from one living victim to another is a `Lost` for the first and a `Gained`
+    /// for the second. Starting a fight and giving one up are not announced as aggro: a pull
+    /// is already obvious, and an enemy walking home has not turned on anybody else. Then the
+    /// threat table is asked whether somebody is about to take it, which is a `Losing` for
+    /// the holder and a `Gaining` for the challenger — the warning the player acts on.
+    fn announce_aggro(
+        &mut self,
+        enemy: EntityId,
+        before: Option<EntityId>,
+        brain: &mut EnemyBrain,
+    ) {
+        let tick = self.tick;
+        if let (Some(from), Some(to)) = (before, brain.target())
+            && from != to
+            && brain.state().is_combat()
+        {
+            if self.world.is_alive(from) {
+                self.events.push(CombatEvent::Aggro {
+                    enemy,
+                    entity: from,
+                    change: AggroChange::Lost,
+                    tick,
+                });
+            }
+            self.events.push(CombatEvent::Aggro {
+                enemy,
+                entity: to,
+                change: AggroChange::Gained,
+                tick,
+            });
+        }
+        let warning = brain.watch_aggro(|candidate| self.legal_victim(enemy, candidate));
+        if let Some(warning) = warning {
+            self.events.push(CombatEvent::Aggro {
+                enemy,
+                entity: warning.holder,
+                change: AggroChange::Losing,
+                tick,
+            });
+            self.events.push(CombatEvent::Aggro {
+                enemy,
+                entity: warning.challenger,
+                change: AggroChange::Gaining,
+                tick,
+            });
+        }
+    }
+
     /// What one enemy can see this tick.
     fn perceive(&mut self, entity: EntityId, brain: &EnemyBrain) -> AiPercept {
         let position = self.world.position(entity).unwrap_or(Vec3::ZERO);
@@ -1013,19 +1075,13 @@ impl Simulation {
             .then(|| self.farthest_hostile(entity, charge_range))
             .flatten();
 
-        // The target is the highest threat that is still a legal victim. "Legal" is asked of
-        // the world here rather than inside the threat table, which is what keeps the table
-        // free of any dependency on the world and testable with a closure.
-        let world = &self.world;
-        let faction = world.faction(entity);
-        let target = brain.threat().highest(|candidate| {
-            world.is_alive(candidate)
-                && faction.is_some_and(|mine| {
-                    world
-                        .faction(candidate)
-                        .is_some_and(|theirs| mine.is_hostile_to(theirs))
-                })
-        });
+        // The target is the taunter while a taunt runs, and otherwise the highest threat that
+        // is still a legal victim. "Legal" is asked of the world here rather than inside the
+        // threat table, which is what keeps the table free of any dependency on the world and
+        // testable with a closure.
+        let target = brain
+            .threat()
+            .target(|candidate| self.legal_victim(entity, candidate));
 
         let describe = |candidate: EntityId| -> Option<AiTarget> {
             let target_position = self.world.position(candidate)?;

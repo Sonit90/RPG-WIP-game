@@ -594,6 +594,17 @@ fn describe(event: &CombatEvent) -> String {
         CombatEvent::DungeonCompleted { seconds, tick } => {
             format!("dungeon completed in {} on {tick}", fixed(seconds))
         }
+        CombatEvent::Aggro {
+            enemy,
+            entity,
+            change,
+            tick,
+        } => format!(
+            "{} {} on {} at {tick}",
+            entity.index(),
+            change.as_str(),
+            enemy.index()
+        ),
     }
 }
 
