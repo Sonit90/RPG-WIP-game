@@ -28,6 +28,13 @@ fn category_of(name: &str) -> AssetCategory {
         "pine" => AssetCategory::Tree,
         "wall_segment" | "pillar" | "arch" | "dome" => AssetCategory::Architecture,
         "brazier" | "supply_crate" => AssetCategory::MediumProp,
+        "crypt_wall" | "wall_pier" | "crypt_gate" | "iron_fence" | "crypt_floor" => {
+            AssetCategory::Architecture
+        }
+        "gravestone" | "grave_cross" | "bone_pile" => AssetCategory::SmallProp,
+        "sarcophagus" => AssetCategory::MediumProp,
+        "dead_tree" => AssetCategory::Tree,
+        "mausoleum" => AssetCategory::HeroArchitecture,
         "banner" => AssetCategory::LargeProp,
         _ => AssetCategory::Unclassified,
     }

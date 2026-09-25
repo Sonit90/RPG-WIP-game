@@ -167,14 +167,15 @@ fn a_brute_closes_and_a_caster_holds_its_distance() {
         if closes {
             assert!(gap < 5.0, "{kind:?} stopped {gap:.1} m away");
         } else {
-            assert!(gap > 10.0, "{kind:?} walked into melee at {gap:.1} m");
+            // It starts inside its preferred range, so it has no reason to come closer.
+            assert!(gap > 6.0, "{kind:?} walked into melee at {gap:.1} m");
         }
     }
 }
 
 #[test]
 fn the_ritualists_nova_is_interruptible_and_an_interrupt_costs_it_the_cast() {
-    let (mut simulation, enemy) = duel(EnemyKind::Ritualist, 16.0);
+    let (mut simulation, enemy) = duel(EnemyKind::Ritualist, 9.0);
     // Long enough to notice and start something.
     run(&mut simulation, 200);
     let casting = simulation
@@ -224,7 +225,7 @@ fn the_ritualists_nova_hits_what_is_inside_its_ring_and_nothing_outside_it() {
 
 #[test]
 fn the_warden_heals_the_ally_that_is_worst_off_and_nothing_when_nobody_is_hurt() {
-    let (mut simulation, members) = pack(&[EnemyKind::Warden, EnemyKind::Melee], 14.0);
+    let (mut simulation, members) = pack(&[EnemyKind::Warden, EnemyKind::Melee], 9.0);
     let (warden, brute) = (members[0], members[1]);
 
     // Nothing is hurt: the Warden has no heal target and falls through to its filler.
@@ -268,7 +269,7 @@ fn the_warden_heals_the_ally_that_is_worst_off_and_nothing_when_nobody_is_hurt()
 
 #[test]
 fn a_mend_that_is_interrupted_restores_nothing() {
-    let (mut simulation, members) = pack(&[EnemyKind::Warden, EnemyKind::Melee], 14.0);
+    let (mut simulation, members) = pack(&[EnemyKind::Warden, EnemyKind::Melee], 9.0);
     let (warden, brute) = (members[0], members[1]);
     set_health_fraction(&mut simulation, brute, 0.3);
     let wounded = health(&simulation, brute);
@@ -298,7 +299,7 @@ fn a_mend_that_is_interrupted_restores_nothing() {
 
 #[test]
 fn a_weaver_leaves_burning_ground_that_expires_on_its_own() {
-    let (mut simulation, enemy) = duel(EnemyKind::Weaver, 14.0);
+    let (mut simulation, enemy) = duel(EnemyKind::Weaver, 9.0);
     let EnemyEffect::Hazard { duration, .. } = EnemyAbility::CinderPool.definition().effect else {
         panic!("the cinder pool is a hazard");
     };
@@ -329,7 +330,7 @@ fn a_weaver_leaves_burning_ground_that_expires_on_its_own() {
 
 #[test]
 fn burning_ground_damages_the_player_standing_in_it_and_never_its_own_side() {
-    let (mut simulation, members) = pack(&[EnemyKind::Weaver, EnemyKind::Melee], 12.0);
+    let (mut simulation, members) = pack(&[EnemyKind::Weaver, EnemyKind::Melee], 9.0);
     let brute = members[1];
     let brute_health = health(&simulation, brute);
     let player_start = health(&simulation, simulation.player().entity);
@@ -349,7 +350,7 @@ fn burning_ground_damages_the_player_standing_in_it_and_never_its_own_side() {
 
 #[test]
 fn a_weavers_pools_go_out_when_it_dies() {
-    let (mut simulation, enemy) = duel(EnemyKind::Weaver, 14.0);
+    let (mut simulation, enemy) = duel(EnemyKind::Weaver, 9.0);
     for _ in 0..900 {
         simulation.step_once();
         if !simulation.enemy_hazards().is_empty() {
@@ -676,7 +677,7 @@ fn a_reset_brings_a_corpse_back_into_the_fight() {
 
 #[test]
 fn a_pack_activates_when_one_member_is_pulled_and_completes_when_all_are_dead() {
-    let (mut simulation, members) = pack(&[EnemyKind::Melee, EnemyKind::Caster], 12.0);
+    let (mut simulation, members) = pack(&[EnemyKind::Melee, EnemyKind::Caster], 9.0);
     assert_eq!(
         simulation.encounter().map(engine_game::Encounter::state),
         Some(EncounterState::NotStarted)
@@ -752,17 +753,16 @@ fn pulling_one_member_of_a_pack_pulls_all_of_it() {
 
 #[test]
 fn a_pack_pulled_together_can_go_home_and_be_pulled_again() {
-    // The pack pull is once per engagement, not a condition that holds while anybody is
-    // awake — otherwise the first member home is woken again by the last one still walking,
-    // and the pack can never go back to sleep.
+    // A pack that walked home can be pulled again. Only a member that is *fighting* pulls its
+    // packmates — otherwise the first member home is woken again by the last one still
+    // walking, and the pack can never go back to sleep. The only way home is the player's
+    // death: a pulled pack never leashes.
     let (mut simulation, members) = pack(&[EnemyKind::Melee, EnemyKind::Melee], 10.0);
     run(&mut simulation, 120);
     assert!(members.iter().all(|m| state(&simulation, *m).is_combat()));
 
-    simulation.push_command(PlayerCommand::Teleport {
-        position: Vec3::new(0.0, 0.0, 300.0),
-    });
-    run(&mut simulation, 1_500);
+    simulation.kill_player();
+    run(&mut simulation, 150);
     for member in &members {
         assert_eq!(
             state(&simulation, *member),
@@ -772,6 +772,7 @@ fn a_pack_pulled_together_can_go_home_and_be_pulled_again() {
     }
 
     // And a second visit pulls it again, whole.
+    simulation.revive_player();
     simulation.push_command(PlayerCommand::Teleport {
         position: Vec3::new(0.0, 0.0, 0.0),
     });
@@ -790,7 +791,7 @@ fn every_member_of_a_pack_fights_at_the_same_time() {
     // The pack requirement: three monsters must all be doing something, not taking turns.
     let (mut simulation, members) = pack(
         &[EnemyKind::Melee, EnemyKind::Caster, EnemyKind::Ritualist],
-        14.0,
+        9.0,
     );
     run(&mut simulation, 240);
     for member in &members {
@@ -808,7 +809,9 @@ fn every_member_of_a_pack_fights_at_the_same_time() {
 }
 
 #[test]
-fn a_pack_leashes_home_together_and_forgets_everything() {
+fn a_pack_chases_a_player_who_runs_however_far_and_never_resets() {
+    // Monsters never go back to their spawn point while the player lives: kiting a pack
+    // across the map drags the whole pack along, still angry.
     let (mut simulation, members) = pack(&[EnemyKind::Melee, EnemyKind::Melee], 10.0);
     run(&mut simulation, 120);
     assert!(members.iter().all(|m| state(&simulation, *m).is_combat()));
@@ -819,16 +822,24 @@ fn a_pack_leashes_home_together_and_forgets_everything() {
     });
     run(&mut simulation, 1_500);
     for member in &members {
-        assert_eq!(
-            state(&simulation, *member),
-            AiState::Idle,
-            "it never came home"
-        );
         assert!(
-            simulation
-                .brain(*member)
-                .is_some_and(|brain| brain.threat().is_empty())
+            state(&simulation, *member).is_combat(),
+            "it gave up: {:?}",
+            state(&simulation, *member)
         );
+        let brain = simulation.brain(*member).expect("an enemy");
+        assert_eq!(
+            brain.target(),
+            Some(simulation.player().entity),
+            "it lost the player"
+        );
+        let from_home = horizontal_distance(
+            simulation.world().position(*member).expect("in the world"),
+            brain.home(),
+        );
+        // The arena's walls stop it long before the player's spot; what matters is that it
+        // is still out there fighting rather than back where it spawned.
+        assert!(from_home > 30.0, "it stayed near home: {from_home:.1} m");
     }
 }
 
@@ -1049,4 +1060,89 @@ fn the_dungeon_is_deterministic_over_a_long_run() {
         log
     };
     assert_eq!(script(1_200), script(1_200));
+}
+
+// ---------------------------------------------------------------------------------------
+// Pack aggro, wipes and the aggro radius
+// ---------------------------------------------------------------------------------------
+
+#[test]
+fn a_packmate_that_is_idle_while_the_rest_fight_is_brought_into_the_fight() {
+    // Not only on the first pull: a member that is at home and idle while another member of
+    // its pack is fighting joins — which is what a straggler that was still walking home
+    // when the pack was pulled again is, the moment it arrives.
+    let (mut simulation, members) = pack(&[EnemyKind::Melee, EnemyKind::Melee], 10.0);
+    run(&mut simulation, 120);
+    assert!(members.iter().all(|m| state(&simulation, *m).is_combat()));
+
+    simulation.restore_enemy(members[1]);
+    assert_eq!(state(&simulation, members[1]), AiState::Idle);
+    run(&mut simulation, 60);
+    assert!(
+        state(&simulation, members[1]).is_combat(),
+        "left idle beside a packmate that is fighting: {:?}",
+        state(&simulation, members[1])
+    );
+}
+
+#[test]
+fn when_the_player_dies_the_monsters_heal_and_walk_home() {
+    let (mut simulation, members) = pack(&[EnemyKind::Melee, EnemyKind::Melee], 10.0);
+    run(&mut simulation, 180);
+    assert!(members.iter().all(|m| state(&simulation, *m).is_combat()));
+    for member in &members {
+        set_health_fraction(&mut simulation, *member, 0.4);
+    }
+
+    let player = simulation.player().entity;
+    simulation.world_mut().damage(player, 1e9);
+    run(&mut simulation, 2);
+    assert!(!simulation.player_alive());
+    for member in &members {
+        let max = simulation
+            .world()
+            .health(*member)
+            .map_or(0.0, engine_game::Health::max);
+        assert_eq!(health(&simulation, *member), max, "not healed to full");
+        assert_eq!(state(&simulation, *member), AiState::Returning);
+        let brain = simulation.brain(*member).expect("an enemy");
+        assert!(brain.threat().is_empty(), "it still remembers the fight");
+        let from_home = horizontal_distance(
+            simulation.world().position(*member).expect("in the world"),
+            brain.home(),
+        );
+        assert!(
+            from_home > 3.0,
+            "it was put home rather than walking: {from_home:.1} m"
+        );
+    }
+
+    // Home before the player comes back, standing where it spawned and asleep.
+    run(&mut simulation, 150);
+    for member in &members {
+        let brain = simulation.brain(*member).expect("an enemy");
+        assert_eq!(state(&simulation, *member), AiState::Idle, "never got home");
+        let from_home = horizontal_distance(
+            simulation.world().position(*member).expect("in the world"),
+            brain.home(),
+        );
+        assert!(from_home < 1.0, "{from_home:.1} m from home");
+    }
+}
+
+#[test]
+fn every_monster_a_level_places_notices_from_under_eleven_metres() {
+    use engine_game::enemy::{AGGRO_RADIUS, EMPOWERED_AGGRO_RADIUS};
+    // Forty per cent under the 18 m it was, for both kinds of monster.
+    assert!((AGGRO_RADIUS - 18.0 * 0.6).abs() < 1e-4);
+    assert!((EMPOWERED_AGGRO_RADIUS - 40.0 * 0.6).abs() < 1e-4);
+    for kind in EnemyKind::ALL {
+        let radius = kind.archetype().aggro_radius;
+        if kind.name().starts_with("EMPOWERED") {
+            // Called into a fight already running; they never have to notice anybody.
+            assert!(radius >= AGGRO_RADIUS, "{kind:?}");
+            continue;
+        }
+        assert_eq!(radius, AGGRO_RADIUS, "{kind:?}");
+    }
 }

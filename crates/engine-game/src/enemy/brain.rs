@@ -13,7 +13,8 @@
 //!    │                                        │  lands              │
 //!    │            arrived home                │  interrupted        │
 //!    └──────────── Returning ◀────────────────┴─────────────────────┘
-//!                              no target, or past the leash
+//!                  nobody left to fight (the player is dead), or
+//!                  an idle monster pushed past its leash
 //!
 //!   any state ──────────────▶ Dead   (health reached zero)
 //! ```
@@ -390,6 +391,12 @@ pub struct EnemyBrain {
     /// The archetype's, unless the level placed it with its own - a sentry an author wants
     /// to notice the whole courtyard is a placement setting, not a new monster.
     aggro_radius: f32,
+    /// Whether it has been told to drop the fight, to be carried out on its next think.
+    ///
+    /// A request rather than an immediate change, so the cast it loses is cancelled through
+    /// the same decision every other lost cast is — the telegraph comes down and the cast
+    /// bar is told why, by the executor, in one place.
+    evading: bool,
 }
 
 impl EnemyBrain {
@@ -414,6 +421,7 @@ impl EnemyBrain {
             frenzy: 0.0,
             frenzy_haste: 0.0,
             aggro_radius: kind.archetype().aggro_radius,
+            evading: false,
         }
     }
 
@@ -446,6 +454,12 @@ impl EnemyBrain {
     #[must_use]
     pub fn is_frenzied(&self) -> bool {
         self.frenzy > 0.0
+    }
+
+    /// Seconds of frenzy left. Zero when it is not frenzied.
+    #[must_use]
+    pub fn frenzy_remaining(&self) -> f32 {
+        self.frenzy.max(0.0)
     }
 
     /// Everything that makes it attack faster, multiplied together.
@@ -646,6 +660,35 @@ impl EnemyBrain {
         self.attack_speed_scale = 1.0;
         self.frenzy = 0.0;
         self.frenzy_haste = 0.0;
+        self.evading = false;
+    }
+
+    /// Drops the fight: forget everyone, and walk home.
+    ///
+    /// What a wipe does to a monster that was fighting. Everything the fight changed is put
+    /// back — threat, phase, cooldowns, crowd control, frenzy — except where it stands: it
+    /// walks home rather than being teleported there, so a party that wiped watches the
+    /// room reset rather than finding it reset. Its health is the simulation's to restore.
+    ///
+    /// Returns whether there was a fight to drop: false when it is idle at home or dead. One
+    /// already walking home counts — losing its target is usually how a monster finds out
+    /// its victim died, a moment before anybody tells it why — and is walking home still.
+    pub fn evade(&mut self) -> bool {
+        if matches!(self.state, AiState::Idle | AiState::Dead) {
+            return false;
+        }
+        self.threat.clear();
+        self.target = None;
+        self.cooldowns = [0.0; ENEMY_ABILITY_COUNT];
+        self.combat_time = 0.0;
+        self.phase = 0;
+        self.stun = 0.0;
+        self.silence = 0.0;
+        self.attack_speed_scale = 1.0;
+        self.frenzy = 0.0;
+        self.frenzy_haste = 0.0;
+        self.evading = true;
+        true
     }
 
     /// Which phase it is in. Zero is the first.
@@ -766,6 +809,22 @@ impl EnemyBrain {
             return AiDecision::IDLE;
         }
 
+        // Told to drop the fight: the cast goes, and it turns for home this tick. Before the
+        // stun, because `evade` has already lifted it.
+        if std::mem::take(&mut self.evading) {
+            let cast = self.stop_cast(CastStop::Lost);
+            self.state = AiState::Returning;
+            self.target = None;
+            if let Some(cast) = cast {
+                return AiDecision {
+                    intent: MoveIntent::NONE,
+                    request: AiRequest::CancelCast(cast.ability),
+                    phase: None,
+                };
+            }
+            return self.think_returning(percept);
+        }
+
         // Stunned: nothing else in this function runs. A cast in progress is lost, exactly
         // as it is to an interrupt, and the caller is told so it can take the telegraph
         // down — a stun that left a cast bar on screen would be a lie about what is
@@ -812,10 +871,12 @@ impl EnemyBrain {
             return AiDecision::IDLE.entering(Some(entered));
         }
 
-        // The leash, checked once for every state rather than inside each of them: an enemy
-        // that has been pulled too far - or displaced too far by anything else - goes home,
-        // and it goes home from Idle and Alert as readily as from a fight.
-        if self.state != AiState::Returning && self.beyond_leash(percept.position) {
+        // The leash, for a monster that is not fighting: one knocked or dragged far from home
+        // while idle walks back. A monster that has been pulled never gives up on a living
+        // victim, however far it is led — it chases until it or its victim dies, and only an
+        // empty world (the player dead, see `evade`) sends it home. Kiting a pack away from
+        // its spawn and having it reset mid-fight was the thing players asked to be rid of.
+        if self.state == AiState::Idle && self.beyond_leash(percept.position) {
             let cast = self.stop_cast(CastStop::Lost);
             self.state = AiState::Returning;
             self.threat.clear();
@@ -1462,18 +1523,41 @@ mod tests {
     }
 
     #[test]
-    fn the_leash_ends_a_fight_however_angry_it_is() {
+    fn a_fight_never_leashes_while_the_victim_lives() {
         let mut brain = brain();
         brain.add_threat(player(), 5_000.0);
+        // Engage close to home first.
+        run(&mut brain, &percept(Vec3::ZERO, 1.0, true), 60);
+        assert!(brain.state().is_combat());
+        // Then be led a hundred metres away: it keeps fighting.
         let far_from_home = Vec3::new(0.0, 0.0, -100.0);
-        let chasing = percept(far_from_home, 1.0, true);
-        let decision = brain.think(&chasing, STEP);
+        run(&mut brain, &percept(far_from_home, 1.0, true), 120);
+        assert_ne!(
+            brain.state(),
+            AiState::Returning,
+            "it gave up on a living victim"
+        );
+        assert!(
+            !brain.threat().is_empty(),
+            "it still remembers who it is fighting"
+        );
+    }
+
+    #[test]
+    fn an_idle_monster_pushed_past_its_leash_walks_home() {
+        let mut brain = brain();
+        let far_from_home = Vec3::new(0.0, 0.0, -100.0);
+        let alone = AiPercept {
+            target: None,
+            nearest: None,
+            ..percept(far_from_home, 1.0, true)
+        };
+        let decision = brain.think(&alone, STEP);
         assert_eq!(brain.state(), AiState::Returning);
         assert!(
             decision.intent.direction.z > 0.0,
-            "it starts walking home on the tick it gives up"
+            "it walks back towards home"
         );
-        assert!(brain.threat().is_empty(), "a leashed enemy forgives");
     }
 
     #[test]
@@ -1542,29 +1626,23 @@ mod tests {
 
     #[test]
     fn a_caster_keeps_its_distance_and_a_brute_closes() {
-        let mut caster = EnemyBrain::new(EnemyKind::Caster, Vec3::ZERO, 0.0);
-        let twenty = percept(Vec3::ZERO, 20.0, true);
-        run(&mut caster, &twenty, 60);
-        assert_eq!(
-            caster.state(),
-            AiState::Chase,
-            "20 m is too far to cast from"
-        );
+        // Both see as far as every monster does. Past it, neither notices; inside it, the
+        // caster is already in range and holds, and the brute has to close to arm's length.
+        let beyond = percept(Vec3::ZERO, super::super::AGGRO_RADIUS + 1.0, true);
+        let inside = percept(Vec3::ZERO, super::super::AGGRO_RADIUS - 1.0, true);
 
-        let sixteen = percept(Vec3::ZERO, 15.0, true);
-        let decision = caster.think(&sixteen, STEP);
+        let mut caster = EnemyBrain::new(EnemyKind::Caster, Vec3::ZERO, 0.0);
+        run(&mut caster, &beyond, 60);
+        assert_eq!(caster.state(), AiState::Idle, "outside the aggro radius");
+        run(&mut caster, &inside, 60);
+        assert!(caster.state().is_combat(), "{:?}", caster.state());
+        let decision = caster.think(&inside, STEP);
         assert_eq!(decision.intent.direction, Vec3::ZERO, "it stops at range");
 
-        // The brute never even notices at 15 m: its aggro radius is 14. Inside it, it
-        // closes, because its preferred range is arm's length.
         let mut brute = brain();
-        run(&mut brute, &sixteen, 60);
-        assert_eq!(
-            brute.state(),
-            AiState::Idle,
-            "15 m is outside a brute's notice"
-        );
-        run(&mut brute, &percept(Vec3::ZERO, 12.0, true), 60);
+        run(&mut brute, &beyond, 60);
+        assert_eq!(brute.state(), AiState::Idle, "outside the aggro radius");
+        run(&mut brute, &inside, 60);
         assert_eq!(brute.state(), AiState::Chase, "melee has to close");
     }
 

@@ -1,0 +1,23 @@
+<svg version="1.1" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+<defs>
+<linearGradient id="frenzy_panel" gradientUnits="userSpaceOnUse" x1="16" y1="496" x2="496" y2="16">
+<stop offset="0" stop-color="rgb(40,6,6)"></stop>
+<stop offset="1" stop-color="rgb(120,20,14)"></stop>
+</linearGradient>
+<radialGradient id="frenzy_glow" gradientUnits="userSpaceOnUse" cx="256" cy="256" r="250">
+<stop offset="0" stop-color="rgb(255,70,30)" stop-opacity="0.55"></stop>
+<stop offset="0.6" stop-color="rgb(255,70,30)" stop-opacity="0.16"></stop>
+<stop offset="1" stop-color="rgb(255,70,30)" stop-opacity="0"></stop>
+</radialGradient>
+<clipPath id="frenzy_tile"><path d="M 16 92 C 16 50 50 16 92 16 L 420 16 C 462 16 496 50 496 92 L 496 420 C 496 462 462 496 420 496 L 92 496 C 50 496 16 462 16 420 Z"></path></clipPath>
+</defs>
+<g clip-path="url(#frenzy_tile)">
+<path fill="url(#frenzy_panel)" d="M 0 0 L 512 0 L 512 512 L 0 512 Z"></path>
+<path fill="url(#frenzy_glow)" d="M 0 0 L 512 0 L 512 512 L 0 512 Z"></path>
+<path fill="rgb(255,210,70)" d="M 110 190 L 226 226 C 216 262 180 272 150 256 C 124 242 112 218 110 190 Z"></path>
+<path fill="rgb(255,210,70)" d="M 402 190 L 286 226 C 296 262 332 272 362 256 C 388 242 400 218 402 190 Z"></path>
+<path fill="rgb(30,6,6)" d="M 168 222 L 196 230 C 194 246 180 250 170 244 Z M 344 222 L 316 230 C 318 246 332 250 342 244 Z"></path>
+<path fill="rgb(24,4,4)" d="M 130 320 C 190 300 322 300 382 320 C 360 400 300 430 256 430 C 212 430 152 400 130 320 Z"></path>
+<path fill="rgb(240,236,220)" d="M 160 322 L 196 318 L 180 380 Z M 352 322 L 316 318 L 332 380 Z M 214 316 L 240 314 L 228 350 Z M 298 316 L 272 314 L 284 350 Z"></path>
+</g>
+</svg>

@@ -447,6 +447,7 @@ impl Simulation {
                     damage_type: DamageType::Physical,
                     killed: result.killed,
                     critical: false,
+                    periodic: false,
                     position,
                     tick,
                 }));

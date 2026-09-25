@@ -32,7 +32,7 @@ For a new hero, say the warrior:
    ```
 
 5. Start the game. The log should say
-   `warrior: imported warrior.glb - … 11 clips, … m tall` and list the optional clips it
+   `warrior: imported warrior.glb - … 12 clips, … m tall` and list the optional clips it
    found. (The prefix is the hero's model name: `fire_mage`, `warrior`, `druid`.)
 
 That is all. The hero picks the file up by name (section 6); nothing in the code changes.
@@ -94,6 +94,7 @@ that is not there is skipped. A new animation goes into that folder and gets a r
 | `run_back` | — | — | no | the run, reversed |
 | `strafe_left` | `Left Strafe.fbx` | all | no | mirrored `strafe_right`, else the forward cycle |
 | `strafe_right` | `Right Strafe.fbx` | all | no | mirrored `strafe_left`, else the forward cycle |
+| `death` | `Death.fbx` | all | no | the character stays standing |
 
 **Downloading from Mixamo:** FBX Binary, **Without Skin**, 30 fps. *In Place* is optional —
 the script handles either.
@@ -106,6 +107,12 @@ for 0.32 s). `land` starts at touchdown, because the frames before it hang the f
 **Mirroring:** delete the `strafe_right` line and the engine mirrors `strafe_left` when the
 model loads. Mixamo's own *Right Strafe* is not quite the mirror image — it starts half a
 stride later — which does not matter for a loop.
+
+**Diagonals need no clip.** A forward or backward diagonal plays the forward (or backward)
+cycle with the drawn body turned 45° into the diagonal and the spine, neck and head turned most
+of the way back (`CharacterVisual::stride_yaw`, see [auras.md](../auras.md#the-diagonal-run)).
+The twist finds bones by name — `Spine`, `Spine1`, `Spine2`, `Neck`, `Head` with any `rig:`
+prefix — so keep those names when retargeting.
 
 ---
 

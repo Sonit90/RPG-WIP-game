@@ -328,6 +328,9 @@ pub struct PlayerView {
     pub mastery_active: bool,
     /// Statuses on the player.
     pub statuses: StatusList,
+    /// Every buff and debuff on the player, class effects included: what the buff bar and
+    /// the debuffs under the player frame draw.
+    pub auras: crate::aura::AuraList,
     /// Whether the player is alive.
     ///
     /// Its own field rather than `health > 0`: what "dead" means is the simulation's to
@@ -395,6 +398,9 @@ pub struct TargetView {
     pub entity: EntityId,
     /// What it is.
     pub kind: EntityKind,
+    /// What it is called, as its table spells it: a monster's own name, or the entity kind for
+    /// anything without one. Upper case; the frames print it in title case.
+    pub name: &'static str,
     /// Current health.
     pub health: f32,
     /// Maximum health.
@@ -719,6 +725,8 @@ pub struct PartyMemberView {
     pub is_player: bool,
     /// What is on them.
     pub statuses: StatusList,
+    /// Every buff and debuff on them: the party frame and the raid cells show the debuffs.
+    pub auras: crate::aura::AuraList,
 }
 
 impl PartyMemberView {
@@ -938,6 +946,7 @@ impl UiSnapshot {
                 mastery: FireMastery::Haste,
                 mastery_active: false,
                 statuses: StatusList::default(),
+                auras: crate::aura::AuraList::default(),
                 alive: true,
                 damage_taken: 0.0,
                 druid: DruidView::default(),
@@ -990,6 +999,7 @@ impl UiSnapshot {
             mastery: mage.mastery,
             mastery_active: mage.mastery_buff.is_active(),
             statuses: statuses_of(simulation, player.entity),
+            auras: crate::aura::auras_of(simulation, player.entity),
             alive: simulation.player_alive(),
             damage_taken: simulation.meter().total_damage_taken() as f32,
             warrior: warrior_view(simulation),
@@ -1041,6 +1051,7 @@ impl UiSnapshot {
                 alive: world.is_alive(*member),
                 is_player: index == 0,
                 statuses: statuses_of(simulation, *member),
+                auras: crate::aura::auras_of(simulation, *member),
             });
         }
 
@@ -1108,9 +1119,21 @@ fn target_view(simulation: &Simulation, entity: EntityId) -> Option<TargetView> 
     let player = simulation.player();
     let health = world.health(entity)?;
     let burn = mage.ignite.get(entity);
+    let kind = world.kind(entity)?;
     Some(TargetView {
         entity,
-        kind: world.kind(entity)?,
+        kind,
+        name: simulation
+            .brain(entity)
+            .map(|brain| brain.kind().name())
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| {
+                if entity == player.entity {
+                    "YOU"
+                } else {
+                    kind.as_str()
+                }
+            }),
         health: health.current(),
         max_health: health.max(),
         // No distance means the target is gone; a large number reads as "out of range"

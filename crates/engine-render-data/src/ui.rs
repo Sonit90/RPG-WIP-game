@@ -380,11 +380,48 @@ pub enum UiIcon {
     TagArea,
     /// A disclosure chevron: pointing right folded, down open.
     ControlChevron,
+
+    // Buffs and debuffs. An effect that *is* an ability — Rejuvenation, Shield Block — wears
+    // that ability's icon; these are the ones that are not.
+    /// A burn on the bearer: Ignite, or any fire left running.
+    AuraBurning,
+    /// The Warrior's bleed: three drops.
+    AuraBleeding,
+    /// What Adrenaline banked, healing back: a heart in a returning arrow.
+    AuraRecovering,
+    /// War Stomp's stacks: a breastplate split down the middle.
+    AuraSundered,
+    /// Astral Sunfire's mark: a sun in a violet halo.
+    AuraAstralSunfire,
+    /// Wrath's stacks: a leaf behind a broken ward.
+    AuraNaturesExposure,
+    /// Astral Wrath: a violet star throwing green sparks.
+    AuraAstralWrath,
+    /// A poison: a green drop and its bubbles.
+    AuraPoisoned,
+    /// Respawn protection: an hourglass still running.
+    AuraRespawnProtection,
+    /// A monster's bleed: three claw rakes.
+    AuraRended,
+    /// A slow: an arrow through the leg and the curse under it.
+    AuraCrippled,
+    /// A monster's frenzy: eyes and fangs.
+    AuraFrenzy,
+    /// A stun: stars circling.
+    AuraStunned,
+    /// A silence: a speech mark struck through.
+    AuraSilenced,
+    /// The Inferno State: a crown of three flames.
+    AuraInferno,
+    /// Puncture Blood's absorb: a shield filled with blood.
+    AuraBloodWard,
+    /// Molten ground's vulnerability: fire underfoot, and more of it taken.
+    AuraScorched,
 }
 
 impl UiIcon {
     /// Every icon, in atlas order.
-    pub const ALL: [Self; 72] = [
+    pub const ALL: [Self; 89] = [
         Self::Firebolt,
         Self::Meteor,
         Self::FlameCone,
@@ -457,6 +494,23 @@ impl UiIcon {
         Self::TagInterrupt,
         Self::TagArea,
         Self::ControlChevron,
+        Self::AuraBurning,
+        Self::AuraBleeding,
+        Self::AuraRecovering,
+        Self::AuraSundered,
+        Self::AuraAstralSunfire,
+        Self::AuraNaturesExposure,
+        Self::AuraAstralWrath,
+        Self::AuraPoisoned,
+        Self::AuraRespawnProtection,
+        Self::AuraRended,
+        Self::AuraCrippled,
+        Self::AuraFrenzy,
+        Self::AuraStunned,
+        Self::AuraSilenced,
+        Self::AuraInferno,
+        Self::AuraBloodWard,
+        Self::AuraScorched,
     ];
 
     /// How many icons there are.
@@ -488,6 +542,75 @@ pub enum TextAlign {
     Center,
     /// The origin is the right edge.
     Right,
+}
+
+/// How a [`UiCommand::StyledLabel`] is set: how heavy its strokes are and the dark edge
+/// around them.
+///
+/// Both are the distance field's to give. Emboldening moves the edge outward by a number of
+/// pixels, and the outline is the same glyph moved further out, drawn first in a dark
+/// colour — so a heavier weight and a readable edge cost no new font file and no second
+/// atlas. What text in the world needs is exactly this: numbers and names float over
+/// torchlight, bright spell effects and black dungeon floors, and only a dark edge reads
+/// against all three.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TextStyle {
+    /// The edge's colour, alpha included. Fully transparent draws no edge.
+    pub outline: UiColor,
+    /// How far the edge reaches past the glyph, in pixels.
+    pub outline_width: f32,
+    /// How far the edge is moved down, in pixels: a little makes the edge read as a shadow
+    /// cast by the letter as well as a line around it.
+    pub shadow_offset: f32,
+    /// How far every stroke is thickened, in pixels. Zero is the face's own weight.
+    pub embolden: f32,
+}
+
+impl TextStyle {
+    /// No edge and the face's own weight: what a plain [`UiCommand::Label`] draws.
+    pub const PLAIN: Self = Self {
+        outline: [0.0, 0.0, 0.0, 0.0],
+        outline_width: 0.0,
+        shadow_offset: 0.0,
+        embolden: 0.0,
+    };
+
+    /// A dark edge `width` pixels wide, nudged `shadow` pixels down, over strokes thickened by
+    /// `embolden` pixels.
+    #[must_use]
+    pub fn outlined(outline: UiColor, width: f32, shadow: f32, embolden: f32) -> Self {
+        let finite = |value: f32| {
+            if value.is_finite() {
+                value.max(0.0)
+            } else {
+                0.0
+            }
+        };
+        Self {
+            outline,
+            outline_width: finite(width),
+            shadow_offset: if shadow.is_finite() { shadow } else { 0.0 },
+            embolden: finite(embolden),
+        }
+    }
+
+    /// Whether an edge is drawn at all.
+    #[must_use]
+    pub fn has_outline(&self) -> bool {
+        self.outline[3] > 0.0 && (self.outline_width > 0.0 || self.shadow_offset != 0.0)
+    }
+
+    /// This style with its edge faded by `alpha`, for text that is fading out.
+    #[must_use]
+    pub fn faded(mut self, alpha: f32) -> Self {
+        let alpha = if alpha.is_finite() {
+            alpha.clamp(0.0, 1.0)
+        } else {
+            1.0
+        };
+        self.outline[3] *= alpha;
+        self
+    }
 }
 
 /// One thing to draw.
@@ -571,6 +694,28 @@ pub enum UiCommand {
         font: crate::font::UiFont,
         /// How the run is placed relative to `origin`.
         align: TextAlign,
+    },
+    /// A run of text in one of the interface's typefaces, thickened and edged: the combat
+    /// text and the nameplates.
+    ///
+    /// The same glyphs as [`UiCommand::Label`], measured by the same metrics, so a layout that
+    /// centres one centres the other. The renderer draws the whole run's edge first and the
+    /// letters over it, so one letter's edge never cuts into its neighbour.
+    StyledLabel {
+        /// Where the run is anchored: `x` per `align`, `y` the top of the line box.
+        origin: (f32, f32),
+        /// Which bytes of the arena to draw.
+        range: TextRange,
+        /// What colour the letters are.
+        color: UiColor,
+        /// Pixels per em.
+        size: f32,
+        /// Which face.
+        font: crate::font::UiFont,
+        /// How the run is placed relative to `origin`.
+        align: TextAlign,
+        /// Weight and edge.
+        style: TextStyle,
     },
     /// A rounded rectangle: filled with a vertical gradient, softened into a shadow, or
     /// stroked as an outline — the surface every panel, card, button and ring is drawn with.
@@ -906,6 +1051,39 @@ impl UiDrawList {
         });
     }
 
+    /// Appends a run of text in `font` at `size` pixels per em, drawn in `style`: thickened
+    /// and edged so it reads over anything the world puts behind it.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "a styled run is this many independent facts, as a label is plus its style"
+    )]
+    pub fn styled_label(
+        &mut self,
+        origin: (f32, f32),
+        text: &str,
+        color: UiColor,
+        font: crate::font::UiFont,
+        size: f32,
+        align: TextAlign,
+        style: TextStyle,
+    ) {
+        if text.is_empty() || size.is_nan() || size <= 0.0 {
+            return;
+        }
+        let start = self.text.len() as u32;
+        self.text.push_str(text);
+        let end = self.text.len() as u32;
+        self.commands.push(UiCommand::StyledLabel {
+            origin,
+            range: TextRange { start, end },
+            color,
+            size,
+            font,
+            align,
+            style,
+        });
+    }
+
     /// Appends a filled rounded rectangle, `top` fading to `bottom`.
     pub fn panel(&mut self, rect: UiRect, radius: f32, top: UiColor, bottom: UiColor) {
         self.panel_shape(rect, radius, top, bottom, 0.0, 0.0);
@@ -1094,6 +1272,28 @@ impl UiDrawList {
                     size,
                     font,
                     align,
+                }
+            } else if let UiCommand::StyledLabel {
+                origin,
+                range,
+                color,
+                size,
+                font,
+                align,
+                style,
+            } = *command
+            {
+                UiCommand::StyledLabel {
+                    origin,
+                    range: TextRange {
+                        start: range.start + base,
+                        end: range.end + base,
+                    },
+                    color,
+                    size,
+                    font,
+                    align,
+                    style,
                 }
             } else {
                 *command

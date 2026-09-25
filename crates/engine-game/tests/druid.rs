@@ -1256,3 +1256,37 @@ fn a_heal_falls_back_to_the_caster_when_the_selection_is_an_enemy() {
         "the heal landed on nobody"
     );
 }
+
+#[test]
+fn a_moonfire_tick_is_announced_as_periodic_and_its_hit_is_not() {
+    // What lets the combat text draw a tick smaller than a hit: the event says which it is,
+    // because the ability id alone cannot — the burn ticks under Moonfire's own id.
+    let mut simulation = druid();
+    let victim = target(&simulation);
+    simulation
+        .cast(FireAbility::Moonfire)
+        .expect("the cast was refused");
+    let mut hits = 0;
+    let mut ticks = 0;
+    // The first pass reads what the cast itself emitted: an instant lands inside `cast`.
+    for step in 0..=(6 * 60) {
+        if step > 0 {
+            simulation.step_once();
+        }
+        for event in simulation.events() {
+            if let CombatEvent::Damage(damage) = event
+                && damage.target == victim
+            {
+                assert_eq!(damage.ability, AbilityId::from_fire(FireAbility::Moonfire));
+                if damage.periodic {
+                    ticks += 1;
+                    assert!(!damage.critical, "a tick never rolls a critical strike");
+                } else {
+                    hits += 1;
+                }
+            }
+        }
+    }
+    assert_eq!(hits, 1, "one direct hit");
+    assert!(ticks >= 2, "the burn ticked {ticks} times in six seconds");
+}

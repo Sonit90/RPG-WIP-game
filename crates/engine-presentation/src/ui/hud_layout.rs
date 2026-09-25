@@ -67,6 +67,12 @@ pub enum HudElementId {
     TargetOfTarget,
     /// The party.
     Party,
+    /// The raid frames: a grid of filled cells, one per member.
+    Raid,
+    /// The player's own cast bar. The one element whose width and height are set separately.
+    CastBar,
+    /// The player's buffs.
+    Buffs,
 }
 
 impl HudElementId {
@@ -78,9 +84,21 @@ impl HudElementId {
         Self::Party,
     ];
 
+    /// The elements that are neither a bar nor one of the four unit frames.
+    pub const EXTRAS: [Self; 3] = [Self::Raid, Self::CastBar, Self::Buffs];
+
     /// Every element, bars first.
     pub fn all() -> impl Iterator<Item = Self> {
-        (0..ACTION_BARS).map(Self::ActionBar).chain(Self::FRAMES)
+        (0..ACTION_BARS)
+            .map(Self::ActionBar)
+            .chain(Self::FRAMES)
+            .chain(Self::EXTRAS)
+    }
+
+    /// Whether this element's width and height can be set on their own.
+    #[must_use]
+    pub fn is_resizable(self) -> bool {
+        self == Self::CastBar
     }
 
     /// Whether this element is an action bar, and which one.
@@ -107,6 +125,9 @@ impl HudElementId {
             Self::Target => out.push_str("TARGET"),
             Self::TargetOfTarget => out.push_str("TARGET OF TARGET"),
             Self::Party => out.push_str("PARTY"),
+            Self::Raid => out.push_str("RAID"),
+            Self::CastBar => out.push_str("CAST BAR"),
+            Self::Buffs => out.push_str("BUFFS"),
         }
     }
 }
@@ -166,6 +187,9 @@ impl HudLayout {
             HudElementId::Target => self.config.frames.target,
             HudElementId::TargetOfTarget => self.config.frames.target_of_target,
             HudElementId::Party => self.config.frames.party,
+            HudElementId::Raid => self.config.frames.raid,
+            HudElementId::CastBar => self.config.frames.cast_bar.placement,
+            HudElementId::Buffs => self.config.frames.buffs,
         }
     }
 
@@ -180,8 +204,65 @@ impl HudLayout {
             HudElementId::Target => &mut self.config.frames.target,
             HudElementId::TargetOfTarget => &mut self.config.frames.target_of_target,
             HudElementId::Party => &mut self.config.frames.party,
+            HudElementId::Raid => &mut self.config.frames.raid,
+            HudElementId::Buffs => &mut self.config.frames.buffs,
+            HudElementId::CastBar => &mut self.config.frames.cast_bar.placement,
         };
         *slot = placement;
+    }
+
+    /// The cast bar's width and height, in logical pixels at the design size.
+    #[must_use]
+    pub fn cast_bar_size(&self) -> (f32, f32) {
+        let bar = self.config.frames.cast_bar;
+        (bar.width, bar.height)
+    }
+
+    /// Sets the cast bar's width and height, clamped and snapped to the allowed steps.
+    ///
+    /// Keeps the bar's centre where it was: a bar that grew from its top-left corner would
+    /// walk away from the spot the player put it in every time they made it wider.
+    pub fn resize_cast_bar(
+        &mut self,
+        width: f32,
+        height: f32,
+        ui_scale: UiScale,
+        viewport: (u32, u32),
+    ) {
+        let before = self.rect_of(HudElementId::CastBar, ui_scale, viewport);
+        let centre = (
+            before.x + before.width * 0.5,
+            before.y + before.height * 0.5,
+        );
+        self.config.frames.cast_bar = self.config.frames.cast_bar.resized(width, height);
+        let size = self.cast_bar_size();
+        let factor = ui_scale.factor() * self.scale_of(HudElementId::CastBar);
+        let (w, h) = (size.0 * factor, size.1 * factor);
+        self.move_to(
+            HudElementId::CastBar,
+            (centre.0 - w * 0.5, centre.1 - h * 0.5),
+            size,
+            ui_scale,
+            viewport,
+        );
+    }
+
+    /// Makes the cast bar wider or narrower, taller or shorter, by whole steps.
+    pub fn nudge_cast_bar(
+        &mut self,
+        width_steps: i32,
+        height_steps: i32,
+        ui_scale: UiScale,
+        viewport: (u32, u32),
+    ) {
+        use engine_settings::hud::{CAST_BAR_HEIGHT_STEP, CAST_BAR_WIDTH_STEP};
+        let (width, height) = self.cast_bar_size();
+        self.resize_cast_bar(
+            width + CAST_BAR_WIDTH_STEP * width_steps as f32,
+            height + CAST_BAR_HEIGHT_STEP * height_steps as f32,
+            ui_scale,
+            viewport,
+        );
     }
 
     /// Whether `id` is drawn and interactive at all.
@@ -263,6 +344,9 @@ impl HudLayout {
     pub fn element_size(&self, id: HudElementId) -> (f32, f32) {
         match id {
             HudElementId::ActionBar(index) => super::action_bar::bar_size(self.orientation(index)),
+            HudElementId::CastBar => self.cast_bar_size(),
+            HudElementId::Raid => super::raid_frame::raid_size(),
+            HudElementId::Buffs => super::aura_row::buff_bar_size(),
             frame => super::unit_frame::frame_size(frame).unwrap_or((0.0, 0.0)),
         }
     }
@@ -422,7 +506,7 @@ mod tests {
             id.write_label(&mut label);
             assert!(!label.is_empty(), "{id:?} has no name");
         }
-        assert_eq!(HudElementId::all().count(), ACTION_BARS + 4);
+        assert_eq!(HudElementId::all().count(), ACTION_BARS + 7);
     }
 
     #[test]
@@ -740,5 +824,49 @@ mod tests {
             "only {visible_y} of {} is on a {viewport:?} screen: {rect:?}",
             rect.height
         );
+    }
+
+    #[test]
+    fn the_cast_bar_resizes_about_its_centre_within_its_bounds() {
+        use engine_settings::hud::{CAST_BAR_HEIGHT_MAX, CAST_BAR_WIDTH_MIN};
+        let mut layout = layout();
+        let scale = UiScale::default();
+        let before = layout.rect_of(HudElementId::CastBar, scale, FHD);
+        layout.nudge_cast_bar(3, 2, scale, FHD);
+        let after = layout.rect_of(HudElementId::CastBar, scale, FHD);
+        assert!(after.width > before.width && after.height > before.height);
+        let centre = |rect: UiRect| (rect.x + rect.width * 0.5, rect.y + rect.height * 0.5);
+        let (a, b) = (centre(before), centre(after));
+        assert!(
+            (a.0 - b.0).abs() <= 1.0 && (a.1 - b.1).abs() <= 1.0,
+            "{a:?} -> {b:?}"
+        );
+
+        layout.resize_cast_bar(1.0, 1_000.0, scale, FHD);
+        assert_eq!(
+            layout.cast_bar_size(),
+            (CAST_BAR_WIDTH_MIN, CAST_BAR_HEIGHT_MAX)
+        );
+        assert_eq!(
+            layout.element_size(HudElementId::CastBar),
+            layout.cast_bar_size()
+        );
+    }
+
+    #[test]
+    fn the_raid_frames_and_the_cast_bar_are_elements_like_any_other() {
+        let mut label = String::new();
+        HudElementId::Raid.write_label(&mut label);
+        assert_eq!(label, "RAID");
+        HudElementId::CastBar.write_label(&mut label);
+        assert_eq!(label, "CAST BAR");
+        let ids: Vec<_> = HudElementId::all().collect();
+        assert!(ids.contains(&HudElementId::Raid) && ids.contains(&HudElementId::CastBar));
+        assert!(HudElementId::CastBar.is_resizable());
+        assert!(!HudElementId::Raid.is_resizable());
+        let mut layout = layout();
+        assert!(layout.is_enabled(HudElementId::Raid) && layout.is_enabled(HudElementId::CastBar));
+        layout.toggle(HudElementId::CastBar);
+        assert!(!layout.is_enabled(HudElementId::CastBar));
     }
 }

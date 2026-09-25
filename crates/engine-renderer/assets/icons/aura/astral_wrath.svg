@@ -1,0 +1,24 @@
+<svg version="1.1" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+<defs>
+<linearGradient id="astral_wrath_panel" gradientUnits="userSpaceOnUse" x1="16" y1="496" x2="496" y2="16">
+<stop offset="0" stop-color="rgb(30,12,52)"></stop>
+<stop offset="1" stop-color="rgb(80,40,130)"></stop>
+</linearGradient>
+<radialGradient id="astral_wrath_glow" gradientUnits="userSpaceOnUse" cx="256" cy="256" r="250">
+<stop offset="0" stop-color="rgb(200,150,255)" stop-opacity="0.55"></stop>
+<stop offset="0.6" stop-color="rgb(200,150,255)" stop-opacity="0.16"></stop>
+<stop offset="1" stop-color="rgb(200,150,255)" stop-opacity="0"></stop>
+</radialGradient>
+<clipPath id="astral_wrath_tile"><path d="M 16 92 C 16 50 50 16 92 16 L 420 16 C 462 16 496 50 496 92 L 496 420 C 496 462 462 496 420 496 L 92 496 C 50 496 16 462 16 420 Z"></path></clipPath>
+</defs>
+<g clip-path="url(#astral_wrath_tile)">
+<path fill="url(#astral_wrath_panel)" d="M 0 0 L 512 0 L 512 512 L 0 512 Z"></path>
+<path fill="url(#astral_wrath_glow)" d="M 0 0 L 512 0 L 512 512 L 0 512 Z"></path>
+<path fill="rgb(206,160,255)"  d="M 256.0 46.0 L 301.3 210.7 L 466.0 256.0 L 301.3 301.3 L 256.0 466.0 L 210.7 301.3 L 46.0 256.0 L 210.7 210.7 Z"></path>
+<path fill="rgb(250,236,255)"  d="M 347.9 164.0 L 300.0 256.0 L 348.0 347.9 L 256.0 300.0 L 164.1 348.0 L 212.0 256.0 L 164.0 164.1 L 256.0 212.0 Z"></path>
+<circle cx="118" cy="128" r="20" fill="rgb(130,230,120)"></circle>
+<circle cx="396" cy="120" r="16" fill="rgb(130,230,120)"></circle>
+<circle cx="402" cy="392" r="20" fill="rgb(130,230,120)"></circle>
+<circle cx="112" cy="386" r="14" fill="rgb(130,230,120)"></circle>
+</g>
+</svg>

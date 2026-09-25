@@ -181,6 +181,8 @@ impl MonsterVisuals {
             facing_yaw: frame.facing_yaw,
             speed: frame.speed,
             heading: frame.heading,
+            // A monster turns its body to where it walks: it has no diagonal to lean into.
+            move_angle: 0.0,
             grounded: frame.grounded,
             rising: frame.rising,
             height: frame.height,

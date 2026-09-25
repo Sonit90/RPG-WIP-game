@@ -296,7 +296,7 @@ fn validate_library(options: &Options, out: &mut String, outcome: &mut Outcome) 
 
 /// The category each environment asset is authored as.
 ///
-/// A table rather than an inference: the library is eighteen named things, and what each of
+/// A table rather than an inference: the library is twenty-nine named things, and what each of
 /// them is for is a decision somebody made when they were authored.
 #[must_use]
 pub fn library_category(name: &str) -> AssetCategory {
@@ -306,6 +306,13 @@ pub fn library_category(name: &str) -> AssetCategory {
         "pine" => AssetCategory::Tree,
         "wall_segment" | "pillar" | "arch" | "dome" => AssetCategory::Architecture,
         "brazier" | "supply_crate" => AssetCategory::MediumProp,
+        "crypt_wall" | "wall_pier" | "crypt_gate" | "iron_fence" | "crypt_floor" => {
+            AssetCategory::Architecture
+        }
+        "gravestone" | "grave_cross" | "bone_pile" => AssetCategory::SmallProp,
+        "sarcophagus" => AssetCategory::MediumProp,
+        "dead_tree" => AssetCategory::Tree,
+        "mausoleum" => AssetCategory::HeroArchitecture,
         // Six metres of pole and cloth: a large prop rather than a medium one.
         "banner" => AssetCategory::LargeProp,
         // Ground, arena floor, ridge line and sky shell: scenery the size of the level, which

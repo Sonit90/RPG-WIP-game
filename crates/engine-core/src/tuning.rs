@@ -251,7 +251,14 @@ pub mod nameplates {
     pub const HEIGHT_UNIT_METRES: f32 = 0.225;
 
     /// How visible a non-target plate is during a fight, as a percentage.
-    pub const OPACITY_DEFAULT: f32 = 40.0;
+    ///
+    /// 65 since the redesign: a non-target plate is now a name over a real health bar, and at
+    /// 40 per cent its bar sank into the floor — dimmed enough to say "not your target", no
+    /// longer bright enough to read how hurt the rest of the pack is.
+    pub const OPACITY_DEFAULT: f32 = 65.0;
+
+    /// The non-target opacity every settings file carried before the redesign.
+    pub const LEGACY_OPACITY_DEFAULT: f32 = 40.0;
 
     /// Most transparent a non-target plate goes.
     pub const OPACITY_MIN: f32 = 0.0;
@@ -263,10 +270,23 @@ pub mod nameplates {
     pub const OPACITY_STEP: f32 = 5.0;
 
     /// Minimum vertical gap between two plates, as a multiple of a plate's height.
-    pub const VERTICAL_MARGIN_DEFAULT: f32 = 0.93;
+    ///
+    /// 0.16 since the nameplate became a name over a real health bar: the plate is nearly
+    /// twice as tall as the one-line text box it replaced, and the old 0.93 turned a pack of
+    /// five into a column a third of the screen tall. A settings file still carrying the old
+    /// default is moved onto this one when it loads; see `engine_settings::nameplate`.
+    pub const VERTICAL_MARGIN_DEFAULT: f32 = 0.16;
+
+    /// The vertical margin every settings file carried before the redesign.
+    pub const LEGACY_VERTICAL_MARGIN_DEFAULT: f32 = 0.93;
 
     /// Minimum horizontal gap between two plates, as a multiple of a plate's width.
-    pub const HORIZONTAL_MARGIN_DEFAULT: f32 = 0.63;
+    ///
+    /// 0.08 for the same reason the vertical margin is 0.16: the plate is wider than it was.
+    pub const HORIZONTAL_MARGIN_DEFAULT: f32 = 0.08;
+
+    /// The horizontal margin every settings file carried before the redesign.
+    pub const LEGACY_HORIZONTAL_MARGIN_DEFAULT: f32 = 0.63;
 
     /// Least separation the layout enforces: plates may touch.
     pub const MARGIN_MIN: f32 = 0.0;
@@ -292,6 +312,12 @@ pub mod nameplates {
     /// How far an enemy may be from the player and still have a plate, in metres.
     pub const MAX_DISTANCE_METRES: f32 = 40.0;
 
+    /// The nearest the display distance can be set, in metres.
+    pub const MAX_DISTANCE_MIN: f32 = 10.0;
+
+    /// The furthest the display distance can be set, in metres.
+    pub const MAX_DISTANCE_MAX: f32 = 80.0;
+
     /// How many plates are drawn at once. The nearest survive.
     pub const MAX_PLATES: usize = 20;
 
@@ -299,10 +325,30 @@ pub mod nameplates {
     pub const MAX_DISPLACEMENT: f32 = 10.0;
 
     /// How many separation passes the layout runs per frame.
-    pub const LAYOUT_ITERATIONS: usize = 8;
+    ///
+    /// Sixteen since the margins became tight enough for the redesigned plate: a small margin
+    /// pushes each pair apart by exactly its overlap, so a chain of eight plates on one point
+    /// takes more passes to settle than the old, overshooting margins did. A frame with
+    /// nothing overlapping still exits on the first pass.
+    pub const LAYOUT_ITERATIONS: usize = 16;
 
     /// How fast a plate slides towards its resolved position, in fraction per second.
     pub const SMOOTHING_PER_SECOND: f32 = 40.0;
+}
+
+/// Floating combat text: how big it is drawn relative to its design size.
+pub mod combat_text {
+    /// Text size on a fresh install, as a percentage of the design size.
+    pub const SIZE_PERCENT_DEFAULT: f32 = 100.0;
+
+    /// Smallest the text can be set, as a percentage.
+    pub const SIZE_PERCENT_MIN: f32 = 50.0;
+
+    /// Largest the text can be set, as a percentage.
+    pub const SIZE_PERCENT_MAX: f32 = 200.0;
+
+    /// Granularity of the size, in percent.
+    pub const SIZE_PERCENT_STEP: f32 = 5.0;
 }
 
 #[cfg(test)]

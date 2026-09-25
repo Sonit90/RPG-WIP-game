@@ -166,6 +166,8 @@ pub enum HeroItem {
 pub enum NameplateItem {
     /// One of the six settings.
     Setting(NameplateSetting),
+    /// Whether plates show the buffs and debuffs on their enemies.
+    Auras,
     /// Returns to the settings screen.
     Back,
 }
@@ -260,6 +262,9 @@ pub enum MenuAction {
     NameplateChanged(NameplateSetting, f32),
     /// A nameplate setting settled on this value. Apply it and persist it.
     NameplateCommitted(NameplateSetting, f32),
+    /// The player turned the buff and debuff icons under nameplates on or off. Apply it and
+    /// persist it; a tick has no drag to settle.
+    NameplateAurasCommitted(bool),
     /// The graphics screen opened.
     OpenedGraphics,
     /// The graphics screen closed back to the settings screen.
@@ -583,6 +588,10 @@ impl MenuSystem {
                 .with_decimals(setting.decimals()),
             );
         }
+        nameplate_screen.push(
+            NameplateItem::Auras,
+            Checkbox::new("SHOW BUFFS AND DEBUFFS").checked(settings.nameplates.auras),
+        );
         nameplate_screen.push(NameplateItem::Back, Button::new("BACK"));
 
         let mut system = Self {
@@ -668,6 +677,17 @@ impl MenuSystem {
             {
                 tick.set_checked(candidate == hero);
             }
+        }
+    }
+
+    /// Says where QUIT goes: out of the game, or back to the editor the game was played from.
+    ///
+    /// Only the label. The menu still emits [`MenuAction::QuitRequested`] either way; which
+    /// of the two a quit means is the application's to decide, since only it knows whether
+    /// there is an editor to go back to.
+    pub fn set_quit_to_editor(&mut self, to_editor: bool) {
+        if let Some(Widget::Button(button)) = self.pause.widget_mut(PauseItem::Quit) {
+            button.label = if to_editor { "QUIT TO EDITOR" } else { "QUIT" };
         }
     }
 
@@ -774,6 +794,9 @@ impl MenuSystem {
             {
                 slider.set_value(settings.nameplates.get(setting));
             }
+        }
+        if let Some(Widget::Checkbox(tick)) = self.nameplates.widget_mut(NameplateItem::Auras) {
+            tick.set_checked(settings.nameplates.auras);
         }
         self.set_shadow_quality(settings.graphics.shadows);
         self.set_minimap_orientation(settings.map.minimap_orientation);
@@ -944,6 +967,8 @@ impl MenuSystem {
             + self.metrics.slider_value_height;
         let content = self.metrics.title_height
             + slider * NAMEPLATE_SLIDER_COUNT
+            + self.metrics.button_height
+            + self.metrics.button_gap
             + self.metrics.group_gap
             + self.metrics.button_height;
         self.centred_panel(self.viewport, content + self.metrics.padding * 2.0)
@@ -1161,6 +1186,11 @@ impl MenuSystem {
                 .set_rect(NameplateItem::Setting(setting), UiRect { y, ..track });
             y += self.metrics.track_height + self.metrics.slider_value_height;
         }
+        self.nameplates.set_rect(
+            NameplateItem::Auras,
+            UiRect::new(x, y, width, self.metrics.button_height),
+        );
+        y += self.metrics.button_height + self.metrics.button_gap;
 
         self.nameplates.set_rect(
             NameplateItem::Back,
@@ -1395,12 +1425,14 @@ impl MenuSystem {
             return;
         }
         let mut back = false;
+        let mut auras = None;
         let mut changes: [Option<(NameplateSetting, f32, bool)>; NameplateSetting::ALL.len() * 2] =
             [None; NameplateSetting::ALL.len() * 2];
         let mut count = 0;
         for (item, event) in self.nameplates.update(input) {
             match (item, event) {
                 (NameplateItem::Back, WidgetEvent::Activated) => back = true,
+                (NameplateItem::Auras, WidgetEvent::Toggled(checked)) => auras = Some(*checked),
                 (NameplateItem::Setting(setting), WidgetEvent::ValueChanged(value))
                     if count < changes.len() =>
                 {
@@ -1423,6 +1455,10 @@ impl MenuSystem {
             } else {
                 MenuAction::NameplateChanged(setting, value)
             });
+        }
+        if let Some(shown) = auras {
+            self.actions
+                .push(MenuAction::NameplateAurasCommitted(shown));
         }
         if back {
             self.back_to_settings();
@@ -1751,6 +1787,25 @@ mod tests {
         assert_eq!(actions, [MenuAction::QuitRequested]);
         // The menu stays up: ending the session is the application's decision to carry out.
         assert_eq!(menu.screen(), MenuScreen::Pause);
+    }
+
+    #[test]
+    fn quit_says_where_it_goes_but_asks_the_same_thing_either_way() {
+        let mut menu = menu();
+        let label = |menu: &MenuSystem| match menu.pause_screen().widget(PauseItem::Quit) {
+            Some(Widget::Button(button)) => button.label,
+            _ => panic!("QUIT is a button"),
+        };
+        assert_eq!(label(&menu), "QUIT");
+        menu.set_quit_to_editor(true);
+        assert_eq!(label(&menu), "QUIT TO EDITOR");
+        menu.open_pause();
+        assert_eq!(
+            click_pause(&mut menu, PauseItem::Quit),
+            [MenuAction::QuitRequested]
+        );
+        menu.set_quit_to_editor(false);
+        assert_eq!(label(&menu), "QUIT");
     }
 
     #[test]
@@ -2183,6 +2238,37 @@ mod tests {
             .widget(NameplateItem::Setting(setting))
             .expect("every setting has a slider")
             .rect()
+    }
+
+    #[test]
+    fn the_nameplate_page_turns_the_buff_and_debuff_icons_off_and_on() {
+        let mut menu = menu();
+        open_nameplates(&mut menu);
+        let rect = menu
+            .nameplate_screen()
+            .widget(NameplateItem::Auras)
+            .expect("the page has the tick")
+            .rect();
+        let panel = menu.nameplate_panel();
+        assert!(
+            rect.y >= panel.y && rect.bottom() <= panel.bottom(),
+            "{rect:?} {panel:?}"
+        );
+        let (x, y) = (rect.x + rect.width * 0.5, rect.y + rect.height * 0.5);
+
+        // On by default, so the first click turns it off, and the second back on.
+        menu.update(&press(x, y));
+        let off = menu.update(&release(x, y)).to_vec();
+        assert!(
+            matches!(off.as_slice(), [MenuAction::NameplateAurasCommitted(false)]),
+            "{off:?}"
+        );
+        menu.update(&press(x, y));
+        let on = menu.update(&release(x, y)).to_vec();
+        assert!(
+            matches!(on.as_slice(), [MenuAction::NameplateAurasCommitted(true)]),
+            "{on:?}"
+        );
     }
 
     #[test]

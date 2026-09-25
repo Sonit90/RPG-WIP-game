@@ -294,7 +294,8 @@ impl EnvironmentObject {
 #[must_use]
 pub fn default_collision(asset: EnvironmentAsset) -> EnvironmentCollision {
     use crate::asset::{
-        ARCH, BRAZIER, PILLAR, PINE, ROCK_MEDIUM, ROCK_SPIRE, SUPPLY_CRATE, WALL_SEGMENT,
+        ARCH, BRAZIER, CRYPT_WALL, DEAD_TREE, GRAVE_CROSS, GRAVESTONE, IRON_FENCE, MAUSOLEUM,
+        PILLAR, PINE, ROCK_MEDIUM, ROCK_SPIRE, SARCOPHAGUS, SUPPLY_CRATE, WALL_PIER, WALL_SEGMENT,
     };
     match asset {
         // Full height, not the arena's kerb: a wall an editor places is a wall meant to stop
@@ -311,6 +312,17 @@ pub fn default_collision(asset: EnvironmentAsset) -> EnvironmentCollision {
         // The trunk, not the canopy. A character brushing through the lower branches of a
         // conifer is correct; being stopped four metres from the trunk is not.
         a if a == PINE => EnvironmentCollision::standing(0.28, 5.0, 0.28),
+        a if a == CRYPT_WALL => EnvironmentCollision::standing(4.0, 5.0, 0.55),
+        a if a == WALL_PIER => EnvironmentCollision::standing(0.6, 6.0, 0.6),
+        a if a == GRAVESTONE => EnvironmentCollision::standing(0.34, 1.1, 0.12),
+        a if a == GRAVE_CROSS => EnvironmentCollision::standing(0.3, 1.8, 0.2),
+        a if a == SARCOPHAGUS => EnvironmentCollision::standing(0.55, 1.05, 1.2),
+        // The trunk, as with the pine: the branches are over head height.
+        a if a == DEAD_TREE => EnvironmentCollision::standing(0.3, 4.0, 0.3),
+        a if a == IRON_FENCE => EnvironmentCollision::standing(2.0, 1.7, 0.08),
+        a if a == MAUSOLEUM => EnvironmentCollision::standing(3.2, 6.5, 3.8),
+        // The crypt gate is a doorway's head and stands on piers; the crypt floor is ground
+        // and the bone pile is ankle-deep. None of them blocks.
         // Ground, ground cover, banners, distant scenery and the sky: nothing. A collision
         // shape a player can trip on without being able to see why is worse than none.
         _ => EnvironmentCollision::None,

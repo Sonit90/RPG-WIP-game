@@ -264,20 +264,35 @@ impl MapStyle {
 /// this is how they are shown in the proportional one.
 #[must_use]
 pub fn title_case(text: &str) -> String {
-    const SMALL: [&str; 9] = ["of", "the", "a", "an", "and", "in", "on", "to", "for"];
     let mut out = String::with_capacity(text.len());
+    write_title_case(&mut out, text);
+    out
+}
+
+/// [`title_case`] into a buffer the caller reuses, replacing what it held.
+///
+/// The per-frame form: a nameplate prints its monster's name every frame, and a fresh
+/// `String` per plate per frame is an allocation the interface does not need to make.
+pub fn write_title_case(out: &mut String, text: &str) {
+    out.clear();
+    push_title_case(out, text);
+}
+
+/// [`title_case`] appended to what `out` already holds.
+pub fn push_title_case(out: &mut String, text: &str) {
+    const SMALL: [&str; 9] = ["of", "the", "a", "an", "and", "in", "on", "to", "for"];
     let mut first_word = true;
     for (index, word) in text.split(' ').enumerate() {
         if index > 0 {
             out.push(' ');
         }
-        let lower = word.to_lowercase();
-        if !first_word && SMALL.contains(&lower.as_str()) {
-            out.push_str(&lower);
+        let lower = word.chars().flat_map(char::to_lowercase);
+        if !first_word && SMALL.iter().any(|small| small.eq_ignore_ascii_case(word)) {
+            out.extend(lower);
         } else {
             // Capitalize after the start and after a hyphen or an apostrophe-free boundary.
             let mut capitalize = true;
-            for character in lower.chars() {
+            for character in lower {
                 if capitalize && character.is_alphabetic() {
                     out.extend(character.to_uppercase());
                     capitalize = false;
@@ -294,7 +309,6 @@ pub fn title_case(text: &str) -> String {
             first_word = word == "-" || word.ends_with(':');
         }
     }
-    out
 }
 
 /// A colour for an ability's category accent.

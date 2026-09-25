@@ -59,8 +59,8 @@ pub enum AnimationSlot {
     StrafeLeft,
     /// Moving sideways to the character's right. Optional, as [`Self::StrafeLeft`].
     StrafeRight,
-    /// Dying, ending on the ground. Optional: a monster has one, a hero does not — and a
-    /// character without it simply stops where it stood, which is what it did before.
+    /// Dying, ending on the ground, and held there. Optional: every hero and monster has one,
+    /// and a model delivered without it simply stops where it stood.
     Death,
 }
 

@@ -501,7 +501,7 @@ pub fn druid() -> Result<ModelAsset, crate::AssetError> {
 
     Ok(ModelAsset::rigid(MODEL_NAME, lod0, materials, textures)
         .with_lod(lod1, 25.0)
-        .with_animation(humanoid::skeleton()?, humanoid::clips(&style())))
+        .with_animation(humanoid::skeleton()?, humanoid::hero_clips(&style())))
 }
 
 /// The Druid's character definition: which model, how tall, and which clip plays when.
@@ -517,6 +517,7 @@ pub fn druid_character() -> CharacterDef {
         .with_clip(AnimationSlot::Land, "land")
         .with_clip(AnimationSlot::Cast, "cast")
         .with_clip(AnimationSlot::CastHeavy, "cast_heavy")
+        .with_clip(AnimationSlot::Death, "death")
         .with_directional_clips()
 }
 
@@ -533,6 +534,19 @@ mod tests {
     }
 
     #[test]
+    fn the_stand_in_can_die() {
+        let model = model();
+        let Ok(bindings) = druid_character().resolve(&model) else {
+            panic!("the Druid's own definition must resolve against its own model");
+        };
+        let Some(death) = bindings.get(AnimationSlot::Death) else {
+            panic!("the Druid stand-in has no death clip");
+        };
+        assert!(!model.clips[death].looping, "a death plays once and holds");
+        assert!(model.clips[death].duration > 0.0);
+    }
+
+    #[test]
     fn the_druid_passes_the_same_validation_an_imported_model_would() {
         let Ok(report) = validate_model(&model(), &ValidationLimits::default()) else {
             panic!("the Druid must validate");
@@ -540,7 +554,8 @@ mod tests {
         assert_eq!(report.lods, 2);
         assert_eq!(report.materials, 5);
         assert_eq!(report.bones as usize, humanoid::BONE_COUNT);
-        assert_eq!(report.clips, 8);
+        // The shared eight and a death.
+        assert_eq!(report.clips, 9);
         assert!(
             (100..700).contains(&report.triangles),
             "a stylized prototype character should stay cheap: {} triangles",

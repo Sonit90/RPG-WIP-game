@@ -499,12 +499,83 @@ const ICONS: &[IconEntry] = &[
         file: "map/control_chevron.svg",
         constant: "CONTROL_CHEVRON",
     },
+    // The buffs and debuffs that have no ability icon of their own to borrow: shown under
+    // nameplates, beside the player's frame and on the party's.
+    IconEntry {
+        file: "aura/burning.svg",
+        constant: "AURA_BURNING",
+    },
+    IconEntry {
+        file: "aura/bleeding.svg",
+        constant: "AURA_BLEEDING",
+    },
+    IconEntry {
+        file: "aura/recovering.svg",
+        constant: "AURA_RECOVERING",
+    },
+    IconEntry {
+        file: "aura/sundered.svg",
+        constant: "AURA_SUNDERED",
+    },
+    IconEntry {
+        file: "aura/astral_sunfire.svg",
+        constant: "AURA_ASTRAL_SUNFIRE",
+    },
+    IconEntry {
+        file: "aura/natures_exposure.svg",
+        constant: "AURA_NATURES_EXPOSURE",
+    },
+    IconEntry {
+        file: "aura/astral_wrath.svg",
+        constant: "AURA_ASTRAL_WRATH",
+    },
+    IconEntry {
+        file: "aura/poisoned.svg",
+        constant: "AURA_POISONED",
+    },
+    IconEntry {
+        file: "aura/respawn_protection.svg",
+        constant: "AURA_RESPAWN_PROTECTION",
+    },
+    IconEntry {
+        file: "aura/rended.svg",
+        constant: "AURA_RENDED",
+    },
+    IconEntry {
+        file: "aura/crippled.svg",
+        constant: "AURA_CRIPPLED",
+    },
+    IconEntry {
+        file: "aura/frenzy.svg",
+        constant: "AURA_FRENZY",
+    },
+    IconEntry {
+        file: "aura/stunned.svg",
+        constant: "AURA_STUNNED",
+    },
+    IconEntry {
+        file: "aura/silenced.svg",
+        constant: "AURA_SILENCED",
+    },
+    IconEntry {
+        file: "aura/inferno.svg",
+        constant: "AURA_INFERNO",
+    },
+    IconEntry {
+        file: "aura/blood_ward.svg",
+        constant: "AURA_BLOOD_WARD",
+    },
+    IconEntry {
+        file: "aura/scorched.svg",
+        constant: "AURA_SCORCHED",
+    },
 ];
 
 /// One icon: a file under `assets/icons/` and the constant its texels are bound to.
 ///
 /// The path carries the folder, and the folders are who the icon belongs to: `firemage/`,
-/// `warrior/`, `druid/`, `equipment/` and `map/` (the dungeon map's markers and sidebar art). A class's art is then one directory to look in
+/// `warrior/`, `druid/`, `equipment/`, `map/` (the dungeon map's markers and sidebar art) and
+/// `aura/` (buffs and debuffs that are not simply an ability's own effect). A class's art is then one directory to look in
 /// rather than eleven names to pick out of forty-five.
 struct IconEntry {
     /// File under `assets/icons/`, including its folder.

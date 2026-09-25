@@ -12,11 +12,14 @@
 //! Commands are pushed in paint order: world-space elements first, screen-space HUD on top.
 
 use engine_core::input::Modifiers;
-use engine_core::math::{Mat4, Vec3};
-use engine_render_data::ui::{TextAlign, UiColor, UiDrawList, UiIcon, UiRect, UiScale};
+use engine_core::math::Mat4;
+use engine_render_data::font::UiFont;
+use engine_render_data::ui::{
+    TextAlign, TextStyle, UiClip, UiColor, UiDrawList, UiIcon, UiRect, UiScale,
+};
 
-use crate::damage_numbers::FloatingNumbers;
-use crate::nameplate::{Nameplate, NameplateConfig, project};
+use crate::damage_numbers::{Avoidance, CombatTextKind, FloatingNumber, FloatingNumbers};
+use crate::nameplate::{Nameplate, NameplateConfig, PlateCastState, PlateRank, project};
 use crate::snapshot::{AbilitySlotView, SlotAvailability, UiSnapshot};
 use engine_game::event::AggroChange;
 use engine_game::firemage::{ABILITY_SLOTS, FireAbility, HeatTier, INFERNO_DURATION};
@@ -212,16 +215,8 @@ pub struct UiTheme {
     pub status: UiColor,
     /// The outline around the current target.
     pub target_outline: UiColor,
-    /// Panel behind the *targeted* enemy's nameplate.
-    ///
-    /// A second colour rather than a brighter outline: two pixels of white around a plate at
-    /// forty metres is a few pixels of white, and a player who has just clicked something
-    /// needs to see which plate answered from wherever they are standing.
-    pub target_panel: UiColor,
     /// Outline thickness in pixels.
     pub outline_pixels: f32,
-    /// Glyph scale for nameplate text.
-    pub plate_text_scale: f32,
     /// Background of any bar.
     pub bar_background: UiColor,
     /// An enemy's health bar.
@@ -251,23 +246,16 @@ pub struct UiTheme {
     pub enemy_cast_fill: UiColor,
     /// Colour of the death notice.
     pub death_text: UiColor,
-    /// An ordinary damage number.
-    pub damage_number: UiColor,
-    /// A killing blow's damage number.
-    pub killing_number: UiColor,
-    /// Colour of a critical strike's number.
-    ///
-    /// A third colour rather than a brighter shade of the first: a player mid-fight is
-    /// distinguishing at a glance, and two shades of yellow are not a distinction.
-    pub critical_number: UiColor,
+    /// How enemy nameplates are coloured.
+    pub plate: PlateTheme,
+    /// How floating combat text is coloured.
+    pub combat: CombatTextTheme,
     /// Aggro floating text for gaining it, or being about to: an enemy turning on you.
     pub aggro_gain_text: UiColor,
     /// Aggro floating text for losing it, or being about to.
     pub aggro_loss_text: UiColor,
     /// Glyph scale for HUD text.
     pub hud_text_scale: f32,
-    /// Glyph scale for a damage number.
-    pub damage_text_scale: f32,
     /// The Heat bar in the first band, where it grants nothing.
     pub heat_low: UiColor,
     /// The Heat bar in the second band, where it grants +15% damage.
@@ -339,11 +327,7 @@ impl Default for UiTheme {
             text: [0.95, 0.95, 0.85, 1.0],
             status: [0.95, 0.62, 0.25, 1.0],
             target_outline: [1.0, 1.0, 1.0, 1.0],
-            // The panel's own hue, lifted and made more opaque: it still reads as the same
-            // piece of interface, and it is unmistakably the one that is selected.
-            target_panel: [0.18, 0.20, 0.26, 0.92],
             outline_pixels: 2.0,
-            plate_text_scale: 2.0,
             bar_background: [0.10, 0.10, 0.12, 0.85],
             enemy_health: [0.80, 0.25, 0.22, 1.0],
             enemy_health_low: [0.95, 0.55, 0.15, 1.0],
@@ -359,13 +343,11 @@ impl Default for UiTheme {
             cast_fill: [0.92, 0.78, 0.32, 1.0],
             enemy_cast_fill: [0.86, 0.30, 0.24, 1.0],
             death_text: [0.92, 0.34, 0.30, 1.0],
-            damage_number: [1.0, 0.92, 0.55, 1.0],
-            killing_number: [1.0, 0.45, 0.30, 1.0],
-            critical_number: [1.0, 0.72, 0.16, 1.0],
+            plate: PlateTheme::default(),
+            combat: CombatTextTheme::default(),
             aggro_gain_text: [1.0, 0.36, 0.26, 1.0],
             aggro_loss_text: [0.52, 0.78, 1.0, 1.0],
             hud_text_scale: 2.0,
-            damage_text_scale: 2.0,
             heat_low: [0.55, 0.55, 0.60, 1.0],
             heat_warm: [0.92, 0.72, 0.22, 1.0],
             heat_high: [0.95, 0.55, 0.15, 1.0],
@@ -491,6 +473,202 @@ impl UiTheme {
     }
 }
 
+/// How an enemy nameplate is coloured.
+///
+/// Its own struct inside [`UiTheme`] because a plate is a component with a palette of its
+/// own — a name, two bars, their borders and their states — and a flat list of twenty more
+/// colours on the theme would bury which of them belong together.
+///
+/// The palette is the genre's, in this game's own values: a warm off-white name, a saturated
+/// red health bar on a near-black ground, an amber cast bar that turns silver when it cannot
+/// be interrupted and red when it was. Rank is carried by the border and the crest as well as
+/// the name's colour, so it does not depend on telling two hues apart.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PlateTheme {
+    /// An ordinary enemy's name.
+    pub name: UiColor,
+    /// The target's name: brighter than the rest, so the selected plate answers at once.
+    pub name_target: UiColor,
+    /// An elite's name.
+    pub name_elite: UiColor,
+    /// A boss's name.
+    pub name_boss: UiColor,
+    /// The name on a dead enemy's fading plate.
+    pub name_dead: UiColor,
+    /// The status line.
+    pub status: UiColor,
+    /// The dark edge around every letter on a plate.
+    pub text_outline: UiColor,
+    /// Behind a bar's fill.
+    pub bar_background: UiColor,
+    /// A bar's border.
+    pub border: UiColor,
+    /// An elite's health-bar border.
+    pub border_elite: UiColor,
+    /// A boss's health-bar border.
+    pub border_boss: UiColor,
+    /// The target's health-bar border.
+    pub border_target: UiColor,
+    /// The health fill, top edge.
+    pub health_top: UiColor,
+    /// The health fill, bottom edge.
+    pub health_bottom: UiColor,
+    /// The health fill once the enemy is nearly dead, top edge.
+    pub health_low_top: UiColor,
+    /// The health fill once the enemy is nearly dead, bottom edge.
+    pub health_low_bottom: UiColor,
+    /// Health just lost, draining towards the fill.
+    pub trail: UiColor,
+    /// A dead enemy's empty bar.
+    pub health_dead: UiColor,
+    /// Below this fraction the bar takes its low colours.
+    pub low_health: f32,
+    /// The text on the health bar.
+    pub health_text: UiColor,
+    /// An interruptible cast's fill, top edge.
+    pub cast_top: UiColor,
+    /// An interruptible cast's fill, bottom edge.
+    pub cast_bottom: UiColor,
+    /// A cast that cannot be interrupted, top edge.
+    pub cast_locked_top: UiColor,
+    /// A cast that cannot be interrupted, bottom edge.
+    pub cast_locked_bottom: UiColor,
+    /// The border of a cast that cannot be interrupted.
+    pub cast_locked_border: UiColor,
+    /// An interrupted cast's fill.
+    pub cast_interrupted: UiColor,
+    /// A completed cast's fill, as it fades.
+    pub cast_complete: UiColor,
+    /// The text on a cast bar.
+    pub cast_text: UiColor,
+    /// A friendly health fill — the player, the party, the raid — top edge.
+    pub friendly_top: UiColor,
+    /// A friendly health fill, bottom edge.
+    pub friendly_bottom: UiColor,
+    /// A friendly health fill that is dangerously low, top edge.
+    pub friendly_low_top: UiColor,
+    /// A friendly health fill that is dangerously low, bottom edge.
+    pub friendly_low_bottom: UiColor,
+    /// The panel every unit frame sits on.
+    pub frame_panel: UiColor,
+    /// The panel's border.
+    pub frame_border: UiColor,
+}
+
+impl Default for PlateTheme {
+    fn default() -> Self {
+        Self {
+            name: [0.98, 0.95, 0.90, 1.0],
+            name_target: [1.0, 1.0, 1.0, 1.0],
+            name_elite: [1.0, 0.88, 0.58, 1.0],
+            name_boss: [1.0, 0.78, 0.34, 1.0],
+            name_dead: [0.62, 0.62, 0.62, 1.0],
+            status: [1.0, 0.72, 0.36, 1.0],
+            text_outline: [0.0, 0.0, 0.0, 0.92],
+            bar_background: [0.035, 0.035, 0.045, 0.92],
+            border: [0.0, 0.0, 0.0, 1.0],
+            border_elite: [0.80, 0.64, 0.30, 1.0],
+            border_boss: [0.96, 0.74, 0.30, 1.0],
+            border_target: [1.0, 1.0, 1.0, 1.0],
+            health_top: [0.90, 0.17, 0.13, 1.0],
+            health_bottom: [0.66, 0.07, 0.05, 1.0],
+            health_low_top: [1.0, 0.44, 0.14, 1.0],
+            health_low_bottom: [0.82, 0.25, 0.05, 1.0],
+            trail: [1.0, 0.86, 0.62, 0.85],
+            health_dead: [0.30, 0.30, 0.30, 1.0],
+            low_health: 0.20,
+            health_text: [1.0, 1.0, 1.0, 1.0],
+            cast_top: [1.0, 0.80, 0.24, 1.0],
+            cast_bottom: [0.88, 0.56, 0.08, 1.0],
+            // Dark enough that the white name printed on it keeps its contrast.
+            cast_locked_top: [0.56, 0.58, 0.64, 1.0],
+            cast_locked_bottom: [0.36, 0.38, 0.44, 1.0],
+            cast_locked_border: [0.86, 0.88, 0.94, 1.0],
+            cast_interrupted: [0.82, 0.13, 0.10, 1.0],
+            // The casting amber, lifted: the bar reads as the same bar, finished.
+            cast_complete: [1.0, 0.88, 0.38, 1.0],
+            cast_text: [1.0, 1.0, 1.0, 1.0],
+            friendly_top: [0.30, 0.82, 0.34, 1.0],
+            friendly_bottom: [0.14, 0.56, 0.18, 1.0],
+            friendly_low_top: [0.96, 0.46, 0.16, 1.0],
+            friendly_low_bottom: [0.78, 0.24, 0.06, 1.0],
+            frame_panel: [0.035, 0.04, 0.055, 0.84],
+            frame_border: [0.0, 0.0, 0.0, 0.9],
+        }
+    }
+}
+
+/// How floating combat text is coloured.
+///
+/// The hierarchy is the genre's: outgoing damage warm gold, a critical a hotter orange,
+/// damage over time a muted amber, healing green, damage taken red. Each is also a different
+/// size and sign (see `damage_numbers`), so no distinction rests on colour alone.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CombatTextTheme {
+    /// An ordinary hit.
+    pub damage: UiColor,
+    /// A critical strike.
+    pub critical: UiColor,
+    /// A tick of damage over time.
+    pub periodic: UiColor,
+    /// Damage the player takes.
+    pub incoming: UiColor,
+    /// Healing.
+    pub heal: UiColor,
+    /// A critical heal.
+    pub heal_critical: UiColor,
+    /// A dodge, a parry or a block.
+    pub avoided: UiColor,
+    /// A shield absorbing damage.
+    pub absorbed: UiColor,
+    /// A spell sent back.
+    pub reflected: UiColor,
+    /// The dark edge around every letter.
+    pub outline: UiColor,
+}
+
+impl Default for CombatTextTheme {
+    fn default() -> Self {
+        Self {
+            damage: [1.0, 0.86, 0.24, 1.0],
+            critical: [1.0, 0.62, 0.12, 1.0],
+            periodic: [0.94, 0.74, 0.42, 1.0],
+            incoming: [1.0, 0.30, 0.22, 1.0],
+            heal: [0.40, 0.96, 0.40, 1.0],
+            heal_critical: [0.64, 1.0, 0.50, 1.0],
+            avoided: [0.94, 0.94, 0.97, 1.0],
+            absorbed: [0.70, 0.84, 1.0, 1.0],
+            reflected: [0.80, 0.66, 1.0, 1.0],
+            outline: [0.0, 0.0, 0.0, 0.9],
+        }
+    }
+}
+
+/// The least a living enemy's cast bar is drawn at, however faded its plate is.
+const CAST_MIN_ALPHA: f32 = 0.9;
+
+/// The top of a line box that puts `font`'s capitals centred on `center_y` at `size`.
+///
+/// Cap height is about 0.72 em in both faces; centring the capitals rather than the line box
+/// is what makes a label sit in the middle of the bar it is printed on.
+pub(crate) fn cap_centred_top(font: UiFont, size: f32, center_y: f32) -> f32 {
+    center_y - font.ascent(size) + size * 0.36
+}
+
+/// The edge every word on a plate is drawn with, at `size` pixels per em.
+///
+/// About a fifteenth of the size, never under a pixel: enough to cut a letter out of a torch
+/// flare, never so much that the letters blur into one dark shape. The slight downward nudge
+/// makes the edge read as a shadow too.
+pub(crate) fn plate_text_style(outline: UiColor, size: f32, embolden: f32) -> TextStyle {
+    TextStyle::outlined(
+        outline,
+        (size * 0.075).max(1.0),
+        (size * 0.05).clamp(0.5, 1.5),
+        size * embolden,
+    )
+}
+
 /// Builds the frame's UI.
 ///
 /// Owns the draw list and its scratch strings across frames, both cleared and never freed,
@@ -503,13 +681,19 @@ pub struct GameUi {
     metrics: HudMetrics,
     /// Scratch for a plate's title line.
     title: String,
-    /// Scratch for a plate's status line.
+    /// Scratch for the seconds and stacks printed over an aura icon.
     statuses: String,
+    /// Every buff and debuff icon drawn this frame, for the tooltip lookup.
+    aura_hits: crate::ui::aura_row::AuraHits,
+    /// The tooltip over one of them, its wrapped description kept between frames.
+    aura_tooltip: crate::ui::aura_row::AuraTooltip,
     /// Scratch for a tooltip's lines. Reused; never freed.
     tooltip_lines: Vec<String>,
     /// Where the minimap is, when the level has one: the corner buttons move to its left
     /// and the dungeon's progress panel moves under it.
     minimap: Option<UiRect>,
+    /// How floating combat text is sized and whether criticals are emphasised.
+    combat_text: engine_settings::CombatTextSettings,
 }
 
 impl GameUi {
@@ -528,8 +712,11 @@ impl GameUi {
             metrics: HudMetrics::new(scale),
             title: String::with_capacity(32),
             statuses: String::with_capacity(64),
+            aura_hits: crate::ui::aura_row::AuraHits::new(),
+            aura_tooltip: crate::ui::aura_row::AuraTooltip::new(),
             tooltip_lines: Vec::with_capacity(8),
             minimap: None,
+            combat_text: engine_settings::CombatTextSettings::default(),
         }
     }
 
@@ -546,6 +733,12 @@ impl GameUi {
     #[must_use]
     pub fn scale(&self) -> UiScale {
         self.metrics.scale
+    }
+
+    /// Draws floating combat text as `settings` say from here on: its size and whether a
+    /// critical swells. Which categories appear is the observer's business, not the drawing's.
+    pub fn set_combat_text(&mut self, settings: engine_settings::CombatTextSettings) {
+        self.combat_text = settings;
     }
 
     /// The HUD's measurements in physical pixels.
@@ -587,55 +780,398 @@ impl GameUi {
     /// Starts a new frame, discarding the previous one's commands.
     pub fn begin(&mut self) {
         self.list.clear();
+        self.aura_hits.clear();
+    }
+
+    /// Every buff and debuff icon drawn this frame, with the effect each one shows.
+    #[must_use]
+    pub fn aura_hits(&self) -> &crate::ui::aura_row::AuraHits {
+        &self.aura_hits
+    }
+
+    /// The buff or debuff under `pointer`, if the pointer is on one.
+    #[must_use]
+    pub fn aura_at(&self, pointer: (f32, f32)) -> Option<(UiRect, crate::aura::Aura)> {
+        self.aura_hits.at(pointer)
+    }
+
+    /// The tooltip for the buff or debuff under `pointer`, if there is one: its name, what
+    /// kind of effect it is — the dispel school, in its colour — what it does and how long
+    /// it has left.
+    ///
+    /// Drawn last of the HUD, so it is over everything it describes. Returns whether a
+    /// tooltip was drawn.
+    pub fn push_aura_tooltip(&mut self, pointer: (f32, f32), viewport: (u32, u32)) -> bool {
+        let Some((anchor, aura)) = self.aura_hits.at(pointer) else {
+            return false;
+        };
+        let style = crate::ui::map_style::MapStyle::new(self.metrics.scale);
+        self.aura_tooltip
+            .push(&mut self.list, anchor, &aura, style, viewport);
+        true
     }
 
     /// Appends every nameplate, in the order the set supplies them.
     ///
-    /// The set is already sorted furthest-first, which is exactly what painter's order
-    /// wants: a nearer plate is pushed later and therefore drawn on top. Phase 3 achieved
-    /// the same thing with a per-plate depth value and the depth buffer; sorting once on the
-    /// CPU is both cheaper and the only option once the panels are translucent.
+    /// The set is already sorted furthest first, which is exactly what painter's order wants:
+    /// a nearer plate is pushed later and therefore drawn on top.
+    ///
+    /// Each plate is one component — name, health bar and, while the enemy casts, the cast
+    /// bar hanging under it — laid out in [`crate::nameplate::PlateGeometry`] and drawn here at
+    /// the plate's alpha, every part together. A plate whose bar dimmed while its name stayed
+    /// bright would be less readable than either.
     pub fn push_nameplates(&mut self, plates: &[Nameplate], config: &NameplateConfig) {
         for plate in plates {
-            let rect = UiRect::new(plate.origin.0, plate.origin.1, plate.size.0, plate.size.1);
-            // The selected plate is lit as well as outlined. The outline says where the
-            // target is; the panel says it from across the room.
-            let panel = if plate.is_target {
-                self.theme.target_panel
-            } else {
-                self.theme.panel
-            };
-            // Every part of the plate takes the same fade, panel and text together: a plate
-            // whose background dimmed while its name stayed bright would be less readable
-            // than either, not a compromise between them.
-            self.list.rect(rect, faded(panel, plate.alpha));
-            if plate.is_target {
-                self.list.outline(
-                    rect,
-                    self.metrics.scale.px(self.theme.outline_pixels),
-                    faded(self.theme.target_outline, plate.alpha),
-                );
+            if plate.alpha <= 0.01 {
+                continue;
             }
+            self.push_plate_name(plate);
+            self.push_plate_health(plate, config);
+            self.push_plate_auras(plate);
+            self.push_plate_cast(plate);
+        }
+    }
 
-            let text_x = plate.origin.0 + config.padding_pixels;
-            let text_y = plate.origin.1 + config.padding_pixels;
+    /// A sample row of buffs in the buff bar's rectangle, for Edit HUD.
+    ///
+    /// The bar is empty most of the time, and an empty rectangle cannot be judged for place or
+    /// size: while the editor is open and nothing is running, this is what fills it.
+    pub fn push_buff_bar_preview(&mut self, rect: UiRect) {
+        use crate::aura::{Aura, AuraKind};
+        use engine_game::status::StatusKind;
+        const SAMPLE: [Aura; 5] = [
+            Aura {
+                kind: AuraKind::FlameShield,
+                stacks: 1,
+                remaining: 4.0,
+                duration: 5.0,
+                indefinite: false,
+                amount: 0.0,
+            },
+            Aura {
+                kind: AuraKind::Status(StatusKind::Rejuvenation),
+                stacks: 1,
+                remaining: 12.0,
+                duration: 18.0,
+                indefinite: false,
+                amount: 0.0,
+            },
+            Aura {
+                kind: AuraKind::ShieldBlock,
+                stacks: 1,
+                remaining: 3.0,
+                duration: 6.0,
+                indefinite: false,
+                amount: 0.0,
+            },
+            Aura {
+                kind: AuraKind::Status(StatusKind::Recuperating),
+                stacks: 3,
+                remaining: 7.0,
+                duration: 10.0,
+                indefinite: false,
+                amount: 0.0,
+            },
+            Aura {
+                kind: AuraKind::Status(StatusKind::WildRush),
+                stacks: 1,
+                remaining: 5.0,
+                duration: 6.0,
+                indefinite: false,
+                amount: 0.0,
+            },
+        ];
+        crate::ui::aura_row::push_buff_bar(
+            &mut self.list,
+            &mut self.aura_hits,
+            rect,
+            SAMPLE.iter(),
+            &mut self.statuses,
+        );
+    }
 
-            plate.write_title(&mut self.title);
-            self.list.text_at(
-                (text_x, text_y),
-                &self.title,
-                faded(self.theme.text, plate.alpha),
-                self.metrics.scale.text(self.theme.plate_text_scale),
+    /// A plate's buffs and debuffs: centred rows of icons, the debuffs over the name and the
+    /// buffs under the health bar.
+    fn push_plate_auras(&mut self, plate: &Nameplate) {
+        use crate::ui::aura_row::{AuraGrow, push_aura_row};
+        if let Some((origin, style)) = plate.debuff_row() {
+            push_aura_row(
+                &mut self.list,
+                &mut self.aura_hits,
+                plate.auras.debuffs(),
+                origin,
+                AuraGrow::Centered,
+                style.faded(plate.alpha),
+                &mut self.statuses,
             );
+        }
+        if let Some((origin, style)) = plate.buff_row() {
+            push_aura_row(
+                &mut self.list,
+                &mut self.aura_hits,
+                plate.auras.buffs(),
+                origin,
+                AuraGrow::Centered,
+                style.faded(plate.alpha),
+                &mut self.statuses,
+            );
+        }
+    }
 
-            if plate.write_statuses(&mut self.statuses) {
-                self.list.text_at(
-                    (text_x, text_y + config.line_advance_pixels),
-                    &self.statuses,
-                    faded(self.theme.status, plate.alpha),
-                    self.metrics.scale.text(self.theme.plate_text_scale),
-                );
+    /// A plate's name — crest first, for an elite or a boss.
+    fn push_plate_name(&mut self, plate: &Nameplate) {
+        let theme = self.theme.plate;
+        let geometry = &plate.geometry;
+        let alpha = plate.alpha;
+        let (x, y) = plate.origin;
+        let outline = faded(theme.text_outline, alpha);
+
+        let color = if plate.dead {
+            theme.name_dead
+        } else if plate.is_target {
+            theme.name_target
+        } else {
+            match plate.rank {
+                PlateRank::Boss => theme.name_boss,
+                PlateRank::Elite => theme.name_elite,
+                PlateRank::Normal => theme.name,
             }
+        };
+        let size = geometry.name_size;
+        let center = y + geometry.name_top + size * 0.59;
+        crate::ui::map_style::write_title_case(&mut self.title, plate.name);
+        // The name and its crest are centred together over the plate.
+        let left = x + ((plate.size.0 - geometry.name_width) * 0.5).round();
+        let mut text_x = left;
+        if let Some((crest, edge)) = geometry.crest {
+            self.list.icon(
+                UiRect::new(left, (center - edge * 0.5).round(), edge, edge),
+                crest,
+                faded([1.0, 1.0, 1.0, 1.0], alpha),
+            );
+            text_x = left + edge + (4.0 * geometry.scale).round();
+        }
+        self.list.styled_label(
+            (text_x, cap_centred_top(UiFont::SemiBold, size, center)),
+            &self.title,
+            faded(color, alpha),
+            UiFont::SemiBold,
+            size,
+            TextAlign::Left,
+            // A touch heavier than the face: SemiBold, thickened, reads as Bold on the plate.
+            plate_text_style(outline, size, 0.025),
+        );
+    }
+
+    /// A plate's health bar: ground, recent-damage trail, fill, border and text.
+    fn push_plate_health(&mut self, plate: &Nameplate, config: &NameplateConfig) {
+        let theme = self.theme.plate;
+        let geometry = &plate.geometry;
+        let alpha = plate.alpha;
+        let bar = plate.bar_rect();
+        let border = geometry.border;
+        let inner = bar.inset(border);
+
+        self.list.rect(inner, faded(theme.bar_background, alpha));
+        let fraction = plate.health_fraction.clamp(0.0, 1.0);
+        let trail = plate.trail_fraction.clamp(fraction, 1.0);
+        if trail > fraction + 0.001 {
+            let start = inner.x + (inner.width * fraction).round();
+            let end = inner.x + (inner.width * trail).round();
+            self.list.rect(
+                UiRect::new(start, inner.y, end - start, inner.height),
+                faded(theme.trail, alpha),
+            );
+        }
+        if plate.dead {
+            self.list
+                .rect(inner, faded(theme.health_dead, alpha * 0.35));
+        } else if fraction > 0.0 {
+            let (top, bottom) = if fraction <= theme.low_health {
+                (theme.health_low_top, theme.health_low_bottom)
+            } else {
+                (theme.health_top, theme.health_bottom)
+            };
+            let fill = UiRect::new(
+                inner.x,
+                inner.y,
+                (inner.width * fraction).round().max(1.0),
+                inner.height,
+            );
+            self.list
+                .panel(fill, 0.0, faded(top, alpha), faded(bottom, alpha));
+        }
+        let border_color = if plate.is_target {
+            theme.border_target
+        } else {
+            match plate.rank {
+                PlateRank::Boss => theme.border_boss,
+                PlateRank::Elite => theme.border_elite,
+                PlateRank::Normal => theme.border,
+            }
+        };
+        self.list.outline(bar, border, faded(border_color, alpha));
+
+        if plate.write_health_text(config.health_text, &mut self.title) {
+            let size = geometry.health_text_size;
+            let center = inner.y + inner.height * 0.5;
+            self.list.styled_label(
+                (
+                    inner.x + inner.width * 0.5,
+                    cap_centred_top(UiFont::SemiBold, size, center),
+                ),
+                &self.title,
+                faded(theme.health_text, alpha),
+                UiFont::SemiBold,
+                size,
+                TextAlign::Center,
+                plate_text_style(faded(theme.text_outline, alpha), size, 0.0),
+            );
+        }
+    }
+
+    /// A plate's cast bar, under its health bar: the school icon, the fill, the spell's name
+    /// and the seconds left.
+    ///
+    /// A cast that cannot be interrupted is silver with a lock on its icon; an interrupted
+    /// one is red, frozen where it stopped, and says so.
+    fn push_plate_cast(&mut self, plate: &Nameplate) {
+        let (Some(cast), Some(rect)) = (plate.cast, plate.cast_rect()) else {
+            return;
+        };
+        let theme = self.theme.plate;
+        let geometry = &plate.geometry;
+        // A cast is the one thing on a dimmed plate the player may have to act on — it is
+        // what an interrupt is for — so it keeps nearly full strength while its plate is
+        // faded for not being the target. A dead enemy's plate still takes its bar with it.
+        let plate_alpha = if plate.dead {
+            plate.alpha
+        } else {
+            plate.alpha.max(CAST_MIN_ALPHA)
+        };
+        let alpha = plate_alpha * cast.alpha;
+        if alpha <= 0.01 {
+            return;
+        }
+        let border = geometry.border;
+        let edge = rect.height;
+        let icon_frame = UiRect::new(rect.x, rect.y, edge, edge);
+        // The icon and the bar share the border between them.
+        let bar = UiRect::new(
+            rect.x + edge - border,
+            rect.y,
+            rect.width - edge + border,
+            edge,
+        );
+        let inner = bar.inset(border);
+        let locked = !cast.interruptible;
+
+        self.list.rect(inner, faded(theme.bar_background, alpha));
+        let (top, bottom) = match cast.state {
+            PlateCastState::Interrupted => (theme.cast_interrupted, theme.cast_interrupted),
+            PlateCastState::Completed if locked => {
+                (theme.cast_locked_top, theme.cast_locked_bottom)
+            }
+            PlateCastState::Completed => (theme.cast_complete, theme.cast_bottom),
+            PlateCastState::Casting if locked => (theme.cast_locked_top, theme.cast_locked_bottom),
+            PlateCastState::Casting => (theme.cast_top, theme.cast_bottom),
+        };
+        let fraction = cast.fraction.clamp(0.0, 1.0);
+        if fraction > 0.0 {
+            let fill = UiRect::new(
+                inner.x,
+                inner.y,
+                (inner.width * fraction).round().max(1.0),
+                inner.height,
+            );
+            self.list
+                .panel(fill, 0.0, faded(top, alpha), faded(bottom, alpha));
+        }
+        let border_color = if locked {
+            theme.cast_locked_border
+        } else {
+            theme.border
+        };
+        self.list.outline(bar, border, faded(border_color, alpha));
+        self.list
+            .icon(icon_frame.inset(border), cast.icon, faded([1.0; 4], alpha));
+        self.list
+            .outline(icon_frame, border, faded(border_color, alpha));
+        if locked {
+            // The lock in the icon's corner: interruptibility said with a shape as well as a
+            // colour.
+            let lock = (edge * 0.62).round();
+            self.list.icon(
+                UiRect::new(
+                    icon_frame.right() - lock + border,
+                    icon_frame.bottom() - lock + border,
+                    lock,
+                    lock,
+                ),
+                UiIcon::Lock,
+                faded([1.0; 4], alpha),
+            );
+        }
+
+        let size = geometry.cast_text_size;
+        let center = inner.y + inner.height * 0.5;
+        let top_y = cap_centred_top(UiFont::SemiBold, size, center);
+        let style = plate_text_style(faded(theme.text_outline, alpha), size, 0.0);
+        let pad = (4.0 * geometry.scale).round();
+        let text_color = faded(theme.cast_text, alpha);
+
+        if cast.state == PlateCastState::Interrupted {
+            self.list.styled_label(
+                (inner.x + inner.width * 0.5, top_y),
+                "Interrupted",
+                text_color,
+                UiFont::SemiBold,
+                size,
+                TextAlign::Center,
+                style,
+            );
+            return;
+        }
+
+        // The seconds left, right-aligned; then the name, cut where it would reach them.
+        let mut name_right = inner.right() - pad;
+        if cast.state == PlateCastState::Casting {
+            self.title.clear();
+            write_tenths(&mut self.title, cast.remaining);
+            let time_width = UiFont::SemiBold.width(&self.title, size);
+            self.list.styled_label(
+                (inner.right() - pad, top_y),
+                &self.title,
+                text_color,
+                UiFont::SemiBold,
+                size,
+                TextAlign::Right,
+                style,
+            );
+            name_right -= time_width + pad;
+        }
+        crate::ui::map_style::write_title_case(&mut self.title, cast.name);
+        let name_x = inner.x + pad;
+        let fits = UiFont::SemiBold.width(&self.title, size) <= name_right - name_x;
+        if !fits {
+            self.list.clip(UiClip::rect(UiRect::new(
+                name_x - pad,
+                bar.y - edge,
+                (name_right - name_x + pad).max(0.0),
+                edge * 3.0,
+            )));
+        }
+        self.list.styled_label(
+            (name_x, top_y),
+            &self.title,
+            text_color,
+            UiFont::SemiBold,
+            size,
+            TextAlign::Left,
+            style,
+        );
+        if !fits {
+            self.list.clip(UiClip::NONE);
         }
     }
 
@@ -653,7 +1189,6 @@ impl GameUi {
         self.begin();
         // World-space first, screen-space on top: painter's order makes "the HUD is in
         // front of the world" a property of this ordering rather than of a depth value.
-        self.push_world_health_bars(plates);
         self.push_nameplates(plates, config);
         self.push_target_frame(snapshot, viewport);
         self.push_player_bars(snapshot, viewport);
@@ -691,7 +1226,6 @@ impl GameUi {
         viewport: (u32, u32),
     ) -> &UiDrawList {
         self.begin();
-        self.push_world_health_bars(plates);
         self.push_nameplates(plates, config);
 
         // The arranged HUD. The theme and the scale are copied out first: the frames are
@@ -705,6 +1239,7 @@ impl GameUi {
             snapshot,
             &theme,
             scratch,
+            &mut self.aura_hits,
             scale,
             viewport,
         );
@@ -716,7 +1251,16 @@ impl GameUi {
 
         self.push_talent_button(snapshot, viewport);
         self.push_character_button(viewport);
-        self.push_cast_bar(snapshot, viewport);
+        // The player's cast bar is an arranged element too: wherever, and whatever size,
+        // the player put it in Edit HUD.
+        if layout.is_enabled(crate::ui::hud_layout::HudElementId::CastBar) {
+            let rect = layout.rect_of(
+                crate::ui::hud_layout::HudElementId::CastBar,
+                scale,
+                viewport,
+            );
+            self.push_cast_bar_in(snapshot, rect);
+        }
         self.push_enemy_cast_bar(snapshot, viewport);
         self.push_dungeon_progress(snapshot, viewport);
         self.push_notification(snapshot, viewport);
@@ -1555,11 +2099,8 @@ impl GameUi {
             .text_aligned(origin, &self.title, border, 1.5, align);
     }
 
-    /// The cast bar, above the ability bar.
+    /// The cast bar, above the ability bar, where the fixed HUD puts it.
     pub fn push_cast_bar(&mut self, snapshot: &UiSnapshot, viewport: (u32, u32)) {
-        let Some(cast) = snapshot.cast else {
-            return;
-        };
         let (width, height) = (viewport.0 as f32, viewport.1 as f32);
         let rect = UiRect::new(
             (width - self.metrics.cast_bar_width) * 0.5,
@@ -1570,19 +2111,140 @@ impl GameUi {
             self.metrics.cast_bar_width,
             self.metrics.cast_bar_height,
         );
-        self.list.bar(
+        self.push_cast_bar_in(snapshot, rect);
+    }
+
+    /// The player's cast bar in `rect`: the rectangle the arranged HUD gave it.
+    ///
+    /// Drawn exactly as an enemy's cast bar is on its nameplate — the spell's icon, an amber
+    /// fill, the name on the left and the seconds left on the right, in the edged face — so
+    /// "a cast" looks like one thing wherever it is on the screen. Everything inside is sized
+    /// from the rectangle, so a bar the player made taller or wider in Edit HUD keeps its
+    /// proportions.
+    pub fn push_cast_bar_in(&mut self, snapshot: &UiSnapshot, rect: UiRect) {
+        let Some(cast) = snapshot.cast else {
+            return;
+        };
+        self.push_cast_strip(
             rect,
+            icon_for(cast.ability),
+            cast.name,
             cast.fraction(),
-            self.theme.bar_background,
-            self.theme.cast_fill,
+            Some(cast.remaining()),
+            1.0,
         );
-        self.title.clear();
-        self.title.push_str(cast.name);
-        self.title.push(' ');
-        write_tenths(&mut self.title, cast.remaining());
-        let (origin, align) = centered(rect.x + rect.width * 0.5, rect.y + 3.0);
-        self.list
-            .text_aligned(origin, &self.title, self.theme.text, 1.0, align);
+    }
+
+    /// What the cast bar looks like while Edit HUD is open and nothing is being cast: a
+    /// sample cast, so the player can see the style they are setting rather than an outline.
+    pub fn push_cast_bar_preview(&mut self, rect: UiRect) {
+        self.push_cast_strip(
+            rect,
+            Some(UiIcon::Firebolt),
+            "CAST BAR",
+            0.6,
+            Some(1.2),
+            0.85,
+        );
+    }
+
+    /// The strip itself: icon, fill, name and countdown.
+    fn push_cast_strip(
+        &mut self,
+        rect: UiRect,
+        icon: Option<UiIcon>,
+        name: &str,
+        fraction: f32,
+        remaining: Option<f32>,
+        alpha: f32,
+    ) {
+        let theme = self.theme.plate;
+        let rect = UiRect::new(
+            rect.x.round(),
+            rect.y.round(),
+            rect.width.round(),
+            rect.height.round().max(6.0),
+        );
+        let border = (rect.height / 20.0).round().clamp(1.0, 2.0);
+        let edge = rect.height;
+        let (bar, icon_frame) = match icon {
+            Some(_) => (
+                UiRect::new(
+                    rect.x + edge - border,
+                    rect.y,
+                    rect.width - edge + border,
+                    edge,
+                ),
+                Some(UiRect::new(rect.x, rect.y, edge, edge)),
+            ),
+            None => (rect, None),
+        };
+        let inner = bar.inset(border);
+        self.list.rect(inner, faded(theme.bar_background, alpha));
+        let fraction = fraction.clamp(0.0, 1.0);
+        if fraction > 0.0 {
+            self.list.panel(
+                UiRect::new(
+                    inner.x,
+                    inner.y,
+                    (inner.width * fraction).round().max(1.0),
+                    inner.height,
+                ),
+                0.0,
+                faded(theme.cast_top, alpha),
+                faded(theme.cast_bottom, alpha),
+            );
+        }
+        self.list.outline(bar, border, faded(theme.border, alpha));
+        if let (Some(icon), Some(frame)) = (icon, icon_frame) {
+            self.list
+                .icon(frame.inset(border), icon, faded([1.0; 4], alpha));
+            self.list.outline(frame, border, faded(theme.border, alpha));
+        }
+
+        let size = (inner.height * 0.66).clamp(8.0, 28.0);
+        let centre = inner.y + inner.height * 0.5;
+        let top = cap_centred_top(UiFont::SemiBold, size, centre);
+        let style = plate_text_style(faded(theme.text_outline, alpha), size, 0.02);
+        let pad = (size * 0.4).round();
+        let mut name_right = inner.right() - pad;
+        if let Some(remaining) = remaining {
+            self.title.clear();
+            write_tenths(&mut self.title, remaining);
+            name_right -= UiFont::SemiBold.width(&self.title, size) + pad;
+            self.list.styled_label(
+                (inner.right() - pad, top),
+                &self.title,
+                faded(theme.cast_text, alpha),
+                UiFont::SemiBold,
+                size,
+                TextAlign::Right,
+                style,
+            );
+        }
+        crate::ui::map_style::write_title_case(&mut self.title, name);
+        let name_x = inner.x + pad;
+        let fits = UiFont::SemiBold.width(&self.title, size) <= name_right - name_x;
+        if !fits {
+            self.list.clip(UiClip::rect(UiRect::new(
+                inner.x,
+                rect.y - edge,
+                (name_right - inner.x).max(0.0),
+                edge * 3.0,
+            )));
+        }
+        self.list.styled_label(
+            (name_x, top),
+            &self.title,
+            faded(theme.cast_text, alpha),
+            UiFont::SemiBold,
+            size,
+            TextAlign::Left,
+            style,
+        );
+        if !fits {
+            self.list.clip(UiClip::NONE);
+        }
     }
 
     /// The target's cast bar, under the target frame.
@@ -1915,29 +2577,16 @@ impl GameUi {
         }
     }
 
-    /// A small health bar over every enemy that has a plate.
-    pub fn push_world_health_bars(&mut self, plates: &[Nameplate]) {
-        for plate in plates {
-            let bar = UiRect::new(
-                plate.origin.0 + (plate.size.0 - self.metrics.world_bar_width) * 0.5,
-                plate.origin.1 - self.metrics.world_bar_height - 3.0,
-                self.metrics.world_bar_width,
-                self.metrics.world_bar_height,
-            );
-            self.list.bar(
-                bar,
-                plate.health_fraction,
-                self.theme.bar_background,
-                self.theme.enemy_health_color(plate.health_fraction),
-            );
-        }
-    }
-
-    /// Floating damage numbers, projected through the camera.
+    /// Floating combat text, projected through the camera.
     ///
-    /// A number behind the camera is skipped rather than drawn: a point behind the eye still
-    /// divides to a finite screen position, and drawing it produces a mirrored ghost — the
-    /// same bug the nameplates avoid, avoided the same way.
+    /// Each entry's anchor is projected to the screen and everything after that is in screen
+    /// pixels — the rise, the lanes, the swell, the size — so a number reads the same at two
+    /// metres and at forty. An anchor behind the camera is skipped rather than drawn: a point
+    /// behind the eye still divides to a finite screen position, and drawing it produces a
+    /// mirrored ghost — the same bug the nameplates avoid, avoided the same way.
+    ///
+    /// Criticals are drawn after everything else, so the number that matters most is never
+    /// under an ordinary one.
     pub fn push_damage_numbers(
         &mut self,
         numbers: &FloatingNumbers,
@@ -1945,58 +2594,79 @@ impl GameUi {
         viewport: (u32, u32),
         now: f32,
     ) {
-        for number in numbers.numbers() {
-            let world: Vec3 = number.position(now);
-            let Some((x, y)) = project(world, view_projection, viewport) else {
-                continue;
-            };
-            let alpha = number.alpha(now);
-            if alpha <= 0.0 {
-                continue;
+        for critical_pass in [false, true] {
+            for number in numbers.numbers() {
+                if number.critical != critical_pass {
+                    continue;
+                }
+                self.push_combat_text(number, view_projection, viewport, now);
             }
-            if let Some(change) = number.aggro {
-                let mut color = match change {
-                    AggroChange::Gained | AggroChange::Gaining => self.theme.aggro_gain_text,
-                    AggroChange::Lost | AggroChange::Losing => self.theme.aggro_loss_text,
-                };
-                color[3] = alpha;
-                let scale = self.metrics.scale.text(self.theme.damage_text_scale);
-                self.list
-                    .text_aligned((x, y), change.as_str(), color, scale, TextAlign::Center);
-                continue;
-            }
-            // A kill outranks a crit: the last number a target ever shows should read as
-            // "it died", not as "that one was lucky".
-            let mut color = if number.killed {
-                self.theme.killing_number
-            } else if number.critical {
-                self.theme.critical_number
-            } else {
-                self.theme.damage_number
-            };
-            // The fade lives in the alpha channel, which only works because the UI blends.
-            color[3] = alpha;
-
-            self.title.clear();
-            write_integer(&mut self.title, number.amount.round() as i64);
-            // A killing blow is bigger as well as differently coloured, so it reads without
-            // the player having to distinguish two shades mid-fight.
-            // Size carries the same information as colour, because size survives the
-            // periphery of the screen and a hue does not.
-            let emphasis = if number.killed {
-                1.4
-            } else if number.critical {
-                1.25
-            } else {
-                1.0
-            };
-            let scale = self
-                .metrics
-                .scale
-                .text(self.theme.damage_text_scale * emphasis);
-            self.list
-                .text_aligned((x, y), &self.title, color, scale, TextAlign::Center);
         }
+    }
+
+    /// One floating entry.
+    fn push_combat_text(
+        &mut self,
+        number: &FloatingNumber,
+        view_projection: &Mat4,
+        viewport: (u32, u32),
+        now: f32,
+    ) {
+        let Some((x, y)) = project(number.origin, view_projection, viewport) else {
+            return;
+        };
+        let emphasis = self.combat_text.critical_emphasis;
+        let frame = number.frame(now, emphasis);
+        if frame.alpha <= 0.0 {
+            return;
+        }
+        let scale = self.metrics.scale.factor() * self.combat_text.size_scale();
+        let size = number.design_size(emphasis) * frame.scale * scale;
+        let center = (x + frame.offset.0 * scale, y + frame.offset.1 * scale);
+        let (width, height) = (viewport.0 as f32, viewport.1 as f32);
+        if center.0 < -size * 4.0
+            || center.0 > width + size * 4.0
+            || center.1 < -size
+            || center.1 > height + size
+        {
+            return;
+        }
+
+        let theme = self.theme.combat;
+        let color = match number.kind {
+            CombatTextKind::Damage if number.critical => theme.critical,
+            CombatTextKind::Damage => theme.damage,
+            CombatTextKind::Periodic => theme.periodic,
+            CombatTextKind::Incoming => theme.incoming,
+            CombatTextKind::Heal if number.critical => theme.heal_critical,
+            CombatTextKind::Heal => theme.heal,
+            CombatTextKind::Avoided(Avoidance::Absorb) => theme.absorbed,
+            CombatTextKind::Avoided(Avoidance::Reflect) => theme.reflected,
+            CombatTextKind::Avoided(_) => theme.avoided,
+            CombatTextKind::Aggro(AggroChange::Gained | AggroChange::Gaining) => {
+                self.theme.aggro_gain_text
+            }
+            CombatTextKind::Aggro(_) => self.theme.aggro_loss_text,
+        };
+        number.write_text(&mut self.title);
+        // Numbers are drawn heavier than words: a digit is read by its shape at a glance, and
+        // weight is what makes the shape carry.
+        let embolden = if number.kind.is_amount() { 0.045 } else { 0.03 };
+        let style = TextStyle::outlined(
+            faded(theme.outline, frame.alpha),
+            (size * 0.07).max(1.0),
+            (size * 0.045).clamp(0.75, 2.0),
+            size * embolden,
+        );
+        self.list.styled_label(
+            (center.0, cap_centred_top(UiFont::SemiBold, size, center.1)),
+            &self.title,
+            faded(color, frame.alpha),
+            UiFont::SemiBold,
+            size,
+            TextAlign::Center,
+            style,
+        );
     }
 }
 
@@ -2203,8 +2873,34 @@ mod tests {
         (set, config)
     }
 
+    /// Every styled run in the built list: its text, colour and size.
+    fn styled(ui: &GameUi) -> Vec<(String, UiColor, f32)> {
+        ui.list()
+            .commands()
+            .iter()
+            .filter_map(|command| match command {
+                UiCommand::StyledLabel {
+                    range, color, size, ..
+                } => Some((ui.list().text_of(*range).to_owned(), *color, *size)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Every outline in the built list, with its colour.
+    fn outlines(ui: &GameUi) -> Vec<(UiRect, UiColor)> {
+        ui.list()
+            .commands()
+            .iter()
+            .filter_map(|command| match command {
+                UiCommand::Outline { rect, color, .. } => Some((*rect, *color)),
+                _ => None,
+            })
+            .collect()
+    }
+
     #[test]
-    fn a_nameplate_becomes_a_panel_and_its_text() {
+    fn a_nameplate_is_a_bold_outlined_name_over_a_real_health_bar() {
         let simulation = sim();
         let (set, config) = plates(&simulation);
         assert!(!set.plates().is_empty(), "the arena has visible enemies");
@@ -2213,39 +2909,171 @@ mod tests {
         ui.begin();
         ui.push_nameplates(set.plates(), &config);
 
-        let rects = ui
-            .list()
-            .commands()
-            .iter()
-            .filter(|command| matches!(command, UiCommand::Rect { .. }))
-            .count();
-        let texts = ui
-            .list()
-            .commands()
-            .iter()
-            .filter(|command| matches!(command, UiCommand::Text { .. }))
-            .count();
-        assert_eq!(rects, set.plates().len(), "one panel per plate");
-        assert!(texts >= set.plates().len(), "at least a title per plate");
+        // No bitmap text at all: every word on a plate is set in the interface font.
+        assert!(
+            texts(&ui).is_empty(),
+            "a plate drew bitmap text: {:?}",
+            texts(&ui)
+        );
+        let labels = styled(&ui);
+        for plate in set.plates() {
+            let name = crate::ui::map_style::title_case(plate.name);
+            let (_, _, size) = labels
+                .iter()
+                .find(|(text, _, _)| *text == name)
+                .unwrap_or_else(|| panic!("no name {name:?} in {labels:?}"));
+            assert!(*size >= 14.0, "the name is readable: {size}");
+            // The bar is a real bar: wide, tall, bordered, and under the name.
+            let bar = plate.bar_rect();
+            assert!(bar.width >= 120.0 && bar.height >= 12.0, "{bar:?}");
+            assert!(bar.y > plate.origin.1 + plate.geometry.name_top);
+            assert!(
+                outlines(&ui).iter().any(|(rect, _)| *rect == bar),
+                "the bar has a border"
+            );
+        }
+        // Every label carries a dark edge, so it reads over anything the world draws.
+        for command in ui.list().commands() {
+            if let UiCommand::StyledLabel { style, .. } = command {
+                assert!(style.has_outline(), "an unedged label: {style:?}");
+            }
+        }
     }
 
     #[test]
-    fn exactly_one_plate_is_outlined_and_it_is_the_target() {
+    fn exactly_one_plate_is_outlined_in_white_and_it_is_the_target() {
         let simulation = sim();
         let (set, config) = plates(&simulation);
         let mut ui = GameUi::new();
         ui.begin();
         ui.push_nameplates(set.plates(), &config);
 
-        let outlines = ui
-            .list()
-            .commands()
+        let white = ui.theme().plate.border_target;
+        let lit: Vec<UiRect> = outlines(&ui)
+            .into_iter()
+            .filter(|(_, color)| *color == white)
+            .map(|(rect, _)| rect)
+            .collect();
+        let targets: Vec<_> = set
+            .plates()
             .iter()
-            .filter(|command| matches!(command, UiCommand::Outline { .. }))
-            .count();
-        let targets = set.plates().iter().filter(|plate| plate.is_target).count();
-        assert_eq!(outlines, targets);
-        assert!(targets <= 1, "at most one plate is the target's");
+            .filter(|plate| plate.is_target)
+            .collect();
+        assert!(targets.len() <= 1, "at most one plate is the target's");
+        assert_eq!(lit.len(), targets.len());
+        if let Some(target) = targets.first() {
+            assert_eq!(lit[0], target.bar_rect());
+        }
+    }
+
+    #[test]
+    fn a_cast_bar_hangs_under_its_health_bar_and_says_what_and_how_long() {
+        use crate::nameplate::{PlateCast, PlateGeometry};
+        use engine_game::enemy::EnemyAbility;
+        let simulation = sim();
+        let (set, config) = plates(&simulation);
+        let mut plate = set.plates()[0];
+        // The same plate, casting: a cast is only ever laid out by the set, so the geometry
+        // is rebuilt the way the set would build it.
+        let metrics = plate.rank.metrics();
+        let name_width = UiFont::SemiBold.width(
+            &crate::ui::map_style::title_case(plate.name),
+            metrics.name_size,
+        );
+        plate.geometry = PlateGeometry::new(
+            metrics,
+            plate.rank.crest(),
+            name_width,
+            plate.geometry.scale,
+            plate.auras.debuffs().count(),
+            plate.auras.buffs().count(),
+            true,
+        );
+        plate.size = plate.geometry.size();
+        let ability = EnemyAbility::ALL
+            .into_iter()
+            .find(|ability| {
+                ability.definition().cast_time > 1.0 && ability.definition().interruptible
+            })
+            .expect("the roster has an interruptible cast");
+        let cast = PlateCast {
+            ability,
+            name: ability.name(),
+            icon: UiIcon::AbilityArcane,
+            fraction: 0.4,
+            remaining: 1.4,
+            interruptible: true,
+            state: PlateCastState::Casting,
+            alpha: 1.0,
+        };
+        plate.cast = Some(cast);
+
+        let mut ui = GameUi::new();
+        ui.begin();
+        ui.push_nameplates(&[plate], &config);
+        let bar = plate.bar_rect();
+        let cast_rect = plate.cast_rect().expect("a casting plate has a cast bar");
+        assert!(
+            cast_rect.y >= bar.bottom(),
+            "the cast bar is under the health bar"
+        );
+        assert!(cast_rect.y - bar.bottom() <= 8.0, "and directly under it");
+        assert_eq!(cast_rect.width, bar.width);
+        let labels = styled(&ui);
+        let name = crate::ui::map_style::title_case(ability.name());
+        assert!(
+            labels.iter().any(|(text, _, _)| *text == name),
+            "{labels:?}"
+        );
+        assert!(
+            labels.iter().any(|(text, _, _)| text == "1.4"),
+            "{labels:?}"
+        );
+        assert!(
+            icons(&ui)
+                .iter()
+                .any(|(icon, _)| *icon == UiIcon::AbilityArcane)
+        );
+        assert!(!icons(&ui).iter().any(|(icon, _)| *icon == UiIcon::Lock));
+
+        // Not interruptible: a lock and a silver border.
+        plate.cast = Some(PlateCast {
+            interruptible: false,
+            ..cast
+        });
+        ui.begin();
+        ui.push_nameplates(&[plate], &config);
+        assert!(icons(&ui).iter().any(|(icon, _)| *icon == UiIcon::Lock));
+        let silver = ui.theme().plate.cast_locked_border;
+        assert!(outlines(&ui).iter().any(|(_, color)| *color == silver));
+
+        // Interrupted: it says so, and prints no countdown.
+        plate.cast = Some(PlateCast {
+            state: PlateCastState::Interrupted,
+            ..cast
+        });
+        ui.begin();
+        ui.push_nameplates(&[plate], &config);
+        let labels = styled(&ui);
+        assert!(
+            labels.iter().any(|(text, _, _)| text == "Interrupted"),
+            "{labels:?}"
+        );
+        assert!(!labels.iter().any(|(text, _, _)| text == "1.4"));
+    }
+
+    #[test]
+    fn a_plate_with_no_cast_draws_no_cast_bar_and_leaves_no_gap() {
+        let simulation = sim();
+        let (set, config) = plates(&simulation);
+        let plate = set.plates()[0];
+        assert!(plate.cast.is_none());
+        assert!(plate.cast_rect().is_none());
+        assert_eq!(plate.size.1, plate.bar_rect().bottom() - plate.origin.1);
+        let mut ui = GameUi::new();
+        ui.begin();
+        ui.push_nameplates(&[plate], &config);
+        assert!(!styled(&ui).iter().any(|(text, _, _)| text == "Interrupted"));
     }
 
     #[test]
@@ -2275,11 +3103,9 @@ mod tests {
         let mut ui = GameUi::new();
         ui.begin();
         ui.push_nameplates(set.plates(), &config);
-        // The first panel pushed belongs to the furthest plate.
-        let UiCommand::Rect { rect, .. } = ui.list().commands()[0] else {
-            panic!("the first command is a panel");
-        };
-        assert_eq!(rect.x, set.plates()[0].origin.0);
+        // The first bar drawn belongs to the furthest plate.
+        let first_outline = outlines(&ui)[0].0;
+        assert_eq!(first_outline, set.plates()[0].bar_rect());
     }
 
     #[test]
@@ -3057,7 +3883,8 @@ mod tests {
         simulation.step_once();
 
         let ui = built(&simulation);
-        let found = texts(&ui);
+        let mut found = texts(&ui);
+        found.extend(styled(&ui).into_iter().map(|(text, _, _)| text));
         assert!(
             found.iter().any(|text| text.contains('.')),
             "a remaining time should be drawn: {found:?}"
@@ -3098,32 +3925,47 @@ mod tests {
             .expect("in range");
         simulation.step_many(20);
 
+        // Drawn as an enemy's cast is on its nameplate: the name, and the seconds left.
         let ui = built(&simulation);
-        let found = texts(&ui);
+        let found: Vec<String> = styled(&ui).into_iter().map(|(text, _, _)| text).collect();
         assert!(
-            found.iter().any(|text| text.starts_with("PYROBLAST")),
-            "the cast bar names the ability and its remaining time: {found:?}"
+            found.iter().any(|text| text == "Pyroblast"),
+            "the cast bar names the ability: {found:?}"
+        );
+        assert!(
+            found
+                .iter()
+                .any(|text| text.contains('.') && text.parse::<f32>().is_ok()),
+            "the cast bar prints the time left: {found:?}"
+        );
+        assert!(
+            icons(&ui)
+                .iter()
+                .any(|(icon, _)| *icon == UiIcon::Pyroblast)
         );
     }
 
     #[test]
-    fn every_enemy_plate_carries_a_world_space_health_bar() {
+    fn a_damaged_plate_shows_its_recent_damage_as_a_trail() {
         let simulation = sim();
-        let (set, _config) = plates(&simulation);
+        let (set, config) = plates(&simulation);
+        let mut plate = set.plates()[0];
+        plate.health_fraction = 0.5;
+        plate.trail_fraction = 0.8;
         let mut ui = GameUi::new();
         ui.begin();
-        ui.push_world_health_bars(set.plates());
-
-        // Two rectangles per bar: background and fill.
-        assert_eq!(rects(&ui).len(), set.plates().len() * 2);
-        // Each sits above its plate.
-        for (bar, plate) in rects(&ui).chunks(2).zip(set.plates()) {
-            assert!(bar[0].y < plate.origin.1, "the bar sits above the plate");
-        }
+        ui.push_nameplates(&[plate], &config);
+        let inner = plate.bar_rect().inset(plate.geometry.border);
+        let trail = rects(&ui)
+            .into_iter()
+            .find(|rect| rect.x > inner.x && rect.height == inner.height)
+            .expect("a trail between the fill and where the health was");
+        let expected = inner.width * 0.3;
+        assert!((trail.width - expected).abs() <= 1.0, "{trail:?}");
     }
 
     #[test]
-    fn a_damage_number_is_drawn_where_it_projects_and_fades_in_its_alpha() {
+    fn a_damage_number_is_bold_outlined_large_and_fades_in_its_alpha() {
         let mut numbers = FloatingNumbers::new();
         numbers.push(
             engine_game::entity::EntityId::new(1, 1),
@@ -3135,19 +3977,19 @@ mod tests {
         );
 
         let mut ui = GameUi::new();
+        let drawn = |ui: &GameUi| styled(ui);
         ui.begin();
-        ui.push_damage_numbers(&numbers, &view_projection(), VIEWPORT, 0.0);
-        let fresh: Vec<_> = ui
-            .list()
-            .commands()
-            .iter()
-            .filter_map(|command| match command {
-                UiCommand::Text { color, .. } => Some(color[3]),
-                _ => None,
-            })
-            .collect();
+        ui.push_damage_numbers(&numbers, &view_projection(), VIEWPORT, 0.1);
+        let fresh = drawn(&ui);
         assert_eq!(fresh.len(), 1, "one number was drawn");
-        assert_eq!(fresh[0], 1.0, "a new number is opaque");
+        assert_eq!(fresh[0].0, "45");
+        assert_eq!(fresh[0].1[3], 1.0, "a number in flight is opaque");
+        assert!(
+            fresh[0].2 >= 24.0,
+            "a hit is large enough to notice: {}",
+            fresh[0].2
+        );
+        assert!(texts(&ui).is_empty(), "no bitmap digits");
 
         ui.begin();
         ui.push_damage_numbers(
@@ -3156,16 +3998,56 @@ mod tests {
             VIEWPORT,
             crate::damage_numbers::NUMBER_LIFETIME * 0.9,
         );
-        let faded: Vec<_> = ui
-            .list()
-            .commands()
-            .iter()
-            .filter_map(|command| match command {
-                UiCommand::Text { color, .. } => Some(color[3]),
-                _ => None,
-            })
-            .collect();
-        assert!(faded[0] < 1.0, "an old number has faded: {}", faded[0]);
+        let faded = drawn(&ui);
+        assert!(
+            faded[0].1[3] < 1.0,
+            "an old number has faded: {}",
+            faded[0].1[3]
+        );
+    }
+
+    #[test]
+    fn a_critical_is_drawn_bigger_hotter_and_on_top() {
+        let mut numbers = FloatingNumbers::new();
+        let enemy = engine_game::entity::EntityId::new(1, 1);
+        let origin = engine_core::math::Vec3::new(0.0, 1.0, -12.0);
+        numbers.push(enemy, origin, 90.0, false, true, 0.0);
+        numbers.push(enemy, origin, 45.0, false, false, 0.0);
+        let mut ui = GameUi::new();
+        ui.begin();
+        ui.push_damage_numbers(&numbers, &view_projection(), VIEWPORT, 0.5);
+        let drawn = styled(&ui);
+        assert_eq!(drawn.len(), 2);
+        // The critical is drawn last, whatever order it arrived in.
+        assert_eq!(drawn[1].0, "90");
+        assert_eq!(drawn[1].1, ui.theme().combat.critical);
+        assert!(drawn[1].2 > drawn[0].2 * 1.3, "{drawn:?}");
+    }
+
+    #[test]
+    fn the_combat_text_size_setting_and_the_interface_scale_both_grow_the_text() {
+        let mut numbers = FloatingNumbers::new();
+        numbers.push(
+            engine_game::entity::EntityId::new(1, 1),
+            engine_core::math::Vec3::new(0.0, 1.0, -12.0),
+            45.0,
+            false,
+            false,
+            0.0,
+        );
+        let size_at = |scale: f32, percent: f32| {
+            let mut ui = GameUi::with_scale(UiScale::new(scale));
+            ui.set_combat_text(engine_settings::CombatTextSettings {
+                size: percent,
+                ..engine_settings::CombatTextSettings::default()
+            });
+            ui.begin();
+            ui.push_damage_numbers(&numbers, &view_projection(), VIEWPORT, 0.5);
+            styled(&ui)[0].2
+        };
+        let base = size_at(1.0, 100.0);
+        assert!((size_at(2.0, 100.0) - base * 2.0).abs() < 0.01);
+        assert!((size_at(1.0, 150.0) - base * 1.5).abs() < 0.01);
     }
 
     #[test]
@@ -3178,24 +4060,17 @@ mod tests {
 
         let mut ui = GameUi::new();
         ui.begin();
-        ui.push_damage_numbers(&numbers, &view_projection(), VIEWPORT, 0.0);
-        let drawn: Vec<(String, [f32; 4])> = ui
-            .list()
-            .commands()
-            .iter()
-            .filter_map(|command| match command {
-                UiCommand::Text { range, color, .. } => {
-                    Some((ui.list().text_of(*range).to_owned(), *color))
-                }
-                _ => None,
-            })
+        ui.push_damage_numbers(&numbers, &view_projection(), VIEWPORT, 0.2);
+        let drawn: Vec<(String, UiColor)> = styled(&ui)
+            .into_iter()
+            .map(|(text, color, _)| (text, color))
             .collect();
         let theme = ui.theme();
         assert_eq!(
             drawn,
             [
-                ("GAINING AGGRO".to_owned(), theme.aggro_gain_text),
-                ("LOSING AGGRO".to_owned(), theme.aggro_loss_text),
+                ("Gaining Aggro".to_owned(), theme.aggro_gain_text),
+                ("Losing Aggro".to_owned(), theme.aggro_loss_text),
             ]
         );
     }

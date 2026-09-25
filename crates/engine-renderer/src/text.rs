@@ -33,7 +33,9 @@ mod generated {
     include!(concat!(env!("OUT_DIR"), "/fonts.rs"));
 }
 
-pub use generated::{ATLAS, ATLAS_HEIGHT, ATLAS_WIDTH, CHARSET as ATLAS_CHARSET, QUADS, SDF_RANGE};
+pub use generated::{
+    ATLAS, ATLAS_HEIGHT, ATLAS_WIDTH, CHARSET as ATLAS_CHARSET, QUADS, SDF_EM, SDF_RANGE,
+};
 
 /// The atlas as straight RGBA: white, with the distance in alpha, which is what the UI shader
 /// reads. Four times the bytes of the single channel, for a texture uploaded once.

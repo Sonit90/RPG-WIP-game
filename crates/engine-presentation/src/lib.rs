@@ -26,6 +26,7 @@
 
 /// Combat heard: the layer that decides what an ability sounds like.
 pub mod audio;
+pub mod aura;
 pub mod camera;
 /// The character visual controller: gameplay state in, a posed and placed character out.
 pub mod character;
@@ -57,7 +58,9 @@ pub use camera::ThirdPersonCamera;
 pub use character_save::{apply_config, config_of};
 pub use collision_debug::{CollisionDebug, DebugBindings};
 pub use collision_hud::CollisionHudModel;
-pub use damage_numbers::{FloatingNumber, FloatingNumbers, MAX_FLOATING_NUMBERS};
+pub use damage_numbers::{
+    CombatTextFilter, CombatTextKind, FloatingNumber, FloatingNumbers, MAX_FLOATING_NUMBERS,
+};
 pub use environment::{
     EnvironmentPlacer, EnvironmentStats, EnvironmentVisuals, scene_light, scene_lighting,
 };
@@ -70,8 +73,7 @@ pub use hud::{HudModel, write_lines};
 pub use monster_visual::{MonsterModel, MonsterVisuals};
 pub use mouse_look::{LOOK_BUTTON, LookChange, MouseLook, RelativeMotion};
 pub use nameplate::{
-    MAX_NAMEPLATES, NAMEPLATE_MAX_DISTANCE, Nameplate, NameplateConfig, NameplateSet,
-    NameplateStatus, project,
+    MAX_NAMEPLATES, NAMEPLATE_MAX_DISTANCE, Nameplate, NameplateConfig, NameplateSet, project,
 };
 pub use nameplate_layout::{LayoutConstraints, NameplateLayout, PlateBox};
 pub use shadow_debug::ShadowCasterDebug;

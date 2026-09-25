@@ -424,6 +424,111 @@ impl ActionBarConfig {
     }
 }
 
+/// Narrowest the player's cast bar can be made, in logical pixels.
+pub const CAST_BAR_WIDTH_MIN: f32 = 120.0;
+
+/// Widest the player's cast bar can be made, in logical pixels.
+pub const CAST_BAR_WIDTH_MAX: f32 = 640.0;
+
+/// The cast bar's width on a fresh install, in logical pixels.
+pub const CAST_BAR_WIDTH_DEFAULT: f32 = 300.0;
+
+/// Granularity of the width controls, in logical pixels.
+pub const CAST_BAR_WIDTH_STEP: f32 = 20.0;
+
+/// Thinnest the player's cast bar can be made, in logical pixels.
+pub const CAST_BAR_HEIGHT_MIN: f32 = 12.0;
+
+/// Thickest the player's cast bar can be made, in logical pixels.
+pub const CAST_BAR_HEIGHT_MAX: f32 = 48.0;
+
+/// The cast bar's height on a fresh install, in logical pixels.
+pub const CAST_BAR_HEIGHT_DEFAULT: f32 = 24.0;
+
+/// Granularity of the height controls, in logical pixels.
+pub const CAST_BAR_HEIGHT_STEP: f32 = 2.0;
+
+/// The player's cast bar: where it is, and how wide and tall.
+///
+/// The one element with a shape of its own as well as a size: a unit frame keeps its
+/// proportions and only scales, but a cast bar is a strip the player may want long and thin
+/// under their character or short and thick beside their action bar. Width and height are in
+/// logical pixels at the design size, so the global interface scale and the element's own
+/// scale still apply on top — the same rule every other element follows.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct HudCastBar {
+    /// Where it is, whether it is shown, and its overall scale.
+    pub placement: HudPlacement,
+    /// How wide it is, in logical pixels.
+    pub width: f32,
+    /// How tall it is, in logical pixels.
+    pub height: f32,
+}
+
+impl Default for HudCastBar {
+    fn default() -> Self {
+        Self {
+            // Centred just above where the second action bar goes, in the gap between it and
+            // the third: clear of every bar's default place at 1080p and above, so each bar
+            // and the cast bar can be picked up in Edit HUD without one hiding the other.
+            placement: HudPlacement::at(HudAnchor::Bottom, 0.0, -0.154),
+            width: CAST_BAR_WIDTH_DEFAULT,
+            height: CAST_BAR_HEIGHT_DEFAULT,
+        }
+    }
+}
+
+impl HudCastBar {
+    /// This cast bar with every invalid field replaced by its default.
+    #[must_use]
+    pub fn validated(self) -> Self {
+        let fallback = Self::default();
+        let mut bar = self;
+        bar.placement = bar.placement.validated(fallback.placement, "the cast bar");
+        if !(bar.width.is_finite()
+            && (CAST_BAR_WIDTH_MIN..=CAST_BAR_WIDTH_MAX).contains(&bar.width))
+        {
+            log::warn!(
+                "hud: the cast bar is {} wide, outside {CAST_BAR_WIDTH_MIN}..{CAST_BAR_WIDTH_MAX}; \
+                 using {}",
+                bar.width,
+                fallback.width
+            );
+            bar.width = fallback.width;
+        }
+        if !(bar.height.is_finite()
+            && (CAST_BAR_HEIGHT_MIN..=CAST_BAR_HEIGHT_MAX).contains(&bar.height))
+        {
+            log::warn!(
+                "hud: the cast bar is {} tall, outside {CAST_BAR_HEIGHT_MIN}..\
+                 {CAST_BAR_HEIGHT_MAX}; using {}",
+                bar.height,
+                fallback.height
+            );
+            bar.height = fallback.height;
+        }
+        bar
+    }
+
+    /// This cast bar at a new size, clamped into the allowed range and snapped to the steps.
+    ///
+    /// Clamped rather than refused: this comes from a control the player is pressing or a
+    /// handle they are dragging, and the honest answer to "wider" at the widest is to stay.
+    #[must_use]
+    pub fn resized(mut self, width: f32, height: f32) -> Self {
+        if width.is_finite() {
+            self.width = ((width / CAST_BAR_WIDTH_STEP).round() * CAST_BAR_WIDTH_STEP)
+                .clamp(CAST_BAR_WIDTH_MIN, CAST_BAR_WIDTH_MAX);
+        }
+        if height.is_finite() {
+            self.height = ((height / CAST_BAR_HEIGHT_STEP).round() * CAST_BAR_HEIGHT_STEP)
+                .clamp(CAST_BAR_HEIGHT_MIN, CAST_BAR_HEIGHT_MAX);
+        }
+        self
+    }
+}
+
 /// The unit frames, one field each.
 ///
 /// Named fields rather than a list, because there are exactly four of them and a file that
@@ -440,6 +545,19 @@ pub struct HudFrames {
     pub target_of_target: HudPlacement,
     /// The party.
     pub party: HudPlacement,
+    /// The raid frames: one cell per member, a filled rounded rectangle each.
+    ///
+    /// Section-level default, so a file written before raid frames existed loads with them
+    /// shown in their default place.
+    pub raid: HudPlacement,
+    /// The player's own cast bar.
+    pub cast_bar: HudCastBar,
+    /// The player's buffs: a block of icons wherever the player puts it.
+    ///
+    /// Section-level default, so a file written before the buff bar existed loads with it
+    /// shown in its default place. The player's *debuffs* are not placed on their own: they
+    /// hang under the player frame and go wherever it goes.
+    pub buffs: HudPlacement,
 }
 
 impl Default for HudFrames {
@@ -450,7 +568,8 @@ impl Default for HudFrames {
     ///
     ///   [ PLAYER ]
     ///   [ PARTY  ]
-    ///
+    ///   [ RAID ]                                   [ BUFFS ]
+    ///                    [ CAST BAR ]
     ///                   [ ACTION BAR 1 ]
     /// ```
     fn default() -> Self {
@@ -459,6 +578,11 @@ impl Default for HudFrames {
             target: HudPlacement::at(HudAnchor::Top, -0.090, 0.030),
             target_of_target: HudPlacement::at(HudAnchor::Top, 0.140, 0.030).scaled(0.80),
             party: HudPlacement::at(HudAnchor::Left, 0.030, 0.060),
+            raid: HudPlacement::at(HudAnchor::Left, 0.030, 0.330),
+            cast_bar: HudCastBar::default(),
+            // Top right, the genre's place for them: below the corner buttons and clear of
+            // the minimap's corner and the target-of-target frame from 720p up.
+            buffs: HudPlacement::at(HudAnchor::TopRight, -0.170, 0.090),
         }
     }
 }
@@ -475,6 +599,9 @@ impl HudFrames {
                 .target_of_target
                 .validated(fallback.target_of_target, "the target-of-target frame"),
             party: self.party.validated(fallback.party, "the party frame"),
+            raid: self.raid.validated(fallback.raid, "the raid frames"),
+            cast_bar: self.cast_bar.validated(),
+            buffs: self.buffs.validated(fallback.buffs, "the buff bar"),
         }
     }
 }
@@ -1401,5 +1528,49 @@ mod tests {
         let text = dir.read();
         assert!(text.contains("\n  \"bars\""), "not pretty-printed: {text}");
         assert!(text.contains("\"orientation\": \"horizontal\""));
+    }
+
+    #[test]
+    fn the_cast_bar_and_the_raid_frames_survive_a_reload() {
+        let dir = TempDir::new("cast_bar_round_trip");
+        let path = dir.file();
+        let mut config = HudConfig::default();
+        config.frames.cast_bar = HudCastBar {
+            placement: HudPlacement::at(HudAnchor::TopLeft, 0.1, 0.2),
+            ..HudCastBar::default()
+        }
+        .resized(420.0, 30.0);
+        config.frames.raid = HudPlacement::at(HudAnchor::Right, -0.05, 0.0).scaled(1.25);
+        let mut manager = HudConfigManager::with_config(&path, config.clone());
+        manager.save();
+
+        let reloaded = HudConfigManager::load(&path);
+        assert_eq!(reloaded.config().frames.cast_bar, config.frames.cast_bar);
+        assert_eq!(reloaded.config().frames.raid, config.frames.raid);
+        assert_eq!(reloaded.config().frames.cast_bar.width, 420.0);
+        assert_eq!(reloaded.config().frames.cast_bar.height, 30.0);
+    }
+
+    #[test]
+    fn a_file_without_the_new_elements_gets_their_defaults_and_bad_sizes_are_repaired() {
+        let old: HudFrames = serde_json::from_str(
+            "{\"player\": {\"anchor\": \"left\", \"offset_x\": 0.03, \"offset_y\": -0.12}}",
+        )
+        .expect("an old frames section parses");
+        assert_eq!(old.validated().raid, HudFrames::default().raid);
+        assert_eq!(old.validated().cast_bar, HudCastBar::default());
+
+        let bad = HudCastBar {
+            width: 9_000.0,
+            height: f32::NAN,
+            ..HudCastBar::default()
+        }
+        .validated();
+        assert_eq!(bad.width, CAST_BAR_WIDTH_DEFAULT);
+        assert_eq!(bad.height, CAST_BAR_HEIGHT_DEFAULT);
+
+        let clamped = HudCastBar::default().resized(5.0, 500.0);
+        assert_eq!(clamped.width, CAST_BAR_WIDTH_MIN);
+        assert_eq!(clamped.height, CAST_BAR_HEIGHT_MAX);
     }
 }

@@ -367,6 +367,9 @@ options:
                          of you at start, by table id (skeleton_warrior,crypt_ghoul) or
                          all
   --spawn-hostile        the --spawn line-up fights instead of waiting to be hit
+  --autocast             the player casts on its own: the nearest enemy is selected and the
+                         first three abilities are pressed in turn, every 0.6 s. Visual QA
+                         of combat — damage numbers, nameplates, cast bars — with --screenshot
   --screenshot <p.png>   write frame --screenshot-frame (default 30), interface and all,
                          to a PNG: visual QA at any --width/--height, with --hidden
   -h, --help             print this help and exit";
@@ -733,6 +736,8 @@ pub struct Args {
     pub spawn: Vec<String>,
     /// Whether the `--spawn` line-up fights rather than waiting to be attacked.
     pub spawn_hostile: bool,
+    /// Whether the player fights on its own, for screenshots of combat.
+    pub autocast: bool,
     /// Override how the minimap turns, for this run only: `rotating` or `north_up`.
     pub minimap: Option<String>,
     /// A Blender layout export to load instead of the built-in layout, if one was named.
@@ -786,6 +791,7 @@ impl Default for Args {
             map_select: None,
             spawn: Vec::new(),
             spawn_hostile: false,
+            autocast: false,
             map_expand: false,
             minimap: None,
             help: false,
@@ -954,6 +960,7 @@ where
             "--map-expand" => args.map_expand = true,
             "--map-select" => args.map_select = Some(next_value(&mut iter, "--map-select")?),
             "--spawn-hostile" => args.spawn_hostile = true,
+            "--autocast" => args.autocast = true,
             "--spawn" => {
                 let raw = iter.next().ok_or(ArgsError::MissingValue("--spawn"))?;
                 args.spawn = raw

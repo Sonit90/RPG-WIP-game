@@ -32,6 +32,8 @@
 
 /// What each character wears and carries, and the file it lives in.
 pub mod character;
+/// Which floating combat text is drawn, and how big.
+pub mod combat_text;
 /// What the player can change about how the game plays.
 pub mod gameplay;
 /// What the player can change about how the game looks.
@@ -53,16 +55,17 @@ pub use character::{
     CHARACTER_FILE_NAME, CharacterConfig, CharacterConfigManager, EquippedEntry, HeroLoadout,
     InventoryEntry,
 };
+pub use combat_text::CombatTextSettings;
 pub use gameplay::GameplaySettings;
 pub use graphics::{GraphicsSettings, ShadowQuality};
 pub use hud::{
     ACTION_BAR_SLOTS, ACTION_BARS, ActionBarConfig, BindingScope, HUD_FILE_NAME, HUD_OFFSET_LIMIT,
     HUD_SCALE_DEFAULT, HUD_SCALE_MAX, HUD_SCALE_MIN, HUD_SCALE_STEP, HeroBindingsConfig, HudAnchor,
-    HudBarBindings, HudConfig, HudConfigManager, HudFrames, HudOrientation, HudPlacement,
-    HudSlotConfig,
+    HudBarBindings, HudCastBar, HudConfig, HudConfigManager, HudFrames, HudOrientation,
+    HudPlacement, HudSlotConfig,
 };
 pub use map::{KeyName, MapSettings, MinimapOrientation, TOGGLE_MAP_KEY_DEFAULT};
-pub use nameplate::{NameplateSetting, NameplateSettings};
+pub use nameplate::{NameplateHealthText, NameplateSetting, NameplateSettings};
 
 /// Name of the settings file. JSON content; the extension is deliberately not `.json`.
 pub const SETTINGS_FILE_NAME: &str = "settings.cfg";
@@ -174,6 +177,12 @@ pub struct GameSettings {
     /// on [`NameplateSettings`] is what makes a file written before this section existed load
     /// with every one of them at its default rather than failing to parse.
     pub nameplates: NameplateSettings,
+    /// Which floating combat text is drawn, and how big.
+    ///
+    /// Its own section beside the nameplates': `"combat_text": {"healing": false}`.
+    /// `#[serde(default)]` on [`CombatTextSettings`] is what lets a file written before combat
+    /// text had settings load with every switch on.
+    pub combat_text: CombatTextSettings,
     /// What the player can change about how the game looks: shadow quality, so far.
     ///
     /// Its own section for the same reason the two above have one, and `#[serde(default)]`
@@ -208,6 +217,7 @@ impl Default for GameSettings {
             ambient_volume: AMBIENT_VOLUME_DEFAULT,
             gameplay: GameplaySettings::default(),
             nameplates: NameplateSettings::default(),
+            combat_text: CombatTextSettings::default(),
             graphics: GraphicsSettings::default(),
             binding_scope: BindingScope::default(),
             map: MapSettings::default(),
@@ -273,6 +283,7 @@ impl GameSettings {
         // that number rather than the whole section.
         settings.gameplay = settings.gameplay.validated();
         settings.nameplates = settings.nameplates.validated();
+        settings.combat_text = settings.combat_text.validated();
         settings.graphics = settings.graphics.validated();
         settings.map = settings.map.validated();
         settings
@@ -337,6 +348,21 @@ impl GameSettings {
 pub(crate) fn lenient<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<f32, D::Error> {
     let value = serde_json::Value::deserialize(deserializer)?;
     Ok(value.as_f64().map_or(f32::NAN, f64_to_f32))
+}
+
+/// Reads a switch that is on unless the file says otherwise, and reads anything that is not a
+/// switch as "on".
+///
+/// The switch counterpart of [`lenient`]: `"enabled": "yes"` is a file with one wrong field,
+/// and it costs that field — which falls back to its default — rather than the document.
+pub(crate) fn lenient_true<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<bool, D::Error> {
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(value.as_bool().unwrap_or_else(|| {
+        log::warn!("settings: {value} is not true or false; using true");
+        true
+    }))
 }
 
 /// A JSON number as an `f32`, or `NaN` if it does not fit in one.
@@ -676,6 +702,11 @@ mod tests {
             ambient_volume: 0.0,
             gameplay: GameplaySettings::default(),
             nameplates: NameplateSettings::default().with(NameplateSetting::Size, 14.0),
+            combat_text: CombatTextSettings {
+                healing: false,
+                size: 125.0,
+                ..CombatTextSettings::default()
+            },
             graphics: GraphicsSettings {
                 shadows: ShadowQuality::Ultra,
             },

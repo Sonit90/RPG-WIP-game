@@ -56,6 +56,7 @@ CLIPS = {
     "strafe_left": ("Left Strafe.fbx", None, None, False),
     # Remove this line and the game mirrors strafe_left into the right-hand strafe.
     "strafe_right": ("Right Strafe.fbx", None, None, False),
+    "death": ("Death.fbx", None, None, False),  # one-shot, holds its last frame lying down
 }
 # Seconds into a cast clip at which the spell leaves the hands. Exported as the clip's glTF
 # extras; the game lines this moment up with the cast completing and plays the rest after.

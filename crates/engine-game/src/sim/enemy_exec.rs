@@ -1680,40 +1680,108 @@ impl Simulation {
         &self.strikes
     }
 
+    /// When the player is dead, every monster that was fighting drops the fight: it is made
+    /// whole and walks home.
+    ///
+    /// A wipe resets the room, not the dungeon. Health back to full and every effect on it
+    /// gone at once — a party that comes back to a pack still at ten per cent has not
+    /// wiped, it has paused — but the walk home is walked, the way a leash is. The boss's
+    /// own reset (its adds sent away, the fight re-armed) follows from it arriving home
+    /// idle, exactly as it does after a leash.
+    ///
+    /// Returns whether anybody dropped a fight this tick.
+    fn evade_on_wipe(&mut self) -> bool {
+        if self.world.is_alive(self.player.entity) {
+            return false;
+        }
+        let mut evaded = Vec::new();
+        for (slot, runtime) in self.enemies.iter_mut().enumerate() {
+            let Some(runtime) = runtime.as_mut() else {
+                continue;
+            };
+            let Some(entity) = self.world.id_at(slot) else {
+                continue;
+            };
+            let was_walking_home = runtime.brain.state() == AiState::Returning;
+            if !self.world.is_alive(entity) || !runtime.brain.evade() {
+                continue;
+            }
+            runtime.dash = None;
+            // Asked every tick the player is dead, of everybody still on the way home, so
+            // only a monster that actually had something put back counts as news.
+            let mut restored = !was_walking_home;
+            if let Some(health) = self.world.health_mut(entity)
+                && health.current() < health.max()
+            {
+                health.restore();
+                restored = true;
+            }
+            if let Some(statuses) = self.world.statuses_mut(entity) {
+                statuses.clear();
+            }
+            if restored {
+                evaded.push(entity);
+            }
+        }
+        for entity in &evaded {
+            self.clear_hazards_of(*entity);
+            self.clear_strikes_of(*entity);
+        }
+        if !evaded.is_empty() {
+            log::info!(
+                "player died: {} monster(s) healed and walking home",
+                evaded.len()
+            );
+        }
+        !evaded.is_empty()
+    }
+
     /// Keeps every encounter's state in step with how many of its members are alive.
     ///
     /// Taken out of `self` and put back so the loop can ask the world questions. A dungeon's
     /// encounters are cheap passes over a handful of entity ids each.
     fn sync_encounter(&mut self) {
+        let wiped = self.evade_on_wipe();
         let mut encounters = std::mem::take(&mut self.encounters);
         for encounter in &mut encounters {
-            // Who is awake, and what they are fighting. A pack is pulled *by* something, and
-            // the rest of it has to be told what.
+            // A wipe ends every fight: nobody is left for an alarm to be about.
+            if wiped {
+                encounter.relax();
+            }
+            // Who is fighting, and what. A pack is pulled *by* something, and the rest of it
+            // has to be told what.
             let mut awake = false;
             let mut puller = None;
             for member in encounter.members() {
                 let Some(Some(runtime)) = self.enemies.get(member.index()) else {
                     continue;
                 };
+                let state = runtime.brain.state();
                 // A corpse is not awake and cannot pull anybody. The last member of a pack
                 // dying must leave the pack at rest, not permanently pulled.
-                if runtime.brain.state() == AiState::Idle || runtime.brain.state() == AiState::Dead
-                {
+                if state == AiState::Idle || state == AiState::Dead {
                     continue;
                 }
                 awake = true;
-                puller = puller.or_else(|| runtime.brain.target());
+                // Only a member that is fighting pulls the others. One walking home has given
+                // up; it still names whoever is nearest as its target, and letting that
+                // wake the packmates already home would turn a leash into a ping-pong.
+                if state.is_combat() || state == AiState::Alert {
+                    puller = puller.or_else(|| runtime.brain.target());
+                }
             }
             // A member killed outright never left Idle, so nobody in the pack is awake and
             // there is no live target to read a puller off. Whoever landed the killing blow
-            // is that puller: a pack that slept through one of its own being deleted could be
-            // taken apart one member at a time.
-            let puller = puller.or_else(|| encounter.alarm());
-            // One member pulled is the whole pack pulled, once. Done here rather than in the
-            // brain because membership is the encounter's: an enemy knows its own aggro
-            // radius and its own leash, and has no idea it is the second of five.
+            // is that puller, once: a pack that slept through one of its own being deleted
+            // could be taken apart one member at a time.
+            let alarm = encounter.alarm().filter(|_| !encounter.pack_pulled());
+            // One member fighting is the whole pack fighting — every tick, not only on the
+            // first pull, so a member that was still walking home when the pack was pulled
+            // again joins the moment it gets there. Done here rather than in the brain
+            // because membership is the encounter's: an enemy knows its own aggro radius and
+            // its own leash, and has no idea it is the second of five.
             let pull = puller
-                .filter(|_| !encounter.pack_pulled())
+                .or(alarm)
                 .filter(|target| self.world.is_alive(*target));
 
             if awake {
@@ -1735,6 +1803,8 @@ impl Simulation {
                     if !self.world.is_alive(*member) {
                         continue;
                     }
+                    // Only the idle are woken: `provoke` leaves anybody already fighting, or
+                    // walking home, exactly as they are.
                     if let Some(Some(runtime)) = self.enemies.get_mut(member.index()) {
                         runtime.brain.provoke(target);
                     }

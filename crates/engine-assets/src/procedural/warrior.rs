@@ -449,7 +449,7 @@ pub fn warrior() -> Result<ModelAsset, crate::AssetError> {
 
     Ok(ModelAsset::rigid(MODEL_NAME, lod0, materials, textures)
         .with_lod(lod1, 25.0)
-        .with_animation(humanoid::skeleton()?, humanoid::clips(&style())))
+        .with_animation(humanoid::skeleton()?, humanoid::hero_clips(&style())))
 }
 
 /// The Warrior's character definition: which model, how tall, and which clip plays when.
@@ -467,6 +467,7 @@ pub fn warrior_character() -> CharacterDef {
         .with_clip(AnimationSlot::Land, "land")
         .with_clip(AnimationSlot::Cast, "cast")
         .with_clip(AnimationSlot::CastHeavy, "cast_heavy")
+        .with_clip(AnimationSlot::Death, "death")
         .with_directional_clips()
 }
 
@@ -483,6 +484,19 @@ mod tests {
     }
 
     #[test]
+    fn the_stand_in_can_die() {
+        let model = model();
+        let Ok(bindings) = warrior_character().resolve(&model) else {
+            panic!("the Warrior's own definition must resolve against its own model");
+        };
+        let Some(death) = bindings.get(AnimationSlot::Death) else {
+            panic!("the Warrior stand-in has no death clip");
+        };
+        assert!(!model.clips[death].looping, "a death plays once and holds");
+        assert!(model.clips[death].duration > 0.0);
+    }
+
+    #[test]
     fn the_warrior_passes_the_same_validation_an_imported_model_would() {
         let Ok(report) = validate_model(&model(), &ValidationLimits::default()) else {
             panic!("the Warrior must validate");
@@ -490,7 +504,8 @@ mod tests {
         assert_eq!(report.lods, 2);
         assert_eq!(report.materials, 4);
         assert_eq!(report.bones as usize, humanoid::BONE_COUNT);
-        assert_eq!(report.clips, 8);
+        // The shared eight and a death.
+        assert_eq!(report.clips, 9);
         assert!(
             (100..700).contains(&report.triangles),
             "a stylized prototype character should stay cheap: {} triangles",

@@ -607,13 +607,14 @@ mod tests {
 
     #[test]
     fn the_upload_count_is_the_number_of_assets_and_not_the_number_of_objects() {
-        // The instancing precondition, stated as the number it is: 16 uploads for ~190
-        // objects. Everything downstream — shared handles, one batch per pair, one
-        // instanced draw — follows from this and nothing else.
+        // The instancing precondition, stated as the number it is: one upload per library
+        // asset — the graveyard kit's included, placed or not — for ~190 objects.
+        // Everything downstream — shared handles, one batch per pair, one instanced draw —
+        // follows from this and nothing else.
         let (_, placer, scene) = placed_arena();
         assert_eq!(placer.visuals().len(), ids::LIBRARY.len());
         assert!(
-            scene.len() > placer.visuals().len() * 10,
+            scene.len() > placer.visuals().len() * 5,
             "{} objects over {} uploads",
             scene.len(),
             placer.visuals().len()

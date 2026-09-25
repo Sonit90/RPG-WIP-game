@@ -7,12 +7,12 @@ priority column is the order the brain tries them in, which is the whole decisio
 
 | Monster | id | Role | Health | Speed | Aggro | Worth | Teaches |
 |---|---|---|---|---|---|---|---|
-| Skeleton Bonecaster | `skeleton_bonecaster` | Ranged AoE | 1,000 | 5.4 | 20 | 4 | dodge zones, carry marks away |
-| Grave Acolyte | `grave_acolyte` | Ranged caster / ground | 1,150 | 5.4 | 20 | 5 | **interrupt**, leave pools |
-| Crypt Archer | `crypt_archer` | Long-range physical | 950 | 5.6 | 22 | 4 | rain, slows, spread damage |
-| Skeleton Warrior | `skeleton_warrior` | Melee cleave | 1,500 | 6.3 | 14 | 4 | face it away, kick the execute |
-| Grave Brute | `grave_brute` | Heavy melee AoE | 2,200 | 5.9 | 14 | 6 | leave slams and quakes, spread for charges |
-| Crypt Ghoul | `crypt_ghoul` | Fast melee / bleed | 1,100 | 6.9 | 15 | 3 | burst it in its frenzy, heal the bleed |
+| Skeleton Bonecaster | `skeleton_bonecaster` | Ranged AoE | 1,000 | 5.4 | 18 | 4 | dodge zones, carry marks away |
+| Grave Acolyte | `grave_acolyte` | Ranged caster / ground | 1,150 | 5.4 | 18 | 5 | **interrupt**, leave pools |
+| Crypt Archer | `crypt_archer` | Long-range physical | 950 | 5.6 | 18 | 4 | rain, slows, spread damage |
+| Skeleton Warrior | `skeleton_warrior` | Melee cleave | 1,500 | 6.3 | 18 | 4 | face it away, kick the execute |
+| Grave Brute | `grave_brute` | Heavy melee AoE | 2,200 | 5.9 | 18 | 6 | leave slams and quakes, spread for charges |
+| Crypt Ghoul | `crypt_ghoul` | Fast melee / bleed | 1,100 | 6.9 | 18 | 3 | burst it in its frenzy, heal the bleed |
 
 Ranged monsters stop at their preferred range (18 / 16 / 24 m) and **back away** from anyone
 who closes inside 7–9 m when they have nothing ready to cast. Melee monsters close to arm's

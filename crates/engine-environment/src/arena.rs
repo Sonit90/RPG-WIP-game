@@ -110,14 +110,15 @@ pub fn environment_demo() -> EnvironmentScene {
     let mut scene = combat_arena();
     scene.name = "environment_demo".into();
 
-    // Two rows of nine. Spaced far enough apart that a large asset does not overlap the
-    // one beside it, and placed past `CLEAR_RADIUS` so the demo row is not in the arena.
+    // Two rows of fifteen, placed past `CLEAR_RADIUS` so the demo row is not in the arena.
     //
-    // Nine and not eight because the library grew to eighteen: a third row would start at
-    // z = 42, which is outside the wall the demo is meant to be walkable inside. Widening a
-    // row costs nothing — nine columns at seven metres reach x = 28 against a limit of 38.6.
-    const SPACING: f32 = 7.0;
-    const PER_ROW: usize = 9;
+    // Fifteen because the library grew to twenty-nine with the graveyard kit: a third row
+    // would start at z = 42, which is outside the wall the demo is meant to be walkable
+    // inside. Fifteen columns at five metres reach x = 35 against a limit of 38.6; the
+    // widest pieces — the arch, a wall, the mausoleum — overlap their neighbours, which a
+    // row of exhibits can live with.
+    const SPACING: f32 = 5.0;
+    const PER_ROW: usize = 15;
     for (index, asset) in LIBRARY.iter().enumerate() {
         // The sky dome and the ground plain are the scene, not exhibits: a second one would
         // be a shell inside the shell and a second floor two centimetres above the first.

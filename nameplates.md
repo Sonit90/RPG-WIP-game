@@ -5,6 +5,11 @@ and how plates are kept from covering one another without being rearranged into 
 
 Status: **COMPLETE**.
 
+> **Redesigned since.** The plate this document lays out is now a name over a real health bar
+> with a cast bar under it, drawn in the interface font with a dark edge. What it looks like,
+> the new switches and the changed defaults are in [combat_ui.md](combat_ui.md); the layout
+> rules below are unchanged except where marked.
+
 ## The rule the whole thing turns on
 
 > A nameplate belongs to its monster. Keep it as close as possible to the position above that
@@ -47,15 +52,17 @@ no camera, no projection — which is what makes every rule below a unit test ov
 | --- | ---: | --- | ---: | --- |
 | Size | 11 | 6 – 24 | 1 | a glyph-scale multiplier; 11 is exactly 1.0 |
 | Height Above Head | 4 | 0 – 20 | 1 | metres: `value * 0.225`; 4 is the 0.90 m the plate already used |
-| Opacity for Non Targets (In Combat) | 40 | 0 – 100 | 5 | alpha `value / 100` |
-| Vertical Margin | 0.93 | 0 – 3 | 0.01 | multiple of a plate's **height** |
-| Horizontal Margin | 0.63 | 0 – 3 | 0.01 | multiple of a plate's **width** |
+| Opacity for Non Targets (In Combat) | 65 (was 40) | 0 – 100 | 5 | alpha `value / 100` |
+| Vertical Margin | 0.16 (was 0.93) | 0 – 3 | 0.01 | multiple of a plate's **height** |
+| Horizontal Margin | 0.08 (was 0.63) | 0 – 3 | 0.01 | multiple of a plate's **width** |
 | Top of Screen Safe Zone | 0.07 | 0 – 0.5 | 0.01 | fraction of the viewport's height |
 
 Displayed units are not internal units, and the conversion lives in one place
-(`engine_settings::nameplate`). The defaults are chosen so that a fresh install draws the plate
-exactly where and how the game drew it before the settings existed — a default settings file
-changes nothing.
+(`engine_settings::nameplate`). The original defaults were chosen so that a fresh install drew
+the plate exactly as before the settings existed. The redesign changed three of them — a plate
+twice as tall needs half the margin — and a file still holding the old defaults exactly is moved
+onto the new ones when it loads (`revision` 2); values a player chose are kept. The section also
+gained `enabled`, `cast_bars`, `health_text`, `stacking` and `max_distance`, file-only for now.
 
 Margins are multiples and the safe zone is a fraction, deliberately: a pixel value would mean
 one thing at 720p and another at 4K, and the layout would have to be re-tuned per display.
@@ -94,7 +101,8 @@ Per frame, over the plates that are actually going to be drawn:
 
 1. Every plate starts at its preferred position — the projection of `head + height` — clamped
    into the allowed area (the viewport minus the top safe zone).
-2. Up to eight separation passes. Each pass sorts by x (a sweep-and-prune broad phase, so the
+2. Up to sixteen separation passes (eight before the redesign; tight margins settle a chain of
+   plates more slowly). Each pass sorts by x (a sweep-and-prune broad phase, so the
    inner loop stops as soon as a neighbour is further away than any pair could need) and
    separates every overlapping pair.
 3. A pair is pushed apart along **whichever axis costs less**, by exactly the overlap, split
@@ -155,5 +163,7 @@ sensitivity and the volumes are.
 - **Displacement is capped, not solved.** A crowd past what the margins can satisfy is left
   overlapping at the cap. The alternative — growing the search until everything fits — is the
   vertical list this design exists to avoid.
+- **Occlusion is not tested.** A plate behind a wall is still drawn; see
+  [combat_ui.md](combat_ui.md#known-limitations).
 - **The plate limit is still twenty.** Beyond that the nearest twenty are drawn, and the layout
   only ever sees those; the setting for it is not exposed on the screen.

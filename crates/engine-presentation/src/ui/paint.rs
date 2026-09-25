@@ -727,7 +727,7 @@ mod tests {
         }
         // The defaults, printed exactly as the reference layout prints them: whole numbers
         // for the three that step in whole numbers, hundredths for the three that do not.
-        for expected in ["11", "4", "40", "0.93", "0.63", "0.07"] {
+        for expected in ["11", "4", "65", "0.16", "0.08", "0.07"] {
             assert!(
                 drawn.contains(&expected.to_owned()),
                 "no {expected} on the screen: {drawn:?}"

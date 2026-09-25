@@ -1,4 +1,4 @@
-//! The environment library: seventeen models, authored in code, for one combat arena.
+//! The environment library: the arena's models and the graveyard kit, authored in code.
 //!
 //! ```text
 //!  terrain        ground_plain   arena_floor
@@ -7,6 +7,9 @@
 //!  vegetation     shrub          fern          pine          leaf_screen
 //!  props          brazier        supply_crate  banner
 //!  background     ridge          sky_dome
+//!  graveyard      crypt_wall     wall_pier     crypt_gate    crypt_floor   mausoleum
+//!                 gravestone     grave_cross   sarcophagus   dead_tree     iron_fence
+//!                 bone_pile
 //! ```
 //!
 //! Same rules as the rest of [`crate::procedural`]: built from tapered prisms and flat
@@ -16,12 +19,13 @@
 //!
 //! # The material budget
 //!
-//! Ten textures across the whole library, and every model draws from that set:
+//! Twelve textures across the whole library, and every model draws from that set:
 //!
 //! | Texture | Used by |
 //! | --- | --- |
 //! | `env_stone` | wall segment, pillar, arch |
-//! | `env_flagstone` | arena floor |
+//! | `env_flagstone` | arena floor, bone pile (bleached) |
+//! | `env_crypt_paving` | crypt floor |
 //! | `env_ground` | ground plain |
 //! | `env_rock` | all three rocks |
 //! | `env_bark` | pine trunk |
@@ -30,6 +34,7 @@
 //! | `env_wood` | crate, banner pole |
 //! | `env_metal` | brazier |
 //! | `env_cloth` | banner |
+//! | `env_crypt_stone` | crypt wall, pier, gate, gravestone, cross, sarcophagus, mausoleum |
 //!
 //! The sky dome and the ridges are untextured: a gradient is cheaper as a two-colour vertex
 //! ramp than as an image, and a distant silhouette has no detail to carry.
@@ -112,6 +117,17 @@ pub fn environment_model(asset: EnvironmentAsset) -> ModelAsset {
         a if a == ids::BANNER => banner(),
         a if a == ids::RIDGE => ridge(),
         a if a == ids::SKY_DOME => sky_dome(),
+        a if a == ids::CRYPT_WALL => crypt_wall(),
+        a if a == ids::WALL_PIER => wall_pier(),
+        a if a == ids::CRYPT_GATE => crypt_gate(),
+        a if a == ids::GRAVESTONE => gravestone(),
+        a if a == ids::GRAVE_CROSS => grave_cross(),
+        a if a == ids::SARCOPHAGUS => sarcophagus(),
+        a if a == ids::DEAD_TREE => dead_tree(),
+        a if a == ids::IRON_FENCE => iron_fence(),
+        a if a == ids::CRYPT_FLOOR => crypt_floor(),
+        a if a == ids::MAUSOLEUM => mausoleum(),
+        a if a == ids::BONE_PILE => bone_pile(),
         other => missing(other),
     }
 }
@@ -507,11 +523,13 @@ fn wall_segment() -> ModelAsset {
             .with_uv_span(0.0, 1.0),
         );
         if detail {
-            // A footing course, wider than the wall.
+            // A footing course, wider than the wall. Heights here are before the lift below,
+            // like the wall's own: -0.38 puts the footing on the floor and the capstone on
+            // the wall's top, rather than a ledge at mid-height and a slab in the air.
             stone.prism(
                 &Prism::new(
-                    Vec3::new(-half, 0.0, 0.0),
-                    Vec3::new(half, 0.0, 0.0),
+                    Vec3::new(-half, -0.38, 0.0),
+                    Vec3::new(half, -0.38, 0.0),
                     0.0,
                     0.0,
                 )
@@ -523,8 +541,8 @@ fn wall_segment() -> ModelAsset {
             // as a slab standing on edge.
             stone.prism(
                 &Prism::new(
-                    Vec3::new(-half, 1.02, 0.0),
-                    Vec3::new(half, 1.02, 0.0),
+                    Vec3::new(-half, 0.52, 0.0),
+                    Vec3::new(half, 0.52, 0.0),
                     0.0,
                     0.0,
                 )
@@ -555,16 +573,13 @@ fn wall_segment() -> ModelAsset {
 fn pillar() -> ModelAsset {
     let level = |detail: u8| {
         let mut stone = MeshBuilder::new();
-        // The shaft, tapered. Always present: it is what a pillar is at any distance.
+        // The shaft, tapered. Always present: it is what a pillar is at any distance. From
+        // the ground, through the plinth: the far level has no plinth, and a shaft that
+        // started on top of one would stand on air there.
         stone.prism(
-            &Prism::new(
-                Vec3::new(0.0, 0.18, 0.0),
-                Vec3::new(0.0, 4.10, 0.0),
-                0.0,
-                0.0,
-            )
-            .with_halves(Vec2::new(0.42, 0.42), Vec2::new(0.33, 0.33))
-            .with_uv_span(0.05, 0.9),
+            &Prism::new(Vec3::ZERO, Vec3::new(0.0, 4.10, 0.0), 0.0, 0.0)
+                .with_halves(Vec2::new(0.42, 0.42), Vec2::new(0.33, 0.33))
+                .with_uv_span(0.05, 0.9),
         );
         if detail >= 1 {
             // A plinth and a capital. Two prisms that turn a post into a pillar.
@@ -862,10 +877,15 @@ fn rock(size: RockSize) -> ModelAsset {
     };
 
     // Every lobe past the first is offset and tilted, so the prism's cross-section dips
-    // below the axis it is built on and the boulder ends up part-buried. Measured once from
-    // the finest level and applied to every level, so a level change is not also a hop.
-    let sink = lowest_point(&level(lobes));
-    let level = |count: usize| lifted(level(count), -sink);
+    // below the axis it is built on and the boulder ends up part-buried. Measured per level:
+    // a coarse level has fewer lobes and dips less, and lifting it by the finest level's
+    // sink stood it on air. A level change moves the top by a few centimetres at the
+    // distance it happens, which is below a pixel; a gap under a rock is not.
+    let level = |count: usize| {
+        let submeshes = level(count);
+        let sink = lowest_point(&submeshes);
+        lifted(submeshes, -sink)
+    };
 
     let mut model = ModelAsset::rigid(
         size.name(),
@@ -916,9 +936,13 @@ fn shrub() -> ModelAsset {
         vec![leaves.into_submesh("shrub", 0)]
     };
     // The masses lean outwards, so their cross-sections dip below the ground they start on.
-    // Corrected once from the finest level, as the boulders are.
-    let sink = lowest_point(&level(3));
-    let level = |count: usize| lifted(level(count), -sink);
+    // Corrected per level, as the boulders are: the single upright mass of the far level
+    // does not dip, and the finest level's correction lifted it off the ground.
+    let level = |count: usize| {
+        let submeshes = level(count);
+        let sink = lowest_point(&submeshes);
+        lifted(submeshes, -sink)
+    };
     ModelAsset::rigid(
         "shrub",
         level(3),
@@ -1116,6 +1140,13 @@ fn brazier() -> ModelAsset {
                     .with_uv_span(0.0, 0.4),
                 );
             }
+        } else {
+            // One stem in place of the three legs: a far level without them is a bowl of
+            // coals hovering at waist height.
+            iron.prism(
+                &Prism::new(Vec3::ZERO, Vec3::new(0.0, 0.80, 0.0), 0.16, 0.08)
+                    .with_uv_span(0.0, 0.4),
+            );
         }
         // The coals, sitting just below the rim.
         coals.prism(
@@ -1394,6 +1425,936 @@ fn sky_texture() -> TextureAsset {
 }
 
 // ---------------------------------------------------------------------------------------
+// Graveyard
+// ---------------------------------------------------------------------------------------
+
+/// Metres of wall one repeat of the crypt-stone texture covers.
+///
+/// Four courses to a repeat, so a course is half a metre: the size a dressed block reads at
+/// from the gameplay camera, and small enough that a five-metre wall is ten courses rather
+/// than a stretched four.
+const CRYPT_STONE_TILE: f32 = 2.0;
+
+/// Height a crypt gate's arch springs from its piers at, in metres.
+const CRYPT_GATE_SPRING: f32 = 3.4;
+
+/// Dark, weathered ashlar: the crypt's walls, piers, gates and tombs.
+///
+/// Darker and colder than `env_stone`, with a stain that varies block to block. The arena's
+/// warm sandstone under a moonlit sky reads as a ruin in daylight; this is the same masonry
+/// after a century of rain.
+fn crypt_stone_texture() -> TextureAsset {
+    TextureAsset::generated(
+        "env_crypt_stone",
+        TEXTURE_SIZE,
+        TEXTURE_SIZE,
+        TextureFormat::Rgba8Srgb,
+        |u, v| {
+            let course = (v * 4.0).floor();
+            let shifted = u + if (course as i32) % 2 == 0 { 0.0 } else { 0.33 };
+            let block = (shifted * 3.0).floor();
+            let block_u = (shifted * 3.0).fract().abs();
+            let block_v = (v * 4.0).fract();
+            let joint =
+                f32::from(!(0.03..=0.97).contains(&block_u) || !(0.07..=0.93).contains(&block_v));
+            // One shade per block, so the wall has variation at block scale; a stain that
+            // runs down from each block's top edge, which is where water sits on a course.
+            let shade = hash01(block as u32 * 13 + 7, course as u32 * 31 + 3);
+            let stain = (1.0 - block_v).powf(3.0) * hash01(block as u32, course as u32 + 90);
+            let grain = hash01(
+                (u * TEXTURE_SIZE as f32) as u32,
+                (v * TEXTURE_SIZE as f32) as u32,
+            ) * 0.16;
+            let base = mix([0.46, 0.46, 0.47], [0.30, 0.31, 0.33], shade * 0.8 + grain);
+            let weathered = mix(base, [0.25, 0.29, 0.22], stain * 0.45);
+            texel(mix(weathered, [0.14, 0.14, 0.15], joint * 0.85))
+        },
+    )
+}
+
+/// Worn paving laid in a running bond: the crypt's floor.
+///
+/// Low contrast on purpose. A floor fills the bottom half of every frame, and the arena's
+/// flagstone — bright slabs, dark joints — reads as a chessboard when it covers a whole
+/// room: the joints are hairlines here and the slabs differ by a shade.
+fn crypt_paving_texture() -> TextureAsset {
+    TextureAsset::generated(
+        "env_crypt_paving",
+        TEXTURE_SIZE,
+        TEXTURE_SIZE,
+        TextureFormat::Rgba8Srgb,
+        |u, v| {
+            // Three rows of two slabs, each row offset by a different amount, so no joint
+            // runs straight across the tile and the tile's own edge is not a visible seam.
+            let row = (v * 3.0).floor();
+            let offset = [0.0, 0.37, 0.71][(row as usize).min(2)];
+            let shifted = u + offset;
+            let slab = (shifted * 2.0).floor();
+            let inner_u = (shifted * 2.0).fract().abs();
+            let inner_v = (v * 3.0).fract();
+            let joint = f32::from(
+                !(0.018..=0.982).contains(&inner_u) || !(0.028..=0.972).contains(&inner_v),
+            );
+            let shade = hash01(slab as u32 * 5 + 11, row as u32 * 17 + 1);
+            let wear = hash01((u * 24.0) as u32, (v * 24.0) as u32) * 0.35;
+            let speckle = hash01(
+                (u * TEXTURE_SIZE as f32) as u32,
+                (v * TEXTURE_SIZE as f32) as u32,
+            ) * 0.1;
+            let stone = mix(
+                [0.38, 0.37, 0.36],
+                [0.29, 0.29, 0.30],
+                shade * 0.55 + wear + speckle,
+            );
+            texel(mix(stone, [0.18, 0.19, 0.16], joint * 0.6))
+        },
+    )
+}
+
+/// The one material every piece of graveyard masonry shares.
+fn crypt_stone_material() -> MaterialAsset {
+    MaterialAsset::colored("env_crypt_stone", 1.0, 1.0, 1.0)
+        .with_roughness(0.92)
+        .with_base_color_texture(0)
+}
+
+/// Wrought iron: the fence and the mausoleum's door.
+fn iron_material() -> MaterialAsset {
+    MaterialAsset::colored("env_metal", 0.8, 0.8, 0.85)
+        .with_roughness(0.6)
+        .with_metallic(0.8)
+        .with_base_color_texture(0)
+}
+
+/// Appends an axis-aligned box from `min` to `max` with UVs planar in metres.
+///
+/// A prism maps its texture once around each face, which is right for a limb and wrong for
+/// a wall: an eight-metre wall and a one-metre gravestone would carry the same number of
+/// courses. Planar UVs at `tile` metres a repeat keep every block in the graveyard the same
+/// size, and a row of walls laid end to end continues its courses across the joints.
+fn block(builder: &mut MeshBuilder, min: Vec3, max: Vec3, tile: f32) {
+    let scale = 1.0 / tile;
+    let uv = |a: f32, b: f32| Vec2::new(a * scale, -b * scale);
+    // (normal, four corners). Each corner list is ordered so that the face winds
+    // counter-clockwise seen from outside, which is the order the quad is emitted in.
+    let (x0, y0, z0) = (min.x, min.y, min.z);
+    let (x1, y1, z1) = (max.x, max.y, max.z);
+    let faces: [(Vec3, [Vec3; 4]); 6] = [
+        (
+            Vec3::X,
+            [
+                Vec3::new(x1, y0, z1),
+                Vec3::new(x1, y0, z0),
+                Vec3::new(x1, y1, z0),
+                Vec3::new(x1, y1, z1),
+            ],
+        ),
+        (
+            -Vec3::X,
+            [
+                Vec3::new(x0, y0, z0),
+                Vec3::new(x0, y0, z1),
+                Vec3::new(x0, y1, z1),
+                Vec3::new(x0, y1, z0),
+            ],
+        ),
+        (
+            Vec3::Z,
+            [
+                Vec3::new(x0, y0, z1),
+                Vec3::new(x1, y0, z1),
+                Vec3::new(x1, y1, z1),
+                Vec3::new(x0, y1, z1),
+            ],
+        ),
+        (
+            -Vec3::Z,
+            [
+                Vec3::new(x1, y0, z0),
+                Vec3::new(x0, y0, z0),
+                Vec3::new(x0, y1, z0),
+                Vec3::new(x1, y1, z0),
+            ],
+        ),
+        (
+            Vec3::Y,
+            [
+                Vec3::new(x0, y1, z0),
+                Vec3::new(x0, y1, z1),
+                Vec3::new(x1, y1, z1),
+                Vec3::new(x1, y1, z0),
+            ],
+        ),
+        (
+            -Vec3::Y,
+            [
+                Vec3::new(x0, y0, z0),
+                Vec3::new(x1, y0, z0),
+                Vec3::new(x1, y0, z1),
+                Vec3::new(x0, y0, z1),
+            ],
+        ),
+    ];
+    for (normal, corners) in faces {
+        let uvs = corners.map(|corner| {
+            if normal.x.abs() > 0.5 {
+                uv(corner.z, corner.y)
+            } else if normal.z.abs() > 0.5 {
+                uv(corner.x, corner.y)
+            } else {
+                uv(corner.x, corner.z)
+            }
+        });
+        builder.quad(corners, normal, uvs);
+    }
+}
+
+/// A full-height crypt wall: footing, battered body, string course, coping and buttresses.
+///
+/// Eight metres along X — the kerb's length, so a room laid out in kerb segments can be
+/// walled in place — and just under five tall. The coping overhangs both faces, which is what
+/// reads as a finished wall; the string course and the two buttresses break the face up so
+/// a room of them does not read as one flat texture.
+fn crypt_wall() -> ModelAsset {
+    let half = WALL_SEGMENT_LENGTH * 0.5;
+    let tile = CRYPT_STONE_TILE;
+    let level = |detail: bool| {
+        let mut stone = MeshBuilder::new();
+        block(
+            &mut stone,
+            Vec3::new(-half, 0.0, -0.62),
+            Vec3::new(half, 0.42, 0.62),
+            tile,
+        );
+        block(
+            &mut stone,
+            Vec3::new(-half, 0.42, -0.48),
+            Vec3::new(half, 4.52, 0.48),
+            tile,
+        );
+        block(
+            &mut stone,
+            Vec3::new(-half, 4.52, -0.6),
+            Vec3::new(half, 4.74, 0.6),
+            tile,
+        );
+        if detail {
+            block(
+                &mut stone,
+                Vec3::new(-half, 2.72, -0.55),
+                Vec3::new(half, 2.9, 0.55),
+                tile,
+            );
+            block(
+                &mut stone,
+                Vec3::new(-half, 4.74, -0.34),
+                Vec3::new(half, 4.92, 0.34),
+                tile,
+            );
+            // Two buttresses a side, a quarter of the way in from each end, leaning back
+            // into the wall as they rise. From the ground up, through the footing: one that
+            // started on the footing's top would overhang its edge with air under it.
+            for x in [-half * 0.5, half * 0.5] {
+                for side in [-1.0_f32, 1.0] {
+                    stone.prism(
+                        &Prism::new(
+                            Vec3::new(x, 0.0, side * 0.72),
+                            Vec3::new(x, 3.4, side * 0.54),
+                            0.0,
+                            0.0,
+                        )
+                        .with_halves(Vec2::new(0.36, 0.26), Vec2::new(0.3, 0.08))
+                        .with_uv_span(0.0, 1.0),
+                    );
+                }
+            }
+        }
+        vec![stone.into_submesh("wall", 0)]
+    };
+    ModelAsset::rigid(
+        "crypt_wall",
+        level(true),
+        vec![crypt_stone_material()],
+        vec![crypt_stone_texture()],
+    )
+    .with_lod(level(false), 70.0)
+}
+
+/// A square pier with a plinth, a band and a pyramid cap: every corner and joint of a wall.
+fn wall_pier() -> ModelAsset {
+    let tile = CRYPT_STONE_TILE;
+    let level = |detail: bool| {
+        let mut stone = MeshBuilder::new();
+        block(
+            &mut stone,
+            Vec3::new(-0.74, 0.0, -0.74),
+            Vec3::new(0.74, 0.6, 0.74),
+            tile,
+        );
+        block(
+            &mut stone,
+            Vec3::new(-0.6, 0.6, -0.6),
+            Vec3::new(0.6, 5.3, 0.6),
+            tile,
+        );
+        block(
+            &mut stone,
+            Vec3::new(-0.72, 5.3, -0.72),
+            Vec3::new(0.72, 5.56, 0.72),
+            tile,
+        );
+        stone.prism(
+            &Prism::new(
+                Vec3::new(0.0, 5.56, 0.0),
+                Vec3::new(0.0, 6.35, 0.0),
+                0.62,
+                0.05,
+            )
+            .with_uv_span(0.0, 0.4),
+        );
+        if detail {
+            block(
+                &mut stone,
+                Vec3::new(-0.66, 2.72, -0.66),
+                Vec3::new(0.66, 2.9, 0.66),
+                tile,
+            );
+        }
+        vec![stone.into_submesh("pier", 0)]
+    };
+    ModelAsset::rigid(
+        "wall_pier",
+        level(true),
+        vec![crypt_stone_material()],
+        vec![crypt_stone_texture()],
+    )
+    .with_lod(level(false), 80.0)
+}
+
+/// A pointed arch over a doorway, its feet built into the piers either side of it.
+///
+/// Two arcs of voussoirs meeting in a point above the middle. Each arc is centred below the
+/// springing line and short of the far side — a depressed pointed arch — because a true
+/// pointed arch over sixteen metres would rise eight and tower over five-metre walls. The
+/// feet stand on an impost let into each pier, the piers [`ids::CRYPT_GATE_SPAN`] apart:
+/// below the springing line nothing of the arch is outside a pier, which is what keeps it
+/// from reading as a hoop hanging in the doorway. A keystone and a cross mark the crown. No
+/// collision: the piers carry that.
+fn crypt_gate() -> ModelAsset {
+    const SPRING_Y: f32 = CRYPT_GATE_SPRING;
+    const RISE: f32 = 3.2;
+    const CENTER_OFFSET: f32 = 2.0;
+    let pier_x = ids::CRYPT_GATE_SPAN * 0.5;
+    // The springer sits inside the pier, so the ring's inner edge meets the pier's face.
+    let spring_x = pier_x - 0.3;
+    // The circle through the springer and the crown, centred `CENTER_OFFSET` past the
+    // middle and `drop` below the springing line.
+    let run = spring_x + CENTER_OFFSET;
+    let drop = (run * run - CENTER_OFFSET * CENTER_OFFSET - RISE * RISE) / (2.0 * RISE);
+    let radius = (run * run + drop * drop).sqrt();
+    let start = drop.atan2(run);
+    let end = (CENTER_OFFSET / radius).acos();
+    let level = |segments: usize, detail: bool| {
+        let mut stone = MeshBuilder::new();
+        for side in [-1.0_f32, 1.0] {
+            // The arc on this side is centred on the other side of the middle.
+            let center = Vec3::new(-side * CENTER_OFFSET, SPRING_Y - drop, 0.0);
+            let point = |t: f32| {
+                let angle = start + t * (end - start);
+                center + Vec3::new(side * angle.cos() * radius, angle.sin() * radius, 0.0)
+            };
+            for step in 0..segments {
+                let t0 = step as f32 / segments as f32;
+                let t1 = (step + 1) as f32 / segments as f32;
+                // Each voussoir runs a little past its neighbours so the joints close — the
+                // first one not past its foot, which would push it out through the pier.
+                let (a, b) = (point(t0), point(t1));
+                let overlap = (b - a) * 0.08;
+                let from = if step == 0 { a } else { a - overlap };
+                stone.prism(
+                    &Prism::new(from, b + overlap, 0.0, 0.0)
+                        .with_halves(Vec2::new(0.52, 0.34), Vec2::new(0.52, 0.34))
+                        .with_width_axis(Vec3::Z)
+                        .with_uv_span(t0, t1 - t0),
+                );
+            }
+            // The impost: a course let into the pier for the arch's foot to stand on, proud
+            // of the pier on every face so the joint reads as carried rather than touching.
+            let (inner, outer) = (side * (pier_x - 0.72), side * (pier_x + 0.72));
+            block(
+                &mut stone,
+                Vec3::new(inner.min(outer), SPRING_Y - 0.62, -0.72),
+                Vec3::new(inner.max(outer), SPRING_Y - 0.2, 0.72),
+                CRYPT_STONE_TILE,
+            );
+        }
+        let crown = SPRING_Y + RISE;
+        // The keystone, proud of the ring on both faces.
+        stone.prism(
+            &Prism::new(
+                Vec3::new(0.0, crown - 0.55, 0.0),
+                Vec3::new(0.0, crown + 0.35, 0.0),
+                0.0,
+                0.0,
+            )
+            .with_halves(Vec2::new(0.22, 0.62), Vec2::new(0.36, 0.62))
+            .with_uv_span(0.0, 0.5),
+        );
+        if detail {
+            // A stone cross on the crown: the doorway's one mark of what the place is.
+            stone.prism(
+                &Prism::new(
+                    Vec3::new(0.0, crown + 0.35, 0.0),
+                    Vec3::new(0.0, crown + 1.45, 0.0),
+                    0.1,
+                    0.09,
+                )
+                .with_uv_span(0.0, 0.5),
+            );
+            stone.prism(
+                &Prism::new(
+                    Vec3::new(-0.36, crown + 1.08, 0.0),
+                    Vec3::new(0.36, crown + 1.08, 0.0),
+                    0.0,
+                    0.0,
+                )
+                .with_halves(Vec2::new(0.09, 0.09), Vec2::new(0.09, 0.09))
+                .with_width_axis(Vec3::Y),
+            );
+        }
+        vec![stone.into_submesh("gate", 0)]
+    };
+    ModelAsset::rigid(
+        "crypt_gate",
+        level(5, true),
+        vec![crypt_stone_material()],
+        vec![crypt_stone_texture()],
+    )
+    .with_lod(level(3, false), 90.0)
+}
+
+/// A weathered headstone on a low base, leaning a little.
+///
+/// The lean is in the mesh because a placement only has a yaw: a row of perfectly upright
+/// stones is a new cemetery, and this is not one. A scene varies the row by yaw and scale.
+fn gravestone() -> ModelAsset {
+    let level = |detail: bool| {
+        let mut stone = MeshBuilder::new();
+        stone.prism(
+            // From the ground, through the base: the far level has no base, and a slab
+            // that started on top of it would hover there.
+            &Prism::new(Vec3::ZERO, Vec3::new(0.03, 0.82, -0.05), 0.0, 0.0)
+                .with_halves(Vec2::new(0.32, 0.08), Vec2::new(0.3, 0.075))
+                .with_uv_span(0.0, 0.8),
+        );
+        // The rounded shoulder, as a taper: two facets read as a curve at this size.
+        stone.prism(
+            &Prism::new(
+                Vec3::new(0.03, 0.82, -0.05),
+                Vec3::new(0.04, 1.02, -0.06),
+                0.0,
+                0.0,
+            )
+            .with_halves(Vec2::new(0.3, 0.075), Vec2::new(0.12, 0.07))
+            .with_uv_span(0.8, 0.2),
+        );
+        if detail {
+            block(
+                &mut stone,
+                Vec3::new(-0.42, 0.0, -0.17),
+                Vec3::new(0.42, 0.12, 0.17),
+                CRYPT_STONE_TILE,
+            );
+        }
+        vec![stone.into_submesh("headstone", 0)]
+    };
+    ModelAsset::rigid(
+        "gravestone",
+        level(true),
+        vec![crypt_stone_material()],
+        vec![crypt_stone_texture()],
+    )
+    .with_lod(level(false), 40.0)
+}
+
+/// A stone cross on a two-step base.
+fn grave_cross() -> ModelAsset {
+    let level = |detail: bool| {
+        let mut stone = MeshBuilder::new();
+        stone.prism(
+            // From the lower step, not the upper one, which the far level drops.
+            &Prism::new(
+                Vec3::new(0.0, 0.18, 0.0),
+                Vec3::new(0.0, 1.82, 0.0),
+                0.1,
+                0.085,
+            )
+            .with_uv_span(0.0, 1.0),
+        );
+        stone.prism(
+            &Prism::new(
+                Vec3::new(-0.42, 1.38, 0.0),
+                Vec3::new(0.42, 1.38, 0.0),
+                0.0,
+                0.0,
+            )
+            .with_halves(Vec2::new(0.09, 0.085), Vec2::new(0.09, 0.085))
+            .with_width_axis(Vec3::Y),
+        );
+        block(
+            &mut stone,
+            Vec3::new(-0.3, 0.0, -0.2),
+            Vec3::new(0.3, 0.18, 0.2),
+            CRYPT_STONE_TILE,
+        );
+        if detail {
+            block(
+                &mut stone,
+                Vec3::new(-0.2, 0.18, -0.14),
+                Vec3::new(0.2, 0.32, 0.14),
+                CRYPT_STONE_TILE,
+            );
+        }
+        vec![stone.into_submesh("cross", 0)]
+    };
+    ModelAsset::rigid(
+        "grave_cross",
+        level(true),
+        vec![crypt_stone_material()],
+        vec![crypt_stone_texture()],
+    )
+    .with_lod(level(false), 45.0)
+}
+
+/// A lidded stone coffin on a plinth, lying along Z.
+fn sarcophagus() -> ModelAsset {
+    let tile = CRYPT_STONE_TILE;
+    let level = |detail: bool| {
+        let mut stone = MeshBuilder::new();
+        block(
+            &mut stone,
+            Vec3::new(-0.56, 0.0, -1.2),
+            Vec3::new(0.56, 0.18, 1.2),
+            tile,
+        );
+        block(
+            &mut stone,
+            Vec3::new(-0.46, 0.18, -1.08),
+            Vec3::new(0.46, 0.8, 1.08),
+            tile,
+        );
+        block(
+            &mut stone,
+            Vec3::new(-0.54, 0.8, -1.16),
+            Vec3::new(0.54, 0.9, 1.16),
+            tile,
+        );
+        if detail {
+            // A raised panel down the lid, and a band round the chest.
+            block(
+                &mut stone,
+                Vec3::new(-0.34, 0.9, -0.98),
+                Vec3::new(0.34, 1.02, 0.98),
+                tile,
+            );
+            block(
+                &mut stone,
+                Vec3::new(-0.49, 0.56, -1.11),
+                Vec3::new(0.49, 0.64, 1.11),
+                tile,
+            );
+        }
+        vec![stone.into_submesh("coffin", 0)]
+    };
+    ModelAsset::rigid(
+        "sarcophagus",
+        level(true),
+        vec![crypt_stone_material()],
+        vec![crypt_stone_texture()],
+    )
+    .with_lod(level(false), 40.0)
+}
+
+/// A bare crooked tree: a kinked trunk and a spread of dead branches.
+fn dead_tree() -> ModelAsset {
+    // (from, to, half-width at the base, at the tip). Fixed rather than generated, so the
+    // tree is the same tree on every machine and the silhouette is one somebody chose.
+    const TRUNK: [(Vec3, Vec3, f32, f32); 3] = [
+        (
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.25, 2.2, 0.1),
+            0.34,
+            0.24,
+        ),
+        (
+            Vec3::new(0.25, 2.2, 0.1),
+            Vec3::new(-0.1, 3.9, -0.05),
+            0.24,
+            0.16,
+        ),
+        (
+            Vec3::new(-0.1, 3.9, -0.05),
+            Vec3::new(0.2, 5.4, 0.1),
+            0.16,
+            0.06,
+        ),
+    ];
+    const BRANCHES: [(Vec3, Vec3, f32, f32); 9] = [
+        (
+            Vec3::new(0.2, 2.0, 0.1),
+            Vec3::new(1.9, 3.3, 0.6),
+            0.13,
+            0.03,
+        ),
+        (
+            Vec3::new(0.1, 2.5, 0.0),
+            Vec3::new(-1.7, 3.5, -0.8),
+            0.12,
+            0.03,
+        ),
+        (
+            Vec3::new(0.0, 3.2, 0.0),
+            Vec3::new(0.6, 4.4, -1.7),
+            0.1,
+            0.025,
+        ),
+        (
+            Vec3::new(-0.05, 3.6, 0.0),
+            Vec3::new(-1.3, 4.9, 1.1),
+            0.09,
+            0.02,
+        ),
+        (
+            Vec3::new(0.05, 4.4, 0.0),
+            Vec3::new(1.4, 5.5, 0.9),
+            0.07,
+            0.02,
+        ),
+        (
+            Vec3::new(1.1, 2.8, 0.35),
+            Vec3::new(1.8, 4.1, -0.2),
+            0.05,
+            0.015,
+        ),
+        (
+            Vec3::new(-1.0, 3.1, -0.45),
+            Vec3::new(-1.9, 2.7, -1.3),
+            0.05,
+            0.015,
+        ),
+        (
+            Vec3::new(0.35, 3.9, -1.0),
+            Vec3::new(-0.3, 4.8, -2.0),
+            0.045,
+            0.015,
+        ),
+        (
+            Vec3::new(-0.8, 4.4, 0.7),
+            Vec3::new(-0.6, 5.6, 1.5),
+            0.045,
+            0.015,
+        ),
+    ];
+    let level = |branches: usize| {
+        let mut bark = MeshBuilder::new();
+        for (from, to, low, high) in TRUNK {
+            bark.prism(&Prism::new(from, to, low, high).with_uv_span(from.y / 5.4, 0.4));
+        }
+        for (from, to, low, high) in BRANCHES.iter().take(branches) {
+            bark.prism(&Prism::new(*from, *to, *low, *high).with_uv_span(0.0, 0.5));
+        }
+        vec![bark.into_submesh("tree", 0)]
+    };
+    ModelAsset::rigid(
+        "dead_tree",
+        level(BRANCHES.len()),
+        vec![
+            MaterialAsset::colored("env_bark", 0.72, 0.7, 0.68)
+                .with_roughness(0.95)
+                .with_base_color_texture(0),
+        ],
+        vec![bark_texture()],
+    )
+    .with_lod(level(5), 55.0)
+    .with_lod(level(2), 110.0)
+}
+
+/// Four metres of spear-topped railing between two posts, along X.
+fn iron_fence() -> ModelAsset {
+    const HALF: f32 = 2.0;
+    const PICKETS: usize = 14;
+    let level = |detail: bool| {
+        let mut iron = MeshBuilder::new();
+        for x in [-HALF, HALF] {
+            iron.prism(&Prism::new(
+                Vec3::new(x, 0.0, 0.0),
+                Vec3::new(x, 1.72, 0.0),
+                0.075,
+                0.06,
+            ));
+            iron.prism(&Prism::new(
+                Vec3::new(x, 1.72, 0.0),
+                Vec3::new(x, 1.9, 0.0),
+                0.09,
+                0.02,
+            ));
+        }
+        for y in [0.22_f32, 1.38] {
+            block(
+                &mut iron,
+                Vec3::new(-HALF, y, -0.025),
+                Vec3::new(HALF, y + 0.05, 0.025),
+                1.0,
+            );
+        }
+        let pickets = if detail { PICKETS } else { PICKETS / 2 };
+        for index in 0..pickets {
+            let x = -HALF + (index as f32 + 0.5) * (HALF * 2.0 / pickets as f32);
+            iron.prism(&Prism::new(
+                Vec3::new(x, 0.05, 0.0),
+                Vec3::new(x, 1.55, 0.0),
+                0.018,
+                0.018,
+            ));
+            if detail {
+                iron.prism(&Prism::new(
+                    Vec3::new(x, 1.55, 0.0),
+                    Vec3::new(x, 1.7, 0.0),
+                    0.04,
+                    0.004,
+                ));
+            }
+        }
+        vec![iron.into_submesh("railing", 0)]
+    };
+    ModelAsset::rigid(
+        "iron_fence",
+        level(true),
+        vec![iron_material()],
+        vec![metal_texture()],
+    )
+    .with_lod(level(false), 35.0)
+}
+
+/// Eight metres of paving, two centimetres above the plain: a crypt's floor.
+///
+/// A square the size of one wall segment, so a room laid out in segments is paved in whole
+/// tiles, and a corridor one tile wide. Two repeats of the paving texture a tile, which puts
+/// each slab at two metres by one and a third.
+fn crypt_floor() -> ModelAsset {
+    let half = WALL_SEGMENT_LENGTH * 0.5;
+    let mut builder = MeshBuilder::new();
+    builder.quad(
+        [
+            Vec3::new(-half, 0.02, -half),
+            Vec3::new(-half, 0.02, half),
+            Vec3::new(half, 0.02, half),
+            Vec3::new(half, 0.02, -half),
+        ],
+        Vec3::Y,
+        [
+            Vec2::new(0.0, 0.0),
+            Vec2::new(0.0, 2.0),
+            Vec2::new(2.0, 2.0),
+            Vec2::new(2.0, 0.0),
+        ],
+    );
+    ModelAsset::rigid(
+        "crypt_floor",
+        vec![builder.into_submesh("floor", 0)],
+        vec![
+            MaterialAsset::colored("env_crypt_paving", 1.0, 1.0, 1.0)
+                .with_roughness(0.9)
+                .with_base_color_texture(0),
+        ],
+        vec![crypt_paving_texture()],
+    )
+}
+
+/// A small stone tomb-house: steps, a chamber, a portico of two columns and a gabled roof.
+///
+/// The door faces +Z. The graveyard's landmark, and the one piece here with a second
+/// material, for the iron of the door.
+fn mausoleum() -> ModelAsset {
+    let tile = CRYPT_STONE_TILE;
+    let level = |detail: bool| {
+        let mut stone = MeshBuilder::new();
+        let mut iron = MeshBuilder::new();
+        // Two steps, the chamber and a cornice.
+        block(
+            &mut stone,
+            Vec3::new(-3.2, 0.0, -3.8),
+            Vec3::new(3.2, 0.22, 3.8),
+            tile,
+        );
+        block(
+            &mut stone,
+            Vec3::new(-2.95, 0.22, -3.55),
+            Vec3::new(2.95, 0.44, 3.55),
+            tile,
+        );
+        block(
+            &mut stone,
+            Vec3::new(-2.6, 0.44, -3.2),
+            Vec3::new(2.6, 4.2, 2.0),
+            tile,
+        );
+        block(
+            &mut stone,
+            Vec3::new(-2.9, 4.2, -3.5),
+            Vec3::new(2.9, 4.55, 3.5),
+            tile,
+        );
+        // The roof: a prism whose width tapers to a ridge along Z, so its two ends are the
+        // pediments.
+        stone.prism(
+            &Prism::new(
+                Vec3::new(0.0, 4.55, 0.0),
+                Vec3::new(0.0, 6.3, 0.0),
+                0.0,
+                0.0,
+            )
+            .with_halves(Vec2::new(3.0, 3.6), Vec2::new(0.06, 3.6))
+            .with_uv_span(0.0, 1.0),
+        );
+        // The portico's columns.
+        for x in [-1.9_f32, 1.9] {
+            stone.prism(
+                &Prism::new(Vec3::new(x, 0.44, 3.0), Vec3::new(x, 4.2, 3.0), 0.3, 0.25)
+                    .with_uv_span(0.0, 1.0),
+            );
+        }
+        // The door, just proud of the chamber's front face.
+        block(
+            &mut iron,
+            Vec3::new(-0.8, 0.44, 2.0),
+            Vec3::new(0.8, 2.9, 2.06),
+            1.0,
+        );
+        if detail {
+            // Plinths and capitals on the columns, and pilasters at the chamber's corners.
+            for x in [-1.9_f32, 1.9] {
+                block(
+                    &mut stone,
+                    Vec3::new(x - 0.4, 0.44, 2.6),
+                    Vec3::new(x + 0.4, 0.66, 3.4),
+                    tile,
+                );
+                block(
+                    &mut stone,
+                    Vec3::new(x - 0.38, 3.95, 2.62),
+                    Vec3::new(x + 0.38, 4.2, 3.38),
+                    tile,
+                );
+            }
+            for x in [-2.6_f32, 2.6] {
+                block(
+                    &mut stone,
+                    Vec3::new(x - 0.22, 0.44, -3.32),
+                    Vec3::new(x + 0.22, 4.2, -2.88),
+                    tile,
+                );
+            }
+            // A lintel over the door.
+            block(
+                &mut stone,
+                Vec3::new(-1.05, 2.9, 1.98),
+                Vec3::new(1.05, 3.2, 2.14),
+                tile,
+            );
+        }
+        vec![stone.into_submesh("tomb", 0), iron.into_submesh("door", 1)]
+    };
+    ModelAsset::rigid(
+        "mausoleum",
+        level(true),
+        vec![crypt_stone_material(), iron_material()],
+        vec![crypt_stone_texture(), metal_texture()],
+    )
+    .with_lod(level(false), 90.0)
+}
+
+/// A heap of bones and skulls: ossuary dressing, ankle-deep and walked through.
+fn bone_pile() -> ModelAsset {
+    // (from, to, half-width) for the long bones; skull centres and sizes.
+    const BONES: [(Vec3, Vec3, f32); 8] = [
+        (
+            Vec3::new(-0.6, 0.12, -0.2),
+            Vec3::new(0.3, 0.2, 0.25),
+            0.045,
+        ),
+        (Vec3::new(-0.2, 0.1, 0.5), Vec3::new(0.5, 0.18, -0.3), 0.04),
+        (Vec3::new(0.4, 0.08, 0.4), Vec3::new(0.8, 0.14, -0.2), 0.04),
+        (
+            Vec3::new(-0.7, 0.06, 0.3),
+            Vec3::new(-0.3, 0.2, -0.4),
+            0.035,
+        ),
+        (
+            Vec3::new(-0.1, 0.28, -0.3),
+            Vec3::new(0.25, 0.3, 0.35),
+            0.035,
+        ),
+        (
+            Vec3::new(0.1, 0.06, -0.6),
+            Vec3::new(0.7, 0.1, -0.45),
+            0.035,
+        ),
+        (
+            Vec3::new(-0.45, 0.25, 0.1),
+            Vec3::new(0.05, 0.36, 0.0),
+            0.03,
+        ),
+        (
+            Vec3::new(-0.5, 0.05, -0.6),
+            Vec3::new(-0.1, 0.12, -0.7),
+            0.03,
+        ),
+    ];
+    const SKULLS: [(Vec3, f32); 4] = [
+        (Vec3::new(0.05, 0.36, 0.05), 0.13),
+        (Vec3::new(-0.42, 0.16, 0.42), 0.12),
+        (Vec3::new(0.55, 0.12, 0.05), 0.12),
+        (Vec3::new(-0.2, 0.12, -0.45), 0.11),
+    ];
+    let level = |detail: bool| {
+        let mut bone = MeshBuilder::new();
+        // The heap itself: a low mound the bones lie on.
+        bone.prism(
+            &Prism::new(Vec3::ZERO, Vec3::new(0.0, 0.22, 0.0), 0.0, 0.0)
+                .with_halves(Vec2::new(0.75, 0.65), Vec2::new(0.35, 0.3)),
+        );
+        let bones = if detail { BONES.len() } else { 3 };
+        for (from, to, half) in BONES.iter().take(bones) {
+            bone.prism(&Prism::new(*from, *to, *half, *half * 0.8));
+        }
+        let skulls = if detail { SKULLS.len() } else { 2 };
+        for (centre, size) in SKULLS.iter().take(skulls) {
+            bone.prism(&Prism::new(
+                *centre - Vec3::new(0.0, *size, 0.0),
+                *centre + Vec3::new(0.0, *size * 0.9, 0.0),
+                *size * 0.85,
+                *size * 0.7,
+            ));
+        }
+        vec![bone.into_submesh("bones", 0)]
+    };
+    ModelAsset::rigid(
+        "bone_pile",
+        level(true),
+        vec![
+            // The flagstone, bleached: at the size a skull is on screen the texture is only
+            // a mottle, and sharing it keeps bone from being a material of its own.
+            MaterialAsset::colored("env_flagstone", 1.25, 1.18, 1.0)
+                .with_roughness(0.85)
+                .with_base_color_texture(0),
+        ],
+        vec![flagstone_texture()],
+    )
+    .with_lod(level(false), 30.0)
+}
+
+// ---------------------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------------------
 
@@ -1501,6 +2462,20 @@ mod tests {
                 a if a == ids::SKY_DOME => 320,
                 // Six of them, each two hundred metres wide.
                 a if a == ids::RIDGE => 80,
+                // The graveyard kit's masonry: modular pieces that make rooms, placed by the
+                // hundred but each one a wall, not a pebble.
+                a if a == ids::CRYPT_WALL
+                    || a == ids::WALL_PIER
+                    || a == ids::SARCOPHAGUS
+                    || a == ids::DEAD_TREE
+                    || a == ids::BONE_PILE =>
+                {
+                    160
+                }
+                // Two arcs of voussoirs and two imposts, over a doorway: nineteen in the crypt.
+                a if a == ids::CRYPT_GATE => 200,
+                // Fourteen pickets with spear tips, and a landmark building placed once.
+                a if a == ids::IRON_FENCE || a == ids::MAUSOLEUM => 420,
                 // Everything else is scatter, and there are dozens of each.
                 _ => 80,
             };
@@ -1509,34 +2484,165 @@ mod tests {
                 "{asset} costs {triangles} triangles against a budget of {limit}"
             );
         }
-        assert!(total < 1_200, "the whole library is {total} triangles");
+        assert!(total < 2_600, "the whole library is {total} triangles");
     }
 
     #[test]
     fn every_model_stands_on_its_own_origin() {
         // The invariant the whole placement path depends on: a scene puts an object at a
         // ground position, and the model has to sit on that rather than through it or above
-        // it. Three assets are deliberately not placed that way: the arch is a span five
-        // metres overhead, the sky is a shell around everything, and a ridge's feet are
+        // it. Four assets are deliberately not placed that way: the arch and the crypt gate
+        // are spans overhead, the sky is a shell around everything, and a ridge's feet are
         // buried because a mountain meeting the ground at a hard edge reads as a cardboard
         // cut-out standing on a plain.
         for (asset, model) in environment_library() {
-            if asset == ids::ARCH || asset == ids::SKY_DOME || asset == ids::RIDGE {
+            if asset == ids::ARCH
+                || asset == ids::CRYPT_GATE
+                || asset == ids::SKY_DOME
+                || asset == ids::RIDGE
+            {
                 continue;
             }
-            let Some(lod) = model.lod0() else {
-                panic!("{asset} has no LOD0");
-            };
-            let lowest = lod
+            // Every level, not only the first: a far level that drops a base is a level
+            // whose headstone hovers at the height the base used to hold it up to.
+            for (index, lod) in model.lods.iter().enumerate() {
+                let lowest = lod
+                    .submeshes
+                    .iter()
+                    .flat_map(|submesh| submesh.geometry.positions())
+                    .map(|position| position.y)
+                    .fold(f32::MAX, f32::min);
+                assert!(
+                    lowest.abs() < 0.06,
+                    "{asset} LOD{index} has its lowest vertex at y = {lowest}"
+                );
+            }
+        }
+    }
+
+    /// The clusters of touching triangles in a level, as the lowest point of each.
+    ///
+    /// Every face of a prism has vertices of its own, so index connectivity would call each
+    /// face a part. Touching is the test instead: two triangles whose bounds meet, within a
+    /// centimetre, are one piece of the model — which is also what an eye reads as joined.
+    fn part_floors(lod: &ModelLod) -> Vec<f32> {
+        let mut boxes: Vec<(Vec3, Vec3)> = Vec::new();
+        for submesh in &lod.submeshes {
+            let positions: Vec<Vec3> = submesh.geometry.positions().collect();
+            for triangle in submesh.indices.chunks_exact(3) {
+                let corners = triangle.iter().map(|&index| positions[index as usize]);
+                let (low, high) = corners.fold(
+                    (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN)),
+                    |(low, high), corner| (low.min(corner), high.max(corner)),
+                );
+                boxes.push((low, high));
+            }
+        }
+        let mut parent: Vec<usize> = (0..boxes.len()).collect();
+        fn root(parent: &mut [usize], mut index: usize) -> usize {
+            while parent[index] != index {
+                parent[index] = parent[parent[index]];
+                index = parent[index];
+            }
+            index
+        }
+        const TOUCH: f32 = 0.01;
+        for first in 0..boxes.len() {
+            for second in first + 1..boxes.len() {
+                let (a, b) = (boxes[first], boxes[second]);
+                let apart = (a.0.x > b.1.x + TOUCH || b.0.x > a.1.x + TOUCH)
+                    || (a.0.y > b.1.y + TOUCH || b.0.y > a.1.y + TOUCH)
+                    || (a.0.z > b.1.z + TOUCH || b.0.z > a.1.z + TOUCH);
+                if !apart {
+                    let (x, y) = (root(&mut parent, first), root(&mut parent, second));
+                    parent[x] = y;
+                }
+            }
+        }
+        let mut floors: std::collections::BTreeMap<usize, f32> = Default::default();
+        for (index, (low, _)) in boxes.iter().enumerate() {
+            let group = root(&mut parent, index);
+            let floor = floors.entry(group).or_insert(f32::MAX);
+            *floor = floor.min(low.y);
+        }
+        floors.into_values().collect()
+    }
+
+    #[test]
+    fn no_part_of_any_model_floats_at_any_level_of_detail() {
+        // A model that stands on its origin can still carry a part in mid-air: a headstone
+        // whose base the far level dropped, a brazier bowl without its legs, an arch that
+        // does not reach its piers. Every cluster of touching geometry has to reach the
+        // ground. The arena's broken arch and the crypt gate are carried by pillars and
+        // piers rather than by the ground, and have tests of their own; the sky and the
+        // ridges are scenery.
+        for (asset, model) in environment_library() {
+            if asset == ids::ARCH
+                || asset == ids::CRYPT_GATE
+                || asset == ids::SKY_DOME
+                || asset == ids::RIDGE
+            {
+                continue;
+            }
+            for (index, lod) in model.lods.iter().enumerate() {
+                for floor in part_floors(lod) {
+                    assert!(
+                        floor < 0.06,
+                        "{asset} LOD{index} has a part floating {floor} m above the ground"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_crypt_gate_is_one_piece() {
+        // Its feet are in the piers (the test below); everything else has to hang off them.
+        for (index, lod) in environment_model(ids::CRYPT_GATE).lods.iter().enumerate() {
+            let parts = part_floors(lod);
+            assert!(
+                parts.len() == 1,
+                "LOD{index}: {} separate parts, floors at {parts:?}",
+                parts.len()
+            );
+            for floor in parts {
+                assert!(
+                    floor < CRYPT_GATE_SPRING,
+                    "LOD{index}: a part never comes down"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_crypt_gate_touches_nothing_but_its_piers_below_the_springing_line() {
+        // The gate is carried, not grounded: below the height it springs from, every vertex
+        // must be inside the footprint of one of the two piers it stands on. A vertex out in
+        // the doorway is an arch's foot hanging in the air.
+        let pier_x = ids::CRYPT_GATE_SPAN * 0.5;
+        for (index, lod) in environment_model(ids::CRYPT_GATE).lods.iter().enumerate() {
+            let positions: Vec<Vec3> = lod
                 .submeshes
                 .iter()
                 .flat_map(|submesh| submesh.geometry.positions())
-                .map(|position| position.y)
-                .fold(f32::MAX, f32::min);
-            assert!(
-                lowest.abs() < 0.06,
-                "{asset} has its lowest vertex at y = {lowest}"
-            );
+                .collect();
+            for position in &positions {
+                if position.y < CRYPT_GATE_SPRING {
+                    assert!(
+                        (position.x.abs() - pier_x).abs() <= 0.75,
+                        "LOD{index}: {position:?} is below the springing line and not in a pier"
+                    );
+                }
+            }
+            // And it does reach down into both piers, rather than stopping above them.
+            for side in [-1.0_f32, 1.0] {
+                assert!(
+                    positions
+                        .iter()
+                        .any(|p| p.x * side > 0.0 && p.y < CRYPT_GATE_SPRING - 0.25),
+                    "LOD{index}: the arch never reaches the pier on side {side}"
+                );
+            }
         }
     }
 
@@ -1608,7 +2714,9 @@ mod tests {
             // Thirteen, because the leaf screen cannot share `env_foliage`: an alpha cutoff
             // is a property of the material, and giving the solid plants one would start
             // running a discard pixel shader over every shrub in the scene to no effect.
-            names.len() <= 13,
+            // Fifteen with the graveyard kit: one dark stone shared by every piece of its
+            // masonry, and a paving of its own for the floor.
+            names.len() <= 15,
             "{} distinct materials across the library: {names:?}",
             names.len()
         );
@@ -1647,7 +2755,9 @@ mod tests {
         // image in the library and pushed the total past a megabyte by 36 KB; the number
         // this test exists to catch is a 2048x2048 texture appearing, not the sixty-fourth
         // kilobyte.
-        assert!(bytes < 1_310_720, "{bytes} bytes of environment textures");
+        // Two megabytes with the graveyard kit: seven of its pieces each carry a copy of
+        // `env_crypt_stone`, the duplication the module docs describe, times seven.
+        assert!(bytes < 2_097_152, "{bytes} bytes of environment textures");
         assert!(bytes > 100_000, "the textures did not get generated");
     }
 

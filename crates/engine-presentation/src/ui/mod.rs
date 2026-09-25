@@ -46,10 +46,13 @@
 
 /// Eight action bars: what is in each slot, which key presses it, and where it is drawn.
 pub mod action_bar;
+pub mod aura_row;
 /// The character sheet: stats, fifteen equipment slots, and the bag.
 pub mod character_menu;
 /// The minimap and the full-screen dungeon map, with its encounter sidebar.
 pub mod dungeon_map;
+/// The look every unit frame, the raid frames and the cast bar share with the nameplates.
+pub mod frame_style;
 /// The ground indicator's geometry: an outline laid onto the terrain surface.
 pub mod ground_decal;
 /// Edit HUD: the interface made draggable.
@@ -62,6 +65,8 @@ pub mod map_style;
 pub mod menu;
 pub mod monster_lab;
 pub mod paint;
+/// The raid frames: one filled, rounded cell per member.
+pub mod raid_frame;
 pub mod screen;
 /// What a right click on an action bar slot opens.
 pub mod slot_menu;

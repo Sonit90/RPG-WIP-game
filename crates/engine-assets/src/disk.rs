@@ -380,7 +380,9 @@ mod tests {
         // Every clip must stand the character up at about its bind-pose height. A clip keyed
         // under the rig's conversion node that lost the conversion draws the character a
         // hundred times too large, or lying down.
-        for clip in &model.clips {
+        // Except the death, which is *meant* to end lying down: it is checked for exactly
+        // that instead.
+        for clip in model.clips.iter().filter(|clip| clip.name != "death") {
             let mut pose = skeleton.rest_pose();
             assert!(clip.sample(clip.duration * 0.5, &mut pose).is_ok());
             let posed = model.posed_height(&pose);
@@ -389,6 +391,28 @@ mod tests {
                 "'{}' poses the character {posed} tall against {height} at rest - the clip \
                  lost the rig's conversion node",
                 clip.name
+            );
+        }
+
+        // An export built before the death download existed has no death clip; one built
+        // after it starts standing and ends on the ground, at the right scale either way.
+        if let Some(index) = model.clip_index("death") {
+            // One-shot, as the character definition marks it: an imported clip loops until
+            // then, and sampling a looping clip at its end wraps back to its first frame.
+            let mut clip = model.clips[index].clone();
+            clip.looping = false;
+            let mut pose = skeleton.rest_pose();
+            assert!(clip.sample(0.0, &mut pose).is_ok());
+            let standing = model.posed_height(&pose);
+            assert!(
+                (0.6 * height..1.4 * height).contains(&standing),
+                "the death starts {standing} tall against {height} at rest"
+            );
+            assert!(clip.sample(clip.duration, &mut pose).is_ok());
+            let lying = model.posed_height(&pose);
+            assert!(
+                (0.05 * height..0.6 * height).contains(&lying),
+                "the death ends {lying} tall against {height} at rest - not lying down"
             );
         }
     }

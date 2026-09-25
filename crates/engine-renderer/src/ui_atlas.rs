@@ -535,6 +535,23 @@ fn icon_texels(icon: UiIcon) -> [&'static [u8]; ICON_VARIANTS] {
         UiIcon::TagInterrupt => raster::TAG_INTERRUPT,
         UiIcon::TagArea => raster::TAG_AREA,
         UiIcon::ControlChevron => raster::CONTROL_CHEVRON,
+        UiIcon::AuraBurning => raster::AURA_BURNING,
+        UiIcon::AuraBleeding => raster::AURA_BLEEDING,
+        UiIcon::AuraRecovering => raster::AURA_RECOVERING,
+        UiIcon::AuraSundered => raster::AURA_SUNDERED,
+        UiIcon::AuraAstralSunfire => raster::AURA_ASTRAL_SUNFIRE,
+        UiIcon::AuraNaturesExposure => raster::AURA_NATURES_EXPOSURE,
+        UiIcon::AuraAstralWrath => raster::AURA_ASTRAL_WRATH,
+        UiIcon::AuraPoisoned => raster::AURA_POISONED,
+        UiIcon::AuraRespawnProtection => raster::AURA_RESPAWN_PROTECTION,
+        UiIcon::AuraRended => raster::AURA_RENDED,
+        UiIcon::AuraCrippled => raster::AURA_CRIPPLED,
+        UiIcon::AuraFrenzy => raster::AURA_FRENZY,
+        UiIcon::AuraStunned => raster::AURA_STUNNED,
+        UiIcon::AuraSilenced => raster::AURA_SILENCED,
+        UiIcon::AuraInferno => raster::AURA_INFERNO,
+        UiIcon::AuraBloodWard => raster::AURA_BLOOD_WARD,
+        UiIcon::AuraScorched => raster::AURA_SCORCHED,
     }
 }
 

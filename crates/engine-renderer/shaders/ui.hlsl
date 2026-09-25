@@ -90,7 +90,23 @@ float4 PSMain(PixelInput input) : SV_TARGET
     float2 uv_dy = ddy(input.uv);
 
     float4 texel;
-    if (input.clip.w > 2.5)
+    if (input.clip.w < -0.5)
+    {
+        // A glyph with its edge moved outward by (-1 - picture) pixels: a thickened letter, or
+        // the dark edge drawn under one. The same distance as the plain glyph below, shifted
+        // before it becomes coverage. A wide edge ramps over up to two pixels, so an outline reads
+        // as a soft dark rim rather than a hard second letter.
+        float dilation = -input.clip.w - 1.0;
+        float field = font_field.SampleLevel(icon_sampler, input.uv, 0.0).a;
+        float texels_per_pixel = max(
+            0.5 * (length(uv_dx * font_atlas_size) + length(uv_dy * font_atlas_size)),
+            1e-4);
+        float distance_pixels = (field - 0.5) * 2.0 * font_range / texels_per_pixel;
+        // Must match dilation_ramp in ui_pipeline.rs, which bounds how far a glyph may grow.
+        float ramp = clamp(dilation * 0.35, 1.0, 2.0);
+        texel = float4(1.0, 1.0, 1.0, saturate((distance_pixels + dilation) / ramp + 0.5));
+    }
+    else if (input.clip.w > 2.5)
     {
         // A rounded panel: the signed distance to a rounded rectangle, in pixels. The texture
         // coordinate is this pixel's offset from the panel's centre; the clip holds its

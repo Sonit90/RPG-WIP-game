@@ -57,6 +57,13 @@ pub struct DamageEvent {
     /// chance of that moment, and an observer that tried to infer it from the amount would
     /// have to re-implement every multiplier that produced the number.
     pub critical: bool,
+    /// Whether this is one tick of damage over time rather than a hit.
+    ///
+    /// Carried for the same reason `critical` is: a burn's third tick and a bolt can deal the
+    /// same number, and a reader that wants to show the two differently — the combat text
+    /// draws a tick smaller and quieter — cannot tell them apart from the amount or the
+    /// ability, since a status ticks under the ability that applied it.
+    pub periodic: bool,
     /// Where the target was standing when it landed, at its feet.
     ///
     /// On the event rather than looked up afterwards, because an observer reading this may
@@ -796,6 +803,7 @@ mod tests {
             damage_type: DamageType::Fire,
             killed: false,
             critical: false,
+            periodic: false,
             position: Vec3::ZERO,
             tick,
         })

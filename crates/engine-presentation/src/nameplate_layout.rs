@@ -131,8 +131,8 @@ pub const DEFAULT_MAX_DISPLACEMENT: f32 = engine_core::tuning::nameplates::MAX_D
 /// Separation passes per frame by default.
 ///
 /// A pass separates every overlapping pair once; a chain of plates pushed into one another
-/// takes a few for the push at one end to reach the other. Eight resolves a pull that can be
-/// resolved at all, and a pass over twenty plates that overlap nothing exits on the first
+/// takes a few for the push at one end to reach the other. Sixteen resolves a pull that can
+/// be resolved at all at the tight margins the redesigned plate uses, and a pass over twenty plates that overlap nothing exits on the first
 /// sweep — the cost is paid by crowds, which is where it belongs.
 pub const DEFAULT_ITERATIONS: usize = engine_core::tuning::nameplates::LAYOUT_ITERATIONS;
 

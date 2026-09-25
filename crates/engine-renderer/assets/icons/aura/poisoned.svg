@@ -1,0 +1,23 @@
+<svg version="1.1" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+<defs>
+<linearGradient id="poisoned_panel" gradientUnits="userSpaceOnUse" x1="16" y1="496" x2="496" y2="16">
+<stop offset="0" stop-color="rgb(8,26,8)"></stop>
+<stop offset="1" stop-color="rgb(30,70,20)"></stop>
+</linearGradient>
+<radialGradient id="poisoned_glow" gradientUnits="userSpaceOnUse" cx="256" cy="256" r="250">
+<stop offset="0" stop-color="rgb(140,230,60)" stop-opacity="0.55"></stop>
+<stop offset="0.6" stop-color="rgb(140,230,60)" stop-opacity="0.16"></stop>
+<stop offset="1" stop-color="rgb(140,230,60)" stop-opacity="0"></stop>
+</radialGradient>
+<clipPath id="poisoned_tile"><path d="M 16 92 C 16 50 50 16 92 16 L 420 16 C 462 16 496 50 496 92 L 496 420 C 496 462 462 496 420 496 L 92 496 C 50 496 16 462 16 420 Z"></path></clipPath>
+</defs>
+<g clip-path="url(#poisoned_tile)">
+<path fill="url(#poisoned_panel)" d="M 0 0 L 512 0 L 512 512 L 0 512 Z"></path>
+<path fill="url(#poisoned_glow)" d="M 0 0 L 512 0 L 512 512 L 0 512 Z"></path>
+<path fill="rgb(118,196,44)"  d="M 236 101.6 C 293.2 195.2 340 262.8 340 320 C 340 378.24 294.24 424 236 424 C 177.76 424 132 378.24 132 320 C 132 262.8 178.8 195.2 236 101.6 Z"></path>
+<path fill="rgb(220,255,170)" fill-opacity="0.55" d="M 212 228.6 C 230.7 259.2 246 281.3 246 300 C 246 319.04 231.04 334 212 334 C 192.96 334 178 319.04 178 300 C 178 281.3 193.3 259.2 212 228.6 Z"></path>
+<circle cx="372" cy="170" r="30" fill="none" stroke="rgb(160,230,80)" stroke-width="12"></circle>
+<circle cx="398" cy="276" r="18" fill="none" stroke="rgb(160,230,80)" stroke-width="10"></circle>
+<circle cx="340" cy="92" r="14" fill="rgb(160,230,80)"></circle>
+</g>
+</svg>

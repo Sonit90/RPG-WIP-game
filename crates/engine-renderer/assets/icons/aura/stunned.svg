@@ -1,0 +1,23 @@
+<svg version="1.1" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+<defs>
+<linearGradient id="stunned_panel" gradientUnits="userSpaceOnUse" x1="16" y1="496" x2="496" y2="16">
+<stop offset="0" stop-color="rgb(12,16,40)"></stop>
+<stop offset="1" stop-color="rgb(40,50,110)"></stop>
+</linearGradient>
+<radialGradient id="stunned_glow" gradientUnits="userSpaceOnUse" cx="256" cy="256" r="250">
+<stop offset="0" stop-color="rgb(255,220,110)" stop-opacity="0.55"></stop>
+<stop offset="0.6" stop-color="rgb(255,220,110)" stop-opacity="0.16"></stop>
+<stop offset="1" stop-color="rgb(255,220,110)" stop-opacity="0"></stop>
+</radialGradient>
+<clipPath id="stunned_tile"><path d="M 16 92 C 16 50 50 16 92 16 L 420 16 C 462 16 496 50 496 92 L 496 420 C 496 462 462 496 420 496 L 92 496 C 50 496 16 462 16 420 Z"></path></clipPath>
+</defs>
+<g clip-path="url(#stunned_tile)">
+<path fill="url(#stunned_panel)" d="M 0 0 L 512 0 L 512 512 L 0 512 Z"></path>
+<path fill="url(#stunned_glow)" d="M 0 0 L 512 0 L 512 512 L 0 512 Z"></path>
+<ellipse cx="256" cy="286" rx="178" ry="70" fill="none" stroke="rgb(250,220,120)" stroke-width="18" stroke-opacity="0.8"></ellipse>
+<path fill="rgb(255,226,110)"  d="M 114.0 208.0 L 129.3 249.0 L 173.0 250.8 L 138.7 278.0 L 150.4 320.2 L 114.0 296.0 L 77.6 320.2 L 89.3 278.0 L 55.0 250.8 L 98.7 249.0 Z"></path>
+<path fill="rgb(255,240,160)"  d="M 256.0 284.0 L 273.6 331.7 L 324.5 333.8 L 284.5 365.3 L 298.3 414.2 L 256.0 386.0 L 213.7 414.2 L 227.5 365.3 L 187.5 333.8 L 238.4 331.7 Z"></path>
+<path fill="rgb(255,226,110)"  d="M 400.0 206.0 L 414.1 242.6 L 453.3 244.7 L 422.8 269.4 L 432.9 307.3 L 400.0 286.0 L 367.1 307.3 L 377.2 269.4 L 346.7 244.7 L 385.9 242.6 Z"></path>
+<path fill="rgb(255,226,110)" fill-opacity="0.75" d="M 256.0 106.0 L 266.6 135.4 L 297.8 136.4 L 273.1 155.6 L 281.9 185.6 L 256.0 168.0 L 230.1 185.6 L 238.9 155.6 L 214.2 136.4 L 245.4 135.4 Z"></path>
+</g>
+</svg>

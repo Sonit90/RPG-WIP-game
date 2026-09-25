@@ -475,6 +475,7 @@ mod tests {
             damage_type: DamageType::Fire,
             killed: false,
             critical: false,
+            periodic: false,
             position: engine_core::math::Vec3::ZERO,
             tick: 0,
         })
@@ -552,6 +553,7 @@ mod tests {
             damage_type: DamageType::Fire,
             killed: true,
             critical: false,
+            periodic: false,
             position: engine_core::math::Vec3::ZERO,
             tick: 1,
         }));

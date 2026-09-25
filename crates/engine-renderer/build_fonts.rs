@@ -219,6 +219,8 @@ fn build_font_atlas(font_dir: &std::path::Path, out_dir: &std::path::Path) {
          pub const ATLAS_HEIGHT: usize = {atlas_height};\n\
          /// Distance the field reaches either side of an outline, in atlas texels.\n\
          pub const SDF_RANGE: f32 = {SDF_RANGE:?};\n\
+         /// Atlas texels per em: one texel is `size / SDF_EM` pixels at `size` pixels per em.\n\
+         pub const SDF_EM: f32 = {SDF_EM:?};\n\
          /// One byte per texel: 128 is the outline, more is inside.\n\
          pub static ATLAS: &[u8] = include_bytes!(r\"{}\");\n\
          /// Each glyph's quad, per face.\n\

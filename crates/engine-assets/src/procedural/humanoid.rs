@@ -1324,6 +1324,16 @@ impl Posture {
     }
 }
 
+/// Every clip a hero stand-in built on this rig ships with: the shared set and a death.
+///
+/// Only a stand-in: a hero delivered as a Mixamo `.glb` brings its own `death` clip.
+#[must_use]
+pub fn hero_clips(style: &Style) -> Vec<AnimationClip> {
+    let mut clips = clips(style);
+    clips.push(death(style));
+    clips
+}
+
 /// Every clip a monster built on this rig ships with: the hero set, a death, the blow's
 /// moment marked in both casts, and the monster's posture over all of it.
 #[must_use]

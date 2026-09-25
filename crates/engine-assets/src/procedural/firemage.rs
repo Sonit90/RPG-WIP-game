@@ -583,6 +583,9 @@ fn clips() -> Vec<AnimationClip> {
         land(),
         cast(),
         cast_heavy(),
+        // The one clip borrowed from the shared rig, which this one matches bone for bone:
+        // `Style::default` is this character's own tuning.
+        super::humanoid::death(&super::humanoid::Style::default()),
     ]
 }
 
@@ -1047,6 +1050,7 @@ pub fn fire_mage_character() -> CharacterDef {
         .with_clip(AnimationSlot::Land, "land")
         .with_clip(AnimationSlot::Cast, "cast")
         .with_clip(AnimationSlot::CastHeavy, "cast_heavy")
+        .with_clip(AnimationSlot::Death, "death")
         .with_directional_clips()
 }
 
@@ -1070,7 +1074,7 @@ mod tests {
         assert_eq!(report.lods, 2);
         assert_eq!(report.materials, 4);
         assert_eq!(report.bones, 21);
-        assert_eq!(report.clips, 8);
+        assert_eq!(report.clips, 9);
         assert!(report.triangles > 100, "{} triangles", report.triangles);
         assert!(
             report.triangles < 600,
@@ -1152,7 +1156,9 @@ mod tests {
         let Ok(bindings) = fire_mage_character().resolve(&model) else {
             panic!("the FireMage's own definition must resolve against its own model");
         };
-        assert_eq!(bindings.len(), AnimationSlot::REQUIRED.len());
+        // Every required slot, and the death.
+        assert_eq!(bindings.len(), AnimationSlot::REQUIRED.len() + 1);
+        assert!(bindings.get(AnimationSlot::Death).is_some());
     }
 
     #[test]

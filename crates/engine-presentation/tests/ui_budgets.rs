@@ -211,6 +211,9 @@ fn the_whole_interface_is_one_batchable_unit() {
             // The interface fonts and the rounded panels are the same pipeline and the same
             // draw: a third texture chosen per vertex, and a shape evaluated per pixel.
             | UiCommand::Label { .. }
+            // A styled run is the same glyphs twice over, the edge grown further: still the
+            // font texture, still one pipeline.
+            | UiCommand::StyledLabel { .. }
             | UiCommand::Panel { .. } => {}
         }
     }
@@ -262,3 +265,127 @@ fn the_hud_survives_a_world_with_nothing_in_it() {
     );
     assert!(ui.list().len() <= COMMAND_BUDGET);
 }
+
+/// Twenty casters and archers around the player, fighting it.
+fn casting_pack() -> Simulation {
+    use engine_game::enemy::EnemyKind;
+    let mut simulation = arena::training_arena(&ArenaConfig::with_group(0));
+    simulation.step_once();
+    let origin = simulation.player_position();
+    let kinds = [
+        EnemyKind::SkeletonBonecaster,
+        EnemyKind::GraveAcolyte,
+        EnemyKind::CryptArcher,
+        EnemyKind::Caster,
+    ];
+    for index in 0..20 {
+        let column = (index % 5) as f32 - 2.0;
+        let row = (index / 5) as f32;
+        simulation.spawn_enemy(
+            kinds[index % kinds.len()],
+            origin + Vec3::new(column * 2.2, 0.0, -10.0 - row * 2.2),
+            0.0,
+        );
+    }
+    simulation
+}
+
+#[test]
+fn a_casting_pack_under_constant_fire_stays_bounded_and_stops_allocating() {
+    // The stress case for the redesigned plates and the combat text together: every plate
+    // carrying a cast bar, the player's damage and the pack's landing every tick, numbers
+    // merging, fanning and being hurried off, plates dying and fading. What must hold is the
+    // shape: a bounded command list, and no allocation once the frame has reached its size.
+    use engine_presentation::damage_numbers::CombatTextFilter;
+    let mut simulation = casting_pack();
+    let view_projection = camera_for(&simulation);
+    let config = NameplateConfig::default();
+    let mut plates = NameplateSet::with_capacity(32);
+    let mut ui = GameUi::new();
+    let mut numbers = FloatingNumbers::new();
+    let mut snapshot = UiSnapshot::build(&simulation);
+    let local = simulation.player().entity;
+
+    let frame = |simulation: &mut Simulation,
+                 plates: &mut NameplateSet,
+                 ui: &mut GameUi,
+                 numbers: &mut FloatingNumbers,
+                 snapshot: &mut UiSnapshot,
+                 tick: usize| {
+        if tick % 12 == 0 {
+            simulation.select_nearest_target();
+            simulation.push_command(PlayerCommand::UseAbility(tick / 12 % 3));
+        }
+        simulation.step_once();
+        let now = simulation.time() as f32;
+        let world = simulation.world();
+        let anchor = |id| world.position(id).map(|p| p + Vec3::new(0.0, 1.3, 0.0));
+        numbers.observe_combat(
+            simulation.events(),
+            local,
+            CombatTextFilter::default(),
+            now,
+            anchor,
+        );
+        numbers.track(anchor);
+        numbers.retire(now);
+        plates.build(simulation, &view_projection, VIEWPORT, &config, FRAME);
+        snapshot.refresh(simulation, None);
+        ui.build(snapshot, plates.plates(), &config, VIEWPORT);
+        ui.push_damage_numbers(numbers, &view_projection, VIEWPORT, now);
+    };
+
+    let mut casting_seen = 0;
+    let mut most_commands = 0;
+    for tick in 0..600 {
+        frame(
+            &mut simulation,
+            &mut plates,
+            &mut ui,
+            &mut numbers,
+            &mut snapshot,
+            tick,
+        );
+        casting_seen = casting_seen.max(
+            plates
+                .plates()
+                .iter()
+                .filter(|plate| plate.cast.is_some())
+                .count(),
+        );
+        most_commands = most_commands.max(ui.list().len());
+    }
+    assert!(
+        casting_seen >= 4,
+        "the pack never cast together: {casting_seen}"
+    );
+    assert!(
+        most_commands <= STRESS_COMMAND_BUDGET,
+        "{most_commands} commands against {STRESS_COMMAND_BUDGET}"
+    );
+
+    // Steady state: the same work, frame after frame, and nothing reallocated.
+    let plate_capacity = plates.capacity();
+    let number_capacity = numbers.numbers().len().max(1);
+    for tick in 600..1200 {
+        frame(
+            &mut simulation,
+            &mut plates,
+            &mut ui,
+            &mut numbers,
+            &mut snapshot,
+            tick,
+        );
+        assert!(numbers.numbers().len() <= MAX_FLOATING_NUMBERS);
+        assert!(ui.list().len() <= STRESS_COMMAND_BUDGET);
+    }
+    assert_eq!(plates.capacity(), plate_capacity, "the plate set regrew");
+    assert!(number_capacity <= MAX_FLOATING_NUMBERS);
+}
+
+/// Commands a pack of twenty casting enemies under constant fire may produce.
+///
+/// Higher than [`COMMAND_BUDGET`] because every plate in it carries a cast bar — an icon, a
+/// fill, a border, a name and a countdown each — and the combat text is at full stream. Still
+/// one draw call: the budget bounds the list, not the batch count.
+const STRESS_COMMAND_BUDGET: usize = 700;

@@ -5,6 +5,13 @@ is where it is.
 
 Status: **COMPLETE**. Every item in section 13 is done and tested.
 
+> **Since:** two more arrangeable elements — `RAID` (raid frames) and `CAST BAR`, whose width
+> and height are set separately with NARROWER / WIDER / SHORTER / TALLER — and the frames are
+> drawn in the nameplate style. See [combat_ui.md](combat_ui.md#unit-frames-raid-frames-and-the-cast-bar).
+> Then `BUFFS` (the player's buffs, `frames.buffs` in `hud.cfg`), with the player's debuffs
+> attached under the player frame and each member's beside the party and raid frames. See
+> [auras.md](auras.md).
+
 ## Goals
 
 Eight independent action bars, per-slot spells and keybinds, movable and scalable unit

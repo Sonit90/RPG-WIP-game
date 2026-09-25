@@ -108,7 +108,7 @@ fn an_enemy_notices_the_player_chases_and_attacks() {
 
 #[test]
 fn an_enemy_stops_inside_its_range_instead_of_walking_through_the_player() {
-    let (mut simulation, enemy) = duel(EnemyKind::Melee, 12.0);
+    let (mut simulation, enemy) = duel(EnemyKind::Melee, 9.0);
     run(&mut simulation, 600);
 
     let player = simulation.player_position();
@@ -127,7 +127,7 @@ fn an_enemy_stops_inside_its_range_instead_of_walking_through_the_player() {
 
 #[test]
 fn a_caster_telegraphs_before_it_hits_and_hits_what_it_drew() {
-    let (mut simulation, enemy) = duel(EnemyKind::Caster, 18.0);
+    let (mut simulation, enemy) = duel(EnemyKind::Caster, 9.0);
     let events = run(&mut simulation, 600);
 
     let telegraph = events
@@ -169,7 +169,7 @@ fn a_caster_telegraphs_before_it_hits_and_hits_what_it_drew() {
 
 #[test]
 fn a_telegraph_is_matched_by_exactly_one_ending() {
-    let (mut simulation, _) = duel(EnemyKind::Caster, 18.0);
+    let (mut simulation, _) = duel(EnemyKind::Caster, 9.0);
     let events = run(&mut simulation, 900);
 
     let mut open: Vec<u32> = Vec::new();
@@ -200,7 +200,7 @@ fn a_telegraph_is_matched_by_exactly_one_ending() {
 fn an_interrupted_cast_deals_no_damage() {
     // Milestone 13: the foundation, asserted where it matters - an interrupt has to cost
     // the enemy its attack, not merely its cast bar.
-    let (mut simulation, enemy) = duel(EnemyKind::Caster, 18.0);
+    let (mut simulation, enemy) = duel(EnemyKind::Caster, 9.0);
     let mut interrupted = false;
     for _ in 0..900 {
         simulation.step_once();
@@ -282,7 +282,7 @@ fn damage_generates_threat_and_threat_picks_the_target() {
 }
 
 #[test]
-fn a_leashed_enemy_goes_home_forgets_and_can_be_pulled_again() {
+fn an_enemy_led_far_away_keeps_chasing_and_goes_home_only_when_the_player_dies() {
     let (mut simulation, enemy) = duel(EnemyKind::Melee, 8.0);
     run(&mut simulation, 60);
     assert!(state(&simulation, enemy).is_combat());
@@ -291,21 +291,30 @@ fn a_leashed_enemy_goes_home_forgets_and_can_be_pulled_again() {
         .map(engine_game::EnemyBrain::home)
         .expect("an enemy");
 
-    // The player leaves the county. The enemy chases, runs out of leash and turns round.
+    // The player leaves the county. The enemy follows rather than giving up.
     let far = home + Vec3::new(0.0, 0.0, 120.0);
     simulation.push_command(engine_game::PlayerCommand::Teleport { position: far });
     run(&mut simulation, 1_200);
+    assert!(
+        state(&simulation, enemy).is_combat(),
+        "it gave up on a living player: {:?}",
+        state(&simulation, enemy)
+    );
 
+    // Only the player's death sends it home, forgetting the fight. Checked before the
+    // player's respawn a few seconds later, which puts them back within its reach.
+    let before = simulation.world().position(enemy).expect("an enemy");
+    simulation.kill_player();
+    run(&mut simulation, 90);
     assert_eq!(
         state(&simulation, enemy),
-        AiState::Idle,
-        "it never went home"
+        AiState::Returning,
+        "it did not turn for home"
     );
-    let position = simulation.world().position(enemy).expect("an enemy");
+    let after = simulation.world().position(enemy).expect("an enemy");
     assert!(
-        horizontal_distance(position, home) < 2.0,
-        "it stopped {:.1} m from home",
-        horizontal_distance(position, home)
+        horizontal_distance(after, home) < horizontal_distance(before, home) - 2.0,
+        "it is not walking home"
     );
     assert!(
         simulation
@@ -313,13 +322,13 @@ fn a_leashed_enemy_goes_home_forgets_and_can_be_pulled_again() {
             .expect("an enemy")
             .threat()
             .is_empty(),
-        "a leashed enemy must forgive"
+        "an enemy that went home must forgive"
     );
 }
 
 #[test]
 fn an_enemy_that_dies_stops_fighting_and_the_encounter_completes() {
-    let (mut simulation, enemy) = duel(EnemyKind::Caster, 16.0);
+    let (mut simulation, enemy) = duel(EnemyKind::Caster, 9.0);
     run(&mut simulation, 120);
     assert!(state(&simulation, enemy).is_combat());
 

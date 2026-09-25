@@ -12,7 +12,7 @@ the party has already learned, escalated.
 | Health | 16,000 (party of three) |
 | Size | 3.2 m tall, 1.0 m radius — the largest silhouette in the crypt, dark crimson, faint glow |
 | Speed | 6.3 m/s (6.6 unmasked) — slower than the player in both phases |
-| Aggro / leash | 22 m / 70 m |
+| Aggro / leash | 10.8 m / none while the player lives |
 | Arena | Hall of the Hollow Steward, 48 × 48 m, four columns inside his Dance of Blades |
 | Sealed | until the dungeon reaches 100 % (see the README) |
 

@@ -36,7 +36,8 @@
 use std::sync::Arc;
 
 use engine_assets::{
-    AnimationPlayer, AnimationSlot, AssetError, CharacterDef, ClipBindings, ModelAsset,
+    AnimationPlayer, AnimationSlot, AssetError, CharacterDef, ClipBindings, ModelAsset, Pose,
+    Skeleton,
 };
 use engine_core::math::{Mat4, Quat, Sphere, Vec3};
 use engine_core::transform::Transform;
@@ -70,6 +71,32 @@ const AIR_FADE: f32 = 0.10;
 /// phase does not need. Over-estimating costs a draw that could have been skipped;
 /// under-estimating is a visible artefact.
 const ANIMATED_BOUNDS_PADDING: f32 = 1.6;
+
+/// The furthest the lower body turns into a diagonal, in radians: 45 degrees.
+///
+/// Exactly the diagonal a forward-and-sideways key pair produces, so a run held on W and D
+/// is a run cycle pointing where the character actually goes rather than a forward run
+/// sliding sideways. Past this the heading is a strafe, which has its own clip.
+const MAX_STRIDE_YAW: f32 = std::f32::consts::FRAC_PI_4;
+
+/// How quickly the stride turn follows the keys, per second.
+///
+/// Exponential: about 90 % of the way in 0.16 s — the locomotion cross-fade — so the body
+/// turns into the diagonal as the cycle settles, and releasing a key does not snap it back.
+const STRIDE_YAW_RATE: f32 = 14.0;
+
+/// How much of the stride turn the torso takes back, spread over the spine and chest.
+///
+/// The legs run along the diagonal; the chest stays mostly square to the facing, the way a
+/// runner looking ahead twists at the waist. What keeps the character reading as facing
+/// forward — the way it will cast — while its feet go the other way.
+const TORSO_COUNTER_TWIST: f32 = 0.55;
+
+/// How much more the neck and head take back, on top of the torso's share.
+///
+/// Together with [`TORSO_COUNTER_TWIST`] nearly all of it: the head looks where the camera
+/// looks.
+const HEAD_COUNTER_TWIST: f32 = 0.35;
 
 /// A cast the visual layer should show.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -139,6 +166,13 @@ pub struct CharacterState {
     /// cycle a model has for it, and without one plays the forward cycle — in reverse when
     /// backpedalling, so the feet step backwards instead of moonwalking.
     pub heading: Heading,
+    /// The direction of travel relative to the facing, in radians: zero straight ahead,
+    /// positive to the character's right, `±pi` straight back.
+    ///
+    /// What turns a diagonal run into a run *along* the diagonal: see
+    /// [`CharacterVisual::stride_yaw`]. Zero for anything that is not steered with its facing
+    /// pinned — a monster turns its whole body to where it walks and has no diagonal.
+    pub move_angle: f32,
     /// Whether the feet are on the ground.
     pub grounded: bool,
     /// Whether the character is rising rather than falling. Only read when airborne.
@@ -174,6 +208,7 @@ impl Default for CharacterState {
             facing_yaw: 0.0,
             speed: 0.0,
             heading: Heading::Forward,
+            move_angle: 0.0,
             grounded: true,
             rising: false,
             height: 1.8,
@@ -234,6 +269,18 @@ pub struct CharacterVisual {
     /// all there is to show. A monster's instant is a *blow*, and a blow the player cannot
     /// see coming is exactly what its wind-up is for; see [`CharacterVisual::with_whole_instants`].
     whole_instants: bool,
+    /// The lower body's turn into a diagonal, radians about +Y, smoothed. See
+    /// [`CharacterVisual::stride_yaw`].
+    stride_yaw: f32,
+    /// The bones that take the stride turn back: `(bone, share of the turn)`, root first.
+    ///
+    /// Found by name at construction — `spine`/`chest` for the torso, `neck`/`head` above it,
+    /// in whichever naming the model uses (`mixamorig:Spine1` and `chest` both match). A
+    /// model with none of them turns whole, which is the same diagonal without the twist.
+    twist_bones: Vec<(u16, f32)>,
+    /// The pose actually skinned while turned: the sampled pose with the counter-twist
+    /// applied. Allocated once.
+    twisted: Pose,
 }
 
 impl CharacterVisual {
@@ -259,6 +306,8 @@ impl CharacterVisual {
         let clips = def.resolve(&asset)?;
         let player = AnimationPlayer::new(skeleton);
         let palette = Vec::with_capacity(skeleton.len());
+        let twist_bones = twist_bones(skeleton);
+        let twisted = skeleton.rest_pose();
 
         Ok(Self {
             asset,
@@ -278,6 +327,9 @@ impl CharacterVisual {
             lod: 0,
             forced: None,
             whole_instants: false,
+            stride_yaw: 0.0,
+            twist_bones,
+            twisted,
         })
     }
 
@@ -339,8 +391,46 @@ impl CharacterVisual {
     pub fn transform(&self) -> Transform {
         let scale = self.def.scale_for_height(self.state.height);
         Transform::from_translation(self.state.position)
-            .with_rotation(Quat::from_yaw_pitch_roll(self.state.facing_yaw, 0.0, 0.0))
+            .with_rotation(Quat::from_yaw_pitch_roll(
+                self.state.facing_yaw + self.stride_yaw,
+                0.0,
+                0.0,
+            ))
             .with_scale(Vec3::splat(scale))
+    }
+
+    /// How far the body is turned off its facing into the diagonal it is running along,
+    /// radians about +Y (positive turns it to its left).
+    ///
+    /// **Visual only.** The simulation's facing — what a cast is aimed along, what the camera
+    /// pins — does not move: this turns the drawn hips and legs so the run cycle points where
+    /// the character goes, and the spine, neck and head turn most of it back so the character
+    /// still looks the way it faces. A forward diagonal turns towards the side it runs to; a
+    /// backward diagonal turns the other way, so the backpedal steps along the diagonal
+    /// behind it. Straight runs, strafes, standing, casting and being dead are all zero.
+    #[must_use]
+    pub fn stride_yaw(&self) -> f32 {
+        self.stride_yaw
+    }
+
+    /// The stride turn `state` asks for, before smoothing.
+    fn stride_target(&self, state: &CharacterState) -> f32 {
+        let moving = state.speed > IDLE_SPEED
+            && state.cast.is_none()
+            && !state.dead
+            && self.forced.is_none();
+        let angle = state.move_angle;
+        if !moving || !angle.is_finite() {
+            return 0.0;
+        }
+        // Yaw grows to the character's left, the move angle to its right: a run to the
+        // front right turns the body right, which is a smaller yaw.
+        let turn = match state.heading {
+            Heading::Forward => -angle,
+            Heading::Backward => -wrap_angle(angle - std::f32::consts::PI),
+            Heading::Left | Heading::Right => 0.0,
+        };
+        turn.clamp(-MAX_STRIDE_YAW, MAX_STRIDE_YAW)
     }
 
     /// Advances the character by `dt` seconds of real time under `state`.
@@ -352,6 +442,16 @@ impl CharacterVisual {
     /// being validated.
     pub fn update(&mut self, dt: f32, state: CharacterState) -> Result<(), AssetError> {
         let dt = dt.max(0.0);
+        // Airborne, the body keeps the turn it left the ground with: a jump along a diagonal
+        // lands along it.
+        if state.grounded {
+            let target = self.stride_target(&state);
+            let blend = 1.0 - (-STRIDE_YAW_RATE * dt).exp();
+            self.stride_yaw += (target - self.stride_yaw) * blend;
+            if (self.stride_yaw - target).abs() < 1e-4 {
+                self.stride_yaw = target;
+            }
+        }
         self.state = state;
 
         // The landing edge: airborne last frame, grounded this one. Gameplay has no "Land"
@@ -438,7 +538,18 @@ impl CharacterVisual {
         }
 
         if let Some(skeleton) = self.asset.skeleton.as_ref() {
-            skeleton.skinning_matrices(self.player.pose(), &mut self.palette)?;
+            if self.stride_yaw.abs() > 1e-4 && !self.twist_bones.is_empty() {
+                self.twisted.copy_from(self.player.pose());
+                counter_twist(
+                    skeleton,
+                    &mut self.twisted,
+                    &self.twist_bones,
+                    -self.stride_yaw,
+                );
+                skeleton.skinning_matrices(&self.twisted, &mut self.palette)?;
+            } else {
+                skeleton.skinning_matrices(self.player.pose(), &mut self.palette)?;
+            }
         }
         Ok(())
     }
@@ -640,6 +751,71 @@ impl CharacterVisual {
 /// or two, and a character that flickers between idle and walk at a stop looks broken.
 const IDLE_SPEED: f32 = 0.15;
 
+/// `angle` wrapped into `[-pi, pi)`.
+fn wrap_angle(angle: f32) -> f32 {
+    (angle + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI
+}
+
+/// The bones that take a stride turn back, and how much of it each takes.
+///
+/// The torso's share is split evenly over every `spine`/`chest` bone, the head's over every
+/// `neck`/`head` bone, so a Mixamo rig's three spine bones and a procedural rig's two turn
+/// the chest by the same total. Hierarchy order, so a parent is twisted before its children
+/// read it.
+fn twist_bones(skeleton: &Skeleton) -> Vec<(u16, f32)> {
+    let matches = |index: usize, parts: &[&str]| {
+        let lower = skeleton.bones()[index].name.to_ascii_lowercase();
+        // The last segment only: `mixamorig:Spine1` is a spine, and `HeadTop_End` is a leaf
+        // with nothing bound to it.
+        let tail = lower.rsplit([':', '|', '/']).next().unwrap_or(&lower);
+        !tail.contains("end") && parts.iter().any(|part| tail.starts_with(part))
+    };
+    let group = |parts: &[&str]| -> Vec<usize> {
+        (0..skeleton.len())
+            .filter(|&index| matches(index, parts))
+            .collect()
+    };
+    let mut bones = Vec::new();
+    for (members, share) in [
+        (group(&["spine", "chest"]), TORSO_COUNTER_TWIST),
+        (group(&["neck", "head"]), HEAD_COUNTER_TWIST),
+    ] {
+        if members.is_empty() {
+            continue;
+        }
+        let each = share / members.len() as f32;
+        bones.extend(members.iter().map(|&index| (index as u16, each)));
+    }
+    bones.sort_by_key(|&(index, _)| index);
+    bones
+}
+
+/// Turns each of `bones` by its share of `yaw` about the **model's** up axis, in `pose`.
+///
+/// A bone's local rotation is in its parent's frame, and a rig's spine bones point every
+/// which way in theirs — so the turn is built in model space and carried into the parent's
+/// frame: `local' = parent^-1 * turn * parent * local`. The parent's model-space rotation is
+/// composed from `pose` itself, so a chest whose spine was already turned turns on top of it.
+fn counter_twist(skeleton: &Skeleton, pose: &mut Pose, bones: &[(u16, f32)], yaw: f32) {
+    let hierarchy = skeleton.bones();
+    for &(index, share) in bones {
+        let index = index as usize;
+        if index >= pose.len() || index >= hierarchy.len() {
+            continue;
+        }
+        let mut parent_rotation = Quat::IDENTITY;
+        let mut cursor = hierarchy[index].parent;
+        while let Some(parent) = cursor {
+            parent_rotation = pose.locals()[parent as usize].rotation * parent_rotation;
+            cursor = hierarchy[parent as usize].parent;
+        }
+        let turn = Quat::from_axis_angle(Vec3::Y, yaw * share);
+        let local = &mut pose.locals_mut()[index];
+        local.rotation =
+            (parent_rotation.conjugate() * turn * parent_rotation * local.rotation).normalize();
+    }
+}
+
 /// Slowest a locomotion clip is played, relative to its authored rate.
 const MIN_PLAYBACK_RATE: f32 = 0.55;
 
@@ -736,6 +912,147 @@ mod tests {
             .collect()
     }
 
+    /// A run at `angle` off the facing (positive to the right), as the extractor reports it.
+    fn running_at(visual: &CharacterVisual, angle: f32) -> CharacterState {
+        let right = angle.sin();
+        let heading = if angle.cos() < -0.3 {
+            Heading::Backward
+        } else if right >= 0.8 {
+            Heading::Right
+        } else if right <= -0.8 {
+            Heading::Left
+        } else {
+            Heading::Forward
+        };
+        CharacterState {
+            speed: visual.def().run_speed + 1.0,
+            heading,
+            move_angle: angle,
+            ..CharacterState::default()
+        }
+    }
+
+    /// Drives `visual` for a second under `state` and returns where the turn settled.
+    fn settle(visual: &mut CharacterVisual, state: CharacterState) -> f32 {
+        for _ in 0..60 {
+            let Ok(()) = visual.update(0.016, state) else {
+                panic!("the update must succeed");
+            };
+        }
+        visual.stride_yaw()
+    }
+
+    #[test]
+    fn a_diagonal_run_turns_the_body_along_the_diagonal_and_nothing_else_does() {
+        use std::f32::consts::{FRAC_PI_2, FRAC_PI_4, PI};
+        for (hero, mut visual) in every_hero() {
+            let cases = [
+                // Forward and right: the body turns right, which is a smaller yaw.
+                (FRAC_PI_4, -FRAC_PI_4),
+                (-FRAC_PI_4, FRAC_PI_4),
+                // Back and right: the body turns left, so the backpedal goes back-right.
+                (3.0 * FRAC_PI_4, FRAC_PI_4),
+                (-3.0 * FRAC_PI_4, -FRAC_PI_4),
+                // Straight lines and strafes are not turned at all.
+                (0.0, 0.0),
+                (PI, 0.0),
+                (FRAC_PI_2, 0.0),
+                (-FRAC_PI_2, 0.0),
+            ];
+            for (angle, expected) in cases {
+                let state = running_at(&visual, angle);
+                let turned = settle(&mut visual, state);
+                assert!(
+                    (turned - expected).abs() < 1e-3,
+                    "{hero:?} at {angle}: turned {turned}, expected {expected}"
+                );
+            }
+            // Standing still after a diagonal brings the body back square.
+            let state = running_at(&visual, FRAC_PI_4);
+            settle(&mut visual, state);
+            assert!(settle(&mut visual, CharacterState::default()).abs() < 1e-3);
+        }
+    }
+
+    #[test]
+    fn the_stride_turn_eases_in_rather_than_snapping() {
+        let mut visual = mage();
+        let state = running_at(&visual, std::f32::consts::FRAC_PI_4);
+        let Ok(()) = visual.update(0.016, state) else {
+            panic!("the update must succeed");
+        };
+        let first = visual.stride_yaw();
+        assert!(first < 0.0 && first > -0.3, "first frame turned {first}");
+        // The simulation's facing is untouched: the turn is in the drawn transform only.
+        assert_eq!(visual.state().facing_yaw, 0.0);
+    }
+
+    #[test]
+    fn every_hero_twists_its_torso_back_towards_the_facing() {
+        // The legs run along the diagonal and the chest is carried most of the way back, so
+        // the character still reads as facing where it will cast. Checked on the skinned
+        // result: the palette with the twist differs from the one without it, and only
+        // above the hips.
+        for (hero, mut visual) in every_hero() {
+            assert!(
+                !visual.twist_bones.is_empty(),
+                "{hero:?} has no spine the stride turn can find"
+            );
+            let total: f32 = visual.twist_bones.iter().map(|&(_, share)| share).sum();
+            assert!(
+                (total - (TORSO_COUNTER_TWIST + HEAD_COUNTER_TWIST)).abs() < 1e-4
+                    || (total - TORSO_COUNTER_TWIST).abs() < 1e-4,
+                "{hero:?} shares add to {total}"
+            );
+            let state = running_at(&visual, std::f32::consts::FRAC_PI_4);
+            settle(&mut visual, state);
+            let twisted = visual.palette().to_vec();
+            let Some(skeleton) = visual.asset.skeleton.as_ref() else {
+                panic!("{hero:?} has no skeleton");
+            };
+            let mut plain = Vec::new();
+            let Ok(()) = skeleton.skinning_matrices(visual.player.pose(), &mut plain) else {
+                panic!("{hero:?} could not skin");
+            };
+            let (spine, _) = visual.twist_bones[0];
+            let spine = spine as usize;
+            assert_ne!(
+                twisted[spine], plain[spine],
+                "{hero:?}'s spine was not turned"
+            );
+            let hips_unchanged = (0..spine)
+                .filter(|&index| skeleton.bones()[spine].parent == Some(index as u16))
+                .all(|index| twisted[index] == plain[index]);
+            assert!(hips_unchanged, "{hero:?}'s hips were turned with the chest");
+        }
+    }
+
+    #[test]
+    fn every_hero_falls_when_it_dies_and_gets_back_up_when_revived() {
+        for (hero, mut visual) in every_hero() {
+            let dead = CharacterState {
+                dead: true,
+                ..CharacterState::default()
+            };
+            let Ok(()) = visual.update(0.016, dead) else {
+                panic!("{hero:?} could not play its death");
+            };
+            assert_eq!(visual.slot(), AnimationSlot::Death, "{hero:?}");
+            // Long after the clip has finished it is still lying there, not looping.
+            for _ in 0..300 {
+                let Ok(()) = visual.update(0.016, dead) else {
+                    panic!("{hero:?} could not hold its death");
+                };
+            }
+            assert_eq!(visual.slot(), AnimationSlot::Death, "{hero:?}");
+
+            let Ok(()) = visual.update(0.016, CharacterState::default()) else {
+                panic!("{hero:?} could not stand back up");
+            };
+            assert_eq!(visual.slot(), AnimationSlot::Idle, "{hero:?} stayed dead");
+        }
+    }
+
     #[test]
     fn every_hero_the_swap_menu_offers_can_actually_be_worn() {
         // What a swap does at runtime, without a device: build the model the hero names,
@@ -744,10 +1061,16 @@ mod tests {
         // bind-pose statue, and the roster has no way to know.
         for (hero, mut visual) in every_hero() {
             assert_eq!(hero.model_name(), visual.def().model.as_str(), "{hero:?}");
-            assert_eq!(
-                visual.clips.len(),
-                AnimationSlot::REQUIRED.len(),
-                "{hero:?} does not fill every animation slot"
+            for slot in AnimationSlot::REQUIRED {
+                assert!(
+                    visual.clips.get(slot).is_some(),
+                    "{hero:?} does not fill {}",
+                    slot.as_str()
+                );
+            }
+            assert!(
+                visual.clips.get(AnimationSlot::Death).is_some(),
+                "{hero:?} cannot die"
             );
             let Ok(()) = visual.update(0.016, CharacterState::default()) else {
                 panic!("{hero:?} must animate");

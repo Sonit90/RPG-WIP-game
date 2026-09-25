@@ -173,6 +173,14 @@ impl VulnerabilityTracker {
             .is_some_and(|remaining| *remaining > 0.0)
     }
 
+    /// Seconds of the debuff left on `target`. Zero when it has none.
+    #[must_use]
+    pub fn remaining(&self, target: EntityId) -> f32 {
+        self.timers
+            .get(target.index())
+            .map_or(0.0, |remaining| remaining.max(0.0))
+    }
+
     /// The extra fire damage multiplier `target` takes right now.
     #[must_use]
     pub fn multiplier(&self, target: EntityId, bonus: f32) -> f32 {

@@ -152,6 +152,11 @@ pub const PICTURE_MAP: f32 = 1.0;
 /// What [`UiVertex::clip`]'s fourth component says for a glyph of the distance-field fonts.
 pub const PICTURE_FONT: f32 = 2.0;
 
+/// [`UiVertex::clip`]'s fourth component for a distance-field glyph whose edge is moved
+/// outward is this *minus* the distance in pixels: `-1.0` is the plain glyph, `-3.5` the glyph
+/// grown by two and a half pixels. Negative so it can never be mistaken for any other picture.
+pub const PICTURE_FONT_DILATED: f32 = -1.0;
+
 /// [`UiVertex::clip`]'s fourth component for a filled rounded panel is this plus its feather
 /// in pixels; the first three are its half-width, half-height and corner radius, and the
 /// texture coordinate is the pixel's offset from the panel's centre.
@@ -837,6 +842,110 @@ fn push_rotated(
     stats.quads += 1;
 }
 
+/// One run of text, as [`push_glyph_run`] lays it out.
+struct GlyphRun<'a> {
+    text: &'a str,
+    origin: (f32, f32),
+    size: f32,
+    font: engine_render_data::font::UiFont,
+    align: TextAlign,
+}
+
+/// How far past its outline a glyph at `size` pixels per em can be thickened or edged.
+///
+/// The field reaches [`crate::text::SDF_RANGE`] texels either side of the outline, and a texel
+/// is `size / SDF_EM` pixels; past that the field is flat, and a glyph grown so far that its
+/// soft edge reaches the flat part lights its whole quad — a faint box behind the letter. So
+/// the growth, plus half of the edge's ramp (see [`dilation_ramp`]), plus half a pixel for the
+/// filter, must stay inside the range. Solved by a few fixed-point steps: the ramp grows with
+/// the dilation, and the answer settles in three.
+#[must_use]
+pub fn max_dilation(size: f32) -> f32 {
+    let range = crate::text::SDF_RANGE * size / crate::text::SDF_EM;
+    let mut dilation = (range - 1.0).max(0.0);
+    for _ in 0..4 {
+        dilation = (range - 0.5 - dilation_ramp(dilation) * 0.5).max(0.0);
+    }
+    dilation
+}
+
+/// The width, in pixels, of the anti-aliased edge of a glyph grown by `dilation` pixels.
+///
+/// One pixel for an ordinary letter; up to two for a wide outline, so the dark edge under a
+/// big number reads as a soft rim rather than a hard second letter. `ui.hlsl` computes the
+/// same thing per pixel and the two must agree.
+#[must_use]
+pub fn dilation_ramp(dilation: f32) -> f32 {
+    (dilation * 0.35).clamp(1.0, 2.0)
+}
+
+/// Emits one quad per inked glyph of `run`, its edge moved `dilation` pixels outward and the
+/// whole run moved `offset_y` pixels down.
+///
+/// Every face-set label goes through here, plain or styled, so a styled run and a plain one
+/// place each glyph identically — the edge sits exactly under its letter.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "a glyph run's destination, budget, colour, edge, offset, clip and statistics"
+)]
+fn push_glyph_run(
+    vertices: &mut Vec<UiVertex>,
+    max_quads: usize,
+    run: &GlyphRun<'_>,
+    color: [f32; 4],
+    dilation: f32,
+    offset_y: f32,
+    clip: ClipState,
+    stats: &mut UiBatchStats,
+) {
+    let GlyphRun {
+        text,
+        origin,
+        size,
+        font,
+        align,
+    } = *run;
+    let width = font.width(text, size);
+    let mut pen = match align {
+        TextAlign::Left => origin.0,
+        TextAlign::Center => origin.0 - width * 0.5,
+        TextAlign::Right => origin.0 - width,
+    };
+    // The baseline on a whole pixel: the field is sampled with its outline where the face put
+    // it, and a half-pixel baseline softens every horizontal stroke.
+    let baseline = (origin.1 + font.ascent(size)).round() + offset_y;
+    let quads = &crate::text::QUADS[font.index()];
+    let attribute = if dilation > 0.0 {
+        clip.attribute(PICTURE_FONT_DILATED - dilation)
+    } else {
+        clip.attribute(PICTURE_FONT)
+    };
+    for character in text.chars() {
+        let index = engine_render_data::font::glyph_index(character);
+        let quad = quads[index];
+        if !quad.is_empty() {
+            let rect = UiRect::new(
+                pen + quad.plane[0] * size,
+                baseline + quad.plane[1] * size,
+                (quad.plane[2] - quad.plane[0]) * size,
+                (quad.plane[3] - quad.plane[1]) * size,
+            );
+            let uv = quad.uv;
+            let uv_at = |x: f32, y: f32| {
+                [
+                    uv[0] + (x - rect.x) / rect.width * (uv[2] - uv[0]),
+                    uv[1] + (y - rect.y) / rect.height * (uv[3] - uv[1]),
+                ]
+            };
+            push_mapped(
+                vertices, max_quads, rect, uv_at, color, attribute, clip.rect, stats,
+            );
+            stats.glyphs += 1;
+        }
+        pen += font.advance(character, size);
+    }
+}
+
 /// Expands one contiguous run of commands into `out`.
 ///
 /// The body every path shares: the serial build calls it once over the whole list and a
@@ -892,49 +1001,69 @@ fn build_range(
                 font,
                 align,
             } => {
-                let text = list.text_of(range);
-                let width = font.width(text, size);
-                let mut pen = match align {
-                    TextAlign::Left => origin.0,
-                    TextAlign::Center => origin.0 - width * 0.5,
-                    TextAlign::Right => origin.0 - width,
+                let run = GlyphRun {
+                    text: list.text_of(range),
+                    origin,
+                    size,
+                    font,
+                    align,
                 };
-                // The baseline on a whole pixel: the field is sampled with its outline where
-                // the face put it, and a half-pixel baseline softens every horizontal stroke.
-                let baseline = (origin.1 + font.ascent(size)).round();
-                let quads = &crate::text::QUADS[font.index()];
-                let attribute = clip.attribute(PICTURE_FONT);
-                for character in text.chars() {
-                    let index = engine_render_data::font::glyph_index(character);
-                    let quad = quads[index];
-                    if !quad.is_empty() {
-                        let rect = UiRect::new(
-                            pen + quad.plane[0] * size,
-                            baseline + quad.plane[1] * size,
-                            (quad.plane[2] - quad.plane[0]) * size,
-                            (quad.plane[3] - quad.plane[1]) * size,
-                        );
-                        let uv = quad.uv;
-                        let uv_at = |x: f32, y: f32| {
-                            [
-                                uv[0] + (x - rect.x) / rect.width * (uv[2] - uv[0]),
-                                uv[1] + (y - rect.y) / rect.height * (uv[3] - uv[1]),
-                            ]
-                        };
-                        push_mapped(
-                            &mut out.vertices,
-                            max_quads,
-                            rect,
-                            uv_at,
-                            color,
-                            attribute,
-                            clip.rect,
-                            &mut out.stats,
-                        );
-                        out.stats.glyphs += 1;
-                    }
-                    pen += font.advance(character, size);
+                push_glyph_run(
+                    &mut out.vertices,
+                    max_quads,
+                    &run,
+                    color,
+                    0.0,
+                    0.0,
+                    clip,
+                    &mut out.stats,
+                );
+            }
+            UiCommand::StyledLabel {
+                origin,
+                range,
+                color,
+                size,
+                font,
+                align,
+                style,
+            } => {
+                let run = GlyphRun {
+                    text: list.text_of(range),
+                    origin,
+                    size,
+                    font,
+                    align,
+                };
+                // The field only reaches so far past an outline, and a glyph moved further than
+                // that has no edge left to find: the whole cell would go solid. Both widths are
+                // therefore held inside what this size can express.
+                let reach = max_dilation(size);
+                let embolden = style.embolden.min(reach * 0.5);
+                // The edge first, the whole run of it, then the letters over it: drawn glyph by
+                // glyph instead, each letter's edge would cut into the letter before it.
+                if style.has_outline() {
+                    push_glyph_run(
+                        &mut out.vertices,
+                        max_quads,
+                        &run,
+                        style.outline,
+                        (embolden + style.outline_width).min(reach),
+                        style.shadow_offset,
+                        clip,
+                        &mut out.stats,
+                    );
                 }
+                push_glyph_run(
+                    &mut out.vertices,
+                    max_quads,
+                    &run,
+                    color,
+                    embolden,
+                    0.0,
+                    clip,
+                    &mut out.stats,
+                );
             }
             UiCommand::Rect { rect, color } => {
                 push_solid(
@@ -1543,6 +1672,126 @@ mod tests {
         assert_eq!(elements[0].AlignedByteOffset, 0);
         assert_eq!(elements[1].AlignedByteOffset, 8);
         assert_eq!(elements[2].AlignedByteOffset, 16);
+    }
+
+    #[test]
+    fn a_styled_label_draws_its_whole_edge_before_any_letter() {
+        use engine_render_data::font::UiFont;
+        use engine_render_data::ui::{TextAlign, TextStyle};
+        let mut batcher = batcher();
+        let mut list = UiDrawList::new();
+        let black = [0.0, 0.0, 0.0, 1.0];
+        list.styled_label(
+            (100.0, 50.0),
+            "1234",
+            WHITE,
+            UiFont::SemiBold,
+            28.0,
+            TextAlign::Center,
+            TextStyle::outlined(black, 2.0, 1.0, 0.75),
+        );
+        let vertices = batcher.build(&list).to_vec();
+        // Four letters, each drawn twice: once as the edge and once as the letter.
+        assert_eq!(batcher.stats().quads, 8);
+        let quads: Vec<&[UiVertex]> = vertices.chunks(VERTICES_PER_QUAD).collect();
+        let (edges, letters) = quads.split_at(4);
+        assert!(edges.iter().all(|quad| quad[0].color == black));
+        assert!(letters.iter().all(|quad| quad[0].color == WHITE));
+        // The edge reaches further than the thickened letter, and both are marked as grown.
+        let edge = -edges[0][0].clip[3] - 1.0;
+        let letter = -letters[0][0].clip[3] - 1.0;
+        assert!((letter - 0.75).abs() < 1e-5, "letter grown by {letter}");
+        let expected = 2.75_f32.min(max_dilation(28.0));
+        assert!(
+            (edge - expected).abs() < 1e-5,
+            "edge grown by {edge}, not {expected}"
+        );
+        // The edge is nudged down by the shadow offset and is otherwise under its letter.
+        assert!((edges[0][0].position[1] - letters[0][0].position[1] - 1.0).abs() < 1e-4);
+        assert_eq!(edges[0][0].position[0], letters[0][0].position[0]);
+    }
+
+    #[test]
+    fn a_styled_label_is_placed_exactly_where_a_plain_one_is() {
+        use engine_render_data::font::UiFont;
+        use engine_render_data::ui::{TextAlign, TextStyle};
+        let mut plain = UiDrawList::new();
+        plain.label(
+            (40.0, 10.0),
+            "Shadow Bolt",
+            WHITE,
+            UiFont::SemiBold,
+            14.0,
+            TextAlign::Left,
+        );
+        let mut styled = UiDrawList::new();
+        styled.styled_label(
+            (40.0, 10.0),
+            "Shadow Bolt",
+            WHITE,
+            UiFont::SemiBold,
+            14.0,
+            TextAlign::Left,
+            TextStyle::PLAIN,
+        );
+        let mut batcher = batcher();
+        let plain_vertices = batcher.build(&plain).to_vec();
+        let styled_vertices = batcher.build(&styled).to_vec();
+        let positions = |vertices: &[UiVertex]| {
+            vertices
+                .iter()
+                .map(|vertex| vertex.position)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(positions(&plain_vertices), positions(&styled_vertices));
+        assert!(
+            styled_vertices
+                .iter()
+                .all(|vertex| vertex.clip[3] == PICTURE_FONT)
+        );
+    }
+
+    #[test]
+    fn the_widest_edge_leaves_its_quad_s_border_transparent() {
+        // What the shader computes where the field has run out — the quad's own border —
+        // for the widest growth each size allows: it must be nothing, or every large number
+        // wears a faint box.
+        for size in [10.0_f32, 12.0, 18.0, 27.0, 38.0, 57.0, 76.0, 120.0] {
+            let dilation = max_dilation(size);
+            let range = crate::text::SDF_RANGE * size / crate::text::SDF_EM;
+            let coverage = ((-range + dilation) / dilation_ramp(dilation) + 0.5).clamp(0.0, 1.0);
+            assert!(
+                coverage <= 0.0,
+                "{size} px: coverage {coverage} at the border"
+            );
+        }
+        // And there is still room for a real edge at every size the combat text uses.
+        assert!(max_dilation(21.0) >= 1.5);
+        assert!(max_dilation(38.0) >= 3.5);
+    }
+
+    #[test]
+    fn an_edge_is_never_wider_than_the_field_can_express() {
+        use engine_render_data::font::UiFont;
+        use engine_render_data::ui::{TextAlign, TextStyle};
+        let mut list = UiDrawList::new();
+        list.styled_label(
+            (0.0, 0.0),
+            "8",
+            WHITE,
+            UiFont::SemiBold,
+            12.0,
+            TextAlign::Left,
+            TextStyle::outlined([0.0, 0.0, 0.0, 1.0], 40.0, 0.0, 40.0),
+        );
+        let mut batcher = batcher();
+        let vertices = batcher.build(&list).to_vec();
+        let reach = max_dilation(12.0);
+        assert!(reach > 0.0);
+        for vertex in &vertices {
+            let grown = -vertex.clip[3] - 1.0;
+            assert!(grown <= reach + 1e-5, "grown {grown} past {reach}");
+        }
     }
 
     #[test]

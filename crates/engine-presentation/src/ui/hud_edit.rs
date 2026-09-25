@@ -7,6 +7,8 @@
 //!                          +-- SHOWN                -> enabled / disabled
 //!                          +-- SMALLER / BIGGER     -> scale by one step
 //!                          +-- HORIZONTAL/VERTICAL  -> a bar turned on its side
+//!                          +-- NARROWER / WIDER     -> the cast bar's width, one step
+//!                          +-- SHORTER / TALLER     -> the cast bar's height, one step
 //! ```
 //!
 //! ## It is not a panel over the game
@@ -63,6 +65,14 @@ pub enum EditItem {
     Bigger,
     /// Turns the selected action bar the other way. Disabled for a frame.
     Orientation,
+    /// Makes the cast bar one step narrower. Only for an element whose shape can change.
+    Narrower,
+    /// Makes the cast bar one step wider.
+    Wider,
+    /// Makes the cast bar one step shorter.
+    Shorter,
+    /// Makes the cast bar one step taller.
+    Taller,
     /// Puts the whole layout back to the default arrangement.
     Reset,
     /// Leaves edit mode.
@@ -71,11 +81,15 @@ pub enum EditItem {
 
 impl EditItem {
     /// Every control, in the order the strip lays them out.
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 10] = [
         Self::Toggle,
         Self::Smaller,
         Self::Bigger,
         Self::Orientation,
+        Self::Narrower,
+        Self::Wider,
+        Self::Shorter,
+        Self::Taller,
         Self::Reset,
         Self::Done,
     ];
@@ -92,6 +106,10 @@ impl EditItem {
             Self::Smaller => "SMALLER",
             Self::Bigger => "BIGGER",
             Self::Orientation => "TURN",
+            Self::Narrower => "NARROWER",
+            Self::Wider => "WIDER",
+            Self::Shorter => "SHORTER",
+            Self::Taller => "TALLER",
             Self::Reset => "RESET ALL",
             Self::Done => "DONE",
         }
@@ -295,6 +313,10 @@ impl HudEditor {
                 EditItem::Done | EditItem::Reset => true,
                 // A bar can be turned; a frame has no orientation to turn.
                 EditItem::Orientation => selected.is_some_and(|id| id.bar_index().is_some()),
+                // Only the cast bar has a width and a height of its own.
+                EditItem::Narrower | EditItem::Wider | EditItem::Shorter | EditItem::Taller => {
+                    selected.is_some_and(HudElementId::is_resizable)
+                }
                 // The rest need something selected to act on.
                 _ => selected.is_some(),
             };
@@ -342,6 +364,18 @@ impl HudEditor {
                     return EditOutcome::Idle;
                 };
                 layout.flip_orientation(index);
+            }
+            EditItem::Narrower | EditItem::Wider | EditItem::Shorter | EditItem::Taller => {
+                if !selected.is_resizable() {
+                    return EditOutcome::Idle;
+                }
+                let (width, height) = match item {
+                    EditItem::Narrower => (-1, 0),
+                    EditItem::Wider => (1, 0),
+                    EditItem::Shorter => (0, -1),
+                    _ => (0, 1),
+                };
+                layout.nudge_cast_bar(width, height, self.scale, self.viewport);
             }
             EditItem::Done | EditItem::Reset => unreachable!("handled above"),
         }
@@ -950,5 +984,63 @@ mod tests {
         }
         // The controls are built once; nothing here grows them.
         assert_eq!(editor.controls().len(), EditItem::ALL.len());
+    }
+
+    #[test]
+    fn the_cast_bar_can_be_moved_and_made_wider_taller_narrower_and_shorter() {
+        let (mut editor, mut layout) = editor();
+        let bar = centre(&layout, HudElementId::CastBar);
+        editor.update(&press(bar), &mut layout, UiScale::default(), FHD);
+        editor.update(&release(bar), &mut layout, UiScale::default(), FHD);
+        assert_eq!(editor.selected(), Some(HudElementId::CastBar));
+
+        let start = layout.cast_bar_size();
+        assert_eq!(
+            click(&mut editor, &mut layout, EditItem::Wider),
+            EditOutcome::Changed
+        );
+        assert_eq!(
+            click(&mut editor, &mut layout, EditItem::Taller),
+            EditOutcome::Changed
+        );
+        let grown = layout.cast_bar_size();
+        assert!(
+            grown.0 > start.0 && grown.1 > start.1,
+            "{start:?} -> {grown:?}"
+        );
+        click(&mut editor, &mut layout, EditItem::Narrower);
+        click(&mut editor, &mut layout, EditItem::Shorter);
+        assert_eq!(
+            layout.cast_bar_size(),
+            start,
+            "the steps are exact inverses"
+        );
+
+        // And it moves like everything else.
+        let before = layout.rect_of(HudElementId::CastBar, UiScale::default(), FHD);
+        let point = centre(&layout, HudElementId::CastBar);
+        drag_to(
+            &mut editor,
+            &mut layout,
+            HudElementId::CastBar,
+            (point.0 - 300.0, point.1 - 200.0),
+        );
+        let after = layout.rect_of(HudElementId::CastBar, UiScale::default(), FHD);
+        assert!((after.x - before.x).abs() > 100.0 && (after.y - before.y).abs() > 100.0);
+    }
+
+    #[test]
+    fn only_the_cast_bar_can_be_reshaped() {
+        let (mut editor, mut layout) = editor();
+        let frame = centre(&layout, HudElementId::Player);
+        editor.update(&press(frame), &mut layout, UiScale::default(), FHD);
+        editor.update(&release(frame), &mut layout, UiScale::default(), FHD);
+        assert_eq!(editor.selected(), Some(HudElementId::Player));
+        let before = layout.config().clone();
+        assert_eq!(
+            click(&mut editor, &mut layout, EditItem::Wider),
+            EditOutcome::Idle
+        );
+        assert_eq!(layout.config(), &before);
     }
 }

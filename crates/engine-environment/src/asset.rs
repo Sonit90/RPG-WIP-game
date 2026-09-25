@@ -220,13 +220,49 @@ pub const RIDGE: EnvironmentAsset = EnvironmentAsset::new("ridge");
 /// The inverted gradient shell the whole scene sits inside.
 pub const SKY_DOME: EnvironmentAsset = EnvironmentAsset::new("sky_dome");
 
+/// A full-height crypt wall: eight metres long and five tall, the graveyard's room boundary.
+///
+/// The same length as [`WALL_SEGMENT`], so a room laid out in kerb segments can be walled in
+/// place, and tall enough that a room reads as a room from the gameplay camera — the kerb is
+/// a metre high and a level built from it reads as a field with fences.
+pub const CRYPT_WALL: EnvironmentAsset = EnvironmentAsset::new("crypt_wall");
+/// A square stone pier with a pyramid cap. Stands at every corner and joint of a crypt wall.
+pub const WALL_PIER: EnvironmentAsset = EnvironmentAsset::new("wall_pier");
+/// A pointed arch that springs from two piers eight metres apart: a doorway's head.
+///
+/// Carries no collision of its own. The piers it stands on are what block, and the opening
+/// under it must stay open.
+pub const CRYPT_GATE: EnvironmentAsset = EnvironmentAsset::new("crypt_gate");
+/// Metres between the centres of the two piers a [`CRYPT_GATE`] stands on.
+///
+/// Two wall segments: the width of every doorway in a room laid out in segments. The arch's
+/// feet are built into piers this far apart, so a gate placed anywhere else is an arch
+/// standing on air — the level's tests hold every gate in the crypt to it.
+pub const CRYPT_GATE_SPAN: f32 = 16.0;
+/// A weathered headstone with a rounded shoulder.
+pub const GRAVESTONE: EnvironmentAsset = EnvironmentAsset::new("gravestone");
+/// A stone grave cross on a stepped base.
+pub const GRAVE_CROSS: EnvironmentAsset = EnvironmentAsset::new("grave_cross");
+/// A lidded stone coffin on a plinth.
+pub const SARCOPHAGUS: EnvironmentAsset = EnvironmentAsset::new("sarcophagus");
+/// A bare, crooked tree: the graveyard's vegetation.
+pub const DEAD_TREE: EnvironmentAsset = EnvironmentAsset::new("dead_tree");
+/// Four metres of wrought-iron railing between two posts.
+pub const IRON_FENCE: EnvironmentAsset = EnvironmentAsset::new("iron_fence");
+/// An eight-metre square of worn paving laid over the ground: a crypt's floor.
+pub const CRYPT_FLOOR: EnvironmentAsset = EnvironmentAsset::new("crypt_floor");
+/// A small stone tomb-house with a pediment and a sealed door. A graveyard's landmark.
+pub const MAUSOLEUM: EnvironmentAsset = EnvironmentAsset::new("mausoleum");
+/// A heap of bones and skulls. Ossuary dressing, walked through.
+pub const BONE_PILE: EnvironmentAsset = EnvironmentAsset::new("bone_pile");
+
 /// Every asset the environment library contains, in category order.
 ///
 /// The list an uploader iterates: one `create_model` per entry, and every placement of that
 /// asset then shares the mesh and material handles it returned. That sharing is the whole
 /// of the instancing requirement — see the crate docs of
 /// `engine_presentation::environment`.
-pub const LIBRARY: [EnvironmentAsset; 18] = [
+pub const LIBRARY: [EnvironmentAsset; 29] = [
     GROUND_PLAIN,
     ARENA_FLOOR,
     WALL_SEGMENT,
@@ -245,6 +281,17 @@ pub const LIBRARY: [EnvironmentAsset; 18] = [
     BANNER,
     RIDGE,
     SKY_DOME,
+    CRYPT_WALL,
+    WALL_PIER,
+    CRYPT_GATE,
+    GRAVESTONE,
+    GRAVE_CROSS,
+    SARCOPHAGUS,
+    DEAD_TREE,
+    IRON_FENCE,
+    CRYPT_FLOOR,
+    MAUSOLEUM,
+    BONE_PILE,
 ];
 
 #[cfg(test)]

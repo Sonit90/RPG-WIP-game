@@ -22,6 +22,7 @@ use engine_game::status::StatusKind;
 use engine_render_data::ui::{TextAlign, UiColor, UiDrawList, UiRect, UiScale};
 use engine_settings::hud::HudPlacement;
 
+use super::frame_style::{frame_bar, frame_panel, frame_text, friendly_fill, hostile_fill, shaded};
 use crate::game_ui::{UiTheme, write_integer};
 use crate::snapshot::{PartyMemberView, TargetView, UiSnapshot};
 
@@ -95,7 +96,10 @@ pub fn frame_size(id: super::hud_layout::HudElementId) -> Option<(f32, f32)> {
         HudElementId::Target => target_size(),
         HudElementId::TargetOfTarget => target_of_target_size(),
         HudElementId::Party => party_size(),
-        HudElementId::ActionBar(_) => return None,
+        HudElementId::Raid => super::raid_frame::raid_size(),
+        HudElementId::Buffs => super::aura_row::buff_bar_size(),
+        // Its size is the player's to set, so it is the layout's to report.
+        HudElementId::ActionBar(_) | HudElementId::CastBar => return None,
     })
 }
 
@@ -120,17 +124,6 @@ impl FrameScratch {
     }
 }
 
-/// How big text is drawn inside a frame whose rectangle is `rect` at design width `design`.
-///
-/// Derived from the rectangle rather than passed in, so a frame the player scaled up gets
-/// bigger text with it and a frame at half size stays legible rather than keeping full-size
-/// glyphs in a box too small for them.
-fn text_scale(theme: &UiTheme, factor: f32) -> f32 {
-    // The bitmap font only looks right at sensible multiples, so this is deliberately not
-    // rounded to an integer here: `UiScale::text` is what does the rounding, once.
-    UiScale::new(factor.clamp(UiScale::MIN, UiScale::MAX)).text(theme.hud_text_scale)
-}
-
 /// How much bigger than its design size a rectangle is.
 fn factor_of(rect: UiRect, design_width: f32) -> f32 {
     if design_width <= 0.0 {
@@ -140,44 +133,170 @@ fn factor_of(rect: UiRect, design_width: f32) -> f32 {
     }
 }
 
-/// Draws the panel every frame sits on.
-fn push_panel(list: &mut UiDrawList, rect: UiRect, theme: &UiTheme) {
-    list.rect(rect, theme.panel);
+/// How big a frame's text is: its design size times how much the frame was scaled.
+fn text_size(design: f32, factor: f32) -> f32 {
+    design * factor.max(0.25)
 }
 
-/// Draws a labelled bar with its numbers, and returns the row below it.
+/// Where a line of text that starts at `top` and is one frame line tall has its centre.
+fn line_centre(top: f32, factor: f32) -> f32 {
+    top + size::LINE * factor * 0.5
+}
+
+/// A bar with its label printed inside it: `label` on the left, `value` on the right.
+///
+/// The nameplate's bar — dark ground, gradient fill, dark border — with the frame's numbers
+/// set in the same edged face as a nameplate's name.
 #[allow(
     clippy::too_many_arguments,
     reason = "one row of a frame is this many facts"
 )]
-fn push_bar_row(
+fn push_labelled_bar(
+    list: &mut UiDrawList,
+    theme: &UiTheme,
+    rect: UiRect,
+    fraction: f32,
+    fill: (UiColor, UiColor),
+    label: &str,
+    value: &str,
+    factor: f32,
+) {
+    let plate = &theme.plate;
+    frame_bar(list, rect, fraction, fill, plate);
+    let size = text_size(11.5, factor).min(rect.height * 0.9);
+    let centre = rect.y + rect.height * 0.5;
+    let pad = 4.0 * factor;
+    frame_text(
+        list,
+        rect.x + pad,
+        centre,
+        label,
+        plate.health_text,
+        size,
+        TextAlign::Left,
+        plate,
+    );
+    frame_text(
+        list,
+        rect.right() - pad,
+        centre,
+        value,
+        plate.health_text,
+        size,
+        TextAlign::Right,
+        plate,
+    );
+}
+
+/// A health bar with `current / maximum` centred and the percentage on the right.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one row of a frame is this many facts"
+)]
+fn push_health_bar(
     list: &mut UiDrawList,
     scratch: &mut FrameScratch,
     theme: &UiTheme,
     rect: UiRect,
     fraction: f32,
-    fill: UiColor,
+    fill: (UiColor, UiColor),
     current: f32,
     maximum: f32,
-    scale: f32,
+    factor: f32,
 ) {
-    list.bar(rect, fraction, theme.bar_background, fill);
+    let plate = &theme.plate;
+    frame_bar(list, rect, fraction, fill, plate);
+    let size = text_size(11.5, factor).min(rect.height * 0.9);
+    let centre = rect.y + rect.height * 0.5;
+    let pad = 4.0 * factor;
+
+    scratch.total.clear();
+    let percent = (fraction.clamp(0.0, 1.0) * 100.0).round() as i64;
+    let percent = if percent == 0 && current > 0.0 {
+        1
+    } else {
+        percent
+    };
+    write_integer(&mut scratch.total, percent);
+    scratch.total.push('%');
+
+    // The numbers as they are, then abbreviated (`1.2M / 2.0M`) if they would run into the
+    // percentage, then not at all: the percentage is the one number a frame must always show.
+    let font = engine_render_data::font::UiFont::SemiBold;
+    let room = rect.width - font.width(&scratch.total, size) * 2.0 - pad * 4.0;
     scratch.health.clear();
     write_integer(&mut scratch.health, current.round() as i64);
-    scratch.health.push('/');
-    scratch.total.clear();
-    write_integer(&mut scratch.total, maximum.round() as i64);
-    let total = std::mem::take(&mut scratch.total);
-    scratch.health.push_str(&total);
-    scratch.total = total;
-    let ((x, y), align) = crate::game_ui::centered(
-        rect.x + rect.width * 0.5,
-        rect.y + (rect.height - scale * 7.0) * 0.5,
+    scratch.health.push_str(" / ");
+    write_integer(&mut scratch.health, maximum.round() as i64);
+    if font.width(&scratch.health, size) > room {
+        scratch.health.clear();
+        crate::nameplate::write_abbreviated(&mut scratch.health, current);
+        scratch.health.push_str(" / ");
+        crate::nameplate::write_abbreviated(&mut scratch.health, maximum);
+    }
+    if font.width(&scratch.health, size) <= room {
+        frame_text(
+            list,
+            rect.x + rect.width * 0.5,
+            centre,
+            &scratch.health,
+            plate.health_text,
+            size,
+            TextAlign::Center,
+            plate,
+        );
+    }
+    frame_text(
+        list,
+        rect.right() - pad,
+        centre,
+        &scratch.total,
+        plate.health_text,
+        size,
+        TextAlign::Right,
+        plate,
     );
-    list.text_aligned((x, y), &scratch.health, theme.text, scale, align);
 }
 
-/// Draws the player's frame: who they are, their health, their Heat and their Energy.
+/// A frame's title line: the name on the left in the frame's name size, `right` on the right.
+#[allow(clippy::too_many_arguments, reason = "a title line is this many facts")]
+fn push_title(
+    list: &mut UiDrawList,
+    scratch: &mut FrameScratch,
+    theme: &UiTheme,
+    inner: UiRect,
+    name: &str,
+    name_color: UiColor,
+    right: &str,
+    right_color: UiColor,
+    factor: f32,
+) {
+    let plate = &theme.plate;
+    let centre = line_centre(inner.y, factor);
+    crate::ui::map_style::write_title_case(&mut scratch.detail, name);
+    frame_text(
+        list,
+        inner.x,
+        centre,
+        &scratch.detail,
+        name_color,
+        text_size(14.0, factor),
+        TextAlign::Left,
+        plate,
+    );
+    frame_text(
+        list,
+        inner.right(),
+        centre,
+        right,
+        right_color,
+        text_size(12.0, factor),
+        TextAlign::Right,
+        plate,
+    );
+}
+
+/// Draws the player's frame: who they are, their health, and their class's resources.
 pub fn push_player_frame(
     list: &mut UiDrawList,
     rect: UiRect,
@@ -186,41 +305,41 @@ pub fn push_player_frame(
     scratch: &mut FrameScratch,
 ) {
     let factor = factor_of(rect, size::PLAYER_WIDTH);
-    let scale = text_scale(theme, factor);
     let padding = size::PADDING * factor;
-    push_panel(list, rect, theme);
+    frame_panel(list, rect, &theme.plate, factor);
 
     let player = &snapshot.player;
     let inner = rect.inset(padding);
-    list.text_at((inner.x, inner.y), "YOU", theme.text, scale);
-    if !player.alive {
-        list.text_aligned(
-            (inner.right(), inner.y),
-            "DEAD",
-            theme.death_text,
-            scale,
-            TextAlign::Right,
-        );
-    }
+    push_title(
+        list,
+        scratch,
+        theme,
+        inner,
+        "YOU",
+        theme.plate.name_target,
+        if player.alive { "" } else { "Dead" },
+        theme.death_text,
+        factor,
+    );
 
     // The respawn protection, along the bottom of the frame: it is a state of the player
     // rather than a resource, so it goes where it cannot push the bars around, and it is drawn
     // from the player's ordinary status list like any other timed effect. See
     // `engine_game::sim::respawn` for why the clock behind it lives where it does.
-    push_respawn_protection(list, inner, factor, scale, player, theme, scratch);
+    push_respawn_protection(list, inner, factor, player, theme, scratch);
 
     let mut y = inner.y + size::LINE * factor;
     let bar = size::BAR * factor;
-    push_bar_row(
+    push_health_bar(
         list,
         scratch,
         theme,
         UiRect::new(inner.x, y, inner.width, bar),
         player.health_fraction(),
-        theme.player_health_color(player.health_fraction()),
+        friendly_fill(&theme.plate, player.health_fraction()),
         player.health,
         player.max_health,
-        scale,
+        factor,
     );
 
     // **The resources the hero the player *is* actually has.** The Warrior has Deflection
@@ -233,7 +352,6 @@ pub fn push_player_frame(
             y + bar + 2.0 * factor,
             bar,
             factor,
-            scale,
             player,
             theme,
             scratch,
@@ -247,7 +365,6 @@ pub fn push_player_frame(
             y + bar + 2.0 * factor,
             bar,
             factor,
-            scale,
             player,
             theme,
             scratch,
@@ -256,34 +373,34 @@ pub fn push_player_frame(
     }
 
     y += bar + 2.0 * factor;
-    list.bar(
+    scratch.detail.clear();
+    write_integer(&mut scratch.detail, player.heat.round() as i64);
+    push_labelled_bar(
+        list,
+        theme,
         UiRect::new(inner.x, y, inner.width, bar),
         player.heat_fraction(),
-        theme.bar_background,
-        theme.heat_color(player.heat_tier),
-    );
-    scratch.detail.clear();
-    scratch.detail.push_str("HEAT ");
-    write_integer(&mut scratch.detail, player.heat.round() as i64);
-    list.text_at(
-        (inner.x + 3.0 * factor, y),
+        shaded(theme.heat_color(player.heat_tier)),
+        "Heat",
         &scratch.detail,
-        theme.text,
-        scale,
+        factor,
     );
 
     y += bar + 2.0 * factor;
-    list.bar(
+    push_labelled_bar(
+        list,
+        theme,
         UiRect::new(inner.x, y, inner.width, bar),
         player.energy_fraction(),
-        theme.bar_background,
-        if player.ultimate_ready {
+        shaded(if player.ultimate_ready {
             theme.energy_full
         } else {
             theme.energy
-        },
+        }),
+        "Energy",
+        if player.ultimate_ready { "Ready" } else { "" },
+        factor,
     );
-    list.text_at((inner.x + 3.0 * factor, y), "ENERGY", theme.text, scale);
 }
 
 /// **The Druid's rows**: Mana, and the Astral Power that arms the next spell.
@@ -302,48 +419,41 @@ fn push_astral_rows(
     mut y: f32,
     bar: f32,
     factor: f32,
-    scale: f32,
     player: &crate::snapshot::PlayerView,
     theme: &UiTheme,
     scratch: &mut FrameScratch,
 ) {
     let druid = &player.druid;
-    list.bar(
+    scratch.detail.clear();
+    write_integer(&mut scratch.detail, druid.mana.round() as i64);
+    push_labelled_bar(
+        list,
+        theme,
         UiRect::new(inner.x, y, inner.width, bar),
         druid.mana_fraction(),
-        theme.bar_background,
-        theme.mana,
-    );
-    scratch.detail.clear();
-    scratch.detail.push_str("MANA ");
-    write_integer(&mut scratch.detail, druid.mana.round() as i64);
-    list.text_at(
-        (inner.x + 3.0 * factor, y),
+        shaded(theme.mana),
+        "Mana",
         &scratch.detail,
-        theme.text,
-        scale,
+        factor,
     );
 
     y += bar + 2.0 * factor;
-    list.bar(
-        UiRect::new(inner.x, y, inner.width, bar),
-        druid.astral_fraction(),
-        theme.bar_background,
-        theme.astral_color(druid.armed),
-    );
     scratch.detail.clear();
-    scratch.detail.push_str("ASTRAL ");
     write_integer(&mut scratch.detail, druid.astral.round() as i64);
     if druid.armed {
-        scratch.detail.push_str(" ARMED");
+        scratch.detail.push_str("  Armed");
     } else if druid.can_arm {
-        scratch.detail.push_str(" *");
+        scratch.detail.push_str("  *");
     }
-    list.text_at(
-        (inner.x + 3.0 * factor, y),
+    push_labelled_bar(
+        list,
+        theme,
+        UiRect::new(inner.x, y, inner.width, bar),
+        druid.astral_fraction(),
+        shaded(theme.astral_color(druid.armed)),
+        "Astral",
         &scratch.detail,
-        theme.text,
-        scale,
+        factor,
     );
 }
 
@@ -361,30 +471,27 @@ fn push_deflection_rows(
     mut y: f32,
     bar: f32,
     factor: f32,
-    scale: f32,
     player: &crate::snapshot::PlayerView,
     theme: &UiTheme,
     scratch: &mut FrameScratch,
 ) {
     let warrior = &player.warrior;
-    list.bar(
-        UiRect::new(inner.x, y, inner.width, bar),
-        warrior.deflection_fraction(),
-        theme.bar_background,
-        theme.deflection_color(warrior.is_capped()),
-    );
+    let plate = &theme.plate;
     scratch.detail.clear();
-    scratch.detail.push_str("DEFLECTION ");
     write_integer(&mut scratch.detail, warrior.deflection.round() as i64);
     // The empowered marker, on the resource itself: twenty banked is an ability's worth.
     if warrior.can_empower() {
-        scratch.detail.push_str(" *");
+        scratch.detail.push_str("  *");
     }
-    list.text_at(
-        (inner.x + 3.0 * factor, y),
+    push_labelled_bar(
+        list,
+        theme,
+        UiRect::new(inner.x, y, inner.width, bar),
+        warrior.deflection_fraction(),
+        shaded(theme.deflection_color(warrior.is_capped())),
+        "Deflection",
         &scratch.detail,
-        theme.text,
-        scale,
+        factor,
     );
 
     // **What holding it is costing.** The passive bonuses run backwards, and a player who
@@ -400,57 +507,68 @@ fn push_deflection_rows(
     // Tenths of a per cent: at twenty-five Deflection the bonus is 3.75 %, and rounding it
     // to a whole number would show the same figure for two very different states.
     scratch.detail.insert(scratch.detail.len() - 1, '.');
-    scratch.detail.push_str("% HP  +");
+    scratch.detail.push_str("% Health  +");
     write_integer(
         &mut scratch.detail,
         (warrior.armor_bonus * 1000.0).round() as i64,
     );
     scratch.detail.insert(scratch.detail.len() - 1, '.');
-    scratch.detail.push_str("% ARMOUR");
-    list.text_at((inner.x, y), &scratch.detail, theme.status, scale);
+    scratch.detail.push_str("% Armour");
+    frame_text(
+        list,
+        inner.x,
+        line_centre(y, factor),
+        &scratch.detail,
+        plate.status,
+        text_size(11.0, factor),
+        TextAlign::Left,
+        plate,
+    );
 
     // What is running. Only what is actually up: a line of dark labels for eleven abilities
     // would be furniture.
     y += size::LINE * factor;
     scratch.detail.clear();
-    if warrior.shield_block > 0.0 {
-        scratch.detail.push_str("BLOCK ");
-    }
-    if warrior.battle_trance > 0.0 {
-        scratch.detail.push_str("TRANCE ");
-    }
-    if warrior.last_stand > 0.0 {
-        scratch.detail.push_str("STAND ");
-    }
-    if warrior.spell_reflect > 0.0 {
-        scratch.detail.push_str("REFLECT ");
-    }
-    if warrior.charging {
-        scratch.detail.push_str("CHARGE ");
-    }
-    if warrior.war_stomp_armor {
-        scratch.detail.push_str("STOMPED ");
+    for (on, word) in [
+        (warrior.shield_block > 0.0, "Block "),
+        (warrior.battle_trance > 0.0, "Trance "),
+        (warrior.last_stand > 0.0, "Stand "),
+        (warrior.spell_reflect > 0.0, "Reflect "),
+        (warrior.charging, "Charge "),
+        (warrior.war_stomp_armor, "Stomped "),
+    ] {
+        if on {
+            scratch.detail.push_str(word);
+        }
     }
     if warrior.adrenaline > 0.0 {
         // The Recovery Pool, while it is being filled: what the player will get back.
-        scratch.detail.push_str("POOL ");
+        scratch.detail.push_str("Pool ");
         write_integer(&mut scratch.detail, warrior.recovery_pool.round() as i64);
         scratch.detail.push(' ');
     }
     if warrior.absorb > 0.0 {
-        scratch.detail.push_str("ABSORB ");
+        scratch.detail.push_str("Absorb ");
         write_integer(&mut scratch.detail, warrior.absorb.round() as i64);
     }
     if !scratch.detail.is_empty() {
-        list.text_at((inner.x, y), &scratch.detail, theme.text, scale);
+        frame_text(
+            list,
+            inner.x,
+            line_centre(y, factor),
+            &scratch.detail,
+            plate.name,
+            text_size(11.0, factor),
+            TextAlign::Left,
+            plate,
+        );
     }
 }
 
 /// Draws a frame for a target, or its empty state when there is nothing selected.
 ///
-/// `title` is what the frame is called when it is empty: the target frame says `NO TARGET`
-/// and the target-of-target frame says `NO TARGET OF TARGET`, so a player looking at two
-/// empty boxes can tell which is which.
+/// `empty_label` is what the frame says when it is empty, so a player looking at two empty
+/// boxes can tell which is which.
 pub fn push_target_frame(
     list: &mut UiDrawList,
     rect: UiRect,
@@ -461,50 +579,76 @@ pub fn push_target_frame(
     design_width: f32,
 ) {
     let factor = factor_of(rect, design_width);
-    let scale = text_scale(theme, factor);
     let padding = size::PADDING * factor;
-    push_panel(list, rect, theme);
+    let plate = &theme.plate;
+    frame_panel(list, rect, plate, factor);
     let inner = rect.inset(padding);
 
     let Some(target) = target else {
         // The empty state is drawn, not hidden. A frame that disappeared would take its
         // place in the layout with it, and the player would have nothing to aim at.
-        let ((x, y), align) = crate::game_ui::centered(
+        crate::ui::map_style::write_title_case(&mut scratch.detail, empty_label);
+        frame_text(
+            list,
             inner.x + inner.width * 0.5,
-            inner.y + (inner.height - scale * 7.0) * 0.5,
+            inner.y + inner.height * 0.5,
+            &scratch.detail,
+            plate.name_dead,
+            text_size(13.0, factor),
+            TextAlign::Center,
+            plate,
         );
-        list.text_aligned((x, y), empty_label, theme.status, scale, align);
         return;
     };
 
-    list.text_at((inner.x, inner.y), target.kind.as_str(), theme.text, scale);
     // The distance, which is what tells a player whether the thing they selected is in range.
+    scratch.total.clear();
     if target.distance.is_finite() && target.distance < f32::MAX {
-        scratch.detail.clear();
-        write_integer(&mut scratch.detail, target.distance.round() as i64);
-        scratch.detail.push('M');
-        list.text_aligned(
-            (inner.right(), inner.y),
-            &scratch.detail,
-            theme.text,
-            scale,
-            TextAlign::Right,
-        );
+        write_integer(&mut scratch.total, target.distance.round() as i64);
+        scratch.total.push_str(" m");
     }
+    let hostile = matches!(
+        target.kind,
+        engine_game::world::EntityKind::Enemy | engine_game::world::EntityKind::Dummy
+    );
+    let name_color = if !target.alive {
+        plate.name_dead
+    } else if target.boss {
+        plate.name_boss
+    } else {
+        plate.name
+    };
+    let distance = std::mem::take(&mut scratch.total);
+    push_title(
+        list,
+        scratch,
+        theme,
+        inner,
+        target.name,
+        name_color,
+        &distance,
+        plate.name,
+        factor,
+    );
+    scratch.total = distance;
 
     let y = inner.y + size::LINE * factor;
     let bar = size::BAR * factor;
     let fraction = target.health_fraction();
-    push_bar_row(
+    push_health_bar(
         list,
         scratch,
         theme,
         UiRect::new(inner.x, y, inner.width, bar.min(inner.bottom() - y)),
         fraction,
-        theme.enemy_health_color(fraction),
+        if hostile {
+            hostile_fill(plate, fraction)
+        } else {
+            friendly_fill(plate, fraction)
+        },
         target.health,
         target.max_health,
-        scale,
+        factor,
     );
 
     // Room for one more line only on the full-size frame; the small one stops at health.
@@ -512,43 +656,47 @@ pub fn push_target_frame(
     if status_y + size::LINE * factor <= rect.bottom() {
         if target.ignite_stacks > 0 {
             scratch.detail.clear();
-            scratch.detail.push_str("IGNITE ");
+            scratch.detail.push_str("Ignite ");
             write_integer(&mut scratch.detail, i64::from(target.ignite_stacks));
-            list.text_at((inner.x, status_y), &scratch.detail, theme.status, scale);
+            frame_text(
+                list,
+                inner.x,
+                line_centre(status_y, factor),
+                &scratch.detail,
+                plate.status,
+                text_size(11.0, factor),
+                TextAlign::Left,
+                plate,
+            );
         }
         // The phase, on the right of the same line, and only for something that has more
         // than one. It is the boss encounter's only piece of dedicated interface: a fight
         // that changes has to say so somewhere the player is already looking, and the frame
         // they are aiming with is that place.
-        if let Some((phase, name)) = target.phase {
+        if let Some((phase, _name)) = target.phase {
             scratch.detail.clear();
-            scratch.detail.push('P');
+            scratch.detail.push_str("Phase ");
             write_integer(&mut scratch.detail, phase as i64);
-            // A boss's phase is drawn in the enemy cast colour, which is the palette's
-            // "something is about to happen to you" — the same meaning it carries on a cast
-            // bar, so it needs no legend.
             let colour = if target.boss {
                 theme.enemy_cast_fill
             } else {
-                theme.status
+                plate.status
             };
-            list.text_aligned(
-                (inner.right(), status_y),
+            frame_text(
+                list,
+                inner.right(),
+                line_centre(status_y, factor),
                 &scratch.detail,
                 colour,
-                scale,
+                text_size(11.0, factor),
                 TextAlign::Right,
+                plate,
             );
-            let _ = name;
         }
     }
 }
 
-/// Draws "CANNOT BE RESPAWNED" and its countdown, while the player has it.
-///
-/// The name comes from [`StatusKind::as_str`], which is the uppercase the whole interface is
-/// drawn in; the effect's own name in prose is `StatusKind::display_name`, and the two are
-/// deliberately separate — see that function.
+/// Draws the respawn protection and its countdown, while the player has it.
 ///
 /// Nothing is drawn when the status is not there, which is nearly always: an interface element
 /// that is present and empty is one a player learns to stop reading.
@@ -556,7 +704,6 @@ fn push_respawn_protection(
     list: &mut UiDrawList,
     inner: UiRect,
     factor: f32,
-    scale: f32,
     player: &crate::snapshot::PlayerView,
     theme: &UiTheme,
     scratch: &mut FrameScratch,
@@ -568,18 +715,22 @@ fn push_respawn_protection(
     else {
         return;
     };
-    scratch.detail.clear();
-    scratch
-        .detail
-        .push_str(StatusKind::RespawnProtection.as_str());
+    crate::ui::map_style::write_title_case(
+        &mut scratch.detail,
+        StatusKind::RespawnProtection.as_str(),
+    );
     scratch.detail.push(' ');
     // Rounded up, so the last second reads "1" rather than "0" for a whole second.
     write_integer(&mut scratch.detail, status.remaining.ceil() as i64);
-    list.text_at(
-        (inner.x, inner.bottom() - size::LINE * factor),
+    frame_text(
+        list,
+        inner.x,
+        line_centre(inner.bottom() - size::LINE * factor, factor),
         &scratch.detail,
         theme.death_text,
-        scale,
+        text_size(11.0, factor),
+        TextAlign::Left,
+        &theme.plate,
     );
 }
 
@@ -595,9 +746,9 @@ pub fn push_party_frame(
     scratch: &mut FrameScratch,
 ) {
     let factor = factor_of(rect, size::PARTY_WIDTH);
-    let scale = text_scale(theme, factor);
     let padding = size::PADDING * factor;
-    push_panel(list, rect, theme);
+    let plate = &theme.plate;
+    frame_panel(list, rect, plate, factor);
     let inner = rect.inset(padding);
     let row_height = size::PARTY_ROW * factor;
 
@@ -608,7 +759,21 @@ pub fn push_party_frame(
             // put health bars over whatever is underneath.
             break;
         }
-        list.text_at((inner.x, top), member.name(), theme.text, scale);
+        crate::ui::map_style::write_title_case(&mut scratch.detail, member.name());
+        frame_text(
+            list,
+            inner.x,
+            line_centre(top, factor),
+            &scratch.detail,
+            if member.alive {
+                plate.name
+            } else {
+                plate.name_dead
+            },
+            text_size(12.5, factor),
+            TextAlign::Left,
+            plate,
+        );
         let fraction = member.health_fraction();
         let bar = UiRect::new(
             inner.x,
@@ -616,34 +781,38 @@ pub fn push_party_frame(
             inner.width,
             size::BAR * factor,
         );
-        push_bar_row(
+        push_health_bar(
             list,
             scratch,
             theme,
             bar,
-            fraction,
-            if member.alive {
-                theme.player_health_color(fraction)
-            } else {
-                theme.enemy_health_low
-            },
+            if member.alive { fraction } else { 0.0 },
+            friendly_fill(plate, fraction),
             member.health,
             member.max_health,
-            scale,
+            factor,
         );
     }
 }
 
-/// Draws every enabled frame, in one call.
+/// Draws every enabled frame, in one call: the four unit frames, the raid frames and the
+/// buff bar, with the debuffs each frame carries — the player's under their frame, each
+/// member's beside their party row and inside their raid cell. Every icon is recorded in
+/// `hits` for the tooltip.
 ///
 /// The order is painter's order and nothing else: the frames do not overlap in the default
 /// layout, and a player who drags two on top of each other gets the later one on top.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the frames read from this many independent sources"
+)]
 pub fn push_frames(
     list: &mut UiDrawList,
     layout: &super::hud_layout::HudLayout,
     snapshot: &UiSnapshot,
     theme: &UiTheme,
     scratch: &mut FrameScratch,
+    hits: &mut super::aura_row::AuraHits,
     ui_scale: UiScale,
     viewport: (u32, u32),
 ) {
@@ -653,12 +822,18 @@ pub fn push_frames(
         if !layout.is_enabled(id) {
             return None;
         }
-        let size = frame_size(id)?;
-        Some(layout.resolve(id, size, ui_scale, viewport))
+        Some(layout.rect_of(id, ui_scale, viewport))
     };
 
     if let Some(rect) = rect_of(HudElementId::Player) {
         push_player_frame(list, rect, snapshot, theme, scratch);
+        super::aura_row::push_player_debuffs(
+            list,
+            hits,
+            rect,
+            snapshot.player.auras.debuffs(),
+            &mut scratch.detail,
+        );
     }
     if let Some(rect) = rect_of(HudElementId::Target) {
         push_target_frame(
@@ -684,6 +859,27 @@ pub fn push_frames(
     }
     if let Some(rect) = rect_of(HudElementId::Party) {
         push_party_frame(list, rect, &snapshot.party, theme, scratch);
+        super::aura_row::push_party_debuffs(list, hits, rect, &snapshot.party, &mut scratch.detail);
+    }
+    if let Some(rect) = rect_of(HudElementId::Raid) {
+        super::raid_frame::push_raid_frame(
+            list,
+            rect,
+            &snapshot.party,
+            snapshot.target.as_ref().map(|target| target.entity),
+            &theme.plate,
+            &mut scratch.detail,
+        );
+        super::aura_row::push_raid_debuffs(list, hits, rect, &snapshot.party, &mut scratch.detail);
+    }
+    if let Some(rect) = rect_of(HudElementId::Buffs) {
+        super::aura_row::push_buff_bar(
+            list,
+            hits,
+            rect,
+            snapshot.player.auras.buffs(),
+            &mut scratch.detail,
+        );
     }
 }
 
@@ -742,7 +938,9 @@ mod tests {
         list.commands()
             .iter()
             .filter_map(|command| match command {
-                UiCommand::Text { range, .. } => Some(list.text_of(*range).to_owned()),
+                UiCommand::Text { range, .. } | UiCommand::StyledLabel { range, .. } => {
+                    Some(list.text_of(*range).to_owned())
+                }
                 _ => None,
             })
             .collect()
@@ -758,10 +956,124 @@ mod tests {
             snapshot,
             &UiTheme::default(),
             &mut scratch,
+            &mut super::super::aura_row::AuraHits::new(),
             UiScale::default(),
             FHD,
         );
         list
+    }
+
+    /// Every icon drawn, with where it was drawn.
+    fn drawn_icons(list: &UiDrawList) -> Vec<(engine_render_data::ui::UiIcon, UiRect)> {
+        list.commands()
+            .iter()
+            .filter_map(|command| match command {
+                UiCommand::Icon { icon, rect, .. } => Some((*icon, *rect)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_debuff_on_the_player_hangs_under_their_frame_and_on_their_party_row() {
+        use engine_game::status::{Status, StatusKind};
+        use engine_render_data::ui::UiIcon;
+        let mut simulation = simulation();
+        let player = simulation.player().entity;
+        simulation
+            .world_mut()
+            .statuses_mut(player)
+            .expect("the player carries a status set")
+            .apply(Status::new(
+                StatusKind::Poisoned,
+                player,
+                engine_game::firemage::FireAbility::Firebolt.into(),
+                10.0,
+                1.0,
+            ));
+        let snapshot = snapshot(&simulation);
+        let layout = HudLayout::default();
+        let mut list = UiDrawList::new();
+        let mut scratch = FrameScratch::new();
+        let mut hits = super::super::aura_row::AuraHits::new();
+        push_frames(
+            &mut list,
+            &layout,
+            &snapshot,
+            &UiTheme::default(),
+            &mut scratch,
+            &mut hits,
+            UiScale::default(),
+            FHD,
+        );
+        let frame = layout.rect_of(HudElementId::Player, UiScale::default(), FHD);
+        let party = layout.rect_of(HudElementId::Party, UiScale::default(), FHD);
+        let poisons: Vec<UiRect> = drawn_icons(&list)
+            .into_iter()
+            .filter(|(icon, _)| *icon == UiIcon::AuraPoisoned)
+            .map(|(_, rect)| rect)
+            .collect();
+        assert!(
+            poisons
+                .iter()
+                .any(|rect| rect.y >= frame.bottom() && rect.x >= frame.x - 0.5),
+            "no poison under the player frame: {poisons:?}"
+        );
+        assert!(
+            poisons.iter().any(|rect| rect.x >= party.right()),
+            "no poison beside the party row: {poisons:?}"
+        );
+        // A poison can be dispelled, so its icon is framed in the dispel blue.
+        assert!(list.commands().iter().any(|command| matches!(
+            command,
+            UiCommand::Outline { color, .. }
+                if *color == super::super::aura_row::DISPEL_BORDER
+        )));
+        // And each one can be hovered for its tooltip.
+        let centre = (poisons[0].x + 2.0, poisons[0].y + 2.0);
+        assert!(hits.at(centre).is_some());
+    }
+
+    #[test]
+    fn the_buff_bar_shows_the_player_s_buffs_where_it_was_put() {
+        use engine_game::status::{Status, StatusKind};
+        use engine_render_data::ui::UiIcon;
+        let mut simulation = simulation();
+        let player = simulation.player().entity;
+        simulation
+            .world_mut()
+            .statuses_mut(player)
+            .expect("the player carries a status set")
+            .apply(Status::new(
+                StatusKind::WildRush,
+                player,
+                engine_game::firemage::FireAbility::WildRush.into(),
+                6.0,
+                0.0,
+            ));
+        let snapshot = snapshot(&simulation);
+        let mut layout = HudLayout::default();
+        let list = frames(&layout, &snapshot);
+        let bar = layout.rect_of(HudElementId::Buffs, UiScale::default(), FHD);
+        let rush = drawn_icons(&list)
+            .into_iter()
+            .find(|(icon, _)| *icon == UiIcon::WildRush)
+            .map(|(_, rect)| rect)
+            .expect("Wild Rush is in the buff bar");
+        assert!(
+            rush.x >= bar.x && rush.right() <= bar.right() + 0.5,
+            "{rush:?} {bar:?}"
+        );
+        assert!(rush.y >= bar.y && rush.bottom() <= bar.bottom() + 0.5);
+
+        // Hidden in Edit HUD, it draws nothing at all.
+        layout.set_enabled(HudElementId::Buffs, false);
+        let list = frames(&layout, &snapshot);
+        assert!(
+            !drawn_icons(&list)
+                .iter()
+                .any(|(icon, _)| *icon == UiIcon::WildRush)
+        );
     }
 
     #[test]
@@ -771,13 +1083,13 @@ mod tests {
         let list = frames(&HudLayout::default(), &snapshot);
         let printed = texts(&list);
 
-        assert!(printed.iter().any(|text| text == "YOU"), "{printed:?}");
+        assert!(printed.iter().any(|text| text == "You"), "{printed:?}");
         assert!(
-            printed.iter().any(|text| text.starts_with("HEAT")),
+            printed.iter().any(|text| text == "Heat"),
             "no Heat: {printed:?}"
         );
         assert!(
-            printed.iter().any(|text| text == "ENERGY"),
+            printed.iter().any(|text| text == "Energy"),
             "no Energy: {printed:?}"
         );
         // The health the simulation actually has, not a number this file made up.
@@ -785,7 +1097,7 @@ mod tests {
         assert!(
             printed
                 .iter()
-                .any(|text| text.starts_with(&format!("{health}/"))),
+                .any(|text| text.starts_with(&format!("{health} / "))),
             "health {health} is not printed: {printed:?}"
         );
     }
@@ -799,7 +1111,7 @@ mod tests {
 
         let printed = texts(&frames(&HudLayout::default(), &snapshot));
         assert!(
-            printed.iter().filter(|text| *text == "NO TARGET").count() >= 2,
+            printed.iter().filter(|text| *text == "No Target").count() >= 2,
             "the empty frames printed nothing: {printed:?}"
         );
     }
@@ -812,15 +1124,13 @@ mod tests {
         let target = snapshot.target.as_ref().expect("a target was selected");
 
         let printed = texts(&frames(&HudLayout::default(), &snapshot));
-        assert!(
-            printed.iter().any(|text| text == target.kind.as_str()),
-            "{printed:?}"
-        );
+        let name = crate::ui::map_style::title_case(target.name);
+        assert!(printed.contains(&name), "{printed:?}");
         let health = target.health.round() as i64;
         assert!(
             printed
                 .iter()
-                .any(|text| text.starts_with(&format!("{health}/"))),
+                .any(|text| text.starts_with(&format!("{health} / "))),
             "the target's health is not printed: {printed:?}"
         );
     }
@@ -837,15 +1147,10 @@ mod tests {
         let list = frames(&HudLayout::default(), &snapshot);
         let printed = texts(&list);
         // Both frames now name the same unit, which is exactly the chain being followed.
-        let kind = snapshot
-            .target
-            .as_ref()
-            .expect("a target")
-            .kind
-            .as_str()
-            .to_owned();
+        let name =
+            crate::ui::map_style::title_case(snapshot.target.as_ref().expect("a target").name);
         assert!(
-            printed.iter().filter(|text| **text == kind).count() >= 2,
+            printed.iter().filter(|text| **text == name).count() >= 2,
             "{printed:?}"
         );
     }
@@ -859,7 +1164,7 @@ mod tests {
         snapshot.party.truncate(1);
 
         let solo = texts(&frames(&HudLayout::default(), &snapshot));
-        assert!(solo.iter().filter(|text| **text == "YOU").count() >= 1);
+        assert!(solo.iter().filter(|text| **text == "You").count() >= 1);
 
         // A member joins. Nothing about the frame changes except that a row fills in.
         let mut extra = snapshot.party[0].clone();
@@ -890,7 +1195,7 @@ mod tests {
         let simulation = simulation();
         let snapshot = snapshot(&simulation);
         let mut layout = HudLayout::default();
-        for id in HudElementId::FRAMES {
+        for id in HudElementId::FRAMES.into_iter().chain([HudElementId::Raid]) {
             layout.set_enabled(id, false);
         }
         let list = frames(&layout, &snapshot);
@@ -949,7 +1254,12 @@ mod tests {
                     &UiTheme::default(),
                     &mut scratch,
                 ),
-                HudElementId::ActionBar(_) => continue,
+                HudElementId::ActionBar(_)
+                | HudElementId::Raid
+                | HudElementId::CastBar
+                | HudElementId::Buffs => {
+                    continue;
+                }
             }
             for command in list.commands() {
                 let drawn = match command {
@@ -1010,6 +1320,7 @@ mod tests {
                 &snapshot,
                 &theme,
                 &mut scratch,
+                &mut super::super::aura_row::AuraHits::new(),
                 UiScale::default(),
                 FHD,
             );
@@ -1025,6 +1336,7 @@ mod tests {
                 &snapshot,
                 &theme,
                 &mut scratch,
+                &mut super::super::aura_row::AuraHits::new(),
                 UiScale::default(),
                 FHD,
             );
@@ -1066,20 +1378,47 @@ mod tests {
 
     #[test]
     fn a_frame_prints_only_glyphs_the_font_has() {
-        // The 5x7 font has uppercase, digits and a little punctuation. A lowercase letter
-        // would draw as nothing, which reads as a bug in the game rather than in the string.
+        // The interface font covers its charset; anything else would draw as a question mark.
+        let known = |character: char| {
+            character == '?'
+                || engine_render_data::font::glyph_index(character)
+                    != engine_render_data::font::glyph_index('?')
+        };
         let mut simulation = simulation();
         simulation.select_nearest_target();
         let snapshot = snapshot(&simulation);
         for text in texts(&frames(&HudLayout::default(), &snapshot)) {
-            for character in text.chars() {
-                assert!(
-                    character.is_ascii_uppercase()
-                        || character.is_ascii_digit()
-                        || " /.:-%+".contains(character),
-                    "{character:?} in {text:?} has no glyph"
-                );
+            assert!(
+                text.chars().all(known),
+                "{text:?} has a character with no glyph"
+            );
+        }
+    }
+
+    #[test]
+    fn the_frames_are_drawn_like_the_nameplates() {
+        // Edged interface type and bordered gradient bars — no bitmap text at all.
+        let mut simulation = simulation();
+        simulation.select_nearest_target();
+        let snapshot = snapshot(&simulation);
+        let list = frames(&HudLayout::default(), &snapshot);
+        assert!(
+            !list
+                .commands()
+                .iter()
+                .any(|command| matches!(command, UiCommand::Text { .. })),
+            "a frame still draws bitmap text"
+        );
+        for command in list.commands() {
+            if let UiCommand::StyledLabel { style, .. } = command {
+                assert!(style.has_outline());
             }
         }
+        assert!(
+            list.commands()
+                .iter()
+                .any(|command| matches!(command, UiCommand::Panel { radius, .. } if *radius > 0.0)),
+            "the panels are rounded"
+        );
     }
 }

@@ -35,7 +35,7 @@
 use engine_core::tuning::nameplates as tuning;
 use serde::{Deserialize, Serialize};
 
-use crate::lenient;
+use crate::{lenient, lenient_true};
 
 /// Smallest nameplate the slider offers.
 ///
@@ -120,6 +120,76 @@ pub const NAMEPLATE_SAFE_ZONE_DEFAULT: f32 = tuning::SAFE_ZONE_DEFAULT;
 
 /// Granularity of the safe-zone slider.
 pub const NAMEPLATE_SAFE_ZONE_STEP: f32 = tuning::SAFE_ZONE_STEP;
+
+/// The nearest the display distance can be set, in metres.
+pub const NAMEPLATE_DISTANCE_MIN: f32 = tuning::MAX_DISTANCE_MIN;
+
+/// The furthest the display distance can be set, in metres.
+pub const NAMEPLATE_DISTANCE_MAX: f32 = tuning::MAX_DISTANCE_MAX;
+
+/// How far away an enemy can be and still have a plate, on a fresh install, in metres.
+pub const NAMEPLATE_DISTANCE_DEFAULT: f32 = tuning::MAX_DISTANCE_METRES;
+
+/// The revision of this section a fresh install writes.
+///
+/// Two since the nameplate redesign, which changed what a margin of one plate *means*: the
+/// plate grew from a line of text to a name over a health bar. A file written at revision one
+/// that still carries the old default margins is moved onto the new defaults when it loads —
+/// see [`NameplateSettings::validated`] — and a margin the player chose is left alone.
+pub const NAMEPLATE_SETTINGS_REVISION: u32 = 2;
+
+/// What a nameplate prints on its health bar.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NameplateHealthText {
+    /// Nothing: the bar alone.
+    None,
+    /// The percentage remaining: `87%`. The default — the one number worth reading at a
+    /// glance across a pack.
+    #[default]
+    Percent,
+    /// Health remaining, abbreviated: `12.4K`.
+    Value,
+    /// Both: `12.4K · 87%`.
+    Both,
+}
+
+impl NameplateHealthText {
+    /// Every mode, in the order a list of them would read.
+    pub const ALL: [Self; 4] = [Self::None, Self::Percent, Self::Value, Self::Both];
+
+    /// The word the file uses.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Percent => "percent",
+            Self::Value => "value",
+            Self::Both => "both",
+        }
+    }
+
+    /// The mode a word names, or `None`. Case-insensitive and trimmed: the file is
+    /// hand-edited.
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|mode| mode.as_str().eq_ignore_ascii_case(name.trim()))
+    }
+}
+
+impl<'de> Deserialize<'de> for NameplateHealthText {
+    /// Any word that is not a mode — or anything that is not a word — is the default.
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        let parsed = value.as_str().and_then(Self::from_name);
+        if parsed.is_none() {
+            log::warn!("settings: nameplates.health_text {value} is not a mode; using percent");
+        }
+        Ok(parsed.unwrap_or_default())
+    }
+}
 
 /// Which nameplate setting a value belongs to.
 ///
@@ -269,6 +339,35 @@ pub struct NameplateSettings {
     /// Fraction of the top of the screen plates stay out of.
     #[serde(deserialize_with = "lenient")]
     pub top_safe_zone: f32,
+    /// Whether enemies have nameplates at all.
+    #[serde(deserialize_with = "lenient_true")]
+    pub enabled: bool,
+    /// Whether a plate shows its enemy's cast under the health bar.
+    #[serde(deserialize_with = "lenient_true")]
+    pub cast_bars: bool,
+    /// Whether a plate shows the buffs and debuffs on its enemy, as icons under the health bar.
+    ///
+    /// On by default; the settings screen's nameplate page can turn it off.
+    #[serde(deserialize_with = "lenient_true")]
+    pub auras: bool,
+    /// What a plate prints on its health bar.
+    pub health_text: NameplateHealthText,
+    /// Whether plates are moved apart when they would cover one another.
+    ///
+    /// On by default. Off draws every plate exactly above its monster, overlaps and all —
+    /// what some players prefer in a pack they read by position rather than by name.
+    #[serde(deserialize_with = "lenient_true")]
+    pub stacking: bool,
+    /// How far from the player an enemy can be and still have a plate, in metres.
+    #[serde(deserialize_with = "lenient")]
+    pub max_distance: f32,
+    /// Which revision of this section the file was written at.
+    ///
+    /// Field-level default rather than the section's: a file written before the field
+    /// existed must read as revision zero, not as whatever a fresh install writes, or it
+    /// could never be told apart from one and moved onto the new defaults.
+    #[serde(default)]
+    pub revision: u32,
 }
 
 impl Default for NameplateSettings {
@@ -280,6 +379,13 @@ impl Default for NameplateSettings {
             vertical_margin: NAMEPLATE_VERTICAL_MARGIN_DEFAULT,
             horizontal_margin: NAMEPLATE_HORIZONTAL_MARGIN_DEFAULT,
             top_safe_zone: NAMEPLATE_SAFE_ZONE_DEFAULT,
+            enabled: true,
+            cast_bars: true,
+            auras: true,
+            health_text: NameplateHealthText::default(),
+            stacking: true,
+            max_distance: NAMEPLATE_DISTANCE_DEFAULT,
+            revision: NAMEPLATE_SETTINGS_REVISION,
         }
     }
 }
@@ -319,9 +425,47 @@ impl NameplateSettings {
     /// These settings with every out-of-range or non-finite field replaced by its default.
     ///
     /// Per field, deliberately: a file with one nonsense number keeps the other five.
+    ///
+    /// Also where an old file is brought up to date: a revision-one file whose margins or
+    /// non-target opacity are still exactly the defaults it was written with gets today's
+    /// defaults instead, because those numbers were never the player's choice and they mean
+    /// something different on the redesigned plate. A value that differs from the old default
+    /// was chosen, and is kept.
     #[must_use]
     pub fn validated(self) -> Self {
         let mut settings = self;
+        if settings.revision < NAMEPLATE_SETTINGS_REVISION {
+            let untouched = |value: f32, legacy: f32| (value - legacy).abs() < 1e-4;
+            if untouched(
+                settings.vertical_margin,
+                tuning::LEGACY_VERTICAL_MARGIN_DEFAULT,
+            ) {
+                settings.vertical_margin = NAMEPLATE_VERTICAL_MARGIN_DEFAULT;
+            }
+            if untouched(
+                settings.horizontal_margin,
+                tuning::LEGACY_HORIZONTAL_MARGIN_DEFAULT,
+            ) {
+                settings.horizontal_margin = NAMEPLATE_HORIZONTAL_MARGIN_DEFAULT;
+            }
+            if untouched(
+                settings.non_target_opacity_in_combat,
+                tuning::LEGACY_OPACITY_DEFAULT,
+            ) {
+                settings.non_target_opacity_in_combat = NAMEPLATE_OPACITY_DEFAULT;
+            }
+            settings.revision = NAMEPLATE_SETTINGS_REVISION;
+        }
+        if !settings.max_distance.is_finite()
+            || !(NAMEPLATE_DISTANCE_MIN..=NAMEPLATE_DISTANCE_MAX).contains(&settings.max_distance)
+        {
+            log::warn!(
+                "settings: nameplate max_distance {} is outside {NAMEPLATE_DISTANCE_MIN}..\
+                 {NAMEPLATE_DISTANCE_MAX}; using the default {NAMEPLATE_DISTANCE_DEFAULT}",
+                settings.max_distance
+            );
+            settings.max_distance = NAMEPLATE_DISTANCE_DEFAULT;
+        }
         for setting in NameplateSetting::ALL {
             let value = settings.get(setting);
             if !value.is_finite() || value < setting.minimum() || value > setting.maximum() {
@@ -394,9 +538,13 @@ mod tests {
         let defaults = NameplateSettings::default();
         assert_eq!(defaults.size, 11.0);
         assert_eq!(defaults.height_above_head, 4.0);
-        assert_eq!(defaults.non_target_opacity_in_combat, 40.0);
-        assert_eq!(defaults.vertical_margin, 0.93);
-        assert_eq!(defaults.horizontal_margin, 0.63);
+        assert_eq!(defaults.non_target_opacity_in_combat, 65.0);
+        assert_eq!(defaults.vertical_margin, 0.16);
+        assert_eq!(defaults.horizontal_margin, 0.08);
+        assert!(defaults.enabled && defaults.cast_bars && defaults.stacking && defaults.auras);
+        assert_eq!(defaults.health_text, NameplateHealthText::Percent);
+        assert_eq!(defaults.max_distance, 40.0);
+        assert_eq!(defaults.revision, NAMEPLATE_SETTINGS_REVISION);
         assert_eq!(defaults.top_safe_zone, 0.07);
         assert!(defaults.is_valid());
     }
@@ -408,7 +556,7 @@ mod tests {
         let defaults = NameplateSettings::default();
         assert!((defaults.text_scale() - 1.0).abs() < 1e-6);
         assert!((defaults.height_metres() - 0.9).abs() < 1e-6);
-        assert!((defaults.non_target_alpha() - 0.4).abs() < 1e-6);
+        assert!((defaults.non_target_alpha() - 0.65).abs() < 1e-6);
     }
 
     #[test]
@@ -493,7 +641,7 @@ mod tests {
     #[test]
     fn a_file_missing_every_nameplate_field_loads_the_defaults() {
         let parsed: NameplateSettings = serde_json::from_str("{}").expect("an empty object");
-        assert_eq!(parsed, NameplateSettings::default());
+        assert_eq!(parsed.validated(), NameplateSettings::default());
     }
 
     #[test]
@@ -511,5 +659,73 @@ mod tests {
             1.5,
             "a valid neighbour was thrown away"
         );
+    }
+
+    #[test]
+    fn a_revision_one_file_with_the_old_default_margins_gets_the_new_ones() {
+        // Exactly what every settings file on disk looked like before the redesign.
+        let old = "{\"size\": 11.0, \"height_above_head\": 4.0, \
+                   \"non_target_opacity_in_combat\": 40.0, \"vertical_margin\": 0.93, \
+                   \"horizontal_margin\": 0.63, \"top_safe_zone\": 0.07}";
+        let parsed: NameplateSettings = serde_json::from_str(old).expect("the old file parses");
+        assert_eq!(
+            parsed.revision, 0,
+            "a file without the field is revision zero"
+        );
+        let loaded = parsed.validated();
+        assert_eq!(loaded.vertical_margin, NAMEPLATE_VERTICAL_MARGIN_DEFAULT);
+        assert_eq!(
+            loaded.horizontal_margin,
+            NAMEPLATE_HORIZONTAL_MARGIN_DEFAULT
+        );
+        assert_eq!(loaded.revision, NAMEPLATE_SETTINGS_REVISION);
+        assert_eq!(loaded, NameplateSettings::default());
+    }
+
+    #[test]
+    fn a_margin_the_player_chose_survives_the_migration() {
+        let parsed: NameplateSettings =
+            serde_json::from_str("{\"vertical_margin\": 1.2, \"horizontal_margin\": 0.63}")
+                .expect("parses");
+        let loaded = parsed.validated();
+        assert_eq!(loaded.vertical_margin, 1.2, "a chosen margin was replaced");
+        assert_eq!(
+            loaded.horizontal_margin,
+            NAMEPLATE_HORIZONTAL_MARGIN_DEFAULT
+        );
+        // And once migrated, the same numbers are never touched again.
+        let again = NameplateSettings {
+            vertical_margin: 0.93,
+            ..loaded
+        }
+        .validated();
+        assert_eq!(again.vertical_margin, 0.93);
+    }
+
+    #[test]
+    fn the_new_switches_load_leniently_and_round_trip() {
+        let parsed: NameplateSettings = serde_json::from_str(
+            "{\"enabled\": \"yes\", \"cast_bars\": false, \"health_text\": \"Both\", \
+             \"stacking\": 3, \"max_distance\": 500}",
+        )
+        .expect("one bad field does not fail the section");
+        let loaded = parsed.validated();
+        assert!(loaded.enabled, "a word is not a switch; the default stands");
+        assert!(!loaded.cast_bars);
+        assert_eq!(loaded.health_text, NameplateHealthText::Both);
+        assert!(loaded.stacking);
+        assert_eq!(loaded.max_distance, NAMEPLATE_DISTANCE_DEFAULT);
+
+        let text = serde_json::to_string(&loaded).expect("encodes");
+        assert!(text.contains("\"health_text\":\"both\""), "{text}");
+        let back: NameplateSettings = serde_json::from_str(&text).expect("decodes");
+        assert_eq!(back, loaded);
+    }
+
+    #[test]
+    fn a_health_text_that_is_not_a_mode_is_the_percentage() {
+        let parsed: NameplateSettings =
+            serde_json::from_str("{\"health_text\": \"lots\"}").expect("parses");
+        assert_eq!(parsed.health_text, NameplateHealthText::Percent);
     }
 }

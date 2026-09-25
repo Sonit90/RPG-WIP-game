@@ -323,6 +323,22 @@ fn heading(velocity: Vec3, yaw: f32) -> Heading {
     }
 }
 
+/// The direction `velocity` goes relative to a body facing `yaw`, in radians: zero ahead,
+/// positive to its right, `±pi` behind. Zero for a body standing still.
+///
+/// Same axes as [`heading`]; the angle rather than the bucket, for the stride turn a diagonal
+/// run gets (see `CharacterVisual::stride_yaw`).
+fn move_angle(velocity: Vec3, yaw: f32) -> f32 {
+    let speed = velocity.x.hypot(velocity.z);
+    if speed <= 1e-4 {
+        return 0.0;
+    }
+    let (sin, cos) = yaw.sin_cos();
+    let forward = -velocity.x * sin - velocity.z * cos;
+    let right = velocity.x * cos - velocity.z * sin;
+    right.atan2(forward)
+}
+
 /// Blends two yaw angles by `alpha`, taking the short way round.
 ///
 /// A plain lerp on angles spins a character the long way round whenever it crosses the
@@ -838,6 +854,7 @@ impl RenderExtractor {
             facing_yaw,
             speed,
             heading,
+            move_angle: move_angle(body.velocity, body.facing_yaw),
             grounded: body.grounded,
             // From the movement state the simulation already derives, rather than from a
             // second look at the velocity: two sources for "am I falling" is exactly what
@@ -854,8 +871,9 @@ impl RenderExtractor {
                 CombatEvent::AbilityUsed { source, tick, .. } if *source == player => Some(*tick),
                 _ => None,
             }),
-            // The hero has no death clip; a dead player keeps standing, as before.
-            dead: false,
+            // A model with a death clip plays it and holds the last frame; one without keeps
+            // standing. Respawning clears it and the character stands straight back up.
+            dead: !simulation.player_alive(),
         };
 
         if let Err(error) = visual.update(self.view.delta_seconds, state) {
@@ -1043,10 +1061,14 @@ impl RenderExtractor {
 
     /// Moves the target marker over the selected target, or hides it.
     fn update_marker(&mut self, simulation: &Simulation) {
+        // Never over the player's own head: selecting yourself (to heal, to read your own
+        // frame) is a selection, and a cube floating above your character says nothing the
+        // unit frame does not already say better.
+        let player = simulation.player().entity;
         let target = simulation
             .player()
             .target
-            .filter(|id| simulation.world().is_alive(*id));
+            .filter(|id| *id != player && simulation.world().is_alive(*id));
 
         let Some(target) = target else {
             self.world.set_visible(self.marker, false);
@@ -1209,6 +1231,32 @@ mod tests {
         let mut simulation = arena::training_arena(&ArenaConfig::default());
         simulation.step_once();
         simulation
+    }
+
+    #[test]
+    fn a_dead_player_is_drawn_dead_and_stands_up_when_revived() {
+        let mut simulation = arena_sim();
+        let mut extractor = extractor();
+        extractor.extract(&simulation);
+        let dead = |extractor: &RenderExtractor| {
+            extractor
+                .player_visual()
+                .expect("the scene set one up")
+                .state()
+                .dead
+        };
+        assert!(!dead(&extractor));
+
+        simulation.kill_player();
+        extractor.extract(&simulation);
+        assert!(
+            dead(&extractor),
+            "the player died and the model was not told"
+        );
+
+        simulation.revive_player();
+        extractor.extract(&simulation);
+        assert!(!dead(&extractor), "a revived player is still drawn dead");
     }
 
     #[test]
@@ -1857,6 +1905,19 @@ mod tests {
         simulation.step_once();
         extractor.extract(&simulation);
         assert!(!extractor.render_world().is_drawable(marker.index()));
+    }
+
+    #[test]
+    fn selecting_yourself_puts_no_marker_over_your_head() {
+        let mut simulation = arena_sim();
+        let mut extractor = extractor();
+        simulation.player_mut().target = Some(simulation.player().entity);
+        extractor.extract(&simulation);
+        assert!(
+            !extractor
+                .render_world()
+                .is_drawable(extractor.marker.index())
+        );
     }
 
     #[test]

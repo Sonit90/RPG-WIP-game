@@ -23,7 +23,7 @@ The Ritualist is not dangerous. Ignoring the Ritualist is dangerous.
 | Melee range | n/a |
 | Basic attack damage | 12 (Bolt) |
 | Attack speed | one Bolt per 2.4 s |
-| Aggro range | 18 m |
+| Aggro range | 10.8 m |
 | Leash range | 45 m |
 | Preferred range | 18 m (± 3 m dead band) |
 | Alert time | 0.5 s |
@@ -54,7 +54,7 @@ Shared with the Ember Adept — see [ember_adept.md](ember_adept.md). Range 25 m
 ## AI Behavior
 
 - **Idle** — stands at its spawn point.
-- **Aggro** — 18 m, or any damage.
+- **Aggro** — 10.8 m, or any damage.
 - **Pack** — it is pulled when *any* member of its pack is, whether or not it noticed
   anything itself. Membership belongs to the encounter; this monster knows only its own
   aggro radius.

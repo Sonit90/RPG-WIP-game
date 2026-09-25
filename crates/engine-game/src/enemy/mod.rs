@@ -2165,6 +2165,22 @@ pub fn level_scale(level: u8) -> (f32, f32) {
     (1.0 + 0.12 * above, 1.0 + 0.06 * above)
 }
 
+/// How close the player must come, in metres, before a monster standing in a pack notices.
+///
+/// One number for every monster a level places, bosses included: how far a pack sees is a
+/// property of the dungeon's pacing, not of one skeleton, and a pull whose reach depends on
+/// which member the player walked towards is a pull nobody can plan. A level can still widen
+/// one placement — see [`crate::dungeon`]'s `aggro_radius` override. The empowered adds a boss
+/// calls are the exception: they arrive already in the fight.
+///
+/// 10.8, which is the original 18 m less forty per cent: packs noticed the player from too far
+/// away to be pulled one at a time.
+pub const AGGRO_RADIUS: f32 = 10.8;
+
+/// How far an empowered add a boss calls notices the party: the original 40 m less forty per
+/// cent. Still wide, because it arrives in the middle of the fight.
+pub const EMPOWERED_AGGRO_RADIUS: f32 = 24.0;
+
 impl EnemyArchetype {
     /// Every field at a neutral value, for the table rows to override.
     ///
@@ -2176,7 +2192,7 @@ impl EnemyArchetype {
         radius: 0.5,
         height: 1.9,
         speed: 5.5,
-        aggro_radius: 14.0,
+        aggro_radius: AGGRO_RADIUS,
         leash_radius: 45.0,
         preferred_range: 2.4,
         range_slack: 0.6,
@@ -2344,7 +2360,7 @@ pub static ARCHETYPES: [EnemyArchetype; ENEMY_KIND_COUNT] = [
         // Slower than the player's 7 m/s: a melee enemy that could not be kited would make
         // Blink and the class's movement pointless.
         speed: 6.76,
-        aggro_radius: 14.0,
+        aggro_radius: AGGRO_RADIUS,
         leash_radius: 40.0,
         preferred_range: 2.4,
         range_slack: 0.6,
@@ -2372,7 +2388,7 @@ pub static ARCHETYPES: [EnemyArchetype; ENEMY_KIND_COUNT] = [
         radius: 0.5,
         height: 1.9,
         speed: 5.46,
-        aggro_radius: 20.0,
+        aggro_radius: AGGRO_RADIUS,
         leash_radius: 45.0,
         // It stops well short of its 25 m reach, so it stands where the player can see it
         // and reach it rather than sniping from the edge of the arena.
@@ -2403,7 +2419,7 @@ pub static ARCHETYPES: [EnemyArchetype; ENEMY_KIND_COUNT] = [
         radius: 0.5,
         height: 1.9,
         speed: 5.2,
-        aggro_radius: 18.0,
+        aggro_radius: AGGRO_RADIUS,
         leash_radius: 45.0,
         preferred_range: 18.0,
         range_slack: 3.0,
@@ -2433,7 +2449,7 @@ pub static ARCHETYPES: [EnemyArchetype; ENEMY_KIND_COUNT] = [
         radius: 0.5,
         height: 1.9,
         speed: 5.72,
-        aggro_radius: 16.0,
+        aggro_radius: AGGRO_RADIUS,
         leash_radius: 45.0,
         preferred_range: 14.0,
         range_slack: 3.0,
@@ -2461,7 +2477,7 @@ pub static ARCHETYPES: [EnemyArchetype; ENEMY_KIND_COUNT] = [
         radius: 0.5,
         height: 1.9,
         speed: 5.72,
-        aggro_radius: 18.0,
+        aggro_radius: AGGRO_RADIUS,
         leash_radius: 45.0,
         preferred_range: 15.0,
         range_slack: 3.0,
@@ -2489,7 +2505,7 @@ pub static ARCHETYPES: [EnemyArchetype; ENEMY_KIND_COUNT] = [
         radius: 0.75,
         height: 2.3,
         speed: 6.5,
-        aggro_radius: 16.0,
+        aggro_radius: AGGRO_RADIUS,
         leash_radius: 45.0,
         preferred_range: 2.6,
         range_slack: 0.6,
@@ -2520,7 +2536,7 @@ pub static ARCHETYPES: [EnemyArchetype; ENEMY_KIND_COUNT] = [
         // Slower than the player in every phase. Nothing in this fight kills a player who is
         // moving, and everything in it kills a player who is not.
         speed: 6.24,
-        aggro_radius: 28.0,
+        aggro_radius: AGGRO_RADIUS,
         leash_radius: 70.0,
         preferred_range: 3.0,
         range_slack: 0.8,
@@ -2553,7 +2569,7 @@ pub static ARCHETYPES: [EnemyArchetype; ENEMY_KIND_COUNT] = [
         radius: 0.5,
         height: 2.0,
         speed: 5.4,
-        aggro_radius: 20.0,
+        aggro_radius: AGGRO_RADIUS,
         leash_radius: 50.0,
         preferred_range: 18.0,
         range_slack: 3.0,
@@ -2585,7 +2601,7 @@ pub static ARCHETYPES: [EnemyArchetype; ENEMY_KIND_COUNT] = [
         radius: 0.5,
         height: 1.95,
         speed: 5.4,
-        aggro_radius: 20.0,
+        aggro_radius: AGGRO_RADIUS,
         leash_radius: 50.0,
         preferred_range: 16.0,
         range_slack: 3.0,
@@ -2617,7 +2633,7 @@ pub static ARCHETYPES: [EnemyArchetype; ENEMY_KIND_COUNT] = [
         radius: 0.5,
         height: 1.9,
         speed: 5.6,
-        aggro_radius: 22.0,
+        aggro_radius: AGGRO_RADIUS,
         leash_radius: 50.0,
         preferred_range: 24.0,
         range_slack: 4.0,
@@ -2649,7 +2665,7 @@ pub static ARCHETYPES: [EnemyArchetype; ENEMY_KIND_COUNT] = [
         radius: 0.6,
         height: 2.1,
         speed: 6.3,
-        aggro_radius: 14.0,
+        aggro_radius: AGGRO_RADIUS,
         leash_radius: 50.0,
         preferred_range: 2.5,
         range_slack: 0.6,
@@ -2680,7 +2696,7 @@ pub static ARCHETYPES: [EnemyArchetype; ENEMY_KIND_COUNT] = [
         radius: 0.9,
         height: 2.7,
         speed: 5.9,
-        aggro_radius: 14.0,
+        aggro_radius: AGGRO_RADIUS,
         leash_radius: 50.0,
         preferred_range: 2.8,
         range_slack: 0.6,
@@ -2712,7 +2728,7 @@ pub static ARCHETYPES: [EnemyArchetype; ENEMY_KIND_COUNT] = [
         height: 1.6,
         // The fastest thing in the roster, and still under the player's 7.0.
         speed: 6.9,
-        aggro_radius: 15.0,
+        aggro_radius: AGGRO_RADIUS,
         leash_radius: 50.0,
         preferred_range: 2.2,
         range_slack: 0.5,
@@ -2746,7 +2762,7 @@ pub static ARCHETYPES: [EnemyArchetype; ENEMY_KIND_COUNT] = [
         radius: 0.55,
         height: 2.3,
         speed: 5.4,
-        aggro_radius: 40.0,
+        aggro_radius: EMPOWERED_AGGRO_RADIUS,
         leash_radius: 70.0,
         preferred_range: 18.0,
         range_slack: 3.0,
@@ -2777,7 +2793,7 @@ pub static ARCHETYPES: [EnemyArchetype; ENEMY_KIND_COUNT] = [
         radius: 0.55,
         height: 2.25,
         speed: 5.4,
-        aggro_radius: 40.0,
+        aggro_radius: EMPOWERED_AGGRO_RADIUS,
         leash_radius: 70.0,
         preferred_range: 16.0,
         range_slack: 3.0,
@@ -2808,7 +2824,7 @@ pub static ARCHETYPES: [EnemyArchetype; ENEMY_KIND_COUNT] = [
         radius: 0.55,
         height: 2.2,
         speed: 5.6,
-        aggro_radius: 40.0,
+        aggro_radius: EMPOWERED_AGGRO_RADIUS,
         leash_radius: 70.0,
         preferred_range: 24.0,
         range_slack: 4.0,
@@ -2839,7 +2855,7 @@ pub static ARCHETYPES: [EnemyArchetype; ENEMY_KIND_COUNT] = [
         radius: 0.7,
         height: 2.45,
         speed: 6.3,
-        aggro_radius: 40.0,
+        aggro_radius: EMPOWERED_AGGRO_RADIUS,
         leash_radius: 70.0,
         preferred_range: 2.6,
         range_slack: 0.6,
@@ -2869,7 +2885,7 @@ pub static ARCHETYPES: [EnemyArchetype; ENEMY_KIND_COUNT] = [
         radius: 1.0,
         height: 3.1,
         speed: 5.9,
-        aggro_radius: 40.0,
+        aggro_radius: EMPOWERED_AGGRO_RADIUS,
         leash_radius: 70.0,
         preferred_range: 2.9,
         range_slack: 0.6,
@@ -2899,7 +2915,7 @@ pub static ARCHETYPES: [EnemyArchetype; ENEMY_KIND_COUNT] = [
         radius: 0.6,
         height: 1.85,
         speed: 6.9,
-        aggro_radius: 40.0,
+        aggro_radius: EMPOWERED_AGGRO_RADIUS,
         leash_radius: 70.0,
         preferred_range: 2.2,
         range_slack: 0.5,
@@ -2930,7 +2946,7 @@ pub static ARCHETYPES: [EnemyArchetype; ENEMY_KIND_COUNT] = [
         radius: 1.0,
         height: 3.2,
         speed: 6.3,
-        aggro_radius: 22.0,
+        aggro_radius: AGGRO_RADIUS,
         leash_radius: 70.0,
         preferred_range: 3.0,
         range_slack: 0.8,

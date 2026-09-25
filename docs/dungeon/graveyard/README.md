@@ -56,12 +56,27 @@ shorthand for `--scene-file <assets>/scenes/graveyard_crypt.json`.
 The hub has no door north: the only ways to the cloister are through a route. Both routes
 reconnect in the cloister, whose north door leads to the gate and the boss hall. Rooms are whole
 numbers of 8 m wall segments and doorways are two segments left out, the Ashen Reliquary's rule.
-Graves (flattened rocks), sarcophagi (long crates), dead trees, broken columns, banners and
-braziers are placed with the existing library; the lighting is a cool moon over a bright blue
-fill, with warm braziers at every doorway.
+The level is dressed with the **graveyard kit** in the environment library
+(`engine-assets/src/procedural/environment.rs`): five-metre `crypt_wall`s where the arena's
+one-metre kerb used to stand, a `wall_pier` at every corner, jamb and sixteen metres of run, a
+pointed `crypt_gate` over every doorway, and `crypt_floor` paving through the crypt route, the
+halls, the boss hall and a path up the yards. The yards and the graveyard route keep their
+grass and get `gravestone`s, `grave_cross`es and `dead_tree`s; the crypt rooms get
+`sarcophagus`es and `bone_pile`s; the Mass Grave has a `mausoleum`. The lychgate's north wall
+is an iron gate (`iron_fence`), with an old burial ground and a dead wood outside the walls.
+The lighting is a cool moon over a blue fill, with warm braziers inside every doorway. No
+training dummies stand in a dungeon.
 
-Two packs in one room stand further apart than the widest aggro radius in the roster (22 m),
-and the player spawns out of every pack's reach — both are tested against the file.
+Every monster notices from **10.8 m** (`enemy::AGGRO_RADIUS`, one number for the whole roster
+and the boss — 18 m until it was cut by forty per cent; only the empowered adds, called straight
+into a fight, see further, at 24 m). **A pulled monster never leashes**: it chases a living
+player however far they run, and only the player's death sends it home. Two packs in
+one room stand further apart than that, and the player spawns out of every pack's reach — both
+are tested against the file.
+
+**A pack fights as one.** The moment any member is fighting, every packmate standing idle is
+pulled onto the same target — on every tick, not only the first, so a member that was still
+walking home when its pack was pulled again joins as soon as it arrives.
 
 ---
 
@@ -161,6 +176,11 @@ too high.* Every one of those is a telegraph, a cast bar, a cone or a stack coun
 ---
 
 ## Reset
+
+**A wipe resets the room.** The moment the player dies, every monster that was fighting — the
+boss and his adds included — drops its target and its cast, is healed to **100 %** with every
+effect on it removed, and **walks back** to where it was placed. The boss's reset follows from
+him arriving home, exactly as after a leash.
 
 **Dying does not undo progress.** When the player comes back (the automatic respawn, or
 `BACKSPACE` while dead), every monster **still standing** goes home, whole and forgetful; every

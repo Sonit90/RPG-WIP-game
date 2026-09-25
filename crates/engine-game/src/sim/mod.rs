@@ -515,6 +515,14 @@ pub struct Simulation {
     /// events, sixty floating numbers and a line in the damage meter for every second the
     /// player spends walking.
     regen_elapsed: f32,
+    /// Set while damage over time is being applied, so the damage it deals is announced as a
+    /// tick rather than a hit.
+    ///
+    /// Scoped rather than threaded through as an argument: a burn reaches `deal_damage`
+    /// through the same `strike` every hit does, and a flag on the seventeen callers of that
+    /// would be seventeen places to pass `false`. Only ever true inside the two loops that
+    /// tick statuses and burns, and false the rest of the time.
+    periodic_damage: bool,
     /// A maximum health that replaces the character sheet's, for a test scene.
     ///
     /// The monster test bed gives the player a million so a boss can be watched through every
@@ -596,6 +604,7 @@ impl Simulation {
             outcomes: Vec::with_capacity(16),
             observed: 0,
             regen_elapsed: 0.0,
+            periodic_damage: false,
             health_override: None,
             tick: 0,
             time: 0.0,
@@ -1747,7 +1756,9 @@ impl Simulation {
                         // A periodic tick does not roll: the roll belongs to the cast that
                         // applied the status, and rerolling per tick would make a damage
                         // over time effect a second source of critical strikes.
+                        self.periodic_damage = true;
                         self.deal_damage(source, id, amount, ability, kind.damage_type(), false);
+                        self.periodic_damage = false;
                     }
                     StatusOutcome::Ended {
                         kind,
@@ -1952,7 +1963,9 @@ impl Simulation {
         let interval = self.mage.ignite_interval();
         self.mage.ignite.tick(step, interval, &mut ignite_ticks);
         for tick in &ignite_ticks {
+            self.periodic_damage = true;
             self.resolve_ignite_tick(*tick);
+            self.periodic_damage = false;
         }
         ignite_ticks.clear();
         self.ignite_ticks = ignite_ticks;
@@ -2358,6 +2371,7 @@ impl Simulation {
             damage_type,
             killed: result.killed,
             critical,
+            periodic: self.periodic_damage,
             position,
             tick,
         }));

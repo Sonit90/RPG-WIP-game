@@ -1,0 +1,22 @@
+<svg version="1.1" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+<defs>
+<linearGradient id="rended_panel" gradientUnits="userSpaceOnUse" x1="16" y1="496" x2="496" y2="16">
+<stop offset="0" stop-color="rgb(28,8,8)"></stop>
+<stop offset="1" stop-color="rgb(70,20,18)"></stop>
+</linearGradient>
+<radialGradient id="rended_glow" gradientUnits="userSpaceOnUse" cx="256" cy="256" r="250">
+<stop offset="0" stop-color="rgb(220,60,40)" stop-opacity="0.55"></stop>
+<stop offset="0.6" stop-color="rgb(220,60,40)" stop-opacity="0.16"></stop>
+<stop offset="1" stop-color="rgb(220,60,40)" stop-opacity="0"></stop>
+</radialGradient>
+<clipPath id="rended_tile"><path d="M 16 92 C 16 50 50 16 92 16 L 420 16 C 462 16 496 50 496 92 L 496 420 C 496 462 462 496 420 496 L 92 496 C 50 496 16 462 16 420 Z"></path></clipPath>
+</defs>
+<g clip-path="url(#rended_tile)">
+<path fill="url(#rended_panel)" d="M 0 0 L 512 0 L 512 512 L 0 512 Z"></path>
+<path fill="url(#rended_glow)" d="M 0 0 L 512 0 L 512 512 L 0 512 Z"></path>
+<path fill="rgb(210,42,36)" d="M 140 90 C 190 190 230 300 250 430 L 216 432 C 190 310 150 200 104 106 Z"></path>
+<path fill="rgb(210,42,36)" d="M 236 76 C 290 180 320 290 336 420 L 300 424 C 280 300 250 190 200 92 Z"></path>
+<path fill="rgb(210,42,36)" d="M 336 90 C 380 180 410 280 420 390 L 386 396 C 372 290 342 196 300 108 Z"></path>
+<path fill="rgb(255,140,120)" fill-opacity="0.6" d="M 146 110 C 180 180 206 250 222 320 L 214 322 C 196 250 170 184 136 116 Z"></path>
+</g>
+</svg>

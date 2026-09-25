@@ -452,7 +452,8 @@ pub fn environment_arena(
 /// A level with monsters placed in it is a fight: they are spawned in their packs, and a
 /// level that says it is a dungeon becomes a dungeon run — see
 /// [`crate::dungeon::populate_from_scene`]. A dungeon never gets the training dummies, however
-/// many were asked for: a dummy group in a crypt is an arena with corridors.
+/// many were asked for — nor the featured and healing dummies: a dummy in a crypt is an arena
+/// with corridors.
 #[must_use]
 pub fn environment_arena_for_party(
     scene: &engine_environment::EnvironmentScene,
@@ -505,7 +506,14 @@ pub fn environment_arena_for_party(
     // is the one place the editor's answer crosses into the runtime.
     simulation.set_player_spawn(config.player_spawn, config.player_spawn_yaw);
     simulation.set_player_entity(arena.player);
-    simulation.party_mut().join(arena.healing_dummy);
+    if scene.dungeon.is_some() {
+        // A dungeon is a place, not a practice yard: the featured dummy and the healing
+        // dummy go the way the group did, and the party is the player's own.
+        simulation.world_mut().despawn(arena.single_dummy);
+        simulation.world_mut().despawn(arena.healing_dummy);
+    } else {
+        simulation.party_mut().join(arena.healing_dummy);
+    }
     if !scene.monsters.is_empty() || scene.dungeon.is_some() {
         crate::dungeon::populate_from_scene(&mut simulation, scene, scaling);
     }
@@ -540,7 +548,8 @@ pub fn encounter_arena(config: &ArenaConfig, encounter: crate::encounter::Encoun
 /// The encounter the demo scene and the tests use: one melee enemy and one caster.
 ///
 /// Placed so that walking forward pulls the brute first and the caster second, which is what
-/// makes the two behaviours legible side by side rather than at once.
+/// makes the two behaviours legible side by side rather than at once — and both outside the
+/// eighteen metres every monster sees from, so neither is pulled by the player spawning.
 #[must_use]
 pub fn demo_encounter(config: &ArenaConfig) -> crate::encounter::Encounter {
     use crate::encounter::{Encounter, EnemySpawn};
@@ -550,8 +559,8 @@ pub fn demo_encounter(config: &ArenaConfig) -> crate::encounter::Encounter {
     Encounter::with_spawns(
         "SKIRMISH",
         vec![
-            EnemySpawn::new(EnemyKind::Melee, origin + Vec3::new(-3.0, 0.0, -16.0)),
-            EnemySpawn::new(EnemyKind::Caster, origin + Vec3::new(6.0, 0.0, -24.0)),
+            EnemySpawn::new(EnemyKind::Melee, origin + Vec3::new(-3.0, 0.0, -21.0)),
+            EnemySpawn::new(EnemyKind::Caster, origin + Vec3::new(6.0, 0.0, -29.0)),
         ],
     )
 }
@@ -574,7 +583,8 @@ pub fn pack_encounter(config: &ArenaConfig, count: usize) -> crate::encounter::E
         let offset = Vec3::new(
             (column as f32 - (columns as f32 - 1.0) * 0.5) * spacing,
             0.0,
-            -18.0 - row as f32 * spacing,
+            // The front row just outside the aggro radius: nothing is pulled by a spawn.
+            -22.0 - row as f32 * spacing,
         );
         let kind = if index % 2 == 0 {
             EnemyKind::Melee

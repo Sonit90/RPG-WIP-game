@@ -186,11 +186,12 @@ elease\mygame.exe --overlay`
 * R restores every dummy to full health and resets DAMAGE DONE and DPS to zero.
 * The wheel changes the camera distance between about 2.5 and 25 metres; ESC releases the
   cursor.
-* Every dummy carries a nameplate reading `DUMMY` with its health percentage on the right.
-  The targeted one — and only that one — has a white outline. After pressing 2 the burning
-  dummy's plate grows a second line reading `BURNING` and a countdown. Plates stay above the
-  heads as the camera turns, vanish when an enemy is behind the camera, and disappear once an
-  enemy is more than 40 metres away (run to the far side of the arena to check).
+* Every dummy carries a nameplate: `Dummy` in bold outlined type over a red health bar with
+  its percentage inside. The targeted one — and only that one — has a white border and a white
+  name. After pressing 2 the burning dummy's plate grows a status line above the name reading
+  `Ignite` and a countdown. Plates stay above the heads as the camera turns, vanish when an
+  enemy is behind the camera, and disappear once an enemy is more than 40 metres away (run to
+  the far side of the arena to check). See MT-030 for casting enemies.
 
 ---
 
@@ -741,6 +742,68 @@ Step 6 shows the Warrior's bar two empty of what the FireMage put there, and ste
 FireMage's slot exactly as it was left, key and all. Unticking the setting in step 8 changes
 nothing on screen and loses nothing: ticking it again brings each character's own bars back.
 Nothing about where the bars sit changes at any point in this test.
+
+## MT-030 — Combat UI: nameplates, cast bars and combat text
+
+**Purpose** — the in-world combat interface reads at a glance in a real fight: plates are a name
+over a health bar with the cast underneath, and floating numbers are large, edged and do not
+pile up. Design and numbers: `combat_ui.md`.
+
+**Steps**
+
+1. `.\target\release\mygame.exe --scene monsters --spawn skeleton_bonecaster,grave_acolyte,crypt_archer,skeleton_warrior,empowered_bonecaster --spawn-hostile`
+2. Stand still for a few seconds and watch the plates while the line-up casts.
+3. Select the Grave Acolyte and interrupt its Grave Drain (`H` in the monster lab).
+4. Cast Flame Cone (3) and Firestorm (6) into the group; then single-target Flame Lance (2)
+   for a while and look for orange numbers.
+5. Let the pack hit you for a few seconds.
+6. Kill everything (`K`).
+7. Repeat step 1 with `--width 3840 --height 2160` after setting `"ui_scale": 2.0` in
+   `settings.cfg`.
+8. Optional, no input: add `--autocast --screenshot shot.png --screenshot-frame 760 --frames 765 --hidden`.
+
+**Expected** — every monster's plate shows its own name (`Skeleton Bonecaster`, not `ENEMY`)
+over a bordered red bar with a percentage; the Empowered Bonecaster's name is gold with a crest
+and its bar a size larger. Each casting monster has a bar directly under its health bar, as
+wide, with the school icon, the spell's name and the seconds left counting down; Bone Spear and
+Multi-Shot are silver with a lock, the interruptible casts amber. The interrupted cast turns red,
+stops where it was and says `Interrupted` for under a second. Area damage puts a fan of gold
+numbers over each target, criticals bigger and orange and on top, Ignite ticks smaller and
+amber. Damage taken floats red with a minus over the player, a burst forming a staircase rather
+than a pile. A plate that loses health shows a pale trail that drains after a moment. A dead
+monster's plate empties and fades rather than vanishing. At 4K with scale 2.0 the layout is the
+1080p layout at twice the size, with crisp text.
+
+---
+
+## MT-031 — Buffs, debuffs and the diagonal run
+
+**Purpose** — every lasting effect shows as its own icon under nameplates, under the player
+frame, in the buff bar and on the party; dispellable debuffs are blue-bordered; hovering one
+explains it; running diagonally turns the legs, not the aim. Design: `auras.md`.
+
+**Steps**
+
+1. `.	argetelease\mygame.exe --scene monsters --spawn skeleton_bonecaster,grave_acolyte,crypt_archer,skeleton_warrior,empowered_bonecaster --spawn-hostile`
+2. Cast Flame Lance (2) and Flame Cone (3) at the pack; then Flame Shield.
+3. Let the Crypt Archer hit you with Crippling Arrow.
+4. Hover each icon: one under a plate, the player's debuff, the buff in the top-right, the icon
+   beside the party row and the one in the raid cell.
+5. SETTINGS → NAMEPLATES → untick SHOW BUFFS AND DEBUFFS; tick it again.
+6. Edit HUD: drag the BUFFS element somewhere else, make it BIGGER, close, restart the game.
+7. Hold the right mouse button and run W+D, W+A, S+D, S+A, then D alone.
+
+**Expected** — Ignite appears over each hit enemy's name with its stacks top-right and its
+seconds along the bottom, darkening as it runs down; the plate grows upward and its health bar
+does not move off the monster's head. Crippled appears under the player frame and beside the player's party row with a blue
+border; bleeds from ghouls have none. Flame Shield appears in the BUFFS block. Each tooltip names
+the effect, its school or Buff/Debuff, what it does and the time left. Unticking the setting
+removes the plate icons at once and it survives a restart. The BUFFS block stays where it was
+put and at its size. On W+D the legs run towards the front-right while chest and head face the
+camera; S+D backpedals along the back-right diagonal; D alone plays the strafe unturned; casting
+Firebolt mid-diagonal fires straight ahead.
+
+---
 
 ## Death, respawn and the twenty seconds
 

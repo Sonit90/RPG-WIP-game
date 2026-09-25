@@ -1,0 +1,22 @@
+<svg version="1.1" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+<defs>
+<linearGradient id="silenced_panel" gradientUnits="userSpaceOnUse" x1="16" y1="496" x2="496" y2="16">
+<stop offset="0" stop-color="rgb(16,20,44)"></stop>
+<stop offset="1" stop-color="rgb(40,56,120)"></stop>
+</linearGradient>
+<radialGradient id="silenced_glow" gradientUnits="userSpaceOnUse" cx="256" cy="256" r="250">
+<stop offset="0" stop-color="rgb(140,170,255)" stop-opacity="0.55"></stop>
+<stop offset="0.6" stop-color="rgb(140,170,255)" stop-opacity="0.16"></stop>
+<stop offset="1" stop-color="rgb(140,170,255)" stop-opacity="0"></stop>
+</radialGradient>
+<clipPath id="silenced_tile"><path d="M 16 92 C 16 50 50 16 92 16 L 420 16 C 462 16 496 50 496 92 L 496 420 C 496 462 462 496 420 496 L 92 496 C 50 496 16 462 16 420 Z"></path></clipPath>
+</defs>
+<g clip-path="url(#silenced_tile)">
+<path fill="url(#silenced_panel)" d="M 0 0 L 512 0 L 512 512 L 0 512 Z"></path>
+<path fill="url(#silenced_glow)" d="M 0 0 L 512 0 L 512 512 L 0 512 Z"></path>
+<path fill="rgb(226,232,246)" d="M 120 150 C 120 116 146 96 180 96 L 332 96 C 366 96 392 116 392 150 L 392 280 C 392 314 366 334 332 334 L 236 334 L 156 408 L 170 334 L 180 334 C 146 334 120 314 120 280 Z"></path>
+<path fill="rgb(110,120,150)" d="M 176 176 L 336 176 L 336 198 L 176 198 Z M 176 232 L 296 232 L 296 254 L 176 254 Z"></path>
+<circle cx="256" cy="256" r="196" fill="none" stroke="rgb(226,52,52)" stroke-width="34"></circle>
+<path fill="none" stroke="rgb(226,52,52)" stroke-width="34" stroke-linecap="round" d="M 118 118 L 394 394"></path>
+</g>
+</svg>

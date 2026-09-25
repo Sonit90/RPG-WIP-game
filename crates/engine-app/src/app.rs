@@ -229,6 +229,10 @@ const AFFECTED_MARK_SIZE: f32 = 46.0;
 /// overlay used and is legible at 1080p without being a magnified blur.
 const UI_TEXT_SCALE: f32 = 2.0;
 
+/// Seconds between the abilities `--autocast` presses: a little over a global cooldown, so
+/// each press is one the player could have made.
+const AUTOCAST_SECONDS: f32 = 0.6;
+
 /// How often the overlay text is rebuilt.
 ///
 /// Formatting allocates, so it happens on an interval and never per frame. Ten a second is
@@ -297,6 +301,13 @@ pub struct App {
     /// path F6 goes down, so "started in the editor" and "pressed F6" cannot drift apart.
     #[cfg(feature = "editor")]
     editor_open_requested: bool,
+    /// Whether the game on screen was entered from the editor.
+    ///
+    /// Decides what QUIT means: back to the editor the author was playtesting from, or out
+    /// of the game for a player who never opened it. Set on the way out of the editor and
+    /// cleared on the way in.
+    #[cfg(feature = "editor")]
+    playing_from_editor: bool,
     /// How many players a level's monsters are scaled for, when the editor rebuilds them.
     #[cfg(feature = "editor")]
     party: u8,
@@ -402,6 +413,12 @@ pub struct App {
     /// several bars, and a tooltip that looked its ability up would point at the first copy
     /// instead of the one under the pointer.
     hovered_slot: Option<SlotAddress>,
+    /// Where the pointer is, when it is free to hover a buff or debuff icon for its tooltip.
+    ///
+    /// `None` while a window, a menu or Edit HUD has the pointer, and while the camera is
+    /// being turned: the cursor is hidden then, and a tooltip under it would be a tooltip
+    /// nobody asked for.
+    aura_pointer: Option<(f32, f32)>,
     /// The area indicator drawn on the ground while an ability is being placed.
     ///
     /// Two render entities rather than a screen-space circle: an area on the floor has to
@@ -470,6 +487,11 @@ pub struct App {
     game_ui: GameUi,
     /// Floating damage numbers in flight. Fixed capacity; never freed.
     numbers: FloatingNumbers,
+    /// `--autocast`: seconds until the player presses its next ability on its own, or `None`
+    /// when the player is the one playing.
+    autocast: Option<f32>,
+    /// Which of the first three abilities `--autocast` presses next.
+    autocast_slot: usize,
     /// Combat, drawn. Observes the same event stream the numbers and the meter read.
     vfx: VfxDirector,
     /// The audio device and the runtime it mixes. Silent on a machine with no sound card,
@@ -1097,6 +1119,8 @@ impl App {
             #[cfg(feature = "editor")]
             editor_open_requested: args.editor,
             #[cfg(feature = "editor")]
+            playing_from_editor: false,
+            #[cfg(feature = "editor")]
             party: args.party,
             #[cfg(feature = "editor")]
             editor_save_path: args
@@ -1155,6 +1179,7 @@ impl App {
             character_scratch: String::with_capacity(64),
             character_config,
             hovered_ability: None,
+            aura_pointer: None,
             hovered_slot: None,
             targeting_decal: None,
             decal_scratch: engine_presentation::ui::ground_decal::DecalScratch::new(),
@@ -1175,6 +1200,8 @@ impl App {
             snapshot,
             game_ui: GameUi::with_scale(ui_scale),
             numbers: FloatingNumbers::new(),
+            autocast: None,
+            autocast_slot: 0,
             vfx: VfxDirector::new(vfx_visuals),
             audio,
             audio_director,
@@ -1265,6 +1292,9 @@ impl App {
         }
         if args.scene.is_monsters() && !args.spawn.is_empty() {
             app.spawn_lineup(&args.spawn, args.spawn_hostile);
+        }
+        if args.autocast {
+            app.autocast = Some(AUTOCAST_SECONDS);
         }
         // In the editor, the same request shows the editor's own preview.
         #[cfg(feature = "editor")]
@@ -1771,6 +1801,7 @@ impl App {
         let viewport = self.renderer.size();
         let scale = self.game_ui.scale();
         let ui_input = UiInput::from_input(ctx.input());
+        self.aura_pointer = None;
         self.snapshot
             .refresh(&self.simulation, self.aiming_ability());
 
@@ -1976,6 +2007,10 @@ impl App {
             }
             return;
         }
+
+        // Nothing modal has the pointer: it may hover an aura icon for its tooltip, which is
+        // looked up against the icons the next UI build draws.
+        self.aura_pointer = (!self.mouse_look.is_active()).then_some(ui_input.pointer);
 
         // The bars: what the pointer is over, what it clicked, and what it right-clicked.
         self.hovered_ability = None;
@@ -2382,6 +2417,15 @@ impl App {
                     log::info!("hud: edit mode");
                 }
                 MenuAction::QuitRequested => {
+                    // A playtest ends where it started: in the editor, on the next frame,
+                    // through the same path F6 takes.
+                    #[cfg(feature = "editor")]
+                    if self.playing_from_editor {
+                        log::info!("quit requested from the menu; back to the editor");
+                        self.menu.close();
+                        self.editor_open_requested = true;
+                        continue;
+                    }
                     log::info!("quit requested from the menu");
                     // Through the engine's own lifecycle: the loop finishes this frame,
                     // `shutdown` runs, the renderer drains its frames in flight and the
@@ -2412,6 +2456,19 @@ impl App {
                 }
                 MenuAction::NameplateCommitted(setting, value) => {
                     self.apply_nameplate(setting, value, true);
+                }
+                MenuAction::NameplateAurasCommitted(shown) => {
+                    self.play_ui_sound(engine_audio::SoundId::UiClick);
+                    // Read by the next frame's plate configuration; nothing else to apply.
+                    let mut settings = self.settings.settings();
+                    settings.nameplates.auras = shown;
+                    self.settings.update(settings);
+                    if self.settings.save_if_dirty() {
+                        log::info!(
+                            "settings: nameplate buffs and debuffs {}",
+                            if shown { "shown" } else { "hidden" }
+                        );
+                    }
                 }
                 MenuAction::OpenedGraphics => {
                     self.play_ui_sound(engine_audio::SoundId::UiClick);
@@ -2552,6 +2609,38 @@ impl App {
 
     /// Stands the monsters `ids` names in a row in front of the player: `--spawn`. Passive
     /// unless `hostile`.
+    /// `--autocast`: selects the nearest enemy and presses the first three abilities in turn.
+    ///
+    /// Through the same commands a key press produces, so what a screenshot shows is exactly
+    /// what playing produces — the damage numbers, the nameplates reacting and the enemies'
+    /// casts answering. Waits while a cast is running rather than queueing into it.
+    fn autocast(&mut self, delta: f32) {
+        let Some(remaining) = self.autocast.as_mut() else {
+            return;
+        };
+        *remaining -= delta;
+        if *remaining > 0.0 || self.simulation.casting().is_some() || self.scene.is_collision() {
+            return;
+        }
+        *remaining = AUTOCAST_SECONDS;
+        let world = self.simulation.world();
+        let target_alive = self
+            .simulation
+            .player()
+            .target
+            .is_some_and(|target| world.is_alive(target));
+        if !target_alive {
+            self.simulation.select_nearest_target();
+        }
+        // Nothing in reach: pressing anyway would only fill the screen with refusals.
+        if self.simulation.player().target.is_none() {
+            return;
+        }
+        self.simulation
+            .push_command(PlayerCommand::UseAbility(self.autocast_slot % 3));
+        self.autocast_slot = self.autocast_slot.wrapping_add(1);
+    }
+
     fn spawn_lineup(&mut self, ids: &[String], hostile: bool) {
         let kinds: Vec<engine_game::enemy::EnemyKind> = if ids.iter().any(|id| id == "all") {
             engine_presentation::ui::monster_lab::ROSTER
@@ -2878,6 +2967,16 @@ impl App {
         {
             return Some(self.simulation.player().entity);
         }
+        // A raid cell is a member, exactly as a party row is.
+        if let Some(rect) = rect_of(HudElementId::Raid)
+            && let Some(cell) = engine_presentation::ui::raid_frame::raid_cell_at(
+                rect,
+                self.snapshot.party.len(),
+                pointer,
+            )
+        {
+            return self.snapshot.party.get(cell).map(|member| member.entity);
+        }
         let rect = rect_of(HudElementId::Party)?;
         let row = engine_presentation::ui::unit_frame::party_row_at(
             rect,
@@ -2946,27 +3045,19 @@ impl App {
                 .set_ui_with(self.game_ui.list(), self.jobs.as_ref());
             return;
         }
-        // The plate's box is measured from the same glyph scale the text inside it is drawn
-        // at, which is what keeps the two the same size at every UI scale. Reading the scale
-        // off the HUD rather than the settings means there is one answer, not two.
+        // The plate is drawn at the HUD's own scale times the player's nameplate size: the
+        // first is what the whole interface is drawn at, the second is what they asked
+        // nameplates in particular to be. Reading the scale off the HUD rather than the
+        // settings means there is one answer, not two.
         let scale = self.game_ui.scale();
-        let text = scale.text(UI_TEXT_SCALE);
-        // The player's own nameplate size, on top of the interface scale: the first is what
-        // the whole HUD is drawn at, the second is what they asked nameplates in particular
-        // to be, and multiplying them is what makes a plate readable at a size the rest of
-        // the interface would be unusable at.
         let nameplates = self.settings.settings().nameplates;
-        let text = text * nameplates.text_scale();
-        let config = NameplateConfig {
-            cell_pixels: text,
-            glyph_advance_pixels: engine_renderer::font::GLYPH_ADVANCE as f32 * text,
-            line_advance_pixels: engine_renderer::font::LINE_ADVANCE as f32 * text,
-            glyph_height_pixels: engine_renderer::font::GLYPH_HEIGHT as f32 * text,
-            padding_pixels: scale.px(NameplateConfig::default().padding_pixels)
-                * nameplates.text_scale(),
-            ..NameplateConfig::default()
-        }
-        .with_settings(nameplates);
+        let config = NameplateConfig::default()
+            .with_settings(nameplates)
+            .at_scale(scale.factor(), nameplates);
+        // Read every frame rather than cached: a combat text setting changed in the file or on
+        // a screen takes effect on the next frame, and copying six fields costs nothing.
+        self.game_ui
+            .set_combat_text(self.settings.settings().combat_text);
 
         let view_projection = self.camera.view_projection();
         self.nameplates.build(
@@ -3002,7 +3093,13 @@ impl App {
             self.simulation.time() as f32,
         );
         // The tooltip for whatever the pointer is over, then the talent menu, then the
-        // pause menu: painter's order is the whole sort.
+        // pause menu: painter's order is the whole sort. A buff or debuff icon first: they
+        // never sit under an action bar slot, so at most one of the two is hovered.
+        if self.hovered_ability.is_none()
+            && let Some(pointer) = self.aura_pointer
+        {
+            self.game_ui.push_aura_tooltip(pointer, viewport);
+        }
         if let Some(ability) = self.hovered_ability {
             // The rectangle the tooltip points at is wherever the player put the slot, not
             // wherever the class's fixed bar used to be.
@@ -3076,6 +3173,28 @@ impl App {
             &mut self.hud_scratch,
             scale,
         );
+        // While the HUD is being arranged, the cast bar shows what it looks like even when
+        // nothing is being cast: its width and height are being set, and an outline is not
+        // enough to judge a style by.
+        if self.hud_editor.is_active()
+            && self.snapshot.cast.is_none()
+            && self.hud_layout.is_enabled(HudElementId::CastBar)
+        {
+            let rect = self
+                .hud_layout
+                .rect_of(HudElementId::CastBar, scale, viewport);
+            self.game_ui.push_cast_bar_preview(rect);
+        }
+        // The buff bar likewise: sample icons while nothing is running, so it can be placed.
+        if self.hud_editor.is_active()
+            && self.snapshot.player.auras.buffs().next().is_none()
+            && self.hud_layout.is_enabled(HudElementId::Buffs)
+        {
+            let rect = self
+                .hud_layout
+                .rect_of(HudElementId::Buffs, scale, viewport);
+            self.game_ui.push_buff_bar_preview(rect);
+        }
         push_hud_editor(
             self.game_ui.list_mut(),
             &self.hud_editor,
@@ -3445,6 +3564,19 @@ impl App {
     ///
     /// Returns [`EngineError`] if the camera cannot be written, which a degenerate aspect
     /// ratio causes.
+    /// Cancels the player's cast and stops every sound the fight is holding.
+    ///
+    /// For the two moments the game hands the world to the editor and takes it back: the
+    /// casting loops are held by the audio director until a `CastEnded` arrives, and across
+    /// those moments nothing will ever send one.
+    #[cfg(feature = "editor")]
+    fn silence_the_fight(&mut self) {
+        self.simulation.cancel_cast();
+        if let Ok(mut audio) = self.audio.system().lock() {
+            self.audio_director.clear(&mut audio);
+        }
+    }
+
     #[cfg(feature = "editor")]
     fn update_editor(&mut self, ctx: &mut EngineContext) -> Result<bool, EngineError> {
         let viewport = self.renderer.size();
@@ -3470,6 +3602,11 @@ impl App {
             self.editor.set_scale(self.game_ui.scale(), viewport);
             let editor_started = Instant::now();
             self.editor.enter(focus, &name, viewport);
+            // A cast begun in the game does not carry on into the editor, and its gathering
+            // sound does not either: the editor has no simulation running to end it.
+            self.silence_the_fight();
+            self.playing_from_editor = false;
+            self.menu.set_quit_to_editor(false);
             crate::startup::stage_from("editor init", editor_started);
             // Once: after the first entry the editor keeps its own save path, which Save As
             // and opening a level change, and re-entering must not put the command line's
@@ -3545,6 +3682,12 @@ impl App {
                     } else if let Some(scene) = self.environment.as_ref() {
                         self.dungeon_map.refresh_encounters(scene);
                     }
+                    // The monsters were just rebuilt without ending their casts, so their
+                    // gathering loops — and any the player left running — would play on
+                    // forever with nothing left to stop them.
+                    self.silence_the_fight();
+                    self.playing_from_editor = true;
+                    self.menu.set_quit_to_editor(true);
                     log::info!("editor: back to playing; collision describes what is on screen");
                     return Ok(false);
                 }
@@ -4845,6 +4988,7 @@ impl Application for App {
             }
             self.simulation.push_commands(self.commands.iter().copied());
         }
+        self.autocast(ctx.time().real_delta().as_secs_f32());
 
         {
             engine_core::profile_scope!(profiler, "Simulation");
@@ -4871,12 +5015,26 @@ impl Application for App {
             // Damage numbers read the same slice. Both are observers; neither is a hook the
             // ability system calls, which is what keeps gameplay unaware of either.
             let world = self.simulation.world();
-            self.numbers.observe(self.simulation.events(), time, |id| {
-                world.position(id).map(|position| {
-                    // Chest height, so a number starts on the body rather than at its feet.
-                    position + Vec3::new(0.0, world.height(id) * 0.7, 0.0)
-                })
-            });
+            // Chest height, so a number starts on the body rather than at its feet. The same
+            // lookup anchors a new number and keeps every number in flight on its target.
+            let chest = |id| {
+                world
+                    .position(id)
+                    .map(|position| position + Vec3::new(0.0, world.height(id) * 0.7, 0.0))
+            };
+            // Only what concerns the player at this screen, filtered by their settings: their
+            // damage, the damage they take, healing, and the attacks they avoid.
+            let filter = engine_presentation::damage_numbers::CombatTextFilter::from(
+                self.settings.settings().combat_text,
+            );
+            self.numbers.observe_combat(
+                self.simulation.events(),
+                self.simulation.player().entity,
+                filter,
+                time,
+                chest,
+            );
+            self.numbers.track(chest);
             // Aggro text about the local player, over the enemy's head rather than its chest
             // so it does not sit in the middle of that enemy's damage numbers.
             let local = self.simulation.player().entity;

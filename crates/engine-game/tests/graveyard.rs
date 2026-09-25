@@ -521,7 +521,7 @@ fn ranged_monsters_keep_their_distance_and_melee_monsters_close() {
 
 #[test]
 fn the_acolytes_drain_grows_every_tick_and_an_interrupt_ends_it() {
-    let (mut simulation, acolyte) = duel(EnemyKind::GraveAcolyte, 14.0);
+    let (mut simulation, acolyte) = duel(EnemyKind::GraveAcolyte, 10.0);
     let events = run(&mut simulation, 60 * 3);
     assert_eq!(first_cast(&events, acolyte), Some(EnemyAbility::GraveDrain));
     let ticks = hits_of(&events, EnemyAbility::GraveDrain);
@@ -532,7 +532,7 @@ fn the_acolytes_drain_grows_every_tick_and_an_interrupt_ends_it() {
     );
 
     // A fresh one, kicked a second into its drain: nothing more lands.
-    let (mut simulation, acolyte) = duel(EnemyKind::GraveAcolyte, 14.0);
+    let (mut simulation, acolyte) = duel(EnemyKind::GraveAcolyte, 10.0);
     let mut kicked = false;
     let mut after = Vec::new();
     for _ in 0..(60 * 8) {
@@ -560,7 +560,7 @@ fn the_acolytes_drain_grows_every_tick_and_an_interrupt_ends_it() {
 
 #[test]
 fn the_bonecasters_mark_follows_its_victim_and_lands_on_them() {
-    let (mut simulation, bonecaster) = duel(EnemyKind::SkeletonBonecaster, 16.0);
+    let (mut simulation, bonecaster) = duel(EnemyKind::SkeletonBonecaster, 10.0);
     let player = simulation.player().entity;
     let mut marked = None;
     let mut events = Vec::new();
@@ -602,7 +602,7 @@ fn the_bonecasters_mark_follows_its_victim_and_lands_on_them() {
 
 #[test]
 fn killing_the_bonecaster_in_time_saves_whoever_it_marked() {
-    let (mut simulation, bonecaster) = duel(EnemyKind::SkeletonBonecaster, 16.0);
+    let (mut simulation, bonecaster) = duel(EnemyKind::SkeletonBonecaster, 10.0);
     for _ in 0..(60 * 3) {
         simulation.step_once();
         if !simulation.enemy_strikes().is_empty() {
@@ -667,7 +667,7 @@ fn standing_in_the_brutes_bone_quake_is_punished() {
 
 #[test]
 fn a_skeleton_warrior_charges_a_distant_player_hits_them_and_slows_them() {
-    let (mut simulation, warrior) = duel(EnemyKind::SkeletonWarrior, 13.0);
+    let (mut simulation, warrior) = duel(EnemyKind::SkeletonWarrior, 10.0);
     let player = simulation.player().entity;
     let mut charged = false;
     let mut slowed = false;
@@ -749,7 +749,7 @@ fn a_frenzied_ghoul_attacks_faster_than_a_calm_one() {
 
 #[test]
 fn the_archers_crippling_arrow_slows_the_player() {
-    let (mut simulation, _) = duel(EnemyKind::CryptArcher, 20.0);
+    let (mut simulation, _) = duel(EnemyKind::CryptArcher, 10.0);
     let player = simulation.player().entity;
     let mut slowed = false;
     for _ in 0..(60 * 20) {
@@ -769,7 +769,7 @@ fn the_archers_crippling_arrow_slows_the_player() {
 
 #[test]
 fn the_archers_rain_is_drawn_before_it_lands_and_lands_where_it_was_drawn() {
-    let (mut simulation, archer) = duel(EnemyKind::CryptArcher, 20.0);
+    let (mut simulation, archer) = duel(EnemyKind::CryptArcher, 10.0);
     let events = run(&mut simulation, 60 * 2);
     assert_eq!(
         first_cast(&events, archer),
@@ -1236,7 +1236,7 @@ fn killing_the_adds_and_the_boss_completes_the_dungeon_once() {
 #[test]
 fn a_charge_follows_a_player_who_runs() {
     // Cast on a player, not at a spot: stepping sideways during the wind-up does not escape.
-    let (mut simulation, warrior) = duel(EnemyKind::SkeletonWarrior, 13.0);
+    let (mut simulation, warrior) = duel(EnemyKind::SkeletonWarrior, 10.0);
     for _ in 0..(60 * 3) {
         simulation.step_once();
         if simulation.is_charging(warrior) {
@@ -1590,6 +1590,41 @@ fn the_level_file_names_only_monsters_the_game_knows_and_is_a_valid_dungeon() {
             all_packs().iter().any(|pack| pack.name == name),
             "{name} is missing"
         );
+    }
+}
+
+#[test]
+fn every_gate_arch_in_the_crypt_stands_on_a_pier_at_each_foot() {
+    // An arch placed anywhere but between two piers is an arch hanging in the air: its feet
+    // are built to rest on piers exactly a span apart, and nothing else holds it up.
+    use engine_environment::asset::{CRYPT_GATE, CRYPT_GATE_SPAN, WALL_PIER};
+    let scene = level();
+    let piers: Vec<Vec3> = scene
+        .objects
+        .iter()
+        .filter(|object| object.asset == WALL_PIER)
+        .map(|object| object.position())
+        .collect();
+    let gates: Vec<_> = scene
+        .objects
+        .iter()
+        .filter(|object| object.asset == CRYPT_GATE)
+        .collect();
+    assert!(
+        gates.len() >= 18,
+        "every doorway has a gate: {}",
+        gates.len()
+    );
+    for gate in gates {
+        let across = gate.transform.rotation.rotate(Vec3::X);
+        for side in [-1.0_f32, 1.0] {
+            let foot = gate.position() + across * (side * CRYPT_GATE_SPAN * 0.5);
+            assert!(
+                piers.iter().any(|pier| (*pier - foot).length() < 0.1),
+                "the gate at {:?} has no pier under its foot at {foot:?}",
+                gate.position()
+            );
+        }
     }
 }
 
