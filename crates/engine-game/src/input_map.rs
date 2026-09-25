@@ -57,6 +57,12 @@ pub struct Bindings {
     pub extra_one: KeyCode,
     /// The second button beside the bar.
     pub extra_two: KeyCode,
+    /// Open and close the full-screen dungeon map.
+    ///
+    /// Here for the reason [`Bindings::character_sheet`] is: a key nothing can check for a
+    /// collision is a key an action bar slot will one day share. The application reads the
+    /// player's choice of it from `settings.cfg` and keeps this default if that collides.
+    pub toggle_map: KeyCode,
     /// Restore the dummies and clear the combat session. A developer control.
     pub reset_dummies: KeyCode,
     /// The mouse button held to turn the camera, which also turns the character.
@@ -77,6 +83,8 @@ impl Default for Bindings {
             // C, which is where the genre has put the character sheet for as long as there
             // have been character sheets.
             character_sheet: KeyCode::C,
+            // M, where the genre has always put the map.
+            toggle_map: KeyCode::M,
             ultimate: KeyCode::R,
             // F and G: the two keys next to the digits that nothing else in the game wants.
             extra_one: KeyCode::F,
@@ -96,8 +104,9 @@ impl Bindings {
     /// ones. A test walks the whole list, which is what stops two actions from quietly
     /// sharing a key again.
     #[must_use]
-    pub fn named_keys(&self) -> [KeyCode; 12] {
+    pub fn named_keys(&self) -> [KeyCode; 13] {
         [
+            self.toggle_map,
             self.extra_one,
             self.extra_two,
             self.forward,
@@ -140,6 +149,7 @@ impl Bindings {
             (self.extra_one, "THE FIRST EXTRA ABILITY"),
             (self.extra_two, "THE SECOND EXTRA ABILITY"),
             (self.character_sheet, "THE CHARACTER SHEET"),
+            (self.toggle_map, "THE DUNGEON MAP"),
             (self.reset_dummies, "RESET DUMMIES"),
         ];
         named

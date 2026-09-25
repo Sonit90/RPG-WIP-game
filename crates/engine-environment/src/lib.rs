@@ -62,6 +62,8 @@ pub mod asset;
 pub mod dungeon;
 pub mod lighting;
 pub mod los_course;
+pub mod map;
+pub mod monster;
 pub mod object;
 pub mod scene;
 pub mod scene_file;
@@ -72,6 +74,8 @@ pub mod water;
 
 pub use asset::{EnvironmentAsset, LIBRARY};
 pub use lighting::{EnvironmentLighting, SceneLight, push_stress_lights};
+pub use map::{EncounterKind, MapDocument, MapEncounter, MapFrame, MapSettings};
+pub use monster::{BossGate, DungeonSettings, MonsterPlacement};
 pub use object::{CollisionBox, CollisionShape, EnvironmentCollision, EnvironmentObject};
 pub use scene::{EnvironmentScene, SpawnPoints};
 pub use scene_file::{SceneDocument, SceneFileError};

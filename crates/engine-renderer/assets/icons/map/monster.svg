@@ -1,0 +1,17 @@
+<svg version="1.1" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+<defs>
+<linearGradient id="monster_panel" gradientUnits="userSpaceOnUse" x1="40" y1="472" x2="472" y2="40">
+<stop offset="0" stop-color="rgb(60,60,64)"></stop>
+<stop offset="1" stop-color="rgb(140,140,146)"></stop>
+</linearGradient>
+<clipPath id="monster_tile"><path d="M 40 120 C 40 76 76 40 120 40 L 392 40 C 436 40 472 76 472 120 L 472 392 C 472 436 436 472 392 472 L 120 472 C 76 472 40 436 40 392 Z"></path></clipPath>
+</defs>
+<g clip-path="url(#monster_tile)">
+<path fill="url(#monster_panel)" d="M 40 40 L 472 40 L 472 472 L 40 472 Z"></path>
+<path fill="rgb(255,255,255)" d="M 256 100 C 176 100 124 158 124 228 C 124 274 144 304 174 322 L 174 372 L 338 372 L 338 322 C 368 304 388 274 388 228 C 388 158 336 100 256 100 Z"></path>
+<path fill="rgb(255,255,255)" d="M 188 372 L 188 410 L 222 410 L 222 384 L 240 384 L 240 410 L 272 410 L 272 384 L 290 384 L 290 410 L 324 410 L 324 372 Z"></path>
+<path fill="rgb(24,24,28)" d="M 158 232 C 158 204 178 190 204 190 C 230 190 242 210 238 236 C 234 262 218 276 196 276 C 172 276 158 256 158 232 Z"></path>
+<path fill="rgb(24,24,28)" d="M 354 232 C 354 204 334 190 308 190 C 282 190 270 210 274 236 C 278 262 294 276 316 276 C 340 276 354 256 354 232 Z"></path>
+<path fill="rgb(24,24,28)" d="M 256 284 L 278 326 L 234 326 Z"></path>
+</g>
+</svg>

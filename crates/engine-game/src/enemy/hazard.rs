@@ -38,11 +38,21 @@ pub const HAZARD_TICK_INTERVAL: f32 = 0.5;
 
 /// The most hazards that can burn at once.
 ///
-/// Six Weavers' worth. A bounded array rather than an unbounded list: an enemy that somehow
-/// cast forever must cost a fixed amount of simulation, and the oldest hazard is dropped
+/// Two empowered adds' trails and a spreading pool, with room left over. A bounded array
+/// rather than an unbounded list: an enemy that somehow cast forever must cost a fixed amount
+/// of simulation, and the oldest hazard is dropped
 /// rather than the newest refused — the newest is the one the player is being asked to move
 /// out of.
-pub const MAX_ENEMY_HAZARDS: usize = 16;
+pub const MAX_ENEMY_HAZARDS: usize = 32;
+
+/// Seconds between the steps a spreading hazard grows by.
+///
+/// In steps rather than continuously, because every step is announced — the pool on the floor
+/// is redrawn at its new size — and a redraw every tick would be a visual that never settles.
+pub const HAZARD_GROWTH_INTERVAL: f32 = 1.5;
+
+/// Metres a spreading hazard's radius grows by at each step.
+pub const HAZARD_GROWTH_STEP: f32 = 1.0;
 
 /// One patch of burning ground.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -63,8 +73,12 @@ pub struct EnemyHazard {
     pub duration: f32,
     /// Damage a second to anything standing in it.
     pub damage_per_second: f32,
+    /// The radius it spreads to. Zero, or anything not above its radius, never grows.
+    pub grow_to: f32,
     /// Seconds until the next damage tick.
     timer: f32,
+    /// Seconds until it next grows.
+    grow_timer: f32,
 }
 
 impl EnemyHazard {
@@ -178,9 +192,40 @@ impl EnemyHazardField {
             remaining: duration.max(0.0),
             duration: duration.max(0.0),
             damage_per_second: damage_per_second.max(0.0),
+            grow_to: 0.0,
             timer: HAZARD_TICK_INTERVAL,
+            grow_timer: HAZARD_GROWTH_INTERVAL,
         });
         id
+    }
+
+    /// Makes hazard `id` spread to `radius` over its life.
+    pub fn set_growth(&mut self, id: u32, radius: f32) {
+        if let Some(hazard) = self.hazards.iter_mut().find(|hazard| hazard.id == id) {
+            hazard.grow_to = if radius.is_finite() {
+                radius.max(0.0)
+            } else {
+                0.0
+            };
+        }
+    }
+
+    /// Grows every spreading hazard whose step is due, copying each one that grew into
+    /// `grown` so its new size can be announced.
+    pub fn grow(&mut self, step: f32, grown: &mut Vec<EnemyHazard>) {
+        let step = if step.is_finite() { step.max(0.0) } else { 0.0 };
+        for hazard in &mut self.hazards {
+            if hazard.grow_to <= hazard.radius {
+                continue;
+            }
+            hazard.grow_timer -= step;
+            if hazard.grow_timer > crate::TIME_EPSILON {
+                continue;
+            }
+            hazard.grow_timer += HAZARD_GROWTH_INTERVAL;
+            hazard.radius = (hazard.radius + HAZARD_GROWTH_STEP).min(hazard.grow_to);
+            grown.push(*hazard);
+        }
     }
 
     /// Advances every hazard, collecting the damage it deals and the ones that burned out.

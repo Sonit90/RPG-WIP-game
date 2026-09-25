@@ -115,6 +115,20 @@ pub struct EnvironmentScene {
     /// A *list* because a spawn point is a thing an author places rather than a field of the
     /// level — see [`crate::spawn`].
     pub spawn_points: Vec<crate::spawn::SpawnPoint>,
+    /// The monsters standing in this level, by the id of the monster each one is.
+    ///
+    /// Empty in every level that is not a fight. A list of records the editor places, like
+    /// the spawn points — see [`crate::monster`].
+    pub monsters: Vec<crate::monster::MonsterPlacement>,
+    /// What this level says about the dungeon it is, if it is one.
+    ///
+    /// `None` for an arena. With it, kills add up to a completion percentage and the boss is
+    /// sealed until that percentage is reached — see [`crate::monster::DungeonSettings`].
+    pub dungeon: Option<crate::monster::DungeonSettings>,
+    /// How the level's map is baked: its vertical range, density and, optionally, its frame.
+    ///
+    /// The defaults for every level that does not say — see [`crate::map`].
+    pub map: crate::map::MapSettings,
 }
 
 impl EnvironmentScene {
@@ -145,6 +159,9 @@ impl EnvironmentScene {
             terrain: None,
             water: Vec::new(),
             spawn_points: Vec::new(),
+            monsters: Vec::new(),
+            dungeon: None,
+            map: crate::map::MapSettings::default(),
         }
     }
 
@@ -195,6 +212,11 @@ impl EnvironmentScene {
     /// Adds a spawn point.
     pub fn push_spawn(&mut self, spawn: crate::spawn::SpawnPoint) {
         self.spawn_points.push(spawn);
+    }
+
+    /// Adds a monster.
+    pub fn push_monster(&mut self, monster: crate::monster::MonsterPlacement) {
+        self.monsters.push(monster);
     }
 
     /// Which body of water a point is inside, if any.
@@ -421,6 +443,21 @@ impl EnvironmentScene {
                 feed(u64::from(component.to_bits()));
             }
             feed(u64::from(object.collision.blocks()));
+        }
+        // Who stands where is part of what the level is: two dungeons with the same walls
+        // and different packs are two different dungeons.
+        for monster in &self.monsters {
+            for byte in monster.monster.as_bytes() {
+                feed(u64::from(*byte));
+            }
+            for component in [
+                monster.position.x,
+                monster.position.y,
+                monster.position.z,
+                monster.yaw,
+            ] {
+                feed(u64::from(component.to_bits()));
+            }
         }
         hash
     }

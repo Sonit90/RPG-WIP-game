@@ -11,5 +11,10 @@ publish.workspace = true
 [dependencies]
 engine-core = { workspace = true }
 
+# Build time only: reads the bundled fonts' metrics into generated tables. Nothing is linked
+# into the crate, so the rule above holds for what the crate *is*.
+[build-dependencies]
+ab_glyph = "0.2"
+
 [lints]
 workspace = true

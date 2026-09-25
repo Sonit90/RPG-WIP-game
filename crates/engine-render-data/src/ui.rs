@@ -324,11 +324,67 @@ pub enum UiIcon {
     Ring,
     /// A trinket.
     Trinket,
+
+    // The dungeon map: its markers, and the sidebar's portraits and ability schools.
+    /// A monster pack on the dungeon map: crossed swords on gold.
+    MapPack,
+    /// A boss on the dungeon map: a skull on red.
+    MapBoss,
+    /// The player on the map: an arrow pointing the way they face.
+    MapPlayer,
+    /// North, on the map's frame.
+    MapCompass,
+    /// A monster's portrait in the map sidebar, tinted by its look.
+    Monster,
+    /// A monster ability that deals physical damage.
+    AbilityPhysical,
+    /// A monster ability that deals fire damage.
+    AbilityFire,
+    /// A monster ability that deals arcane damage.
+    AbilityArcane,
+    /// A monster ability that deals nature damage.
+    AbilityNature,
+    /// A monster ability that heals its allies.
+    AbilityHeal,
+    /// An elite or empowered pack on the map: a violet crest with a star.
+    CrestElite,
+    /// The dungeon's emblem in the map's header.
+    EmblemCrypt,
+    /// Map control: zoom in.
+    ControlZoomIn,
+    /// Map control: zoom out.
+    ControlZoomOut,
+    /// Map control: fit the whole level.
+    ControlFit,
+    /// Map control: centre on the player.
+    ControlRecenter,
+    /// Close a window.
+    ControlClose,
+    /// Help glyph: drag with the mouse.
+    MouseDrag,
+    /// Help glyph: turn the mouse wheel.
+    MouseWheel,
+    /// Help glyph: click.
+    MouseClick,
+    /// An empty loot table's chest.
+    LootChest,
+    /// Locked: the boss is sealed.
+    Lock,
+    /// Done: an encounter cleared.
+    Check,
+    /// Ability tag: slows, roots or moves its target.
+    TagControl,
+    /// Ability tag: can be interrupted.
+    TagInterrupt,
+    /// Ability tag: hits an area.
+    TagArea,
+    /// A disclosure chevron: pointing right folded, down open.
+    ControlChevron,
 }
 
 impl UiIcon {
     /// Every icon, in atlas order.
-    pub const ALL: [Self; 45] = [
+    pub const ALL: [Self; 72] = [
         Self::Firebolt,
         Self::Meteor,
         Self::FlameCone,
@@ -374,6 +430,33 @@ impl UiIcon {
         Self::Amulet,
         Self::Ring,
         Self::Trinket,
+        Self::MapPack,
+        Self::MapBoss,
+        Self::MapPlayer,
+        Self::MapCompass,
+        Self::Monster,
+        Self::AbilityPhysical,
+        Self::AbilityFire,
+        Self::AbilityArcane,
+        Self::AbilityNature,
+        Self::AbilityHeal,
+        Self::CrestElite,
+        Self::EmblemCrypt,
+        Self::ControlZoomIn,
+        Self::ControlZoomOut,
+        Self::ControlFit,
+        Self::ControlRecenter,
+        Self::ControlClose,
+        Self::MouseDrag,
+        Self::MouseWheel,
+        Self::MouseClick,
+        Self::LootChest,
+        Self::Lock,
+        Self::Check,
+        Self::TagControl,
+        Self::TagInterrupt,
+        Self::TagArea,
+        Self::ControlChevron,
     ];
 
     /// How many icons there are.
@@ -470,6 +553,174 @@ pub enum UiCommand {
         /// How the run is placed relative to `origin`.
         align: TextAlign,
     },
+    /// A run of text set in one of the interface's typefaces.
+    ///
+    /// The proportional counterpart of [`UiCommand::Text`]: Inter or Cinzel from a distance-field
+    /// atlas, at any pixel size, measured with [`crate::font::UiFont`]'s own metrics so a layout
+    /// can wrap and align it exactly. `Text` remains the 5 × 7 bitmap the rest of the HUD uses.
+    Label {
+        /// Where the run is anchored: `x` per `align`, `y` the top of the line box.
+        origin: (f32, f32),
+        /// Which bytes of the arena to draw.
+        range: TextRange,
+        /// What colour.
+        color: UiColor,
+        /// Pixels per em.
+        size: f32,
+        /// Which face.
+        font: crate::font::UiFont,
+        /// How the run is placed relative to `origin`.
+        align: TextAlign,
+    },
+    /// A rounded rectangle: filled with a vertical gradient, softened into a shadow, or
+    /// stroked as an outline — the surface every panel, card, button and ring is drawn with.
+    ///
+    /// The shape is a signed distance evaluated per pixel, so the corners are anti-aliased at
+    /// any size and a ring is a circle-radius rectangle stroked. `feather` blurs the edge over
+    /// that many pixels (a drop shadow); `stroke`, when positive, draws only a band that wide
+    /// inside the edge. A rectangular [`UiCommand::Clip`] applies; a circular one does not.
+    Panel {
+        /// The shape's bounds, before any feather.
+        rect: UiRect,
+        /// Corner radius, in pixels, clamped to half the shorter side.
+        radius: f32,
+        /// Colour at the top edge.
+        top: UiColor,
+        /// Colour at the bottom edge.
+        bottom: UiColor,
+        /// Pixels the edge is blurred over. Zero is a crisp edge.
+        feather: f32,
+        /// Width of an outline, in pixels. Zero fills the shape.
+        stroke: f32,
+        /// Whether the interior is left undrawn: a drop shadow under an opaque surface, whose
+        /// middle nobody can see. Only the band where the shape is not solid is shaded, which
+        /// is what keeps a window-sized shadow from costing a window's worth of fill.
+        /// Outlines are always hollow.
+        hollow: bool,
+    },
+    /// Confines every command after it to a region, until the next `Clip`.
+    ///
+    /// State in the stream rather than a field on each command, so the dozens of glyphs,
+    /// markers and rows a map or a scrolling list draws do not each carry a copy. The renderer
+    /// resolves it: a rectangle is cut on the CPU, exactly, texture coordinates and all; a
+    /// circle is cut per pixel in the shader, anti-aliased, because a circle is not a shape a
+    /// quad can be trimmed to. [`UiClip::NONE`] ends it.
+    Clip(UiClip),
+    /// A filled, anti-aliased circle.
+    ///
+    /// Its own circle is its shape, so it ignores a circular [`UiCommand::Clip`] region; a
+    /// rectangular one still applies.
+    Disc {
+        /// Its centre, in pixels.
+        center: (f32, f32),
+        /// Its radius, in pixels.
+        radius: f32,
+        /// What colour.
+        color: UiColor,
+    },
+    /// The map picture, sampled through an affine mapping from the screen to its texture.
+    ///
+    /// `rect` is where it is drawn. `origin` is the texture coordinate at the rectangle's
+    /// top-left corner, and `du` and `dv` are how far the texture coordinate moves for one
+    /// pixel right and one pixel down. A rotating minimap is a rotated `du`/`dv` on an
+    /// unrotated rectangle; a panned, zoomed map is a shifted `origin` and a scaled pair.
+    /// Texture coordinates outside `0..1` are transparent, so the region beyond the level is
+    /// whatever was drawn underneath.
+    ///
+    /// The renderer owns which picture that is (`Renderer::set_ui_map_texture`); a frame with
+    /// no map set draws nothing for this command.
+    MapImage {
+        /// Where, in pixels.
+        rect: UiRect,
+        /// The texture coordinate at `rect`'s top-left corner.
+        origin: (f32, f32),
+        /// Texture-coordinate change per pixel to the right.
+        du: (f32, f32),
+        /// Texture-coordinate change per pixel downward.
+        dv: (f32, f32),
+        /// What to multiply the picture by.
+        tint: UiColor,
+    },
+    /// An icon turned about its centre: the player's arrow on the map.
+    RotatedIcon {
+        /// Its centre, in pixels.
+        center: (f32, f32),
+        /// Its edge, in pixels.
+        size: f32,
+        /// Which picture.
+        icon: UiIcon,
+        /// Clockwise turn on screen, in radians. Zero draws the icon as authored.
+        rotation: f32,
+        /// What to multiply it by.
+        tint: UiColor,
+    },
+}
+
+/// A circle, in pixels.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct UiCircle {
+    /// Its centre.
+    pub center: (f32, f32),
+    /// Its radius.
+    pub radius: f32,
+}
+
+impl UiCircle {
+    /// Whether a point is inside it.
+    #[must_use]
+    pub fn contains(self, x: f32, y: f32) -> bool {
+        let (dx, dy) = (x - self.center.0, y - self.center.1);
+        dx * dx + dy * dy <= self.radius * self.radius
+    }
+}
+
+/// Where a [`UiCommand::Clip`] confines what is drawn after it: a rectangle, a circle, both, or
+/// nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct UiClip {
+    /// Nothing outside this rectangle is drawn.
+    pub rect: Option<UiRect>,
+    /// Nothing outside this circle is drawn.
+    pub circle: Option<UiCircle>,
+}
+
+impl UiClip {
+    /// No clip at all.
+    pub const NONE: Self = Self {
+        rect: None,
+        circle: None,
+    };
+
+    /// Clipped to a rectangle.
+    #[must_use]
+    pub fn rect(rect: UiRect) -> Self {
+        Self {
+            rect: Some(rect),
+            circle: None,
+        }
+    }
+
+    /// Clipped to a circle.
+    #[must_use]
+    pub fn circle(center: (f32, f32), radius: f32) -> Self {
+        Self {
+            rect: None,
+            circle: Some(UiCircle { center, radius }),
+        }
+    }
+
+    /// Whether this clip lets everything through.
+    #[must_use]
+    pub fn is_none(self) -> bool {
+        self.rect.is_none() && self.circle.is_none()
+    }
+
+    /// Whether a point survives it.
+    #[must_use]
+    pub fn contains(self, x: f32, y: f32) -> bool {
+        self.rect.is_none_or(|rect| rect.contains(x, y))
+            && self.circle.is_none_or(|circle| circle.contains(x, y))
+    }
 }
 
 /// A frame's worth of UI, in paint order.
@@ -628,6 +879,161 @@ impl UiDrawList {
         });
     }
 
+    /// Appends a run of text in `font` at `size` pixels per em, its line box's top at
+    /// `origin.1`.
+    pub fn label(
+        &mut self,
+        origin: (f32, f32),
+        text: &str,
+        color: UiColor,
+        font: crate::font::UiFont,
+        size: f32,
+        align: TextAlign,
+    ) {
+        if text.is_empty() || size.is_nan() || size <= 0.0 {
+            return;
+        }
+        let start = self.text.len() as u32;
+        self.text.push_str(text);
+        let end = self.text.len() as u32;
+        self.commands.push(UiCommand::Label {
+            origin,
+            range: TextRange { start, end },
+            color,
+            size,
+            font,
+            align,
+        });
+    }
+
+    /// Appends a filled rounded rectangle, `top` fading to `bottom`.
+    pub fn panel(&mut self, rect: UiRect, radius: f32, top: UiColor, bottom: UiColor) {
+        self.panel_shape(rect, radius, top, bottom, 0.0, 0.0);
+    }
+
+    /// Appends a rounded outline `width` pixels wide, inside `rect`.
+    pub fn panel_stroke(&mut self, rect: UiRect, radius: f32, width: f32, color: UiColor) {
+        if width.is_nan() || width <= 0.0 {
+            return;
+        }
+        self.panel_shape(rect, radius, color, color, 0.0, width);
+    }
+
+    /// Appends a soft shadow: `rect`'s rounded shape blurred over `feather` pixels.
+    ///
+    /// Hollow: its middle is not drawn, because something opaque is about to be drawn over
+    /// it. For a soft shape that *is* seen whole — a halo, a glow — use [`UiDrawList::glow`].
+    pub fn shadow(&mut self, rect: UiRect, radius: f32, feather: f32, color: UiColor) {
+        self.panel_shape(rect, radius, color, color, feather.max(0.0), 0.0);
+        if let Some(UiCommand::Panel { hollow, .. }) = self.commands.last_mut() {
+            *hollow = true;
+        }
+    }
+
+    /// Appends a soft filled shape: `rect`'s rounded shape blurred over `feather` pixels, drawn
+    /// whole — a halo, a glow.
+    pub fn glow(&mut self, rect: UiRect, radius: f32, feather: f32, color: UiColor) {
+        self.panel_shape(rect, radius, color, color, feather.max(0.0), 0.0);
+    }
+
+    /// Appends a rounded rectangle with every option: see [`UiCommand::Panel`].
+    pub fn panel_shape(
+        &mut self,
+        rect: UiRect,
+        radius: f32,
+        top: UiColor,
+        bottom: UiColor,
+        feather: f32,
+        stroke: f32,
+    ) {
+        if !rect.is_visible() {
+            return;
+        }
+        let radius = radius.max(0.0).min(rect.width * 0.5).min(rect.height * 0.5);
+        self.commands.push(UiCommand::Panel {
+            rect,
+            radius,
+            top,
+            bottom,
+            feather: if feather.is_finite() {
+                feather.max(0.0)
+            } else {
+                0.0
+            },
+            stroke: if stroke.is_finite() {
+                stroke.max(0.0)
+            } else {
+                0.0
+            },
+            hollow: false,
+        });
+    }
+
+    /// Confines everything appended after this to `clip`, until the next call.
+    ///
+    /// Pass [`UiClip::NONE`] to end it. Whoever sets a clip ends it: a list handed to
+    /// [`UiDrawList::append`] has its clip ended for it, so one producer's clip never reaches
+    /// another's commands.
+    pub fn clip(&mut self, clip: UiClip) {
+        self.commands.push(UiCommand::Clip(clip));
+    }
+
+    /// Appends a filled, anti-aliased circle. One with no radius is dropped.
+    pub fn disc(&mut self, center: (f32, f32), radius: f32, color: UiColor) {
+        if radius.is_nan() || radius <= 0.0 {
+            return;
+        }
+        self.commands.push(UiCommand::Disc {
+            center,
+            radius,
+            color,
+        });
+    }
+
+    /// Appends the map picture over `rect`, mapped by `origin`, `du` and `dv`.
+    ///
+    /// See [`UiCommand::MapImage`] for what the three mean.
+    pub fn map_image(
+        &mut self,
+        rect: UiRect,
+        origin: (f32, f32),
+        du: (f32, f32),
+        dv: (f32, f32),
+        tint: UiColor,
+    ) {
+        if !rect.is_visible() {
+            return;
+        }
+        self.commands.push(UiCommand::MapImage {
+            rect,
+            origin,
+            du,
+            dv,
+            tint,
+        });
+    }
+
+    /// Appends an icon turned `rotation` radians clockwise about `center`.
+    pub fn icon_rotated(
+        &mut self,
+        center: (f32, f32),
+        size: f32,
+        icon: UiIcon,
+        rotation: f32,
+        tint: UiColor,
+    ) {
+        if size.is_nan() || size <= 0.0 || !rotation.is_finite() {
+            return;
+        }
+        self.commands.push(UiCommand::RotatedIcon {
+            center,
+            size,
+            icon,
+            rotation,
+            tint,
+        });
+    }
+
     /// Appends a bar: a background, then a fill covering `fraction` of it.
     ///
     /// One call because every bar in the HUD is the same two rectangles, and a bar whose
@@ -644,6 +1050,10 @@ impl UiDrawList {
     /// Used to compose a frame from lists built by independent producers — the world-space
     /// layer and the screen-space layer — without either knowing about the other.
     pub fn append(&mut self, other: &Self) {
+        let clipped = other
+            .commands
+            .iter()
+            .any(|command| matches!(command, UiCommand::Clip(_)));
         let base = self.text.len() as u32;
         self.text.push_str(&other.text);
         self.commands.extend(other.commands.iter().map(|command| {
@@ -665,16 +1075,90 @@ impl UiDrawList {
                     scale,
                     align,
                 }
+            } else if let UiCommand::Label {
+                origin,
+                range,
+                color,
+                size,
+                font,
+                align,
+            } = *command
+            {
+                UiCommand::Label {
+                    origin,
+                    range: TextRange {
+                        start: range.start + base,
+                        end: range.end + base,
+                    },
+                    color,
+                    size,
+                    font,
+                    align,
+                }
             } else {
                 *command
             }
         }));
+        if clipped {
+            self.commands.push(UiCommand::Clip(UiClip::NONE));
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_appended_list_s_clip_ends_with_it() {
+        let mut inner = UiDrawList::new();
+        inner.clip(UiClip::circle((5.0, 5.0), 4.0));
+        inner.disc((5.0, 5.0), 2.0, WHITE);
+        let mut outer = UiDrawList::new();
+        outer.append(&inner);
+        outer.rect(UiRect::new(0.0, 0.0, 2.0, 2.0), WHITE);
+        let commands = outer.commands();
+        assert_eq!(commands[2], UiCommand::Clip(UiClip::NONE));
+        assert!(matches!(commands[3], UiCommand::Rect { .. }));
+    }
+
+    #[test]
+    fn a_clip_contains_what_is_inside_both_of_its_shapes() {
+        let clip = UiClip {
+            rect: Some(UiRect::new(0.0, 0.0, 10.0, 10.0)),
+            circle: Some(UiCircle {
+                center: (0.0, 0.0),
+                radius: 5.0,
+            }),
+        };
+        assert!(clip.contains(2.0, 2.0));
+        assert!(
+            !clip.contains(6.0, 6.0),
+            "inside the rectangle, outside the circle"
+        );
+        assert!(
+            !clip.contains(-1.0, 0.0),
+            "inside the circle, outside the rectangle"
+        );
+        assert!(UiClip::NONE.contains(1e6, -1e6));
+    }
+
+    #[test]
+    fn degenerate_discs_icons_and_images_are_dropped() {
+        let mut list = UiDrawList::new();
+        list.disc((0.0, 0.0), 0.0, WHITE);
+        list.disc((0.0, 0.0), f32::NAN, WHITE);
+        list.icon_rotated((0.0, 0.0), 0.0, UiIcon::MapPlayer, 0.0, WHITE);
+        list.icon_rotated((0.0, 0.0), 8.0, UiIcon::MapPlayer, f32::NAN, WHITE);
+        list.map_image(
+            UiRect::new(0.0, 0.0, 0.0, 5.0),
+            (0.0, 0.0),
+            (1.0, 0.0),
+            (0.0, 1.0),
+            WHITE,
+        );
+        assert!(list.is_empty());
+    }
 
     const WHITE: UiColor = [1.0, 1.0, 1.0, 1.0];
     const BLACK: UiColor = [0.0, 0.0, 0.0, 1.0];

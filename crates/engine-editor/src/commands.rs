@@ -125,7 +125,25 @@ pub enum Command {
     PutWater,
     PutSpawn,
     PutLight,
+    PutMonster,
     ResetLayout,
+    /// Turn the selected monsters into the previous or next monster in the catalogue.
+    CycleMonster(bool),
+    /// Turn the selected monsters into the monster chosen in the browser.
+    UseBrowserMonster,
+    /// Switch the selected monsters on or off.
+    ToggleMonsterEnabled,
+    /// Put every selected monster in one pack of their own.
+    PackSelection,
+    /// Forget a monster's own aggro and worth, going back to the monster's.
+    ResetMonsterOverrides,
+    /// Show or hide the dungeon map's preview in the corner of the viewport.
+    ToggleMapPreview,
+    /// Bake the level's map again from what is in the editor now.
+    ///
+    /// The editor cannot draw — it has no renderer — so this raises a request the application
+    /// answers, exactly as opening a level does.
+    BakeMap,
 }
 
 impl Editor {
@@ -318,6 +336,21 @@ impl Editor {
                 self.show_debug = !self.show_debug;
                 false
             }
+            Command::ToggleMapPreview => {
+                self.map_preview = !self.map_preview;
+                self.status = if self.map_preview {
+                    "Map preview on (F4)".to_owned()
+                } else {
+                    "Map preview off".to_owned()
+                };
+                false
+            }
+            Command::BakeMap => {
+                self.bake_requested = true;
+                self.map_preview = true;
+                self.status = "Baking the map...".to_owned();
+                false
+            }
             Command::ToggleShortcuts => {
                 self.modal = match self.modal {
                     Some(crate::Modal::Shortcuts) => None,
@@ -416,7 +449,14 @@ impl Editor {
                     ],
                 };
                 for property in properties {
-                    changed |= inspector::set(scene, &selection, primary, *property, value);
+                    changed |= inspector::set(
+                        scene,
+                        self.browser.monsters(),
+                        &selection,
+                        primary,
+                        *property,
+                        value,
+                    );
                 }
                 if changed {
                     self.push_undo(before);
@@ -424,7 +464,7 @@ impl Editor {
                 }
                 changed
             }
-            Command::PutWater | Command::PutSpawn | Command::PutLight => {
+            Command::PutWater | Command::PutSpawn | Command::PutLight | Command::PutMonster => {
                 let pointer = self.menu_origin.unwrap_or(self.pointer);
                 let ui = engine_presentation::ui::input::UiInput {
                     pointer,
@@ -438,6 +478,9 @@ impl Editor {
                     Command::PutSpawn => {
                         self.put_spawn(&ui, scene, &view_projection, viewport, false)
                     }
+                    Command::PutMonster => {
+                        self.put_monster(&ui, scene, &view_projection, viewport, false)
+                    }
                     _ => self.put_light(&ui, scene, &view_projection, viewport, false),
                 }
             }
@@ -445,7 +488,94 @@ impl Editor {
                 self.panels = crate::layout::PanelSizes::default();
                 false
             }
+            Command::CycleMonster(forward) => {
+                let count = self.browser.monsters().len();
+                if count == 0 {
+                    return false;
+                }
+                let next = |current: Option<usize>| {
+                    let at = current.unwrap_or(0);
+                    if forward {
+                        (at + 1) % count
+                    } else {
+                        (at + count - 1) % count
+                    }
+                };
+                self.edit_monsters(scene, |monster, catalogue| {
+                    let index = next(catalogue.index_of(&monster.monster));
+                    if let Some(entry) = catalogue.get(index) {
+                        monster.monster.clone_from(&entry.id);
+                    }
+                })
+            }
+            Command::UseBrowserMonster => {
+                let Some(id) = self
+                    .browser
+                    .selected_monster()
+                    .map(|entry| entry.id.clone())
+                else {
+                    self.status = "Choose a monster in the browser first".to_owned();
+                    return false;
+                };
+                self.edit_monsters(scene, |monster, _| monster.monster.clone_from(&id))
+            }
+            Command::ToggleMonsterEnabled => {
+                let enable = self
+                    .selected
+                    .iter()
+                    .filter_map(|what| what.monster())
+                    .any(|index| {
+                        scene
+                            .monsters
+                            .get(index)
+                            .is_some_and(|monster| !monster.enabled)
+                    });
+                self.edit_monsters(scene, |monster, _| monster.enabled = enable)
+            }
+            Command::PackSelection => {
+                let name = crate::next_pack_name(scene);
+                let label = name.clone();
+                let changed = self.edit_monsters(scene, |monster, _| {
+                    monster.pack = Some(name.clone());
+                });
+                if changed {
+                    self.status = format!("The selection is {label}");
+                }
+                changed
+            }
+            Command::ResetMonsterOverrides => self.edit_monsters(scene, |monster, _| {
+                monster.aggro_radius = None;
+                monster.completion = None;
+            }),
         }
+    }
+
+    /// Applies `edit` to every selected monster, as one undo step. Returns whether any were.
+    fn edit_monsters(
+        &mut self,
+        scene: &mut EnvironmentScene,
+        mut edit: impl FnMut(
+            &mut engine_environment::MonsterPlacement,
+            &crate::monster::MonsterCatalogue,
+        ),
+    ) -> bool {
+        let indices: Vec<usize> = self
+            .selected
+            .iter()
+            .filter_map(|what| what.monster())
+            .collect();
+        if indices.is_empty() {
+            return false;
+        }
+        self.snapshot(scene);
+        let catalogue = self.browser.monsters().clone();
+        for index in indices {
+            if let Some(monster) = scene.monsters.get_mut(index) {
+                edit(monster, &catalogue);
+            }
+        }
+        self.water_touched = true;
+        true
     }
 
     /// Deletes everything selected. Returns whether anything was.
@@ -477,6 +607,9 @@ impl Editor {
                 }
                 Selected::Light(index) => {
                     scene.lights.remove(index);
+                }
+                Selected::Monster(index) => {
+                    scene.monsters.remove(index);
                 }
             }
         }
@@ -557,6 +690,7 @@ impl Editor {
                 Selected::Water(index) => scene.water.get(index).copied().map(Clip::Water),
                 Selected::Spawn(index) => scene.spawn_points.get(index).copied().map(Clip::Spawn),
                 Selected::Light(index) => scene.lights.get(index).copied().map(Clip::Light),
+                Selected::Monster(index) => scene.monsters.get(index).cloned().map(Clip::Monster),
             })
             .collect()
     }
@@ -570,7 +704,7 @@ impl Editor {
     ) -> Vec<Selected> {
         let mut added = Vec::with_capacity(items.len());
         for item in items {
-            added.push(match *item {
+            added.push(match item.clone() {
                 Clip::Object(mut object) => {
                     object.transform.translation += offset;
                     scene.objects.push(object);
@@ -591,6 +725,14 @@ impl Editor {
                     light.position += offset;
                     scene.lights.push(light);
                     Selected::Light(scene.lights.len() - 1)
+                }
+                // A copy fights with its original: same pack, one grid step over. A pack
+                // of three duplicated is a pack of six, which is what an author doubling a
+                // pull wants — and `Pack Selection` splits it off when they do not.
+                Clip::Monster(mut monster) => {
+                    monster.position += offset;
+                    scene.monsters.push(monster);
+                    Selected::Monster(scene.monsters.len() - 1)
                 }
             });
         }
@@ -816,7 +958,7 @@ impl Editor {
 }
 
 /// One thing on the editor's clipboard.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Clip {
     /// A placement.
     Object(EnvironmentObject),
@@ -826,6 +968,8 @@ pub enum Clip {
     Spawn(engine_environment::spawn::SpawnPoint),
     /// A light.
     Light(engine_environment::lighting::SceneLight),
+    /// A monster.
+    Monster(engine_environment::MonsterPlacement),
 }
 
 impl Clip {
@@ -837,6 +981,7 @@ impl Clip {
             Self::Water(body) => body.center,
             Self::Spawn(spawn) => spawn.position,
             Self::Light(light) => light.position,
+            Self::Monster(monster) => monster.position,
         }
     }
 }

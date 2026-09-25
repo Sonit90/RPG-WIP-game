@@ -54,6 +54,11 @@ what lets every one of its verbs be tested with no window open.
 * **Status bar** — the tool, the selection, snapping, the last thing that happened (for a few
   seconds) or a hint for what you can do next, the ground under the pointer, and whether the file
   is saved.
+* **The terrain brush** (`B`) is drawn on the ground under the pointer: a ring at its size and
+  a fainter one where its strength falls to half, in the mode's colour — green with an up arrow
+  to raise, amber with a down arrow to lower (the arrow's length is the strength), blue with the
+  flat level it will pull the ground to for flatten, violet with a wavy ring to smooth. It is
+  drawn heavier while painting, and a label beside the pointer names the mode, size and strength.
 * **Right-click** an object for Focus, Duplicate, Copy, Paste, Delete, Reset Transform, Drop to
   Ground, Select All of This Asset, Show in Browser, Hide and Lock; right-click empty ground to
   paste or add a light, water or a spawn point there.
@@ -74,11 +79,12 @@ Grouped by what is being built rather than by key, which is how the editor print
 
 | Group | Keys |
 | --- | --- |
-| **Placing** | drag a browser row into the world · double-click a row to place in front of the camera · `N` placing mode: every `LMB` in the world puts one down. A drop lands on the terrain, or on top of the solid thing under the pointer |
+| **Placing** | drag a browser row into the world · double-click a row to place in front of the camera · a drop lands on the terrain, or on top of the solid thing under the pointer |
+| **Painting** | `N` placing mode, then click to put one down, **drag** to paint a line of tiles, **`SHIFT`+drag** to fill a rectangle (shown with its count before you release). Tiles are laid on the ground as far apart as the asset is wide, rounded up to the grid, never twice in one cell; one stroke is one undo, and what was painted is selected |
 | **Assets** | `TAB` next asset · `CTRL+F` find (in the panel under the pointer) · `F2` rescan |
 | **Terrain** | `B` sculpt · `TAB` brush mode · `1` `2` brush size · `3` `4` strength |
 | **Caves** | `M` module snap — a 4 m grid and quarter turns |
-| **Put** | `V` water · `P` spawn point · `I` light — each under the cursor |
+| **Put** | `V` water · `P` spawn point · `I` light — each under the cursor. A lake is one body of water made bigger (the scale tool, `T`, or its size in the inspector), not a floor of water tiles |
 | **Selecting** | `LMB` on something selects it · double-click frames it · drag on empty ground draws a selection box · `CTRL+LMB` adds · `SHIFT+LMB` in the hierarchy selects a range · `CTRL+A` every object · `ESC` drops it, and leaves placing mode · right-click for actions |
 | **Gizmo** | `1` move · `2` rotate · `3` scale · the Select tool on the toolbar hides the handles · hold `CTRL` while dragging to turn snapping off |
 | **Editing** | arrows nudge (`SHIFT` for up/down) · `R` yaw · `T` size · `0` reset · `L` local axes · `X`/`DELETE` delete · `CTRL+D` duplicate · `CTRL+C`/`CTRL+V` copy and paste (under the pointer) · `CTRL+G` drop onto what is below · click an inspector number to type it, use the wheel over it, or drag its tag |
@@ -209,7 +215,9 @@ level has one, so a file written before a feature existed still loads.
   "terrain": { ... },         // origin, cell size, resolution, heights
   "water": [ ... ],           // centre, half extents, yaw, depth
   "spawn_points": [ ... ],    // position, yaw
-  "lights": [ ... ]           // position, colour, intensity, range; a cone for a spotlight
+  "lights": [ ... ],          // position, colour, intensity, range; a cone for a spotlight
+  "monsters": [ ... ],        // monster id, position, yaw, pack, level, … — see below
+  "dungeon": { ... }          // completion requirement, boss pack, gate, boss add pool
 }
 ```
 
@@ -231,7 +239,97 @@ Nothing here is required. An empty level is a valid level.
 When the editor saves, compound collision shapes no placement uses any more are left out of the
 file.
 
+### Monsters
+
+A level with monsters in it is a fight; the game spawns them when the level loads. Only
+`monster` and `position` are required:
+
+```jsonc
+{ "monster": "skeleton_warrior", "position": [-11, 0, -53] }          // the one-line form
+{
+  "monster": "grave_brute",      // the id from the monster table — never an index
+  "position": [-14, 0, -108],
+  "yaw": 3.14,                   // facing, radians; 0 faces -Z
+  "scale": 1.2,                  // body size; the hitbox grows with it          (default 1)
+  "name": "Old Knuckles",        // the author's name for it                      (optional)
+  "pack": "CROSSING SENTRIES",   // placements sharing a pack are one encounter  (optional)
+  "aggro_radius": 18.0,          // overrides the monster's own                   (optional)
+  "level": 2,                    // 1-10; +12 % health, +6 % damage per level     (default 1)
+  "enabled": false,              // kept in the file, not spawned                 (default true)
+  "completion": 5.0              // overrides the monster's own completion worth  (optional)
+}
+```
+
+* **Packs.** Pulling one member pulls the whole pack; the pack is cleared when all of it is dead.
+  A placement with no pack is a pack of one.
+* **Unknown ids** are reported in the log with their index and skipped; the rest of the level
+  still loads. The editor still shows, moves and deletes them.
+
+### Dungeon settings
+
+```jsonc
+"dungeon": {
+  "name": "GRAVEYARD CRYPT",           // the progress panel's title
+  "required_completion": 100.0,        // the completion that counts as 100 %
+  "boss_pack": "HOLLOW STEWARD",       // which pack is the boss (sealed until 100 %)
+  "boss_gate": { "center": [0,0,-240], "half_extents": [8,3,0.6], "yaw": 0 },
+  "add_spawns": [ { "position": [-12,0,-266], "yaw": 3.14 }, ... ],
+  "add_count": 2,                      // adds the boss calls when he is pulled
+  "add_pool": ["skeleton_bonecaster", "grave_acolyte", ...],  // each spawns empowered
+  "allow_duplicate_adds": false
+}
+```
+
+Completion is the sum of what each killed monster is worth (its table value, or the placement's
+`completion`) against `required_completion`, clamped at 100 %. Placing more than the requirement
+is what makes some packs optional. The loader refuses a dungeon that asks for more distinct adds
+than its pool holds.
+
+### Placing monsters in the editor
+
+The browser's first folder is **Monsters**: every monster the game can spawn, listed from the
+monster table (the empowered adds are listed too, after the rest, for testing). Choose one, then
+place it with any of the ordinary gestures — drag it into the world, double-click it (in front
+of the camera), or `N` placing mode to lay a row. **`U`** puts the chosen monster under the
+cursor. Right-click the viewport for **Add Monster Here**.
+
+* A monster placed within 12 m of the last one joins its pack; further away it starts
+  `PACK n`. **Group Into One Pack** (right-click, or the inspector) puts the whole selection in
+  one new pack.
+* Every verb works: click to select, drag the gizmo, arrows to nudge, `R` to turn, `T` to
+  scale, `CTRL+D` to duplicate (into the same pack), `X` to delete, `CTRL+Z` to undo.
+* The **inspector** shows the monster's type, role and what it asks of the party, its name,
+  its pack, `Size / Lvl`, `Aggro / Worth` (the effective values — the monster's own unless
+  typed over; the reset arrow forgets the override), **Enabled**, and buttons to step through
+  types or switch to the browser's monster.
+* In the viewport each monster is drawn as the enemy model, at its height and in its colour;
+  a switched-off one is drawn dark. The hierarchy lists them under **Monsters** with their
+  pack.
+* **F6** back to playing rebuilds the fight from the level as you left it — the new monster is
+  there, in its pack, and a dungeon is sealed and at 0 % again.
+
+`CTRL+S` saves to the level's file; `--scene graveyard` saves to
+`assets/scenes/graveyard_crypt.json`, which is what the game loads next time.
+
 ---
+
+### The level's map
+
+A level with an environment gets a dungeon map ([`dungeon-map.md`](dungeon-map.md)). Nothing has
+to be authored: the picture is baked from the level's geometry the first time it is played (and
+again whenever its walls, terrain, water or lighting change), and the encounter markers come from
+the monster placements — one per pack, at the middle of its members, keyed by the pack name.
+An optional `"map"` record tunes the bake:
+
+```json
+"map": { "floor": -1, "ceiling": 8, "padding": 8, "texels_per_metre": 5,
+         "bounds": [-96, -296, 96, 8] }
+```
+
+`ceiling` keeps a roof off the map; `bounds` (`[min_x, min_z, max_x, max_z]`, north = −Z) replaces
+the derived frame. In the editor, **F4** shows the map preview (live markers, "STALE" when walls
+moved), **Bake Map** (File or View menu) re-bakes now, and a selected monster's inspector shows its
+map `u, v`. Leaving the editor re-bakes automatically if the geometry changed.
 
 ## 4. Assets
 

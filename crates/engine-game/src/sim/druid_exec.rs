@@ -881,11 +881,19 @@ impl Simulation {
     /// What the player's movement speed is multiplied by. One when nothing is multiplying it.
     #[must_use]
     pub fn move_speed_multiplier(&self) -> f32 {
-        if self.wild_rush_active() {
+        let rush = if self.wild_rush_active() {
             1.0 + WILD_RUSH_SPEED
         } else {
             1.0
-        }
+        };
+        // A crippling shot: the slow is the status's own strength, so every slow in the
+        // roster is one status with one number on it.
+        let slow = self
+            .world
+            .statuses(self.player.entity)
+            .and_then(|statuses| statuses.get(crate::status::StatusKind::Crippled))
+            .map_or(0.0, |status| status.magnitude);
+        rush * (1.0 - slow).clamp(0.1, 1.0)
     }
 
     /// The flat damage reduction the Druid currently has, as a fraction.

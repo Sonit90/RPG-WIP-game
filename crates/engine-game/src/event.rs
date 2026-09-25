@@ -309,6 +309,13 @@ pub enum CombatEvent {
         shape: TelegraphShape,
         /// Seconds until it lands.
         delay: f32,
+        /// The entity the shape moves with, for a mark that follows its victim.
+        ///
+        /// `None` for everything else, which is nearly everything: a telegraph that moved
+        /// would be impossible to walk out of. A mark is the one exception, and it is drawn on
+        /// the victim because stepping out of it is not the answer — taking it away from the
+        /// party is.
+        follow: Option<EntityId>,
         /// The simulation tick it happened on.
         tick: u64,
     },
@@ -520,6 +527,43 @@ pub enum CombatEvent {
         /// The simulation tick it happened on.
         tick: u64,
     },
+    /// The dungeon's completion moved.
+    ///
+    /// Emitted once per kill that was worth something, carrying the new totals, so the
+    /// progress panel, a sound and the log all hear the same number.
+    DungeonProgress {
+        /// Completion credited so far, in the dungeon's own units.
+        credited: f32,
+        /// The fraction of the requirement that is, clamped to `[0, 1]`.
+        fraction: f32,
+        /// The simulation tick it happened on.
+        tick: u64,
+    },
+    /// The dungeon reached its requirement and the boss's gate opened.
+    BossUnlocked {
+        /// Where the gate stood, for an effect to be drawn at.
+        position: Vec3,
+        /// The simulation tick it happened on.
+        tick: u64,
+    },
+    /// The boss called an add into the fight.
+    AddSummoned {
+        /// The boss.
+        boss: EntityId,
+        /// The add.
+        add: EntityId,
+        /// Where it appeared.
+        position: Vec3,
+        /// The simulation tick it happened on.
+        tick: u64,
+    },
+    /// The boss and every add it called are dead: the dungeon is done.
+    DungeonCompleted {
+        /// Seconds from the first pull to the last kill.
+        seconds: f32,
+        /// The simulation tick it happened on.
+        tick: u64,
+    },
 }
 
 impl CombatEvent {
@@ -557,7 +601,11 @@ impl CombatEvent {
             | Self::AbsorbApplied { tick, .. }
             | Self::Absorbed { tick, .. }
             | Self::SpellReflected { tick, .. }
-            | Self::ControlApplied { tick, .. } => tick,
+            | Self::ControlApplied { tick, .. }
+            | Self::DungeonProgress { tick, .. }
+            | Self::BossUnlocked { tick, .. }
+            | Self::AddSummoned { tick, .. }
+            | Self::DungeonCompleted { tick, .. } => tick,
             Self::Damage(damage) => damage.tick,
         }
     }

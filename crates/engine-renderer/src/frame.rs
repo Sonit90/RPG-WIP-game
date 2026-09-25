@@ -267,6 +267,13 @@ impl FrameRing {
     pub fn completed_value(&self) -> u64 {
         self.fence.completed_value()
     }
+
+    /// The fence value of the latest submission: once the GPU has passed it, nothing
+    /// submitted so far can still be reading a resource.
+    #[must_use]
+    pub fn last_signaled_value(&self) -> u64 {
+        self.fence.last_signaled_value()
+    }
 }
 
 #[cfg(test)]

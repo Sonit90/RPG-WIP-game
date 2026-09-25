@@ -53,6 +53,8 @@ pub fn key_from_virtual_code(code: u16) -> KeyCode {
     const VK_RMENU: u16 = 0xA5;
     const VK_HOME: u16 = 0x24;
     const VK_DELETE: u16 = 0x2E;
+    const VK_NUMPAD0: u16 = 0x60;
+    const VK_NUMPAD9: u16 = 0x69;
     const VK_SUBTRACT: u16 = 0x6D;
     const VK_DECIMAL: u16 = 0x6E;
     const VK_OEM_MINUS: u16 = 0xBD;
@@ -81,6 +83,11 @@ pub fn key_from_virtual_code(code: u16) -> KeyCode {
         VK_MENU | VK_LMENU => KeyCode::LeftAlt,
         VK_RMENU => KeyCode::RightAlt,
         VK_0..=VK_9 => KeyCode::digit_key((code - VK_0) as u8).unwrap_or(KeyCode::Unknown),
+        // The number pad's digits are the same digits, as its `-` and `.` already are: typing
+        // `12.5` into a field must not depend on which block of keys the hand is on.
+        VK_NUMPAD0..=VK_NUMPAD9 => {
+            KeyCode::digit_key((code - VK_NUMPAD0) as u8).unwrap_or(KeyCode::Unknown)
+        }
         VK_A..=VK_Z => KeyCode::ALL[KeyCode::A.index() + (code - VK_A) as usize],
         VK_F1..=VK_F12 => {
             KeyCode::function_key((code - VK_F1 + 1) as u8).unwrap_or(KeyCode::Unknown)
@@ -250,6 +257,19 @@ pub fn x_button_from_wparam(wparam: usize) -> MouseButton {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn number_pad_digits_are_digits() {
+        for digit in 0..=9_u16 {
+            assert_eq!(
+                key_from_virtual_code(0x60 + digit),
+                key_from_virtual_code(0x30 + digit),
+                "numpad {digit}"
+            );
+        }
+        assert_eq!(key_from_virtual_code(0x6E), KeyCode::Period);
+        assert_eq!(key_from_virtual_code(0x6D), KeyCode::Minus);
+    }
 
     #[test]
     fn pops_in_fifo_order() {

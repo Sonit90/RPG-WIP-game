@@ -59,6 +59,9 @@ pub fn push_editor(
     // The world first, so the panels are painted over it: an outline that ran across the
     // browser would be a selection marker floating on a list of file names.
     push_world_overlay(list, editor, scene, scratch, &layout);
+    if editor.shows_map_preview() {
+        push_map_preview(list, editor, scene, &layout);
+    }
 
     let mut paint = Paint::new(list, layout.scale);
     push_viewport_chips(&mut paint, editor, scene, &layout);
@@ -83,6 +86,120 @@ pub fn push_editor(
     {
         paint.tooltip(editor.pointer(), title, key, layout.window);
     }
+}
+
+// ---------------------------------------------------------------------------------------
+// The map preview
+// ---------------------------------------------------------------------------------------
+
+/// The dungeon map's preview, in the viewport's top-right corner: the baked picture with every
+/// encounter drawn where its monsters stand *now*.
+///
+/// The markers are derived from the scene on every frame, exactly as the game's map derives
+/// them, so a pack dragged across the room moves on the preview while it is dragged; only the
+/// picture waits for a bake, and the preview says when it is out of date.
+fn push_map_preview(
+    list: &mut UiDrawList,
+    editor: &Editor,
+    scene: &EnvironmentScene,
+    layout: &Layout,
+) {
+    use engine_environment::map::{EncounterKind, encounters, frame_for};
+    use engine_render_data::ui::{TextAlign, UiIcon};
+
+    let scale = layout.scale;
+    let viewport = layout.viewport;
+    let picture = editor.map_picture();
+    let frame = picture.map_or_else(|| frame_for(scene), |picture| picture.frame);
+    if !frame.is_valid() {
+        return;
+    }
+    let pad = scale.px(8.0);
+    let header = scale.px(20.0);
+    let max_width = (viewport.width * 0.32).max(scale.px(160.0));
+    let max_height = (viewport.height * 0.6).max(scale.px(160.0));
+    let ppm = (max_width / frame.width()).min(max_height / frame.depth());
+    let (map_width, map_height) = (frame.width() * ppm, frame.depth() * ppm);
+    let panel = UiRect::new(
+        viewport.right() - map_width - pad * 3.0,
+        // Below the viewport's chips, which sit along its top edge.
+        viewport.y + scale.px(34.0),
+        map_width + pad * 2.0,
+        map_height + pad * 2.0 + header,
+    );
+    list.rect(panel, [0.07, 0.07, 0.09, 0.94]);
+    list.outline(panel, scale.px(1.0), theme::BORDER);
+    let title = match picture {
+        Some(picture) if picture.stale => "MAP - STALE, BAKE AGAIN".to_owned(),
+        Some(picture) => format!("MAP - {} X {}", picture.width, picture.height),
+        None => "MAP - NOT BAKED".to_owned(),
+    };
+    let stale = picture.is_none_or(|picture| picture.stale);
+    list.text_at(
+        (panel.x + pad, panel.y + scale.px(6.0)),
+        &title,
+        if stale {
+            [1.0, 0.7, 0.35, 1.0]
+        } else {
+            theme::TEXT
+        },
+        scale.text(1.0),
+    );
+    list.text_aligned(
+        (panel.right() - pad, panel.y + scale.px(6.0)),
+        "F4",
+        theme::TEXT_FAINT,
+        scale.text(1.0),
+        TextAlign::Right,
+    );
+    let area = UiRect::new(panel.x + pad, panel.y + header + pad, map_width, map_height);
+    list.rect(area, [0.12, 0.10, 0.08, 1.0]);
+    if picture.is_some() {
+        list.map_image(
+            area,
+            (0.0, 0.0),
+            (1.0 / map_width, 0.0),
+            (0.0, 1.0 / map_height),
+            [1.0; 4],
+        );
+    }
+    let to_screen = |position: engine_core::math::Vec3| {
+        let (u, v) = frame.world_to_uv(position);
+        (area.x + u * area.width, area.y + v * area.height)
+    };
+    // The selected monsters' packs are ringed.
+    let selected_packs: Vec<String> = editor
+        .selected()
+        .iter()
+        .filter_map(|what| what.monster())
+        .filter_map(|index| {
+            scene
+                .monsters
+                .get(index)
+                .map(|monster| monster.pack_key(index))
+        })
+        .collect();
+    for encounter in encounters(scene) {
+        let at = to_screen(encounter.position);
+        let size = match encounter.kind {
+            EncounterKind::Boss => scale.px(18.0),
+            EncounterKind::Pack => scale.px(13.0),
+        };
+        if selected_packs.contains(&encounter.key) {
+            list.disc(at, size * 0.8, [1.0, 0.95, 0.6, 1.0]);
+        }
+        list.icon(
+            UiRect::new(at.0 - size * 0.5, at.1 - size * 0.5, size, size),
+            match encounter.kind {
+                EncounterKind::Boss => UiIcon::MapBoss,
+                EncounterKind::Pack => UiIcon::MapPack,
+            },
+            [1.0; 4],
+        );
+    }
+    // Where the player starts.
+    let spawn = to_screen(scene.player_spawn().position);
+    list.disc(spawn, scale.px(4.0), [0.3, 0.7, 1.0, 1.0]);
 }
 
 // ---------------------------------------------------------------------------------------
@@ -492,7 +609,10 @@ fn push_asset_row(
     }
     let depth = browser.depth(row) as f32;
     let mut x = rect.x + paint.px(metrics::PADDING) + paint.px(metrics::INDENT) * depth;
-    let folder = matches!(row, BrowserRow::Folder(_) | BrowserRow::BuiltinFolder);
+    let folder = matches!(
+        row,
+        BrowserRow::Folder(_) | BrowserRow::BuiltinFolder | BrowserRow::MonsterFolder
+    );
     let empty = match row {
         BrowserRow::Folder(index) => browser
             .catalogue()
@@ -672,6 +792,7 @@ fn push_browser_tiles(paint: &mut Paint<'_>, editor: &Editor, layout: &Layout) {
                 let name = match folder {
                     panels::TileFolder::Root => "Assets".to_owned(),
                     panels::TileFolder::Builtin => "Built-in".to_owned(),
+                    panels::TileFolder::Monsters => "Monsters".to_owned(),
                     panels::TileFolder::Folder(index) => editor
                         .browser()
                         .catalogue()
@@ -1106,7 +1227,7 @@ fn push_inspector(
                     paint.fill(rect, theme::FIELD);
                     paint.frame(rect, if hover { theme::DIVIDER } else { theme::BORDER });
                     let value = primary
-                        .and_then(|what| inspector::get(scene, what, property))
+                        .and_then(|what| inspector::get(scene, editor.monsters(), what, property))
                         .unwrap_or(0.0);
                     let decimals = match property {
                         inspector::Property::ScaleX
@@ -1297,7 +1418,7 @@ fn push_viewport_chips(
     // The mode banner, top centre, only while a click means something other than select.
     let banner = if editor.is_place_mode() {
         Some(format!(
-            "Placing {} - click to put one down - Esc to stop",
+            "Placing {} - click, drag to paint, Shift+drag to fill - Esc to stop",
             theme::display_name(editor.browser().selected_name())
         ))
     } else if editor.is_sculpting() {
@@ -1429,6 +1550,7 @@ fn push_debug(paint: &mut Paint<'_>, editor: &Editor, scene: &EnvironmentScene, 
             Selected::Water(index) => format!("water#{index} "),
             Selected::Spawn(index) => format!("spawn#{index} "),
             Selected::Light(index) => format!("light#{index} "),
+            Selected::Monster(index) => format!("monster#{index} "),
         })
         .collect();
     let lines = [
@@ -1451,6 +1573,7 @@ fn push_debug(paint: &mut Paint<'_>, editor: &Editor, scene: &EnvironmentScene, 
         ("Water", format!("{}", scene.water.len())),
         ("Spawns", format!("{}", scene.spawn_points.len())),
         ("Lights", format!("{}", scene.lights.len())),
+        ("Monsters", format!("{}", scene.monsters.len())),
         ("Terrain", terrain),
         ("History", format!("{undo} undo / {redo} redo")),
         ("Camera", format!("{:.1} {:.1} {:.1}", eye.x, eye.y, eye.z)),
@@ -1838,6 +1961,8 @@ fn push_world_overlay(
     let area = layout.viewport;
     let scale = editor.scale();
 
+    push_brush_cursor(list, editor, scene, layout);
+
     // What the pointer is over, outlined faintly: the answer to "what will this click
     // select" before the click.
     // Not water: its pickable box is the whole volume of a lake, and a wireframe that size
@@ -2153,6 +2278,216 @@ fn bounds_of(points: &[(f32, f32)]) -> Option<UiRect> {
     (!points.is_empty()).then(|| UiRect::new(left, top, right - left, bottom - top))
 }
 
+/// The colour each brush mode is drawn in, so the ring says what a click will do before the
+/// label is read: green builds up, amber digs down, blue levels, violet softens.
+fn brush_color(mode: engine_environment::terrain::BrushMode) -> UiColor {
+    use engine_environment::terrain::BrushMode;
+    match mode {
+        BrushMode::Raise => [0.45, 0.88, 0.45, 1.0],
+        BrushMode::Lower => [0.96, 0.62, 0.30, 1.0],
+        BrushMode::Flatten => [0.36, 0.66, 1.00, 1.0],
+        BrushMode::Smooth => [0.78, 0.62, 1.00, 1.0],
+    }
+}
+
+/// The brush's picture, for the label beside the ring.
+fn brush_icon(mode: engine_environment::terrain::BrushMode) -> Icon {
+    use engine_environment::terrain::BrushMode;
+    match mode {
+        BrushMode::Raise => Icon::ArrowUp,
+        BrushMode::Lower => Icon::ArrowDown,
+        BrushMode::Flatten => Icon::Flatten,
+        BrushMode::Smooth => Icon::Smooth,
+    }
+}
+
+/// How high the raise and lower arrows stand, in metres: longer for a stronger brush, and
+/// kept between a hand's width and a storey so it stays readable at either end.
+#[must_use]
+pub fn brush_arrow_length(strength: f32) -> f32 {
+    (1.0 + strength * 4.0).clamp(1.0, 8.0)
+}
+
+/// The terrain brush as a cursor, drawn on the ground under the pointer.
+///
+/// ```text
+///        RAISE              LOWER             FLATTEN              SMOOTH
+///          ^                 |              ------------          ~~~~~~~~
+///       .--|--.           .--|--.          .----------.          .~~~~~~.
+///      (   |   )         (   v   )        (  target    )        ( ~~~~~~ )
+///       '-----'           '-----'          '----------'          '~~~~~~'
+/// ```
+///
+/// The outer ring is the brush's reach, following the ground so it sits on a hill the way the
+/// stroke will; the inner ring is where the smoothstep falloff is at half strength. The mode
+/// is its colour and its shape: an arrow up or down whose length is the strength, the level a
+/// flatten will pull the ground to, or a wavy ring for smoothing. While the button is down the
+/// ring is drawn heavier, so painting and aiming look different.
+fn push_brush_cursor(
+    list: &mut UiDrawList,
+    editor: &Editor,
+    scene: &EnvironmentScene,
+    layout: &Layout,
+) {
+    use engine_environment::terrain::BrushMode;
+    if !editor.is_sculpting() || editor.open_menu().is_some() || editor.modal().is_some() {
+        return;
+    }
+    let pointer = editor.pointer();
+    if !layout.viewport.contains(pointer.0, pointer.1) {
+        return;
+    }
+    let Some(centre) = editor.cursor_world() else {
+        return;
+    };
+    let scale = editor.scale();
+    let view_projection = editor.view_projection();
+    let window = layout.window;
+    let mode = editor.brush();
+    let color = brush_color(mode);
+    let faint = [color[0], color[1], color[2], 0.45];
+    let shadow = [0.0, 0.0, 0.0, 0.45];
+    let painting = editor.is_brushing();
+    let radius = editor.brush_radius();
+    let lift = 0.06;
+    let project =
+        |point: Vec3| engine_presentation::nameplate::project(point, &view_projection, window);
+    let clip = layout.viewport;
+
+    // A closed ring at `radius`, each point lifted onto the ground (or held at `height`, for
+    // the flatten target), with `wobble` bending it into waves.
+    let ring = |list: &mut UiDrawList,
+                radius: f32,
+                height: Option<f32>,
+                wobble: f32,
+                thickness: f32,
+                color: UiColor| {
+        let segments = 72;
+        let point_at = |step: usize| {
+            let angle = step as f32 / segments as f32 * std::f32::consts::TAU;
+            let bend = 1.0 + wobble * (angle * 10.0).sin();
+            let x = centre.x + angle.cos() * radius * bend;
+            let z = centre.z + angle.sin() * radius * bend;
+            let y = height.unwrap_or_else(|| scene.ground_at(Vec3::new(x, 0.0, z))) + lift;
+            Vec3::new(x, y, z)
+        };
+        let mut previous = project(point_at(0));
+        for step in 1..=segments {
+            let next = project(point_at(step));
+            if let (Some(from), Some(to)) = (previous, next)
+                && let Some((from, to)) = clip_segment(from, to, clip)
+            {
+                stroke(list, from, to, thickness, color);
+            }
+            previous = next;
+        }
+    };
+
+    let heavy = scale.px(if painting { 3.0 } else { 2.0 });
+    // A dark edge under the ring, so it reads on bright grass and in a dark valley alike.
+    ring(list, radius, None, 0.0, heavy + scale.px(2.0), shadow);
+    ring(list, radius, None, 0.0, heavy, color);
+    let wobble = if mode == BrushMode::Smooth { 0.12 } else { 0.0 };
+    ring(list, radius * 0.5, None, wobble, scale.px(1.0), faint);
+
+    let ground = scene.ground_at(centre);
+    let on_ground = Vec3::new(centre.x, ground + lift, centre.z);
+    match mode {
+        BrushMode::Raise | BrushMode::Lower => {
+            let length = brush_arrow_length(editor.brush_strength());
+            let raised = Vec3::new(centre.x, ground + length, centre.z);
+            let (base, tip) = if mode == BrushMode::Raise {
+                (on_ground, raised)
+            } else {
+                (raised, on_ground)
+            };
+            if let (Some(from), Some(to)) = (project(base), project(tip)) {
+                stroke(list, from, to, heavy + scale.px(2.0), shadow);
+                stroke(list, from, to, heavy, color);
+                // The head: two short strokes back from the tip.
+                let (dx, dy) = (to.0 - from.0, to.1 - from.1);
+                let length = (dx * dx + dy * dy).sqrt().max(1.0);
+                let (ux, uy) = (dx / length, dy / length);
+                let head = scale.px(9.0);
+                for side in [-1.0_f32, 1.0] {
+                    let back = (
+                        to.0 - ux * head - uy * head * 0.6 * side,
+                        to.1 - uy * head + ux * head * 0.6 * side,
+                    );
+                    stroke(list, to, back, heavy, color);
+                }
+            }
+        }
+        BrushMode::Flatten => {
+            // The level the ground will be pulled to: the height under the middle of the
+            // brush, held flat, so it shows where the plateau will cut into the hill.
+            ring(list, radius * 0.98, Some(ground), 0.0, scale.px(1.0), faint);
+            let arm = radius * 0.35;
+            for (from, to) in [
+                (
+                    Vec3::new(centre.x - arm, ground + lift, centre.z),
+                    Vec3::new(centre.x + arm, ground + lift, centre.z),
+                ),
+                (
+                    Vec3::new(centre.x, ground + lift, centre.z - arm),
+                    Vec3::new(centre.x, ground + lift, centre.z + arm),
+                ),
+            ] {
+                if let (Some(from), Some(to)) = (project(from), project(to)) {
+                    stroke(list, from, to, scale.px(1.0), faint);
+                }
+            }
+        }
+        BrushMode::Smooth => {}
+    }
+
+    // The centre, as a small cross: where the stroke is aimed.
+    if let Some(at) = project(on_ground) {
+        let arm = scale.px(5.0);
+        stroke(
+            list,
+            (at.0 - arm, at.1),
+            (at.0 + arm, at.1),
+            scale.px(1.0),
+            color,
+        );
+        stroke(
+            list,
+            (at.0, at.1 - arm),
+            (at.0, at.1 + arm),
+            scale.px(1.0),
+            color,
+        );
+    }
+
+    // And in words, beside the pointer: the mode, the size, the strength.
+    let mut paint = Paint::new(list, scale);
+    let text = format!(
+        "{}  {:.1} m  -  strength {:.2}",
+        theme::display_name(&mode.as_str().to_ascii_lowercase()),
+        radius,
+        editor.brush_strength()
+    );
+    let width = paint.chip_width(&text, true);
+    let rect = UiRect::new(
+        pointer.0 + paint.px(18.0),
+        pointer.1 + paint.px(16.0),
+        width,
+        paint.px(20.0),
+    );
+    paint.fill(rect, theme::OVERLAY);
+    paint.frame(rect, if painting { color } else { theme::DIVIDER });
+    let slot = paint.icon_slot(rect, rect.x + paint.px(3.0));
+    paint.icon(brush_icon(mode), slot, color);
+    paint.label(
+        rect,
+        slot.right() + paint.px(2.0),
+        rect.right(),
+        &text,
+        theme::TEXT_STRONG,
+    );
+}
+
 /// Whether any of `rect` is inside `area`.
 fn overlaps(rect: UiRect, area: UiRect) -> bool {
     rect.right() >= area.x
@@ -2165,23 +2500,134 @@ fn overlaps(rect: UiRect, area: UiRect) -> bool {
 const HOVER_COLOR: UiColor = [1.0, 1.0, 1.0, 0.30];
 
 /// Where a carried asset would land: a footprint box on the surface, so an author sees the
-/// drop before they make it.
+/// drop before they make it — and in placing mode, the cell a click fills, or the whole
+/// rectangle a `SHIFT`-drag will fill, with its count.
 fn push_drop_preview(
     list: &mut UiDrawList,
     editor: &Editor,
     scene: &EnvironmentScene,
     viewport: (u32, u32),
 ) {
+    let scale = editor.scale();
+    let view_projection = editor.view_projection();
+    let project =
+        |point: Vec3| engine_presentation::nameplate::project(point, &view_projection, viewport);
+    // A line along the ground from `from` to `to`, bent over the terrain in between.
+    let ground_line = |list: &mut UiDrawList,
+                       from: (f32, f32),
+                       to: (f32, f32),
+                       thickness: f32,
+                       color: UiColor| {
+        let pieces = 8;
+        let at = |t: f32| {
+            let (x, z) = (from.0 + (to.0 - from.0) * t, from.1 + (to.1 - from.1) * t);
+            Vec3::new(x, scene.ground_at(Vec3::new(x, 0.0, z)) + 0.05, z)
+        };
+        for piece in 0..pieces {
+            let (a, b) = (
+                piece as f32 / pieces as f32,
+                (piece + 1) as f32 / pieces as f32,
+            );
+            if let (Some(a), Some(b)) = (project(at(a)), project(at(b))) {
+                stroke(list, a, b, thickness, color);
+            }
+        }
+    };
+    let rectangle = |list: &mut UiDrawList,
+                     low: (f32, f32),
+                     high: (f32, f32),
+                     thickness: f32,
+                     color: UiColor| {
+        ground_line(list, (low.0, low.1), (high.0, low.1), thickness, color);
+        ground_line(list, (high.0, low.1), (high.0, high.1), thickness, color);
+        ground_line(list, (high.0, high.1), (low.0, high.1), thickness, color);
+        ground_line(list, (low.0, high.1), (low.0, low.1), thickness, color);
+    };
+
+    if editor.is_place_mode() {
+        let spacing = editor.preview_spacing();
+        let half = spacing * 0.5;
+        let (start, current, fill) = match editor.paint_stroke() {
+            Some(stroke) => (stroke.start, stroke.current, stroke.fill),
+            None => {
+                let Some(at) = editor.cursor_world() else {
+                    return;
+                };
+                let cell = (
+                    (at.x / spacing).round() as i64,
+                    (at.z / spacing).round() as i64,
+                );
+                (cell, cell, false)
+            }
+        };
+        let (x0, x1) = (start.0.min(current.0), start.0.max(current.0));
+        let (z0, z1) = (start.1.min(current.1), start.1.max(current.1));
+        let (x0, x1, z0, z1) = if fill {
+            (x0, x1, z0, z1)
+        } else {
+            (current.0, current.0, current.1, current.1)
+        };
+        let low = (x0 as f32 * spacing - half, z0 as f32 * spacing - half);
+        let high = (x1 as f32 * spacing + half, z1 as f32 * spacing + half);
+        rectangle(list, low, high, scale.px(2.0), theme::ACCENT);
+        if fill {
+            // The cells inside, faintly, so the count on the label can be seen as well as read.
+            for x in x0..x1 {
+                let line = x as f32 * spacing + half;
+                ground_line(
+                    list,
+                    (line, low.1),
+                    (line, high.1),
+                    scale.px(1.0),
+                    theme::ACCENT_FILL,
+                );
+            }
+            for z in z0..z1 {
+                let line = z as f32 * spacing + half;
+                ground_line(
+                    list,
+                    (low.0, line),
+                    (high.0, line),
+                    scale.px(1.0),
+                    theme::ACCENT_FILL,
+                );
+            }
+            let (columns, rows) = (x1 - x0 + 1, z1 - z0 + 1);
+            let mut paint = Paint::new(list, scale);
+            let text = format!(
+                "{columns} x {rows} = {} tiles, {spacing} m apart",
+                columns * rows
+            );
+            let pointer = editor.pointer();
+            let width = paint.chip_width(&text, false);
+            let rect = UiRect::new(
+                pointer.0 + paint.px(16.0),
+                pointer.1 + paint.px(14.0),
+                width,
+                paint.px(20.0),
+            );
+            paint.fill(rect, theme::RAISED);
+            paint.frame(rect, theme::ACCENT);
+            paint.label(
+                rect,
+                rect.x + paint.px(6.0),
+                rect.right(),
+                &text,
+                theme::TEXT_STRONG,
+            );
+        }
+        return;
+    }
+
     let Some(at) = editor.drop_preview(scene) else {
         return;
     };
-    let scale = editor.scale();
     let half = Vec3::new(0.5, 0.5, 0.5);
     let corners = box_corners(at + Vec3::new(0.0, half.y, 0.0), half, Quat::IDENTITY);
     push_wireframe(
         list,
         &corners,
-        &editor.view_projection(),
+        &view_projection,
         viewport,
         scale.px(1.0),
         theme::ACCENT,
@@ -2192,11 +2638,7 @@ fn push_drop_preview(
         (at - Vec3::new(arm, 0.0, 0.0), at + Vec3::new(arm, 0.0, 0.0)),
         (at - Vec3::new(0.0, 0.0, arm), at + Vec3::new(0.0, 0.0, arm)),
     ] {
-        let view_projection = editor.view_projection();
-        if let (Some(from), Some(to)) = (
-            engine_presentation::nameplate::project(from, &view_projection, viewport),
-            engine_presentation::nameplate::project(to, &view_projection, viewport),
-        ) {
+        if let (Some(from), Some(to)) = (project(from), project(to)) {
             stroke(list, from, to, scale.px(2.0), theme::ACCENT);
         }
     }
@@ -2748,5 +3190,169 @@ mod tests {
         }
         // And none of the old wall of keys: help is a window now, not the bottom of the screen.
         assert!(!list.text().contains("PLACING MODE: LMB"));
+    }
+
+    /// An editor sculpting a flat level, the pointer in the middle of the viewport.
+    fn sculpting(mode_steps: usize) -> (Editor, EnvironmentScene) {
+        let mut scene = EnvironmentScene::with_capacity("test", 0);
+        let mut editor = Editor::new();
+        editor.enter(Vec3::ZERO, "test", VIEWPORT);
+        editor.execute(crate::commands::Command::ToggleSculpt, &mut scene);
+        let view = camera(Vec3::new(0.0, 12.0, 18.0), Vec3::ZERO);
+        let pointer = (VIEWPORT.0 as f32 * 0.5, VIEWPORT.1 as f32 * 0.5);
+        for _ in 0..mode_steps {
+            let mut tab = InputState::new();
+            tab.apply(engine_core::input::InputEvent::KeyDown {
+                key: engine_core::input::KeyCode::Tab,
+                repeat: false,
+            });
+            editor.update(
+                &tab,
+                &UiInput {
+                    pointer,
+                    ..UiInput::new()
+                },
+                &mut scene,
+                &view,
+                VIEWPORT,
+                1.0 / 60.0,
+            );
+        }
+        editor.update(
+            &InputState::new(),
+            &UiInput {
+                pointer,
+                ..UiInput::new()
+            },
+            &mut scene,
+            &view,
+            VIEWPORT,
+            1.0 / 60.0,
+        );
+        (editor, scene)
+    }
+
+    #[test]
+    fn the_brush_is_drawn_under_the_pointer_in_its_modes_colour_with_its_name() {
+        use engine_environment::terrain::BrushMode;
+        for (steps, mode) in [
+            (0, BrushMode::Raise),
+            (1, BrushMode::Lower),
+            (2, BrushMode::Flatten),
+            (3, BrushMode::Smooth),
+        ] {
+            let (editor, scene) = sculpting(steps);
+            assert_eq!(editor.brush(), mode);
+            let list = painted(&editor, &scene);
+            assert!(
+                quads_of(&list, brush_color(mode)) > 20,
+                "{mode:?}: no ring in its colour"
+            );
+            for other in [
+                BrushMode::Raise,
+                BrushMode::Lower,
+                BrushMode::Flatten,
+                BrushMode::Smooth,
+            ] {
+                if other != mode {
+                    assert_eq!(
+                        quads_of(&list, brush_color(other)),
+                        0,
+                        "{mode:?} drew {other:?}'s colour"
+                    );
+                }
+            }
+            let name = crate::theme::display_name(&mode.as_str().to_ascii_lowercase());
+            assert!(
+                list.text().contains(&name),
+                "{mode:?}: the label is missing"
+            );
+        }
+    }
+
+    #[test]
+    fn no_brush_is_drawn_when_not_sculpting_or_over_a_panel() {
+        let (mut editor, mut scene) = sculpting(0);
+        let view = camera(Vec3::new(0.0, 12.0, 18.0), Vec3::ZERO);
+        // Over the browser: the brush would not paint there, so it is not drawn there.
+        editor.update(
+            &InputState::new(),
+            &UiInput {
+                pointer: (60.0, 300.0),
+                ..UiInput::new()
+            },
+            &mut scene,
+            &view,
+            VIEWPORT,
+            1.0 / 60.0,
+        );
+        assert_eq!(
+            quads_of(&painted(&editor, &scene), brush_color(editor.brush())),
+            0
+        );
+
+        editor.execute(crate::commands::Command::ToggleSculpt, &mut scene);
+        let pointer = (VIEWPORT.0 as f32 * 0.5, VIEWPORT.1 as f32 * 0.5);
+        editor.update(
+            &InputState::new(),
+            &UiInput {
+                pointer,
+                ..UiInput::new()
+            },
+            &mut scene,
+            &view,
+            VIEWPORT,
+            1.0 / 60.0,
+        );
+        assert_eq!(
+            quads_of(&painted(&editor, &scene), brush_color(editor.brush())),
+            0
+        );
+    }
+
+    #[test]
+    fn a_bigger_brush_draws_a_bigger_ring_and_a_stronger_one_a_longer_arrow() {
+        let ring_width = |radius_steps: usize| {
+            let (mut editor, mut scene) = sculpting(0);
+            let view = camera(Vec3::new(0.0, 12.0, 18.0), Vec3::ZERO);
+            let pointer = (VIEWPORT.0 as f32 * 0.5, VIEWPORT.1 as f32 * 0.5);
+            for _ in 0..radius_steps {
+                let mut key = InputState::new();
+                key.apply(engine_core::input::InputEvent::KeyDown {
+                    key: engine_core::input::KeyCode::Digit2,
+                    repeat: false,
+                });
+                editor.update(
+                    &key,
+                    &UiInput {
+                        pointer,
+                        ..UiInput::new()
+                    },
+                    &mut scene,
+                    &view,
+                    VIEWPORT,
+                    1.0 / 60.0,
+                );
+            }
+            let list = painted(&editor, &scene);
+            let color = brush_color(editor.brush());
+            let xs: Vec<f32> = list
+                .commands()
+                .iter()
+                .filter_map(|command| match command {
+                    engine_render_data::ui::UiCommand::Rect { rect, color: c } if *c == color => {
+                        Some(rect.x)
+                    }
+                    _ => None,
+                })
+                .collect();
+            xs.iter().copied().fold(f32::MIN, f32::max)
+                - xs.iter().copied().fold(f32::MAX, f32::min)
+        };
+        assert!(
+            ring_width(2) > ring_width(0) * 1.3,
+            "the ring did not grow with the brush"
+        );
+        assert!(brush_arrow_length(1.0) > brush_arrow_length(0.2));
     }
 }

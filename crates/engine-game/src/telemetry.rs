@@ -216,6 +216,12 @@ impl CombatMeter {
                 | CombatEvent::TelegraphStarted { .. }
                 | CombatEvent::TelegraphEnded { .. }
                 | CombatEvent::Landed { .. }
+                // The dungeon's own progress. Completion, a gate and an add are facts about
+                // the run, not about damage, and the meter measures damage.
+                | CombatEvent::DungeonProgress { .. }
+                | CombatEvent::BossUnlocked { .. }
+                | CombatEvent::AddSummoned { .. }
+                | CombatEvent::DungeonCompleted { .. }
                 // The Warrior's defensive stream. A Block, a Parry, a Dodge, a point of
                 // Deflection and a shield taking a hit all *prevent* damage rather than
                 // move any, and the healing they cause arrives as `Healing` like every

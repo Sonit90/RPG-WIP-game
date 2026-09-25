@@ -173,6 +173,22 @@ fn spawn_box(spawn: &SpawnPoint) -> (Vec3, Vec3, Quat) {
     )
 }
 
+/// The pickable box of a monster: its body, roughly, scaled by the placement.
+///
+/// Roughly because this module sees the level and not the monster table: two metres and a
+/// bit tall, a metre and a half wide, which covers every monster in the roster to within a
+/// click. The highlight the editor draws uses the same box, so what is clicked and what is
+/// shown agree.
+fn monster_box(monster: &engine_environment::MonsterPlacement) -> (Vec3, Vec3, Quat) {
+    let scale = monster.scale.max(0.1);
+    let half = Vec3::new(0.75 * scale, 1.15 * scale, 0.75 * scale);
+    (
+        monster.position + Vec3::new(0.0, half.y, 0.0),
+        half,
+        Quat::from_yaw_pitch_roll(monster.yaw, 0.0, 0.0),
+    )
+}
+
 /// The pickable box of a light: a small cube around where it shines from.
 fn light_box(light: &SceneLight) -> (Vec3, Vec3, Quat) {
     (
@@ -197,6 +213,7 @@ pub fn selection_box(scene: &EnvironmentScene, what: Selected) -> Option<(Vec3, 
         Selected::Water(index) => scene.water.get(index).map(water_box),
         Selected::Spawn(index) => scene.spawn_points.get(index).map(spawn_box),
         Selected::Light(index) => scene.lights.get(index).map(light_box),
+        Selected::Monster(index) => scene.monsters.get(index).map(monster_box),
     }
 }
 
@@ -207,6 +224,7 @@ fn everything(scene: &EnvironmentScene) -> impl Iterator<Item = Selected> + '_ {
         .chain((0..scene.water.len()).map(Selected::Water))
         .chain((0..scene.spawn_points.len()).map(Selected::Spawn))
         .chain((0..scene.lights.len()).map(Selected::Light))
+        .chain((0..scene.monsters.len()).map(Selected::Monster))
 }
 
 /// What a ray hits first: a placement, a body of water, a spawn point, a light, or nothing.

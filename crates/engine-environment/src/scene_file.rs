@@ -39,6 +39,7 @@ use engine_core::transform::Transform;
 
 use crate::asset::{EnvironmentAsset, LIBRARY};
 use crate::lighting::{EnvironmentLighting, SceneLight};
+use crate::monster::{BossGate, DungeonSettings, MonsterPlacement};
 use crate::object::{EnvironmentCollision, EnvironmentObject};
 use crate::scene::{EnvironmentScene, SpawnPoints};
 
@@ -241,6 +242,285 @@ pub struct SceneDocument {
     /// existed a level authored in the editor lost every local light it had when it was saved.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub lights: Vec<LightRecord>,
+    /// The monsters standing in the level, if it is a fight.
+    ///
+    /// Absent in a level with none, for the reason the water list is: every file written
+    /// before monsters could be placed reads unchanged, which is why this is not a version
+    /// bump.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub monsters: Vec<MonsterRecord>,
+    /// What the level says about the dungeon it is. Absent for an arena.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dungeon: Option<DungeonRecord>,
+    /// How the level's map is baked. Absent means every default, which is most levels.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub map: Option<MapRecord>,
+}
+
+/// How a level's map is baked, as the file says it. Every field is optional.
+///
+/// `{"map": {"ceiling": 8}}` is a whole record: a level with a low roof that should stay off
+/// its map. See [`crate::map::MapSettings`].
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct MapRecord {
+    /// The lowest `y` the bake sees.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub floor: Option<f32>,
+    /// The highest `y` the bake sees.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ceiling: Option<f32>,
+    /// Metres of margin around the derived frame.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub padding: Option<f32>,
+    /// Texture density.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub texels_per_metre: Option<f32>,
+    /// The frame, `[min_x, min_z, max_x, max_z]`, when the author chooses it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bounds: Option<[f32; 4]>,
+}
+
+impl MapRecord {
+    /// The record for `settings`, or `None` for the defaults.
+    #[must_use]
+    pub fn from_settings(settings: &crate::map::MapSettings) -> Option<Self> {
+        if settings.is_default() {
+            return None;
+        }
+        let defaults = crate::map::MapSettings::default();
+        Some(Self {
+            floor: settings.floor,
+            ceiling: settings.ceiling,
+            padding: (settings.padding != defaults.padding).then_some(settings.padding),
+            texels_per_metre: (settings.texels_per_metre != defaults.texels_per_metre)
+                .then_some(settings.texels_per_metre),
+            bounds: settings
+                .bounds
+                .map(|frame| [frame.min_x, frame.min_z, frame.max_x, frame.max_z]),
+        })
+    }
+
+    /// The settings this record describes, defaults filled in.
+    #[must_use]
+    pub fn to_settings(&self) -> crate::map::MapSettings {
+        let defaults = crate::map::MapSettings::default();
+        crate::map::MapSettings {
+            floor: self.floor,
+            ceiling: self.ceiling,
+            padding: self.padding.unwrap_or(defaults.padding),
+            texels_per_metre: self.texels_per_metre.unwrap_or(defaults.texels_per_metre),
+            bounds: self
+                .bounds
+                .map(|b| crate::map::MapFrame::new(b[0], b[1], b[2], b[3])),
+        }
+    }
+}
+
+/// One monster, as the file says it.
+///
+/// Only `monster` and `position` are required, so a hand-written placement is one line:
+/// `{"monster": "crypt_ghoul", "position": [4, 0, -12]}`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MonsterRecord {
+    /// Which monster, by the id the monster table spells it with.
+    pub monster: String,
+    /// Where its feet go, `[x, y, z]`.
+    pub position: [f32; 3],
+    /// Which way it faces, radians about +Y. Absent means along −Z.
+    #[serde(default)]
+    pub yaw: f32,
+    /// Uniform size. Absent means one.
+    #[serde(default = "unit", skip_serializing_if = "is_unit")]
+    pub scale: f32,
+    /// A name the author gave it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// The pack it fights with. Placements sharing a pack are one encounter.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pack: Option<String>,
+    /// Its aggro radius in metres, when it is not the monster's own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub aggro_radius: Option<f32>,
+    /// Its level. Absent means one.
+    #[serde(default = "level_one", skip_serializing_if = "is_level_one")]
+    pub level: u8,
+    /// Whether it is spawned. Absent means yes.
+    #[serde(default = "yes", skip_serializing_if = "is_yes")]
+    pub enabled: bool,
+    /// What killing it is worth towards completion, when it is not the monster's own value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completion: Option<f32>,
+}
+
+impl MonsterRecord {
+    /// The record a placement is written as.
+    #[must_use]
+    pub fn from_placement(placement: &MonsterPlacement) -> Self {
+        Self {
+            monster: placement.monster.clone(),
+            position: array(placement.position),
+            yaw: placement.yaw,
+            scale: placement.scale,
+            name: placement.name.clone(),
+            pack: placement.pack.clone(),
+            aggro_radius: placement.aggro_radius,
+            level: placement.level,
+            enabled: placement.enabled,
+            completion: placement.completion,
+        }
+    }
+
+    /// The placement this record describes.
+    #[must_use]
+    pub fn to_placement(&self) -> MonsterPlacement {
+        MonsterPlacement {
+            monster: self.monster.clone(),
+            position: vector(self.position),
+            yaw: self.yaw,
+            scale: self.scale,
+            name: self.name.clone(),
+            pack: self.pack.clone(),
+            aggro_radius: self.aggro_radius,
+            level: self.level,
+            enabled: self.enabled,
+            completion: self.completion,
+        }
+    }
+}
+
+/// The boss gate, as the file says it.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct BossGateRecord {
+    /// The middle of the barrier, `[x, y, z]`.
+    pub center: [f32; 3],
+    /// Half-width, half-height, half-thickness, before rotation.
+    pub half_extents: [f32; 3],
+    /// Rotation about +Y, radians.
+    #[serde(default)]
+    pub yaw: f32,
+}
+
+/// What the level says about the dungeon it is, as the file says it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DungeonRecord {
+    /// What it is called.
+    pub name: String,
+    /// The completion value that counts as 100 %.
+    pub required_completion: f32,
+    /// Which pack is the boss.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub boss_pack: Option<String>,
+    /// The barrier the boss waits behind.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub boss_gate: Option<BossGateRecord>,
+    /// Where the boss's adds appear.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub add_spawns: Vec<SpawnPointRecord>,
+    /// How many adds the boss calls.
+    #[serde(default)]
+    pub add_count: u8,
+    /// Which monsters an add may be, by id.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub add_pool: Vec<String>,
+    /// Whether one monster may be chosen twice.
+    #[serde(default)]
+    pub allow_duplicate_adds: bool,
+}
+
+impl DungeonRecord {
+    /// The record the settings are written as.
+    #[must_use]
+    pub fn from_settings(settings: &DungeonSettings) -> Self {
+        Self {
+            name: settings.name.clone(),
+            required_completion: settings.required_completion,
+            boss_pack: settings.boss_pack.clone(),
+            boss_gate: settings.boss_gate.map(|gate| BossGateRecord {
+                center: array(gate.center),
+                half_extents: array(gate.half_extents),
+                yaw: gate.yaw,
+            }),
+            add_spawns: settings
+                .add_spawns
+                .iter()
+                .map(|spawn| SpawnPointRecord {
+                    position: array(spawn.position),
+                    yaw: spawn.yaw,
+                })
+                .collect(),
+            add_count: settings.add_count,
+            add_pool: settings.add_pool.clone(),
+            allow_duplicate_adds: settings.allow_duplicate_adds,
+        }
+    }
+
+    /// The settings this record describes.
+    #[must_use]
+    pub fn to_settings(&self) -> DungeonSettings {
+        DungeonSettings {
+            name: self.name.clone(),
+            required_completion: self.required_completion,
+            boss_pack: self.boss_pack.clone(),
+            boss_gate: self.boss_gate.map(|gate| BossGate {
+                center: vector(gate.center),
+                half_extents: vector(gate.half_extents),
+                yaw: gate.yaw,
+            }),
+            add_spawns: self
+                .add_spawns
+                .iter()
+                .map(|spawn| crate::spawn::SpawnPoint {
+                    position: vector(spawn.position),
+                    yaw: spawn.yaw,
+                })
+                .collect(),
+            add_count: self.add_count,
+            add_pool: self.add_pool.clone(),
+            allow_duplicate_adds: self.allow_duplicate_adds,
+        }
+    }
+}
+
+/// Serde's default for a scale that was left out.
+fn unit() -> f32 {
+    1.0
+}
+
+/// Whether a scale is the default, so it is not written.
+#[allow(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde's skip_serializing_if hands the field over by reference"
+)]
+fn is_unit(value: &f32) -> bool {
+    (*value - 1.0).abs() < f32::EPSILON
+}
+
+/// Serde's default for a level that was left out.
+fn level_one() -> u8 {
+    1
+}
+
+/// Whether a level is the default, so it is not written.
+#[allow(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde's skip_serializing_if hands the field over by reference"
+)]
+fn is_level_one(value: &u8) -> bool {
+    *value == 1
+}
+
+/// Serde's default for a flag that was left out.
+fn yes() -> bool {
+    true
+}
+
+/// Whether a flag is the default, so it is not written.
+#[allow(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde's skip_serializing_if hands the field over by reference"
+)]
+fn is_yes(value: &bool) -> bool {
+    *value
 }
 
 /// One local light, as the file says it.
@@ -442,6 +722,13 @@ impl SceneDocument {
                 })
                 .collect(),
             lights: scene.lights.iter().map(LightRecord::from_light).collect(),
+            monsters: scene
+                .monsters
+                .iter()
+                .map(MonsterRecord::from_placement)
+                .collect(),
+            dungeon: scene.dungeon.as_ref().map(DungeonRecord::from_settings),
+            map: MapRecord::from_settings(&scene.map),
             water: scene
                 .water
                 .iter()
@@ -616,6 +903,53 @@ impl SceneDocument {
                 });
             }
             scene.push_light(record.to_light());
+        }
+
+        for (index, record) in self.monsters.iter().enumerate() {
+            let placement = record.to_placement();
+            // The id is not resolved here: this crate cannot see the monster table, for the
+            // reason it cannot see a mesh. Gameplay resolves it when the level is built, and a
+            // name it does not know is reported there, naming the placement.
+            if !placement.is_valid() {
+                return Err(SceneFileError::Invalid {
+                    path: path.to_owned(),
+                    location: format!("monsters[{index}]"),
+                    reason: format!(
+                        "a monster needs a name, a finite position, yaw and positive scale, and \
+                         a level from 1 to {}",
+                        crate::monster::MAX_MONSTER_LEVEL
+                    ),
+                });
+            }
+            scene.push_monster(placement);
+        }
+
+        if let Some(record) = &self.dungeon {
+            let settings = record.to_settings();
+            if !settings.is_valid() {
+                return Err(SceneFileError::Invalid {
+                    path: path.to_owned(),
+                    location: "dungeon".to_owned(),
+                    reason: "a dungeon needs a positive completion requirement, a valid gate, \
+                             valid add spawns, and a pool at least as large as the number of \
+                             distinct adds it asks for"
+                        .to_owned(),
+                });
+            }
+            scene.dungeon = Some(settings);
+        }
+
+        if let Some(record) = &self.map {
+            let settings = record.to_settings();
+            if !settings.is_valid() {
+                return Err(SceneFileError::Invalid {
+                    path: path.to_owned(),
+                    location: "map".to_owned(),
+                    reason: "a map needs finite numbers, a positive density, a ceiling above its floor and bounds with an area"
+                        .to_owned(),
+                });
+            }
+            scene.map = settings;
         }
 
         for (index, record) in self.objects.iter().enumerate() {
@@ -945,6 +1279,71 @@ mod tests {
     }
 
     #[test]
+    fn monsters_and_dungeon_settings_survive_the_round_trip() {
+        let mut original = scene();
+        let mut named =
+            crate::monster::MonsterPlacement::new("grave_brute", Vec3::new(3.0, 0.0, -9.0))
+                .with_yaw(1.25)
+                .in_pack("B1");
+        named.name = Some("Old Knuckles".to_owned());
+        named.level = 3;
+        named.scale = 1.2;
+        named.aggro_radius = Some(11.0);
+        named.enabled = false;
+        named.completion = Some(4.5);
+        original.push_monster(named);
+        original.push_monster(crate::monster::MonsterPlacement::new(
+            "crypt_ghoul",
+            Vec3::new(-1.0, 0.0, 2.0),
+        ));
+        let mut settings = crate::monster::DungeonSettings::new("GRAVEYARD CRYPT", 100.0);
+        settings.boss_pack = Some("BOSS".to_owned());
+        settings.add_count = 2;
+        settings.add_pool = vec!["grave_brute".to_owned(), "crypt_ghoul".to_owned()];
+        settings.add_spawns = vec![crate::spawn::SpawnPoint::new(Vec3::new(4.0, 0.0, -30.0))];
+        settings.boss_gate = Some(crate::monster::BossGate {
+            center: Vec3::new(0.0, 0.0, -20.0),
+            half_extents: Vec3::new(8.0, 3.0, 0.5),
+            yaw: 0.0,
+        });
+        original.dungeon = Some(settings);
+
+        let text = serde_json::to_string(&SceneDocument::from_scene(&original)).expect("writable");
+        let restored: SceneDocument = serde_json::from_str(&text).expect("readable");
+        let restored = restored.to_scene("memory").expect("and valid");
+        assert_eq!(restored.monsters, original.monsters);
+        assert_eq!(restored.dungeon, original.dungeon);
+
+        // The one-line form a person writes by hand is a whole placement.
+        let hand = r#"{"monster": "crypt_archer", "position": [1, 0, 2]}"#;
+        let record: MonsterRecord = serde_json::from_str(hand).expect("one line is enough");
+        let placement = record.to_placement();
+        assert!(placement.is_valid());
+        assert_eq!(placement.level, 1);
+        assert!(placement.enabled);
+        assert!((placement.scale - 1.0).abs() < f32::EPSILON);
+
+        let dry = serde_json::to_string(&SceneDocument::from_scene(&scene())).expect("writable");
+        assert!(!dry.contains("monsters") && !dry.contains("dungeon"));
+    }
+
+    #[test]
+    fn a_monster_at_level_zero_is_refused_and_the_message_names_it() {
+        let mut document = SceneDocument::from_scene(&scene());
+        let mut record = MonsterRecord::from_placement(&crate::monster::MonsterPlacement::new(
+            "crypt_ghoul",
+            Vec3::ZERO,
+        ));
+        document.monsters.push(record.clone());
+        record.level = 0;
+        document.monsters.push(record);
+        let error = document
+            .to_scene("memory")
+            .expect_err("level zero is a typo");
+        assert!(error.to_string().contains("monsters[1]"), "{error}");
+    }
+
+    #[test]
     fn lights_survive_the_round_trip_and_an_empty_level_writes_none_of_them() {
         let mut original = scene();
         original.push_light(SceneLight::brazier(Vec3::new(3.0, 1.5, -2.0), 9.0));
@@ -1094,6 +1493,9 @@ mod tests {
             terrain: None,
             water: Vec::new(),
             spawn_points: Vec::new(),
+            monsters: Vec::new(),
+            dungeon: None,
+            map: None,
             lights: Vec::new(),
             objects: vec![
                 ObjectRecord {
@@ -1140,6 +1542,9 @@ mod tests {
             terrain: None,
             water: Vec::new(),
             spawn_points: Vec::new(),
+            monsters: Vec::new(),
+            dungeon: None,
+            map: None,
             lights: Vec::new(),
             objects: vec![ObjectRecord {
                 asset: "   ".to_owned(),
@@ -1213,6 +1618,9 @@ mod tests {
             terrain: None,
             water: Vec::new(),
             spawn_points: Vec::new(),
+            monsters: Vec::new(),
+            dungeon: None,
+            map: None,
             lights: Vec::new(),
             objects: vec![ObjectRecord {
                 asset: "pillar".to_owned(),

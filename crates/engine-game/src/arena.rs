@@ -440,6 +440,30 @@ pub fn environment_arena(
     scene: &engine_environment::EnvironmentScene,
     group_count: usize,
 ) -> Simulation {
+    environment_arena_for_party(
+        scene,
+        group_count,
+        crate::dungeon::DungeonScaling::default(),
+    )
+}
+
+/// [`environment_arena`], with the level's monsters scaled for a party of a given size.
+///
+/// A level with monsters placed in it is a fight: they are spawned in their packs, and a
+/// level that says it is a dungeon becomes a dungeon run — see
+/// [`crate::dungeon::populate_from_scene`]. A dungeon never gets the training dummies, however
+/// many were asked for: a dummy group in a crypt is an arena with corridors.
+#[must_use]
+pub fn environment_arena_for_party(
+    scene: &engine_environment::EnvironmentScene,
+    group_count: usize,
+    scaling: crate::dungeon::DungeonScaling,
+) -> Simulation {
+    let group_count = if scene.dungeon.is_some() {
+        0
+    } else {
+        group_count
+    };
     let config = ArenaConfig::from_environment(scene, group_count);
     let mut simulation = Simulation::new(SimConfig {
         movement: config.movement(),
@@ -482,6 +506,9 @@ pub fn environment_arena(
     simulation.set_player_spawn(config.player_spawn, config.player_spawn_yaw);
     simulation.set_player_entity(arena.player);
     simulation.party_mut().join(arena.healing_dummy);
+    if !scene.monsters.is_empty() || scene.dungeon.is_some() {
+        crate::dungeon::populate_from_scene(&mut simulation, scene, scaling);
+    }
     simulation.select_nearest_target();
     simulation
 }

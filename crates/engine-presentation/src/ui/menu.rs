@@ -25,8 +25,8 @@
 use engine_render_data::ui::{UiRect, UiScale};
 use engine_settings::{
     BindingScope, CAMERA_SENSITIVITY_MAX, CAMERA_SENSITIVITY_MIN, CAMERA_SENSITIVITY_STEP,
-    GameSettings, NameplateSetting, ShadowQuality, UI_SCALE_MAX, UI_SCALE_MIN, UI_SCALE_STEP,
-    VOLUME_MAX, VOLUME_MIN, VOLUME_STEP,
+    GameSettings, KeyName, MinimapOrientation, NameplateSetting, ShadowQuality, UI_SCALE_MAX,
+    UI_SCALE_MIN, UI_SCALE_STEP, VOLUME_MAX, VOLUME_MIN, VOLUME_STEP,
 };
 
 use engine_game::hero::Hero;
@@ -64,6 +64,12 @@ pub enum MenuScreen {
     /// of five levels wants a row per level with a line saying what it buys, which is the
     /// hero roster's shape and not a row on a list of sliders.
     Graphics,
+    /// The map section of the settings: how the minimap turns, and the key that opens the
+    /// dungeon map.
+    ///
+    /// The graphics screen's shape — one tick per mode with a line saying what it does —
+    /// because it is the same question: pick exactly one of a short list.
+    Map,
 }
 
 impl MenuScreen {
@@ -111,6 +117,8 @@ pub enum SettingsItem {
     BindingScope,
     /// Opens the graphics section.
     Graphics,
+    /// Opens the map section.
+    Map,
     /// Opens the nameplate section.
     Nameplates,
     /// Returns to the pause menu.
@@ -126,6 +134,17 @@ pub enum SettingsItem {
 pub enum GraphicsItem {
     /// One of the five shadow levels. Ticked when it is the one in force.
     Shadows(ShadowQuality),
+    /// Returns to the settings screen.
+    Back,
+}
+
+/// The map screen's items, in layout order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MapItem {
+    /// One of the two minimap modes. Ticked when it is the one in force.
+    Orientation(MinimapOrientation),
+    /// Replace the map's transitions with instant changes.
+    ReducedMotion,
     /// Returns to the settings screen.
     Back,
 }
@@ -255,6 +274,17 @@ pub enum MenuAction {
     /// Applying it is not free — the shadow atlas is recreated and the GPU is waited on —
     /// which is exactly why it is a click and not a slider.
     ShadowQualityCommitted(ShadowQuality),
+    /// The map screen opened.
+    OpenedMap,
+    /// The map screen closed back to the settings screen.
+    ClosedMap,
+    /// The player chose how the minimap turns. Apply it and persist it.
+    ///
+    /// Committed immediately, like a shadow level, and applied on the very next frame: the
+    /// minimap is on screen behind the menu, so the player sees the mode they picked.
+    MinimapOrientationCommitted(MinimapOrientation),
+    /// The player turned the map's reduced motion on or off. Apply it and persist it.
+    ReducedMotionCommitted(bool),
 }
 
 /// What a shadow level's row is called.
@@ -415,6 +445,11 @@ pub struct MenuSystem {
     pause: UiScreen<PauseItem>,
     settings: UiScreen<SettingsItem>,
     graphics: UiScreen<GraphicsItem>,
+    map: UiScreen<MapItem>,
+    /// The minimap mode the map screen's ticks describe. Held for the reason `shadows` is.
+    orientation: MinimapOrientation,
+    /// The key that opens the dungeon map, for the map screen to print.
+    map_key: KeyName,
     /// The shadow level the ticks describe.
     ///
     /// Held for the reason [`MenuSystem::hero`] is: a row of checkboxes is one choice, and
@@ -491,6 +526,7 @@ impl MenuSystem {
                 .checked(settings.binding_scope.is_per_character()),
         );
         settings_screen.push(SettingsItem::Graphics, Button::new("GRAPHICS"));
+        settings_screen.push(SettingsItem::Map, Button::new("MAP"));
         settings_screen.push(SettingsItem::Nameplates, Button::new("NAMEPLATES"));
         settings_screen.push(SettingsItem::Back, Button::new("BACK"));
 
@@ -504,6 +540,20 @@ impl MenuSystem {
             );
         }
         graphics_screen.push(GraphicsItem::Back, Button::new("BACK"));
+
+        // The map section: one tick per minimap mode, built from `MinimapOrientation::ALL`.
+        let mut map_screen = UiScreen::new();
+        for mode in MinimapOrientation::ALL {
+            map_screen.push(
+                MapItem::Orientation(mode),
+                Checkbox::new(mode.label()).checked(mode == settings.map.minimap_orientation),
+            );
+        }
+        map_screen.push(
+            MapItem::ReducedMotion,
+            Checkbox::new("REDUCE MAP MOTION").checked(settings.map.reduced_motion),
+        );
+        map_screen.push(MapItem::Back, Button::new("BACK"));
 
         // The roster. One row per hero, built from `Hero::ALL`, so a fourth playable
         // character is a row in that array and nothing here.
@@ -543,6 +593,9 @@ impl MenuSystem {
             heroes: hero_screen,
             nameplates: nameplate_screen,
             graphics: graphics_screen,
+            map: map_screen,
+            orientation: settings.map.minimap_orientation,
+            map_key: settings.map.toggle_key,
             shadows: settings.graphics.shadows,
             hero: Hero::default(),
             actions: Vec::with_capacity(4),
@@ -646,6 +699,37 @@ impl MenuSystem {
         }
     }
 
+    /// The map screen's widgets, for drawing.
+    #[must_use]
+    pub fn map_screen(&self) -> &UiScreen<MapItem> {
+        &self.map
+    }
+
+    /// The minimap mode the map screen is showing as chosen.
+    #[must_use]
+    pub fn minimap_orientation(&self) -> MinimapOrientation {
+        self.orientation
+    }
+
+    /// The key the map screen says opens the dungeon map.
+    #[must_use]
+    pub fn map_key(&self) -> &str {
+        self.map_key.as_str()
+    }
+
+    /// Moves the tick to `mode` without emitting anything: what the application calls once
+    /// it has applied a mode, exactly as for a shadow level.
+    pub fn set_minimap_orientation(&mut self, mode: MinimapOrientation) {
+        self.orientation = mode;
+        for candidate in MinimapOrientation::ALL {
+            if let Some(Widget::Checkbox(tick)) =
+                self.map.widget_mut(MapItem::Orientation(candidate))
+            {
+                tick.set_checked(candidate == mode);
+            }
+        }
+    }
+
     /// The nameplate screen's widgets, for drawing.
     #[must_use]
     pub fn nameplate_screen(&self) -> &UiScreen<NameplateItem> {
@@ -692,6 +776,11 @@ impl MenuSystem {
             }
         }
         self.set_shadow_quality(settings.graphics.shadows);
+        self.set_minimap_orientation(settings.map.minimap_orientation);
+        self.map_key = settings.map.toggle_key;
+        if let Some(Widget::Checkbox(tick)) = self.map.widget_mut(MapItem::ReducedMotion) {
+            tick.set_checked(settings.map.reduced_motion);
+        }
         self.set_scale(UiScale::new(settings.ui_scale));
     }
 
@@ -768,6 +857,7 @@ impl MenuSystem {
         self.layout_heroes(viewport);
         self.layout_nameplates(viewport);
         self.layout_graphics(viewport);
+        self.layout_map(viewport);
     }
 
     /// The panel the pause menu draws in.
@@ -808,8 +898,25 @@ impl MenuSystem {
         let content = self.metrics.title_height
             + slider * SLIDER_COUNT
             + self.metrics.group_gap
-            + self.metrics.button_height * 4.0
-            + self.metrics.button_gap * 3.0;
+            + self.metrics.button_height * 5.0
+            + self.metrics.button_gap * 4.0;
+        self.centred_panel(self.viewport, content + self.metrics.padding * 2.0)
+    }
+
+    /// The panel the map screen draws in: a row per minimap mode with its description, the
+    /// map key's line, and a separated BACK.
+    #[must_use]
+    pub fn map_panel(&self) -> UiRect {
+        let row = self.metrics.button_height
+            + self.metrics.hero_description_height
+            + self.metrics.button_gap;
+        let content = self.metrics.title_height
+            + row * MinimapOrientation::ALL.len() as f32
+            + self.metrics.hero_description_height * 2.0
+            + self.metrics.button_height
+            + self.metrics.button_gap
+            + self.metrics.group_gap
+            + self.metrics.button_height;
         self.centred_panel(self.viewport, content + self.metrics.padding * 2.0)
     }
 
@@ -926,6 +1033,11 @@ impl MenuSystem {
         );
         y += self.metrics.button_height + self.metrics.button_gap;
         self.settings.set_rect(
+            SettingsItem::Map,
+            UiRect::new(x, y, width, self.metrics.button_height),
+        );
+        y += self.metrics.button_height + self.metrics.button_gap;
+        self.settings.set_rect(
             SettingsItem::Nameplates,
             UiRect::new(x, y, width, self.metrics.button_height),
         );
@@ -997,6 +1109,39 @@ impl MenuSystem {
         );
     }
 
+    fn layout_map(&mut self, viewport: (u32, u32)) {
+        self.viewport = viewport;
+        let panel = self.map_panel();
+        let x = panel.x + self.metrics.padding;
+        let width = panel.width - self.metrics.padding * 2.0;
+        let mut y = panel.y + self.metrics.padding + self.metrics.title_height;
+        for mode in MinimapOrientation::ALL {
+            self.map.set_rect(
+                MapItem::Orientation(mode),
+                UiRect::new(x, y, width, self.metrics.button_height),
+            );
+            y += self.metrics.button_height
+                + self.metrics.hero_description_height
+                + self.metrics.button_gap;
+        }
+        self.map.set_rect(
+            MapItem::ReducedMotion,
+            UiRect::new(x, y, width, self.metrics.button_height),
+        );
+        y += self.metrics.button_height + self.metrics.button_gap;
+        // Two lines for the key, reserved here and printed by the painter.
+        y += self.metrics.hero_description_height * 2.0;
+        self.map.set_rect(
+            MapItem::Back,
+            UiRect::new(
+                x,
+                y - self.metrics.button_gap + self.metrics.group_gap,
+                width,
+                self.metrics.button_height,
+            ),
+        );
+    }
+
     fn layout_nameplates(&mut self, viewport: (u32, u32)) {
         self.viewport = viewport;
         let panel = self.nameplate_panel();
@@ -1045,6 +1190,7 @@ impl MenuSystem {
             MenuScreen::Heroes => self.update_heroes(input),
             MenuScreen::Nameplates => self.update_nameplates(input),
             MenuScreen::Graphics => self.update_graphics(input),
+            MenuScreen::Map => self.update_map(input),
         }
         &self.actions
     }
@@ -1144,6 +1290,7 @@ impl MenuSystem {
         let mut back = false;
         let mut open_nameplates = false;
         let mut open_graphics = false;
+        let mut open_map = false;
         let mut binding_scope = None;
         // Collected first: the borrow of the screen's event buffer ends here, and the
         // actions below are pushed onto this system's own.
@@ -1155,6 +1302,7 @@ impl MenuSystem {
                 (SettingsItem::Back, WidgetEvent::Activated) => back = true,
                 (SettingsItem::Nameplates, WidgetEvent::Activated) => open_nameplates = true,
                 (SettingsItem::Graphics, WidgetEvent::Activated) => open_graphics = true,
+                (SettingsItem::Map, WidgetEvent::Activated) => open_map = true,
                 (SettingsItem::BindingScope, WidgetEvent::Toggled(checked)) => {
                     binding_scope = Some(BindingScope::from_per_character(*checked));
                 }
@@ -1210,6 +1358,13 @@ impl MenuSystem {
         }
         if let Some(scope) = binding_scope {
             self.actions.push(MenuAction::BindingScopeCommitted(scope));
+        }
+        if open_map {
+            self.screen = MenuScreen::Map;
+            self.settings.reset();
+            self.map.reset();
+            self.actions.push(MenuAction::OpenedMap);
+            return;
         }
         if open_graphics {
             self.screen = MenuScreen::Graphics;
@@ -1309,6 +1464,49 @@ impl MenuSystem {
         if back {
             self.back_to_settings_from_graphics();
         }
+    }
+
+    /// The map section: one tick per minimap mode, and a way back. The graphics screen's
+    /// rules: the tick goes back to what the application says until it says otherwise.
+    fn update_map(&mut self, input: &UiInput) {
+        if input.cancel {
+            self.back_to_settings_from_map();
+            return;
+        }
+        let mut back = false;
+        let mut chosen = None;
+        let mut motion = None;
+        for (item, event) in self.map.update(input) {
+            match (item, event) {
+                (MapItem::Back, WidgetEvent::Activated) => back = true,
+                (MapItem::ReducedMotion, WidgetEvent::Toggled(checked)) => motion = Some(*checked),
+                (MapItem::Orientation(mode), WidgetEvent::Toggled(_) | WidgetEvent::Activated) => {
+                    chosen = Some(*mode);
+                }
+                _ => {}
+            }
+        }
+        let current = self.orientation;
+        self.set_minimap_orientation(current);
+        if let Some(mode) = chosen {
+            self.actions
+                .push(MenuAction::MinimapOrientationCommitted(mode));
+        }
+        if let Some(reduced) = motion {
+            self.actions
+                .push(MenuAction::ReducedMotionCommitted(reduced));
+        }
+        if back {
+            self.back_to_settings_from_map();
+        }
+    }
+
+    /// Escape and BACK from the map section return to the settings screen.
+    fn back_to_settings_from_map(&mut self) {
+        self.screen = MenuScreen::Settings;
+        self.map.reset();
+        self.settings.reset();
+        self.actions.push(MenuAction::ClosedMap);
     }
 
     /// Escape and BACK from the graphics section return to the settings screen, not to the

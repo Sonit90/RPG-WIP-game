@@ -66,6 +66,8 @@ use crate::world::{EntityKind, GameWorld};
 /// How the simulation is configured.
 /// Casting the Druid: Mana, Astral Power, the empowerment and the channel.
 pub mod druid_exec;
+/// A dungeon run's simulation half: sealing, crediting, the gate and the boss's adds.
+pub mod dungeon_exec;
 /// Enemy brains, their attacks and their telegraphs: the combat half of the AI.
 pub mod enemy_exec;
 mod firemage_exec;
@@ -459,6 +461,28 @@ pub struct Simulation {
     hazard_expired: Vec<(u32, Vec3)>,
     /// Identities for telegraphs, so an end can be matched to its start.
     next_telegraph: u32,
+    /// Zones laid by a cast that land later: marks, rains, quakes, shockwaves.
+    strikes: crate::enemy::strike::StrikeField,
+    /// Strikes landed, dropped or removed this step. Reused; never freed.
+    strike_scratch: Vec<crate::enemy::strike::PendingStrike>,
+    /// Who a chained detonation caught, while their marks are laid. Reused; never freed.
+    chain_scratch: Vec<EntityId>,
+    /// Who the last area an enemy resolved caught. Reused; never freed.
+    hits_last: Vec<EntityId>,
+    /// Hazards that spread this step. Reused; never freed.
+    hazard_grown: Vec<crate::enemy::hazard::EnemyHazard>,
+    /// The enemies' own random generator: target picks, scatter, the boss's adds.
+    ///
+    /// Seeded from [`SimConfig::rng_seed`] and advanced only by enemy decisions, so the
+    /// player's own critical strikes and an enemy's mark cannot disturb each other's
+    /// sequence, and a replay of one seed is a replay of the whole fight.
+    enemy_rng: u64,
+    /// The dungeon run, if this simulation is a dungeon with a completion requirement.
+    dungeon: Option<crate::dungeon_run::DungeonRun>,
+    /// Kills waiting to be credited towards completion. Reused; never freed.
+    pending_credit: Vec<EntityId>,
+    /// The boss gate's collision, while it stands.
+    gate_static: Option<engine_collision::world::StaticId>,
     events: EventStream,
     meter: CombatMeter,
     targets: TargetQuery,
@@ -549,6 +573,16 @@ impl Simulation {
             hazard_ticks: Vec::with_capacity(16),
             hazard_expired: Vec::with_capacity(16),
             next_telegraph: 0,
+            strikes: crate::enemy::strike::StrikeField::new(),
+            strike_scratch: Vec::with_capacity(16),
+            chain_scratch: Vec::with_capacity(8),
+            hits_last: Vec::with_capacity(16),
+            hazard_grown: Vec::with_capacity(8),
+            // Never zero: xorshift stays at zero forever from a zero state.
+            enemy_rng: seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1,
+            dungeon: None,
+            pending_credit: Vec::with_capacity(8),
+            gate_static: None,
             events: EventStream::with_capacity(256),
             meter: CombatMeter::new(),
             targets: TargetQuery::with_capacity(64),
@@ -1078,6 +1112,11 @@ impl Simulation {
         // After the AI, so ground lit this tick does not also burn this tick — a pool the
         // player has had no frame to see is a pool they could not have avoided.
         self.tick_enemy_hazards(step);
+        // Likewise a zone laid this tick does not land this tick.
+        self.tick_enemy_strikes(step);
+        // After every encounter has been brought up to date: a boss pulled this tick calls
+        // its adds this tick, and a kill this tick is credited this tick.
+        self.tick_dungeon();
         stats.ai += ai_started.elapsed();
 
         let movement_started = Instant::now();
@@ -1240,6 +1279,9 @@ impl Simulation {
     fn respawn_player(&mut self) {
         let player = self.player.entity;
         self.revive_player();
+        // The party wiped: the fight it lost is over. What is still standing resets; what the
+        // party killed stays dead, and the dungeon keeps its progress.
+        self.reset_after_wipe();
         // After the revive, because that clears every status the corpse was carrying and the
         // protection is applied by `publish_respawn_protection` on this same tick.
         if let Some((position, yaw)) = self.player_spawn
@@ -1893,9 +1935,18 @@ impl Simulation {
     /// refuses walls, and ends against an obstacle rather than failing outright.
     pub(super) fn slide_player(&mut self, offset: Vec3) {
         let entity = self.player.entity;
-        let Some(body) = self.world.body(entity).copied() else {
-            return;
-        };
+        if let Some(result) = self.slide_body(entity, offset) {
+            self.last_move = result;
+        }
+    }
+
+    /// Moves any body by `offset`, sliding along whatever is in the way.
+    ///
+    /// The one collided displacement, shared by the player's Blink and Shield Charge and an
+    /// enemy's charge, so a monster that charges into a pillar stops at the pillar exactly
+    /// as a Warrior does.
+    pub(super) fn slide_body(&mut self, entity: EntityId, offset: Vec3) -> Option<MoveResult> {
+        let body = self.world.body(entity).copied()?;
         let character = self.config.character;
         let mut state = CharacterState::at(body.position);
         state.grounded = body.grounded;
@@ -1912,7 +1963,7 @@ impl Simulation {
             body.grounded = state.grounded;
             body.ground_normal = state.ground_normal;
         }
-        self.last_move = result;
+        Some(result)
     }
 
     /// Spawns an enemy of `kind` at `position`, facing `yaw`.
@@ -1921,16 +1972,12 @@ impl Simulation {
     /// spawn, the same body, the same health — that additionally gets a brain, which is
     /// what "an enemy is an entity that happens to have a mind" means in practice.
     pub fn spawn_enemy(&mut self, kind: EnemyKind, position: Vec3, yaw: f32) -> EntityId {
-        let entity = self.world.spawn(crate::world::enemy_desc(kind, position));
-        if let Some(body) = self.world.body_mut(entity) {
-            body.facing_yaw = yaw;
-        }
-        let slot = entity.index();
-        if self.enemies.len() <= slot {
-            self.enemies.resize(slot + 1, None);
-        }
-        self.enemies[slot] = Some(enemy_exec::EnemyRuntime::new(kind, position, yaw));
-        entity
+        self.spawn_enemy_with(
+            kind,
+            position,
+            yaw,
+            &dungeon_exec::EnemySpawnOptions::default(),
+        )
     }
 
     /// One enemy's brain, if that entity is an enemy.
@@ -2008,9 +2055,21 @@ impl Simulation {
     /// the whole-world [`Simulation::reset_encounter`].
     pub fn apply_encounter_resets(&mut self) {
         let mut encounters = std::mem::take(&mut self.encounters);
-        for encounter in &mut encounters {
+        for (index, encounter) in encounters.iter_mut().enumerate() {
             if !encounter.is_resetting() {
                 continue;
+            }
+            // An add the boss called was never part of the level: it is taken away, not put
+            // back.
+            for summon in encounter.take_summons() {
+                if self.world.contains(summon) {
+                    self.despawn_enemy(summon);
+                }
+            }
+            if let Some(run) = self.dungeon.as_mut()
+                && run.rules().boss_encounter == Some(index)
+            {
+                run.disengage();
             }
             for member in encounter.members().to_vec() {
                 self.restore_enemy(member);
@@ -2031,18 +2090,15 @@ impl Simulation {
         };
         runtime.brain.reset();
         runtime.intent = MoveIntent::NONE;
-        let telegraph = runtime.telegraph.take();
+        runtime.dash = None;
+        let telegraphs = runtime.telegraphs.take();
         let home = runtime.brain.home();
-        if let Some(id) = telegraph {
+        if let Some((first, count)) = telegraphs {
             let anchor = self.world.position(entity).unwrap_or(home);
-            self.events.push(CombatEvent::TelegraphEnded {
-                id,
-                anchor,
-                resolved: false,
-                tick: self.tick,
-            });
+            self.end_telegraphs(first, count, anchor, false);
         }
         self.clear_hazards_of(entity);
+        self.clear_strikes_of(entity);
         if !self.world.contains(entity) {
             return;
         }
@@ -2069,7 +2125,16 @@ impl Simulation {
     pub fn add_encounter(&mut self, mut encounter: crate::encounter::Encounter) {
         let mut members = Vec::with_capacity(encounter.spawns().len());
         for spawn in encounter.spawns().to_vec() {
-            members.push(self.spawn_enemy(spawn.kind, spawn.position, spawn.facing_yaw));
+            let options = spawn
+                .detail
+                .map(|detail| detail.options())
+                .unwrap_or_default();
+            members.push(self.spawn_enemy_with(
+                spawn.kind,
+                spawn.position,
+                spawn.facing_yaw,
+                &options,
+            ));
         }
         encounter.set_members(members);
         self.encounters.push(encounter);
@@ -2098,11 +2163,44 @@ impl Simulation {
         // Ground left burning by anybody. A pool that survived a reset would be the one piece
         // of the last attempt still on the floor during the next one.
         self.clear_all_hazards();
+        // And every mark, rain and quake still counting down.
+        self.clear_all_strikes();
+        // The run itself: nothing credited, the gate shut, the boss sealed, the adds gone.
+        self.reset_dungeon_run();
         for encounter in &mut self.encounters {
             encounter.finish_reset();
         }
         self.meter.reset(self.time);
         log::info!("encounter reset");
+    }
+
+    /// Recovers from a wipe: every monster still standing goes home whole and forgets the
+    /// fight, and every monster that was killed **stays dead**.
+    ///
+    /// What happens when the player comes back from dying. Unlike
+    /// [`Simulation::reset_encounter`] — the development reset, which rebuilds the whole
+    /// fight — this keeps the party's progress: packs they cleared stay cleared, completion
+    /// keeps what was credited, a boss gate that opened stays open. A boss fight that was
+    /// running is abandoned: its adds go, and the boss is made whole to be pulled again.
+    pub fn reset_after_wipe(&mut self) {
+        self.dismiss_summons();
+        for slot in 0..self.enemies.len() {
+            let Some(entity) = self.world.id_at(slot) else {
+                continue;
+            };
+            if self.enemies[slot].is_some() && self.world.is_alive(entity) {
+                self.restore_enemy(entity);
+            }
+        }
+        self.clear_all_hazards();
+        self.clear_all_strikes();
+        for encounter in &mut self.encounters {
+            // A cleared pack stays cleared; one with anybody left in it can be pulled again.
+            if encounter.state() != crate::encounter::EncounterState::Completed {
+                encounter.finish_reset();
+            }
+        }
+        log::info!("wipe: the living reset, the dead stay dead");
     }
 
     /// Kills an entity outright, through the ordinary damage path.
@@ -2192,6 +2290,11 @@ impl Simulation {
         // is cast: it amplifies every point of Nature and Arcane damage the target takes,
         // whoever dealt it, which is what the design asks for and what a per-ability
         // multiplier could never be.
+        // A boss behind a sealed gate cannot be hurt: it is not in the fight yet, and a bolt
+        // through the bars would start one the dungeon has not allowed.
+        if self.is_sealed(target) {
+            return;
+        }
         let mut amount = amount * self.exposure_multiplier(target, damage_type);
         if target == self.player.entity && source != target && self.is_hostile_to_player(source) {
             match self.defend_player(source, amount, ability, damage_type) {
@@ -2282,16 +2385,12 @@ impl Simulation {
             // bar comes down through the event, exactly as a living caster's would.
             if let Some(Some(runtime)) = self.enemies.get_mut(target.index()) {
                 let cast = runtime.brain.die();
-                let telegraph = runtime.telegraph.take();
+                let telegraphs = runtime.telegraphs.take();
                 runtime.intent = MoveIntent::NONE;
+                runtime.dash = None;
                 if let Some(cast) = cast {
-                    if let Some(id) = telegraph {
-                        self.events.push(CombatEvent::TelegraphEnded {
-                            id,
-                            anchor: cast.anchor,
-                            resolved: false,
-                            tick,
-                        });
+                    if let Some((first, count)) = telegraphs {
+                        self.end_telegraphs(first, count, cast.anchor, false);
                     }
                     self.events.push(CombatEvent::CastEnded {
                         source: target,
@@ -2306,6 +2405,12 @@ impl Simulation {
             // nothing will ever explain, and it would keep dealing damage credited to a
             // corpse.
             self.clear_hazards_of(target);
+            // And the marks it laid: killing the Bonecaster in time saves whoever it marked.
+            self.clear_strikes_of(target);
+            // What it was worth towards the dungeon.
+            // Queued whoever died: during the AI's own step the enemy table is out, so
+            // whether this was an enemy is answered when the queue is paid, not here.
+            self.queue_credit(target);
 
             // The pack it belonged to hears it die. A member killed outright never leaves
             // Idle and its threat table is cleared by the death, so this is the only moment
@@ -2324,6 +2429,7 @@ impl Simulation {
                 killer: source,
                 tick,
             });
+            self.flush_credits();
         }
     }
 
@@ -2452,8 +2558,18 @@ impl Simulation {
         // The same key puts the *fight* back where there is one: an encounter is what the
         // dummies are in a scene that has enemies, and a player who has just died pressing
         // the reset key means "again", not "restore the dummies I was not fighting".
+        //
+        // Pressed by a *dead* player it is the wipe recovery rather than a rebuild: back at the
+        // start, the monsters still standing home and whole, and every monster the party
+        // killed still dead. Only a living player's press puts the whole fight back — the
+        // development reset.
         if !self.encounters.is_empty() || !self.enemies.is_empty() {
-            self.reset_encounter();
+            if self.player_alive() {
+                self.reset_encounter();
+            } else {
+                self.respawn.clear();
+                self.respawn_player();
+            }
             return;
         }
         self.meter.reset(self.time);

@@ -126,6 +126,12 @@ impl GpuFence {
         self.wait(value)
     }
 
+    /// The value the latest [`Fence::signal`] asked the GPU to reach; zero before any.
+    #[must_use]
+    pub fn last_signaled_value(&self) -> u64 {
+        self.next_value.saturating_sub(1)
+    }
+
     /// Highest fence value the GPU has passed.
     #[must_use]
     pub fn completed_value(&self) -> u64 {

@@ -83,6 +83,11 @@ pub enum Scene {
     /// more lights asking for shadow maps than any preset will grant. See
     /// [`engine_environment::shadow_course`] for what stands in each bay and why.
     Shadows,
+    /// The Graveyard Crypt: a branching dungeon with a completion requirement, two optional
+    /// routes and a boss who calls two empowered adds. Loaded from
+    /// `assets/scenes/graveyard_crypt.json` when that file exists — which is what the editor
+    /// saves — and from the built-in layout otherwise.
+    Graveyard,
 }
 
 impl Scene {
@@ -100,6 +105,7 @@ impl Scene {
             Self::LineOfSight => "LINE OF SIGHT",
             Self::Dungeon => "DUNGEON",
             Self::Shadows => "SHADOWS",
+            Self::Graveyard => "GRAVEYARD",
         }
     }
 
@@ -117,7 +123,12 @@ impl Scene {
     pub fn has_environment(self) -> bool {
         matches!(
             self,
-            Self::Combat | Self::Environment | Self::Dungeon | Self::LineOfSight | Self::Shadows
+            Self::Combat
+                | Self::Environment
+                | Self::Dungeon
+                | Self::LineOfSight
+                | Self::Shadows
+                | Self::Graveyard
         )
     }
 
@@ -157,6 +168,12 @@ impl Scene {
         matches!(self, Self::Dungeon)
     }
 
+    /// Whether this is the Graveyard Crypt.
+    #[must_use]
+    pub fn is_graveyard(self) -> bool {
+        matches!(self, Self::Graveyard)
+    }
+
     /// Whether this is the line-of-sight test bed.
     #[must_use]
     pub fn is_line_of_sight(self) -> bool {
@@ -185,6 +202,7 @@ impl FromStr for Scene {
             "dungeon" | "reliquary" | "DUNGEON" => Ok(Self::Dungeon),
             "los" | "line-of-sight" | "sight" | "LOS" => Ok(Self::LineOfSight),
             "shadows" | "shadow" | "SHADOWS" => Ok(Self::Shadows),
+            "graveyard" | "crypt" | "graveyard_crypt" | "GRAVEYARD" => Ok(Self::Graveyard),
             _ => Err(()),
         }
     }
@@ -246,7 +264,10 @@ options:
                          (default 4, combat scene only)
   --scene <name>         which scenario to load: combat (default), collision,
                          character, environment, vfx, audio, encounter, los,
-                         dungeon or shadows. The shadows scene is the shadow test
+                         dungeon, graveyard or shadows. The graveyard scene is the
+                         Graveyard Crypt, loaded from assets/scenes/graveyard_crypt.json
+                         when it exists (the editor saves it) - a branching dungeon whose
+                         boss is sealed until 100% completion. The shadows scene is the shadow test
                          course: six bays on flat ground - one isolated caster, a
                          hundred crates in a grid, a line of rocks crossing every
                          cascade split, alpha-tested foliage, spot lights and point
@@ -284,6 +305,10 @@ options:
   --vfx-stress <rate>    play <rate> catalogue effects a second around the player, for
                          measurement. Presentation only: it starts no ability and deals
                          no damage, so what it measures is what effects cost to draw
+  --party <1-5>          how many players a level's monsters are scaled for (default 1).
+                         The Graveyard Crypt is tuned for 3 - a tank, a damage dealer and
+                         a healer - and --party 3 plays it at those numbers. One player
+                         meets the same mechanics with less health and smaller hits.
   --enemies <count>      enemies in the encounter scene (default: its own two, a melee
                          enemy and a caster). Any other number builds a pack of that
                          many, alternating the two kinds, for the stress scenarios
@@ -310,6 +335,18 @@ options:
                          empty level saved there by CTRL+S, so opening the editor on a
                          level that has not been made yet is one command line rather
                          than a file somebody has to write by hand first
+  --bake-map             bake the level's map again even if the baked one is current
+                         (it is baked automatically when missing or stale, and kept in
+                         assets/generated/maps/)
+  --no-map               no dungeon map at all: no bake, no minimap, no M key. The
+                         baseline for measuring what the map costs
+  --minimap <mode>       rotating or north_up, for this run only (settings.cfg keeps
+                         the player's choice)
+  --open-map             open the full-screen dungeon map once the level has loaded
+  --map-select <n>       select the n-th encounter on it (0 is the first pack)
+  --map-expand           open every card and ability of that selection
+  --screenshot <p.png>   write frame --screenshot-frame (default 30), interface and all,
+                         to a PNG: visual QA at any --width/--height, with --hidden
   -h, --help             print this help and exit";
 
 /// Individual shadow settings named on the command line, applied on top of a preset.
@@ -597,6 +634,8 @@ pub struct Args {
     /// a pack of that many, alternating the two kinds, which is what the stress scenarios
     /// use.
     pub enemies: usize,
+    /// How many players a level's monsters are scaled for.
+    pub party: u8,
     /// Whether an audio device is opened.
     ///
     /// A measurement control, exactly as [`Args::ui`] is: the audio runtime runs either
@@ -642,6 +681,33 @@ pub struct Args {
     /// startup failure. Editing a level that does not exist yet is the ordinary way a level
     /// begins, and it must not require somebody to hand-write a JSON file first.
     pub editor: bool,
+    /// Whether to bake the level's map again even if the one on disk is current.
+    ///
+    /// A bake is otherwise automatic: a level with no baked map, or one whose geometry has
+    /// changed since, is baked once when it loads and the picture is kept in
+    /// `assets/generated/maps/`. This forces it, for measuring the bake or after changing
+    /// how maps are styled.
+    pub bake_map: bool,
+    /// Whether to leave the map out altogether: no bake, no minimap, no `M`.
+    ///
+    /// The "map disabled" half of the map's cost measurement.
+    pub no_map: bool,
+    /// Where to write a screenshot of frame [`Args::screenshot_frame`], interface included.
+    ///
+    /// Visual QA without a person at the screen: pair it with `--hidden`, `--width` and
+    /// `--height` to see the interface at 1080p, 1440p and 4K from one command line each.
+    pub screenshot: Option<String>,
+    /// Which presented frame the screenshot is of. Thirty by default: long enough for the
+    /// first frames' uploads to have settled.
+    pub screenshot_frame: u64,
+    /// Open the full-screen dungeon map once the level has loaded. For screenshots.
+    pub open_map: bool,
+    /// Select this encounter on the map once it is open. For screenshots.
+    pub map_select: Option<usize>,
+    /// Open every monster card and ability of the selection. For screenshots.
+    pub map_expand: bool,
+    /// Override how the minimap turns, for this run only: `rotating` or `north_up`.
+    pub minimap: Option<String>,
     /// A Blender layout export to load instead of the built-in layout, if one was named.
     ///
     /// The same job as [`Args::scene_file`] from the other authoring direction. Naming both
@@ -679,11 +745,20 @@ impl Default for Args {
             env_density: 1.0,
             vfx_stress: 0.0,
             enemies: 0,
+            party: 1,
             audio: true,
             parallel_jobs: true,
             scene_file: None,
             layout: None,
             editor: false,
+            bake_map: false,
+            no_map: false,
+            screenshot: None,
+            screenshot_frame: 30,
+            open_map: false,
+            map_select: None,
+            map_expand: false,
+            minimap: None,
             help: false,
         }
     }
@@ -721,6 +796,7 @@ impl Args {
                 Scene::Dungeon => "myGame — the Ashen Reliquary".to_owned(),
                 Scene::LineOfSight => "myGame — line-of-sight course".to_owned(),
                 Scene::Shadows => "myGame — shadow course".to_owned(),
+                Scene::Graveyard => "myGame — the Graveyard Crypt".to_owned(),
             },
         }
     }
@@ -825,6 +901,7 @@ where
             "--env-density" => args.env_density = next_value(&mut iter, "--env-density")?,
             "--vfx-stress" => args.vfx_stress = next_value(&mut iter, "--vfx-stress")?,
             "--enemies" => args.enemies = next_value(&mut iter, "--enemies")?,
+            "--party" => args.party = next_value(&mut iter, "--party")?,
             "--lights" => args.stress_lights = next_value(&mut iter, "--lights")?,
             "--shadow-lights" => {
                 args.stress_shadow_lights = next_value(&mut iter, "--shadow-lights")?;
@@ -834,6 +911,22 @@ where
                 args.scene_file = Some(raw.as_ref().to_owned());
             }
             "--editor" => args.editor = true,
+            "--bake-map" => args.bake_map = true,
+            "--no-map" => args.no_map = true,
+            "--screenshot" => {
+                let raw = iter.next().ok_or(ArgsError::MissingValue("--screenshot"))?;
+                args.screenshot = Some(raw.as_ref().to_owned());
+            }
+            "--screenshot-frame" => {
+                args.screenshot_frame = next_value(&mut iter, "--screenshot-frame")?;
+            }
+            "--open-map" => args.open_map = true,
+            "--map-expand" => args.map_expand = true,
+            "--map-select" => args.map_select = Some(next_value(&mut iter, "--map-select")?),
+            "--minimap" => {
+                let raw = iter.next().ok_or(ArgsError::MissingValue("--minimap"))?;
+                args.minimap = Some(raw.as_ref().to_owned());
+            }
             "--layout" => {
                 let raw = iter.next().ok_or(ArgsError::MissingValue("--layout"))?;
                 args.layout = Some(raw.as_ref().to_owned());
@@ -997,6 +1090,26 @@ mod tests {
     fn the_editor_is_off_unless_asked_for() {
         assert!(!parse::<[&str; 0], &str>([]).expect("empty is valid").editor);
         assert!(parse(["--editor"]).expect("--editor is valid").editor);
+        let baking = parse(["--bake-map"]).expect("--bake-map is valid");
+        assert!(baking.bake_map && !baking.no_map);
+        assert!(parse(["--no-map"]).expect("--no-map is valid").no_map);
+        let shot = parse([
+            "--screenshot",
+            "a.png",
+            "--screenshot-frame",
+            "12",
+            "--open-map",
+            "--map-select",
+            "3",
+            "--minimap",
+            "north_up",
+        ])
+        .expect("the QA options are valid");
+        assert_eq!(shot.screenshot.as_deref(), Some("a.png"));
+        assert_eq!(shot.screenshot_frame, 12);
+        assert!(shot.open_map);
+        assert_eq!(shot.map_select, Some(3));
+        assert_eq!(shot.minimap.as_deref(), Some("north_up"));
         let both = parse(["--editor", "--scene-file", "assets/scenes/new.json"])
             .expect("the editor and a scene file go together");
         assert!(both.editor);

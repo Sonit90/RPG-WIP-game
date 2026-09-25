@@ -31,6 +31,14 @@
 //! would be a browser that shows nothing at all in a checkout where nobody has run the
 //! generator.
 //!
+//! # Monsters are a folder too
+//!
+//! The monsters the game can spawn are listed at the top as a folder called `Monsters`, handed
+//! over by the application from the monster table (see [`crate::monster`]). Choosing one and
+//! placing it — a drag into the world, a double click, placing mode — puts a
+//! [`engine_environment::MonsterPlacement`] down rather than an object, through the same
+//! gestures every asset is placed with.
+//!
 //! # A filter flattens the tree
 //!
 //! While something is typed, folders are not drawn: what an author wants after typing `rock`
@@ -64,6 +72,10 @@ pub enum BrowserRow {
     BuiltinFolder,
     /// One of the assets compiled into this build, by index into [`LIBRARY`].
     Builtin(usize),
+    /// The `Monsters` folder.
+    MonsterFolder,
+    /// A monster, by index into the monster catalogue.
+    Monster(usize),
 }
 
 /// What the next click will place.
@@ -73,6 +85,8 @@ pub enum Selection {
     Builtin(usize),
     /// An asset on disk, by index into the catalogue's entries.
     Entry(usize),
+    /// A monster, by index into the monster catalogue.
+    Monster(usize),
 }
 
 /// The browser's state: what is on disk, what is open, and what is chosen.
@@ -94,6 +108,13 @@ pub struct AssetBrowser {
     /// A cache because the answer costs a sidecar read and, failing that, a `.glb` import —
     /// and because an author placing forty rocks must not pay for forty of them.
     collision: Vec<(String, CollisionShape)>,
+    /// Each asset's footprint on the ground, measured once from its model: how far apart
+    /// placing mode lays tiles of it.
+    footprints: Vec<(String, f32)>,
+    /// The monsters the game can spawn, as the application described them.
+    monsters: crate::monster::MonsterCatalogue,
+    /// Whether the `Monsters` folder is open.
+    monsters_expanded: bool,
 }
 
 /// What a placement should block.
@@ -134,9 +155,44 @@ impl AssetBrowser {
             typing: false,
             selection: Selection::Builtin(0),
             collision: Vec::new(),
+            footprints: Vec::new(),
+            monsters: crate::monster::MonsterCatalogue::default(),
+            monsters_expanded: true,
         };
         browser.rebuild_rows();
         browser
+    }
+
+    /// Hands the browser the monsters the game can spawn.
+    pub fn set_monsters(&mut self, monsters: crate::monster::MonsterCatalogue) {
+        self.monsters = monsters;
+        self.clamp_selection();
+        self.rebuild_rows();
+    }
+
+    /// The monsters the browser lists.
+    #[must_use]
+    pub fn monsters(&self) -> &crate::monster::MonsterCatalogue {
+        &self.monsters
+    }
+
+    /// The monster the next placement puts down, if a monster is chosen.
+    #[must_use]
+    pub fn selected_monster(&self) -> Option<&crate::monster::MonsterEntry> {
+        match self.selection {
+            Selection::Monster(index) => self.monsters.get(index),
+            _ => None,
+        }
+    }
+
+    /// Chooses the monster whose id is `id`. Returns whether the browser has it.
+    pub fn choose_monster(&mut self, id: &str) -> bool {
+        let Some(index) = self.monsters.index_of(id) else {
+            return false;
+        };
+        self.selection = Selection::Monster(index);
+        self.reveal_selection();
+        true
     }
 
     /// Reads `root` and opens the tree down to where the assets actually are.
@@ -254,6 +310,7 @@ impl AssetBrowser {
         match (row, self.selection) {
             (BrowserRow::Builtin(row), Selection::Builtin(chosen)) => row == chosen,
             (BrowserRow::Entry(row), Selection::Entry(chosen)) => row == chosen,
+            (BrowserRow::Monster(row), Selection::Monster(chosen)) => row == chosen,
             _ => false,
         }
     }
@@ -264,6 +321,7 @@ impl AssetBrowser {
         match row {
             BrowserRow::Folder(index) => self.expanded.get(index).copied().unwrap_or(false),
             BrowserRow::BuiltinFolder => self.builtin_expanded,
+            BrowserRow::MonsterFolder => self.monsters_expanded,
             _ => false,
         }
     }
@@ -281,6 +339,9 @@ impl AssetBrowser {
                 Some(entry) => EnvironmentAsset::interned(&entry.id),
                 None => LIBRARY[0],
             },
+            // A monster is not an asset: the editor places a monster placement for it and
+            // never asks this. The library's first entry keeps the answer total.
+            Selection::Monster(_) => LIBRARY[0],
         }
     }
 
@@ -294,13 +355,17 @@ impl AssetBrowser {
                 .entries()
                 .get(index)
                 .map_or("nothing", |entry| entry.name.as_str()),
+            Selection::Monster(index) => self
+                .monsters
+                .get(index)
+                .map_or("nothing", |entry| entry.id.as_str()),
         }
     }
 
     /// The chosen asset's id, if it is a file.
     fn selected_id(&self) -> Option<String> {
         match self.selection {
-            Selection::Builtin(_) => None,
+            Selection::Builtin(_) | Selection::Monster(_) => None,
             Selection::Entry(index) => self
                 .catalogue
                 .entries()
@@ -343,11 +408,57 @@ impl AssetBrowser {
         PlacementCollision::Shape(shape)
     }
 
+    /// How wide the chosen asset is on the ground, in metres: the larger of its width and
+    /// its depth, measured from its level-0 geometry.
+    ///
+    /// Measured from the model rather than from its collision, because the pieces that are
+    /// most often laid in rows — a floor tile, a water plane — are the ones with no collision
+    /// box to measure: a water plane has no thickness and blocks nothing. `None` when the
+    /// model cannot be read.
+    pub fn selected_footprint(&mut self) -> Option<f32> {
+        // A monster is spaced by its body: two of them painted in a row stand shoulder to
+        // shoulder rather than inside each other.
+        if let Some(monster) = self.selected_monster() {
+            return Some((monster.radius * 2.0 + 1.0).max(1.0));
+        }
+        let name = self.selected_asset().name().to_owned();
+        if let Some((_, known)) = self.footprints.iter().find(|(id, _)| *id == name) {
+            return Some(*known);
+        }
+        let model = match self.selection {
+            Selection::Builtin(index) => {
+                Some(engine_assets::procedural::environment::environment_model(
+                    LIBRARY[index.min(LIBRARY.len() - 1)],
+                ))
+            }
+            Selection::Entry(index) => self.catalogue.entries().get(index).and_then(|entry| {
+                let limits = engine_assets::ValidationLimits::default();
+                engine_assets::disk::load_glb(&entry.name, &entry.path, &limits).ok()
+            }),
+            Selection::Monster(_) => None,
+        }?;
+        let lod = model.lod0()?;
+        let mut min = Vec3::splat(f32::MAX);
+        let mut max = Vec3::splat(f32::MIN);
+        for submesh in &lod.submeshes {
+            for position in submesh.geometry.positions() {
+                min = min.min(position);
+                max = max.max(position);
+            }
+        }
+        if min.x > max.x {
+            return None;
+        }
+        let footprint = (max.x - min.x).max(max.z - min.z);
+        self.footprints.push((name, footprint));
+        Some(footprint)
+    }
+
     /// Where the file behind the chosen asset is, if there is one.
     #[must_use]
     pub fn selected_path(&self) -> Option<&Path> {
         match self.selection {
-            Selection::Builtin(_) => None,
+            Selection::Builtin(_) | Selection::Monster(_) => None,
             Selection::Entry(index) => self
                 .catalogue
                 .entries()
@@ -382,6 +493,7 @@ impl AssetBrowser {
                 }
             }
             BrowserRow::BuiltinFolder => self.builtin_expanded = !self.builtin_expanded,
+            BrowserRow::MonsterFolder => self.monsters_expanded = !self.monsters_expanded,
             _ => return,
         }
         self.rebuild_rows();
@@ -405,6 +517,7 @@ impl AssetBrowser {
                 }
                 Selection::Entry(index)
             }
+            BrowserRow::Monster(index) if index < self.monsters.len() => Selection::Monster(index),
             _ => return false,
         };
         let changed = selection != self.selection;
@@ -469,8 +582,8 @@ impl AssetBrowser {
             return 0;
         }
         match row {
-            BrowserRow::BuiltinFolder => 0,
-            BrowserRow::Builtin(_) => 1,
+            BrowserRow::BuiltinFolder | BrowserRow::MonsterFolder => 0,
+            BrowserRow::Builtin(_) | BrowserRow::Monster(_) => 1,
             BrowserRow::Folder(index) => self
                 .catalogue
                 .folders()
@@ -490,6 +603,12 @@ impl AssetBrowser {
     pub fn name(&self, row: BrowserRow) -> String {
         match row {
             BrowserRow::BuiltinFolder => "Built-in".to_owned(),
+            BrowserRow::MonsterFolder => "Monsters".to_owned(),
+            BrowserRow::Monster(index) => {
+                self.monsters.get(index).map_or_else(String::new, |entry| {
+                    crate::theme::display_name(&entry.name.to_ascii_lowercase())
+                })
+            }
             BrowserRow::Builtin(index) => {
                 crate::theme::display_name(LIBRARY[index.min(LIBRARY.len() - 1)].name())
             }
@@ -514,6 +633,7 @@ impl AssetBrowser {
         match row {
             BrowserRow::Builtin(index) => Some(Selection::Builtin(index)),
             BrowserRow::Entry(index) => Some(Selection::Entry(index)),
+            BrowserRow::Monster(index) => Some(Selection::Monster(index)),
             _ => None,
         }
     }
@@ -528,7 +648,8 @@ impl AssetBrowser {
                 .entries()
                 .get(index)
                 .is_some_and(|entry| entry.kind.is_placeable()),
-            BrowserRow::Folder(_) | BrowserRow::BuiltinFolder => false,
+            BrowserRow::Monster(index) => index < self.monsters.len(),
+            BrowserRow::Folder(_) | BrowserRow::BuiltinFolder | BrowserRow::MonsterFolder => false,
         }
     }
 
@@ -562,6 +683,19 @@ impl AssetBrowser {
             BrowserRow::Builtin(index) => {
                 (1, LIBRARY[index.min(LIBRARY.len() - 1)].name().to_owned())
             }
+            BrowserRow::MonsterFolder => (
+                0,
+                format!(
+                    "{} monsters",
+                    if self.monsters_expanded { "-" } else { "+" }
+                ),
+            ),
+            BrowserRow::Monster(index) => (
+                1,
+                self.monsters
+                    .get(index)
+                    .map_or_else(String::new, |entry| entry.id.clone()),
+            ),
             BrowserRow::Folder(index) => match self.catalogue.folders().get(index) {
                 Some(folder) => (
                     folder.depth.saturating_sub(1),
@@ -673,10 +807,27 @@ impl AssetBrowser {
             for index in self.catalogue.search(&needle) {
                 self.rows.push(BrowserRow::Entry(index));
             }
+            for (index, monster) in self.monsters.entries().iter().enumerate() {
+                if monster.id.contains(&needle)
+                    || monster.name.to_ascii_lowercase().contains(&needle)
+                    || monster.role.to_ascii_lowercase().contains(&needle)
+                {
+                    self.rows.push(BrowserRow::Monster(index));
+                }
+            }
             self.scroll = 0;
             return;
         }
 
+        // Monsters first: in a level that is a dungeon they are what is being placed most.
+        if !self.monsters.is_empty() {
+            self.rows.push(BrowserRow::MonsterFolder);
+            if self.monsters_expanded {
+                for index in 0..self.monsters.len() {
+                    self.rows.push(BrowserRow::Monster(index));
+                }
+            }
+        }
         self.rows.push(BrowserRow::BuiltinFolder);
         if self.builtin_expanded {
             for index in 0..LIBRARY.len() {
@@ -737,7 +888,8 @@ impl AssetBrowser {
             .enumerate()
             .filter(|(_, entry)| entry.kind.is_placeable())
             .map(|(index, _)| Selection::Entry(index));
-        builtins.chain(entries).collect()
+        let monsters = (0..self.monsters.len()).map(Selection::Monster);
+        builtins.chain(entries).chain(monsters).collect()
     }
 
     /// Opens whatever the chosen asset is inside and scrolls it into view.
@@ -747,6 +899,7 @@ impl AssetBrowser {
     fn reveal_selection(&mut self) {
         match self.selection {
             Selection::Builtin(_) => self.builtin_expanded = true,
+            Selection::Monster(_) => self.monsters_expanded = true,
             Selection::Entry(index) => {
                 let mut folder = self
                     .catalogue
@@ -779,9 +932,12 @@ impl AssetBrowser {
 
     /// Puts the selection back on something that exists after a rescan.
     fn clamp_selection(&mut self) {
-        if let Selection::Entry(index) = self.selection
-            && self.catalogue.entries().get(index).is_none()
-        {
+        let gone = match self.selection {
+            Selection::Entry(index) => self.catalogue.entries().get(index).is_none(),
+            Selection::Monster(index) => index >= self.monsters.len(),
+            Selection::Builtin(_) => false,
+        };
+        if gone {
             self.selection = Selection::Builtin(0);
         }
     }

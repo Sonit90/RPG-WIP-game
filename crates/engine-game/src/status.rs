@@ -92,6 +92,17 @@ pub enum StatusKind {
     /// This is the *published view* of that clock: everything that asks whether the player is
     /// protected asks the status, and only the respawn system writes it.
     RespawnProtection,
+    /// A monster's bleed: Rending Claws, Rending Frenzy, the Steward's Garrote.
+    ///
+    /// Separate from the Warrior's own [`StatusKind::Bleeding`] because it stacks and that one
+    /// does not, and because what a player's heal can see on a party frame is "the Ghoul's
+    /// bleed", not "a bleed". How tall it may stack is the ability's to say, per application.
+    Rended,
+    /// Slower movement: Crippling Arrow, Gouging Riposte.
+    ///
+    /// How much slower is the status's [`Status::magnitude`], so one kind serves every slow
+    /// in the roster and the most recent one applied is the one that holds.
+    Crippled,
 }
 
 /// How a harmful effect is classified for dispelling.
@@ -146,6 +157,8 @@ impl StatusKind {
             Self::AstralWrath => "ASTRAL WRATH",
             Self::WildRush => "WILD RUSH",
             Self::Poisoned => "POISONED",
+            Self::Rended => "RENDED",
+            Self::Crippled => "CRIPPLED",
         }
     }
 
@@ -178,6 +191,8 @@ impl StatusKind {
             Self::AstralWrath => "Astral Wrath",
             Self::WildRush => "Wild Rush",
             Self::Poisoned => "Poisoned",
+            Self::Rended => "Rended",
+            Self::Crippled => "Crippled",
         }
     }
 
@@ -196,10 +211,14 @@ impl StatusKind {
             | Self::NaturesExposure
             | Self::Sundered => Some(DispelSchool::Magic),
             Self::Poisoned => Some(DispelSchool::Poison),
+            // A crippling shot is a curse on the legs: the Druid can take it off. The bleed
+            // below is a wound, and nothing removes a wound with a spell.
+            Self::Crippled => Some(DispelSchool::Curse),
             // A bleed is a wound. Nothing in the game removes one with a spell, which is the
             // point of the exception: a dispel that removed everything would be a dispel
             // nothing had to be chosen for.
             Self::Bleeding
+            | Self::Rended
             | Self::Recuperating
             | Self::Recovering
             | Self::Rejuvenation
@@ -258,9 +277,12 @@ impl StatusKind {
     pub fn damage_type(self) -> DamageType {
         match self {
             Self::Burning => DamageType::Fire,
-            Self::Bleeding | Self::Recuperating | Self::Recovering | Self::Sundered => {
-                DamageType::Physical
-            }
+            Self::Bleeding
+            | Self::Rended
+            | Self::Crippled
+            | Self::Recuperating
+            | Self::Recovering
+            | Self::Sundered => DamageType::Physical,
             Self::Moonfire
             | Self::Sunfire
             | Self::AstralSunfire
@@ -284,7 +306,11 @@ impl StatusKind {
     #[must_use]
     pub fn max_stacks(self) -> u8 {
         match self {
-            Self::Burning | Self::Bleeding | Self::Recovering => 1,
+            Self::Burning | Self::Bleeding | Self::Recovering | Self::Crippled => 1,
+            // The ceiling a single application may raise; each ability narrows it to its own
+            // with `Status::max_stacks`, so the Ghoul's eight and the empowered Ghoul's ten are
+            // the table's numbers, not this one.
+            Self::Rended => 10,
             Self::Recuperating => 5,
             Self::Sundered => 8,
             // Fifteen, which is the forty-five per cent ceiling the design states divided by
@@ -387,6 +413,10 @@ pub struct Status {
     /// [`StatusEnd::Expired`] and on nothing else: a bloom that also paid when the status
     /// was consumed or cleared would make dispelling a Lifebloom a heal.
     pub expiry_heal: f32,
+    /// A strength that is neither damage nor healing: how much a slow slows, as a fraction.
+    ///
+    /// Zero for every status that does not read it.
+    pub magnitude: f32,
     /// Seconds until the next tick.
     timer: f32,
 }
@@ -417,8 +447,28 @@ impl Status {
             indefinite: false,
             empowered: false,
             expiry_heal: 0.0,
+            magnitude: 0.0,
             timer: STATUS_TICK_INTERVAL,
         }
+    }
+
+    /// The same, with a strength: how much a slow slows.
+    #[must_use]
+    pub fn with_magnitude(mut self, magnitude: f32) -> Self {
+        self.magnitude = if magnitude.is_finite() {
+            magnitude.clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        self
+    }
+
+    /// The same, allowed to stack only to `max` rather than to the kind's ceiling.
+    #[must_use]
+    pub fn stacking_to(mut self, max: u8) -> Self {
+        self.max_stacks = max.clamp(1, self.kind.max_stacks().max(1));
+        self.stacks = self.stacks.min(self.max_stacks);
+        self
     }
 
     /// The same, ticking faster the more haste the caster has.

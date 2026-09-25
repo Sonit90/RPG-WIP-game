@@ -128,9 +128,14 @@ const INSTANCE_ALIGNMENT: usize = 16;
 
 /// Alignment for the UI vertex stream in the upload ring.
 ///
-/// The stride, for the same reason as [`INSTANCE_ALIGNMENT`]: a vertex buffer view has no
-/// 256-byte requirement, it needs an address the input assembler can index by stride.
-const UI_VERTEX_ALIGNMENT: usize = size_of::<UiVertex>();
+/// Sixteen, as for [`INSTANCE_ALIGNMENT`]: a vertex buffer view has no 256-byte requirement,
+/// only a four-byte one, and the ring's allocator wants a power of two. It used to be the
+/// stride, which stopped being a power of two when the vertex grew its clip to 48 bytes.
+const UI_VERTEX_ALIGNMENT: usize = 16;
+
+// The ring rounds every allocation up to its alignment, so the alignment must divide cleanly
+// into what the input assembler reads: whole floats.
+const _: () = assert!(UI_VERTEX_ALIGNMENT.is_power_of_two() && size_of::<UiVertex>() % 4 == 0);
 
 /// Alignment for the particle instance stream in the upload ring.
 ///
@@ -294,6 +299,34 @@ struct UiState {
     build_ms: f64,
     /// Whether the UI pass draws at all.
     enabled: bool,
+    /// The level's map picture, which `UiCommand::MapImage` samples. `None` until a level
+    /// with a baked map is loaded.
+    map: Option<UiMapPicture>,
+    /// The descriptor slot the map's view is written into, allocated on first use and reused
+    /// by every map after it, so re-baking a level in the editor costs no descriptor.
+    map_descriptor: Option<crate::descriptor::DescriptorHandle>,
+    /// The interface fonts' distance-field atlas. Held for its descriptor, like the atlas.
+    #[allow(
+        dead_code,
+        reason = "keeps the texture the font descriptor points at alive"
+    )]
+    font: crate::resource::GpuTexture,
+    /// Where the font atlas's view lives.
+    font_descriptor: crate::descriptor::DescriptorHandle,
+}
+
+/// The map picture on the GPU.
+struct UiMapPicture {
+    /// Held, not read: the map descriptor views it.
+    #[allow(
+        dead_code,
+        reason = "keeps the texture the map descriptor points at alive"
+    )]
+    texture: crate::resource::GpuTexture,
+    /// Texels across and down.
+    size: (u32, u32),
+    /// Bytes of GPU memory, mips included.
+    bytes: usize,
 }
 
 /// The blended particle pass, owned by the renderer.
@@ -474,6 +507,12 @@ pub struct Renderer {
     /// letting the slot resolve to the flat fallback. The shadow bit is not stored here -
     /// it is global and per frame.
     material_features: Vec<ShaderFeatures>,
+    /// Each material's parameters, as it was created, so an identical request is answered
+    /// with the material that already exists. See [`Renderer::create_material_with_textures`].
+    material_descs: Vec<MaterialDesc>,
+    /// Meshes replaced by [`Renderer::replace_mesh`], kept alive until the GPU has passed the
+    /// last frame that could have drawn them.
+    retired_meshes: Vec<(u64, GpuMesh)>,
     /// Which phase each material is drawn in, indexed by material handle.
     ///
     /// A parallel array beside `material_features` rather than a field read back out of the
@@ -600,6 +639,12 @@ pub struct Renderer {
     pending_release: DeferredReleaseQueue,
     /// Slot recorded by `render` and not yet presented.
     recorded_frame_slot: Option<usize>,
+    /// Where the frame being recorded is copied to, when it is a [`Renderer::capture_world`]
+    /// frame rather than one for the screen.
+    capture: Option<crate::offscreen::Readback>,
+    /// Where the next ordinary frame — interface and all — is copied to, when a screenshot
+    /// was asked for. See [`Renderer::request_screenshot`].
+    screenshot: Option<crate::offscreen::Readback>,
     /// Back-buffer index the recorded frame targeted. Tracked separately from the frame
     /// slot: one is a texture, the other is CPU-side recording state.
     recorded_back_buffer: usize,
@@ -740,6 +785,8 @@ impl Renderer {
             materials: Vec::new(),
             material_bindings: Vec::new(),
             material_features: Vec::new(),
+            material_descs: Vec::new(),
+            retired_meshes: Vec::new(),
             material_surfaces: Vec::new(),
             transparent_draws_last_frame: 0,
             material_tables: Vec::new(),
@@ -783,6 +830,8 @@ impl Renderer {
             uploads,
             pending_release: DeferredReleaseQueue::new(),
             recorded_frame_slot: None,
+            capture: None,
+            screenshot: None,
             recorded_back_buffer: 0,
             context,
         };
@@ -2180,6 +2229,37 @@ impl Renderer {
         Ok(MeshHandle::new(index, 1))
     }
 
+    /// Replaces the geometry behind `handle` with `data`, keeping the handle.
+    ///
+    /// For geometry that changes at run time — the editor's terrain under a brush — which
+    /// would otherwise be a new mesh per change and a mesh leaked per change. The old buffers
+    /// are kept until the GPU has passed every frame already submitted, since any of them may
+    /// still be drawing the old geometry; they are dropped at the start of a later frame.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RendererError::InvalidConfig`] for a handle that names no mesh, or
+    /// [`RendererError::Api`] if a D3D12 call fails.
+    pub fn replace_mesh(
+        &mut self,
+        handle: MeshHandle,
+        data: &MeshData,
+    ) -> Result<(), RendererError> {
+        let index = handle.index();
+        if index >= self.meshes.len() {
+            return Err(RendererError::InvalidConfig {
+                reason: format!("mesh {index} was replaced, and {} exist", self.meshes.len()),
+            });
+        }
+        let mesh = self.queued(|device, uploader, buffers| {
+            GpuMesh::queue_into(device, uploader, buffers, data)
+        })?;
+        let old = std::mem::replace(&mut self.meshes[index], mesh);
+        self.retired_meshes
+            .push((self.frames.last_signaled_value(), old));
+        Ok(())
+    }
+
     /// Uploads a skinned mesh and returns a handle to it.
     ///
     /// # Errors
@@ -2624,6 +2704,64 @@ impl Renderer {
         })
     }
 
+    /// Replaces the rigid geometry of a model uploaded by [`Renderer::create_model`] with
+    /// `model`'s, keeping every handle — the meshes, the materials and the binding.
+    ///
+    /// `model` must have the shape `binding` was made from: the same levels of detail with
+    /// the same number of parts. Its materials are not looked at; the binding keeps the ones
+    /// it has. This is what run-time geometry — the editor's terrain — is rebuilt with, so a
+    /// change costs an upload and not a new mesh and material every time.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RendererError::InvalidConfig`] when the shapes do not match or a part is
+    /// skinned, or [`RendererError::Api`] if a D3D12 call fails.
+    pub fn replace_model_geometry(
+        &mut self,
+        binding: &ModelBinding,
+        model: &engine_assets::ModelAsset,
+    ) -> Result<(), RendererError> {
+        use engine_assets::mesh::Geometry;
+        let mismatch = || RendererError::InvalidConfig {
+            reason: format!(
+                "'{}' does not have the levels and parts of the model it replaces",
+                model.name
+            ),
+        };
+        if model.lods.len() != binding.lods.len() {
+            return Err(mismatch());
+        }
+        for (lod, bound) in model.lods.iter().zip(&binding.lods) {
+            if lod.submeshes.len() != bound.parts.len() {
+                return Err(mismatch());
+            }
+            for (submesh, part) in lod.submeshes.iter().zip(&bound.parts) {
+                let (Geometry::Static(vertices), PartGeometry::Rigid(mesh)) =
+                    (&submesh.geometry, part.geometry)
+                else {
+                    return Err(mismatch());
+                };
+                let vertices = vertices
+                    .iter()
+                    .map(|vertex| {
+                        MeshVertex::new(vertex.position, vertex.normal, vertex.uv)
+                            .with_tangent(vertex.tangent)
+                            .with_color(vertex.color)
+                    })
+                    .collect();
+                let data = MeshData::new(vertices, submesh.indices.clone())?;
+                self.replace_mesh(mesh, &data)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// How many materials exist. Identical requests share one, so this counts distinct ones.
+    #[must_use]
+    pub fn material_count(&self) -> usize {
+        self.materials.len()
+    }
+
     /// Creates the UI pipeline and uploads the UI atlas.
     ///
     /// The atlas holds the font and every ability icon, and is uploaded exactly once, at
@@ -2656,11 +2794,26 @@ impl Renderer {
             atlas_pixels.texels(),
             windows::Win32::Graphics::Direct3D12::D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
         )?;
+        // The distance-field fonts: uploaded with the atlas, once.
+        let font = crate::resource::GpuTexture::new(
+            context,
+            crate::text::ATLAS_WIDTH as u32,
+            crate::text::ATLAS_HEIGHT as u32,
+            DXGI_FORMAT_R8G8B8A8_UNORM,
+            D3D12_RESOURCE_STATE_COPY_DEST,
+        )?;
+        uploader.queue_texture(
+            context,
+            &font,
+            &crate::text::atlas_rgba(),
+            windows::Win32::Graphics::Direct3D12::D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+        )?;
         uploader.flush(context)?;
 
         // One slot out of the renderer's shared heap. The UI binds a single SRV that never
         // changes; what changed in Phase 5 is that it is no longer the only one.
         let atlas_descriptor = descriptors.allocate_persistent()?;
+        let font_descriptor = descriptors.allocate_persistent()?;
 
         let desc = D3D12_SHADER_RESOURCE_VIEW_DESC {
             Format: DXGI_FORMAT_R8G8B8A8_UNORM,
@@ -2687,6 +2840,14 @@ impl Renderer {
                 atlas_descriptor.cpu,
             );
         }
+        // SAFETY: as above, for the font atlas and its own slot.
+        unsafe {
+            context.device().CreateShaderResourceView(
+                Some(crate::resource::TrackedResource::resource(&font)),
+                Some(&desc),
+                font_descriptor.cpu,
+            );
+        }
 
         Ok(UiState {
             pipeline,
@@ -2697,6 +2858,10 @@ impl Renderer {
             stats: UiBatchStats::default(),
             build_ms: 0.0,
             enabled: true,
+            map: None,
+            map_descriptor: None,
+            font,
+            font_descriptor,
         })
     }
 
@@ -2770,6 +2935,219 @@ impl Renderer {
         self.ui.enabled
     }
 
+    /// Uploads the level's map picture for the UI to draw, replacing any before it.
+    ///
+    /// Straight RGBA8, drawn through a data view — the bytes reach the screen as they are, the
+    /// same as the atlas — with a full mip chain filtered on the CPU, so the minimap minifies it
+    /// without shimmering. Waits for the GPU to go idle first: the descriptor slot is reused,
+    /// and a frame in flight may still be reading the old picture through it. That makes this a
+    /// load-time call, never a per-frame one.
+    ///
+    /// # Errors
+    ///
+    /// [`RendererError::InvalidConfig`] for texels that do not match the size, or the D3D12
+    /// failure creating or uploading the texture.
+    pub fn set_ui_map_texture(
+        &mut self,
+        width: u32,
+        height: u32,
+        texels: &[u8],
+    ) -> Result<(), RendererError> {
+        use windows::Win32::Graphics::Direct3D12::{
+            D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+            D3D12_SHADER_RESOURCE_VIEW_DESC, D3D12_SHADER_RESOURCE_VIEW_DESC_0,
+            D3D12_SRV_DIMENSION_TEXTURE2D, D3D12_TEX2D_SRV,
+        };
+        use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_R8G8B8A8_UNORM;
+
+        let expected = width as usize * height as usize * 4;
+        if width == 0 || height == 0 || texels.len() != expected {
+            return Err(RendererError::InvalidConfig {
+                reason: format!(
+                    "a {width}x{height} map needs {expected} bytes, got {}",
+                    texels.len()
+                ),
+            });
+        }
+        self.wait_for_idle()?;
+        self.ui.map = None;
+
+        let mip_levels = crate::mipmap::level_count(width, height);
+        let texture = crate::resource::GpuTexture::with_mips(
+            &self.context,
+            width,
+            height,
+            mip_levels,
+            DXGI_FORMAT_R8G8B8A8_UNORM,
+            D3D12_RESOURCE_STATE_COPY_DEST,
+        )?;
+        let chain =
+            crate::mipmap::generate(texels, width, height, crate::mipmap::TextureKind::Data);
+        let mut levels: Vec<&[u8]> = Vec::with_capacity(chain.len() + 1);
+        levels.push(texels);
+        levels.extend(chain.iter().map(Vec::as_slice));
+        self.queued(|device, uploader, _| {
+            uploader.queue_texture_mips(
+                device,
+                &texture,
+                &levels,
+                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+            )
+        })?;
+
+        let descriptor = match self.ui.map_descriptor {
+            Some(descriptor) => descriptor,
+            None => {
+                let descriptor = self.descriptors.allocate_persistent()?;
+                self.ui.map_descriptor = Some(descriptor);
+                descriptor
+            }
+        };
+        let desc = D3D12_SHADER_RESOURCE_VIEW_DESC {
+            Format: DXGI_FORMAT_R8G8B8A8_UNORM,
+            ViewDimension: D3D12_SRV_DIMENSION_TEXTURE2D,
+            Shader4ComponentMapping: 0x1688,
+            Anonymous: D3D12_SHADER_RESOURCE_VIEW_DESC_0 {
+                Texture2D: D3D12_TEX2D_SRV {
+                    MostDetailedMip: 0,
+                    MipLevels: mip_levels,
+                    PlaneSlice: 0,
+                    ResourceMinLODClamp: 0.0,
+                },
+            },
+        };
+        // SAFETY: FFI call. The texture is kept alive in `self.ui.map` for as long as the
+        // descriptor names it, and the CPU handle addresses a slot this heap allocated.
+        unsafe {
+            self.context.device().CreateShaderResourceView(
+                Some(crate::resource::TrackedResource::resource(&texture)),
+                Some(&desc),
+                descriptor.cpu,
+            );
+        }
+        self.ui.map = Some(UiMapPicture {
+            texture,
+            size: (width, height),
+            bytes: levels.iter().map(|level| level.len()).sum(),
+        });
+        Ok(())
+    }
+
+    /// Forgets the map picture: `UiCommand::MapImage` draws nothing until the next one.
+    ///
+    /// # Errors
+    ///
+    /// The fence failure, if waiting for the GPU to finish with the old picture fails.
+    pub fn clear_ui_map_texture(&mut self) -> Result<(), RendererError> {
+        if self.ui.map.is_some() {
+            self.wait_for_idle()?;
+            self.ui.map = None;
+        }
+        Ok(())
+    }
+
+    /// The map picture's size in texels and its GPU memory in bytes, if one is set.
+    #[must_use]
+    pub fn ui_map_texture(&self) -> Option<((u32, u32), usize)> {
+        self.ui.map.as_ref().map(|map| (map.size, map.bytes))
+    }
+
+    /// Asks for the next frame recorded — interface, overlay and all, exactly as presented — to
+    /// be kept. Collect it with [`Renderer::take_screenshot`] after that frame is presented.
+    ///
+    /// For visual checks at a given resolution without a person at the screen; it waits for the
+    /// GPU when collected, so it is a tool, not a feature.
+    ///
+    /// # Errors
+    ///
+    /// The readback buffer's creation failure.
+    pub fn request_screenshot(&mut self) -> Result<(), RendererError> {
+        let (width, height) = self.swap_chain.size();
+        self.screenshot = Some(crate::offscreen::Readback::for_texture(
+            self.context.device(),
+            width,
+            height,
+            crate::swapchain::BACK_BUFFER_FORMAT,
+        )?);
+        Ok(())
+    }
+
+    /// The frame [`Renderer::request_screenshot`] kept, once it has been presented. Waits for
+    /// the GPU to finish it.
+    ///
+    /// # Errors
+    ///
+    /// The fence wait or the readback's failure.
+    pub fn take_screenshot(
+        &mut self,
+    ) -> Result<Option<crate::offscreen::CapturedImage>, RendererError> {
+        if self.recorded_frame_slot.is_some() {
+            // Recorded but not yet presented: not finished, not collectable.
+            return Ok(None);
+        }
+        let Some(readback) = self.screenshot.take() else {
+            return Ok(None);
+        };
+        self.wait_for_idle()?;
+        Ok(Some(crate::offscreen::CapturedImage {
+            width: readback.width,
+            height: readback.height,
+            pixels: readback.pixels()?,
+        }))
+    }
+
+    /// Draws `world` through `camera` into the back buffer and reads the pixels back, without
+    /// presenting them.
+    ///
+    /// The dungeon map's bake: the *real* frame — the same culling, materials, textures,
+    /// lights and shadows the game draws with — seen from a top-down orthographic camera, with
+    /// no particles, no overlay and no interface on top. The frame is fenced and waited for
+    /// rather than presented, so it never reaches the screen, and the next ordinary frame
+    /// draws into the same back buffer as if nothing had happened.
+    ///
+    /// Synchronous and slow by design — it waits for the GPU — so it is a load-time or an
+    /// editor action, never a per-frame one. The image is the back buffer's size.
+    ///
+    /// # Errors
+    ///
+    /// Anything [`Renderer::render_world`] can fail with, or the readback's own failure.
+    pub fn capture_world(
+        &mut self,
+        world: &RenderWorld,
+        camera: &Camera,
+        lighting: Lighting,
+        color: [f32; 4],
+    ) -> Result<crate::offscreen::CapturedImage, RendererError> {
+        let (width, height) = self.swap_chain.size();
+        self.capture = Some(crate::offscreen::Readback::for_texture(
+            self.context.device(),
+            width,
+            height,
+            crate::swapchain::BACK_BUFFER_FORMAT,
+        )?);
+        self.build_render_list(world, camera);
+        self.prepare_shadows(world, camera, lighting);
+        let drawn = self.draw_render_list(camera, lighting, color);
+        let capture = self.capture.take();
+        drawn?;
+        // Fenced rather than presented: the slot's fence covers the submission, the ring
+        // moves on exactly as it would have, and the swap chain never sees the frame.
+        if let Some(slot) = self.recorded_frame_slot.take() {
+            self.frames.end_frame(self.context.queue(), slot)?;
+        }
+        self.wait_for_idle()?;
+        let Some(capture) = capture else {
+            return Err(RendererError::InvalidConfig {
+                reason: "the capture target vanished while its frame was recorded".to_owned(),
+            });
+        };
+        Ok(crate::offscreen::CapturedImage {
+            width,
+            height,
+            pixels: capture.pixels()?,
+        })
+    }
+
     /// Records the UI as one draw call, if there is anything to draw.
     ///
     /// Returns the vertices submitted. The whole interface is one vertex buffer against one
@@ -2803,6 +3181,17 @@ impl Renderer {
         };
         self.commands
             .set_root_descriptor_table(ROOT_UI_ATLAS_TABLE, table);
+        // The map, or the atlas standing in for it: a table the signature declares is bound on
+        // every draw, so a map vertex with no map reads a valid texture rather than garbage.
+        let map_table = match (&self.ui.map, self.ui.map_descriptor) {
+            (Some(_), Some(crate::descriptor::DescriptorHandle { gpu: Some(gpu), .. })) => gpu,
+            _ => table,
+        };
+        self.commands
+            .set_root_descriptor_table(crate::ui_pipeline::ROOT_UI_MAP_TABLE, map_table);
+        let font_table = self.ui.font_descriptor.gpu.unwrap_or(table);
+        self.commands
+            .set_root_descriptor_table(crate::ui_pipeline::ROOT_UI_FONT_TABLE, font_table);
         self.commands
             .set_topology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         self.commands.set_vertex_buffer(
@@ -3032,6 +3421,20 @@ impl Renderer {
         };
         let textures = textures.resolve(&self.fallback_textures);
 
+        // A material is fixed at creation — its constants and its descriptor table are never
+        // written again — so an identical request can share the one that exists. Without
+        // this, anything rebuilt at run time leaked a four-descriptor table per rebuild: the
+        // editor's terrain is rebuilt on every frame of a brush stroke, and a few seconds of
+        // flattening filled the 4096-descriptor persistent region, after which nothing could
+        // be uploaded at all and the ground vanished.
+        if let Some(index) = (0..self.materials.len()).find(|index| {
+            self.material_descs[*index] == desc
+                && self.material_features[*index] == features
+                && self.material_bindings[*index].textures == textures
+        }) {
+            return Ok(MaterialHandle::new(index as u32, 1));
+        }
+
         // The constants first: a failure there must not leave a descriptor range allocated
         // to a material that does not exist.
         let material = self.queued(|device, uploader, buffers| {
@@ -3045,6 +3448,7 @@ impl Renderer {
         let index = self.materials.len() as u32;
         self.materials.push(material);
         self.material_features.push(features);
+        self.material_descs.push(desc);
         self.material_surfaces.push(desc.surface);
         self.material_bindings
             .push(MaterialTextureBinding { textures, range });
@@ -3267,6 +3671,9 @@ impl Renderer {
         // Resources whose last use the GPU has now passed. Costs a comparison per frame
         // when the queue is empty, which it usually is.
         self.pending_release.collect(self.frames.completed_value());
+        let completed = self.frames.completed_value();
+        self.retired_meshes
+            .retain(|(last_use, _)| *last_use > completed);
 
         // This slot's upload memory is free again, for the same reason its allocator is:
         // the ring's wait proved the GPU finished the frame that used it.
@@ -3321,9 +3728,14 @@ impl Renderer {
         // Before the interface and after the scene: a blended particle has to see the opaque
         // world beneath it, and a health bar under a fireball is a health bar nobody can
         // read.
+        // A capture is the level and nothing on top of it: no particles, no overlay, no UI.
+        let capturing = self.capture.is_some();
+
         self.gpu_timer
             .begin_pass(self.commands.list(), slot, PARTICLE_PASS);
-        self.draw_particles(slot)?;
+        if !capturing {
+            self.draw_particles(slot)?;
+        }
         self.gpu_timer
             .end_pass(self.commands.list(), slot, PARTICLE_PASS);
 
@@ -3340,7 +3752,7 @@ impl Renderer {
         // which the mesh pipeline's input layout does not describe. Binding it here rather
         // than assuming whatever the scene left bound is what makes both draw paths work.
         #[cfg(feature = "debug-overlay")]
-        {
+        if !capturing {
             self.overlay.drawn_vertices = 0;
             if self.overlay.enabled {
                 // Upload only when this slot's buffer no longer matches the text. Safe to
@@ -3393,13 +3805,26 @@ impl Renderer {
 
         // Last, and on top of everything: the UI blends, so it must see the finished scene
         // beneath it. One draw call for the whole interface.
-        self.draw_ui(slot)?;
+        if !capturing {
+            self.draw_ui(slot)?;
+        }
         self.gpu_timer.end_pass(self.commands.list(), slot, UI_PASS);
 
         // Re-borrowed after `draw_ui`, which needs `&mut self`. The buffer is the same
         // resource either way; holding the earlier borrow across the call would only be a
         // borrow-checker argument, not a correctness one.
         let buffer = self.swap_chain.buffer(back_buffer);
+        if let Some(capture) = self.capture.as_ref().or(self.screenshot.as_ref()) {
+            self.commands.transition_to(
+                buffer,
+                windows::Win32::Graphics::Direct3D12::D3D12_RESOURCE_STATE_COPY_SOURCE,
+            );
+            self.commands.flush_barriers();
+            capture.record_copy(
+                self.commands.list(),
+                crate::resource::TrackedResource::resource(buffer),
+            );
+        }
         self.commands
             .transition_to(buffer, D3D12_RESOURCE_STATE_PRESENT);
 

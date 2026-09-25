@@ -500,7 +500,7 @@ impl Editor {
             .last_row_click
             .is_some_and(|(last, when)| last == row && self.clock - when <= DOUBLE_CLICK_SECONDS);
         match row {
-            BrowserRow::Folder(_) | BrowserRow::BuiltinFolder => {
+            BrowserRow::Folder(_) | BrowserRow::BuiltinFolder | BrowserRow::MonsterFolder => {
                 self.browser.toggle(row);
                 self.last_row_click = None;
             }
@@ -568,6 +568,7 @@ impl Editor {
             .chain((0..scene.water.len()).map(Selected::Water))
             .chain((0..scene.spawn_points.len()).map(Selected::Spawn))
             .chain((0..scene.lights.len()).map(Selected::Light))
+            .chain((0..scene.monsters.len()).map(Selected::Monster))
             .filter(|what| {
                 needle.is_empty()
                     || panels::item_name(scene, *what)
@@ -858,7 +859,14 @@ impl Editor {
                     scrub.moved = true;
                 }
                 let selection = self.selected.clone();
-                if inspector::set(scene, &selection, primary, scrub.property, value) {
+                if inspector::set(
+                    scene,
+                    self.browser.monsters(),
+                    &selection,
+                    primary,
+                    scrub.property,
+                    value,
+                ) {
                     self.water_touched = !primary.is_scene_kind();
                     changed = true;
                 }
@@ -896,10 +904,9 @@ impl Editor {
                     self.begin_inspector_edit(scene, property);
                 }
                 Some(Element::Tag { property, .. }) => {
-                    if let Some(start) = self
-                        .selection()
-                        .and_then(|primary| inspector::get(scene, primary, property))
-                    {
+                    if let Some(start) = self.selection().and_then(|primary| {
+                        inspector::get(scene, self.browser.monsters(), primary, property)
+                    }) {
                         self.scrub = Some(Scrub {
                             property,
                             from: x,
@@ -940,7 +947,7 @@ impl Editor {
         if let Some(Element::Value { property, .. }) = under
             && self.inspector_edit.is_none()
             && let Some(primary) = self.selection()
-            && let Some(value) = inspector::get(scene, primary, property)
+            && let Some(value) = inspector::get(scene, self.browser.monsters(), primary, property)
         {
             let step = property.wheel_step(self.grid(), self.yaw_step());
             let fast = if input.modifiers().shift() { 10.0 } else { 1.0 };
@@ -955,6 +962,7 @@ impl Editor {
             let selection = self.selected.clone();
             if inspector::set(
                 scene,
+                self.browser.monsters(),
                 &selection,
                 primary,
                 property,
@@ -978,7 +986,8 @@ impl Editor {
         let Some(primary) = self.selection() else {
             return;
         };
-        let value = inspector::get(scene, primary, property).unwrap_or(0.0);
+        let value =
+            inspector::get(scene, self.browser.monsters(), primary, property).unwrap_or(0.0);
         self.inspector_edit = Some(InspectorEdit {
             property,
             field: field::TextField::new(&format_value(value), field::Charset::Number),
@@ -1003,6 +1012,7 @@ impl Editor {
             || self.gizmo_drag.is_some()
             || self.gizmo_hover.is_some()
             || self.sculpting
+            || self.placing
         {
             self.hovered = None;
             self.cursor_world = if over_viewport {

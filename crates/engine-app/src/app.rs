@@ -59,6 +59,10 @@ use engine_presentation::ui::action_bar::{self, ActionBarSet, SlotAddress};
 use engine_presentation::ui::character_menu::{
     CharacterMenu, CharacterMenuOutcome, CharacterTheme, push_character_menu,
 };
+use engine_presentation::ui::dungeon_map::{
+    DungeonMap, DungeonMapInfo, DungeonProgress, EncounterStatus, MapKeys, MapMarkers, MapOutcome,
+    MapTheme, MapUnit,
+};
 use engine_presentation::ui::ground_decal::{DecalBand, GroundSurface};
 use engine_presentation::ui::hud_edit::{EditOutcome, HudEditor, push_hud_editor};
 use engine_presentation::ui::hud_layout::{HudElementId, HudLayout};
@@ -257,6 +261,9 @@ pub struct App {
     /// `EnvironmentObject`, because a terrain is not a placement: it has no asset id, no
     /// transform an author can drag, and exactly one of it per level.
     terrain_entity: Option<engine_render_data::RenderEntity>,
+    /// The terrain's uploaded model, kept so a rebuild replaces its geometry in place rather
+    /// than uploading a new mesh and material on every frame of a brush stroke.
+    terrain_binding: Option<engine_render_data::ModelBinding>,
     /// One render entity per body of water the level holds.
     ///
     /// Respawned together when any body changes, for the reason the terrain's single entity
@@ -286,6 +293,9 @@ pub struct App {
     /// path F6 goes down, so "started in the editor" and "pressed F6" cannot drift apart.
     #[cfg(feature = "editor")]
     editor_open_requested: bool,
+    /// How many players a level's monsters are scaled for, when the editor rebuilds them.
+    #[cfg(feature = "editor")]
+    party: u8,
     /// Where the editor saves, when `--scene-file` named a file.
     ///
     /// Without one the editor names its own file after the scene. With one, CTRL+S writes
@@ -351,6 +361,23 @@ pub struct App {
     talent_theme: TalentTheme,
     /// Scratch the talent menu formats its numbers into. Reused; never freed.
     talent_scratch: String,
+    /// The minimap and the full-screen dungeon map, opened with `M`.
+    dungeon_map: DungeonMap,
+    /// How they are coloured.
+    map_theme: MapTheme,
+    /// Where the player and the party are on the map, refreshed every frame: the only part of
+    /// it that moves.
+    map_markers: MapMarkers,
+    /// Whether a level gets a map at all. `--no-map` is the baseline the map's cost is
+    /// measured against.
+    map_enabled: bool,
+    /// The level file the map belongs to, which decides where its baked picture is kept.
+    map_source: Option<std::path::PathBuf>,
+    /// The picture the map is drawing, and the geometry it was baked from: what the editor's
+    /// preview reports and what tells an edit that the picture has gone stale.
+    map_status: Option<MapStatus>,
+    /// Where to write a screenshot, and of which frame.
+    screenshot: Option<(std::path::PathBuf, u64)>,
     /// The character sheet, opened from the corner button or the character key.
     character_menu: CharacterMenu,
     /// How the character sheet is coloured.
@@ -629,7 +656,11 @@ impl App {
         let (mut simulation, demo) = match args.scene {
             Scene::Combat => (
                 match environment.as_ref() {
-                    Some(scene) => arena::environment_arena(scene, args.dummies),
+                    Some(scene) => arena::environment_arena_for_party(
+                        scene,
+                        args.dummies,
+                        engine_game::dungeon::DungeonScaling::for_party(args.party),
+                    ),
                     None => arena::training_arena(&ArenaConfig::with_group(args.dummies)),
                 },
                 None,
@@ -711,6 +742,23 @@ impl App {
             // environment bed — but a dummy is a *skinned* caster, and a skinned caster is
             // the one thing here that has to be judged animating rather than standing, so
             // it is judged in the combat scene where it moves.
+            // The Graveyard Crypt: its level file, with its monsters, its completion and its
+            // sealed boss, scaled for the party the command line named.
+            Scene::Graveyard => {
+                let scaling = engine_game::dungeon::DungeonScaling::for_party(args.party);
+                log::info!(
+                    "graveyard: monsters scaled for a party of {} (tuned for {})",
+                    scaling.party_size,
+                    engine_game::dungeon::DungeonScaling::DESIGNED_PARTY
+                );
+                (
+                    match environment.as_ref() {
+                        Some(scene) => arena::environment_arena_for_party(scene, 0, scaling),
+                        None => arena::training_arena(&ArenaConfig::with_group(0)),
+                    },
+                    None,
+                )
+            }
             Scene::Shadows => (
                 match environment.as_ref() {
                     Some(scene) => arena::environment_arena(scene, 0),
@@ -995,6 +1043,9 @@ impl App {
             .shadows
             .unwrap_or(game_settings.settings().graphics.shadows);
 
+        // Read before the settings move into the app: the minimap's mode and the map's key.
+        let map_settings = game_settings.settings().map;
+
         crate::startup::stage("app assembly");
         let mut app = Self {
             window,
@@ -1008,17 +1059,29 @@ impl App {
             environment,
             placer,
             terrain_entity: None,
+            terrain_binding: None,
             water_entities: Vec::new(),
             #[cfg(feature = "editor")]
             spawn_marker_entities: Vec::new(),
-            bindings: Bindings::default(),
+            bindings: bindings_with_map_key(map_settings.toggle_key.as_str()),
             scene: args.scene,
             #[cfg(feature = "editor")]
-            editor: engine_editor::Editor::new(),
+            editor: {
+                // The editor learns what monsters exist from the one crate that knows both.
+                let mut editor = engine_editor::Editor::new();
+                editor.set_monster_catalogue(monster_catalogue());
+                editor
+            },
             #[cfg(feature = "editor")]
             editor_open_requested: args.editor,
             #[cfg(feature = "editor")]
-            editor_save_path: args.scene_file.as_deref().map(std::path::PathBuf::from),
+            party: args.party,
+            #[cfg(feature = "editor")]
+            editor_save_path: args
+                .scene_file
+                .as_deref()
+                .map(std::path::PathBuf::from)
+                .or_else(|| args.scene.is_graveyard().then(graveyard_path)),
             demo,
             collision_ui: UiDrawList::with_capacity(64, 1_024),
             #[cfg(feature = "debug-overlay")]
@@ -1044,6 +1107,25 @@ impl App {
             talent_menu: TalentMenu::with_scale(ui_scale),
             talent_theme: TalentTheme::default(),
             talent_scratch: String::with_capacity(32),
+            dungeon_map: {
+                let mut map = DungeonMap::new(ui_scale);
+                map.set_orientation(map_settings.minimap_orientation);
+                map.set_reduced_motion(map_settings.reduced_motion);
+                map
+            },
+            map_theme: MapTheme,
+            map_markers: MapMarkers::default(),
+            map_enabled: !args.no_map,
+            map_status: None,
+            screenshot: args
+                .screenshot
+                .as_deref()
+                .map(|path| (std::path::PathBuf::from(path), args.screenshot_frame.max(1))),
+            map_source: args
+                .scene_file
+                .as_deref()
+                .map(std::path::PathBuf::from)
+                .or_else(|| args.scene.is_graveyard().then(graveyard_path)),
             character_menu: CharacterMenu::with_scale(ui_scale),
             character_theme: CharacterTheme::default(),
             character_scratch: String::with_capacity(64),
@@ -1139,7 +1221,220 @@ impl App {
             app.renderer.set_local_lights_enabled(enabled);
             log::info!("local lights: {}", if enabled { "on" } else { "off" });
         }
+        // Last: the bake draws the level through the renderer exactly as it is configured
+        // to draw it, shadows included.
+        app.setup_dungeon_map(args.bake_map);
+        if let Some(mode) = args
+            .minimap
+            .as_deref()
+            .and_then(engine_settings::MinimapOrientation::from_name)
+        {
+            app.dungeon_map.set_orientation(mode);
+        }
+        if args.open_map && app.dungeon_map.open() {
+            app.dungeon_map.select(args.map_select);
+            if args.map_expand {
+                let viewport = app.renderer.size();
+                let _ = app.dungeon_map.sidebar_lines(viewport);
+                app.dungeon_map.expand_all();
+            }
+        }
+        // In the editor, the same request shows the editor's own preview.
+        #[cfg(feature = "editor")]
+        if args.open_map {
+            app.editor.set_map_preview(true);
+        }
+        crate::startup::stage("dungeon map");
         Ok(app)
+    }
+
+    /// Gives the loaded level its map: the picture on disk if it is current, a fresh bake if
+    /// it is not (or if `force`), and the encounters from the level's placements either way.
+    ///
+    /// A level with no environment — the collision course, the effect benches — has no map,
+    /// and neither does a run with `--no-map`. Closes the full-screen map: whatever was
+    /// selected on the last level's map is not on this one.
+    fn setup_dungeon_map(&mut self, force: bool) {
+        self.map_status = None;
+        let scene = match self.environment.as_ref() {
+            Some(scene) if self.map_enabled => scene,
+            _ => {
+                self.dungeon_map.set_info(None);
+                if let Err(error) = self.renderer.clear_ui_map_texture() {
+                    log::warn!("map: could not release the picture: {error}");
+                }
+                return;
+            }
+        };
+        let root = crate::map_bake::map_root(self.map_source.as_deref());
+        let cached = if force {
+            None
+        } else {
+            crate::map_bake::load_cached(scene, &root)
+        };
+        let picture = match cached {
+            Some(picture) => Some(picture),
+            None => {
+                let mut statics: Vec<engine_render_data::RenderEntity> =
+                    self.water_entities.clone();
+                statics.extend(self.terrain_entity);
+                match crate::map_bake::bake(
+                    &mut self.renderer,
+                    self.placer.visuals(),
+                    self.extractor.render_world(),
+                    &statics,
+                    scene,
+                    &root,
+                ) {
+                    Ok(picture) => Some(picture),
+                    Err(error) => {
+                        log::warn!("map '{}': not baked: {error}", scene.name);
+                        None
+                    }
+                }
+            }
+        };
+        let info = match picture {
+            Some(picture) => {
+                let uploaded = self.renderer.set_ui_map_texture(
+                    picture.width,
+                    picture.height,
+                    &picture.texels,
+                );
+                match uploaded {
+                    Ok(()) => {
+                        self.map_status = Some(MapStatus {
+                            frame: picture.frame,
+                            size: (picture.width, picture.height),
+                            geometry: engine_environment::map::geometry_hash(scene),
+                            milliseconds: picture.milliseconds,
+                            baked: picture.baked,
+                        });
+                        log::info!(
+                            "map '{}': {}x{} picture {} in {:.1} ms ({} capture tile(s)), {:.1} MB on the GPU",
+                            scene.name,
+                            picture.width,
+                            picture.height,
+                            if picture.baked { "baked" } else { "loaded" },
+                            picture.milliseconds,
+                            picture.tiles,
+                            self.renderer
+                                .ui_map_texture()
+                                .map_or(0.0, |(_, bytes)| bytes as f64 / (1024.0 * 1024.0))
+                        );
+                        DungeonMapInfo::from_scene(scene, picture.frame, true)
+                    }
+                    Err(error) => {
+                        log::warn!("map '{}': the picture did not upload: {error}", scene.name);
+                        DungeonMapInfo::from_scene(scene, picture.frame, false)
+                    }
+                }
+            }
+            None => {
+                DungeonMapInfo::from_scene(scene, engine_environment::map::frame_for(scene), false)
+            }
+        };
+        log::info!(
+            "map '{}': {} encounter marker(s)",
+            scene.name,
+            info.encounters.len()
+        );
+        self.dungeon_map.set_info(Some(info));
+    }
+
+    /// The baked picture as the editor's preview and inspector want it.
+    #[cfg(feature = "editor")]
+    fn map_picture_info(&self) -> Option<engine_editor::MapPictureInfo> {
+        let status = self.map_status?;
+        let stale = self
+            .environment
+            .as_ref()
+            .is_some_and(|scene| engine_environment::map::geometry_hash(scene) != status.geometry);
+        Some(engine_editor::MapPictureInfo {
+            frame: status.frame,
+            width: status.size.0,
+            height: status.size.1,
+            stale,
+            milliseconds: status.milliseconds,
+            baked_now: status.baked,
+        })
+    }
+
+    /// Refreshes the moving half of the map: the player, the party and the view.
+    ///
+    /// The player's *interpolated* position, the same one the camera follows, so the arrow
+    /// glides at the frame rate rather than stepping at the simulation's.
+    fn refresh_map_markers(&mut self) {
+        if self.dungeon_map.info().is_none() {
+            return;
+        }
+        let player = self.simulation.player().entity;
+        let facing = self
+            .simulation
+            .world()
+            .body(player)
+            .map(|body| body.facing_yaw);
+        self.map_markers.player = Some(MapUnit {
+            position: engine_presentation::extract::interpolated_player_position(&self.simulation),
+            facing,
+        });
+        self.map_markers.view_yaw = self.controller.yaw;
+        // The run: each pack's state by its name, and the dungeon's completion.
+        self.map_markers.statuses.clear();
+        if let Some(info) = self.dungeon_map.info() {
+            let encounters = self.simulation.encounters();
+            self.map_markers
+                .statuses
+                .extend(info.encounters.iter().map(|view| {
+                    encounters
+                        .iter()
+                        .find(|encounter| encounter.name() == view.key)
+                        .map_or(EncounterStatus::Unknown, |encounter| {
+                            match encounter.state() {
+                                engine_game::EncounterState::Completed => EncounterStatus::Cleared,
+                                engine_game::EncounterState::Active => EncounterStatus::Engaged,
+                                engine_game::EncounterState::NotStarted
+                                | engine_game::EncounterState::Resetting => {
+                                    EncounterStatus::Waiting
+                                }
+                            }
+                        })
+                }));
+        }
+        self.map_markers.progress = self.simulation.dungeon_run().map(|run| DungeonProgress {
+            percent: run.percent(),
+            fraction: run.fraction(),
+            unlocked: run.is_unlocked(),
+            completed: run.is_completed(),
+        });
+        let world = self.simulation.world();
+        self.map_markers.party.clear();
+        for &member in self.simulation.party().members() {
+            if member == player {
+                continue;
+            }
+            if let Some(position) = world.position(member) {
+                self.map_markers.party.push(MapUnit {
+                    position,
+                    facing: world.body(member).map(|body| body.facing_yaw),
+                });
+            }
+        }
+    }
+
+    /// What opening the full-screen map does to the rest of the interface: the other windows
+    /// close, a spell being aimed is put away, and the camera lets go of the pointer.
+    fn on_map_opened(&mut self) {
+        self.talent_menu.close();
+        self.character_menu.close();
+        if self.targeting.is_active() {
+            self.targeting.cancel();
+        }
+        self.hovered_ability = None;
+        self.hovered_slot = None;
+        self.cancel_mouse_look();
+        self.play_ui_sound(engine_audio::SoundId::UiClick);
+        log::debug!("map: opened");
     }
 
     /// Applies one physical key press that is not a gameplay binding.
@@ -1485,6 +1780,57 @@ impl App {
             return;
         }
 
+        // The dungeon map. Its key opens and closes it; while it is up it owns the pointer and
+        // the wheel, and nothing under it — the bar, its keys, a click on the world — hears
+        // this frame. Closed, it still answers the minimap: a hover, and a click that opens it.
+        if self.dungeon_map.info().is_some() {
+            if ctx.input().was_key_pressed(self.bindings.toggle_map) {
+                match self.dungeon_map.toggle() {
+                    MapOutcome::Opened => self.on_map_opened(),
+                    MapOutcome::Closed => self.play_ui_sound(engine_audio::SoundId::UiCancel),
+                    MapOutcome::Idle | MapOutcome::Consumed => {}
+                }
+                return;
+            }
+            let wheel = ctx.input().wheel_delta();
+            // The map's own keys, only while it is open: arrows zoom and step through the
+            // encounters, Home frames the dungeon, the full stop finds the player.
+            if self.dungeon_map.is_open() {
+                let input = ctx.input();
+                self.dungeon_map.handle_keys(
+                    MapKeys {
+                        zoom_in: input.was_key_pressed(KeyCode::ArrowUp),
+                        zoom_out: input.was_key_pressed(KeyCode::ArrowDown)
+                            || input.was_key_pressed(KeyCode::Minus),
+                        fit: input.was_key_pressed(KeyCode::Home),
+                        recenter: input.was_key_pressed(KeyCode::Period),
+                        next: input.was_key_pressed(KeyCode::ArrowRight),
+                        previous: input.was_key_pressed(KeyCode::ArrowLeft),
+                    },
+                    viewport,
+                );
+            }
+            match self
+                .dungeon_map
+                .update(&ui_input, wheel, viewport, &self.map_markers)
+            {
+                MapOutcome::Opened => {
+                    self.on_map_opened();
+                    return;
+                }
+                MapOutcome::Closed => {
+                    self.play_ui_sound(engine_audio::SoundId::UiCancel);
+                    return;
+                }
+                MapOutcome::Consumed => {
+                    self.hovered_ability = None;
+                    self.hovered_slot = None;
+                    return;
+                }
+                MapOutcome::Idle => {}
+            }
+        }
+
         // The character key, read here rather than in the input map for the reason the bar's
         // keys are: it toggles a window, and whether a press opens or closes one is a
         // question about the interface rather than about the character. Read after the slot
@@ -1738,6 +2084,7 @@ impl App {
     /// one closes the other here rather than in either window's own update.
     fn open_character_sheet(&mut self) {
         self.talent_menu.close();
+        self.dungeon_map.close();
         self.hovered_ability = None;
         self.hovered_slot = None;
         self.character_menu.open();
@@ -1746,6 +2093,7 @@ impl App {
     /// Opens the talent window, closing the character sheet.
     fn open_talents(&mut self) {
         self.character_menu.close();
+        self.dungeon_map.close();
         self.talent_menu.open();
     }
 
@@ -1906,6 +2254,10 @@ impl App {
             if self.hud_editor.is_active() || self.slot_menu.is_open() {
                 return;
             }
+            if self.dungeon_map.close() {
+                self.play_ui_sound(engine_audio::SoundId::UiCancel);
+                return;
+            }
             if self.character_menu.is_open() {
                 self.character_menu.close();
                 return;
@@ -2023,6 +2375,38 @@ impl App {
                     self.play_ui_sound(engine_audio::SoundId::UiClick);
                     self.choose_shadow_quality(quality);
                 }
+                MenuAction::OpenedMap => {
+                    self.play_ui_sound(engine_audio::SoundId::UiClick);
+                    self.menu.apply_settings(self.settings.settings());
+                }
+                MenuAction::ClosedMap => {
+                    self.play_ui_sound(engine_audio::SoundId::UiCancel);
+                }
+                MenuAction::ReducedMotionCommitted(reduced) => {
+                    self.play_ui_sound(engine_audio::SoundId::UiClick);
+                    self.dungeon_map.set_reduced_motion(reduced);
+                    let mut settings = self.settings.settings();
+                    settings.map.reduced_motion = reduced;
+                    self.settings.update(settings);
+                    if self.settings.save_if_dirty() {
+                        log::info!(
+                            "settings: map motion {}",
+                            if reduced { "reduced" } else { "full" }
+                        );
+                    }
+                }
+                MenuAction::MinimapOrientationCommitted(mode) => {
+                    self.play_ui_sound(engine_audio::SoundId::UiClick);
+                    // Applied at once: the minimap is on screen behind the menu.
+                    self.dungeon_map.set_orientation(mode);
+                    let mut settings = self.settings.settings();
+                    settings.map.minimap_orientation = mode;
+                    self.settings.update(settings);
+                    if self.settings.save_if_dirty() {
+                        log::info!("settings: the minimap is now {}", mode.as_str());
+                    }
+                    self.menu.set_minimap_orientation(mode);
+                }
             }
         }
     }
@@ -2059,6 +2443,7 @@ impl App {
         self.game_ui.set_scale(scale);
         self.menu.set_scale(scale);
         self.talent_menu.set_scale(scale);
+        self.dungeon_map.set_scale(scale);
         self.character_menu.set_scale(scale);
         self.slot_menu.set_scale(scale);
         self.hud_editor.layout(scale, self.renderer.size());
@@ -2169,7 +2554,12 @@ impl App {
         // the pause menu, whose buttons it clicks. Aiming and the talent window are handled
         // by the caller, which does not reach this at all. The right button is not gated: it
         // does nothing in a menu.
-        let orbit_allowed = !self.menu.is_open();
+        // A press on the minimap is the minimap's: it opens the map, it does not start a look.
+        let pointer = ctx.input().mouse_position();
+        let orbit_allowed = !self.menu.is_open()
+            && !self
+                .dungeon_map
+                .wants_pointer((pointer.0 as f32, pointer.1 as f32), self.renderer.size());
         match self.mouse_look.update(ctx.input(), orbit_allowed) {
             Some(LookChange::Began) => {
                 let cursor = ctx.input().mouse_position();
@@ -2391,6 +2781,12 @@ impl App {
 
         self.snapshot
             .refresh(&self.simulation, self.aiming_ability());
+        // The HUD keeps out of the minimap's corner when there is one.
+        let minimap = self
+            .dungeon_map
+            .info()
+            .map(|_| self.dungeon_map.minimap_layout(viewport).bounds());
+        self.game_ui.set_minimap_bounds(minimap);
         self.game_ui.build_arranged(
             &self.snapshot,
             self.nameplates.plates(),
@@ -2433,6 +2829,20 @@ impl App {
             }
         }
         self.push_affected_highlights(viewport);
+        // The minimap with the HUD, then the full-screen map over everything but the windows
+        // and menus that can be opened on top of it.
+        self.dungeon_map.push_minimap(
+            self.game_ui.list_mut(),
+            &self.map_markers,
+            viewport,
+            &self.map_theme,
+        );
+        self.dungeon_map.push_map_screen(
+            self.game_ui.list_mut(),
+            &self.map_markers,
+            viewport,
+            &self.map_theme,
+        );
         engine_presentation::ui::talent_menu::push_talent_menu(
             self.game_ui.list_mut(),
             &self.talent_menu,
@@ -2527,13 +2937,34 @@ impl App {
         if model.triangle_count() == 0 {
             return;
         }
-        let binding = match self.renderer.create_model(&model) {
-            Ok(binding) => binding,
-            Err(error) => {
-                log::error!("terrain: could not be uploaded: {error}");
-                return;
+        // The second and every later rebuild replaces the geometry of the model already on
+        // the GPU. Uploading a fresh model per rebuild — which a brush stroke asks for every
+        // frame — leaked a mesh and a material each time until the renderer ran out of
+        // descriptors, and then the terrain could not be uploaded at all and vanished.
+        let reused = self.terrain_binding.take().and_then(|binding| {
+            match self.renderer.replace_model_geometry(&binding, &model) {
+                Ok(()) => Some(binding),
+                Err(error) => {
+                    log::warn!(
+                        "terrain: could not be updated in place ({error}); uploading it anew"
+                    );
+                    None
+                }
             }
+        });
+        let binding = match reused {
+            Some(binding) => binding,
+            None => match self.renderer.create_model(&model) {
+                Ok(binding) => binding,
+                Err(error) => {
+                    log::error!("terrain: could not be uploaded: {error}");
+                    return;
+                }
+            },
         };
+        // The bounds are the new geometry's, not the binding's: the binding was measured when
+        // the ground was first uploaded, and a stroke can raise a hill out of them.
+        let lod_bounds = model.lods.first().map(engine_assets::ModelLod::bounds);
         // One level of detail and one material, so one part: a terrain has no LOD chain and
         // is drawn with the single surface material the level chose.
         let Some(part) = binding.lods.first().and_then(|lod| lod.parts.first()) else {
@@ -2543,12 +2974,14 @@ impl App {
             log::error!("terrain: built as skinned geometry, which it never is");
             return;
         };
-        let bounds = binding.lods.first().map_or(part.bounds, |lod| lod.bounds);
+        let bounds = lod_bounds.unwrap_or(part.bounds);
+        let (mesh, material) = (mesh, part.material);
+        self.terrain_binding = Some(binding.clone());
         let world = self.extractor.render_world_mut();
         let entity = world.spawn(engine_render_data::RenderEntityDesc {
             transform: engine_core::transform::Transform::IDENTITY,
             mesh,
-            material: part.material,
+            material,
             bounds,
             ..Default::default()
         });
@@ -2643,6 +3076,8 @@ impl App {
             return;
         };
         let spawns = scene.spawn_points.clone();
+        let monsters = scene.monsters.clone();
+        self.push_monster_markers(&monsters);
         if spawns.is_empty() {
             return;
         }
@@ -2677,6 +3112,98 @@ impl App {
             });
             self.spawn_marker_entities.push(entity);
         }
+    }
+
+    /// One marker per placed monster while the editor is open: the enemy model the game
+    /// draws, at the monster's height and in its colour, turned the way it faces.
+    ///
+    /// What the author sees is what will stand there — a Grave Brute is a big grey body and a
+    /// Bonecaster a pale thin one — so a pack can be laid out by eye. A switched-off monster is
+    /// drawn dark. Added to the same entity list the spawn markers use, so one rebuild and one
+    /// despawn cover both.
+    #[cfg(feature = "editor")]
+    fn push_monster_markers(&mut self, monsters: &[engine_environment::MonsterPlacement]) {
+        if monsters.is_empty() {
+            return;
+        }
+        let model = engine_assets::procedural::dummy::training_dummy(
+            engine_assets::procedural::dummy::DummyVariant::Single,
+        );
+        let binding = match self.renderer.create_model(&model) {
+            Ok(binding) => binding,
+            Err(error) => {
+                log::error!("monster markers: could not be uploaded: {error}");
+                return;
+            }
+        };
+        let Some(lod) = binding.lods.first() else {
+            return;
+        };
+        let catalogue = self.editor.monsters().clone();
+        for monster in monsters {
+            let (height, tint) = catalogue
+                .find(&monster.monster)
+                .map_or((1.9, [0.6, 0.6, 0.6]), |entry| (entry.height, entry.tint));
+            let scale = height * monster.scale.max(0.1) / binding.model_height.max(1e-3);
+            let transform = engine_core::transform::Transform::from_translation(monster.position)
+                .with_rotation(engine_core::math::Quat::from_yaw_pitch_roll(
+                    monster.yaw,
+                    0.0,
+                    0.0,
+                ))
+                .with_scale(Vec3::splat(scale));
+            let shade = if monster.enabled { 1.0 } else { 0.35 };
+            let style = engine_render_data::InstanceStyle {
+                tint: [tint[0] * shade, tint[1] * shade, tint[2] * shade, 1.0],
+                emissive: 0.0,
+            };
+            for part in &lod.parts {
+                let engine_render_data::PartGeometry::Rigid(mesh) = part.geometry else {
+                    continue;
+                };
+                let world = self.extractor.render_world_mut();
+                let entity = world.spawn(engine_render_data::RenderEntityDesc {
+                    transform,
+                    mesh,
+                    material: part.material,
+                    bounds: part.bounds,
+                    style,
+                    ..Default::default()
+                });
+                self.spawn_marker_entities.push(entity);
+            }
+        }
+    }
+
+    /// Builds the level's fight again from the scene as the editor left it.
+    ///
+    /// What makes "place a monster, press F6, fight it" work: the simulation's monsters,
+    /// packs, completion and sealed boss are taken down and rebuilt from the edited level,
+    /// through the same function a level file is loaded with. Only for a level that places
+    /// monsters or is a dungeon — a built-in scene whose fight is not in its level keeps it.
+    #[cfg(feature = "editor")]
+    fn rebuild_level_monsters(&mut self) {
+        let Some(scene) = self.environment.as_ref() else {
+            return;
+        };
+        if scene.monsters.is_empty()
+            && scene.dungeon.is_none()
+            && self.simulation.dungeon_run().is_none()
+        {
+            return;
+        }
+        let scene = scene.clone();
+        self.simulation.clear_enemies();
+        let report = engine_game::dungeon::populate_from_scene(
+            &mut self.simulation,
+            &scene,
+            engine_game::dungeon::DungeonScaling::for_party(self.party),
+        );
+        log::info!(
+            "editor: {} monsters in {} packs rebuilt from the level",
+            report.monsters,
+            report.packs
+        );
     }
 
     /// Rebuilds the static collision world from the environment scene as it stands now.
@@ -2757,6 +3284,10 @@ impl App {
                 self.placer
                     .place(world, &visible, controller_eye_guess(scene), LOD_BIAS);
             }
+            // The full-screen map belongs to the game; the editor has a preview of its own.
+            self.dungeon_map.close();
+            let picture = self.map_picture_info();
+            self.editor.set_map_picture(picture);
             log::info!("editor: editing '{name}' ({count} objects); F6 goes back to playing");
             // The signposts go up with the editor and come down with it.
             self.rebuild_spawn_markers(true);
@@ -2766,6 +3297,7 @@ impl App {
         let ui_input = UiInput::from_input(ctx.input());
         let view_projection = self.camera.view_projection();
         let seconds = ctx.time().real_delta().as_secs_f32();
+        let mut opened_level = false;
         let mut changed = false;
         let mut terrain_changed = false;
         let mut water_changed = false;
@@ -2799,6 +3331,17 @@ impl App {
                     // they just built rather than in the one that was loaded.
                     self.rebuild_environment_collision();
                     self.rebuild_spawn_markers(false);
+                    // After the collision: a dungeon's gate is part of the fight, and the
+                    // rebuild above cleared the world it stood in.
+                    self.rebuild_level_monsters();
+                    // The map follows: markers from where the monsters now stand, and a fresh
+                    // picture if the walls moved.
+                    let stale = self.map_picture_info().is_none_or(|picture| picture.stale);
+                    if stale {
+                        self.setup_dungeon_map(false);
+                    } else if let Some(scene) = self.environment.as_ref() {
+                        self.dungeon_map.refresh_encounters(scene);
+                    }
                     log::info!("editor: back to playing; collision describes what is on screen");
                     return Ok(false);
                 }
@@ -2818,9 +3361,11 @@ impl App {
                         path.display(),
                         scene.len()
                     );
+                    self.map_source = Some(path.clone());
                     self.editor.opened(&scene, path);
                     self.environment = Some(scene);
                     changed = true;
+                    opened_level = true;
                 }
                 Err(error) => {
                     log::error!("editor: could not open {}: {error}", path.display());
@@ -2880,6 +3425,26 @@ impl App {
         }
         if changed || terrain_changed || water_changed {
             self.renderer.end_upload_batch()?;
+        }
+
+        // The map: a level opened from the browser gets its own; an edit moves the markers
+        // and may leave the picture out of date; a bake asked for is answered here, where
+        // the renderer is.
+        if opened_level {
+            self.setup_dungeon_map(false);
+            let picture = self.map_picture_info();
+            self.editor.set_map_picture(picture);
+        } else if changed || terrain_changed || water_changed {
+            if let Some(scene) = self.environment.as_ref() {
+                self.dungeon_map.refresh_encounters(scene);
+            }
+            let stale = self.map_picture_info().is_none_or(|picture| picture.stale);
+            self.editor.set_map_stale(stale);
+        }
+        if self.editor.take_bake_request() {
+            self.setup_dungeon_map(true);
+            let picture = self.map_picture_info();
+            self.editor.set_map_picture(picture);
         }
 
         let (width, height) = self.renderer.size();
@@ -4039,13 +4604,20 @@ impl Application for App {
                 || self.character_menu.is_open()
                 || self.hud_editor.is_active()
                 || self.slot_menu.is_open()
+                || self.dungeon_map.is_open()
             {
                 self.cancel_mouse_look();
             } else {
                 self.apply_mouse_look(ctx);
             }
+            // The wheel is the map's while it is open or under the pointer, and the camera's
+            // otherwise.
             let wheel = ctx.input().wheel_delta();
-            if wheel != 0.0 {
+            let pointer = ctx.input().mouse_position();
+            let on_map = self
+                .dungeon_map
+                .wants_pointer((pointer.0 as f32, pointer.1 as f32), self.renderer.size());
+            if wheel != 0.0 && !on_map {
                 self.controller.zoom(wheel);
             }
             self.commands.clear();
@@ -4176,6 +4748,11 @@ impl Application for App {
                 self.controller
                     .apply(&mut self.camera, aspect_of(width, height))?;
             }
+            // After the camera, whose yaw is the rotating minimap's "up".
+            self.refresh_map_markers();
+            self.dungeon_map.observe(&self.map_markers);
+            self.dungeon_map
+                .advance(ctx.time().real_delta().as_secs_f32(), self.renderer.size());
         }
 
         {
@@ -4256,7 +4833,40 @@ impl Application for App {
     }
 
     fn present(&mut self, _ctx: &mut EngineContext) -> Result<(), EngineError> {
+        // A screenshot is of the frame about to be recorded after this one's successor is
+        // asked for: request it one frame early, collect it after it is presented.
+        if let Some((_, frame)) = &self.screenshot
+            && self.renderer.frames_presented() + 1 == *frame
+            && let Err(error) = self.renderer.request_screenshot()
+        {
+            log::warn!("screenshot: {error}");
+        }
         self.renderer.present()?;
+        if let Some((path, frame)) = self.screenshot.clone()
+            && self.renderer.frames_presented() == frame + 1
+        {
+            self.screenshot = None;
+            match self.renderer.take_screenshot() {
+                Ok(Some(image)) => {
+                    match engine_assets::map_image::save_png(
+                        &path,
+                        image.width,
+                        image.height,
+                        &image.pixels,
+                    ) {
+                        Ok(()) => log::info!(
+                            "screenshot: {}x{} written to {}",
+                            image.width,
+                            image.height,
+                            path.display()
+                        ),
+                        Err(error) => log::warn!("screenshot: {error}"),
+                    }
+                }
+                Ok(None) => log::warn!("screenshot: the frame was not kept"),
+                Err(error) => log::warn!("screenshot: {error}"),
+            }
+        }
         if self.renderer.frames_presented() == 1 {
             crate::startup::stage("frame 1: present");
             engine_renderer::log_pipeline_startup_counters();
@@ -4381,6 +4991,22 @@ fn upload_visuals(renderer: &mut Renderer) -> Result<VisualBindings, EngineError
 fn load_authored_scene(
     args: &Args,
 ) -> Result<Option<engine_environment::EnvironmentScene>, EngineError> {
+    // The Graveyard Crypt is a level file like any other: `--scene graveyard` is shorthand for
+    // `--scene-file <assets>/scenes/graveyard_crypt.json`, and an explicit file wins.
+    if args.scene.is_graveyard() && args.scene_file.is_none() && args.layout.is_none() {
+        let path = graveyard_path();
+        let scene = engine_environment::scene_file::load(&path).map_err(|error| {
+            EngineError::unsupported("load the Graveyard Crypt's level file").with_source(error)
+        })?;
+        log::info!(
+            "graveyard: '{}' from {} - {} objects, {} monsters",
+            scene.name,
+            path.display(),
+            scene.len(),
+            scene.monsters.len()
+        );
+        return Ok(Some(scene));
+    }
     match (args.scene_file.as_deref(), args.layout.as_deref()) {
         (Some(_), Some(_)) => Err(EngineError::unsupported(
             "load both --scene-file and --layout; they are two ways to say what the level is",
@@ -4424,6 +5050,104 @@ fn load_authored_scene(
         }
         (None, None) => Ok(None),
     }
+}
+
+/// The picture the dungeon map is drawing, and what it was baked from.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct MapStatus {
+    /// The world rectangle it shows.
+    frame: engine_environment::MapFrame,
+    /// Texels across and down.
+    size: (u32, u32),
+    /// `geometry_hash` of the level it is a picture of.
+    geometry: u64,
+    /// How long producing it took.
+    milliseconds: f32,
+    /// Whether it was baked rather than loaded.
+    baked: bool,
+}
+
+/// The default bindings, with the dungeon map on the key `settings.cfg` names.
+///
+/// The name is checked twice: that it is a key at all, and that no other binding already
+/// claims it. Either failure keeps the default `M` and says so — a map key that silently
+/// shared `W` would stop the character walking.
+fn bindings_with_map_key(name: &str) -> Bindings {
+    let mut bindings = Bindings::default();
+    let Some(key) = KeyCode::from_name(name) else {
+        log::warn!("settings: map.toggle_key '{name}' is not a key; the map stays on M");
+        return bindings;
+    };
+    if key != bindings.toggle_map {
+        let default = bindings.toggle_map;
+        bindings.toggle_map = KeyCode::Unknown;
+        if let Some(taken) = bindings.reserved(key) {
+            log::warn!(
+                "settings: map.toggle_key '{name}' already opens {taken}; the map stays on M"
+            );
+            bindings.toggle_map = default;
+            return bindings;
+        }
+        bindings.toggle_map = key;
+        log::info!("settings: the dungeon map opens on {name}");
+    }
+    bindings
+}
+
+/// Where the Graveyard Crypt's level file is: the first asset root that has it.
+///
+/// The same search the model loader does, so the file the game plays is the file the editor
+/// saved. When no root has it, the first root's path is returned, and loading it reports the
+/// file as missing by name.
+fn graveyard_path() -> std::path::PathBuf {
+    let roots = engine_assets::disk::asset_roots();
+    roots
+        .iter()
+        .map(|root| root.join(engine_game::dungeon::GRAVEYARD_CRYPT_FILE))
+        .find(|path| path.is_file())
+        .unwrap_or_else(|| {
+            roots
+                .first()
+                .cloned()
+                .unwrap_or_else(|| std::path::PathBuf::from("assets"))
+                .join(engine_game::dungeon::GRAVEYARD_CRYPT_FILE)
+        })
+}
+
+/// The monster table, as the level editor lists it.
+///
+/// The one place the editor learns what the game can spawn. The crypt's six monsters and
+/// its boss first, then the empowered adds (called by a boss rather than placed), then the
+/// first dungeon's monsters.
+#[cfg(feature = "editor")]
+fn monster_catalogue() -> Vec<engine_editor::monster::MonsterEntry> {
+    use engine_game::enemy::{EnemyKind, MonsterTier};
+    let order = |kind: &EnemyKind| match kind.archetype().tier {
+        _ if kind.index() < 7 => 3,
+        MonsterTier::Normal => 0,
+        MonsterTier::Boss => 1,
+        MonsterTier::Empowered => 2,
+    };
+    let mut kinds: Vec<EnemyKind> = EnemyKind::ALL.to_vec();
+    kinds.sort_by_key(|kind| (order(kind), kind.index()));
+    kinds
+        .into_iter()
+        .map(|kind| {
+            let archetype = kind.archetype();
+            engine_editor::monster::MonsterEntry {
+                id: archetype.id.to_owned(),
+                name: archetype.name.to_owned(),
+                role: archetype.role.as_str().to_owned(),
+                summary: archetype.summary.to_owned(),
+                tint: archetype.look.tint,
+                height: archetype.height,
+                radius: archetype.radius,
+                aggro_radius: archetype.aggro_radius,
+                completion: archetype.completion,
+                placeable: archetype.tier != MonsterTier::Empowered,
+            }
+        })
+        .collect()
 }
 
 /// Makes sure a model is uploaded for every asset the scene names.
@@ -4979,6 +5703,12 @@ fn log_controls(args: &Args, demo: Option<&DemoScene>) {
             );
             log::info!("nothing spawns: every pack is standing there already, waiting to notice");
         }
+        None if args.scene.is_graveyard() => {
+            log::info!(
+                "the Graveyard Crypt: clear the main path and either route to reach 100% - the boss's gate opens then"
+            );
+            log::info!("the progress panel is top right; BACKSPACE puts the whole run back");
+        }
         None if args.scene.is_encounter() => {
             log::info!("encounter demo: walk forward to be noticed; BACKSPACE resets the fight");
         }
@@ -5061,7 +5791,7 @@ fn log_controls(args: &Args, demo: Option<&DemoScene>) {
     log::info!("  F5               developer overlay on/off");
     #[cfg(feature = "editor")]
     log::info!("  F6               level editor: place, move and delete environment objects");
-    if args.scene.is_encounter() || args.scene.is_dungeon() {
+    if args.scene.is_encounter() || args.scene.is_dungeon() || args.scene.is_graveyard() {
         log::info!("  BACKSPACE        put the fight back: enemies home and whole, you alive");
         log::info!("  G                interrupt the target's cast (developer control)");
     }

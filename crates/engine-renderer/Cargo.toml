@@ -39,6 +39,8 @@ log = { workspace = true }
 # check in build.rs fails the build if one ever does.
 [build-dependencies]
 resvg = { version = "0.48", default-features = false }
+# The interface fonts' distance-field atlas: outlines and coverage, at build time only.
+ab_glyph = "0.2"
 
 [dependencies.windows]
 workspace = true

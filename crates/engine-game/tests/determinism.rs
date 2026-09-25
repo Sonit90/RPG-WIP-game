@@ -434,14 +434,16 @@ fn describe(event: &CombatEvent) -> String {
             anchor,
             shape,
             delay,
+            follow,
             tick,
         } => format!(
-            "telegraph {id} by {} ability {} at {} {} shape {shape:?} delay {} on {tick}",
+            "telegraph {id} by {} ability {} at {} {} shape {shape:?} delay {} follow {:?} on {tick}",
             source.index(),
             ability.slot(),
             fixed(anchor.x),
             fixed(anchor.z),
-            fixed(delay)
+            fixed(delay),
+            follow.map(|entity| entity.index())
         ),
         CombatEvent::TelegraphEnded {
             id,
@@ -561,6 +563,37 @@ fn describe(event: &CombatEvent) -> String {
             source.index(),
             ability.slot()
         ),
+        CombatEvent::DungeonProgress {
+            credited,
+            fraction,
+            tick,
+        } => format!(
+            "progress {} ({}) at {tick}",
+            fixed(credited),
+            fixed(fraction)
+        ),
+        CombatEvent::BossUnlocked { position, tick } => {
+            format!(
+                "unlocked at {} {} on {tick}",
+                fixed(position.x),
+                fixed(position.z)
+            )
+        }
+        CombatEvent::AddSummoned {
+            boss,
+            add,
+            position,
+            tick,
+        } => format!(
+            "add {} for {} at {} {} on {tick}",
+            add.index(),
+            boss.index(),
+            fixed(position.x),
+            fixed(position.z)
+        ),
+        CombatEvent::DungeonCompleted { seconds, tick } => {
+            format!("dungeon completed in {} on {tick}", fixed(seconds))
+        }
     }
 }
 

@@ -243,6 +243,9 @@ const HEALTH_TINT_FLOOR: f32 = 0.45;
 /// Emissive added to the current target, so selection is visible on the enemy itself.
 const TARGET_GLOW: f32 = 0.22;
 
+/// Emissive a monster with a full glow in its look carries: an empowered add, lit from inside.
+const EMPOWERED_GLOW: f32 = 0.35;
+
 /// How long a hit flash lasts, in simulated seconds.
 ///
 /// Short enough to read as an impact rather than a state, long enough to survive a frame at
@@ -777,14 +780,27 @@ impl RenderExtractor {
         // Wounded enemies darken towards their material's own colour rather than towards
         // black: a health tint that reached zero would make a nearly-dead dummy invisible
         // against the arena floor.
+        // Each monster's own colour, from its table row: a Bonecaster reads as bone and an
+        // Acolyte as violet from across the room, and an empowered add glows. Numbers the
+        // gameplay table carries and presentation reads — nothing here knows which monster
+        // is which.
+        let look = simulation.brain(id).map(|brain| brain.archetype().look);
         if let Some(health) = simulation.world().health(id) {
             let fraction = health.fraction().clamp(0.0, 1.0);
             let shade = HEALTH_TINT_FLOOR + (1.0 - HEALTH_TINT_FLOOR) * fraction;
-            style.tint = if hostile {
-                [shade, shade * 0.45, shade * 0.38, 1.0]
-            } else {
-                [shade, shade * 0.94, shade * 0.90, 1.0]
+            style.tint = match look {
+                Some(look) if hostile => [
+                    shade * look.tint[0],
+                    shade * look.tint[1],
+                    shade * look.tint[2],
+                    1.0,
+                ],
+                _ if hostile => [shade, shade * 0.45, shade * 0.38, 1.0],
+                _ => [shade, shade * 0.94, shade * 0.90, 1.0],
             };
+        }
+        if let Some(look) = look {
+            style.emissive += look.glow * EMPOWERED_GLOW;
         }
 
         // The current target glows. This is what replaces "the marker is the only thing that

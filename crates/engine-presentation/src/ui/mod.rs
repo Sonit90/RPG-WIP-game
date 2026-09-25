@@ -48,6 +48,8 @@
 pub mod action_bar;
 /// The character sheet: stats, fifteen equipment slots, and the bag.
 pub mod character_menu;
+/// The minimap and the full-screen dungeon map, with its encounter sidebar.
+pub mod dungeon_map;
 /// The ground indicator's geometry: an outline laid onto the terrain surface.
 pub mod ground_decal;
 /// Edit HUD: the interface made draggable.
@@ -55,6 +57,8 @@ pub mod hud_edit;
 /// Where every arrangeable interface element sits, at any resolution.
 pub mod hud_layout;
 pub mod input;
+/// The dungeon map's design tokens: colour, type, spacing, radii, motion.
+pub mod map_style;
 pub mod menu;
 pub mod paint;
 pub mod screen;
@@ -72,6 +76,9 @@ pub use action_bar::{
 pub use character_menu::{
     CharacterMenu, CharacterMenuOutcome, CharacterMetrics, CharacterTheme, Drag,
     push_character_menu, quality_color,
+};
+pub use dungeon_map::{
+    DungeonMap, DungeonMapInfo, MapEncounterView, MapMarkers, MapOutcome, MapTheme, MapUnit,
 };
 pub use ground_decal::{
     DecalBand, DecalScratch, GroundSurface, MAX_SEGMENTS, SEGMENT_LENGTH, build_band,

@@ -50,6 +50,7 @@ pub mod error;
 pub mod gltf_export;
 pub mod gltf_import;
 pub mod library;
+pub mod map_image;
 pub mod material;
 pub mod material_file;
 pub mod mesh;

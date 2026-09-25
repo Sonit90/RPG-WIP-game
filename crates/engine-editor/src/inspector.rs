@@ -5,7 +5,12 @@
 //!  WATER   POS [x][y][z]   SIZE [x][z][depth] YAW [deg]
 //!  SPAWN   POS [x][y][z]   YAW [deg]
 //!  LIGHT   POS [x][y][z]   LIGHT [range][intensity]  COLOR [r][g][b]
+//!  MONSTER POS [x][y][z]   YAW [deg]   SIZE [scale]  LEVEL [n]  AGGRO [m]  WORTH [%]
 //! ```
+//!
+//! A monster's aggro radius and its completion worth are the monster's own until an author
+//! types one: the inspector shows the value that will be used either way, read from the
+//! catalogue when the placement does not override it.
 //!
 //! One table per kind, read by both the painter and the pointer code, so the cell a click
 //! lands in and the cell that is drawn are the same cell.
@@ -20,6 +25,7 @@ use engine_core::math::{Quat, Vec3};
 use engine_environment::EnvironmentScene;
 
 use crate::Selected;
+use crate::monster::MonsterCatalogue;
 
 /// One number the inspector shows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -54,6 +60,14 @@ pub enum Property {
     Green,
     /// A light's blue.
     Blue,
+    /// A monster's uniform size.
+    MonsterScale,
+    /// A monster's level.
+    Level,
+    /// How close the player must come before a monster notices, in metres.
+    Aggro,
+    /// What killing a monster is worth towards dungeon completion.
+    Worth,
 }
 
 impl Property {
@@ -74,6 +88,8 @@ impl Property {
             Self::Range => 1.0,
             Self::Intensity => 0.25,
             Self::Red | Self::Green | Self::Blue => 0.05,
+            Self::MonsterScale => 0.1,
+            Self::Level | Self::Aggro | Self::Worth => 1.0,
         }
     }
 
@@ -85,6 +101,19 @@ impl Property {
             Self::SizeX | Self::SizeZ => crate::WATER_MIN_HALF_EXTENT * 2.0,
             Self::Depth | Self::Range => 0.1,
             Self::Intensity | Self::Red | Self::Green | Self::Blue => 0.0,
+            Self::MonsterScale => 0.25,
+            Self::Level => 1.0,
+            Self::Aggro | Self::Worth => 0.0,
+        }
+    }
+
+    /// The largest value it may take, for the few that have one.
+    fn maximum(self) -> f32 {
+        match self {
+            Self::MonsterScale => 4.0,
+            Self::Level => f32::from(engine_environment::monster::MAX_MONSTER_LEVEL),
+            Self::Aggro => 80.0,
+            _ => f32::INFINITY,
         }
     }
 
@@ -137,6 +166,18 @@ pub fn rows(what: Selected) -> &'static [Row] {
             YAW,
         ],
         Selected::Spawn(_) => &[POSITION, YAW],
+        Selected::Monster(_) => &[
+            POSITION,
+            YAW,
+            Row {
+                label: "SIZE",
+                properties: &[Property::MonsterScale, Property::Level],
+            },
+            Row {
+                label: "PULL",
+                properties: &[Property::Aggro, Property::Worth],
+            },
+        ],
         Selected::Light(_) => &[
             POSITION,
             Row {
@@ -160,7 +201,12 @@ pub fn properties(what: Selected) -> impl Iterator<Item = Property> {
 
 /// A property's value on one thing, as the inspector shows it.
 #[must_use]
-pub fn get(scene: &EnvironmentScene, what: Selected, property: Property) -> Option<f32> {
+pub fn get(
+    scene: &EnvironmentScene,
+    monsters: &MonsterCatalogue,
+    what: Selected,
+    property: Property,
+) -> Option<f32> {
     use Property as P;
     let position = crate::position_of(scene, what)?;
     match property {
@@ -205,13 +251,30 @@ pub fn get(scene: &EnvironmentScene, what: Selected, property: Property) -> Opti
                 _ => None,
             }
         }
+        Selected::Monster(index) => {
+            let monster = scene.monsters.get(index)?;
+            let own = monsters.find(&monster.monster);
+            match property {
+                P::Yaw => Some(monster.yaw.to_degrees()),
+                P::MonsterScale => Some(monster.scale),
+                P::Level => Some(f32::from(monster.level)),
+                // What will be used: the placement's own number, or the monster's.
+                P::Aggro => monster
+                    .aggro_radius
+                    .or_else(|| own.map(|entry| entry.aggro_radius)),
+                P::Worth => monster
+                    .completion
+                    .or_else(|| own.map(|entry| entry.completion)),
+                _ => None,
+            }
+        }
     }
 }
 
 /// Sets `property` on one thing. Returns whether it had that property.
 fn set_one(scene: &mut EnvironmentScene, what: Selected, property: Property, value: f32) -> bool {
     use Property as P;
-    let value = value.max(property.minimum());
+    let value = value.max(property.minimum()).min(property.maximum());
     if property.is_position() {
         let Some(position) = crate::position_of(scene, what) else {
             return false;
@@ -274,6 +337,19 @@ fn set_one(scene: &mut EnvironmentScene, what: Selected, property: Property, val
                 _ => return false,
             }
         }
+        Selected::Monster(index) => {
+            let Some(monster) = scene.monsters.get_mut(index) else {
+                return false;
+            };
+            match property {
+                P::Yaw => monster.yaw = value.to_radians(),
+                P::MonsterScale => monster.scale = value,
+                P::Level => monster.level = value.round().clamp(1.0, 255.0) as u8,
+                P::Aggro => monster.aggro_radius = Some(value),
+                P::Worth => monster.completion = Some(value),
+                _ => return false,
+            }
+        }
     }
     true
 }
@@ -284,12 +360,13 @@ fn set_one(scene: &mut EnvironmentScene, what: Selected, property: Property, val
 /// Returns whether anything changed.
 pub fn set(
     scene: &mut EnvironmentScene,
+    monsters: &MonsterCatalogue,
     selection: &[Selected],
     primary: Selected,
     property: Property,
     value: f32,
 ) -> bool {
-    let Some(before) = get(scene, primary, property) else {
+    let Some(before) = get(scene, monsters, primary, property) else {
         return false;
     };
     if property.is_position() {
@@ -298,7 +375,7 @@ pub fn set(
             return false;
         }
         for what in selection {
-            let Some(current) = get(scene, *what, property) else {
+            let Some(current) = get(scene, monsters, *what, property) else {
                 continue;
             };
             set_one(scene, *what, property, current + delta);
@@ -307,7 +384,7 @@ pub fn set(
     }
     let mut changed = false;
     for what in selection {
-        if get(scene, *what, property).is_some_and(|current| current != value) {
+        if get(scene, monsters, *what, property).is_some_and(|current| current != value) {
             changed |= set_one(scene, *what, property, value);
         }
     }
@@ -343,6 +420,7 @@ mod tests {
         let group = [Selected::Object(0), Selected::Object(1)];
         assert!(set(
             &mut scene,
+            &MonsterCatalogue::default(),
             &group,
             Selected::Object(1),
             Property::PositionX,
@@ -360,9 +438,22 @@ mod tests {
     fn a_yaw_typed_into_a_group_turns_every_member_to_it() {
         let mut scene = two_pillars();
         let group = [Selected::Object(0), Selected::Object(1)];
-        set(&mut scene, &group, Selected::Object(0), Property::Yaw, 90.0);
+        set(
+            &mut scene,
+            &MonsterCatalogue::default(),
+            &group,
+            Selected::Object(0),
+            Property::Yaw,
+            90.0,
+        );
         for index in 0..2 {
-            let yaw = get(&scene, Selected::Object(index), Property::Yaw).expect("a yaw");
+            let yaw = get(
+                &scene,
+                &MonsterCatalogue::default(),
+                Selected::Object(index),
+                Property::Yaw,
+            )
+            .expect("a yaw");
             assert!((yaw - 90.0).abs() < 1e-3, "{index} faces {yaw}");
         }
     }
@@ -371,7 +462,14 @@ mod tests {
     fn nothing_typed_can_make_a_level_the_loader_refuses() {
         let mut scene = two_pillars();
         let one = [Selected::Object(0)];
-        set(&mut scene, &one, Selected::Object(0), Property::ScaleY, 0.0);
+        set(
+            &mut scene,
+            &MonsterCatalogue::default(),
+            &one,
+            Selected::Object(0),
+            Property::ScaleY,
+            0.0,
+        );
         assert!(scene.objects[0].transform.scale.y > 0.0);
 
         scene.push_water(engine_environment::water::WaterBody::new(
@@ -380,14 +478,23 @@ mod tests {
             2.0,
         ));
         let water = [Selected::Water(0)];
+        let none = MonsterCatalogue::default();
         set(
             &mut scene,
+            &none,
             &water,
             Selected::Water(0),
             Property::SizeX,
             -3.0,
         );
-        set(&mut scene, &water, Selected::Water(0), Property::Depth, 0.0);
+        set(
+            &mut scene,
+            &none,
+            &water,
+            Selected::Water(0),
+            Property::Depth,
+            0.0,
+        );
         assert!(scene.water[0].is_valid());
     }
 
@@ -398,6 +505,7 @@ mod tests {
             Selected::Water(0),
             Selected::Spawn(0),
             Selected::Light(0),
+            Selected::Monster(0),
         ] {
             assert_eq!(rows(what)[0], POSITION);
             for row in rows(what) {

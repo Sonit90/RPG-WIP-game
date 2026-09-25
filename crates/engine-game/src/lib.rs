@@ -82,6 +82,8 @@ pub mod demo;
 pub mod druid;
 /// The first dungeon: which pack stands where, and how to put the whole thing back.
 pub mod dungeon;
+/// A dungeon run: completion, the boss gate and the boss's adds.
+pub mod dungeon_run;
 /// A fight as an object: members, lifecycle and reset.
 pub mod encounter;
 /// What an enemy is, what it wants, and who it is angry at.

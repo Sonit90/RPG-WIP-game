@@ -45,6 +45,7 @@ pub mod shadow;
 pub mod stress;
 pub mod swapchain;
 pub mod sync;
+pub mod text;
 pub mod texture_id;
 pub mod transparency;
 pub mod ui_atlas;

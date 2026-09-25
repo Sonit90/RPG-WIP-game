@@ -12,6 +12,8 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+include!("build_fonts.rs");
+
 /// One compiled entry point.
 struct ShaderEntry {
     /// File under `shaders/`.
@@ -389,12 +391,120 @@ const ICONS: &[IconEntry] = &[
         file: "equipment/trinket.svg",
         constant: "TRINKET",
     },
+    IconEntry {
+        file: "map/map_pack.svg",
+        constant: "MAP_PACK",
+    },
+    IconEntry {
+        file: "map/map_boss.svg",
+        constant: "MAP_BOSS",
+    },
+    IconEntry {
+        file: "map/map_player.svg",
+        constant: "MAP_PLAYER",
+    },
+    IconEntry {
+        file: "map/map_compass.svg",
+        constant: "MAP_COMPASS",
+    },
+    IconEntry {
+        file: "map/monster.svg",
+        constant: "MONSTER",
+    },
+    IconEntry {
+        file: "map/ability_physical.svg",
+        constant: "ABILITY_PHYSICAL",
+    },
+    IconEntry {
+        file: "map/ability_fire.svg",
+        constant: "ABILITY_FIRE",
+    },
+    IconEntry {
+        file: "map/ability_arcane.svg",
+        constant: "ABILITY_ARCANE",
+    },
+    IconEntry {
+        file: "map/ability_nature.svg",
+        constant: "ABILITY_NATURE",
+    },
+    IconEntry {
+        file: "map/ability_heal.svg",
+        constant: "ABILITY_HEAL",
+    },
+    IconEntry {
+        file: "map/crest_elite.svg",
+        constant: "CREST_ELITE",
+    },
+    IconEntry {
+        file: "map/emblem_crypt.svg",
+        constant: "EMBLEM_CRYPT",
+    },
+    IconEntry {
+        file: "map/control_zoom_in.svg",
+        constant: "CONTROL_ZOOM_IN",
+    },
+    IconEntry {
+        file: "map/control_zoom_out.svg",
+        constant: "CONTROL_ZOOM_OUT",
+    },
+    IconEntry {
+        file: "map/control_fit.svg",
+        constant: "CONTROL_FIT",
+    },
+    IconEntry {
+        file: "map/control_recenter.svg",
+        constant: "CONTROL_RECENTER",
+    },
+    IconEntry {
+        file: "map/control_close.svg",
+        constant: "CONTROL_CLOSE",
+    },
+    IconEntry {
+        file: "map/mouse_drag.svg",
+        constant: "MOUSE_DRAG",
+    },
+    IconEntry {
+        file: "map/mouse_wheel.svg",
+        constant: "MOUSE_WHEEL",
+    },
+    IconEntry {
+        file: "map/mouse_click.svg",
+        constant: "MOUSE_CLICK",
+    },
+    IconEntry {
+        file: "map/loot_chest.svg",
+        constant: "LOOT_CHEST",
+    },
+    IconEntry {
+        file: "map/icon_lock.svg",
+        constant: "ICON_LOCK",
+    },
+    IconEntry {
+        file: "map/icon_check.svg",
+        constant: "ICON_CHECK",
+    },
+    IconEntry {
+        file: "map/tag_control.svg",
+        constant: "TAG_CONTROL",
+    },
+    IconEntry {
+        file: "map/tag_interrupt.svg",
+        constant: "TAG_INTERRUPT",
+    },
+    IconEntry {
+        file: "map/tag_area.svg",
+        constant: "TAG_AREA",
+    },
+    IconEntry {
+        file: "map/control_chevron.svg",
+        constant: "CONTROL_CHEVRON",
+    },
 ];
 
 /// One icon: a file under `assets/icons/` and the constant its texels are bound to.
 ///
 /// The path carries the folder, and the folders are who the icon belongs to: `firemage/`,
-/// `warrior/`, `druid/` and `equipment/`. A class's art is then one directory to look in
+/// `warrior/`, `druid/`, `equipment/` and `map/` (the dungeon map's markers and sidebar art). A class's art is then one directory to look in
 /// rather than eleven names to pick out of forty-five.
 struct IconEntry {
     /// File under `assets/icons/`, including its folder.
@@ -482,6 +592,13 @@ fn main() {
         .unwrap_or_else(|error| panic!("failed to write the generated shader module: {error}"));
 
     rasterize_icons(&manifest.join("assets").join("icons"), &out_dir);
+
+    // The interface fonts, as one signed-distance-field atlas.
+    println!("cargo:rerun-if-changed=build_fonts.rs");
+    build_font_atlas(
+        &manifest.join("..").join("engine-render-data").join("fonts"),
+        &out_dir,
+    );
 }
 
 /// Rasterizes every icon to straight-alpha RGBA texels and generates `icons.rs`.

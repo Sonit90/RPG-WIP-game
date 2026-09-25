@@ -867,6 +867,32 @@ pub struct UiSnapshot {
     pub crit_chance: f32,
     /// The current maximum Ignite stacks. Read by every tooltip that mentions it.
     pub ignite_max: u8,
+    /// The dungeon run, if the level is a dungeon: what the progress panel draws.
+    pub dungeon: Option<DungeonView>,
+}
+
+/// A dungeon run, as the progress panel reads it.
+///
+/// Read off [`engine_game::dungeon_run::DungeonRun`] every frame, never kept: the run is the
+/// one truth about how complete the dungeon is.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct DungeonView {
+    /// Its name. Rewritten in place every frame, so it allocates once.
+    pub name: String,
+    /// Completion as a fraction of the requirement, `[0, 1]`.
+    pub fraction: f32,
+    /// Completion as a whole percentage, rounded down.
+    pub percent: u32,
+    /// Whether the requirement is met and the boss's gate is open.
+    pub unlocked: bool,
+    /// Whether the boss fight is running.
+    pub boss_engaged: bool,
+    /// How many of the boss's adds are still standing.
+    pub adds_alive: usize,
+    /// Whether the boss and every add are dead.
+    pub completed: bool,
+    /// How long the run took, once it is over.
+    pub finished_after: Option<f32>,
 }
 
 impl UiSnapshot {
@@ -933,6 +959,7 @@ impl UiSnapshot {
             haste: 0.0,
             crit_chance: 0.0,
             ignite_max: 5,
+            dungeon: None,
         };
         snapshot.refresh(simulation, aiming);
         snapshot
@@ -980,6 +1007,26 @@ impl UiSnapshot {
             .and_then(|entity| simulation.brain(entity))
             .and_then(engine_game::enemy::brain::EnemyBrain::target)
             .and_then(|entity| target_view(simulation, entity));
+
+        match simulation.dungeon_run() {
+            Some(run) => {
+                let view = self.dungeon.get_or_insert_with(DungeonView::default);
+                view.name.clear();
+                view.name.push_str(run.name());
+                view.fraction = run.fraction();
+                view.percent = run.percent();
+                view.unlocked = run.is_unlocked();
+                view.boss_engaged = run.is_engaged();
+                view.adds_alive = run
+                    .adds()
+                    .iter()
+                    .filter(|add| world.is_alive(**add))
+                    .count();
+                view.completed = run.is_completed();
+                view.finished_after = run.finished_after();
+            }
+            None => self.dungeon = None,
+        }
 
         self.party.clear();
         for (index, member) in simulation.party().members().iter().enumerate() {

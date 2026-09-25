@@ -12,7 +12,7 @@
 
 use engine_render_data::ui::{TextAlign, UiColor, UiDrawList, UiRect, UiScale};
 
-use super::menu::{GraphicsItem, HeroItem, MenuScreen, MenuSystem, PauseItem};
+use super::menu::{GraphicsItem, HeroItem, MapItem, MenuScreen, MenuSystem, PauseItem};
 use super::widget::{Slider, Widget, WidgetState};
 
 /// How the menus are coloured and sized.
@@ -158,7 +158,54 @@ pub fn push_menu(
         MenuScreen::Heroes => push_heroes(list, menu, theme, viewport, scale),
         MenuScreen::Nameplates => push_nameplates(list, menu, theme, scratch, viewport, scale),
         MenuScreen::Graphics => push_graphics(list, menu, theme, viewport, scale),
+        MenuScreen::Map => push_map_settings(list, menu, theme, scratch, viewport, scale),
     }
+}
+
+/// The map section: a tick per minimap mode with a line saying what it does, and the key
+/// that opens the map.
+fn push_map_settings(
+    list: &mut UiDrawList,
+    menu: &MenuSystem,
+    theme: &MenuTheme,
+    scratch: &mut MenuScratch,
+    viewport: (u32, u32),
+    scale: UiScale,
+) {
+    let panel = menu.map_panel();
+    push_backdrop(list, theme, viewport, panel, "MAP", scale);
+    let mut last_bottom = panel.y;
+    for (item, widget) in menu.map_screen().widgets() {
+        push_widget(list, widget, theme, scale);
+        let rect = widget.rect();
+        match item {
+            MapItem::Orientation(mode) => {
+                list.text_at(
+                    (rect.x + scale.px(48.0), rect.bottom() + scale.px(6.0)),
+                    mode.description(),
+                    theme.text_disabled,
+                    scale.text(0.8),
+                );
+                last_bottom = rect.bottom() + scale.px(26.0);
+            }
+            MapItem::ReducedMotion => last_bottom = rect.bottom() + scale.px(4.0),
+            MapItem::Back => {}
+        }
+    }
+    let _ = scratch;
+    let key_line = format!("TOGGLE MAP: {}", menu.map_key());
+    list.text_at(
+        (panel.x + scale.px(28.0), last_bottom + scale.px(10.0)),
+        &key_line,
+        theme.text,
+        scale.text(1.0),
+    );
+    list.text_at(
+        (panel.x + scale.px(28.0), last_bottom + scale.px(26.0)),
+        "SET IN SETTINGS.CFG: MAP.TOGGLE_KEY",
+        theme.text_disabled,
+        scale.text(0.8),
+    );
 }
 
 /// The hero roster: one ticked row per playable character, a line saying what it is, and a

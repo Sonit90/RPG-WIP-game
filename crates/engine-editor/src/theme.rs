@@ -100,6 +100,8 @@ pub mod kind {
     pub const STONE: UiColor = rgba(0.700, 0.700, 0.720, 1.0);
     /// Trees and bushes.
     pub const PLANT: UiColor = rgba(0.520, 0.800, 0.450, 1.0);
+    /// Monsters: bone against the crypt's violet.
+    pub const MONSTER: UiColor = rgba(0.880, 0.520, 0.560, 1.0);
 }
 
 /// Measurements, in logical pixels. Multiplied by the interface scale where they are used.

@@ -62,6 +62,12 @@ pub enum Icon {
     Check,
     Cube,
     Dot,
+    ArrowUp,
+    ArrowDown,
+    Flatten,
+    Smooth,
+    /// A monster: a skull.
+    Skull,
 }
 
 /// Each icon as nine rows of nine: `x` is lit, anything else is not.
@@ -518,6 +524,61 @@ fn art(icon: Icon) -> [&'static str; SIZE] {
             "..xx.....",
             ".........",
         ],
+        Icon::ArrowUp => [
+            "....x....",
+            "...xxx...",
+            "..xxxxx..",
+            ".xxxxxxx.",
+            "...xxx...",
+            "...xxx...",
+            "...xxx...",
+            "...xxx...",
+            ".........",
+        ],
+        Icon::ArrowDown => [
+            ".........",
+            "...xxx...",
+            "...xxx...",
+            "...xxx...",
+            "...xxx...",
+            ".xxxxxxx.",
+            "..xxxxx..",
+            "...xxx...",
+            "....x....",
+        ],
+        Icon::Flatten => [
+            ".........",
+            "...x.x...",
+            "...xxx...",
+            "....x....",
+            "xxxxxxxxx",
+            "....x....",
+            "...xxx...",
+            "...x.x...",
+            ".........",
+        ],
+        Icon::Skull => [
+            "..xxxxx..",
+            ".xxxxxxx.",
+            "xxxxxxxxx",
+            "xx..x..xx",
+            "xx..x..xx",
+            "xxxx.xxxx",
+            ".xxxxxxx.",
+            "..x.x.x..",
+            "..x.x.x..",
+        ],
+        Icon::Smooth => [
+            ".........",
+            ".........",
+            "..xx.....",
+            ".x..x...x",
+            "x....x.x.",
+            "......x..",
+            ".........",
+            ".........",
+            ".........",
+        ],
         Icon::Dot => [
             ".........",
             ".........",
@@ -581,7 +642,7 @@ pub fn draw_in(list: &mut UiDrawList, icon: Icon, rect: UiRect, cell: f32, color
 mod tests {
     use super::*;
 
-    const EVERY: [Icon; 43] = [
+    const EVERY: [Icon; 48] = [
         Icon::Folder,
         Icon::Model,
         Icon::Material,
@@ -625,6 +686,11 @@ mod tests {
         Icon::Check,
         Icon::Cube,
         Icon::Dot,
+        Icon::ArrowUp,
+        Icon::ArrowDown,
+        Icon::Flatten,
+        Icon::Smooth,
+        Icon::Skull,
     ];
 
     #[test]

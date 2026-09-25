@@ -42,7 +42,7 @@
 
 use engine_audio::{AudioStats, AudioSystem, Listener, SoundCue, SoundId, VoiceHandle};
 use engine_core::math::Vec3;
-use engine_game::enemy::{EnemyAbility, TelegraphShape};
+use engine_game::enemy::{EnemyAbility, EnemyCue, TelegraphShape};
 use engine_game::entity::EntityId;
 use engine_game::event::CombatEvent;
 use engine_game::firemage::FireAbility;
@@ -463,6 +463,29 @@ impl AudioDirector {
                 let origin = self.chest_of(target, simulation);
                 self.request(SoundCue::at(SoundId::HeavyImpact, origin), audio);
             }
+            // The dungeon. The gate opening is the biggest sound in the catalogue, because it
+            // is the one moment in the run that everybody has to hear from wherever they are;
+            // an add arriving is an arrival, and the end of the run is a cooldown coming up.
+            // Existing sounds, chosen by shape, like every other enemy cue.
+            CombatEvent::BossUnlocked { position, .. } => {
+                self.request(
+                    SoundCue::at(
+                        SoundId::CataclysmImpact,
+                        position + Vec3::new(0.0, 1.5, 0.0),
+                    ),
+                    audio,
+                );
+            }
+            CombatEvent::AddSummoned { position, .. } => {
+                self.request(
+                    SoundCue::at(SoundId::BlinkArrive, position + Vec3::new(0.0, 1.0, 0.0)),
+                    audio,
+                );
+            }
+            CombatEvent::DungeonCompleted { .. } => {
+                let origin = self.chest_of(simulation.player().entity, simulation);
+                self.request(SoundCue::at(SoundId::FireMasteryActivate, origin), audio);
+            }
             // Nothing to hear, or a state the frame synchronises instead. A phase change is
             // seen rather than heard: this phase authors no new cues. A point of Deflection
             // is deliberately silent — it happens several times a second in a pack, and the
@@ -479,6 +502,7 @@ impl AudioDirector {
             | CombatEvent::AstralPowerSpent { .. }
             | CombatEvent::ManaSpent { .. }
             | CombatEvent::ManaRestored { .. }
+            | CombatEvent::DungeonProgress { .. }
             | CombatEvent::Dispelled { .. } => {}
         }
     }
@@ -520,24 +544,13 @@ impl AudioDirector {
         self.end_enemy_cast(source, audio);
         // Reused from the player's own casts rather than given sounds of their own: a
         // gather is a gather, and this phase adds no new audio assets.
-        let sound = match ability {
-            // The dungeon's monsters and its boss are deliberately absent from this table's
-            // right-hand side: the phase adds no ability sounds, and every new attack reuses
-            // one of the three gathers that already exist.
-            EnemyAbility::GroundBlast
-            | EnemyAbility::RitualNova
-            | EnemyAbility::Ashfall
-            | EnemyAbility::ImmolationNova => SoundId::PyroblastCast,
-            EnemyAbility::Cleave
-            | EnemyAbility::WardensSweep
-            | EnemyAbility::AshBurst
-            | EnemyAbility::CinderPool
-            | EnemyAbility::CinderRain => SoundId::FlameLanceCast,
-            EnemyAbility::Bolt
-            | EnemyAbility::Swing
-            | EnemyAbility::Sunder
-            | EnemyAbility::Mend
-            | EnemyAbility::EmberLance => SoundId::FireboltCast,
+        // By the ability's own cue rather than by a row per attack: gameplay says what kind of
+        // gathering it is, and this is the one place that decides what that kind sounds
+        // like. Every enemy attack reuses one of the three gathers that already exist.
+        let sound = match ability.definition().cue {
+            EnemyCue::Heavy => SoundId::PyroblastCast,
+            EnemyCue::Sweep => SoundId::FlameLanceCast,
+            EnemyCue::Quick => SoundId::FireboltCast,
         };
         let origin = self.chest_of(source, simulation);
         let key = source.index() as u32;

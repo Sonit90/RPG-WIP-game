@@ -500,6 +500,9 @@ pub struct GameUi {
     statuses: String,
     /// Scratch for a tooltip's lines. Reused; never freed.
     tooltip_lines: Vec<String>,
+    /// Where the minimap is, when the level has one: the corner buttons move to its left
+    /// and the dungeon's progress panel moves under it.
+    minimap: Option<UiRect>,
 }
 
 impl GameUi {
@@ -519,6 +522,7 @@ impl GameUi {
             title: String::with_capacity(32),
             statuses: String::with_capacity(64),
             tooltip_lines: Vec::with_capacity(8),
+            minimap: None,
         }
     }
 
@@ -652,6 +656,7 @@ impl GameUi {
         self.push_character_button(viewport);
         self.push_cast_bar(snapshot, viewport);
         self.push_enemy_cast_bar(snapshot, viewport);
+        self.push_dungeon_progress(snapshot, viewport);
         self.push_notification(snapshot, viewport);
         self.push_death_notice(snapshot, viewport);
         &self.list
@@ -706,9 +711,151 @@ impl GameUi {
         self.push_character_button(viewport);
         self.push_cast_bar(snapshot, viewport);
         self.push_enemy_cast_bar(snapshot, viewport);
+        self.push_dungeon_progress(snapshot, viewport);
         self.push_notification(snapshot, viewport);
         self.push_death_notice(snapshot, viewport);
         &self.list
+    }
+
+    /// The dungeon's progress panel, at the right edge of the screen.
+    ///
+    /// ```text
+    /// GRAVEYARD CRYPT
+    /// COMPLETION
+    /// ████████████████░░░░ 82%
+    /// REQUIRED: 100%
+    /// ```
+    ///
+    /// Drawn only in a dungeon, from the snapshot the run was read into this frame. At 100 %
+    /// the last line says the way is open; during the boss it counts his adds; at the end it
+    /// says how long the run took. Built from the same primitives as every other panel —
+    /// a rectangle, a bar and text — so it scales and themes with the rest of the HUD.
+    pub fn push_dungeon_progress(&mut self, snapshot: &UiSnapshot, viewport: (u32, u32)) {
+        use crate::ui::map_style::{MapStyle, color, radius, type_scale};
+        let Some(dungeon) = snapshot.dungeon.as_ref() else {
+            return;
+        };
+        let scale = self.metrics.scale;
+        let style = MapStyle::new(scale);
+        let width = scale.px(232.0);
+        let pad = scale.px(14.0);
+        let x = viewport.0 as f32 - width - scale.px(20.0);
+        // Under the minimap when there is one, so the two stack down the right-hand edge.
+        let y = self
+            .minimap
+            .map_or(scale.px(150.0), |minimap| minimap.bottom() + scale.px(14.0));
+        let height = pad * 2.0
+            + style.line(type_scale::HEADING)
+            + style.line(type_scale::LABEL)
+            + scale.px(6.0 + 10.0)
+            + style.line(type_scale::META);
+        let panel = UiRect::new(x, y, width, height);
+        let corner = scale.px(radius::CARD);
+        self.list.shadow(
+            panel,
+            corner,
+            scale.px(14.0),
+            color::alpha(color::SHADOW, 0.7),
+        );
+        self.list.panel(
+            panel,
+            corner,
+            color::alpha(color::SURFACE_1, 0.94),
+            color::alpha(color::SURFACE_0_BOTTOM, 0.94),
+        );
+        self.list
+            .panel_stroke(panel, corner, scale.px(1.0), color::BORDER_STRONG);
+
+        let left = x + pad;
+        let mut row = y + pad - scale.px(2.0);
+        self.list.label(
+            (left, row),
+            &dungeon.name,
+            color::TEXT_TITLE,
+            engine_render_data::font::UiFont::Display,
+            style.size(type_scale::HEADING),
+            TextAlign::Left,
+        );
+        row += style.line(type_scale::HEADING);
+        self.title.clear();
+        write_integer(&mut self.title, i64::from(dungeon.percent));
+        self.title.push('%');
+        self.list.label(
+            (left, row),
+            "COMPLETION",
+            color::TEXT_MUTED,
+            type_scale::LABEL.font,
+            style.size(type_scale::LABEL),
+            TextAlign::Left,
+        );
+        self.list.label(
+            (x + width - pad, row - scale.px(1.0)),
+            &self.title,
+            color::TEXT_PRIMARY,
+            type_scale::HEADING.font,
+            style.size(type_scale::UI),
+            TextAlign::Right,
+        );
+        row += style.line(type_scale::LABEL) + scale.px(4.0);
+
+        let bar = UiRect::new(left, row, width - pad * 2.0, scale.px(6.0));
+        self.list.panel(
+            bar,
+            bar.height * 0.5,
+            [1.0, 1.0, 1.0, 0.08],
+            [1.0, 1.0, 1.0, 0.08],
+        );
+        let fraction = dungeon.fraction.clamp(0.0, 1.0);
+        if fraction > 0.0 {
+            let fill = UiRect::new(
+                bar.x,
+                bar.y,
+                (bar.width * fraction).max(bar.height),
+                bar.height,
+            );
+            let (top, bottom) = if dungeon.unlocked {
+                (color::VERDANT, color::alpha(color::VERDANT, 0.8))
+            } else {
+                (color::BRONZE_BRIGHT, color::BRONZE)
+            };
+            self.list.panel(fill, bar.height * 0.5, top, bottom);
+        }
+        row += bar.height + scale.px(10.0);
+
+        self.title.clear();
+        let tint = if dungeon.completed {
+            self.title.push_str("DUNGEON COMPLETED  ");
+            // Minutes and seconds: a run is timed the way a player would say it.
+            let total = dungeon.finished_after.unwrap_or(0.0).max(0.0).round() as i64;
+            write_integer(&mut self.title, total / 60);
+            self.title.push(':');
+            if total % 60 < 10 {
+                self.title.push('0');
+            }
+            write_integer(&mut self.title, total % 60);
+            color::VERDANT
+        } else if dungeon.boss_engaged {
+            self.title.push_str("THE STEWARD'S GUESTS: ");
+            write_integer(
+                &mut self.title,
+                i64::try_from(dungeon.adds_alive).unwrap_or(i64::MAX),
+            );
+            color::CRIMSON
+        } else if dungeon.unlocked {
+            self.title.push_str("THE PATH TO THE CRYPT LORD IS OPEN");
+            color::VERDANT
+        } else {
+            self.title.push_str("REQUIRED: 100%");
+            color::TEXT_MUTED
+        };
+        self.list.label(
+            (left, row),
+            &self.title,
+            tint,
+            type_scale::META.font,
+            style.size(type_scale::META),
+            TextAlign::Left,
+        );
     }
 
     /// Every enabled action bar, wherever the layout puts it.
@@ -1321,12 +1468,24 @@ impl GameUi {
     #[must_use]
     pub fn talent_button_rect(&self, viewport: (u32, u32)) -> UiRect {
         let width = viewport.0 as f32;
+        // The minimap owns the corner when there is one; the buttons sit on its left, level
+        // with its banner, the way the genre hangs buttons off the minimap's edge.
+        let right = self.minimap.map_or(width - self.metrics.margin, |minimap| {
+            minimap.x - self.metrics.corner_button_gap
+        });
         UiRect::new(
-            width - self.metrics.margin - self.metrics.talent_button_size,
+            right - self.metrics.talent_button_size,
             self.metrics.margin,
             self.metrics.talent_button_size,
             self.metrics.talent_button_size,
         )
+    }
+
+    /// Tells the HUD where the minimap is this frame, or that there is none.
+    ///
+    /// The minimap is drawn by `ui::dungeon_map`; the HUD only keeps out of its way.
+    pub fn set_minimap_bounds(&mut self, bounds: Option<UiRect>) {
+        self.minimap = bounds;
     }
 
     /// Where the character button sits: beside the talent button, further left.
@@ -1475,7 +1634,7 @@ impl GameUi {
         let (origin, align) = centered(width * 0.5, height * 0.42 + self.metrics.bar_height * 2.0);
         self.list.text_aligned(
             origin,
-            "PRESS BACKSPACE TO RESET THE ENCOUNTER",
+            "PRESS BACKSPACE TO RETURN - WHAT YOU KILLED STAYS DEAD",
             self.theme.text,
             self.metrics.scale.text(self.theme.hud_text_scale * 0.8),
             align,

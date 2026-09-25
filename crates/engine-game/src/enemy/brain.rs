@@ -39,7 +39,19 @@ use engine_core::math::Vec3;
 use crate::entity::EntityId;
 use crate::movement::MoveIntent;
 
-use super::{ENEMY_ABILITY_COUNT, EnemyAbility, EnemyArchetype, EnemyKind, TelegraphShape};
+use super::{
+    ENEMY_ABILITY_COUNT, EnemyAbility, EnemyArchetype, EnemyKind, EnemyRequirement, EnemyTarget,
+    TelegraphShape,
+};
+
+/// The most impact zones one cast can lay.
+///
+/// Deadly Rain's three circles on each of three players. A fixed array rather than a list, so a
+/// cast stays `Copy` and a brain allocates nothing however many zones it lays.
+pub const MAX_ZONES: usize = 9;
+
+/// The most distinct hostiles one cast can be aimed at.
+pub const MAX_TARGETS: usize = 3;
 
 /// How close to home counts as home, in metres.
 const HOME_TOLERANCE: f32 = 0.6;
@@ -117,9 +129,34 @@ pub struct AiPercept {
     /// untouched pack's healer fall through to its filler instead of casting a heal at
     /// nobody.
     pub wounded_ally: Option<AiTarget>,
+    /// The hostile furthest away that could still be reached, for a charge.
+    ///
+    /// Only asked for by an archetype that has something to aim at it; `None` otherwise.
+    pub farthest: Option<AiTarget>,
+    /// Whether whoever it is fighting is bleeding, for an ability that needs them to be.
+    pub victim_bleeding: bool,
 }
 
 impl AiPercept {
+    /// A percept of a living enemy at `position` with nobody around it.
+    ///
+    /// The starting point every caller fills in: a test names the one or two fields it is
+    /// about, and a field added to the percept later is a default here rather than an edit to
+    /// every literal.
+    #[must_use]
+    pub fn alone(position: Vec3) -> Self {
+        Self {
+            position,
+            alive: true,
+            target: None,
+            nearest: None,
+            health_fraction: 1.0,
+            wounded_ally: None,
+            farthest: None,
+            victim_bleeding: false,
+        }
+    }
+
     /// Who this enemy is fighting: the angriest, or failing that the nearest.
     ///
     /// Threat decides *between* attackers; it does not decide *whether* there is a fight.
@@ -233,6 +270,51 @@ pub struct EnemyCast {
     /// point wherever the caster had turned to in the meantime, and the telegraph on the
     /// floor would have been a lie.
     pub shape: TelegraphShape,
+    /// How many zones the cast lays. Zone zero is [`EnemyCast::anchor`] and
+    /// [`EnemyCast::shape`]; the rest are filled in by the simulation when the cast starts.
+    ///
+    /// The brain cannot see the world, so it cannot know who else there is to aim at; it
+    /// starts the cast on its one recipient and the executor, which can, plans the rest.
+    pub zone_count: u8,
+    /// Where each zone is anchored.
+    pub zones: [Vec3; MAX_ZONES],
+    /// Where each zone was *aimed*: the player a line was fired at, the spot a pool is left.
+    pub aims: [Vec3; MAX_ZONES],
+    /// Which way each zone's shape points, for cones and lines.
+    pub yaws: [f32; MAX_ZONES],
+    /// Who each zone was laid on, for a mark that follows its victim.
+    pub zone_targets: [Option<EntityId>; MAX_ZONES],
+    /// Every hostile the cast is aimed at, the recipient first.
+    pub targets: [Option<EntityId>; MAX_TARGETS],
+    /// How many ticks a channel has already dealt.
+    pub ticks: u8,
+}
+
+impl EnemyCast {
+    /// The shape of zone `index`, turned the way that zone points.
+    #[must_use]
+    pub fn zone_shape(&self, index: usize) -> TelegraphShape {
+        aimed_shape(self.shape, self.yaws.get(index).copied().unwrap_or(0.0))
+    }
+
+    /// The zones the cast lays, as `(anchor, shape, aim, laid on)`.
+    pub fn zone_list(
+        &self,
+    ) -> impl Iterator<Item = (Vec3, TelegraphShape, Vec3, Option<EntityId>)> + '_ {
+        (0..usize::from(self.zone_count).min(MAX_ZONES)).map(|index| {
+            (
+                self.zones[index],
+                self.zone_shape(index),
+                self.aims[index],
+                self.zone_targets[index],
+            )
+        })
+    }
+
+    /// Every hostile the cast is aimed at.
+    pub fn target_list(&self) -> impl Iterator<Item = EntityId> + '_ {
+        self.targets.iter().filter_map(|target| *target)
+    }
 }
 
 impl EnemyCast {
@@ -299,6 +381,15 @@ pub struct EnemyBrain {
     /// divides every cooldown it starts, which is what "attack speed" means for an enemy
     /// whose whole rotation is cooldowns.
     attack_speed_scale: f32,
+    /// Seconds of frenzy left: the enemy attacks faster while it runs.
+    frenzy: f32,
+    /// How much faster a frenzy makes it attack, as a fraction.
+    frenzy_haste: f32,
+    /// How close the player must come before it notices, in metres.
+    ///
+    /// The archetype's, unless the level placed it with its own - a sentry an author wants
+    /// to notice the whole courtyard is a placement setting, not a new monster.
+    aggro_radius: f32,
 }
 
 impl EnemyBrain {
@@ -320,7 +411,72 @@ impl EnemyBrain {
             stun: 0.0,
             silence: 0.0,
             attack_speed_scale: 1.0,
+            frenzy: 0.0,
+            frenzy_haste: 0.0,
+            aggro_radius: kind.archetype().aggro_radius,
         }
+    }
+
+    /// Sets how close the player must come before it notices, in metres.
+    ///
+    /// Survives a reset: it is where the level put it, not something the fight changed.
+    pub fn set_aggro_radius(&mut self, radius: f32) {
+        if radius.is_finite() && radius >= 0.0 {
+            self.aggro_radius = radius;
+        }
+    }
+
+    /// How close the player must come before it notices, in metres.
+    #[must_use]
+    pub fn aggro_radius(&self) -> f32 {
+        self.aggro_radius
+    }
+
+    /// Starts a frenzy: `haste` faster for `seconds`, keeping whichever lasts longer.
+    pub fn frenzy(&mut self, seconds: f32, haste: f32) {
+        if seconds.is_finite() && seconds > self.frenzy {
+            self.frenzy = seconds;
+        }
+        if haste.is_finite() {
+            self.frenzy_haste = haste.max(0.0);
+        }
+    }
+
+    /// Whether it is frenzied.
+    #[must_use]
+    pub fn is_frenzied(&self) -> bool {
+        self.frenzy > 0.0
+    }
+
+    /// Everything that makes it attack faster, multiplied together.
+    ///
+    /// Divides every cooldown and every recovery it starts. The one place the two sources -
+    /// a debuff pushed in from outside and its own frenzy - meet.
+    #[must_use]
+    pub fn haste(&self) -> f32 {
+        let frenzy = if self.frenzy > 0.0 {
+            1.0 + self.frenzy_haste
+        } else {
+            1.0
+        };
+        (self.attack_speed_scale * frenzy).max(0.2)
+    }
+
+    /// The cast in progress, to be completed by the simulation.
+    ///
+    /// The brain starts a cast on its one recipient; the executor, which can see the world,
+    /// fills in the other targets and zones the ability asks for. Nothing else writes here.
+    pub fn cast_mut(&mut self) -> Option<&mut EnemyCast> {
+        self.cast.as_mut()
+    }
+
+    /// Advances its timers without deciding anything.
+    ///
+    /// What a charge runs while the body is carried along its line: the mind waits, its
+    /// cooldowns and its frenzy keep counting, and it decides nothing until it lands.
+    pub fn hold(&mut self, step: f32) {
+        let step = if step.is_finite() { step.max(0.0) } else { 0.0 };
+        self.tick_timers(step);
     }
 
     /// Which archetype it is.
@@ -468,6 +624,8 @@ impl EnemyBrain {
         self.stun = 0.0;
         self.silence = 0.0;
         self.attack_speed_scale = 1.0;
+        self.frenzy = 0.0;
+        self.frenzy_haste = 0.0;
     }
 
     /// Which phase it is in. Zero is the first.
@@ -668,6 +826,7 @@ impl EnemyBrain {
         self.timer = (self.timer - step).max(0.0);
         self.stun = (self.stun - step).max(0.0);
         self.silence = (self.silence - step).max(0.0);
+        self.frenzy = (self.frenzy - step).max(0.0);
         for cooldown in &mut self.cooldowns {
             *cooldown = (*cooldown - step).max(0.0);
         }
@@ -686,7 +845,7 @@ impl EnemyBrain {
             .or_else(|| {
                 percept
                     .nearest
-                    .filter(|near| near.distance <= self.archetype().aggro_radius)
+                    .filter(|near| near.distance <= self.aggro_radius)
             });
         let Some(noticed) = noticed else {
             return self.face_home(percept);
@@ -740,9 +899,57 @@ impl EnemyBrain {
         let archetype = self.archetype();
         let facing = yaw_towards(percept.position, target.position);
 
-        // Out of position: close, and do nothing else. A dead band on the outside, so an
-        // enemy sitting at exactly its preferred range does not twitch between two states.
-        if target.distance > archetype.preferred_range + archetype.range_slack {
+        // Out of position: close. A dead band on the outside, so an enemy sitting at exactly
+        // its preferred range does not twitch between two states.
+        let out_of_position = target.distance > archetype.preferred_range + archetype.range_slack;
+
+        // The phase's list *is* the priority list: the first ability that is off cooldown,
+        // in range, and has somebody to be used on is the one used. A boss with a rotation is
+        // a longer list; a healer is a list whose first entry selects an ally.
+        //
+        // While closing, only a gap-closer — something with a minimum range, a charge or a
+        // leap — is considered: that is what it is for, and a melee monster that stopped to
+        // swing at somebody fifteen metres away would be a monster standing still.
+        let choice = archetype
+            .phase_abilities(self.phase)
+            .filter_map(|ability| {
+                let definition = ability.definition();
+                if self.cooldowns[ability.index()] > 0.0 {
+                    return None;
+                }
+                if out_of_position && definition.min_range <= 0.0 {
+                    return None;
+                }
+                // Silenced: everything with a cast bar is off the list, and the instants
+                // stay. Filtered here rather than refused later so a silenced caster picks
+                // its swing instead of standing still holding a spell it cannot cast.
+                if self.is_silenced() && definition.is_cast() {
+                    return None;
+                }
+                if definition.requires == EnemyRequirement::VictimBleeding
+                    && !percept.victim_bleeding
+                {
+                    return None;
+                }
+                let recipient = match definition.select {
+                    // A random pick is made by the simulation when the cast starts; the brain
+                    // only needs to know there is somebody to pick from, and its own target
+                    // is proof of that.
+                    EnemyTarget::Victim | EnemyTarget::Random => target,
+                    EnemyTarget::WoundedAlly => percept.wounded_ally?,
+                    EnemyTarget::Farthest => percept.farthest?,
+                };
+                // A frenzy is aimed at the enemy itself: it is ready whenever there is a fight.
+                if definition.effect.is_self() {
+                    return Some((ability, recipient));
+                }
+                if recipient.distance < definition.min_range {
+                    return None;
+                }
+                (recipient.distance <= definition.range).then_some((ability, recipient))
+            })
+            .next();
+        if out_of_position && choice.is_none() {
             self.state = AiState::Chase;
             return AiDecision {
                 intent: MoveIntent {
@@ -754,32 +961,23 @@ impl EnemyBrain {
                 phase: None,
             };
         }
-
         self.state = AiState::Attack;
-        // The phase's list *is* the priority list: the first ability that is off cooldown,
-        // in range, and has somebody to be used on is the one used. A boss with a rotation is
-        // a longer list; a healer is a list whose first entry selects an ally.
-        let choice = archetype
-            .phase_abilities(self.phase)
-            .filter_map(|ability| {
-                let definition = ability.definition();
-                if self.cooldowns[ability.index()] > 0.0 {
-                    return None;
-                }
-                // Silenced: everything with a cast bar is off the list, and the instants
-                // stay. Filtered here rather than refused later so a silenced caster picks
-                // its swing instead of standing still holding a spell it cannot cast.
-                if self.is_silenced() && definition.is_cast() {
-                    return None;
-                }
-                let recipient = match definition.select {
-                    super::EnemyTarget::Victim => target,
-                    super::EnemyTarget::WoundedAlly => percept.wounded_ally?,
-                };
-                (recipient.distance <= definition.range).then_some((ability, recipient))
-            })
-            .next();
         let Some((ability, recipient)) = choice else {
+            // Nothing ready, and somebody is standing on a ranged monster: it backs away,
+            // still facing them. Only when nothing is ready, so stepping back never costs it
+            // a cast it would otherwise have made.
+            if archetype.retreat_below > 0.0 && target.distance < archetype.retreat_below {
+                let away = direction_towards(target.position, percept.position);
+                return AiDecision {
+                    intent: MoveIntent {
+                        direction: away,
+                        jump: false,
+                        facing: Some(facing),
+                    },
+                    request: AiRequest::None,
+                    phase: None,
+                };
+            }
             // Nothing ready: hold position and keep facing. Standing still rather than
             // circling is deliberate — movement the player cannot predict is not a
             // foundation, it is noise.
@@ -798,9 +996,8 @@ impl EnemyBrain {
         // The phase's cooldown scaling is applied here, once, when the ability is started —
         // not when it is read — so a phase change does not retroactively shorten a cooldown
         // that is already running.
-        self.cooldowns[ability.index()] = definition.cooldown
-            * archetype.phase_cooldown_scale(self.phase)
-            / self.attack_speed_scale.max(0.2);
+        self.cooldowns[ability.index()] =
+            definition.cooldown * archetype.phase_cooldown_scale(self.phase) / self.haste();
         let intent = MoveIntent {
             direction: Vec3::ZERO,
             jump: false,
@@ -808,6 +1005,17 @@ impl EnemyBrain {
         };
         if definition.is_cast() {
             self.state = AiState::Cast;
+            let anchor = match definition.aim {
+                super::EnemyAim::Target => recipient.position,
+                super::EnemyAim::Caster => percept.position,
+            };
+            // A line or a cone from the caster points at whoever it was aimed at, which for a
+            // charge is not necessarily who the enemy is facing.
+            let yaw = yaw_towards(percept.position, recipient.position);
+            let mut targets = [None; MAX_TARGETS];
+            targets[0] = Some(recipient.entity);
+            let mut zone_targets = [None; MAX_ZONES];
+            zone_targets[0] = Some(recipient.entity);
             self.cast = Some(EnemyCast {
                 ability,
                 elapsed: 0.0,
@@ -815,12 +1023,16 @@ impl EnemyBrain {
                 // Whoever the ability selected, which for a heal is an ally rather than the
                 // thing the enemy is fighting.
                 target: recipient.entity,
-                anchor: match definition.aim {
-                    super::EnemyAim::Target => recipient.position,
-                    super::EnemyAim::Caster => percept.position,
-                },
+                anchor,
                 interruptible: definition.interruptible,
-                shape: aimed_shape(definition.shape, facing),
+                shape: aimed_shape(definition.shape, yaw),
+                zone_count: 1,
+                zones: [anchor; MAX_ZONES],
+                aims: [recipient.position; MAX_ZONES],
+                yaws: [yaw; MAX_ZONES],
+                zone_targets,
+                targets,
+                ticks: 0,
             });
             return AiDecision {
                 intent,
@@ -829,7 +1041,7 @@ impl EnemyBrain {
             };
         }
         self.state = AiState::Recover;
-        self.timer = definition.recovery;
+        self.timer = definition.recovery / self.haste();
         AiDecision {
             intent,
             request: AiRequest::Instant(ability),
@@ -876,7 +1088,7 @@ impl EnemyBrain {
 
         self.cast = None;
         self.state = AiState::Recover;
-        self.timer = cast.ability.definition().recovery;
+        self.timer = cast.ability.definition().recovery / self.haste();
         AiDecision {
             intent: MoveIntent {
                 direction: Vec3::ZERO,
@@ -992,6 +1204,7 @@ pub fn aimed_shape(shape: TelegraphShape, yaw: f32) -> TelegraphShape {
             range,
             half_angle,
         },
+        TelegraphShape::Line { length, width, .. } => TelegraphShape::Line { yaw, length, width },
         other => other,
     }
 }
@@ -1050,6 +1263,8 @@ mod tests {
             nearest: Some(target),
             health_fraction: 1.0,
             wounded_ally: None,
+            farthest: None,
+            victim_bleeding: false,
         }
     }
 
@@ -1104,6 +1319,8 @@ mod tests {
             nearest: None,
             health_fraction: 1.0,
             wounded_ally: None,
+            farthest: None,
+            victim_bleeding: false,
         };
         brain.think(&far, STEP);
         assert_eq!(brain.state(), AiState::Alert);
@@ -1200,6 +1417,8 @@ mod tests {
             nearest: None,
             health_fraction: 1.0,
             wounded_ally: None,
+            farthest: None,
+            victim_bleeding: false,
         };
         // The tick it loses its target it drops the cast; from the next one it walks.
         brain.think(&lost, STEP);

@@ -437,6 +437,17 @@ Health, cooldowns, statuses, resources, factions, targets. `RenderWorld` carries
 mesh and material handles, bounds and visibility, and there is nowhere in it for the rest to
 go — which is enforced by the crate split rather than by review.
 
+### The dungeon map
+
+The minimap and the full-screen map are drawn inside the same single UI batch: each UI vertex
+carries a `clip` attribute (a circle the pixel shader clips to, and which of two textures to
+sample — the atlas or the level's baked map picture). Rectangular clips are cut on the CPU. The
+picture is baked at level load by `Renderer::capture_world` (a top-down orthographic frame of a
+private `RenderWorld` holding only the static level, fenced and never presented), styled on the
+CPU with a walkable mask from `engine-environment`, and cached in `assets/generated/maps/`.
+Gameplay contributes only data (ability descriptions and counters, a loot table of item ids);
+encounter markers are derived from the scene's placements. See `docs/dungeon-map.md`.
+
 ## Engine lifecycle (Phase 1, M1)
 
 `engine-core::application` owns the lifecycle and the frame loop:

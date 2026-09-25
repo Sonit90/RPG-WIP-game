@@ -44,6 +44,7 @@
 
 pub mod camera;
 pub mod error;
+pub mod font;
 pub mod lighting;
 pub mod particles;
 pub mod skinning;
@@ -52,6 +53,7 @@ pub mod world;
 
 pub use camera::{Camera, DEFAULT_FAR, DEFAULT_FOV_Y, DEFAULT_NEAR, Projection};
 pub use error::RenderDataError;
+pub use font::UiFont;
 pub use lighting::{Lighting, LocalLight, LocalLightKind};
 pub use particles::{DEFAULT_PARTICLE_CAPACITY, ParticleBlend, ParticleDrawList, ParticleInstance};
 pub use skinning::{

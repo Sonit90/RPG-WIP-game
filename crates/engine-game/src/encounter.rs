@@ -24,8 +24,11 @@
 //! Waves, phases, scripted timelines, adds, loot and objectives. Every one of them is a
 //! layer *above* this lifecycle, and none of them changes its shape.
 
+use std::borrow::Cow;
+
 use engine_core::math::Vec3;
 
+use crate::dungeon::SpawnDetail;
 use crate::enemy::EnemyKind;
 use crate::entity::EntityId;
 
@@ -75,6 +78,11 @@ pub struct EnemySpawn {
     pub position: Vec3,
     /// Which way it faces while it is idle.
     pub facing_yaw: f32,
+    /// Everything a level placement said about it beyond kind and place, if it said anything.
+    ///
+    /// An index into the dungeon's own table of details rather than the details themselves,
+    /// so a spawn point stays a small `Copy` value; `None` is the monster as designed.
+    pub detail: Option<SpawnDetail>,
 }
 
 impl EnemySpawn {
@@ -85,7 +93,15 @@ impl EnemySpawn {
             kind,
             position,
             facing_yaw: 0.0,
+            detail: None,
         }
+    }
+
+    /// The same spawn, with a level placement's details.
+    #[must_use]
+    pub fn detailed(mut self, detail: SpawnDetail) -> Self {
+        self.detail = Some(detail);
+        self
     }
 
     /// The same spawn, facing `yaw`.
@@ -99,7 +115,7 @@ impl EnemySpawn {
 /// A fight: its members, its spawn points and its state.
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct Encounter {
-    name: &'static str,
+    name: Cow<'static, str>,
     state: EncounterState,
     spawns: Vec<EnemySpawn>,
     /// The entity each spawn point currently is, in the same order.
@@ -120,41 +136,49 @@ pub struct Encounter {
     /// sleep through its neighbour being deleted. The killer is remembered here instead, and
     /// the next tick pulls the pack with it exactly as a live member's target would.
     alarm: Option<EntityId>,
+    /// How many of [`Encounter::members`] were called into the fight rather than spawned
+    /// with the level: a boss's adds.
+    ///
+    /// Always the *last* members, so the ones that stand in for spawn points keep their
+    /// indices and a reset can hand the summons back to be taken out of the world.
+    summons: usize,
 }
 
 impl Encounter {
     /// An empty encounter named `name`.
     #[must_use]
-    pub fn new(name: &'static str) -> Self {
+    pub fn new(name: impl Into<Cow<'static, str>>) -> Self {
         Self {
-            name,
+            name: name.into(),
             state: EncounterState::NotStarted,
             spawns: Vec::new(),
             members: Vec::new(),
             resets: 0,
             pulled_together: false,
             alarm: None,
+            summons: 0,
         }
     }
 
     /// An encounter with these spawn points, not yet populated.
     #[must_use]
-    pub fn with_spawns(name: &'static str, spawns: Vec<EnemySpawn>) -> Self {
+    pub fn with_spawns(name: impl Into<Cow<'static, str>>, spawns: Vec<EnemySpawn>) -> Self {
         Self {
-            name,
+            name: name.into(),
             state: EncounterState::NotStarted,
             members: Vec::with_capacity(spawns.len()),
             spawns,
             resets: 0,
             pulled_together: false,
             alarm: None,
+            summons: 0,
         }
     }
 
     /// Its name.
     #[must_use]
-    pub fn name(&self) -> &'static str {
-        self.name
+    pub fn name(&self) -> &str {
+        &self.name
     }
 
     /// Where it is in its life.
@@ -209,9 +233,32 @@ impl Encounter {
     /// Called by the simulation, which is the only thing that can spawn.
     pub fn set_members(&mut self, members: Vec<EntityId>) {
         self.members = members;
+        self.summons = 0;
         self.state = EncounterState::NotStarted;
         self.pulled_together = false;
         self.alarm = None;
+    }
+
+    /// Adds a member that was called into the fight rather than spawned with the level.
+    ///
+    /// It counts towards the encounter like any member — the fight is not won while it
+    /// stands — and a reset hands it back through [`Encounter::take_summons`].
+    pub fn add_summon(&mut self, entity: EntityId) {
+        self.members.push(entity);
+        self.summons += 1;
+    }
+
+    /// How many members were called in rather than spawned.
+    #[must_use]
+    pub fn summon_count(&self) -> usize {
+        self.summons
+    }
+
+    /// Removes and returns every called-in member.
+    pub fn take_summons(&mut self) -> Vec<EntityId> {
+        let keep = self.members.len().saturating_sub(self.summons);
+        self.summons = 0;
+        self.members.split_off(keep)
     }
 
     /// Marks the fight as running. Idempotent.

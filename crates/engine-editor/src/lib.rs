@@ -21,6 +21,7 @@
 //!   │        │  H / SHIFT+H         hide the selection / show everything
 //!   │        │  K                   lock the selection: the world's clicks pass through it
 //!   │        │  V / P / I           pour water / put a spawn point / put a light
+//!   │        │  U                   put the browser's monster where the cursor is
 //!   │        │  M                   module snap: the cave grid, on and off
 //!   │        │  CTRL+click          add to the selection; CTRL+A takes everything
 //!   │        │  CTRL+Z / CTRL+Y     undo / redo
@@ -93,6 +94,7 @@ pub mod icons;
 pub mod inspector;
 mod interaction;
 pub mod layout;
+pub mod monster;
 pub mod panels;
 pub mod pick;
 pub mod theme;
@@ -108,7 +110,9 @@ use engine_environment::lighting::SceneLight;
 use engine_environment::spawn::SpawnPoint;
 use engine_environment::terrain::{BrushMode, Terrain};
 use engine_environment::water::WaterBody;
-use engine_environment::{EnvironmentAsset, EnvironmentObject, EnvironmentScene, scene_file};
+use engine_environment::{
+    EnvironmentAsset, EnvironmentObject, EnvironmentScene, MonsterPlacement, scene_file,
+};
 use engine_presentation::ui::ground_decal::GroundSurface;
 use engine_presentation::ui::input::UiInput;
 use engine_presentation::ui::targeting::{cursor_ray, ground_under_cursor};
@@ -139,6 +143,7 @@ struct Snapshot {
     water: Vec<WaterBody>,
     spawn_points: Vec<SpawnPoint>,
     lights: Vec<SceneLight>,
+    monsters: Vec<MonsterPlacement>,
     flags: Vec<u8>,
 }
 
@@ -151,6 +156,7 @@ impl Snapshot {
             water: scene.water.clone(),
             spawn_points: scene.spawn_points.clone(),
             lights: scene.lights.clone(),
+            monsters: scene.monsters.clone(),
             flags: flags.to_vec(),
         }
     }
@@ -162,6 +168,7 @@ impl Snapshot {
         scene.water = self.water;
         scene.spawn_points = self.spawn_points;
         scene.lights = self.lights;
+        scene.monsters = self.monsters;
         self.flags
     }
 }
@@ -229,6 +236,24 @@ const UNIFORM_SCALE_PIXELS: f32 = 150.0;
 /// What a scale drag rounds to when snapping is on.
 const SCALE_SNAP: f32 = 0.05;
 
+/// The level's baked map, as the editor sees it: where it is in the world and whether it is
+/// still a picture of this level.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MapPictureInfo {
+    /// The world rectangle the picture shows.
+    pub frame: engine_environment::MapFrame,
+    /// Texels across.
+    pub width: u32,
+    /// Texels down.
+    pub height: u32,
+    /// Whether the level's walls have moved since it was baked.
+    pub stale: bool,
+    /// Milliseconds the bake (or the load) took.
+    pub milliseconds: f32,
+    /// Whether it was baked just now rather than loaded from disk.
+    pub baked_now: bool,
+}
+
 /// What the application should do about the frame the editor just read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EditorOutcome {
@@ -275,6 +300,8 @@ pub enum Selected {
     Spawn(usize),
     /// A local light, by its index into `scene.lights`.
     Light(usize),
+    /// A monster, by its index into `scene.monsters`.
+    Monster(usize),
 }
 
 impl Selected {
@@ -310,6 +337,15 @@ impl Selected {
     pub fn light(self) -> Option<usize> {
         match self {
             Self::Light(index) => Some(index),
+            _ => None,
+        }
+    }
+
+    /// The monster index, if this is a monster.
+    #[must_use]
+    pub fn monster(self) -> Option<usize> {
+        match self {
+            Self::Monster(index) => Some(index),
             _ => None,
         }
     }
@@ -385,6 +421,23 @@ struct PlacementDrag {
     /// that was carried out into the level.
     from: (f32, f32),
 }
+
+/// A stroke of placing mode: tiles laid along the pointer, or a rectangle being dragged out.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PaintStroke {
+    /// The cell the stroke started in.
+    pub start: (i64, i64),
+    /// The cell the pointer is in now.
+    pub current: (i64, i64),
+    /// Metres between cells: the grid, or the asset's footprint when that is larger.
+    pub spacing: f32,
+    /// Whether this is a rectangle (`SHIFT`) filled on release, rather than a line painted
+    /// as the pointer moves.
+    pub fill: bool,
+}
+
+/// The most tiles one fill may lay, so a slip of the hand cannot put ten thousand rocks down.
+const FILL_LIMIT: usize = 1024;
 
 /// A selection box being dragged out over the world.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -529,8 +582,16 @@ pub struct Editor {
     yaw_step: usize,
     /// Whether the terrain brush has the pointer instead of placement and selection.
     sculpting: bool,
+    /// Whether the brush is painting this frame: the button is down over the ground.
+    brush_active: bool,
     /// Whether a click in the world puts an object down rather than selecting one.
     placing: bool,
+    /// The placing-mode stroke in progress, if one is.
+    paint: Option<PaintStroke>,
+    /// Whether `SHIFT` is held this frame.
+    shift: bool,
+    /// How far apart placing mode lays tiles, worked out once a frame for the preview.
+    spacing_preview: f32,
     /// What the brush does.
     brush: BrushMode,
     /// How wide the brush is, in metres.
@@ -614,6 +675,13 @@ pub struct Editor {
     leave_requested: bool,
     /// Whether the debug overlay is on.
     show_debug: bool,
+    /// Whether the dungeon map's preview is drawn in the viewport's corner.
+    map_preview: bool,
+    /// Whether the author asked for the map to be baked again, for the application to answer.
+    bake_requested: bool,
+    /// The level's baked map, as the application last told it: what the preview draws over
+    /// and what the inspector measures a monster's map position against.
+    map_picture: Option<MapPictureInfo>,
     /// What is on the clipboard.
     clipboard: Vec<commands::Clip>,
     /// The tooltip the pointer is resting on.
@@ -676,7 +744,11 @@ impl Editor {
             snap: true,
             yaw_step: 2,
             sculpting: false,
+            brush_active: false,
             placing: false,
+            paint: None,
+            shift: false,
+            spacing_preview: 1.0,
             brush: BrushMode::Raise,
             brush_radius: 6.0,
             brush_strength: 0.5,
@@ -718,6 +790,9 @@ impl Editor {
             modal: None,
             leave_requested: false,
             show_debug: false,
+            map_preview: false,
+            bake_requested: false,
+            map_picture: None,
             clipboard: Vec::new(),
             tip: None,
             tip_last: None,
@@ -798,6 +873,27 @@ impl Editor {
     #[must_use]
     pub fn selected_spawn(&self) -> Option<usize> {
         self.selection().and_then(Selected::spawn)
+    }
+
+    /// Whether a monster is selected.
+    #[must_use]
+    pub fn is_monster_selected(&self, index: usize) -> bool {
+        self.is_selected(Selected::Monster(index))
+    }
+
+    /// Hands the editor the monsters the game can spawn, for the browser and the inspector.
+    ///
+    /// Called by the application, which is the one crate that links both the editor and the
+    /// monster table. See [`crate::monster`].
+    pub fn set_monster_catalogue(&mut self, entries: Vec<monster::MonsterEntry>) {
+        self.browser
+            .set_monsters(monster::MonsterCatalogue::new(entries));
+    }
+
+    /// The monsters the editor offers.
+    #[must_use]
+    pub fn monsters(&self) -> &monster::MonsterCatalogue {
+        self.browser.monsters()
     }
 
     /// The primary selection, if it is a placement.
@@ -925,6 +1021,50 @@ impl Editor {
     #[must_use]
     pub fn can_paste(&self) -> bool {
         !self.clipboard.is_empty()
+    }
+
+    /// Whether the dungeon map's preview is showing.
+    #[must_use]
+    pub fn shows_map_preview(&self) -> bool {
+        self.map_preview
+    }
+
+    /// Shows or hides the map preview.
+    pub fn set_map_preview(&mut self, shown: bool) {
+        self.map_preview = shown;
+    }
+
+    /// Takes the author's request to bake the map, if there is one. The application answers
+    /// it and calls [`Editor::set_map_picture`] with the result.
+    pub fn take_bake_request(&mut self) -> bool {
+        std::mem::take(&mut self.bake_requested)
+    }
+
+    /// Tells the editor about the level's baked map, or that there is none.
+    pub fn set_map_picture(&mut self, picture: Option<MapPictureInfo>) {
+        if self.bake_requested || picture.is_some_and(|picture| picture.baked_now) {
+            self.status = match picture {
+                Some(picture) => format!(
+                    "Map baked: {} x {} in {:.0} ms",
+                    picture.width, picture.height, picture.milliseconds
+                ),
+                None => "The map could not be baked; see the log".to_owned(),
+            };
+        }
+        self.map_picture = picture;
+    }
+
+    /// The level's baked map, if the application has one.
+    #[must_use]
+    pub fn map_picture(&self) -> Option<MapPictureInfo> {
+        self.map_picture
+    }
+
+    /// Marks the baked map as describing other geometry than the level now has, or not.
+    pub fn set_map_stale(&mut self, stale: bool) {
+        if let Some(picture) = &mut self.map_picture {
+            picture.stale = stale;
+        }
     }
 
     /// Whether the debug overlay is on.
@@ -1069,6 +1209,12 @@ impl Editor {
     #[must_use]
     pub fn brush(&self) -> BrushMode {
         self.brush
+    }
+
+    /// Whether the brush is painting this frame.
+    #[must_use]
+    pub fn is_brushing(&self) -> bool {
+        self.sculpting && self.brush_active
     }
 
     /// How wide the brush is, in metres.
@@ -1465,6 +1611,10 @@ impl Editor {
 
         let modifiers = input.modifiers();
         let control = modifiers.ctrl();
+        self.shift = modifiers.shift();
+        if self.placing {
+            self.spacing_preview = self.paint_spacing();
+        }
         let pointer = ui_input.pointer;
         let over_viewport = layout.viewport.contains(pointer.0, pointer.1);
 
@@ -1536,6 +1686,12 @@ impl Editor {
         // Sculpting takes the world pointer and most of the keyboard; the panels keep theirs.
         // A key the brush answered is *not* passed on: `B` cycles the brush while sculpting
         // and switches modes while not, and one press must not do both.
+        // The brush cursor follows the ground under the pointer, painting or not.
+        if self.sculpting {
+            self.update_hover(ui_input, scene, view_projection, viewport, !over_panel);
+        } else {
+            self.brush_active = false;
+        }
         if self.sculpting && !typing {
             let (outcome, handled) = self.update_terrain(
                 input,
@@ -1561,6 +1717,8 @@ impl Editor {
                 Some(self.put_spawn(ui_input, scene, view_projection, viewport, over_panel))
             } else if input.was_key_pressed(KeyCode::I) {
                 Some(self.put_light(ui_input, scene, view_projection, viewport, over_panel))
+            } else if input.was_key_pressed(KeyCode::U) {
+                Some(self.put_monster(ui_input, scene, view_projection, viewport, over_panel))
             } else {
                 None
             };
@@ -1761,6 +1919,74 @@ impl Editor {
         true
     }
 
+    /// Puts the browser's monster on the ground under the cursor. Returns whether one arrived.
+    ///
+    /// The monster chosen in the browser, or the first one in it when an asset is chosen
+    /// instead — `U` always puts *a* monster down, and the inspector says which.
+    pub(crate) fn put_monster(
+        &mut self,
+        ui_input: &UiInput,
+        scene: &mut EnvironmentScene,
+        view_projection: &Mat4,
+        viewport: (u32, u32),
+        over_panel: bool,
+    ) -> bool {
+        if over_panel {
+            return false;
+        }
+        let Some(ground) = self.drop_point(ui_input.pointer, scene, view_projection, viewport)
+        else {
+            self.status = "point at the ground to put a monster".to_owned();
+            return false;
+        };
+        self.place_monster(scene, ground)
+    }
+
+    /// Puts the browser's monster down at `position` and selects it.
+    ///
+    /// Facing whatever the last monster placed faces, and in the same pack when it is close
+    /// enough to it to be the same fight — laying out a pack is placing three monsters in a
+    /// row, and each one joining the last is what makes that one gesture rather than three
+    /// plus an edit.
+    fn place_monster(&mut self, scene: &mut EnvironmentScene, position: Vec3) -> bool {
+        let id = match self.browser.selected_monster() {
+            Some(entry) => entry.id.clone(),
+            None => match self.browser.monsters().get(0) {
+                Some(entry) => entry.id.clone(),
+                None => {
+                    self.status = "no monsters are known to this build".to_owned();
+                    return false;
+                }
+            },
+        };
+        self.snapshot(scene);
+        let standing = self.snap(position);
+        let standing = Vec3::new(
+            standing.x,
+            scene.ground_at(standing).max(position.y),
+            standing.z,
+        );
+        let mut placement = MonsterPlacement::new(id.clone(), standing);
+        if let Some(last) = scene.monsters.last() {
+            placement.yaw = last.yaw;
+            let near = (last.position - standing).length() <= MONSTER_PACK_REACH;
+            if near {
+                placement.pack.clone_from(&last.pack);
+            }
+        }
+        if placement.pack.is_none() {
+            placement.pack = Some(next_pack_name(scene));
+        }
+        let pack = placement.pack.clone().unwrap_or_default();
+        scene.push_monster(placement);
+        self.selected.clear();
+        self.selected
+            .push(Selected::Monster(scene.monsters.len() - 1));
+        self.water_touched = true;
+        self.status = format!("Placed {} in {pack}", theme::display_name(&id));
+        true
+    }
+
     /// Puts a warm point light above the ground under the cursor. Returns whether one arrived.
     fn put_light(
         &mut self,
@@ -1899,11 +2125,14 @@ impl Editor {
         // Nothing below is a key, so nothing below has answered one: a frame in which the
         // brush is not painting leaves the keyboard to the editor.
         if over_panel || !ui_input.pointer_down {
+            self.brush_active = false;
             return (EditorOutcome::Idle, false);
         }
         let Some(ground) = ground_under(ui_input.pointer, view_projection, viewport, scene) else {
+            self.brush_active = false;
             return (EditorOutcome::Idle, false);
         };
+        self.brush_active = true;
 
         // A level with no terrain gets one the first time somebody paints on it. Sized to the
         // level's own playable square, so the ground reaches as far as the walls do.
@@ -1968,7 +2197,9 @@ impl Editor {
                         .position(|known| *known == property)
                         .map_or(0, |at| (at + 1) % all.len().max(1));
                     if let Some(property) = all.get(next).copied() {
-                        let value = inspector::get(scene, primary, property).unwrap_or(0.0);
+                        let value =
+                            inspector::get(scene, self.browser.monsters(), primary, property)
+                                .unwrap_or(0.0);
                         self.inspector_edit = Some(InspectorEdit {
                             property,
                             field: field::TextField::new(
@@ -1997,7 +2228,14 @@ impl Editor {
         };
         let before = Snapshot::of(scene, &self.flags);
         let selection = self.selected.clone();
-        if !inspector::set(scene, &selection, primary, edit.property, value) {
+        if !inspector::set(
+            scene,
+            self.browser.monsters(),
+            &selection,
+            primary,
+            edit.property,
+            value,
+        ) {
             return false;
         }
         self.push_undo(before);
@@ -2039,6 +2277,7 @@ impl Editor {
             Selected::Water(index) => *index < scene.water.len(),
             Selected::Spawn(index) => *index < scene.spawn_points.len(),
             Selected::Light(index) => *index < scene.lights.len(),
+            Selected::Monster(index) => *index < scene.monsters.len(),
         });
     }
 
@@ -2100,6 +2339,9 @@ impl Editor {
         }
         if pressed(KeyCode::F3) {
             return self.execute(Command::ToggleDebug, scene);
+        }
+        if pressed(KeyCode::F4) {
+            return self.execute(Command::ToggleMapPreview, scene);
         }
         if control {
             let command = if pressed(KeyCode::S) {
@@ -2240,6 +2482,7 @@ impl Editor {
     /// longer in the middle of something" is one idea — and a gesture left half-finished by a
     /// mode change is exactly how a click three frames later moves something nobody selected.
     fn cancel_manipulation(&mut self) {
+        self.paint = None;
         self.gizmo_drag = None;
         self.placement = None;
         self.gizmo_hover = None;
@@ -2362,19 +2605,12 @@ impl Editor {
             return false;
         }
 
-        // Placing mode: every press in the world puts one down, and nothing else happens.
-        // Deliberately *not* a pick against the scene first — an author laying out a row of
-        // pillars wants the next one where the cursor is, including on top of the last one.
+        // Placing mode: a press puts one down, a drag paints a line of them, and a
+        // `SHIFT`-drag fills a rectangle — and nothing else happens. Deliberately *not* a pick
+        // against the scene first: an author laying out a row of pillars wants the next one
+        // where the cursor is.
         if self.placing {
-            if !ui_input.pointer_pressed || over_panel {
-                return false;
-            }
-            let Some(ground) = self.drop_point(ui_input.pointer, scene, view_projection, viewport)
-            else {
-                self.status = "point at the ground to place".to_owned();
-                return false;
-            };
-            return self.place(scene, ground);
+            return self.update_paint(ui_input, scene, view_projection, viewport, over_panel);
         }
 
         let screen = self.gizmo_with(scene, view_projection, viewport);
@@ -2766,11 +3002,217 @@ impl Editor {
         })
     }
 
+    /// How far apart placing mode lays tiles this frame.
+    #[must_use]
+    pub fn preview_spacing(&self) -> f32 {
+        self.spacing_preview
+    }
+
+    /// The stroke placing mode is in the middle of, for the painter's preview.
+    #[must_use]
+    pub fn paint_stroke(&self) -> Option<PaintStroke> {
+        self.paint
+    }
+
+    /// How far apart painted tiles are: the grid, or the chosen asset's footprint when that is
+    /// larger — so a four-metre floor tile painted on a one-metre grid lands edge to edge
+    /// rather than four times over itself.
+    pub fn paint_spacing(&mut self) -> f32 {
+        let footprint = self.browser.selected_footprint().unwrap_or(1.0);
+        let footprint = if footprint.is_finite() && footprint > 0.05 {
+            footprint
+        } else {
+            1.0
+        };
+        let grid = self.grid();
+        if grid <= 0.0 {
+            return footprint;
+        }
+        // A whole number of grid steps, so every tile still lands on the grid.
+        (footprint / grid).ceil().max(1.0) * grid
+    }
+
+    /// The ground point at the middle of cell `cell` for tiles `spacing` apart.
+    fn cell_point(scene: &EnvironmentScene, cell: (i64, i64), spacing: f32) -> Vec3 {
+        let (x, z) = (cell.0 as f32 * spacing, cell.1 as f32 * spacing);
+        Vec3::new(x, scene.ground_at(Vec3::new(x, 0.0, z)), z)
+    }
+
+    /// Whether the chosen asset already stands in cell `cell`, so a stroke that passes over a
+    /// cell twice does not stack a second tile on the first.
+    fn cell_taken(&self, scene: &EnvironmentScene, cell: (i64, i64), spacing: f32) -> bool {
+        let asset = self.asset();
+        let (x, z) = (cell.0 as f32 * spacing, cell.1 as f32 * spacing);
+        scene.objects.iter().any(|object| {
+            object.asset == asset
+                && (object.transform.translation.x - x).abs() < spacing * 0.25
+                && (object.transform.translation.z - z).abs() < spacing * 0.25
+        })
+    }
+
+    /// One frame of placing mode. Returns whether the scene changed.
+    fn update_paint(
+        &mut self,
+        ui_input: &UiInput,
+        scene: &mut EnvironmentScene,
+        view_projection: &Mat4,
+        viewport: (u32, u32),
+        over_panel: bool,
+    ) -> bool {
+        // Tiles go on the ground, not on top of each other: painting a floor with the
+        // surface under the pointer would stack every tile on the edge of the last one.
+        let ground = ground_under(ui_input.pointer, view_projection, viewport, scene);
+        let Some(mut stroke) = self.paint else {
+            if !ui_input.pointer_pressed || over_panel {
+                return false;
+            }
+            let Some(ground) = ground else {
+                self.status = "Point at the ground to place".to_owned();
+                return false;
+            };
+            let spacing = self.paint_spacing();
+            let cell = (
+                (ground.x / spacing).round() as i64,
+                (ground.z / spacing).round() as i64,
+            );
+            self.paint = Some(PaintStroke {
+                start: cell,
+                current: cell,
+                spacing,
+                fill: self.shift,
+            });
+            self.selected.clear();
+            if self.shift {
+                self.status = "Drag out the rectangle to fill, release to place".to_owned();
+                return false;
+            }
+            // One undo for the whole stroke, taken before the first tile.
+            self.snapshot(scene);
+            return self.paint_cell(scene, cell, spacing);
+        };
+
+        if let Some(ground) = ground {
+            stroke.current = (
+                (ground.x / stroke.spacing).round() as i64,
+                (ground.z / stroke.spacing).round() as i64,
+            );
+        }
+        let mut changed = false;
+        if ui_input.pointer_down {
+            if !stroke.fill {
+                // Every cell between the last one and this one, so a fast drag leaves no gaps.
+                let last = self.paint.map_or(stroke.current, |old| old.current);
+                for cell in cells_between(last, stroke.current) {
+                    changed |= self.paint_cell(scene, cell, stroke.spacing);
+                }
+            }
+            self.paint = Some(stroke);
+            if !stroke.fill && changed {
+                self.status = format!(
+                    "Painting {} - {} placed",
+                    theme::display_name(self.browser.selected_name()),
+                    self.selected.len()
+                );
+            }
+            return changed;
+        }
+
+        // The button came up.
+        self.paint = None;
+        if stroke.fill {
+            let (x0, x1) = (
+                stroke.start.0.min(stroke.current.0),
+                stroke.start.0.max(stroke.current.0),
+            );
+            let (z0, z1) = (
+                stroke.start.1.min(stroke.current.1),
+                stroke.start.1.max(stroke.current.1),
+            );
+            let count = ((x1 - x0 + 1) * (z1 - z0 + 1)) as usize;
+            if count > FILL_LIMIT {
+                self.status = format!(
+                    "{count} tiles is more than one fill lays ({FILL_LIMIT}); drag a smaller rectangle"
+                );
+                return false;
+            }
+            self.snapshot(scene);
+            for z in z0..=z1 {
+                for x in x0..=x1 {
+                    changed |= self.paint_cell(scene, (x, z), stroke.spacing);
+                }
+            }
+            if !changed {
+                // Nothing new went down — every cell was taken — so the snapshot is spent on
+                // nothing; take it back rather than leave an undo that undoes nothing.
+                self.undo.pop();
+                self.revision -= 1;
+            }
+        }
+        self.status = format!(
+            "Placed {} {} ({} m apart)",
+            self.selected.len(),
+            theme::display_name(self.browser.selected_name()),
+            stroke.spacing
+        );
+        changed
+    }
+
+    /// Places the chosen asset in `cell`, unless it is already there. Adds it to the
+    /// selection, so a painted floor can be moved as one. Returns whether it placed.
+    fn paint_cell(&mut self, scene: &mut EnvironmentScene, cell: (i64, i64), spacing: f32) -> bool {
+        let point = Self::cell_point(scene, cell, spacing);
+        // Placing mode with a monster chosen lays monsters: a pack in a stroke.
+        if let Some(entry) = self.browser.selected_monster() {
+            let id = entry.id.clone();
+            let taken = scene.monsters.iter().any(|monster| {
+                monster.monster == id
+                    && (monster.position.x - point.x).abs() < spacing * 0.25
+                    && (monster.position.z - point.z).abs() < spacing * 0.25
+            });
+            if taken {
+                return false;
+            }
+            let pack = scene
+                .monsters
+                .last()
+                .filter(|last| (last.position - point).length() <= MONSTER_PACK_REACH)
+                .and_then(|last| last.pack.clone())
+                .unwrap_or_else(|| next_pack_name(scene));
+            scene.push_monster(MonsterPlacement::new(id, point).in_pack(pack));
+            self.selected
+                .push(Selected::Monster(scene.monsters.len() - 1));
+            self.water_touched = true;
+            return true;
+        }
+        if self.cell_taken(scene, cell, spacing) {
+            return false;
+        }
+        let asset = self.asset();
+        let collision = match self.browser.selected_collision() {
+            browser::PlacementCollision::Simple(collision) => collision,
+            browser::PlacementCollision::Shape(shape) => scene.intern_collision(shape),
+        };
+        scene.push(EnvironmentObject {
+            asset,
+            transform: Transform::from_translation(point),
+            collision,
+        });
+        self.flags.push(0);
+        self.selected
+            .push(Selected::Object(scene.objects.len() - 1));
+        true
+    }
+
     /// Puts the browser's asset into the scene at `position` and selects it.
     ///
     /// One function for every way of placing, so a dropped asset and a double-clicked one land
     /// with the same collision, the same snapping and the same undo behind them.
     fn place(&mut self, scene: &mut EnvironmentScene, position: Vec3) -> bool {
+        // A monster chosen in the browser is placed as a monster: the same drag, the same
+        // double click, a different kind of thing in the level.
+        if self.browser.selected_monster().is_some() {
+            return self.place_monster(scene, position);
+        }
         self.snapshot(scene);
         let asset = self.asset();
         // What it blocks is decided once, here, and written into the level. A built-in has an
@@ -2955,6 +3397,21 @@ impl Editor {
     }
 }
 
+/// The grid cells a straight line from `from` to `to` passes through, `to` included and
+/// `from` left out — `from` was painted by the frame before.
+fn cells_between(from: (i64, i64), to: (i64, i64)) -> Vec<(i64, i64)> {
+    let steps = (to.0 - from.0).abs().max((to.1 - from.1).abs());
+    (1..=steps)
+        .map(|step| {
+            let t = step as f32 / steps as f32;
+            (
+                from.0 + ((to.0 - from.0) as f32 * t).round() as i64,
+                from.1 + ((to.1 - from.1) as f32 * t).round() as i64,
+            )
+        })
+        .collect()
+}
+
 /// Writes `scene` to `path` as the editor writes every level: without the collision shapes
 /// no placement names any more.
 fn write_scene(scene: &EnvironmentScene, path: &Path) -> Result<(), scene_file::SceneFileError> {
@@ -3014,7 +3471,30 @@ fn index_of(what: Selected) -> usize {
         Selected::Object(index)
         | Selected::Water(index)
         | Selected::Spawn(index)
-        | Selected::Light(index) => index,
+        | Selected::Light(index)
+        | Selected::Monster(index) => index,
+    }
+}
+
+/// How close to the last monster placed a new one must stand to join its pack, in metres.
+///
+/// Twelve: two packs further apart than that are two pulls, and one closer than that would be
+/// pulled together anyway by the widest aggro radius in the roster.
+const MONSTER_PACK_REACH: f32 = 12.0;
+
+/// A pack name no monster in the level uses yet: `PACK 1`, `PACK 2`, …
+fn next_pack_name(scene: &EnvironmentScene) -> String {
+    let mut number = 1;
+    loop {
+        let name = format!("PACK {number}");
+        if !scene
+            .monsters
+            .iter()
+            .any(|monster| monster.pack.as_deref() == Some(name.as_str()))
+        {
+            return name;
+        }
+        number += 1;
     }
 }
 
@@ -3032,6 +3512,7 @@ pub(crate) fn position_of(scene: &EnvironmentScene, what: Selected) -> Option<Ve
         Selected::Water(index) => scene.water.get(index).map(|body| body.center),
         Selected::Spawn(index) => scene.spawn_points.get(index).map(|spawn| spawn.position),
         Selected::Light(index) => scene.lights.get(index).map(|light| light.position),
+        Selected::Monster(index) => scene.monsters.get(index).map(|monster| monster.position),
     }
 }
 
@@ -3056,6 +3537,11 @@ pub(crate) fn move_by(scene: &mut EnvironmentScene, what: Selected, delta: Vec3)
         Selected::Light(index) => {
             if let Some(light) = scene.lights.get_mut(index) {
                 light.position += delta;
+            }
+        }
+        Selected::Monster(index) => {
+            if let Some(monster) = scene.monsters.get_mut(index) {
+                monster.position += delta;
             }
         }
     }
@@ -3096,6 +3582,14 @@ fn pose_of(scene: &EnvironmentScene, what: Selected) -> Option<Pose> {
                 scale: Vec3::splat(light.range),
             }
         }
+        Selected::Monster(index) => {
+            let monster = scene.monsters.get(index)?;
+            Pose {
+                position: monster.position,
+                yaw: monster.yaw,
+                scale: Vec3::splat(monster.scale),
+            }
+        }
     })
 }
 
@@ -3133,6 +3627,15 @@ fn set_pose(scene: &mut EnvironmentScene, what: Selected, pose: Pose) {
                 light.range = pose.scale.x.max(0.1);
             }
         }
+        // A monster scales uniformly — its body is one size, not three — and within what the
+        // loader accepts.
+        Selected::Monster(index) => {
+            if let Some(monster) = scene.monsters.get_mut(index) {
+                monster.position = pose.position;
+                monster.yaw = pose.yaw;
+                monster.scale = pose.scale.x.clamp(0.25, 4.0);
+            }
+        }
     }
 }
 
@@ -3140,7 +3643,11 @@ fn set_pose(scene: &mut EnvironmentScene, what: Selected, pose: Pose) {
 /// and the lights.
 #[must_use]
 pub fn hierarchy_len(scene: &EnvironmentScene) -> usize {
-    scene.objects.len() + scene.water.len() + scene.spawn_points.len() + scene.lights.len()
+    scene.objects.len()
+        + scene.water.len()
+        + scene.spawn_points.len()
+        + scene.lights.len()
+        + scene.monsters.len()
 }
 
 /// What the unfiltered hierarchy's `row`th line names, if it names anything.
@@ -3160,7 +3667,11 @@ pub fn hierarchy_row_at(row: usize, scene: &EnvironmentScene) -> Option<Selected
         return Some(Selected::Spawn(spawn));
     }
     let light = spawn - scene.spawn_points.len();
-    (light < scene.lights.len()).then_some(Selected::Light(light))
+    if light < scene.lights.len() {
+        return Some(Selected::Light(light));
+    }
+    let monster = light - scene.lights.len();
+    (monster < scene.monsters.len()).then_some(Selected::Monster(monster))
 }
 
 /// Which unfiltered hierarchy row names `what`. The inverse of [`hierarchy_row_at`].
@@ -3172,6 +3683,13 @@ pub fn hierarchy_row_of(what: Selected, scene: &EnvironmentScene) -> usize {
         Selected::Spawn(index) => scene.objects.len() + scene.water.len() + index,
         Selected::Light(index) => {
             scene.objects.len() + scene.water.len() + scene.spawn_points.len() + index
+        }
+        Selected::Monster(index) => {
+            scene.objects.len()
+                + scene.water.len()
+                + scene.spawn_points.len()
+                + scene.lights.len()
+                + index
         }
     }
 }
@@ -4295,13 +4813,19 @@ mod tests {
         );
         assert_eq!(outcome, EditorOutcome::SceneChanged);
         assert_eq!(scene.len(), 1, "the click placed nothing");
+        update(
+            &mut editor,
+            &InputState::new(),
+            &release(centre()),
+            &mut scene,
+        );
 
-        // A second click on the same spot, which is now on top of the first object: it
-        // places another rather than selecting the one that is there.
+        // A second click somewhere else places another rather than selecting anything.
+        let elsewhere = (centre().0 + 200.0, centre().1);
         let outcome = update(
             &mut editor,
             &InputState::new(),
-            &press(centre()),
+            &press(elsewhere),
             &mut scene,
         );
         assert_eq!(outcome, EditorOutcome::SceneChanged);
@@ -4310,7 +4834,110 @@ mod tests {
             2,
             "the second click selected instead of placing"
         );
-        assert_eq!(editor.selected_object(), Some(1), "the new one is selected");
+        update(
+            &mut editor,
+            &InputState::new(),
+            &release(elsewhere),
+            &mut scene,
+        );
+
+        // And a click on a cell that already holds the asset adds no invisible twin.
+        update(
+            &mut editor,
+            &InputState::new(),
+            &press(centre()),
+            &mut scene,
+        );
+        update(
+            &mut editor,
+            &InputState::new(),
+            &release(centre()),
+            &mut scene,
+        );
+        assert_eq!(scene.len(), 2, "a second copy was stacked inside the first");
+    }
+
+    #[test]
+    fn a_drag_in_placing_mode_paints_a_line_of_tiles_edge_to_edge_in_one_undo() {
+        let mut editor = editor();
+        let mut scene = scene();
+        update(&mut editor, &keyed(KeyCode::N), &UiInput::new(), &mut scene);
+        let spacing = editor.paint_spacing();
+        // From the middle of the screen, a good way to the right, through several cells.
+        let from = centre();
+        let to = (centre().0 + 400.0, centre().1);
+        update(&mut editor, &InputState::new(), &press(from), &mut scene);
+        update(&mut editor, &InputState::new(), &hold(to), &mut scene);
+        update(&mut editor, &InputState::new(), &release(to), &mut scene);
+        assert!(scene.len() > 3, "the drag laid {} tile(s)", scene.len());
+        let mut xs: Vec<f32> = scene
+            .objects
+            .iter()
+            .map(|object| object.position().x)
+            .collect();
+        xs.sort_by(f32::total_cmp);
+        for pair in xs.windows(2) {
+            assert!(
+                (pair[1] - pair[0] - spacing).abs() < 1e-3,
+                "a gap or an overlap: {xs:?}"
+            );
+        }
+        assert_eq!(
+            objects_of(&editor).len(),
+            scene.len(),
+            "the painted tiles are selected"
+        );
+
+        update(
+            &mut editor,
+            &control_keyed(KeyCode::Z),
+            &UiInput::new(),
+            &mut scene,
+        );
+        assert!(
+            scene.is_empty(),
+            "one undo did not take the whole stroke back"
+        );
+    }
+
+    #[test]
+    fn a_shift_drag_in_placing_mode_fills_the_rectangle_on_release() {
+        let mut editor = editor();
+        let mut scene = scene();
+        update(&mut editor, &keyed(KeyCode::N), &UiInput::new(), &mut scene);
+        let from = centre();
+        let to = (centre().0 + 250.0, centre().1 + 150.0);
+        update(
+            &mut editor,
+            &shift_keyed(KeyCode::Unknown),
+            &press(from),
+            &mut scene,
+        );
+        update(
+            &mut editor,
+            &shift_keyed(KeyCode::Unknown),
+            &hold(to),
+            &mut scene,
+        );
+        assert!(scene.is_empty(), "a fill waits for the release");
+        let stroke = editor.paint_stroke().expect("a fill in progress");
+        assert!(stroke.fill);
+        let columns = (stroke.current.0 - stroke.start.0).abs() + 1;
+        let rows = (stroke.current.1 - stroke.start.1).abs() + 1;
+        update(&mut editor, &InputState::new(), &release(to), &mut scene);
+        assert_eq!(scene.len() as i64, columns * rows);
+        assert!(
+            columns > 1 && rows > 1,
+            "{columns} x {rows} is not a rectangle"
+        );
+
+        update(
+            &mut editor,
+            &control_keyed(KeyCode::Z),
+            &UiInput::new(),
+            &mut scene,
+        );
+        assert!(scene.is_empty());
     }
 
     #[test]
@@ -6390,5 +7017,291 @@ mod tests {
             0.1,
         );
         assert!(editor.tooltip().is_none());
+    }
+
+    #[test]
+    fn painted_tiles_are_as_far_apart_as_the_asset_is_wide() {
+        let mut editor = editor();
+        // The default asset is a one-metre plane: on the one-metre grid, one step apart.
+        assert!((editor.paint_spacing() - 1.0).abs() < 1e-3);
+        // The arena floor is eighty-two metres across, and a floor laid of it must not
+        // overlap itself eighty-two times.
+        assert!(editor.browser_mut().reveal_named("arena_floor"));
+        let spacing = editor.paint_spacing();
+        assert!((spacing - 82.0).abs() < 1e-3, "{spacing}");
+        // And the spacing is a whole number of grid steps, so every tile is on the grid.
+        editor.execute(commands::Command::SetGrid(2), &mut scene());
+        let spacing = editor.paint_spacing();
+        assert!(
+            (spacing / editor.grid()).fract().abs() < 1e-4,
+            "{spacing} is off the grid"
+        );
+    }
+
+    // -------------------------------------------------------------------------------- monsters
+
+    /// An editor that knows the test catalogue, with a Skeleton Warrior chosen in the browser.
+    fn monster_editor() -> Editor {
+        let mut editor = editor();
+        editor.set_monster_catalogue(monster::tests::catalogue().entries().to_vec());
+        assert!(editor.browser_mut().choose_monster("skeleton_warrior"));
+        editor
+    }
+
+    /// An editor with one Skeleton Warrior put down at the origin with `U`.
+    fn with_a_monster() -> (Editor, EnvironmentScene) {
+        let mut editor = monster_editor();
+        let mut scene = scene();
+        let (input, ui) = keyed_at(KeyCode::U, centre());
+        let outcome = update(&mut editor, &input, &ui, &mut scene);
+        assert_eq!(
+            outcome,
+            EditorOutcome::WaterChanged,
+            "a monster is level furniture: its marker is rebuilt, the level is not re-placed"
+        );
+        (editor, scene)
+    }
+
+    #[test]
+    fn the_browser_lists_the_monsters_and_choosing_one_makes_it_the_next_placement() {
+        let editor = monster_editor();
+        let browser = editor.browser();
+        assert!(browser.rows().contains(&browser::BrowserRow::MonsterFolder));
+        let listed = browser
+            .rows()
+            .iter()
+            .filter(|row| matches!(row, browser::BrowserRow::Monster(_)))
+            .count();
+        assert_eq!(listed, 3);
+        assert_eq!(
+            browser.selected_monster().map(|entry| entry.id.as_str()),
+            Some("skeleton_warrior")
+        );
+    }
+
+    #[test]
+    fn u_puts_the_chosen_monster_where_the_cursor_is_and_selects_it() {
+        let (editor, scene) = with_a_monster();
+        assert_eq!(scene.monsters.len(), 1);
+        let monster = &scene.monsters[0];
+        assert_eq!(monster.monster, "skeleton_warrior");
+        assert!(monster.position.x.abs() < 0.01 && monster.position.z.abs() < 0.01);
+        assert!(monster.is_valid());
+        assert!(
+            monster.pack.is_some(),
+            "a new monster starts a pack of its own"
+        );
+        assert_eq!(editor.selection(), Some(Selected::Monster(0)));
+    }
+
+    #[test]
+    fn a_monster_is_placed_from_the_browser_like_any_asset() {
+        // The double click on a row: one in front of the camera, through `place`.
+        let mut editor = monster_editor();
+        let mut scene = scene();
+        editor.place_at_centre = true;
+        update(
+            &mut editor,
+            &InputState::new(),
+            &hover(centre()),
+            &mut scene,
+        );
+        assert_eq!(scene.monsters.len(), 1);
+        assert!(scene.objects.is_empty(), "a monster is not an object");
+        assert_eq!(editor.selection(), Some(Selected::Monster(0)));
+    }
+
+    #[test]
+    fn a_second_monster_placed_nearby_joins_the_first_ones_pack() {
+        let (mut editor, mut scene) = with_a_monster();
+        let (input, ui) = keyed_at(KeyCode::U, (centre().0 + 40.0, centre().1));
+        update(&mut editor, &input, &ui, &mut scene);
+        assert_eq!(scene.monsters.len(), 2);
+        assert_eq!(scene.monsters[0].pack, scene.monsters[1].pack);
+    }
+
+    #[test]
+    fn a_monster_can_be_clicked_moved_turned_scaled_and_deleted() {
+        let (mut editor, mut scene) = with_a_monster();
+        // Nothing selected, then a click on it.
+        editor.selected.clear();
+        update(
+            &mut editor,
+            &InputState::new(),
+            &press(centre()),
+            &mut scene,
+        );
+        update(
+            &mut editor,
+            &InputState::new(),
+            &UiInput {
+                pointer: centre(),
+                pointer_released: true,
+                ..UiInput::new()
+            },
+            &mut scene,
+        );
+        assert_eq!(
+            editor.selection(),
+            Some(Selected::Monster(0)),
+            "a click selects it"
+        );
+
+        let before = scene.monsters[0].position;
+        update(
+            &mut editor,
+            &keyed(KeyCode::ArrowRight),
+            &UiInput::new(),
+            &mut scene,
+        );
+        assert!(
+            scene.monsters[0].position.x > before.x,
+            "an arrow did not move it"
+        );
+
+        update(&mut editor, &keyed(KeyCode::R), &UiInput::new(), &mut scene);
+        assert!(
+            (scene.monsters[0].yaw - editor.yaw_step().to_radians()).abs() < 1e-4,
+            "R turned it to {}",
+            scene.monsters[0].yaw
+        );
+
+        update(&mut editor, &keyed(KeyCode::T), &UiInput::new(), &mut scene);
+        assert!(scene.monsters[0].scale > 1.0, "T did not grow it");
+        assert!(scene.monsters[0].is_valid());
+
+        update(&mut editor, &keyed(KeyCode::X), &UiInput::new(), &mut scene);
+        assert!(scene.monsters.is_empty(), "X did not delete it");
+        update(
+            &mut editor,
+            &control_keyed(KeyCode::Z),
+            &UiInput::new(),
+            &mut scene,
+        );
+        assert_eq!(scene.monsters.len(), 1, "the delete was not undoable");
+    }
+
+    #[test]
+    fn control_d_duplicates_a_monster_into_the_same_pack() {
+        let (mut editor, mut scene) = with_a_monster();
+        update(
+            &mut editor,
+            &control_keyed(KeyCode::D),
+            &UiInput::new(),
+            &mut scene,
+        );
+        assert_eq!(scene.monsters.len(), 2);
+        assert_eq!(scene.monsters[1].monster, scene.monsters[0].monster);
+        assert_eq!(scene.monsters[1].pack, scene.monsters[0].pack);
+        assert_ne!(scene.monsters[1].position, scene.monsters[0].position);
+        assert_eq!(
+            editor.selection(),
+            Some(Selected::Monster(1)),
+            "the copy is selected"
+        );
+    }
+
+    #[test]
+    fn the_inspector_edits_a_monsters_level_aggro_worth_and_type() {
+        let (mut editor, mut scene) = with_a_monster();
+        let catalogue = editor.monsters().clone();
+        let me = Selected::Monster(0);
+        // Defaults are the monster's own, read through the catalogue.
+        assert_eq!(
+            inspector::get(&scene, &catalogue, me, inspector::Property::Aggro),
+            Some(14.0)
+        );
+        for (property, value) in [
+            (inspector::Property::Level, 3.0),
+            (inspector::Property::Aggro, 20.0),
+            (inspector::Property::Worth, 7.0),
+        ] {
+            assert!(inspector::set(
+                &mut scene,
+                &catalogue,
+                &[me],
+                me,
+                property,
+                value
+            ));
+        }
+        assert_eq!(scene.monsters[0].level, 3);
+        assert_eq!(scene.monsters[0].aggro_radius, Some(20.0));
+        assert_eq!(scene.monsters[0].completion, Some(7.0));
+        // Nothing typed can make a level the loader refuses.
+        inspector::set(
+            &mut scene,
+            &catalogue,
+            &[me],
+            me,
+            inspector::Property::Level,
+            99.0,
+        );
+        inspector::set(
+            &mut scene,
+            &catalogue,
+            &[me],
+            me,
+            inspector::Property::MonsterScale,
+            0.0,
+        );
+        assert!(scene.monsters[0].is_valid(), "{:?}", scene.monsters[0]);
+
+        editor.execute(commands::Command::ResetMonsterOverrides, &mut scene);
+        assert_eq!(scene.monsters[0].aggro_radius, None);
+        editor.execute(commands::Command::CycleMonster(true), &mut scene);
+        assert_eq!(scene.monsters[0].monster, "crypt_archer");
+        editor.execute(commands::Command::ToggleMonsterEnabled, &mut scene);
+        assert!(!scene.monsters[0].enabled);
+    }
+
+    #[test]
+    fn grouping_a_selection_makes_it_one_pack() {
+        let (mut editor, mut scene) = with_a_monster();
+        // A second one, moved off into a pack of its own.
+        let (input, ui) = keyed_at(KeyCode::U, (centre().0 + 40.0, centre().1));
+        update(&mut editor, &input, &ui, &mut scene);
+        assert_eq!(scene.monsters.len(), 2);
+        scene.monsters[1].pack = Some("ELSEWHERE".to_owned());
+        assert_ne!(scene.monsters[0].pack, scene.monsters[1].pack);
+        editor.selected = vec![Selected::Monster(0), Selected::Monster(1)];
+        assert!(editor.execute(commands::Command::PackSelection, &mut scene));
+        assert_eq!(scene.monsters[0].pack, scene.monsters[1].pack);
+    }
+
+    #[test]
+    fn monster_placements_survive_a_save_and_a_load() {
+        let (mut editor, mut scene) = with_a_monster();
+        update(&mut editor, &keyed(KeyCode::R), &UiInput::new(), &mut scene);
+        scene.monsters[0].name = Some("Old Rattlebones".to_owned());
+        scene.monsters[0].level = 2;
+        editor.save(&scene);
+        let loaded = scene_file::load(&editor.save_path).expect("the level loads");
+        assert_eq!(loaded.monsters, scene.monsters);
+    }
+
+    #[test]
+    fn a_monster_and_a_spawn_point_are_told_apart_by_every_verb() {
+        let (mut editor, mut scene) = with_a_monster();
+        let (input, ui) = keyed_at(KeyCode::P, (centre().0 + 200.0, centre().1));
+        update(&mut editor, &input, &ui, &mut scene);
+        assert_eq!(editor.selection(), Some(Selected::Spawn(0)));
+        update(&mut editor, &keyed(KeyCode::X), &UiInput::new(), &mut scene);
+        assert!(scene.spawn_points.is_empty());
+        assert_eq!(
+            scene.monsters.len(),
+            1,
+            "deleting the spawn took the monster too"
+        );
+        // And the hierarchy lists it under its own group.
+        assert!(
+            editor
+                .hierarchy_items(&scene)
+                .contains(&Selected::Monster(0))
+        );
+        assert_eq!(
+            panels::Group::of(&scene, Selected::Monster(0)),
+            panels::Group::Monsters
+        );
     }
 }

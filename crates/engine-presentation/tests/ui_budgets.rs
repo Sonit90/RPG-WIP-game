@@ -200,7 +200,18 @@ fn the_whole_interface_is_one_batchable_unit() {
             | UiCommand::Outline { .. }
             | UiCommand::RadialFill { .. }
             | UiCommand::Icon { .. }
-            | UiCommand::Text { .. } => {}
+            | UiCommand::Text { .. }
+            // The map's commands keep the batch too: a clip is a per-vertex attribute, a disc
+            // is a quad with its own circle, and the map picture is the second texture the
+            // one pipeline always has bound, chosen per vertex.
+            | UiCommand::Clip(_)
+            | UiCommand::Disc { .. }
+            | UiCommand::MapImage { .. }
+            | UiCommand::RotatedIcon { .. }
+            // The interface fonts and the rounded panels are the same pipeline and the same
+            // draw: a third texture chosen per vertex, and a shape evaluated per pixel.
+            | UiCommand::Label { .. }
+            | UiCommand::Panel { .. } => {}
         }
     }
     assert_eq!(DRAW_CALLS, 1, "the interface is submitted once");

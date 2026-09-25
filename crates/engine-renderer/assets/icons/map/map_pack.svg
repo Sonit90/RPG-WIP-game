@@ -1,0 +1,16 @@
+<svg version="1.1" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+<defs>
+<linearGradient id="p_rim" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="rgb(236,204,138)"/><stop offset="1" stop-color="rgb(128,94,48)"/></linearGradient>
+<linearGradient id="p_fill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="rgb(58,56,58)"/><stop offset="1" stop-color="rgb(24,22,24)"/></linearGradient>
+</defs>
+<path d="M 256 28 C 330 58 392 64 448 60 C 452 250 404 392 256 486 C 108 392 60 250 64 60 C 120 64 182 58 256 28 Z" fill="rgb(10,8,6)" transform="translate(0 10)" opacity="0.55"/>
+<path d="M 256 28 C 330 58 392 64 448 60 C 452 250 404 392 256 486 C 108 392 60 250 64 60 C 120 64 182 58 256 28 Z" fill="url(#p_rim)"/>
+<path d="M 256 62 C 318 86 370 94 414 92 C 414 250 376 362 256 446 C 136 362 98 250 98 92 C 142 94 194 86 256 62 Z" fill="url(#p_fill)"/>
+<g fill="rgb(232,224,206)">
+<path d="M 170 146 L 196 140 L 340 318 L 344 350 L 314 344 L 172 170 Z"/>
+<path d="M 342 146 L 316 140 L 172 318 L 168 350 L 198 344 L 340 170 Z"/>
+<path d="M 300 318 L 352 370 L 336 386 L 284 334 Z"/>
+<path d="M 212 318 L 160 370 L 176 386 L 228 334 Z"/>
+<circle cx="352" cy="384" r="18"/><circle cx="160" cy="384" r="18"/>
+</g>
+</svg>

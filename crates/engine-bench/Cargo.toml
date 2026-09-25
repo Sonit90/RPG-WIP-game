@@ -35,6 +35,12 @@ path = "src/game_bench.rs"
 # The user interface on its own: layout, batching and drawing. Separate from the gameplay
 # benchmark because "is the UI fast enough?" is a question about a different pass, and the
 # Phase 3 audit showed it is the one that moves the frame's tail.
+# The dungeon map: the bake's CPU half, and the minimap's and full-screen map's per-frame
+# cost as the marker count grows. No device.
+[[bin]]
+name = "map_bench"
+path = "src/map_bench.rs"
+
 [[bin]]
 name = "ui_bench"
 path = "src/ui_bench.rs"

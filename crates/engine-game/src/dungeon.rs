@@ -34,6 +34,7 @@ use engine_core::math::Vec3;
 use engine_environment::dungeon::{AREAS, DungeonArea, ashen_reliquary};
 
 use crate::arena::{ArenaConfig, add_environment_collision, build_collision};
+use crate::dungeon_run::DungeonRules;
 use crate::encounter::{Encounter, EncounterState, EnemySpawn};
 use crate::enemy::EnemyKind;
 use crate::entity::EntityId;
@@ -378,6 +379,291 @@ pub fn build_dungeon() -> (Simulation, Dungeon) {
 #[must_use]
 pub fn dungeon_scene() -> engine_environment::EnvironmentScene {
     ashen_reliquary()
+}
+
+// ------------------------------------------------------------------------------------------
+// Dungeons authored as levels
+// ------------------------------------------------------------------------------------------
+
+/// How a dungeon's monsters are scaled for the party that runs it.
+///
+/// The tables are tuned for [`DungeonScaling::DESIGNED_PARTY`]: a tank, a damage dealer and
+/// a healer. The game has one player today, so a smaller party is how a solo developer walks
+/// the same dungeon with the same mechanics and less of every number — every mechanic, every
+/// telegraph and every timing is unchanged, because none of those are what scales.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DungeonScaling {
+    /// How many players the dungeon is being run by.
+    pub party_size: u8,
+}
+
+impl Default for DungeonScaling {
+    fn default() -> Self {
+        Self::for_party(Self::DESIGNED_PARTY)
+    }
+}
+
+impl DungeonScaling {
+    /// The party the numbers are tuned for: a tank, a damage dealer, a healer.
+    pub const DESIGNED_PARTY: u8 = 3;
+
+    /// Scaling for a party of `size`, clamped to one to five.
+    #[must_use]
+    pub fn for_party(size: u8) -> Self {
+        Self {
+            party_size: size.clamp(1, 5),
+        }
+    }
+
+    /// What monster health is multiplied by.
+    ///
+    /// Health scales roughly with the damage the party brings. A solo player brings a little
+    /// under half of a party's, because a party's tank and healer deal little.
+    #[must_use]
+    pub fn health(&self) -> f32 {
+        match self.party_size {
+            1 => 0.45,
+            2 => 0.7,
+            3 => 1.0,
+            4 => 1.25,
+            _ => 1.5,
+        }
+    }
+
+    /// What monster damage is multiplied by.
+    ///
+    /// Only below the designed party: a solo player has no healer and takes every hit a tank
+    /// would have taken, so the hits are smaller — but no smaller than the point where
+    /// standing in a telegraph stops mattering.
+    #[must_use]
+    pub fn damage(&self) -> f32 {
+        match self.party_size {
+            1 => 0.6,
+            2 => 0.8,
+            _ => 1.0,
+        }
+    }
+}
+
+/// Everything a level placement says about a monster beyond kind and place.
+///
+/// `Copy`, so an [`EnemySpawn`] stays a small value; the author's name for the monster is
+/// applied separately, after it is spawned.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SpawnDetail {
+    /// Its level.
+    pub level: u8,
+    /// What its health is multiplied by on top of its level.
+    pub health_scale: f32,
+    /// What its damage is multiplied by on top of its level.
+    pub damage_scale: f32,
+    /// Its aggro radius, when it is not the monster's own.
+    pub aggro_radius: Option<f32>,
+    /// What killing it is worth towards completion, when it is not the monster's own.
+    pub completion: Option<f32>,
+    /// Uniform size multiplier.
+    pub size: f32,
+}
+
+impl SpawnDetail {
+    /// The spawn options this detail becomes.
+    #[must_use]
+    pub fn options(&self) -> crate::sim::dungeon_exec::EnemySpawnOptions {
+        crate::sim::dungeon_exec::EnemySpawnOptions {
+            level: self.level,
+            health_scale: self.health_scale,
+            damage_scale: self.damage_scale,
+            aggro_radius: self.aggro_radius,
+            completion: self.completion,
+            size: self.size,
+            name: None,
+        }
+    }
+}
+
+/// What building a level's monsters produced, for the log and for a test to assert on.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct PopulateReport {
+    /// How many encounters the placements became.
+    pub packs: usize,
+    /// How many monsters were spawned.
+    pub monsters: usize,
+    /// How many placements were switched off.
+    pub disabled: usize,
+    /// Placements whose monster id the table does not know, by index and id.
+    ///
+    /// Reported rather than refused: a level naming a monster this build has never heard of
+    /// is a level whose other hundred placements still work, and the log says which one is
+    /// missing and where.
+    pub unknown: Vec<(usize, String)>,
+    /// Which encounter is the boss, if the level has one.
+    pub boss_encounter: Option<usize>,
+    /// The completion every placed monster together is worth.
+    pub total_completion: f32,
+}
+
+/// Spawns a level's monsters, grouped into packs, and makes it a dungeon run if it says so.
+///
+/// Placements sharing a pack name become one encounter; a placement with no pack is a pack
+/// of one. Every monster is scaled by its own level and by `scaling`. If the level carries
+/// [`engine_environment::DungeonSettings`], the run is installed: completion, the sealed
+/// boss, its gate and its adds.
+pub fn populate_from_scene(
+    simulation: &mut Simulation,
+    scene: &engine_environment::EnvironmentScene,
+    scaling: DungeonScaling,
+) -> PopulateReport {
+    let mut report = PopulateReport::default();
+    // Packs in the order their first member appears in the level, so the encounter list is
+    // stable across saves and a pack's index means the same thing on every load.
+    let mut order: Vec<String> = Vec::new();
+    let mut packs: Vec<Vec<usize>> = Vec::new();
+    for (index, placement) in scene.monsters.iter().enumerate() {
+        if !placement.enabled {
+            report.disabled += 1;
+            continue;
+        }
+        if EnemyKind::from_id(&placement.monster).is_none() {
+            log::warn!(
+                "level '{}': monsters[{index}] names '{}', which is not a monster",
+                scene.name,
+                placement.monster
+            );
+            report.unknown.push((index, placement.monster.clone()));
+            continue;
+        }
+        let key = placement.pack_key(index);
+        match order.iter().position(|existing| *existing == key) {
+            Some(pack) => packs[pack].push(index),
+            None => {
+                order.push(key);
+                packs.push(vec![index]);
+            }
+        }
+    }
+
+    let boss_pack = scene
+        .dungeon
+        .as_ref()
+        .and_then(|settings| settings.boss_pack.clone());
+    for (key, members) in order.iter().zip(&packs) {
+        let spawns: Vec<EnemySpawn> = members
+            .iter()
+            .filter_map(|index| {
+                let placement = &scene.monsters[*index];
+                let kind = EnemyKind::from_id(&placement.monster)?;
+                let position = Vec3::new(
+                    placement.position.x,
+                    placement
+                        .position
+                        .y
+                        .max(scene.ground_at(placement.position)),
+                    placement.position.z,
+                );
+                Some(
+                    EnemySpawn::new(kind, position)
+                        .facing(placement.yaw)
+                        .detailed(SpawnDetail {
+                            level: placement.level,
+                            health_scale: scaling.health(),
+                            damage_scale: scaling.damage(),
+                            aggro_radius: placement.aggro_radius,
+                            completion: placement.completion,
+                            size: placement.scale,
+                        }),
+                )
+            })
+            .collect();
+        let encounter_index = simulation.encounters().len();
+        let is_boss = boss_pack.as_deref() == Some(key.as_str())
+            || (boss_pack.is_none() && spawns.iter().any(|spawn| spawn.kind.is_boss()));
+        simulation.add_encounter(Encounter::with_spawns(key.clone(), spawns));
+        if is_boss && report.boss_encounter.is_none() {
+            report.boss_encounter = Some(encounter_index);
+        }
+        // The author's names, now that there are entities to give them to.
+        let spawned = simulation
+            .encounter_at(encounter_index)
+            .map(|encounter| encounter.members().to_vec())
+            .unwrap_or_default();
+        for (entity, index) in spawned.iter().zip(members) {
+            if let Some(name) = scene.monsters[*index].name.clone() {
+                simulation.set_enemy_name(*entity, name);
+            }
+            report.total_completion += simulation.completion_value(*entity);
+        }
+        report.monsters += spawned.len();
+        report.packs += 1;
+    }
+
+    if let Some(settings) = &scene.dungeon {
+        let pool: Vec<EnemyKind> = settings
+            .add_pool
+            .iter()
+            .filter_map(|id| {
+                let kind = EnemyKind::from_id(id);
+                if kind.is_none() {
+                    log::warn!(
+                        "level '{}': add pool names unknown monster '{id}'",
+                        scene.name
+                    );
+                }
+                kind
+            })
+            .collect();
+        simulation.set_dungeon(DungeonRules {
+            name: settings.name.clone(),
+            required: settings.required_completion.max(f32::EPSILON),
+            boss_encounter: report.boss_encounter,
+            gate: settings.boss_gate,
+            add_spawns: settings
+                .add_spawns
+                .iter()
+                .map(|spawn| (spawn.position, spawn.yaw))
+                .collect(),
+            add_count: usize::from(settings.add_count),
+            add_pool: pool,
+            allow_duplicate_adds: settings.allow_duplicate_adds,
+        });
+    }
+    log::info!(
+        "level '{}': {} monsters in {} packs ({} disabled, {} unknown), {:.0} completion placed",
+        scene.name,
+        report.monsters,
+        report.packs,
+        report.disabled,
+        report.unknown.len(),
+        report.total_completion
+    );
+    report
+}
+
+/// Where the Graveyard Crypt's level lives, under the assets root.
+///
+/// The crypt is *content*, not code: its walls, graves, lights, every monster placement and
+/// its dungeon settings are one level file the editor opens, edits and saves. Nothing in
+/// Rust describes its layout.
+pub const GRAVEYARD_CRYPT_FILE: &str = "scenes/graveyard_crypt.json";
+
+/// Builds a playable level from a level file: layout, collision, monsters, completion, boss.
+///
+/// The one path every authored level goes through —
+/// [`crate::arena::environment_arena_for_party`] over the scene the file describes — so a
+/// test, the game and the editor's "play" all build the same dungeon from the same bytes.
+/// Returns the scene too, for the caller that has to draw it.
+///
+/// # Errors
+///
+/// The scene file's own error: the file is missing, is not JSON, or says something
+/// impossible — each naming where.
+pub fn build_level_file(
+    path: impl AsRef<std::path::Path>,
+    scaling: DungeonScaling,
+) -> Result<(Simulation, engine_environment::EnvironmentScene), engine_environment::SceneFileError>
+{
+    let scene = engine_environment::scene_file::load(path)?;
+    let simulation = crate::arena::environment_arena_for_party(&scene, 0, scaling);
+    Ok((simulation, scene))
 }
 
 #[cfg(test)]

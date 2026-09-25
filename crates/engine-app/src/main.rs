@@ -7,6 +7,7 @@ mod app;
 mod args;
 mod audio_device;
 mod benchmark;
+mod map_bake;
 mod startup;
 
 use std::process::ExitCode;

@@ -175,6 +175,19 @@ const SHIELD_TINT: [f32; 4] = [1.0, 0.62, 0.30, 1.0];
 /// Colour of the Fire Mastery aura, which reuses the shell at a different size and hue.
 const MASTERY_TINT: [f32; 4] = [1.0, 0.90, 0.45, 1.0];
 
+/// A line telegraph — a spear, a volley, a charge's path. Bone-white, so a line on the floor
+/// never reads as the player's own line of fire.
+const LINE_TELEGRAPH_TINT: [f32; 4] = [0.92, 0.90, 0.82, 0.75];
+
+/// A mark that follows a player: violet, the one colour on the floor that moves.
+const MARK_TINT: [f32; 4] = [0.72, 0.35, 1.0, 0.9];
+
+/// The sealed boss gate: a violet wall of light across the doorway.
+const GATE_TINT: [f32; 4] = [0.55, 0.30, 0.95, 0.85];
+
+/// An add arriving, and the gate breaking.
+const CRYPT_TINT: [f32; 4] = [0.65, 0.35, 0.95, 1.0];
+
 /// One uploaded shape, and the bounds the culler tests it with.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ShapeBinding {
@@ -318,6 +331,8 @@ pub struct VfxDirector {
     enemy_casts: Vec<(u32, VfxHandle)>,
     /// The mage's defensive shell, while Flame Shield is up.
     shield: Option<VfxHandle>,
+    /// The wall across the boss's doorway, while the dungeon keeps it shut.
+    gate: Option<VfxHandle>,
     /// The Fire Mastery aura, while it is up.
     mastery: Option<VfxHandle>,
     /// The gathering effect, while a cast is running.
@@ -344,6 +359,7 @@ impl VfxDirector {
             telegraphs: Vec::with_capacity(16),
             enemy_casts: Vec::with_capacity(16),
             shield: None,
+            gate: None,
             mastery: None,
             cast: None,
             enabled: true,
@@ -551,13 +567,33 @@ impl VfxDirector {
                 shape,
                 delay,
                 id,
+                follow,
                 ..
             } => {
                 let spawn = match shape {
+                    // A mark rides its victim: stepping out of it is not the answer, taking it
+                    // away from everybody else is — so it is drawn where they are.
+                    TelegraphShape::Circle { radius } if follow.is_some() => follow.map(|victim| {
+                        VfxSpawn::at(VfxId::Telegraph, Vec3::ZERO)
+                            .with_radius(radius.max(0.5))
+                            .lasting(delay.max(0.05))
+                            .tinted(MARK_TINT)
+                            .attached_to(victim.index() as u32)
+                    }),
                     TelegraphShape::Circle { radius } => Some(
                         VfxSpawn::at(VfxId::Telegraph, anchor)
                             .with_radius(radius.max(0.5))
                             .lasting(delay.max(0.05)),
+                    ),
+                    // A spear, a volley or a charge's path: the band along the ground the
+                    // player's own line effect is drawn with, in bone rather than fire.
+                    TelegraphShape::Line { yaw, length, width } => Some(
+                        VfxSpawn::at(VfxId::LineFire, anchor)
+                            .facing(yaw)
+                            .with_radius(width.max(0.5))
+                            .with_length(length.max(0.5))
+                            .lasting(delay.max(0.05))
+                            .tinted(LINE_TELEGRAPH_TINT),
                     ),
                     TelegraphShape::Cone {
                         yaw,
@@ -599,6 +635,7 @@ impl VfxDirector {
                     let radius = match shape {
                         TelegraphShape::Circle { radius } => radius,
                         TelegraphShape::Cone { range, .. } => range * 0.5,
+                        TelegraphShape::Line { width, .. } => width,
                         TelegraphShape::Single => 1.0,
                     };
                     self.spawn(VfxSpawn::at(VfxId::Explosion, anchor).with_radius(radius.max(1.0)));
@@ -715,6 +752,33 @@ impl VfxDirector {
                         .tinted(CONTROL_TINT),
                 );
             }
+            // The gate breaking: a burst where it stood, the size of the doorway.
+            CombatEvent::BossUnlocked { position, .. } => {
+                self.spawn(
+                    VfxSpawn::at(VfxId::Explosion, position + Vec3::new(0.0, 1.5, 0.0))
+                        .with_radius(6.0)
+                        .tinted(CRYPT_TINT),
+                );
+            }
+            // An add stepping out of nowhere: the arrival Blink already draws, in the crypt's
+            // colour, so "that one was called" reads from across the hall.
+            CombatEvent::AddSummoned { position, .. } => {
+                self.spawn(
+                    VfxSpawn::at(VfxId::BlinkArrival, position)
+                        .with_radius(2.2)
+                        .tinted(CRYPT_TINT),
+                );
+            }
+            CombatEvent::DungeonCompleted { .. } => {
+                let player = simulation.player().entity;
+                if let Some(position) = simulation.world().position(player) {
+                    self.spawn(
+                        VfxSpawn::at(VfxId::BlinkArrival, position)
+                            .with_radius(3.0)
+                            .tinted(MASTERY_TINT),
+                    );
+                }
+            }
             // A point of Deflection and a shield taking a hit move no picture of their own:
             // both happen several times a second in a pack, and the block that caused them
             // has already been drawn.
@@ -728,6 +792,7 @@ impl VfxDirector {
             | CombatEvent::ManaSpent { .. }
             | CombatEvent::ManaRestored { .. }
             | CombatEvent::Dispelled { .. }
+            | CombatEvent::DungeonProgress { .. }
             | CombatEvent::Absorbed { .. } => {}
         }
     }
@@ -986,6 +1051,7 @@ impl VfxDirector {
 
     /// Starts and stops the effects that follow a *state* rather than a moment.
     fn sync_states(&mut self, simulation: &Simulation) {
+        self.sync_gate(simulation);
         let player = simulation.player().entity;
         let slot = player.index() as u32;
         let height = simulation.world().height(player).max(1.0);
@@ -1031,6 +1097,38 @@ impl VfxDirector {
                 .lasting(f32::MAX)
                 .attached_to(slot),
         );
+    }
+
+    /// Keeps the wall across the boss's doorway up for exactly as long as the gate is shut.
+    ///
+    /// State rather than an event: the gate is shut from the moment the level is built, and
+    /// a director created after that — or cleared by a reset — still has to draw it.
+    fn sync_gate(&mut self, simulation: &Simulation) {
+        let gate = simulation
+            .dungeon_run()
+            .and_then(|run| run.rules().gate)
+            .filter(|_| simulation.gate_is_closed());
+        let live = self.gate.is_some_and(|handle| self.system.contains(handle));
+        match (gate, live) {
+            (Some(gate), false) => {
+                let (from, to) = gate.ends();
+                let yaw = engine_game::enemy::brain::yaw_towards(from, to);
+                self.gate = self.spawn(
+                    VfxSpawn::at(VfxId::LineFire, from)
+                        .facing(yaw)
+                        .with_radius(1.4)
+                        .with_length(gate.half_extents.x * 2.0)
+                        .lasting(f32::MAX)
+                        .tinted(GATE_TINT),
+                );
+            }
+            (None, true) => {
+                if let Some(handle) = self.gate.take() {
+                    self.system.stop(handle);
+                }
+            }
+            _ => {}
+        }
     }
 
     /// Keeps one state-driven effect in step with the state that owns it.

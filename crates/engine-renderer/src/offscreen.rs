@@ -1362,6 +1362,10 @@ pub fn render_ui(
                     constant_allocation.gpu_address(),
                 );
                 list.SetGraphicsRootDescriptorTable(ROOT_UI_ATLAS_TABLE, table);
+                // The map and font tables name the atlas: a table the signature declares is
+                // bound, even on a path whose commands never sample it.
+                list.SetGraphicsRootDescriptorTable(crate::ui_pipeline::ROOT_UI_MAP_TABLE, table);
+                list.SetGraphicsRootDescriptorTable(crate::ui_pipeline::ROOT_UI_FONT_TABLE, table);
                 list.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
                 list.IASetVertexBuffers(
                     0,
@@ -1750,6 +1754,146 @@ fn render_with(
         height,
         pixels,
     })
+}
+
+/// A buffer the GPU copies one texture into, and the layout it copies it with.
+///
+/// The half of [`render_with`] the live renderer needs too: `Renderer::capture_world` copies
+/// its own back buffer into one of these to bake a level's map through the real frame path.
+pub(crate) struct Readback {
+    /// The buffer, in a readback heap, created in `COPY_DEST`.
+    pub(crate) buffer: ID3D12Resource,
+    /// Where each row lands: texture rows are padded to the pitch alignment.
+    pub(crate) footprint: D3D12_PLACED_SUBRESOURCE_FOOTPRINT,
+    /// The buffer's size.
+    pub(crate) total_bytes: u64,
+    /// The texture's width.
+    pub(crate) width: u32,
+    /// The texture's height.
+    pub(crate) height: u32,
+}
+
+impl Readback {
+    /// A readback buffer sized for one `width × height` texture of `format`.
+    pub(crate) fn for_texture(
+        device: &windows::Win32::Graphics::Direct3D12::ID3D12Device,
+        width: u32,
+        height: u32,
+        format: windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT,
+    ) -> Result<Self, RendererError> {
+        let target_desc = D3D12_RESOURCE_DESC {
+            Dimension: D3D12_RESOURCE_DIMENSION_TEXTURE2D,
+            Width: u64::from(width),
+            Height: height,
+            DepthOrArraySize: 1,
+            MipLevels: 1,
+            Format: format,
+            SampleDesc: DXGI_SAMPLE_DESC {
+                Count: 1,
+                Quality: 0,
+            },
+            ..Default::default()
+        };
+        let mut footprint = D3D12_PLACED_SUBRESOURCE_FOOTPRINT::default();
+        let mut total_bytes = 0u64;
+        // SAFETY: FFI call. `target_desc` describes the texture to be copied and every
+        // out-parameter is a valid, owned value.
+        unsafe {
+            device.GetCopyableFootprints(
+                &target_desc,
+                0,
+                1,
+                0,
+                Some(&mut footprint),
+                None,
+                None,
+                Some(&mut total_bytes),
+            );
+        }
+        let readback_desc = D3D12_RESOURCE_DESC {
+            Dimension: D3D12_RESOURCE_DIMENSION_BUFFER,
+            Width: total_bytes,
+            Height: 1,
+            DepthOrArraySize: 1,
+            MipLevels: 1,
+            Format: DXGI_FORMAT_UNKNOWN,
+            SampleDesc: DXGI_SAMPLE_DESC {
+                Count: 1,
+                Quality: 0,
+            },
+            Layout: D3D12_TEXTURE_LAYOUT_ROW_MAJOR,
+            ..Default::default()
+        };
+        let heap = D3D12_HEAP_PROPERTIES {
+            Type: D3D12_HEAP_TYPE_READBACK,
+            ..Default::default()
+        };
+        let mut buffer: Option<ID3D12Resource> = None;
+        // SAFETY: FFI call with initialized descriptors that outlive it. COPY_DEST is the
+        // required initial state for a readback buffer a copy writes into.
+        unsafe {
+            device.CreateCommittedResource(
+                &heap,
+                D3D12_HEAP_FLAG_NONE,
+                &readback_desc,
+                D3D12_RESOURCE_STATE_COPY_DEST,
+                None,
+                &mut buffer,
+            )
+        }
+        .map_err(|error| RendererError::api("ID3D12Device::CreateCommittedResource", error))?;
+        let Some(buffer) = buffer else {
+            return Err(RendererError::InvalidConfig {
+                reason: "readback buffer creation produced no resource".to_owned(),
+            });
+        };
+        Ok(Self {
+            buffer,
+            footprint,
+            total_bytes,
+            width,
+            height,
+        })
+    }
+
+    /// Records a copy of subresource 0 of `source`, which must be in `COPY_SOURCE`, into this
+    /// buffer.
+    pub(crate) fn record_copy(
+        &self,
+        list: &windows::Win32::Graphics::Direct3D12::ID3D12GraphicsCommandList,
+        source: &ID3D12Resource,
+    ) {
+        let from = D3D12_TEXTURE_COPY_LOCATION {
+            // SAFETY: non-owning copy of the interface pointer, never released through this
+            // structure. `source` outlives the recording.
+            pResource: unsafe { std::mem::transmute_copy(source) },
+            Type: D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
+            Anonymous: D3D12_TEXTURE_COPY_LOCATION_0 {
+                SubresourceIndex: 0,
+            },
+        };
+        let to = D3D12_TEXTURE_COPY_LOCATION {
+            // SAFETY: as above; `self.buffer` outlives the submission its owner waits for.
+            pResource: unsafe { std::mem::transmute_copy(&self.buffer) },
+            Type: D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT,
+            Anonymous: D3D12_TEXTURE_COPY_LOCATION_0 {
+                PlacedFootprint: self.footprint,
+            },
+        };
+        // SAFETY: FFI call recording into an open list; both resources are live.
+        unsafe { list.CopyTextureRegion(&to, 0, 0, 0, &from, None) };
+    }
+
+    /// The copied pixels, tightly packed. Call only after the copy's submission completed.
+    pub(crate) fn pixels(&self) -> Result<Vec<u8>, RendererError> {
+        read_pixels(
+            &self.buffer,
+            &self.footprint,
+            self.width,
+            self.height,
+            self.total_bytes,
+        )
+    }
 }
 
 /// Maps the readback buffer and copies its rows into a tightly packed image.

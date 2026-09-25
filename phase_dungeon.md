@@ -561,6 +561,9 @@ back to `NotStarted`, which means it can be pulled again on the next tick.
 
 ## 14. Deferred work
 
+> **Since done:** optional routes, boss adds, dungeon completion and non-circular (line) and
+> growing hazards arrived with the Graveyard Crypt — see `phase_graveyard.md`.
+
 * Optional routes and branching layouts.
 * A second dungeon — the point of the layout being a function is that this is a new function.
 * Coordinated pack AI, patrol paths and pulling neighbours.

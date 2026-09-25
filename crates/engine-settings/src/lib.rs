@@ -38,6 +38,8 @@ pub mod gameplay;
 pub mod graphics;
 /// The interface layout the player arranged: action bars, unit frames and their file.
 pub mod hud;
+/// How the minimap turns, and which key opens the dungeon map.
+pub mod map;
 /// How nameplates are sized, placed and separated.
 pub mod nameplate;
 
@@ -59,6 +61,7 @@ pub use hud::{
     HudBarBindings, HudConfig, HudConfigManager, HudFrames, HudOrientation, HudPlacement,
     HudSlotConfig,
 };
+pub use map::{KeyName, MapSettings, MinimapOrientation, TOGGLE_MAP_KEY_DEFAULT};
 pub use nameplate::{NameplateSetting, NameplateSettings};
 
 /// Name of the settings file. JSON content; the extension is deliberately not `.json`.
@@ -185,6 +188,12 @@ pub struct GameSettings {
     /// to be found before the file it is in could be understood.
     #[serde(default)]
     pub binding_scope: BindingScope,
+    /// How the minimap turns and which key opens the dungeon map.
+    ///
+    /// Its own section, like the graphics: `"map": {"minimap_orientation": "north_up"}`.
+    /// `#[serde(default)]` on [`MapSettings`] is what lets a file written before the map
+    /// existed load with both at their defaults.
+    pub map: MapSettings,
 }
 
 impl Default for GameSettings {
@@ -201,6 +210,7 @@ impl Default for GameSettings {
             nameplates: NameplateSettings::default(),
             graphics: GraphicsSettings::default(),
             binding_scope: BindingScope::default(),
+            map: MapSettings::default(),
         }
     }
 }
@@ -264,6 +274,7 @@ impl GameSettings {
         settings.gameplay = settings.gameplay.validated();
         settings.nameplates = settings.nameplates.validated();
         settings.graphics = settings.graphics.validated();
+        settings.map = settings.map.validated();
         settings
     }
 
@@ -669,6 +680,11 @@ mod tests {
                 shadows: ShadowQuality::Ultra,
             },
             binding_scope: BindingScope::Character,
+            map: MapSettings {
+                minimap_orientation: MinimapOrientation::NorthUp,
+                toggle_key: KeyName::new("N").unwrap_or_default(),
+                reduced_motion: true,
+            },
         };
         let text = serde_json::to_string(&settings).expect("settings serialize");
         let parsed: GameSettings = serde_json::from_str(&text).expect("settings parse");
@@ -676,6 +692,10 @@ mod tests {
         assert!(text.contains("camera_sensitivity"), "{text}");
         assert!(text.contains("master_volume"), "{text}");
         assert!(text.contains("\"binding_scope\":\"character\""), "{text}");
+        assert!(
+            text.contains("\"minimap_orientation\":\"north_up\""),
+            "{text}"
+        );
     }
 
     #[test]

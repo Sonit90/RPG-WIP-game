@@ -493,6 +493,7 @@ pub fn menu_entries(kind: MenuKind, editor: &Editor, scene: &EnvironmentScene) -
         MenuKind::File => vec![
             MenuEntry::new("Save", "Ctrl+S", Command::Save),
             MenuEntry::new("Save As...", "Ctrl+Shift+S", Command::SaveAs),
+            MenuEntry::new("Bake Map", "", Command::BakeMap).after_separator(),
             MenuEntry::new("Back to the Game", "F6", Command::Play).after_separator(),
         ],
         MenuKind::Edit => vec![
@@ -540,7 +541,10 @@ pub fn menu_entries(kind: MenuKind, editor: &Editor, scene: &EnvironmentScene) -
             MenuEntry::new("Debug Overlay", "F3", Command::ToggleDebug)
                 .checked(editor.shows_debug())
                 .after_separator(),
-            MenuEntry::new("Reset Panel Layout", "", Command::ResetLayout),
+            MenuEntry::new("Map Preview", "F4", Command::ToggleMapPreview)
+                .checked(editor.shows_map_preview()),
+            MenuEntry::new("Bake Map", "", Command::BakeMap),
+            MenuEntry::new("Reset Panel Layout", "", Command::ResetLayout).after_separator(),
         ],
         MenuKind::Help => vec![MenuEntry::new(
             "Keyboard Shortcuts",
@@ -579,6 +583,7 @@ pub fn menu_entries(kind: MenuKind, editor: &Editor, scene: &EnvironmentScene) -
         MenuKind::Object => {
             let spawn = matches!(editor.selection(), Some(Selected::Spawn(index)) if index > 0);
             let light = matches!(editor.selection(), Some(Selected::Light(_)));
+            let monster = matches!(editor.selection(), Some(Selected::Monster(_)));
             let single_object = matches!(editor.selection(), Some(Selected::Object(_)));
             let locked = editor
                 .selection()
@@ -614,6 +619,22 @@ pub fn menu_entries(kind: MenuKind, editor: &Editor, scene: &EnvironmentScene) -
                         .after_separator(),
                 );
             }
+            if monster {
+                entries.push(
+                    MenuEntry::new("Group Into One Pack", "", Command::PackSelection)
+                        .after_separator(),
+                );
+                entries.push(MenuEntry::new(
+                    "Use Browser Monster",
+                    "",
+                    Command::UseBrowserMonster,
+                ));
+                entries.push(MenuEntry::new(
+                    "Enable / Disable",
+                    "",
+                    Command::ToggleMonsterEnabled,
+                ));
+            }
             if light {
                 let casts = editor
                     .selection()
@@ -633,6 +654,7 @@ pub fn menu_entries(kind: MenuKind, editor: &Editor, scene: &EnvironmentScene) -
             MenuEntry::new("Add Light Here", "I", Command::PutLight).after_separator(),
             MenuEntry::new("Add Water Here", "V", Command::PutWater),
             MenuEntry::new("Add Spawn Point Here", "P", Command::PutSpawn),
+            MenuEntry::new("Add Monster Here", "U", Command::PutMonster),
             MenuEntry::new("Select All", "Ctrl+A", Command::SelectAll).after_separator(),
             MenuEntry::new("Frame Level", "F", Command::Frame),
             MenuEntry::new("Show All", "Shift+H", Command::ShowAll).enabled(editor.has_hidden()),
@@ -723,11 +745,13 @@ pub enum Group {
     Spawns,
     /// Lights.
     Lights,
+    /// Monsters.
+    Monsters,
 }
 
 impl Group {
     /// Every group, in the order the hierarchy lists them.
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 11] = [
         Self::Ground,
         Self::Cliffs,
         Self::Caves,
@@ -738,6 +762,7 @@ impl Group {
         Self::Water,
         Self::Spawns,
         Self::Lights,
+        Self::Monsters,
     ];
 
     /// Its bit in a set of collapsed groups.
@@ -760,6 +785,7 @@ impl Group {
             Self::Water => "Water",
             Self::Spawns => "Spawn Points",
             Self::Lights => "Lights",
+            Self::Monsters => "Monsters",
         }
     }
 
@@ -777,6 +803,7 @@ impl Group {
             Self::Water => Icon::Water,
             Self::Spawns => Icon::Spawn,
             Self::Lights => Icon::Light,
+            Self::Monsters => Icon::Skull,
         }
     }
 
@@ -790,6 +817,7 @@ impl Group {
             Self::Water => kind::WATER,
             Self::Spawns => kind::SPAWN,
             Self::Lights => kind::LIGHT,
+            Self::Monsters => kind::MONSTER,
         }
     }
 
@@ -834,6 +862,7 @@ impl Group {
             Selected::Water(_) => Self::Water,
             Selected::Spawn(_) => Self::Spawns,
             Selected::Light(_) => Self::Lights,
+            Selected::Monster(_) => Self::Monsters,
         }
     }
 }
@@ -859,6 +888,26 @@ pub fn item_name(scene: &EnvironmentScene, what: Selected) -> String {
         Selected::Spawn(0) => "Player Start".to_owned(),
         Selected::Spawn(index) => format!("Spawn Point {}", index + 1),
         Selected::Light(index) => format!("Light {}", index + 1),
+        // The author's name if it has one, the monster's otherwise, and the pack it fights
+        // with — what a designer scanning a list of forty skeletons needs to tell them apart.
+        Selected::Monster(index) => scene.monsters.get(index).map_or_else(
+            || "Monster".to_owned(),
+            |monster| {
+                let name = monster
+                    .name
+                    .clone()
+                    .filter(|name| !name.trim().is_empty())
+                    .unwrap_or_else(|| theme::display_name(&monster.monster));
+                let off = if monster.enabled { "" } else { " (off)" };
+                match &monster.pack {
+                    Some(pack) => format!(
+                        "{name} - {}{off}",
+                        theme::display_name(&pack.to_ascii_lowercase())
+                    ),
+                    None => format!("{name}{off}"),
+                }
+            },
+        ),
     }
 }
 
@@ -888,6 +937,8 @@ pub enum Section {
     Asset,
     /// Hidden and locked.
     Visibility,
+    /// A monster: what it is, its level, its pull and its pack.
+    Monster,
 }
 
 impl Section {
@@ -907,6 +958,7 @@ impl Section {
             Self::Spawn => "Spawn",
             Self::Asset => "Asset",
             Self::Visibility => "Editor",
+            Self::Monster => "Monster",
         }
     }
 }
@@ -1197,9 +1249,9 @@ pub fn inspector(editor: &Editor, scene: &EnvironmentScene, layout: &Layout) -> 
                     Some(Command::ResetProperty(Property::ScaleX)),
                 );
             }
-            Selected::Water(_) | Selected::Spawn(_) => {
+            Selected::Water(_) | Selected::Spawn(_) | Selected::Monster(_) => {
                 column.numbers(
-                    if matches!(primary, Selected::Spawn(_)) {
+                    if matches!(primary, Selected::Spawn(_) | Selected::Monster(_)) {
                         "Facing"
                     } else {
                         "Rotation"
@@ -1302,6 +1354,88 @@ pub fn inspector(editor: &Editor, scene: &EnvironmentScene, layout: &Layout) -> 
                 }
             }
         }
+        Selected::Monster(index) => {
+            if column.section(Section::Monster, collapsed)
+                && let Some(monster) = scene.monsters.get(index)
+            {
+                let entry = editor.monsters().find(&monster.monster);
+                column.info(
+                    "Type",
+                    entry.map_or_else(
+                        || format!("Unknown '{}'", monster.monster),
+                        |entry| theme::display_name(&entry.id),
+                    ),
+                );
+                if let Some(entry) = entry {
+                    column.info(
+                        "Role",
+                        theme::display_name(&entry.role.to_ascii_lowercase()),
+                    );
+                    column.info("Plays", entry.summary.clone());
+                }
+                column.info(
+                    "Name",
+                    monster
+                        .name
+                        .clone()
+                        .filter(|name| !name.trim().is_empty())
+                        .unwrap_or_else(|| "-".to_owned()),
+                );
+                column.info(
+                    "Pack",
+                    monster
+                        .pack
+                        .clone()
+                        .unwrap_or_else(|| "on its own".to_owned()),
+                );
+                // Where it lands on the baked map: the relationship between a world position
+                // and a map position, made inspectable.
+                if let Some(picture) = editor.map_picture() {
+                    let (u, v) = picture.frame.world_to_uv(monster.position);
+                    column.info(
+                        "Map",
+                        format!(
+                            "u {u:.3} v {v:.3} (texel {}, {})",
+                            (u * picture.width as f32).floor() as i32,
+                            (v * picture.height as f32).floor() as i32
+                        ),
+                    );
+                }
+                let dim = theme::TEXT_DIM;
+                column.numbers(
+                    "Size / Lvl",
+                    &[
+                        (Property::MonsterScale, "S", dim),
+                        (Property::Level, "L", dim),
+                    ],
+                    None,
+                );
+                column.numbers(
+                    "Aggro / Worth",
+                    &[(Property::Aggro, "M", dim), (Property::Worth, "%", dim)],
+                    Some(Command::ResetMonsterOverrides),
+                );
+                column.check("Enabled", monster.enabled, Command::ToggleMonsterEnabled);
+                for (label, command, width) in [
+                    ("< Type", Command::CycleMonster(false), 64.0),
+                    ("Type >", Command::CycleMonster(true), 64.0),
+                    ("Use Browser Monster", Command::UseBrowserMonster, 150.0),
+                    ("Group Into One Pack", Command::PackSelection, 150.0),
+                ] {
+                    let rect = column.row(layout.px(metrics::ROW_HEIGHT + 2.0));
+                    column.out.push(Element::Button {
+                        rect: UiRect::new(
+                            rect.x,
+                            rect.y + layout.px(2.0),
+                            layout.px(width).min(rect.width),
+                            rect.height - layout.px(4.0),
+                        ),
+                        label,
+                        command,
+                    });
+                }
+            }
+        }
         Selected::Light(index) => {
             if column.section(Section::Light, collapsed)
                 && let Some(light) = scene.lights.get(index)
@@ -1385,6 +1519,8 @@ pub enum TileFolder {
     Builtin,
     /// A folder on disk, by index into the catalogue's folders.
     Folder(usize),
+    /// The monsters the game can spawn.
+    Monsters,
 }
 
 /// One tile.
@@ -1405,14 +1541,23 @@ pub fn tiles(editor: &Editor) -> Vec<Tile> {
         return browser
             .rows()
             .iter()
-            .filter(|row| !matches!(row, BrowserRow::Folder(_) | BrowserRow::BuiltinFolder))
+            .filter(|row| {
+                !matches!(
+                    row,
+                    BrowserRow::Folder(_) | BrowserRow::BuiltinFolder | BrowserRow::MonsterFolder
+                )
+            })
             .map(|row| Tile::Asset(*row))
             .collect();
     }
     let catalogue = browser.catalogue();
     match editor.tile_folder() {
         TileFolder::Root => {
-            let mut out = vec![Tile::Open(TileFolder::Builtin)];
+            let mut out = Vec::new();
+            if !browser.monsters().is_empty() {
+                out.push(Tile::Open(TileFolder::Monsters));
+            }
+            out.push(Tile::Open(TileFolder::Builtin));
             if let Some(root) = catalogue.folders().first() {
                 out.extend(
                     root.children
@@ -1429,6 +1574,9 @@ pub fn tiles(editor: &Editor) -> Vec<Tile> {
         }
         TileFolder::Builtin => (0..engine_environment::asset::LIBRARY.len())
             .map(|index| Tile::Asset(BrowserRow::Builtin(index)))
+            .collect(),
+        TileFolder::Monsters => (0..browser.monsters().len())
+            .map(|index| Tile::Asset(BrowserRow::Monster(index)))
             .collect(),
         TileFolder::Folder(index) => {
             catalogue
@@ -1459,6 +1607,7 @@ pub fn crumbs(editor: &Editor) -> Vec<(String, TileFolder)> {
     match editor.tile_folder() {
         TileFolder::Root => {}
         TileFolder::Builtin => path.push(("Built-in".to_owned(), TileFolder::Builtin)),
+        TileFolder::Monsters => path.push(("Monsters".to_owned(), TileFolder::Monsters)),
         TileFolder::Folder(index) => {
             let mut current = Some(index);
             while let Some(at) = current {
@@ -1482,7 +1631,19 @@ pub fn crumbs(editor: &Editor) -> Vec<(String, TileFolder)> {
 #[must_use]
 pub fn row_icon(editor: &Editor, row: BrowserRow) -> (Icon, UiColor) {
     match row {
-        BrowserRow::Folder(_) | BrowserRow::BuiltinFolder => (Icon::Folder, kind::FOLDER),
+        BrowserRow::Folder(_) | BrowserRow::BuiltinFolder | BrowserRow::MonsterFolder => {
+            (Icon::Folder, kind::FOLDER)
+        }
+        BrowserRow::Monster(index) => {
+            let tint = editor
+                .browser()
+                .monsters()
+                .get(index)
+                .map_or(kind::MONSTER, |entry| {
+                    [entry.tint[0], entry.tint[1], entry.tint[2], 1.0]
+                });
+            (Icon::Skull, tint)
+        }
         BrowserRow::Builtin(index) => {
             let group = Group::of_asset(engine_environment::asset::LIBRARY[index].name());
             (group.icon(), group.color())
@@ -1531,6 +1692,19 @@ pub fn row_kind(editor: &Editor, row: BrowserRow) -> &'static str {
                 _ => "",
             }
         }
+        BrowserRow::Monster(index) => match editor
+            .browser()
+            .monsters()
+            .get(index)
+            .map(|entry| entry.role.as_str())
+        {
+            Some("MELEE") => "Melee",
+            Some("RANGED") => "Ranged",
+            Some("BOSS") => "Boss",
+            Some("SUPPORT") => "Support",
+            Some("ELITE") => "Elite",
+            _ => "Monster",
+        },
         _ => "",
     }
 }
@@ -1543,7 +1717,7 @@ pub fn hint(editor: &Editor) -> &'static str {
     } else if editor.is_sculpting() {
         "Drag to shape the ground  -  Tab brush  -  1 2 size  -  3 4 strength"
     } else if editor.is_place_mode() {
-        "Click to place  -  Tab next asset  -  Esc to stop"
+        "Click to place  -  drag to paint  -  Shift+drag to fill  -  Esc to stop"
     } else if editor.gizmo_axis().is_some() {
         "Hold Ctrl to move freely without snapping"
     } else if editor.hovered().is_some() {
