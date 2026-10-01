@@ -34,7 +34,7 @@ use crate::material::{
     MaterialTextures,
 };
 use crate::mesh::{GpuMesh, MeshData, MeshVertex, SkinnedMeshData, SkinnedVertex, VertexStream};
-use crate::mesh_pipeline::{InstanceTransform, MeshPipelines, PipelineVariant};
+use crate::mesh_pipeline::{CharacterPass, InstanceTransform, MeshPipelines, PipelineVariant};
 use crate::mipmap::TextureKind;
 #[cfg(feature = "debug-overlay")]
 use crate::overlay::{OverlayBuffers, OverlayGeometry, OverlayMetrics};
@@ -387,6 +387,10 @@ struct OverlayState {
 pub struct Renderer {
     /// The open upload batch, if one is. See [`Renderer::begin_upload_batch`].
     bulk: Option<StagingUploader>,
+    /// What the camera fades out of its way this frame. See [`Renderer::set_camera_fade`].
+    camera_fade: Option<engine_render_data::CameraFade>,
+    /// Draws the translucent-character passes recorded last frame, both passes counted.
+    translucent_character_draws_last_frame: u32,
     /// Device-local memory every mesh and material is suballocated out of, so a model costs
     /// a few offsets rather than a driver allocation per buffer.
     geometry: BufferArena,
@@ -749,6 +753,8 @@ impl Renderer {
 
         let renderer = Self {
             bulk: None,
+            camera_fade: None,
+            translucent_character_draws_last_frame: 0,
             geometry: BufferArena::new(
                 windows::Win32::Graphics::Direct3D12::D3D12_RESOURCE_STATE_COMMON,
             ),
@@ -1561,6 +1567,7 @@ impl Renderer {
         let mut frame_constants =
             FrameConstants::new(camera.view_projection(), camera.position(), lighting);
         frame_constants.set_camera(camera);
+        frame_constants.set_camera_fade(self.camera_fade);
         let (viewport_width, viewport_height) = self.swap_chain.size();
         frame_constants.set_viewport(viewport_width, viewport_height);
         self.shadow
@@ -1690,6 +1697,7 @@ impl Renderer {
 
         self.draw_skinned(slot)?;
         self.draw_transparent(slot)?;
+        self.draw_translucent_characters(slot)?;
         self.finish_recording(slot, back_buffer)
     }
 
@@ -1783,6 +1791,7 @@ impl Renderer {
 
         self.draw_skinned(slot)?;
         self.draw_transparent(slot)?;
+        self.draw_translucent_characters(slot)?;
         self.finish_recording(slot, back_buffer)
     }
 
@@ -1945,6 +1954,102 @@ impl Renderer {
             let Some(instance) = self.skinned.instances().get(index).copied() else {
                 break;
             };
+            // A character the camera is looking through is drawn later, over everything
+            // else: see `draw_translucent_characters`.
+            if is_translucent(&instance) {
+                continue;
+            }
+            self.record_skinned_instance(
+                slot,
+                index,
+                instance,
+                CharacterPass::Lit,
+                instance.style,
+                &mut bound_palette,
+            )?;
+            drawn += 1;
+        }
+
+        // Draw and triangle counts are not accumulated here: `CommandContext` already counts
+        // every `draw_indexed` recorded through it, and a second tally would either
+        // double-count or drift.
+        self.skinned_draws_last_frame = drawn;
+        Ok(drawn)
+    }
+
+    /// Records the characters the camera is looking through: each one twice, over the
+    /// finished world.
+    ///
+    /// ```text
+    /// shadow -> opaque -> skinned -> transparent -> TRANSLUCENT CHARACTERS -> particles
+    /// ```
+    ///
+    /// After the transparent phase, so a spell effect behind the character is seen through
+    /// it. First every one of them writes its depth and no colour ([`CharacterPass::DepthPrime`]),
+    /// then every one of them blends at its opacity, tested against that depth and writing
+    /// none ([`CharacterPass::Translucent`]) — so each pixel blends only the character's
+    /// nearest surface over what is behind it. A character at opacity zero is not drawn at
+    /// all. Its shadow is unaffected: the shadow stage draws it whole.
+    ///
+    /// The prime pass has no pixel shader (unless the material is alpha-tested and needs its
+    /// cutout), so it costs a depth-only rasterization, and the blend pass shades only the
+    /// nearest layer: a see-through character costs about what a solid one does.
+    ///
+    /// The cost to know about: a particle *behind* a translucent character is hidden by the
+    /// primed depth, because particles come after. A few frames of a spark behind a
+    /// see-through body is the trade for a body that does not show its own insides.
+    fn draw_translucent_characters(&mut self, slot: usize) -> Result<u32, RendererError> {
+        let any = self
+            .skinned
+            .instances()
+            .iter()
+            .any(|instance| is_translucent(instance) && instance.style.opacity > 0.0);
+        if !any {
+            return Ok(0);
+        }
+        self.commands
+            .set_topology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        let mut drawn = 0;
+        for pass in [CharacterPass::DepthPrime, CharacterPass::Translucent] {
+            let mut bound_palette: Option<(u32, u32)> = None;
+            for index in 0..self.skinned.len() {
+                let Some(instance) = self.skinned.instances().get(index).copied() else {
+                    break;
+                };
+                if !is_translucent(&instance) || instance.style.opacity <= 0.0 {
+                    continue;
+                }
+                // The opacity becomes the tint's alpha, which is what the blend reads; the
+                // dither is off, because blending is doing the fading.
+                let mut style = instance.style;
+                style.tint[3] *= style.opacity;
+                style.opacity = 1.0;
+                self.record_skinned_instance(
+                    slot,
+                    index,
+                    instance,
+                    pass,
+                    style,
+                    &mut bound_palette,
+                )?;
+                drawn += 1;
+            }
+        }
+        self.translucent_character_draws_last_frame = drawn;
+        Ok(drawn)
+    }
+
+    /// Records one skinned submesh through `pass`, drawn with `style`.
+    fn record_skinned_instance(
+        &mut self,
+        slot: usize,
+        index: usize,
+        instance: engine_render_data::SkinnedInstance,
+        pass: CharacterPass,
+        style: engine_render_data::InstanceStyle,
+        bound_palette: &mut Option<(u32, u32)>,
+    ) -> Result<(), RendererError> {
+        {
             let Some(mesh) = self.skinned_meshes.get(instance.mesh.index()) else {
                 return Err(RendererError::InvalidConfig {
                     reason: format!(
@@ -1966,7 +2071,7 @@ impl Renderer {
                 });
             };
             let material_address = material.gpu_address();
-            let variant = self.material_variant(instance.material);
+            let variant = self.material_variant(instance.material).with_pass(pass);
             let pipeline_state = self
                 .pipelines
                 .skinned(self.context.device(), variant)?
@@ -1988,7 +2093,7 @@ impl Renderer {
             };
 
             let range = (instance.palette_start, instance.palette_len);
-            if bound_palette != Some(range) {
+            if *bound_palette != Some(range) {
                 let Some(palette) = self.skinned.palette_of(index) else {
                     return Err(RendererError::InvalidConfig {
                         reason: format!(
@@ -2018,12 +2123,12 @@ impl Renderer {
                 allocation.write(&self.palette_scratch)?;
                 self.commands
                     .set_root_cbv(ROOT_SKIN_CBV, allocation.gpu_address());
-                bound_palette = Some(range);
+                *bound_palette = Some(range);
             }
 
             let object = ObjectConstants::shadowed(
                 instance.transform.matrix(),
-                instance.style,
+                style,
                 instance.receives_shadow,
             );
             let allocation = self.uploads.write_constants(slot, &object)?;
@@ -2037,15 +2142,15 @@ impl Renderer {
             self.commands.set_vertex_buffer(0, vertex_view);
             self.commands.set_index_buffer(index_view);
             self.commands.draw_indexed(index_count, 1, 0);
-
-            drawn += 1;
         }
+        Ok(())
+    }
 
-        // Draw and triangle counts are not accumulated here: `CommandContext` already counts
-        // every `draw_indexed` recorded through it, and a second tally would either
-        // double-count or drift.
-        self.skinned_draws_last_frame = drawn;
-        Ok(drawn)
+    /// Draws the translucent-character passes recorded in the most recent frame: two per
+    /// submesh of every character the camera was looking through.
+    #[must_use]
+    pub fn translucent_character_draws_last_frame(&self) -> u32 {
+        self.translucent_character_draws_last_frame
     }
 
     /// Skinned submeshes drawn by the most recent frame.
@@ -2082,6 +2187,7 @@ impl Renderer {
             features,
             wireframe: self.wireframe,
             surface,
+            pass: crate::mesh_pipeline::CharacterPass::Lit,
         }
     }
 
@@ -3233,6 +3339,15 @@ impl Renderer {
         self.particles.drawn
     }
 
+    /// What the camera fades out of its way from the next frame on, or `None` for nothing.
+    ///
+    /// Only entities whose style is [`engine_render_data::InstanceStyle::see_through`] are
+    /// affected, and only by a dither in the pass they are already drawn in: no phase, sort
+    /// or pipeline changes. Kept until it is set again.
+    pub fn set_camera_fade(&mut self, fade: Option<engine_render_data::CameraFade>) {
+        self.camera_fade = fade;
+    }
+
     /// Turns the whole particle pass on or off.
     ///
     /// What a benchmark's particle-free baseline uses, and what answers "how much of this
@@ -4094,3 +4209,9 @@ const _: () = {
     const fn assert_send<T: Send>() {}
     assert_send::<Renderer>();
 };
+
+/// Whether a skinned instance is drawn see-through: blended over the world in its own passes
+/// rather than with the other characters. See `Renderer::draw_translucent_characters`.
+fn is_translucent(instance: &engine_render_data::SkinnedInstance) -> bool {
+    instance.style.is_faded()
+}

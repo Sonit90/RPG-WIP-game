@@ -17,7 +17,7 @@ against the defaults. Nothing restates a default anywhere else.
 | `tuning::movement` | speed, acceleration, air control, gravity, jump, arena extent |
 | `tuning::character` | the collision capsule: radius, height, step height, slope, snap |
 | `tuning::simulation` | RNG seed, how long a refusal stays on screen |
-| `tuning::camera` | mouse sensitivity default and slider bounds |
+| `tuning::camera` | mouse sensitivity default and slider bounds; camera collision radius, padding, minimum distance, recovery rate; character fade and see-through fade distances |
 | `tuning::interface` | interface scale default and slider bounds |
 | `tuning::audio` | volume bounds and the four channel defaults |
 | `tuning::nameplates` | size, height, opacity, margins, safe zone, and the layout's own limits |
@@ -29,6 +29,7 @@ tuning::movement::*   ──▶ MovementConfig::default()   (engine-game)
 tuning::character::*  ──▶ CharacterConfig::default()  (engine-collision)
 tuning::player::*     ──▶ SimConfig::default(), EntityDesc::player()
 tuning::camera::*     ──▶ GameSettings::default()     (engine-settings) ──▶ settings.cfg
+tuning::camera::COLLISION_* ──▶ CameraCollision::DEFAULT (engine-presentation)
 tuning::nameplates::* ──▶ NameplateSettings, NameplateConfig, LayoutConstraints
 ```
 

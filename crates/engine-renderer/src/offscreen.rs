@@ -35,7 +35,8 @@ use crate::material::{
 };
 use crate::mesh::{GpuMesh, MeshData, SkinnedMeshData, VertexStream};
 use crate::mesh_pipeline::{
-    InstanceTransform, InstancedMeshPipeline, MeshPipeline, PipelineVariant, SkinnedMeshPipeline,
+    CharacterPass, InstanceTransform, InstancedMeshPipeline, MeshPipeline, PipelineVariant,
+    SkinnedMeshPipeline,
 };
 use crate::pipeline::{ScenePipeline, TRIANGLE_VERTICES, Vertex};
 use crate::scene::{
@@ -435,6 +436,180 @@ pub fn render_skinned_scene(
     })
 }
 
+/// Renders rigid `backdrop` objects, then skinned `characters` at `opacity`, the way the
+/// window draws a character the camera is looking through.
+///
+/// The offscreen mirror of `Renderer::draw_translucent_characters`, through the same pipeline
+/// variants: at opacity one the characters are drawn with [`CharacterPass::Lit`] like any
+/// other; below one they are drawn after the backdrop twice, once
+/// [`CharacterPass::DepthPrime`] and once [`CharacterPass::Translucent`] with the opacity in
+/// the tint's alpha; at zero they are not drawn.
+///
+/// # Errors
+///
+/// Returns [`RendererError`] if any D3D12 call fails, a material is invalid, or a palette is
+/// longer than the shader's array.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "a scene, a character set and the one number under test"
+)]
+pub fn render_translucent_characters(
+    width: u32,
+    height: u32,
+    clear_color: [f32; 4],
+    backdrop: &[SceneObject<'_>],
+    characters: &[SkinnedObject<'_>],
+    opacity: f32,
+    camera: &Camera,
+    lighting: Lighting,
+) -> Result<CapturedImage, RendererError> {
+    render_with(width, height, clear_color, |context, commands, _, _| {
+        let list = commands.list();
+        let device = context.device();
+        // One signature for the rigid and the skinned states, as the window path has: the
+        // root arguments below survive every pipeline switch.
+        let signature = crate::mesh_pipeline::create_root_signature(device)?;
+        let variant = PipelineVariant::solid(ShaderFeatures::ALL);
+        let rigid = MeshPipeline::for_variant(device, &signature, variant)?;
+        let lit = SkinnedMeshPipeline::for_variant(device, &signature, variant)?;
+        let prime = SkinnedMeshPipeline::for_variant(
+            device,
+            &signature,
+            variant.with_pass(CharacterPass::DepthPrime),
+        )?;
+        let translucent = SkinnedMeshPipeline::for_variant(
+            device,
+            &signature,
+            variant.with_pass(CharacterPass::Translucent),
+        )?;
+        let mut ring = UploadRing::new(context, 1 << 20, 1)?;
+        ring.begin_frame(0);
+
+        let mut rigid_meshes = Vec::with_capacity(backdrop.len());
+        let mut rigid_materials = Vec::with_capacity(backdrop.len());
+        for object in backdrop {
+            rigid_meshes.push(GpuMesh::upload(context, object.mesh)?);
+            rigid_materials.push(Material::new(context, object.material)?);
+        }
+        let mut skinned_meshes = Vec::with_capacity(characters.len());
+        let mut skinned_materials = Vec::with_capacity(characters.len());
+        let mut palettes = Vec::with_capacity(characters.len());
+        let mut padded = Vec::with_capacity(MAX_PALETTE_BONES);
+        for object in characters {
+            if object.palette.len() > MAX_PALETTE_BONES {
+                return Err(RendererError::InvalidConfig {
+                    reason: format!(
+                        "a palette of {} bones does not fit the shader's array of {}",
+                        object.palette.len(),
+                        MAX_PALETTE_BONES
+                    ),
+                });
+            }
+            skinned_meshes.push(GpuMesh::upload_skinned(context, object.mesh)?);
+            skinned_materials.push(Material::new(context, object.material)?);
+            padded.clear();
+            padded.extend(
+                object
+                    .palette
+                    .iter()
+                    .map(engine_core::math::Mat4::to_cols_array),
+            );
+            padded.resize(
+                MAX_PALETTE_BONES,
+                engine_core::math::Mat4::IDENTITY.to_cols_array(),
+            );
+            palettes.push(ring.write(0, &padded, crate::upload::CONSTANT_BUFFER_ALIGNMENT)?);
+        }
+
+        let white = fallback_maps(context)?;
+        let frame = FrameConstants::new(camera.view_projection(), camera.position(), lighting);
+        let frame_allocation = ring.write_constants(0, &frame)?;
+        let cluster_allocation = empty_light_grid(&mut ring)?;
+
+        // SAFETY: FFI calls recording into the open list. Every referenced object is
+        // returned below and kept alive until the submission completes.
+        unsafe {
+            list.SetGraphicsRootSignature(&signature);
+            list.SetDescriptorHeaps(&[Some(white.heap.heap().clone())]);
+            list.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+            list.SetGraphicsRootConstantBufferView(ROOT_FRAME_CBV, frame_allocation.gpu_address());
+            list.SetGraphicsRootShaderResourceView(
+                crate::scene::ROOT_CLUSTER_SRV,
+                cluster_allocation.gpu_address(),
+            );
+            list.SetGraphicsRootDescriptorTable(ROOT_MATERIAL_TABLE, white.table);
+            list.SetGraphicsRootDescriptorTable(crate::scene::ROOT_CONTACT_TABLE, white.table);
+            list.SetPipelineState(rigid.pipeline_state());
+        }
+        for (index, object) in backdrop.iter().enumerate() {
+            let constants = ObjectConstants::new(object.transform.matrix());
+            let allocation = ring.write_constants(0, &constants)?;
+            // SAFETY: as above.
+            unsafe {
+                list.SetGraphicsRootConstantBufferView(
+                    ROOT_MATERIAL_CBV,
+                    rigid_materials[index].gpu_address(),
+                );
+                list.SetGraphicsRootConstantBufferView(ROOT_OBJECT_CBV, allocation.gpu_address());
+                list.IASetVertexBuffers(0, Some(&[*rigid_meshes[index].vertex_view()]));
+                list.IASetIndexBuffer(Some(rigid_meshes[index].index_view()));
+                list.DrawIndexedInstanced(rigid_meshes[index].index_count(), 1, 0, 0, 0);
+            }
+        }
+
+        let opacity = opacity.clamp(0.0, 1.0);
+        let passes: Vec<(&SkinnedMeshPipeline, f32)> = if opacity >= 1.0 {
+            vec![(&lit, 1.0)]
+        } else if opacity > 0.0 {
+            vec![(&prime, 1.0), (&translucent, opacity)]
+        } else {
+            Vec::new()
+        };
+        for (pipeline, alpha) in passes {
+            // SAFETY: as above.
+            unsafe { list.SetPipelineState(pipeline.pipeline_state()) };
+            for (index, object) in characters.iter().enumerate() {
+                let mut style = engine_render_data::InstanceStyle::NEUTRAL;
+                style.tint[3] = alpha;
+                let constants = ObjectConstants::styled(object.transform.matrix(), style);
+                let allocation = ring.write_constants(0, &constants)?;
+                // SAFETY: as above.
+                unsafe {
+                    list.SetGraphicsRootConstantBufferView(
+                        ROOT_MATERIAL_CBV,
+                        skinned_materials[index].gpu_address(),
+                    );
+                    list.SetGraphicsRootConstantBufferView(
+                        ROOT_OBJECT_CBV,
+                        allocation.gpu_address(),
+                    );
+                    list.SetGraphicsRootConstantBufferView(
+                        ROOT_SKIN_CBV,
+                        palettes[index].gpu_address(),
+                    );
+                    list.IASetVertexBuffers(0, Some(&[*skinned_meshes[index].vertex_view()]));
+                    list.IASetIndexBuffer(Some(skinned_meshes[index].index_view()));
+                    list.DrawIndexedInstanced(skinned_meshes[index].index_count(), 1, 0, 0, 0);
+                }
+            }
+        }
+
+        Ok(Box::new((
+            signature,
+            rigid,
+            lit,
+            prime,
+            translucent,
+            ring,
+            rigid_meshes,
+            rigid_materials,
+            skinned_meshes,
+            skinned_materials,
+            white,
+        )) as Box<dyn std::any::Any>)
+    })
+}
+
 /// Renders a set of transformed, shaded meshes through a camera and reads the result back.
 ///
 /// This is the offscreen equivalent of [`crate::Renderer::render_world`] — same pipeline,
@@ -482,6 +657,70 @@ pub fn render_scene_with_features(
     lighting: Lighting,
     features: ShaderFeatures,
 ) -> Result<CapturedImage, RendererError> {
+    render_scene_inner(
+        width,
+        height,
+        clear_color,
+        objects,
+        &[],
+        None,
+        camera,
+        lighting,
+        features,
+    )
+}
+
+/// The same, with a style per object and the frame's camera fade.
+///
+/// What a fade is tested through: `styles[i]` is drawn on `objects[i]` (an object past the
+/// end of `styles` is neutral), and `fade` is written into the frame constants exactly as
+/// [`crate::Renderer::set_camera_fade`] has the window path write it.
+///
+/// # Errors
+///
+/// Returns [`RendererError`] if any D3D12 call fails or a material is invalid.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the arguments of `render_scene`, plus the two things this variant exists for"
+)]
+pub fn render_scene_styled(
+    width: u32,
+    height: u32,
+    clear_color: [f32; 4],
+    objects: &[SceneObject<'_>],
+    styles: &[engine_render_data::InstanceStyle],
+    fade: Option<engine_render_data::CameraFade>,
+    camera: &Camera,
+    lighting: Lighting,
+) -> Result<CapturedImage, RendererError> {
+    render_scene_inner(
+        width,
+        height,
+        clear_color,
+        objects,
+        styles,
+        fade,
+        camera,
+        lighting,
+        ShaderFeatures::ALL,
+    )
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the union of the public entry points' arguments"
+)]
+fn render_scene_inner(
+    width: u32,
+    height: u32,
+    clear_color: [f32; 4],
+    objects: &[SceneObject<'_>],
+    styles: &[engine_render_data::InstanceStyle],
+    fade: Option<engine_render_data::CameraFade>,
+    camera: &Camera,
+    lighting: Lighting,
+    features: ShaderFeatures,
+) -> Result<CapturedImage, RendererError> {
     render_with(width, height, clear_color, |context, commands, _, _| {
         let list = commands.list();
         // Its own root signature: this path owns exactly one pipeline, so there is nothing
@@ -504,7 +743,8 @@ pub fn render_scene_with_features(
         }
 
         let white = fallback_maps(context)?;
-        let frame = FrameConstants::new(camera.view_projection(), camera.position(), lighting);
+        let mut frame = FrameConstants::new(camera.view_projection(), camera.position(), lighting);
+        frame.set_camera_fade(fade);
         let frame_allocation = ring.write_constants(0, &frame)?;
         // An empty light grid. These paths have no local lights, so the shader never reads
         // it — but a root SRV the signature declares is bound on every draw that could,
@@ -532,7 +772,10 @@ pub fn render_scene_with_features(
         }
 
         for (index, object) in objects.iter().enumerate() {
-            let constants = ObjectConstants::new(object.transform.matrix());
+            let constants = ObjectConstants::styled(
+                object.transform.matrix(),
+                styles.get(index).copied().unwrap_or_default(),
+            );
             let allocation = ring.write_constants(0, &constants)?;
             // SAFETY: as above.
             unsafe {

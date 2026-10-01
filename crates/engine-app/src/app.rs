@@ -1053,6 +1053,13 @@ impl App {
 
         let mut controller = ThirdPersonCamera::following(simulation.player_position());
         controller.set_sensitivity(game_settings.settings().camera_sensitivity);
+        // Placed against the level before the first frame, so the session never opens with
+        // the eye inside a wall it is about to be pulled out of.
+        controller.avoid_obstructions(
+            simulation.collision_world(),
+            simulation.player_position(),
+            0.0,
+        );
         let mut camera = Camera::new(Projection::perspective(aspect_of(width, height)))?;
         controller.apply(&mut camera, aspect_of(width, height))?;
 
@@ -3797,7 +3804,7 @@ impl App {
             let shade = if monster.enabled { 1.0 } else { 0.35 };
             let style = engine_render_data::InstanceStyle {
                 tint: [tint[0] * shade, tint[1] * shade, tint[2] * shade, 1.0],
-                emissive: 0.0,
+                ..engine_render_data::InstanceStyle::NEUTRAL
             };
             for part in &lod.parts {
                 let engine_render_data::PartGeometry::Rigid(mesh) = part.geometry else {
@@ -4172,6 +4179,10 @@ impl App {
             self.editor
                 .apply_camera(&mut self.camera, aspect_of(width, height))?;
         }
+        // The editor's free camera follows nobody, so nothing is in its way, and a level is
+        // built looking at every piece of it whole.
+        self.renderer.set_camera_fade(None);
+        self.extractor.set_player_opacity(1.0);
         if self.environment.is_some() {
             self.placer.update_lod(
                 self.extractor.render_world_mut(),
@@ -5017,6 +5028,11 @@ impl App {
         }
         if self.collision_debug.enabled() {
             engine_presentation::los_debug::append_lines(&mut self.overlay_lines, &self.simulation);
+            engine_presentation::los_debug::append_camera_lines(
+                &mut self.overlay_lines,
+                &self.controller,
+                self.simulation.collision_world(),
+            );
         }
         self.renderer.set_overlay_text(&self.overlay_lines);
         // Appends to the geometry `set_overlay_text` rebuilt, so it comes after it. The
@@ -5506,12 +5522,37 @@ impl Application for App {
                 engine_presentation::extract::interpolated_player_position(&self.simulation);
             // A teleport is not movement, so it is not smoothed: the camera arrives with the
             // character instead of chasing it across the gap at the follow rate.
-            if engine_presentation::extract::player_teleported(&self.simulation) {
+            let teleported = engine_presentation::extract::player_teleported(&self.simulation);
+            if teleported {
                 self.controller.snap_to(position);
             } else {
                 self.controller
                     .follow(position, ctx.time().real_delta().as_secs_f32());
             }
+            // Against the collision world the character itself moves through, so the camera
+            // can never be somewhere the level is solid. A teleport places it outright, the
+            // same way the focus is snapped rather than smoothed.
+            self.controller.avoid_obstructions(
+                self.simulation.collision_world(),
+                position,
+                if teleported {
+                    0.0
+                } else {
+                    ctx.time().real_delta().as_secs_f32()
+                },
+            );
+            // Drawn on the next rebuild, which comes before the camera in the frame: the
+            // picture is one frame old, which is what a debug view of a camera can be.
+            #[cfg(feature = "debug-overlay")]
+            self.collision_debug
+                .set_camera_probe(self.controller.probe().copied());
+            // What the camera fades: its own character when it has been pushed in close, and
+            // see-through things in front of the eye or between the eye and the character.
+            // The character's opacity is read on the next extraction — a frame later, which
+            // the fade's own easing is far slower than.
+            self.extractor
+                .set_player_opacity(self.controller.character_opacity());
+            self.renderer.set_camera_fade(self.controller.fade());
             let (width, height) = self.renderer.size();
             if width > 0 && height > 0 {
                 self.controller

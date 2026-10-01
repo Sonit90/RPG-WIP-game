@@ -19,9 +19,10 @@ use windows::Win32::Graphics::Direct3D12::{
     D3D12_ROOT_PARAMETER, D3D12_ROOT_PARAMETER_0, D3D12_ROOT_PARAMETER_TYPE_CBV,
     D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE, D3D12_ROOT_PARAMETER_TYPE_SRV,
     D3D12_ROOT_SIGNATURE_DESC, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT,
-    D3D12_SHADER_VISIBILITY_ALL, D3D12_SHADER_VISIBILITY_PIXEL, D3D12_SHADER_VISIBILITY_VERTEX,
-    D3D12_STATIC_BORDER_COLOR_OPAQUE_BLACK, D3D12_STATIC_BORDER_COLOR_OPAQUE_WHITE,
-    D3D12_STATIC_SAMPLER_DESC, D3D12_TEXTURE_ADDRESS_MODE_BORDER, D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
+    D3D12_SHADER_BYTECODE, D3D12_SHADER_VISIBILITY_ALL, D3D12_SHADER_VISIBILITY_PIXEL,
+    D3D12_SHADER_VISIBILITY_VERTEX, D3D12_STATIC_BORDER_COLOR_OPAQUE_BLACK,
+    D3D12_STATIC_BORDER_COLOR_OPAQUE_WHITE, D3D12_STATIC_SAMPLER_DESC,
+    D3D12_TEXTURE_ADDRESS_MODE_BORDER, D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
     D3D12_TEXTURE_ADDRESS_MODE_WRAP, D3D12SerializeRootSignature, ID3D12Device,
     ID3D12PipelineState, ID3D12RootSignature,
 };
@@ -37,7 +38,8 @@ use crate::error::RendererError;
 use crate::material::SurfaceClass;
 use crate::mesh::{MeshVertex, SkinnedVertex};
 use crate::pipeline::{
-    blend_desc_for, depth_stencil_desc_for, rasterizer_desc, wireframe_rasterizer_desc,
+    blend_desc_for, depth_prime_blend_desc, depth_stencil_desc_for, rasterizer_desc,
+    transparent_blend_desc, wireframe_rasterizer_desc,
 };
 use crate::scene::{ROOT_PARAMETER_REGISTERS, ROOT_SKIN_CBV};
 use crate::shader::{
@@ -69,8 +71,37 @@ pub struct PipelineVariant {
     /// material's constant, not a pipeline setting. It is still a distinct key so that reading
     /// a variant says which phase it belongs to.
     pub surface: SurfaceClass,
+    /// Which of a character's passes this state draws. Only the skinned pipeline reads it;
+    /// see [`CharacterPass`].
+    pub pass: CharacterPass,
 }
 
+/// Which pass of a skinned character a pipeline state draws.
+///
+/// A character drawn whole uses [`CharacterPass::Lit`] — its material's own blend and depth
+/// state, exactly as before. A character the camera is looking *through* is drawn twice,
+/// after every opaque and transparent surface:
+///
+/// ```text
+/// DepthPrime   writes its depth, no colour,    -> the nearest layer of the character
+///              no pixel shader
+/// Translucent  blends over the world, tests    -> only that layer, src.a over 1 - src.a
+///              LESS_EQUAL, writes no depth
+/// ```
+///
+/// One layer per pixel is what makes it see-through rather than x-rayed: blending every
+/// triangle would show the far arm through the chest and darken where the body overlaps
+/// itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum CharacterPass {
+    /// The material's own state.
+    #[default]
+    Lit,
+    /// Depth only.
+    DepthPrime,
+    /// Blended, depth-tested against the prime, not written.
+    Translucent,
+}
 impl PipelineVariant {
     /// The solid-fill, opaque variant of `features`.
     #[must_use]
@@ -79,7 +110,15 @@ impl PipelineVariant {
             features,
             wireframe: false,
             surface: SurfaceClass::Opaque,
+            pass: CharacterPass::Lit,
         }
+    }
+
+    /// The same variant drawing character pass `pass`.
+    #[must_use]
+    pub const fn with_pass(mut self, pass: CharacterPass) -> Self {
+        self.pass = pass;
+        self
     }
 
     /// The same variant drawn as `surface`.
@@ -833,6 +872,7 @@ impl SkinnedMeshPipeline {
             rasterizer_desc(),
             features,
             SurfaceClass::Opaque,
+            CharacterPass::Lit,
         )
     }
 
@@ -862,6 +902,7 @@ impl SkinnedMeshPipeline {
             wireframe_rasterizer_desc(),
             features,
             SurfaceClass::Opaque,
+            CharacterPass::Lit,
         )
     }
 
@@ -885,6 +926,7 @@ impl SkinnedMeshPipeline {
             variant.rasterizer(),
             variant.features,
             variant.surface,
+            variant.pass,
         )
     }
 
@@ -895,6 +937,7 @@ impl SkinnedMeshPipeline {
         rasterizer: D3D12_RASTERIZER_DESC,
         features: ShaderFeatures,
         surface: SurfaceClass,
+        pass: CharacterPass,
     ) -> Result<Self, RendererError> {
         // Cloned, not created: the caller owns the one signature every mesh pipeline shares,
         // and a PSO holds a reference of its own for as long as it lives.
@@ -910,13 +953,30 @@ impl SkinnedMeshPipeline {
             // lives only for this call and the real reference is owned here.
             pRootSignature: unsafe { std::mem::transmute_copy(&root_signature) },
             VS: bytecode(MESH_SKINNED_VS),
-            PS: bytecode(mesh_skinned_pixel_shader(features)),
+            // The depth prime writes no colour, so it needs no colour: no pixel shader at all,
+            // which is a depth-only rasterization with early depth testing. Running the lit
+            // shader here shaded every layer of a close-up character in full and threw the
+            // result away. An alpha-tested material keeps its shader, for the cutout.
+            PS: if pass == CharacterPass::DepthPrime && surface != SurfaceClass::AlphaTest {
+                D3D12_SHADER_BYTECODE::default()
+            } else {
+                bytecode(mesh_skinned_pixel_shader(features))
+            },
             RasterizerState: rasterizer,
             // The two descriptors the surface class decides, and the only two. Opaque and
             // alpha-tested surfaces get exactly what every mesh pipeline got before
             // transparency existed.
-            BlendState: blend_desc_for(surface),
-            DepthStencilState: depth_stencil_desc_for(surface),
+            // A character the camera looks through overrides both: see `CharacterPass`.
+            BlendState: match pass {
+                CharacterPass::Lit => blend_desc_for(surface),
+                CharacterPass::DepthPrime => depth_prime_blend_desc(),
+                CharacterPass::Translucent => transparent_blend_desc(),
+            },
+            DepthStencilState: match pass {
+                CharacterPass::Lit => depth_stencil_desc_for(surface),
+                CharacterPass::DepthPrime => depth_stencil_desc_for(SurfaceClass::Opaque),
+                CharacterPass::Translucent => depth_stencil_desc_for(SurfaceClass::Transparent),
+            },
             DSVFormat: DEPTH_FORMAT,
             SampleMask: u32::MAX,
             PrimitiveTopologyType: D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE,
@@ -1043,10 +1103,10 @@ pub(crate) fn instanced_vertex_elements() -> Vec<D3D12_INPUT_ELEMENT_DESC> {
     elements.push(D3D12_INPUT_ELEMENT_DESC {
         SemanticName: INSTANCE_EMISSIVE_SEMANTIC,
         SemanticIndex: 0,
-        // Two floats, not one: the emissive add, and beside it the per-instance "does this
-        // receive shadows" flag. The second component reads a word that was already padding
-        // in the instance record, so the stream did not grow.
-        Format: DXGI_FORMAT_R32G32_FLOAT,
+        // Four floats: the emissive add, the per-instance "does this receive shadows" flag,
+        // the dither fade and the see-through flag. The last three read words that were
+        // already padding in the instance record, so the stream did not grow.
+        Format: DXGI_FORMAT_R32G32B32A32_FLOAT,
         InputSlot: 1,
         AlignedByteOffset: 80,
         InputSlotClass: D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA,
@@ -1082,9 +1142,11 @@ pub struct InstanceTransform {
     /// Per instance rather than per material for the same reason the tint is: two copies of
     /// one prop can disagree about it without splitting the batch.
     pub receives_shadow: f32,
-    /// Padding to a 16-byte boundary, so the element offsets the input layout declares are
-    /// the ones the struct actually has.
-    pub padding: [f32; 2],
+    /// How much of the instance the dither removes: `1 - opacity`, so zero is whole. The
+    /// third component of `INSTANCE_EMISSIVE`, in what used to be padding.
+    pub fade: f32,
+    /// 1 when the frame's camera fade may fade this instance. The fourth component.
+    pub see_through: f32,
 }
 
 impl InstanceTransform {
@@ -1121,7 +1183,8 @@ impl InstanceTransform {
             tint: style.tint,
             emissive: style.emissive,
             receives_shadow: f32::from(u8::from(receives_shadow)),
-            padding: [0.0; 2],
+            fade: 1.0 - style.opacity.clamp(0.0, 1.0),
+            see_through: f32::from(u8::from(style.see_through)),
         }
     }
 }

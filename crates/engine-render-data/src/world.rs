@@ -96,9 +96,21 @@ declare_handle!(RenderEntity, "one drawable in a `RenderWorld`");
 /// extractor expressed "this one died" by despawning the render entity and respawning it
 /// with a different material handle, which churned a slot for a colour change.
 ///
-/// Deliberately small: five floats, sixteen of a 96-byte instance record. It is not a
-/// second material system and must not become one — no textures, no shader selection, no
-/// parameters the lighting model does not already read.
+/// Deliberately small: seven floats, in a 96-byte instance record that had room for them. It
+/// is not a second material system and must not become one — no textures, no shader
+/// selection, no parameters the lighting model does not already read.
+///
+/// # Fading
+///
+/// [`InstanceStyle::opacity`] fades an entity, and how depends on what it is:
+///
+/// * **A skinned character is see-through.** Below opacity one it is drawn after the whole
+///   world, blended over it, in two passes — its depth first, then its colour tested
+///   against that depth — so the world shows through it while its own far arm and the back
+///   of its body do not. Its shadow stays whole.
+/// * **A rigid entity is dithered.** The pixel shader discards a screen-door share of its
+///   pixels, so it stays in its batch, writes depth and needs no sorting. That is also how
+///   [`InstanceStyle::see_through`] entities are faded by the frame's [`CameraFade`].
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct InstanceStyle {
     /// Multiplied with the material's base colour. `[1, 1, 1, 1]` changes nothing.
@@ -111,6 +123,45 @@ pub struct InstanceStyle {
     /// What a hit flash and a selection glow are made of: a surface that briefly ignores
     /// the lighting, without a second material or a second draw.
     pub emissive: f32,
+    /// How much of the entity is drawn, from 1 (all of it) to 0 (none). Blended for a
+    /// skinned character, dithered for anything rigid; see the type's own notes.
+    ///
+    /// The tint's alpha is a different thing: it is what a *transparent material* blends
+    /// with, and an opaque material ignores it.
+    pub opacity: f32,
+    /// Whether the camera may fade this entity when it gets in the way: when it is right in
+    /// front of the eye, or between the eye and the character the camera follows.
+    ///
+    /// Off for anything solid — walls, floors, terrain — which the camera keeps out of
+    /// instead; on for what the camera can pass through, which is otherwise the thing that
+    /// fills the screen. What "in the way" means is the frame's [`CameraFade`].
+    pub see_through: bool,
+}
+
+/// Where the camera is looking from and at, for fading what stands in the way.
+///
+/// ```text
+///   eye o ---------------------------------> target (the character's chest)
+///        \__ near zone: anything closer than `near_end` fades, gone by `near_start`
+///         \_________ tube: anything inside `radius` of the line, in front of the
+///                     target, fades towards `min_opacity`
+/// ```
+///
+/// Applies only to entities whose style is [`InstanceStyle::see_through`]. A frame with no
+/// fade — the default, every offscreen path, the editor's free camera — fades nothing.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CameraFade {
+    /// What the camera is looking at and must be able to see: the character's chest.
+    pub target: engine_core::math::Vec3,
+    /// Distance from the eye, in metres, at and below which a see-through surface is gone.
+    pub near_start: f32,
+    /// Distance from the eye, in metres, from which a see-through surface is whole.
+    pub near_end: f32,
+    /// Radius of the clear tube around the eye-to-target line at the target, in metres. It
+    /// narrows towards the eye.
+    pub radius: f32,
+    /// How much of a see-through surface inside the tube is still drawn.
+    pub min_opacity: f32,
 }
 
 impl Default for InstanceStyle {
@@ -124,6 +175,8 @@ impl InstanceStyle {
     pub const NEUTRAL: Self = Self {
         tint: [1.0, 1.0, 1.0, 1.0],
         emissive: 0.0,
+        opacity: 1.0,
+        see_through: false,
     };
 
     /// A style that multiplies the surface by `tint`.
@@ -142,6 +195,43 @@ impl InstanceStyle {
             emissive: emissive.max(0.0),
             ..self
         }
+    }
+
+    /// The same style, drawn at `opacity` (clamped to 0..=1; anything not a number is whole).
+    #[must_use]
+    pub fn with_opacity(self, opacity: f32) -> Self {
+        Self {
+            opacity: if opacity.is_nan() {
+                1.0
+            } else {
+                opacity.clamp(0.0, 1.0)
+            },
+            ..self
+        }
+    }
+
+    /// The same style, fadeable by the camera when it gets in the way.
+    #[must_use]
+    pub fn see_through(self) -> Self {
+        Self {
+            see_through: true,
+            ..self
+        }
+    }
+
+    /// Below this opacity an entity counts as faded; at or above it, as whole.
+    ///
+    /// A threshold rather than `< 1.0`, so a value a rounding error short of one — which an
+    /// eased fade produces — can never put an entity on a fading path.
+    pub const FADED_BELOW: f32 = 0.999;
+
+    /// Whether this style fades its entity at all.
+    ///
+    /// What decides whether a skinned character is drawn see-through, in its own and more
+    /// expensive passes, rather than with the other characters.
+    #[must_use]
+    pub fn is_faded(self) -> bool {
+        self.opacity < Self::FADED_BELOW
     }
 
     /// Whether this style leaves the material untouched.
@@ -624,6 +714,15 @@ pub fn world_bounds(local: Sphere, transform: &Transform) -> Sphere {
 mod tests {
     use super::*;
     use engine_core::math::{Quat, Vec3};
+
+    #[test]
+    fn a_style_is_faded_only_when_it_is_visibly_faded() {
+        assert!(!InstanceStyle::NEUTRAL.is_faded());
+        // What an eased fade stalls at: one f32 step under one. Whole, not faded.
+        assert!(!InstanceStyle::NEUTRAL.with_opacity(0.999_999_94).is_faded());
+        assert!(InstanceStyle::NEUTRAL.with_opacity(0.5).is_faded());
+        assert!(InstanceStyle::NEUTRAL.with_opacity(0.0).is_faded());
+    }
 
     fn desc(mesh: u32, material: u32) -> RenderEntityDesc {
         RenderEntityDesc {

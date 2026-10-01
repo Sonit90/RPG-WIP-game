@@ -40,6 +40,20 @@
 //! 5. Each transparent object is recorded as its own draw, in that order, with a pipeline
 //!    state whose blend is enabled and whose depth write mask is zero.
 //!
+//! # Fading is not transparency
+//!
+//! An entity can also be *faded* per instance — `InstanceStyle::opacity`, and the frame's
+//! `CameraFade` for entities marked `see_through` — and that is deliberately **not** this
+//! contract:
+//!
+//! * A rigid entity fades by an ordered dither in whatever pass it already draws in: the pixel
+//!   shader discards a screen-door share of the pixels, so the surface keeps its class, its
+//!   depth write, its batch and its shadow.
+//! * A skinned character below opacity one is drawn see-through in its own two passes after
+//!   this phase — depth, then colour blended and tested against it
+//!   ([`CharacterPass`](crate::mesh_pipeline::CharacterPass)) — so exactly one layer of it
+//!   blends over the world and its insides never show.
+//!
 //! # What is deliberately not here
 //!
 //! * **No order-independent transparency.** No weighted-blended OIT, no per-pixel lists, no

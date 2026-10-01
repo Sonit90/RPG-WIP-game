@@ -41,7 +41,9 @@
 //! That is asserted in this module's tests rather than described.
 
 use engine_core::math::{Sphere, Vec3};
-use engine_environment::{EnvironmentAsset, EnvironmentObject, EnvironmentScene};
+use engine_environment::{
+    EnvironmentAsset, EnvironmentCollision, EnvironmentObject, EnvironmentScene,
+};
 use engine_render_data::{
     InstanceStyle, Lighting, LocalLight, MeshHandle, ModelBinding, PartGeometry, RenderEntity,
     RenderEntityDesc, RenderWorld, SHADOW_LOD_MESHES, ShadowCasting,
@@ -357,10 +359,16 @@ fn spawn_parts(
             material: part.material,
             bounds: part.bounds,
             visible: true,
-            // Environment objects are never tinted, hit-flashed or faded. `InstanceStyle`
-            // describes what is happening to one entity right now, and nothing happens to a
-            // rock — so it stays neutral and costs the multiply the shader does anyway.
-            style: InstanceStyle::NEUTRAL,
+            // Environment objects are never tinted or hit-flashed. The one thing that can
+            // happen to one is the camera looking through it — and only to decoration: a
+            // piece with collision is solid, the camera keeps out of it, and it is never
+            // faded. A fern or a hanging banner has no collision, so the camera passes
+            // straight through it, and that is exactly when it must get out of the way.
+            style: if matches!(object.collision, EnvironmentCollision::None) {
+                InstanceStyle::NEUTRAL.see_through()
+            } else {
+                InstanceStyle::NEUTRAL
+            },
             // Scenery casts and receives, and hands the shadow passes the coarser levels the
             // model already carries. This is the whole of what §10 asks for: no shadow
             // meshes are authored, the asset's own levels of detail are reused, and a far
@@ -593,6 +601,38 @@ mod tests {
         let mut placer = EnvironmentPlacer::new(visuals());
         placer.place(&mut world, &scene, Vec3::new(0.0, 2.0, 0.0), 1.0);
         (world, placer, scene)
+    }
+
+    #[test]
+    fn decoration_is_see_through_and_anything_with_collision_is_not() {
+        // The rule the camera fade rests on: what the camera collides with it keeps out of
+        // and never fades; what it passes through is faded when it gets in the way.
+        let (world, placer, scene) = placed_arena();
+        let (mut decoration, mut solid) = (0, 0);
+        for (index, object) in scene.objects.iter().enumerate() {
+            let parts = placer.parts_of(index).expect("every object was placed");
+            let expected = matches!(object.collision, EnvironmentCollision::None);
+            for part in parts {
+                let slot = part.index();
+                assert_eq!(
+                    world.styles()[slot].see_through,
+                    expected,
+                    "{:?} with {:?}",
+                    object.asset,
+                    object.collision
+                );
+                assert_eq!(world.styles()[slot].opacity, 1.0);
+            }
+            if expected {
+                decoration += 1;
+            } else {
+                solid += 1;
+            }
+        }
+        assert!(
+            decoration > 0 && solid > 0,
+            "{decoration} decorative, {solid} solid"
+        );
     }
 
     #[test]

@@ -1456,6 +1456,7 @@ fn style_of(draw: &MeshDraw) -> InstanceStyle {
             1.0,
         ],
         emissive: draw.emissive * alpha,
+        ..InstanceStyle::NEUTRAL
     }
 }
 

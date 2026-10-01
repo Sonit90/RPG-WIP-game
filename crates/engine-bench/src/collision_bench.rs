@@ -23,6 +23,7 @@
 //! | broad | `BroadPhase::query` alone, into a reused buffer |
 //! | narrow | `overlap_capsule`: the broad phase plus every exact test it implies |
 //! | controller | `move_character`: the whole tick, sweeps, resolution and step probes |
+//! | camera | `ThirdPersonCamera::avoid_obstructions`: the per-frame camera collision check |
 //!
 //! Narrow-phase time is reported as the difference, which is the only honest way to state
 //! it: the narrow phase cannot run without a candidate list to run over.
@@ -38,6 +39,7 @@ use std::time::{Duration, Instant};
 use engine_collision::broad::Proxy;
 use engine_collision::prelude::*;
 use engine_core::math::Vec3;
+use engine_presentation::camera::ThirdPersonCamera;
 
 /// Radius of the circuit the character walks, in metres.
 const CIRCUIT_RADIUS: f32 = 7.2;
@@ -152,6 +154,10 @@ struct Measurement {
     /// ability that asks for one is activated and again when its cast lands, and never in
     /// between. A tick figure would imply a per-frame cost this system does not have.
     los_us: f64,
+    /// Microseconds per frame of the third-person camera's obstruction check.
+    ///
+    /// Per *frame*, unlike the line-of-sight ray: the camera checks every rendered frame.
+    camera_us: f64,
     /// Candidates the broad phase offered per tick.
     candidates: f64,
     /// Exact tests per tick.
@@ -180,18 +186,28 @@ fn run(scenarios: &[usize], ticks: usize) {
     println!("=== SUMMARY: microseconds per tick ===");
     println!();
     println!(
-        "{:>8} | {:>6} | {:>8} | {:>8} | {:>10} | {:>8} | {:>6} | {:>6} | {:>6}",
-        "statics", "phase", "broad", "narrow", "controller", "los ray", "cands", "tests", "allocs"
+        "{:>8} | {:>6} | {:>8} | {:>8} | {:>10} | {:>8} | {:>8} | {:>6} | {:>6} | {:>6}",
+        "statics",
+        "phase",
+        "broad",
+        "narrow",
+        "controller",
+        "los ray",
+        "camera",
+        "cands",
+        "tests",
+        "allocs"
     );
     for measurement in &measurements {
         println!(
-            "{:>8} | {:>6} | {:>8.3} | {:>8.3} | {:>10.3} | {:>8.3} | {:>6.1} | {:>6.1} | {:>6}",
+            "{:>8} | {:>6} | {:>8.3} | {:>8.3} | {:>10.3} | {:>8.3} | {:>8.3} | {:>6.1} | {:>6.1} | {:>6}",
             measurement.statics,
             measurement.broad_phase,
             measurement.broad_us,
             (measurement.query_us - measurement.broad_us).max(0.0),
             measurement.controller_us,
             measurement.los_us,
+            measurement.camera_us,
             measurement.candidates,
             measurement.narrow_tests,
             measurement.allocations,
@@ -207,6 +223,9 @@ fn run(scenarios: &[usize], ticks: usize) {
     println!("the line-of-sight column is per *ray*, not per tick: one ray is cast when a");
     println!("targeted ability that requires it is activated, and one more when its cast");
     println!("lands. Never per frame, and never per enemy.");
+    println!();
+    println!("the camera column is per *frame*: the third-person camera sweeps its sphere");
+    println!("through the level every rendered frame to keep out of the walls.");
     println!();
     println!("At 240 FPS the frame budget is 4166 us. At 480 FPS it is 2083 us.");
 }
@@ -321,6 +340,27 @@ fn measure(statics: usize, ticks: usize) -> Measurement {
     // nothing measures the broad phase rejecting everything.
     let _ = blocked;
 
+    // --- the camera's per-frame obstruction check ------------------------------------------
+    //
+    // The real camera, following the circuit at its furthest zoom while the mouse turns it,
+    // so the sweep is as long as it ever is and runs into the pillars every quarter lap.
+    let mut camera = ThirdPersonCamera::following(Vec3::new(CIRCUIT_RADIUS, 0.0, 0.0));
+    camera.distance = 25.0;
+    let frame = |camera: &mut ThirdPersonCamera, point: &Vec3| {
+        let feet = Vec3::new(point.x, 0.0, point.z);
+        camera.rotate(3.0, 0.4);
+        camera.follow(feet, 1.0 / 240.0);
+        camera.avoid_obstructions(&world, feet, 1.0 / 240.0);
+    };
+    for point in path.iter().take(WARMUP_TICKS) {
+        frame(&mut camera, point);
+    }
+    let started = Instant::now();
+    for point in &path {
+        frame(&mut camera, point);
+    }
+    let camera_time = started.elapsed();
+
     Measurement {
         statics,
         broad_phase: world.broad_phase().name(),
@@ -328,6 +368,7 @@ fn measure(statics: usize, ticks: usize) -> Measurement {
         query_us: per_tick_us(query, ticks),
         controller_us: per_tick_us(controller, ticks),
         los_us: per_tick_us(los, ticks),
+        camera_us: per_tick_us(camera_time, ticks),
         candidates: candidate_total as f64 / ticks as f64,
         narrow_tests: tests as f64 / ticks as f64,
         contacts: contacts as f64 / ticks as f64,
@@ -448,6 +489,10 @@ fn report(measurement: &Measurement) {
     println!(
         "  line-of-sight    {:>8.3} us/ray    {LOS_RANGE:.0} m, per targeted cast",
         measurement.los_us
+    );
+    println!(
+        "  camera check     {:>8.3} us/frame  sphere sweeps, 25 m zoom",
+        measurement.camera_us
     );
     println!(
         "  allocations      {:>8}   (measured run only)",

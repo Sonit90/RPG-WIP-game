@@ -79,6 +79,52 @@ pub fn append_lines(lines: &mut Vec<String>, simulation: &Simulation) -> usize {
     lines.len() - before
 }
 
+/// Appends the camera's obstruction readout to `lines`, or nothing before the first check.
+///
+/// ```text
+/// CAMERA    HELD IN   ZOOM 8.0 M   AT 3.2 M   LIMIT 3.2 M
+/// BLOCKER   DUNGEON WALL
+/// ```
+///
+/// Rides with the line-of-sight readout on the same key, because both are "what did a ray
+/// through the collision world just find". Returns how many lines it added.
+pub fn append_camera_lines(
+    lines: &mut Vec<String>,
+    camera: &crate::camera::ThirdPersonCamera,
+    world: &engine_collision::CollisionWorld,
+) -> usize {
+    let Some(probe) = camera.probe() else {
+        return 0;
+    };
+    let before = lines.len();
+    let actual = camera.actual_distance();
+    let state = if probe.obstructed() {
+        "HELD IN"
+    } else if actual + 1e-3 < camera.distance {
+        "EASING  "
+    } else {
+        "CLEAR   "
+    };
+    let mut line = String::new();
+    let _ = write!(
+        line,
+        "CAMERA    {state}  ZOOM {:.1} M   AT {actual:.1} M   LIMIT {:.1} M",
+        camera.distance, probe.limit
+    );
+    lines.push(line);
+    if let Some(hit) = probe.hit {
+        let label = world.label(hit.id);
+        let mut line = String::new();
+        let _ = write!(
+            line,
+            "BLOCKER   {}",
+            if label.is_empty() { "UNNAMED" } else { label }
+        );
+        lines.push(line);
+    }
+    lines.len() - before
+}
+
 #[cfg(test)]
 #[allow(
     clippy::expect_used,

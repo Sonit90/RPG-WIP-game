@@ -173,6 +173,11 @@ pub struct FrameConstants {
     pub contact_target: [f32; 4],
     /// `[near kernel code, far kernel code, first reduced cascade, unused]`.
     pub filter_lod: [f32; 4],
+    /// `[target x, y, z, 1 when the camera fade is on]`. See
+    /// [`engine_render_data::CameraFade`].
+    pub camera_fade: [f32; 4],
+    /// `[near start, near end, tube radius, minimum opacity]`.
+    pub camera_fade_params: [f32; 4],
 }
 
 /// Written out rather than derived: `#[derive(Default)]` does not reach an array longer than
@@ -211,6 +216,8 @@ impl Default for FrameConstants {
             cluster_depth: [0.0; 4],
             contact_target: [0.0; 4],
             filter_lod: [0.0; 4],
+            camera_fade: [0.0; 4],
+            camera_fade_params: [0.0; 4],
         }
     }
 }
@@ -258,6 +265,28 @@ impl FrameConstants {
             .inverse()
             .unwrap_or(Mat4::IDENTITY)
             .to_cols_array();
+    }
+
+    /// Records what the camera fades out of its way, or switches the fade off.
+    ///
+    /// Off is all zeros, which is also what every caller that never heard of the fade
+    /// produces: an offscreen helper or a benchmark fades nothing.
+    pub fn set_camera_fade(&mut self, fade: Option<engine_render_data::CameraFade>) {
+        match fade {
+            Some(fade) => {
+                self.camera_fade = [fade.target.x, fade.target.y, fade.target.z, 1.0];
+                self.camera_fade_params = [
+                    fade.near_start.max(0.0),
+                    fade.near_end.max(fade.near_start.max(0.0)),
+                    fade.radius.max(0.0),
+                    fade.min_opacity.clamp(0.0, 1.0),
+                ];
+            }
+            None => {
+                self.camera_fade = [0.0; 4];
+                self.camera_fade_params = [0.0; 4];
+            }
+        }
     }
 
     /// Records how large the frame being drawn is, in pixels.
@@ -457,8 +486,13 @@ pub struct ObjectConstants {
     /// is padded to sixteen bytes either way, and a `bool` in a constant buffer is four
     /// bytes in HLSL regardless.
     pub receives_shadow: f32,
-    /// Padding to the 16-byte constant-buffer row.
-    pub padding: [f32; 2],
+    /// How much of the object the dither *removes*: `1 - opacity`.
+    ///
+    /// Stored inverted so that zero — what every zero-filled record holds — is a whole
+    /// object. In what used to be padding.
+    pub fade: f32,
+    /// 1 when the frame's camera fade may fade this object. In what used to be padding.
+    pub see_through: f32,
 }
 
 impl ObjectConstants {
@@ -489,7 +523,8 @@ impl ObjectConstants {
             tint: style.tint,
             emissive: style.emissive,
             receives_shadow: f32::from(u8::from(receives_shadow)),
-            padding: [0.0; 2],
+            fade: 1.0 - style.opacity.clamp(0.0, 1.0),
+            see_through: f32::from(u8::from(style.see_through)),
         }
     }
 }
@@ -562,7 +597,12 @@ mod tests {
         assert_eq!(std::mem::offset_of!(FrameConstants, cluster_depth), 3984);
         assert_eq!(std::mem::offset_of!(FrameConstants, contact_target), 4000);
         assert_eq!(std::mem::offset_of!(FrameConstants, filter_lod), 4016);
-        assert_eq!(size_of::<FrameConstants>(), 4032);
+        assert_eq!(std::mem::offset_of!(FrameConstants, camera_fade), 4032);
+        assert_eq!(
+            std::mem::offset_of!(FrameConstants, camera_fade_params),
+            4048
+        );
+        assert_eq!(size_of::<FrameConstants>(), 4064);
         // Kept small on purpose. The cluster masks live in their own buffer rather than
         // here: putting 13.5 KB of them in this one cost 0.34 ms a frame at 4K, because a
         // constant buffer that no longer fits the hardware's constant cache is slower to
@@ -579,6 +619,38 @@ mod tests {
         assert_eq!(std::mem::offset_of!(ObjectConstants, tint), 64);
         assert_eq!(std::mem::offset_of!(ObjectConstants, emissive), 80);
         assert_eq!(std::mem::offset_of!(ObjectConstants, receives_shadow), 84);
+        assert_eq!(std::mem::offset_of!(ObjectConstants, fade), 88);
+        assert_eq!(std::mem::offset_of!(ObjectConstants, see_through), 92);
+    }
+
+    #[test]
+    fn an_object_is_whole_unless_its_style_fades_it() {
+        // Zero is whole, so a zero-filled record can never make something vanish.
+        let whole = ObjectConstants::new(Mat4::IDENTITY);
+        assert_eq!((whole.fade, whole.see_through), (0.0, 0.0));
+        let style = engine_render_data::InstanceStyle::NEUTRAL
+            .with_opacity(0.25)
+            .see_through();
+        let faded = ObjectConstants::styled(Mat4::IDENTITY, style);
+        assert!((faded.fade - 0.75).abs() < 1e-6);
+        assert_eq!(faded.see_through, 1.0);
+    }
+
+    #[test]
+    fn the_camera_fade_is_off_unless_it_is_set() {
+        let mut constants = FrameConstants::new(Mat4::IDENTITY, Vec3::ZERO, Lighting::default());
+        assert_eq!(constants.camera_fade[3], 0.0);
+        constants.set_camera_fade(Some(engine_render_data::CameraFade {
+            target: Vec3::new(1.0, 2.0, 3.0),
+            near_start: 0.2,
+            near_end: 1.0,
+            radius: 0.9,
+            min_opacity: 0.3,
+        }));
+        assert_eq!(constants.camera_fade, [1.0, 2.0, 3.0, 1.0]);
+        assert_eq!(constants.camera_fade_params, [0.2, 1.0, 0.9, 0.3]);
+        constants.set_camera_fade(None);
+        assert_eq!(constants.camera_fade, [0.0; 4]);
     }
 
     #[test]

@@ -231,6 +231,9 @@ pub struct RenderExtractor {
     /// extractor to measure visibility and has no interest in a skeleton. A scene with no
     /// visual simply does not draw its player, which is loud rather than subtle.
     player_visual: Option<CharacterVisual>,
+    /// How much of the player's character is drawn. See
+    /// [`RenderExtractor::set_player_opacity`].
+    player_opacity: f32,
     /// Which dummy is the single-target one.
     ///
     /// Gameplay does not distinguish them — `EntityKind` is `Player` or `Dummy`, and the doc
@@ -483,6 +486,7 @@ impl RenderExtractor {
             marker_height: MARKER_HEIGHT,
             hits: Vec::with_capacity(64),
             player_visual: None,
+            player_opacity: 1.0,
             featured_dummy: None,
             view: ViewParams::default(),
             monsters: MonsterVisuals::new(),
@@ -508,6 +512,25 @@ impl RenderExtractor {
     /// forgot to supply one would hide the omission behind a cube.
     pub fn set_player_visual(&mut self, visual: CharacterVisual) {
         self.player_visual = Some(visual);
+    }
+
+    /// How much of the player's character to draw, from 1 (all of it) to 0, from the next
+    /// extraction on.
+    ///
+    /// The camera's decision, handed in: it fades the character when it has been pushed in
+    /// close to it. See [`crate::camera::ThirdPersonCamera::character_opacity`].
+    pub fn set_player_opacity(&mut self, opacity: f32) {
+        self.player_opacity = if opacity.is_nan() {
+            1.0
+        } else {
+            opacity.clamp(0.0, 1.0)
+        };
+    }
+
+    /// The opacity the player's character is drawn at.
+    #[must_use]
+    pub fn player_opacity(&self) -> f32 {
+        self.player_opacity
     }
 
     /// The player's visual controller, for the developer overlay.
@@ -769,8 +792,9 @@ impl RenderExtractor {
         if !alive {
             return InstanceStyle {
                 tint: CORPSE_TINT,
-                emissive: 0.0,
-            };
+                ..InstanceStyle::NEUTRAL
+            }
+            .see_through();
         }
         let look = simulation.brain(id).map(|brain| brain.archetype().look);
         let fraction = simulation
@@ -780,10 +804,14 @@ impl RenderExtractor {
         let shade = MONSTER_HEALTH_FLOOR + (1.0 - MONSTER_HEALTH_FLOOR) * fraction;
         let tint = look.map_or([1.0; 3], |look| look.tint);
         let wash = |channel: f32| shade * (1.0 + (channel - 1.0) * MONSTER_TINT_WASH);
+        // See-through: a monster has no static collision, so the camera can end up behind
+        // or inside one, and it is then exactly the thing hiding the player's character.
         let mut style = InstanceStyle {
             tint: [wash(tint[0]), wash(tint[1]), wash(tint[2]), 1.0],
             emissive: look.map_or(0.0, |look| look.glow * EMPOWERED_GLOW),
-        };
+            ..InstanceStyle::NEUTRAL
+        }
+        .see_through();
         if simulation.player().target == Some(id) {
             style.emissive += TARGET_GLOW;
         }
@@ -882,10 +910,13 @@ impl RenderExtractor {
             // crash, and the character holds its last pose.
             log::error!("character animation failed: {error}");
         }
-        visual.submit(
+        // Not see-through: the camera's tube is aimed *at* the character, and the character
+        // has its own fade.
+        visual.submit_styled(
             &mut self.world,
             self.view.camera_position,
             self.view.lod_bias,
+            InstanceStyle::NEUTRAL.with_opacity(self.player_opacity),
         );
     }
 
@@ -903,11 +934,14 @@ impl RenderExtractor {
             // lifeless grey; it does not need a `dead_material` for every model in the game.
             return InstanceStyle {
                 tint: DEAD_TINT,
-                emissive: 0.0,
-            };
+                ..InstanceStyle::NEUTRAL
+            }
+            .see_through();
         }
 
-        let mut style = InstanceStyle::NEUTRAL;
+        // See-through for the same reason a monster is: the camera does not collide with
+        // dummies, so one can stand between the eye and the character.
+        let mut style = InstanceStyle::NEUTRAL.see_through();
 
         // An enemy is tinted towards its own colour so a fight is legible at a glance: the
         // things that hit back do not look like the things that stand there. It is a tint
@@ -1231,6 +1265,47 @@ mod tests {
         let mut simulation = arena::training_arena(&ArenaConfig::default());
         simulation.step_once();
         simulation
+    }
+
+    #[test]
+    fn the_cameras_opacity_reaches_every_part_of_the_player_and_nothing_else() {
+        let simulation = arena_sim();
+        let mut extractor = extractor();
+        extractor.extract(&simulation);
+        let skinned = extractor.render_world().skinned().instances().to_vec();
+        assert!(!skinned.is_empty(), "the player was drawn");
+        assert!(skinned.iter().all(|instance| instance.style.opacity == 1.0));
+        assert!(
+            skinned.iter().all(|instance| !instance.style.see_through),
+            "the camera's own target is never see-through"
+        );
+
+        extractor.set_player_opacity(0.4);
+        extractor.extract(&simulation);
+        let skinned = extractor.render_world().skinned().instances();
+        assert!(
+            skinned
+                .iter()
+                .all(|instance| (instance.style.opacity - 0.4).abs() < 1e-6),
+            "a part of the player was not faded"
+        );
+        // The dummies the camera does not collide with are see-through, and whole.
+        let world = extractor.render_world();
+        let dummies = (0..world.slot_count())
+            .filter(|&slot| world.is_drawable(slot) && world.styles()[slot].see_through)
+            .count();
+        assert!(dummies > 0, "no dummy is see-through");
+        assert!(
+            world.styles().iter().all(|style| style.opacity == 1.0),
+            "something other than the player was faded"
+        );
+
+        extractor.set_player_opacity(f32::NAN);
+        assert_eq!(
+            extractor.player_opacity(),
+            1.0,
+            "a meaningless opacity is whole"
+        );
     }
 
     #[test]

@@ -41,7 +41,10 @@ cbuffer Object : register(b1)
     float4 instance_tint;
     float instance_emissive;
     float instance_receives_shadow;
-    float2 object_padding;
+    // How much of the object the dither removes (1 - opacity), and 1 when the frame's camera
+    // fade may fade it. Both in what used to be padding; both zero for a whole, solid object.
+    float instance_fade;
+    float instance_see_through;
 };
 
 #define MAX_BONES 128

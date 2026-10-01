@@ -170,6 +170,59 @@ pub mod camera {
 
     /// Granularity of the sensitivity slider.
     pub const SENSITIVITY_STEP: f32 = 0.05;
+
+    /// Radius of the sphere the camera is swept as when it keeps out of walls, in metres.
+    ///
+    /// Not a point: the near plane has width, and a point that stops exactly on a wall still
+    /// shows the wall's inside at the corners of the screen. A quarter metre covers the near
+    /// plane at any field of view the game uses with room to spare.
+    pub const COLLISION_RADIUS: f32 = 0.25;
+
+    /// Extra gap kept between the camera's sphere and whatever it stopped at, in metres.
+    pub const COLLISION_PADDING: f32 = 0.10;
+
+    /// Closest the camera is pulled in towards the character before it stops, in metres.
+    ///
+    /// The camera never goes nearer than this when there is room for it here — and when the
+    /// character is so boxed in that there is not, it stops where its centre still has the
+    /// wall in front of it rather than going through.
+    pub const COLLISION_MIN_DISTANCE: f32 = 0.30;
+
+    /// How quickly the camera returns to its zoom once a wall stops being in the way, in
+    /// e-folds per second.
+    ///
+    /// Moving in is instant — a camera that eased into a wall would be inside it for the
+    /// easing. Moving back out is not, because a camera that snaps back the frame a pillar
+    /// passes reads as a cut.
+    pub const COLLISION_RECOVERY_RATE: f32 = 5.0;
+
+    /// Gap between the eye and the character's body, in metres, below which the character
+    /// is fully faded out. A camera this close is looking from inside the model.
+    pub const CHARACTER_FADE_HIDDEN: f32 = 0.15;
+
+    /// Gap between the eye and the character's body, in metres, from which the character is
+    /// drawn whole. The closest zoom leaves about two metres, so only a camera a wall has
+    /// pushed in ever fades the character.
+    pub const CHARACTER_FADE_WHOLE: f32 = 1.0;
+
+    /// How quickly the character's fade follows the camera, in e-folds per second. Fast, but
+    /// not instant: the camera pulls in at once when a wall appears, and a character that
+    /// vanished in the same frame would read as a flicker.
+    pub const CHARACTER_FADE_RATE: f32 = 12.0;
+
+    /// Distance from the eye, in metres, at and below which a see-through object (decoration
+    /// the camera does not collide with, a monster) is not drawn at all.
+    pub const NEAR_FADE_START: f32 = 0.2;
+
+    /// Distance from the eye, in metres, from which a see-through object is drawn whole.
+    pub const NEAR_FADE_END: f32 = 1.0;
+
+    /// Radius, at the character, of the tube between the eye and the character inside which
+    /// see-through objects fade, in metres. Wide enough to clear the character's shoulders.
+    pub const OCCLUDER_FADE_RADIUS: f32 = 0.9;
+
+    /// How much of a see-through object standing in that tube is still drawn.
+    pub const OCCLUDER_MIN_OPACITY: f32 = 0.3;
 }
 
 /// How big the interface is drawn, as a multiple of its design size.

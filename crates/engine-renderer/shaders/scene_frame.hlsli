@@ -102,6 +102,12 @@ cbuffer Frame : register(b0)
     // x: the kernel near cascades use  y: the one far cascades use  z: the first cascade
     // that uses it. z >= MAX_CASCADES means every cascade uses x.
     float4 filter_lod;
+
+    // ---- the camera fade -----------------------------------------------------------
+    // xyz: what the camera is looking at (the character's chest)  w: 1 when the fade is on
+    float4 camera_fade;
+    // x: near start  y: near end  z: tube radius at the target  w: minimum opacity
+    float4 camera_fade_params;
 };
 
 // The material constants and the four-texture material set, shared with the depth-only
@@ -859,6 +865,84 @@ bool shadow_atlas_preview(float2 pixel, out float3 color)
 // what makes a shadowed area look like a hole in the world. Occlusion *is* applied to it,
 // which is what the ORM map's red channel is for - a crevice is dark because the sky cannot
 // reach it, which is a statement about ambient light and not about the sun.
+// The ordered-dither threshold for a pixel: a 4x4 Bayer matrix, sixteen levels.
+//
+// What a fade is made of. A surface drawn at opacity `a` keeps the pixels whose threshold is
+// below `a` and discards the rest, so it stays in the opaque pass — it writes depth, casts its
+// whole shadow and needs no sorting — and a skinned character fades the same way a rock does,
+// without the far side of its own body showing through, which is what blending would do.
+float dither_threshold(float2 pixel)
+{
+    static const float bayer[16] = {
+        0.0, 8.0, 2.0, 10.0,
+        12.0, 4.0, 14.0, 6.0,
+        3.0, 11.0, 1.0, 9.0,
+        15.0, 7.0, 13.0, 5.0,
+    };
+    uint2 cell = uint2(pixel) & 3u;
+    return (bayer[cell.y * 4u + cell.x] + 0.5) / 16.0;
+}
+
+// How much of a see-through surface at `world_position` the camera leaves drawn.
+//
+//   eye o ===================> target
+//         near zone            tube: in front of the target, within the radius
+//
+// The near zone fades whatever is about to touch the eye, so nothing is cut open by the near
+// plane. The tube fades whatever stands between the eye and the character, narrowing towards
+// the eye and easing off just in front of the character so the ground it stands on is not
+// caught. Solid geometry never reaches here: it is not see-through, and the camera keeps out
+// of it instead.
+float camera_fade_opacity(float3 world_position)
+{
+    float3 to_surface = world_position - camera_position;
+    float distance = length(to_surface);
+    float near_start = camera_fade_params.x;
+    float near_end = camera_fade_params.y;
+    float near = saturate((distance - near_start) / max(near_end - near_start, 1e-4));
+    near = near * near * (3.0 - 2.0 * near);
+
+    float3 axis = camera_fade.xyz - camera_position;
+    float length_to_target = length(axis);
+    if (length_to_target < 1e-3)
+    {
+        return near;
+    }
+    float3 direction = axis / length_to_target;
+    float along = dot(to_surface, direction);
+    float radius_at_target = camera_fade_params.z;
+    // Narrow at the eye, full width at the target.
+    float radius = radius_at_target * lerp(0.35, 1.0, saturate(along / length_to_target));
+    float across = length(to_surface - direction * along);
+    // Within half a radius of the target's own depth the tube lets go: a surface level with
+    // the character is beside it, not in front of it.
+    float margin = radius_at_target * 0.5;
+    float in_front = saturate((length_to_target - margin - along) / max(margin, 1e-4));
+    float inside = 1.0 - smoothstep(radius * 0.6, radius, across);
+    float occluding = along > 0.0 ? in_front * inside : 0.0;
+    float tube = lerp(1.0, camera_fade_params.w, occluding);
+    return min(near, tube);
+}
+
+// Discards this pixel if the surface's fade says it is one of the ones not drawn.
+//
+// `fade` is the entity's own (1 - opacity): what fades the player's character when the camera
+// is close to it. `see_through` lets the frame's camera fade apply on top.
+void apply_fade(float4 screen_position, float3 world_position, float fade, float see_through)
+{
+    float opacity = 1.0 - fade;
+    if (see_through > 0.5 && camera_fade.w > 0.5)
+    {
+        opacity *= camera_fade_opacity(world_position);
+    }
+    // The highest threshold is 15.5/16, so a whole surface never reaches the comparison's
+    // losing side; the early test only spares it the table lookup.
+    if (opacity < 0.999 && opacity < dither_threshold(screen_position.xy))
+    {
+        discard;
+    }
+}
+
 float4 shade_surface(
     float4 screen_position,
     float3 world_position,
@@ -867,8 +951,12 @@ float4 shade_surface(
     float2 uv,
     float4 tint,
     float emissive_scale,
-    float receives_shadow)
+    float receives_shadow,
+    float fade,
+    float see_through)
 {
+    // Before anything is sampled: a pixel the fade removes costs nothing else.
+    apply_fade(screen_position, world_position, fade, see_through);
     MaterialSample material = sample_material(uv);
     float4 albedo = material.base_color;
     // Alpha-tested materials: foliage, fences, grates. `alpha_cutoff` is zero for an opaque

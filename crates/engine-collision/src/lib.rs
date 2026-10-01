@@ -83,7 +83,10 @@ pub use controller::{
 pub use layer::{CollisionFilter, CollisionLayer, CollisionMask};
 pub use ray::{Ray, RayHit, ray_vs_shape};
 pub use shape::{Capsule, Obb, Segment, Shape};
-pub use world::{CollisionWorld, QueryBuffers, StaticDesc, StaticId, StaticRayHit};
+pub use world::{
+    CollisionWorld, QueryBuffers, SPHERE_SWEEP_TOLERANCE, SphereSweepHit, StaticDesc, StaticId,
+    StaticRayHit,
+};
 
 /// Everything a caller normally wants, in one `use`.
 ///
@@ -98,5 +101,7 @@ pub mod prelude {
     pub use crate::layer::{CollisionFilter, CollisionLayer, CollisionMask};
     pub use crate::ray::{Ray, RayHit};
     pub use crate::shape::{Capsule, Obb, Shape};
-    pub use crate::world::{CollisionWorld, QueryBuffers, StaticDesc, StaticId, StaticRayHit};
+    pub use crate::world::{
+        CollisionWorld, QueryBuffers, SphereSweepHit, StaticDesc, StaticId, StaticRayHit,
+    };
 }

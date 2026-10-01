@@ -349,6 +349,19 @@ pub(crate) fn transparent_blend_desc() -> D3D12_BLEND_DESC {
     desc
 }
 
+/// Writes depth and no colour: the first of a translucent character's two passes.
+///
+/// The character is drawn once like this, so the depth buffer holds its nearest surface, and
+/// then again blended with [`depth_stencil_desc_for`]'s transparent state. The second pass
+/// only lets through fragments level with what the first wrote, so each pixel blends exactly
+/// one layer of the character over the world — the far arm, the back of the robe and the
+/// inside of the head are all behind that layer and never reach the screen.
+pub(crate) fn depth_prime_blend_desc() -> D3D12_BLEND_DESC {
+    let mut desc = blend_desc();
+    desc.RenderTarget[0].RenderTargetWriteMask = 0;
+    desc
+}
+
 /// Opaque rendering: no blending, write every channel.
 pub(crate) fn blend_desc() -> D3D12_BLEND_DESC {
     let target = D3D12_RENDER_TARGET_BLEND_DESC {

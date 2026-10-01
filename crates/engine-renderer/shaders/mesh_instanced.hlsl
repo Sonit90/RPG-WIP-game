@@ -43,10 +43,10 @@ struct VertexInput
     // material put it in. Neutral is tint (1,1,1,1) and emissive 0, and it costs the same
     // as not having the feature: the multiply and the add still happen.
     float4 tint     : INSTANCE_TINT;
-    // x: the emissive add. y: 1 when this instance is darkened by shadows. The second
-    // component reads a word that was padding in the instance record, so per-instance
-    // shadow receipt costs no extra bytes in the stream.
-    float2 emissive_scale : INSTANCE_EMISSIVE;
+    // x: the emissive add. y: 1 when this instance is darkened by shadows. z: how much of
+    // it the dither removes (1 - opacity). w: 1 when the camera fade may fade it. y, z and w
+    // read words that were padding in the instance record, so none of them grew the stream.
+    float4 emissive_scale : INSTANCE_EMISSIVE;
 };
 
 struct PixelInput
@@ -59,7 +59,8 @@ struct PixelInput
     float4 world_tangent  : TANGENT;
     float2 uv             : TEXCOORD0;
     float4 tint           : COLOR0;
-    float2 emissive_scale : COLOR1;
+    // Constant across the instance, so not interpolated.
+    nointerpolation float4 emissive_scale : COLOR1;
 };
 
 PixelInput VSMain(VertexInput input)
@@ -101,5 +102,7 @@ float4 PSMain(PixelInput input) : SV_TARGET
         input.uv,
         input.tint,
         input.emissive_scale.x,
-        input.emissive_scale.y);
+        input.emissive_scale.y,
+        input.emissive_scale.z,
+        input.emissive_scale.w);
 }

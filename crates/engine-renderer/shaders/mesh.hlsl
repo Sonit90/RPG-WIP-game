@@ -25,7 +25,10 @@ cbuffer Object : register(b1)
     // what used to be padding, so the per-object constants did not grow a register for a
     // flag.
     float instance_receives_shadow;
-    float2 object_padding;
+    // How much of the object the dither removes (1 - opacity), and 1 when the frame's camera
+    // fade may fade it. Both in what used to be padding; both zero for a whole, solid object.
+    float instance_fade;
+    float instance_see_through;
 };
 
 struct VertexInput
@@ -81,5 +84,7 @@ float4 PSMain(PixelInput input) : SV_TARGET
         input.uv,
         instance_tint,
         instance_emissive,
-        instance_receives_shadow);
+        instance_receives_shadow,
+        instance_fade,
+        instance_see_through);
 }

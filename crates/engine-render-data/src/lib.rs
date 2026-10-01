@@ -64,6 +64,6 @@ pub use ui::{
     MAX_ICON_PIXELS, TextAlign, TextRange, UiColor, UiCommand, UiDrawList, UiIcon, UiRect, UiScale,
 };
 pub use world::{
-    Handle, InstanceStyle, MaterialHandle, MeshHandle, RenderEntity, RenderEntityDesc, RenderWorld,
-    SHADOW_LOD_MESHES, ShadowCasting, world_bounds,
+    CameraFade, Handle, InstanceStyle, MaterialHandle, MeshHandle, RenderEntity, RenderEntityDesc,
+    RenderWorld, SHADOW_LOD_MESHES, ShadowCasting, world_bounds,
 };

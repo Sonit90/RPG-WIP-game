@@ -617,6 +617,10 @@ impl ShadowRenderer {
                     &frustum,
                     self.pipelines.prepass(),
                     &mut palette,
+                    // A character the camera is looking through is not in the camera's
+                    // depth: the world behind it is drawn first and seen through it, and a
+                    // primed depth here would reject exactly that world.
+                    true,
                 )
             });
         self.instance_scratch = instances;
@@ -723,6 +727,8 @@ impl ShadowRenderer {
                     frustum,
                     self.pipelines.shadow(),
                     &mut palette,
+                    // Its shadow, on the other hand, is whole.
+                    false,
                 )
             });
         self.instance_scratch = instances;
@@ -850,6 +856,7 @@ impl ShadowRenderer {
         frustum: &Frustum,
         pipelines: &ShadowPipelineSet,
         scratch: &mut Vec<[f32; 16]>,
+        skip_translucent: bool,
     ) -> Result<u32, RendererError> {
         if scene.skinned.is_empty() {
             return Ok(0);
@@ -862,6 +869,9 @@ impl ShadowRenderer {
                 break;
             };
             if !skinned_caster_visible(&instance, frustum) {
+                continue;
+            }
+            if skip_translucent && instance.style.is_faded() {
                 continue;
             }
             let Some(mesh) = scene.skinned_meshes.get(instance.mesh.index()) else {

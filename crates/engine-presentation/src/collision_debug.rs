@@ -7,6 +7,7 @@
 //! the character's capsule      --->    a cylinder and two caps
 //! contacts from a live query   --->    a marker and an arrow per contact
 //! grounded / airborne          --->    the capsule's colour
+//! the camera's obstruction check --->   pivot, sweep, hit and normal, desired and actual eye
 //! ```
 //!
 //! Two properties matter more than what it looks like:
@@ -23,6 +24,8 @@
 //! feature, so a `--no-default-features` build cannot reach this module at all.
 
 use engine_collision::CharacterConfig;
+
+use crate::camera::CameraProbe;
 use engine_collision::shape::Shape;
 use engine_collision::world::{CollisionWorld, QueryBuffers};
 use engine_core::math::{Quat, Sphere, Vec3};
@@ -97,6 +100,19 @@ const LOS_THICKNESS: f32 = 0.06;
 /// Size of the marker drawn at each end of the ray, and at the blocking point.
 const LOS_MARKER_SIZE: f32 = 0.22;
 
+/// Colour of the camera sweep while nothing is in its way.
+const CAMERA_CLEAR_TINT: [f32; 3] = [0.55, 0.85, 1.00];
+
+/// Colour of the camera sweep, and its hit, while geometry is holding the camera in.
+const CAMERA_BLOCKED_TINT: [f32; 3] = [1.00, 0.55, 0.15];
+
+/// Thickness of the drawn camera sweep, in metres. Thinner than the line-of-sight ray, so
+/// the two can be told apart where they cross.
+const CAMERA_SWEEP_THICKNESS: f32 = 0.03;
+
+/// Size of the markers on the camera sweep, in metres.
+const CAMERA_MARKER_SIZE: f32 = 0.10;
+
 /// The collision world, drawn.
 #[derive(Debug)]
 pub struct CollisionDebug {
@@ -111,6 +127,8 @@ pub struct CollisionDebug {
     drawn: usize,
     /// How many contacts the last rebuild found.
     contacts: usize,
+    /// The camera's last obstruction check, handed in by whoever owns the camera.
+    camera: Option<CameraProbe>,
 }
 
 impl CollisionDebug {
@@ -124,7 +142,16 @@ impl CollisionDebug {
             enabled: false,
             drawn: 0,
             contacts: 0,
+            camera: None,
         }
+    }
+
+    /// Hands the view the camera's last obstruction check, to be drawn on the next rebuild.
+    ///
+    /// Handed in rather than read, because the camera belongs to the application and this
+    /// view only ever sees the simulation.
+    pub fn set_camera_probe(&mut self, probe: Option<CameraProbe>) {
+        self.camera = probe;
     }
 
     /// Whether the view is on.
@@ -173,6 +200,7 @@ impl CollisionDebug {
         self.draw_statics(render, simulation.collision_world(), &mut used);
         self.draw_character(render, simulation, &mut used);
         self.draw_line_of_sight(render, simulation, &mut used);
+        self.draw_camera(render, &mut used);
 
         // Anything the pool still holds beyond what this frame needed is parked out of
         // sight rather than despawned: a frame with one contact fewer than the last must
@@ -416,6 +444,108 @@ impl CollisionDebug {
         }
     }
 
+    /// Draws the camera's last obstruction check.
+    ///
+    /// ```text
+    /// anchor o--pivot o==========o eye   x hit -> normal    . desired eye
+    /// ```
+    ///
+    /// The sweep is drawn from the pivot to the *desired* eye, so a blocked sweep visibly
+    /// runs into the wall that stopped it; the hit and its normal are drawn where it did.
+    /// The marker at the actual eye sits inside the near plane while playing and so only
+    /// shows from a free camera, which is where it is useful.
+    fn draw_camera(&mut self, render: &mut RenderWorld, used: &mut usize) {
+        let Some(probe) = self.camera else {
+            return;
+        };
+        let colour = if probe.obstructed() {
+            CAMERA_BLOCKED_TINT
+        } else {
+            CAMERA_CLEAR_TINT
+        };
+        let style = tint(colour, 0.9);
+
+        for (from, to) in [
+            (probe.anchor, probe.pivot),
+            (probe.pivot, probe.desired_eye),
+        ] {
+            let along = to - from;
+            let length = along.length();
+            if length > 1e-3 {
+                self.push(
+                    render,
+                    Transform::from_translation((from + to) * 0.5)
+                        .with_rotation(rotation_from_up(along))
+                        .with_scale(Vec3::new(
+                            CAMERA_SWEEP_THICKNESS,
+                            length,
+                            CAMERA_SWEEP_THICKNESS,
+                        )),
+                    self.bindings.box_mesh,
+                    self.bindings.box_bounds,
+                    self.bindings.contact_material,
+                    style,
+                    used,
+                );
+            }
+        }
+        for (point, mesh, bounds) in [
+            (
+                probe.anchor,
+                self.bindings.box_mesh,
+                self.bindings.box_bounds,
+            ),
+            (
+                probe.pivot,
+                self.bindings.sphere_mesh,
+                self.bindings.sphere_bounds,
+            ),
+            (
+                probe.desired_eye,
+                self.bindings.box_mesh,
+                self.bindings.box_bounds,
+            ),
+            (
+                probe.eye,
+                self.bindings.sphere_mesh,
+                self.bindings.sphere_bounds,
+            ),
+        ] {
+            self.push(
+                render,
+                Transform::from_translation(point).with_scale(Vec3::splat(CAMERA_MARKER_SIZE)),
+                mesh,
+                bounds,
+                self.bindings.contact_material,
+                style,
+                used,
+            );
+        }
+        if let Some(hit) = probe.hit {
+            let blocked = tint(CAMERA_BLOCKED_TINT, 0.9);
+            self.push(
+                render,
+                Transform::from_translation(hit.point).with_scale(Vec3::splat(CONTACT_SIZE)),
+                self.bindings.box_mesh,
+                self.bindings.box_bounds,
+                self.bindings.contact_material,
+                blocked,
+                used,
+            );
+            self.push(
+                render,
+                Transform::from_translation(hit.point + hit.normal * (NORMAL_LENGTH * 0.5))
+                    .with_rotation(rotation_from_up(hit.normal))
+                    .with_scale(Vec3::new(NORMAL_THICKNESS, NORMAL_LENGTH, NORMAL_THICKNESS)),
+                self.bindings.box_mesh,
+                self.bindings.box_bounds,
+                self.bindings.contact_material,
+                blocked,
+                used,
+            );
+        }
+    }
+
     /// Writes one drawn thing into the pool, spawning a slot only if the pool is short.
     #[allow(
         clippy::too_many_arguments,
@@ -593,6 +723,40 @@ mod tests {
             debug.rebuild(&mut render, &simulation);
         }
         assert_eq!(render.slot_count(), slots, "the debug view churned slots");
+    }
+
+    #[test]
+    fn a_camera_probe_adds_its_sweep_and_hit_to_the_view() {
+        let (mut simulation, _) = demo::collision_demo();
+        simulation.step_many(10);
+        let mut render = RenderWorld::new();
+        let mut debug = CollisionDebug::new(bindings());
+        debug.set_enabled(&mut render, true);
+        debug.rebuild(&mut render, &simulation);
+        let without = debug.drawn();
+
+        let mut camera = crate::camera::ThirdPersonCamera::following(simulation.player_position());
+        camera.avoid_obstructions(
+            simulation.collision_world(),
+            simulation.player_position(),
+            0.0,
+        );
+        let probe = camera.probe().copied().expect("the check ran");
+        debug.set_camera_probe(Some(probe));
+        debug.rebuild(&mut render, &simulation);
+        let lines = 2;
+        let markers = 4;
+        let hit = if probe.obstructed() { 2 } else { 0 };
+        assert!(
+            debug.drawn() > without + markers + hit
+                && debug.drawn() <= without + lines + markers + hit,
+            "{} drawn, {without} without the camera",
+            debug.drawn()
+        );
+
+        debug.set_camera_probe(None);
+        debug.rebuild(&mut render, &simulation);
+        assert_eq!(debug.drawn(), without);
     }
 
     #[test]
