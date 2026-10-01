@@ -10,12 +10,15 @@
 //! [`engine_core::input`] types.
 
 pub mod config;
+/// Monitors and their display modes.
+pub mod display;
 pub mod dpi;
 pub mod error;
 pub mod event;
 pub mod window;
 
-pub use config::WindowConfig;
+pub use config::{AppliedDisplay, WindowConfig, WindowMode};
+pub use display::{MonitorInfo, ScreenRect, VideoMode, primary_monitor};
 pub use error::PlatformError;
 pub use event::{EventQueue, WindowEvent, key_from_virtual_code};
 pub use window::Window;

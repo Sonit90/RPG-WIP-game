@@ -681,6 +681,9 @@ pub struct Args {
     pub parallel_jobs: bool,
     /// Whether to open a borderless fullscreen window.
     pub fullscreen: bool,
+    /// Whether `--width`, `--height` or `--fullscreen` was given: the command line then
+    /// decides the window for this run, and the saved display settings are left alone.
+    pub display_from_command_line: bool,
     /// Whether the renderer's validation layer was explicitly requested.
     ///
     /// `None` leaves the build's default in place; `Some(true)` forces it on.
@@ -783,6 +786,7 @@ impl Default for Args {
             scene: Scene::Combat,
             ui: true,
             fullscreen: false,
+            display_from_command_line: false,
             validation: None,
             env_density: 1.0,
             vfx_stress: 0.0,
@@ -812,6 +816,21 @@ impl Default for Args {
 }
 
 impl Args {
+    /// Whether the window opens in the player's saved display settings.
+    ///
+    /// Not when the command line chose the window — a size or `--fullscreen` — and not for a
+    /// run nobody is watching or that measures something: `--hidden`, a benchmark, a
+    /// screenshot or a frame budget want exactly the window they asked for, and an exclusive
+    /// fullscreen switch in the middle of an automated run is the last thing they want.
+    #[must_use]
+    pub fn uses_saved_display(&self) -> bool {
+        !self.display_from_command_line
+            && self.window
+            && self.benchmark.is_none()
+            && self.screenshot.is_none()
+            && self.frames.is_none()
+    }
+
     /// Applies the command line on top of the default settings.
     ///
     /// Only the fields an option actually names are changed, so a default that moves
@@ -896,8 +915,14 @@ where
     while let Some(argument) = iter.next() {
         let argument = argument.as_ref();
         match argument {
-            "--width" => args.width = next_value(&mut iter, "--width")?,
-            "--height" => args.height = next_value(&mut iter, "--height")?,
+            "--width" => {
+                args.width = next_value(&mut iter, "--width")?;
+                args.display_from_command_line = true;
+            }
+            "--height" => {
+                args.height = next_value(&mut iter, "--height")?;
+                args.display_from_command_line = true;
+            }
             "--background" => args.focus = false,
             "--hidden" => args.window = false,
             "--frames" => args.frames = Some(next_value(&mut iter, "--frames")?),
@@ -934,7 +959,10 @@ where
             }
             "--report" => args.report_interval_secs = next_value(&mut iter, "--report")?,
             "--vsync" => args.vsync = true,
-            "--fullscreen" => args.fullscreen = true,
+            "--fullscreen" => {
+                args.fullscreen = true;
+                args.display_from_command_line = true;
+            }
             "--validation" => args.validation = Some(true),
             "--overlay" => args.overlay = true,
             "--dummies" => args.dummies = next_value(&mut iter, "--dummies")?,
@@ -1250,6 +1278,30 @@ mod tests {
         assert!(Scene::Environment.has_environment());
         assert!(!Scene::Collision.has_environment());
         assert!(!Scene::Character.has_environment());
+    }
+
+    #[test]
+    fn the_saved_display_settings_apply_unless_the_command_line_chose_the_window() {
+        let plain = parse::<[&str; 0], &str>([]).expect("empty is valid");
+        assert!(plain.uses_saved_display());
+        for flags in [
+            vec!["--width", "1280"],
+            vec!["--height", "720"],
+            vec!["--fullscreen"],
+            vec!["--hidden"],
+            vec!["--benchmark"],
+            vec!["--frames", "10"],
+            vec!["--screenshot", "shot.png"],
+        ] {
+            let args = parse(flags.clone()).expect("valid");
+            assert!(!args.uses_saved_display(), "{flags:?}");
+        }
+        // Other options leave the player's display alone.
+        assert!(
+            parse(["--vsync", "--scene", "playground"])
+                .expect("valid")
+                .uses_saved_display()
+        );
     }
 
     #[test]

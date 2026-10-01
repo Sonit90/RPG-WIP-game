@@ -867,6 +867,32 @@ target falls back to you.
 
 ---
 
+## MT-034 — Display settings: resolution, window mode, keep or revert
+
+**Purpose** — the resolution and window mode change at runtime without a restart, every change
+must be kept or it reverts, and the choice survives a restart. Design: `docs/display.md`.
+
+**Steps**
+
+1. `.	argetelease\mygame.exe`; ESC (twice if the mouse is captured) → SETTINGS → DISPLAY.
+2. Open RESOLUTION. Choose a smaller size; APPLY. Wait 15 seconds without touching anything.
+3. Choose WINDOW MODE: BORDERLESS FULLSCREEN; APPLY; KEEP CHANGES.
+4. Press Alt+Enter twice.
+5. Choose FULLSCREEN and 1600 x 900; APPLY; KEEP CHANGES. Alt+Tab to the desktop, then back.
+6. Quit and start the game again.
+7. Set WINDOWED 1920 x 1080 again and keep it.
+
+**Expected** — The list shows the monitor's sizes once each, largest first, the current one
+marked. APPLY resizes the window at once — HUD, menu and camera follow — and the dialog counts
+down from 15, reverting by itself at zero; nothing is saved. Borderless covers the monitor at
+its desktop resolution, the resolution box greyed and labelled DESKTOP. Alt+Enter goes to a
+window and back to borderless, and the DISPLAY screen follows. Fullscreen switches the monitor
+to 1600 x 900; Alt+Tab shows the desktop at its own resolution with the game minimized, and
+returning switches again. The restart opens straight in the kept mode. No step leaves the
+desktop at a changed resolution after the game exits.
+
+---
+
 ## Death, respawn and the twenty seconds
 
 `cargo run -p engine-app --features editor -- --scene-file assets/scenes/showcase.json`

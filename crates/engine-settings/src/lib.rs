@@ -34,6 +34,8 @@
 pub mod character;
 /// Which floating combat text is drawn, and how big.
 pub mod combat_text;
+/// The resolution and the window mode, and the rules for choosing and confirming them.
+pub mod display;
 /// What the player can change about how the game plays.
 pub mod gameplay;
 /// What the player can change about how the game looks.
@@ -56,6 +58,10 @@ pub use character::{
     InventoryEntry,
 };
 pub use combat_text::CombatTextSettings;
+pub use display::{
+    CONFIRM_SECONDS, ConfirmOutcome, DisplayConfirmation, DisplaySettings, Resolution, WindowMode,
+    closest_resolution, resolution_options,
+};
 pub use gameplay::GameplaySettings;
 pub use graphics::{GraphicsSettings, ShadowQuality};
 pub use hud::{
@@ -203,6 +209,13 @@ pub struct GameSettings {
     /// `#[serde(default)]` on [`MapSettings`] is what lets a file written before the map
     /// existed load with both at their defaults.
     pub map: MapSettings,
+    /// The resolution and the window mode: `"display": {"resolution_width": 1920,
+    /// "resolution_height": 1080, "window_mode": "windowed"}`.
+    ///
+    /// Written only once the player keeps a change (see [`DisplayConfirmation`]), so a
+    /// display configuration that turned the screen black is never the one the next launch
+    /// starts with.
+    pub display: DisplaySettings,
 }
 
 impl Default for GameSettings {
@@ -221,6 +234,7 @@ impl Default for GameSettings {
             graphics: GraphicsSettings::default(),
             binding_scope: BindingScope::default(),
             map: MapSettings::default(),
+            display: DisplaySettings::default(),
         }
     }
 }
@@ -286,6 +300,7 @@ impl GameSettings {
         settings.combat_text = settings.combat_text.validated();
         settings.graphics = settings.graphics.validated();
         settings.map = settings.map.validated();
+        settings.display = settings.display.validated();
         settings
     }
 
@@ -513,6 +528,15 @@ impl SettingsManager {
         });
     }
 
+    /// Sets the display settings. Does not write anything: the caller saves once the player
+    /// has kept them.
+    pub fn set_display(&mut self, display: DisplaySettings) {
+        self.update(GameSettings {
+            display,
+            ..self.settings
+        });
+    }
+
     /// Sets the master volume, snapping it to the slider's step and range.
     pub fn set_master_volume(&mut self, value: f32) {
         self.update(GameSettings {
@@ -716,6 +740,7 @@ mod tests {
                 toggle_key: KeyName::new("N").unwrap_or_default(),
                 reduced_motion: true,
             },
+            display: DisplaySettings::new(Resolution::new(2560, 1440), WindowMode::Fullscreen),
         };
         let text = serde_json::to_string(&settings).expect("settings serialize");
         let parsed: GameSettings = serde_json::from_str(&text).expect("settings parse");
@@ -727,6 +752,32 @@ mod tests {
             text.contains("\"minimap_orientation\":\"north_up\""),
             "{text}"
         );
+        assert!(text.contains("\"window_mode\":\"fullscreen\""), "{text}");
+        assert!(text.contains("\"resolution_width\":2560"), "{text}");
+    }
+
+    #[test]
+    fn display_settings_survive_the_file_and_a_bad_one_falls_back() {
+        let directory =
+            std::env::temp_dir().join(format!("mygame-display-settings-{}", std::process::id()));
+        let _ = fs::create_dir_all(&directory);
+        let path = directory.join(SETTINGS_FILE_NAME);
+        let mut manager = SettingsManager::with_settings(&path, GameSettings::default());
+        let chosen =
+            DisplaySettings::new(Resolution::new(1600, 900), WindowMode::BorderlessFullscreen);
+        manager.set_display(chosen);
+        assert!(manager.is_dirty());
+        manager.save();
+        assert_eq!(SettingsManager::load(&path).settings().display, chosen);
+
+        fs::write(
+            &path,
+            r#"{"display": {"resolution_width": 3, "resolution_height": 2, "window_mode": "nope"}}"#,
+        )
+        .expect("writes");
+        let loaded = SettingsManager::load(&path).settings().display;
+        assert_eq!(loaded, DisplaySettings::default());
+        let _ = fs::remove_dir_all(&directory);
     }
 
     #[test]

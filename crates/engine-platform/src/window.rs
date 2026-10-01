@@ -20,22 +20,25 @@ const MAX_WINDOW_EDGE: i32 = 16384;
 use windows::Win32::UI::WindowsAndMessaging::{
     AdjustWindowRectEx, CREATESTRUCTW, CS_HREDRAW, CS_OWNDC, CS_VREDRAW, CW_USEDEFAULT,
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GWL_EXSTYLE, GWL_STYLE,
-    GWLP_USERDATA, GetClientRect, GetSystemMetrics, GetWindowLongPtrW, IDC_ARROW, LoadCursorW,
-    MINMAXINFO, MSG, PM_REMOVE, PeekMessageW, PostQuitMessage, RegisterClassExW, SIZE_MAXIMIZED,
-    SIZE_MINIMIZED, SIZE_RESTORED, SM_CXSCREEN, SM_CYSCREEN, SW_HIDE, SW_SHOW, SW_SHOWNOACTIVATE,
-    SW_SHOWNORMAL, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOOWNERZORDER, SWP_NOZORDER, SetCursorPos,
+    GWLP_USERDATA, GetClientRect, GetSystemMetrics, GetWindowLongPtrW, GetWindowRect, HWND_TOP,
+    IDC_ARROW, IsIconic, IsWindowVisible, LoadCursorW, MINMAXINFO, MSG, PM_REMOVE, PeekMessageW,
+    PostQuitMessage, RegisterClassExW, SIZE_MAXIMIZED, SIZE_MINIMIZED, SIZE_RESTORED, SM_CXSCREEN,
+    SM_CYSCREEN, SW_HIDE, SW_MINIMIZE, SW_RESTORE, SW_SHOW, SW_SHOWNOACTIVATE, SW_SHOWNORMAL,
+    SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOOWNERZORDER, SWP_NOZORDER, SetCursorPos,
     SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowCursor, ShowWindow, TranslateMessage,
-    WINDOW_EX_STYLE, WINDOW_STYLE, WM_ACTIVATEAPP, WM_CLOSE, WM_DESTROY, WM_ERASEBKGND,
-    WM_GETMINMAXINFO, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN,
-    WM_MBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCCREATE, WM_QUIT, WM_RBUTTONDOWN, WM_RBUTTONUP,
-    WM_SIZE, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_XBUTTONDOWN, WM_XBUTTONUP, WNDCLASSEXW, WS_OVERLAPPED,
-    WS_OVERLAPPEDWINDOW, WS_POPUP, WS_SYSMENU,
+    WINDOW_EX_STYLE, WINDOW_STYLE, WM_ACTIVATEAPP, WM_CLOSE, WM_DESTROY, WM_DISPLAYCHANGE,
+    WM_ERASEBKGND, WM_GETMINMAXINFO, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP,
+    WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCCREATE, WM_QUIT,
+    WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SIZE, WM_SYSCHAR, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_XBUTTONDOWN,
+    WM_XBUTTONUP, WNDCLASSEXW, WS_OVERLAPPED, WS_OVERLAPPEDWINDOW, WS_POPUP, WS_SYSMENU,
+    WS_VISIBLE,
 };
 use windows::core::{HSTRING, PCWSTR, w};
 
 use engine_core::input::{InputEvent, MouseButton};
 
-use crate::config::WindowConfig;
+use crate::config::{AppliedDisplay, WindowConfig, WindowMode};
+use crate::display::{self, MonitorInfo, VideoMode};
 use crate::error::PlatformError;
 use crate::event::{
     EventQueue, WindowEvent, cursor_from_lparam, key_from_virtual_code, size_from_lparam,
@@ -66,6 +69,24 @@ struct WindowState {
     /// Where the last pointer message said the cursor was, so a button message only reports
     /// a position when it is news.
     last_cursor: Option<(i32, i32)>,
+    /// How the window covers the screen now.
+    mode: WindowMode,
+    /// The monitor mode this window switched to, while it is in exclusive fullscreen.
+    exclusive: Option<Exclusive>,
+    /// Whether a framed window may be resized by its edges.
+    resizable: bool,
+}
+
+/// An exclusive fullscreen switch this window made, and whether it is undone for now.
+#[derive(Debug, Clone)]
+struct Exclusive {
+    /// Which monitor was switched.
+    device: String,
+    /// What it was switched to.
+    mode: VideoMode,
+    /// Whether the switch is undone while the game is not in front (alt-tab), to be made
+    /// again when it comes back.
+    suspended: bool,
 }
 
 /// A native Windows window.
@@ -140,6 +161,13 @@ impl Window {
             client_height: client.1,
             minimized: false,
             cursor_visible: true,
+            mode: if config.fullscreen {
+                WindowMode::Borderless
+            } else {
+                WindowMode::Windowed
+            },
+            exclusive: None,
+            resizable: config.resizable,
         }));
 
         let title = HSTRING::from(config.title.as_str());
@@ -433,6 +461,227 @@ impl Window {
         .map_err(|error| PlatformError::win32("SetWindowPos", error))
     }
 
+    /// How the window covers the screen now.
+    #[must_use]
+    pub fn window_mode(&self) -> WindowMode {
+        self.state_ref().mode
+    }
+
+    /// The monitor the window is on — the one holding most of it.
+    #[must_use]
+    pub fn monitor(&self) -> Option<MonitorInfo> {
+        display::monitor_of_window(self.hwnd)
+    }
+
+    /// Puts the window in `mode`, at a client size of `width` x `height` where the mode
+    /// takes one, on the monitor it is on now.
+    ///
+    /// - **Windowed**: a framed window with that client size, centred on its monitor's work
+    ///   area. Any exclusive switch is undone first.
+    /// - **Borderless**: a popup covering the monitor at the desktop's own mode; the size is
+    ///   not used. Any exclusive switch is undone first.
+    /// - **Fullscreen**: the monitor switched to the mode nearest `width` x `height` it
+    ///   offers, and a popup covering it. If the monitor refuses, the window falls back to
+    ///   borderless rather than to nothing — the returned [`AppliedDisplay`] says so.
+    ///
+    /// Nothing renderer-side happens here. Windows delivers `WM_SIZE`, the next
+    /// [`Window::pump_events`] reports it as [`crate::WindowEvent::Resized`], and the
+    /// application resizes its swap chain on the same path a dragged edge takes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PlatformError::InvalidConfig`] if the window's monitor cannot be found or
+    /// the size is zero, or [`PlatformError::Win32`] if positioning the window fails.
+    pub fn apply_display(
+        &mut self,
+        mode: WindowMode,
+        width: u32,
+        height: u32,
+    ) -> Result<AppliedDisplay, PlatformError> {
+        if width == 0 || height == 0 {
+            return Err(PlatformError::InvalidConfig {
+                reason: format!("a {width}x{height} display is not a display"),
+            });
+        }
+        // Leaving exclusive fullscreen — or changing its mode — starts from the desktop's
+        // own mode, so the monitor read below describes the desktop and not the old switch.
+        if let Some(exclusive) = self.state_mut().exclusive.take() {
+            display::restore_mode(&exclusive.device);
+        }
+        let monitor = self.monitor().ok_or_else(|| PlatformError::InvalidConfig {
+            reason: "the window is on no monitor".to_owned(),
+        })?;
+        let applied = match mode {
+            WindowMode::Windowed => self.become_windowed(&monitor, width, height)?,
+            WindowMode::Borderless => self.become_borderless(&monitor)?,
+            WindowMode::Fullscreen => {
+                let wanted = monitor
+                    .mode_for(width, height)
+                    .or_else(|| nearest_mode(&monitor.modes, width, height));
+                match wanted.map(|wanted| (wanted, display::change_mode(&monitor.device, wanted))) {
+                    Some((wanted, Ok(()))) => {
+                        self.state_mut().exclusive = Some(Exclusive {
+                            device: monitor.device.clone(),
+                            mode: wanted,
+                            suspended: false,
+                        });
+                        // The monitor's rectangle is the new mode's now.
+                        let switched = self.monitor().unwrap_or_else(|| monitor.clone());
+                        let mut applied = self.become_borderless(&switched)?;
+                        applied.mode = WindowMode::Fullscreen;
+                        self.state_mut().mode = WindowMode::Fullscreen;
+                        applied
+                    }
+                    Some((_, Err(error))) => {
+                        log::warn!(
+                            "display: exclusive fullscreen refused ({error}); borderless instead"
+                        );
+                        self.become_borderless(&monitor)?
+                    }
+                    None => {
+                        log::warn!(
+                            "display: {} lists no modes; borderless instead",
+                            monitor.device
+                        );
+                        self.become_borderless(&monitor)?
+                    }
+                }
+            }
+        };
+        log::info!(
+            "display: {:?} at {}x{} on {}",
+            applied.mode,
+            applied.width,
+            applied.height,
+            monitor.device
+        );
+        Ok(applied)
+    }
+
+    /// Fits the window to its monitor again after the display configuration changed under
+    /// it: a borderless window to the monitor's new size, and a framed window that has been
+    /// left with no monitor under it back onto one.
+    pub fn refit_after_display_change(&mut self) {
+        match self.window_mode() {
+            WindowMode::Borderless => {
+                if let Some(monitor) = self.monitor()
+                    && let Err(error) = self.become_borderless(&monitor)
+                {
+                    log::warn!("display: could not refit the borderless window: {error}");
+                }
+            }
+            WindowMode::Windowed => {
+                // SAFETY: FFI call on a live window; DEFAULTTONULL answers whether any
+                // monitor holds part of it.
+                let on_screen = !unsafe {
+                    windows::Win32::Graphics::Gdi::MonitorFromWindow(
+                        self.hwnd,
+                        windows::Win32::Graphics::Gdi::MONITOR_DEFAULTTONULL,
+                    )
+                }
+                .is_invalid();
+                if !on_screen && let Some(monitor) = display::primary_monitor() {
+                    let (width, height) = self.client_size();
+                    let _ = self.become_windowed(&monitor, width.max(640), height.max(360));
+                }
+            }
+            // Exclusive: the switch is this window's own, and alt-tab handles the rest.
+            WindowMode::Fullscreen => {}
+        }
+    }
+
+    fn become_windowed(
+        &mut self,
+        monitor: &MonitorInfo,
+        width: u32,
+        height: u32,
+    ) -> Result<AppliedDisplay, PlatformError> {
+        let style = if self.state_ref().resizable {
+            WS_OVERLAPPEDWINDOW
+        } else {
+            WS_OVERLAPPED | WS_SYSMENU
+        };
+        let (outer_width, outer_height) =
+            outer_size(width, height, style, WINDOW_EX_STYLE::default())?;
+        // Centred on the work area, and never starting above or left of it, so the title bar
+        // is on screen even when the window is larger than the monitor.
+        let work = monitor.work_area;
+        let x = work.x + ((work.width as i32 - outer_width) / 2).max(0);
+        let y = work.y + ((work.height as i32 - outer_height) / 2).max(0);
+        self.restyle(style, (x, y, outer_width, outer_height))?;
+        self.state_mut().mode = WindowMode::Windowed;
+        Ok(AppliedDisplay {
+            mode: WindowMode::Windowed,
+            width,
+            height,
+        })
+    }
+
+    fn become_borderless(
+        &mut self,
+        monitor: &MonitorInfo,
+    ) -> Result<AppliedDisplay, PlatformError> {
+        let bounds = monitor.bounds;
+        self.restyle(
+            WS_POPUP,
+            (
+                bounds.x,
+                bounds.y,
+                bounds.width as i32,
+                bounds.height as i32,
+            ),
+        )?;
+        self.state_mut().mode = WindowMode::Borderless;
+        Ok(AppliedDisplay {
+            mode: WindowMode::Borderless,
+            width: bounds.width,
+            height: bounds.height,
+        })
+    }
+
+    /// Replaces the window's frame style and puts its outer rectangle at `rect`.
+    fn restyle(
+        &self,
+        style: WINDOW_STYLE,
+        rect: (i32, i32, i32, i32),
+    ) -> Result<(), PlatformError> {
+        // SAFETY: FFI read of a live window's own style; the visibility bit is carried over so
+        // a hidden window stays hidden and a shown one stays shown.
+        let current = unsafe { GetWindowLongPtrW(self.hwnd, GWL_STYLE) } as u32;
+        let style = style.0 | (current & WS_VISIBLE.0);
+        // SAFETY: FFI write of the window's own style word. SWP_FRAMECHANGED below makes
+        // Windows recompute the frame for it.
+        unsafe { SetWindowLongPtrW(self.hwnd, GWL_STYLE, style as isize) };
+        // SAFETY: FFI call on a live window with no borrowed pointers.
+        unsafe {
+            SetWindowPos(
+                self.hwnd,
+                Some(HWND_TOP),
+                rect.0,
+                rect.1,
+                rect.2,
+                rect.3,
+                SWP_FRAMECHANGED | SWP_NOOWNERZORDER | SWP_NOACTIVATE,
+            )
+        }
+        .map_err(|error| PlatformError::win32("SetWindowPos", error))
+    }
+
+    /// The window's outer rectangle on the virtual desktop: left, top, width, height.
+    #[must_use]
+    pub fn outer_rect(&self) -> (i32, i32, u32, u32) {
+        let mut rect = RECT::default();
+        // SAFETY: `hwnd` is live and `rect` is a valid out-parameter. A failure leaves it
+        // zeroed, which reads as an empty rectangle.
+        let _ = unsafe { GetWindowRect(self.hwnd, &mut rect) };
+        (
+            rect.left,
+            rect.top,
+            (rect.right - rect.left).max(0) as u32,
+            (rect.bottom - rect.top).max(0) as u32,
+        )
+    }
+
     fn state_ref(&self) -> &WindowState {
         // SAFETY: `state` was created by Box::into_raw in `new`, is never null, and is
         // only reclaimed in `drop`, so it is valid for the lifetime of `self`. The window
@@ -452,6 +701,11 @@ impl Drop for Window {
         // The cursor's display counter is process-wide: a window that hid it and then went
         // away would leave the desktop without a pointer.
         self.set_cursor_visible(true);
+        // And the monitor's mode: CDS_FULLSCREEN would be undone at exit anyway, but a window
+        // dropped before the process ends — a test, a recreated window — must not leave it.
+        if let Some(exclusive) = self.state_mut().exclusive.take() {
+            display::restore_mode(&exclusive.device);
+        }
         // SAFETY: `hwnd` is live and owned by this value. DestroyWindow synchronously
         // delivers WM_DESTROY/WM_NCDESTROY, so the procedure can still reach the state
         // during this call; the box is only reclaimed afterwards.
@@ -540,6 +794,21 @@ fn primary_monitor_size() -> (u32, u32) {
         log::warn!("GetSystemMetrics reported no primary monitor; falling back to 1920x1080");
         (1920, 1080)
     }
+}
+
+/// The mode among `modes` whose size is nearest `width` x `height`.
+fn nearest_mode(modes: &[VideoMode], width: u32, height: u32) -> Option<VideoMode> {
+    let wanted = (f64::from(width) * f64::from(height)).max(1.0);
+    modes.iter().copied().min_by(|a, b| {
+        let score = |mode: &VideoMode| {
+            (f64::from(mode.width) * f64::from(mode.height) / wanted)
+                .ln()
+                .abs()
+        };
+        score(a)
+            .partial_cmp(&score(b))
+            .unwrap_or(core::cmp::Ordering::Equal)
+    })
 }
 
 /// Converts a desired client size into the outer window size for a given style.
@@ -740,13 +1009,60 @@ unsafe extern "system" fn window_proc(
             LRESULT(0)
         }
         WM_ACTIVATEAPP => {
+            let focused = wparam.0 != 0;
             state
                 .events
-                .push(WindowEvent::Input(InputEvent::FocusChanged {
-                    focused: wparam.0 != 0,
-                }));
+                .push(WindowEvent::Input(InputEvent::FocusChanged { focused }));
+            // Exclusive fullscreen gives the monitor back while the game is not in front:
+            // alt-tab lands on the desktop at its own resolution, and the game minimizes
+            // rather than sitting in front of it at the wrong size. Coming back makes the
+            // switch again.
+            if let Some(exclusive) = state.exclusive.as_mut() {
+                // SAFETY: FFI queries on the live window this message is for.
+                let visible = unsafe { IsWindowVisible(hwnd) }.as_bool();
+                if !focused && visible && !exclusive.suspended {
+                    exclusive.suspended = true;
+                    display::restore_mode(&exclusive.device);
+                    // SAFETY: as above; the BOOL is the previous visibility.
+                    let _ = unsafe { ShowWindow(hwnd, SW_MINIMIZE) };
+                } else if focused && exclusive.suspended {
+                    exclusive.suspended = false;
+                    if let Err(error) = display::change_mode(&exclusive.device, exclusive.mode) {
+                        log::warn!("display: could not switch back after alt-tab: {error}");
+                    }
+                    // SAFETY: as above.
+                    if unsafe { IsIconic(hwnd) }.as_bool() {
+                        // SAFETY: as above.
+                        let _ = unsafe { ShowWindow(hwnd, SW_RESTORE) };
+                    }
+                    if let Some(monitor) = display::monitor_of_window(hwnd) {
+                        let b = monitor.bounds;
+                        // SAFETY: FFI call on the live window; a failure leaves it where it
+                        // was, which the next display change refits.
+                        let _ = unsafe {
+                            SetWindowPos(
+                                hwnd,
+                                Some(HWND_TOP),
+                                b.x,
+                                b.y,
+                                b.width as i32,
+                                b.height as i32,
+                                SWP_NOOWNERZORDER,
+                            )
+                        };
+                    }
+                }
+            }
             LRESULT(0)
         }
+        WM_DISPLAYCHANGE => {
+            state.events.push(WindowEvent::DisplayChanged);
+            // SAFETY: FFI call with the parameters Windows supplied.
+            unsafe { DefWindowProcW(hwnd, message, wparam, lparam) }
+        }
+        // Alt+Enter is the game's (it toggles fullscreen); without this Windows treats it as
+        // an unhandled menu mnemonic and plays the error sound.
+        WM_SYSCHAR if wparam.0 == 0x0D => LRESULT(0),
         WM_ERASEBKGND => {
             // The renderer owns every pixel of the client area; letting GDI erase it
             // first only causes flicker.

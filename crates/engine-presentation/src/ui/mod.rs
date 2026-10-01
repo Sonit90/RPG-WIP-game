@@ -50,6 +50,8 @@ pub mod aura_row;
 /// The character sheet: stats, fifteen equipment slots, and the bag.
 pub mod character_menu;
 /// The minimap and the full-screen dungeon map, with its encounter sidebar.
+/// The DISPLAY screen: resolution, window mode, and the keep-or-revert dialog.
+pub mod display_menu;
 pub mod dungeon_map;
 /// The look every unit frame, the raid frames and the cast bar share with the nameplates.
 pub mod frame_style;

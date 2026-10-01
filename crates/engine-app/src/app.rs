@@ -86,6 +86,9 @@ use engine_renderer::{
 };
 use engine_settings::character::CharacterConfigManager;
 use engine_settings::hud::{BindingScope, HudConfigManager};
+use engine_settings::{
+    ConfirmOutcome, DisplayConfirmation, DisplaySettings, Resolution, WindowMode,
+};
 use engine_settings::{NameplateSetting, SettingsManager};
 
 use crate::args::{Args, Scene};
@@ -347,6 +350,16 @@ pub struct App {
     /// This frame's menu actions, copied out of the menu so they can be applied to `self`.
     /// Reused; never freed.
     menu_actions: Vec<MenuAction>,
+    /// The display configuration in force: what the window is doing now, which is not always
+    /// what the settings file says — a change waiting to be confirmed is in force and not
+    /// saved yet.
+    display: DisplaySettings,
+    /// A display change waiting for the player to keep it.
+    display_confirm: Option<DisplayConfirmation>,
+    /// The clock the confirmation counts down on.
+    display_clock: Instant,
+    /// The fullscreen mode Alt+Enter goes back to from a window.
+    last_fullscreen: WindowMode,
     /// How the menus are coloured and sized.
     menu_theme: MenuTheme,
     /// Scratch the menu formats its numbers into. Reused; never freed.
@@ -584,11 +597,43 @@ impl App {
         // Windows is white — and loading a scene takes long enough for that to be a white
         // flash a player sees. Showing the window only once there is a frame in it removes
         // the flash rather than recolouring it.
-        let window_config = WindowConfig::new(&settings.title, settings.width, settings.height)
-            .with_fullscreen(settings.display_mode.is_fullscreen())
+        // The player's settings, before the window: the saved display configuration decides
+        // what the window is, and the swap chain below is created at its final size rather
+        // than at a default and then resized.
+        // `settings` here is the engine's; this is the player's, which is a different thing
+        // with a different lifetime: it changes while the game runs and it is written back.
+        let game_settings = SettingsManager::load_from_game_directory();
+        // The saved display configuration, made possible on the monitor the window will open
+        // on — unless the command line chose the window itself (a size, `--fullscreen`,
+        // `--hidden`, a benchmark or a screenshot), which it does for this run only.
+        let saved_display = args
+            .uses_saved_display()
+            .then(|| fit_display_to_monitor(game_settings.settings().display));
+        let (create_width, create_height) = match saved_display {
+            Some(display) if display.window_mode == WindowMode::Windowed => {
+                (display.resolution_width, display.resolution_height)
+            }
+            _ => (settings.width, settings.height),
+        };
+        let window_config = WindowConfig::new(&settings.title, create_width, create_height)
+            .with_fullscreen(saved_display.is_none() && settings.display_mode.is_fullscreen())
             .with_activate(args.focus)
             .with_visible(false);
-        let window = Window::new(&window_config)?;
+        let mut window = Window::new(&window_config)?;
+        let display_in_force = match saved_display {
+            Some(display) if display.window_mode.is_fullscreen() => {
+                apply_display_to(&mut window, display, display)
+            }
+            Some(display) => display,
+            None => DisplaySettings::new(
+                Resolution::new(settings.width, settings.height),
+                if settings.display_mode.is_fullscreen() {
+                    WindowMode::BorderlessFullscreen
+                } else {
+                    WindowMode::Windowed
+                },
+            ),
+        };
         crate::startup::stage("window init");
         if !args.window {
             log::info!("window: --hidden; the game runs and renders with nothing on screen");
@@ -919,11 +964,8 @@ impl App {
             collision_debug.rebuild(extractor.render_world_mut(), &simulation);
         }
 
-        // Settings first: the camera is built with the sensitivity the player last chose,
-        // so the first mouse movement of the session already uses it.
-        // `settings` here is the engine's; this is the player's, which is a different thing
-        // with a different lifetime: it changes while the game runs and it is written back.
-        let game_settings = SettingsManager::load_from_game_directory();
+        // The camera is built with the sensitivity the player last chose, so the first mouse
+        // movement of the session already uses it.
         log::info!(
             "settings: {} (camera sensitivity {:.2}, interface size {:.2}, nameplate size {:.0},              health regen {:.1}%/s)",
             game_settings.path().display(),
@@ -1147,6 +1189,14 @@ impl App {
             heroes,
             menu: MenuSystem::new(game_settings.settings(), env!("CARGO_PKG_VERSION")),
             menu_actions: Vec::with_capacity(4),
+            display: display_in_force,
+            display_confirm: None,
+            display_clock: Instant::now(),
+            last_fullscreen: if display_in_force.window_mode.is_fullscreen() {
+                display_in_force.window_mode
+            } else {
+                WindowMode::BorderlessFullscreen
+            },
             menu_theme: MenuTheme::default(),
             menu_scratch: MenuScratch::new(),
             settings: game_settings,
@@ -1859,7 +1909,8 @@ impl App {
                 up: input.was_key_pressed(KeyCode::ArrowUp),
                 down: input.was_key_pressed(KeyCode::ArrowDown),
                 toggle: input.was_key_pressed(KeyCode::ArrowRight),
-                spawn: input.was_key_pressed(KeyCode::Enter),
+                // Not with Alt held: Alt+Enter is the fullscreen toggle.
+                spawn: input.was_key_pressed(KeyCode::Enter) && !input.modifiers().alt(),
                 reset: input.was_key_pressed(KeyCode::Delete),
                 kill: input.was_key_pressed(KeyCode::K),
                 passive: input.was_key_pressed(KeyCode::P),
@@ -2351,6 +2402,132 @@ impl App {
         }
     }
 
+    /// Asks the window's monitor what it offers and tells the display screen, with what is
+    /// in force.
+    fn refresh_display_options(&mut self) {
+        let Some(monitor) = self.window.monitor() else {
+            return;
+        };
+        let desktop = Resolution::new(monitor.desktop.width, monitor.desktop.height);
+        let reported: Vec<Resolution> = monitor
+            .resolutions()
+            .into_iter()
+            .map(Resolution::from)
+            .collect();
+        let options = engine_settings::resolution_options(
+            &reported,
+            desktop,
+            Some(self.display.resolution()),
+        );
+        self.menu
+            .set_display_options(options, desktop, self.display);
+    }
+
+    /// APPLY: puts `wanted` in force and starts the confirmation. Nothing is saved yet.
+    fn begin_display_change(&mut self, wanted: DisplaySettings) {
+        // A change already being confirmed is replaced by this one, and the settings to go
+        // back to are still the ones before *it*: the last configuration the player kept.
+        let previous = self
+            .display_confirm
+            .take()
+            .map_or(self.display, |pending| pending.previous());
+        let applied = apply_display_to(&mut self.window, wanted, self.display);
+        self.display = applied;
+        if applied.window_mode.is_fullscreen() {
+            self.last_fullscreen = applied.window_mode;
+        }
+        let now = self.display_clock.elapsed().as_secs_f64();
+        let pending = DisplayConfirmation::start(previous, applied, now);
+        self.display_confirm = Some(pending);
+        let display = self.menu.display_menu_mut();
+        display.set_current(applied);
+        display.begin_confirmation(pending.seconds_left(now));
+        log::info!(
+            "display: trying {}x{} {}; keep within {} s or it reverts",
+            applied.resolution_width,
+            applied.resolution_height,
+            applied.window_mode.as_str(),
+            engine_settings::CONFIRM_SECONDS
+        );
+    }
+
+    /// Ends a confirmation: keeps and saves, or puts the previous configuration back.
+    fn finish_display_change(&mut self, outcome: ConfirmOutcome) {
+        match outcome {
+            ConfirmOutcome::Keep(kept) => {
+                self.settings.set_display(kept);
+                if self.settings.save_if_dirty() {
+                    log::info!(
+                        "settings: display {}x{} {} kept",
+                        kept.resolution_width,
+                        kept.resolution_height,
+                        kept.window_mode.as_str()
+                    );
+                }
+            }
+            ConfirmOutcome::Revert(previous) => {
+                let applied = apply_display_to(&mut self.window, previous, self.display);
+                self.display = applied;
+                log::info!(
+                    "display: reverted to {}x{} {}",
+                    applied.resolution_width,
+                    applied.resolution_height,
+                    applied.window_mode.as_str()
+                );
+            }
+        }
+        let display = self.menu.display_menu_mut();
+        display.end_confirmation();
+        display.set_current(self.display);
+    }
+
+    /// Counts the confirmation down, and reverts when it runs out.
+    fn tick_display_confirmation(&mut self) {
+        let Some(pending) = self.display_confirm else {
+            return;
+        };
+        let now = self.display_clock.elapsed().as_secs_f64();
+        if let Some(outcome) = pending.expired(now) {
+            self.display_confirm = None;
+            log::info!("display: not confirmed in time");
+            self.finish_display_change(outcome);
+        } else {
+            self.menu
+                .display_menu_mut()
+                .set_confirmation_seconds(pending.seconds_left(now));
+        }
+    }
+
+    /// Alt+Enter: from a window to the last fullscreen mode, from fullscreen to a window.
+    ///
+    /// Applied and saved at once, without the confirmation: it is undone by the same two keys,
+    /// so there is nothing a player could be stranded in. Ignored while a change from the
+    /// menu is waiting to be confirmed, which must be kept or reverted first.
+    fn toggle_fullscreen(&mut self) {
+        if self.display_confirm.is_some() || !self.window_shown {
+            return;
+        }
+        let target = if self.display.window_mode.is_fullscreen() {
+            self.last_fullscreen = self.display.window_mode;
+            WindowMode::Windowed
+        } else {
+            self.last_fullscreen
+        };
+        let wanted = DisplaySettings {
+            window_mode: target,
+            ..self.display
+        };
+        self.display = apply_display_to(&mut self.window, wanted, self.display);
+        self.settings.set_display(self.display);
+        if self.settings.save_if_dirty() {
+            log::info!(
+                "settings: Alt+Enter, now {}",
+                self.display.window_mode.as_str()
+            );
+        }
+        self.menu.display_menu_mut().set_current(self.display);
+    }
+
     /// Runs the menus for this frame and carries out what they asked for.
     ///
     /// The menu never performs an action itself: it returns [`MenuAction`]s and this is the
@@ -2358,6 +2535,7 @@ impl App {
     /// keeps a check for which screen is open out of the renderer and the simulation.
     fn update_menu(&mut self, ctx: &mut EngineContext) {
         self.menu.layout(self.renderer.size());
+        self.tick_display_confirmation();
 
         let ui_input = UiInput::from_input(ctx.input());
 
@@ -2365,7 +2543,11 @@ impl App {
         // cancel a placement, then stop a cast, and only then open the pause menu. Each
         // press backs out of exactly one thing, which is what makes pressing it twice from
         // the talent window land on the menu.
-        if ui_input.cancel {
+        // The display screen answers escape itself — an open list closes, the confirmation
+        // dialog reverts — so none of the chain below may take the press first.
+        let display_screen =
+            self.menu.screen() == engine_presentation::ui::menu::MenuScreen::Display;
+        if ui_input.cancel && !display_screen {
             // Edit mode and the slot menu answer escape themselves, in the interface update
             // that runs after this one. Backing out of one of them must not also open the
             // pause menu on the same press.
@@ -2536,6 +2718,30 @@ impl App {
                             "settings: map motion {}",
                             if reduced { "reduced" } else { "full" }
                         );
+                    }
+                }
+                MenuAction::OpenedDisplay => {
+                    self.play_ui_sound(engine_audio::SoundId::UiClick);
+                    // What the monitor offers now, not what it offered at startup.
+                    self.refresh_display_options();
+                }
+                MenuAction::ClosedDisplay => {
+                    self.play_ui_sound(engine_audio::SoundId::UiCancel);
+                }
+                MenuAction::DisplayApplyRequested(wanted) => {
+                    self.play_ui_sound(engine_audio::SoundId::UiClick);
+                    self.begin_display_change(wanted);
+                }
+                MenuAction::DisplayKeepRequested => {
+                    self.play_ui_sound(engine_audio::SoundId::UiSelect);
+                    if let Some(pending) = self.display_confirm.take() {
+                        self.finish_display_change(pending.keep());
+                    }
+                }
+                MenuAction::DisplayRevertRequested => {
+                    self.play_ui_sound(engine_audio::SoundId::UiCancel);
+                    if let Some(pending) = self.display_confirm.take() {
+                        self.finish_display_change(pending.revert());
                     }
                 }
                 MenuAction::MinimapOrientationCommitted(mode) => {
@@ -4952,6 +5158,20 @@ impl Application for App {
                         self.camera.set_viewport(width, height)?;
                     }
                 }
+                // A monitor was added, removed or changed mode: a borderless window is fitted
+                // to its monitor again, and the resolution list is asked again.
+                WindowEvent::DisplayChanged => {
+                    self.window.refit_after_display_change();
+                    self.refresh_display_options();
+                }
+                // Alt+Enter: windowed and fullscreen, back and forth. Ahead of every other use
+                // of Enter, so it is never also a press of whatever Enter does.
+                WindowEvent::Input(InputEvent::KeyDown {
+                    key: KeyCode::Enter,
+                    repeat: false,
+                }) if ctx.input().modifiers().alt() => {
+                    self.toggle_fullscreen();
+                }
                 // Movement is accumulated from the messages, not from a position compared
                 // against the centre once a frame: the re-centring warp produces a message
                 // of its own, and only here can it be told apart from the player's hand.
@@ -5742,6 +5962,69 @@ fn upload_environment(
         texture_bytes as f64 / 1024.0,
     );
     Ok(visuals)
+}
+
+/// The saved display configuration made possible on the primary monitor — the one a new
+/// window opens on: its resolution if the monitor offers it, otherwise the closest it does.
+fn fit_display_to_monitor(saved: DisplaySettings) -> DisplaySettings {
+    let Some(monitor) = engine_platform::primary_monitor() else {
+        return saved.validated();
+    };
+    let desktop = Resolution::new(monitor.desktop.width, monitor.desktop.height);
+    let reported: Vec<Resolution> = monitor
+        .resolutions()
+        .into_iter()
+        .map(Resolution::from)
+        .collect();
+    let offered = engine_settings::resolution_options(&reported, desktop, None);
+    let fitted = saved.fitted_to(&offered);
+    if fitted != saved {
+        log::info!(
+            "display: saved {}x{} is not offered by {}; using {}x{}",
+            saved.resolution_width,
+            saved.resolution_height,
+            monitor.device,
+            fitted.resolution_width,
+            fitted.resolution_height
+        );
+    }
+    fitted
+}
+
+/// Puts `wanted` on `window` and returns what is in force afterwards, in the settings'
+/// terms. A fallback (exclusive refused, so borderless) is reported as what it is; a failure
+/// leaves `current` in force.
+fn apply_display_to(
+    window: &mut Window,
+    wanted: DisplaySettings,
+    current: DisplaySettings,
+) -> DisplaySettings {
+    let mode = match wanted.window_mode {
+        WindowMode::Windowed => engine_platform::WindowMode::Windowed,
+        WindowMode::BorderlessFullscreen => engine_platform::WindowMode::Borderless,
+        WindowMode::Fullscreen => engine_platform::WindowMode::Fullscreen,
+    };
+    match window.apply_display(mode, wanted.resolution_width, wanted.resolution_height) {
+        Ok(applied) => {
+            let window_mode = match applied.mode {
+                engine_platform::WindowMode::Windowed => WindowMode::Windowed,
+                engine_platform::WindowMode::Borderless => WindowMode::BorderlessFullscreen,
+                engine_platform::WindowMode::Fullscreen => WindowMode::Fullscreen,
+            };
+            // Borderless keeps the chosen resolution in the settings — it is what a later
+            // windowed or fullscreen switch goes back to — and uses the desktop's meanwhile.
+            let resolution = if window_mode.uses_resolution() {
+                Resolution::new(applied.width, applied.height)
+            } else {
+                wanted.resolution()
+            };
+            DisplaySettings::new(resolution, window_mode)
+        }
+        Err(error) => {
+            log::warn!("display: could not apply: {error}");
+            current
+        }
+    }
 }
 
 /// Where the camera will be on the first frame, near enough for the initial level choice.

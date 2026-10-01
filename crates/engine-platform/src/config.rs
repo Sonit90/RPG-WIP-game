@@ -13,6 +13,33 @@ pub const MIN_DIMENSION: u32 = 64;
 /// cannot overflow a `u32` render-target size calculation downstream.
 pub const MAX_DIMENSION: u32 = 16384;
 
+/// How a window covers the screen.
+///
+/// The platform's own word for it: the settings crate has the player's, and the application
+/// translates, so neither depends on the other.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum WindowMode {
+    /// A framed window, sized by its client area.
+    #[default]
+    Windowed,
+    /// A borderless popup covering its monitor at the monitor's current mode.
+    Borderless,
+    /// A borderless popup covering its monitor, the monitor switched to a chosen mode.
+    Fullscreen,
+}
+
+/// What [`crate::Window::apply_display`] actually did: the mode and client size in force,
+/// which a fallback can make different from what was asked.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AppliedDisplay {
+    /// The mode in force.
+    pub mode: WindowMode,
+    /// Client width in pixels.
+    pub width: u32,
+    /// Client height in pixels.
+    pub height: u32,
+}
+
 /// Initial state of a platform window.
 ///
 /// The dimensions describe the *client* area — the region the renderer draws into —

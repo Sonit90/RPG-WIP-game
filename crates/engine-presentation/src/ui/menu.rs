@@ -25,12 +25,13 @@
 use engine_render_data::ui::{UiRect, UiScale};
 use engine_settings::{
     BindingScope, CAMERA_SENSITIVITY_MAX, CAMERA_SENSITIVITY_MIN, CAMERA_SENSITIVITY_STEP,
-    GameSettings, KeyName, MinimapOrientation, NameplateSetting, ShadowQuality, UI_SCALE_MAX,
-    UI_SCALE_MIN, UI_SCALE_STEP, VOLUME_MAX, VOLUME_MIN, VOLUME_STEP,
+    DisplaySettings, GameSettings, KeyName, MinimapOrientation, NameplateSetting, Resolution,
+    ShadowQuality, UI_SCALE_MAX, UI_SCALE_MIN, UI_SCALE_STEP, VOLUME_MAX, VOLUME_MIN, VOLUME_STEP,
 };
 
 use engine_game::hero::Hero;
 
+use super::display_menu::{DisplayLayout, DisplayMenu, DisplayOutcome};
 use super::input::UiInput;
 use super::screen::UiScreen;
 use super::widget::{Button, Checkbox, Slider, Widget, WidgetEvent};
@@ -70,6 +71,8 @@ pub enum MenuScreen {
     /// The graphics screen's shape — one tick per mode with a line saying what it does —
     /// because it is the same question: pick exactly one of a short list.
     Map,
+    /// The display section: resolution and window mode, applied and then confirmed.
+    Display,
 }
 
 impl MenuScreen {
@@ -117,6 +120,8 @@ pub enum SettingsItem {
     BindingScope,
     /// Opens the graphics section.
     Graphics,
+    /// Opens the display section: resolution and window mode.
+    Display,
     /// Opens the map section.
     Map,
     /// Opens the nameplate section.
@@ -290,6 +295,19 @@ pub enum MenuAction {
     MinimapOrientationCommitted(MinimapOrientation),
     /// The player turned the map's reduced motion on or off. Apply it and persist it.
     ReducedMotionCommitted(bool),
+    /// The display screen opened. The application refreshes what the monitor offers.
+    OpenedDisplay,
+    /// The display screen closed back to the settings screen.
+    ClosedDisplay,
+    /// The player pressed APPLY. Apply these, then start the confirmation.
+    ///
+    /// Not saved: settings that turned the screen black must not be what the next launch
+    /// starts with. The confirmation decides.
+    DisplayApplyRequested(DisplaySettings),
+    /// The player kept the display settings being confirmed. Save them.
+    DisplayKeepRequested,
+    /// The player wants the previous display settings back — by REVERT or by escape.
+    DisplayRevertRequested,
 }
 
 /// What a shadow level's row is called.
@@ -475,6 +493,8 @@ pub struct MenuSystem {
     viewport: (u32, u32),
     /// Every measurement, already converted to physical pixels for the current UI scale.
     metrics: MenuMetrics,
+    /// The display section and its confirmation dialog.
+    display: DisplayMenu,
 }
 
 impl MenuSystem {
@@ -531,6 +551,7 @@ impl MenuSystem {
                 .checked(settings.binding_scope.is_per_character()),
         );
         settings_screen.push(SettingsItem::Graphics, Button::new("GRAPHICS"));
+        settings_screen.push(SettingsItem::Display, Button::new("DISPLAY"));
         settings_screen.push(SettingsItem::Map, Button::new("MAP"));
         settings_screen.push(SettingsItem::Nameplates, Button::new("NAMEPLATES"));
         settings_screen.push(SettingsItem::Back, Button::new("BACK"));
@@ -610,6 +631,7 @@ impl MenuSystem {
             actions: Vec::with_capacity(4),
             viewport: (0, 0),
             metrics: MenuMetrics::new(UiScale::new(settings.ui_scale)),
+            display: DisplayMenu::new(settings.display),
         };
         system.layout((1920, 1080));
         system
@@ -689,6 +711,30 @@ impl MenuSystem {
         if let Some(Widget::Button(button)) = self.pause.widget_mut(PauseItem::Quit) {
             button.label = if to_editor { "QUIT TO EDITOR" } else { "QUIT" };
         }
+    }
+
+    /// The display section: its widgets, its choices and its dialog, for drawing.
+    #[must_use]
+    pub fn display_menu(&self) -> &DisplayMenu {
+        &self.display
+    }
+
+    /// The display section, to tell it what is in force, what the monitor offers, and how
+    /// long the confirmation has left.
+    pub fn display_menu_mut(&mut self) -> &mut DisplayMenu {
+        &mut self.display
+    }
+
+    /// Tells the display section what the monitor offers and what is in force, and lays it
+    /// out again for the new number of rows.
+    pub fn set_display_options(
+        &mut self,
+        options: Vec<Resolution>,
+        desktop: Resolution,
+        current: DisplaySettings,
+    ) {
+        self.display.set_options(options, desktop, current);
+        self.layout_display(self.viewport);
     }
 
     /// The graphics screen's widgets, for drawing.
@@ -881,6 +927,40 @@ impl MenuSystem {
         self.layout_nameplates(viewport);
         self.layout_graphics(viewport);
         self.layout_map(viewport);
+        self.layout_display(viewport);
+    }
+
+    /// The panel the display screen draws in.
+    #[must_use]
+    pub fn display_panel(&self) -> UiRect {
+        let m = &self.metrics;
+        let height = DisplayMenu::content_height(
+            m.padding,
+            m.title_height,
+            m.slider_label_height,
+            m.button_height,
+            m.button_gap,
+            m.group_gap,
+            m.hero_description_height,
+        );
+        self.centred_panel(self.viewport, height)
+    }
+
+    fn layout_display(&mut self, viewport: (u32, u32)) {
+        let panel = self.display_panel();
+        let m = self.metrics;
+        self.display.layout(&DisplayLayout {
+            panel,
+            padding: m.padding,
+            title_height: m.title_height,
+            label_height: m.slider_label_height,
+            row_height: m.button_height,
+            gap: m.button_gap,
+            group_gap: m.group_gap,
+            line_height: m.hero_description_height,
+            viewport,
+            scale: m.scale,
+        });
     }
 
     /// The panel the pause menu draws in.
@@ -1052,9 +1132,21 @@ impl MenuSystem {
             UiRect::new(x, y, width, self.metrics.button_height),
         );
         y += self.metrics.button_height + self.metrics.button_gap;
+        // GRAPHICS and DISPLAY share a row: the panel is already as tall as a 1080p screen
+        // allows, and the two are the same kind of thing.
+        let half = (width - self.metrics.button_gap) * 0.5;
         self.settings.set_rect(
             SettingsItem::Graphics,
-            UiRect::new(x, y, width, self.metrics.button_height),
+            UiRect::new(x, y, half, self.metrics.button_height),
+        );
+        self.settings.set_rect(
+            SettingsItem::Display,
+            UiRect::new(
+                x + half + self.metrics.button_gap,
+                y,
+                width - half - self.metrics.button_gap,
+                self.metrics.button_height,
+            ),
         );
         y += self.metrics.button_height + self.metrics.button_gap;
         self.settings.set_rect(
@@ -1221,6 +1313,7 @@ impl MenuSystem {
             MenuScreen::Nameplates => self.update_nameplates(input),
             MenuScreen::Graphics => self.update_graphics(input),
             MenuScreen::Map => self.update_map(input),
+            MenuScreen::Display => self.update_display(input),
         }
         &self.actions
     }
@@ -1320,6 +1413,7 @@ impl MenuSystem {
         let mut back = false;
         let mut open_nameplates = false;
         let mut open_graphics = false;
+        let mut open_display = false;
         let mut open_map = false;
         let mut binding_scope = None;
         // Collected first: the borrow of the screen's event buffer ends here, and the
@@ -1332,6 +1426,7 @@ impl MenuSystem {
                 (SettingsItem::Back, WidgetEvent::Activated) => back = true,
                 (SettingsItem::Nameplates, WidgetEvent::Activated) => open_nameplates = true,
                 (SettingsItem::Graphics, WidgetEvent::Activated) => open_graphics = true,
+                (SettingsItem::Display, WidgetEvent::Activated) => open_display = true,
                 (SettingsItem::Map, WidgetEvent::Activated) => open_map = true,
                 (SettingsItem::BindingScope, WidgetEvent::Toggled(checked)) => {
                     binding_scope = Some(BindingScope::from_per_character(*checked));
@@ -1361,7 +1456,9 @@ impl MenuSystem {
                             WidgetEvent::ValueCommitted(value) => {
                                 volumes.push((*channel, *value, true));
                             }
-                            WidgetEvent::Activated | WidgetEvent::Toggled(_) => {}
+                            WidgetEvent::Activated
+                            | WidgetEvent::Toggled(_)
+                            | WidgetEvent::Chosen(_) => {}
                         }
                     }
                 }
@@ -1394,6 +1491,13 @@ impl MenuSystem {
             self.settings.reset();
             self.map.reset();
             self.actions.push(MenuAction::OpenedMap);
+            return;
+        }
+        if open_display {
+            self.screen = MenuScreen::Display;
+            self.settings.reset();
+            self.display.discard_changes();
+            self.actions.push(MenuAction::OpenedDisplay);
             return;
         }
         if open_graphics {
@@ -1547,6 +1651,26 @@ impl MenuSystem {
 
     /// Escape and BACK from the graphics section return to the settings screen, not to the
     /// game — the rule every section of the settings follows.
+    /// The display section: two dropdowns, APPLY and BACK, and the dialog that follows
+    /// APPLY. Everything it decides leaves as an action.
+    fn update_display(&mut self, input: &UiInput) {
+        match self.display.update(input) {
+            Some(DisplayOutcome::Apply(settings)) => {
+                self.actions
+                    .push(MenuAction::DisplayApplyRequested(settings));
+            }
+            Some(DisplayOutcome::Keep) => self.actions.push(MenuAction::DisplayKeepRequested),
+            Some(DisplayOutcome::Revert) => self.actions.push(MenuAction::DisplayRevertRequested),
+            Some(DisplayOutcome::Back) => {
+                self.display.discard_changes();
+                self.screen = MenuScreen::Settings;
+                self.settings.reset();
+                self.actions.push(MenuAction::ClosedDisplay);
+            }
+            None => {}
+        }
+    }
+
     fn back_to_settings_from_graphics(&mut self) {
         self.screen = MenuScreen::Settings;
         self.graphics.reset();
@@ -1978,6 +2102,81 @@ mod tests {
             ),
             "{unticked:?}"
         );
+    }
+
+    #[test]
+    fn the_display_screen_opens_from_settings_and_applies_through_an_action() {
+        use engine_settings::{DisplaySettings, Resolution, WindowMode};
+        let mut menu = menu();
+        menu.open_pause();
+        click_pause(&mut menu, PauseItem::Settings);
+        let actions = click_settings(&mut menu, SettingsItem::Display);
+        assert!(actions.contains(&MenuAction::OpenedDisplay), "{actions:?}");
+        assert_eq!(menu.screen(), MenuScreen::Display);
+        menu.set_display_options(
+            vec![Resolution::new(2560, 1440), Resolution::new(1920, 1080)],
+            Resolution::new(2560, 1440),
+            DisplaySettings::default(),
+        );
+        // Every widget of the screen is inside its panel, at every size the menu is tested at.
+        for viewport in [(1280, 720), (1920, 1080), (3840, 2160)] {
+            menu.layout(viewport);
+            let panel = menu.display_panel();
+            for (_, widget) in menu.display_menu().screen().widgets() {
+                let rect = widget.rect();
+                assert!(
+                    rect.x >= panel.x && rect.right() <= panel.right() + 0.5,
+                    "{viewport:?}: {rect:?} outside {panel:?}"
+                );
+                assert!(
+                    rect.bottom() <= panel.bottom() + 0.5,
+                    "{viewport:?}: {rect:?}"
+                );
+            }
+        }
+        menu.layout((1920, 1080));
+        // Choose fullscreen and apply.
+        let mode = menu
+            .display_menu()
+            .screen()
+            .widget(crate::ui::display_menu::DisplayItem::WindowMode)
+            .expect("mode")
+            .rect();
+        let at = |rect: UiRect| (rect.x + rect.width * 0.5, rect.y + rect.height * 0.5);
+        let (x, y) = at(mode);
+        menu.update(&press(x, y));
+        let Some(crate::ui::widget::Widget::Dropdown(open)) = menu
+            .display_menu()
+            .screen()
+            .widget(crate::ui::display_menu::DisplayItem::WindowMode)
+            .copied()
+        else {
+            panic!("a dropdown");
+        };
+        let (x, y) = at(open.option_rect(2));
+        menu.update(&press(x, y));
+        menu.update(&release(x, y));
+        let apply = menu
+            .display_menu()
+            .screen()
+            .widget(crate::ui::display_menu::DisplayItem::Apply)
+            .expect("apply")
+            .rect();
+        let (x, y) = at(apply);
+        menu.update(&press(x, y));
+        let actions = menu.update(&release(x, y)).to_vec();
+        assert!(
+            actions.contains(&MenuAction::DisplayApplyRequested(DisplaySettings::new(
+                Resolution::new(1920, 1080),
+                WindowMode::Fullscreen
+            ))),
+            "{actions:?}"
+        );
+        // Escape while the dialog is up reverts rather than leaving the screen.
+        menu.display_menu_mut().begin_confirmation(15);
+        let actions = menu.update(&escape()).to_vec();
+        assert_eq!(actions, vec![MenuAction::DisplayRevertRequested]);
+        assert_eq!(menu.screen(), MenuScreen::Display);
     }
 
     #[test]

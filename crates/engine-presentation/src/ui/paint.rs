@@ -10,10 +10,12 @@
 //! exists — it creates no texture, no buffer and no pipeline, and opening it allocates
 //! nothing after the first time.
 
-use engine_render_data::ui::{TextAlign, UiColor, UiDrawList, UiRect, UiScale};
+use engine_render_data::ui::{TextAlign, UiColor, UiDrawList, UiIcon, UiRect, UiScale};
+use engine_settings::WindowMode;
 
+use super::display_menu::{DisplayItem, DisplayMenu};
 use super::menu::{GraphicsItem, HeroItem, MapItem, MenuScreen, MenuSystem, PauseItem};
-use super::widget::{Slider, Widget, WidgetState};
+use super::widget::{Dropdown, Slider, Widget, WidgetState};
 
 /// How the menus are coloured and sized.
 ///
@@ -159,6 +161,262 @@ pub fn push_menu(
         MenuScreen::Nameplates => push_nameplates(list, menu, theme, scratch, viewport, scale),
         MenuScreen::Graphics => push_graphics(list, menu, theme, viewport, scale),
         MenuScreen::Map => push_map_settings(list, menu, theme, scratch, viewport, scale),
+        MenuScreen::Display => push_display(list, menu, theme, scratch, viewport, scale),
+    }
+}
+
+/// The display section: two labelled dropdowns, a line saying what the chosen mode does, a
+/// line saying what is in force, APPLY and BACK — and, after APPLY, the dialog over all of
+/// it.
+///
+/// An open list is drawn last, so it covers the rows under it the way it also takes their
+/// clicks.
+fn push_display(
+    list: &mut UiDrawList,
+    menu: &MenuSystem,
+    theme: &MenuTheme,
+    scratch: &mut MenuScratch,
+    viewport: (u32, u32),
+    scale: UiScale,
+) {
+    let display = menu.display_menu();
+    let panel = menu.display_panel();
+    push_backdrop(list, theme, viewport, panel, "DISPLAY", scale);
+    let small = scale.text(theme.label_scale * 0.8);
+    let pending = display.pending();
+
+    let mut open: Option<(DisplayItem, Dropdown)> = None;
+    let mut mode_bottom = panel.y;
+    for (item, widget) in display.screen().widgets() {
+        match widget {
+            Widget::Dropdown(dropdown) => {
+                // The label above the box.
+                list.text_at(
+                    (
+                        dropdown.rect.x,
+                        dropdown.rect.y - scale.px(8.0) - 7.0 * small,
+                    ),
+                    dropdown.label,
+                    if dropdown.state.enabled {
+                        theme.title
+                    } else {
+                        theme.text_disabled
+                    },
+                    small,
+                );
+                let text = dropdown_text(display, item, dropdown.selected, scratch);
+                push_dropdown_box(list, dropdown, text, theme, scale);
+                if dropdown.is_open() {
+                    open = Some((item, *dropdown));
+                }
+                if item == DisplayItem::WindowMode {
+                    mode_bottom = dropdown.rect.bottom();
+                }
+            }
+            _ => push_widget(list, widget, theme, scale),
+        }
+    }
+
+    // What the chosen mode does, then what the screen is doing now.
+    let x = panel.x + scale.px(28.0);
+    list.text_at(
+        (x, mode_bottom + scale.px(8.0)),
+        pending.window_mode.description(),
+        theme.text_disabled,
+        scale.text(0.8),
+    );
+    scratch.value.clear();
+    let current = display.current();
+    if pending.window_mode == WindowMode::BorderlessFullscreen {
+        scratch.value.push_str("USES THE DESKTOP RESOLUTION: ");
+        scratch.value.push_str(&display.desktop().label());
+    } else {
+        scratch.value.push_str("NOW: ");
+        let in_force = if current.window_mode == WindowMode::BorderlessFullscreen {
+            display.desktop()
+        } else {
+            current.resolution()
+        };
+        scratch.value.push_str(&in_force.label());
+        scratch.value.push_str(", ");
+        scratch.value.push_str(current.window_mode.label());
+    }
+    list.text_at(
+        (x, mode_bottom + scale.px(8.0) + scale.px(18.0)),
+        &scratch.value,
+        theme.text,
+        scale.text(0.8),
+    );
+
+    if let Some((item, dropdown)) = open {
+        push_dropdown_list(list, display, item, &dropdown, theme, scratch, scale);
+    }
+
+    if let Some(seconds) = display.confirming() {
+        push_display_dialog(list, display, seconds, theme, scratch, viewport, scale);
+    }
+}
+
+/// What a dropdown row says: a resolution from the monitor's list, or a window mode.
+fn dropdown_text<'a>(
+    display: &'a DisplayMenu,
+    item: DisplayItem,
+    index: usize,
+    scratch: &'a mut MenuScratch,
+) -> &'a str {
+    match item {
+        DisplayItem::Resolution => {
+            if display.pending().window_mode == WindowMode::BorderlessFullscreen {
+                // Borderless uses the desktop's; the box says so rather than a size that
+                // will not be used.
+                scratch.minimum.clear();
+                scratch.minimum.push_str(&display.desktop().label());
+                scratch.minimum.push_str("  (DESKTOP)");
+                &scratch.minimum
+            } else {
+                display
+                    .resolution_labels()
+                    .get(index)
+                    .map_or("", String::as_str)
+            }
+        }
+        DisplayItem::WindowMode => WindowMode::ALL.get(index).map_or("", |mode| mode.label()),
+        DisplayItem::Apply | DisplayItem::Back => "",
+    }
+}
+
+/// A closed dropdown: the box, its chosen option, and a chevron pointing where it opens.
+fn push_dropdown_box(
+    list: &mut UiDrawList,
+    dropdown: &Dropdown,
+    text: &str,
+    theme: &MenuTheme,
+    scale: UiScale,
+) {
+    let rect = dropdown.rect;
+    let state = WidgetState {
+        pressed: dropdown.state.pressed || dropdown.open,
+        ..dropdown.state
+    };
+    list.rect(rect, theme.fill(&state));
+    list.outline(
+        rect,
+        scale.px(1.0),
+        if dropdown.open {
+            theme.track_fill
+        } else {
+            theme.separator
+        },
+    );
+    let label_scale = scale.text(theme.label_scale);
+    list.text_at(
+        (rect.x + scale.px(16.0), text_baseline(rect, label_scale)),
+        text,
+        theme.label_color(&dropdown.state),
+        label_scale,
+    );
+    let chevron = scale.px(16.0);
+    let down = std::f32::consts::FRAC_PI_2;
+    list.icon_rotated(
+        (rect.right() - scale.px(22.0), rect.y + rect.height * 0.5),
+        chevron,
+        UiIcon::ControlChevron,
+        if dropdown.open == dropdown.upward {
+            down
+        } else {
+            -down
+        },
+        theme.label_color(&dropdown.state),
+    );
+}
+
+/// An open dropdown's list: every option, the chosen one marked, the hovered one lit.
+fn push_dropdown_list(
+    list: &mut UiDrawList,
+    display: &DisplayMenu,
+    item: DisplayItem,
+    dropdown: &Dropdown,
+    theme: &MenuTheme,
+    scratch: &mut MenuScratch,
+    scale: UiScale,
+) {
+    let whole = dropdown.list_rect();
+    list.rect(whole.inset(-scale.px(2.0)), theme.panel_border);
+    list.rect(whole, theme.panel);
+    let label_scale = scale.text(theme.label_scale);
+    for index in 0..dropdown.len {
+        let row = dropdown.option_rect(index);
+        let hovered = dropdown.hovered_option == Some(index);
+        if hovered {
+            list.rect(row, theme.button_hovered);
+        }
+        if index == dropdown.selected {
+            list.rect(
+                UiRect::new(row.x, row.y, scale.px(4.0), row.height),
+                theme.track_fill,
+            );
+        }
+        let text = dropdown_text(display, item, index, scratch);
+        list.text_at(
+            (row.x + scale.px(16.0), text_baseline(row, label_scale)),
+            text,
+            if index == dropdown.selected || hovered {
+                theme.text
+            } else {
+                theme.text_disabled
+            },
+            label_scale,
+        );
+    }
+}
+
+/// "Keep these display settings?" with its countdown and its two buttons, over everything.
+fn push_display_dialog(
+    list: &mut UiDrawList,
+    display: &DisplayMenu,
+    seconds: u32,
+    theme: &MenuTheme,
+    scratch: &mut MenuScratch,
+    viewport: (u32, u32),
+    scale: UiScale,
+) {
+    let dialog = display.dialog();
+    list.rect(
+        UiRect::new(0.0, 0.0, viewport.0 as f32, viewport.1 as f32),
+        theme.scrim,
+    );
+    list.rect(dialog, theme.panel);
+    list.outline(dialog, scale.px(theme.border_pixels), theme.title);
+    let (origin, align) = centre_text(dialog.x + dialog.width * 0.5, dialog.y + scale.px(26.0));
+    list.text_aligned(
+        origin,
+        "KEEP THESE DISPLAY SETTINGS?",
+        theme.title,
+        scale.text(theme.title_scale * 0.6),
+        align,
+    );
+    // Written by hand rather than with `write_decimals`, which replaces what is in the buffer.
+    scratch.value.clear();
+    let _ = core::fmt::Write::write_fmt(&mut scratch.value, format_args!("REVERTING IN {seconds}"));
+    scratch.value.push_str(if seconds == 1 {
+        " SECOND..."
+    } else {
+        " SECONDS..."
+    });
+    let (origin, align) = centre_text(dialog.x + dialog.width * 0.5, dialog.y + scale.px(70.0));
+    list.text_aligned(
+        origin,
+        &scratch.value,
+        if seconds <= 5 {
+            theme.title
+        } else {
+            theme.text
+        },
+        scale.text(theme.label_scale),
+        align,
+    );
+    for (_, widget) in display.confirm_screen().widgets() {
+        push_widget(list, widget, theme, scale);
     }
 }
 
@@ -403,6 +661,9 @@ pub fn push_widget(list: &mut UiDrawList, widget: &Widget, theme: &MenuTheme, sc
             // this is the fallback for a screen that only wants the track.
             push_track(list, slider, theme, scale);
         }
+        // A dropdown drawn without its options' words: the screen that owns it knows them
+        // and draws the full form; this is the fallback.
+        Widget::Dropdown(dropdown) => push_dropdown_box(list, dropdown, "", theme, scale),
     }
 }
 
@@ -607,6 +868,53 @@ mod tests {
             pointer_released: true,
             ..UiInput::new()
         });
+    }
+
+    #[test]
+    fn the_display_screen_prints_its_choices_and_the_dialog_its_countdown() {
+        use engine_settings::{DisplaySettings, Resolution};
+        let mut menu = menu();
+        menu.open_pause();
+        open_settings(&mut menu);
+        let rect = menu
+            .settings_screen()
+            .widget(crate::ui::menu::SettingsItem::Display)
+            .expect("DISPLAY exists")
+            .rect();
+        let (x, y) = (rect.x + rect.width * 0.5, rect.y + rect.height * 0.5);
+        for (pressed, released) in [(true, false), (false, true)] {
+            menu.update(&UiInput {
+                pointer: (x, y),
+                pointer_down: pressed,
+                pointer_pressed: pressed,
+                pointer_released: released,
+                ..UiInput::new()
+            });
+        }
+        menu.set_display_options(
+            vec![Resolution::new(2560, 1440), Resolution::new(1920, 1080)],
+            Resolution::new(2560, 1440),
+            DisplaySettings::default(),
+        );
+        let text = render(&menu).text().to_owned();
+        for word in [
+            "DISPLAY",
+            "RESOLUTION",
+            "WINDOW MODE",
+            "1920 x 1080",
+            "WINDOWED",
+            "APPLY",
+        ] {
+            assert!(text.contains(word), "{word} missing from {text}");
+        }
+        menu.display_menu_mut().begin_confirmation(15);
+        let text = render(&menu).text().to_owned();
+        assert!(text.contains("KEEP THESE DISPLAY SETTINGS?"), "{text}");
+        assert!(text.contains("REVERTING IN 15 SECONDS..."), "{text}");
+        assert!(
+            text.contains("KEEP CHANGES") && text.contains("REVERT"),
+            "{text}"
+        );
     }
 
     fn render(menu: &MenuSystem) -> UiDrawList {

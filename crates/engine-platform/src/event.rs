@@ -117,6 +117,9 @@ pub enum WindowEvent {
     Restored,
     /// The user asked to close the window. The application decides whether to obey.
     CloseRequested,
+    /// The display configuration changed: a monitor was added, removed or rearranged, or
+    /// one changed mode. A borderless window may need to be fitted to its monitor again.
+    DisplayChanged,
 }
 
 impl WindowEvent {
