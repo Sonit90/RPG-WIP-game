@@ -1,9 +1,40 @@
 # Display settings: resolution and window mode
 
-**SETTINGS → DISPLAY** sets the resolution and the window mode. A change is applied, then
-confirmed: if the player does not press **KEEP CHANGES** within 15 seconds (or presses
-**REVERT**, or escape), the previous configuration comes back. Only a kept change is saved.
-**Alt+Enter** switches between a window and fullscreen at any time.
+**SETTINGS → GRAPHICS** sets the resolution and the window mode (and, below them, the shadow
+quality — see `shadows.md`). A display change is applied, then confirmed: if the player does
+not press **KEEP CHANGES** within 15 seconds (or presses **REVERT**, or escape), the previous
+configuration comes back. Only a kept change is saved. **Alt+Enter** switches between a window
+and fullscreen at any time, except in the editor.
+
+```text
+┌──────────── GRAPHICS ───────────┐
+│ RESOLUTION                      │
+│ [ 1920 x 1080               ▼ ] │
+│ WINDOW MODE                     │
+│ [ WINDOWED                  ▼ ] │
+│ A FRAMED WINDOW ...             │
+│ NOW: 1920 x 1080, WINDOWED      │
+│ SHADOW QUALITY                  │
+│ [ HIGH                      ▼ ] │
+│ SHARPER SHADOWS ...             │
+│ [ APPLY      ]  [ BACK       ]  │
+└─────────────────────────────────┘
+```
+
+Choosing from a dropdown changes nothing; **APPLY** carries out every choice at once and
+**BACK** forgets them. A display change is then confirmed (it can leave the player looking at
+a black screen); a shadow level is simply applied and saved. Both changed: the shadows are
+applied, then the display goes to the confirmation, and REVERT undoes only the display.
+
+## The editor is always a window
+
+Opening the world editor (F6, `--editor`, or QUIT TO EDITOR) from borderless or exclusive
+fullscreen switches the game to a framed window: the saved resolution if a window that size
+fits the monitor's work area, otherwise the same shape shrunk until it does
+(`DisplaySettings::for_editor`). Nothing is saved; leaving the editor puts the previous mode
+back. Alt+Enter does nothing while the editor is open, and a display change still waiting for
+KEEP CHANGES is reverted on the way in. Started with `--editor`, the window is created as that
+window directly, so the monitor never switches mode for a game nobody is playing yet.
 
 ## Modes
 
@@ -59,8 +90,8 @@ Labels read `1920 x 1080`: the menus use the 5x7 bitmap font, which is ASCII-onl
 | rules | `engine-settings/src/display.rs` | `DisplaySettings`, `WindowMode`, validation, `resolution_options`, `closest_resolution`, the `DisplayConfirmation` state machine |
 | platform | `engine-platform/src/display.rs` | monitors, their modes, switching and restoring a mode |
 | platform | `engine-platform/src/window.rs` | `Window::apply_display`, alt-tab in exclusive mode, `WM_DISPLAYCHANGE`, Alt+Enter without the system beep, restoring the monitor on drop |
-| interface | `engine-presentation/src/ui/display_menu.rs`, `ui/widget.rs` (`Dropdown`), `ui/paint.rs` | the screen, the dropdowns, the dialog |
-| application | `engine-app/src/app.rs` | startup, APPLY / KEEP / REVERT, the countdown, Alt+Enter, display-change events |
+| interface | `engine-presentation/src/ui/graphics_menu.rs`, `ui/widget.rs` (`Dropdown`), `ui/paint.rs` | the screen, the dropdowns, the dialog |
+| application | `engine-app/src/app.rs` | startup, APPLY / KEEP / REVERT, the countdown, Alt+Enter, display-change events, the editor's window |
 
 Nothing in the renderer changed: a mode change produces `WM_SIZE`, the application calls
 `Renderer::resize` (swap chain, depth, contact-shadow targets) and `Camera::set_viewport`
@@ -68,17 +99,18 @@ exactly as for a dragged window edge, and the interface lays itself out against 
 
 ## Tests
 
-- `engine-settings` `display` (7): defaults, the file round trip, a bad mode or size costing
+- `engine-settings` `display` (8): defaults, the file round trip, a bad mode or size costing
   only that field, fallback to the closest size, the list (unique, sane, common first, largest
-  first, ASCII labels), keep / revert / timeout; `lib` persists a kept change and repairs a bad
-  section.
+  first, ASCII labels), keep / revert / timeout, the editor's window fitting the work area;
+  `lib` persists a kept change and repairs a bad section.
 - `engine-platform` `display` (2) and `tests/window_display.rs` (4, plus 1 `#[ignore]`d):
   monitor description, best mode, windowed size and centring, borderless covering the monitor
   and back, zero sizes refused. The ignored test switches the real monitor:
   `cargo test -p engine-platform --test window_display -- --ignored`.
-- `engine-presentation`: `Dropdown` (3), `display_menu` (7: pending vs in force, borderless
+- `engine-presentation`: `Dropdown` (3), `graphics_menu` (7: pending vs in force, borderless
   greying, an open list taking the click, the dialog, discarding, a lost size), `menu` (the
-  screen from SETTINGS, layout at three resolutions, APPLY and escape-reverts as actions),
-  `paint` (the dialog's countdown text).
+  screen from SETTINGS, layout at three resolutions, APPLY and escape-reverts as actions, a
+  shadow level waiting for APPLY, BACK forgetting it, one APPLY carrying both),
+  `paint` (the screen's text, the dialog's countdown).
 - `engine-app` `args`: when the saved display applies.
 - Manual: MT-034 in `manual-tests.md`.

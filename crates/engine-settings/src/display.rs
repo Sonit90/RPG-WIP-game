@@ -290,7 +290,41 @@ impl DisplaySettings {
             None => self.validated(),
         }
     }
+
+    /// What the world editor runs in instead of these settings: a window, or `None` when
+    /// these already are one.
+    ///
+    /// The editor is a tool beside other tools — a file browser, a second monitor, a text
+    /// editor with the level's JSON — so it never covers the monitor. The resolution is kept
+    /// when a framed window of that size fits in `work_area` (the monitor less its taskbar);
+    /// otherwise it is shrunk, same shape, until it does. Never saved: leaving the editor puts
+    /// these settings back.
+    #[must_use]
+    pub fn for_editor(self, work_area: Resolution) -> Option<Self> {
+        if self.window_mode == WindowMode::Windowed {
+            return None;
+        }
+        let wanted = self.validated().resolution();
+        // Room for a title bar and borders, so the frame is on screen as well as the client.
+        let room_width = work_area.width.saturating_sub(EDITOR_FRAME_WIDTH);
+        let room_height = work_area.height.saturating_sub(EDITOR_FRAME_HEIGHT);
+        let fit = (f64::from(room_width) / f64::from(wanted.width))
+            .min(f64::from(room_height) / f64::from(wanted.height))
+            .min(1.0);
+        // Even sizes, and never below the smallest window the settings allow.
+        let edge = |size: u32| {
+            let scaled = (f64::from(size) * fit) as u32 & !1;
+            scaled.max(RESOLUTION_MIN_EDGE)
+        };
+        let resolution = Resolution::new(edge(wanted.width), edge(wanted.height));
+        Some(Self::new(resolution, WindowMode::Windowed))
+    }
 }
+
+/// Width a window frame adds around the client area, roughly, at any common DPI.
+const EDITOR_FRAME_WIDTH: u32 = 32;
+/// Height a window frame adds around the client area, title bar included, roughly.
+const EDITOR_FRAME_HEIGHT: u32 = 64;
 
 /// The offered resolution nearest to `wanted`: itself if it is offered, otherwise the one
 /// with the same shape and the nearest size, otherwise the nearest size of any shape.
@@ -469,6 +503,40 @@ mod tests {
         let display = DisplaySettings::default();
         assert_eq!(display.resolution(), r(1920, 1080));
         assert_eq!(display.window_mode, WindowMode::Windowed);
+    }
+
+    #[test]
+    fn the_editor_runs_in_a_window_that_fits_the_work_area() {
+        // Already a window: nothing to change.
+        assert_eq!(
+            DisplaySettings::new(r(1920, 1080), WindowMode::Windowed).for_editor(r(1920, 1040)),
+            None
+        );
+        // A small resolution is kept as it is.
+        for mode in [WindowMode::BorderlessFullscreen, WindowMode::Fullscreen] {
+            let editor = DisplaySettings::new(r(1600, 900), mode)
+                .for_editor(r(2560, 1400))
+                .expect("fullscreen becomes a window");
+            assert_eq!(
+                editor,
+                DisplaySettings::new(r(1600, 900), WindowMode::Windowed)
+            );
+        }
+        // The desktop's own size does not fit beside a taskbar and a title bar: it shrinks,
+        // keeping its shape, until the frame fits too.
+        let editor = DisplaySettings::new(r(1920, 1080), WindowMode::Fullscreen)
+            .for_editor(r(1920, 1040))
+            .expect("a window");
+        assert_eq!(editor.window_mode, WindowMode::Windowed);
+        assert!(editor.resolution_width + 32 <= 1920, "{editor:?}");
+        assert!(editor.resolution_height + 64 <= 1040, "{editor:?}");
+        let shape = editor.resolution().aspect();
+        assert!((shape - 16.0 / 9.0).abs() < 0.01, "{shape}");
+        // A tiny work area still yields a usable window.
+        let editor = DisplaySettings::new(r(3840, 2160), WindowMode::Fullscreen)
+            .for_editor(r(300, 200))
+            .expect("a window");
+        assert!(editor.resolution().is_valid(), "{editor:?}");
     }
 
     #[test]

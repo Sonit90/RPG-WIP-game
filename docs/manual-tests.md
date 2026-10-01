@@ -874,22 +874,30 @@ must be kept or it reverts, and the choice survives a restart. Design: `docs/dis
 
 **Steps**
 
-1. `.	argetelease\mygame.exe`; ESC (twice if the mouse is captured) → SETTINGS → DISPLAY.
+1. `.\target\release\mygame.exe`; ESC (twice if the mouse is captured) → SETTINGS → GRAPHICS.
 2. Open RESOLUTION. Choose a smaller size; APPLY. Wait 15 seconds without touching anything.
 3. Choose WINDOW MODE: BORDERLESS FULLSCREEN; APPLY; KEEP CHANGES.
 4. Press Alt+Enter twice.
 5. Choose FULLSCREEN and 1600 x 900; APPLY; KEEP CHANGES. Alt+Tab to the desktop, then back.
 6. Quit and start the game again.
-7. Set WINDOWED 1920 x 1080 again and keep it.
+7. Choose SHADOW QUALITY: LOW; look; APPLY. Choose HIGH; BACK; open GRAPHICS again.
+8. Set BORDERLESS FULLSCREEN and keep it. Press F6 (a `--features editor` build), press
+   Alt+Enter, then F6 again.
+9. Set WINDOWED 1920 x 1080 again and keep it.
 
 **Expected** — The list shows the monitor's sizes once each, largest first, the current one
 marked. APPLY resizes the window at once — HUD, menu and camera follow — and the dialog counts
 down from 15, reverting by itself at zero; nothing is saved. Borderless covers the monitor at
 its desktop resolution, the resolution box greyed and labelled DESKTOP. Alt+Enter goes to a
-window and back to borderless, and the DISPLAY screen follows. Fullscreen switches the monitor
+window and back to borderless, and the GRAPHICS screen follows. Fullscreen switches the monitor
 to 1600 x 900; Alt+Tab shows the desktop at its own resolution with the game minimized, and
-returning switches again. The restart opens straight in the kept mode. No step leaves the
-desktop at a changed resolution after the game exits.
+returning switches again. The restart opens straight in the kept mode. Choosing LOW changes
+nothing until APPLY, which changes the shadows behind the open menu with no dialog; HIGH
+followed by BACK is forgotten and the screen shows LOW again.
+F6 opens the editor in a framed window that fits above the taskbar; Alt+Enter does nothing
+there; F6 back to the game returns to borderless, and `settings.cfg` still says
+`borderless_fullscreen`. No step leaves the desktop at a changed resolution after the game
+exits.
 
 ---
 

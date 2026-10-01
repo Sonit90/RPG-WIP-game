@@ -360,6 +360,10 @@ pub struct App {
     display_clock: Instant,
     /// The fullscreen mode Alt+Enter goes back to from a window.
     last_fullscreen: WindowMode,
+    /// The display configuration the editor replaced with a window, put back when the
+    /// editor closes. `None` when the editor is closed or found a window already.
+    #[cfg(feature = "editor")]
+    display_before_editor: Option<DisplaySettings>,
     /// How the menus are coloured and sized.
     menu_theme: MenuTheme,
     /// Scratch the menu formats its numbers into. Reused; never freed.
@@ -609,6 +613,21 @@ impl App {
         let saved_display = args
             .uses_saved_display()
             .then(|| fit_display_to_monitor(game_settings.settings().display));
+        // The editor never covers the monitor (see `enter_editor_window`). Started in it, the
+        // window opens as the window the editor would have switched to, rather than switching
+        // the monitor's mode once for the game and back again on the first frame; the saved
+        // settings wait for the way out.
+        let editor_display = if cfg!(feature = "editor") && args.editor {
+            saved_display.and_then(|display| {
+                let work = engine_platform::primary_monitor()?.work_area;
+                display.for_editor(Resolution::new(work.width, work.height))
+            })
+        } else {
+            None
+        };
+        #[cfg(feature = "editor")]
+        let display_before_editor = editor_display.and(saved_display);
+        let saved_display = editor_display.or(saved_display);
         let (create_width, create_height) = match saved_display {
             Some(display) if display.window_mode == WindowMode::Windowed => {
                 (display.resolution_width, display.resolution_height)
@@ -1197,6 +1216,8 @@ impl App {
             } else {
                 WindowMode::BorderlessFullscreen
             },
+            #[cfg(feature = "editor")]
+            display_before_editor,
             menu_theme: MenuTheme::default(),
             menu_scratch: MenuScratch::new(),
             settings: game_settings,
@@ -1749,8 +1770,7 @@ impl App {
     fn choose_shadow_quality(&mut self, quality: engine_settings::ShadowQuality) {
         let previous = self.settings.settings().graphics.shadows;
         if quality == previous {
-            // Still worth re-ticking: the click moved the checkbox the player pressed, and
-            // this is what puts it back.
+            // Still worth telling the menu: it clears the screen's pending choice.
             self.menu.set_shadow_quality(previous);
             return;
         }
@@ -2439,7 +2459,7 @@ impl App {
         let now = self.display_clock.elapsed().as_secs_f64();
         let pending = DisplayConfirmation::start(previous, applied, now);
         self.display_confirm = Some(pending);
-        let display = self.menu.display_menu_mut();
+        let display = self.menu.graphics_menu_mut();
         display.set_current(applied);
         display.begin_confirmation(pending.seconds_left(now));
         log::info!(
@@ -2476,7 +2496,7 @@ impl App {
                 );
             }
         }
-        let display = self.menu.display_menu_mut();
+        let display = self.menu.graphics_menu_mut();
         display.end_confirmation();
         display.set_current(self.display);
     }
@@ -2493,7 +2513,7 @@ impl App {
             self.finish_display_change(outcome);
         } else {
             self.menu
-                .display_menu_mut()
+                .graphics_menu_mut()
                 .set_confirmation_seconds(pending.seconds_left(now));
         }
     }
@@ -2505,6 +2525,11 @@ impl App {
     /// menu is waiting to be confirmed, which must be kept or reverted first.
     fn toggle_fullscreen(&mut self) {
         if self.display_confirm.is_some() || !self.window_shown {
+            return;
+        }
+        // The editor is always a window.
+        #[cfg(feature = "editor")]
+        if self.editor.is_active() {
             return;
         }
         let target = if self.display.window_mode.is_fullscreen() {
@@ -2525,7 +2550,7 @@ impl App {
                 self.display.window_mode.as_str()
             );
         }
-        self.menu.display_menu_mut().set_current(self.display);
+        self.menu.graphics_menu_mut().set_current(self.display);
     }
 
     /// Runs the menus for this frame and carries out what they asked for.
@@ -2543,10 +2568,10 @@ impl App {
         // cancel a placement, then stop a cast, and only then open the pause menu. Each
         // press backs out of exactly one thing, which is what makes pressing it twice from
         // the talent window land on the menu.
-        // The display screen answers escape itself — an open list closes, the confirmation
+        // The graphics screen answers escape itself — an open list closes, the confirmation
         // dialog reverts — so none of the chain below may take the press first.
         let display_screen =
-            self.menu.screen() == engine_presentation::ui::menu::MenuScreen::Display;
+            self.menu.screen() == engine_presentation::ui::menu::MenuScreen::Graphics;
         if ui_input.cancel && !display_screen {
             // Edit mode and the slot menu answer escape themselves, in the interface update
             // that runs after this one. Backing out of one of them must not also open the
@@ -2690,8 +2715,10 @@ impl App {
                 }
                 MenuAction::OpenedGraphics => {
                     self.play_ui_sound(engine_audio::SoundId::UiClick);
-                    // The screen shows what is in the settings, not what it last showed.
+                    // The screen shows what is in the settings, not what it last showed, and
+                    // what the monitor offers now, not what it offered at startup.
                     self.menu.apply_settings(self.settings.settings());
+                    self.refresh_display_options();
                 }
                 MenuAction::ClosedGraphics => {
                     self.play_ui_sound(engine_audio::SoundId::UiCancel);
@@ -2719,14 +2746,6 @@ impl App {
                             if reduced { "reduced" } else { "full" }
                         );
                     }
-                }
-                MenuAction::OpenedDisplay => {
-                    self.play_ui_sound(engine_audio::SoundId::UiClick);
-                    // What the monitor offers now, not what it offered at startup.
-                    self.refresh_display_options();
-                }
-                MenuAction::ClosedDisplay => {
-                    self.play_ui_sound(engine_audio::SoundId::UiCancel);
                 }
                 MenuAction::DisplayApplyRequested(wanted) => {
                     self.play_ui_sound(engine_audio::SoundId::UiClick);
@@ -3878,6 +3897,58 @@ impl App {
         }
     }
 
+    /// Puts the game in a window for the editor, remembering what it was.
+    ///
+    /// The editor is a tool beside other tools, so it never covers the monitor: borderless
+    /// and exclusive fullscreen become a window that fits the monitor's work area. Nothing is
+    /// saved — the player's display settings are the game's, and leaving the editor puts them
+    /// back ([`Self::leave_editor_window`]). A display change still waiting to be confirmed
+    /// is reverted first: the dialog is a menu the editor does not show.
+    #[cfg(feature = "editor")]
+    fn enter_editor_window(&mut self) {
+        if let Some(pending) = self.display_confirm.take() {
+            self.finish_display_change(pending.revert());
+        }
+        let Some(monitor) = self.window.monitor() else {
+            return;
+        };
+        let work = Resolution::new(monitor.work_area.width, monitor.work_area.height);
+        let Some(windowed) = self.display.for_editor(work) else {
+            return;
+        };
+        let before = self.display;
+        self.display = apply_display_to(&mut self.window, windowed, self.display);
+        if self.display.window_mode == WindowMode::Windowed {
+            // Kept from the first entry: a second F6 before leaving must not remember the
+            // editor's own window as the game's.
+            self.display_before_editor.get_or_insert(before);
+            log::info!(
+                "display: editor in a {}x{} window; {} comes back when it closes",
+                self.display.resolution_width,
+                self.display.resolution_height,
+                before.window_mode.as_str()
+            );
+        }
+        self.menu.graphics_menu_mut().set_current(self.display);
+    }
+
+    /// Puts back the display configuration the editor replaced with a window.
+    #[cfg(feature = "editor")]
+    fn leave_editor_window(&mut self) {
+        let Some(before) = self.display_before_editor.take() else {
+            return;
+        };
+        self.display = apply_display_to(&mut self.window, before, self.display);
+        if self.display.window_mode.is_fullscreen() {
+            self.last_fullscreen = self.display.window_mode;
+        }
+        log::info!(
+            "display: editor closed; back to {}",
+            self.display.window_mode.as_str()
+        );
+        self.menu.graphics_menu_mut().set_current(self.display);
+    }
+
     #[cfg(feature = "editor")]
     fn update_editor(&mut self, ctx: &mut EngineContext) -> Result<bool, EngineError> {
         let viewport = self.renderer.size();
@@ -3903,6 +3974,7 @@ impl App {
             self.editor.set_scale(self.game_ui.scale(), viewport);
             let editor_started = Instant::now();
             self.editor.enter(focus, &name, viewport);
+            self.enter_editor_window();
             // A cast begun in the game does not carry on into the editor, and its gathering
             // sound does not either: the editor has no simulation running to end it.
             self.silence_the_fight();
@@ -3989,6 +4061,7 @@ impl App {
                     self.silence_the_fight();
                     self.playing_from_editor = true;
                     self.menu.set_quit_to_editor(true);
+                    self.leave_editor_window();
                     log::info!("editor: back to playing; collision describes what is on screen");
                     return Ok(false);
                 }

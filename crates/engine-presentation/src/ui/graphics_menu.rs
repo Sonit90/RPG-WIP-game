@@ -1,46 +1,75 @@
-//! The DISPLAY screen: resolution and window mode, applied together and kept only when the
-//! player says so.
+//! The GRAPHICS screen: resolution, window mode and shadow quality, all applied together by
+//! APPLY.
 //!
 //! ```text
-//! ┌──────────── DISPLAY ────────────┐
+//! ┌──────────── GRAPHICS ───────────┐
 //! │ RESOLUTION                      │      ┌──────────────────────────────────┐
 //! │ [ 3840 x 2160               ▼ ] │      │  KEEP THESE DISPLAY SETTINGS?    │
 //! │ WINDOW MODE                     │      │  REVERTING IN 15 SECONDS...      │
 //! │ [ BORDERLESS FULLSCREEN     ▼ ] │      │ [ KEEP CHANGES ]  [ REVERT ]     │
 //! │ COVERS THE MONITOR AT ITS ...   │      └──────────────────────────────────┘
-//! │ NOW: 1920 x 1080, WINDOWED      │          after APPLY, over everything
-//! │ [ APPLY ]                       │
-//! │ [ BACK  ]                       │
+//! │ NOW: 1920 x 1080, WINDOWED      │          after APPLY, over everything,
+//! │ SHADOW QUALITY                  │          when the display changed
+//! │ [ HIGH                      ▼ ] │
+//! │ SHARPER SHADOWS, AND ...        │
+//! │ [ APPLY      ]  [ BACK       ]  │
 //! └─────────────────────────────────┘
 //! ```
 //!
-//! Choosing in a dropdown changes nothing but the choice: the display is only touched by
-//! APPLY, which the application carries out and then confirms through the dialog. The menu
-//! never decides what is in force — the application tells it ([`DisplayMenu::set_current`])
-//! after applying, reverting, or an Alt+Enter toggle, so the screen always shows the truth.
+//! Choosing from a dropdown changes nothing but the choice; APPLY carries out every choice at
+//! once, and BACK forgets them. A display change can turn the screen black, so it is then
+//! confirmed by the dialog; a shadow level cannot strand anybody, so it is simply applied
+//! and saved.
 //!
+//! The menu never decides what is in force — the application tells it
+//! ([`GraphicsMenu::set_current`], [`GraphicsMenu::set_shadow_quality`]) after applying,
+//! reverting, an Alt+Enter toggle or the shadow key, so the screen always shows the truth.
 //! The resolution list is the monitor's, given by the application
-//! ([`DisplayMenu::set_options`]); this module only turns it into rows and remembers which
+//! ([`GraphicsMenu::set_options`]); this module only turns it into rows and remembers which
 //! one is chosen.
 
 use engine_render_data::ui::{UiRect, UiScale};
-use engine_settings::{DisplaySettings, Resolution, WindowMode};
+use engine_settings::{DisplaySettings, Resolution, ShadowQuality, WindowMode};
 
 use super::input::UiInput;
 use super::screen::UiScreen;
 use super::widget::{Button, Dropdown, Widget, WidgetEvent};
 
-/// The DISPLAY screen's items, in layout order.
+/// The GRAPHICS screen's items, in layout order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DisplayItem {
+pub enum GraphicsItem {
     /// The resolution dropdown.
     Resolution,
     /// The window mode dropdown.
     WindowMode,
-    /// Applies the choices.
+    /// The shadow quality dropdown.
+    Shadows,
+    /// Applies every choice. At the bottom, beside BACK.
     Apply,
     /// Returns to the settings screen, dropping unapplied choices.
     Back,
+}
+
+/// The three dropdowns, in the order they are laid out.
+const DROPDOWNS: [GraphicsItem; 3] = [
+    GraphicsItem::Resolution,
+    GraphicsItem::WindowMode,
+    GraphicsItem::Shadows,
+];
+
+/// What a shadow level's row says.
+///
+/// Upper case like every other label in the menu, and the same word the file uses so a player
+/// reading `settings.cfg` sees what they chose.
+#[must_use]
+pub fn shadow_label(quality: ShadowQuality) -> &'static str {
+    match quality {
+        ShadowQuality::Off => "OFF",
+        ShadowQuality::Low => "LOW",
+        ShadowQuality::Medium => "MEDIUM",
+        ShadowQuality::High => "HIGH",
+        ShadowQuality::Ultra => "ULTRA",
+    }
 }
 
 /// The confirmation dialog's buttons.
@@ -52,11 +81,17 @@ pub enum ConfirmItem {
     Revert,
 }
 
-/// What the DISPLAY screen asks for.
+/// What the GRAPHICS screen asks for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DisplayOutcome {
-    /// Apply these settings, then confirm them.
-    Apply(DisplaySettings),
+pub enum GraphicsOutcome {
+    /// APPLY: what changed. The display, when present, is applied and then confirmed; the
+    /// shadow level, when present, is applied and saved.
+    Apply {
+        /// The display settings to try, if they differ from what is in force.
+        display: Option<DisplaySettings>,
+        /// The shadow level to use, if it differs from the one in force.
+        shadows: Option<ShadowQuality>,
+    },
     /// The player kept the settings being confirmed.
     Keep,
     /// The player wants the previous settings back.
@@ -67,7 +102,7 @@ pub enum DisplayOutcome {
 
 /// Measurements the screen is laid out with, in physical pixels: the menu's own.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct DisplayLayout {
+pub struct GraphicsLayout {
     /// The panel the screen draws in.
     pub panel: UiRect,
     /// Padding inside it.
@@ -90,10 +125,10 @@ pub struct DisplayLayout {
     pub scale: UiScale,
 }
 
-/// The DISPLAY screen and its confirmation dialog.
+/// The GRAPHICS screen and its confirmation dialog.
 #[derive(Debug, Clone)]
-pub struct DisplayMenu {
-    screen: UiScreen<DisplayItem>,
+pub struct GraphicsMenu {
+    screen: UiScreen<GraphicsItem>,
     confirm: UiScreen<ConfirmItem>,
     /// What the monitor offers, largest first.
     options: Vec<Resolution>,
@@ -109,21 +144,33 @@ pub struct DisplayMenu {
     confirming: Option<u32>,
     /// Where the dialog is.
     dialog: UiRect,
+    /// The shadow level in force.
+    shadows: ShadowQuality,
+    /// What the shadow dropdown says.
+    pending_shadows: ShadowQuality,
 }
 
-impl DisplayMenu {
-    /// The screen with `current` in force and, until the monitor is asked, only its
-    /// resolution on offer.
+impl GraphicsMenu {
+    /// The screen with `current` and `shadows` in force and, until the monitor is asked,
+    /// only the current resolution on offer.
     #[must_use]
-    pub fn new(current: DisplaySettings) -> Self {
+    pub fn new(current: DisplaySettings, shadows: ShadowQuality) -> Self {
         let mut screen = UiScreen::new();
-        screen.push(DisplayItem::Resolution, Dropdown::new("RESOLUTION", 1, 0));
+        screen.push(GraphicsItem::Resolution, Dropdown::new("RESOLUTION", 1, 0));
         screen.push(
-            DisplayItem::WindowMode,
+            GraphicsItem::WindowMode,
             Dropdown::new("WINDOW MODE", WindowMode::ALL.len(), 0),
         );
-        screen.push(DisplayItem::Apply, Button::new("APPLY"));
-        screen.push(DisplayItem::Back, Button::new("BACK"));
+        screen.push(
+            GraphicsItem::Shadows,
+            Dropdown::new(
+                "SHADOW QUALITY",
+                ShadowQuality::ALL.len(),
+                shadow_index(shadows),
+            ),
+        );
+        screen.push(GraphicsItem::Apply, Button::new("APPLY"));
+        screen.push(GraphicsItem::Back, Button::new("BACK"));
         let mut confirm = UiScreen::new();
         confirm.push(ConfirmItem::Keep, Button::new("KEEP CHANGES"));
         confirm.push(ConfirmItem::Revert, Button::new("REVERT"));
@@ -137,6 +184,8 @@ impl DisplayMenu {
             pending: current,
             confirming: None,
             dialog: UiRect::new(0.0, 0.0, 0.0, 0.0),
+            shadows,
+            pending_shadows: shadows,
         };
         menu.set_options(vec![current.resolution()], current.resolution(), current);
         menu
@@ -176,15 +225,41 @@ impl DisplayMenu {
         self.current
     }
 
-    /// What the dropdowns say.
+    /// The shadow level in force.
+    #[must_use]
+    pub fn shadow_quality(&self) -> ShadowQuality {
+        self.shadows
+    }
+
+    /// The shadow level in force now — after a choice was applied, refused, or changed by
+    /// the shadow key. The dropdown follows.
+    pub fn set_shadow_quality(&mut self, quality: ShadowQuality) {
+        self.shadows = quality;
+        self.pending_shadows = quality;
+        self.sync_widgets();
+    }
+
+    /// What the display dropdowns say.
     #[must_use]
     pub fn pending(&self) -> DisplaySettings {
         self.pending
     }
 
+    /// What the shadow dropdown says.
+    #[must_use]
+    pub fn pending_shadows(&self) -> ShadowQuality {
+        self.pending_shadows
+    }
+
     /// Whether APPLY would change anything.
     #[must_use]
     pub fn has_changes(&self) -> bool {
+        self.has_display_changes() || self.pending_shadows != self.shadows
+    }
+
+    /// Whether APPLY would change the display.
+    #[must_use]
+    pub fn has_display_changes(&self) -> bool {
         if self.pending.window_mode != self.current.window_mode {
             return true;
         }
@@ -213,7 +288,7 @@ impl DisplayMenu {
 
     /// The screen's widgets.
     #[must_use]
-    pub fn screen(&self) -> &UiScreen<DisplayItem> {
+    pub fn screen(&self) -> &UiScreen<GraphicsItem> {
         &self.screen
     }
 
@@ -258,19 +333,20 @@ impl DisplayMenu {
     /// Forgets unapplied choices and any open list: the screen is being left.
     pub fn discard_changes(&mut self) {
         self.pending = self.current;
+        self.pending_shadows = self.shadows;
         self.sync_widgets();
         self.screen.reset();
     }
 
     fn close_dropdowns(&mut self) {
-        for item in [DisplayItem::Resolution, DisplayItem::WindowMode] {
+        for item in DROPDOWNS {
             if let Some(Widget::Dropdown(dropdown)) = self.screen.widget_mut(item) {
                 dropdown.close();
             }
         }
     }
 
-    /// The dropdowns and APPLY made to show `pending`.
+    /// The dropdowns and APPLY made to show the pending choices.
     fn sync_widgets(&mut self) {
         let selected = self
             .options
@@ -286,7 +362,7 @@ impl DisplayMenu {
             self.pending.resolution_height = found.height;
         }
         let uses_resolution = self.pending.window_mode.uses_resolution();
-        if let Some(Widget::Dropdown(dropdown)) = self.screen.widget_mut(DisplayItem::Resolution) {
+        if let Some(Widget::Dropdown(dropdown)) = self.screen.widget_mut(GraphicsItem::Resolution) {
             if dropdown.len != self.options.len() || dropdown.selected != selected {
                 dropdown.set_options(self.options.len(), selected);
             }
@@ -296,21 +372,25 @@ impl DisplayMenu {
             .iter()
             .position(|mode| *mode == self.pending.window_mode)
             .unwrap_or(0);
-        if let Some(Widget::Dropdown(dropdown)) = self.screen.widget_mut(DisplayItem::WindowMode) {
+        if let Some(Widget::Dropdown(dropdown)) = self.screen.widget_mut(GraphicsItem::WindowMode) {
             dropdown.selected = mode;
         }
+        let shadows = shadow_index(self.pending_shadows);
+        if let Some(Widget::Dropdown(dropdown)) = self.screen.widget_mut(GraphicsItem::Shadows) {
+            dropdown.selected = shadows;
+        }
         let changes = self.has_changes();
-        if let Some(Widget::Button(button)) = self.screen.widget_mut(DisplayItem::Apply) {
+        if let Some(Widget::Button(button)) = self.screen.widget_mut(GraphicsItem::Apply) {
             button.state.enabled = changes;
         }
     }
 
     /// Places everything inside `layout.panel`.
-    pub fn layout(&mut self, layout: &DisplayLayout) {
+    pub fn layout(&mut self, layout: &GraphicsLayout) {
         let x = layout.panel.x + layout.padding;
         let width = layout.panel.width - layout.padding * 2.0;
         let mut y = layout.panel.y + layout.padding + layout.title_height;
-        for item in [DisplayItem::Resolution, DisplayItem::WindowMode] {
+        for item in [GraphicsItem::Resolution, GraphicsItem::WindowMode] {
             y += layout.label_height;
             self.screen
                 .set_rect(item, UiRect::new(x, y, width, layout.row_height));
@@ -318,18 +398,31 @@ impl DisplayMenu {
         }
         // The mode's description and the line saying what is in force.
         y += layout.line_height * 2.0 + layout.group_gap - layout.gap;
+        // The shadows, a group of their own: a label, the box, the level's description.
+        y += layout.label_height;
         self.screen.set_rect(
-            DisplayItem::Apply,
+            GraphicsItem::Shadows,
             UiRect::new(x, y, width, layout.row_height),
         );
-        y += layout.row_height + layout.gap;
+        y += layout.row_height + layout.line_height + layout.group_gap;
+        // APPLY and BACK side by side at the bottom: the two ways off the screen.
+        let half = (width - layout.gap) * 0.5;
         self.screen.set_rect(
-            DisplayItem::Back,
-            UiRect::new(x, y, width, layout.row_height),
+            GraphicsItem::Apply,
+            UiRect::new(x, y, half, layout.row_height),
+        );
+        self.screen.set_rect(
+            GraphicsItem::Back,
+            UiRect::new(
+                x + half + layout.gap,
+                y,
+                width - half - layout.gap,
+                layout.row_height,
+            ),
         );
         let screen_height = layout.viewport.1 as f32;
         let margin = layout.scale.px(8.0);
-        for item in [DisplayItem::Resolution, DisplayItem::WindowMode] {
+        for item in DROPDOWNS {
             if let Some(Widget::Dropdown(dropdown)) = self.screen.widget_mut(item) {
                 dropdown.fit_list(screen_height, margin);
             }
@@ -385,12 +478,18 @@ impl DisplayMenu {
     ) -> f32 {
         padding * 2.0
             + title_height
+            // RESOLUTION and WINDOW MODE, then the two lines under them.
             + (label_height + row_height + gap) * 2.0
             + line_height * 2.0
             + group_gap
             - gap
-            + row_height * 2.0
-            + gap
+            // SHADOW QUALITY and its line.
+            + label_height
+            + row_height
+            + line_height
+            + group_gap
+            // APPLY and BACK.
+            + row_height
     }
 
     /// Whether a dropdown's list is showing.
@@ -406,29 +505,29 @@ impl DisplayMenu {
     /// While the dialog is up only its buttons answer, and escape means REVERT. While a list
     /// is open only that dropdown answers, so a click on its rows never also lands on what
     /// is under them. Otherwise escape means BACK.
-    pub fn update(&mut self, input: &UiInput) -> Option<DisplayOutcome> {
+    pub fn update(&mut self, input: &UiInput) -> Option<GraphicsOutcome> {
         if self.confirming.is_some() {
             if input.cancel {
-                return Some(DisplayOutcome::Revert);
+                return Some(GraphicsOutcome::Revert);
             }
             let mut outcome = None;
             for (item, event) in self.confirm.update(input) {
                 if *event == WidgetEvent::Activated {
                     outcome = Some(match item {
-                        ConfirmItem::Keep => DisplayOutcome::Keep,
-                        ConfirmItem::Revert => DisplayOutcome::Revert,
+                        ConfirmItem::Keep => GraphicsOutcome::Keep,
+                        ConfirmItem::Revert => GraphicsOutcome::Revert,
                     });
                 }
             }
             return outcome;
         }
 
-        let open = [DisplayItem::Resolution, DisplayItem::WindowMode]
+        let open = DROPDOWNS
             .into_iter()
             .find(|item| {
                 matches!(self.screen.widget(*item), Some(Widget::Dropdown(dropdown)) if dropdown.is_open())
             });
-        let mut chosen: Option<(DisplayItem, usize)> = None;
+        let mut chosen: Option<(GraphicsItem, usize)> = None;
         if let Some(item) = open {
             if let Some(Widget::Dropdown(dropdown)) = self.screen.widget_mut(item)
                 && let Some(WidgetEvent::Chosen(index)) = dropdown.update(input)
@@ -437,44 +536,60 @@ impl DisplayMenu {
             }
         } else {
             if input.cancel {
-                return Some(DisplayOutcome::Back);
+                return Some(GraphicsOutcome::Back);
             }
             let mut apply = false;
             let mut back = false;
             for (item, event) in self.screen.update(input) {
                 match (item, event) {
-                    (DisplayItem::Apply, WidgetEvent::Activated) => apply = true,
-                    (DisplayItem::Back, WidgetEvent::Activated) => back = true,
+                    (GraphicsItem::Apply, WidgetEvent::Activated) => apply = true,
+                    (GraphicsItem::Back, WidgetEvent::Activated) => back = true,
                     (item, WidgetEvent::Chosen(index)) => chosen = Some((*item, *index)),
                     _ => {}
                 }
             }
             if back {
-                return Some(DisplayOutcome::Back);
+                return Some(GraphicsOutcome::Back);
             }
             if apply && self.has_changes() {
-                return Some(DisplayOutcome::Apply(self.pending));
+                return Some(GraphicsOutcome::Apply {
+                    display: self.has_display_changes().then_some(self.pending),
+                    shadows: (self.pending_shadows != self.shadows).then_some(self.pending_shadows),
+                });
             }
         }
         if let Some((item, index)) = chosen {
             match item {
-                DisplayItem::Resolution => {
+                GraphicsItem::Resolution => {
                     if let Some(resolution) = self.options.get(index) {
                         self.pending.resolution_width = resolution.width;
                         self.pending.resolution_height = resolution.height;
                     }
                 }
-                DisplayItem::WindowMode => {
+                GraphicsItem::Shadows => {
+                    if let Some(quality) = ShadowQuality::ALL.get(index) {
+                        self.pending_shadows = *quality;
+                    }
+                }
+                GraphicsItem::WindowMode => {
                     if let Some(mode) = WindowMode::ALL.get(index) {
                         self.pending.window_mode = *mode;
                     }
                 }
-                DisplayItem::Apply | DisplayItem::Back => {}
+                GraphicsItem::Apply | GraphicsItem::Back => {}
             }
             self.sync_widgets();
         }
         None
     }
+}
+
+/// Where `quality` is in [`ShadowQuality::ALL`]: its row in the dropdown.
+fn shadow_index(quality: ShadowQuality) -> usize {
+    ShadowQuality::ALL
+        .iter()
+        .position(|candidate| *candidate == quality)
+        .unwrap_or(0)
 }
 
 #[cfg(test)]
@@ -487,9 +602,9 @@ mod tests {
 
     const VIEWPORT: (u32, u32) = (1920, 1080);
 
-    fn layout() -> DisplayLayout {
+    fn layout() -> GraphicsLayout {
         let scale = UiScale::default();
-        DisplayLayout {
+        GraphicsLayout {
             panel: UiRect::new(750.0, 200.0, 420.0, 520.0),
             padding: 28.0,
             title_height: 56.0,
@@ -503,8 +618,8 @@ mod tests {
         }
     }
 
-    fn menu() -> DisplayMenu {
-        let mut menu = DisplayMenu::new(DisplaySettings::default());
+    fn menu() -> GraphicsMenu {
+        let mut menu = GraphicsMenu::new(DisplaySettings::default(), ShadowQuality::High);
         menu.set_options(
             vec![
                 Resolution::new(3840, 2160),
@@ -528,7 +643,7 @@ mod tests {
         }
     }
 
-    fn click(menu: &mut DisplayMenu, rect: UiRect) -> Option<DisplayOutcome> {
+    fn click(menu: &mut GraphicsMenu, rect: UiRect) -> Option<GraphicsOutcome> {
         let first = menu.update(&press_at(rect));
         let mut release = press_at(rect);
         release.pointer_pressed = false;
@@ -537,14 +652,14 @@ mod tests {
         first.or(menu.update(&release))
     }
 
-    fn dropdown(menu: &DisplayMenu, item: DisplayItem) -> Dropdown {
+    fn dropdown(menu: &GraphicsMenu, item: GraphicsItem) -> Dropdown {
         match menu.screen().widget(item) {
             Some(Widget::Dropdown(dropdown)) => *dropdown,
             _ => panic!("{item:?} is a dropdown"),
         }
     }
 
-    fn choose(menu: &mut DisplayMenu, item: DisplayItem, index: usize) {
+    fn choose(menu: &mut GraphicsMenu, item: GraphicsItem, index: usize) {
         let closed = dropdown(menu, item);
         menu.update(&press_at(closed.rect));
         let open = dropdown(menu, item);
@@ -555,19 +670,19 @@ mod tests {
     #[test]
     fn the_screen_opens_on_what_is_in_force_with_nothing_to_apply() {
         let menu = menu();
-        assert_eq!(dropdown(&menu, DisplayItem::Resolution).selected, 2);
-        assert_eq!(dropdown(&menu, DisplayItem::WindowMode).selected, 0);
+        assert_eq!(dropdown(&menu, GraphicsItem::Resolution).selected, 2);
+        assert_eq!(dropdown(&menu, GraphicsItem::WindowMode).selected, 0);
         assert!(!menu.has_changes());
         assert_eq!(menu.resolution_labels()[0], "3840 x 2160");
-        let apply = menu.screen().widget(DisplayItem::Apply).expect("apply");
+        let apply = menu.screen().widget(GraphicsItem::Apply).expect("apply");
         assert!(!apply.is_enabled());
     }
 
     #[test]
     fn choosing_marks_pending_and_apply_asks_for_exactly_that() {
         let mut menu = menu();
-        choose(&mut menu, DisplayItem::Resolution, 1);
-        choose(&mut menu, DisplayItem::WindowMode, 2);
+        choose(&mut menu, GraphicsItem::Resolution, 1);
+        choose(&mut menu, GraphicsItem::WindowMode, 2);
         let wanted = DisplaySettings::new(Resolution::new(2560, 1440), WindowMode::Fullscreen);
         assert_eq!(menu.pending(), wanted);
         assert_eq!(
@@ -578,18 +693,86 @@ mod tests {
         assert!(menu.has_changes());
         let apply = menu
             .screen()
-            .widget(DisplayItem::Apply)
+            .widget(GraphicsItem::Apply)
             .expect("apply")
             .rect();
-        assert_eq!(click(&mut menu, apply), Some(DisplayOutcome::Apply(wanted)));
+        assert_eq!(
+            click(&mut menu, apply),
+            Some(GraphicsOutcome::Apply {
+                display: Some(wanted),
+                shadows: None,
+            })
+        );
+    }
+
+    #[test]
+    fn a_shadow_level_waits_for_apply_like_the_display() {
+        let mut menu = menu();
+        let apply = menu
+            .screen()
+            .widget(GraphicsItem::Apply)
+            .expect("apply")
+            .rect();
+        assert!(!menu.has_changes());
+        // Low is the second level.
+        choose(&mut menu, GraphicsItem::Shadows, 1);
+        assert_eq!(menu.pending_shadows(), ShadowQuality::Low);
+        assert_eq!(
+            menu.shadow_quality(),
+            ShadowQuality::High,
+            "chosen is not applied"
+        );
+        assert!(menu.has_changes());
+        assert!(!menu.has_display_changes());
+        assert_eq!(
+            click(&mut menu, apply),
+            Some(GraphicsOutcome::Apply {
+                display: None,
+                shadows: Some(ShadowQuality::Low),
+            })
+        );
+        // Once applied, nothing is left to apply.
+        menu.set_shadow_quality(ShadowQuality::Low);
+        assert!(!menu.has_changes());
+        // Both at once: one APPLY carries both.
+        choose(&mut menu, GraphicsItem::Shadows, 4);
+        choose(&mut menu, GraphicsItem::WindowMode, 2);
+        let Some(GraphicsOutcome::Apply { display, shadows }) = click(&mut menu, apply) else {
+            panic!("APPLY asks for both");
+        };
+        assert_eq!(shadows, Some(ShadowQuality::Ultra));
+        assert_eq!(display.map(|d| d.window_mode), Some(WindowMode::Fullscreen));
+        // BACK forgets an unapplied level.
+        menu.discard_changes();
+        assert_eq!(menu.pending_shadows(), ShadowQuality::Low);
+        assert_eq!(dropdown(&menu, GraphicsItem::Shadows).selected, 1);
+    }
+
+    #[test]
+    fn apply_and_back_share_the_bottom_row() {
+        let menu = menu();
+        let rect = |item| menu.screen().widget(item).expect("item").rect();
+        let (apply, back) = (rect(GraphicsItem::Apply), rect(GraphicsItem::Back));
+        assert_eq!(apply.y, back.y);
+        assert!(apply.right() < back.x, "APPLY is left of BACK");
+        for item in [
+            GraphicsItem::Resolution,
+            GraphicsItem::WindowMode,
+            GraphicsItem::Shadows,
+        ] {
+            assert!(
+                rect(item).bottom() < apply.y,
+                "{item:?} is below the buttons"
+            );
+        }
     }
 
     #[test]
     fn borderless_ignores_the_resolution_and_disables_its_list() {
         let mut menu = menu();
-        choose(&mut menu, DisplayItem::WindowMode, 1);
+        choose(&mut menu, GraphicsItem::WindowMode, 1);
         assert_eq!(menu.pending().window_mode, WindowMode::BorderlessFullscreen);
-        assert!(!dropdown(&menu, DisplayItem::Resolution).state.enabled);
+        assert!(!dropdown(&menu, GraphicsItem::Resolution).state.enabled);
         assert!(menu.has_changes());
         // In force already as borderless at another resolution: nothing to apply.
         let mut menu = menu_with(DisplaySettings::new(
@@ -600,7 +783,7 @@ mod tests {
         assert!(!menu.has_changes());
     }
 
-    fn menu_with(current: DisplaySettings) -> DisplayMenu {
+    fn menu_with(current: DisplaySettings) -> GraphicsMenu {
         let mut menu = menu();
         menu.set_current(current);
         menu
@@ -609,13 +792,13 @@ mod tests {
     #[test]
     fn an_open_list_takes_the_click_from_what_is_under_it() {
         let mut menu = menu();
-        let resolution = dropdown(&menu, DisplayItem::Resolution);
+        let resolution = dropdown(&menu, GraphicsItem::Resolution);
         menu.update(&press_at(resolution.rect));
         assert!(menu.has_open_list());
         // The window-mode box sits under the open resolution list.
-        let mode_box = dropdown(&menu, DisplayItem::WindowMode).rect;
+        let mode_box = dropdown(&menu, GraphicsItem::WindowMode).rect;
         menu.update(&press_at(mode_box));
-        assert!(!dropdown(&menu, DisplayItem::WindowMode).is_open());
+        assert!(!dropdown(&menu, GraphicsItem::WindowMode).is_open());
     }
 
     #[test]
@@ -630,34 +813,34 @@ mod tests {
             .widget(ConfirmItem::Keep)
             .expect("keep")
             .rect();
-        assert_eq!(click(&mut menu, keep), Some(DisplayOutcome::Keep));
+        assert_eq!(click(&mut menu, keep), Some(GraphicsOutcome::Keep));
         let revert = menu
             .confirm_screen()
             .widget(ConfirmItem::Revert)
             .expect("revert")
             .rect();
-        assert_eq!(click(&mut menu, revert), Some(DisplayOutcome::Revert));
+        assert_eq!(click(&mut menu, revert), Some(GraphicsOutcome::Revert));
         let escape = UiInput {
             cancel: true,
             ..UiInput::default()
         };
-        assert_eq!(menu.update(&escape), Some(DisplayOutcome::Revert));
+        assert_eq!(menu.update(&escape), Some(GraphicsOutcome::Revert));
         // While it is up, the screen under it does not answer.
         let back = menu
             .screen()
-            .widget(DisplayItem::Back)
+            .widget(GraphicsItem::Back)
             .expect("back")
             .rect();
         assert_eq!(click(&mut menu, back), None);
         menu.end_confirmation();
         assert_eq!(menu.confirming(), None);
-        assert_eq!(click(&mut menu, back), Some(DisplayOutcome::Back));
+        assert_eq!(click(&mut menu, back), Some(GraphicsOutcome::Back));
     }
 
     #[test]
     fn leaving_drops_unapplied_choices_and_the_truth_wins() {
         let mut menu = menu();
-        choose(&mut menu, DisplayItem::Resolution, 0);
+        choose(&mut menu, GraphicsItem::Resolution, 0);
         assert!(menu.has_changes());
         menu.discard_changes();
         assert!(!menu.has_changes());
@@ -668,13 +851,13 @@ mod tests {
             WindowMode::BorderlessFullscreen,
         );
         menu.set_current(toggled);
-        assert_eq!(dropdown(&menu, DisplayItem::WindowMode).selected, 1);
+        assert_eq!(dropdown(&menu, GraphicsItem::WindowMode).selected, 1);
         assert_eq!(menu.pending(), toggled);
     }
 
     #[test]
     fn a_saved_size_the_monitor_lacks_shows_as_the_closest_it_has() {
-        let mut menu = DisplayMenu::new(DisplaySettings::default());
+        let mut menu = GraphicsMenu::new(DisplaySettings::default(), ShadowQuality::High);
         menu.set_options(
             vec![Resolution::new(2560, 1440), Resolution::new(1600, 900)],
             Resolution::new(2560, 1440),

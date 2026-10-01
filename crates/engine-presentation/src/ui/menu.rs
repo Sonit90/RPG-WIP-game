@@ -31,7 +31,7 @@ use engine_settings::{
 
 use engine_game::hero::Hero;
 
-use super::display_menu::{DisplayLayout, DisplayMenu, DisplayOutcome};
+use super::graphics_menu::{GraphicsLayout, GraphicsMenu, GraphicsOutcome};
 use super::input::UiInput;
 use super::screen::UiScreen;
 use super::widget::{Button, Checkbox, Slider, Widget, WidgetEvent};
@@ -59,20 +59,17 @@ pub enum MenuScreen {
     /// column is taller than a 720p window, and the reference layout gives nameplates a page
     /// of their own for the same reason.
     Nameplates,
-    /// The graphics section of the settings: shadow quality, so far.
+    /// The graphics section of the settings: resolution, window mode and shadow quality.
     ///
-    /// Its own screen for the reason the nameplates have one, and for a second: choosing one
-    /// of five levels wants a row per level with a line saying what it buys, which is the
-    /// hero roster's shape and not a row on a list of sliders.
+    /// Its own screen for the reason the nameplates have one: three dropdowns, APPLY and the
+    /// lines saying what each choice does are taller than a row on a list of sliders.
     Graphics,
     /// The map section of the settings: how the minimap turns, and the key that opens the
     /// dungeon map.
     ///
-    /// The graphics screen's shape — one tick per mode with a line saying what it does —
+    /// The hero roster's shape — one tick per mode with a line saying what it does —
     /// because it is the same question: pick exactly one of a short list.
     Map,
-    /// The display section: resolution and window mode, applied and then confirmed.
-    Display,
 }
 
 impl MenuScreen {
@@ -118,28 +115,13 @@ pub enum SettingsItem {
     AmbientVolume,
     /// Whether each character remembers its own bars.
     BindingScope,
-    /// Opens the graphics section.
+    /// Opens the graphics section: resolution, window mode and shadows.
     Graphics,
-    /// Opens the display section: resolution and window mode.
-    Display,
     /// Opens the map section.
     Map,
     /// Opens the nameplate section.
     Nameplates,
     /// Returns to the pause menu.
-    Back,
-}
-
-/// The graphics screen's items, in layout order.
-///
-/// One row per shadow level plus a way back — the hero roster's shape, because it is the
-/// same question: pick exactly one of a short list. A checkbox per level rather than a
-/// dropdown, because a dropdown is a widget this framework does not have and five rows fit.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum GraphicsItem {
-    /// One of the five shadow levels. Ticked when it is the one in force.
-    Shadows(ShadowQuality),
-    /// Returns to the settings screen.
     Back,
 }
 
@@ -270,19 +252,15 @@ pub enum MenuAction {
     /// The player turned the buff and debuff icons under nameplates on or off. Apply it and
     /// persist it; a tick has no drag to settle.
     NameplateAurasCommitted(bool),
-    /// The graphics screen opened.
+    /// The graphics screen opened. The application refreshes what the monitor offers.
     OpenedGraphics,
     /// The graphics screen closed back to the settings screen.
     ClosedGraphics,
-    /// The player chose a shadow quality. Apply it and persist it.
+    /// The player applied a shadow quality. Apply it and persist it.
     ///
-    /// Committed immediately — a row of ticks has no drag to settle — so there is one action
-    /// rather than the changed/committed pair the sliders need. Emitted even for the level
-    /// already in force: the menu reports what was pressed and the application decides that
-    /// nothing changed, which is the rule every other action here follows.
-    ///
-    /// Applying it is not free — the shadow atlas is recreated and the GPU is waited on —
-    /// which is exactly why it is a click and not a slider.
+    /// Emitted by APPLY on the graphics screen, only when the chosen level differs from the
+    /// one in force — choosing from the dropdown alone changes nothing. Applying it is not
+    /// free: the shadow atlas is recreated and the GPU is waited on.
     ShadowQualityCommitted(ShadowQuality),
     /// The map screen opened.
     OpenedMap,
@@ -295,10 +273,6 @@ pub enum MenuAction {
     MinimapOrientationCommitted(MinimapOrientation),
     /// The player turned the map's reduced motion on or off. Apply it and persist it.
     ReducedMotionCommitted(bool),
-    /// The display screen opened. The application refreshes what the monitor offers.
-    OpenedDisplay,
-    /// The display screen closed back to the settings screen.
-    ClosedDisplay,
     /// The player pressed APPLY. Apply these, then start the confirmation.
     ///
     /// Not saved: settings that turned the screen black must not be what the next launch
@@ -308,21 +282,6 @@ pub enum MenuAction {
     DisplayKeepRequested,
     /// The player wants the previous display settings back — by REVERT or by escape.
     DisplayRevertRequested,
-}
-
-/// What a shadow level's row is called.
-///
-/// Upper case like every other label in the menu, and the same word the file uses so a player
-/// reading `settings.cfg` sees what they clicked.
-#[must_use]
-fn shadow_label(quality: ShadowQuality) -> &'static str {
-    match quality {
-        ShadowQuality::Off => "SHADOWS: OFF",
-        ShadowQuality::Low => "SHADOWS: LOW",
-        ShadowQuality::Medium => "SHADOWS: MEDIUM",
-        ShadowQuality::High => "SHADOWS: HIGH",
-        ShadowQuality::Ultra => "SHADOWS: ULTRA",
-    }
 }
 
 /// The value one volume channel currently has.
@@ -467,18 +426,15 @@ pub struct MenuSystem {
     title: &'static str,
     pause: UiScreen<PauseItem>,
     settings: UiScreen<SettingsItem>,
-    graphics: UiScreen<GraphicsItem>,
     map: UiScreen<MapItem>,
-    /// The minimap mode the map screen's ticks describe. Held for the reason `shadows` is.
-    orientation: MinimapOrientation,
-    /// The key that opens the dungeon map, for the map screen to print.
-    map_key: KeyName,
-    /// The shadow level the ticks describe.
+    /// The minimap mode the map screen's ticks describe.
     ///
     /// Held for the reason [`MenuSystem::hero`] is: a row of checkboxes is one choice, and
     /// the widget that was clicked is not the authority on what the choice now is — the
-    /// application is, because applying a level can fail and leave the old one running.
-    shadows: ShadowQuality,
+    /// application is.
+    orientation: MinimapOrientation,
+    /// The key that opens the dungeon map, for the map screen to print.
+    map_key: KeyName,
     heroes: UiScreen<HeroItem>,
     nameplates: UiScreen<NameplateItem>,
     /// Which hero the roster shows a tick beside.
@@ -493,8 +449,8 @@ pub struct MenuSystem {
     viewport: (u32, u32),
     /// Every measurement, already converted to physical pixels for the current UI scale.
     metrics: MenuMetrics,
-    /// The display section and its confirmation dialog.
-    display: DisplayMenu,
+    /// The graphics section and its confirmation dialog.
+    graphics: GraphicsMenu,
 }
 
 impl MenuSystem {
@@ -551,21 +507,9 @@ impl MenuSystem {
                 .checked(settings.binding_scope.is_per_character()),
         );
         settings_screen.push(SettingsItem::Graphics, Button::new("GRAPHICS"));
-        settings_screen.push(SettingsItem::Display, Button::new("DISPLAY"));
         settings_screen.push(SettingsItem::Map, Button::new("MAP"));
         settings_screen.push(SettingsItem::Nameplates, Button::new("NAMEPLATES"));
         settings_screen.push(SettingsItem::Back, Button::new("BACK"));
-
-        // The graphics section. One row per shadow level, built from `ShadowQuality::ALL`,
-        // so a sixth level is an entry in that array and nothing here.
-        let mut graphics_screen = UiScreen::new();
-        for quality in ShadowQuality::ALL {
-            graphics_screen.push(
-                GraphicsItem::Shadows(quality),
-                Checkbox::new(shadow_label(quality)).checked(quality == settings.graphics.shadows),
-            );
-        }
-        graphics_screen.push(GraphicsItem::Back, Button::new("BACK"));
 
         // The map section: one tick per minimap mode, built from `MinimapOrientation::ALL`.
         let mut map_screen = UiScreen::new();
@@ -622,16 +566,14 @@ impl MenuSystem {
             settings: settings_screen,
             heroes: hero_screen,
             nameplates: nameplate_screen,
-            graphics: graphics_screen,
             map: map_screen,
             orientation: settings.map.minimap_orientation,
             map_key: settings.map.toggle_key,
-            shadows: settings.graphics.shadows,
             hero: Hero::default(),
             actions: Vec::with_capacity(4),
             viewport: (0, 0),
             metrics: MenuMetrics::new(UiScale::new(settings.ui_scale)),
-            display: DisplayMenu::new(settings.display),
+            graphics: GraphicsMenu::new(settings.display, settings.graphics.shadows),
         };
         system.layout((1920, 1080));
         system
@@ -713,19 +655,19 @@ impl MenuSystem {
         }
     }
 
-    /// The display section: its widgets, its choices and its dialog, for drawing.
+    /// The graphics section: its widgets, its choices and its dialog, for drawing.
     #[must_use]
-    pub fn display_menu(&self) -> &DisplayMenu {
-        &self.display
+    pub fn graphics_menu(&self) -> &GraphicsMenu {
+        &self.graphics
     }
 
-    /// The display section, to tell it what is in force, what the monitor offers, and how
+    /// The graphics section, to tell it what is in force, what the monitor offers, and how
     /// long the confirmation has left.
-    pub fn display_menu_mut(&mut self) -> &mut DisplayMenu {
-        &mut self.display
+    pub fn graphics_menu_mut(&mut self) -> &mut GraphicsMenu {
+        &mut self.graphics
     }
 
-    /// Tells the display section what the monitor offers and what is in force, and lays it
+    /// Tells the graphics section what the monitor offers and what is in force, and lays it
     /// out again for the new number of rows.
     pub fn set_display_options(
         &mut self,
@@ -733,36 +675,23 @@ impl MenuSystem {
         desktop: Resolution,
         current: DisplaySettings,
     ) {
-        self.display.set_options(options, desktop, current);
-        self.layout_display(self.viewport);
-    }
-
-    /// The graphics screen's widgets, for drawing.
-    #[must_use]
-    pub fn graphics_screen(&self) -> &UiScreen<GraphicsItem> {
-        &self.graphics
+        self.graphics.set_options(options, desktop, current);
+        self.layout_graphics(self.viewport);
     }
 
     /// The shadow level the graphics screen is showing as chosen.
     #[must_use]
     pub fn shadow_quality(&self) -> ShadowQuality {
-        self.shadows
+        self.graphics.shadow_quality()
     }
 
-    /// Moves the tick to `quality` without emitting anything.
+    /// Shows `quality` as the level in force without emitting anything.
     ///
     /// What the application calls once it has actually applied a level. The menu never moves
-    /// its own tick on a click: applying a shadow level recreates the atlas and can fail, and
-    /// a screen that had already ticked the new row would be lying about what is running.
+    /// its own choice on a click: applying a shadow level recreates the atlas and can fail,
+    /// and a screen that already showed the new level would be lying about what is running.
     pub fn set_shadow_quality(&mut self, quality: ShadowQuality) {
-        self.shadows = quality;
-        for candidate in ShadowQuality::ALL {
-            if let Some(Widget::Checkbox(tick)) =
-                self.graphics.widget_mut(GraphicsItem::Shadows(candidate))
-            {
-                tick.set_checked(candidate == quality);
-            }
-        }
+        self.graphics.set_shadow_quality(quality);
     }
 
     /// The map screen's widgets, for drawing.
@@ -925,16 +854,15 @@ impl MenuSystem {
         self.layout_settings(viewport);
         self.layout_heroes(viewport);
         self.layout_nameplates(viewport);
-        self.layout_graphics(viewport);
         self.layout_map(viewport);
-        self.layout_display(viewport);
+        self.layout_graphics(viewport);
     }
 
-    /// The panel the display screen draws in.
+    /// The panel the graphics screen draws in.
     #[must_use]
-    pub fn display_panel(&self) -> UiRect {
+    pub fn graphics_panel(&self) -> UiRect {
         let m = &self.metrics;
-        let height = DisplayMenu::content_height(
+        let height = GraphicsMenu::content_height(
             m.padding,
             m.title_height,
             m.slider_label_height,
@@ -946,10 +874,10 @@ impl MenuSystem {
         self.centred_panel(self.viewport, height)
     }
 
-    fn layout_display(&mut self, viewport: (u32, u32)) {
-        let panel = self.display_panel();
+    fn layout_graphics(&mut self, viewport: (u32, u32)) {
+        let panel = self.graphics_panel();
         let m = self.metrics;
-        self.display.layout(&DisplayLayout {
+        self.graphics.layout(&GraphicsLayout {
             panel,
             padding: m.padding,
             title_height: m.title_height,
@@ -1018,22 +946,6 @@ impl MenuSystem {
             + self.metrics.hero_description_height * 2.0
             + self.metrics.button_height
             + self.metrics.button_gap
-            + self.metrics.group_gap
-            + self.metrics.button_height;
-        self.centred_panel(self.viewport, content + self.metrics.padding * 2.0)
-    }
-
-    /// The panel the graphics screen draws in.
-    ///
-    /// One row per shadow level with a line of description under each, then a separated
-    /// BACK — the hero roster's shape, because it answers the same kind of question.
-    #[must_use]
-    pub fn graphics_panel(&self) -> UiRect {
-        let row = self.metrics.button_height
-            + self.metrics.hero_description_height
-            + self.metrics.button_gap;
-        let content = self.metrics.title_height
-            + row * ShadowQuality::ALL.len() as f32
             + self.metrics.group_gap
             + self.metrics.button_height;
         self.centred_panel(self.viewport, content + self.metrics.padding * 2.0)
@@ -1132,21 +1044,9 @@ impl MenuSystem {
             UiRect::new(x, y, width, self.metrics.button_height),
         );
         y += self.metrics.button_height + self.metrics.button_gap;
-        // GRAPHICS and DISPLAY share a row: the panel is already as tall as a 1080p screen
-        // allows, and the two are the same kind of thing.
-        let half = (width - self.metrics.button_gap) * 0.5;
         self.settings.set_rect(
             SettingsItem::Graphics,
-            UiRect::new(x, y, half, self.metrics.button_height),
-        );
-        self.settings.set_rect(
-            SettingsItem::Display,
-            UiRect::new(
-                x + half + self.metrics.button_gap,
-                y,
-                width - half - self.metrics.button_gap,
-                self.metrics.button_height,
-            ),
+            UiRect::new(x, y, width, self.metrics.button_height),
         );
         y += self.metrics.button_height + self.metrics.button_gap;
         self.settings.set_rect(
@@ -1187,36 +1087,6 @@ impl MenuSystem {
 
         self.heroes.set_rect(
             HeroItem::Back,
-            UiRect::new(
-                x,
-                y - self.metrics.button_gap + self.metrics.group_gap,
-                width,
-                self.metrics.button_height,
-            ),
-        );
-    }
-
-    fn layout_graphics(&mut self, viewport: (u32, u32)) {
-        self.viewport = viewport;
-        let panel = self.graphics_panel();
-        let x = panel.x + self.metrics.padding;
-        let width = panel.width - self.metrics.padding * 2.0;
-        let mut y = panel.y + self.metrics.padding + self.metrics.title_height;
-
-        for quality in ShadowQuality::ALL {
-            self.graphics.set_rect(
-                GraphicsItem::Shadows(quality),
-                UiRect::new(x, y, width, self.metrics.button_height),
-            );
-            // The description's line is reserved by the layout rather than borrowed from the
-            // next row by the painter, exactly as the hero roster does it.
-            y += self.metrics.button_height
-                + self.metrics.hero_description_height
-                + self.metrics.button_gap;
-        }
-
-        self.graphics.set_rect(
-            GraphicsItem::Back,
             UiRect::new(
                 x,
                 y - self.metrics.button_gap + self.metrics.group_gap,
@@ -1313,7 +1183,6 @@ impl MenuSystem {
             MenuScreen::Nameplates => self.update_nameplates(input),
             MenuScreen::Graphics => self.update_graphics(input),
             MenuScreen::Map => self.update_map(input),
-            MenuScreen::Display => self.update_display(input),
         }
         &self.actions
     }
@@ -1413,7 +1282,6 @@ impl MenuSystem {
         let mut back = false;
         let mut open_nameplates = false;
         let mut open_graphics = false;
-        let mut open_display = false;
         let mut open_map = false;
         let mut binding_scope = None;
         // Collected first: the borrow of the screen's event buffer ends here, and the
@@ -1426,7 +1294,6 @@ impl MenuSystem {
                 (SettingsItem::Back, WidgetEvent::Activated) => back = true,
                 (SettingsItem::Nameplates, WidgetEvent::Activated) => open_nameplates = true,
                 (SettingsItem::Graphics, WidgetEvent::Activated) => open_graphics = true,
-                (SettingsItem::Display, WidgetEvent::Activated) => open_display = true,
                 (SettingsItem::Map, WidgetEvent::Activated) => open_map = true,
                 (SettingsItem::BindingScope, WidgetEvent::Toggled(checked)) => {
                     binding_scope = Some(BindingScope::from_per_character(*checked));
@@ -1493,17 +1360,10 @@ impl MenuSystem {
             self.actions.push(MenuAction::OpenedMap);
             return;
         }
-        if open_display {
-            self.screen = MenuScreen::Display;
-            self.settings.reset();
-            self.display.discard_changes();
-            self.actions.push(MenuAction::OpenedDisplay);
-            return;
-        }
         if open_graphics {
             self.screen = MenuScreen::Graphics;
             self.settings.reset();
-            self.graphics.reset();
+            self.graphics.discard_changes();
             self.actions.push(MenuAction::OpenedGraphics);
             return;
         }
@@ -1569,45 +1429,8 @@ impl MenuSystem {
         }
     }
 
-    /// The graphics section: one tick per shadow level, and a way back.
-    ///
-    /// The tick the click moved is put straight back where the application says it belongs,
-    /// exactly as the hero roster does: the screen reports what was pressed, and what is
-    /// actually running is not its to decide. Choosing a level does **not** close the menu —
-    /// unlike choosing a hero — because the whole point of the screen is to look at the
-    /// result and try the next one down if it is not fast enough.
-    fn update_graphics(&mut self, input: &UiInput) {
-        if input.cancel {
-            self.back_to_settings_from_graphics();
-            return;
-        }
-        let mut back = false;
-        let mut chosen = None;
-        for (item, event) in self.graphics.update(input) {
-            match (item, event) {
-                (GraphicsItem::Back, WidgetEvent::Activated) => back = true,
-                (
-                    GraphicsItem::Shadows(quality),
-                    WidgetEvent::Toggled(_) | WidgetEvent::Activated,
-                ) => {
-                    chosen = Some(*quality);
-                }
-                _ => {}
-            }
-        }
-        let current = self.shadows;
-        self.set_shadow_quality(current);
-        if let Some(quality) = chosen {
-            self.actions
-                .push(MenuAction::ShadowQualityCommitted(quality));
-        }
-        if back {
-            self.back_to_settings_from_graphics();
-        }
-    }
-
-    /// The map section: one tick per minimap mode, and a way back. The graphics screen's
-    /// rules: the tick goes back to what the application says until it says otherwise.
+    /// The map section: one tick per minimap mode, and a way back. The tick goes back to
+    /// what the application says until it says otherwise.
     fn update_map(&mut self, input: &UiInput) {
         if input.cancel {
             self.back_to_settings_from_map();
@@ -1649,33 +1472,36 @@ impl MenuSystem {
         self.actions.push(MenuAction::ClosedMap);
     }
 
-    /// Escape and BACK from the graphics section return to the settings screen, not to the
-    /// game — the rule every section of the settings follows.
-    /// The display section: two dropdowns, APPLY and BACK, and the dialog that follows
+    /// The graphics section: three dropdowns, APPLY and BACK, and the dialog that follows
     /// APPLY. Everything it decides leaves as an action.
-    fn update_display(&mut self, input: &UiInput) {
-        match self.display.update(input) {
-            Some(DisplayOutcome::Apply(settings)) => {
-                self.actions
-                    .push(MenuAction::DisplayApplyRequested(settings));
+    ///
+    /// APPLY does **not** close the menu — the point is to look at the result and try
+    /// something else if it is not right. Escape and BACK return to the settings screen, not
+    /// to the game — the rule every section of the settings follows.
+    fn update_graphics(&mut self, input: &UiInput) {
+        match self.graphics.update(input) {
+            Some(GraphicsOutcome::Apply { display, shadows }) => {
+                // The shadows first: the display change starts a confirmation, and a level
+                // applied after it would land in the middle of the dialog.
+                if let Some(quality) = shadows {
+                    self.actions
+                        .push(MenuAction::ShadowQualityCommitted(quality));
+                }
+                if let Some(settings) = display {
+                    self.actions
+                        .push(MenuAction::DisplayApplyRequested(settings));
+                }
             }
-            Some(DisplayOutcome::Keep) => self.actions.push(MenuAction::DisplayKeepRequested),
-            Some(DisplayOutcome::Revert) => self.actions.push(MenuAction::DisplayRevertRequested),
-            Some(DisplayOutcome::Back) => {
-                self.display.discard_changes();
+            Some(GraphicsOutcome::Keep) => self.actions.push(MenuAction::DisplayKeepRequested),
+            Some(GraphicsOutcome::Revert) => self.actions.push(MenuAction::DisplayRevertRequested),
+            Some(GraphicsOutcome::Back) => {
+                self.graphics.discard_changes();
                 self.screen = MenuScreen::Settings;
                 self.settings.reset();
-                self.actions.push(MenuAction::ClosedDisplay);
+                self.actions.push(MenuAction::ClosedGraphics);
             }
             None => {}
         }
-    }
-
-    fn back_to_settings_from_graphics(&mut self) {
-        self.screen = MenuScreen::Settings;
-        self.graphics.reset();
-        self.settings.reset();
-        self.actions.push(MenuAction::ClosedGraphics);
     }
 
     fn back_to_pause(&mut self) {
@@ -1702,6 +1528,7 @@ impl MenuSystem {
 )]
 mod tests {
     use super::*;
+    use crate::ui::graphics_menu::GraphicsItem;
 
     fn at(x: f32, y: f32) -> UiInput {
         UiInput::new().with_pointer(x, y)
@@ -2105,14 +1932,14 @@ mod tests {
     }
 
     #[test]
-    fn the_display_screen_opens_from_settings_and_applies_through_an_action() {
+    fn the_graphics_screen_applies_the_display_through_an_action() {
         use engine_settings::{DisplaySettings, Resolution, WindowMode};
         let mut menu = menu();
         menu.open_pause();
         click_pause(&mut menu, PauseItem::Settings);
-        let actions = click_settings(&mut menu, SettingsItem::Display);
-        assert!(actions.contains(&MenuAction::OpenedDisplay), "{actions:?}");
-        assert_eq!(menu.screen(), MenuScreen::Display);
+        let actions = click_settings(&mut menu, SettingsItem::Graphics);
+        assert!(actions.contains(&MenuAction::OpenedGraphics), "{actions:?}");
+        assert_eq!(menu.screen(), MenuScreen::Graphics);
         menu.set_display_options(
             vec![Resolution::new(2560, 1440), Resolution::new(1920, 1080)],
             Resolution::new(2560, 1440),
@@ -2121,8 +1948,8 @@ mod tests {
         // Every widget of the screen is inside its panel, at every size the menu is tested at.
         for viewport in [(1280, 720), (1920, 1080), (3840, 2160)] {
             menu.layout(viewport);
-            let panel = menu.display_panel();
-            for (_, widget) in menu.display_menu().screen().widgets() {
+            let panel = menu.graphics_panel();
+            for (_, widget) in menu.graphics_menu().screen().widgets() {
                 let rect = widget.rect();
                 assert!(
                     rect.x >= panel.x && rect.right() <= panel.right() + 0.5,
@@ -2137,18 +1964,18 @@ mod tests {
         menu.layout((1920, 1080));
         // Choose fullscreen and apply.
         let mode = menu
-            .display_menu()
+            .graphics_menu()
             .screen()
-            .widget(crate::ui::display_menu::DisplayItem::WindowMode)
+            .widget(GraphicsItem::WindowMode)
             .expect("mode")
             .rect();
         let at = |rect: UiRect| (rect.x + rect.width * 0.5, rect.y + rect.height * 0.5);
         let (x, y) = at(mode);
         menu.update(&press(x, y));
         let Some(crate::ui::widget::Widget::Dropdown(open)) = menu
-            .display_menu()
+            .graphics_menu()
             .screen()
-            .widget(crate::ui::display_menu::DisplayItem::WindowMode)
+            .widget(GraphicsItem::WindowMode)
             .copied()
         else {
             panic!("a dropdown");
@@ -2157,9 +1984,9 @@ mod tests {
         menu.update(&press(x, y));
         menu.update(&release(x, y));
         let apply = menu
-            .display_menu()
+            .graphics_menu()
             .screen()
-            .widget(crate::ui::display_menu::DisplayItem::Apply)
+            .widget(GraphicsItem::Apply)
             .expect("apply")
             .rect();
         let (x, y) = at(apply);
@@ -2173,10 +2000,10 @@ mod tests {
             "{actions:?}"
         );
         // Escape while the dialog is up reverts rather than leaving the screen.
-        menu.display_menu_mut().begin_confirmation(15);
+        menu.graphics_menu_mut().begin_confirmation(15);
         let actions = menu.update(&escape()).to_vec();
         assert_eq!(actions, vec![MenuAction::DisplayRevertRequested]);
-        assert_eq!(menu.screen(), MenuScreen::Display);
+        assert_eq!(menu.screen(), MenuScreen::Graphics);
     }
 
     #[test]
@@ -2598,7 +2425,8 @@ mod tests {
 
     fn centre_of_graphics(menu: &MenuSystem, item: GraphicsItem) -> (f32, f32) {
         let rect = menu
-            .graphics_screen()
+            .graphics_menu()
+            .screen()
             .widget(item)
             .expect("the item exists")
             .rect();
@@ -2609,6 +2437,32 @@ mod tests {
         let (x, y) = centre_of_graphics(menu, item);
         menu.update(&press(x, y));
         menu.update(&release(x, y)).to_vec()
+    }
+
+    /// Opens the shadow dropdown and picks `quality` from its list.
+    fn choose_shadows(menu: &mut MenuSystem, quality: ShadowQuality) -> Vec<MenuAction> {
+        let (x, y) = centre_of_graphics(menu, GraphicsItem::Shadows);
+        menu.update(&press(x, y));
+        menu.update(&release(x, y));
+        let Some(Widget::Dropdown(open)) = menu
+            .graphics_menu()
+            .screen()
+            .widget(GraphicsItem::Shadows)
+            .copied()
+        else {
+            panic!("the shadows are a dropdown");
+        };
+        assert!(open.is_open(), "the click did not open the list");
+        let index = ShadowQuality::ALL
+            .iter()
+            .position(|candidate| *candidate == quality)
+            .expect("every level is listed");
+        let row = open.option_rect(index);
+        let (x, y) = (row.x + row.width * 0.5, row.y + row.height * 0.5);
+        // A list chooses on the press, so both frames are reported.
+        let mut actions = menu.update(&press(x, y)).to_vec();
+        actions.extend_from_slice(menu.update(&release(x, y)));
+        actions
     }
 
     fn open_graphics(menu: &mut MenuSystem) {
@@ -2624,13 +2478,11 @@ mod tests {
         }
     }
 
-    fn is_ticked(menu: &MenuSystem, quality: ShadowQuality) -> bool {
-        match menu
-            .graphics_screen()
-            .widget(GraphicsItem::Shadows(quality))
-        {
-            Some(Widget::Checkbox(tick)) => tick.checked,
-            _ => panic!("{} has no row", quality.as_str()),
+    /// The level the shadow dropdown shows.
+    fn shown_shadows(menu: &MenuSystem) -> ShadowQuality {
+        match menu.graphics_menu().screen().widget(GraphicsItem::Shadows) {
+            Some(Widget::Dropdown(dropdown)) => ShadowQuality::ALL[dropdown.selected],
+            _ => panic!("the shadows are a dropdown"),
         }
     }
 
@@ -2657,137 +2509,143 @@ mod tests {
     }
 
     #[test]
-    fn the_graphics_screen_offers_every_shadow_level_with_the_current_one_ticked() {
+    fn the_graphics_screen_shows_the_shadow_level_in_force() {
         let mut menu = MenuSystem::new(settings_with_shadows(ShadowQuality::Medium), "0.1.0");
         menu.layout((1280, 720));
-
-        for quality in ShadowQuality::ALL {
-            assert_eq!(
-                is_ticked(&menu, quality),
-                quality == ShadowQuality::Medium,
-                "{} is ticked wrongly",
-                quality.as_str()
-            );
-        }
+        assert_eq!(shown_shadows(&menu), ShadowQuality::Medium);
         assert_eq!(menu.shadow_quality(), ShadowQuality::Medium);
     }
 
     #[test]
-    fn choosing_a_level_reports_it_and_leaves_the_tick_where_the_game_says() {
-        // The rule the hero roster follows, and for a stronger reason: applying a shadow
-        // level recreates the atlas and can fail, so the screen must not tick a row it has
-        // no evidence is running.
+    fn choosing_a_level_changes_nothing_until_apply() {
         let mut menu = menu();
         open_graphics(&mut menu);
         assert_eq!(menu.shadow_quality(), ShadowQuality::High);
 
-        let actions = click_graphics(&mut menu, GraphicsItem::Shadows(ShadowQuality::Ultra));
+        let actions = choose_shadows(&mut menu, ShadowQuality::Ultra);
+        assert!(
+            actions.is_empty(),
+            "choosing applied something: {actions:?}"
+        );
+        assert_eq!(shown_shadows(&menu), ShadowQuality::Ultra);
+        assert_eq!(menu.shadow_quality(), ShadowQuality::High);
+
+        // APPLY reports it, and only it: the display did not change. The menu stays open.
+        let actions = click_graphics(&mut menu, GraphicsItem::Apply);
         assert_eq!(
             actions,
             [MenuAction::ShadowQualityCommitted(ShadowQuality::Ultra)]
         );
+        assert_eq!(menu.screen(), MenuScreen::Graphics);
         assert_eq!(
             menu.shadow_quality(),
             ShadowQuality::High,
-            "the menu moved its own tick before the application applied anything"
+            "the menu moved its own level before the application applied anything"
         );
-        assert!(
-            !is_ticked(&menu, ShadowQuality::Ultra),
-            "the clicked row ticked itself"
-        );
-        assert!(is_ticked(&menu, ShadowQuality::High));
 
-        // Once the application has applied it, the tick moves.
+        // Once the application has applied it, the dropdown shows it and APPLY has nothing
+        // left to do.
         menu.set_shadow_quality(ShadowQuality::Ultra);
         assert_eq!(menu.shadow_quality(), ShadowQuality::Ultra);
-        assert!(is_ticked(&menu, ShadowQuality::Ultra));
-        assert!(!is_ticked(&menu, ShadowQuality::High));
+        assert_eq!(shown_shadows(&menu), ShadowQuality::Ultra);
+        assert!(click_graphics(&mut menu, GraphicsItem::Apply).is_empty());
     }
 
     #[test]
-    fn choosing_a_level_does_not_close_the_menu() {
-        // Unlike choosing a hero. The point of the screen is to look at the result and try
-        // the next level down if it is not fast enough, which a screen that closed itself
-        // would turn into five round trips through two menus.
+    fn back_forgets_an_unapplied_level() {
         let mut menu = menu();
         open_graphics(&mut menu);
-        click_graphics(&mut menu, GraphicsItem::Shadows(ShadowQuality::Low));
-        assert_eq!(menu.screen(), MenuScreen::Graphics);
+        choose_shadows(&mut menu, ShadowQuality::Low);
+        let actions = click_graphics(&mut menu, GraphicsItem::Back);
+        assert_eq!(actions, [MenuAction::ClosedGraphics]);
+        click_settings(&mut menu, SettingsItem::Graphics);
+        assert_eq!(shown_shadows(&menu), ShadowQuality::High);
     }
 
     #[test]
-    fn choosing_the_level_already_in_force_still_reports_it() {
-        // The menu reports what was pressed; deciding that nothing changed is the
-        // application's, which is the division every other action here follows.
+    fn one_apply_carries_the_shadows_and_the_display() {
+        use engine_settings::{DisplaySettings, WindowMode};
         let mut menu = menu();
         open_graphics(&mut menu);
-        let actions = click_graphics(&mut menu, GraphicsItem::Shadows(ShadowQuality::High));
+        choose_shadows(&mut menu, ShadowQuality::Off);
+        let Some(Widget::Dropdown(mode)) = menu
+            .graphics_menu()
+            .screen()
+            .widget(GraphicsItem::WindowMode)
+            .copied()
+        else {
+            panic!("a dropdown");
+        };
+        let at = |rect: UiRect| (rect.x + rect.width * 0.5, rect.y + rect.height * 0.5);
+        let (x, y) = at(mode.rect);
+        menu.update(&press(x, y));
+        menu.update(&release(x, y));
+        let Some(Widget::Dropdown(open)) = menu
+            .graphics_menu()
+            .screen()
+            .widget(GraphicsItem::WindowMode)
+            .copied()
+        else {
+            panic!("a dropdown");
+        };
+        let (x, y) = at(open.option_rect(1));
+        menu.update(&press(x, y));
+        menu.update(&release(x, y));
+        let actions = click_graphics(&mut menu, GraphicsItem::Apply);
         assert_eq!(
             actions,
-            [MenuAction::ShadowQualityCommitted(ShadowQuality::High)]
+            [
+                MenuAction::ShadowQualityCommitted(ShadowQuality::Off),
+                MenuAction::DisplayApplyRequested(DisplaySettings {
+                    window_mode: WindowMode::BorderlessFullscreen,
+                    ..DisplaySettings::default()
+                }),
+            ]
         );
     }
 
     #[test]
-    fn loaded_settings_tick_the_level_they_name() {
+    fn loaded_settings_show_the_level_they_name() {
         let mut menu = menu();
         menu.apply_settings(settings_with_shadows(ShadowQuality::Off));
         assert_eq!(menu.shadow_quality(), ShadowQuality::Off);
-        assert!(is_ticked(&menu, ShadowQuality::Off));
-        assert!(!is_ticked(&menu, ShadowQuality::High));
+        assert_eq!(shown_shadows(&menu), ShadowQuality::Off);
     }
 
     #[test]
-    fn every_graphics_row_stays_inside_its_panel() {
+    fn every_graphics_widget_stays_inside_its_panel_without_overlapping() {
         let mut menu = menu();
-        for viewport in [(1280, 720), (1920, 1080), (3840, 2160), (640, 480)] {
+        for viewport in [(1280, 720), (1920, 1080), (3840, 2160)] {
             menu.layout(viewport);
             let panel = menu.graphics_panel();
-            for (item, widget) in menu.graphics_screen().widgets() {
+            let rects: Vec<_> = menu
+                .graphics_menu()
+                .screen()
+                .widgets()
+                .map(|(item, widget)| (item, widget.rect()))
+                .collect();
+            for (i, (item, rect)) in rects.iter().enumerate() {
+                for (other, them) in &rects[i + 1..] {
+                    let apart = rect.right() <= them.x
+                        || them.right() <= rect.x
+                        || rect.bottom() <= them.y
+                        || them.bottom() <= rect.y;
+                    assert!(apart, "{viewport:?}: {item:?} overlaps {other:?}");
+                }
+            }
+            for (item, widget) in menu.graphics_menu().screen().widgets() {
                 let rect = widget.rect();
-                assert!(rect.x >= panel.x, "{item:?} escaped left");
+                assert!(rect.x >= panel.x, "{viewport:?}: {item:?} escaped left");
                 assert!(
                     rect.right() <= panel.right() + 0.01,
-                    "{item:?} escaped right"
+                    "{viewport:?}: {item:?} escaped right"
                 );
                 assert!(
-                    rect.bottom() <= panel.bottom() + 0.01,
-                    "{item:?} escaped below"
+                    rect.y >= panel.y && rect.bottom() <= panel.bottom() + 0.01,
+                    "{viewport:?}: {item:?} escaped the panel"
                 );
             }
         }
-    }
-
-    #[test]
-    fn the_graphics_rows_are_listed_cheapest_first_and_do_not_overlap() {
-        // The order the player reads them in is the order they cost, so "the next one down"
-        // is the row above.
-        let menu = menu();
-        let mut previous_bottom: Option<f32> = None;
-        for quality in ShadowQuality::ALL {
-            let rect = menu
-                .graphics_screen()
-                .widget(GraphicsItem::Shadows(quality))
-                .expect("every level has a row")
-                .rect();
-            if let Some(bottom) = previous_bottom {
-                assert!(
-                    rect.y > bottom,
-                    "{} overlaps the row above it",
-                    quality.as_str()
-                );
-            }
-            previous_bottom = Some(rect.bottom());
-        }
-        let back = menu
-            .graphics_screen()
-            .widget(GraphicsItem::Back)
-            .expect("BACK exists")
-            .rect();
-        assert!(
-            back.y > previous_bottom.unwrap_or(0.0),
-            "BACK is not below the last level"
-        );
     }
 
     #[test]

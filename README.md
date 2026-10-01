@@ -53,7 +53,7 @@ Controls:
 | MOUSE WHEEL | camera distance |
 | F5 | show or hide the developer overlay |
 | F9 | wireframe on/off |
-| ALT + ENTER | windowed / fullscreen (resolution and mode: SETTINGS → DISPLAY, see `docs/display.md`) |
+| ALT + ENTER | windowed / fullscreen (resolution and mode: SETTINGS → GRAPHICS, see `docs/display.md`; the editor is always windowed) |
 
 The combat HUD is always on: player health and resource bars, a target frame, an ability bar
 with cooldown wipes, a cast bar, world-space health bars and nameplates above nearby enemies,

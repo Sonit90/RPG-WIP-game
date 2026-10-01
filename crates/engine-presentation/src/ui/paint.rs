@@ -11,10 +11,10 @@
 //! nothing after the first time.
 
 use engine_render_data::ui::{TextAlign, UiColor, UiDrawList, UiIcon, UiRect, UiScale};
-use engine_settings::WindowMode;
+use engine_settings::{ShadowQuality, WindowMode};
 
-use super::display_menu::{DisplayItem, DisplayMenu};
-use super::menu::{GraphicsItem, HeroItem, MapItem, MenuScreen, MenuSystem, PauseItem};
+use super::graphics_menu::{GraphicsItem, GraphicsMenu, shadow_label};
+use super::menu::{HeroItem, MapItem, MenuScreen, MenuSystem, PauseItem};
 use super::widget::{Dropdown, Slider, Widget, WidgetState};
 
 /// How the menus are coloured and sized.
@@ -159,19 +159,19 @@ pub fn push_menu(
         MenuScreen::Settings => push_settings(list, menu, theme, scratch, viewport, scale),
         MenuScreen::Heroes => push_heroes(list, menu, theme, viewport, scale),
         MenuScreen::Nameplates => push_nameplates(list, menu, theme, scratch, viewport, scale),
-        MenuScreen::Graphics => push_graphics(list, menu, theme, viewport, scale),
+        MenuScreen::Graphics => push_graphics(list, menu, theme, scratch, viewport, scale),
         MenuScreen::Map => push_map_settings(list, menu, theme, scratch, viewport, scale),
-        MenuScreen::Display => push_display(list, menu, theme, scratch, viewport, scale),
     }
 }
 
-/// The display section: two labelled dropdowns, a line saying what the chosen mode does, a
-/// line saying what is in force, APPLY and BACK — and, after APPLY, the dialog over all of
-/// it.
+/// The graphics section: two labelled display dropdowns, a line saying what the chosen mode
+/// does, a line saying what is in force, the shadow dropdown with a line saying what the
+/// chosen level buys, and APPLY and BACK side by side — and, after APPLY changed the display,
+/// the dialog over all of it.
 ///
 /// An open list is drawn last, so it covers the rows under it the way it also takes their
 /// clicks.
-fn push_display(
+fn push_graphics(
     list: &mut UiDrawList,
     menu: &MenuSystem,
     theme: &MenuTheme,
@@ -179,14 +179,15 @@ fn push_display(
     viewport: (u32, u32),
     scale: UiScale,
 ) {
-    let display = menu.display_menu();
-    let panel = menu.display_panel();
-    push_backdrop(list, theme, viewport, panel, "DISPLAY", scale);
+    let display = menu.graphics_menu();
+    let panel = menu.graphics_panel();
+    push_backdrop(list, theme, viewport, panel, "GRAPHICS", scale);
     let small = scale.text(theme.label_scale * 0.8);
     let pending = display.pending();
 
-    let mut open: Option<(DisplayItem, Dropdown)> = None;
+    let mut open: Option<(GraphicsItem, Dropdown)> = None;
     let mut mode_bottom = panel.y;
+    let mut shadows_bottom = panel.y;
     for (item, widget) in display.screen().widgets() {
         match widget {
             Widget::Dropdown(dropdown) => {
@@ -209,8 +210,10 @@ fn push_display(
                 if dropdown.is_open() {
                     open = Some((item, *dropdown));
                 }
-                if item == DisplayItem::WindowMode {
-                    mode_bottom = dropdown.rect.bottom();
+                match item {
+                    GraphicsItem::WindowMode => mode_bottom = dropdown.rect.bottom(),
+                    GraphicsItem::Shadows => shadows_bottom = dropdown.rect.bottom(),
+                    _ => {}
                 }
             }
             _ => push_widget(list, widget, theme, scale),
@@ -247,6 +250,13 @@ fn push_display(
         theme.text,
         scale.text(0.8),
     );
+    // What the chosen shadow level buys.
+    list.text_at(
+        (x, shadows_bottom + scale.px(8.0)),
+        display.pending_shadows().description(),
+        theme.text_disabled,
+        scale.text(0.8),
+    );
 
     if let Some((item, dropdown)) = open {
         push_dropdown_list(list, display, item, &dropdown, theme, scratch, scale);
@@ -257,15 +267,16 @@ fn push_display(
     }
 }
 
-/// What a dropdown row says: a resolution from the monitor's list, or a window mode.
+/// What a dropdown row says: a resolution from the monitor's list, a window mode, or a
+/// shadow level.
 fn dropdown_text<'a>(
-    display: &'a DisplayMenu,
-    item: DisplayItem,
+    display: &'a GraphicsMenu,
+    item: GraphicsItem,
     index: usize,
     scratch: &'a mut MenuScratch,
 ) -> &'a str {
     match item {
-        DisplayItem::Resolution => {
+        GraphicsItem::Resolution => {
             if display.pending().window_mode == WindowMode::BorderlessFullscreen {
                 // Borderless uses the desktop's; the box says so rather than a size that
                 // will not be used.
@@ -280,8 +291,11 @@ fn dropdown_text<'a>(
                     .map_or("", String::as_str)
             }
         }
-        DisplayItem::WindowMode => WindowMode::ALL.get(index).map_or("", |mode| mode.label()),
-        DisplayItem::Apply | DisplayItem::Back => "",
+        GraphicsItem::WindowMode => WindowMode::ALL.get(index).map_or("", |mode| mode.label()),
+        GraphicsItem::Shadows => ShadowQuality::ALL
+            .get(index)
+            .map_or("", |quality| shadow_label(*quality)),
+        GraphicsItem::Apply | GraphicsItem::Back => "",
     }
 }
 
@@ -333,8 +347,8 @@ fn push_dropdown_box(
 /// An open dropdown's list: every option, the chosen one marked, the hovered one lit.
 fn push_dropdown_list(
     list: &mut UiDrawList,
-    display: &DisplayMenu,
-    item: DisplayItem,
+    display: &GraphicsMenu,
+    item: GraphicsItem,
     dropdown: &Dropdown,
     theme: &MenuTheme,
     scratch: &mut MenuScratch,
@@ -373,7 +387,7 @@ fn push_dropdown_list(
 /// "Keep these display settings?" with its countdown and its two buttons, over everything.
 fn push_display_dialog(
     list: &mut UiDrawList,
-    display: &DisplayMenu,
+    display: &GraphicsMenu,
     seconds: u32,
     theme: &MenuTheme,
     scratch: &mut MenuScratch,
@@ -492,35 +506,6 @@ fn push_heroes(
         list.text_at(
             (rect.x + scale.px(48.0), rect.bottom() + scale.px(6.0)),
             hero.description(),
-            theme.text_disabled,
-            scale.text(0.8),
-        );
-    }
-}
-
-/// The graphics section: a tick per shadow level with a line saying what it buys.
-///
-/// The hero roster's painter, applied to a different question — a row, its tick, and a
-/// description read straight off the value rather than written down here. The two are
-/// separate functions only because the panel and the title differ.
-fn push_graphics(
-    list: &mut UiDrawList,
-    menu: &MenuSystem,
-    theme: &MenuTheme,
-    viewport: (u32, u32),
-    scale: UiScale,
-) {
-    let panel = menu.graphics_panel();
-    push_backdrop(list, theme, viewport, panel, "GRAPHICS", scale);
-    for (item, widget) in menu.graphics_screen().widgets() {
-        push_widget(list, widget, theme, scale);
-        let GraphicsItem::Shadows(quality) = item else {
-            continue;
-        };
-        let rect = widget.rect();
-        list.text_at(
-            (rect.x + scale.px(48.0), rect.bottom() + scale.px(6.0)),
-            quality.description(),
             theme.text_disabled,
             scale.text(0.8),
         );
@@ -871,15 +856,15 @@ mod tests {
     }
 
     #[test]
-    fn the_display_screen_prints_its_choices_and_the_dialog_its_countdown() {
+    fn the_graphics_screen_prints_its_choices_and_the_dialog_its_countdown() {
         use engine_settings::{DisplaySettings, Resolution};
         let mut menu = menu();
         menu.open_pause();
         open_settings(&mut menu);
         let rect = menu
             .settings_screen()
-            .widget(crate::ui::menu::SettingsItem::Display)
-            .expect("DISPLAY exists")
+            .widget(crate::ui::menu::SettingsItem::Graphics)
+            .expect("GRAPHICS exists")
             .rect();
         let (x, y) = (rect.x + rect.width * 0.5, rect.y + rect.height * 0.5);
         for (pressed, released) in [(true, false), (false, true)] {
@@ -898,16 +883,19 @@ mod tests {
         );
         let text = render(&menu).text().to_owned();
         for word in [
-            "DISPLAY",
+            "GRAPHICS",
             "RESOLUTION",
             "WINDOW MODE",
             "1920 x 1080",
             "WINDOWED",
             "APPLY",
+            "SHADOW QUALITY",
+            "HIGH",
+            ShadowQuality::High.description(),
         ] {
             assert!(text.contains(word), "{word} missing from {text}");
         }
-        menu.display_menu_mut().begin_confirmation(15);
+        menu.graphics_menu_mut().begin_confirmation(15);
         let text = render(&menu).text().to_owned();
         assert!(text.contains("KEEP THESE DISPLAY SETTINGS?"), "{text}");
         assert!(text.contains("REVERTING IN 15 SECONDS..."), "{text}");
