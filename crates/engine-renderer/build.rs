@@ -569,6 +569,38 @@ const ICONS: &[IconEntry] = &[
         file: "aura/scorched.svg",
         constant: "AURA_SCORCHED",
     },
+    IconEntry {
+        file: "aura/fortitude.svg",
+        constant: "AURA_FORTITUDE",
+    },
+    IconEntry {
+        file: "aura/battle_shout.svg",
+        constant: "AURA_BATTLE_SHOUT",
+    },
+    IconEntry {
+        file: "aura/arcane_intellect.svg",
+        constant: "AURA_ARCANE_INTELLECT",
+    },
+    IconEntry {
+        file: "aura/bloodlust.svg",
+        constant: "AURA_BLOODLUST",
+    },
+    IconEntry {
+        file: "aura/regeneration.svg",
+        constant: "AURA_REGENERATION",
+    },
+    IconEntry {
+        file: "aura/curse_of_weakness.svg",
+        constant: "AURA_CURSE_OF_WEAKNESS",
+    },
+    IconEntry {
+        file: "aura/withering_plague.svg",
+        constant: "AURA_WITHERING_PLAGUE",
+    },
+    IconEntry {
+        file: "aura/magic_vulnerability.svg",
+        constant: "AURA_MAGIC_VULNERABILITY",
+    },
 ];
 
 /// One icon: a file under `assets/icons/` and the constant its texels are bound to.

@@ -1,0 +1,21 @@
+<svg version="1.1" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+<defs>
+<linearGradient id="regeneration_panel" gradientUnits="userSpaceOnUse" x1="16" y1="496" x2="496" y2="16">
+<stop offset="0" stop-color="rgb(8, 30, 14)"></stop>
+<stop offset="1" stop-color="rgb(30, 90, 40)"></stop>
+</linearGradient>
+<radialGradient id="regeneration_glow" gradientUnits="userSpaceOnUse" cx="256" cy="256" r="250">
+<stop offset="0" stop-color="rgb(120, 240, 140)" stop-opacity="0.55"></stop>
+<stop offset="0.6" stop-color="rgb(120, 240, 140)" stop-opacity="0.16"></stop>
+<stop offset="1" stop-color="rgb(120, 240, 140)" stop-opacity="0"></stop>
+</radialGradient>
+<clipPath id="regeneration_tile"><path d="M 16 92 C 16 50 50 16 92 16 L 420 16 C 462 16 496 50 496 92 L 496 420 C 496 462 462 496 420 496 L 92 496 C 50 496 16 462 16 420 Z"></path></clipPath>
+</defs>
+<g clip-path="url(#regeneration_tile)">
+<path fill="url(#regeneration_panel)" d="M 0 0 L 512 0 L 512 512 L 0 512 Z"></path>
+<path fill="url(#regeneration_glow)" d="M 0 0 L 512 0 L 512 512 L 0 512 Z"></path>
+<path fill="rgb(92,196,104)" d="M 112 400 C 112 220 220 112 410 100 C 400 290 292 400 112 400 Z"></path>
+<path fill="none" stroke="rgb(30,90,40)" stroke-width="16" stroke-linecap="round" d="M 140 372 C 220 290 300 210 380 132"></path>
+<path fill="rgb(230,255,230)" d="M 326 300 L 362 300 L 362 344 L 406 344 L 406 380 L 362 380 L 362 424 L 326 424 L 326 380 L 282 380 L 282 344 L 326 344 Z"></path>
+</g>
+</svg>

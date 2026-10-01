@@ -880,56 +880,47 @@ impl Simulation {
     }
 
     /// What the player's movement speed is multiplied by. One when nothing is multiplying it.
+    ///
+    /// The effects on the player, read from the registry: Wild Rush's burst, a crippling
+    /// shot's slow, anything else that names movement speed — the same evaluation a monster's
+    /// speed goes through.
     #[must_use]
     pub fn move_speed_multiplier(&self) -> f32 {
-        let rush = if self.wild_rush_active() {
-            1.0 + WILD_RUSH_SPEED
-        } else {
-            1.0
-        };
-        // A crippling shot: the slow is the status's own strength, so every slow in the
-        // roster is one status with one number on it.
-        let slow = self
-            .world
+        self.world
             .statuses(self.player.entity)
-            .and_then(|statuses| statuses.get(crate::status::StatusKind::Crippled))
-            .map_or(0.0, |status| status.magnitude);
-        rush * (1.0 - slow).clamp(0.1, 1.0)
+            .map_or(1.0, crate::status::StatusSet::move_speed_multiplier)
     }
 
-    /// The flat damage reduction the Druid currently has, as a fraction.
+    /// The flat damage reduction `entity`'s effects give it, as a fraction: Wild Rush's.
     #[must_use]
-    pub(super) fn druid_damage_reduction(&self) -> f32 {
-        if self.wild_rush_active() {
-            WILD_RUSH_REDUCTION
-        } else {
-            0.0
-        }
+    pub(super) fn status_damage_reduction(&self, entity: EntityId) -> f32 {
+        self.world
+            .statuses(entity)
+            .map_or(0.0, crate::status::StatusSet::damage_reduction)
     }
 
-    /// **What Nature's Exposure multiplies an incoming hit by.**
+    /// **What the effects on `target` multiply an incoming hit by**: Nature's Exposure, Magic
+    /// Vulnerability, anything in the registry that names damage taken.
     ///
-    /// Read where damage is applied, so it answers for every source of Nature and Arcane
-    /// damage in the game rather than for the Druid's own spells. Physical and Fire are
-    /// untouched.
+    /// Read where damage is applied, so it answers for every source of damage in the game
+    /// rather than for one class's spells.
     #[must_use]
-    pub(super) fn exposure_multiplier(
+    pub(super) fn damage_taken_multiplier(
         &self,
         target: EntityId,
         damage_type: crate::combat::DamageType,
     ) -> f32 {
-        use crate::combat::DamageType;
-        if !matches!(damage_type, DamageType::Nature | DamageType::Arcane) {
-            return 1.0;
-        }
-        let stacks = self
-            .world
-            .statuses(target)
-            .map_or(0, |statuses| statuses.stacks(StatusKind::NaturesExposure));
-        if stacks == 0 {
-            return 1.0;
-        }
-        Druid::exposure_multiplier(stacks)
+        self.world.statuses(target).map_or(1.0, |statuses| {
+            statuses.damage_taken_multiplier(damage_type)
+        })
+    }
+
+    /// What the effects on `source` multiply the damage it deals by: Bloodlust, a curse.
+    #[must_use]
+    pub(super) fn damage_dealt_multiplier(&self, source: EntityId) -> f32 {
+        self.world
+            .statuses(source)
+            .map_or(1.0, crate::status::StatusSet::damage_dealt_multiplier)
     }
 
     /// **Astral Sunfire's conversion**: a share of what the party dealt becomes healing.

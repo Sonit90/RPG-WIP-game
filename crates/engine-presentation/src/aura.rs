@@ -93,6 +93,14 @@ impl AuraKind {
                 StatusKind::RespawnProtection => UiIcon::AuraRespawnProtection,
                 StatusKind::Rended => UiIcon::AuraRended,
                 StatusKind::Crippled => UiIcon::AuraCrippled,
+                StatusKind::Fortitude => UiIcon::AuraFortitude,
+                StatusKind::BattleShout => UiIcon::AuraBattleShout,
+                StatusKind::ArcaneIntellect => UiIcon::AuraArcaneIntellect,
+                StatusKind::Bloodlust => UiIcon::AuraBloodlust,
+                StatusKind::Regeneration => UiIcon::AuraRegeneration,
+                StatusKind::CurseOfWeakness => UiIcon::AuraCurseOfWeakness,
+                StatusKind::WitheringPlague => UiIcon::AuraWitheringPlague,
+                StatusKind::MagicVulnerability => UiIcon::AuraMagicVulnerability,
             },
             Self::Ignite => UiIcon::AuraBurning,
             Self::Scorched => UiIcon::AuraScorched,
@@ -137,33 +145,8 @@ impl AuraKind {
     #[must_use]
     pub fn description(self) -> &'static str {
         match self {
-            Self::Status(kind) => match kind {
-                StatusKind::Burning => "Taking fire damage every second.",
-                StatusKind::Bleeding => {
-                    "Bleeding for a share of the Warrior's maximum health every second."
-                }
-                StatusKind::Recuperating => "Healing a share of maximum health every second.",
-                StatusKind::Recovering => "Healing back the damage Adrenaline banked.",
-                StatusKind::Sundered => "Attacking 2% slower per stack.",
-                StatusKind::Moonfire => "Taking Nature damage every second.",
-                StatusKind::Sunfire => "Taking Nature damage every second.",
-                StatusKind::AstralSunfire => {
-                    "Damage dealt to this target heals the party for a share of it."
-                }
-                StatusKind::NaturesExposure => "Taking 3% more Nature and Arcane damage per stack.",
-                StatusKind::Rejuvenation => "Healing every second.",
-                StatusKind::Regrowth => "Healing every second.",
-                StatusKind::Lifebloom => "Healing every second, and blooming when it ends.",
-                StatusKind::WildGrowth => "Healing every second.",
-                StatusKind::AstralWrath => "Wrath spreads Nature's Exposure around its target.",
-                StatusKind::WildRush => "50% faster and taking 30% less damage.",
-                StatusKind::Poisoned => "Taking Nature damage every second.",
-                StatusKind::RespawnProtection => {
-                    "Recently respawned: cannot be respawned again yet."
-                }
-                StatusKind::Rended => "Bleeding every second. Stacks.",
-                StatusKind::Crippled => "Moving slower.",
-            },
+            // A status says what it does in the effect registry, once, for every reader.
+            Self::Status(kind) => kind.description(),
             Self::Ignite => "Burning every tick. Detonate consumes it for a burst.",
             Self::Scorched => "Taking more fire damage from standing in molten ground.",
             Self::FlameShield => "Taking 30% less damage.",
@@ -411,7 +394,7 @@ pub fn fill_auras(simulation: &Simulation, entity: EntityId, list: &mut AuraList
 }
 
 /// One status as an aura.
-fn status_aura(status: &engine_game::status::Status) -> Aura {
+pub fn status_aura(status: &engine_game::status::Status) -> Aura {
     Aura {
         kind: AuraKind::Status(status.kind),
         stacks: status.stacks.max(1),

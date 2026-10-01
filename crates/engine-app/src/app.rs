@@ -67,8 +67,8 @@ use engine_presentation::ui::dungeon_map::{
 use engine_presentation::ui::ground_decal::{DecalBand, GroundSurface};
 use engine_presentation::ui::hud_edit::{EditOutcome, HudEditor, push_hud_editor};
 use engine_presentation::ui::hud_layout::{HudElementId, HudLayout};
-use engine_presentation::ui::monster_lab::{
-    LabAction, LabKeys, LabStatus, MonsterLab, TEST_PLAYER_HEALTH,
+use engine_presentation::ui::monster_playground::{
+    PlaygroundAction, PlaygroundKeys, PlaygroundPanels,
 };
 use engine_presentation::ui::slot_menu::{SlotMenu, SlotMenuOutcome, push_slot_menu};
 use engine_presentation::ui::talent_menu::{TalentMenu, TalentMenuOutcome, TalentTheme};
@@ -376,10 +376,11 @@ pub struct App {
     talent_theme: TalentTheme,
     /// Scratch the talent menu formats its numbers into. Reused; never freed.
     talent_scratch: String,
-    /// The monster test bed's panel. Only the monster scene draws it or listens to it.
-    monster_lab: MonsterLab,
-    /// The monster the lab spawned last, whose animation the panel reports.
-    lab_latest: Option<engine_game::entity::EntityId>,
+    /// The Monster Combat Playground: what is offered, chosen and standing in the world.
+    /// Only the monster scene installs it or listens to it.
+    playground: engine_game::playground::MonsterPlayground,
+    /// Its two panels.
+    playground_panels: PlaygroundPanels,
     /// The minimap and the full-screen dungeon map, opened with `M`.
     dungeon_map: DungeonMap,
     /// How they are coloured.
@@ -805,10 +806,17 @@ impl App {
             // spawned from the panel.
             Scene::Monsters => (arena::training_arena(&ArenaConfig::with_group(0)), None),
         };
+        // The playground exists in every scene, and only the monster scene installs it: test
+        // health, by default a million, so a boss can be watched through every phase and
+        // every kit tested without the tester dying in the middle of it.
+        let mut playground = engine_game::playground::MonsterPlayground::new(
+            engine_game::playground::PlaygroundConfig {
+                test_health: args.test_health,
+                ..engine_game::playground::PlaygroundConfig::default()
+            },
+        );
         if args.scene.is_monsters() {
-            // A million, so a boss can be watched through every phase and every kit tested
-            // without the tester dying in the middle of it.
-            simulation.set_player_health_override(Some(TEST_PLAYER_HEALTH));
+            playground.install(&mut simulation);
         }
         crate::startup::stage("simulation build");
         // The environment library, uploaded once: sixteen `create_model` calls, whatever the
@@ -1153,8 +1161,8 @@ impl App {
             talent_menu: TalentMenu::with_scale(ui_scale),
             talent_theme: TalentTheme::default(),
             talent_scratch: String::with_capacity(32),
-            monster_lab: MonsterLab::new(ui_scale),
-            lab_latest: None,
+            playground_panels: PlaygroundPanels::new(ui_scale, &playground),
+            playground,
             dungeon_map: {
                 let mut map = DungeonMap::new(ui_scale);
                 map.set_orientation(map_settings.minimap_orientation);
@@ -1292,6 +1300,9 @@ impl App {
         }
         if args.scene.is_monsters() && !args.spawn.is_empty() {
             app.spawn_lineup(&args.spawn, args.spawn_hostile);
+        }
+        if args.scene.is_monsters() && !args.effects.is_empty() {
+            app.apply_startup_effects(&args.effects);
         }
         if args.autocast {
             app.autocast = Some(AUTOCAST_SECONDS);
@@ -1838,23 +1849,45 @@ impl App {
             return;
         }
 
-        // The monster lab's panel, in its scene. A click on it is its own; its keys are keys
-        // nothing else in that scene uses.
+        // The playground's panels, in its scene. A click on them is theirs; their keys are keys
+        // nothing else in that scene uses, and while the search field is typing every key is
+        // the field's — the world hears none of them (see `playground_owns_keyboard`).
         if self.scene.is_monsters() {
             let input = ctx.input();
-            let keys = LabKeys {
-                previous: input.was_key_pressed(KeyCode::ArrowUp),
-                next: input.was_key_pressed(KeyCode::ArrowDown),
+            let ctrl = input.modifiers().ctrl();
+            let keys = PlaygroundKeys {
+                up: input.was_key_pressed(KeyCode::ArrowUp),
+                down: input.was_key_pressed(KeyCode::ArrowDown),
+                toggle: input.was_key_pressed(KeyCode::ArrowRight),
                 spawn: input.was_key_pressed(KeyCode::Enter),
-                passive: input.was_key_pressed(KeyCode::P),
+                reset: input.was_key_pressed(KeyCode::Delete),
                 kill: input.was_key_pressed(KeyCode::K),
-                clear: input.was_key_pressed(KeyCode::Delete),
+                passive: input.was_key_pressed(KeyCode::P),
                 hide: input.was_key_pressed(KeyCode::L),
+                search: ctrl && input.was_key_pressed(KeyCode::F),
             };
             let wheel = input.wheel_delta();
-            let action = self.monster_lab.update(&ui_input, wheel, keys, viewport);
-            self.apply_lab_action(action);
-            if self.monster_lab.wants_pointer(ui_input.pointer, viewport) {
+            let panel_input = if self.playground_panels.is_typing() {
+                ui_input.with_captured_key(input)
+            } else {
+                ui_input
+            };
+            let action = self.playground_panels.update(
+                &panel_input,
+                wheel,
+                keys,
+                viewport,
+                &self.playground,
+                &self.simulation,
+            );
+            self.apply_playground_action(action);
+            let (left, right) = self.playground_panels.reserved(viewport);
+            self.hud_layout.set_reserved(left, right);
+            if self.playground_panels.is_typing()
+                || self
+                    .playground_panels
+                    .wants_pointer(ui_input.pointer, viewport)
+            {
                 self.hovered_ability = None;
                 self.hovered_slot = None;
                 return;
@@ -2336,7 +2369,10 @@ impl App {
             // Edit mode and the slot menu answer escape themselves, in the interface update
             // that runs after this one. Backing out of one of them must not also open the
             // pause menu on the same press.
-            if self.hud_editor.is_active() || self.slot_menu.is_open() {
+            if self.hud_editor.is_active()
+                || self.slot_menu.is_open()
+                || self.playground_owns_keyboard()
+            {
                 return;
             }
             if self.dungeon_map.close() {
@@ -2534,81 +2570,147 @@ impl App {
         }
     }
 
-    /// Applies an interface size, and writes it to disk if the interaction has finished.
-    ///
-    /// The value goes to the settings first and reaches the interface from there, so what is
-    /// drawn is always what would be written to the file, snapping included.
-    ///
-    /// Every screen is told, not only the HUD: a menu laid out at one scale and a HUD at
-    /// another would disagree about where things are, and the menu is itself the screen the
-    /// slider lives on — so the player watches the change happen to the thing they are
-    /// dragging. Nothing is rebuilt beyond the measurements, so this is a few dozen
-    /// multiplies rather than anything that could be felt.
-    /// Carries out what the monster lab's panel asked for.
-    fn apply_lab_action(&mut self, action: LabAction) {
-        match action {
-            LabAction::None => {}
-            LabAction::Spawn {
-                kind,
-                count,
-                passive,
-            } => {
-                let player = self.simulation.player().entity;
-                let Some(origin) = self.simulation.world().position(player) else {
-                    return;
-                };
-                // In front of the camera, where the tester is looking, and facing back at
-                // them. Several fan out so none stands inside another.
-                let yaw = self.controller.yaw;
-                let distance = if kind.is_boss() { 12.0 } else { 8.0 };
-                let options = engine_game::sim::dungeon_exec::EnemySpawnOptions {
-                    aggro_radius: passive.then_some(0.0),
-                    ..engine_game::sim::dungeon_exec::EnemySpawnOptions::default()
-                };
-                for index in 0..count {
-                    let spread = if count > 1 {
-                        (index as f32 / (count - 1) as f32 - 0.5) * 0.9
-                    } else {
-                        0.0
-                    };
-                    let heading = yaw + spread;
-                    let position =
-                        origin + Vec3::new(-heading.sin(), 0.0, -heading.cos()) * distance;
-                    let facing = heading + std::f32::consts::PI;
-                    let id = self
-                        .simulation
-                        .spawn_enemy_with(kind, position, facing, &options);
-                    self.lab_latest = Some(id);
-                }
-                log::info!(
-                    "monster lab: spawned {count} x {}{}",
-                    kind.name(),
-                    if passive { " (passive)" } else { "" }
-                );
-                self.play_ui_sound(engine_audio::SoundId::UiSelect);
-            }
-            LabAction::KillAll => {
-                let living: Vec<_> = self
-                    .simulation
-                    .enemies()
-                    .map(|(id, _)| id)
-                    .filter(|id| self.simulation.world().is_alive(*id))
-                    .collect();
-                for id in &living {
-                    self.simulation.slay(*id);
-                }
-                log::info!("monster lab: killed {}", living.len());
-            }
-            LabAction::Clear => {
-                self.simulation.clear_enemies();
-                self.lab_latest = None;
-                log::info!("monster lab: cleared");
-            }
-        }
+    /// Whether the playground's search field has the keyboard, so no key this frame is play.
+    fn playground_owns_keyboard(&self) -> bool {
+        self.scene.is_monsters() && self.playground_panels.is_typing()
     }
 
-    /// Stands the monsters `ids` names in a row in front of the player: `--spawn`. Passive
-    /// unless `hostile`.
+    /// Carries out what the playground's panels asked for, on the playground and through it
+    /// on the simulation.
+    fn apply_playground_action(&mut self, action: PlaygroundAction) {
+        use engine_game::playground::HealthMode;
+        let sound = match action {
+            PlaygroundAction::None => return,
+            PlaygroundAction::Toggle(kind) => {
+                let chosen = self.playground.selection_mut().toggle(kind);
+                log::debug!(
+                    "playground: {} {}",
+                    if chosen { "chose" } else { "dropped" },
+                    kind.name()
+                );
+                engine_audio::SoundId::UiSelect
+            }
+            PlaygroundAction::ClearSelection => {
+                self.playground.selection_mut().clear();
+                engine_audio::SoundId::UiCancel
+            }
+            PlaygroundAction::SpawnSelected => {
+                // In front of the camera, where the tester is looking.
+                let origin = self.simulation.player_position();
+                let count = self.playground.spawn_selected(
+                    &mut self.simulation,
+                    origin,
+                    self.controller.yaw,
+                );
+                log::info!(
+                    "playground: spawned {count} monster(s){}",
+                    if self.playground.is_passive() {
+                        " (passive)"
+                    } else {
+                        ""
+                    }
+                );
+                engine_audio::SoundId::UiSelect
+            }
+            PlaygroundAction::ResetEncounter => {
+                let count = self.playground.reset_encounter(&mut self.simulation);
+                log::info!("playground: encounter reset, {count} monster(s) removed");
+                engine_audio::SoundId::UiCancel
+            }
+            PlaygroundAction::KillEncounter => {
+                let count = self.playground.kill_encounter(&mut self.simulation);
+                log::info!("playground: killed {count}");
+                engine_audio::SoundId::UiSelect
+            }
+            PlaygroundAction::SetHealth(mode) => {
+                self.playground.set_health_mode(&mut self.simulation, mode);
+                log::info!(
+                    "playground: {} health",
+                    match mode {
+                        HealthMode::Test => "test",
+                        HealthMode::Normal => "normal",
+                    }
+                );
+                engine_audio::SoundId::UiSelect
+            }
+            PlaygroundAction::ResetPlayer => {
+                self.playground.reset_player(&mut self.simulation);
+                log::info!("playground: player reset");
+                engine_audio::SoundId::UiSelect
+            }
+            PlaygroundAction::SetPassive(passive) => {
+                self.playground.set_passive(passive);
+                engine_audio::SoundId::UiSelect
+            }
+            PlaygroundAction::SetLevel(level) => {
+                self.playground.set_monster_level(level);
+                engine_audio::SoundId::UiSelect
+            }
+            PlaygroundAction::SetHero(hero) => {
+                self.swap_hero(hero);
+                log::info!("playground: playing {}", hero.name());
+                engine_audio::SoundId::UiSelect
+            }
+            PlaygroundAction::SetEffectTarget(entity) => {
+                self.playground.set_effect_target(entity);
+                // And the game's own target, so the target frame, the nameplate's highlight
+                // and a healer's next spell all point where the effects are being tried.
+                if entity == self.simulation.player().entity {
+                    self.simulation.push_command(PlayerCommand::SelectSelf);
+                } else {
+                    self.simulation
+                        .push_command(PlayerCommand::SelectTarget { entity });
+                }
+                engine_audio::SoundId::UiSelect
+            }
+            PlaygroundAction::ApplyEffect {
+                kind,
+                duration,
+                stacks,
+            } => {
+                let applied =
+                    self.playground
+                        .apply_effect(&mut self.simulation, kind, duration, stacks);
+                log::info!(
+                    "playground: {} {} for {duration:.0} s ({stacks} stack(s))",
+                    if applied {
+                        "applied"
+                    } else {
+                        "could not apply"
+                    },
+                    kind.display_name()
+                );
+                engine_audio::SoundId::UiSelect
+            }
+            PlaygroundAction::RemoveEffect(kind) => {
+                self.playground.remove_effect(&mut self.simulation, kind);
+                log::info!("playground: removed {}", kind.display_name());
+                engine_audio::SoundId::UiCancel
+            }
+            PlaygroundAction::ClearEffects { buffs } => {
+                let count = self.playground.clear_effects(&mut self.simulation, buffs);
+                log::info!(
+                    "playground: cleared {count} {}",
+                    if buffs { "buff(s)" } else { "debuff(s)" }
+                );
+                engine_audio::SoundId::UiCancel
+            }
+            PlaygroundAction::AddTestEffects => {
+                let count = self.playground.add_test_effects(&mut self.simulation);
+                log::info!("playground: {count} test effects applied");
+                engine_audio::SoundId::UiSelect
+            }
+            PlaygroundAction::Target(entity) => {
+                // Through the same command clicking a nameplate sends, so gameplay still
+                // decides whether the selection is legal.
+                self.simulation
+                    .push_command(PlayerCommand::SelectTarget { entity });
+                engine_audio::SoundId::UiSelect
+            }
+        };
+        self.play_ui_sound(sound);
+    }
+
     /// `--autocast`: selects the nearest enemy and presses the first three abilities in turn.
     ///
     /// Through the same commands a key press produces, so what a screenshot shows is exactly
@@ -2641,14 +2743,38 @@ impl App {
         self.autocast_slot = self.autocast_slot.wrapping_add(1);
     }
 
+    /// `--effects`: opens the playground's Effects mode and puts the effects `ids` names, by
+    /// registry id or `all`, on the player.
+    fn apply_startup_effects(&mut self, ids: &[String]) {
+        use engine_presentation::ui::monster_playground::PlaygroundMode;
+        self.playground_panels.set_mode(PlaygroundMode::Effects);
+        if ids.iter().any(|id| id == "all") {
+            let count = self.playground.add_test_effects(&mut self.simulation);
+            log::info!("playground: {count} effects on the player");
+            return;
+        }
+        for id in ids {
+            match engine_game::status::StatusKind::from_id(id) {
+                Some(kind) => {
+                    self.playground_panels.choose_effect(kind);
+                    let duration = kind.definition().generic.duration;
+                    self.playground
+                        .apply_effect(&mut self.simulation, kind, duration, 1);
+                }
+                None => log::warn!("--effects: no effect is called '{id}'"),
+            }
+        }
+    }
+
+    /// `--spawn`: chooses the monsters `ids` names, by table id or `all`, and spawns them
+    /// through the playground, passive unless `hostile`.
     fn spawn_lineup(&mut self, ids: &[String], hostile: bool) {
         let kinds: Vec<engine_game::enemy::EnemyKind> = if ids.iter().any(|id| id == "all") {
-            engine_presentation::ui::monster_lab::ROSTER
+            self.playground
+                .library()
+                .entries()
                 .iter()
-                .filter_map(|row| match row {
-                    engine_presentation::ui::monster_lab::LabRow::Monster(kind) => Some(*kind),
-                    engine_presentation::ui::monster_lab::LabRow::Heading(_) => None,
-                })
+                .map(|entry| entry.kind)
                 .collect()
         } else {
             ids.iter()
@@ -2661,63 +2787,29 @@ impl App {
                 })
                 .collect()
         };
-        let player = self.simulation.player().entity;
-        let Some(origin) = self.simulation.world().position(player) else {
-            return;
-        };
-        let yaw = self.controller.yaw;
-        let forward = Vec3::new(-yaw.sin(), 0.0, -yaw.cos());
-        let right = Vec3::new(yaw.cos(), 0.0, -yaw.sin());
-        let spacing = 2.4;
-        let options = engine_game::sim::dungeon_exec::EnemySpawnOptions {
-            aggro_radius: (!hostile).then_some(0.0),
-            ..engine_game::sim::dungeon_exec::EnemySpawnOptions::default()
-        };
-        let count = kinds.len();
-        for (index, kind) in kinds.into_iter().enumerate() {
-            let offset = (index as f32 - (count as f32 - 1.0) * 0.5) * spacing;
-            let position = origin + forward * 7.0 + right * offset;
-            let id = self.simulation.spawn_enemy_with(
-                kind,
-                position,
-                yaw + std::f32::consts::PI,
-                &options,
-            );
-            self.lab_latest = Some(id);
+        let selection = self.playground.selection_mut();
+        selection.clear();
+        for kind in kinds {
+            selection.select(kind);
         }
-        log::info!("monster lab: {count} monster(s) lined up");
+        self.playground.set_passive(!hostile);
+        let origin = self.simulation.player_position();
+        let count =
+            self.playground
+                .spawn_selected(&mut self.simulation, origin, self.controller.yaw);
+        log::info!("playground: {count} monster(s) lined up");
     }
 
-    /// What the monster lab's status line shows.
-    fn lab_status(&self) -> LabStatus {
-        let world = self.simulation.world();
-        let (mut alive, mut dead) = (0, 0);
-        for (id, _) in self.simulation.enemies() {
-            if world.is_alive(id) {
-                alive += 1;
-            } else {
-                dead += 1;
-            }
-        }
-        let latest = self.lab_latest.and_then(|id| {
-            let brain = self.simulation.brain(id)?;
-            let animation = self
-                .extractor
-                .monsters()
-                .visual(id)
-                .map_or("RIGID STAND-IN", |visual| visual.slot().as_str());
-            Some((brain.archetype().name.to_owned(), animation))
-        });
-        let player = world.health(self.simulation.player().entity);
-        LabStatus {
-            alive,
-            dead,
-            animated: self.extractor.monsters().animated(),
-            latest,
-            player_health: player.map_or((0.0, 0.0), |health| (health.current(), health.max())),
-        }
-    }
-
+    /// Applies an interface size, and writes it to disk if the interaction has finished.
+    ///
+    /// The value goes to the settings first and reaches the interface from there, so what is
+    /// drawn is always what would be written to the file, snapping included.
+    ///
+    /// Every screen is told, not only the HUD: a menu laid out at one scale and a HUD at
+    /// another would disagree about where things are, and the menu is itself the screen the
+    /// slider lives on — so the player watches the change happen to the thing they are
+    /// dragging. Nothing is rebuilt beyond the measurements, so this is a few dozen
+    /// multiplies rather than anything that could be felt.
     fn apply_ui_scale(&mut self, value: f32, persist: bool) {
         self.settings.set_ui_scale(value);
         let scale = UiScale::new(self.settings.settings().ui_scale);
@@ -2725,7 +2817,7 @@ impl App {
         self.menu.set_scale(scale);
         self.talent_menu.set_scale(scale);
         self.dungeon_map.set_scale(scale);
-        self.monster_lab.set_scale(scale);
+        self.playground_panels.set_scale(scale);
         self.character_menu.set_scale(scale);
         self.slot_menu.set_scale(scale);
         self.hud_editor.layout(scale, self.renderer.size());
@@ -2840,7 +2932,7 @@ impl App {
         let pointer = ctx.input().mouse_position();
         let on_lab = self.scene.is_monsters()
             && self
-                .monster_lab
+                .playground_panels
                 .wants_pointer((pointer.0 as f32, pointer.1 as f32), self.renderer.size());
         let orbit_allowed = !self.menu.is_open()
             && !on_lab
@@ -3125,9 +3217,12 @@ impl App {
         }
         self.push_affected_highlights(viewport);
         if self.scene.is_monsters() {
-            let status = self.lab_status();
-            self.monster_lab
-                .push(self.game_ui.list_mut(), viewport, &status);
+            self.playground_panels.push(
+                self.game_ui.list_mut(),
+                viewport,
+                &self.playground,
+                &self.simulation,
+            );
         }
         // The minimap with the HUD, then the full-screen map over everything but the windows
         // and menus that can be opened on top of it.
@@ -4965,7 +5060,7 @@ impl Application for App {
                 .wants_pointer((pointer.0 as f32, pointer.1 as f32), self.renderer.size())
                 || (self.scene.is_monsters()
                     && self
-                        .monster_lab
+                        .playground_panels
                         .wants_pointer((pointer.0 as f32, pointer.1 as f32), self.renderer.size()));
             if wheel != 0.0 && !on_map {
                 self.controller.zoom(wheel);
@@ -4973,7 +5068,9 @@ impl Application for App {
             self.commands.clear();
             // The collision scene issues movement and jump only: it has no abilities and no
             // targets, and its digits stand the character at a test station instead.
-            if self.scene.is_collision() {
+            if self.playground_owns_keyboard() {
+                // The playground's search field is typing: every key is a letter in it.
+            } else if self.scene.is_collision() {
                 self.bindings.write_movement_commands(
                     ctx.input(),
                     self.controller.yaw,
@@ -4997,6 +5094,11 @@ impl Application for App {
             // twice. There is no menu case here — a shared world does not stop because one
             // player opened a settings screen.
             self.simulation.advance(ctx.time().real_delta());
+            if self.scene.is_monsters() {
+                // A boss's adds become the encounter's; members something else took away
+                // are forgotten. A few comparisons over this frame's events.
+                self.playground.observe(&self.simulation);
+            }
         }
 
         {
@@ -6119,15 +6221,16 @@ fn log_controls(args: &Args, demo: Option<&DemoScene>) {
         }
         None if args.scene.is_monsters() => {
             log::info!(
-                "monster lab: pick a monster in the panel and spawn it; you have {} health",
-                TEST_PLAYER_HEALTH as u64
+                "monster playground: tick monsters on the left, spawn them, fight; you have {} health",
+                args.test_health as u64
             );
-            log::info!("  UP / DOWN        choose a monster (or click one)");
-            log::info!("  ENTER            spawn it in front of you");
+            log::info!("  CLICK A ROW      choose or drop a monster (UP / DOWN + RIGHT also work)");
+            log::info!("  CTRL+F           search the library");
+            log::info!("  ENTER            spawn everything chosen in front of you");
+            log::info!("  DELETE           reset the encounter: every playground monster goes");
+            log::info!("  K                kill the encounter: their deaths play");
             log::info!("  P                passive spawns: they wait until you hit them");
-            log::info!("  K                kill every monster: their deaths play");
-            log::info!("  DELETE           remove every monster");
-            log::info!("  L                hide or show the panel");
+            log::info!("  L                hide or show the panels");
         }
         None if args.scene.is_encounter() => {
             log::info!("encounter demo: walk forward to be noticed; BACKSPACE resets the fight");

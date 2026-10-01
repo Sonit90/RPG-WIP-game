@@ -552,6 +552,14 @@ fn icon_texels(icon: UiIcon) -> [&'static [u8]; ICON_VARIANTS] {
         UiIcon::AuraInferno => raster::AURA_INFERNO,
         UiIcon::AuraBloodWard => raster::AURA_BLOOD_WARD,
         UiIcon::AuraScorched => raster::AURA_SCORCHED,
+        UiIcon::AuraFortitude => raster::AURA_FORTITUDE,
+        UiIcon::AuraBattleShout => raster::AURA_BATTLE_SHOUT,
+        UiIcon::AuraArcaneIntellect => raster::AURA_ARCANE_INTELLECT,
+        UiIcon::AuraBloodlust => raster::AURA_BLOODLUST,
+        UiIcon::AuraRegeneration => raster::AURA_REGENERATION,
+        UiIcon::AuraCurseOfWeakness => raster::AURA_CURSE_OF_WEAKNESS,
+        UiIcon::AuraWitheringPlague => raster::AURA_WITHERING_PLAGUE,
+        UiIcon::AuraMagicVulnerability => raster::AURA_MAGIC_VULNERABILITY,
     }
 }
 

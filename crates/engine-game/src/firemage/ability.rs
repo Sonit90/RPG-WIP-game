@@ -1792,7 +1792,7 @@ pub static ABILITIES: [AbilityDef; ABILITY_COUNT] = [
         damage_type: DamageType::Nature,
         id: FireAbility::NaturesCleanse,
         name: "NATURES CLEANSE",
-        description: "REMOVES MAGIC AND POISON FROM AN ALLY. NOT EMPOWERABLE",
+        description: "REMOVES MAGIC, POISONS, CURSES AND DISEASES FROM AN ALLY. NOT EMPOWERABLE",
         target: TargetMode::Friendly,
         cast_time: 0.0,
         cooldown: 8.0,

@@ -19,8 +19,11 @@
 //! concerned — it is attributed to the ability that applied it, and to the caster.
 
 use crate::ability::AbilityId;
+use crate::character::Stat;
 use crate::combat::DamageType;
+use crate::druid::tuning::{NATURES_EXPOSURE_PER_STACK, WILD_RUSH_REDUCTION, WILD_RUSH_SPEED};
 use crate::entity::EntityId;
+use crate::warrior::tuning::WAR_STOMP_ATTACK_SPEED_PER_STACK;
 
 /// Seconds between the damage ticks of a lasting status.
 ///
@@ -28,11 +31,12 @@ use crate::entity::EntityId;
 /// scaled: what is left is readable off the overlay without arithmetic.
 pub const STATUS_TICK_INTERVAL: f32 = 1.0;
 
-/// Statuses the simulation knows.
+/// Every lasting effect in the game: the keys of the global effect registry.
 ///
-/// One kind so far, because one is what proves the mechanism. The set is an enum rather
-/// than a string or a registry id so a `match` over every status is exhaustive and adding
-/// one is a compile error everywhere it must be handled.
+/// An enum rather than a string id, so a `match` over every effect is exhaustive and adding
+/// one is a compile error everywhere it must be handled. What each one *is* — its name, its
+/// class, its stacks, its dispel school, what it does to stats — is its row in
+/// [`STATUS_DEFS`], read through [`StatusKind::definition`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum StatusKind {
     /// Damage over time. Consumed by Detonate.
@@ -103,6 +107,22 @@ pub enum StatusKind {
     /// How much slower is the status's [`Status::magnitude`], so one kind serves every slow
     /// in the roster and the most recent one applied is the one that holds.
     Crippled,
+    /// More Stamina, so more maximum health. Stacks to three.
+    Fortitude,
+    /// More Strength.
+    BattleShout,
+    /// More Intellect.
+    ArcaneIntellect,
+    /// Haste, damage and speed: the burst buff.
+    Bloodlust,
+    /// Healing every second.
+    Regeneration,
+    /// A curse: less damage dealt.
+    CurseOfWeakness,
+    /// A disease: less Stamina and slower, and a little damage, per stack.
+    WitheringPlague,
+    /// More magic damage taken, and some physical.
+    MagicVulnerability,
 }
 
 /// How a harmful effect is classified for dispelling.
@@ -116,9 +136,9 @@ pub enum DispelSchool {
     Magic,
     /// Poisons.
     Poison,
-    /// Curses. Nothing applies one yet.
+    /// Curses: Crippled, Curse of Weakness.
     Curse,
-    /// Diseases. Nothing applies one yet.
+    /// Diseases: Withering Plague.
     Disease,
 }
 
@@ -135,31 +155,224 @@ impl DispelSchool {
     }
 }
 
+/// Which damage types an [`EffectModifier`] reaches, as a small set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Schools(u8);
+
+impl Schools {
+    /// Every damage type.
+    pub const ALL: Self = Self(0b1111);
+    /// Weapons and impacts.
+    pub const PHYSICAL: Self = Self(1 << 0);
+    /// Fire, Arcane and Nature: everything that is not a weapon.
+    pub const MAGIC: Self = Self(0b1110);
+    /// Nature and Arcane: what Nature's Exposure amplifies.
+    pub const NATURE_ARCANE: Self = Self((1 << 2) | (1 << 3));
+
+    /// Whether `damage_type` is in the set.
+    #[must_use]
+    pub const fn contains(self, damage_type: DamageType) -> bool {
+        let bit = match damage_type {
+            DamageType::Physical => 1 << 0,
+            DamageType::Fire => 1 << 1,
+            DamageType::Arcane => 1 << 2,
+            DamageType::Nature => 1 << 3,
+        };
+        self.0 & bit != 0
+    }
+
+    /// Short name for a readout: `"all"`, `"physical"`, `"magic"`, `"nature and arcane"`.
+    #[must_use]
+    pub fn describe(self) -> &'static str {
+        match self.0 {
+            0b1111 => "all",
+            0b0001 => "physical",
+            0b1110 => "magic",
+            0b1100 => "Nature and Arcane",
+            _ => "some",
+        }
+    }
+}
+
+/// What one effect does to whoever carries it, besides ticking.
+///
+/// **The one place an effect's stat change is written.** Gameplay reads these through
+/// [`StatusSet::move_speed_multiplier`], [`StatusSet::damage_taken_multiplier`] and the
+/// other evaluators below, for the player and a monster alike, so an effect cannot do one
+/// thing to the player and another to a skeleton: there is no second copy of the number.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum EffectModifier {
+    /// A character-sheet stat, flat, per stack. Only an entity with a character sheet — the
+    /// player — has stats for it to change.
+    Stat {
+        /// Which stat.
+        stat: crate::character::Stat,
+        /// Points per stack. Negative takes away.
+        per_stack: f32,
+    },
+    /// Movement speed, as a fraction per stack: `0.5` is half as fast again, `-0.3` is thirty
+    /// per cent slower.
+    MoveSpeed {
+        /// Fraction per stack.
+        per_stack: f32,
+    },
+    /// Slower by the status's own [`Status::magnitude`]: one kind for every slow, each
+    /// application saying how strong it is.
+    Slow,
+    /// Attack speed, as a fraction per stack. Negative is slower.
+    AttackSpeed {
+        /// Fraction per stack.
+        per_stack: f32,
+    },
+    /// More (or, negative, less) damage of `schools` taken, as a fraction per stack. Applied
+    /// where damage is applied, whoever dealt it.
+    DamageTaken {
+        /// Which damage types.
+        schools: Schools,
+        /// Fraction per stack.
+        per_stack: f32,
+    },
+    /// A flat share taken off every hit, where hits are mitigated. Does not stack.
+    DamageReduction {
+        /// Fraction, `0..1`.
+        fraction: f32,
+    },
+    /// More (or, negative, less) damage dealt, as a fraction per stack.
+    DamageDealt {
+        /// Fraction per stack.
+        per_stack: f32,
+    },
+}
+
+/// Whether an effect is something the bearer wants.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum EffectClass {
+    /// Helpful.
+    Buff,
+    /// Harmful.
+    Debuff,
+}
+
+/// Everything about one effect, defined once.
+///
+/// **The global effect registry is [`STATUS_DEFS`]**: one row per [`StatusKind`], read by the
+/// simulation when an effect is applied, ticked, dispelled or evaluated, and by the interface
+/// for its name, description and border. A player and a monster carrying the same kind carry
+/// a [`Status`] that points at the same row.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct StatusDef {
+    /// Which effect. A row's kind is its index's kind — a test holds the table to it.
+    pub kind: StatusKind,
+    /// A stable lower-case id: `"natures_exposure"`. Never renamed.
+    pub id: &'static str,
+    /// Upper case, for the developer overlay's font.
+    pub overlay_name: &'static str,
+    /// The name a player reads.
+    pub name: &'static str,
+    /// What it does, in a sentence, for a tooltip.
+    pub description: &'static str,
+    /// Buff or debuff.
+    pub class: EffectClass,
+    /// The school a dispel has to name, if any. Only a debuff in a school is dispellable.
+    pub dispel: Option<DispelSchool>,
+    /// The tallest it may stack on one bearer. One refreshes rather than stacks.
+    pub max_stacks: u8,
+    /// The kind of damage its ticks deal.
+    pub damage_type: DamageType,
+    /// Whether its ticks restore health rather than remove it.
+    pub heals: bool,
+    /// What it does to the bearer's stats while it is on them.
+    pub modifiers: &'static [EffectModifier],
+    /// What a generic application — one not made by an ability, such as the test bed's —
+    /// gives it.
+    pub generic: GenericApplication,
+    /// Whether anything but its owning system may apply it. Respawn protection is the
+    /// lifecycle's own clock and is never applied from outside.
+    pub applicable: bool,
+}
+
+/// The numbers an effect gets when it is applied by something other than an ability, which
+/// has its own.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GenericApplication {
+    /// Seconds it lasts unless told otherwise.
+    pub duration: f32,
+    /// Damage or healing each tick, per stack. Zero for an effect that does not tick.
+    pub per_tick: f32,
+    /// Its strength, for an effect that reads one (a slow).
+    pub magnitude: f32,
+}
+
+impl GenericApplication {
+    const fn new(duration: f32, per_tick: f32, magnitude: f32) -> Self {
+        Self {
+            duration,
+            per_tick,
+            magnitude,
+        }
+    }
+}
+
+/// How many effects exist.
+pub const STATUS_KIND_COUNT: usize = 27;
+
 impl StatusKind {
+    /// Every effect, in registry order.
+    pub const ALL: [Self; STATUS_KIND_COUNT] = [
+        Self::Burning,
+        Self::Bleeding,
+        Self::Recuperating,
+        Self::Recovering,
+        Self::Sundered,
+        Self::Moonfire,
+        Self::Sunfire,
+        Self::AstralSunfire,
+        Self::NaturesExposure,
+        Self::Rejuvenation,
+        Self::Regrowth,
+        Self::Lifebloom,
+        Self::WildGrowth,
+        Self::AstralWrath,
+        Self::WildRush,
+        Self::Poisoned,
+        Self::RespawnProtection,
+        Self::Rended,
+        Self::Crippled,
+        Self::Fortitude,
+        Self::BattleShout,
+        Self::ArcaneIntellect,
+        Self::Bloodlust,
+        Self::Regeneration,
+        Self::CurseOfWeakness,
+        Self::WitheringPlague,
+        Self::MagicVulnerability,
+    ];
+
+    /// Its row in [`STATUS_DEFS`].
+    #[must_use]
+    pub const fn index(self) -> usize {
+        self as usize
+    }
+
+    /// Everything about it: the registry row.
+    #[must_use]
+    pub fn definition(self) -> &'static StatusDef {
+        &STATUS_DEFS[self.index()]
+    }
+
+    /// The kind whose id is `id`, ignoring case.
+    #[must_use]
+    pub fn from_id(id: &str) -> Option<Self> {
+        let id = id.trim();
+        Self::ALL
+            .into_iter()
+            .find(|kind| kind.definition().id.eq_ignore_ascii_case(id))
+    }
+
     /// Short uppercase name, for the developer overlay's font.
     #[must_use]
     pub fn as_str(self) -> &'static str {
-        match self {
-            Self::RespawnProtection => "CANNOT BE RESPAWNED",
-            Self::Burning => "BURNING",
-            Self::Bleeding => "BLEEDING",
-            Self::Recuperating => "RECUPERATING",
-            Self::Recovering => "RECOVERING",
-            Self::Sundered => "SUNDERED",
-            Self::Moonfire => "MOONFIRE",
-            Self::Sunfire => "SUNFIRE",
-            Self::AstralSunfire => "ASTRAL SUNFIRE",
-            Self::NaturesExposure => "NATURES EXPOSURE",
-            Self::Rejuvenation => "REJUVENATION",
-            Self::Regrowth => "REGROWTH",
-            Self::Lifebloom => "LIFEBLOOM",
-            Self::WildGrowth => "WILD GROWTH",
-            Self::AstralWrath => "ASTRAL WRATH",
-            Self::WildRush => "WILD RUSH",
-            Self::Poisoned => "POISONED",
-            Self::Rended => "RENDED",
-            Self::Crippled => "CRIPPLED",
-        }
+        self.definition().overlay_name
     }
 
     /// The name this effect is shown to a player under.
@@ -167,33 +380,15 @@ impl StatusKind {
     /// [`StatusKind::as_str`] is the *developer overlay's* name: uppercase, because that is
     /// the font the overlay and the unit frames are drawn in. This is the effect's actual
     /// name, in the case it is written in, for anything that needs to print it as prose.
-    ///
-    /// The two exist separately because "CANNOT BE RESPAWNED" and "Cannot be respawned" are
-    /// the same effect said to two audiences, and a single string would have to be wrong for
-    /// one of them.
     #[must_use]
     pub fn display_name(self) -> &'static str {
-        match self {
-            Self::RespawnProtection => "Cannot be respawned",
-            Self::Burning => "Burning",
-            Self::Bleeding => "Bleeding",
-            Self::Recuperating => "Recuperating",
-            Self::Recovering => "Recovering",
-            Self::Sundered => "Sundered",
-            Self::Moonfire => "Moonfire",
-            Self::Sunfire => "Sunfire",
-            Self::AstralSunfire => "Astral Sunfire",
-            Self::NaturesExposure => "Nature's Exposure",
-            Self::Rejuvenation => "Rejuvenation",
-            Self::Regrowth => "Regrowth",
-            Self::Lifebloom => "Lifebloom",
-            Self::WildGrowth => "Wild Growth",
-            Self::AstralWrath => "Astral Wrath",
-            Self::WildRush => "Wild Rush",
-            Self::Poisoned => "Poisoned",
-            Self::Rended => "Rended",
-            Self::Crippled => "Crippled",
-        }
+        self.definition().name
+    }
+
+    /// What it does, in a sentence.
+    #[must_use]
+    pub fn description(self) -> &'static str {
+        self.definition().description
     }
 
     /// Which school a dispel has to name to remove this, or `None` if nothing can.
@@ -203,54 +398,13 @@ impl StatusKind {
     /// here - see [`StatusKind::is_harmful`].
     #[must_use]
     pub fn dispel_school(self) -> Option<DispelSchool> {
-        match self {
-            Self::Burning
-            | Self::Moonfire
-            | Self::Sunfire
-            | Self::AstralSunfire
-            | Self::NaturesExposure
-            | Self::Sundered => Some(DispelSchool::Magic),
-            Self::Poisoned => Some(DispelSchool::Poison),
-            // A crippling shot is a curse on the legs: the Druid can take it off. The bleed
-            // below is a wound, and nothing removes a wound with a spell.
-            Self::Crippled => Some(DispelSchool::Curse),
-            // A bleed is a wound. Nothing in the game removes one with a spell, which is the
-            // point of the exception: a dispel that removed everything would be a dispel
-            // nothing had to be chosen for.
-            Self::Bleeding
-            | Self::Rended
-            | Self::Recuperating
-            | Self::Recovering
-            | Self::Rejuvenation
-            | Self::Regrowth
-            | Self::Lifebloom
-            | Self::WildGrowth
-            | Self::AstralWrath
-            // Respawn protection is not something an enemy can take off the player: it is
-            // the lifecycle's own bookkeeping, and a dispel that removed it would be a
-            // dispel that could delete a player.
-            | Self::RespawnProtection
-            | Self::WildRush => None,
-        }
+        self.definition().dispel
     }
 
     /// Whether the bearer would rather not have this.
     #[must_use]
     pub fn is_harmful(self) -> bool {
-        !matches!(
-            self,
-            Self::Recuperating
-                | Self::Recovering
-                | Self::Rejuvenation
-                | Self::Regrowth
-                | Self::Lifebloom
-                | Self::WildGrowth
-                | Self::AstralWrath
-                | Self::WildRush
-                // Not harmful: it is the thing standing between the player and being killed
-                // repeatedly, and it is over in twenty seconds.
-                | Self::RespawnProtection
-        )
+        self.definition().class == EffectClass::Debuff
     }
 
     /// Whether a dispel that names its school may remove it.
@@ -275,27 +429,7 @@ impl StatusKind {
     /// The kind of damage this status deals when it ticks.
     #[must_use]
     pub fn damage_type(self) -> DamageType {
-        match self {
-            Self::Burning => DamageType::Fire,
-            Self::Bleeding
-            | Self::Rended
-            | Self::Crippled
-            | Self::Recuperating
-            | Self::Recovering
-            | Self::Sundered => DamageType::Physical,
-            Self::Moonfire
-            | Self::Sunfire
-            | Self::AstralSunfire
-            | Self::NaturesExposure
-            | Self::Rejuvenation
-            | Self::Regrowth
-            | Self::Lifebloom
-            | Self::WildGrowth
-            | Self::AstralWrath
-            | Self::WildRush
-            | Self::RespawnProtection
-            | Self::Poisoned => DamageType::Nature,
-        }
+        self.definition().damage_type
     }
 
     /// How many times this status may stack on one bearer.
@@ -305,45 +439,387 @@ impl StatusKind {
     /// about how tall a stack of War Stomp is.
     #[must_use]
     pub fn max_stacks(self) -> u8 {
-        match self {
-            Self::Burning | Self::Bleeding | Self::Recovering | Self::Crippled => 1,
-            // The ceiling a single application may raise; each ability narrows it to its own
-            // with `Status::max_stacks`, so the Ghoul's eight and the empowered Ghoul's ten are
-            // the table's numbers, not this one.
-            Self::Rended => 10,
-            Self::Recuperating => 5,
-            Self::Sundered => 8,
-            // Fifteen, which is the forty-five per cent ceiling the design states divided by
-            // the three per cent one stack is worth. One number, in one place.
-            Self::NaturesExposure => 15,
-            Self::Moonfire
-            | Self::Sunfire
-            | Self::AstralSunfire
-            | Self::Rejuvenation
-            | Self::Regrowth
-            | Self::Lifebloom
-            | Self::WildGrowth
-            | Self::AstralWrath
-            | Self::WildRush
-            | Self::RespawnProtection
-            | Self::Poisoned => 1,
-        }
+        self.definition().max_stacks
     }
 
-    /// Whether a tick of this status restores health rather than removing it.
+    /// Whether a tick of this status restores health rather than removes it.
     #[must_use]
     pub fn heals(self) -> bool {
-        matches!(
-            self,
-            Self::Recuperating
-                | Self::Recovering
-                | Self::Rejuvenation
-                | Self::Regrowth
-                | Self::Lifebloom
-                | Self::WildGrowth
-        )
+        self.definition().heals
     }
 }
+
+/// A buff with nothing particular about it, for the rows below to override.
+const BUFF: StatusDef = StatusDef {
+    kind: StatusKind::Burning,
+    id: "",
+    overlay_name: "",
+    name: "",
+    description: "",
+    class: EffectClass::Buff,
+    dispel: None,
+    max_stacks: 1,
+    damage_type: DamageType::Nature,
+    heals: false,
+    modifiers: &[],
+    generic: GenericApplication::new(30.0, 0.0, 0.0),
+    applicable: true,
+};
+
+/// A debuff with nothing particular about it.
+const DEBUFF: StatusDef = StatusDef {
+    class: EffectClass::Debuff,
+    ..BUFF
+};
+
+/// **The global effect registry.** One row per [`StatusKind`], in [`StatusKind::ALL`] order.
+///
+/// The last eight rows are applied by nothing in the shipping roster yet. Like Poisoned
+/// before them, they exist so the rules every effect follows — stat changes, curses and
+/// diseases, dispels — have something to be written and tested against, and so content can
+/// use them by naming them.
+pub static STATUS_DEFS: [StatusDef; STATUS_KIND_COUNT] = [
+    StatusDef {
+        kind: StatusKind::Burning,
+        id: "burning",
+        overlay_name: "BURNING",
+        name: "Burning",
+        description: "Taking fire damage every second.",
+        dispel: Some(DispelSchool::Magic),
+        damage_type: DamageType::Fire,
+        generic: GenericApplication::new(10.0, 8.0, 0.0),
+        ..DEBUFF
+    },
+    StatusDef {
+        kind: StatusKind::Bleeding,
+        id: "bleeding",
+        overlay_name: "BLEEDING",
+        name: "Bleeding",
+        description: "Bleeding for a share of the Warrior's maximum health every second.",
+        damage_type: DamageType::Physical,
+        generic: GenericApplication::new(10.0, 8.0, 0.0),
+        ..DEBUFF
+    },
+    StatusDef {
+        kind: StatusKind::Recuperating,
+        id: "recuperating",
+        overlay_name: "RECUPERATING",
+        name: "Recuperating",
+        description: "Healing a share of maximum health every second.",
+        max_stacks: 5,
+        damage_type: DamageType::Physical,
+        heals: true,
+        generic: GenericApplication::new(10.0, 5.0, 0.0),
+        ..BUFF
+    },
+    StatusDef {
+        kind: StatusKind::Recovering,
+        id: "recovering",
+        overlay_name: "RECOVERING",
+        name: "Recovering",
+        description: "Healing back the damage Adrenaline banked.",
+        damage_type: DamageType::Physical,
+        heals: true,
+        generic: GenericApplication::new(6.0, 5.0, 0.0),
+        ..BUFF
+    },
+    StatusDef {
+        kind: StatusKind::Sundered,
+        id: "sundered",
+        overlay_name: "SUNDERED",
+        name: "Sundered",
+        description: "Attacking 2% slower per stack.",
+        dispel: Some(DispelSchool::Magic),
+        max_stacks: 8,
+        damage_type: DamageType::Physical,
+        modifiers: &[EffectModifier::AttackSpeed {
+            per_stack: -WAR_STOMP_ATTACK_SPEED_PER_STACK,
+        }],
+        generic: GenericApplication::new(12.0, 0.0, 0.0),
+        ..DEBUFF
+    },
+    StatusDef {
+        kind: StatusKind::Moonfire,
+        id: "moonfire",
+        overlay_name: "MOONFIRE",
+        name: "Moonfire",
+        description: "Taking Nature damage every second.",
+        dispel: Some(DispelSchool::Magic),
+        generic: GenericApplication::new(16.0, 8.0, 0.0),
+        ..DEBUFF
+    },
+    StatusDef {
+        kind: StatusKind::Sunfire,
+        id: "sunfire",
+        overlay_name: "SUNFIRE",
+        name: "Sunfire",
+        description: "Taking Nature damage every second.",
+        dispel: Some(DispelSchool::Magic),
+        generic: GenericApplication::new(12.0, 8.0, 0.0),
+        ..DEBUFF
+    },
+    StatusDef {
+        kind: StatusKind::AstralSunfire,
+        id: "astral_sunfire",
+        overlay_name: "ASTRAL SUNFIRE",
+        name: "Astral Sunfire",
+        description: "Damage dealt to this target heals the party for a share of it.",
+        dispel: Some(DispelSchool::Magic),
+        generic: GenericApplication::new(12.0, 0.0, 0.0),
+        ..DEBUFF
+    },
+    StatusDef {
+        kind: StatusKind::NaturesExposure,
+        id: "natures_exposure",
+        overlay_name: "NATURES EXPOSURE",
+        name: "Nature's Exposure",
+        description: "Taking 3% more Nature and Arcane damage per stack.",
+        dispel: Some(DispelSchool::Magic),
+        // Fifteen, which is the forty-five per cent ceiling the design states divided by
+        // the three per cent one stack is worth. One number, in one place.
+        max_stacks: 15,
+        modifiers: &[EffectModifier::DamageTaken {
+            schools: Schools::NATURE_ARCANE,
+            per_stack: NATURES_EXPOSURE_PER_STACK,
+        }],
+        generic: GenericApplication::new(15.0, 0.0, 0.0),
+        ..DEBUFF
+    },
+    StatusDef {
+        kind: StatusKind::Rejuvenation,
+        id: "rejuvenation",
+        overlay_name: "REJUVENATION",
+        name: "Rejuvenation",
+        description: "Healing every second.",
+        heals: true,
+        generic: GenericApplication::new(12.0, 10.0, 0.0),
+        ..BUFF
+    },
+    StatusDef {
+        kind: StatusKind::Regrowth,
+        id: "regrowth",
+        overlay_name: "REGROWTH",
+        name: "Regrowth",
+        description: "Healing every second.",
+        heals: true,
+        generic: GenericApplication::new(12.0, 10.0, 0.0),
+        ..BUFF
+    },
+    StatusDef {
+        kind: StatusKind::Lifebloom,
+        id: "lifebloom",
+        overlay_name: "LIFEBLOOM",
+        name: "Lifebloom",
+        description: "Healing every second, and blooming when it ends.",
+        heals: true,
+        generic: GenericApplication::new(10.0, 6.0, 0.0),
+        ..BUFF
+    },
+    StatusDef {
+        kind: StatusKind::WildGrowth,
+        id: "wild_growth",
+        overlay_name: "WILD GROWTH",
+        name: "Wild Growth",
+        description: "Healing every second.",
+        heals: true,
+        generic: GenericApplication::new(7.0, 10.0, 0.0),
+        ..BUFF
+    },
+    StatusDef {
+        kind: StatusKind::AstralWrath,
+        id: "astral_wrath",
+        overlay_name: "ASTRAL WRATH",
+        name: "Astral Wrath",
+        description: "Wrath spreads Nature's Exposure around its target.",
+        generic: GenericApplication::new(10.0, 0.0, 0.0),
+        ..BUFF
+    },
+    StatusDef {
+        kind: StatusKind::WildRush,
+        id: "wild_rush",
+        overlay_name: "WILD RUSH",
+        name: "Wild Rush",
+        description: "50% faster and taking 30% less damage.",
+        modifiers: &[
+            EffectModifier::MoveSpeed {
+                per_stack: WILD_RUSH_SPEED,
+            },
+            EffectModifier::DamageReduction {
+                fraction: WILD_RUSH_REDUCTION,
+            },
+        ],
+        generic: GenericApplication::new(6.0, 0.0, 0.0),
+        ..BUFF
+    },
+    StatusDef {
+        kind: StatusKind::Poisoned,
+        id: "poisoned",
+        overlay_name: "POISONED",
+        name: "Poisoned",
+        description: "Taking Nature damage every second.",
+        dispel: Some(DispelSchool::Poison),
+        generic: GenericApplication::new(12.0, 6.0, 0.0),
+        ..DEBUFF
+    },
+    StatusDef {
+        kind: StatusKind::RespawnProtection,
+        id: "respawn_protection",
+        overlay_name: "CANNOT BE RESPAWNED",
+        name: "Cannot be respawned",
+        description: "Recently respawned: cannot be respawned again yet.",
+        // Not harmful: it is the thing standing between the player and being killed
+        // repeatedly, and it is over in twenty seconds. Not dispellable: it is the
+        // lifecycle's own bookkeeping, and a dispel that removed it could delete a player.
+        generic: GenericApplication::new(20.0, 0.0, 0.0),
+        applicable: false,
+        ..BUFF
+    },
+    StatusDef {
+        kind: StatusKind::Rended,
+        id: "rended",
+        overlay_name: "RENDED",
+        name: "Rended",
+        description: "Bleeding every second. Stacks.",
+        // The ceiling a single application may raise; each ability narrows it to its own
+        // with `Status::max_stacks`, so the Ghoul's eight and the empowered Ghoul's ten are
+        // the table's numbers, not this one.
+        max_stacks: 10,
+        damage_type: DamageType::Physical,
+        generic: GenericApplication::new(10.0, 4.0, 0.0),
+        ..DEBUFF
+    },
+    StatusDef {
+        kind: StatusKind::Crippled,
+        id: "crippled",
+        overlay_name: "CRIPPLED",
+        name: "Crippled",
+        description: "Moving slower.",
+        // A crippling shot is a curse on the legs: the Druid can take it off. A bleed is a
+        // wound, and nothing removes a wound with a spell.
+        dispel: Some(DispelSchool::Curse),
+        damage_type: DamageType::Physical,
+        modifiers: &[EffectModifier::Slow],
+        generic: GenericApplication::new(8.0, 0.0, 0.4),
+        ..DEBUFF
+    },
+    StatusDef {
+        kind: StatusKind::Fortitude,
+        id: "fortitude",
+        overlay_name: "FORTITUDE",
+        name: "Fortitude",
+        description: "20 more Stamina per stack.",
+        max_stacks: 3,
+        modifiers: &[EffectModifier::Stat {
+            stat: Stat::Stamina,
+            per_stack: 20.0,
+        }],
+        generic: GenericApplication::new(60.0, 0.0, 0.0),
+        ..BUFF
+    },
+    StatusDef {
+        kind: StatusKind::BattleShout,
+        id: "battle_shout",
+        overlay_name: "BATTLE SHOUT",
+        name: "Battle Shout",
+        description: "40 more Strength.",
+        modifiers: &[EffectModifier::Stat {
+            stat: Stat::Strength,
+            per_stack: 40.0,
+        }],
+        generic: GenericApplication::new(60.0, 0.0, 0.0),
+        ..BUFF
+    },
+    StatusDef {
+        kind: StatusKind::ArcaneIntellect,
+        id: "arcane_intellect",
+        overlay_name: "ARCANE INTELLECT",
+        name: "Arcane Intellect",
+        description: "40 more Intellect.",
+        modifiers: &[EffectModifier::Stat {
+            stat: Stat::Intellect,
+            per_stack: 40.0,
+        }],
+        generic: GenericApplication::new(60.0, 0.0, 0.0),
+        ..BUFF
+    },
+    StatusDef {
+        kind: StatusKind::Bloodlust,
+        id: "bloodlust",
+        overlay_name: "BLOODLUST",
+        name: "Bloodlust",
+        description: "30% more haste, 20% more damage dealt and 10% faster.",
+        modifiers: &[
+            EffectModifier::Stat {
+                stat: Stat::Haste,
+                per_stack: 30.0 * crate::character::RATING_PER_PERCENT,
+            },
+            EffectModifier::DamageDealt { per_stack: 0.20 },
+            EffectModifier::MoveSpeed { per_stack: 0.10 },
+        ],
+        generic: GenericApplication::new(40.0, 0.0, 0.0),
+        ..BUFF
+    },
+    StatusDef {
+        kind: StatusKind::Regeneration,
+        id: "regeneration",
+        overlay_name: "REGENERATION",
+        name: "Regeneration",
+        description: "Healing every second.",
+        heals: true,
+        generic: GenericApplication::new(20.0, 12.0, 0.0),
+        ..BUFF
+    },
+    StatusDef {
+        kind: StatusKind::CurseOfWeakness,
+        id: "curse_of_weakness",
+        overlay_name: "CURSE OF WEAKNESS",
+        name: "Curse of Weakness",
+        description: "Dealing 25% less damage.",
+        dispel: Some(DispelSchool::Curse),
+        modifiers: &[EffectModifier::DamageDealt { per_stack: -0.25 }],
+        generic: GenericApplication::new(30.0, 0.0, 0.0),
+        ..DEBUFF
+    },
+    StatusDef {
+        kind: StatusKind::WitheringPlague,
+        id: "withering_plague",
+        overlay_name: "WITHERING PLAGUE",
+        name: "Withering Plague",
+        description: "15 less Stamina and 10% slower per stack, and Nature damage every second.",
+        dispel: Some(DispelSchool::Disease),
+        max_stacks: 3,
+        modifiers: &[
+            EffectModifier::Stat {
+                stat: Stat::Stamina,
+                per_stack: -15.0,
+            },
+            EffectModifier::MoveSpeed { per_stack: -0.10 },
+        ],
+        generic: GenericApplication::new(24.0, 3.0, 0.0),
+        ..DEBUFF
+    },
+    StatusDef {
+        kind: StatusKind::MagicVulnerability,
+        id: "magic_vulnerability",
+        overlay_name: "MAGIC VULNERABILITY",
+        name: "Magic Vulnerability",
+        description: "Taking 15% more magic and 5% more physical damage per stack.",
+        dispel: Some(DispelSchool::Magic),
+        max_stacks: 3,
+        modifiers: &[
+            EffectModifier::DamageTaken {
+                schools: Schools::MAGIC,
+                per_stack: 0.15,
+            },
+            EffectModifier::DamageTaken {
+                schools: Schools::PHYSICAL,
+                per_stack: 0.05,
+            },
+        ],
+        generic: GenericApplication::new(24.0, 0.0, 0.0),
+        ..DEBUFF
+    },
+];
 
 /// Why a status ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -714,6 +1190,114 @@ impl StatusSet {
     /// Removes everything without reporting it. For arena setup and tests.
     pub fn clear(&mut self) {
         self.entries.clear();
+    }
+
+    // ------------------------------------------------------------------------------------
+    // What the effects on one bearer do to it, read from the registry. Every one of these is
+    // what gameplay multiplies by, for the player and for a monster alike.
+
+    /// Every modifier of every active status, with the status it belongs to.
+    fn modifiers(&self) -> impl Iterator<Item = (&Status, &'static EffectModifier)> + '_ {
+        self.entries.iter().flat_map(|status| {
+            status
+                .kind
+                .definition()
+                .modifiers
+                .iter()
+                .map(move |modifier| (status, modifier))
+        })
+    }
+
+    /// What the bearer's movement speed is multiplied by. One when nothing changes it.
+    #[must_use]
+    pub fn move_speed_multiplier(&self) -> f32 {
+        let mut multiplier = 1.0;
+        for (status, modifier) in self.modifiers() {
+            match *modifier {
+                EffectModifier::MoveSpeed { per_stack } => {
+                    multiplier *= (1.0 + per_stack * f32::from(status.stacks)).max(0.0);
+                }
+                // A slow is the status's own strength, so every slow in the roster is one
+                // status with one number on it.
+                EffectModifier::Slow => multiplier *= 1.0 - status.magnitude,
+                _ => {}
+            }
+        }
+        multiplier.clamp(0.1, 4.0)
+    }
+
+    /// What the bearer's attack speed is multiplied by: below one is slower.
+    #[must_use]
+    pub fn attack_speed_scale(&self) -> f32 {
+        let mut scale = 1.0;
+        for (status, modifier) in self.modifiers() {
+            if let EffectModifier::AttackSpeed { per_stack } = *modifier {
+                scale *= (1.0 + per_stack * f32::from(status.stacks)).max(0.0);
+            }
+        }
+        scale.clamp(0.1, 4.0)
+    }
+
+    /// What a hit of `damage_type` on the bearer is multiplied by.
+    #[must_use]
+    pub fn damage_taken_multiplier(&self, damage_type: DamageType) -> f32 {
+        let mut multiplier = 1.0;
+        for (status, modifier) in self.modifiers() {
+            if let EffectModifier::DamageTaken { schools, per_stack } = *modifier
+                && schools.contains(damage_type)
+            {
+                multiplier *= (1.0 + per_stack * f32::from(status.stacks)).max(0.0);
+            }
+        }
+        multiplier
+    }
+
+    /// The share every hit on the bearer loses where hits are mitigated, `0..1`.
+    #[must_use]
+    pub fn damage_reduction(&self) -> f32 {
+        let mut kept = 1.0;
+        for (_, modifier) in self.modifiers() {
+            if let EffectModifier::DamageReduction { fraction } = *modifier {
+                kept *= 1.0 - fraction.clamp(0.0, 1.0);
+            }
+        }
+        1.0 - kept
+    }
+
+    /// What the bearer's damage is multiplied by.
+    #[must_use]
+    pub fn damage_dealt_multiplier(&self) -> f32 {
+        let mut multiplier = 1.0;
+        for (status, modifier) in self.modifiers() {
+            if let EffectModifier::DamageDealt { per_stack } = *modifier {
+                multiplier *= (1.0 + per_stack * f32::from(status.stacks)).max(0.0);
+            }
+        }
+        multiplier
+    }
+
+    /// The character-sheet stats the bearer's effects add (or take away).
+    #[must_use]
+    pub fn stat_bonus(&self) -> crate::character::StatBlock {
+        let mut bonus = crate::character::StatBlock::default();
+        for (status, modifier) in self.modifiers() {
+            if let EffectModifier::Stat { stat, per_stack } = *modifier {
+                bonus.add(stat, per_stack * f32::from(status.stacks));
+            }
+        }
+        bonus
+    }
+
+    /// Removes every status `source` applied, without reporting it, and returns how many
+    /// went.
+    ///
+    /// What taking an entity out of the world entirely leaves to clean up: a bleed whose
+    /// author no longer exists is not a death the game is simulating but a leftover, and a
+    /// test bed that despawns a monster must not leave its poison ticking on the player.
+    pub fn remove_from(&mut self, source: EntityId) -> usize {
+        let before = self.entries.len();
+        self.entries.retain(|entry| entry.source != source);
+        before - self.entries.len()
     }
 
     /// Advances every status by one simulation step, appending what happened to `out`.
@@ -1153,6 +1737,88 @@ mod tests {
         statuses.tick(0.0, 1.0, &mut outcomes);
         assert!(outcomes.is_empty());
         assert_eq!(statuses.remaining(StatusKind::Burning), 6.0);
+    }
+
+    #[test]
+    fn the_registry_has_one_row_per_kind_in_order_with_unique_ids() {
+        assert_eq!(STATUS_DEFS.len(), StatusKind::ALL.len());
+        let mut ids = Vec::new();
+        for (index, kind) in StatusKind::ALL.into_iter().enumerate() {
+            let row = kind.definition();
+            assert_eq!(kind.index(), index, "{kind:?}");
+            assert_eq!(row.kind, kind, "row {index} is not {kind:?}");
+            assert!(
+                !row.name.is_empty() && !row.description.is_empty(),
+                "{kind:?}"
+            );
+            assert!(
+                row.id.chars().all(|c| c.is_ascii_lowercase() || c == '_'),
+                "{}",
+                row.id
+            );
+            assert!(!ids.contains(&row.id), "{} twice", row.id);
+            ids.push(row.id);
+            assert!(row.max_stacks >= 1, "{kind:?}");
+            assert!(row.generic.duration > 0.0, "{kind:?}");
+            // A buff is never something a dispel takes off.
+            if row.class == EffectClass::Buff {
+                assert!(!kind.is_dispellable(), "{kind:?}");
+            }
+        }
+        // Every dispel school has something in it to dispel.
+        for school in [
+            DispelSchool::Magic,
+            DispelSchool::Poison,
+            DispelSchool::Curse,
+            DispelSchool::Disease,
+        ] {
+            assert!(
+                StatusKind::ALL
+                    .into_iter()
+                    .any(|kind| kind.is_dispellable() && kind.dispel_school() == Some(school)),
+                "{school:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_evaluators_read_the_registry() {
+        let effect = |kind: StatusKind, stacks: u8| {
+            Status::new(kind, EntityId::new(0, 1), AbilityId::NONE, 10.0, 0.0).with_stacks(stacks)
+        };
+        let mut statuses = StatusSet::new();
+        assert_eq!(statuses.move_speed_multiplier(), 1.0);
+        statuses.apply(effect(StatusKind::Sundered, 8));
+        assert!((statuses.attack_speed_scale() - 0.84).abs() < 1e-6);
+        statuses.apply(effect(StatusKind::NaturesExposure, 10));
+        assert!((statuses.damage_taken_multiplier(DamageType::Nature) - 1.30).abs() < 1e-6);
+        assert_eq!(statuses.damage_taken_multiplier(DamageType::Fire), 1.0);
+        statuses.apply(effect(StatusKind::Crippled, 1).with_magnitude(0.4));
+        statuses.apply(effect(StatusKind::WildRush, 1));
+        assert!(
+            (statuses.move_speed_multiplier() - 0.9).abs() < 1e-6,
+            "1.5 × 0.6"
+        );
+        assert!((statuses.damage_reduction() - 0.30).abs() < 1e-6);
+        statuses.apply(effect(StatusKind::Fortitude, 2));
+        statuses.apply(effect(StatusKind::WitheringPlague, 1));
+        assert_eq!(statuses.stat_bonus().get(Stat::Stamina), 40.0 - 15.0);
+        statuses.apply(effect(StatusKind::CurseOfWeakness, 1));
+        assert!((statuses.damage_dealt_multiplier() - 0.75).abs() < 1e-6);
+    }
+
+    #[test]
+    fn removing_a_source_takes_only_what_it_applied() {
+        let mut statuses = StatusSet::new();
+        statuses.apply(burn(6.0, 8.0));
+        let mut bleed = burn(6.0, 4.0);
+        bleed.kind = StatusKind::Bleeding;
+        bleed.source = EntityId::new(7, 1);
+        statuses.apply(bleed);
+        assert_eq!(statuses.remove_from(EntityId::new(7, 1)), 1);
+        assert!(statuses.has(StatusKind::Burning));
+        assert!(!statuses.has(StatusKind::Bleeding));
+        assert_eq!(statuses.remove_from(EntityId::new(7, 1)), 0);
     }
 
     #[test]

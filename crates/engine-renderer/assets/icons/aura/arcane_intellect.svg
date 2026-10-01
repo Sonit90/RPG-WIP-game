@@ -1,0 +1,23 @@
+<svg version="1.1" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+<defs>
+<linearGradient id="arcane_intellect_panel" gradientUnits="userSpaceOnUse" x1="16" y1="496" x2="496" y2="16">
+<stop offset="0" stop-color="rgb(14, 12, 40)"></stop>
+<stop offset="1" stop-color="rgb(52, 40, 120)"></stop>
+</linearGradient>
+<radialGradient id="arcane_intellect_glow" gradientUnits="userSpaceOnUse" cx="256" cy="256" r="250">
+<stop offset="0" stop-color="rgb(170, 140, 255)" stop-opacity="0.55"></stop>
+<stop offset="0.6" stop-color="rgb(170, 140, 255)" stop-opacity="0.16"></stop>
+<stop offset="1" stop-color="rgb(170, 140, 255)" stop-opacity="0"></stop>
+</radialGradient>
+<clipPath id="arcane_intellect_tile"><path d="M 16 92 C 16 50 50 16 92 16 L 420 16 C 462 16 496 50 496 92 L 496 420 C 496 462 462 496 420 496 L 92 496 C 50 496 16 462 16 420 Z"></path></clipPath>
+</defs>
+<g clip-path="url(#arcane_intellect_tile)">
+<path fill="url(#arcane_intellect_panel)" d="M 0 0 L 512 0 L 512 512 L 0 512 Z"></path>
+<path fill="url(#arcane_intellect_glow)" d="M 0 0 L 512 0 L 512 512 L 0 512 Z"></path>
+<path fill="rgb(120,100,200)" d="M 96 330 L 256 370 L 416 330 L 416 410 L 256 450 L 96 410 Z"></path>
+<path fill="rgb(200,190,255)" d="M 112 320 L 252 354 L 252 430 L 112 396 Z"></path>
+<path fill="rgb(170,160,240)" d="M 400 320 L 260 354 L 260 430 L 400 396 Z"></path>
+<path fill="rgb(236,226,255)" d="M 256.0 70.0 L 287.1 164.9 L 382.0 196.0 L 287.1 227.1 L 256.0 322.0 L 224.9 227.1 L 130.0 196.0 L 224.9 164.9 Z"></path>
+<path fill="rgb(150,120,255)" d="M 295.6 156.4 L 276.0 196.0 L 295.6 235.6 L 256.0 216.0 L 216.4 235.6 L 236.0 196.0 L 216.4 156.4 L 256.0 176.0 Z"></path>
+</g>
+</svg>

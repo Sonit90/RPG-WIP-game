@@ -63,7 +63,8 @@ pub mod input;
 /// The dungeon map's design tokens: colour, type, spacing, radii, motion.
 pub mod map_style;
 pub mod menu;
-pub mod monster_lab;
+/// The Monster Combat Playground's panels: the library, the test controls, the encounter.
+pub mod monster_playground;
 pub mod paint;
 /// The raid frames: one filled, rounded cell per member.
 pub mod raid_frame;

@@ -417,11 +417,27 @@ pub enum UiIcon {
     AuraBloodWard,
     /// Molten ground's vulnerability: fire underfoot, and more of it taken.
     AuraScorched,
+    /// Fortitude: a tower shield with a cross of light.
+    AuraFortitude,
+    /// Battle Shout: a war horn and the shout leaving it.
+    AuraBattleShout,
+    /// Arcane Intellect: an arcane star over an open tome.
+    AuraArcaneIntellect,
+    /// Bloodlust: a blood drop with speed behind it.
+    AuraBloodlust,
+    /// Regeneration: a leaf with a healing cross.
+    AuraRegeneration,
+    /// Curse of Weakness: a broken sword inside a hex.
+    AuraCurseOfWeakness,
+    /// Withering Plague: a spiked spore.
+    AuraWitheringPlague,
+    /// Magic Vulnerability: a cracked orb of warding.
+    AuraMagicVulnerability,
 }
 
 impl UiIcon {
     /// Every icon, in atlas order.
-    pub const ALL: [Self; 89] = [
+    pub const ALL: [Self; 97] = [
         Self::Firebolt,
         Self::Meteor,
         Self::FlameCone,
@@ -511,6 +527,14 @@ impl UiIcon {
         Self::AuraInferno,
         Self::AuraBloodWard,
         Self::AuraScorched,
+        Self::AuraFortitude,
+        Self::AuraBattleShout,
+        Self::AuraArcaneIntellect,
+        Self::AuraBloodlust,
+        Self::AuraRegeneration,
+        Self::AuraCurseOfWeakness,
+        Self::AuraWitheringPlague,
+        Self::AuraMagicVulnerability,
     ];
 
     /// How many icons there are.

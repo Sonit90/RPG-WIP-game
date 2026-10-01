@@ -218,7 +218,8 @@ impl FromStr for Scene {
             "los" | "line-of-sight" | "sight" | "LOS" => Ok(Self::LineOfSight),
             "shadows" | "shadow" | "SHADOWS" => Ok(Self::Shadows),
             "graveyard" | "crypt" | "graveyard_crypt" | "GRAVEYARD" => Ok(Self::Graveyard),
-            "monsters" | "monster" | "bestiary" | "lab" | "MONSTERS" => Ok(Self::Monsters),
+            "monsters" | "monster" | "bestiary" | "lab" | "playground" | "monster_playground"
+            | "MONSTERS" => Ok(Self::Monsters),
             _ => Err(()),
         }
     }
@@ -280,9 +281,10 @@ options:
                          (default 4, combat scene only)
   --scene <name>         which scenario to load: combat (default), collision,
                          character, environment, vfx, audio, encounter, los,
-                         dungeon, graveyard, monsters or shadows. The monsters scene
-                         is the monster lab: a panel that spawns any monster in front
-                         of a player with a million health. The graveyard scene is the
+                         dungeon, graveyard, monsters (or playground) or shadows. The
+                         monsters scene is the Monster Combat Playground: choose any
+                         monsters, spawn them together in front of a player with a
+                         million health, fight them, reset, choose again. The graveyard scene is the
                          Graveyard Crypt, loaded from assets/scenes/graveyard_crypt.json
                          when it exists (the editor saves it) - a branching dungeon whose
                          boss is sealed until 100% completion. The shadows scene is the shadow test
@@ -363,10 +365,13 @@ options:
   --open-map             open the full-screen dungeon map once the level has loaded
   --map-select <n>       select the n-th encounter on it (0 is the first pack)
   --map-expand           open every card and ability of that selection
-  --spawn <ids>          monster lab: stand these monsters in a passive line in front
-                         of you at start, by table id (skeleton_warrior,crypt_ghoul) or
-                         all
-  --spawn-hostile        the --spawn line-up fights instead of waiting to be hit
+  --spawn <ids>          monster playground: choose these monsters and spawn them, passive,
+                         in front of you at start, by table id
+                         (skeleton_warrior,crypt_ghoul) or all
+  --spawn-hostile        the --spawn encounter fights instead of waiting to be hit
+  --test-health <n>      monster playground: the player's test health (default 1000000)
+  --effects <ids>        monster playground: open the Effects mode and put these effects
+                         on the player at start, by registry id (fortitude,poisoned) or all
   --autocast             the player casts on its own: the nearest enemy is selected and the
                          first three abilities are pressed in turn, every 0.6 s. Visual QA
                          of combat — damage numbers, nameplates, cast bars — with --screenshot
@@ -731,9 +736,14 @@ pub struct Args {
     pub map_select: Option<usize>,
     /// Open every monster card and ability of the selection. For screenshots.
     pub map_expand: bool,
-    /// Monsters the monster lab stands in a passive line in front of the player at start,
-    /// by table id: `skeleton_warrior`, `crypt_steward`, or `all`.
+    /// Monsters the monster playground chooses and spawns in front of the player at start,
+    /// passive, by table id: `skeleton_warrior`, `crypt_steward`, or `all`.
     pub spawn: Vec<String>,
+    /// The maximum health the monster playground's test health gives the player.
+    pub test_health: f32,
+    /// Effects the monster playground puts on the player at start, by registry id, or
+    /// `all`; the playground opens in Effects mode when there are any.
+    pub effects: Vec<String>,
     /// Whether the `--spawn` line-up fights rather than waiting to be attacked.
     pub spawn_hostile: bool,
     /// Whether the player fights on its own, for screenshots of combat.
@@ -790,6 +800,8 @@ impl Default for Args {
             open_map: false,
             map_select: None,
             spawn: Vec::new(),
+            test_health: engine_game::playground::PlaygroundConfig::DEFAULT_TEST_HEALTH,
+            effects: Vec::new(),
             spawn_hostile: false,
             autocast: false,
             map_expand: false,
@@ -832,7 +844,7 @@ impl Args {
                 Scene::LineOfSight => "myGame — line-of-sight course".to_owned(),
                 Scene::Shadows => "myGame — shadow course".to_owned(),
                 Scene::Graveyard => "myGame — the Graveyard Crypt".to_owned(),
-                Scene::Monsters => "myGame — monster lab".to_owned(),
+                Scene::Monsters => "myGame — monster playground".to_owned(),
             },
         }
     }
@@ -960,6 +972,29 @@ where
             "--map-expand" => args.map_expand = true,
             "--map-select" => args.map_select = Some(next_value(&mut iter, "--map-select")?),
             "--spawn-hostile" => args.spawn_hostile = true,
+            "--effects" => {
+                let raw = iter.next().ok_or(ArgsError::MissingValue("--effects"))?;
+                args.effects = raw
+                    .as_ref()
+                    .split(',')
+                    .map(|id| id.trim().to_owned())
+                    .filter(|id| !id.is_empty())
+                    .collect();
+            }
+            "--test-health" => {
+                let raw = iter
+                    .next()
+                    .ok_or(ArgsError::MissingValue("--test-health"))?;
+                let raw = raw.as_ref();
+                args.test_health = raw
+                    .parse::<f32>()
+                    .ok()
+                    .filter(|value| value.is_finite() && *value >= 1.0)
+                    .ok_or_else(|| ArgsError::InvalidValue {
+                        option: "--test-health",
+                        value: raw.to_owned(),
+                    })?;
+            }
             "--autocast" => args.autocast = true,
             "--spawn" => {
                 let raw = iter.next().ok_or(ArgsError::MissingValue("--spawn"))?;
@@ -1218,8 +1253,8 @@ mod tests {
     }
 
     #[test]
-    fn the_monster_lab_parses_with_its_line_up() {
-        for name in ["monsters", "monster", "bestiary", "lab"] {
+    fn the_monster_playground_parses_with_its_line_up() {
+        for name in ["monsters", "monster", "bestiary", "lab", "playground"] {
             let args = parse(["--scene", name]).expect("a monster lab name is valid");
             assert_eq!(args.scene, Scene::Monsters);
             assert!(args.scene.is_monsters());
@@ -1236,6 +1271,14 @@ mod tests {
         assert_eq!(args.spawn, vec!["skeleton_warrior", "crypt_ghoul"]);
         assert!(args.spawn_hostile);
         assert_eq!(Scene::Monsters.as_str(), "MONSTERS");
+        assert_eq!(args.test_health, 1_000_000.0, "a million unless asked");
+        let args = parse(["--scene", "playground", "--test-health", "50000"]).expect("valid");
+        assert_eq!(args.test_health, 50_000.0);
+        assert!(parse(["--test-health", "0"]).is_err());
+        assert!(parse(["--test-health", "lots"]).is_err());
+        let args =
+            parse(["--scene", "playground", "--effects", "fortitude, poisoned"]).expect("valid");
+        assert_eq!(args.effects, vec!["fortitude", "poisoned"]);
     }
 
     #[test]

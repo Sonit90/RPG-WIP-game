@@ -257,6 +257,18 @@ impl Navigator {
         })
     }
 
+    /// The ground under `position`, looked for from about its own height, and whether a body
+    /// fits standing on it.
+    ///
+    /// The same column a search reads, cache included, so a spot judged standable here is one
+    /// a monster put there can also walk away from. `None` where there is no ground at all.
+    pub fn ground_at(&mut self, collision: &CollisionWorld, position: Vec3) -> Option<(f32, bool)> {
+        let x = self.cell_of(position.x);
+        let z = self.cell_of(position.z);
+        self.column(collision, x, z, position.y)
+            .map(|column| (column.ground, column.walkable))
+    }
+
     /// Whether a body can step from ground `from` to ground `to`, `distance` metres apart.
     fn climbable(&self, from: f32, to: f32, distance: f32) -> bool {
         (to - from).abs() <= self.config.max_step + distance * self.config.max_slope.tan()

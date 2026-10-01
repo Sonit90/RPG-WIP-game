@@ -47,6 +47,39 @@ take off — harmful, and in a dispel school — and the border is that answer. 
 Class buffs, a monster's frenzy, stun and silence are never dispellable: they are not statuses,
 and no dispel reaches them.
 
+## The effect registry
+
+Every status is defined once, in `engine_game::status::STATUS_DEFS`: one `StatusDef` per
+`StatusKind` (`StatusKind::ALL`, `StatusKind::definition()`). A row holds the effect's stable
+id, its names, its tooltip sentence, buff or debuff, its dispel school, its stack ceiling, the
+damage type and whether its ticks heal, what a generic application gives it (duration, per-tick
+amount, magnitude), whether anything outside its owner may apply it, and **its stat
+modifiers**. `display_name`, `dispel_school`, `max_stacks`, `is_harmful` and the rest read the
+row; the interface's tooltip reads `StatusKind::description`. A player and a monster carrying
+the same kind carry a `Status` that points at the same row.
+
+| modifier | what reads it | example |
+| --- | --- | --- |
+| `Stat { stat, per_stack }` | `Simulation::character_stats` (the player's sheet; health follows Stamina) | Fortitude +20 Stamina, Withering Plague -15 Stamina |
+| `MoveSpeed { per_stack }` / `Slow` | the player's `move_speed_multiplier`, every monster's movement | Wild Rush +50%, Crippled by its magnitude |
+| `AttackSpeed { per_stack }` | every monster's attack speed, each tick | Sundered -2% |
+| `DamageTaken { schools, per_stack }` | `deal_damage`, for every target | Nature's Exposure +3% Nature/Arcane, Magic Vulnerability |
+| `DamageReduction { fraction }` | the player's defence profile; a monster's hits in `deal_damage` | Wild Rush 30% |
+| `DamageDealt { per_stack }` | `deal_damage`, for every source | Bloodlust +20%, Curse of Weakness -25% |
+
+War Stomp's attack speed, Nature's Exposure, Wild Rush and Crippled were hand-written per
+class before; they now go through these evaluators with the same numbers, so the same effect
+does the same thing to a player and to a skeleton (a crippled monster really walks slower).
+Stat-sheet modifiers only change an entity with a character sheet: the player.
+
+Eight rows are applied by nothing in the shipping roster yet, like Poisoned before them, so
+that stat effects, curses and diseases have something real to be tested and dispelled against:
+**Fortitude, Battle Shout, Arcane Intellect, Bloodlust, Regeneration** (buffs) and **Curse of
+Weakness** (curse), **Withering Plague** (disease), **Magic Vulnerability** (magic). Each has
+its own icon in `assets/icons/aura/`. Effects applied by name rather than by an ability go
+through `Simulation::apply_effect` / `remove_effect`, which announce `StatusApplied` /
+`StatusRemoved` like any other.
+
 ## Where an aura comes from
 
 `crate::aura::fill_auras` is the one place the simulation's scattered effect state is read:
@@ -72,7 +105,7 @@ protection, the one effect that runs while dead. Simulation changes: two read-on
 
 An effect that *is* an ability — Rejuvenation on a target, Shield Block on the Warrior, Flame
 Shield — wears that ability's icon, so the button pressed is what appears on the target. The
-seventeen that are not have their own SVG in `crates/engine-renderer/assets/icons/aura/`:
+twenty-five that are not have their own SVG in `crates/engine-renderer/assets/icons/aura/`:
 burning, bleeding, recovering, sundered, astral sunfire, nature's exposure, astral wrath,
 poisoned, respawn protection, rended, crippled, frenzy, stunned, silenced, inferno, blood ward,
 scorched. A unit test holds every effect to a distinct icon (Ignite and the Burning status are

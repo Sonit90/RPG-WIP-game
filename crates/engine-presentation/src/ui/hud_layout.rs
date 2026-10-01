@@ -37,6 +37,14 @@
 //! layout arranged at 3440x1440 and opened at 1280x720 therefore still produces reachable
 //! rectangles, so a resolution change can never strand an element where the player cannot
 //! click it back.
+//!
+//! ## Room a tool panel has taken
+//!
+//! A development screen docked to an edge — the monster playground's two panels — reserves a
+//! strip of the screen with [`HudLayout::set_reserved`]. The HUD is then laid out in what is
+//! left, exactly as if the window were that much narrower: a left-anchored frame moves in
+//! beside the panel, a centred bar stays centred in the space the player can see. Nothing is
+//! written to the configuration, so the arrangement on disk never learns a panel existed.
 
 use engine_render_data::ui::{UiRect, UiScale};
 use engine_settings::hud::{
@@ -140,6 +148,8 @@ impl HudElementId {
 #[derive(Debug, Clone, PartialEq)]
 pub struct HudLayout {
     config: HudConfig,
+    /// Physical pixels a docked panel has taken from the left and the right edge.
+    reserved: (f32, f32),
 }
 
 impl Default for HudLayout {
@@ -157,6 +167,48 @@ impl HudLayout {
     pub fn new(config: HudConfig) -> Self {
         Self {
             config: config.validated(),
+            reserved: (0.0, 0.0),
+        }
+    }
+
+    /// Takes `left` and `right` physical pixels off the screen's sides for everything the
+    /// layout places, until it is called again. Zero gives them back.
+    ///
+    /// Not part of the configuration: see the module notes.
+    pub fn set_reserved(&mut self, left: f32, right: f32) {
+        let clean = |value: f32| {
+            if value.is_finite() {
+                value.max(0.0)
+            } else {
+                0.0
+            }
+        };
+        self.reserved = (clean(left), clean(right));
+    }
+
+    /// What [`HudLayout::set_reserved`] took, left and right.
+    #[must_use]
+    pub fn reserved(&self) -> (f32, f32) {
+        self.reserved
+    }
+
+    /// The part of `viewport` the HUD is laid out in: left edge, width and height.
+    fn region(&self, viewport: (u32, u32)) -> Region {
+        let (width, height) = viewport_size(viewport);
+        // The reservation never takes more than three quarters of the screen: a HUD squeezed
+        // into nothing would put every element on top of every other.
+        let available = width * 0.25;
+        let taken = self.reserved.0 + self.reserved.1;
+        let fit = if taken > width - available && taken > 0.0 {
+            (width - available) / taken
+        } else {
+            1.0
+        };
+        let left = self.reserved.0 * fit;
+        Region {
+            x: left,
+            width: (width - taken * fit).max(1.0),
+            height,
         }
     }
 
@@ -376,10 +428,8 @@ impl HudLayout {
         let placement = self.placement(id);
         let factor = ui_scale.factor() * placement.scale;
         let (width, height) = (size.0 * factor, size.1 * factor);
-        clamp_on_screen(
-            unclamped_rect(placement, (width, height), viewport),
-            viewport,
-        )
+        let region = self.region(viewport);
+        clamp_in(unclamped_rect(placement, (width, height), region), region)
     }
 
     /// Moves `id` so that its top-left corner lands on `(x, y)` in physical pixels.
@@ -404,19 +454,19 @@ impl HudLayout {
         let mut placement = self.placement(id);
         let factor = ui_scale.factor() * placement.scale;
         let (width, height) = (size.0 * factor, size.1 * factor);
-        let rect = clamp_on_screen(UiRect::new(position.0, position.1, width, height), viewport);
+        let region = self.region(viewport);
+        let rect = clamp_in(UiRect::new(position.0, position.1, width, height), region);
 
-        let (view_width, view_height) = viewport_size(viewport);
         let centre = (
-            (rect.x + width * 0.5) / view_width,
-            (rect.y + height * 0.5) / view_height,
+            (rect.x - region.x + width * 0.5) / region.width,
+            (rect.y + height * 0.5) / region.height,
         );
         placement.anchor = HudAnchor::nearest(centre.0, centre.1);
 
         let (origin_x, origin_y) = placement.anchor.origin();
         let (align_x, align_y) = placement.anchor.alignment();
-        placement.offset_x = (rect.x + width * align_x) / view_width - origin_x;
-        placement.offset_y = (rect.y + height * align_y) / view_height - origin_y;
+        placement.offset_x = (rect.x - region.x + width * align_x) / region.width - origin_x;
+        placement.offset_y = (rect.y + height * align_y) / region.height - origin_y;
         self.set_placement(id, placement);
     }
 }
@@ -430,13 +480,23 @@ fn viewport_size(viewport: (u32, u32)) -> (f32, f32) {
     ((viewport.0 as f32).max(1.0), (viewport.1 as f32).max(1.0))
 }
 
+/// The part of the screen the HUD is laid out in, in physical pixels.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Region {
+    /// Its left edge.
+    x: f32,
+    /// Its width, never zero.
+    width: f32,
+    /// Its height, never zero. It always starts at the top.
+    height: f32,
+}
+
 /// Where a placement puts an element of a given physical size, before clamping.
-fn unclamped_rect(placement: HudPlacement, size: (f32, f32), viewport: (u32, u32)) -> UiRect {
-    let (view_width, view_height) = viewport_size(viewport);
+fn unclamped_rect(placement: HudPlacement, size: (f32, f32), region: Region) -> UiRect {
     let (origin_x, origin_y) = placement.anchor.origin();
     let (align_x, align_y) = placement.anchor.alignment();
-    let x = (origin_x + placement.offset_x) * view_width - size.0 * align_x;
-    let y = (origin_y + placement.offset_y) * view_height - size.1 * align_y;
+    let x = region.x + (origin_x + placement.offset_x) * region.width - size.0 * align_x;
+    let y = (origin_y + placement.offset_y) * region.height - size.1 * align_y;
     UiRect::new(x, y, size.0, size.1)
 }
 
@@ -447,7 +507,19 @@ fn unclamped_rect(placement: HudPlacement, size: (f32, f32), viewport: (u32, u32
 /// way to see it.
 #[must_use]
 pub fn clamp_on_screen(rect: UiRect, viewport: (u32, u32)) -> UiRect {
-    let (view_width, view_height) = viewport_size(viewport);
+    let (width, height) = viewport_size(viewport);
+    clamp_in(
+        rect,
+        Region {
+            x: 0.0,
+            width,
+            height,
+        },
+    )
+}
+
+/// [`clamp_on_screen`] inside `region` rather than the whole screen.
+fn clamp_in(rect: UiRect, region: Region) -> UiRect {
     let clamp_axis = |position: f32, size: f32, extent: f32| -> f32 {
         let visible = size * MIN_VISIBLE_FRACTION;
         if visible > extent {
@@ -459,8 +531,8 @@ pub fn clamp_on_screen(rect: UiRect, viewport: (u32, u32)) -> UiRect {
         position.clamp(visible - size, extent - visible)
     };
     UiRect {
-        x: clamp_axis(rect.x, rect.width, view_width),
-        y: clamp_axis(rect.y, rect.height, view_height),
+        x: region.x + clamp_axis(rect.x - region.x, rect.width, region.width),
+        y: clamp_axis(rect.y, rect.height, region.height),
         ..rect
     }
 }
@@ -851,6 +923,42 @@ mod tests {
             layout.element_size(HudElementId::CastBar),
             layout.cast_bar_size()
         );
+    }
+
+    #[test]
+    fn a_reserved_edge_moves_the_hud_into_what_is_left_and_gives_it_back() {
+        let mut layout = layout();
+        let scale = UiScale::default();
+        let player = layout.rect_of(HudElementId::Player, scale, FHD);
+        let bar = layout.rect_of(HudElementId::ActionBar(0), scale, FHD);
+        let buffs = layout.rect_of(HudElementId::Buffs, scale, FHD);
+
+        layout.set_reserved(330.0, 330.0);
+        let moved = layout.rect_of(HudElementId::Player, scale, FHD);
+        assert!(
+            moved.x >= 330.0,
+            "the player frame is still under the panel"
+        );
+        let centred = layout.rect_of(HudElementId::ActionBar(0), scale, FHD);
+        assert!(
+            (centred.x + centred.width * 0.5 - (bar.x + bar.width * 0.5)).abs() < 0.5,
+            "equal panels keep a centred bar where it was"
+        );
+        let right = layout.rect_of(HudElementId::Buffs, scale, FHD);
+        assert!(right.right() <= FHD.0 as f32 - 330.0 + 0.5);
+        assert!(right.x < buffs.x);
+
+        // A drag under a reservation stores a position that comes back to the same place.
+        layout.move_to(HudElementId::Party, (500.0, 300.0), SIZE, scale, FHD);
+        let dropped = layout.resolve(HudElementId::Party, SIZE, scale, FHD);
+        assert!((dropped.x - 500.0).abs() < 0.5 && (dropped.y - 300.0).abs() < 0.5);
+
+        layout.set_reserved(0.0, 0.0);
+        assert_eq!(layout.rect_of(HudElementId::Player, scale, FHD), player);
+        // An absurd reservation still leaves a quarter of the screen.
+        layout.set_reserved(5_000.0, f32::NAN);
+        let squeezed = layout.rect_of(HudElementId::Player, scale, HD);
+        assert!(squeezed.x.is_finite() && squeezed.x < HD.0 as f32);
     }
 
     #[test]

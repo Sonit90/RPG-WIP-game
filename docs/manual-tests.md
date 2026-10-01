@@ -805,6 +805,68 @@ Firebolt mid-diagonal fires straight ahead.
 
 ---
 
+## MT-032 — Monster Combat Playground: choose, spawn, fight, reset, again
+
+**Purpose** — any combination of monsters can be fought and cleared in seconds, with the real
+combat systems, and the workflow repeats without a restart. Design: `docs/monsters.md`.
+
+**Steps**
+
+1. `.\target\release\mygame.exe --scene playground`
+2. Tick Crypt Archer, Skeleton Warrior and Grave Brute. Point at each and read the card.
+3. Press **SPAWN SELECTED**. Watch for ten seconds without acting.
+4. Click the Skeleton Warrior's row in CURRENT ENCOUNTER, then cast Flame Lance (2) a few times.
+5. Press **RESET ENCOUNTER** (or Delete).
+6. Untick all three, tick Grave Acolyte and Crypt Ghoul, press Enter.
+7. Click **Normal HP** and let the pack hit you; then **Reset player**.
+8. Ctrl+F, type `empow`, Enter; tick two empowered monsters and spawn them; press K.
+9. Press L twice. Repeat steps 2–5 three more times.
+
+**Expected** — the list shows every monster with a role; the counter reads `3 MONSTERS
+SELECTED`; the card lists each monster's own abilities with cast and cooldown. The three stand
+in front of you in two rows (melee nearer), none inside another, all facing you, and attack
+at once: plates, cast bars, telegraphs and damage numbers as anywhere else, the encounter rows
+saying what each is casting, your health dropping from 1,000,000. Clicking a row targets that
+monster (target frame) and your spells hit it. The reset leaves nothing: no monster, plate,
+telegraph, ground effect, debuff on you or target; `empty` under CURRENT ENCOUNTER; the
+selection still ticked. The second group replaces the first. Normal HP shows the sheet's
+maximum (500 for the FireMage) and real damage; Reset player fills it and clears bleeds and
+cooldowns. Typing does not move or cast. K plays every death and the rows read `DEAD`. L
+hides both panels and the HUD slides back to its usual place, then returns. Every repeat
+behaves the same.
+
+---
+
+## MT-033 — Buffs and debuffs: apply, expire, stack, dispel, reset
+
+**Purpose** — every effect in the registry can be put on the player or a monster for a chosen
+time, shows as its own line, changes the stats it says it changes, expires on the game clock,
+and is dispelled by the real healer. Design: `auras.md`, `docs/monsters.md`.
+
+**Steps**
+
+1. `.\target\release\mygame.exe --scene playground`, click **Effects**.
+2. Choose Fortitude, TIME 5 s, APPLY TO YOU. Watch Stamina and health for six seconds.
+3. Apply Fortitude three times (STACKS 1), then Bloodlust, Battle Shout and Regeneration.
+4. Apply Poisoned, Curse of Weakness, Withering Plague (STACKS 3) and Rended.
+5. Click **Druid**. Target the Healing Dummy in the list, apply Poisoned to it, and press
+   Nature's Cleanse (bar slot 0). Target yourself, wait out the cooldown, cleanse again.
+6. On the Monsters tab spawn a Skeleton Warrior (Passive); back on Effects, pick it, apply
+   Crippled and Magic Vulnerability ×3.
+7. **Add test effects** on yourself; scroll the list. **Reset player**. **RESET ENCOUNTER**.
+
+**Expected** — Stamina reads `70 (+20)` and maximum health rises, then both come back when
+the timer reaches zero and the line disappears by itself. Fortitude shows `×3` and refreshes;
+buffs and debuffs are separate lists, timers count down, the HUD's icons agree. The cleanse
+takes the dummy's poison off its party row, then your poison, curse and plague — the blue
+bordered ones — and leaves Rended; Stamina returns to 50, speed and damage dealt to ×1.00, and
+mana and cooldown are spent as normal. The skeleton's plate shows the two debuffs, movement
+×0.60, magic taken ×1.45. The test set lists twenty-six lines and a note about the HUD's limit
+of twenty. Reset player empties both lists; reset encounter removes the skeleton and the
+target falls back to you.
+
+---
+
 ## Death, respawn and the twenty seconds
 
 `cargo run -p engine-app --features editor -- --scene-file assets/scenes/showcase.json`

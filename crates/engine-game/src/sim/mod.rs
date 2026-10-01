@@ -68,9 +68,13 @@ use crate::world::{EntityKind, GameWorld};
 pub mod druid_exec;
 /// A dungeon run's simulation half: sealing, crediting, the gate and the boss's adds.
 pub mod dungeon_exec;
+/// Effects applied and removed by name, with the registry's numbers; what they make of a body.
+pub mod effect_exec;
 /// Enemy brains, their attacks and their telegraphs: the combat half of the AI.
 pub mod enemy_exec;
 mod firemage_exec;
+/// The test bed's controls: reset the player, dismiss chosen enemies, find standing ground.
+mod playground_exec;
 pub mod respawn;
 /// Casting the Warrior: Deflection, the incoming-damage pipeline and the charge.
 mod warrior_exec;
@@ -532,6 +536,9 @@ pub struct Simulation {
     /// phase without the watcher dying; the stat path and the Warrior's multipliers would
     /// otherwise put the number back on the next refresh.
     health_override: Option<f32>,
+    /// The character-sheet stats the player's effects gave them when last looked at; a
+    /// change is what makes the derived numbers be recomputed. See `sync_effect_stats`.
+    effect_stat_bonus: crate::character::StatBlock,
 }
 
 impl Simulation {
@@ -612,6 +619,7 @@ impl Simulation {
             regen_elapsed: 0.0,
             periodic_damage: false,
             health_override: None,
+            effect_stat_bonus: crate::character::StatBlock::default(),
             tick: 0,
             time: 0.0,
             stats: SimStats::default(),
@@ -694,6 +702,17 @@ impl Simulation {
     pub fn character_stats(&self) -> crate::character::StatBlock {
         let mut stats = self.sheet().stats_with(&self.spirit);
         stats.add_block(&self.stat_bonus);
+        // And what the effects on the player add or take away: Fortitude's Stamina, a
+        // plague's loss of it. Read live, so an effect's stats are there exactly while it is.
+        if let Some(statuses) = self.world.statuses(self.player.entity) {
+            stats.add_block(&statuses.stat_bonus());
+        }
+        // A stat cannot go below nothing, however many debuffs are on it.
+        for stat in crate::character::Stat::ALL {
+            if stats.get(stat) < 0.0 {
+                stats.set(stat, 0.0);
+            }
+        }
         stats
     }
 
@@ -1192,6 +1211,10 @@ impl Simulation {
 
         let status_started = Instant::now();
         self.tick_statuses(step);
+        // An effect that changes the player's stats may have expired this tick; one that
+        // changes a monster's attack speed is pushed into its mind, whoever applied it.
+        self.sync_effect_stats();
+        self.sync_war_stomp();
         stats.statuses += status_started.elapsed();
 
         // After combat, so a tick that took damage cannot also regenerate from it.
@@ -1550,7 +1573,13 @@ impl Simulation {
             // away to keep its target in front walks at the speed its brain was tuned for.
             let config = match runtime {
                 Some(runtime) => MovementConfig {
-                    max_speed: runtime.brain.speed(),
+                    // And every effect on it that names movement speed: a crippling shot
+                    // slows a skeleton exactly as it slows the player.
+                    max_speed: runtime.brain.speed()
+                        * self
+                            .world
+                            .statuses(id)
+                            .map_or(1.0, crate::status::StatusSet::move_speed_multiplier),
                     backpedal_speed: 1.0,
                     ..config
                 },
@@ -2351,7 +2380,15 @@ impl Simulation {
         if self.is_sealed(target) {
             return;
         }
-        let mut amount = amount * self.exposure_multiplier(target, damage_type);
+        // Every effect that changes damage, from the registry: what the target's effects make
+        // it take, what the source's make it deal. The player's flat reductions are applied
+        // with the rest of their defences below; anybody else's are applied here.
+        let mut amount = amount
+            * self.damage_taken_multiplier(target, damage_type)
+            * self.damage_dealt_multiplier(source);
+        if target != self.player.entity {
+            amount *= 1.0 - self.status_damage_reduction(target);
+        }
         if target == self.player.entity && source != target && self.is_hostile_to_player(source) {
             match self.defend_player(source, amount, ability, damage_type) {
                 Some(landing) => amount = landing,

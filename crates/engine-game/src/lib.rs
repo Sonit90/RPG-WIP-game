@@ -59,6 +59,7 @@
 //! | [`demo`] | The collision demo scene: geometry, no combat |
 //! | [`enemy`] | Enemy archetypes, their attacks, their threat and their state machine |
 //! | [`encounter`] | A fight: who is in it, whether it is running, how to reset it |
+//! | [`playground`] | The monster test bed: choose monsters, spawn them, fight them, reset |
 //! | [`sim`] | The tick, and everything that owns state across one |
 
 /// Seconds below which a countdown is treated as finished.
@@ -101,6 +102,8 @@ pub mod movement;
 pub mod nav;
 /// Who the player is grouped with: the roster the party frames read.
 pub mod party;
+/// The Monster Combat Playground: a test bed's choice of monsters, and nothing that fights.
+pub mod playground;
 pub mod sim;
 pub mod status;
 pub mod targeting;

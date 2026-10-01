@@ -69,13 +69,16 @@ impl Simulation {
         if self.hero != Hero::Warrior {
             // Every other hero's own reduction, through the same field the Warrior's Last
             // Stand uses: one number, applied once, where damage is mitigated.
-            profile.damage_reduction = self.druid_damage_reduction();
+            profile.damage_reduction = self.status_damage_reduction(self.player.entity);
             return profile;
         }
         profile.armor *= self.warrior.armor_multiplier();
         profile.block += self.warrior.shield_block_bonus(self.scaling_health());
         profile.immune_to_critical = self.warrior.immune_to_critical();
-        profile.damage_reduction = self.warrior.damage_reduction();
+        // The class's own reduction and whatever the player's effects give, compounded: two
+        // reductions of thirty per cent leave forty-nine, not forty.
+        let effects = self.status_damage_reduction(self.player.entity);
+        profile.damage_reduction = 1.0 - (1.0 - self.warrior.damage_reduction()) * (1.0 - effects);
         profile
     }
 
@@ -738,7 +741,6 @@ impl Simulation {
         if adrenaline_ended {
             self.start_recovery();
         }
-        self.sync_war_stomp();
         // Last, because everything above can have changed a multiplier.
         self.refresh_warrior_health();
     }
@@ -883,7 +885,11 @@ impl Simulation {
                 full_stack = true;
             }
             if let Some(Some(runtime)) = self.enemies.get_mut(slot) {
-                let scale = 1.0 - WAR_STOMP_ATTACK_SPEED_PER_STACK * f32::from(stacks);
+                // Every attack-speed effect on it, War Stomp's included, from the registry.
+                let scale = self
+                    .world
+                    .statuses(id)
+                    .map_or(1.0, crate::status::StatusSet::attack_speed_scale);
                 runtime.brain.set_attack_speed_scale(scale);
             }
         }
