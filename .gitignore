@@ -34,6 +34,9 @@ Desktop.ini
 # designer built, and losing it loses the level. Everything else under assets/ is binary
 # content that lives beside the repository.
 !/assets/scenes/
+# The editor's crash-recovery copies: rewritten every couple of minutes on one machine, and
+# meaningless anywhere else. The level itself is the file without `.autosave`.
+/assets/scenes/*.autosave.json
 # Generated starter content is reproducible - `cargo run --bin asset_gen` writes all of it -
 # so it is treated as build output rather than as source.
 /assets/generated/

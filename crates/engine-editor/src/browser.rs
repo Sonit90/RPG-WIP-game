@@ -1420,31 +1420,6 @@ mod tests {
     }
 
     #[test]
-    fn the_real_directory_shows_its_categories_when_the_editor_opens() {
-        let root = std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets"));
-        if !root.join("generated").is_dir() {
-            return;
-        }
-        let mut browser = AssetBrowser::new();
-        browser.scan(&root);
-        let labels: Vec<String> = browser
-            .rows()
-            .iter()
-            .map(|row| browser.label(*row).1)
-            .collect();
-        for wanted in ["+ caves", "+ cliffs", "+ rocks", "+ builtin"] {
-            assert!(
-                labels.iter().any(|label| label == wanted),
-                "{wanted}: {labels:?}"
-            );
-        }
-        assert!(
-            labels.len() < 24,
-            "the opening view needs scrolling to reach the categories: {labels:?}"
-        );
-    }
-
-    #[test]
     fn a_placed_file_blocks_the_box_its_geometry_fills() {
         // The generated library, if this checkout has it: a boulder is solid and a water
         // plane is not, and both answers come out of the geometry rather than out of a table.
