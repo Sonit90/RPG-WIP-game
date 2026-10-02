@@ -363,7 +363,7 @@ pub fn ticks_to_ms(begin: u64, end: u64, frequency: u64) -> Option<f64> {
 }
 
 /// Creates a readback buffer of `bytes` bytes for resolved query data.
-fn create_readback_buffer(
+pub(crate) fn create_readback_buffer(
     device: &ID3D12Device,
     bytes: usize,
 ) -> Result<ID3D12Resource, RendererError> {

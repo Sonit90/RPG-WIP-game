@@ -38,8 +38,8 @@ use crate::error::RendererError;
 use crate::material::SurfaceClass;
 use crate::mesh::{MeshVertex, SkinnedVertex};
 use crate::pipeline::{
-    blend_desc_for, depth_prime_blend_desc, depth_stencil_desc_for, rasterizer_desc,
-    transparent_blend_desc, wireframe_rasterizer_desc,
+    blend_desc_for, depth_prime_blend_desc, depth_stencil_desc_for, depth_stencil_desc_for_mode,
+    rasterizer_desc, transparent_blend_desc, wireframe_rasterizer_desc,
 };
 use crate::scene::{ROOT_PARAMETER_REGISTERS, ROOT_SKIN_CBV};
 use crate::shader::{
@@ -74,6 +74,32 @@ pub struct PipelineVariant {
     /// Which of a character's passes this state draws. Only the skinned pipeline reads it;
     /// see [`CharacterPass`].
     pub pass: CharacterPass,
+    /// Whether the camera's depth prepass already wrote this surface's depth. See
+    /// [`DepthMode`].
+    pub depth: DepthMode,
+}
+
+/// Whether a surface's depth is still to be written, or is already in the buffer.
+///
+/// ```text
+/// Write    LESS_EQUAL, writes depth     the surface makes its own depth (no prepass, or a
+///                                       surface the prepass did not draw)
+/// Primed   LESS_EQUAL, writes nothing   the prepass drew exactly this surface already
+/// ```
+///
+/// Primed exists for the pixel shader, not the depth buffer: every mesh pixel shader can
+/// `discard` (the fade dither, the alpha test), and a pipeline that can discard *and* writes
+/// depth makes the hardware shade a fragment before it may test it. With writes off the test
+/// moves ahead of the shader, so a hidden fragment is never shaded — and the result is the
+/// same picture, because the buffer already holds exactly the depth these writes would have
+/// stored. Opaque and alpha-tested surfaces only; a transparent one never writes either way.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum DepthMode {
+    /// Tests and writes, as every pass did before the prepass existed.
+    #[default]
+    Write,
+    /// Tests against the prepass's depth and writes nothing.
+    Primed,
 }
 
 /// Which pass of a skinned character a pipeline state draws.
@@ -111,7 +137,15 @@ impl PipelineVariant {
             wireframe: false,
             surface: SurfaceClass::Opaque,
             pass: CharacterPass::Lit,
+            depth: DepthMode::Write,
         }
+    }
+
+    /// The same variant with depth mode `depth`.
+    #[must_use]
+    pub const fn with_depth(mut self, depth: DepthMode) -> Self {
+        self.depth = depth;
+        self
     }
 
     /// The same variant drawing character pass `pass`.
@@ -873,6 +907,7 @@ impl SkinnedMeshPipeline {
             features,
             SurfaceClass::Opaque,
             CharacterPass::Lit,
+            DepthMode::Write,
         )
     }
 
@@ -903,6 +938,7 @@ impl SkinnedMeshPipeline {
             features,
             SurfaceClass::Opaque,
             CharacterPass::Lit,
+            DepthMode::Write,
         )
     }
 
@@ -927,6 +963,7 @@ impl SkinnedMeshPipeline {
             variant.features,
             variant.surface,
             variant.pass,
+            variant.depth,
         )
     }
 
@@ -938,6 +975,7 @@ impl SkinnedMeshPipeline {
         features: ShaderFeatures,
         surface: SurfaceClass,
         pass: CharacterPass,
+        depth: DepthMode,
     ) -> Result<Self, RendererError> {
         // Cloned, not created: the caller owns the one signature every mesh pipeline shares,
         // and a PSO holds a reference of its own for as long as it lives.
@@ -973,7 +1011,7 @@ impl SkinnedMeshPipeline {
                 CharacterPass::Translucent => transparent_blend_desc(),
             },
             DepthStencilState: match pass {
-                CharacterPass::Lit => depth_stencil_desc_for(surface),
+                CharacterPass::Lit => depth_stencil_desc_for_mode(surface, depth),
                 CharacterPass::DepthPrime => depth_stencil_desc_for(SurfaceClass::Opaque),
                 CharacterPass::Translucent => depth_stencil_desc_for(SurfaceClass::Transparent),
             },
@@ -1231,6 +1269,7 @@ impl InstancedMeshPipeline {
             rasterizer_desc(),
             features,
             SurfaceClass::Opaque,
+            DepthMode::Write,
         )
     }
 
@@ -1260,6 +1299,7 @@ impl InstancedMeshPipeline {
             wireframe_rasterizer_desc(),
             features,
             SurfaceClass::Opaque,
+            DepthMode::Write,
         )
     }
 
@@ -1283,6 +1323,7 @@ impl InstancedMeshPipeline {
             variant.rasterizer(),
             variant.features,
             variant.surface,
+            variant.depth,
         )
     }
 
@@ -1293,6 +1334,7 @@ impl InstancedMeshPipeline {
         rasterizer: D3D12_RASTERIZER_DESC,
         features: ShaderFeatures,
         surface: SurfaceClass,
+        depth: DepthMode,
     ) -> Result<Self, RendererError> {
         // The same root signature as the non-instanced pipeline - literally the same object,
         // handed in by the cache: same frame and material registers, same slot order. The
@@ -1318,7 +1360,7 @@ impl InstancedMeshPipeline {
             // alpha-tested surfaces get exactly what every mesh pipeline got before
             // transparency existed.
             BlendState: blend_desc_for(surface),
-            DepthStencilState: depth_stencil_desc_for(surface),
+            DepthStencilState: depth_stencil_desc_for_mode(surface, depth),
             DSVFormat: DEPTH_FORMAT,
             SampleMask: u32::MAX,
             PrimitiveTopologyType: D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE,

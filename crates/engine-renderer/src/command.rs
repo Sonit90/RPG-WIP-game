@@ -172,6 +172,9 @@ impl CommandStats {
     }
 }
 
+/// Vertex-buffer slots whose binding is tracked for redundancy. Higher slots are always bound.
+const TRACKED_VERTEX_SLOTS: usize = 2;
+
 /// The pipeline objects currently bound, by identity.
 ///
 /// COM interface pointers are compared as addresses: two handles to the same object have
@@ -190,8 +193,12 @@ struct BindingState {
     /// Tracked for counting only: the binds are still issued. Milestone 17 wants to know
     /// how many of them a sort could remove before deciding whether to remove any.
     root_cbv: [u64; MAX_TRACKED_ROOT_SLOTS],
-    /// GPU address of the most recently bound vertex-buffer view.
-    vertex_buffer: u64,
+    /// GPU address most recently bound to each tracked vertex-buffer slot.
+    ///
+    /// Per slot: the instanced paths bind the mesh to slot 0 per batch and their instance
+    /// stream to slot 1 once per pass, and one address shared by both slots could neither
+    /// skip the slot-0 rebind of a run nor tell the two apart.
+    vertex_buffers: [u64; TRACKED_VERTEX_SLOTS],
     /// GPU address of the most recently bound index-buffer view.
     index_buffer: u64,
 }
@@ -533,17 +540,18 @@ impl CommandContext {
 
     /// Binds one vertex buffer view to `slot`.
     ///
-    /// The bind is always issued. Whether it *changed* anything is counted, because a
-    /// vertex buffer rebound to the address it already holds is a driver call that does
-    /// nothing, and how many of those a frame makes is what says whether sorting is worth
-    /// doing.
+    /// Skipped when the slot already holds that address — a vertex buffer rebound to the
+    /// address it already holds is a driver call that does nothing — and counted either way,
+    /// because how many of those a frame makes is what says whether sorting is worth doing.
     pub fn set_vertex_buffer(&mut self, slot: u32, view: D3D12_VERTEX_BUFFER_VIEW) {
         self.stats.vertex_buffer_binds += 1;
-        if self.bound.vertex_buffer == view.BufferLocation {
-            self.stats.redundant_vertex_buffer_binds += 1;
-            return;
+        if let Some(bound) = self.bound.vertex_buffers.get_mut(slot as usize) {
+            if *bound == view.BufferLocation {
+                self.stats.redundant_vertex_buffer_binds += 1;
+                return;
+            }
+            *bound = view.BufferLocation;
         }
-        self.bound.vertex_buffer = view.BufferLocation;
         self.stats.mesh_changes += 1;
 
         // SAFETY: FFI call on the open list. The view refers to a buffer the caller keeps

@@ -512,7 +512,7 @@ impl<A: Application> Engine<A> {
             // paused or slowed simulation must not make the engine look faster.
             self.ctx.metrics.record(
                 self.ctx.time.frame_index(),
-                self.ctx.time.real_delta(),
+                self.ctx.time.measured_delta(),
                 self.ctx.stages,
                 self.app.gpu_frame_ms(),
             );

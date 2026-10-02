@@ -94,6 +94,11 @@ pub struct Time {
     clock: FrameClock,
     frame_index: u64,
     real_delta: Duration,
+    /// What the clock measured for the last frame, whatever the timeline advanced by.
+    measured_delta: Duration,
+    /// A constant the real timeline advances by instead of the clock, for a deterministic
+    /// capture (`--fixed-step`).
+    fixed_step: Option<Duration>,
     real_elapsed: Duration,
     simulation_delta: Duration,
     simulation_elapsed: Duration,
@@ -116,6 +121,8 @@ impl Time {
             clock: FrameClock::new(),
             frame_index: 0,
             real_delta: Duration::ZERO,
+            measured_delta: Duration::ZERO,
+            fixed_step: None,
             real_elapsed: Duration::ZERO,
             simulation_delta: Duration::ZERO,
             simulation_elapsed: Duration::ZERO,
@@ -130,8 +137,28 @@ impl Time {
     /// Called once per frame by the engine loop. Nothing else should call it — two callers
     /// would split one frame's duration across two deltas.
     pub fn advance(&mut self) {
-        let real_delta = self.clock.tick();
-        self.advance_by(real_delta);
+        let measured = self.clock.tick();
+        self.step(measured, self.fixed_step.unwrap_or(measured));
+    }
+
+    /// Advances the real timeline by `step` every frame instead of by what the clock measured,
+    /// or by the clock again with `None`.
+    ///
+    /// For a capture that must not depend on how fast the machine ran it: a camera that eases
+    /// towards its target by the frame's delta is somewhere else at frame 60 in a faster build,
+    /// and two screenshots of the same scene then differ for no reason a renderer change made.
+    /// Performance measurement keeps reading [`Time::measured_delta`], which stays the clock.
+    pub fn set_fixed_step(&mut self, step: Option<Duration>) {
+        self.fixed_step = step;
+    }
+
+    /// What the clock measured for the previous frame.
+    ///
+    /// The same as [`Time::real_delta`] unless a fixed step is set, and the number a frame-time
+    /// measurement must read either way.
+    #[must_use]
+    pub fn measured_delta(&self) -> Duration {
+        self.measured_delta
     }
 
     /// Advances both timelines by a supplied real delta instead of sampling the clock.
@@ -142,6 +169,12 @@ impl Time {
     /// replay needs to drive the simulation from recorded deltas rather than from this
     /// machine's clock.
     pub fn advance_by(&mut self, real_delta: Duration) {
+        self.step(real_delta, real_delta);
+    }
+
+    /// One frame: `measured` is what the clock said, `real_delta` what the timeline moves by.
+    fn step(&mut self, measured: Duration, real_delta: Duration) {
+        self.measured_delta = measured;
         self.frame_index += 1;
         self.real_delta = real_delta;
         self.real_elapsed += real_delta;
@@ -261,6 +294,7 @@ impl Time {
         self.clock = FrameClock::new();
         self.frame_index = 0;
         self.real_delta = Duration::ZERO;
+        self.measured_delta = Duration::ZERO;
         self.real_elapsed = Duration::ZERO;
         self.simulation_delta = Duration::ZERO;
         self.simulation_elapsed = Duration::ZERO;

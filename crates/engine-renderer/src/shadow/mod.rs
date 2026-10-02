@@ -46,6 +46,7 @@ pub mod pipeline;
 pub mod renderer;
 pub mod resources;
 pub mod settings;
+pub mod static_cache;
 pub mod stats;
 
 pub use atlas::{AtlasRect, ShadowAtlasLayout};
@@ -53,7 +54,7 @@ pub use cascade::{
     CascadeSplit, CascadeView, build_cascades, cascade_blend, select_cascade, shadow_lod_for,
     split_cascades,
 };
-pub use caster::{ShadowCasterCollector, ShadowCullStats};
+pub use caster::{CasterSlots, ShadowCasterCollector, ShadowCullStats};
 pub use contact::{CONTACT_FORMAT, ContactShadowPipeline, ContactShadowTarget};
 pub use local::{LocalShadowView, SelectedLight, select_shadow_lights};
 pub use renderer::{ShadowRenderer, ShadowScene};
@@ -63,4 +64,5 @@ pub use settings::{
     MAX_LOCAL_SHADOW_VIEWS, PcfKernel, ShadowBias, ShadowLod, ShadowLodSettings, ShadowPreset,
     ShadowSettings,
 };
+pub use static_cache::{StaticCacheStats, StaticShadowCache, StaticView};
 pub use stats::{ShadowPassStats, ShadowStats};

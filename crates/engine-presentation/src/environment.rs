@@ -353,7 +353,9 @@ fn spawn_parts(
             // palette to give it.
             continue;
         };
-        parts.push(world.spawn(RenderEntityDesc {
+        // Static: an environment part is placed once and only ever replaced whole (a level of
+        // detail swap, an editor re-place), which is what lets the shadow views keep it.
+        parts.push(world.spawn_static(RenderEntityDesc {
             transform: object.transform,
             mesh,
             material: part.material,
@@ -364,7 +366,7 @@ fn spawn_parts(
             // piece with collision is solid, the camera keeps out of it, and it is never
             // faded. A fern or a hanging banner has no collision, so the camera passes
             // straight through it, and that is exactly when it must get out of the way.
-            style: if matches!(object.collision, EnvironmentCollision::None) {
+            style: if camera_may_fade(object.asset, &object.collision) {
                 InstanceStyle::NEUTRAL.see_through()
             } else {
                 InstanceStyle::NEUTRAL
@@ -378,6 +380,25 @@ fn spawn_parts(
         }));
         stats.spawned += 1;
     }
+}
+
+/// Whether the camera may fade a placed object out of its way.
+///
+/// Decoration only: a piece without collision, which the camera passes straight through. The
+/// floors and the backdrop have no collision either — nothing walks into a sky dome, and the
+/// ground is walked *on* — but they are not decoration, and [`InstanceStyle::see_through`]
+/// says so in as many words: off for floors and terrain. Marking them see-through let the
+/// camera dither the ground under its own eye, and it cost every frame far more than that:
+/// a surface that may be dithered stays out of the depth prepass, and the ground, the floor
+/// and the sky are most of the screen.
+fn camera_may_fade(asset: EnvironmentAsset, collision: &EnvironmentCollision) -> bool {
+    use engine_environment::asset as ids;
+    let floor_or_backdrop = asset == ids::GROUND_PLAIN
+        || asset == ids::ARENA_FLOOR
+        || asset == ids::CRYPT_FLOOR
+        || asset == ids::SKY_DOME
+        || asset == ids::RIDGE;
+    matches!(collision, EnvironmentCollision::None) && !floor_or_backdrop
 }
 
 /// The shadow behaviour for one part of a placed object.
@@ -606,12 +627,25 @@ mod tests {
     #[test]
     fn decoration_is_see_through_and_anything_with_collision_is_not() {
         // The rule the camera fade rests on: what the camera collides with it keeps out of
-        // and never fades; what it passes through is faded when it gets in the way.
+        // and never fades; what it passes through is faded when it gets in the way. The
+        // floors and the backdrop have no collision and are still not decoration.
+        use engine_environment::asset as ids;
         let (world, placer, scene) = placed_arena();
-        let (mut decoration, mut solid) = (0, 0);
+        let (mut decoration, mut solid, mut ground) = (0, 0, 0);
         for (index, object) in scene.objects.iter().enumerate() {
             let parts = placer.parts_of(index).expect("every object was placed");
-            let expected = matches!(object.collision, EnvironmentCollision::None);
+            let floor_or_backdrop = [
+                ids::GROUND_PLAIN,
+                ids::ARENA_FLOOR,
+                ids::SKY_DOME,
+                ids::RIDGE,
+            ]
+            .contains(&object.asset);
+            if floor_or_backdrop {
+                ground += 1;
+            }
+            let expected =
+                matches!(object.collision, EnvironmentCollision::None) && !floor_or_backdrop;
             for part in parts {
                 let slot = part.index();
                 assert_eq!(
@@ -630,8 +664,8 @@ mod tests {
             }
         }
         assert!(
-            decoration > 0 && solid > 0,
-            "{decoration} decorative, {solid} solid"
+            decoration > 0 && solid > 0 && ground > 0,
+            "{decoration} decorative, {solid} solid, {ground} floor or backdrop"
         );
     }
 

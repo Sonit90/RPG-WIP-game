@@ -17,8 +17,8 @@ extract ──► RenderWorld ──┬─► shadow.prepare()     cascades, cas
                           ├─► shadow.record()      depth-only, into the atlas   GPU
                           │       one viewport per view, no render target
                           │
-                          ├─► depth prepass        only when contact shadows are on
-                          │       + CopyResource into a sampleable depth texture
+                          ├─► depth prepass        every preset: the camera pass is drawn primed
+                          │       (contact shadows then sample its depth in place)
                           │
                           └─► mesh pass            samples the atlas, shades      GPU
 ```
@@ -148,6 +148,16 @@ shadow is a bug that looks exactly like a light leak.
 keeps a caster when its bounds intersect the view's volume. It reuses `RenderList` and the
 counting-sort batching the main pass uses; there is no second scene representation.
 
+The lists are grouped by material and mesh with the camera's own counting sort, over the
+renderer's real key space (`materials.len() x meshes.len()`), so a shadow view draws one
+instanced batch per distinct mesh rather than one draw per caster. Until 2026-10 it was
+called with `usize::MAX` for both, which overflowed the bucket limit and fell back to gather
+order: environment parts are interleaved and level-of-detail swaps reuse slots last-in-first-
+out, so that was a draw per caster per view — 1,506 cascade draws in the 1,071-object
+environment stress, 54 grouped. The sort walks only the keys a list contains (a shadow view
+holds a few dozen of the graveyard's 7,332), because walking and clearing every bucket for
+every view cost more than the instancing saved.
+
 Then `shadow_lod_for` picks one of four levels:
 
 | Level | Meaning |
@@ -172,6 +182,43 @@ a draw call that changes nothing, and a scene made of pebbles is thousands of th
 The stand-in meshes come from the model's own LOD chain —
 `engine_presentation::environment::shadow_lods` fills them — so a shadow LOD is never a
 separate asset somebody has to remember to author.
+
+## Static casters, recorded once
+
+The level's own geometry — the environment, the terrain, the water — is spawned with
+`RenderWorld::spawn_static`, and every change to a static slot (spawned, despawned, moved,
+hidden, re-shaded: a level-of-detail swap, an editor edit) bumps
+`RenderWorld::static_generation`. Everything else is a mover: training dummies and rigid
+stand-ins, which `extract` moves every frame. Characters are the skinned list, as before.
+
+`shadow::static_cache` keeps, per view, the static casters gathered for it — the grouped list
+and the instance data composed in batch order — and gathers them again only when they are
+stale. The frame then gathers just the movers, from one short list built once per frame, and
+memcpys each view's cached instances into the upload ring. What is cached is the
+*recording*, not the depth: the GPU still rasterizes every static caster into the atlas every
+frame, which is a few hundredths of a millisecond, while restoring a cached depth tile would
+cost a full-tile copy per view per frame — more than drawing the casters again.
+
+| View | Stale when |
+| --- | --- |
+| every view | the static generation or the shadow settings changed |
+| a local view | its light and face are keyed with the exact view-projection; static lights never move, so it is gathered once per light per scene, whatever the selection does frame to frame |
+| a cascade | its snapped light-space centre has moved more than the margin (15 % of its radius) from where the cached list was gathered |
+
+The cascade case is exact: the list is gathered for the box grown by the margin
+(`CascadeView::expanded_frustum`), so it holds every caster any box within the margin could
+need, and the extras land outside the tile, where the viewport clips them, or past its far
+plane, where they write the clear depth. The reuse test is a containment test, not an
+equality: the cascade radius is computed from the rotated frustum and differs in its last bits
+from one camera angle to the next, and an equality test rebuilt two views every frame the
+camera turned. `static_cache::tests` checks over a walk and a turn that a reused list is a
+superset of an exact gather, with the same level of detail for every caster.
+
+Measured at 720p, cache off against on in the same binary: the shadow stage's preparation went
+from 0.075 to 0.003 ms in the graveyard and from 0.100 to 0.004 ms in the environment stress,
+the frame from 0.497 to 0.414 and 0.316 to 0.234 ms. With the camera turning at 1.5 rad/s the
+graveyard rebuilds 0.08 views a frame and the environment stress 0.35 (level-of-detail swaps
+bump the generation), 0.004 and 0.011 ms of preparation.
 
 ## Who casts and who receives
 
@@ -305,17 +352,47 @@ reads the floor's own screen-space slope as an occluder; below a certain eye hei
 difference lands inside the thickness window across most of the ground at once, and which
 part depends on the camera's angle — grey that swims about as you turn.
 
-It needs the camera's depth as a texture. The engine runs a depth prepass and then
-`CopyResource`s the depth buffer into a plain sampleable texture. **The alternative was a
-read-only DSV** — binding the same resource as depth-write and as an SRV simultaneously —
-which avoids the copy but requires every mesh PSO to exist in a second variant with a
-read-only depth-stencil state. One copy of a depth buffer per frame is cheaper than doubling
-the pipeline count, and much cheaper to reason about.
+It needs the camera's depth as a texture, and it reads the depth buffer itself. The march runs
+between the depth prepass and the camera pass, when nothing writes depth, so the buffer —
+`R32_TYPELESS`, with a `D32_FLOAT` DSV and an `R32_FLOAT` SRV — is moved to
+`PIXEL_SHADER_RESOURCE` for the march and back to `DEPTH_WRITE` after it
+(`ShadowRenderer::copy_scene_depth` / `finish_scene_depth`). It used to `CopyResource` the
+depth buffer into a texture of its own every frame: 0.10 ms at 4K and 33 MB of VRAM, gone
+with the same picture. No read-only DSV and no second set of PSOs was needed, because nothing
+is bound as depth while the march reads it. The offscreen test path still copies; it has its
+own depth texture.
 
 One consequence worth knowing: the depth prepass forced `depth_stencil_desc()` from `LESS` to
 `LESS_EQUAL`, because after a prepass the main pass draws each surface at exactly the depth
 already there. That change is why `tests/depth_ordering.rs` now asserts that coplanar surfaces
 keep the *last* one drawn.
+
+### Depth priming
+
+The prepass runs at **every** preset, not only where contact shadows need it, and the camera
+pass draws everything it covered with depth writes **off** (`DepthMode::Primed`): same
+`LESS_EQUAL` test, nothing written, because the buffer already holds exactly that depth. That
+is for the pixel shader, not the depth buffer. Every mesh pixel shader can `discard` (the fade
+dither, the alpha test), and a pipeline that can discard *and* writes depth makes the hardware
+shade a fragment before it may test it; with writes off the test moves ahead of the shader and
+a hidden fragment is never shaded. Pipeline statistics (`--pipeline-stats`) measured the mesh
+pass at 1.65 pixel-shader invocations per screen pixel in the arena and the environment stress,
+and 1.000 primed; the pass fell by a third to two fifths at 1440p and 4K.
+
+The prepass draws the camera's own lists: the rigid `visible` list and every whole character
+(caster or not). What the camera may dither this frame is split out of `visible` first — a
+faded entity, or a see-through one whose bounds reach the camera fade's near zone or its tube
+(`may_be_dithered`, conservative against the shader's `camera_fade_opacity`) — and drawn after
+the primed batches with ordinary depth writes. The prepass used to write those surfaces whole,
+so the dither's holes kept the occluder's depth and hid what they should have shown.
+
+The floors and the backdrop are never see-through (`environment::camera_may_fade`): they have
+no collision either, and were marked see-through with the decoration until it turned out that
+the ground, the arena floor and the sky dome — most of the screen — were then always in the
+split, and always shaded wherever they were hidden.
+
+`--shadow-tweak prime=off` draws without priming and `prime-prepass=off` keeps the prepass to
+High and Ultra, for A/B runs.
 
 ## The atlas
 
@@ -410,6 +487,10 @@ it is not fast enough.
 | `F7` | cycles the debug view: off → cascade tint → shadow factor → the atlas → caster bounds |
 | `F5` | the developer overlay, which carries the shadow statistics block |
 | `--shadows <level>` | overrides the setting for one run **without** writing it back |
+| `--shadow-tweak key=value,...` | one field of the preset for one run, never written back: `cascades`, `res`, `distance`, `blend`, `pcf`, `contact`, `contact-steps`, `contact-length`, `contact-distance`, `contact-divisor`, `local`, `local-views`, `filter-lod`, `min-importance`, plus the A/B controls `clusters`, `local-lights`, `prime`, `prime-prepass`, `static-cache`, `cache-margin` and the trade-off `far-movers` |
+| `--pipeline-stats` | counts the mesh pass's pixel-shader invocations per screen pixel, in three sections, into the run profile |
+| `--camera-spin <rad/s>` | turns the follow camera on its own, for measuring what is cached against the view |
+| `--fixed-step <ms>` | advances every frame by a constant, so two builds capture the same frame (`--screenshot`) |
 
 `--shadows` deliberately does not persist: it is a measurement control, and a benchmark run
 must not change what the player sees next time they start the game.
@@ -465,6 +546,15 @@ GPU behaviour is asserted in pixels, offscreen, through the real shadow stage:
 * `tests/root_signature_identity.rs` — the mesh, instanced and shadow pipelines share one root
   signature object, which is what lets the shadow pass rebind nothing but a PSO.
 
+The static-caster cache and the grouping are unit-tested where they live
+(`shadow::static_cache::tests`, `render_list::tests::the_sparse_grouping_matches_a_walk_over_every_bucket`,
+`world::tests::only_changes_to_the_static_scene_move_its_generation`). Their pictures were
+checked the other way: `--fixed-step 4` screenshots of the arena, the dungeon, the graveyard
+and the environment demo at Low through Ultra, and with `--camera-spin`, against the build
+before them — zero differing pixels in every still frame, and in three of the twelve
+spinning-camera frames at most 18 pixels by at most 5 levels, the same with the cache and
+priming switched off.
+
 The visual test bed is `--scene shadows` (`engine_environment::shadow_course`): six bays on
 flat ground — an isolated caster, a hundred crates in a grid, a line of rocks crossing every
 cascade split, alpha-tested foliage, spot lights, point lights. Flat ground on purpose: terrain
@@ -507,9 +597,13 @@ reused every frame, and the constants go through the existing upload ring.
   carry sixteen matrices.
 * **Cascade count is capped at 4**, which is the four sets of matrices and rectangles in the
   frame constants.
-* **No cached/static shadow map.** Every view is redrawn every frame. A scene whose static
-  geometry dominates could cache the far cascades and redraw only the movers; nothing measured
-  so far justifies the invalidation logic.
+* **No cached shadow depth.** Static casters' *recording* is cached (see "Static casters,
+  recorded once"); their depth is rasterized every frame, because restoring a cached tile costs
+  more GPU than drawing it.
+* **Characters are one draw per submesh per view.** Skinned casters are not instanced; in the
+  character-heavy scenes they are now most of the shadow draws. `far-movers=off` drops them
+  (and the rigid movers) from the last cascade: graveyard shadow skinned draws 204 to 31, the
+  frame 4–7 % at 720p, for no shadow on something moving more than 50 m away. Off by default.
 * **The atlas debug view lives inside the mesh pixel shader.** It draws only where some
   fragment covers the corner. That is a real constraint, taken knowingly: the alternative is a
   second pipeline, root signature and draw for a developer tool.

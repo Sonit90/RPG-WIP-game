@@ -38,6 +38,7 @@ mod palette;
 mod parallel;
 pub mod particle_pipeline;
 pub mod pipeline;
+pub mod pipeline_stats;
 pub mod render_list;
 pub mod renderer;
 pub mod resource;

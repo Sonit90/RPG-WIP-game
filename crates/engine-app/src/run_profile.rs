@@ -76,6 +76,66 @@ pub struct RenderSplit {
     pub shadow_prep_ms: f64,
 }
 
+/// What the shadow stage recorded in one frame, from the shadow renderer's own counters.
+///
+/// Counts are carried as `f64` because the profile only ever sums and averages them.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ShadowSplit {
+    /// Recording the atlas views: cascades and local lights.
+    pub atlas_ms: f64,
+    /// Recording the camera's depth prepass.
+    pub prepass_ms: f64,
+    /// Draw calls into the cascades.
+    pub cascade_draws: f64,
+    /// Draw calls into the local views.
+    pub local_draws: f64,
+    /// Skinned draws into the atlas views (included in the two above).
+    pub skinned_draws: f64,
+    /// Casters gathered across every view; a caster in two views counts twice.
+    pub casters: f64,
+    /// Views holding cached static casters.
+    pub static_views: f64,
+    /// Views whose static casters were gathered again this frame.
+    pub static_rebuilt: f64,
+    /// Static instances drawn from the cache.
+    pub cached_instances: f64,
+    /// Moving instances drawn.
+    pub moving_instances: f64,
+}
+
+impl ShadowSplit {
+    /// The split of one frame's shadow statistics.
+    #[must_use]
+    pub fn of(stats: &engine_renderer::shadow::ShadowStats) -> Self {
+        let cascade_draws: u32 = stats.cascades.iter().map(|pass| pass.draw_calls).sum();
+        Self {
+            atlas_ms: stats.atlas_ms,
+            prepass_ms: stats.prepass_ms,
+            cascade_draws: f64::from(cascade_draws),
+            local_draws: f64::from(stats.local.draw_calls),
+            skinned_draws: f64::from(stats.skinned_draws),
+            casters: f64::from(stats.casters()),
+            static_views: f64::from(stats.static_views),
+            static_rebuilt: f64::from(stats.static_cache.rebuilt),
+            cached_instances: f64::from(stats.static_cache.cached_instances),
+            moving_instances: f64::from(stats.static_cache.moving_instances),
+        }
+    }
+
+    fn add(&mut self, other: &Self) {
+        self.atlas_ms += other.atlas_ms;
+        self.prepass_ms += other.prepass_ms;
+        self.cascade_draws += other.cascade_draws;
+        self.local_draws += other.local_draws;
+        self.skinned_draws += other.skinned_draws;
+        self.casters += other.casters;
+        self.static_views += other.static_views;
+        self.static_rebuilt += other.static_rebuilt;
+        self.cached_instances += other.cached_instances;
+        self.moving_instances += other.moving_instances;
+    }
+}
+
 /// Everything recorded about one frame.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct FrameSample {
@@ -93,6 +153,8 @@ pub struct FrameSample {
     pub update: UpdateSplit,
     /// The render stage, broken down.
     pub render: RenderSplit,
+    /// The shadow stage's recording, broken down.
+    pub shadow: ShadowSplit,
 }
 
 /// One captured slow frame.
@@ -205,6 +267,12 @@ pub struct RunProfile {
     gpu: FrameStatsWindow,
     /// GPU time per timed pass, indexed as `gpu_timer::TIMED_PASSES` names them.
     passes: [FrameStatsWindow; MAX_TIMED_PASSES],
+    /// Mesh-pass pixel-shader invocations per screen pixel, from `--pipeline-stats`. A ratio,
+    /// not a time; the window is only used for its percentiles.
+    overdraw: FrameStatsWindow,
+    /// The same, per section of the pass (`pipeline_stats::SECTION_NAMES`), summed for means.
+    overdraw_sections: [f64; engine_renderer::pipeline_stats::SECTIONS],
+    overdraw_frames: u64,
     hitches: HitchLog,
     /// The allocation counter when measurement began. Zero without `alloc-count`.
     allocs_at_start: crate::alloc_count::Allocations,
@@ -213,6 +281,7 @@ pub struct RunProfile {
     stage_sums: [f64; 4],
     split_sums: UpdateSplit,
     render_sums: RenderSplit,
+    shadow_sums: ShadowSplit,
     frames: u64,
     /// The renderer's counters when measurement began, so the report can say what the run
     /// itself created: a pipeline created mid-run is a stall whether or not it crossed the
@@ -232,11 +301,15 @@ impl RunProfile {
             cpu: FrameStatsWindow::new(capacity),
             gpu: FrameStatsWindow::new(capacity),
             passes: std::array::from_fn(|_| FrameStatsWindow::new(capacity)),
+            overdraw: FrameStatsWindow::new(capacity),
+            overdraw_sections: [0.0; engine_renderer::pipeline_stats::SECTIONS],
+            overdraw_frames: 0,
             hitches: HitchLog::new(),
             allocs_at_start: crate::alloc_count::allocations(),
             stage_sums: [0.0; 4],
             split_sums: UpdateSplit::default(),
             render_sums: RenderSplit::default(),
+            shadow_sums: ShadowSplit::default(),
             frames: 0,
             counters_at_start: engine_renderer::resource_counters(),
         })
@@ -252,6 +325,16 @@ impl RunProfile {
         }
     }
 
+    /// Records the latest mesh pass's pixel-shader invocations per screen pixel, whole and
+    /// per section.
+    pub fn record_overdraw(&mut self, sections: [f64; engine_renderer::pipeline_stats::SECTIONS]) {
+        self.overdraw.record_ms(sections.iter().sum());
+        for (sum, value) in self.overdraw_sections.iter_mut().zip(sections) {
+            *sum += value;
+        }
+        self.overdraw_frames += 1;
+    }
+
     /// Records one frame.
     pub fn record(&mut self, sample: FrameSample) {
         let FrameSample {
@@ -262,6 +345,7 @@ impl RunProfile {
             running_p50_ms,
             update,
             render,
+            shadow,
         } = sample;
         self.cpu.record_ms(total_ms);
         if let Some(gpu_ms) = gpu_ms {
@@ -289,6 +373,7 @@ impl RunProfile {
         render_sums.cull_ms += render.cull_ms;
         render_sums.group_ms += render.group_ms;
         render_sums.shadow_prep_ms += render.shadow_prep_ms;
+        self.shadow_sums.add(&shadow);
         self.frames += 1;
         self.hitches.observe(Hitch {
             frame,
@@ -307,9 +392,13 @@ impl RunProfile {
         for window in &mut self.passes {
             window.clear();
         }
+        self.overdraw.clear();
+        self.overdraw_sections = [0.0; engine_renderer::pipeline_stats::SECTIONS];
+        self.overdraw_frames = 0;
         self.stage_sums = [0.0; 4];
         self.split_sums = UpdateSplit::default();
         self.render_sums = RenderSplit::default();
+        self.shadow_sums = ShadowSplit::default();
         self.frames = 0;
         self.counters_at_start = engine_renderer::resource_counters();
         self.hitches.clear();
@@ -379,6 +468,20 @@ impl RunProfile {
                 r.shadow_prep_ms / n,
                 (render - passes).max(0.0),
             );
+            let sh = &self.shadow_sums;
+            log::info!(
+                "run shadow (mean): record atlas {:.4} ms + prepass {:.4} ms | draws: cascades {:.1}, local {:.1} (skinned {:.1}) | casters {:.1} | static cache: {:.0} views cached, rebuilds {:.4}/frame, instances {:.1} cached + {:.1} moving",
+                sh.atlas_ms / n,
+                sh.prepass_ms / n,
+                sh.cascade_draws / n,
+                sh.local_draws / n,
+                sh.skinned_draws / n,
+                sh.casters / n,
+                sh.static_views / n,
+                sh.static_rebuilt / n,
+                sh.cached_instances / n,
+                sh.moving_instances / n,
+            );
         }
         // Per pass on one line, p50 and mean: the shape of the GPU frame. The last three are
         // parts of the shadow stage, not additions to it.
@@ -392,6 +495,23 @@ impl RunProfile {
             }
         }
         log::info!("{}", line.trim_end_matches(" |"));
+        if let Some(overdraw) = self.overdraw.stats() {
+            log::info!(
+                "run overdraw (mesh pass): p50 {:.3} | mean {:.3} pixel-shader invocations per pixel | n={}",
+                overdraw.p50_ms,
+                overdraw.mean_ms,
+                overdraw.count,
+            );
+            let frames = self.overdraw_frames.max(1) as f64;
+            let mut line = String::from("run overdraw by section (mean):");
+            for (name, sum) in engine_renderer::pipeline_stats::SECTION_NAMES
+                .iter()
+                .zip(self.overdraw_sections)
+            {
+                line.push_str(&format!(" {name} {:.3} |", sum / frames));
+            }
+            log::info!("{}", line.trim_end_matches(" |"));
+        }
         if crate::alloc_count::COUNTING
             && let Some(cpu) = cpu
         {

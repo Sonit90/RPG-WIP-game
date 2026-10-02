@@ -81,6 +81,9 @@ pub struct ShadowResources {
     /// full-screen depth buffer — and it is only made when contact shadows are on.
     scene_depth: GpuTexture,
     scene_depth_srv: DescriptorHandle,
+    /// Whether `scene_depth_srv` views the camera's own depth buffer, sampled in place,
+    /// rather than `scene_depth`, a copy of it. See [`ShadowResources::sample_camera_depth`].
+    camera_depth: bool,
     layout: ShadowAtlasLayout,
 }
 
@@ -126,6 +129,7 @@ impl ShadowResources {
             atlas_srv,
             scene_depth,
             scene_depth_srv,
+            camera_depth: false,
             layout,
         })
     }
@@ -193,7 +197,11 @@ impl ShadowResources {
     ) -> Result<bool, RendererError> {
         let layout = ShadowAtlasLayout::new(settings);
         let (width, height) = layout.size();
-        let (depth_width, depth_height) = Self::scene_depth_size(settings, scene_size);
+        let (depth_width, depth_height) = if self.camera_depth {
+            (1, 1)
+        } else {
+            Self::scene_depth_size(settings, scene_size)
+        };
 
         let atlas_changed = layout.size() != self.layout.size();
         let depth_changed = (depth_width, depth_height) != self.scene_depth.size();
@@ -211,7 +219,11 @@ impl ShadowResources {
         }
         if depth_changed {
             self.scene_depth = Self::create_depth_copy(device, depth_width, depth_height)?;
-            create_depth_srv(device, &self.scene_depth, self.scene_depth_srv);
+            // In camera-depth mode the view stays on the camera's buffer; the copy is a
+            // placeholder nothing reads.
+            if !self.camera_depth {
+                create_depth_srv(device, &self.scene_depth, self.scene_depth_srv);
+            }
         }
         Ok(true)
     }
@@ -232,6 +244,37 @@ impl ShadowResources {
     #[must_use]
     pub fn atlas_srv(&self) -> DescriptorHandle {
         self.atlas_srv
+    }
+
+    /// Points the contact-shadow march at the camera's own depth buffer, sampled in place.
+    ///
+    /// Replaces the full-screen copy: the march runs between the depth prepass and the camera
+    /// pass, when nothing writes depth, so the buffer can simply be read — moved to
+    /// `PIXEL_SHADER_RESOURCE` for the march and back to `DEPTH_WRITE` after it — and the copy
+    /// (a full-resolution read and write every frame, 0.1 ms at 4K) and the texture it filled
+    /// (33 MB at 4K) both go. `depth` must be typeless, as [`GpuTexture::sampleable_depth`]
+    /// creates it. Called again whenever the depth buffer is recreated.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RendererError::Api`] if the placeholder copy cannot be created.
+    pub fn sample_camera_depth(
+        &mut self,
+        device: &RenderDevice,
+        depth: &GpuTexture,
+    ) -> Result<(), RendererError> {
+        if !self.camera_depth || self.scene_depth.size() != (1, 1) {
+            self.scene_depth = Self::create_depth_copy(device, 1, 1)?;
+        }
+        self.camera_depth = true;
+        create_depth_srv(device, depth, self.scene_depth_srv);
+        Ok(())
+    }
+
+    /// Whether the march samples the camera's depth buffer in place rather than a copy.
+    #[must_use]
+    pub fn samples_camera_depth(&self) -> bool {
+        self.camera_depth
     }
 
     /// The scene-depth copy, for the transitions around the copy.

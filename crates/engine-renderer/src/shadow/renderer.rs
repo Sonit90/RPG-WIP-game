@@ -45,20 +45,26 @@ use crate::upload::UploadRing;
 
 use super::atlas::AtlasRect;
 use super::cascade::{CascadeView, build_cascades};
-use super::caster::{ShadowCasterCollector, skinned_caster_visible};
+use super::caster::{CasterSlots, ShadowCasterCollector, skinned_caster_visible};
 use super::contact::{ContactShadowPipeline, ContactShadowTarget};
 use super::local::{LocalShadowView, SelectedLight, select_shadow_lights};
 use super::pipeline::{ShadowGeometry, ShadowPipelineSet, ShadowPipelines, ShadowSurface};
 use super::resources::{SHADOW_CLEAR, ShadowResources};
 use super::settings::ShadowSettings;
+use super::static_cache::{StaticShadowCache, StaticView};
 use super::stats::{ShadowPassStats, ShadowStats};
 
-/// Alignment for a per-instance stream in the upload ring.
-///
-/// Sixteen, for the reason `renderer.rs` documents at length: a vertex buffer view needs an
-/// address its elements do not straddle, and the 96-byte instance record is not a power of
-/// two.
-const INSTANCE_ALIGNMENT: usize = 16;
+/// Where a batch loop's per-instance data comes from.
+pub(crate) enum InstanceSource<'a> {
+    /// Composed from the list's own transforms into this frame's ring, with this scratch.
+    Compose(&'a mut Vec<InstanceTransform>),
+    /// Composed already, in the list's batch order, and only copied into this frame's ring:
+    /// a static view's casters, kept from the frame they were gathered in.
+    Cached(&'a [InstanceTransform]),
+    /// Already in the ring, in the list's batch order: what the camera pass uploaded for the
+    /// same list, which the depth prepass binds instead of composing it a second time.
+    Uploaded(windows::Win32::Graphics::Direct3D12::D3D12_VERTEX_BUFFER_VIEW),
+}
 
 /// What one depth pass is rendered with.
 ///
@@ -158,6 +164,16 @@ pub struct ShadowRenderer {
     stats: ShadowStats,
     /// 0 none, 1 cascade tint, 2 shadow factor only.
     debug_mode: u32,
+    /// Whether the camera prepass runs for depth priming alone, without contact shadows.
+    priming_prepass: bool,
+    /// Every view's static casters, kept across frames.
+    static_cache: StaticShadowCache,
+    /// This frame's movers: casting slots that are not part of the static scene.
+    movers: Vec<u32>,
+    /// Whether the last cascade draws movers and characters. On by default; off is a measured
+    /// trade-off (`--shadow-tweak far-movers=off`): something moving 50 m and more away loses
+    /// its shadow, which is a few pixels at that range, for its draws in the largest view.
+    far_movers: bool,
     /// Milliseconds the last `prepare` took, folded into the stats by `record`.
     prepare_ms: f64,
 }
@@ -204,6 +220,10 @@ impl ShadowRenderer {
             instance_scratch: Vec::new(),
             palette_scratch: Vec::new(),
             debug_mode: 0,
+            priming_prepass: false,
+            static_cache: StaticShadowCache::default(),
+            movers: Vec::new(),
+            far_movers: true,
             prepare_ms: 0.0,
         })
     }
@@ -240,6 +260,7 @@ impl ShadowRenderer {
         self.pipelines.set_bias(device.device(), settings.bias)?;
         self.settings = settings;
         self.stats = ShadowStats::for_settings(&self.settings);
+        self.stats.prepass = self.needs_prepass();
         Ok(())
     }
 
@@ -300,7 +321,35 @@ impl ShadowRenderer {
     /// configuration without them pays nothing for it.
     #[must_use]
     pub fn needs_prepass(&self) -> bool {
+        self.needs_depth_copy() || self.priming_prepass
+    }
+
+    /// Whether the prepass's depth is copied for, and marched by, the contact shadows.
+    ///
+    /// Only when contact shadows are on. A prepass that runs for depth priming alone writes
+    /// the camera's depth buffer and stops there.
+    #[must_use]
+    pub fn needs_depth_copy(&self) -> bool {
         self.settings.enabled && self.settings.contact.enabled
+    }
+
+    /// Runs the camera prepass even without contact shadows, so the camera pass can test
+    /// against it instead of writing its own depth. See `DepthMode::Primed`.
+    pub fn set_priming_prepass(&mut self, enabled: bool) {
+        self.priming_prepass = enabled;
+    }
+
+    /// Whether the last cascade draws movers and characters (see the field).
+    pub fn set_far_movers(&mut self, enabled: bool) {
+        self.far_movers = enabled;
+    }
+
+    /// Turns the static-caster cache on or off, and sets how far a cached cascade may drift
+    /// before it is gathered again, as a fraction of its radius. Off gathers every caster
+    /// into every view every frame: the A/B control.
+    pub fn set_static_cache(&mut self, enabled: bool, margin_fraction: f32) {
+        self.static_cache.set_enabled(enabled);
+        self.static_cache.set_margin_fraction(margin_fraction);
     }
 
     /// Whether any shadow work happens at all.
@@ -340,7 +389,19 @@ impl ShadowRenderer {
     /// Builds the cascades, culls the casters into one render list per view, and picks which
     /// local lights can afford a shadow map. Nothing here touches D3D12, which is what lets
     /// a test assert on the result and what would let this move onto a worker thread.
-    pub fn prepare(&mut self, world: &RenderWorld, camera: &Camera, lighting: Lighting) {
+    ///
+    /// `material_count` and `mesh_count` are the lengths of the renderer's handle arrays: the
+    /// key space the lists are grouped over, exactly as the camera's list is. Passing anything
+    /// larger than the real arrays makes the grouping give up and keep gather order, which is
+    /// what every shadow view did before they were passed: a draw per caster.
+    pub fn prepare(
+        &mut self,
+        world: &RenderWorld,
+        camera: &Camera,
+        lighting: Lighting,
+        material_count: usize,
+        mesh_count: usize,
+    ) {
         let started = std::time::Instant::now();
         self.stats = ShadowStats::for_settings(&self.settings);
         self.stats.enabled = self.settings.enabled;
@@ -369,22 +430,72 @@ impl ShadowRenderer {
                 .resize_with(self.cascades.len(), RenderList::new);
         }
 
+        // The frame's movers: everything that casts and is not part of the static scene,
+        // gathered once here and tested per view below. With the cache off, that is every
+        // caster, and every view is gathered from scratch exactly as before the cache.
+        self.static_cache
+            .begin_frame(world.static_generation(), &self.settings);
+        let caching = self.static_cache.enabled();
+        self.movers.clear();
+        {
+            let (flags, shadow, statics) = (
+                world.visible_flags(),
+                world.shadow_casting(),
+                world.static_flags(),
+            );
+            for slot in 0..world.slot_count() {
+                if flags[slot] && shadow[slot].casts && !(caching && statics[slot]) {
+                    self.movers.push(slot as u32);
+                }
+            }
+        }
+
         let layout = *self.resources.layout();
         let mut lod_counts = [0_u32; 4];
         for index in 0..self.cascades.len() {
             let cascade = self.cascades[index];
+            let mut static_casters = 0;
+            if caching {
+                let (collector, settings) = (&mut self.collector, &self.settings);
+                let view = self.static_cache.cascade(index, &cascade, |frustum, list| {
+                    collector.collect_cascade_with(
+                        world,
+                        frustum,
+                        &cascade,
+                        index,
+                        settings,
+                        CasterSlots::Static,
+                        list,
+                    );
+                    list.group_by_material_and_mesh(material_count, mesh_count);
+                });
+                static_casters = view.list.len() as u32;
+            }
             let mut list = std::mem::take(&mut self.cascade_lists[index]);
-            self.collector
-                .collect_cascade(world, &cascade, index, &self.settings, &mut list);
-            // The same grouping the camera pass uses, which is what gives the shadow pass
-            // instanced batching for free.
-            list.group_by_material_and_mesh(usize::MAX, usize::MAX);
+            let movers: &[u32] = if self.far_movers || index + 1 < self.cascades.len() {
+                &self.movers
+            } else {
+                &[]
+            };
+            self.collector.collect_cascade_with(
+                world,
+                &cascade.frustum(),
+                &cascade,
+                index,
+                &self.settings,
+                CasterSlots::Only(movers),
+                &mut list,
+            );
+            // The same grouping the camera pass uses, over the same key space, which is what
+            // gives the shadow pass instanced batching.
+            list.group_by_material_and_mesh(material_count, mesh_count);
             let stats = self.collector.stats();
-            self.stats.cascades[index].casters = stats.visible;
+            self.stats.cascades[index].casters = static_casters + stats.visible;
             for (level, count) in stats.lod_counts.iter().enumerate() {
                 lod_counts[level] += count;
             }
             lod_counts[3] += stats.too_small;
+            self.static_cache.count_moving(list.len());
             self.cascade_lists[index] = list;
             self.cascade_rects
                 .push(layout.cascade_rect(index).unwrap_or(AtlasRect {
@@ -422,16 +533,39 @@ impl ShadowRenderer {
         }
         for index in 0..self.local_views.len() {
             let view = self.local_views[index];
+            let resolution = layout.local_resolution();
+            if caching {
+                let (collector, settings) = (&mut self.collector, &self.settings);
+                let cached = self.static_cache.local(
+                    view.light,
+                    view.face.unwrap_or(0),
+                    view.view_projection.to_cols_array(),
+                    |list| {
+                        collector.collect_local_with(
+                            world,
+                            &view,
+                            resolution,
+                            settings,
+                            CasterSlots::Static,
+                            list,
+                        );
+                        list.group_by_material_and_mesh(material_count, mesh_count);
+                    },
+                );
+                self.stats.local.casters += cached.list.len() as u32;
+            }
             let mut list = std::mem::take(&mut self.local_lists[index]);
-            self.collector.collect_local(
+            self.collector.collect_local_with(
                 world,
                 &view,
-                layout.local_resolution(),
+                resolution,
                 &self.settings,
+                CasterSlots::Only(&self.movers),
                 &mut list,
             );
-            list.group_by_material_and_mesh(usize::MAX, usize::MAX);
+            list.group_by_material_and_mesh(material_count, mesh_count);
             self.stats.local.casters += self.collector.stats().visible;
+            self.static_cache.count_moving(list.len());
             self.local_lists[index] = list;
             self.local_rects
                 .push(layout.local_rect(index).unwrap_or(AtlasRect {
@@ -441,6 +575,8 @@ impl ShadowRenderer {
                 }));
         }
 
+        self.stats.static_cache = self.static_cache.stats();
+        self.stats.static_views = self.static_cache.cached_views();
         self.prepare_ms = started.elapsed().as_secs_f64() * 1e3;
     }
 
@@ -516,15 +652,46 @@ impl ShadowRenderer {
         // removal with no other diagnostic.
         self.bind_first_pipeline(commands, true);
 
+        // Out of `self` for the loops, so a view can lend its static casters to `record_view`
+        // while that borrows `self` mutably. Put back below, on every path.
+        let cache = std::mem::take(&mut self.static_cache);
+        let result = self.record_views(commands, uploads, slot, scene, &cache);
+        self.static_cache = cache;
+        result?;
+
+        // One transition for the whole atlas, which is the second reason it is one texture.
+        commands.transition_to(
+            self.resources.atlas(),
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+        );
+
+        self.stats.atlas_ms = started.elapsed().as_secs_f64() * 1e3;
+        self.stats.cpu_ms += self.stats.atlas_ms;
+        Ok(())
+    }
+
+    /// Records every cascade and every local view, each with the static casters `cache`
+    /// holds for it.
+    fn record_views(
+        &mut self,
+        commands: &mut CommandContext,
+        uploads: &mut UploadRing,
+        slot: usize,
+        scene: &ShadowScene<'_>,
+        cache: &StaticShadowCache,
+    ) -> Result<(), RendererError> {
         for index in 0..self.cascades.len() {
             let Some(rect) = self.cascade_rects.get(index).copied() else {
                 continue;
             };
             let view = ShadowViewConstants::new(self.cascades[index].view_projection, true);
             let frustum = self.cascades[index].frustum();
+            let statics = cache.cascade_view(index);
+            let characters = self.far_movers || index + 1 < self.cascades.len();
             let list = std::mem::take(&mut self.cascade_lists[index]);
-            let pass =
-                self.record_view(commands, uploads, slot, scene, rect, view, &list, &frustum);
+            let pass = self.record_view(
+                commands, uploads, slot, scene, rect, view, statics, &list, &frustum, characters,
+            );
             self.cascade_lists[index] = list;
             let pass = pass?;
             self.stats.cascades[index].draw_calls = pass.draw_calls;
@@ -535,24 +702,22 @@ impl ShadowRenderer {
             let Some(rect) = self.local_rects.get(index).copied() else {
                 continue;
             };
-            let view = ShadowViewConstants::new(self.local_views[index].view_projection, false);
-            let frustum = self.local_views[index].frustum();
+            let local = self.local_views[index];
+            let view = ShadowViewConstants::new(local.view_projection, false);
+            let frustum = local.frustum();
+            let statics = cache
+                .enabled()
+                .then(|| cache.local_view(local.light, local.face.unwrap_or(0)))
+                .flatten();
             let list = std::mem::take(&mut self.local_lists[index]);
-            let pass =
-                self.record_view(commands, uploads, slot, scene, rect, view, &list, &frustum);
+            let pass = self.record_view(
+                commands, uploads, slot, scene, rect, view, statics, &list, &frustum, true,
+            );
             self.local_lists[index] = list;
             let pass = pass?;
             self.stats.local.draw_calls += pass.draw_calls;
             self.stats.local.triangles += pass.triangles;
         }
-
-        // One transition for the whole atlas, which is the second reason it is one texture.
-        commands.transition_to(
-            self.resources.atlas(),
-            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-        );
-
-        self.stats.cpu_ms += started.elapsed().as_secs_f64() * 1e3;
         Ok(())
     }
 
@@ -580,6 +745,7 @@ impl ShadowRenderer {
         camera: &Camera,
         depth_dsv: windows::Win32::Graphics::Direct3D12::D3D12_CPU_DESCRIPTOR_HANDLE,
         size: (u32, u32),
+        camera_instances: Option<windows::Win32::Graphics::Direct3D12::D3D12_VERTEX_BUFFER_VIEW>,
     ) -> Result<(), RendererError> {
         if !self.needs_prepass() {
             return Ok(());
@@ -606,7 +772,10 @@ impl ShadowRenderer {
                 scene,
                 list,
                 self.pipelines.prepass(),
-                &mut instances,
+                match camera_instances {
+                    Some(view) => InstanceSource::Uploaded(view),
+                    None => InstanceSource::Compose(&mut instances),
+                },
             )
             .and_then(|()| {
                 self.record_skinned(
@@ -626,7 +795,8 @@ impl ShadowRenderer {
         self.instance_scratch = instances;
         self.palette_scratch = palette;
         result?;
-        self.stats.cpu_ms += started.elapsed().as_secs_f64() * 1e3;
+        self.stats.prepass_ms = started.elapsed().as_secs_f64() * 1e3;
+        self.stats.cpu_ms += self.stats.prepass_ms;
         Ok(())
     }
 
@@ -638,7 +808,13 @@ impl ShadowRenderer {
     /// command and one full-screen depth buffer of bandwidth, and it only happens when
     /// contact shadows are on. The trade is recorded in `docs/shadows.md`.
     pub fn copy_scene_depth(&mut self, commands: &mut CommandContext, depth: &GpuTexture) {
-        if !self.needs_prepass() {
+        if !self.needs_depth_copy() {
+            return;
+        }
+        if self.resources.samples_camera_depth() {
+            // No copy: the march reads the depth buffer itself, which only has to be readable
+            // until `finish_scene_depth` hands it back to the camera pass.
+            commands.transition_to(depth, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
             return;
         }
         commands.transition_to(depth, D3D12_RESOURCE_STATE_COPY_SOURCE);
@@ -649,6 +825,29 @@ impl ShadowRenderer {
             D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
         );
         commands.transition_to(depth, D3D12_RESOURCE_STATE_DEPTH_WRITE);
+    }
+
+    /// Returns the camera's depth buffer to `DEPTH_WRITE` after the contact-shadow march, when
+    /// the march sampled it in place. A no-op for the copy path, which never moved it.
+    pub fn finish_scene_depth(&mut self, commands: &mut CommandContext, depth: &GpuTexture) {
+        if self.needs_depth_copy() && self.resources.samples_camera_depth() {
+            commands.transition_to(depth, D3D12_RESOURCE_STATE_DEPTH_WRITE);
+        }
+    }
+
+    /// Samples the camera's depth buffer in place for the contact-shadow march instead of a
+    /// copy of it. See [`ShadowResources::sample_camera_depth`]; called again whenever the
+    /// depth buffer or the shadow resources are recreated.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RendererError::Api`] if a D3D12 call fails.
+    pub fn sample_camera_depth(
+        &mut self,
+        device: &RenderDevice,
+        depth: &GpuTexture,
+    ) -> Result<(), RendererError> {
+        self.resources.sample_camera_depth(device, depth)
     }
 
     /// Records the contact-shadow pass into its own half-resolution target.
@@ -694,8 +893,10 @@ impl ShadowRenderer {
         scene: &ShadowScene<'_>,
         rect: AtlasRect,
         view: ShadowViewConstants,
+        statics: Option<&StaticView>,
         list: &RenderList,
         frustum: &Frustum,
+        characters: bool,
     ) -> Result<ShadowPassStats, RendererError> {
         let before = commands.stats();
         commands.set_viewport_rect(rect.x, rect.y, rect.size, rect.size);
@@ -708,17 +909,35 @@ impl ShadowRenderer {
         // the next frame. The same trick `Simulation::apply_pending_commands` uses.
         let mut instances = std::mem::take(&mut self.instance_scratch);
         let mut palette = std::mem::take(&mut self.palette_scratch);
-        let result = self
-            .record_batches(
-                commands,
-                uploads,
-                slot,
-                scene,
-                list,
-                self.pipelines.shadow(),
-                &mut instances,
-            )
+        // The static casters first, from the cache, then the movers and the characters.
+        let statics = statics.map(|view| (&view.list, view.instances.as_slice()));
+        let result = statics
+            .map_or(Ok(()), |(statics, cached)| {
+                self.record_batches(
+                    commands,
+                    uploads,
+                    slot,
+                    scene,
+                    statics,
+                    self.pipelines.shadow(),
+                    InstanceSource::Cached(cached),
+                )
+            })
             .and_then(|()| {
+                self.record_batches(
+                    commands,
+                    uploads,
+                    slot,
+                    scene,
+                    list,
+                    self.pipelines.shadow(),
+                    InstanceSource::Compose(&mut instances),
+                )
+            })
+            .and_then(|()| {
+                if !characters {
+                    return Ok(0);
+                }
                 self.record_skinned(
                     commands,
                     uploads,
@@ -760,8 +979,33 @@ impl ShadowRenderer {
         scene: &ShadowScene<'_>,
         list: &RenderList,
         pipelines: &ShadowPipelineSet,
-        scratch: &mut Vec<InstanceTransform>,
+        instances: InstanceSource<'_>,
     ) -> Result<(), RendererError> {
+        // One instance stream for the whole list, in batch order, bound once: each batch is
+        // then a draw starting at its own `first`.
+        let stream = match instances {
+            InstanceSource::Uploaded(view) => Some(view),
+            InstanceSource::Compose(scratch) => list.upload_instances(uploads, slot, scratch)?,
+            InstanceSource::Cached([]) => None,
+            InstanceSource::Cached(instances) => {
+                let allocation = uploads.write(
+                    slot,
+                    instances,
+                    crate::render_list::INSTANCE_STREAM_ALIGNMENT,
+                )?;
+                Some(
+                    windows::Win32::Graphics::Direct3D12::D3D12_VERTEX_BUFFER_VIEW {
+                        BufferLocation: allocation.gpu_address(),
+                        SizeInBytes: std::mem::size_of_val(instances) as u32,
+                        StrideInBytes: size_of::<InstanceTransform>() as u32,
+                    },
+                )
+            }
+        };
+        let Some(stream) = stream else {
+            return Ok(());
+        };
+        commands.set_vertex_buffer(1, stream);
         for batch in list.batches() {
             let Some(mesh) = scene.meshes.get(batch.mesh.index()) else {
                 return Err(RendererError::InvalidConfig {
@@ -808,32 +1052,9 @@ impl ShadowRenderer {
                 commands.set_root_descriptor_table(ROOT_MATERIAL_TABLE, table);
             }
 
-            let count = batch.count as usize;
-            let bytes = count * size_of::<InstanceTransform>();
-            let allocation = uploads.allocate(slot, bytes, INSTANCE_ALIGNMENT)?;
-
-            let first = batch.first as usize;
-            scratch.clear();
-            scratch.reserve(count);
-            for &entry in &list.order()[first..first + count] {
-                scratch.push(InstanceTransform::styled(
-                    list.transforms()[entry as usize].matrix(),
-                    list.styles()[entry as usize],
-                ));
-            }
-            allocation.write(scratch)?;
-
             commands.set_vertex_buffer(0, *mesh.vertex_view());
-            commands.set_vertex_buffer(
-                1,
-                windows::Win32::Graphics::Direct3D12::D3D12_VERTEX_BUFFER_VIEW {
-                    BufferLocation: allocation.gpu_address(),
-                    SizeInBytes: bytes as u32,
-                    StrideInBytes: size_of::<InstanceTransform>() as u32,
-                },
-            );
             commands.set_index_buffer(*mesh.index_view());
-            commands.draw_indexed(mesh.index_count(), batch.count, 0);
+            commands.draw_indexed(mesh.index_count(), batch.count, batch.first);
         }
         Ok(())
     }
@@ -856,7 +1077,7 @@ impl ShadowRenderer {
         frustum: &Frustum,
         pipelines: &ShadowPipelineSet,
         scratch: &mut Vec<[f32; 16]>,
-        skip_translucent: bool,
+        camera_depth: bool,
     ) -> Result<u32, RendererError> {
         if scene.skinned.is_empty() {
             return Ok(0);
@@ -868,10 +1089,15 @@ impl ShadowRenderer {
             let Some(instance) = scene.skinned.instances().get(index).copied() else {
                 break;
             };
-            if !skinned_caster_visible(&instance, frustum) {
-                continue;
-            }
-            if skip_translucent && instance.style.is_faded() {
+            if camera_depth {
+                // The camera's depth, not a light's: every whole character the camera draws
+                // is in it, caster or not — the camera pass draws them against this depth
+                // without writing their own — and a faded one is not, because the camera
+                // draws it see-through over the world rather than into it.
+                if instance.style.is_faded() || !frustum.intersects_sphere(&instance.bounds) {
+                    continue;
+                }
+            } else if !skinned_caster_visible(&instance, frustum) {
                 continue;
             }
             let Some(mesh) = scene.skinned_meshes.get(instance.mesh.index()) else {

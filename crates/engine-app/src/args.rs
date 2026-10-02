@@ -275,6 +275,15 @@ options:
                          job system's workers. The parallel passes are on by default and
                          each falls back to serial below its own size threshold; this
                          forces serial at any size, for A/B measurement and determinism
+  --pipeline-stats       count the mesh pass's pixel-shader invocations with a pipeline
+                         statistics query and report them per screen pixel (overdraw).
+                         Off by default: never on in a run timed against another
+  --camera-spin <rad/s>  turn the follow camera around the player at this rate. A
+                         measurement control: a benchmark's camera otherwise stands
+                         still, which flatters anything cached against the view
+  --fixed-step <ms>      advance every frame by this much time instead of the clock's
+                         measurement, so a screenshot is the same frame in a fast build
+                         and a slow one. For captures; timings still read the clock
   --overlay              start with the debug overlay visible (F5 toggles it at any
                          time; hidden by default because it costs frame time)
   --dummies <count>      training dummies in the group, on top of the single dummy
@@ -399,6 +408,8 @@ pub struct ShadowOverrides {
     pub distance: Option<f32>,
     /// The filter kernel.
     pub pcf: Option<PcfKernel>,
+    /// The fraction of each cascade blended into the next.
+    pub blend: Option<f32>,
     /// Whether contact shadows run.
     pub contact: Option<bool>,
     /// Steps in the contact-shadow march.
@@ -428,6 +439,21 @@ pub struct ShadowOverrides {
     /// Not a shadow setting - it switches off the lights themselves - but it belongs to the
     /// same measurement question ("what does this cost?") and shares its parser.
     pub local_lights: Option<bool>,
+    /// Whether the camera pass draws prepass-covered surfaces without writing depth.
+    ///
+    /// Not a shadow setting either: the A/B control for depth priming, which only exists
+    /// where the shadow stage runs a depth prepass.
+    pub prime: Option<bool>,
+    /// Whether the camera depth prepass runs for priming alone where contact shadows would
+    /// not run it: Low, Medium, shadows off.
+    pub prime_prepass: Option<bool>,
+    /// Whether the shadow views keep their static casters across frames.
+    pub static_cache: Option<bool>,
+    /// How far a cached cascade may drift before it is gathered again, as a fraction of its
+    /// radius.
+    pub cache_margin: Option<f32>,
+    /// Whether the last cascade draws movers and characters.
+    pub far_movers: Option<bool>,
 }
 
 impl ShadowOverrides {
@@ -456,6 +482,7 @@ impl ShadowOverrides {
                     self.resolution = Some(value.parse().map_err(|_| invalid())?);
                 }
                 "distance" => self.distance = Some(value.parse().map_err(|_| invalid())?),
+                "blend" => self.blend = Some(value.parse().map_err(|_| invalid())?),
                 "pcf" => {
                     self.pcf = Some(match value {
                         "1" | "single" => PcfKernel::Single,
@@ -484,6 +511,15 @@ impl ShadowOverrides {
                 "local-views" => self.local_views = Some(value.parse().map_err(|_| invalid())?),
                 "local-lights" => self.local_lights = Some(boolean(value).ok_or_else(invalid)?),
                 "clusters" => self.clusters = Some(boolean(value).ok_or_else(invalid)?),
+                "prime" => self.prime = Some(boolean(value).ok_or_else(invalid)?),
+                "prime-prepass" => {
+                    self.prime_prepass = Some(boolean(value).ok_or_else(invalid)?);
+                }
+                "static-cache" => {
+                    self.static_cache = Some(boolean(value).ok_or_else(invalid)?);
+                }
+                "cache-margin" => self.cache_margin = Some(value.parse().map_err(|_| invalid())?),
+                "far-movers" => self.far_movers = Some(boolean(value).ok_or_else(invalid)?),
                 "filter-lod" => self.filter_lod = Some(value.parse().map_err(|_| invalid())?),
                 "min-importance" => {
                     self.min_importance = Some(value.parse().map_err(|_| invalid())?);
@@ -508,6 +544,9 @@ impl ShadowOverrides {
         }
         if let Some(pcf) = self.pcf {
             settings.pcf = pcf;
+        }
+        if let Some(blend) = self.blend {
+            settings.blend_fraction = blend;
         }
         if let Some(enabled) = self.contact {
             settings.contact.enabled = enabled;
@@ -679,6 +718,13 @@ pub struct Args {
     /// quality one: `--serial-jobs` forces the serial path at any size, which is what an
     /// A/B run and a determinism check need. Mirrors `--serial-cull` in the showcase.
     pub parallel_jobs: bool,
+    /// Whether the mesh pass counts its pipeline statistics (`--pipeline-stats`).
+    pub pipeline_stats: bool,
+    /// Radians per second the follow camera turns around the player, or zero for none.
+    pub camera_spin: f32,
+    /// Milliseconds every frame advances the real timeline by instead of the clock's, for a
+    /// deterministic capture (`--fixed-step`). `None` follows the clock.
+    pub fixed_step_ms: Option<f64>,
     /// Whether to open a borderless fullscreen window.
     pub fullscreen: bool,
     /// Whether `--width`, `--height` or `--fullscreen` was given: the command line then
@@ -794,6 +840,9 @@ impl Default for Args {
             party: 1,
             audio: true,
             parallel_jobs: true,
+            pipeline_stats: false,
+            camera_spin: 0.0,
+            fixed_step_ms: None,
             scene_file: None,
             layout: None,
             editor: false,
@@ -1043,6 +1092,11 @@ where
             }
             "--no-audio" => args.audio = false,
             "--serial-jobs" => args.parallel_jobs = false,
+            "--pipeline-stats" => args.pipeline_stats = true,
+            "--camera-spin" => args.camera_spin = next_value(&mut iter, "--camera-spin")?,
+            "--fixed-step" => {
+                args.fixed_step_ms = Some(next_value(&mut iter, "--fixed-step")?);
+            }
             "--no-ui" => args.ui = false,
             "-h" | "--help" => args.help = true,
             other => return Err(ArgsError::Unknown(other.to_owned())),

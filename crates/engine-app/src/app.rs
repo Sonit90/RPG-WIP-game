@@ -564,6 +564,10 @@ pub struct App {
     /// Individual shadow fields `--shadow-tweak` named, applied over whichever preset is
     /// current - including the one F4 switches to.
     shadow_overrides: crate::args::ShadowOverrides,
+    /// `--camera-spin`: radians per second the follow camera turns on its own, or zero.
+    camera_spin: f32,
+    /// `--fixed-step`, until the first frame hands it to the engine's clock.
+    fixed_step: Option<Duration>,
     /// When the measured window opened, and at which frame.
     ///
     /// The run's own average frame rate covers the warm-up too, and at 900 frames the
@@ -1329,6 +1333,11 @@ impl App {
             window_shown: false,
             warmup_frames: args.warmup,
             shadow_overrides: args.shadow_overrides,
+            camera_spin: args.camera_spin,
+            fixed_step: args
+                .fixed_step_ms
+                .filter(|ms| ms.is_finite() && *ms > 0.0)
+                .map(|ms| Duration::from_secs_f64(ms / 1e3)),
             measured_from: None,
             benchmark: args.benchmark.as_ref().map(|resolutions| {
                 log::info!(
@@ -1382,6 +1391,39 @@ impl App {
         if let Some(enabled) = args.shadow_overrides.local_lights {
             app.renderer.set_local_lights_enabled(enabled);
             log::info!("local lights: {}", if enabled { "on" } else { "off" });
+        }
+        if let Some(enabled) = args.shadow_overrides.prime {
+            app.renderer.set_depth_priming(enabled);
+            log::info!("depth priming: {}", if enabled { "on" } else { "off" });
+        }
+        if let Some(enabled) = args.shadow_overrides.prime_prepass {
+            app.renderer.set_priming_prepass(enabled);
+            log::info!("priming prepass: {}", if enabled { "on" } else { "off" });
+        }
+        if let Some(enabled) = args.shadow_overrides.far_movers {
+            app.renderer.set_far_shadow_movers(enabled);
+            log::info!("far-cascade movers: {}", if enabled { "on" } else { "off" });
+        }
+        if args.shadow_overrides.static_cache.is_some()
+            || args.shadow_overrides.cache_margin.is_some()
+        {
+            let enabled = args.shadow_overrides.static_cache.unwrap_or(true);
+            let margin = args
+                .shadow_overrides
+                .cache_margin
+                .unwrap_or(engine_renderer::shadow::static_cache::DEFAULT_CASCADE_MARGIN);
+            app.renderer.set_static_shadow_cache(enabled, margin);
+            log::info!(
+                "static shadow cache: {}, cascade margin {margin}",
+                if enabled { "on" } else { "off" }
+            );
+        }
+        if args.pipeline_stats {
+            app.renderer.set_pipeline_statistics(true)?;
+            log::info!("pipeline statistics: on (mesh pass)");
+        }
+        if app.camera_spin != 0.0 {
+            log::info!("camera spin: {} rad/s", app.camera_spin);
         }
         // Last: the bake draws the level through the renderer exactly as it is configured
         // to draw it, shadows included.
@@ -3652,7 +3694,7 @@ impl App {
         let (mesh, material) = (mesh, part.material);
         self.terrain_binding = Some(binding.clone());
         let world = self.extractor.render_world_mut();
-        let entity = world.spawn(engine_render_data::RenderEntityDesc {
+        let entity = world.spawn_static(engine_render_data::RenderEntityDesc {
             transform: engine_core::transform::Transform::IDENTITY,
             mesh,
             material,
@@ -3716,7 +3758,7 @@ impl App {
                     body.yaw, 0.0, 0.0,
                 ));
             let world = self.extractor.render_world_mut();
-            let entity = world.spawn(engine_render_data::RenderEntityDesc {
+            let entity = world.spawn_static(engine_render_data::RenderEntityDesc {
                 transform,
                 mesh,
                 material: part.material,
@@ -5369,6 +5411,10 @@ impl Application for App {
     /// gameplay pipeline rather than to "update".
     fn update(&mut self, ctx: &mut EngineContext) -> Result<(), EngineError> {
         let profiler = ctx.profiler();
+        // `--fixed-step`, set on the first frame: the context does not exist before it.
+        if let Some(step) = self.fixed_step.take() {
+            ctx.time_mut().set_fixed_step(Some(step));
+        }
 
         // The warm-up boundary: everything recorded so far described the load rather than
         // the frame, so it is discarded here rather than being averaged with what follows.
@@ -5605,6 +5651,12 @@ impl Application for App {
             // A teleport is not movement, so it is not smoothed: the camera arrives with the
             // character instead of chasing it across the gap at the follow rate.
             let teleported = engine_presentation::extract::player_teleported(&self.simulation);
+            // `--camera-spin`: a benchmark's camera turning on its own, so what is cached
+            // against the view is measured while the view actually changes.
+            if self.camera_spin != 0.0 {
+                self.controller
+                    .spin(self.camera_spin * ctx.time().real_delta().as_secs_f32());
+            }
             if teleported {
                 self.controller.snap_to(position);
             } else {
@@ -5804,6 +5856,14 @@ impl Application for App {
         self.last_total_stall = total_stall;
         if let Some(profile) = self.run_profile.as_mut() {
             profile.record_passes(self.renderer.last_pass_ms());
+            let (width, height) = self.renderer.size();
+            if let Some(sections) = self.renderer.last_scene_statistics() {
+                profile.record_overdraw(sections.map(|section| {
+                    section
+                        .pixel_invocations_per_pixel(width, height)
+                        .unwrap_or(0.0)
+                }));
+            }
             let (animate_ms, _) = self.extractor.animation_stats();
             let running_p50 = ctx
                 .metrics()
@@ -5812,7 +5872,7 @@ impl Application for App {
             profile.record(crate::run_profile::FrameSample {
                 frame: ctx.frame_index(),
                 stages: ctx.stage_timings(),
-                total_ms: ctx.time().real_delta().as_secs_f64() * 1e3,
+                total_ms: ctx.time().measured_delta().as_secs_f64() * 1e3,
                 gpu_ms: self.renderer.last_gpu_frame_ms(),
                 running_p50_ms: running_p50,
                 update: crate::run_profile::UpdateSplit {
@@ -5830,6 +5890,7 @@ impl Application for App {
                     group_ms: self.renderer.last_group_ms(),
                     shadow_prep_ms: self.renderer.shadow_stats().prepare_ms,
                 },
+                shadow: crate::run_profile::ShadowSplit::of(&self.renderer.shadow_stats()),
             });
         }
         self.advance_benchmark(ctx);

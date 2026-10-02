@@ -501,7 +501,7 @@ impl Application for Showcase {
 
     fn end_frame(&mut self, ctx: &mut EngineContext) {
         self.graph
-            .record((ctx.time().real_delta().as_secs_f64() * 1e3) as f32);
+            .record((ctx.time().measured_delta().as_secs_f64() * 1e3) as f32);
         self.maybe_report(ctx);
         #[cfg(feature = "debug-overlay")]
         self.maybe_update_overlay(ctx);

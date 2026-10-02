@@ -77,6 +77,14 @@ NEXT HIGHEST-VALUE OPTIMIZATION
 Record the shadow views in parallel on their own command lists (or stop re-recording static
 casters every frame); the job system needs a cheaper wake-up first, because in the game its
 workers are asleep and a split pays ~80 us before any work starts (section 14).
+
+FOLLOW-UP, 2026-10-02 (section 16): both addressed, same pictures
+
+Shadow lists instanced (they never were), static casters recorded once per view, the mesh
+pass depth-primed (it shaded 1.65 fragments a pixel: floors and sky were on late-Z), contact
+shadows reading depth in place. 1080p: arena 2029 -> 3150 FPS, graveyard 1856 -> 2385,
+environment stress 1643 -> 2722. 4K GPU: arena 1.536 -> 0.875 ms, graveyard 1.484 -> 0.983.
+Left: characters in the shadow views, contact shadows at 4K.
 ```
 
 ---
@@ -639,6 +647,150 @@ In order of expected value per unit of risk:
 6. **Exercise the untested first-use paths** in an interactive session with the run profile on
    (camera through the character, map, menus, hero swap) and pre-create any pipeline variant
    that shows up in `run created`.
+
+## 16. Follow-up: the shadow bottlenecks (2026-10-02)
+
+Sections 14 and 15 left two items: the shadow stage's recording on the CPU, and the mesh
+pass's shadow sampling on the GPU at 1440p and above. Both were measured again with new
+instruments, and most of each is gone. Every change below draws the same picture as the
+build before it: `--fixed-step` captures (16.4) of four scenes at every preset differ by zero
+pixels. Same machine, `--hidden`, every before/after pair interleaved, three runs each.
+
+### 16.1 What the instruments found
+
+* **The shadow pass had never been instanced.** `ShadowRenderer::prepare` grouped its lists
+  with `group_by_material_and_mesh(usize::MAX, usize::MAX)`, which overflows the bucket limit
+  and falls back to gather order: about one draw per caster per view (1,506 cascade draws in
+  the density-8 environment stress, 54 once grouped). Grouping with the real key space then
+  cost more than it saved, because the counting sort cleared and walked all 7,332 buckets
+  for each of ten views; it now visits only the keys a list holds.
+* **The mesh pass shaded 1.65 fragments per pixel with the prepass on.** A new
+  `PIPELINE_STATISTICS` query (`--pipeline-stats`) put all of it in the rigid opaque
+  batches, and a per-batch capture put 1.58 of it in three draws: the ground plane (0.66 per
+  pixel), the arena floor (0.62) and the sky dome (0.30). All three had been marked
+  see-through, the camera-fade flag decoration gets for having no collision. Every mesh pixel
+  shader can `discard`, and a pipeline that discards and writes depth runs the shader before
+  the depth test, so the floors and the sky were shaded wherever they were hidden.
+* **The static scene was re-gathered into every view every frame**: 0.05–0.08 ms of
+  preparation in the graveyard and the environment stress after the grouping fix, for lists
+  that change only when the camera moves far enough or the level changes.
+* **Contact shadows copied the depth buffer every frame**: 0.10 ms of the 0.14 ms "prepass"
+  timer at 4K, and a 33 MB texture.
+
+### 16.2 What changed
+
+| Change | Where | Exact? |
+| --- | --- | --- |
+| Shadow lists grouped over the real key space; the counting sort visits only the keys present | `shadow/renderer.rs`, `render_list.rs` | yes: depth does not depend on draw order |
+| Depth priming: prepass-covered draws use `LESS_EQUAL` with writes off, and the prepass runs at every preset | `mesh_pipeline.rs` (`DepthMode`), `renderer.rs`, `shadow/renderer.rs` | yes |
+| Floors and backdrop never see-through; what the camera may dither this frame is split out of the prepass and drawn with writes | `presentation/environment.rs`, `renderer.rs` (`may_be_dithered`) | yes, and it fixes the dither's holes at High/Ultra |
+| Static recording cache: static casters gathered, grouped and composed once per view, rebuilt on a static change or when a cascade drifts past a 15 % margin; movers gathered per frame | `shadow/static_cache.rs`, `render-data/world.rs` (`spawn_static`, `static_generation`) | yes: a reused list is a superset of an exact gather (tested) |
+| One instance stream per list, bound once; the prepass binds the camera's instead of composing its own | `render_list.rs`, `shadow/renderer.rs`, `renderer.rs` | yes |
+| Contact shadows sample the depth buffer in place (typeless depth buffer, transitioned around the march) | `depth.rs`, `shadow/resources.rs` | yes |
+| Contact read with two gathers instead of four loads, same order of summation | `scene_frame.hlsli` | yes, to the bit |
+| Per-slot vertex-buffer bind tracking | `command.rs` | — |
+
+### 16.3 Results
+
+**CPU, 1280x720** (`frame_matrix.ps1 -Mode pacing`, 6,000 frames after 600, 3 runs):
+
+| Scenario | CPU mean before | after | avg FPS before | after | shadow prep before | after |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Empty | 0.173 | 0.158 | 5767 | 6330 | 0.001 | 0.002 |
+| Arena | 0.281 | 0.191 | 3565 | 5233 | 0.016 | 0.004 |
+| Fight | 0.464 | 0.451 | 2156 | 2216 | 0.003 | 0.002 |
+| Dungeon | 0.317 | 0.284 | 3151 | 3516 | 0.010 | 0.003 |
+| Graveyard | 0.509 | 0.414 | 1964 | 2418 | 0.049 | 0.003 |
+| Encounter (10) | 0.214 | 0.209 | 4682 | 4784 | 0.001 | 0.002 |
+| Env stress, density 4 | 0.314 | 0.206 | 3182 | 4864 | 0.035 | 0.004 |
+| Env stress, density 8 | 0.431 | 0.223 | 2323 | 4490 | 0.062 | 0.004 |
+
+**1920x1080**, same method:
+
+| Scenario | CPU mean before | after | avg FPS before | after | 1% low before | after | GPU p50 before | after |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Empty | 0.278 | 0.246 | 3599 | 4073 | 2508 | 2889 | 0.229 | 0.198 |
+| Arena | 0.493 | 0.317 | 2029 | 3150 | 1273 | 1858 | 0.437 | 0.271 |
+| Fight | 0.500 | 0.480 | 2001 | 2085 | 1129 | 1477 | 0.386 | 0.308 |
+| Dungeon | 0.394 | 0.327 | 2539 | 3062 | 1606 | 1865 | 0.338 | 0.274 |
+| Graveyard | 0.539 | 0.419 | 1856 | 2385 | 1224 | 1546 | 0.477 | 0.334 |
+| Encounter (10) | 0.307 | 0.275 | 3258 | 3639 | 2033 | 2256 | 0.256 | 0.223 |
+| Env stress, density 4 | 0.521 | 0.329 | 1920 | 3039 | 1216 | 1872 | 0.467 | 0.281 |
+| Env stress, density 8 | 0.609 | 0.367 | 1643 | 2722 | 1076 | 1684 | 0.553 | 0.319 |
+
+**GPU at 1440p and 4K** (`-Mode res`, 600 frames after 120, 3 runs), GPU p50 in ms:
+
+| Scenario | 1440p before | after | 4K before | after | 4K mesh pass before | after |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Empty | 0.357 | 0.303 | 0.745 | 0.632 | 0.449 | 0.424 |
+| Arena | 0.718 | 0.425 | 1.536 | 0.875 | 1.176 | 0.617 |
+| Fight | 0.464 | 0.378 | 0.991 | 0.694 | 0.489 | 0.364 |
+| Dungeon | 0.526 | 0.432 | 1.078 | 0.868 | 0.728 | 0.614 |
+| Graveyard | 0.737 | 0.496 | 1.484 | 0.983 | 1.100 | 0.693 |
+| Encounter (10) | 0.397 | 0.328 | 0.833 | 0.696 | 0.533 | 0.485 |
+| Env stress, density 4 | 0.765 | 0.451 | 1.626 | 0.916 | 1.261 | 0.654 |
+| Env stress, density 8 | 0.876 | 0.504 | 1.884 | 1.049 | 1.508 | 0.780 |
+
+The 4K "prepass" timer, which held the depth copy, fell from 0.10–0.15 to 0.02–0.06 ms in
+every scene. VRAM fell by the copy's size (4 MiB at 720p, 33 MB at 4K). The fight moved
+least on the CPU because its shadow draws are characters (285 of 294 cascade draws), which
+none of this touches (16.6).
+
+With the camera turning at 1.5 rad/s (`--camera-spin`), the cache rebuilt 0.08 views a frame
+in the graveyard and 0.35 in the environment stress (level-of-detail swaps bump the static
+generation), for 0.004 and 0.011 ms of shadow preparation against 0.065 and 0.085 ms with the
+cache off.
+
+### 16.4 Correctness
+
+* `--fixed-step 4` (new: the real timeline advances by a constant, so a faster build captures
+  the same frame) screenshots of the arena, the dungeon, the graveyard and the environment
+  demo at Low, Medium, High and Ultra, against `HEAD` built with only that flag: zero
+  differing pixels in every one. With `--camera-spin 1.5` at frames 300, 900 and 1500: zero in
+  nine of twelve, and at most 18 pixels by at most 5 levels in the other three — the same
+  with the static cache and priming switched off, so neither causes it.
+* `cargo test --workspace`: 3,566 passed, 0 failed (11 new: the sparse grouping against a
+  walk over every bucket, the static generation, the cache's reuse and invalidation, a
+  property test that a reused cascade list is a superset of an exact gather over a walk and a
+  turn, the dither split against the shader's tube). `cargo clippy --workspace --all-targets`
+  clean; `--no-default-features` builds, with the one pre-existing dead-code warning.
+
+### 16.5 Measured and not adopted
+
+* **Receiver culling of cascade movers** — dropping a character from a cascade when its
+  light-space footprint misses everything that samples the cascade. Exact, but with the
+  receivers bounded by the frustum slice's light-space box it culled nothing (the slice
+  reaches far below the ground at 150 m). Reverted.
+* **Trade-offs, available as keys and off by default** (visual changes the defaults should
+  not make silently):
+  * `--shadow-tweak far-movers=off`: no movers or characters in the last cascade, so nothing
+    moving more than 50 m away has a shadow. Graveyard shadow skinned draws 204 to 31; CPU
+    -4 to -7 % at 720p in the fight, the graveyard and the dungeon.
+  * `contact-divisor=3` or `4` at 4K: -0.030 to -0.047 ms, contact shadows at a third or a
+    quarter of the resolution on each axis.
+  * `pcf=single`: -0.074 ms in the 4K mesh pass, hard-edged shadows.
+
+### 16.6 What is left, and the commands
+
+1. **Characters in the shadow views**: one draw per submesh per view, now most of the shadow
+   draws in the character-heavy scenes (the fight, the dungeon). Instancing them needs the
+   bone palettes in a structured buffer indexed by instance.
+2. **Contact shadows at 4K**: the march 0.12 ms (it does not fall below ~0.09 ms at any
+   resolution divisor, which points at the depth decompression on the transition) and the
+   read about 0.08 ms.
+3. **The job system's wake-up** (14.4), unchanged; with the shadow stage this small, parallel
+   recording is no longer the reason to fix it.
+
+```powershell
+.\tools\bench\frame_matrix.ps1 -Mode pacing -Size 1280x720 -Frames 6000 -Warmup 600 -Repeats 3 -Configs "<label>|<exe>|--scene ... --shadows high;..."
+.\tools\bench\frame_matrix.ps1 -Mode res -Resolutions 1280x720,1920x1080,2560x1440,3840x2160 -Repeats 3 -Configs "..."
+mygame.exe --hidden --shadows high --scene combat --pipeline-stats --frames 3000 --warmup 1500   # overdraw
+mygame.exe --hidden --scene graveyard --fixed-step 4 --screenshot shot.png --screenshot-frame 90 --frames 100
+```
+
+Run every binary of a comparison from one directory, with `--shadows` given: the game reads
+`settings.cfg` next to the executable, and a development tree's `target/release` holds a
+player's own settings.
 
 ---
 

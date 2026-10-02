@@ -306,6 +306,28 @@ pub(crate) fn depth_stencil_desc_for(surface: SurfaceClass) -> D3D12_DEPTH_STENC
     }
 }
 
+/// The depth state for a surface class drawn in `mode`.
+///
+/// [`DepthMode::Write`] is [`depth_stencil_desc_for`] unchanged. [`DepthMode::Primed`] keeps
+/// the test and drops the write, for a surface the camera's depth prepass already drew; a
+/// transparent surface writes nothing in either mode.
+///
+/// [`DepthMode::Write`]: crate::mesh_pipeline::DepthMode::Write
+/// [`DepthMode::Primed`]: crate::mesh_pipeline::DepthMode::Primed
+pub(crate) fn depth_stencil_desc_for_mode(
+    surface: SurfaceClass,
+    mode: crate::mesh_pipeline::DepthMode,
+) -> D3D12_DEPTH_STENCIL_DESC {
+    let desc = depth_stencil_desc_for(surface);
+    match mode {
+        crate::mesh_pipeline::DepthMode::Write => desc,
+        crate::mesh_pipeline::DepthMode::Primed => D3D12_DEPTH_STENCIL_DESC {
+            DepthWriteMask: D3D12_DEPTH_WRITE_MASK_ZERO,
+            ..desc
+        },
+    }
+}
+
 /// The blend state for a surface class.
 ///
 /// Opaque and alpha-tested get [`blend_desc`], which blends nothing. Transparent gets

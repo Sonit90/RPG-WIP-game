@@ -65,11 +65,23 @@ pub struct ShadowStats {
     /// different work: preparation is a pure pass over the world, once per view, and
     /// recording is driver calls. A single `cpu_ms` cannot say which one grew.
     pub prepare_ms: f64,
+    /// Milliseconds of `cpu_ms` spent recording the atlas views: every cascade and every
+    /// local view, their batches and their skinned casters.
+    pub atlas_ms: f64,
+    /// Milliseconds of `cpu_ms` spent recording the camera's depth prepass.
+    ///
+    /// Apart from the atlas because it draws a different list — the camera's, not a light's
+    /// — and is cut by different work.
+    pub prepass_ms: f64,
     /// Milliseconds the GPU spent on them, or `None` before the first slot has completed a
     /// full lap. Lags by the same number of frames the frame timer does.
     pub gpu_ms: Option<f64>,
     /// Whether the depth prepass ran, which is what contact shadows need.
     pub prepass: bool,
+    /// What the static-caster cache did this frame.
+    pub static_cache: super::static_cache::StaticCacheStats,
+    /// Views holding cached static casters at the end of this frame.
+    pub static_views: u32,
 }
 
 impl ShadowStats {

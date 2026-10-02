@@ -1313,7 +1313,7 @@ pub fn render_scene_shadowed_debug(
             commands.set_descriptor_heaps(&[Some(descriptors.heap().clone())]);
 
             // The shadow stage, exactly as the renderer runs it.
-            shadow.prepare(&world, camera, lighting);
+            shadow.prepare(&world, camera, lighting, materials.len(), meshes.len());
 
             // The frame constants before the stage rather than after it, for the reason the
             // window does the same: the contact-shadow pass reads them, and it runs inside
@@ -1352,7 +1352,7 @@ pub fn render_scene_shadowed_debug(
                 let mut visible = crate::render_list::RenderList::new();
                 let mut culler = crate::culling::Culler::new();
                 culler.accept_all(&world, &mut visible);
-                visible.group_by_material_and_mesh(usize::MAX, usize::MAX);
+                visible.group_by_material_and_mesh(materials.len(), meshes.len());
                 let scene = crate::shadow::renderer::ShadowScene {
                     meshes: &meshes,
                     skinned_meshes: &[],
@@ -1370,6 +1370,7 @@ pub fn render_scene_shadowed_debug(
                     camera,
                     dsv,
                     (width, height),
+                    None,
                 )?;
                 shadow.copy_scene_depth(commands, depth_texture);
 

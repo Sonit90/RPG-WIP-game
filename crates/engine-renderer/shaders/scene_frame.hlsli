@@ -506,7 +506,21 @@ float contact_shadow_at(float2 pixel, float view_distance)
     float2 coordinate = (pixel / viewport) * contact_target.xy - 0.5;
     float2 base = floor(coordinate);
     float2 fraction = coordinate - base;
-    int2 limit = int2(contact_target.xy) - 1;
+
+    // The 2x2 block whose top-left texel is `base`, as two gathers — one per channel —
+    // rather than four loads: the point at the block's shared corner gathers exactly those
+    // four texels, and the clamping sampler at s2 clamps them at the target's edges as the
+    // loads clamped their indices. Gather order is (0,1) (1,1) (1,0) (0,0) in x y z w; the
+    // taps are then visited in the loads' order, so the sums are the same to the last bit.
+    float2 corner = (base + 1.0) / contact_target.xy;
+    float4 shadow4 = contact_shadows.GatherRed(depth_sampler, corner);
+    float4 distance4 = contact_shadows.GatherGreen(depth_sampler, corner);
+    float2 taps[4] = {
+        float2(shadow4.w, distance4.w),
+        float2(shadow4.z, distance4.z),
+        float2(shadow4.x, distance4.x),
+        float2(shadow4.y, distance4.y),
+    };
 
     float total = 0.0;
     float total_weight = 0.0;
@@ -516,8 +530,7 @@ float contact_shadow_at(float2 pixel, float view_distance)
         [unroll]
         for (int x = 0; x < 2; ++x)
         {
-            int2 texel = clamp(int2(base) + int2(x, y), int2(0, 0), limit);
-            float2 tap = contact_shadows.Load(int3(texel, 0));
+            float2 tap = taps[y * 2 + x];
             if (tap.y <= 0.0)
             {
                 continue;

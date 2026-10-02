@@ -337,6 +337,13 @@ impl ThirdPersonCamera {
         self.pitch = (self.pitch - delta_y * rate).clamp(MIN_PITCH, MAX_PITCH);
     }
 
+    /// Turns the orbit by `radians` of yaw, independent of the mouse sensitivity.
+    ///
+    /// What a benchmark's spinning camera uses: a fixed angular rate, not a pixel count.
+    pub fn spin(&mut self, radians: f32) {
+        self.yaw = (self.yaw + radians).rem_euclid(std::f32::consts::TAU);
+    }
+
     /// Applies wheel notches as an orbit distance change.
     ///
     /// Rolling away from the user pulls the camera in, which is what "zoom in" means.

@@ -84,6 +84,8 @@ use engine_core::transform::Transform;
 use engine_render_data::{InstanceStyle, MaterialHandle, MeshHandle, RenderEntity};
 
 use crate::material::SurfaceClass;
+use crate::mesh_pipeline::InstanceTransform;
+use crate::upload::UploadRing;
 
 /// A run of entries sharing one mesh and one material.
 ///
@@ -108,6 +110,18 @@ pub struct RenderBatch {
 /// list it is sorting, so the grouping is skipped instead. 64Ki buckets is 256 KiB of
 /// counters, which is already generous for a scene with one pipeline.
 const MAX_GROUPING_BUCKETS: usize = 64 * 1024;
+
+/// Alignment for a per-instance vertex stream in the upload ring.
+///
+/// A vertex buffer view has no 256-byte requirement the way a constant buffer view does;
+/// what it needs is an address aligned to its largest element, so the input assembler's
+/// fetches do not straddle a boundary. Every element in the stream is a `float4` or
+/// smaller, so sixteen bytes is enough.
+///
+/// It is deliberately **not** `size_of::<InstanceTransform>()`, which is what it used to
+/// be: the record grew to 96 bytes when it gained a tint, and 96 is not a power of two —
+/// which the ring's aligner requires and which turned an alignment constant into a panic.
+pub(crate) const INSTANCE_STREAM_ALIGNMENT: usize = 16;
 
 /// One entry, gathered from the parallel arrays.
 ///
@@ -153,15 +167,20 @@ pub struct RenderList {
     /// Runs of entries sharing a mesh and a material.
     batches: Vec<RenderBatch>,
     /// Histogram scratch for the counting sort, reused across frames.
-    counts: Vec<u32>,
-    /// Where each bucket started before the scatter, reused across frames.
     ///
-    /// The scatter consumes `counts` by advancing each bucket's cursor, so the batch pass
-    /// needs the values it had beforehand. This used to be a `to_vec()` inside the pass —
-    /// one heap allocation of `material_count * mesh_count` words **every frame**, which
-    /// went unnoticed while the scene had nine materials and four meshes and showed up the
-    /// moment the environment brought forty of each. `env_bench` counts it.
-    starts: Vec<u32>,
+    /// Dense over the whole key space but kept all-zero between calls: the grouping resets
+    /// exactly the counters it touched, so it never clears the array whole.
+    counts: Vec<u32>,
+    /// The distinct keys the last grouping saw, reused across frames.
+    ///
+    /// Every buffer here is held rather than allocated per call. The bucket starts used to
+    /// be a `to_vec()` inside the pass — one heap allocation of `material_count *
+    /// mesh_count` words **every frame**, which went unnoticed while the scene had nine
+    /// materials and four meshes and showed up the moment the environment brought forty of
+    /// each. `env_bench` counts it.
+    touched: Vec<u32>,
+    /// Each entry's key, so the scatter does not recompute it, reused across frames.
+    keys: Vec<u32>,
     /// `(squared distance from the eye, entry index)` for the depth sort, reused across
     /// frames.
     ///
@@ -191,7 +210,8 @@ impl RenderList {
             order: Vec::with_capacity(capacity),
             batches: Vec::new(),
             counts: Vec::new(),
-            starts: Vec::new(),
+            touched: Vec::new(),
+            keys: Vec::new(),
             depth_keys: Vec::new(),
         }
     }
@@ -400,6 +420,92 @@ impl RenderList {
         self.truncate(kept);
     }
 
+    /// Moves every entry `moves` accepts into `out`, keeping both lists in gather order.
+    ///
+    /// The general form of [`RenderList::split_transparent`], for a split decided by the
+    /// entity and its style rather than by its material: the renderer uses it to take the
+    /// entries the camera may dither this frame out of the list its depth prepass draws.
+    /// Costs one predicate call per entry and nothing else when it moves nothing.
+    ///
+    /// Both lists' `order` and `batches` are invalidated, as with the transparent split.
+    pub fn split_where(
+        &mut self,
+        out: &mut Self,
+        mut moves: impl FnMut(RenderEntity, InstanceStyle) -> bool,
+    ) {
+        out.clear();
+        self.order.clear();
+        self.batches.clear();
+
+        let mut kept = 0;
+        for index in 0..self.len() {
+            if moves(self.entities[index], self.styles[index]) {
+                out.push(
+                    self.entities[index],
+                    self.transforms[index],
+                    self.meshes[index],
+                    self.materials[index],
+                    self.styles[index],
+                    self.receives_shadow[index],
+                );
+                continue;
+            }
+            if kept != index {
+                self.entities[kept] = self.entities[index];
+                self.transforms[kept] = self.transforms[index];
+                self.meshes[kept] = self.meshes[index];
+                self.materials[kept] = self.materials[index];
+                self.styles[kept] = self.styles[index];
+                self.receives_shadow[kept] = self.receives_shadow[index];
+            }
+            kept += 1;
+        }
+        self.truncate(kept);
+    }
+
+    /// Composes every entry's per-instance data into one allocation of this frame's upload
+    /// ring, in the order the batches walk, and returns the view a batch loop binds once.
+    ///
+    /// Batch `b`'s instances then start at `b.first`, so each batch is one draw with
+    /// `start_instance = first` and the instance stream is bound once per pass rather than once
+    /// per batch. It is also what lets two passes over the same list share one copy: the
+    /// camera's depth prepass and the camera pass draw the same list and bind the same view.
+    /// `None` for an empty list. Group first; the batches index the order this writes in.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::RendererError::InvalidConfig`] if the ring cannot fit the instances.
+    pub(crate) fn upload_instances(
+        &self,
+        uploads: &mut UploadRing,
+        slot: usize,
+        scratch: &mut Vec<InstanceTransform>,
+    ) -> Result<
+        Option<windows::Win32::Graphics::Direct3D12::D3D12_VERTEX_BUFFER_VIEW>,
+        crate::RendererError,
+    > {
+        if self.order.is_empty() {
+            return Ok(None);
+        }
+        scratch.clear();
+        scratch.extend(self.order.iter().map(|&entry| {
+            let entry = entry as usize;
+            InstanceTransform::shadowed(
+                self.transforms[entry].matrix(),
+                self.styles[entry],
+                self.receives_shadow[entry],
+            )
+        }));
+        let allocation = uploads.write(slot, scratch, INSTANCE_STREAM_ALIGNMENT)?;
+        Ok(Some(
+            windows::Win32::Graphics::Direct3D12::D3D12_VERTEX_BUFFER_VIEW {
+                BufferLocation: allocation.gpu_address(),
+                SizeInBytes: std::mem::size_of_val(scratch.as_slice()) as u32,
+                StrideInBytes: size_of::<InstanceTransform>() as u32,
+            },
+        ))
+    }
+
     /// Shortens every payload array to `length`, keeping the allocations.
     fn truncate(&mut self, length: usize) {
         self.entities.truncate(length);
@@ -493,6 +599,18 @@ impl RenderList {
     /// grouping is trying to save; it would have spent the win on the sort. Nine materials
     /// and four meshes is 36 buckets.
     ///
+    /// # Sparse: only the keys the list uses are visited
+    ///
+    /// The histogram is a dense array of `material_count * mesh_count` counters, but the
+    /// prefix sum and the batch pass walk only the keys this list actually contains, sorted —
+    /// and only those counters are reset afterwards, so the array stays zero between calls
+    /// and is never cleared whole. The difference is the shadow stage: a game level has
+    /// thousands of possible keys (78 materials x 94 meshes in the graveyard) and each of its
+    /// ten shadow views holds a few dozen of them. Walking and clearing every bucket for every
+    /// view cost more than the instancing saved; walking the few dozen costs nothing. The
+    /// output is the same order the dense walk produced: ascending key, gather order within a
+    /// key.
+    ///
     /// Above [`MAX_GROUPING_BUCKETS`] the histogram would be larger than the list, so the
     /// list is left in gather order and the batches become whatever runs it already had.
     /// That is a correct answer, just a worse one, and it keeps a scene with thousands of
@@ -519,60 +637,86 @@ impl RenderList {
             return;
         }
 
-        // Histogram. `counts` is reused across frames, so this is a fill rather than an
-        // allocation once the scene has been seen.
-        self.counts.clear();
-        self.counts.resize(buckets + 1, 0);
-        let key_of = |mesh: MeshHandle, material: MaterialHandle| -> Option<usize> {
+        // The dense histogram, grown once to the largest key space seen and otherwise kept
+        // all-zero between calls: every counter this call touches is reset before it
+        // returns, so nothing ever clears the whole array.
+        if self.counts.len() < buckets {
+            self.counts.resize(buckets, 0);
+        }
+        let key_of = |mesh: MeshHandle, material: MaterialHandle| -> Option<u32> {
             let (mesh, material) = (mesh.index(), material.index());
-            (mesh < mesh_count && material < material_count).then_some(material * mesh_count + mesh)
+            (mesh < mesh_count && material < material_count)
+                .then_some((material * mesh_count + mesh) as u32)
         };
 
+        // Histogram, noting each key the first time it appears.
+        self.keys.clear();
+        self.touched.clear();
+        let mut bucketable = true;
         for (mesh, material) in self.meshes.iter().zip(&self.materials) {
             let Some(key) = key_of(*mesh, *material) else {
-                // A handle outside the renderer's arrays cannot be bucketed. Recording
-                // rejects it by name a moment later, which is a better error than a
-                // silently mis-sorted frame.
-                self.batch_in_gather_order();
-                return;
+                bucketable = false;
+                break;
             };
-            self.counts[key + 1] += 1;
+            let count = &mut self.counts[key as usize];
+            if *count == 0 {
+                self.touched.push(key);
+            }
+            *count += 1;
+            self.keys.push(key);
+        }
+        if !bucketable {
+            // A handle outside the renderer's arrays cannot be bucketed. Recording rejects it
+            // by name a moment later, which is a better error than a silently mis-sorted
+            // frame.
+            self.reset_touched_counts();
+            self.batch_in_gather_order();
+            return;
         }
 
-        // Prefix sum turns counts into the first output index of each bucket.
-        for index in 1..self.counts.len() {
-            self.counts[index] += self.counts[index - 1];
+        // Ascending key, exactly the order a walk over every bucket visits them in. A few
+        // dozen keys per list, so this is the cheap sort.
+        self.touched.sort_unstable();
+
+        // Prefix sum over the touched keys only: each counter becomes its bucket's first
+        // output index, and the batches are known before the scatter fills them.
+        let mut offset = 0_u32;
+        for &key in &self.touched {
+            let count = std::mem::replace(&mut self.counts[key as usize], offset);
+            self.batches.push(RenderBatch {
+                // Filled from the bucket's first entry once the scatter has placed it.
+                mesh: MeshHandle::INVALID,
+                material: MaterialHandle::INVALID,
+                first: offset,
+                count,
+            });
+            offset += count;
         }
 
         // Scatter. Entries land in bucket order, and within a bucket in gather order —
         // so the grouping is stable and two runs of the same build produce the same frame.
-        self.starts.clear();
-        self.starts.extend_from_slice(&self.counts[..buckets]);
         self.order.resize(self.len(), 0);
-        for (index, (mesh, material)) in self.meshes.iter().zip(&self.materials).enumerate() {
-            let Some(key) = key_of(*mesh, *material) else {
-                self.batch_in_gather_order();
-                return;
-            };
-            let slot = self.counts[key] as usize;
-            self.counts[key] += 1;
-            self.order[slot] = index as u32;
+        for (index, &key) in self.keys.iter().enumerate() {
+            let cursor = &mut self.counts[key as usize];
+            self.order[*cursor as usize] = index as u32;
+            *cursor += 1;
         }
 
-        for key in 0..buckets {
-            let start = self.starts[key];
-            let end = self.counts[key];
-            if end == start {
-                continue;
-            }
-            let first_entry = self.order[start as usize] as usize;
-            self.batches.push(RenderBatch {
-                mesh: self.meshes[first_entry],
-                material: self.materials[first_entry],
-                first: start,
-                count: end - start,
-            });
+        for batch in &mut self.batches {
+            let first_entry = self.order[batch.first as usize] as usize;
+            batch.mesh = self.meshes[first_entry];
+            batch.material = self.materials[first_entry];
         }
+        self.reset_touched_counts();
+    }
+
+    /// Returns every counter the last grouping touched to zero, which is the invariant the
+    /// sparse histogram relies on between calls.
+    fn reset_touched_counts(&mut self) {
+        for &key in &self.touched {
+            self.counts[key as usize] = 0;
+        }
+        self.touched.clear();
     }
 
     /// Leaves the entries in gather order and derives batches from the runs already there.
@@ -662,6 +806,96 @@ mod tests {
             );
         }
         list
+    }
+
+    /// The grouping as it was before it went sparse: every bucket walked, in key order, and
+    /// gather order within a bucket. What the sparse version must reproduce exactly.
+    fn dense_reference(
+        list: &RenderList,
+        materials: usize,
+        meshes: usize,
+    ) -> Vec<(u32, u32, Vec<u32>)> {
+        let mut buckets: Vec<Vec<u32>> = vec![Vec::new(); materials * meshes];
+        for index in 0..list.len() {
+            let key = list.materials()[index].index() * meshes + list.meshes()[index].index();
+            buckets[key].push(index as u32);
+        }
+        buckets
+            .into_iter()
+            .enumerate()
+            .filter(|(_, entries)| !entries.is_empty())
+            .map(|(key, entries)| ((key % meshes) as u32, (key / meshes) as u32, entries))
+            .collect()
+    }
+
+    fn grouped_runs(list: &RenderList) -> Vec<(u32, u32, Vec<u32>)> {
+        list.batches()
+            .iter()
+            .map(|batch| {
+                let first = batch.first as usize;
+                (
+                    batch.mesh.index() as u32,
+                    batch.material.index() as u32,
+                    list.order()[first..first + batch.count as usize].to_vec(),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_sparse_grouping_matches_a_walk_over_every_bucket() {
+        // A large key space with few keys in use — the shadow views' shape — and several
+        // calls on one list with different sizes and key spaces, so a counter left non-zero
+        // by one call would corrupt the next.
+        let mut list = RenderList::new();
+        let mut seed = 0x2545_f491_u32;
+        for (count, materials, meshes) in [
+            (40, 78, 94),
+            (300, 78, 94),
+            (7, 3, 2),
+            (1, 78, 94),
+            (120, 9, 4),
+        ] {
+            list.clear();
+            for index in 0..count {
+                seed ^= seed << 13;
+                seed ^= seed >> 17;
+                seed ^= seed << 5;
+                // A handful of distinct keys, as a shadow view has.
+                let mesh = (seed % 6) * (meshes as u32 / 6).max(1) % meshes as u32;
+                let material = (seed / 7 % 4) * (materials as u32 / 4).max(1) % materials as u32;
+                list.push(
+                    RenderEntity::new(index, 1),
+                    Transform::IDENTITY,
+                    MeshHandle::new(mesh, 1),
+                    MaterialHandle::new(material, 1),
+                    InstanceStyle::NEUTRAL,
+                    true,
+                );
+            }
+            list.group_by_material_and_mesh(materials, meshes);
+            assert_eq!(
+                grouped_runs(&list),
+                dense_reference(&list, materials, meshes),
+                "{count} entries over {materials}x{meshes}"
+            );
+            assert!(
+                list.counts.iter().all(|&count| count == 0),
+                "every touched counter is reset"
+            );
+        }
+    }
+
+    #[test]
+    fn a_handle_outside_the_key_space_falls_back_and_leaves_the_counters_clean() {
+        let mut list = filled(30);
+        // Material 4 exists in the list; a key space of four materials does not hold it.
+        list.group_by_material_and_mesh(4, 3);
+        assert_eq!(list.batches().iter().map(|b| b.count).sum::<u32>(), 30);
+        assert!(list.counts.iter().all(|&count| count == 0));
+        // And the next, valid call groups normally.
+        list.group_by_material_and_mesh(5, 3);
+        assert_eq!(list.batches().len(), 15);
     }
 
     #[test]

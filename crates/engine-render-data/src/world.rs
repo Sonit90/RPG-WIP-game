@@ -357,6 +357,12 @@ pub struct RenderWorld {
     visible: Vec<bool>,
     /// Whether each slot casts and receives shadows, and what it offers the shadow pass.
     shadow: Vec<ShadowCasting>,
+    /// Whether each slot was spawned as part of the static scene: placed once and never
+    /// moved, so what the shadow passes draw for it can be kept across frames.
+    is_static: Vec<bool>,
+    /// Bumped by every change to a static slot. Anything cached from the static slots is
+    /// valid exactly as long as this has not moved.
+    static_generation: u64,
     generations: Vec<u32>,
     /// Slots whose entity was despawned, most recent first.
     free_slots: Vec<u32>,
@@ -425,6 +431,8 @@ impl RenderWorld {
             bounds: Vec::with_capacity(capacity),
             visible: Vec::with_capacity(capacity),
             shadow: Vec::with_capacity(capacity),
+            is_static: Vec::with_capacity(capacity),
+            static_generation: 0,
             generations: Vec::with_capacity(capacity),
             free_slots: Vec::new(),
             live: 0,
@@ -447,6 +455,7 @@ impl RenderWorld {
             self.bounds[slot] = world_bounds;
             self.visible[slot] = desc.visible;
             self.shadow[slot] = desc.shadow;
+            self.is_static[slot] = false;
             return RenderEntity::new(index, self.generations[slot]);
         }
 
@@ -458,10 +467,27 @@ impl RenderWorld {
         self.bounds.push(world_bounds);
         self.visible.push(desc.visible);
         self.shadow.push(desc.shadow);
+        self.is_static.push(false);
         // Generation 1, not 0: a default-constructed handle has generation 0 and must not
         // accidentally address a live slot.
         self.generations.push(1);
         RenderEntity::new(index, 1)
+    }
+
+    /// Adds an entity that is part of the static scene: placed once and then left alone.
+    ///
+    /// What the level's own geometry is spawned with — the environment, the terrain, the
+    /// water. The renderer may keep what it draws for a static entity across frames (the
+    /// shadow views record their static casters once, not every frame), so every later
+    /// change to one — moving it, hiding it, despawning it — bumps
+    /// [`RenderWorld::static_generation`], which is what invalidates those caches. Anything
+    /// that moves every frame is spawned with [`RenderWorld::spawn`] instead; a static entity
+    /// moved every frame would be correct, and would rebuild the caches every frame.
+    pub fn spawn_static(&mut self, desc: RenderEntityDesc) -> RenderEntity {
+        let entity = self.spawn(desc);
+        self.is_static[entity.index()] = true;
+        self.static_generation += 1;
+        entity
     }
 
     /// Removes an entity. A stale handle is ignored and reported.
@@ -471,6 +497,7 @@ impl RenderWorld {
         }
         let slot = entity.index();
         // Bumping the generation is what makes every outstanding handle to this slot stale.
+        self.touch_static(slot);
         self.generations[slot] = self.generations[slot].wrapping_add(1).max(1);
         self.visible[slot] = false;
         self.free_slots.push(entity.raw().index());
@@ -501,6 +528,7 @@ impl RenderWorld {
             return false;
         }
         let slot = entity.index();
+        self.touch_static(slot);
         self.bounds[slot] = world_bounds(local, &transform);
         self.transforms[slot] = transform;
         true
@@ -528,6 +556,7 @@ impl RenderWorld {
         if !self.contains(entity) {
             return false;
         }
+        self.touch_static(entity.index());
         self.materials[entity.index()] = material;
         true
     }
@@ -541,6 +570,7 @@ impl RenderWorld {
         if !self.contains(entity) {
             return false;
         }
+        self.touch_static(entity.index());
         self.shadow[entity.index()] = shadow;
         true
     }
@@ -549,6 +579,9 @@ impl RenderWorld {
     pub fn set_visible(&mut self, entity: RenderEntity, visible: bool) -> bool {
         if !self.contains(entity) {
             return false;
+        }
+        if self.visible[entity.index()] != visible {
+            self.touch_static(entity.index());
         }
         self.visible[entity.index()] = visible;
         true
@@ -606,6 +639,29 @@ impl RenderWorld {
     #[must_use]
     pub fn visible_flags(&self) -> &[bool] {
         &self.visible
+    }
+
+    /// Per-slot: whether the slot was spawned with [`RenderWorld::spawn_static`].
+    #[must_use]
+    pub fn static_flags(&self) -> &[bool] {
+        &self.is_static
+    }
+
+    /// How many times the static scene has changed: bumped by every spawn, despawn, move,
+    /// hide or re-shade of a static slot, and by [`RenderWorld::clear`].
+    ///
+    /// A cache built from the static slots is valid while this reads what it read when the
+    /// cache was built, and not a frame longer.
+    #[must_use]
+    pub fn static_generation(&self) -> u64 {
+        self.static_generation
+    }
+
+    /// Records that a static slot is about to change.
+    fn touch_static(&mut self, slot: usize) {
+        if self.is_static.get(slot).copied().unwrap_or(false) {
+            self.static_generation += 1;
+        }
     }
 
     /// Per-slot shadow behaviour.
@@ -691,6 +747,8 @@ impl RenderWorld {
         self.bounds.clear();
         self.visible.clear();
         self.shadow.clear();
+        self.is_static.clear();
+        self.static_generation += 1;
         self.generations.clear();
         self.free_slots.clear();
         self.live = 0;
@@ -714,6 +772,78 @@ pub fn world_bounds(local: Sphere, transform: &Transform) -> Sphere {
 mod tests {
     use super::*;
     use engine_core::math::{Quat, Vec3};
+
+    fn prop() -> RenderEntityDesc {
+        RenderEntityDesc {
+            mesh: MeshHandle::new(0, 1),
+            material: MaterialHandle::new(0, 1),
+            ..RenderEntityDesc::default()
+        }
+    }
+
+    #[test]
+    fn only_changes_to_the_static_scene_move_its_generation() {
+        let mut world = RenderWorld::new();
+        let start = world.static_generation();
+        let mover = world.spawn(prop());
+        assert_eq!(
+            world.static_generation(),
+            start,
+            "a mover is not the static scene"
+        );
+        let wall = world.spawn_static(prop());
+        assert!(world.static_flags()[wall.index()]);
+        assert!(!world.static_flags()[mover.index()]);
+        let after_spawn = world.static_generation();
+        assert!(after_spawn > start);
+
+        // What a dummy does every frame must not touch it.
+        for _ in 0..10 {
+            world.set_transform(
+                mover,
+                Transform::from_translation(Vec3::new(1.0, 0.0, 0.0)),
+                Sphere::new(Vec3::ZERO, 1.0),
+            );
+            world.set_style(mover, InstanceStyle::tinted(1.0, 0.0, 0.0));
+            world.set_visible(mover, false);
+        }
+        // A static entity's style is never read by the depth passes either.
+        world.set_style(wall, InstanceStyle::NEUTRAL.see_through());
+        // Neither is showing what is already shown.
+        world.set_visible(wall, true);
+        assert_eq!(world.static_generation(), after_spawn);
+
+        let mut last = after_spawn;
+        let mut changed = |world: &RenderWorld, what: &str| {
+            assert!(world.static_generation() > last, "{what} must invalidate");
+            last = world.static_generation();
+        };
+        world.set_transform(wall, Transform::IDENTITY, Sphere::new(Vec3::ZERO, 1.0));
+        changed(&world, "moving a static entity");
+        world.set_material(wall, MaterialHandle::new(1, 1));
+        changed(&world, "re-shading one");
+        world.set_shadow_casting(wall, ShadowCasting::RECEIVES_ONLY);
+        changed(&world, "changing its shadow");
+        world.set_visible(wall, false);
+        changed(&world, "hiding one");
+        world.despawn(wall);
+        changed(&world, "despawning one");
+        world.clear();
+        changed(&world, "clearing the world");
+    }
+
+    #[test]
+    fn a_reused_slot_forgets_it_was_static() {
+        let mut world = RenderWorld::new();
+        let wall = world.spawn_static(prop());
+        world.despawn(wall);
+        let mover = world.spawn(prop());
+        assert_eq!(mover.index(), wall.index(), "the freed slot is reused");
+        assert!(!world.static_flags()[mover.index()]);
+        let generation = world.static_generation();
+        world.set_transform(mover, Transform::IDENTITY, Sphere::new(Vec3::ZERO, 1.0));
+        assert_eq!(world.static_generation(), generation);
+    }
 
     #[test]
     fn a_style_is_faded_only_when_it_is_visibly_faded() {

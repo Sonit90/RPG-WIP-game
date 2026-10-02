@@ -47,6 +47,17 @@ pub struct ShadowCullStats {
     pub lod_counts: [u32; 3],
 }
 
+/// Which of the world's slots a gathering pass looks at.
+#[derive(Debug, Clone, Copy)]
+pub enum CasterSlots<'a> {
+    /// Every slot.
+    All,
+    /// Only the slots spawned static, for a list that is kept across frames.
+    Static,
+    /// Exactly these slots: the frame's movers, gathered once and tested per view.
+    Only(&'a [u32]),
+}
+
 /// Gathers shadow casters into render lists.
 ///
 /// Holds only statistics, exactly like [`Culler`](crate::culling::Culler): the lists are the
@@ -83,7 +94,38 @@ impl ShadowCasterCollector {
         list: &mut RenderList,
     ) {
         let frustum = cascade.frustum();
-        self.collect(world, &frustum, list, |radius| {
+        self.collect_cascade_with(
+            world,
+            &frustum,
+            cascade,
+            cascade_index,
+            settings,
+            CasterSlots::All,
+            list,
+        );
+    }
+
+    /// [`ShadowCasterCollector::collect_cascade`] against `frustum` rather than the
+    /// cascade's own, over `slots` only.
+    ///
+    /// The frustum is what a cached list is grown by ([`CascadeView::expanded_frustum`]);
+    /// the level of detail is still the cascade's own, which depends on the caster's size
+    /// and the cascade's texel and on nothing the camera does.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the cascade pass's inputs plus the two that vary between its callers"
+    )]
+    pub fn collect_cascade_with(
+        &mut self,
+        world: &RenderWorld,
+        frustum: &Frustum,
+        cascade: &CascadeView,
+        cascade_index: usize,
+        settings: &ShadowSettings,
+        slots: CasterSlots<'_>,
+        list: &mut RenderList,
+    ) {
+        self.collect_with_bounds(world, frustum, list, slots, |_, radius| {
             shadow_lod_for(radius, cascade, &settings.lod, cascade_index)
         });
     }
@@ -102,11 +144,24 @@ impl ShadowCasterCollector {
         settings: &ShadowSettings,
         list: &mut RenderList,
     ) {
+        self.collect_local_with(world, view, resolution, settings, CasterSlots::All, list);
+    }
+
+    /// [`ShadowCasterCollector::collect_local`] over `slots` only.
+    pub fn collect_local_with(
+        &mut self,
+        world: &RenderWorld,
+        view: &LocalShadowView,
+        resolution: u32,
+        settings: &ShadowSettings,
+        slots: CasterSlots<'_>,
+        list: &mut RenderList,
+    ) {
         let frustum = view.frustum();
         let origin = view.bounds.center;
         let resolution = resolution.max(1) as f32;
         let bounds = world.bounds();
-        self.collect_with_bounds(world, &frustum, list, |slot, radius| {
+        self.collect_with_bounds(world, &frustum, list, slots, |slot, radius| {
             // Texels the caster covers: its angular size, divided by the angle one texel
             // spans. A ninety-degree face across `resolution` texels is the worst case, and
             // using it for a spot light's narrower cone only makes the test conservative.
@@ -126,17 +181,6 @@ impl ShadowCasterCollector {
         });
     }
 
-    /// The body both passes share, for callers whose LOD rule needs only the radius.
-    fn collect(
-        &mut self,
-        world: &RenderWorld,
-        frustum: &Frustum,
-        list: &mut RenderList,
-        level_of: impl Fn(f32) -> ShadowLod,
-    ) {
-        self.collect_with_bounds(world, frustum, list, |_, radius| level_of(radius));
-    }
-
     /// The body both passes share.
     ///
     /// One pass over the arrays, testing the cheapest thing first: the flags are a byte
@@ -146,10 +190,12 @@ impl ShadowCasterCollector {
         world: &RenderWorld,
         frustum: &Frustum,
         list: &mut RenderList,
+        slots: CasterSlots<'_>,
         level_of: impl Fn(usize, f32) -> ShadowLod,
     ) {
         list.clear();
         let mut stats = ShadowCullStats::default();
+        let statics = world.static_flags();
 
         let bounds = world.bounds();
         let transforms = world.transforms();
@@ -159,19 +205,19 @@ impl ShadowCasterCollector {
         let shadow = world.shadow_casting();
         let flags = world.visible_flags();
 
-        for slot in 0..world.slot_count() {
+        let mut gather = |slot: usize| {
             if !flags[slot] || !shadow[slot].casts {
-                continue;
+                return;
             }
             stats.considered += 1;
             if !frustum.intersects_sphere(&bounds[slot]) {
                 stats.culled += 1;
-                continue;
+                return;
             }
             let level = level_of(slot, bounds[slot].radius);
             let Some(mesh_level) = level.mesh_level() else {
                 stats.too_small += 1;
-                continue;
+                return;
             };
             stats.lod_counts[mesh_level.min(2)] += 1;
             stats.visible += 1;
@@ -187,6 +233,13 @@ impl ShadowCasterCollector {
                 // debugging is not misleading.
                 shadow[slot].receives,
             );
+        };
+        match slots {
+            CasterSlots::All => (0..world.slot_count()).for_each(&mut gather),
+            CasterSlots::Static => (0..world.slot_count())
+                .filter(|&slot| statics.get(slot).copied().unwrap_or(false))
+                .for_each(&mut gather),
+            CasterSlots::Only(only) => only.iter().for_each(|&slot| gather(slot as usize)),
         }
 
         stats.culled = stats.considered - stats.visible - stats.too_small;

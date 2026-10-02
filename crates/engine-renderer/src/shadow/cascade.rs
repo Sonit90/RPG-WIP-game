@@ -76,6 +76,12 @@ pub struct CascadeView {
     pub texel_world_size: f32,
     /// How far the light frustum extends behind the sphere, in metres.
     pub extrusion: f32,
+    /// The light's view, eye pinned at the world origin: the same for every cascade, and a
+    /// fixed rotation of world space for as long as the sun does not move.
+    pub light_view: Mat4,
+    /// The box's centre in that light space, snapped to the texel grid: `x` and `y` the
+    /// middle of the map, `z` the depth of the sphere's centre (negative in front).
+    pub light_center: Vec3,
 }
 
 impl CascadeView {
@@ -88,6 +94,30 @@ impl CascadeView {
     #[must_use]
     pub fn frustum(&self) -> Frustum {
         Frustum::from_view_projection(&self.view_projection)
+    }
+
+    /// The culling frustum of this cascade's box grown by `margin` metres on every side.
+    ///
+    /// What a cached caster list is gathered against: a list built for the grown box is
+    /// still complete for any later box of the same size whose centre has moved less than
+    /// `margin` along each light-space axis, so the cascade can follow the camera that far
+    /// before its static casters have to be gathered again. The extra casters it holds land
+    /// outside the cascade's tile, where the viewport clips them, or past its far plane,
+    /// where they write the clear depth.
+    #[must_use]
+    pub fn expanded_frustum(&self, margin: f32) -> Frustum {
+        let margin = margin.max(0.0);
+        let (radius, center) = (self.radius + margin, self.light_center);
+        let center_distance = -center.z;
+        let projection = Mat4::orthographic(
+            center.x - radius,
+            center.x + radius,
+            center.y - radius,
+            center.y + radius,
+            center_distance - radius - self.extrusion,
+            center_distance + radius,
+        );
+        Frustum::from_view_projection(&(projection * self.light_view))
     }
 
     /// The sphere this cascade covers.
@@ -279,6 +309,8 @@ pub fn build_cascade(
         radius,
         texel_world_size: texel,
         extrusion,
+        light_view: view,
+        light_center: Vec3::new(offset_x, offset_y, offset_z),
     }
 }
 

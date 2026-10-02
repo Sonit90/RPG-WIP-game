@@ -140,6 +140,12 @@ for ($pass = 1; $pass -le $Repeats; $pass++) {
             $gpass  = [regex]::Match($text, "run GPU passes \(p50/mean ms\):(.*)")
             # Run-wide stage means - the periodic report's split is one frame's sample.
             $means  = [regex]::Match($text, "run stages \(mean ms\): events ([\d.]+) \| update ([\d.]+) \(sim ([\d.]+) \| extract ([\d.]+), anim ([\d.]+) \| vfx ([\d.]+) \| camera ([\d.]+) \| audio ([\d.]+) \| ui ([\d.]+)\) \| render ([\d.]+) \| present ([\d.]+)")
+            # Run-wide render split, the shadow stage's recording split (builds with the shadow
+            # instrumentation only) and, with --pipeline-stats, the mesh pass's overdraw.
+            $rsplit = [regex]::Match($text, "run render \(mean ms\): ([\d.]+) = GPU wait ([\d.]+) \+ cull ([\d.]+) \+ group ([\d.]+) \+ shadow prep ([\d.]+) \+ recording ([\d.]+)")
+            $shadow = [regex]::Match($text, "run shadow \(mean\): record atlas ([\d.]+) ms \+ prepass ([\d.]+) ms \| draws: cascades ([\d.]+), local ([\d.]+) \(skinned ([\d.]+)\) \| casters ([\d.]+)")
+            $cache  = [regex]::Match($text, "\| static cache: (\d+) views cached, rebuilds ([\d.]+)/frame, instances ([\d.]+) cached \+ ([\d.]+) moving")
+            $odraw  = [regex]::Match($text, "run overdraw \(mesh pass\): p50 ([\d.]+) \| mean ([\d.]+)")
 
             Add-Sample $key $label $res "cpu_mean" (Num $cpu 1)
             Add-Sample $key $label $res "cpu_p50" (Num $cpu 2)
@@ -168,6 +174,28 @@ for ($pass = 1; $pass -le $Repeats; $pass++) {
                 Add-Sample $key $label $res "ui" (Num $means 9)
                 Add-Sample $key $label $res "render" (Num $means 10)
                 Add-Sample $key $label $res "present" (Num $means 11)
+            }
+            if ($rsplit.Success) {
+                Add-Sample $key $label $res "r_wait" (Num $rsplit 2)
+                Add-Sample $key $label $res "r_shadow_prep" (Num $rsplit 5)
+                Add-Sample $key $label $res "r_recording" (Num $rsplit 6)
+            }
+            if ($shadow.Success) {
+                Add-Sample $key $label $res "sh_atlas" (Num $shadow 1)
+                Add-Sample $key $label $res "sh_prepass" (Num $shadow 2)
+                Add-Sample $key $label $res "sh_cascade_draws" (Num $shadow 3)
+                Add-Sample $key $label $res "sh_local_draws" (Num $shadow 4)
+                Add-Sample $key $label $res "sh_skinned" (Num $shadow 5)
+                Add-Sample $key $label $res "sh_casters" (Num $shadow 6)
+            }
+            if ($cache.Success) {
+                Add-Sample $key $label $res "sc_rebuilds" (Num $cache 2)
+                Add-Sample $key $label $res "sc_cached" (Num $cache 3)
+                Add-Sample $key $label $res "sc_moving" (Num $cache 4)
+            }
+            if ($odraw.Success) {
+                Add-Sample $key $label $res "overdraw_p50" (Num $odraw 1)
+                Add-Sample $key $label $res "overdraw_mean" (Num $odraw 2)
             }
             if ($stageLines.Count -gt 0) {
                 # One frame's sample, kept for the split of render it alone has.
@@ -251,11 +279,22 @@ if ($Mode -eq "res") {
             $(if ([double]::IsNaN([double]$r.allocs_frame)) { "-" } else { "{0:F3}" -f $r.allocs_frame }))
     }
     Write-Host ""
-    Write-Host "| Configuration | GPU shadow | atlas | prepass | contact | scene | particles | ui |"
-    Write-Host "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |"
+    Write-Host "| Configuration | GPU shadow | atlas | prepass | contact | scene | particles | ui | overdraw p50 |"
+    Write-Host "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |"
     foreach ($r in $rows) {
-        Write-Host ("| {0} | {1:F3} | {2:F3} | {3:F3} | {4:F3} | {5:F3} | {6:F3} | {7:F3} |" -f
-            $r.config, $r.gpu_shadow, $r.gpu_atlas, $r.gpu_prepass, $r.gpu_contact, $r.gpu_scene, $r.gpu_particles, $r.gpu_ui)
+        Write-Host ("| {0} | {1:F3} | {2:F3} | {3:F3} | {4:F3} | {5:F3} | {6:F3} | {7:F3} | {8:F3} |" -f
+            $r.config, $r.gpu_shadow, $r.gpu_atlas, $r.gpu_prepass, $r.gpu_contact, $r.gpu_scene, $r.gpu_particles, $r.gpu_ui,
+            $r.overdraw_p50)
+    }
+    Write-Host ""
+    Write-Host "Run-wide means. Shadow recording columns need a build with the shadow instrumentation; the static-cache columns one with the cache."
+    Write-Host ""
+    Write-Host "| Configuration | render | GPU wait | recording | shadow prep | atlas rec | prepass rec | cascade draws | local draws | skinned | casters | cache rebuilds/frame | cached inst | moving inst |"
+    Write-Host "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |"
+    foreach ($r in $rows) {
+        Write-Host ("| {0} | {1:F4} | {2:F4} | {3:F4} | {4:F4} | {5:F4} | {6:F4} | {7:F1} | {8:F1} | {9:F1} | {10:F0} | {11:F4} | {12:F0} | {13:F0} |" -f
+            $r.config, $r.render, $r.r_wait, $r.r_recording, $r.r_shadow_prep, $r.sh_atlas, $r.sh_prepass,
+            $r.sh_cascade_draws, $r.sh_local_draws, $r.sh_skinned, $r.sh_casters, $r.sc_rebuilds, $r.sc_cached, $r.sc_moving)
     }
 }
 if ($Out -ne "") { $rows | ConvertTo-Json -Depth 4 | Out-File -Encoding utf8 $Out }

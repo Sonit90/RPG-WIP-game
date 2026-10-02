@@ -34,7 +34,9 @@ use crate::material::{
     MaterialTextures,
 };
 use crate::mesh::{GpuMesh, MeshData, MeshVertex, SkinnedMeshData, SkinnedVertex, VertexStream};
-use crate::mesh_pipeline::{CharacterPass, InstanceTransform, MeshPipelines, PipelineVariant};
+use crate::mesh_pipeline::{
+    CharacterPass, DepthMode, InstanceTransform, MeshPipelines, PipelineVariant,
+};
 use crate::mipmap::TextureKind;
 #[cfg(feature = "debug-overlay")]
 use crate::overlay::{OverlayBuffers, OverlayGeometry, OverlayMetrics};
@@ -114,23 +116,12 @@ fn measured_height(model: &engine_assets::ModelAsset) -> f32 {
 /// time and a present percentile can be read against a frame percentile.
 const PRESENT_WINDOW: usize = engine_core::metrics::DEFAULT_HISTORY;
 
-/// Alignment for a per-instance vertex stream in the upload ring.
-///
-/// A vertex buffer view has no 256-byte requirement the way a constant buffer view does;
-/// what it needs is an address aligned to its largest element, so the input assembler's
-/// fetches do not straddle a boundary. Every element in the stream is a `float4` or
-/// smaller, so sixteen bytes is enough.
-///
-/// It is deliberately **not** `size_of::<InstanceTransform>()`, which is what it used to
-/// be: the record grew to 96 bytes when it gained a tint, and 96 is not a power of two —
-/// which the ring's aligner requires and which turned an alignment constant into a panic.
-const INSTANCE_ALIGNMENT: usize = 16;
-
 /// Alignment for the UI vertex stream in the upload ring.
 ///
-/// Sixteen, as for [`INSTANCE_ALIGNMENT`]: a vertex buffer view has no 256-byte requirement,
-/// only a four-byte one, and the ring's allocator wants a power of two. It used to be the
-/// stride, which stopped being a power of two when the vertex grew its clip to 48 bytes.
+/// Sixteen, as for [`crate::render_list::INSTANCE_STREAM_ALIGNMENT`]: a vertex buffer view
+/// has no 256-byte requirement, only a four-byte one, and the ring's allocator wants a power
+/// of two. It used to be the stride, which stopped being a power of two when the vertex grew
+/// its clip to 48 bytes.
 const UI_VERTEX_ALIGNMENT: usize = 16;
 
 // The ring rounds every allocation up to its alignment, so the alignment must divide cleanly
@@ -142,8 +133,8 @@ const _: () = assert!(UI_VERTEX_ALIGNMENT.is_power_of_two() && size_of::<UiVerte
 /// Sixteen, deliberately **not** the 36-byte record size: the ring's aligner requires a
 /// power of two, and a vertex buffer needs an address the input assembler can index from
 /// rather than one that is a multiple of the stride. This is the same trap
-/// [`INSTANCE_ALIGNMENT`] documents, met a second time by a record that is also not a power
-/// of two.
+/// [`crate::render_list::INSTANCE_STREAM_ALIGNMENT`] documents, met a second time by a
+/// record that is also not a power of two.
 const PARTICLE_ALIGNMENT: usize = 16;
 
 /// Most quads one frame of UI may emit.
@@ -418,6 +409,10 @@ pub struct Renderer {
     /// pass whose timestamps have not been resolved yet, which is every pass for the first
     /// few frames of a run.
     last_pass_ms: [Option<f64>; MAX_TIMED_PASSES],
+    /// The mesh pass's pipeline statistics, when asked for. `None` costs nothing.
+    pipeline_statistics: Option<crate::pipeline_stats::PipelineStatistics>,
+    /// The most recent resolved statistics, read with the same lag as the timestamps.
+    last_scene_statistics: Option<crate::pipeline_stats::SceneStatistics>,
     /// Root signature and pipeline state, independent of the geometry.
     pipeline: ScenePipeline,
     /// Depth target, the size of the back buffer.
@@ -578,6 +573,25 @@ pub struct Renderer {
     /// across frames for the same reason `visible` is: after the scene reaches its
     /// high-water mark, building it allocates nothing.
     transparent: RenderList,
+    /// This frame's opaque draws the camera may dither: faded entities, and see-through ones
+    /// the frame's camera fade reaches.
+    ///
+    /// Split out of `visible` so the depth prepass never draws them. The prepass writes whole
+    /// surfaces, and a surface the camera pass then dithers would leave its depth behind in
+    /// the holes — hiding exactly what the dither is there to show. Drawn after the opaque
+    /// batches with ordinary depth writes; usually empty, or a handful of props in front of
+    /// the camera.
+    dithered: RenderList,
+    /// Whether the camera pass may draw prepass-covered surfaces without writing depth. On by
+    /// default; off is the A/B control (`--shadow-tweak prime=off`). See `DepthMode::Primed`.
+    depth_priming: bool,
+    /// Whether this frame's depth prepass ran and covers `visible` and the whole characters,
+    /// so their camera draws can be [`DepthMode::Primed`]. Set by the shadow stage.
+    depth_primed: bool,
+    /// This frame's instance stream for `visible`, uploaded once before the shadow stage and
+    /// bound by both the depth prepass and the camera pass. `None` before it is uploaded, and
+    /// for an empty list.
+    camera_instances: Option<windows::Win32::Graphics::Direct3D12::D3D12_VERTEX_BUFFER_VIEW>,
     /// Whether `render_world` culls. Off makes the benchmark able to measure the same
     /// frame with one step removed rather than comparing two code paths.
     culling_enabled: bool,
@@ -733,12 +747,18 @@ impl Renderer {
             GpuDescriptorHeap::new(&context, MAX_TEXTURE_DESCRIPTORS, 0, frames_in_flight)?;
         // Before the struct literal, because it allocates two persistent descriptors out of
         // the heap above and the heap is moved into the literal.
-        let shadow = ShadowRenderer::new(
+        let mut shadow = ShadowRenderer::new(
             &context,
             &mut descriptors,
             ShadowSettings::default(),
             (config.width, config.height),
         )?;
+        // The camera pass is drawn primed by default, so the prepass runs at every preset, not
+        // only where contact shadows need it: the floors and the sky alone are more pixels than
+        // the screen, and without a primed depth they are shaded wherever they are hidden.
+        shadow.set_priming_prepass(true);
+        // The contact-shadow march reads the depth buffer itself, not a copy of it.
+        shadow.sample_camera_depth(&context, depth.texture())?;
         let ui = Self::create_ui_state(&context, &mut descriptors)?;
         let particle_pipeline = ParticlePipeline::new(context.device())?;
 
@@ -774,6 +794,8 @@ impl Renderer {
             gpu_timer,
             last_gpu_frame_ms: None,
             last_pass_ms: [None; MAX_TIMED_PASSES],
+            pipeline_statistics: None,
+            last_scene_statistics: None,
             pipeline,
             depth,
             pipelines: MeshPipelines::new(),
@@ -809,6 +831,10 @@ impl Renderer {
             culler: Culler::new(),
             visible: RenderList::new(),
             transparent: RenderList::new(),
+            dithered: RenderList::new(),
+            depth_priming: true,
+            depth_primed: false,
+            camera_instances: None,
             culling_enabled: true,
             cull_view_projection: None,
             last_cull_ms: 0.0,
@@ -960,6 +986,62 @@ impl Renderer {
     #[must_use]
     pub fn last_pass_ms(&self) -> [Option<f64>; MAX_TIMED_PASSES] {
         self.last_pass_ms
+    }
+
+    /// Whether the camera pass may draw what the depth prepass covered without writing depth.
+    ///
+    /// On by default; it only has an effect where the shadow stage runs a prepass (contact
+    /// shadows on). Off draws exactly as before priming existed, which is the A/B control.
+    pub fn set_depth_priming(&mut self, enabled: bool) {
+        self.depth_priming = enabled;
+    }
+
+    /// Whether the camera depth prepass also runs where contact shadows do not need it, purely
+    /// so the camera pass can be drawn primed: at Low and Medium, and with shadows off.
+    pub fn set_priming_prepass(&mut self, enabled: bool) {
+        self.shadow.set_priming_prepass(enabled);
+    }
+
+    /// Turns the shadow views' static-caster cache on or off, with the cascade margin as a
+    /// fraction of each cascade's radius. See `shadow::static_cache`.
+    pub fn set_static_shadow_cache(&mut self, enabled: bool, margin_fraction: f32) {
+        self.shadow.set_static_cache(enabled, margin_fraction);
+    }
+
+    /// Whether the last cascade draws movers and characters: a measured trade-off, on by
+    /// default. See `ShadowRenderer::set_far_movers`.
+    pub fn set_far_shadow_movers(&mut self, enabled: bool) {
+        self.shadow.set_far_movers(enabled);
+    }
+
+    /// Turns the mesh pass's pipeline-statistics query on or off.
+    ///
+    /// A measurement control (`--pipeline-stats`): off by default, because a statistics
+    /// query is not free on every driver and a timing comparison must not carry one.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RendererError::Api`] if the query heap cannot be created.
+    pub fn set_pipeline_statistics(&mut self, enabled: bool) -> Result<(), RendererError> {
+        if !enabled {
+            self.pipeline_statistics = None;
+            self.last_scene_statistics = None;
+            return Ok(());
+        }
+        if self.pipeline_statistics.is_none() {
+            self.pipeline_statistics = Some(crate::pipeline_stats::PipelineStatistics::new(
+                self.context.device(),
+                self.gpu_timer.frame_count(),
+            )?);
+        }
+        Ok(())
+    }
+
+    /// The most recent mesh pass's pipeline statistics, or `None` when the query is off or
+    /// has not completed a lap. Lags the frame exactly as [`Renderer::last_pass_ms`] does.
+    #[must_use]
+    pub fn last_scene_statistics(&self) -> Option<crate::pipeline_stats::SceneStatistics> {
+        self.last_scene_statistics
     }
 
     /// Timestamp ticks per second on the direct queue.
@@ -1310,7 +1392,19 @@ impl Renderer {
         // A scene with no transparent material pays one predicate pass and nothing else.
         self.visible
             .split_transparent(&self.material_surfaces, &mut self.transparent);
+        // Whatever the camera may dither this frame leaves the list the depth prepass draws;
+        // see `dithered`. Decided per entity from the same fade the shader applies, so a
+        // see-through prop nowhere near the eye or the line to the character stays in.
+        let fade = self.camera_fade;
+        let eye = camera.position();
+        let bounds = world.bounds();
         self.visible
+            .split_where(&mut self.dithered, |entity, style| {
+                may_be_dithered(style, fade, eye, bounds.get(entity.index()))
+            });
+        self.visible
+            .group_by_material_and_mesh(self.materials.len(), self.meshes.len());
+        self.dithered
             .group_by_material_and_mesh(self.materials.len(), self.meshes.len());
         // Sorted from the camera the frame is drawn with, not from the cull camera: the cull
         // view may be frozen for debugging (`cull_view_projection`), and freezing what is
@@ -1394,7 +1488,13 @@ impl Renderer {
             self.clusters.disable();
         }
 
-        self.shadow.prepare(world, camera, lighting);
+        self.shadow.prepare(
+            world,
+            camera,
+            lighting,
+            self.materials.len(),
+            self.meshes.len(),
+        );
     }
 
     /// The shadow system, for a caller that wants to change its settings or read its stats.
@@ -1518,12 +1618,14 @@ impl Renderer {
         if prepass {
             let (width, height) = self.swap_chain.size();
             let dsv = self.depth.view().cpu;
+            // The camera's own lists, rigid and skinned: the prepass draws exactly what the
+            // camera pass will draw primed, and nothing that pass will not.
             let scene = ShadowScene {
                 meshes: &self.meshes,
                 skinned_meshes: &self.skinned_meshes,
                 materials: &self.materials,
                 material_tables: &self.material_tables,
-                skinned: &self.shadow_skinned,
+                skinned: &self.skinned,
                 palettes: &self.frame_palettes,
             };
             self.shadow.record_prepass(
@@ -1535,15 +1637,17 @@ impl Renderer {
                 camera,
                 dsv,
                 (width, height),
+                self.camera_instances,
             )?;
             self.shadow
                 .copy_scene_depth(&mut self.commands, self.depth.texture());
+            self.depth_primed = true;
         }
         self.gpu_timer
             .end_pass(self.commands.list(), slot, DEPTH_PREPASS);
         self.gpu_timer
             .begin_pass(self.commands.list(), slot, CONTACT_PASS);
-        if prepass {
+        if prepass && self.shadow.needs_depth_copy() {
             // The contact-shadow march, into its own half-resolution target. It reads the
             // depth copy made on the line above and the frame constants, so it goes here and
             // not with the atlas: the depth it marches through does not exist until now.
@@ -1553,6 +1657,8 @@ impl Renderer {
                     .set_root_descriptor_table(ROOT_DEPTH_TABLE, table);
             }
             self.shadow.record_contact(&mut self.commands);
+            self.shadow
+                .finish_scene_depth(&mut self.commands, self.depth.texture());
         }
         self.gpu_timer
             .end_pass(self.commands.list(), slot, CONTACT_PASS);
@@ -1586,6 +1692,14 @@ impl Renderer {
         color: [f32; 4],
     ) -> Result<(), RendererError> {
         let (slot, back_buffer) = self.begin_recording(color)?;
+        // Until the shadow stage has actually recorded this frame's prepass, nothing may be
+        // drawn primed.
+        self.depth_primed = false;
+        // The camera's instances, once, for the prepass and the camera pass both: the two draw
+        // the same list, and composing it twice was the prepass's larger half.
+        self.camera_instances =
+            self.visible
+                .upload_instances(&mut self.uploads, slot, &mut self.instance_scratch)?;
 
         // Every character's palette, once, before any pass binds one: the shadow views, the
         // prepass and the camera pass then share these addresses rather than each uploading
@@ -1635,6 +1749,7 @@ impl Renderer {
         // `finish_recording`, which both the instanced and the non-instanced path reach.
         self.gpu_timer
             .begin_pass(self.commands.list(), slot, SCENE_PASS);
+        self.statistics_section(slot, crate::pipeline_stats::OPAQUE_SECTION);
 
         // The root signature first, before a single root argument is written.
         //
@@ -1675,67 +1790,78 @@ impl Renderer {
         // other, so the mesh and material binds happen once per run rather than once per
         // object — and the command context skips them anyway if the run is a continuation
         // of the previous one.
-        for batch in self.visible.batches() {
-            let Some(mesh) = self.meshes.get(batch.mesh.index()) else {
-                return Err(RendererError::InvalidConfig {
-                    reason: format!(
-                        "render list names mesh {} which does not exist",
-                        batch.mesh.index()
-                    ),
-                });
+        //
+        // Always with depth writes: the per-object path has its own vertex shader, which is
+        // not the prepass's, so its depth is not promised to equal what the prepass wrote.
+        for which in [CameraList::Visible, CameraList::Dithered] {
+            let list = match which {
+                CameraList::Visible => &self.visible,
+                CameraList::Dithered => &self.dithered,
             };
-            let Some(material) = self.materials.get(batch.material.index()) else {
-                return Err(RendererError::InvalidConfig {
-                    reason: format!(
-                        "render list names material {} which does not exist",
-                        batch.material.index()
-                    ),
-                });
-            };
+            for batch in list.batches() {
+                let Some(mesh) = self.meshes.get(batch.mesh.index()) else {
+                    return Err(RendererError::InvalidConfig {
+                        reason: format!(
+                            "render list names mesh {} which does not exist",
+                            batch.mesh.index()
+                        ),
+                    });
+                };
+                let Some(material) = self.materials.get(batch.material.index()) else {
+                    return Err(RendererError::InvalidConfig {
+                        reason: format!(
+                            "render list names material {} which does not exist",
+                            batch.material.index()
+                        ),
+                    });
+                };
 
-            let Some(table) = self.material_table(batch.material) else {
-                return Err(RendererError::InvalidConfig {
-                    reason: format!(
-                        "material {} has no shader-visible base colour map",
-                        batch.material.index()
-                    ),
-                });
-            };
+                let Some(table) = self.material_table(batch.material) else {
+                    return Err(RendererError::InvalidConfig {
+                        reason: format!(
+                            "material {} has no shader-visible base colour map",
+                            batch.material.index()
+                        ),
+                    });
+                };
 
-            let variant = self.material_variant(batch.material);
-            let pipeline_state = self
-                .pipelines
-                .mesh(self.context.device(), variant)?
-                .pipeline_state()
-                .clone();
-            // State only: the signature was bound once above. The command context drops a
-            // redundant bind, so a run of batches sharing a permutation - which is nearly
-            // every scene - costs one PSO change, not one per batch.
-            self.commands.set_pipeline_state(&pipeline_state);
+                let variant = self.material_variant(batch.material);
+                let pipeline_state = self
+                    .pipelines
+                    .mesh(self.context.device(), variant)?
+                    .pipeline_state()
+                    .clone();
+                // State only: the signature was bound once above. The command context drops a
+                // redundant bind, so a run of batches sharing a permutation - which is nearly
+                // every scene - costs one PSO change, not one per batch.
+                self.commands.set_pipeline_state(&pipeline_state);
 
-            self.commands
-                .set_root_cbv(ROOT_MATERIAL_CBV, material.gpu_address());
-            self.commands
-                .set_root_descriptor_table(ROOT_MATERIAL_TABLE, table);
-            self.commands.set_vertex_buffer(0, *mesh.vertex_view());
-            self.commands.set_index_buffer(*mesh.index_view());
-
-            let first = batch.first as usize;
-            let last = first + batch.count as usize;
-            for &entry in &self.visible.order()[first..last] {
-                let object = ObjectConstants::shadowed(
-                    self.visible.transforms()[entry as usize].matrix(),
-                    self.visible.styles()[entry as usize],
-                    self.visible.receives_shadow()[entry as usize],
-                );
-                let allocation = self.uploads.write_constants(slot, &object)?;
                 self.commands
-                    .set_root_cbv(ROOT_OBJECT_CBV, allocation.gpu_address());
-                self.commands.draw_indexed(mesh.index_count(), 1, 0);
+                    .set_root_cbv(ROOT_MATERIAL_CBV, material.gpu_address());
+                self.commands
+                    .set_root_descriptor_table(ROOT_MATERIAL_TABLE, table);
+                self.commands.set_vertex_buffer(0, *mesh.vertex_view());
+                self.commands.set_index_buffer(*mesh.index_view());
+
+                let first = batch.first as usize;
+                let last = first + batch.count as usize;
+                for &entry in &list.order()[first..last] {
+                    let object = ObjectConstants::shadowed(
+                        list.transforms()[entry as usize].matrix(),
+                        list.styles()[entry as usize],
+                        list.receives_shadow()[entry as usize],
+                    );
+                    let allocation = self.uploads.write_constants(slot, &object)?;
+                    self.commands
+                        .set_root_cbv(ROOT_OBJECT_CBV, allocation.gpu_address());
+                    self.commands.draw_indexed(mesh.index_count(), 1, 0);
+                }
             }
         }
 
+        self.statistics_section(slot, crate::pipeline_stats::CHARACTER_SECTION);
         self.draw_skinned(slot)?;
+        self.statistics_section(slot, crate::pipeline_stats::BLENDED_SECTION);
         self.draw_transparent(slot)?;
         self.draw_translucent_characters(slot)?;
         self.finish_recording(slot, back_buffer)
@@ -1758,7 +1884,63 @@ impl Renderer {
         slot: usize,
         back_buffer: usize,
     ) -> Result<(), RendererError> {
-        for batch in self.visible.batches() {
+        // Everything the prepass drew tests against its depth and writes none; what it did
+        // not draw - the entries the camera may dither - makes its own depth afterwards.
+        let primed = self.primed_depth_mode();
+        self.draw_opaque_instanced(slot, CameraList::Visible, primed)?;
+        self.draw_opaque_instanced(slot, CameraList::Dithered, DepthMode::Write)?;
+
+        self.statistics_section(slot, crate::pipeline_stats::CHARACTER_SECTION);
+        self.draw_skinned(slot)?;
+        self.statistics_section(slot, crate::pipeline_stats::BLENDED_SECTION);
+        self.draw_transparent(slot)?;
+        self.draw_translucent_characters(slot)?;
+        self.finish_recording(slot, back_buffer)
+    }
+
+    /// Opens the mesh pass's next statistics section, when `--pipeline-stats` asked for them.
+    fn statistics_section(&mut self, slot: usize, section: usize) {
+        if let Some(statistics) = self.pipeline_statistics.as_mut() {
+            statistics.begin(self.commands.list(), slot, section);
+        }
+    }
+
+    /// The depth mode for a surface this frame's prepass covered: [`DepthMode::Primed`] when
+    /// the prepass ran and priming is on, [`DepthMode::Write`] otherwise.
+    fn primed_depth_mode(&self) -> DepthMode {
+        if self.depth_primed && self.depth_priming && !self.wireframe {
+            DepthMode::Primed
+        } else {
+            DepthMode::Write
+        }
+    }
+
+    /// Records one of the camera's opaque lists as instanced batches, drawn with `depth`.
+    fn draw_opaque_instanced(
+        &mut self,
+        slot: usize,
+        which: CameraList,
+        depth: DepthMode,
+    ) -> Result<(), RendererError> {
+        // One stream for the whole list, in batch order, bound once: the visible list's was
+        // uploaded before the shadow stage, which the prepass has already drawn from.
+        let stream = match which {
+            CameraList::Visible => self.camera_instances,
+            CameraList::Dithered => self.dithered.upload_instances(
+                &mut self.uploads,
+                slot,
+                &mut self.instance_scratch,
+            )?,
+        };
+        let Some(stream) = stream else {
+            return Ok(());
+        };
+        self.commands.set_vertex_buffer(1, stream);
+        let list = match which {
+            CameraList::Visible => &self.visible,
+            CameraList::Dithered => &self.dithered,
+        };
+        for batch in list.batches() {
             let Some(mesh) = self.meshes.get(batch.mesh.index()) else {
                 return Err(RendererError::InvalidConfig {
                     reason: format!(
@@ -1776,24 +1958,6 @@ impl Renderer {
                 });
             };
 
-            // One allocation for the whole run, so the instances are contiguous — which is
-            // what a per-instance vertex stream requires.
-            let count = batch.count as usize;
-            let bytes = count * size_of::<InstanceTransform>();
-            let allocation = self.uploads.allocate(slot, bytes, INSTANCE_ALIGNMENT)?;
-
-            let first = batch.first as usize;
-            self.instance_scratch.clear();
-            self.instance_scratch.reserve(count);
-            for &entry in &self.visible.order()[first..first + count] {
-                self.instance_scratch.push(InstanceTransform::shadowed(
-                    self.visible.transforms()[entry as usize].matrix(),
-                    self.visible.styles()[entry as usize],
-                    self.visible.receives_shadow()[entry as usize],
-                ));
-            }
-            allocation.write(&self.instance_scratch)?;
-
             let Some(table) = self.material_table(batch.material) else {
                 return Err(RendererError::InvalidConfig {
                     reason: format!(
@@ -1803,7 +1967,7 @@ impl Renderer {
                 });
             };
 
-            let variant = self.material_variant(batch.material);
+            let variant = self.material_variant(batch.material).with_depth(depth);
             let pipeline_state = self
                 .pipelines
                 .instanced(self.context.device(), variant)?
@@ -1816,23 +1980,11 @@ impl Renderer {
             self.commands
                 .set_root_descriptor_table(ROOT_MATERIAL_TABLE, table);
             self.commands.set_vertex_buffer(0, *mesh.vertex_view());
-            self.commands.set_vertex_buffer(
-                1,
-                windows::Win32::Graphics::Direct3D12::D3D12_VERTEX_BUFFER_VIEW {
-                    BufferLocation: allocation.gpu_address(),
-                    SizeInBytes: bytes as u32,
-                    StrideInBytes: size_of::<InstanceTransform>() as u32,
-                },
-            );
             self.commands.set_index_buffer(*mesh.index_view());
             self.commands
-                .draw_indexed(mesh.index_count(), batch.count, 0);
+                .draw_indexed(mesh.index_count(), batch.count, batch.first);
         }
-
-        self.draw_skinned(slot)?;
-        self.draw_transparent(slot)?;
-        self.draw_translucent_characters(slot)?;
-        self.finish_recording(slot, back_buffer)
+        Ok(())
     }
 
     /// Records this frame's transparent draws, farthest first.
@@ -1986,6 +2138,8 @@ impl Renderer {
             .set_topology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 
         let mut drawn = 0;
+        // A whole character is in the prepass, so it tests against its own depth there.
+        let depth = self.primed_depth_mode();
         // Consecutive submeshes of one character name the same palette range, so the upload
         // is skipped for all but the first of them.
         let mut bound_palette: Option<(u32, u32)> = None;
@@ -2004,6 +2158,7 @@ impl Renderer {
                 index,
                 instance,
                 CharacterPass::Lit,
+                depth,
                 instance.style,
                 &mut bound_palette,
             )?;
@@ -2069,6 +2224,7 @@ impl Renderer {
                     index,
                     instance,
                     pass,
+                    DepthMode::Write,
                     style,
                     &mut bound_palette,
                 )?;
@@ -2080,12 +2236,18 @@ impl Renderer {
     }
 
     /// Records one skinned submesh through `pass`, drawn with `style`.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one submesh's draw: which, through which pass and depth mode, styled how, with
+                  the palette the run already bound"
+    )]
     fn record_skinned_instance(
         &mut self,
         slot: usize,
         index: usize,
         instance: engine_render_data::SkinnedInstance,
         pass: CharacterPass,
+        depth: DepthMode,
         style: engine_render_data::InstanceStyle,
         bound_palette: &mut Option<(u32, u32)>,
     ) -> Result<(), RendererError> {
@@ -2111,7 +2273,10 @@ impl Renderer {
                 });
             };
             let material_address = material.gpu_address();
-            let variant = self.material_variant(instance.material).with_pass(pass);
+            let variant = self
+                .material_variant(instance.material)
+                .with_pass(pass)
+                .with_depth(depth);
             let pipeline_state = self
                 .pipelines
                 .skinned(self.context.device(), variant)?
@@ -2223,6 +2388,7 @@ impl Renderer {
             wireframe: self.wireframe,
             surface,
             pass: crate::mesh_pipeline::CharacterPass::Lit,
+            depth: DepthMode::Write,
         }
     }
 
@@ -3819,6 +3985,11 @@ impl Renderer {
         }
         let shadow_ms = self.gpu_timer.read_pass_ms(slot, SHADOW_PASS_QUERY)?;
         self.shadow.set_gpu_ms(shadow_ms);
+        if let Some(statistics) = self.pipeline_statistics.as_ref()
+            && let Some(read) = statistics.read(slot)?
+        {
+            self.last_scene_statistics = Some(read);
+        }
 
         // Resources whose last use the GPU has now passed. Costs a comparison per frame
         // when the queue is empty, which it usually is.
@@ -3876,6 +4047,9 @@ impl Renderer {
         // the batch-by-batch path both arrive at this function and nowhere else.
         self.gpu_timer
             .end_pass(self.commands.list(), slot, SCENE_PASS);
+        if let Some(statistics) = self.pipeline_statistics.as_mut() {
+            statistics.end(self.commands.list(), slot);
+        }
 
         // Before the interface and after the scene: a blended particle has to see the opaque
         // world beneath it, and a health bar under a fireball is a health bar nobody can
@@ -4145,6 +4319,9 @@ impl Renderer {
         // size and is replaced at the same moment. The shadow *atlas* is unaffected: its
         // size comes from the quality settings and not from the window.
         self.shadow.resize(&self.context, (width, height))?;
+        // The march samples the depth buffer that was just replaced.
+        self.shadow
+            .sample_camera_depth(&self.context, self.depth.texture())?;
 
         // After ResizeBuffers every slot is free again; forget the old fence values so
         // the next frames do not wait on submissions that referenced destroyed buffers.
@@ -4251,6 +4428,59 @@ const _: () = {
 /// rather than with the other characters. See `Renderer::draw_translucent_characters`.
 fn is_translucent(instance: &engine_render_data::SkinnedInstance) -> bool {
     instance.style.is_faded()
+}
+
+/// Which of the camera's opaque lists a recording loop walks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CameraList {
+    /// Everything the depth prepass draws.
+    Visible,
+    /// What the camera may dither this frame, which the prepass leaves out.
+    Dithered,
+}
+
+/// Whether the camera pass may dither some of a rigid entity's pixels away this frame.
+///
+/// Conservative, against the shader's `apply_fade`: true for an entity with its own fade,
+/// and for a see-through one whose bounds reach the camera fade's near zone (within
+/// `near_end` of the eye) or its tube (within `radius` of the segment from the eye to the
+/// target). Outside both the shader's opacity is exactly one and it never discards, so the
+/// entity can be drawn into the depth prepass whole. An entity with no bounds is assumed to
+/// be reachable.
+fn may_be_dithered(
+    style: engine_render_data::InstanceStyle,
+    fade: Option<engine_render_data::CameraFade>,
+    eye: engine_core::math::Vec3,
+    bounds: Option<&engine_core::math::Sphere>,
+) -> bool {
+    if style.is_faded() {
+        return true;
+    }
+    if !style.see_through {
+        return false;
+    }
+    let Some(fade) = fade else {
+        return false;
+    };
+    let Some(bounds) = bounds else {
+        return true;
+    };
+    // A millimetre of slack against the shader's own float arithmetic.
+    const SLACK: f32 = 1e-3;
+    let to_center = bounds.center - eye;
+    let near_end = fade.near_end.max(fade.near_start).max(0.0);
+    if to_center.length() - bounds.radius < near_end + SLACK {
+        return true;
+    }
+    let axis = fade.target - eye;
+    let length_squared = axis.dot(axis);
+    let along = if length_squared > 1e-12 {
+        (to_center.dot(axis) / length_squared).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let closest = eye + axis * along;
+    (bounds.center - closest).length() - bounds.radius < fade.radius.max(0.0) + SLACK
 }
 
 /// What each of a model's textures is *for*, worked out from the materials that name it.
@@ -4449,4 +4679,85 @@ pub fn prepare_model_textures(model: &engine_assets::ModelAsset) -> Option<Prepa
         })
         .collect::<Option<Vec<_>>>()?;
     Some(PreparedTextures { textures })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::may_be_dithered;
+    use engine_core::math::{Sphere, Vec3};
+    use engine_render_data::{CameraFade, InstanceStyle};
+
+    fn fade() -> CameraFade {
+        CameraFade {
+            target: Vec3::new(0.0, 1.5, 0.0),
+            near_start: 0.2,
+            near_end: 0.6,
+            radius: 1.2,
+            min_opacity: 0.25,
+        }
+    }
+
+    const EYE: Vec3 = Vec3::new(0.0, 3.0, 8.0);
+
+    fn at(center: Vec3, radius: f32) -> Sphere {
+        Sphere::new(center, radius)
+    }
+
+    #[test]
+    fn only_what_the_shader_could_dither_leaves_the_prepass() {
+        let see_through = InstanceStyle::NEUTRAL.see_through();
+        let solid = InstanceStyle::NEUTRAL;
+        let between = at(Vec3::new(0.3, 2.2, 4.0), 0.5);
+        let beside = at(Vec3::new(9.0, 1.0, 0.0), 0.5);
+
+        // A see-through prop between the eye and the character, and one at the eye.
+        assert!(may_be_dithered(
+            see_through,
+            Some(fade()),
+            EYE,
+            Some(&between)
+        ));
+        assert!(may_be_dithered(
+            see_through,
+            Some(fade()),
+            EYE,
+            Some(&at(EYE, 0.1))
+        ));
+        // Far to one side, or with no fade this frame, it is drawn whole.
+        assert!(!may_be_dithered(
+            see_through,
+            Some(fade()),
+            EYE,
+            Some(&beside)
+        ));
+        assert!(!may_be_dithered(see_through, None, EYE, Some(&between)));
+        // Solid geometry is never faded by the camera, wherever it is.
+        assert!(!may_be_dithered(solid, Some(fade()), EYE, Some(&between)));
+        // An entity's own fade always dithers it.
+        let faded = InstanceStyle::NEUTRAL.with_opacity(0.5);
+        assert!(may_be_dithered(faded, None, EYE, Some(&beside)));
+    }
+
+    #[test]
+    fn the_test_is_conservative_against_the_shaders_tube() {
+        // Sample points along and around the eye-to-target segment that the shader's tube
+        // fades; a sphere of any size containing one of them must be classified dithered.
+        let style = InstanceStyle::NEUTRAL.see_through();
+        let fade = fade();
+        let axis = fade.target - EYE;
+        for step in 0..=10 {
+            let along = EYE + axis * (step as f32 / 10.0);
+            for offset in [
+                Vec3::ZERO,
+                Vec3::new(1.1, 0.0, 0.0),
+                Vec3::new(0.0, -1.1, 0.0),
+            ] {
+                let point = along + offset;
+                assert!(
+                    may_be_dithered(style, Some(fade), EYE, Some(&at(point, 0.01))),
+                    "a point {offset:?} off the line at step {step} is inside the tube"
+                );
+            }
+        }
+    }
 }
