@@ -50,14 +50,15 @@ const QUERIES_PER_FRAME: usize = 2 + 2 * MAX_TIMED_PASSES;
 
 /// How many passes inside a frame can be timed separately.
 ///
-/// Four, which is every stage the frame has: the shadow stage, the camera's mesh pass, the
-/// particles and the interface. Raising it is a change to this constant and to nothing else
-/// — the heap, the readback buffer and the resolve are all sized from it.
+/// Seven: every stage the frame has — the shadow stage, the camera's mesh pass, the
+/// particles and the interface — plus the three parts of the shadow stage, timed inside its
+/// own pair. Raising it is a change to this constant and to nothing else — the heap, the
+/// readback buffer and the resolve are all sized from it.
 ///
 /// It went from one to four because "the frame got 0.13 ms slower at 800x450 and no slower
 /// at 1080p" is not a question one number can answer. A per-pass split says which stage
 /// moved, and a stage that did not move rules itself out.
-pub const MAX_TIMED_PASSES: usize = 4;
+pub const MAX_TIMED_PASSES: usize = 7;
 
 /// The pass index the shadow stage's timestamps use.
 ///
@@ -77,12 +78,28 @@ pub const PARTICLE_PASS: usize = 2;
 /// The interface: the debug overlay's geometry and the game UI's single batched draw.
 pub const UI_PASS: usize = 3;
 
+/// The shadow atlas fill: cascades and local views. Nested inside [`SHADOW_PASS`].
+pub const SHADOW_ATLAS_PASS: usize = 4;
+
+/// The camera's depth prepass and the copy of its depth that contact shadows read. Nested
+/// inside [`SHADOW_PASS`]; zero-length when contact shadows are off.
+pub const DEPTH_PREPASS: usize = 5;
+
+/// The half-resolution contact-shadow march. Nested inside [`SHADOW_PASS`]; zero-length when
+/// contact shadows are off.
+pub const CONTACT_PASS: usize = 6;
+
 /// Every timed pass, in the order they are recorded, with a name for a report.
+///
+/// The last three are parts of the first: they do not add to the frame on top of it.
 pub const TIMED_PASSES: [(usize, &str); MAX_TIMED_PASSES] = [
     (SHADOW_PASS, "shadow"),
     (SCENE_PASS, "scene"),
     (PARTICLE_PASS, "particles"),
     (UI_PASS, "ui"),
+    (SHADOW_ATLAS_PASS, "atlas"),
+    (DEPTH_PREPASS, "prepass"),
+    (CONTACT_PASS, "contact"),
 ];
 
 /// Bytes per timestamp, which `ResolveQueryData` writes as `u64` ticks.

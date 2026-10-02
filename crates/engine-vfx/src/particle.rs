@@ -79,11 +79,15 @@ const MIN_CHUNK_PARTICLES: usize = 4096;
 
 /// Smallest pool worth splitting at all.
 ///
-/// `vfx_bench` measures the worst case the game can currently produce at 2,618 particles
-/// and 17.8 us for the whole VFX step, which is under the break-even however it is divided.
-/// This threshold is what keeps the pass serial there, and it is deliberately above
-/// anything combat reaches: the parallel path is for a scene several times larger.
-const MIN_TOTAL_PARTICLES: usize = 8192;
+/// Above the pool's own 16,384-particle capacity, so the parallel path does not run in
+/// anything the game can produce today. It used to be 8,192, which only the synthetic
+/// `--vfx-stress 120` reaches (~9,500 live particles), and measured there in the game
+/// (docs/PERFORMANCE_AUDIT.md) the split lost: integration across workers saved ~7 us and the
+/// chunked write cost ~32 us more than the serial one, because the chunks' lists are then
+/// copied into the frame's list on this thread, and waking sleeping workers costs tens of
+/// microseconds before either starts. `vfx_bench`'s break-even was measured with the workers
+/// already awake, which the game's are not. The path stays, tested, for a pool that size.
+const MIN_TOTAL_PARTICLES: usize = 32_768;
 
 /// How many chunks `particles` should be split into across `workers`.
 ///

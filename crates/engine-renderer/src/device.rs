@@ -29,7 +29,9 @@ use windows::Win32::Graphics::Direct3D12::{
 use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT, DXGI_FORMAT_UNKNOWN, DXGI_SAMPLE_DESC};
 use windows::Win32::Graphics::Dxgi::{
     CreateDXGIFactory2, DXGI_CREATE_FACTORY_DEBUG, DXGI_CREATE_FACTORY_FLAGS,
-    DXGI_FEATURE_PRESENT_ALLOW_TEARING, IDXGIFactory6,
+    DXGI_FEATURE_PRESENT_ALLOW_TEARING, DXGI_MEMORY_SEGMENT_GROUP_LOCAL,
+    DXGI_MEMORY_SEGMENT_GROUP_NON_LOCAL, DXGI_QUERY_VIDEO_MEMORY_INFO, IDXGIAdapter3,
+    IDXGIFactory6,
 };
 
 use windows::core::Interface;
@@ -58,8 +60,22 @@ pub struct RenderDevice {
     device: ID3D12Device,
     queue: ID3D12CommandQueue,
     adapter_info: AdapterInfo,
+    /// The adapter, for asking what video memory the process is using. `None` on a system
+    /// whose DXGI predates `IDXGIAdapter3`, where the question simply has no answer.
+    adapter: Option<IDXGIAdapter3>,
     feature_level: D3D_FEATURE_LEVEL,
     allow_tearing: bool,
+}
+
+/// Video memory this process is using, as the OS's memory manager reports it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct VideoMemory {
+    /// Bytes resident in the adapter's own memory.
+    pub local_usage: u64,
+    /// How much of the adapter's memory the OS will currently let this process use.
+    pub local_budget: u64,
+    /// Bytes of system memory the adapter is using on this process's behalf.
+    pub non_local_usage: u64,
 }
 
 impl RenderDevice {
@@ -160,8 +176,34 @@ impl RenderDevice {
             device,
             queue,
             adapter_info: adapter_info.clone(),
+            adapter: adapter.cast().ok(),
             feature_level,
             allow_tearing,
+        })
+    }
+
+    /// Video memory in use, or `None` if the adapter cannot say.
+    ///
+    /// A kernel call: cheap, but meant for a report interval, not for every frame.
+    #[must_use]
+    pub fn video_memory(&self) -> Option<VideoMemory> {
+        let adapter = self.adapter.as_ref()?;
+        let mut local = DXGI_QUERY_VIDEO_MEMORY_INFO::default();
+        let mut non_local = DXGI_QUERY_VIDEO_MEMORY_INFO::default();
+        // SAFETY: FFI calls on a live adapter, each with a valid out-parameter that outlives
+        // the call. Node 0 is the only node of a single-GPU adapter.
+        unsafe {
+            adapter
+                .QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &mut local)
+                .ok()?;
+            adapter
+                .QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_NON_LOCAL, &mut non_local)
+                .ok()?;
+        }
+        Some(VideoMemory {
+            local_usage: local.CurrentUsage,
+            local_budget: local.Budget,
+            non_local_usage: non_local.CurrentUsage,
         })
     }
 

@@ -16,6 +16,10 @@ use engine_renderer::{UiBatchStats, UiBatcher, UiVertex};
 /// The budget the game uses, so the drop path behaves as it does in a frame.
 const MAX_QUADS: usize = 65_536;
 
+/// Plates in the list the tests split: 28 units each, so 1,400 of them is 39,200 units -
+/// past `MIN_TOTAL_UNITS`, nine `MIN_CHUNK_UNITS` chunks, and still inside `MAX_QUADS`.
+const PLATES: usize = 1_400;
+
 /// A list large enough that the batcher actually splits it.
 ///
 /// Below `MIN_TOTAL_UNITS` the build falls back to the serial path, which would make every
@@ -61,7 +65,7 @@ fn parallel(list: &UiDrawList, workers: usize) -> (Vec<UiVertex>, UiBatchStats) 
 
 #[test]
 fn the_parallel_buffer_is_identical_to_the_serial_one() {
-    let list = large_list(600);
+    let list = large_list(PLATES);
     let (expected, expected_stats) = serial(&list);
     assert!(
         expected.len() > 6,
@@ -93,7 +97,7 @@ fn the_parallel_buffer_is_identical_to_the_serial_one() {
 fn zero_workers_runs_inline_and_agrees() {
     // The determinism configuration: the same API, no threads, and it must land on the
     // serial answer rather than on a third one.
-    let list = large_list(600);
+    let list = large_list(PLATES);
     let (expected, expected_stats) = serial(&list);
     let (actual, stats) = parallel(&list, 0);
     assert_eq!(actual.len(), expected.len());
@@ -109,7 +113,7 @@ fn a_list_that_shrank_does_not_keep_the_previous_frames_vertices() {
     };
     let mut batcher = UiBatcher::new(MAX_QUADS);
 
-    let big = large_list(600);
+    let big = large_list(PLATES);
     let long = batcher.build_with(&big, Some(&jobs)).len();
 
     let small = large_list(4);
@@ -127,7 +131,7 @@ fn a_list_that_shrank_does_not_keep_the_previous_frames_vertices() {
 fn the_budget_is_enforced_across_the_whole_merge() {
     // A tiny budget, so the drop path runs. Which quads survive is a statement about paint
     // order, so the parallel merge has to keep exactly the ones the serial build kept.
-    let list = large_list(600);
+    let list = large_list(PLATES);
 
     let mut serial_batcher = UiBatcher::new(64);
     let expected = serial_batcher.build(&list).to_vec();

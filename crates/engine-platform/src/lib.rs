@@ -15,10 +15,12 @@ pub mod display;
 pub mod dpi;
 pub mod error;
 pub mod event;
+pub mod memory;
 pub mod window;
 
 pub use config::{AppliedDisplay, WindowConfig, WindowMode};
 pub use display::{MonitorInfo, ScreenRect, VideoMode, primary_monitor};
 pub use error::PlatformError;
 pub use event::{EventQueue, WindowEvent, key_from_virtual_code};
+pub use memory::{ProcessMemory, process_memory};
 pub use window::Window;

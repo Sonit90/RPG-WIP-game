@@ -286,6 +286,7 @@ impl BenchHarness {
             p50_ms: 0.0,
             p95_ms: 0.0,
             p99_ms: 0.0,
+            p999_ms: 0.0,
         };
 
         Ok(BenchResult {

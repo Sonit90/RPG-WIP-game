@@ -16,10 +16,20 @@
 //!
 //! # The hash, and why a hash is enough
 //!
-//! FNV-1a, widened to 128 bits by running two independent 64-bit lanes over the same bytes
-//! with different offset bases and folding the length in. It is a few lines, has no
-//! dependency, and is entirely deterministic — the same image hashes the same on every run
-//! and every machine, which is what will let a processed asset be cached by content later.
+//! Two independent 64-bit lanes over the same bytes, a *word* at a time: each step rotates
+//! the lane, folds in the next eight bytes and multiplies by a dense odd constant (the
+//! FxHash step), the second lane consuming every word with its bits reversed. A tail shorter
+//! than a word goes through byte-at-a-time FNV-1a, the length is folded in, and each lane
+//! ends with MurmurHash3's finalizer so every input bit reaches every output bit. It is a few
+//! lines, has no dependency, and is entirely deterministic — the same image hashes the same
+//! on every run and every machine, which is what will let a processed asset be cached by
+//! content later.
+//!
+//! It used to be FNV-1a a *byte* at a time, and that was 46 ms of a 400 ms launch: a 2048x2048
+//! texture is sixteen million bytes, and each byte waited on the previous byte's multiply. A
+//! word at a time is the same dependency chain an eighth as long. Nothing stores these values
+//! between runs, so changing the function changed nothing but the time
+//! (docs/PERFORMANCE_AUDIT.md).
 //!
 //! A hash is enough because the *key* is not the hash alone: it carries the dimensions and
 //! the colour space too, so a collision would have to be two different images of exactly the
@@ -31,8 +41,15 @@
 //! Cryptographic strength is not the property being bought here — an adversary is not
 //! supplying textures — so a fast non-cryptographic hash is the right tool.
 
-/// FNV-1a's 64-bit prime, used for both lanes.
+/// FNV-1a's 64-bit prime, used for both lanes' byte-at-a-time tail.
 const FNV_PRIME: u64 = 0x0000_0100_0000_01B3;
+
+/// The multiplier for a whole word: dense and odd, so a multiply is a bijection that moves
+/// every bit of the word into the bits above it. FxHash's constant.
+const WORD_MULTIPLIER_A: u64 = 0x517c_c1b7_2722_0a95;
+
+/// The second lane's multiplier: the 64-bit golden ratio, unrelated to the first.
+const WORD_MULTIPLIER_B: u64 = 0x9e37_79b9_7f4a_7c15;
 
 /// FNV-1a's 64-bit offset basis: the first lane's starting state.
 const FNV_OFFSET_A: u64 = 0xcbf2_9ce4_8422_2325;
@@ -59,22 +76,32 @@ impl ContentHash {
     pub fn of(bytes: &[u8]) -> Self {
         let mut low = FNV_OFFSET_A;
         let mut high = FNV_OFFSET_B;
-        for byte in bytes {
+        let mut words = bytes.chunks_exact(8);
+        for word in &mut words {
+            let mut array = [0_u8; 8];
+            array.copy_from_slice(word);
+            let word = u64::from_le_bytes(array);
+            // The rotation carries the multiply's well-mixed high bits back down to the
+            // low ones before the next word lands on them.
+            low = (low.rotate_left(5) ^ word).wrapping_mul(WORD_MULTIPLIER_A);
+            // The second lane consumes the same word with its bits reversed, so that two
+            // buffers whose difference cancels in one lane cannot cancel in both.
+            high = (high.rotate_left(5) ^ word.reverse_bits()).wrapping_mul(WORD_MULTIPLIER_B);
+        }
+        for byte in words.remainder() {
             low ^= u64::from(*byte);
             low = low.wrapping_mul(FNV_PRIME);
-            // The second lane consumes the same byte with its bits reversed, so that two
-            // buffers whose difference cancels in one lane cannot cancel in both.
             high ^= u64::from(byte.reverse_bits());
             high = high.wrapping_mul(FNV_PRIME);
         }
         // The length, folded in at the end: a buffer of trailing zeros and the same buffer
-        // with more of them are different images, and FNV alone barely separates them.
+        // with more of them are different images.
         let length = bytes.len() as u64;
         low ^= length;
         low = low.wrapping_mul(FNV_PRIME);
         high ^= length.rotate_left(32);
         high = high.wrapping_mul(FNV_PRIME);
-        Self((u128::from(high) << 64) | u128::from(low))
+        Self((u128::from(finalize(high)) << 64) | u128::from(finalize(low)))
     }
 
     /// The hash as a number, for logging and for tests that want to see two differ.
@@ -82,6 +109,17 @@ impl ContentHash {
     pub fn value(self) -> u128 {
         self.0
     }
+}
+
+/// MurmurHash3's 64-bit finalizer: every input bit flips each output bit with probability
+/// close to one half, so a lane's last steps, which only ever carry differences upward, end
+/// with them spread across all 64 bits.
+fn finalize(mut value: u64) -> u64 {
+    value ^= value >> 33;
+    value = value.wrapping_mul(0xff51_afd7_ed55_8ccd);
+    value ^= value >> 33;
+    value = value.wrapping_mul(0xc4ce_b9fe_1a85_ec53);
+    value ^ (value >> 33)
 }
 
 /// Everything that makes two uploaded textures interchangeable.
@@ -148,6 +186,40 @@ mod tests {
             ContentHash::of(&altered),
             "one texel of one channel must change the hash"
         );
+    }
+
+    #[test]
+    fn every_single_bit_flip_of_a_texture_changes_both_lanes() {
+        // A buffer longer than a word, with a tail, and a flip of each bit of a word-sized
+        // stretch in the middle and of the tail: the word path and the byte path both have to
+        // notice a one-bit difference, and in both halves of the hash.
+        let image: Vec<u8> = (0..4099_u32).map(|index| (index * 31 + 7) as u8).collect();
+        let original = ContentHash::of(&image).value();
+        for at in (2040..2056).chain(4096..4099) {
+            for bit in 0..8 {
+                let mut altered = image.clone();
+                altered[at] ^= 1 << bit;
+                let changed = ContentHash::of(&altered).value();
+                assert_ne!(
+                    changed as u64, original as u64,
+                    "low lane, byte {at} bit {bit}"
+                );
+                assert_ne!(
+                    changed >> 64,
+                    original >> 64,
+                    "high lane, byte {at} bit {bit}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn swapped_words_do_not_collide() {
+        // The word path's version of the transposition check below.
+        let forward: Vec<u8> = (0..16_u8).collect();
+        let mut swapped = forward.clone();
+        swapped.rotate_left(8);
+        assert_ne!(ContentHash::of(&forward), ContentHash::of(&swapped));
     }
 
     #[test]

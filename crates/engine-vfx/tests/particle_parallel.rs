@@ -17,9 +17,9 @@ use engine_render_data::{ParticleBlend, ParticleDrawList};
 use engine_vfx::particle::ParticlePool;
 use engine_vfx::{NO_OWNER, ParticleSpawn};
 
-/// Big enough that `update_with` actually splits it — below `MIN_TOTAL_PARTICLES` the pool
-/// takes the serial path and every test here would pass without a worker running.
-const PARTICLES: usize = 20_000;
+/// Big enough that `update_with` actually splits it — below `MIN_TOTAL_PARTICLES` (32,768)
+/// the pool takes the serial path and every test here would pass without a worker running.
+const PARTICLES: usize = 40_000;
 
 fn spawn_at(index: usize) -> ParticleSpawn {
     let f = index as f32;

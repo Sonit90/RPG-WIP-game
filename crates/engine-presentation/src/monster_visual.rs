@@ -40,6 +40,59 @@ pub struct MonsterModel {
     pub binding: ModelBinding,
 }
 
+impl MonsterModel {
+    /// Monster `name`'s procedural model and definition, bound to handles nothing uploaded.
+    ///
+    /// For a benchmark or a test that animates monsters with no device: the controller poses
+    /// the skeleton and fills the palette exactly as it does in the game, and nothing ever
+    /// dereferences a handle. `None` for a name with no model.
+    #[must_use]
+    pub fn unbound(name: &str) -> Option<Self> {
+        let model = engine_assets::procedural::monster_model(name)?.ok()?;
+        let definition = engine_assets::procedural::monster_character(name)?;
+        let binding = unbound_binding(&model);
+        Some(Self {
+            name: name.to_owned(),
+            definition,
+            model: Arc::new(model),
+            binding,
+        })
+    }
+}
+
+/// A skinned binding over handles nothing uploaded; see [`MonsterModel::unbound`].
+fn unbound_binding(model: &ModelAsset) -> ModelBinding {
+    use engine_render_data::{
+        MaterialHandle, ModelLodBinding, ModelPart, PartGeometry, SkinnedMeshHandle,
+    };
+    ModelBinding {
+        lods: model
+            .lods
+            .iter()
+            .enumerate()
+            .map(|(level, lod)| ModelLodBinding {
+                parts: lod
+                    .submeshes
+                    .iter()
+                    .enumerate()
+                    .map(|(index, submesh)| ModelPart {
+                        geometry: PartGeometry::Skinned(SkinnedMeshHandle::new(
+                            (level * 8 + index) as u32,
+                            1,
+                        )),
+                        material: MaterialHandle::new(submesh.material as u32, 1),
+                        bounds: submesh.bounds,
+                    })
+                    .collect(),
+                min_distance: lod.min_distance,
+                bounds: lod.bounds(),
+            })
+            .collect(),
+        skinned: true,
+        model_height: 1.8,
+    }
+}
+
 /// The monster models, and a controller for every enemy drawn with one.
 #[derive(Default)]
 pub struct MonsterVisuals {
@@ -47,6 +100,9 @@ pub struct MonsterVisuals {
     slots: Vec<Option<Slot>>,
     /// This frame's latest `(cast started, ability used)` tick per gameplay slot.
     ticks: Vec<(Option<u64>, Option<u64>)>,
+    /// Seconds this frame spent in [`CharacterVisual::update`], and how many updates that
+    /// was. Reset by [`MonsterVisuals::observe`], which runs once at the top of a frame.
+    animation: (f64, u32),
 }
 
 struct Slot {
@@ -83,6 +139,12 @@ impl MonsterVisuals {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Milliseconds this frame's monster animation took, and how many monsters were animated.
+    #[must_use]
+    pub fn animation_stats(&self) -> (f64, u32) {
+        (self.animation.0 * 1e3, self.animation.1)
     }
 
     /// Replaces the models. Controllers built on the old ones are dropped.
@@ -122,6 +184,7 @@ impl MonsterVisuals {
     /// Reads this frame's events: the tick each enemy last started a cast and last used an
     /// ability. One pass over the slice for every enemy, rather than one per enemy.
     pub fn observe(&mut self, simulation: &Simulation) {
+        self.animation = (0.0, 0);
         let count = simulation.world().slot_count();
         self.ticks.clear();
         self.ticks.resize(count, (None, None));
@@ -194,9 +257,12 @@ impl MonsterVisuals {
             released,
             dead: frame.dead,
         };
+        let started = std::time::Instant::now();
         if let Err(error) = slot.visual.update(delta, state) {
             log::error!("monster animation failed: {error}");
         }
+        self.animation.0 += started.elapsed().as_secs_f64();
+        self.animation.1 += 1;
         slot.visual.submit_styled(world, camera, lod_bias, style);
     }
 

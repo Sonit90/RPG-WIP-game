@@ -41,7 +41,7 @@ use crate::scene::{
     FrameConstants, ObjectConstants, ROOT_FRAME_CBV, ROOT_MATERIAL_CBV, ROOT_MATERIAL_TABLE,
     ROOT_OBJECT_CBV, ROOT_SKIN_CBV,
 };
-use crate::upload::{CONSTANT_BUFFER_ALIGNMENT, UploadRing};
+use crate::upload::UploadRing;
 
 use super::atlas::AtlasRect;
 use super::cascade::{CascadeView, build_cascades};
@@ -59,9 +59,6 @@ use super::stats::{ShadowPassStats, ShadowStats};
 /// address its elements do not straddle, and the 96-byte instance record is not a power of
 /// two.
 const INSTANCE_ALIGNMENT: usize = 16;
-
-/// Bones the shader's palette array holds. Mirrors the camera pass's own padding rule.
-const MAX_PALETTE_BONES: usize = engine_render_data::MAX_PALETTE_BONES;
 
 /// What one depth pass is rendered with.
 ///
@@ -106,6 +103,9 @@ pub struct ShadowScene<'a> {
     /// This frame's skinned draws, unfiltered — a character behind the camera still casts
     /// into a cascade.
     pub skinned: &'a SkinnedDrawList,
+    /// Where this frame uploaded each of `skinned`'s palettes. A palette missing from it is
+    /// uploaded by the pass that needs it, as every pass used to.
+    pub palettes: &'a crate::palette::FramePalettes,
 }
 
 /// The highest debug view `shade_surface` knows.
@@ -913,29 +913,26 @@ impl ShadowRenderer {
 
             let range = (instance.palette_start, instance.palette_len);
             if bound_palette != Some(range) {
-                let Some(palette) = scene.skinned.palette_of(index) else {
-                    return Err(RendererError::InvalidConfig {
-                        reason: format!(
-                            "a skinned shadow caster names bones {}..{} of a {}-matrix palette",
-                            instance.palette_start,
-                            instance.palette_start + instance.palette_len,
-                            scene.skinned.palette().len()
-                        ),
-                    });
+                // Uploaded once for the whole frame, before any pass was recorded; this view
+                // only binds it. The upload below is the fallback for a palette the frame did
+                // not know about, which is what every view used to do for every character.
+                let address = match scene.palettes.address(range.0, range.1) {
+                    Some(address) => address,
+                    None => {
+                        let Some(palette) = scene.skinned.palette_of(index) else {
+                            return Err(RendererError::InvalidConfig {
+                                reason: format!(
+                                    "a skinned shadow caster names bones {}..{} of a {}-matrix palette",
+                                    instance.palette_start,
+                                    instance.palette_start + instance.palette_len,
+                                    scene.skinned.palette().len()
+                                ),
+                            });
+                        };
+                        crate::palette::upload_padded(palette, scratch, uploads, slot)?
+                    }
                 };
-                scratch.clear();
-                scratch.extend(palette.iter().map(engine_core::math::Mat4::to_cols_array));
-                // The identity for bones the character does not have, for the same reason
-                // the camera pass pads: a root CBV shorter than the declared array lets the
-                // GPU read past the allocation.
-                scratch.resize(MAX_PALETTE_BONES, Mat4::IDENTITY.to_cols_array());
-                let allocation = uploads.allocate(
-                    slot,
-                    MAX_PALETTE_BONES * size_of::<[f32; 16]>(),
-                    CONSTANT_BUFFER_ALIGNMENT,
-                )?;
-                allocation.write(scratch)?;
-                commands.set_root_cbv(ROOT_SKIN_CBV, allocation.gpu_address());
+                commands.set_root_cbv(ROOT_SKIN_CBV, address);
                 bound_palette = Some(range);
             }
 

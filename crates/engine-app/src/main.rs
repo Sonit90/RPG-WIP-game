@@ -3,11 +3,13 @@
 //! Wiring only: parse arguments, build the application, hand it to the engine.
 //! The lifecycle and the frame loop belong to `engine-core`.
 
+mod alloc_count;
 mod app;
 mod args;
 mod audio_device;
 mod benchmark;
 mod map_bake;
+mod run_profile;
 mod startup;
 
 use std::process::ExitCode;

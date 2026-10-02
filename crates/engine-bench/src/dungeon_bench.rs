@@ -98,6 +98,9 @@ struct Scenario {
     label: &'static str,
     /// Which packs the player is dragged through and left fighting.
     packs: &'static [usize],
+    /// Whether the monsters are drawn with their animated models, as the game draws them,
+    /// rather than with the rigid stand-in. The difference is the cost of posing them.
+    animated: bool,
     /// Health fraction the boss is put at before measuring, if the boss is in the scenario.
     ///
     /// This is how the *worst case* is reached deterministically: phase three is a health
@@ -190,30 +193,35 @@ fn main() -> ExitCode {
 }
 
 /// Every scenario the phase asked for.
-static SCENARIOS: [Scenario; 6] = [
+static SCENARIOS: [Scenario; 8] = [
     Scenario {
         label: "1 pack",
         packs: &[0],
+        animated: false,
         boss_health: None,
     },
     Scenario {
         label: "3 packs",
         packs: &[0, 1, 2],
+        animated: false,
         boss_health: None,
     },
     Scenario {
         label: "5 packs",
         packs: &[0, 1, 2, 3, 4],
+        animated: false,
         boss_health: None,
     },
     Scenario {
         label: "full dungeon",
         packs: &[0, 1, 2, 3, 4, 5, 6, 7],
+        animated: false,
         boss_health: None,
     },
     Scenario {
         label: "boss encounter",
         packs: &[BOSS_PACK],
+        animated: false,
         boss_health: None,
     },
     // Phase three, with every trash pack in the dungeon also pulled and still alive. Nothing
@@ -221,6 +229,23 @@ static SCENARIOS: [Scenario; 6] = [
     Scenario {
         label: "boss, worst case",
         packs: &[0, 1, 2, 3, 4, 5, 6, 7, BOSS_PACK],
+        animated: false,
+        boss_health: Some(0.3),
+    },
+    // The two above again, with every monster posed by its own skeleton as the game draws
+    // it. The extraction column's difference is what animation costs; it was never measured
+    // before the performance audit (docs/PERFORMANCE_AUDIT.md), which found it at ~0.75 us a
+    // monster in the game.
+    Scenario {
+        label: "full, animated",
+        packs: &[0, 1, 2, 3, 4, 5, 6, 7],
+        animated: true,
+        boss_health: None,
+    },
+    Scenario {
+        label: "worst, animated",
+        packs: &[0, 1, 2, 3, 4, 5, 6, 7, BOSS_PACK],
+        animated: true,
         boss_health: Some(0.3),
     },
 ];
@@ -346,6 +371,14 @@ fn measure(scenario: &Scenario, frames: usize) -> Measurement {
     let (mut simulation, dungeon) = build_dungeon();
 
     let mut extractor = RenderExtractor::new(bindings(), 240.0);
+    if scenario.animated {
+        extractor.set_monster_models(
+            engine_assets::procedural::MONSTER_MODELS
+                .iter()
+                .filter_map(|name| engine_presentation::MonsterModel::unbound(name))
+                .collect(),
+        );
+    }
     let mut culler = Culler::new();
     let mut list = RenderList::new();
     let mut controller = ThirdPersonCamera::following(simulation.player_position());

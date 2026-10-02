@@ -77,15 +77,43 @@ pub fn bc5_size(width: u32, height: u32) -> usize {
 /// why that decision is not made here.
 #[must_use]
 pub fn compress_bc1(texels: &[u8], width: u32, height: u32) -> Vec<u8> {
-    let (blocks_x, blocks_y) = block_counts(width, height);
-    let mut out = Vec::with_capacity(bc1_size(width, height));
-    for block_y in 0..blocks_y {
-        for block_x in 0..blocks_x {
+    let (_, blocks_y) = block_counts(width, height);
+    let mut out = vec![0_u8; bc1_size(width, height)];
+    compress_bc1_rows(texels, width, height, 0..blocks_y, &mut out);
+    out
+}
+
+/// [`compress_bc1`] for the block rows `block_rows` only, written into `out`.
+///
+/// Every block is encoded from its own sixteen texels and nothing else, so an image can be
+/// cut into bands of block rows, the bands compressed on different threads, and the result
+/// is byte for byte what [`compress_bc1`] produces — which is what the renderer does with a
+/// large texture at load. `out` is exactly the bands' bytes: `block_rows.len()` rows of
+/// `block_counts(width, height).0` blocks of [`BC1_BLOCK_BYTES`].
+///
+/// # Panics
+///
+/// Panics if `out` is not that length.
+pub fn compress_bc1_rows(
+    texels: &[u8],
+    width: u32,
+    height: u32,
+    block_rows: std::ops::Range<u32>,
+    out: &mut [u8],
+) {
+    let (blocks_x, _) = block_counts(width, height);
+    let row_bytes = blocks_x as usize * BC1_BLOCK_BYTES;
+    assert_eq!(
+        out.len(),
+        block_rows.len() * row_bytes,
+        "the output is the bands' bytes"
+    );
+    for (row, block_y) in out.chunks_exact_mut(row_bytes).zip(block_rows) {
+        for (slot, block_x) in row.chunks_exact_mut(BC1_BLOCK_BYTES).zip(0..blocks_x) {
             let block = gather(texels, width, height, block_x, block_y);
-            out.extend_from_slice(&encode_bc1(&block));
+            slot.copy_from_slice(&encode_bc1(&block));
         }
     }
-    out
 }
 
 /// Compresses the red and green channels of RGBA8 texels to BC5.
@@ -95,18 +123,41 @@ pub fn compress_bc1(texels: &[u8], width: u32, height: u32) -> Vec<u8> {
 /// blue channel away lossless in the only sense that matters.
 #[must_use]
 pub fn compress_bc5(texels: &[u8], width: u32, height: u32) -> Vec<u8> {
-    let (blocks_x, blocks_y) = block_counts(width, height);
-    let mut out = Vec::with_capacity(bc5_size(width, height));
-    for block_y in 0..blocks_y {
-        for block_x in 0..blocks_x {
+    let (_, blocks_y) = block_counts(width, height);
+    let mut out = vec![0_u8; bc5_size(width, height)];
+    compress_bc5_rows(texels, width, height, 0..blocks_y, &mut out);
+    out
+}
+
+/// [`compress_bc5`] for the block rows `block_rows` only, written into `out`. See
+/// [`compress_bc1_rows`]: the same contract, with [`BC5_BLOCK_BYTES`] per block.
+///
+/// # Panics
+///
+/// Panics if `out` is not `block_rows.len()` rows of blocks.
+pub fn compress_bc5_rows(
+    texels: &[u8],
+    width: u32,
+    height: u32,
+    block_rows: std::ops::Range<u32>,
+    out: &mut [u8],
+) {
+    let (blocks_x, _) = block_counts(width, height);
+    let row_bytes = blocks_x as usize * BC5_BLOCK_BYTES;
+    assert_eq!(
+        out.len(),
+        block_rows.len() * row_bytes,
+        "the output is the bands' bytes"
+    );
+    for (row, block_y) in out.chunks_exact_mut(row_bytes).zip(block_rows) {
+        for (slot, block_x) in row.chunks_exact_mut(BC5_BLOCK_BYTES).zip(0..blocks_x) {
             let block = gather(texels, width, height, block_x, block_y);
             let red: [u8; 16] = std::array::from_fn(|index| block[index][0]);
             let green: [u8; 16] = std::array::from_fn(|index| block[index][1]);
-            out.extend_from_slice(&encode_bc4(&red));
-            out.extend_from_slice(&encode_bc4(&green));
+            slot[..8].copy_from_slice(&encode_bc4(&red));
+            slot[8..].copy_from_slice(&encode_bc4(&green));
         }
     }
-    out
 }
 
 /// The sixteen texels of one block, clamped at the edges of a partial block.
@@ -460,6 +511,44 @@ mod tests {
         let green = decode_bc4(&compressed[8..16]);
         assert_eq!(red, [128_u8; 16]);
         assert_eq!(green, [128_u8; 16]);
+    }
+
+    #[test]
+    fn bands_compressed_separately_are_the_whole_image_compressed_at_once() {
+        // A gradient with a hue turn in it, odd-sized so the last block row and column are
+        // partial: every kind of block the bands could get wrong.
+        let (width, height) = (37_u32, 29_u32);
+        let texels: Vec<u8> = (0..width * height)
+            .flat_map(|index| {
+                let (x, y) = (index % width, index / width);
+                [(x * 7) as u8, (y * 9) as u8, ((x + y) * 3) as u8, 255]
+            })
+            .collect();
+        let (blocks_x, blocks_y) = block_counts(width, height);
+        for (whole, size, compress) in [
+            (
+                compress_bc1(&texels, width, height),
+                BC1_BLOCK_BYTES,
+                compress_bc1_rows as fn(&[u8], u32, u32, std::ops::Range<u32>, &mut [u8]),
+            ),
+            (
+                compress_bc5(&texels, width, height),
+                BC5_BLOCK_BYTES,
+                compress_bc5_rows,
+            ),
+        ] {
+            let row = blocks_x as usize * size;
+            let mut banded = vec![0_u8; whole.len()];
+            let mut start = 0;
+            for band in [2_u32, 1, 3, blocks_y - 6] {
+                let rows = start..start + band;
+                let bytes = &mut banded[start as usize * row..(start + band) as usize * row];
+                compress(&texels, width, height, rows, bytes);
+                start += band;
+            }
+            assert_eq!(start, blocks_y);
+            assert_eq!(banded, whole);
+        }
     }
 
     #[test]

@@ -237,3 +237,48 @@ D3D12 asking the driver for something.
   even for an empty level. That was 300 ms and is now 26; the saving no longer justifies
   making "what a level needs" a question the loader has to answer.
 * **Caching compressed textures on disk.** 9 ms in release, for a cache that can go stale.
+
+## The 2026-10 audit: one second again, and back to a quarter of one
+
+By the time of the audit the launch was ~1.0 s again (Ryzen 9 5900X, warm, median of 9):
+945 ms for an empty scene, 997 for the dungeon, 1022 for the graveyard. The cause was new
+content on an old path — the imported Fire Mage's two 2048x2048 textures went through
+`create_texture` on the main thread, after the device existed:
+
+| Inside `GPU upload: heroes` (dungeon) | Before |
+| --- | ---: |
+| mip filtering, `powf` for every sRGB conversion | 385 ms |
+| BC1/BC5 compression on one core | 263 ms |
+| byte-at-a-time content hash and alpha scan | 46 ms |
+| import (two JPEG decodes) and the rest | ~5 ms + ~40 ms |
+
+What changed, each measured alone and interleaved (`docs/PERFORMANCE_AUDIT.md`, 12.1-12.7):
+
+* Mip filtering reads two tables built from the same formulas — exact for every float, proven
+  by an exhaustive test — and splits each level into bands of rows across threads.
+* Block compression splits into bands of block rows.
+* The content hash reads a word at a time.
+* `ModelPreload` builds and imports the hero, monster and environment models on a thread that
+  starts before the window, and `engine_renderer::prepare_model_textures` does their mips,
+  compression and hashing there too. The main thread finds it all finished when it reaches the
+  uploads; it waited 0.0 ms in every measured launch. The thread is capped at eight bands so the
+  driver initializing inside `D3D12CreateDevice` keeps its cores.
+
+The texture bytes the GPU receives are unchanged: `MYGAME_TEXTURE_DIGEST=1` folds every
+uploaded level into one digest, and it is the same before and after every step.
+
+| Launch (warm, 9 runs) | Before | After |
+| --- | ---: | ---: |
+| Empty | 945 ms | 223 ms |
+| Dungeon | 997 ms | 241 ms |
+| Graveyard | 1022 ms | 262 ms |
+| Editor + showcase (7 runs) | 1037 ms | 282 ms |
+
+What is left, dungeon: `D3D12CreateDevice` and the swap chain ~128 ms (the driver), renderer
+objects 45 ms (the UI state's synchronous flush and pipelines, the shadow renderer), the map
+9 ms, and ~40 ms of uploads. The considerations above about hiding the device still hold —
+except that the CPU work worth hiding behind it is now ~160 ms, and it is hidden.
+
+`tools/bench/startup_matrix.ps1` runs these comparisons: interleaved, per-stage medians, and
+the first launch of each binary reported separately as "cold" (a freshly copied executable's
+first launch is slower for reasons outside the engine, consistent with antivirus scanning).

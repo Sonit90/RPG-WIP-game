@@ -25,8 +25,8 @@ use crate::frame::{FrameRing, SyncStats};
 use std::collections::HashMap;
 
 use crate::gpu_timer::{
-    GpuTimer, MAX_TIMED_PASSES, PARTICLE_PASS, SCENE_PASS, SHADOW_PASS as SHADOW_PASS_QUERY,
-    UI_PASS,
+    CONTACT_PASS, DEPTH_PREPASS, GpuTimer, MAX_TIMED_PASSES, PARTICLE_PASS, SCENE_PASS,
+    SHADOW_ATLAS_PASS, SHADOW_PASS as SHADOW_PASS_QUERY, UI_PASS,
 };
 use crate::light_cluster::{LightClusterStats, LightClusters};
 use crate::material::{
@@ -58,14 +58,14 @@ use crate::ui_pipeline::{
     ROOT_UI_ATLAS_TABLE, ROOT_UI_FRAME_CBV, UiBatchStats, UiBatcher, UiFrameConstants, UiPipeline,
     UiVertex,
 };
-use crate::upload::{CONSTANT_BUFFER_ALIGNMENT, StagingUploader, UploadRing};
+use crate::upload::{StagingUploader, UploadRing};
 use crate::{AdapterInfo, RendererConfig};
 use engine_core::math::Frustum;
 use engine_core::time::{FrameStats, FrameStatsWindow};
 use engine_render_data::Camera;
 use engine_render_data::{
-    Lighting, LocalLight, MAX_PALETTE_BONES, MaterialHandle, MeshHandle, ModelBinding,
-    ModelLodBinding, ModelPart, PartGeometry, RenderWorld, SkinnedDrawList, SkinnedMeshHandle,
+    Lighting, LocalLight, MaterialHandle, MeshHandle, ModelBinding, ModelLodBinding, ModelPart,
+    PartGeometry, RenderWorld, SkinnedDrawList, SkinnedMeshHandle,
 };
 
 /// How many shader-visible SRVs the renderer's one descriptor heap holds.
@@ -548,6 +548,9 @@ pub struct Renderer {
     /// answered by two runs of one binary, and the alternative - deleting the braziers from
     /// the scene - would measure a different scene. On for every ordinary run.
     local_lights_enabled: bool,
+    /// This frame's bone palettes, each uploaded once and bound by every pass that draws the
+    /// character: see `crate::palette`.
+    frame_palettes: crate::palette::FramePalettes,
     /// This frame's skinned draws, *unculled*, for the shadow passes.
     ///
     /// Separate from [`Renderer::skinned`], which is the camera's filtered copy: a character
@@ -801,6 +804,7 @@ impl Renderer {
             clusters: LightClusters::new(),
             light_clustering: true,
             local_lights_enabled: true,
+            frame_palettes: crate::palette::FramePalettes::new(),
             shadow_skinned: SkinnedDrawList::new(),
             culler: Culler::new(),
             visible: RenderList::new(),
@@ -904,6 +908,12 @@ impl Renderer {
     #[must_use]
     pub fn adapter_info(&self) -> &AdapterInfo {
         self.context.adapter_info()
+    }
+
+    /// Video memory this process is using. A kernel call: for a report, not every frame.
+    #[must_use]
+    pub fn video_memory(&self) -> Option<crate::device::VideoMemory> {
+        self.context.video_memory()
     }
 
     /// Current back-buffer size in pixels.
@@ -1489,13 +1499,23 @@ impl Renderer {
             materials: &self.materials,
             material_tables: &self.material_tables,
             skinned: &self.shadow_skinned,
+            palettes: &self.frame_palettes,
         };
         // Every one of these is a *different field* of `self`, which is what lets the shadow
         // renderer be borrowed mutably while the meshes and materials are borrowed shared.
+        self.gpu_timer
+            .begin_pass(self.commands.list(), slot, SHADOW_ATLAS_PASS);
         self.shadow
             .record(&mut self.commands, &mut self.uploads, slot, &scene)?;
+        self.gpu_timer
+            .end_pass(self.commands.list(), slot, SHADOW_ATLAS_PASS);
 
-        if self.shadow.needs_prepass() {
+        // Both sub-passes are stamped whether or not they run, so a frame without contact
+        // shadows reads zero for them rather than a stale number from the last frame that had.
+        self.gpu_timer
+            .begin_pass(self.commands.list(), slot, DEPTH_PREPASS);
+        let prepass = self.shadow.needs_prepass();
+        if prepass {
             let (width, height) = self.swap_chain.size();
             let dsv = self.depth.view().cpu;
             let scene = ShadowScene {
@@ -1504,6 +1524,7 @@ impl Renderer {
                 materials: &self.materials,
                 material_tables: &self.material_tables,
                 skinned: &self.shadow_skinned,
+                palettes: &self.frame_palettes,
             };
             self.shadow.record_prepass(
                 &mut self.commands,
@@ -1517,7 +1538,12 @@ impl Renderer {
             )?;
             self.shadow
                 .copy_scene_depth(&mut self.commands, self.depth.texture());
-
+        }
+        self.gpu_timer
+            .end_pass(self.commands.list(), slot, DEPTH_PREPASS);
+        self.gpu_timer
+            .begin_pass(self.commands.list(), slot, CONTACT_PASS);
+        if prepass {
             // The contact-shadow march, into its own half-resolution target. It reads the
             // depth copy made on the line above and the frame constants, so it goes here and
             // not with the atlas: the depth it marches through does not exist until now.
@@ -1528,6 +1554,8 @@ impl Renderer {
             }
             self.shadow.record_contact(&mut self.commands);
         }
+        self.gpu_timer
+            .end_pass(self.commands.list(), slot, CONTACT_PASS);
 
         // Back to the camera's targets. The shadow passes bound a depth-only target and a
         // viewport the size of an atlas tile; leaving either would render the scene into the
@@ -1558,6 +1586,18 @@ impl Renderer {
         color: [f32; 4],
     ) -> Result<(), RendererError> {
         let (slot, back_buffer) = self.begin_recording(color)?;
+
+        // Every character's palette, once, before any pass binds one: the shadow views, the
+        // prepass and the camera pass then share these addresses rather than each uploading
+        // its own copy. The shadow list is the unculled superset and only matters when there
+        // are shadows; the camera's list is what it draws.
+        self.frame_palettes.clear();
+        if self.shadow.settings().enabled {
+            self.frame_palettes
+                .upload_all(&self.shadow_skinned, &mut self.uploads, slot)?;
+        }
+        self.frame_palettes
+            .upload_all(&self.skinned, &mut self.uploads, slot)?;
 
         // The frame constants are written once into this slot's upload memory and bound
         // twice: once for the contact-shadow pass inside the shadow stage, once for the mesh
@@ -2094,35 +2134,30 @@ impl Renderer {
 
             let range = (instance.palette_start, instance.palette_len);
             if *bound_palette != Some(range) {
-                let Some(palette) = self.skinned.palette_of(index) else {
-                    return Err(RendererError::InvalidConfig {
-                        reason: format!(
-                            "a skinned draw names bones {}..{} of a {}-matrix palette",
-                            instance.palette_start,
-                            instance.palette_start + instance.palette_len,
-                            self.skinned.palette().len()
-                        ),
-                    });
+                // Uploaded once for the frame in `draw_render_list`; the upload here is the
+                // fallback for a palette that table does not hold.
+                let address = match self.frame_palettes.address(range.0, range.1) {
+                    Some(address) => address,
+                    None => {
+                        let Some(palette) = self.skinned.palette_of(index) else {
+                            return Err(RendererError::InvalidConfig {
+                                reason: format!(
+                                    "a skinned draw names bones {}..{} of a {}-matrix palette",
+                                    instance.palette_start,
+                                    instance.palette_start + instance.palette_len,
+                                    self.skinned.palette().len()
+                                ),
+                            });
+                        };
+                        crate::palette::upload_padded(
+                            palette,
+                            &mut self.palette_scratch,
+                            &mut self.uploads,
+                            slot,
+                        )?
+                    }
                 };
-                self.palette_scratch.clear();
-                self.palette_scratch
-                    .extend(palette.iter().map(engine_core::math::Mat4::to_cols_array));
-                // The identity for the bones the character does not have. Zeroes would
-                // collapse any vertex that reached them to the origin; the identity leaves
-                // it in bind pose, which is wrong in a way that is visible and bounded.
-                self.palette_scratch.resize(
-                    MAX_PALETTE_BONES,
-                    engine_core::math::Mat4::IDENTITY.to_cols_array(),
-                );
-
-                let allocation = self.uploads.allocate(
-                    slot,
-                    MAX_PALETTE_BONES * size_of::<[f32; 16]>(),
-                    CONSTANT_BUFFER_ALIGNMENT,
-                )?;
-                allocation.write(&self.palette_scratch)?;
-                self.commands
-                    .set_root_cbv(ROOT_SKIN_CBV, allocation.gpu_address());
+                self.commands.set_root_cbv(ROOT_SKIN_CBV, address);
                 *bound_palette = Some(range);
             }
 
@@ -2397,6 +2432,72 @@ impl Renderer {
         &mut self,
         image: &TextureImage<'_>,
     ) -> Result<TextureHandle, RendererError> {
+        let identity = TextureIdentity::of(image)?;
+        self.count_texture_request(image);
+        // The whole point: the same image asked for twice is uploaded once. Checked before
+        // anything is allocated or filtered, so a hit costs one hash of the texels and no
+        // GPU work at all — no resource, no staging buffer, no descriptor, no flush.
+        if let Some(existing) = self.resident_texture(&identity.key, image) {
+            return Ok(existing);
+        }
+        let prepared = identity.prepare(image);
+        self.upload_prepared_texture(image, prepared)
+    }
+
+    /// [`Renderer::create_texture`] for a texture whose CPU work [`prepare_texture`] has
+    /// already done, on whatever thread did it.
+    ///
+    /// # Errors
+    ///
+    /// As [`Renderer::create_texture`].
+    pub fn create_texture_prepared(
+        &mut self,
+        image: &TextureImage<'_>,
+        prepared: PreparedTexture,
+    ) -> Result<TextureHandle, RendererError> {
+        if !prepared.describes(image) {
+            // Prepared from a different image: do the work again rather than upload the
+            // wrong picture.
+            return self.create_texture(image);
+        }
+        self.count_texture_request(image);
+        if let Some(existing) = self.resident_texture(&prepared.key, image) {
+            return Ok(existing);
+        }
+        self.upload_prepared_texture(image, prepared)
+    }
+
+    /// The per-request counters, deduplicated hits included.
+    fn count_texture_request(&mut self, image: &TextureImage<'_>) {
+        self.texture_requests += 1;
+        // What this request would have cost before Milestone 4: its own RGBA8 copy, with the
+        // mip chain it now has. Counted per request, so the deduplicated ones are counted too
+        // — they are exactly what the saving is made of.
+        self.texture_bytes_naive += rgba_chain_bytes(image.width, image.height);
+    }
+
+    /// The handle of a texture with this content already resident, if there is one.
+    fn resident_texture(
+        &self,
+        key: &TextureKey,
+        image: &TextureImage<'_>,
+    ) -> Option<TextureHandle> {
+        let existing = self.textures_by_content.get(key)?;
+        log::trace!(
+            "texture: reusing {} for a {}x{} image already resident",
+            existing.index(),
+            image.width,
+            image.height
+        );
+        Some(*existing)
+    }
+
+    /// Creates the resource and its view for a prepared texture and queues its levels.
+    fn upload_prepared_texture(
+        &mut self,
+        image: &TextureImage<'_>,
+        prepared: PreparedTexture,
+    ) -> Result<TextureHandle, RendererError> {
         use crate::mipmap::Compression;
         use windows::Win32::Graphics::Direct3D12::{
             D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
@@ -2408,49 +2509,14 @@ impl Renderer {
             DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_R8G8B8A8_UNORM_SRGB,
         };
 
-        let expected = image.width as usize * image.height as usize * 4;
-        if image.width == 0 || image.height == 0 || image.texels.len() != expected {
-            return Err(RendererError::InvalidConfig {
-                reason: format!(
-                    "a {}x{} RGBA texture needs {expected} bytes, got {}",
-                    image.width,
-                    image.height,
-                    image.texels.len()
-                ),
-            });
-        }
-
-        self.texture_requests += 1;
-        // What this request would have cost before Milestone 4: its own RGBA8 copy, with the
-        // mip chain it now has. Counted per request, so the deduplicated ones are counted too
-        // — they are exactly what the saving is made of.
-        self.texture_bytes_naive += rgba_chain_bytes(image.width, image.height);
-        let mip_levels = crate::mipmap::level_count(image.width, image.height);
-        let compression = crate::mipmap::compression_for(
-            image.kind,
-            image.width,
-            image.height,
-            crate::mipmap::has_transparency(image.texels),
-        );
-        let key = TextureKey::new(
-            image.texels,
-            image.width,
-            image.height,
-            image.kind,
-            mip_levels > 1,
-        );
-        // The whole point: the same image asked for twice is uploaded once. Checked before
-        // anything is allocated, so a hit costs one hash of the texels and no GPU work at
-        // all — no resource, no staging buffer, no descriptor, no flush.
-        if let Some(existing) = self.textures_by_content.get(&key) {
-            log::trace!(
-                "texture: reusing {} for a {}x{} image already resident",
-                existing.index(),
-                image.width,
-                image.height
-            );
-            return Ok(*existing);
-        }
+        let PreparedTexture {
+            key,
+            compression,
+            mip_levels,
+            chain,
+            compressed,
+            ..
+        } = prepared;
 
         // The *view* format carries the colour space for the uncompressed formats — the
         // texels are the same bytes either way and it is the read that linearizes — and the
@@ -2472,38 +2538,12 @@ impl Renderer {
             format,
             D3D12_RESOURCE_STATE_COPY_DEST,
         )?;
-        // Filtered on the CPU at upload rather than generated on the GPU with a compute
-        // pass. Uploading content is not a per-frame cost, the filters differ per texture
-        // kind — a normal map's mips have to be renormalized — and a compute path would need
-        // a UAV on every sampled texture, which is a resource flag on all of them to save
-        // milliseconds that happen once.
-        let chain = crate::mipmap::generate(image.texels, image.width, image.height, image.kind);
-        let mut levels: Vec<&[u8]> = Vec::with_capacity(chain.len() + 1);
-        levels.push(image.texels);
-        levels.extend(chain.iter().map(Vec::as_slice));
 
-        // Block compression happens *after* the chain is filtered, level by level. Filtering
-        // compressed data would mean decompressing it first, and compressing level 0 and
-        // reducing that would compound the format's error down the chain.
-        let probe = crate::upload_timing::Probe::start();
-        let compressed: Vec<Vec<u8>> = match compression {
-            Compression::None => Vec::new(),
-            Compression::Bc1 | Compression::Bc5 => levels
-                .iter()
-                .enumerate()
-                .map(|(level, texels)| {
-                    let (width, height) =
-                        crate::mipmap::level_size(image.width, image.height, level as u32);
-                    match compression {
-                        Compression::Bc5 => engine_assets::bc::compress_bc5(texels, width, height),
-                        _ => engine_assets::bc::compress_bc1(texels, width, height),
-                    }
-                })
-                .collect(),
-        };
-        probe.compression();
-        if !compressed.is_empty() {
-            levels = compressed.iter().map(Vec::as_slice).collect();
+        let levels: Vec<&[u8]> = if compressed.is_empty() {
+            std::iter::once(image.texels)
+                .chain(chain.iter().map(Vec::as_slice))
+                .collect()
+        } else {
             log::debug!(
                 "texture: {}x{} {:?} compressed to {:?}, {} KB against {} KB",
                 image.width,
@@ -2513,8 +2553,10 @@ impl Renderer {
                 compressed.iter().map(Vec::len).sum::<usize>() / 1024,
                 (image.texels.len() * 4 / 3) / 1024
             );
-        }
+            compressed.iter().map(Vec::as_slice).collect()
+        };
 
+        crate::upload_timing::digest_texture(&levels);
         self.queued(|device, uploader, _| {
             uploader.queue_texture_mips(
                 device,
@@ -2635,6 +2677,21 @@ impl Renderer {
         &mut self,
         model: &engine_assets::ModelAsset,
     ) -> Result<ModelBinding, RendererError> {
+        self.create_model_prepared(model, None)
+    }
+
+    /// [`Renderer::create_model`] with its textures' CPU work done in advance by
+    /// [`prepare_model_textures`] — typically on a thread, while something else had the
+    /// device. `None`, or textures prepared from a different model, does that work here.
+    ///
+    /// # Errors
+    ///
+    /// As [`Renderer::create_model`].
+    pub fn create_model_prepared(
+        &mut self,
+        model: &engine_assets::ModelAsset,
+        prepared: Option<PreparedTextures>,
+    ) -> Result<ModelBinding, RendererError> {
         use engine_assets::mesh::Geometry;
 
         engine_assets::validate_model(model, &engine_assets::ValidationLimits::default()).map_err(
@@ -2643,58 +2700,34 @@ impl Renderer {
             },
         )?;
 
-        // What each of the model's textures is *for*, worked out from the materials that
-        // name it before any of them is uploaded.
-        //
-        // The asset carries a colour space per texture and nothing else, which was enough
-        // while the colour space was all the upload needed. A mip chain needs more: a normal
-        // map's levels have to be averaged as directions and renormalized, and a texture the
-        // uploader thought was ordinary data would produce mips that flatten with distance.
-        // The material slots are the only place that knowledge exists, so the roles are
-        // collected here rather than guessed from the format.
-        //
-        // A texture named by two slots of different kinds — a normal map also used as an ORM
-        // map, which no exporter produces — resolves to the first role that claims it, and
-        // the log line says so rather than picking silently.
-        let mut kinds: Vec<TextureKind> = model
-            .textures
-            .iter()
-            .map(|texture| {
-                if texture.format.is_srgb() {
-                    TextureKind::Color
-                } else {
-                    TextureKind::Data
-                }
-            })
-            .collect();
-        for material in &model.materials {
-            if let Some(index) = material.normal_texture
-                && let Some(kind) = kinds.get_mut(index)
-            {
-                if *kind == TextureKind::Color {
-                    log::warn!(
-                        "{}: texture {index} is used as a normal map and marked as colour; \
-                         filtering it as a normal map",
-                        model.name
-                    );
-                }
-                *kind = TextureKind::Normal;
-            }
-        }
+        let kinds = texture_kinds(model);
 
         // Textures first, then materials that name them, then geometry that names materials.
         //
         // Uploading is deduplicated by content inside `create_texture`, so a model whose
         // materials share one image — an ORM map used by every material of a building — pays
         // for one resource and one descriptor however many times it is named.
+        //
+        // Prepared textures — filtered and compressed on another thread before the model got
+        // here — are used when they were prepared from this model; anything else is
+        // prepared now, exactly as it always was.
+        let mut prepared = prepared
+            .filter(|prepared| prepared.textures.len() == model.textures.len())
+            .map(|prepared| prepared.textures.into_iter().map(Some).collect::<Vec<_>>())
+            .unwrap_or_default();
         let mut textures = Vec::with_capacity(model.textures.len());
         for (index, texture) in model.textures.iter().enumerate() {
-            textures.push(self.create_texture(&TextureImage {
+            let image = TextureImage {
                 width: texture.width,
                 height: texture.height,
                 kind: kinds[index],
                 texels: &texture.texels,
-            })?);
+            };
+            let handle = match prepared.get_mut(index).and_then(Option::take) {
+                Some(prepared) => self.create_texture_prepared(&image, prepared)?,
+                None => self.create_texture(&image)?,
+            };
+            textures.push(handle);
         }
 
         let mut materials = Vec::with_capacity(model.materials.len());
@@ -3764,6 +3797,10 @@ impl Renderer {
         // Frame pacing lives in the ring: it waits for this slot's previous submission,
         // resets the allocator, and records whether the wait actually blocked.
         let slot = self.frames.begin_frame()?;
+        // Last frame's palette addresses point into upload memory another slot owns. Every
+        // recording path starts here, so none of them can bind one: a path that does not
+        // fill the table falls back to uploading its own.
+        self.frame_palettes.clear();
 
         // The wait inside `begin_frame` is exactly the point where this slot's previous
         // timestamps are known to be resolved, so reading them costs no extra
@@ -4214,4 +4251,202 @@ const _: () = {
 /// rather than with the other characters. See `Renderer::draw_translucent_characters`.
 fn is_translucent(instance: &engine_render_data::SkinnedInstance) -> bool {
     instance.style.is_faded()
+}
+
+/// What each of a model's textures is *for*, worked out from the materials that name it.
+///
+/// The asset carries a colour space per texture and nothing else, which was enough while the
+/// colour space was all the upload needed. A mip chain needs more: a normal map's levels have
+/// to be averaged as directions and renormalized, and a texture the uploader thought was
+/// ordinary data would produce mips that flatten with distance. The material slots are the
+/// only place that knowledge exists, so the roles are collected here rather than guessed from
+/// the format.
+///
+/// A texture named by two slots of different kinds — a normal map also used as an ORM map,
+/// which no exporter produces — resolves to the first role that claims it, and the log line
+/// says so rather than picking silently.
+fn texture_kinds(model: &engine_assets::ModelAsset) -> Vec<TextureKind> {
+    let mut kinds: Vec<TextureKind> = model
+        .textures
+        .iter()
+        .map(|texture| {
+            if texture.format.is_srgb() {
+                TextureKind::Color
+            } else {
+                TextureKind::Data
+            }
+        })
+        .collect();
+    for material in &model.materials {
+        if let Some(index) = material.normal_texture
+            && let Some(kind) = kinds.get_mut(index)
+        {
+            if *kind == TextureKind::Color {
+                log::warn!(
+                    "{}: texture {index} is used as a normal map and marked as colour; \
+                     filtering it as a normal map",
+                    model.name
+                );
+            }
+            *kind = TextureKind::Normal;
+        }
+    }
+    kinds
+}
+
+/// What makes a texture this texture: its content key and how it will be compressed.
+///
+/// The cheap half of a texture's CPU work — one hash and one scan of the texels — and the
+/// half that decides whether the expensive half is needed at all.
+struct TextureIdentity {
+    key: TextureKey,
+    compression: crate::mipmap::Compression,
+    mip_levels: u32,
+}
+
+impl TextureIdentity {
+    /// Validates `image` and identifies it.
+    fn of(image: &TextureImage<'_>) -> Result<Self, RendererError> {
+        let expected = image.width as usize * image.height as usize * 4;
+        if image.width == 0 || image.height == 0 || image.texels.len() != expected {
+            return Err(RendererError::InvalidConfig {
+                reason: format!(
+                    "a {}x{} RGBA texture needs {expected} bytes, got {}",
+                    image.width,
+                    image.height,
+                    image.texels.len()
+                ),
+            });
+        }
+        let mip_levels = crate::mipmap::level_count(image.width, image.height);
+        let inspect = crate::upload_timing::Probe::start();
+        let compression = crate::mipmap::compression_for(
+            image.kind,
+            image.width,
+            image.height,
+            crate::mipmap::has_transparency(image.texels),
+        );
+        let key = TextureKey::new(
+            image.texels,
+            image.width,
+            image.height,
+            image.kind,
+            mip_levels > 1,
+        );
+        inspect.inspect();
+        Ok(Self {
+            key,
+            compression,
+            mip_levels,
+        })
+    }
+
+    /// The expensive half: the mip chain, filtered for the image's kind, and every level
+    /// block-compressed if the image is to be.
+    fn prepare(self, image: &TextureImage<'_>) -> PreparedTexture {
+        use crate::mipmap::Compression;
+        // Filtered on the CPU at upload rather than generated on the GPU with a compute
+        // pass. Uploading content is not a per-frame cost, the filters differ per texture
+        // kind — a normal map's mips have to be renormalized — and a compute path would need
+        // a UAV on every sampled texture, which is a resource flag on all of them to save
+        // milliseconds that happen once.
+        let mips = crate::upload_timing::Probe::start();
+        let chain = crate::mipmap::generate(image.texels, image.width, image.height, image.kind);
+        mips.mips(u64::from(image.width) * u64::from(image.height));
+
+        // Block compression happens *after* the chain is filtered, level by level. Filtering
+        // compressed data would mean decompressing it first, and compressing level 0 and
+        // reducing that would compound the format's error down the chain.
+        let probe = crate::upload_timing::Probe::start();
+        let compressed: Vec<Vec<u8>> = match self.compression {
+            Compression::None => Vec::new(),
+            Compression::Bc1 | Compression::Bc5 => std::iter::once(image.texels)
+                .chain(chain.iter().map(Vec::as_slice))
+                .enumerate()
+                .map(|(level, texels)| {
+                    let (width, height) =
+                        crate::mipmap::level_size(image.width, image.height, level as u32);
+                    crate::mipmap::compress_level(self.compression, texels, width, height)
+                })
+                .collect(),
+        };
+        probe.compression();
+        PreparedTexture {
+            key: self.key,
+            compression: self.compression,
+            mip_levels: self.mip_levels,
+            width: image.width,
+            height: image.height,
+            kind: image.kind,
+            chain,
+            compressed,
+        }
+    }
+}
+
+/// A texture's CPU work, done: what [`Renderer::create_texture`] computes before it touches
+/// the device. `Send`, so it can be done on another thread and handed over.
+#[derive(Debug)]
+pub struct PreparedTexture {
+    key: TextureKey,
+    compression: crate::mipmap::Compression,
+    mip_levels: u32,
+    width: u32,
+    height: u32,
+    kind: TextureKind,
+    /// Levels 1 onwards, uncompressed.
+    chain: Vec<Vec<u8>>,
+    /// Every level, level 0 included, compressed — or empty when the texture is not.
+    compressed: Vec<Vec<u8>>,
+}
+
+impl PreparedTexture {
+    /// Whether this was prepared from an image shaped like `image`. The content is not
+    /// re-hashed — that would be the work preparing saved — so this guards against a list
+    /// handed to the wrong model, not against one whose texels changed in between.
+    fn describes(&self, image: &TextureImage<'_>) -> bool {
+        self.width == image.width && self.height == image.height && self.kind == image.kind
+    }
+}
+
+/// Every texture of one model, prepared. See [`prepare_model_textures`].
+#[derive(Debug)]
+pub struct PreparedTextures {
+    textures: Vec<PreparedTexture>,
+}
+
+/// Does the CPU work of uploading `image` — the content hash, the mip chain and the block
+/// compression — without a device, so it can run on any thread.
+///
+/// # Errors
+///
+/// Returns [`RendererError::InvalidConfig`] if the texel buffer does not match the
+/// dimensions.
+pub fn prepare_texture(image: &TextureImage<'_>) -> Result<PreparedTexture, RendererError> {
+    Ok(TextureIdentity::of(image)?.prepare(image))
+}
+
+/// [`prepare_texture`] for every texture of `model`, with the roles its materials give them.
+///
+/// What [`Renderer::create_model_prepared`] takes. A model whose textures cannot be prepared
+/// returns `None`, and its upload prepares them itself and reports the error the way it
+/// always did.
+#[must_use]
+pub fn prepare_model_textures(model: &engine_assets::ModelAsset) -> Option<PreparedTextures> {
+    let kinds = texture_kinds(model);
+    let textures = model
+        .textures
+        .iter()
+        .zip(kinds)
+        .map(|(texture, kind)| {
+            prepare_texture(&TextureImage {
+                width: texture.width,
+                height: texture.height,
+                kind,
+                texels: &texture.texels,
+            })
+            .ok()
+        })
+        .collect::<Option<Vec<_>>>()?;
+    Some(PreparedTextures { textures })
 }

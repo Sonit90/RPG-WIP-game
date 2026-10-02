@@ -107,23 +107,36 @@ impl CascadeView {
 /// view distance costs nothing rather than rendering geometry that is never shaded.
 #[must_use]
 pub fn split_cascades(settings: &ShadowSettings, camera: &Camera) -> Vec<CascadeSplit> {
+    let (splits, count) = cascade_splits(settings, camera);
+    splits[..count].to_vec()
+}
+
+/// [`split_cascades`] into a fixed array, with how many of its entries are used.
+///
+/// The per-frame form: [`build_cascades`] runs every frame, and a `Vec` of at most
+/// [`MAX_CASCADES`] entries was the one heap allocation every shadowed frame made
+/// (docs/PERFORMANCE_AUDIT.md).
+fn cascade_splits(
+    settings: &ShadowSettings,
+    camera: &Camera,
+) -> ([CascadeSplit; MAX_CASCADES], usize) {
     let (near, far) = camera.projection().depth_range();
     let count = settings.cascade_count.clamp(1, MAX_CASCADES);
-    let mut splits = Vec::with_capacity(count);
+    let mut splits = [CascadeSplit { near, far: near }; MAX_CASCADES];
     let mut start = near;
-    for index in 0..count {
+    for (index, split) in splits.iter_mut().enumerate().take(count) {
         let end = settings.cascade_distances[index].min(far);
         // A cascade whose far plane is already behind its near plane contributes nothing;
         // it is kept as a degenerate sliver rather than dropped so the cascade *count* the
         // shader is told about always matches the number of matrices it is handed.
         let end = end.max(start + 1e-3);
-        splits.push(CascadeSplit {
+        *split = CascadeSplit {
             near: start,
             far: end,
-        });
+        };
         start = end;
     }
-    splits
+    (splits, count)
 }
 
 /// The eight world-space corners of the camera's frustum between `near` and `far`.
@@ -283,9 +296,10 @@ pub fn build_cascades(
     if !settings.enabled {
         return;
     }
-    for split in split_cascades(settings, camera) {
+    let (splits, count) = cascade_splits(settings, camera);
+    for split in &splits[..count] {
         let corners = frustum_slice_corners(camera, split.near, split.far);
-        out.push(build_cascade(split, &corners, light_direction, settings));
+        out.push(build_cascade(*split, &corners, light_direction, settings));
     }
 }
 

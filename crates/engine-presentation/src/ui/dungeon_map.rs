@@ -1262,6 +1262,11 @@ pub struct DungeonMap {
     /// The last progress seen, for the overview's card.
     progress: Option<DungeonProgress>,
     statuses: Vec<EncounterStatus>,
+    /// The minimap banner's title, title-cased and fitted, and the `(width, size)` it was
+    /// fitted for. Rebuilt by [`DungeonMap::advance`] only when one of those changes: building
+    /// it in `push_minimap` was two `String`s every frame of every level with a map.
+    minimap_title: String,
+    minimap_title_key: Option<(u32, u32)>,
 }
 
 impl Default for DungeonMap {
@@ -1304,11 +1309,36 @@ impl DungeonMap {
             player: None,
             progress: None,
             statuses: Vec::new(),
+            minimap_title: String::new(),
+            minimap_title_key: None,
         }
+    }
+
+    /// The banner title's cache key: the width it is fitted to and the size it is set at.
+    fn minimap_title_key(&self, viewport: (u32, u32)) -> (f32, (u32, u32)) {
+        let s = self.style;
+        let width = self.minimap_layout(viewport).banner.width - s.px(24.0);
+        (width, (width.to_bits(), s.size(type_scale::UI).to_bits()))
+    }
+
+    /// Rebuilds the cached banner title if the level, the viewport or the scale changed.
+    fn refresh_minimap_title(&mut self, viewport: (u32, u32)) {
+        let Some(info) = &self.info else {
+            return;
+        };
+        let (width, key) = self.minimap_title_key(viewport);
+        if self.minimap_title_key == Some(key) {
+            return;
+        }
+        self.minimap_title = self
+            .style
+            .fit(type_scale::UI, &title_case(&info.name), width);
+        self.minimap_title_key = Some(key);
     }
 
     /// Replaces the level. Closes the map and forgets the selection.
     pub fn set_info(&mut self, info: Option<DungeonMapInfo>) {
+        self.minimap_title_key = None;
         self.emphasis = vec![0.0; info.as_ref().map_or(0, |info| info.encounters.len())];
         self.info = info;
         self.open = false;
@@ -1478,6 +1508,7 @@ impl DungeonMap {
     /// Advances the map's transitions by `dt` seconds. Nothing moves once everything has
     /// arrived, so an idle map costs nothing here.
     pub fn advance(&mut self, dt: f32, viewport: (u32, u32)) {
+        self.refresh_minimap_title(viewport);
         let ease = |value: f32, target: f32, duration: f32| -> f32 {
             if self.reduced_motion || duration <= 0.0 {
                 return target;
@@ -2839,17 +2870,22 @@ impl DungeonMap {
             color::SURFACE_0_BOTTOM,
         );
         list.panel_stroke(plate, plate.height * 0.5, s.px(1.0), color::BORDER_STRONG);
-        let name = s.fit(
-            type_scale::UI,
-            &title_case(&info.name),
-            plate.width - s.px(24.0),
-        );
+        // The title `advance` cached for this viewport and scale, or - drawn without an
+        // `advance` first, as a test or a one-off render does - built here.
+        let (width, key) = self.minimap_title_key(viewport);
+        let built;
+        let name: &str = if self.minimap_title_key == Some(key) {
+            &self.minimap_title
+        } else {
+            built = s.fit(type_scale::UI, &title_case(&info.name), width);
+            &built
+        };
         list.label(
             (
                 cx,
                 s.centred_top(type_scale::UI, plate.y + plate.height * 0.5),
             ),
-            &name,
+            name,
             color::TEXT_TITLE,
             type_scale::UI.font,
             s.size(type_scale::UI),

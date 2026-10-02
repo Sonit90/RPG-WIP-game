@@ -486,6 +486,16 @@ pub struct App {
     extract_ms: f64,
     /// Milliseconds the last VFX observation and update took.
     vfx_ms: f64,
+    /// Milliseconds the camera stage took: follow, the collision sweeps, the fade and the map.
+    camera_ms: f64,
+    /// Every measured frame of a `--frames` run, and the frames that hitched in it.
+    run_profile: Option<crate::run_profile::RunProfile>,
+    /// The renderer's cumulative fence-wait time at the last frame, so the run profile can
+    /// take this frame's share of it.
+    last_total_stall: Duration,
+    /// The allocation counter and frame index at the last report, so the report can say how
+    /// many allocations each frame since made. Always zero without `alloc-count`.
+    allocs_at_report: (crate::alloc_count::Allocations, u64),
     /// Milliseconds the last UI *layout* took: nameplates, snapshot and draw-list build.
     ///
     /// The renderer measures the batching that follows it separately, so the two together
@@ -590,6 +600,12 @@ impl App {
     /// Returns [`EngineError`] if the window, the D3D12 device or the scene's GPU resources
     /// cannot be created.
     pub fn new(settings: &EngineSettings, args: &Args) -> Result<Self, EngineError> {
+        // The hero and monster models, read from disk and built on a thread of their own
+        // while the window, the device and the renderer's objects are created. None of it
+        // needs a device, and creating one is ~100 ms of the driver loading itself — the
+        // largest single wait in a launch, now spent decoding the hero textures instead.
+        let preload = ModelPreload::start();
+
         // Before any window exists: without it, a fullscreen window on a scaled display
         // covers only part of the screen, and the client size the renderer is given does
         // not match the pixels on screen.
@@ -887,8 +903,13 @@ impl App {
         // scene's object count is. Every placement of an asset then shares the mesh and
         // material handles that upload returned, which is the whole of the instancing
         // story — see `engine_presentation::environment`.
+        let PreloadedModels {
+            heroes,
+            monsters,
+            environment: environment_library,
+        } = preload.finish()?;
         let mut placer = engine_presentation::EnvironmentPlacer::new(match environment {
-            Some(_) => upload_environment(&mut renderer)?,
+            Some(_) => upload_environment(&mut renderer, environment_library)?,
             None => engine_presentation::EnvironmentVisuals::new(),
         });
 
@@ -898,13 +919,13 @@ impl App {
         // The player's model, skeleton and clips. Every scene gets one, including the
         // collision course — a character test needs a character, and a capsule that walks is
         // easier to judge when it has legs.
-        let heroes = HeroVisuals::upload(&mut renderer)?;
+        let heroes = HeroVisuals::upload(&mut renderer, heroes)?;
         extractor.set_player_visual(heroes.visual(simulation.hero())?);
         crate::startup::stage("GPU upload: heroes");
         // Every monster's model. Seven small uploads, for every scene: an encounter can be
         // placed in any level from the editor, and a monster with no model falls back to
         // the tinted dummy rather than failing.
-        extractor.set_monster_models(upload_monsters(&mut renderer)?);
+        extractor.set_monster_models(upload_monsters(&mut renderer, monsters)?);
         crate::startup::stage("GPU upload: monsters");
         if args.scene.is_collision() {
             // The demo course brings its own floor: a slab whose top face is at y = 0. The
@@ -1280,6 +1301,10 @@ impl App {
             click_travel: 0,
             extract_ms: 0.0,
             vfx_ms: 0.0,
+            camera_ms: 0.0,
+            run_profile: crate::run_profile::RunProfile::for_run(args.frames),
+            last_total_stall: Duration::ZERO,
+            allocs_at_report: (crate::alloc_count::allocations(), 0),
             ui_ms: 0.0,
             nameplates: NameplateSet::with_capacity(32),
             frame_seconds: 0.0,
@@ -4629,6 +4654,7 @@ impl App {
         let meter = self.simulation.meter();
         let cull = self.renderer.cull_stats();
         let ui = self.renderer.ui_stats();
+        let animate = self.extractor.animation_stats();
         // Writing to a `String` cannot fail, here and below.
         let _ = write!(
             report,
@@ -4646,12 +4672,15 @@ impl App {
         let _ = write!(
             report,
             " | sim {:.3} ms ({} ticks) | \
-             extract {:.3} ms | vfx {:.3} ms | audio {:.3} ms | cull {:.3} ms | ui {:.3} ms ({} quads, {} cmds) | visible {} | \
+             extract {:.3} ms (anim {:.3} ms, {} chars) | vfx {:.3} ms | camera {:.3} ms | audio {:.3} ms | cull {:.3} ms | ui {:.3} ms ({} quads, {} cmds) | visible {} | \
              draws {} ({} skinned) | tris {}",
             stats.total_ms(),
             stats.ticks,
             self.extract_ms,
+            animate.0,
+            animate.1,
             self.vfx_ms,
+            self.camera_ms,
             self.audio_ms,
             self.renderer.last_cull_ms(),
             self.ui_ms + self.renderer.ui_build_ms(),
@@ -4897,6 +4926,48 @@ impl App {
                 environment.lod_changes,
             );
         }
+        // Memory on its own line: what the OS says the process holds, what the GPU's memory
+        // manager says it holds, and - in a build that counts - what the frames since the
+        // last report allocated. Two kernel calls per report, none per frame.
+        {
+            const MIB: f64 = 1024.0 * 1024.0;
+            report.push_str("\n  memory:");
+            if let Some(memory) = engine_platform::process_memory() {
+                let _ = write!(
+                    report,
+                    " RAM working set {:.1} MiB (peak {:.1}), private {:.1} MiB |",
+                    memory.working_set as f64 / MIB,
+                    memory.peak_working_set as f64 / MIB,
+                    memory.private_bytes as f64 / MIB,
+                );
+            }
+            if let Some(video) = self.renderer.video_memory() {
+                let _ = write!(
+                    report,
+                    " VRAM {:.1} MiB of {:.0} MiB budget, {:.1} MiB system |",
+                    video.local_usage as f64 / MIB,
+                    video.local_budget as f64 / MIB,
+                    video.non_local_usage as f64 / MIB,
+                );
+            }
+            let now = crate::alloc_count::allocations();
+            let frame = ctx.frame_index();
+            let (then, then_frame) = self.allocs_at_report;
+            let delta = now.since(then);
+            let frames = frame.saturating_sub(then_frame).max(1);
+            if crate::alloc_count::COUNTING {
+                let _ = write!(
+                    report,
+                    " allocs {:.2}/frame ({:.0} B/frame) over {} frames",
+                    delta.count as f64 / frames as f64,
+                    delta.bytes as f64 / frames as f64,
+                    frames,
+                );
+            } else {
+                report.push_str(" allocs not counted (build with --features alloc-count)");
+            }
+            self.allocs_at_report = (now, frame);
+        }
         let _ = write!(
             report,
             "\n  combat: {:.0} damage | {:.0} DPS over {:.1} s | {} deaths | {} events",
@@ -5080,6 +5151,12 @@ impl App {
                 self.warmup_frames,
             );
         }
+
+        // The whole measured run, not the last 1024 frames, with its hitches.
+        if let Some(profile) = self.run_profile.as_mut() {
+            profile.report();
+        }
+        crate::alloc_count::report_traces();
 
         // Recompute rather than reading the cached summary: the last refresh can be up to
         // a quarter of a second old, and the closing numbers should cover the whole window.
@@ -5298,6 +5375,10 @@ impl Application for App {
         if self.warmup_frames > 0 && ctx.frame_index() == self.warmup_frames {
             ctx.metrics_mut().clear();
             self.shadow_gpu.clear();
+            if let Some(profile) = self.run_profile.as_mut() {
+                profile.clear();
+            }
+            crate::alloc_count::arm_trace();
             self.measured_from = Some((Instant::now(), ctx.frame_index()));
         }
 
@@ -5512,6 +5593,7 @@ impl Application for App {
 
         {
             engine_core::profile_scope!(profiler, "Camera");
+            let camera_started = Instant::now();
             // The render delta, not the simulation step: the camera is presentation and is
             // expected to move every frame, which is what stops a 60 Hz simulation from
             // looking like 60 FPS.
@@ -5563,6 +5645,7 @@ impl Application for App {
             self.dungeon_map.observe(&self.map_markers);
             self.dungeon_map
                 .advance(ctx.time().real_delta().as_secs_f32(), self.renderer.size());
+            self.camera_ms = camera_started.elapsed().as_secs_f64() * 1e3;
         }
 
         {
@@ -5715,6 +5798,39 @@ impl Application for App {
         // reading is skipped rather than recorded as zero.
         if let Some(milliseconds) = self.renderer.shadow_stats().gpu_ms {
             self.shadow_gpu.record_ms(milliseconds);
+        }
+        let total_stall = self.renderer.sync_stats().total_stall;
+        let wait = total_stall.saturating_sub(self.last_total_stall);
+        self.last_total_stall = total_stall;
+        if let Some(profile) = self.run_profile.as_mut() {
+            profile.record_passes(self.renderer.last_pass_ms());
+            let (animate_ms, _) = self.extractor.animation_stats();
+            let running_p50 = ctx
+                .metrics()
+                .summary()
+                .map_or(0.0, |summary| summary.cpu.p50_ms);
+            profile.record(crate::run_profile::FrameSample {
+                frame: ctx.frame_index(),
+                stages: ctx.stage_timings(),
+                total_ms: ctx.time().real_delta().as_secs_f64() * 1e3,
+                gpu_ms: self.renderer.last_gpu_frame_ms(),
+                running_p50_ms: running_p50,
+                update: crate::run_profile::UpdateSplit {
+                    sim_ms: self.simulation.stats().total_ms(),
+                    extract_ms: self.extract_ms,
+                    animate_ms,
+                    vfx_ms: self.vfx_ms,
+                    camera_ms: self.camera_ms,
+                    audio_ms: self.audio_ms,
+                    ui_ms: self.ui_ms + self.renderer.ui_build_ms(),
+                },
+                render: crate::run_profile::RenderSplit {
+                    wait_ms: wait.as_secs_f64() * 1e3,
+                    cull_ms: self.renderer.last_cull_ms(),
+                    group_ms: self.renderer.last_group_ms(),
+                    shadow_prep_ms: self.renderer.shadow_stats().prepare_ms,
+                },
+            });
         }
         self.advance_benchmark(ctx);
         self.maybe_report(ctx);
@@ -6049,27 +6165,20 @@ fn environment_model_for(
 /// asset and the place inside it rather than drawing something wrong.
 fn upload_environment(
     renderer: &mut Renderer,
+    library: Vec<PreloadedEnvironmentModel>,
 ) -> Result<engine_presentation::EnvironmentVisuals, EngineError> {
     let mut visuals = engine_presentation::EnvironmentVisuals::new();
     let mut triangles = 0;
     let mut texture_bytes = 0;
-    // Startup timing: the library is *authored in code* and then uploaded, alternately, so
-    // the two costs cannot be told apart by a stage boundary. Two accumulators, reported as
-    // two rows of the same table.
-    let mut authoring = Duration::ZERO;
-    let mut uploading = Duration::ZERO;
-    let mut mark = Instant::now();
-    for (asset, model) in engine_assets::procedural::environment_library() {
-        authoring += mark.elapsed();
-        mark = Instant::now();
+    // Authored in code on the preload thread (see `ModelPreload`); what is left here is the
+    // upload.
+    let started = Instant::now();
+    for (asset, model, prepared) in library {
         triangles += model.triangle_count();
         texture_bytes += model.texture_bytes();
-        visuals.insert(asset, renderer.create_model(&model)?);
-        uploading += mark.elapsed();
-        mark = Instant::now();
+        visuals.insert(asset, renderer.create_model_prepared(&model, prepared)?);
     }
-    crate::startup::record("  env: authored in code", authoring);
-    crate::startup::record("  env: create_model", uploading);
+    crate::startup::record("  env: create_model", started.elapsed());
     log::info!(
         "environment library: {} models, {triangles} triangles at LOD0, {:.0} KiB of textures",
         visuals.len(),
@@ -6182,36 +6291,18 @@ struct HeroVisual {
 }
 
 impl HeroVisuals {
-    /// Uploads all three heroes.
+    /// Uploads all three heroes, built or imported by [`ModelPreload`].
     ///
     /// # Errors
     ///
-    /// Returns [`EngineError`] if a model fails to build, fails to import or fails to upload.
-    fn upload(renderer: &mut Renderer) -> Result<Self, EngineError> {
-        // Which hero is built from what. The one table: an artist's export is looked for
-        // under the hero's own file name, and the procedural model stands in until one is
-        // delivered.
-        let sources: [HeroSource; 3] = [
-            (
-                Hero::FireMage,
-                "firemage.glb",
-                fire_mage,
-                fire_mage_character,
-            ),
-            (Hero::Warrior, "warrior.glb", warrior, warrior_character),
-            (Hero::Druid, "druid.glb", druid, druid_character),
-        ];
-
-        let mut entries = Vec::with_capacity(sources.len());
-        // Startup timing: as in `upload_environment`, building and uploading alternate.
-        let mut building = Duration::ZERO;
+    /// Returns [`EngineError`] if a model failed to build or import, or fails to upload.
+    fn upload(renderer: &mut Renderer, heroes: Vec<PreloadedHero>) -> Result<Self, EngineError> {
+        let mut entries = Vec::with_capacity(heroes.len());
         let mut uploading = Duration::ZERO;
-        for (hero, file, build, character) in sources {
+        for (hero, loaded, prepared) in heroes {
+            let (definition, model) = loaded?;
             let mark = Instant::now();
-            let (definition, model) = load_character(hero, file, build, character)?;
-            building += mark.elapsed();
-            let mark = Instant::now();
-            let binding = renderer.create_model(&model)?;
+            let binding = renderer.create_model_prepared(&model, prepared)?;
             uploading += mark.elapsed();
             entries.push(HeroVisual {
                 hero,
@@ -6220,7 +6311,6 @@ impl HeroVisuals {
                 binding,
             });
         }
-        crate::startup::record("  heroes: built/imported", building);
         crate::startup::record("  heroes: create_model", uploading);
         Ok(Self { entries })
     }
@@ -6254,20 +6344,17 @@ impl HeroVisuals {
 /// # Errors
 ///
 /// Returns [`EngineError`] if a model fails to build or to upload.
-fn upload_monsters(renderer: &mut Renderer) -> Result<Vec<MonsterModel>, EngineError> {
+fn upload_monsters(
+    renderer: &mut Renderer,
+    monsters: Vec<PreloadedMonster>,
+) -> Result<Vec<MonsterModel>, EngineError> {
     let started = Instant::now();
-    let mut models = Vec::with_capacity(engine_assets::procedural::MONSTER_MODELS.len());
-    for name in engine_assets::procedural::MONSTER_MODELS {
-        let (Some(built), Some(definition)) = (
-            engine_assets::procedural::monster_model(name),
-            engine_assets::procedural::monster_character(name),
-        ) else {
-            continue;
-        };
+    let mut models = Vec::with_capacity(monsters.len());
+    for (name, built, definition, prepared) in monsters {
         let model = built.map_err(|error| {
             EngineError::unsupported("build a monster model").with_source(error)
         })?;
-        let binding = renderer.create_model(&model)?;
+        let binding = renderer.create_model_prepared(&model, prepared)?;
         models.push(MonsterModel {
             name: name.to_owned(),
             definition,
@@ -6281,6 +6368,172 @@ fn upload_monsters(renderer: &mut Renderer) -> Result<Vec<MonsterModel>, EngineE
         started.elapsed().as_secs_f64() * 1000.0
     );
     Ok(models)
+}
+
+/// What [`load_character`] produces: a hero's definition and model, or why it has none.
+type LoadedCharacter =
+    Result<(engine_assets::CharacterDef, engine_assets::ModelAsset), EngineError>;
+
+/// One hero, its model, and the model's textures already filtered and compressed.
+type PreloadedHero = (
+    Hero,
+    LoadedCharacter,
+    Option<engine_renderer::PreparedTextures>,
+);
+
+/// One monster's table name, its built model, its definition, and the model's textures
+/// already filtered and compressed.
+type PreloadedMonster = (
+    &'static str,
+    Result<engine_assets::ModelAsset, engine_assets::AssetError>,
+    engine_assets::CharacterDef,
+    Option<engine_renderer::PreparedTextures>,
+);
+
+/// One environment library asset, its model, and the model's textures prepared.
+type PreloadedEnvironmentModel = (
+    engine_environment::EnvironmentAsset,
+    engine_assets::ModelAsset,
+    Option<engine_renderer::PreparedTextures>,
+);
+
+/// Every hero and monster model, built or imported, and the environment library.
+struct PreloadedModels {
+    /// In [`Hero::ALL`] order.
+    heroes: Vec<PreloadedHero>,
+    /// Every monster table name that has a model, in table order.
+    monsters: Vec<PreloadedMonster>,
+    /// The environment library, authored in code. Built for every launch, which costs the
+    /// background thread ~15 ms that a scene without an environment then drops: cheaper than
+    /// teaching the preload which scene is about to load.
+    environment: Vec<PreloadedEnvironmentModel>,
+}
+
+/// Threads the preload thread's texture passes are split across. See
+/// `engine_renderer::limit_bands_on_this_thread` for the measurement behind eight.
+const PRELOAD_BANDS: usize = 8;
+
+/// The hero and monster models, built on their own thread while the device is created.
+///
+/// # Why a thread
+///
+/// `App::new` creates the window, then the D3D12 device and the renderer's objects — about
+/// 145 ms, 100 of it the driver loading itself inside `D3D12CreateDevice` — and only then
+/// reads the hero models, decodes their textures, filters their mip chains and compresses
+/// them, none of which needs it. Started first, all of that happens inside the wait: the main
+/// thread finds the models finished, and their textures prepared, when it reaches the uploads
+/// (`engine_renderer::prepare_model_textures` is the renderer's own CPU work, run early).
+/// Nothing here touches the device, the window or the settings, so nothing about the order
+/// the rest of `App::new` runs in changes.
+///
+/// A failure is carried through to the join rather than reported on the thread, so a broken
+/// export fails the launch at the same point, with the same error, as it always did.
+struct ModelPreload {
+    thread: std::thread::JoinHandle<PreloadedModels>,
+}
+
+impl ModelPreload {
+    /// Starts building every hero and monster model.
+    fn start() -> Self {
+        Self {
+            thread: std::thread::spawn(|| {
+                // Background work: the driver initializing on the main thread is the launch's
+                // critical path, and every core this takes slows it (see the measurements on
+                // `limit_bands_on_this_thread`).
+                engine_renderer::limit_bands_on_this_thread(Some(PRELOAD_BANDS));
+                let started = Instant::now();
+                // Which hero is built from what. The one table: an artist's export is looked
+                // for under the hero's own file name, and the procedural model stands in until
+                // one is delivered.
+                let sources: [HeroSource; 3] = [
+                    (
+                        Hero::FireMage,
+                        "firemage.glb",
+                        fire_mage,
+                        fire_mage_character,
+                    ),
+                    (Hero::Warrior, "warrior.glb", warrior, warrior_character),
+                    (Hero::Druid, "druid.glb", druid, druid_character),
+                ];
+                let heroes: Vec<(Hero, LoadedCharacter)> = sources
+                    .into_iter()
+                    .map(|(hero, file, build, character)| {
+                        (hero, load_character(hero, file, build, character))
+                    })
+                    .collect();
+                crate::startup::record(
+                    "  heroes: built/imported (preload thread)",
+                    started.elapsed(),
+                );
+                let started = Instant::now();
+                let monsters: Vec<_> = engine_assets::procedural::MONSTER_MODELS
+                    .iter()
+                    .filter_map(|name| {
+                        let built = engine_assets::procedural::monster_model(name)?;
+                        let definition = engine_assets::procedural::monster_character(name)?;
+                        Some((*name, built, definition))
+                    })
+                    .collect();
+                crate::startup::record("  monsters: built (preload thread)", started.elapsed());
+                let started = Instant::now();
+                let heroes = heroes
+                    .into_iter()
+                    .map(|(hero, loaded)| {
+                        let prepared = loaded
+                            .as_ref()
+                            .ok()
+                            .and_then(|(_, model)| engine_renderer::prepare_model_textures(model));
+                        (hero, loaded, prepared)
+                    })
+                    .collect();
+                let monsters = monsters
+                    .into_iter()
+                    .map(|(name, built, definition)| {
+                        let prepared = built
+                            .as_ref()
+                            .ok()
+                            .and_then(engine_renderer::prepare_model_textures);
+                        (name, built, definition, prepared)
+                    })
+                    .collect();
+                crate::startup::record("  textures prepared (preload thread)", started.elapsed());
+                // Last: the environment library is the first thing the main thread uploads,
+                // but it is small, and the heroes are the long pole of the preload.
+                let started = Instant::now();
+                let environment = engine_assets::procedural::environment_library()
+                    .into_iter()
+                    .map(|(asset, model)| {
+                        let prepared = engine_renderer::prepare_model_textures(&model);
+                        (asset, model, prepared)
+                    })
+                    .collect();
+                crate::startup::record(
+                    "  env: authored and prepared (preload thread)",
+                    started.elapsed(),
+                );
+                PreloadedModels {
+                    heroes,
+                    monsters,
+                    environment,
+                }
+            }),
+        }
+    }
+
+    /// Waits for the models, which a launch has normally finished long before it asks.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError`] if the thread panicked.
+    fn finish(self) -> Result<PreloadedModels, EngineError> {
+        let waited = Instant::now();
+        let models = self
+            .thread
+            .join()
+            .map_err(|_| EngineError::unsupported("build the hero and monster models"))?;
+        crate::startup::record("  model preload: waited for the thread", waited.elapsed());
+        Ok(models)
+    }
 }
 
 /// One hero's model: the artist's export if one is installed, the procedural model if not.

@@ -17,6 +17,12 @@ is not to reach 480 FPS; it is to build a measurement system that can be trusted
 its time on, what was done about it (1.4 s to 0.35 s on the reference machine) and what is
 left. This file is about the frame.
 
+**The 2026-10 performance audit is `docs/PERFORMANCE_AUDIT.md`**: a fresh baseline on a
+different machine (Ryzen 9 5900X), the instrumentation it added (run-wide p99.9 and 0.1% lows,
+a hitch log, run-wide stage means, a seven-pass GPU split, RAM/VRAM, `alloc-count`), the
+drivers in `tools/bench/`, and what it changed: launch ~1.0 s to ~0.24 s, the heavy fight
+0.67 to 0.50 ms a frame, and steady-state allocations to ~0.02 a frame.
+
 ## Methodology
 
 * **CPU frame time** — implemented (M3). `engine_core::time::FrameClock` takes `Instant`
@@ -81,6 +87,20 @@ must list every allocation that occurs once per frame, with its justification.
 | Overlay vertex upload | none, and skipped entirely unless the text changed | One persistently mapped upload buffer per frame slot |
 | Overlay text formatting | allocates, 4x per second | Rebuilt in place into reused `String`s, off the per-frame path |
 | Stress scene geometry | none per frame | Built into a reused scratch `Vec` and uploaded to a default heap only when the level changes |
+
+**Measured in the whole game (2026-10 audit, `--features alloc-count`)** — this table had only
+ever been checked by the headless benches. The full game allocated 1 time a frame in an empty
+scene, 3 in every level and 13 in a big fight; after the audit it is 0.021-0.059 a frame
+everywhere (`docs/PERFORMANCE_AUDIT.md`, section 6). What remains, all of it bounded:
+
+| Site | Allocation | Justification |
+| --- | --- | --- |
+| `FrameStatsWindow::stats` | was one sort buffer per refresh (stable sort) | Fixed: unstable sort into the scratch, which is identical for `f64::total_cmp` |
+| `shadow::cascade::build_cascades` | was one `Vec` every frame | Fixed: a fixed array of `MAX_CASCADES` |
+| `DungeonMap::push_minimap` | was two `String`s every frame | Fixed: the banner title is cached by `advance` |
+| `JobSystem::map_chunks` | a `Vec` of boxed jobs per call | Only when a pass actually splits, which no scene does at the audit's thresholds |
+| VFX entity pools, render-list chunks, UI chunk buffers | regrowth when a frame exceeds the previous peak | High-water marks, a few times in a run's first seconds |
+| Logging, the periodic report | a few per report interval | Off the per-frame path by design |
 
 Logging allocates while formatting its message, which is why it is banned from the frame
 path. `Renderer::resize` allocates (it rebuilds the back-buffer vector), but it runs only
@@ -1307,3 +1327,26 @@ does not have to do that half again.
 3. Whether the same overlap is reachable without touching presentation at all — the render
    thread of the original Phase 5 plan moves recording off the game thread instead, and its
    back-pressure is the fence it already has.
+
+# Performance audit (2026-10)
+
+The whole audit — baseline, profiles, findings, every change with its interleaved before/after,
+what is left — is `docs/PERFORMANCE_AUDIT.md`, with its data in `docs/performance/audit/`.
+The numbers below are the frame-time summary, 1920x1080 `--hidden`, Ryzen 9 5900X +
+RX 6700 XT, the unoptimized and the final build interleaved in one session, 3 runs each:
+
+| Scenario | CPU p50 before | after | avg FPS before | after | 1% low before | after |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Monster playground fight (21 monsters, autocast) | 0.672 ms | 0.505 ms | 1483 | 2013 | 1087 | 1199 |
+| Dungeon (24 animated monsters) | 0.385 ms | 0.381 ms | 2550 | 2577 | 1633 | 1794 |
+| Graveyard | 0.525 ms | 0.509 ms | 1852 | 1881 | 1215 | 1238 |
+| VFX stress (100 dummies, 120 effects/s) | 1.134 ms | 1.059 ms | 717 | 719 | 316 | 332 |
+| Arena, empty scene, encounter, environment stress | unchanged | | | | | |
+
+Two methodology additions this file's rules should carry forward:
+
+* **A parallel path is measured in the game, against `--serial-jobs`.** The UI and particle
+  thresholds were set from `cpu_bench`'s break-even, where the workers are awake; in the game
+  they are asleep and the split lost by 2x. See `docs/threading.md`.
+* **The periodic report's stage split is one frame.** Read the run-wide means the game now
+  prints at exit (`run stages`, `run render`) instead; `tools/bench/frame_matrix.ps1` does.

@@ -245,6 +245,8 @@ pub struct RenderExtractor {
     /// Monsters drawn as animated characters, where their table row names a model there is
     /// one of. The rest are drawn with the rigid stand-in.
     monsters: MonsterVisuals,
+    /// Milliseconds the player character's animation update took this frame.
+    player_animate_ms: f64,
 }
 
 /// Height above the floor the target marker floats at, in metres.
@@ -490,7 +492,20 @@ impl RenderExtractor {
             featured_dummy: None,
             view: ViewParams::default(),
             monsters: MonsterVisuals::new(),
+            player_animate_ms: 0.0,
         }
+    }
+
+    /// Milliseconds this frame's skeletal animation took — the player and every animated
+    /// monster — and how many characters were animated.
+    ///
+    /// Part of the extraction time, not in addition to it: the split exists so a frame with
+    /// a dungeon's worth of monsters can say how much of its extraction is posing them.
+    #[must_use]
+    pub fn animation_stats(&self) -> (f64, u32) {
+        let (monsters_ms, monsters) = self.monsters.animation_stats();
+        let player = u32::from(self.player_visual.is_some());
+        (monsters_ms + self.player_animate_ms, monsters + player)
     }
 
     /// Gives the monsters their models: every enemy whose table row names one of these is
@@ -904,7 +919,10 @@ impl RenderExtractor {
             dead: !simulation.player_alive(),
         };
 
-        if let Err(error) = visual.update(self.view.delta_seconds, state) {
+        let started = std::time::Instant::now();
+        let result = visual.update(self.view.delta_seconds, state);
+        self.player_animate_ms = started.elapsed().as_secs_f64() * 1e3;
+        if let Err(error) = result {
             // A clip bound to the wrong skeleton. Validation rejects it at load, so reaching
             // here means an asset changed underneath a loaded model — worth a line, not a
             // crash, and the character holds its last pose.

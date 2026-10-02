@@ -1335,12 +1335,14 @@ pub fn render_scene_shadowed_debug(
                 ring.write(0, clusters.masks(), crate::upload::DEFAULT_ALIGNMENT)?;
 
             let empty = engine_render_data::SkinnedDrawList::new();
+            let no_palettes = crate::palette::FramePalettes::new();
             let scene = crate::shadow::renderer::ShadowScene {
                 meshes: &meshes,
                 skinned_meshes: &[],
                 materials: &materials,
                 material_tables: &tables,
                 skinned: &empty,
+                palettes: &no_palettes,
             };
             shadow.record(commands, &mut ring, 0, &scene)?;
 
@@ -1357,6 +1359,7 @@ pub fn render_scene_shadowed_debug(
                     materials: &materials,
                     material_tables: &tables,
                     skinned: &empty,
+                    palettes: &no_palettes,
                 };
                 shadow.record_prepass(
                     commands,

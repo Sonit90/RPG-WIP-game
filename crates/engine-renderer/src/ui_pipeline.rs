@@ -1270,19 +1270,24 @@ fn build_range(
 
 /// Smallest amount of work worth handing to a worker, in the units [`work_units`] counts.
 ///
-/// `docs/threading.md` measured the job break-even near 12 us, and `ui_bench` measures the
-/// combat HUD at ~46 ns per unit — 905 quads in 42 us. Five hundred units is ~24 us: over
-/// the line with margin, because a unit is an estimate and a chunk that lands under it
-/// costs more to submit than to run.
-const MIN_CHUNK_UNITS: usize = 512;
+/// Eight times what `docs/threading.md`'s 12 us break-even suggested, because that break-even
+/// was measured with the workers already awake. In the game they are asleep between passes,
+/// and waking them is most of what a split costs — see [`MIN_TOTAL_UNITS`].
+const MIN_CHUNK_UNITS: usize = 4096;
 
 /// Smallest whole build worth splitting at all.
 ///
-/// Two thousand units is ~95 us. Below it the submission overhead is a visible share of the
-/// pass however it is divided, so the whole build stays on the calling thread. The combat
-/// HUD measures 13-42 us, which is why this pass is serial in the game today and parallel
-/// only when the interface grows several times over.
-const MIN_TOTAL_UNITS: usize = 2048;
+/// Measured in the game, not in `ui_bench` (docs/PERFORMANCE_AUDIT.md): the monster
+/// playground's fight with twenty-one nameplates is 2,681 units and 3,171 quads. Serially that
+/// batches in 0.061 ms. Split across five workers it took 0.092 ms to expand - waking sleeping
+/// workers costs more than the expansion they share - and then 0.041 ms more to concatenate
+/// the five buffers, 0.133 ms in all: the parallel path was 2.2x the serial one, and the
+/// whole frame 0.11 ms slower for it. Expansion is ~23 ns a unit and the merge ~13 ns a quad
+/// on top of ~80 us of fixed cost, so splitting cannot win below roughly 27,000 units, and
+/// barely wins above. Thirty-two thousand is twelve times the heaviest interface the game
+/// draws today: the parallel path stays for an interface that size, and is tested, and does
+/// not run otherwise.
+const MIN_TOTAL_UNITS: usize = 32_768;
 
 /// How much work a draw list is, in units of roughly one quad.
 ///

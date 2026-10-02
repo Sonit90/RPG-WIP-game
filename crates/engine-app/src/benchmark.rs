@@ -392,8 +392,8 @@ impl ResolutionBenchmark {
                 Some(gpu) => {
                     let _ = writeln!(
                         out,
-                        "    GPU frame     : p50 {:.3} | p95 {:.3} | mean {:.3} ms | n={}",
-                        gpu.p50_ms, gpu.p95_ms, gpu.mean_ms, gpu.count
+                        "    GPU frame     : p50 {:.3} | p95 {:.3} | p99 {:.3} | mean {:.3} ms | n={}",
+                        gpu.p50_ms, gpu.p95_ms, gpu.p99_ms, gpu.mean_ms, gpu.count
                     );
                 }
                 None => {
@@ -403,8 +403,13 @@ impl ResolutionBenchmark {
             if let Some(cpu) = result.cpu {
                 let _ = writeln!(
                     out,
-                    "    CPU frame     : p50 {:.3} | p95 {:.3} | mean {:.3} ms | n={}",
-                    cpu.p50_ms, cpu.p95_ms, cpu.mean_ms, cpu.count
+                    "    CPU frame     : p50 {:.3} | p95 {:.3} | p99 {:.3} | mean {:.3} ms | n={} | 1% low {:.0} FPS",
+                    cpu.p50_ms,
+                    cpu.p95_ms,
+                    cpu.p99_ms,
+                    cpu.mean_ms,
+                    cpu.count,
+                    cpu.p99_fps()
                 );
             }
             for (pass, name) in TIMED_PASSES {
@@ -448,7 +453,15 @@ mod tests {
     fn report(size: (u32, u32)) -> FrameReport {
         FrameReport {
             actual_size: size,
-            pass_ms: [Some(0.5), Some(1.0), Some(0.1), Some(0.05)],
+            pass_ms: [
+                Some(0.5),
+                Some(1.0),
+                Some(0.1),
+                Some(0.05),
+                Some(0.3),
+                Some(0.1),
+                Some(0.1),
+            ],
             draw_calls: 42,
             textures: 19,
             unique_textures: 12,

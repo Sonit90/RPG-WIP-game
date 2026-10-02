@@ -22,6 +22,10 @@ editor = ["dep:engine-editor"]
 # an empty inline body without it. Development builds measure with
 # `--features startup-timing`.
 startup-timing = ["engine-renderer/startup-timing"]
+# Counts every heap allocation the process makes and reports allocations per frame. Off by
+# default and never in a shipping build: without it the game uses the system allocator
+# directly. Development builds measure with `--features alloc-count`.
+alloc-count = []
 
 [dependencies]
 engine-assets = { workspace = true }

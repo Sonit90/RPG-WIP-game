@@ -34,6 +34,8 @@ pub mod mipmap;
 pub mod offscreen;
 #[cfg(feature = "debug-overlay")]
 pub mod overlay;
+mod palette;
+mod parallel;
 pub mod particle_pipeline;
 pub mod pipeline;
 pub mod render_list;
@@ -88,8 +90,21 @@ pub use engine_render_data::{
     ParticleInstance, Projection, RenderEntity, RenderEntityDesc, RenderWorld, ShadowCasting,
     TextAlign, UiColor, UiCommand, UiDrawList, UiIcon, UiRect, UiScale,
 };
+pub use parallel::limit_bands_on_this_thread;
+pub use renderer::{PreparedTexture, PreparedTextures, prepare_model_textures, prepare_texture};
 pub use stress::STRESS_LEVELS;
 pub use swapchain::{BACK_BUFFER_FORMAT, FRAME_COUNT};
+pub use upload_timing::Counters as ResourceCounters;
+
+/// Pipelines, resources and GPU-waiting flushes created so far in the process.
+///
+/// All zero unless the `startup-timing` feature is on. The application diffs two of these
+/// across a frame to say whether a slow frame created a pipeline or waited on an upload.
+#[must_use]
+#[inline]
+pub fn resource_counters() -> ResourceCounters {
+    upload_timing::counters()
+}
 
 /// Logs how many pipeline state objects have been created so far and what they cost.
 ///

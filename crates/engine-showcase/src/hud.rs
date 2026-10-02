@@ -229,6 +229,7 @@ mod tests {
                     p50_ms: 2.10,
                     p95_ms: 2.60,
                     p99_ms: 3.10,
+                    p999_ms: 3.10,
                 },
                 gpu: None,
                 stages: StageAverages::default(),
