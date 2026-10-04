@@ -45,6 +45,10 @@ pub struct Claims {
     pub iat: i64,
     pub exp: i64,
     pub jti: Uuid,
+    /// The account's display name, for other players to see. Standard OIDC claim; absent
+    /// when the account has none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preferred_username: Option<String>,
 }
 
 /// A verified player token.
@@ -137,6 +141,16 @@ impl JwtCodec {
     }
 
     fn sign(&self, sub: String, role: &str, ttl_seconds: i64) -> Result<String, AppError> {
+        self.sign_named(sub, role, ttl_seconds, None)
+    }
+
+    fn sign_named(
+        &self,
+        sub: String,
+        role: &str,
+        ttl_seconds: i64,
+        name: Option<&str>,
+    ) -> Result<String, AppError> {
         let now = OffsetDateTime::now_utc().unix_timestamp();
         let claims = Claims {
             sub,
@@ -146,6 +160,10 @@ impl JwtCodec {
             iat: now,
             exp: now + ttl_seconds,
             jti: Uuid::new_v4(),
+            preferred_username: name
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+                .map(|name| name.chars().take(32).collect()),
         };
         let mut header = Header::new(Algorithm::ES256);
         header.kid = Some(self.cfg.key_id.clone());
@@ -155,6 +173,11 @@ impl JwtCodec {
     /// A player's access token.
     pub fn issue(&self, user_id: Uuid, role: Role) -> Result<String, AppError> {
         self.sign(user_id.to_string(), role.as_str(), self.cfg.access_ttl_min * 60)
+    }
+
+    /// A player's access token carrying their display name.
+    pub fn issue_named(&self, user_id: Uuid, role: Role, name: Option<&str>) -> Result<String, AppError> {
+        self.sign_named(user_id.to_string(), role.as_str(), self.cfg.access_ttl_min * 60, name)
     }
 
     /// A token for an internal service identity (the realm bridge). Short-lived; the bridge

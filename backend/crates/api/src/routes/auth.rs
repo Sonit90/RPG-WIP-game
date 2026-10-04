@@ -897,7 +897,13 @@ async fn issue_tokens(
     role: Role,
     user_agent: Option<&str>,
 ) -> ApiResult<TokenPair> {
-    let access = state.jwt.issue(user_id, role).map_err(ApiError)?;
+    // The display name rides in the token so the realm can show it to other players.
+    let name = user_db::find_by_id(&state.db, user_id)
+        .await
+        .ok()
+        .flatten()
+        .and_then(|user| user.display_name);
+    let access = state.jwt.issue_named(user_id, role, name.as_deref()).map_err(ApiError)?;
     let refresh = generate_refresh_token();
     let hash = hash_refresh_token(&refresh);
     let exp = OffsetDateTime::now_utc()

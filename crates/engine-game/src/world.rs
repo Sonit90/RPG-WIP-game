@@ -173,6 +173,10 @@ pub fn enemy_desc(kind: crate::enemy::EnemyKind, position: Vec3) -> EntityDesc {
 pub struct GameWorld {
     allocator: EntityAllocator,
     kinds: Vec<EntityKind>,
+    /// A name an entity is shown under, when it is more than its kind: another player's
+    /// character in an online party. Interned, so the interface can hold it as `&'static str`
+    /// like every other name it prints.
+    labels: Vec<Option<&'static str>>,
     factions: Vec<Faction>,
     bodies: Vec<Body>,
     /// Every body as it was at the start of the current tick.
@@ -204,6 +208,7 @@ impl GameWorld {
         Self {
             allocator: EntityAllocator::with_capacity(capacity),
             kinds: Vec::with_capacity(capacity),
+            labels: Vec::new(),
             factions: Vec::with_capacity(capacity),
             bodies: Vec::with_capacity(capacity),
             previous_bodies: Vec::with_capacity(capacity),
@@ -224,6 +229,7 @@ impl GameWorld {
 
         if slot < self.kinds.len() {
             self.kinds[slot] = desc.kind;
+            self.labels[slot] = None;
             self.factions[slot] = desc.faction;
             self.bodies[slot] = body;
             // A new entity has no history: interpolating from wherever the slot's previous
@@ -240,6 +246,7 @@ impl GameWorld {
         }
 
         self.kinds.push(desc.kind);
+        self.labels.push(None);
         self.factions.push(desc.faction);
         self.bodies.push(body);
         self.previous_bodies.push(body);
@@ -249,6 +256,26 @@ impl GameWorld {
         self.heights.push(desc.height);
         self.spawn_positions.push(desc.position);
         id
+    }
+
+    /// Gives an entity a name to be shown under. Names are interned: the same name set twice
+    /// is stored once, so the set grows with the distinct names a session has seen.
+    pub fn set_label(&mut self, id: EntityId, label: &str) {
+        if !self.allocator.contains(id) {
+            return;
+        }
+        if let Some(slot) = self.labels.get_mut(id.index()) {
+            *slot = Some(intern_label(label));
+        }
+    }
+
+    /// The name an entity was given with [`GameWorld::set_label`].
+    #[must_use]
+    pub fn label(&self, id: EntityId) -> Option<&'static str> {
+        if !self.allocator.contains(id) {
+            return None;
+        }
+        self.labels.get(id.index()).copied().flatten()
     }
 
     /// Removes an entity. A stale id is reported rather than panicking.
@@ -526,6 +553,24 @@ impl GameWorld {
 #[must_use]
 pub fn horizontal_distance(a: Vec3, b: Vec3) -> f32 {
     (a.x - b.x).hypot(a.z - b.z)
+}
+
+/// Interns an entity label, returning a `'static` copy shared by every caller that asks for
+/// the same text.
+fn intern_label(label: &str) -> &'static str {
+    use std::collections::BTreeSet;
+    use std::sync::{Mutex, OnceLock};
+    static LABELS: OnceLock<Mutex<BTreeSet<&'static str>>> = OnceLock::new();
+    let labels = LABELS.get_or_init(|| Mutex::new(BTreeSet::new()));
+    let Ok(mut labels) = labels.lock() else {
+        return "";
+    };
+    if let Some(existing) = labels.get(label) {
+        return existing;
+    }
+    let leaked: &'static str = Box::leak(label.to_owned().into_boxed_str());
+    labels.insert(leaked);
+    leaked
 }
 
 #[cfg(test)]

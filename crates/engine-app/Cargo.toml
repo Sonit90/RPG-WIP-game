@@ -59,6 +59,7 @@ engine-settings = { workspace = true }
 engine-net = { workspace = true }
 engine-realm = { workspace = true }
 engine-collision = { workspace = true }
+serde_json = { workspace = true }
 # `release_max_level_info` compiles trace! and debug! out of release builds entirely:
 # no branch, no argument evaluation, nothing left in the binary. The feature is enabled
 # here, in the binary crate, because it is a process-wide decision — a library enabling it

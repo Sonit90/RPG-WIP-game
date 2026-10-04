@@ -348,6 +348,8 @@ pub struct App {
     /// The online game, when `--network-mode online` started one. `None` is the offline game,
     /// exactly as it always was.
     online: Option<crate::online::OnlineSession>,
+    /// When the account settings were last offered for sync.
+    settings_offered_at: Option<Instant>,
     /// The pause and settings menus. Owns no gameplay and no file: it emits actions.
     menu: MenuSystem,
     /// This frame's menu actions, copied out of the menu so they can be applied to `self`.
@@ -1251,6 +1253,7 @@ impl App {
             commands: Vec::with_capacity(16),
             heroes,
             online: None,
+            settings_offered_at: None,
             menu: MenuSystem::new(game_settings.settings(), env!("CARGO_PKG_VERSION")),
             menu_actions: Vec::with_capacity(4),
             display: display_in_force,
@@ -2451,6 +2454,32 @@ impl App {
     /// Anything the old hero had open goes with it. A Meteor being placed by a mage who is
     /// now a Warrior has no ability behind it, and a targeting circle for a spell nobody can
     /// cast is the one state this must not leave behind.
+    /// Applies the account's synced settings: everything but this machine's display and
+    /// graphics, written to the local files and pushed into every system that reads them.
+    fn apply_account_settings(&mut self, document: &serde_json::Value) {
+        let Some((settings, hud)) = engine_settings::account::apply_account_document(
+            document,
+            &self.settings.settings(),
+            self.hud_config.config(),
+        ) else {
+            log::warn!("online: the account's settings are in a format this build cannot read");
+            return;
+        };
+        self.settings.update(settings);
+        self.settings.save_if_dirty();
+        self.hud_config.update(hud);
+        self.hud_config.save_if_dirty();
+        apply_volumes(&self.audio, settings);
+        self.apply_sensitivity(settings.camera_sensitivity, false);
+        self.apply_ui_scale(settings.ui_scale, false);
+        self.action_bars = ActionBarSet::for_hero(
+            self.hud_config.config(),
+            settings.binding_scope,
+            self.simulation.hero(),
+        );
+        self.hud_layout = HudLayout::new(self.hud_config.config().clone());
+    }
+
     fn swap_hero(&mut self, hero: Hero) {
         // Read before the simulation is told: per character, the bars being replaced are the
         // ones this character had, and after `set_hero` there is nothing left to ask.
@@ -5508,7 +5537,27 @@ impl Application for App {
                 match directive {
                     crate::online::Directive::SetHero(hero) => self.swap_hero(hero),
                     crate::online::Directive::Quit => ctx.request_exit(),
+                    crate::online::Directive::ApplyAccountSettings(document) => {
+                        self.apply_account_settings(&document);
+                    }
                 }
+            }
+        }
+
+        // Every two seconds, offer the account's settings to the realm API; it uploads only
+        // what changed since the last sync.
+        if self.online.is_some()
+            && self
+                .settings_offered_at
+                .is_none_or(|at| at.elapsed() >= Duration::from_secs(2))
+        {
+            self.settings_offered_at = Some(Instant::now());
+            let document = engine_settings::account::account_document(
+                &self.settings.settings(),
+                self.hud_config.config(),
+            );
+            if let Some(online) = self.online.as_mut() {
+                online.observe_settings(document);
             }
         }
 

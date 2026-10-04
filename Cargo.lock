@@ -609,6 +609,7 @@ dependencies = [
  "engine-settings",
  "engine-vfx",
  "log",
+ "serde_json",
 ]
 
 [[package]]

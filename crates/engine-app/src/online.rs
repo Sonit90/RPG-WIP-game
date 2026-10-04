@@ -129,12 +129,14 @@ struct DevProgress {
 }
 
 /// What the application should do this frame, beyond drawing.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Directive {
     /// Put this hero's kit and model on the local player.
     SetHero(Hero),
     /// Close the game.
     Quit,
+    /// Apply the account's synced settings document over the local settings.
+    ApplyAccountSettings(serde_json::Value),
 }
 
 /// One other player, as the world shows them.
@@ -191,6 +193,10 @@ pub struct OnlineSession {
     epoch: Instant,
     dev: DevScript,
     dev_progress: DevProgress,
+    /// The account settings: the stored version, what was last stored, what is in flight.
+    settings_version: Option<i64>,
+    settings_synced: Option<serde_json::Value>,
+    settings_in_flight: Option<serde_json::Value>,
 }
 
 /// How long a toast stays.
@@ -248,6 +254,9 @@ impl OnlineSession {
             epoch: Instant::now(),
             dev,
             dev_progress: DevProgress::default(),
+            settings_version: None,
+            settings_synced: None,
+            settings_in_flight: None,
         })
     }
 
@@ -280,6 +289,26 @@ impl OnlineSession {
     #[must_use]
     pub fn player_placed(&self) -> bool {
         self.world.prediction.is_some()
+    }
+
+    /// Offers the current account settings document; uploads it when it differs from what
+    /// the account has stored. Called every few seconds, not every frame.
+    pub fn observe_settings(&mut self, document: serde_json::Value) {
+        let Some(version) = self.settings_version else {
+            return;
+        };
+        if self.session.is_none() || self.settings_in_flight.is_some() {
+            return;
+        }
+        if self.settings_synced.as_ref() == Some(&document) {
+            return;
+        }
+        self.settings_in_flight = Some(document.clone());
+        self.client
+            .send(NetCommand::SaveSettings(engine_realm::api::SettingsDocument {
+                version,
+                settings: document,
+            }));
     }
 
     /// Directives for the application, drained.
@@ -434,6 +463,7 @@ impl OnlineSession {
                 self.stage = Screen::Characters;
                 self.session = Some(session);
                 self.client.send(NetCommand::FetchCharacters);
+                self.client.send(NetCommand::FetchSettings);
             }
             NetEvent::SignedOut { reason } => {
                 self.ui.clear_password();
@@ -452,10 +482,34 @@ impl OnlineSession {
                 self.characters = characters;
                 self.busy = None;
             }
-            NetEvent::Character(_) | NetEvent::Settings(_) | NetEvent::SettingsSaved(_) => {}
+            NetEvent::Settings(document) => {
+                self.settings_version = Some(document.version);
+                if document.version > 0 && document.settings.is_object() {
+                    log::info!("online: account settings v{} applied", document.version);
+                    self.settings_synced = Some(document.settings.clone());
+                    self.directives
+                        .push(Directive::ApplyAccountSettings(document.settings));
+                }
+            }
+            NetEvent::SettingsSaved(version) => {
+                self.settings_version = Some(version);
+                self.settings_synced = self.settings_in_flight.take();
+            }
+            NetEvent::Character(_) => {}
             NetEvent::QueueAccepted => self.busy = None,
             NetEvent::Realm(update) => self.mirror.apply(update),
             NetEvent::Clock(clock) => self.clock = clock,
+            NetEvent::Failed {
+                action: Action::Settings,
+                error,
+            } => {
+                // Another machine saved first, or the API is down: start again from what is
+                // stored rather than overwrite it.
+                log::info!("online: settings not synced: {}", error.message);
+                self.settings_in_flight = None;
+                self.settings_version = None;
+                self.client.send(NetCommand::FetchSettings);
+            }
             NetEvent::Failed { action, error } => {
                 self.busy = None;
                 log::info!("online: {action:?} refused: {}", error.message);
@@ -818,6 +872,17 @@ impl OnlineSession {
             self.leave_world(simulation, extractor);
             self.world.instance = Some(instance.id);
             log::info!("online: entering instance {}", instance.id);
+            // The offline level's training dummies are not part of a realm dungeon: every
+            // entity here besides the local player comes from the server.
+            let player = simulation.player().entity;
+            let strays: Vec<EntityId> = (0..simulation.world().slot_count())
+                .filter_map(|slot| simulation.world().id_at(slot))
+                .filter(|id| *id != player)
+                .collect();
+            for id in strays {
+                simulation.party_mut().leave(id);
+                simulation.world_mut().despawn(id);
+            }
             if let Some(me) = self.mirror.me() {
                 place_player(simulation, me.position, me.yaw);
                 self.world.prediction = Some(Prediction::new(me.last_seq));
@@ -877,6 +942,7 @@ impl OnlineSession {
         for account in gone {
             if let Some(remote) = self.world.remotes.remove(&account) {
                 extractor.remove_remote_character(remote.entity);
+                simulation.party_mut().leave(remote.entity);
                 simulation.world_mut().despawn(remote.entity);
             }
         }
@@ -893,6 +959,8 @@ impl OnlineSession {
                     radius: engine_core::tuning::player::RADIUS,
                     height: engine_core::tuning::player::HEIGHT,
                 });
+                simulation.world_mut().set_label(entity, &other.name);
+                simulation.party_mut().join(entity);
                 RemoteEntity {
                     entity,
                     buffer: SnapshotBuffer::default(),
@@ -1046,6 +1114,7 @@ impl OnlineSession {
     fn leave_world(&mut self, simulation: &mut Simulation, extractor: &mut engine_presentation::RenderExtractor) {
         for (_, remote) in std::mem::take(&mut self.world.remotes) {
             extractor.remove_remote_character(remote.entity);
+            simulation.party_mut().leave(remote.entity);
             simulation.world_mut().despawn(remote.entity);
         }
         for (_, entity) in std::mem::take(&mut self.world.monsters) {

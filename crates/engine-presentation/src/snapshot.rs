@@ -715,6 +715,8 @@ pub struct PartyMemberView {
     pub entity: EntityId,
     /// What they are, which is the closest thing to a name the world has.
     pub kind: EntityKind,
+    /// Their own name, when the world gave them one (another player).
+    pub label: Option<&'static str>,
     /// Current health.
     pub health: f32,
     /// Maximum health.
@@ -746,7 +748,7 @@ impl PartyMemberView {
         if self.is_player {
             "YOU"
         } else {
-            self.kind.as_str()
+            self.label.unwrap_or_else(|| self.kind.as_str())
         }
     }
 }
@@ -1046,6 +1048,7 @@ impl UiSnapshot {
             self.party.push(PartyMemberView {
                 entity: *member,
                 kind: world.kind(*member).unwrap_or(EntityKind::Player),
+                label: world.label(*member),
                 health: health.current(),
                 max_health: health.max(),
                 alive: world.is_alive(*member),
@@ -1131,7 +1134,7 @@ fn target_view(simulation: &Simulation, entity: EntityId) -> Option<TargetView> 
                 if entity == player.entity {
                     "YOU"
                 } else {
-                    kind.as_str()
+                    world.label(entity).unwrap_or_else(|| kind.as_str())
                 }
             }),
         health: health.current(),

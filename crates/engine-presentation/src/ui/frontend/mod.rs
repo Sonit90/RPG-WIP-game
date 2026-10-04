@@ -683,7 +683,7 @@ impl FrontEndUi {
             }
             Screen::InWorld => {
                 // A small "leave" control while in the dungeon.
-                layout.add(Hit::LeaveParty, UiRect::new(w - px(160.0), px(18.0), px(140.0), px(32.0)));
+                layout.add(Hit::LeaveParty, in_world_leave(w, scale));
             }
         }
         layout
@@ -935,6 +935,11 @@ impl Painter<'_> {
         self.text((rect.x + width * 0.5, rect.y + px(2.0)), role.name(), color, UiFont::SemiBold, 13.0, TextAlign::Center);
         width
     }
+}
+
+/// The in-world "Leave Party" control: under the minimap, clear of the HUD's top-right buttons.
+fn in_world_leave(w: f32, scale: UiScale) -> UiRect {
+    UiRect::new(w - scale.px(160.0), scale.px(360.0), scale.px(140.0), scale.px(32.0))
 }
 
 fn centered(w: f32, h: f32, width: f32, height: f32) -> UiRect {
@@ -1304,18 +1309,19 @@ fn draw_in_world(ctx: &mut Painter<'_>, view: &FrontEndView, w: f32, h: f32) {
         }
         _ => {}
     }
-    ctx.button(UiRect::new(w - px(160.0), px(18.0), px(140.0), px(32.0)), "Leave Party", ButtonKind::Secondary, &Hit::LeaveParty, true);
+    ctx.button(in_world_leave(w, ctx.scale), "Leave Party", ButtonKind::Secondary, &Hit::LeaveParty, true);
     if let Some((level, text)) = &view.connection
         && *level != StatusLevel::Good
     {
-        ctx.text((w - px(180.0), px(24.0)), text, status_color(*level), UiFont::Medium, 14.0, TextAlign::Right);
+        ctx.text((w - px(180.0), px(366.0)), text, status_color(*level), UiFont::Medium, 14.0, TextAlign::Right);
     }
 }
 
 fn draw_toasts(ctx: &mut Painter<'_>, view: &FrontEndView, w: f32, h: f32) {
     let scale = ctx.scale;
     let px = move |v: f32| scale.px(v);
-    let mut y = if view.screen == Screen::InWorld { h * 0.18 } else { h - px(180.0) };
+    // In the world, above the action bars and clear of the unit frames at the top.
+    let mut y = if view.screen == Screen::InWorld { h - px(250.0) } else { h - px(180.0) };
     for toast in view.toasts.iter().rev().take(4) {
         ctx.banner(&toast.message, toast.level, w, y);
         y -= px(48.0);

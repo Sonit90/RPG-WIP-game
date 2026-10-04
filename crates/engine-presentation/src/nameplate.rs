@@ -966,6 +966,7 @@ impl NameplateSet {
                 .brain(entity)
                 .map(|brain| brain.kind().name())
                 .filter(|name| !name.is_empty())
+                .or_else(|| world.label(entity))
                 .or_else(|| world.kind(entity).map(EntityKind::as_str))
                 .unwrap_or("ENEMY");
             let cast = if config.cast_bars && fading.is_none() {

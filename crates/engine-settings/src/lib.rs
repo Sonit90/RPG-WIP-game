@@ -31,6 +31,8 @@
 //! sensitivity" a one-line change rather than a search.
 
 /// What each character wears and carries, and the file it lives in.
+/// The settings that follow an account between machines.
+pub mod account;
 pub mod character;
 /// Which floating combat text is drawn, and how big.
 pub mod combat_text;
