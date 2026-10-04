@@ -39,6 +39,12 @@ schedule and, eventually, to be driven by a network authority.
 | `engine-environment` | The level as data: placements, collision primitives, lighting, spawn points. `engine-core` only. | Phase 2 (environment) |
 | `engine-presentation` | Gameplay to rendering: extraction, the third-person camera, HUD text, the VFX director. | Phase 3 |
 | `engine-vfx` | Effects as data and the runtime that plays them: catalogue, instances, particles. `engine-core` and `engine-render-data` only — no gameplay, no device. | Phase 3 (VFX) |
+| `engine-realm` | The online game's shared rules: catalogs, loadouts, matchmaking, party and instance state machines, the movement step. No I/O; compiles to wasm32 for the realm module. | Networking |
+| `engine-net` | The client's network layer: realm API, SpacetimeDB link, reconnect, prediction, interpolation. No `windows`, no renderer, no UI. | Networking |
+| `engine-realm-testclient` | `realm-bot`: headless clients and the end-to-end scenarios. Development only. | Networking |
+
+The SpacetimeDB module (`server/realm-module`) and the realm API (`backend/`) are separate Cargo
+workspaces that compile the shared rules by path. See `docs/networking/NETWORKING_ARCHITECTURE.md`.
 
 `engine-platform` hands the renderer an opaque window handle and a client size.
 It does not link D3D12; the renderer does not create windows.

@@ -1,0 +1,27 @@
+# TLS termination for the realm. Caddy obtains and renews certificates automatically.
+#
+# API_DOMAIN    the realm API and the OIDC issuer (https://api.example.com). SpacetimeDB fetches
+#               /.well-known/openid-configuration and the JWKS from here.
+# REALM_DOMAIN  SpacetimeDB: the game's websocket and the operator's `spacetime` CLI.
+
+{$API_DOMAIN} {
+	encode gzip
+	reverse_proxy api:8080 {
+		header_up X-Forwarded-For {remote_host}
+	}
+	log {
+		output stdout
+		format json
+	}
+}
+
+{$REALM_DOMAIN} {
+	# Websockets are proxied as-is. Module publishing goes through here too and is protected by
+	# SpacetimeDB's own owner check; restrict /v1/database/*/publish by address if wanted:
+	#   @publish path_regexp ^/v1/database/[^/]+$
+	reverse_proxy spacetimedb:3000
+	log {
+		output stdout
+		format json
+	}
+}

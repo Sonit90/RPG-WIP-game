@@ -45,3 +45,4 @@ Desktop.ini
 
 # Local online stack: SpacetimeDB data and logs written by tools/realm-dev.ps1.
 /.realm-dev/
+deploy/.env
