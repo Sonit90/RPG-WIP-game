@@ -247,6 +247,35 @@ pub struct RenderExtractor {
     monsters: MonsterVisuals,
     /// Milliseconds the player character's animation update took this frame.
     player_animate_ms: f64,
+    /// Other players' characters, drawn from what the realm last said about them.
+    remote_characters: Vec<RemoteCharacter>,
+}
+
+/// Where another player's character is this frame, as the network layer interpolated it.
+///
+/// Presentation does not know it came over a network: it is a pose, like the one the local
+/// player's body produces, handed in by whoever owns the entity.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RemoteFrame {
+    /// Feet position.
+    pub position: Vec3,
+    /// Facing, radians.
+    pub facing_yaw: f32,
+    /// Velocity, for the walk cycle.
+    pub velocity: Vec3,
+    /// On the ground.
+    pub grounded: bool,
+    /// Dead.
+    pub dead: bool,
+    /// How opaque: a disconnected player is drawn faded.
+    pub opacity: f32,
+}
+
+/// One other player's character.
+struct RemoteCharacter {
+    entity: EntityId,
+    visual: CharacterVisual,
+    frame: Option<RemoteFrame>,
 }
 
 /// Height above the floor the target marker floats at, in metres.
@@ -493,6 +522,36 @@ impl RenderExtractor {
             view: ViewParams::default(),
             monsters: MonsterVisuals::new(),
             player_animate_ms: 0.0,
+            remote_characters: Vec::new(),
+        }
+    }
+
+    /// Draws `entity` as a character with `visual` instead of a stand-in. Replaces any visual
+    /// the entity already had.
+    pub fn add_remote_character(&mut self, entity: EntityId, visual: CharacterVisual) {
+        self.remove_remote_character(entity);
+        self.remote_characters.push(RemoteCharacter {
+            entity,
+            visual,
+            frame: None,
+        });
+    }
+
+    /// Stops drawing `entity` as a character.
+    pub fn remove_remote_character(&mut self, entity: EntityId) {
+        self.remote_characters.retain(|remote| remote.entity != entity);
+    }
+
+    /// Whether `entity` is drawn as a remote character.
+    #[must_use]
+    pub fn is_remote_character(&self, entity: EntityId) -> bool {
+        self.remote_characters.iter().any(|remote| remote.entity == entity)
+    }
+
+    /// Sets the pose a remote character is drawn in this frame.
+    pub fn set_remote_frame(&mut self, entity: EntityId, frame: RemoteFrame) {
+        if let Some(remote) = self.remote_characters.iter_mut().find(|r| r.entity == entity) {
+            remote.frame = Some(frame);
         }
     }
 
@@ -659,7 +718,7 @@ impl RenderExtractor {
                 Some(id) => {
                     // The player is not a `RenderWorld` slot. It is a skinned character, and
                     // its controller submits it below.
-                    if game.kind(id) == Some(EntityKind::Player) {
+                    if game.kind(id) == Some(EntityKind::Player) || self.is_remote_character(id) {
                         self.despawn_parts(slot, &mut stats);
                         stats.extracted += 1;
                         continue;
@@ -748,6 +807,7 @@ impl RenderExtractor {
         }
 
         self.update_player_visual(simulation);
+        self.update_remote_characters(simulation);
         self.update_marker(simulation);
         self.stats = stats;
         &self.world
@@ -936,6 +996,40 @@ impl RenderExtractor {
             self.view.lod_bias,
             InstanceStyle::NEUTRAL.with_opacity(self.player_opacity),
         );
+    }
+
+    /// Animates and submits every remote character that has a pose this frame.
+    fn update_remote_characters(&mut self, simulation: &Simulation) {
+        let game = simulation.world();
+        for remote in &mut self.remote_characters {
+            let Some(frame) = remote.frame else {
+                continue;
+            };
+            let state = CharacterState {
+                position: frame.position,
+                facing_yaw: frame.facing_yaw,
+                speed: frame.velocity.x.hypot(frame.velocity.z),
+                heading: heading(frame.velocity, frame.facing_yaw),
+                move_angle: move_angle(frame.velocity, frame.facing_yaw),
+                grounded: frame.grounded,
+                rising: !frame.grounded && frame.velocity.y > 0.0,
+                height: game.height(remote.entity),
+                cast: None,
+                cast_progress: 0.0,
+                cast_started: None,
+                released: None,
+                dead: frame.dead,
+            };
+            if let Err(error) = remote.visual.update(self.view.delta_seconds, state) {
+                log::error!("remote character animation failed: {error}");
+            }
+            remote.visual.submit_styled(
+                &mut self.world,
+                self.view.camera_position,
+                self.view.lod_bias,
+                InstanceStyle::NEUTRAL.with_opacity(frame.opacity),
+            );
+        }
     }
 
     /// The per-entity visual state an entity is drawn with.

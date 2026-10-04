@@ -65,7 +65,8 @@ pub use environment::{
     EnvironmentPlacer, EnvironmentStats, EnvironmentVisuals, scene_light, scene_lighting,
 };
 pub use extract::{
-    RenderExtractor, VisualBindings, VisualStats, interpolated_player_position, lerp_angle,
+    RemoteFrame, RenderExtractor, VisualBindings, VisualStats, interpolated_player_position,
+    lerp_angle,
     lerp_position,
 };
 pub use game_ui::{GameUi, UiTheme};

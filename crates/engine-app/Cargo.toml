@@ -54,6 +54,11 @@ engine-audio = { workspace = true }
 cpal = "0.18"
 # The player's settings and the file they live in.
 engine-settings = { workspace = true }
+# The online game: the network layer and the realm's shared rules. Both are plain Rust with
+# no window or device; the app is the only crate that joins them to the renderer.
+engine-net = { workspace = true }
+engine-realm = { workspace = true }
+engine-collision = { workspace = true }
 # `release_max_level_info` compiles trace! and debug! out of release builds entirely:
 # no branch, no argument evaluation, nothing left in the binary. The feature is enabled
 # here, in the binary crate, because it is a process-wide decision — a library enabling it

@@ -345,6 +345,9 @@ pub struct App {
     /// save perhaps a megabyte of vertex data. Three prism characters are cheaper than one
     /// hitch.
     heroes: HeroVisuals,
+    /// The online game, when `--network-mode online` started one. `None` is the offline game,
+    /// exactly as it always was.
+    online: Option<crate::online::OnlineSession>,
     /// The pause and settings menus. Owns no gameplay and no file: it emits actions.
     menu: MenuSystem,
     /// This frame's menu actions, copied out of the menu so they can be applied to `self`.
@@ -866,8 +869,17 @@ impl App {
                     scaling.party_size,
                     engine_game::dungeon::DungeonScaling::DESIGNED_PARTY
                 );
+                let online = args.network_mode == crate::args::NetworkMode::Online;
                 (
                     match environment.as_ref() {
+                        // Online the server owns the monsters, the completion and the boss:
+                        // the client builds the level alone and the realm fills it.
+                        Some(scene) if online => {
+                            let mut level = scene.clone();
+                            level.monsters.clear();
+                            level.dungeon = None;
+                            arena::environment_arena_for_party(&level, 0, scaling)
+                        }
                         Some(scene) => arena::environment_arena_for_party(scene, 0, scaling),
                         None => arena::training_arena(&ArenaConfig::with_group(0)),
                     },
@@ -1238,6 +1250,7 @@ impl App {
             shadow_debug,
             commands: Vec::with_capacity(16),
             heroes,
+            online: None,
             menu: MenuSystem::new(game_settings.settings(), env!("CARGO_PKG_VERSION")),
             menu_actions: Vec::with_capacity(4),
             display: display_in_force,
@@ -1458,6 +1471,30 @@ impl App {
             app.editor.set_map_preview(true);
         }
         crate::startup::stage("dungeon map");
+        if args.network_mode == crate::args::NetworkMode::Online {
+            let endpoints = engine_net::RealmEndpoints::resolve(
+                args.realm_config.as_deref().map(std::path::Path::new),
+            )
+            .map_err(|error| EngineError::unsupported(format!("configure the realm: {error}")))?;
+            log::info!(
+                "online: realm {} database {}, api {}",
+                endpoints.spacetimedb_url,
+                endpoints.spacetimedb_database,
+                endpoints.auth_api_url
+            );
+            let store = crate::online::DpapiTokenStore::for_profile(args.profile.as_deref());
+            let dev = crate::online::DevScript {
+                login: args.dev_login.clone(),
+                autoplay: args.dev_autoplay.as_ref().and_then(|(character, role)| {
+                    engine_realm::Role::from_key(role).map(|role| (character.clone(), role))
+                }),
+            };
+            let session = crate::online::OnlineSession::start(endpoints, Box::new(store), dev)
+                .map_err(|error| EngineError::unsupported(format!("start the network layer: {error}")))?;
+            app.online = Some(session);
+            // Until the realm places the player, nobody stands in the start area.
+            app.extractor.set_player_opacity(0.0);
+        }
         Ok(app)
     }
 
@@ -3408,6 +3445,18 @@ impl App {
                 .set_ui_with(&self.collision_ui, self.jobs.as_ref());
             return;
         }
+        // The online front-end is the whole interface while it is up.
+        if let Some(online) = self.online.as_ref()
+            && online.front_end_active()
+        {
+            let scale = self.game_ui.scale();
+            self.game_ui.list_mut().clear();
+            online.draw(self.game_ui.list_mut(), viewport, scale);
+            self.ui_ms = started.elapsed().as_secs_f64() * 1e3;
+            self.renderer
+                .set_ui_with(self.game_ui.list(), self.jobs.as_ref());
+            return;
+        }
         // In the editor the game's HUD is not drawn at all: health bars, nameplates and an
         // action bar over a level being built are noise, and they sat under the editor's own
         // panels as a second interface nobody could use.
@@ -3610,6 +3659,13 @@ impl App {
                 &mut self.hud_scratch,
                 viewport,
             );
+        }
+
+        // The realm's overlays — countdown, party controls, notices, reconnecting — over the
+        // HUD and under the menu.
+        if let Some(online) = self.online.as_ref() {
+            let scale = self.game_ui.scale();
+            online.draw(self.game_ui.list_mut(), viewport, scale);
         }
 
         // Last of all, into the same list: painter's order puts the menu over the HUD, and
@@ -5439,7 +5495,28 @@ impl Application for App {
             return Ok(());
         }
 
-        {
+        // The online game: the network layer's events, then the front-end screens, then what
+        // they asked the application to do. Offline this is one `None` check.
+        let mut online_front_end = false;
+        if let Some(online) = self.online.as_mut() {
+            engine_core::profile_scope!(profiler, "Online");
+            let viewport = self.renderer.size();
+            let scale = self.game_ui.scale();
+            online.update(ctx.input(), viewport, scale, ctx.time().real_delta().as_secs_f32());
+            online_front_end = online.front_end_active();
+            for directive in online.take_directives() {
+                match directive {
+                    crate::online::Directive::SetHero(hero) => self.swap_hero(hero),
+                    crate::online::Directive::Quit => ctx.request_exit(),
+                }
+            }
+        }
+
+        if online_front_end {
+            // The front-end owns the whole screen: no menu, no camera, no world input.
+            self.commands.clear();
+            self.cancel_mouse_look();
+        } else {
             engine_core::profile_scope!(profiler, "Input");
             // The menu sees the frame's input first, and then gameplay sees it too: the
             // world is shared, so a player with a settings screen open is still standing in
@@ -5482,6 +5559,9 @@ impl Application for App {
                 || self.hud_editor.is_active()
                 || self.slot_menu.is_open()
                 || self.dungeon_map.is_open()
+                || self.online.as_ref().is_some_and(|online| {
+                    online.wants_pointer(self.renderer.size(), self.game_ui.scale())
+                })
             {
                 self.cancel_mouse_look();
             } else {
@@ -5519,6 +5599,21 @@ impl Application for App {
                     &mut self.commands,
                 );
             }
+            if let Some(online) = self.online.as_ref() {
+                // Online there is no combat yet (the server will own it): movement, jumping
+                // and targeting only, and none of it until the realm has placed the player.
+                let may_move = online.may_move();
+                self.commands.retain(|command| match command {
+                    engine_game::PlayerCommand::Move { .. } | engine_game::PlayerCommand::Jump => may_move,
+                    engine_game::PlayerCommand::SelectNearestTarget
+                    | engine_game::PlayerCommand::CycleTarget
+                    | engine_game::PlayerCommand::ClearTarget
+                    | engine_game::PlayerCommand::SelectSelf
+                    | engine_game::PlayerCommand::SelectTarget { .. }
+                    | engine_game::PlayerCommand::PickTarget { .. } => true,
+                    _ => false,
+                });
+            }
             self.simulation.push_commands(self.commands.iter().copied());
         }
         self.autocast(ctx.time().real_delta().as_secs_f32());
@@ -5529,7 +5624,28 @@ impl Application for App {
             // the frame rate, and feeding it a scaled or clamped delta would do that job
             // twice. There is no menu case here — a shared world does not stop because one
             // player opened a settings screen.
-            self.simulation.advance(ctx.time().real_delta());
+            let ticks = self.simulation.advance(ctx.time().real_delta());
+            if let Some(online) = self.online.as_mut() {
+                // Every tick the simulation predicted is one input frame for the server: the
+                // same intent, so the server applies exactly what the client already showed.
+                let intent = self.commands.iter().find_map(|command| match *command {
+                    engine_game::PlayerCommand::Move {
+                        forward,
+                        right,
+                        yaw,
+                        face_camera,
+                    } => Some((forward, right, yaw, face_camera)),
+                    _ => None,
+                });
+                let jump = self
+                    .commands
+                    .iter()
+                    .any(|command| matches!(command, engine_game::PlayerCommand::Jump));
+                online.record_ticks(ticks, intent, jump);
+                let heroes = &self.heroes;
+                let visual_for = |hero: Hero| heroes.visual(hero).ok();
+                online.sync_world(&mut self.simulation, &mut self.extractor, &visual_for);
+            }
             if self.scene.is_monsters() {
                 // A boss's adds become the encounter's; members something else took away
                 // are forgotten. A few comparisons over this frame's events.
@@ -5684,8 +5800,12 @@ impl Application for App {
             // see-through things in front of the eye or between the eye and the character.
             // The character's opacity is read on the next extraction — a frame later, which
             // the fade's own easing is far slower than.
-            self.extractor
-                .set_player_opacity(self.controller.character_opacity());
+            let player_shown = self.online.as_ref().is_none_or(|online| online.player_placed());
+            self.extractor.set_player_opacity(if player_shown {
+                self.controller.character_opacity()
+            } else {
+                0.0
+            });
             self.renderer.set_camera_fade(self.controller.fade());
             let (width, height) = self.renderer.size();
             if width > 0 && height > 0 {

@@ -335,6 +335,17 @@ options:
                          measurement. Presentation only: it starts no ability and deals
                          no damage, so what it measures is what effects cost to draw
   --party <1-5>          how many players a level's monsters are scaled for (default 1).
+  --network-mode <m>     offline (default: the local game) or online (sign in and play on the
+                         realm). --online and --offline are shorthands.
+  --realm-config <file>  JSON with spacetimedb_url, spacetimedb_database, auth_api_url and
+                         persistence_api_url. Environment variables of those names (upper
+                         case) override it; both default to this machine.
+  --profile <name>       keep this client's remembered sign-in separate (several local
+                         clients, one account each).
+  --dev-login <e:p>      development only, local realm only: sign in (registering if new)
+                         without typing. The password is visible to other local processes.
+  --dev-autoplay <c:r>   development: once signed in, take character c (warrior, druid,
+                         firemage) as role r (tank, healer, dps), queue, accept, start.
                          The Graveyard Crypt is tuned for 3 - a tank, a damage dealer and
                          a healer - and --party 3 plays it at those numbers. One player
                          meets the same mechanics with less health and smaller hits.
@@ -806,6 +817,29 @@ pub struct Args {
     pub layout: Option<String>,
     /// Whether `--help` was requested.
     pub help: bool,
+    /// Offline (the single-player game, unchanged) or online (sign in, queue, realm).
+    pub network_mode: NetworkMode,
+    /// A JSON file naming the realm's addresses, overriding the development defaults.
+    pub realm_config: Option<String>,
+    /// A name that keeps this client's remembered session apart from another's on the same
+    /// machine, so three clients can sign in as three accounts for local testing.
+    pub profile: Option<String>,
+    /// Development: sign in (registering first if new) as `email:password`, without typing.
+    /// Refused unless every realm address is this machine.
+    pub dev_login: Option<(String, String)>,
+    /// Development: once signed in, choose `character:role`, queue for the first dungeon,
+    /// accept the ready check and start if leading — a client that plays itself to the start.
+    pub dev_autoplay: Option<(String, String)>,
+}
+
+/// Whether the game talks to the realm.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum NetworkMode {
+    /// The local game: no account, no server, every system as before.
+    #[default]
+    Offline,
+    /// The online game: sign in, choose a character, queue, play under server authority.
+    Online,
 }
 
 impl Default for Args {
@@ -860,6 +894,11 @@ impl Default for Args {
             map_expand: false,
             minimap: None,
             help: false,
+            network_mode: NetworkMode::Offline,
+            realm_config: None,
+            profile: None,
+            dev_login: None,
+            dev_autoplay: None,
         }
     }
 }
@@ -1046,6 +1085,57 @@ where
                 args.screenshot_frame = next_value(&mut iter, "--screenshot-frame")?;
             }
             "--open-map" => args.open_map = true,
+            "--online" => args.network_mode = NetworkMode::Online,
+            "--offline" => args.network_mode = NetworkMode::Offline,
+            "--network-mode" => {
+                let value: String = next_value(&mut iter, "--network-mode")?;
+                args.network_mode = match value.as_str() {
+                    "online" => NetworkMode::Online,
+                    "offline" | "local" => NetworkMode::Offline,
+                    _ => {
+                        return Err(ArgsError::InvalidValue {
+                            option: "--network-mode",
+                            value,
+                        });
+                    }
+                };
+            }
+            "--realm-config" => {
+                let raw = iter.next().ok_or(ArgsError::MissingValue("--realm-config"))?;
+                args.realm_config = Some(raw.as_ref().to_owned());
+            }
+            "--dev-login" => {
+                let raw = iter.next().ok_or(ArgsError::MissingValue("--dev-login"))?;
+                let Some((email, password)) = raw.as_ref().split_once(':') else {
+                    return Err(ArgsError::InvalidValue {
+                        option: "--dev-login",
+                        value: "<email:password>".to_owned(),
+                    });
+                };
+                args.dev_login = Some((email.to_owned(), password.to_owned()));
+            }
+            "--dev-autoplay" => {
+                let raw = iter.next().ok_or(ArgsError::MissingValue("--dev-autoplay"))?;
+                let raw = raw.as_ref();
+                let Some((character, role)) = raw.split_once(':') else {
+                    return Err(ArgsError::InvalidValue {
+                        option: "--dev-autoplay",
+                        value: raw.to_owned(),
+                    });
+                };
+                args.dev_autoplay = Some((character.to_owned(), role.to_owned()));
+            }
+            "--profile" => {
+                let raw = iter.next().ok_or(ArgsError::MissingValue("--profile"))?;
+                let raw = raw.as_ref();
+                if raw.is_empty() || !raw.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+                    return Err(ArgsError::InvalidValue {
+                        option: "--profile",
+                        value: raw.to_owned(),
+                    });
+                }
+                args.profile = Some(raw.to_owned());
+            }
             "--map-expand" => args.map_expand = true,
             "--map-select" => args.map_select = Some(next_value(&mut iter, "--map-select")?),
             "--spawn-hostile" => args.spawn_hostile = true,

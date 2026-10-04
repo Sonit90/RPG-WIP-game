@@ -21,6 +21,9 @@ engine-assets = { workspace = true }
 # both what a scene says and what a `RenderWorld` is.
 engine-environment = { workspace = true }
 engine-game = { workspace = true }
+# The realm's rule types (roles, countdown display) for the online front-end screens. Plain
+# data and pure functions: presentation still knows nothing about the network.
+engine-realm = { workspace = true }
 engine-render-data = { workspace = true }
 # Effects as data and their runtime. Presentation is the only crate allowed to say that a
 # gameplay thing looks like a particular effect, so this dependency lives here and nowhere

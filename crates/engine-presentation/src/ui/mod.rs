@@ -52,6 +52,8 @@ pub mod character_menu;
 pub mod dungeon_map;
 /// The look every unit frame, the raid frames and the cast bar share with the nameplates.
 pub mod frame_style;
+/// The online front-end: sign-in, characters, dungeons, roles, queue, ready check, party.
+pub mod frontend;
 /// The minimap and the full-screen dungeon map, with its encounter sidebar.
 /// The GRAPHICS screen: resolution, window mode, shadow quality and the keep-or-revert dialog.
 pub mod graphics_menu;

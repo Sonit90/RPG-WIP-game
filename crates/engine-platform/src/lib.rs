@@ -16,6 +16,8 @@ pub mod dpi;
 pub mod error;
 pub mod event;
 pub mod memory;
+/// Secrets at rest (DPAPI, current user) and the clipboard.
+pub mod secure_store;
 pub mod window;
 
 pub use config::{AppliedDisplay, WindowConfig, WindowMode};

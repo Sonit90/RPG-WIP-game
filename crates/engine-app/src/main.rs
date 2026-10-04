@@ -9,6 +9,7 @@ mod args;
 mod audio_device;
 mod benchmark;
 mod map_bake;
+mod online;
 mod run_profile;
 mod startup;
 
@@ -26,7 +27,7 @@ fn main() -> ExitCode {
         return ExitCode::FAILURE;
     }
 
-    let args = match args::parse(std::env::args().skip(1)) {
+    let mut args = match args::parse(std::env::args().skip(1)) {
         Ok(args) => args,
         Err(error) => {
             eprintln!("error: {error}\n\n{}", args::USAGE);
@@ -40,6 +41,12 @@ fn main() -> ExitCode {
     }
 
     log::info!("{} {}", env!("CARGO_BIN_NAME"), env!("CARGO_PKG_VERSION"));
+
+    // Online, the world is a realm dungeon: the level is the dungeon's, whatever scene the
+    // command line's default would have chosen. Its monsters come from the server.
+    if args.network_mode == args::NetworkMode::Online && args.scene_file.is_none() {
+        args.scene = args::Scene::Graveyard;
+    }
 
     // Configuration is validated before anything is created, so a bad value is a message
     // here rather than a failed Win32 call three layers down.
