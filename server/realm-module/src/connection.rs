@@ -73,7 +73,7 @@ pub fn client_connected(ctx: &ReducerContext) -> Result<(), String> {
         )
         .to_wire());
     }
-    if !jwt.audience().iter().any(|aud| *aud == config.audience) {
+    if !jwt.audience().contains(&config.audience) {
         log::warn!("event=auth_rejected reason=audience");
         return Err(RealmError::new(
             ErrorCategory::Authentication,

@@ -27,8 +27,8 @@ pub struct AppState {
 /// the file on first start; anywhere else a missing key stops the service.
 fn load_signing_key(settings: &Settings) -> anyhow::Result<String> {
     if let Some(pem) = settings.auth.jwt_private_key_pem.as_ref().filter(|p| !p.trim().is_empty()) {
-        return Ok(pem.replace("\n", "
-"));
+        // An env var cannot hold newlines everywhere: accept a PEM written with literal `\n`.
+        return Ok(pem.replace("\\n", "\n"));
     }
     let path = settings
         .auth

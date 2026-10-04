@@ -137,6 +137,8 @@ pub enum Directive {
     Quit,
     /// Apply the account's synced settings document over the local settings.
     ApplyAccountSettings(serde_json::Value),
+    /// Dress this hero's sheet in the character's stored loadout.
+    ApplyLoadout(Hero, engine_realm::loadout::Loadout),
 }
 
 /// One other player, as the world shows them.
@@ -309,6 +311,33 @@ impl OnlineSession {
                 version,
                 settings: document,
             }));
+    }
+
+    /// Asks the API to move an item on the selected character. The server validates it and
+    /// answers with the new loadout; nothing changes locally until it does.
+    pub fn request_move(
+        &mut self,
+        from: engine_game::character::ItemSlot,
+        to: engine_game::character::ItemSlot,
+    ) {
+        use engine_game::character::ItemSlot;
+        use engine_realm::loadout::SlotRef;
+        let to_ref = |slot: ItemSlot| match slot {
+            ItemSlot::Equipment(equip) => SlotRef::Equipment {
+                slot: equip.key().to_owned(),
+            },
+            ItemSlot::Inventory(index) => SlotRef::Inventory {
+                index: u32::try_from(index).unwrap_or(u32::MAX),
+            },
+        };
+        let Some(character_id) = self.selected_character_summary().map(|c| c.id.clone()) else {
+            return;
+        };
+        self.client.send(NetCommand::MoveItem {
+            character_id,
+            from: to_ref(from),
+            to: to_ref(to),
+        });
     }
 
     /// Directives for the application, drained.
@@ -495,7 +524,23 @@ impl OnlineSession {
                 self.settings_version = Some(version);
                 self.settings_synced = self.settings_in_flight.take();
             }
-            NetEvent::Character(_) => {}
+            NetEvent::Character(detail) => {
+                let hero = self
+                    .catalog
+                    .character(&detail.summary.definition_id)
+                    .map(|definition| definition.hero);
+                if let Some(hero) = hero {
+                    let loadout = engine_realm::loadout::Loadout {
+                        equipment: detail.summary.equipment.clone(),
+                        inventory: detail.inventory.clone(),
+                    };
+                    self.directives.push(Directive::ApplyLoadout(hero, loadout));
+                }
+                // Keep the list's copy in step (gear score, level after a result).
+                if let Some(entry) = self.characters.iter_mut().find(|c| c.id == detail.summary.id) {
+                    *entry = detail.summary.clone();
+                }
+            }
             NetEvent::QueueAccepted => self.busy = None,
             NetEvent::Realm(update) => self.mirror.apply(update),
             NetEvent::Clock(clock) => self.clock = clock,
@@ -562,6 +607,10 @@ impl OnlineSession {
                 self.selected_role = None;
             }
             FrontEndAction::ConfirmCharacter => {
+                if let Some(id) = self.selected_character_summary().map(|c| c.id.clone()) {
+                    // The persistent character, once: its loadout dresses the local sheet.
+                    self.client.send(NetCommand::FetchCharacter(id));
+                }
                 if let Some(hero) = self.selected_hero() {
                     self.directives.push(Directive::SetHero(hero));
                     self.hero = Some(hero);

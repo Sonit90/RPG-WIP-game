@@ -2153,6 +2153,13 @@ impl App {
                 .character_menu
                 .update(&ui_input, &self.snapshot, viewport)
             {
+                CharacterMenuOutcome::Move { from, to } if self.online.is_some() => {
+                    // Online the character is the server's: the move is a request, and the
+                    // sheet changes when the API answers with the validated loadout.
+                    if let Some(online) = self.online.as_mut() {
+                        online.request_move(from, to);
+                    }
+                }
                 CharacterMenuOutcome::Move { from, to } => {
                     self.simulation
                         .push_command(PlayerCommand::MoveItem { from, to });
@@ -2405,6 +2412,11 @@ impl App {
     /// The roster is the authority; the file is a copy of it. Nothing reads the panel to
     /// decide what was saved, which is what keeps a half-finished drag out of the save.
     fn save_characters(&mut self) {
+        // Online the persistent character lives on the server; the local file is the offline
+        // game's and is left as it was.
+        if self.online.is_some() {
+            return;
+        }
         let config = engine_presentation::character_save::config_of(self.simulation.roster());
         self.character_config.update(config);
         if self.character_config.save_if_dirty() {
@@ -5539,6 +5551,12 @@ impl Application for App {
                     crate::online::Directive::Quit => ctx.request_exit(),
                     crate::online::Directive::ApplyAccountSettings(document) => {
                         self.apply_account_settings(&document);
+                    }
+                    crate::online::Directive::ApplyLoadout(hero, loadout) => {
+                        *self.simulation.roster_mut().sheet_mut(hero) =
+                            engine_realm::loadout::sheet_of(hero, &loadout);
+                        self.simulation.refresh_character();
+                        log::info!("online: {} dressed from the persistent character", hero.name());
                     }
                 }
             }
