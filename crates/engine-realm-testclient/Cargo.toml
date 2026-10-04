@@ -1,0 +1,23 @@
+[package]
+name = "engine-realm-testclient"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+# Headless realm clients: scripted bots over the real network layer, for local multiplayer
+# testing and the end-to-end/security scenarios. Development only; the game never links it.
+[dependencies]
+engine-core = { workspace = true }
+engine-net = { workspace = true }
+engine-realm = { workspace = true }
+log = { workspace = true }
+serde_json = { workspace = true }
+ureq = { version = "3", default-features = false, features = ["rustls", "json"] }
+
+[[bin]]
+name = "realm-bot"
+path = "src/main.rs"
+
+[lints]
+workspace = true

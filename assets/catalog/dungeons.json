@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "dungeons": [
+    {
+      "id": "graveyard_crypt",
+      "name": "Graveyard Crypt",
+      "description": "A walled churchyard over a crypt that will not stay shut. Fight through the gate wardens and the ossuary to the Hollow Steward.",
+      "scene": "scenes/graveyard_crypt.json",
+      "difficulty": "normal",
+      "min_level": 1,
+      "max_level": 10,
+      "min_gear_score": 0,
+      "recommended_gear_score": 40,
+      "rewards": ["Experience", "Crypt-forged gear", "Steward's Reliquary"],
+      "countdown_seconds": 5,
+      "spawn_points": [
+        { "position": [0.0, 0.0, -8.0], "yaw": 0.0 },
+        { "position": [-2.5, 0.0, -6.5], "yaw": 0.0 },
+        { "position": [2.5, 0.0, -6.5], "yaw": 0.0 }
+      ],
+      "start_barrier": {
+        "center": [0.0, 2.5, -32.0],
+        "half_extents": [8.0, 2.5, 0.6]
+      }
+    }
+  ]
+}

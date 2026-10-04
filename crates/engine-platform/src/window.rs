@@ -29,7 +29,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     WINDOW_EX_STYLE, WINDOW_STYLE, WM_ACTIVATEAPP, WM_CLOSE, WM_DESTROY, WM_DISPLAYCHANGE,
     WM_ERASEBKGND, WM_GETMINMAXINFO, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP,
     WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCCREATE, WM_QUIT,
-    WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SIZE, WM_SYSCHAR, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_XBUTTONDOWN,
+    WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SIZE, WM_CHAR, WM_SYSCHAR, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_XBUTTONDOWN,
     WM_XBUTTONUP, WNDCLASSEXW, WS_OVERLAPPED, WS_OVERLAPPEDWINDOW, WS_POPUP, WS_SYSMENU,
     WS_VISIBLE,
 };
@@ -75,6 +75,8 @@ struct WindowState {
     exclusive: Option<Exclusive>,
     /// Whether a framed window may be resized by its edges.
     resizable: bool,
+    /// The first half of a UTF-16 surrogate pair `WM_CHAR` delivered, waiting for the second.
+    high_surrogate: Option<u16>,
 }
 
 /// An exclusive fullscreen switch this window made, and whether it is undone for now.
@@ -157,6 +159,7 @@ impl Window {
         let state = Box::into_raw(Box::new(WindowState {
             events: EventQueue::new(),
             last_cursor: None,
+            high_surrogate: None,
             client_width: client.0,
             client_height: client.1,
             minimized: false,
@@ -1063,6 +1066,30 @@ unsafe extern "system" fn window_proc(
         // Alt+Enter is the game's (it toggles fullscreen); without this Windows treats it as
         // an unhandled menu mnemonic and plays the error sound.
         WM_SYSCHAR if wparam.0 == 0x0D => LRESULT(0),
+        WM_CHAR => {
+            // UTF-16 code units: a character outside the basic plane arrives as a surrogate
+            // pair in two messages, and is only a character once both halves are here.
+            let unit = (wparam.0 & 0xFFFF) as u16;
+            let character = if (0xD800..0xDC00).contains(&unit) {
+                state.high_surrogate = Some(unit);
+                None
+            } else if (0xDC00..0xE000).contains(&unit) {
+                state
+                    .high_surrogate
+                    .take()
+                    .and_then(|high| char::decode_utf16([high, unit]).next())
+                    .and_then(Result::ok)
+            } else {
+                state.high_surrogate = None;
+                char::from_u32(u32::from(unit))
+            };
+            if let Some(character) = character {
+                state
+                    .events
+                    .push(WindowEvent::Input(InputEvent::Text { character }));
+            }
+            LRESULT(0)
+        }
         WM_ERASEBKGND => {
             // The renderer owns every pixel of the client area; letting GDI erase it
             // first only causes flicker.

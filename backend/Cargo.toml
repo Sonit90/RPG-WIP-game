@@ -1,0 +1,83 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/api",
+    "crates/core",
+    "crates/db",
+    "crates/auth",
+    "crates/game",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.78"
+license = "MIT OR Apache-2.0"
+authors = ["generic-auth contributors"]
+publish = false
+
+[workspace.dependencies]
+# Async runtime / utilities
+tokio = { version = "1.39", features = ["full"] }
+async-trait = "0.1"
+
+# Web stack (Axum)
+axum = { version = "0.8.9", features = ["macros", "multipart"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["trace", "cors", "limit", "compression-gzip", "request-id"] }
+hyper = { version = "1", features = ["full"] }
+
+# Serialization / config
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+config = { version = "0.14", default-features = false, features = ["toml"] }
+
+# Errors / logging
+thiserror = "1"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# Database (SQLx + Postgres)
+sqlx = { version = "0.8", default-features = false, features = [
+    "runtime-tokio-rustls",
+    "postgres",
+    "uuid",
+    "time",
+    "json",
+    "macros",
+    "migrate",
+] }
+
+# IDs & time
+uuid = { version = "1", features = ["v4", "v7", "serde"] }
+time = { version = "0.3", features = ["serde", "macros", "formatting", "parsing"] }
+
+# Auth
+jsonwebtoken = "9"
+# ES256 signing keys for OIDC-compatible access tokens.
+p256 = { version = "0.13", features = ["pkcs8", "pem"] }
+base64 = "0.22"
+argon2 = "0.5"
+oauth2 = "4"
+rand = "0.8"
+
+# HTTP client (OAuth flows)
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+sha2 = "0.10"
+hmac = "0.12"
+hex = "0.4"
+lettre = { version = "0.11", default-features = false, features = ["tokio1-native-tls", "smtp-transport", "builder"] }
+url = "2"
+validator = { version = "0.18", features = ["derive"] }
+clap = { version = "4", features = ["derive"] }
+
+# OpenAPI
+utoipa = { version = "5", features = ["axum_extras", "uuid", "time"] }
+utoipa-swagger-ui = { version = "9", features = ["axum"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+panic = "abort"

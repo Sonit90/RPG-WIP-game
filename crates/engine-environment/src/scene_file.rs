@@ -1093,12 +1093,27 @@ pub fn load(path: impl AsRef<Path>) -> Result<EnvironmentScene, SceneFileError> 
         path: display.clone(),
         reason: error.to_string(),
     })?;
+    parse(&text, &display)
+}
+
+/// Builds the scene a level file's `text` describes, without touching the filesystem.
+///
+/// [`load`] is this plus a file read. A server that embeds its levels at compile time (the
+/// realm module runs where there is no filesystem) and a test with a document in a string
+/// both enter here, so there is one parser and one set of validation rules. `name` is what
+/// errors call the document.
+///
+/// # Errors
+///
+/// [`SceneFileError::Malformed`] if the text is not JSON of this shape, and
+/// [`SceneFileError::Invalid`] for anything the document says that cannot be built.
+pub fn parse(text: &str, name: &str) -> Result<EnvironmentScene, SceneFileError> {
     let document: SceneDocument =
-        serde_json::from_str(&text).map_err(|error| SceneFileError::Malformed {
-            path: display.clone(),
+        serde_json::from_str(text).map_err(|error| SceneFileError::Malformed {
+            path: name.to_owned(),
             reason: error.to_string(),
         })?;
-    document.to_scene(&display)
+    document.to_scene(name)
 }
 
 /// A vector as three numbers.

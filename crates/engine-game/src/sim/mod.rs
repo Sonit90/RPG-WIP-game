@@ -34,7 +34,7 @@
 //!
 //! Two abilities in one tick apply in the order the commands arrived.
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use engine_collision::controller::{CharacterConfig, CharacterState, MoveResult};
 use engine_collision::world::{CollisionWorld, QueryBuffers};
@@ -292,6 +292,36 @@ impl LineOfSightDebug {
     #[must_use]
     pub fn blocker_label(&self) -> &'static str {
         self.check.map_or("", |check| check.blocker_label)
+    }
+}
+
+/// The profiling clock behind [`SimStats`].
+///
+/// `std::time::Instant::now` panics on `wasm32-unknown-unknown`, which is where the realm
+/// server runs the shared gameplay code. The numbers are telemetry only — the simulation's
+/// behaviour never reads them — so there they read zero and nothing else changes.
+#[derive(Clone, Copy)]
+struct Stopwatch {
+    #[cfg(not(target_family = "wasm"))]
+    started: std::time::Instant,
+}
+
+impl Stopwatch {
+    fn start() -> Self {
+        Self {
+            #[cfg(not(target_family = "wasm"))]
+            started: std::time::Instant::now(),
+        }
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    fn elapsed(self) -> Duration {
+        self.started.elapsed()
+    }
+
+    #[cfg(target_family = "wasm")]
+    fn elapsed(self) -> Duration {
+        Duration::ZERO
     }
 }
 
@@ -1079,7 +1109,7 @@ impl Simulation {
     pub fn advance(&mut self, delta: Duration) -> u32 {
         self.begin_batch();
         let ticks = self.timestep.accumulate(delta);
-        let started = Instant::now();
+        let started = Stopwatch::start();
         let mut stats = SimStats {
             ticks,
             dropped_ticks: self.timestep.dropped_ticks(),
@@ -1105,7 +1135,7 @@ impl Simulation {
             ticks: 1,
             ..SimStats::default()
         };
-        let started = Instant::now();
+        let started = Stopwatch::start();
         self.tick_once(&mut stats);
         stats.total = started.elapsed();
         self.record_stats(stats);
@@ -1118,7 +1148,7 @@ impl Simulation {
             ticks: count,
             ..SimStats::default()
         };
-        let started = Instant::now();
+        let started = Stopwatch::start();
         for _ in 0..count {
             self.tick_once(&mut stats);
         }
@@ -1174,7 +1204,7 @@ impl Simulation {
         // Before movement, so an intent decided this tick is walked this tick. AI is its own
         // stage in the timings because "what does thinking cost" is the question the stress
         // test asks, and burying it in `abilities` would answer a different one.
-        let ai_started = Instant::now();
+        let ai_started = Stopwatch::start();
         // Resets first: a pack asked to reset last tick is put back before anybody thinks,
         // so nothing spends a tick acting on a fight that is being taken down.
         self.apply_encounter_resets();
@@ -1189,11 +1219,11 @@ impl Simulation {
         self.tick_dungeon();
         stats.ai += ai_started.elapsed();
 
-        let movement_started = Instant::now();
+        let movement_started = Stopwatch::start();
         self.integrate_bodies(step);
         stats.movement += movement_started.elapsed();
 
-        let ability_started = Instant::now();
+        let ability_started = Stopwatch::start();
         // Before the class tick and before the cast, because a Shield Charge in flight is a
         // movement that this tick's abilities are aimed from: the Warrior has to have
         // arrived before anything decides what is in range.
@@ -1209,7 +1239,7 @@ impl Simulation {
         self.drop_invalid_target();
         stats.abilities += ability_started.elapsed();
 
-        let status_started = Instant::now();
+        let status_started = Stopwatch::start();
         self.tick_statuses(step);
         // An effect that changes the player's stats may have expired this tick; one that
         // changes a monster's attack speed is pushed into its mind, whoever applied it.
@@ -1229,7 +1259,7 @@ impl Simulation {
         // has to be this tick's, after everything that could have killed them has run.
         self.tick_respawn(step);
 
-        let telemetry_started = Instant::now();
+        let telemetry_started = Stopwatch::start();
         self.flush_observations();
         self.sample_fire_counters(step);
         stats.telemetry += telemetry_started.elapsed();

@@ -34,6 +34,8 @@ Desktop.ini
 # designer built, and losing it loses the level. Everything else under assets/ is binary
 # content that lives beside the repository.
 !/assets/scenes/
+# The character and dungeon catalogs are data the server, client and API compile in.
+!/assets/catalog/
 # The editor's crash-recovery copies: rewritten every couple of minutes on one machine, and
 # meaningless anywhere else. The level itself is the file without `.autosave`.
 /assets/scenes/*.autosave.json

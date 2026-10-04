@@ -18,6 +18,15 @@ members = [
     "crates/engine-environment",
     # Gameplay. Depends on engine-core alone; see its lib docs for why that is the point.
     "crates/engine-game",
+    # The realm's rules: catalogs, matchmaking, party and instance state machines, movement
+    # validation. Shared by the SpacetimeDB module, the client and the persistence API, so it
+    # does no I/O at all and compiles to wasm32.
+    "crates/engine-realm",
+    # The client's network layer: realm API + SpacetimeDB on a background thread, surfaced as
+    # plain events. No `windows`, no renderer, no UI.
+    "crates/engine-net",
+    # Headless realm bots for local multiplayer and end-to-end tests. Development only.
+    "crates/engine-realm-testclient",
     # Effects as data and the runtime that plays them. engine-core and engine-render-data
     # only: no gameplay, no device, so the whole VFX runtime is tested without either.
     "crates/engine-vfx",
@@ -73,6 +82,10 @@ engine-collision = { path = "crates/engine-collision" }
 engine-environment = { path = "crates/engine-environment" }
 # The gameplay simulation. Must never gain a `windows`, renderer or render-data dependency.
 engine-game = { path = "crates/engine-game" }
+# The realm's shared rules. Must never gain `windows`, a renderer, a network or a database.
+engine-realm = { path = "crates/engine-realm" }
+# The client's network layer. Must never gain `windows`, a renderer or presentation.
+engine-net = { path = "crates/engine-net" }
 engine-presentation = { path = "crates/engine-presentation" }
 engine-editor = { path = "crates/engine-editor" }
 # Effects as data and their runtime. Must never gain `windows`, `engine-renderer`,

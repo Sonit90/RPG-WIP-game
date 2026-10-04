@@ -789,6 +789,63 @@ pub enum InputEvent {
         /// Whether focus was gained.
         focused: bool,
     },
+    /// The keyboard produced a character, after layout, shift state and dead keys.
+    ///
+    /// What a text field types — never what gameplay binds, which reads keys. Editing
+    /// controls arrive here too, auto-repeated the way the OS repeats them: backspace
+    /// (`'\u{8}'`), tab (`'\t'`), enter (`'\r'`), escape (`'\u{1b}'`) and Ctrl+V (`'\u{16}'`).
+    Text {
+        /// The character.
+        character: char,
+    },
+}
+
+/// The characters typed during one frame.
+///
+/// Fixed capacity so [`InputState`] stays `Copy` and allocation-free. Thirty-two characters a
+/// frame is far beyond typing speed; a paste goes through the clipboard, not through here, so
+/// the cap only ever drops keyboard-mashing at single-digit frame rates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TypedText {
+    characters: [char; 32],
+    len: u8,
+}
+
+impl Default for TypedText {
+    fn default() -> Self {
+        Self {
+            characters: ['\0'; 32],
+            len: 0,
+        }
+    }
+}
+
+impl TypedText {
+    /// Adds one character; silently drops it once full.
+    pub fn push(&mut self, character: char) {
+        let len = usize::from(self.len);
+        if len < self.characters.len() {
+            self.characters[len] = character;
+            self.len += 1;
+        }
+    }
+
+    /// The characters, in the order they were typed.
+    #[must_use]
+    pub fn as_slice(&self) -> &[char] {
+        &self.characters[..usize::from(self.len)]
+    }
+
+    /// Whether nothing was typed.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    /// Forgets everything.
+    pub fn clear(&mut self) {
+        self.len = 0;
+    }
 }
 
 /// Mouse position, buttons and per-frame deltas.
@@ -839,6 +896,8 @@ pub struct InputState {
     mouse: MouseState,
     /// Whether the window had keyboard focus at the last event.
     focused: bool,
+    /// Characters typed this frame.
+    typed: TypedText,
 }
 
 impl InputState {
@@ -850,6 +909,7 @@ impl InputState {
             previous_keys: KeySet::new(),
             mouse: MouseState::default(),
             focused: true,
+            typed: TypedText::default(),
         }
     }
 
@@ -862,6 +922,7 @@ impl InputState {
         self.mouse.previous_buttons = self.mouse.buttons;
         self.mouse.delta = (0, 0);
         self.mouse.wheel = 0.0;
+        self.typed.clear();
     }
 
     /// Applies one platform event.
@@ -888,7 +949,14 @@ impl InputState {
                     self.release_all();
                 }
             }
+            InputEvent::Text { character } => self.typed.push(character),
         }
+    }
+
+    /// The characters typed this frame, editing controls included.
+    #[must_use]
+    pub fn typed(&self) -> &[char] {
+        self.typed.as_slice()
     }
 
     /// Whether the key is held right now.

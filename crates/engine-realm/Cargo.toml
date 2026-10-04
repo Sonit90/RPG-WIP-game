@@ -1,0 +1,29 @@
+[package]
+name = "engine-realm"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+# The realm's rules: what a character and a dungeon are, how a queue becomes a party, what a
+# party may do, how an instance lives and dies, and how one movement input is applied.
+#
+# Pure logic, shared by three programs that must agree: the SpacetimeDB module (compiled to
+# wasm32), the game client (prediction) and the persistence API (gear score, loadout
+# validation). So it depends on the simulation-side crates and nothing that does I/O: no
+# `windows`, no renderer, no network, no SpacetimeDB. Every rule is tested natively here.
+[dependencies]
+engine-collision = { workspace = true }
+engine-core = { workspace = true }
+engine-environment = { workspace = true }
+engine-game = { workspace = true }
+log = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+
+[lints]
+workspace = true
+
+[features]
+# Compile the level files into the crate, for a server with no filesystem (the realm module).
+embedded-scenes = []

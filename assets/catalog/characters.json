@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "characters": [
+    {
+      "id": "warrior",
+      "name": "Warrior",
+      "class": "Warrior",
+      "hero": "warrior",
+      "roles": ["tank"],
+      "starter": true,
+      "description": "Plate and shield. Blocks, parries and dodges into Deflection, and holds the enemy's attention."
+    },
+    {
+      "id": "druid",
+      "name": "Druid",
+      "class": "Druid",
+      "hero": "druid",
+      "roles": ["healer", "dps"],
+      "starter": true,
+      "description": "Moon, stars and a heal that is not a cooldown. Keeps the party standing or burns from range."
+    },
+    {
+      "id": "firemage",
+      "name": "Fire Mage",
+      "class": "Mage",
+      "hero": "firemage",
+      "roles": ["dps"],
+      "starter": true,
+      "description": "Ranged fire. Banks a burn with Heat and Ignite, then spends it all at once."
+    }
+  ]
+}

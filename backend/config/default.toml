@@ -1,0 +1,64 @@
+# Base configuration for generic auth service.
+# Values can be overridden by env vars of the form APP__SECTION__KEY
+# (double underscores delimit nesting). Example: APP__HTTP__BIND.
+
+[http]
+bind = "0.0.0.0:8080"
+public_url = "http://127.0.0.1:8080"
+request_timeout_secs = 30
+
+[db]
+# url MUST come from DATABASE_URL env var (or APP__DB__URL).
+max_connections = 20
+min_connections = 2
+acquire_timeout_secs = 10
+run_migrations_on_start = true
+
+[auth]
+# jwt_secret MUST come from APP__AUTH__JWT_SECRET env var (HMAC for email codes only).
+# Access tokens are ES256: issuer defaults to http.public_url; the private key comes from
+# APP__AUTH__JWT_PRIVATE_KEY_PEM or APP__AUTH__JWT_PRIVATE_KEY_PATH (dev creates the file).
+jwt_issuer = ""
+jwt_audience = "mygame-realm"
+jwt_key_id = "realm-1"
+jwt_private_key_path = "data/jwt_es256.pem"
+jwt_access_ttl_min = 30
+jwt_refresh_ttl_days = 14
+password_min_length = 8
+
+# Email verification codes (6-digit). Hashed with HMAC keyed by jwt_secret.
+email_code_ttl_min = 15
+email_code_max_attempts = 5
+# First resend is free; subsequent resends throttled by this cooldown.
+email_code_resend_cooldown_secs = 15
+email_code_max_per_hour = 5
+
+[auth.google]
+client_id = ""
+client_secret = ""
+redirect_url = "http://localhost:8080/api/v1/auth/oauth/google/callback"
+
+[cors]
+# Empty list = no CORS headers added. Use ["*"] only in dev.
+allowed_origins = []
+
+[email]
+# SMTP_HOST blank → dev mode, verification link logged to stdout instead of sent.
+# Works with any SMTP provider: set smtp_host, smtp_port, smtp_username, smtp_password.
+#   Mailjet:  smtp_host = "in-v3.mailjet.com",  smtp_port = 587
+#   SendGrid: smtp_host = "smtp.sendgrid.net",  smtp_port = 587
+#   Mailgun:  smtp_host = "smtp.mailgun.org",   smtp_port = 587
+smtp_host = ""
+smtp_port = 587
+smtp_username = ""
+smtp_password = ""
+from_email = "noreply@example.com"
+from_name = "Auth Service"
+
+[realm]
+# The SpacetimeDB realm this service bridges to. SPACETIMEDB_URL / SPACETIMEDB_DATABASE override.
+enabled = true
+spacetimedb_url = "http://127.0.0.1:3000"
+spacetimedb_database = "realm"
+service_subject = "service:realm-bridge"
+result_poll_secs = 5
