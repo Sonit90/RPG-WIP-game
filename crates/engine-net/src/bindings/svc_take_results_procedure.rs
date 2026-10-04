@@ -26,10 +26,8 @@ pub trait svc_take_results {
     fn svc_take_results_then(
         &self,
 
-        __callback: impl FnOnce(
-                &super::ProcedureEventContext,
-                Result<Result<Vec<PendingResult>, String>, __sdk::InternalError>,
-            ) + Send
+        __callback: impl FnOnce(&super::ProcedureEventContext, Result<Vec<PendingResult>, __sdk::InternalError>)
+            + Send
             + 'static,
     );
 }
@@ -38,14 +36,12 @@ impl svc_take_results for super::RemoteProcedures {
     fn svc_take_results_then(
         &self,
 
-        __callback: impl FnOnce(
-                &super::ProcedureEventContext,
-                Result<Result<Vec<PendingResult>, String>, __sdk::InternalError>,
-            ) + Send
+        __callback: impl FnOnce(&super::ProcedureEventContext, Result<Vec<PendingResult>, __sdk::InternalError>)
+            + Send
             + 'static,
     ) {
         self.imp
-            .invoke_procedure_with_callback::<_, Result<Vec<PendingResult>, String>>(
+            .invoke_procedure_with_callback::<_, Vec<PendingResult>>(
                 "svc_take_results",
                 SvcTakeResultsArgs {},
                 __callback,

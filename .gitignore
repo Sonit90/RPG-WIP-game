@@ -42,3 +42,6 @@ Desktop.ini
 # Generated starter content is reproducible - `cargo run --bin asset_gen` writes all of it -
 # so it is treated as build output rather than as source.
 /assets/generated/
+
+# Local online stack: SpacetimeDB data and logs written by tools/realm-dev.ps1.
+/.realm-dev/
