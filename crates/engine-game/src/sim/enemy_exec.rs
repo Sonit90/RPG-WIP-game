@@ -1824,7 +1824,8 @@ impl Simulation {
     ///
     /// Returns whether anybody dropped a fight this tick.
     fn evade_on_wipe(&mut self) -> bool {
-        if self.world.is_alive(self.player.entity) {
+        // A wipe is every player down; one dead player is a fight still going.
+        if !self.all_players_dead() {
             return false;
         }
         let mut evaded = Vec::new();

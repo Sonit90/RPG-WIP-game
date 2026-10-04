@@ -75,6 +75,8 @@ pub mod enemy_exec;
 mod firemage_exec;
 /// The test bed's controls: reset the player, dismiss chosen enemies, find standing ground.
 mod playground_exec;
+/// More than one player in one simulation: per-player state swapped in and out.
+pub mod players;
 pub mod respawn;
 /// Casting the Warrior: Deflection, the incoming-damage pipeline and the charge.
 mod warrior_exec;
@@ -545,6 +547,8 @@ pub struct Simulation {
     last_active_stats: SimStats,
     /// Who the player is grouped with. The local player is always its first member.
     party: Party,
+    /// Every player but the active one. See [`players`].
+    others: Vec<Option<players::PlayerSlot>>,
     /// Seconds of out-of-combat time since the last regeneration tick.
     ///
     /// Regeneration happens once a second rather than every simulation tick: one heal of a
@@ -655,6 +659,7 @@ impl Simulation {
             stats: SimStats::default(),
             last_active_stats: SimStats::default(),
             party: Party::new(),
+            others: Vec::new(),
         }
     }
 
@@ -1184,7 +1189,7 @@ impl Simulation {
         }
         let time = self.time;
         let cursor = self.observed;
-        self.meter.observe(self.events.events_after(cursor), time);
+        self.for_each_player(|sim| sim.meter.observe(sim.events.events_after(cursor), time));
         self.observed = self.events.len();
     }
 
@@ -1199,7 +1204,7 @@ impl Simulation {
         // gameplay reads the result.
         self.world.begin_tick();
 
-        self.apply_pending_commands();
+        self.for_each_player(Self::apply_pending_commands);
 
         // Before movement, so an intent decided this tick is walked this tick. AI is its own
         // stage in the timings because "what does thinking cost" is the question the stress
@@ -1224,44 +1229,48 @@ impl Simulation {
         stats.movement += movement_started.elapsed();
 
         let ability_started = Stopwatch::start();
-        // Before the class tick and before the cast, because a Shield Charge in flight is a
-        // movement that this tick's abilities are aimed from: the Warrior has to have
-        // arrived before anything decides what is in range.
-        self.tick_warrior(step);
-        self.tick_firemage(step);
-        // Before the cast, so a Tranquility that finishes this tick has already paid out the
-        // pulse that fell on the same step.
-        self.tick_druid(step);
-        // After the frame's commands have been applied — an instant ability used this tick
-        // has already interrupted any cast — and before statuses, so a cast that lands this
-        // tick applies its damage before this tick's burns.
-        self.tick_cast(step);
-        self.drop_invalid_target();
+        self.for_each_player(|sim| {
+            // Before the class tick and before the cast, because a Shield Charge in flight is
+            // a movement that this tick's abilities are aimed from: the Warrior has to have
+            // arrived before anything decides what is in range.
+            sim.tick_warrior(step);
+            sim.tick_firemage(step);
+            // Before the cast, so a Tranquility that finishes this tick has already paid out
+            // the pulse that fell on the same step.
+            sim.tick_druid(step);
+            // After the frame's commands have been applied — an instant ability used this
+            // tick has already interrupted any cast — and before statuses, so a cast that
+            // lands this tick applies its damage before this tick's burns.
+            sim.tick_cast(step);
+            sim.drop_invalid_target();
+        });
         stats.abilities += ability_started.elapsed();
 
         let status_started = Stopwatch::start();
         self.tick_statuses(step);
         // An effect that changes the player's stats may have expired this tick; one that
         // changes a monster's attack speed is pushed into its mind, whoever applied it.
-        self.sync_effect_stats();
-        self.sync_war_stomp();
+        self.for_each_player(|sim| {
+            sim.sync_effect_stats();
+            sim.sync_war_stomp();
+        });
         stats.statuses += status_started.elapsed();
 
-        // After combat, so a tick that took damage cannot also regenerate from it.
-        self.tick_regeneration(step);
-        self.tick_spirit(step);
-
-        // Before the respawn clock, because falling out of the world is one of the things
-        // that could have killed the player this tick.
-        self.tick_void(step);
-
-        // Last of all, because it asks one question — is the player alive — and the answer
-        // has to be this tick's, after everything that could have killed them has run.
-        self.tick_respawn(step);
+        self.for_each_player(|sim| {
+            // After combat, so a tick that took damage cannot also regenerate from it.
+            sim.tick_regeneration(step);
+            sim.tick_spirit(step);
+            // Before the respawn clock, because falling out of the world is one of the
+            // things that could have killed the player this tick.
+            sim.tick_void(step);
+            // Last of all, because it asks one question — is the player alive — and the
+            // answer has to be this tick's, after everything that could have killed them.
+            sim.tick_respawn(step);
+        });
 
         let telemetry_started = Stopwatch::start();
         self.flush_observations();
-        self.sample_fire_counters(step);
+        self.for_each_player(|sim| sim.sample_fire_counters(step));
         stats.telemetry += telemetry_started.elapsed();
     }
 
@@ -1576,8 +1585,6 @@ impl Simulation {
     /// still on a flat floor, so a collision query per dummy per tick would buy nothing at
     /// 1,000 of them.
     fn integrate_bodies(&mut self, step: f32) {
-        let player = self.player.entity;
-        let intent = self.intent;
         let config = self.config.movement;
         let character = self.config.character;
 
@@ -1585,7 +1592,7 @@ impl Simulation {
             let Some(id) = self.world.id_at(slot) else {
                 continue;
             };
-            if id == player {
+            if self.is_player_entity(id) {
                 continue;
             }
             // An enemy walks with the intent its brain decided; everything else stands
@@ -1640,6 +1647,16 @@ impl Simulation {
                 movement::step(body, MoveIntent::NONE, &config, step);
             }
         }
+
+        self.for_each_player(|sim| sim.integrate_player(step));
+    }
+
+    /// Moves the active player one tick with their own intent, through the collided step.
+    fn integrate_player(&mut self, step: f32) {
+        let player = self.player.entity;
+        let intent = self.intent;
+        let config = self.config.movement;
+        let character = self.config.character;
 
         // A dead player is a body, not a character: it keeps falling and sliding to a stop
         // under the same controller, and it stops steering. Refusing abilities is
@@ -2408,6 +2425,14 @@ impl Simulation {
         // A boss behind a sealed gate cannot be hurt: it is not in the fight yet, and a bolt
         // through the bars would start one the dungeon has not allowed.
         if self.is_sealed(target) {
+            return;
+        }
+        // With several players, the one being hit (their defences) or the one hitting (their
+        // procs and resources) is made active first. A single-player simulation never swaps.
+        if let Some(player) = self.context_player(source, target) {
+            let _ = self.with_player(player, |sim| {
+                sim.deal_damage(source, target, amount, ability, damage_type, critical);
+            });
             return;
         }
         // Every effect that changes damage, from the registry: what the target's effects make

@@ -139,9 +139,7 @@ impl Simulation {
             *slot = None;
         }
         self.world.despawn(entity);
-        if self.player.target == Some(entity) {
-            self.player.target = None;
-        }
+        self.forget_target_everywhere(entity);
     }
 
     /// Takes every enemy, every encounter and the dungeon run out of the simulation.
