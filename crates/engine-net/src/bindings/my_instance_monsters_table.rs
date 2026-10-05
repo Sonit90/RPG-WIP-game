@@ -3,6 +3,9 @@
 
 #![allow(unused, clippy::all)]
 use super::instance_monster_type::InstanceMonster;
+use super::net_cast_type::NetCast;
+use super::net_entity_type::NetEntity;
+use super::net_status_type::NetStatus;
 use super::v_3_type::V3;
 use spacetimedb_sdk::__codegen::{self as __sdk, __lib, __sats, __ws};
 

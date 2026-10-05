@@ -4,6 +4,9 @@
 #![allow(unused, clippy::all)]
 use spacetimedb_sdk::__codegen::{self as __sdk, __lib, __sats, __ws};
 
+use super::net_cast_type::NetCast;
+use super::net_entity_type::NetEntity;
+use super::net_status_type::NetStatus;
 use super::v_3_type::V3;
 
 #[derive(__lib::ser::Serialize, __lib::de::Deserialize, Clone, PartialEq, Debug)]
@@ -20,6 +23,11 @@ pub struct InstanceMonster {
     pub level: u32,
     pub health: f32,
     pub max_health: f32,
+    pub key: u64,
+    pub alive: bool,
+    pub target: NetEntity,
+    pub cast: Option<NetCast>,
+    pub statuses: Vec<NetStatus>,
 }
 
 impl __sdk::InModule for InstanceMonster {
@@ -41,6 +49,11 @@ pub struct InstanceMonsterCols {
     pub level: __sdk::__query_builder::Col<InstanceMonster, u32>,
     pub health: __sdk::__query_builder::Col<InstanceMonster, f32>,
     pub max_health: __sdk::__query_builder::Col<InstanceMonster, f32>,
+    pub key: __sdk::__query_builder::Col<InstanceMonster, u64>,
+    pub alive: __sdk::__query_builder::Col<InstanceMonster, bool>,
+    pub target: __sdk::__query_builder::Col<InstanceMonster, NetEntity>,
+    pub cast: __sdk::__query_builder::Col<InstanceMonster, Option<NetCast>>,
+    pub statuses: __sdk::__query_builder::Col<InstanceMonster, Vec<NetStatus>>,
 }
 
 impl __sdk::__query_builder::HasCols for InstanceMonster {
@@ -58,6 +71,11 @@ impl __sdk::__query_builder::HasCols for InstanceMonster {
             level: __sdk::__query_builder::Col::new(table_name, "level"),
             health: __sdk::__query_builder::Col::new(table_name, "health"),
             max_health: __sdk::__query_builder::Col::new(table_name, "max_health"),
+            key: __sdk::__query_builder::Col::new(table_name, "key"),
+            alive: __sdk::__query_builder::Col::new(table_name, "alive"),
+            target: __sdk::__query_builder::Col::new(table_name, "target"),
+            cast: __sdk::__query_builder::Col::new(table_name, "cast"),
+            statuses: __sdk::__query_builder::Col::new(table_name, "statuses"),
         }
     }
 }
@@ -68,6 +86,7 @@ impl __sdk::__query_builder::HasCols for InstanceMonster {
 pub struct InstanceMonsterIxCols {
     pub id: __sdk::__query_builder::IxCol<InstanceMonster, u64>,
     pub instance_id: __sdk::__query_builder::IxCol<InstanceMonster, u64>,
+    pub key: __sdk::__query_builder::IxCol<InstanceMonster, u64>,
 }
 
 impl __sdk::__query_builder::HasIxCols for InstanceMonster {
@@ -76,6 +95,7 @@ impl __sdk::__query_builder::HasIxCols for InstanceMonster {
         InstanceMonsterIxCols {
             id: __sdk::__query_builder::IxCol::new(table_name, "id"),
             instance_id: __sdk::__query_builder::IxCol::new(table_name, "instance_id"),
+            key: __sdk::__query_builder::IxCol::new(table_name, "key"),
         }
     }
 }

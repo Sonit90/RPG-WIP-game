@@ -56,7 +56,7 @@ Dependency rules from `docs/architecture.md` still hold: `engine-game`, `engine-
 | Machine settings (display, resolution, graphics) | Client `settings.cfg` | Never uploaded |
 | Queue, parties, ready checks, leaders | Realm | |
 | Instances, runtime positions, HP, barrier, countdown | Realm | |
-| Monster runtime state | Realm | Static until server combat (Phase 9) |
+| Monster runtime state, combat (casts, cooldowns, resources, statuses, threat) | Realm | The server's `Simulation`; rows are its projection |
 | Pending results (outbox) | Realm until acknowledged | Then API |
 
 A character enters the realm as a **snapshot** taken by the API at queue time (id, name,
@@ -73,6 +73,7 @@ Clients send **intent**, never state:
 | "accept / decline the ready check" | outcome, re-queue, leader (random, server-side) |
 | "start", "kick X", "make X leader", "leave" | authorization via `engine_realm::party::authorize` |
 | input frames: axes, camera yaw, jump, sequence number | position, velocity, collision, barrier, speed |
+| "press bar slot N (at point P) with target T" | whether it casts, every hit, heal, status, death, completion |
 | "what time is it" | the server clock |
 
 There is no message that carries a position, a health value, a gear score, a reward or a
@@ -100,14 +101,16 @@ reducer / scheduled tick ─► private tables ─► caller-scoped views (my_*)
 ```text
 client tick (60 Hz)  intent ─► Simulation (predicted) ─► InputFrame{seq} ─► outbox (~30 Hz send)
 realm move_input     drop stale/malformed ─► InputBudget (60/s of server time, burst 12)
-                     ─► engine_realm::movement::apply_input × N ─► row {pos, vel, last_seq}
+                     ─► the instance's fight: Simulation::drive_player × N ─► row {pos, vel, last_seq}
 client               row ─► Prediction::reconcile (rewind, replay unacked) ─► body
 others               rows ─► SnapshotBuffer ─► drawn 100 ms behind, interpolated
 ```
 
-Server and client integrate with the same function (`engine_game::movement::step_collided`
-via `apply_input`) against the same collision (`LevelGeometry::build`, the same
-`engine_game::arena` builders the offline game uses, plus barrier boxes). A speed hack —
+Server and client integrate with the same collided step (`engine_game::movement::
+step_collided`) against the same collision (the `engine_game::arena` builders the offline game
+uses, plus the start barrier while it stands). The server moves each player through the fight
+itself (`drive_player`), so speed effects, death, the boss gate and the barrier apply. Combat
+is described in [DUNGEON_INSTANCES.md](DUNGEON_INSTANCES.md#server-combat). A speed hack —
 oversized axes or frames faster than real time — is clamped and budgeted; the security
 scenario floods 16-frame messages with axis 50 and checks the distance stays within real
 time.

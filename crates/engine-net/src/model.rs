@@ -11,9 +11,11 @@
 //! state, a remote player's position are what the server last said they were.
 
 use std::collections::BTreeMap;
+use std::time::Instant;
 
 use engine_core::math::Vec3;
 use engine_realm::Micros;
+use engine_realm::combat::{CastState, CooldownState, EntityRef, Resources, StatusState, WireEvent};
 use engine_realm::Role;
 use engine_realm::instance::InstanceState;
 use engine_realm::party::{PartyState, ReadyResponse};
@@ -135,7 +137,9 @@ pub struct RemotePlayerState {
 /// One monster in the instance.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MonsterInfo {
-    /// Monster id.
+    /// Its key in the fight: how events and actions name it.
+    pub key: u64,
+    /// Row id.
     pub id: u64,
     /// The archetype key.
     pub archetype: String,
@@ -153,6 +157,52 @@ pub struct MonsterInfo {
     pub health: f32,
     /// Maximum health.
     pub max_health: f32,
+    /// Alive.
+    pub alive: bool,
+    /// Whom it is fighting.
+    pub target: EntityRef,
+    /// What it is casting, as of `received`.
+    pub cast: Option<CastState>,
+    /// Statuses on it, as of `received`.
+    pub statuses: Vec<StatusState>,
+    /// When this row arrived, so timers can run down until the next.
+    pub received: Instant,
+}
+
+/// One player's combat state beyond health and position.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PlayerCombatInfo {
+    /// Their account.
+    pub account_id: String,
+    /// Alive.
+    pub alive: bool,
+    /// Their selection.
+    pub target: EntityRef,
+    /// Their cast, as of `received`.
+    pub cast: Option<CastState>,
+    /// Their resources.
+    pub resources: Resources,
+    /// Their class's cooldowns, as of `received`.
+    pub cooldowns: Vec<CooldownState>,
+    /// Statuses on them, as of `received`.
+    pub statuses: Vec<StatusState>,
+    /// When this row arrived.
+    pub received: Instant,
+}
+
+impl PlayerCombatInfo {
+    /// Seconds since the row arrived.
+    #[must_use]
+    pub fn age(&self) -> f32 {
+        self.received.elapsed().as_secs_f32()
+    }
+
+    /// `ability`'s cooldown now: charges, and seconds to the next.
+    #[must_use]
+    pub fn cooldown(&self, ability: u16) -> Option<(u8, f32)> {
+        let state = self.cooldowns.iter().find(|c| c.ability == ability)?;
+        Some((state.charges, (state.recharge - self.age()).max(0.0)))
+    }
 }
 
 /// How a notice should be shown.
@@ -211,8 +261,14 @@ pub enum RealmUpdate {
     PlayerRemoved(String),
     /// One monster inserted or changed.
     MonsterUpsert(MonsterInfo),
-    /// One monster gone.
+    /// One monster gone, by key.
     MonsterRemoved(u64),
+    /// One player's combat row inserted or changed.
+    CombatUpsert(PlayerCombatInfo),
+    /// One player's combat row gone.
+    CombatRemoved(String),
+    /// What happened in one combat pass, in order.
+    CombatEvents(Vec<WireEvent>),
     /// One notice arrived.
     NoticeAdded(Notice),
     /// One notice expired or was dismissed.
@@ -236,8 +292,12 @@ pub struct RealmMirror {
     pub instance: Option<InstanceInfo>,
     /// The instance's players, by account id.
     pub players: BTreeMap<String, RemotePlayerState>,
-    /// The instance's monsters, by id.
+    /// The instance's monsters, by key.
     pub monsters: BTreeMap<u64, MonsterInfo>,
+    /// Every player's combat state, by account id.
+    pub combat: BTreeMap<String, PlayerCombatInfo>,
+    /// Combat events not yet taken by the game, oldest first.
+    pub events: Vec<WireEvent>,
     /// Unread notices, oldest first.
     pub notices: Vec<Notice>,
     /// Queue counts per dungeon id.
@@ -267,6 +327,8 @@ impl RealmMirror {
                 if instance.is_none() {
                     self.players.clear();
                     self.monsters.clear();
+                    self.combat.clear();
+                    self.events.clear();
                 }
                 self.instance = instance;
             }
@@ -277,10 +339,23 @@ impl RealmMirror {
                 self.players.remove(&account_id);
             }
             RealmUpdate::MonsterUpsert(monster) => {
-                self.monsters.insert(monster.id, monster);
+                self.monsters.insert(monster.key, monster);
             }
-            RealmUpdate::MonsterRemoved(id) => {
-                self.monsters.remove(&id);
+            RealmUpdate::MonsterRemoved(key) => {
+                self.monsters.remove(&key);
+            }
+            RealmUpdate::CombatUpsert(combat) => {
+                self.combat.insert(combat.account_id.clone(), combat);
+            }
+            RealmUpdate::CombatRemoved(account_id) => {
+                self.combat.remove(&account_id);
+            }
+            RealmUpdate::CombatEvents(events) => {
+                // Bounded: a game that stopped reading (a minimised client) must not grow
+                // this forever. What is dropped is old effects, never state.
+                self.events.extend(events);
+                let excess = self.events.len().saturating_sub(4096);
+                self.events.drain(..excess);
             }
             RealmUpdate::NoticeAdded(notice) => {
                 if !self.notices.iter().any(|existing| existing.id == notice.id) {
@@ -321,6 +396,17 @@ impl RealmMirror {
             (Some(party), Some(me)) => party.leader.as_deref() == Some(me),
             _ => false,
         }
+    }
+
+    /// Takes the combat events that arrived since the last call.
+    pub fn take_events(&mut self) -> Vec<WireEvent> {
+        std::mem::take(&mut self.events)
+    }
+
+    /// The local player's combat state.
+    #[must_use]
+    pub fn my_combat(&self) -> Option<&PlayerCombatInfo> {
+        self.combat.get(self.my_account_id()?)
     }
 
     /// Everyone else in the instance.

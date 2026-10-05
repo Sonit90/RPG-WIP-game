@@ -20,7 +20,11 @@
 //!   still decides where the player is;
 //! * other players are drawn where the server said they were, interpolated (`engine_net::
 //!   interpolation`), never simulated;
-//! * monsters are the server's rows, placed and posed, with no client AI;
+//! * monsters are the server's rows, placed, posed and interpolated, with no client AI;
+//! * the fight is the server's: the simulation runs under a remote authority
+//!   (`Simulation::set_remote_authority`), so an ability press becomes a `combat_act`
+//!   request, and health, casts, cooldowns, resources and statuses are laid into the world
+//!   from the server's rows, its events injected for effects, numbers and sound;
 //! * nothing here can change HP, cooldowns, rewards or the party: those are requests.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -29,7 +33,10 @@ use std::time::{Duration, Instant};
 use engine_collision::world::{QueryBuffers, StaticId};
 use engine_core::math::Vec3;
 use engine_game::combat::Faction;
-use engine_game::enemy::EnemyKind;
+use engine_game::enemy::{EnemyAbility, EnemyKind};
+use engine_game::firemage::FireAbility;
+use engine_game::sim::remote::{PresentedResources, PresentedStatus};
+use engine_game::status::StatusKind;
 use engine_game::hero::Hero;
 use engine_game::movement::{Body, MovementState};
 use engine_game::sim::dungeon_exec::EnemySpawnOptions;
@@ -50,6 +57,7 @@ use engine_presentation::ui::frontend::{
 };
 use engine_realm::api::CharacterSummary;
 use engine_realm::catalog::Catalog;
+use engine_realm::combat::{AbilityRef, ActionKind, CombatAction, EntityRef, StatusState};
 use engine_realm::instance::{Countdown, CountdownDisplay};
 use engine_realm::matchmaking::MatchmakingConfig;
 use engine_realm::movement::{BarrierKind, MovementRules, barriers_of};
@@ -149,16 +157,24 @@ struct RemoteEntity {
     definition: String,
 }
 
+/// One monster, as the world shows it.
+struct MonsterEntity {
+    entity: EntityId,
+    buffer: SnapshotBuffer,
+    last: Option<(Vec3, f32)>,
+}
+
 /// The realm's instance, mirrored into the local simulation.
 #[derive(Default)]
 struct WorldLink {
     instance: Option<u64>,
     remotes: BTreeMap<String, RemoteEntity>,
-    monsters: BTreeMap<u64, EntityId>,
+    monsters: BTreeMap<u64, MonsterEntity>,
     barrier: Option<StaticId>,
     prediction: Option<Prediction>,
     pending_jump: bool,
     last_reconciled_seq: u32,
+    last_authoritative: Option<(Vec3, f32)>,
     last_send: Option<Instant>,
     buffers: Option<QueryBuffers>,
 }
@@ -921,6 +937,9 @@ impl OnlineSession {
             self.leave_world(simulation, extractor);
             self.world.instance = Some(instance.id);
             log::info!("online: entering instance {}", instance.id);
+            // The server runs this fight; the local simulation predicts movement and
+            // presents what the server decides.
+            simulation.set_remote_authority(true);
             // The offline level's training dummies are not part of a realm dungeon: every
             // entity here besides the local player comes from the server.
             let player = simulation.player().entity;
@@ -1039,6 +1058,7 @@ impl OnlineSession {
                 body.facing_yaw = yaw;
                 body.grounded = other.grounded;
             }
+            simulation.present_health(remote.entity, other.health, other.max_health);
             extractor.set_remote_frame(
                 remote.entity,
                 RemoteFrame {
@@ -1052,22 +1072,22 @@ impl OnlineSession {
             );
         }
 
-        // Monsters: the server's rows, posed. No client AI decides anything about them.
+        // Monsters: the server's rows, interpolated. No client AI decides anything about them.
         let monsters = self.mirror.monsters.clone();
         let gone: Vec<u64> = self
             .world
             .monsters
             .keys()
-            .filter(|id| !monsters.contains_key(id))
+            .filter(|key| !monsters.contains_key(key))
             .copied()
             .collect();
-        for id in gone {
-            if let Some(entity) = self.world.monsters.remove(&id) {
-                simulation.world_mut().despawn(entity);
+        for key in gone {
+            if let Some(monster) = self.world.monsters.remove(&key) {
+                simulation.world_mut().despawn(monster.entity);
             }
         }
-        for (id, monster) in &monsters {
-            if !self.world.monsters.contains_key(id) {
+        for (key, monster) in &monsters {
+            if !self.world.monsters.contains_key(key) {
                 let Some(kind) = EnemyKind::from_id(&monster.archetype) else {
                     continue;
                 };
@@ -1079,23 +1099,47 @@ impl OnlineSession {
                     ..EnemySpawnOptions::default()
                 };
                 let entity = simulation.spawn_enemy_with(kind, monster.position, monster.yaw, &options);
-                self.world.monsters.insert(*id, entity);
+                self.world.monsters.insert(
+                    *key,
+                    MonsterEntity {
+                        entity,
+                        buffer: SnapshotBuffer::default(),
+                        last: None,
+                    },
+                );
             }
-            if let Some(entity) = self.world.monsters.get(id)
-                && let Some(body) = simulation.world_mut().body_mut(*entity)
-            {
-                body.position = monster.position;
+            let Some(entry) = self.world.monsters.get_mut(key) else {
+                continue;
+            };
+            if entry.last != Some((monster.position, monster.yaw)) {
+                entry.last = Some((monster.position, monster.yaw));
+                entry.buffer.push(now_seconds, monster.position, monster.yaw);
+            }
+            let (position, yaw) = entry
+                .buffer
+                .sample(now_seconds)
+                .unwrap_or((monster.position, monster.yaw));
+            let entity = entry.entity;
+            if let Some(body) = simulation.world_mut().body_mut(entity) {
+                body.position = position;
                 body.velocity = Vec3::ZERO;
-                body.facing_yaw = monster.yaw;
+                body.facing_yaw = yaw;
             }
+            simulation.present_health(entity, monster.health, monster.max_health);
         }
+        self.present_combat(simulation);
 
         // The local player: reconcile to the latest authoritative row.
+        // On a new acknowledgement, and also when the server moved the player itself — a
+        // respawn, a Blink, a charge, a knock-back — which changes the row but not the
+        // sequence number. Replaying the unacknowledged frames from there is right in both.
         if let Some(me) = self.mirror.me().cloned()
-            && me.last_seq != self.world.last_reconciled_seq
+            && (me.last_seq != self.world.last_reconciled_seq
+                || self.world.last_authoritative != Some((me.position, me.yaw)))
             && let Some(prediction) = self.world.prediction.as_mut()
         {
             self.world.last_reconciled_seq = me.last_seq;
+            self.world.last_authoritative = Some((me.position, me.yaw));
             let rules = MovementRules {
                 movement: simulation.config().movement,
                 character: simulation.config().character,
@@ -1160,14 +1204,180 @@ impl OnlineSession {
         }
     }
 
+    /// The entity the wire's `reference` names in this world.
+    fn resolve(&self, simulation: &Simulation, reference: &EntityRef) -> Option<EntityId> {
+        match reference {
+            EntityRef::None => None,
+            EntityRef::Player(account) if Some(account.as_str()) == self.mirror.my_account_id() => {
+                Some(simulation.player().entity)
+            }
+            EntityRef::Player(account) => self.world.remotes.get(account).map(|r| r.entity),
+            EntityRef::Monster(key) => self.world.monsters.get(key).map(|m| m.entity),
+        }
+    }
+
+    /// How the wire names `entity`.
+    fn name_of(&self, simulation: &Simulation, entity: EntityId) -> EntityRef {
+        if entity == simulation.player().entity {
+            return self
+                .mirror
+                .my_account_id()
+                .map_or(EntityRef::None, |me| EntityRef::Player(me.to_owned()));
+        }
+        if let Some((account, _)) = self.world.remotes.iter().find(|(_, r)| r.entity == entity) {
+            return EntityRef::Player(account.clone());
+        }
+        self.world
+            .monsters
+            .iter()
+            .find(|(_, m)| m.entity == entity)
+            .map_or(EntityRef::None, |(key, _)| EntityRef::Monster(*key))
+    }
+
+    fn presented_statuses(&self, simulation: &Simulation, statuses: &[StatusState], age: f32) -> Vec<PresentedStatus> {
+        statuses
+            .iter()
+            .filter_map(|status| {
+                Some(PresentedStatus {
+                    kind: *StatusKind::ALL.get(usize::from(status.kind))?,
+                    source: self.resolve(simulation, &status.source).unwrap_or(EntityId::INVALID),
+                    remaining: (status.remaining - age).max(0.0),
+                    duration: status.duration,
+                    stacks: status.stacks,
+                })
+            })
+            .collect()
+    }
+
+    /// Lays the server's fight into the world: health and statuses on every body, what each
+    /// monster is doing, the local player's cast, cooldowns and resources; then this pass's
+    /// events, and the ability presses the player made, sent as requests.
+    fn present_combat(&mut self, simulation: &mut Simulation) {
+        // Players.
+        let mine = self.mirror.my_account_id().map(str::to_owned);
+        if let Some(me) = self.mirror.me() {
+            let entity = simulation.player().entity;
+            simulation.present_health(entity, me.health, me.max_health);
+        }
+        let combat: Vec<_> = self.mirror.combat.values().cloned().collect();
+        for row in &combat {
+            let reference = EntityRef::Player(row.account_id.clone());
+            let Some(entity) = self.resolve(simulation, &reference) else {
+                continue;
+            };
+            let age = row.age();
+            let statuses = self.presented_statuses(simulation, &row.statuses, age);
+            simulation.present_statuses(entity, &statuses);
+            if Some(&row.account_id) != mine.as_ref() {
+                continue;
+            }
+            let cast = row.cast.and_then(|cast| match cast.ability {
+                AbilityRef::Player(index) => FireAbility::ALL
+                    .get(usize::from(index))
+                    .map(|ability| (*ability, cast.elapsed + age, cast.duration)),
+                _ => None,
+            });
+            simulation.present_cast(cast);
+            let cooldowns: Vec<(FireAbility, u8, f32)> = row
+                .cooldowns
+                .iter()
+                .filter_map(|c| {
+                    let ability = *FireAbility::ALL.get(usize::from(c.ability))?;
+                    Some((ability, c.charges, (c.recharge - age).max(0.0)))
+                })
+                .collect();
+            simulation.present_class_state(
+                &cooldowns,
+                PresentedResources {
+                    heat: row.resources.heat,
+                    energy: row.resources.energy,
+                    mana: row.resources.mana,
+                    deflection: row.resources.deflection,
+                    astral: row.resources.astral,
+                    global_cooldown: (row.resources.global_cooldown - age).max(0.0),
+                },
+            );
+        }
+
+        // Monsters.
+        let monsters: Vec<_> = self.mirror.monsters.values().cloned().collect();
+        for monster in &monsters {
+            let Some(entity) = self.world.monsters.get(&monster.key).map(|m| m.entity) else {
+                continue;
+            };
+            let age = monster.received.elapsed().as_secs_f32();
+            let statuses = self.presented_statuses(simulation, &monster.statuses, age);
+            simulation.present_statuses(entity, &statuses);
+            let target = self.resolve(simulation, &monster.target);
+            let cast = monster.cast.and_then(|cast| match cast.ability {
+                AbilityRef::Monster(index) => EnemyAbility::ALL
+                    .get(usize::from(index))
+                    .map(|ability| (*ability, cast.elapsed + age, cast.duration)),
+                _ => None,
+            });
+            let interruptible = cast.is_some_and(|(ability, _, _)| ability.definition().interruptible);
+            simulation.present_enemy(entity, target, cast, interruptible);
+        }
+
+        // Events, as if they had happened here this frame.
+        let tick = simulation.tick_count();
+        for wire in self.mirror.take_events() {
+            let resolve = |reference: &EntityRef| self.resolve(simulation, reference);
+            if let Some(event) = engine_realm::combat::wire::decode(&wire, &resolve, tick) {
+                simulation.inject_event(event);
+            }
+        }
+
+        // Presses, with the selection they were made against.
+        let requests = simulation.take_remote_requests();
+        if requests.is_empty() || !self.may_act() {
+            return;
+        }
+        let target = simulation
+            .player()
+            .target
+            .map_or(EntityRef::None, |entity| self.name_of(simulation, entity));
+        let slot = |s: usize| u8::try_from(s).unwrap_or(u8::MAX);
+        let at = |p: Vec3| [p.x, p.y, p.z];
+        for request in requests {
+            let kind = match request {
+                engine_game::PlayerCommand::UseAbility(s) => ActionKind::Ability(slot(s)),
+                engine_game::PlayerCommand::UseAbilityAt { slot: s, position } => {
+                    ActionKind::AbilityAt(slot(s), at(position))
+                }
+                engine_game::PlayerCommand::UseUltimate { position } => ActionKind::Ultimate(at(position)),
+                engine_game::PlayerCommand::UseExtra(index) => ActionKind::Extra(slot(index)),
+                _ => continue,
+            };
+            self.client.send(NetCommand::Act(CombatAction {
+                target: target.clone(),
+                kind,
+            }));
+        }
+    }
+
+    /// Whether the run is under way, so a press can mean something.
+    fn may_act(&self) -> bool {
+        self.mirror
+            .instance
+            .as_ref()
+            .is_some_and(|instance| instance.state == engine_realm::instance::InstanceState::Active)
+    }
+
     fn leave_world(&mut self, simulation: &mut Simulation, extractor: &mut engine_presentation::RenderExtractor) {
         for (_, remote) in std::mem::take(&mut self.world.remotes) {
             extractor.remove_remote_character(remote.entity);
             simulation.party_mut().leave(remote.entity);
             simulation.world_mut().despawn(remote.entity);
         }
-        for (_, entity) in std::mem::take(&mut self.world.monsters) {
-            simulation.world_mut().despawn(entity);
+        for (_, monster) in std::mem::take(&mut self.world.monsters) {
+            simulation.world_mut().despawn(monster.entity);
+        }
+        if simulation.is_remote_authority() {
+            simulation.set_remote_authority(false);
+            let player = simulation.player().entity;
+            simulation.world_mut().restore(player);
+            simulation.present_cast(None);
         }
         if let Some(id) = self.world.barrier.take() {
             let world = simulation.collision_world_mut();

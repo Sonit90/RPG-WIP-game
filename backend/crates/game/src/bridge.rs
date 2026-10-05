@@ -45,6 +45,8 @@ pub struct Snapshot {
     pub definition_id: String,
     pub level: u32,
     pub gear_score: u32,
+    /// The stored loadout as JSON: what the realm dresses the character in for the fight.
+    pub loadout: String,
 }
 
 /// SpacetimeDB's JSON for a unit enum variant: the variant's name in snake_case.
@@ -123,6 +125,7 @@ impl RealmBridge {
                 snapshot.definition_id,
                 snapshot.level,
                 snapshot.gear_score,
+                snapshot.loadout,
                 dungeon_id,
                 role_json(role),
             ]),

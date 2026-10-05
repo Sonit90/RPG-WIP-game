@@ -2074,6 +2074,21 @@ impl AbilityBook {
         Self { states }
     }
 
+    /// Everything about `ability`'s cooldown: charges ready and time to the next one.
+    #[must_use]
+    pub fn state(&self, ability: FireAbility) -> AbilityState {
+        self.states[ability.index()]
+    }
+
+    /// Replaces `ability`'s cooldown state: how a networked client is brought back in line
+    /// with the authoritative simulation.
+    pub fn set_state(&mut self, ability: FireAbility, state: AbilityState) {
+        self.states[ability.index()] = AbilityState {
+            charges: state.charges,
+            recharge: if state.recharge.is_finite() { state.recharge.max(0.0) } else { 0.0 },
+        };
+    }
+
     /// Charges ready on `ability`.
     #[must_use]
     pub fn charges(&self, ability: FireAbility) -> u8 {

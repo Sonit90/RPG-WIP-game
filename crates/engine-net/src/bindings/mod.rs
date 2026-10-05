@@ -11,10 +11,14 @@ pub mod admin_configure_reducer;
 pub mod admin_finish_instance_reducer;
 pub mod admin_set_matchmaking_reducer;
 pub mod admin_set_timeouts_reducer;
+pub mod combat_act_reducer;
+pub mod combat_batch_type;
+pub mod combat_timer_type;
 pub mod connection_type;
 pub mod countdown_timer_type;
 pub mod dismiss_notice_reducer;
 pub mod dungeon_instance_type;
+pub mod instance_combat_type;
 pub mod instance_monster_type;
 pub mod instance_player_type;
 pub mod instance_state_tag_type;
@@ -22,14 +26,24 @@ pub mod janitor_timer_type;
 pub mod matchmaking_timer_type;
 pub mod move_input_reducer;
 pub mod my_account_table;
+pub mod my_combat_batches_table;
 pub mod my_instance_monsters_table;
 pub mod my_instance_players_table;
 pub mod my_instance_table;
 pub mod my_notices_table;
 pub mod my_party_members_table;
 pub mod my_party_table;
+pub mod my_player_combat_table;
 pub mod my_ticket_table;
+pub mod net_ability_type;
+pub mod net_action_type;
+pub mod net_aimed_type;
+pub mod net_cast_type;
+pub mod net_cooldown_type;
+pub mod net_entity_type;
 pub mod net_input_frame_type;
+pub mod net_resources_type;
+pub mod net_status_type;
 pub mod notice_level_type;
 pub mod party_kick_reducer;
 pub mod party_leave_reducer;
@@ -39,7 +53,7 @@ pub mod party_state_tag_type;
 pub mod party_transfer_leader_reducer;
 pub mod party_type;
 pub mod pending_result_type;
-pub mod physics_timer_type;
+pub mod player_combat_type;
 pub mod player_notice_type;
 pub mod presence_tag_type;
 pub mod queue_leave_reducer;
@@ -64,10 +78,14 @@ pub use admin_configure_reducer::admin_configure;
 pub use admin_finish_instance_reducer::admin_finish_instance;
 pub use admin_set_matchmaking_reducer::admin_set_matchmaking;
 pub use admin_set_timeouts_reducer::admin_set_timeouts;
+pub use combat_act_reducer::combat_act;
+pub use combat_batch_type::CombatBatch;
+pub use combat_timer_type::CombatTimer;
 pub use connection_type::Connection;
 pub use countdown_timer_type::CountdownTimer;
 pub use dismiss_notice_reducer::dismiss_notice;
 pub use dungeon_instance_type::DungeonInstance;
+pub use instance_combat_type::InstanceCombat;
 pub use instance_monster_type::InstanceMonster;
 pub use instance_player_type::InstancePlayer;
 pub use instance_state_tag_type::InstanceStateTag;
@@ -75,14 +93,24 @@ pub use janitor_timer_type::JanitorTimer;
 pub use matchmaking_timer_type::MatchmakingTimer;
 pub use move_input_reducer::move_input;
 pub use my_account_table::*;
+pub use my_combat_batches_table::*;
 pub use my_instance_monsters_table::*;
 pub use my_instance_players_table::*;
 pub use my_instance_table::*;
 pub use my_notices_table::*;
 pub use my_party_members_table::*;
 pub use my_party_table::*;
+pub use my_player_combat_table::*;
 pub use my_ticket_table::*;
+pub use net_ability_type::NetAbility;
+pub use net_action_type::NetAction;
+pub use net_aimed_type::NetAimed;
+pub use net_cast_type::NetCast;
+pub use net_cooldown_type::NetCooldown;
+pub use net_entity_type::NetEntity;
 pub use net_input_frame_type::NetInputFrame;
+pub use net_resources_type::NetResources;
+pub use net_status_type::NetStatus;
 pub use notice_level_type::NoticeLevel;
 pub use party_kick_reducer::party_kick;
 pub use party_leave_reducer::party_leave;
@@ -92,7 +120,7 @@ pub use party_state_tag_type::PartyStateTag;
 pub use party_transfer_leader_reducer::party_transfer_leader;
 pub use party_type::Party;
 pub use pending_result_type::PendingResult;
-pub use physics_timer_type::PhysicsTimer;
+pub use player_combat_type::PlayerCombat;
 pub use player_notice_type::PlayerNotice;
 pub use presence_tag_type::PresenceTag;
 pub use queue_leave_reducer::queue_leave;
@@ -140,6 +168,10 @@ pub enum Reducer {
         reconnect_grace_seconds: u32,
         queue_disconnect_grace_seconds: u32,
     },
+    CombatAct {
+        target: NetEntity,
+        action: NetAction,
+    },
     DismissNotice {
         notice_id: u64,
     },
@@ -168,6 +200,7 @@ pub enum Reducer {
         definition_id: String,
         level: u32,
         gear_score: u32,
+        loadout: String,
         dungeon_id: String,
         role: RoleTag,
     },
@@ -184,6 +217,7 @@ impl __sdk::Reducer for Reducer {
             Reducer::AdminFinishInstance { .. } => "admin_finish_instance",
             Reducer::AdminSetMatchmaking { .. } => "admin_set_matchmaking",
             Reducer::AdminSetTimeouts { .. } => "admin_set_timeouts",
+            Reducer::CombatAct { .. } => "combat_act",
             Reducer::DismissNotice { .. } => "dismiss_notice",
             Reducer::MoveInput { .. } => "move_input",
             Reducer::PartyKick { .. } => "party_kick",
@@ -236,6 +270,12 @@ impl __sdk::Reducer for Reducer {
                 reconnect_grace_seconds: reconnect_grace_seconds.clone(),
                 queue_disconnect_grace_seconds: queue_disconnect_grace_seconds.clone(),
             }),
+            Reducer::CombatAct { target, action } => {
+                __sats::bsatn::to_vec(&combat_act_reducer::CombatActArgs {
+                    target: target.clone(),
+                    action: action.clone(),
+                })
+            }
             Reducer::DismissNotice { notice_id } => {
                 __sats::bsatn::to_vec(&dismiss_notice_reducer::DismissNoticeArgs {
                     notice_id: notice_id.clone(),
@@ -276,6 +316,7 @@ impl __sdk::Reducer for Reducer {
                 definition_id,
                 level,
                 gear_score,
+                loadout,
                 dungeon_id,
                 role,
             } => __sats::bsatn::to_vec(&svc_enqueue_reducer::SvcEnqueueArgs {
@@ -285,6 +326,7 @@ impl __sdk::Reducer for Reducer {
                 definition_id: definition_id.clone(),
                 level: level.clone(),
                 gear_score: gear_score.clone(),
+                loadout: loadout.clone(),
                 dungeon_id: dungeon_id.clone(),
                 role: role.clone(),
             }),
@@ -298,12 +340,14 @@ impl __sdk::Reducer for Reducer {
 #[doc(hidden)]
 pub struct DbUpdate {
     my_account: __sdk::TableUpdate<Account>,
+    my_combat_batches: __sdk::TableUpdate<CombatBatch>,
     my_instance: __sdk::TableUpdate<DungeonInstance>,
     my_instance_monsters: __sdk::TableUpdate<InstanceMonster>,
     my_instance_players: __sdk::TableUpdate<InstancePlayer>,
     my_notices: __sdk::TableUpdate<PlayerNotice>,
     my_party: __sdk::TableUpdate<Party>,
     my_party_members: __sdk::TableUpdate<PartyMember>,
+    my_player_combat: __sdk::TableUpdate<PlayerCombat>,
     my_ticket: __sdk::TableUpdate<QueueTicket>,
     queue_population: __sdk::TableUpdate<QueuePopulation>,
 }
@@ -317,6 +361,9 @@ impl TryFrom<__ws::v2::TransactionUpdate> for DbUpdate {
                 "my_account" => db_update
                     .my_account
                     .append(my_account_table::parse_table_update(table_update)?),
+                "my_combat_batches" => db_update
+                    .my_combat_batches
+                    .append(my_combat_batches_table::parse_table_update(table_update)?),
                 "my_instance" => db_update
                     .my_instance
                     .append(my_instance_table::parse_table_update(table_update)?),
@@ -335,6 +382,9 @@ impl TryFrom<__ws::v2::TransactionUpdate> for DbUpdate {
                 "my_party_members" => db_update
                     .my_party_members
                     .append(my_party_members_table::parse_table_update(table_update)?),
+                "my_player_combat" => db_update
+                    .my_player_combat
+                    .append(my_player_combat_table::parse_table_update(table_update)?),
                 "my_ticket" => db_update
                     .my_ticket
                     .append(my_ticket_table::parse_table_update(table_update)?),
@@ -368,6 +418,9 @@ impl __sdk::DbUpdate for DbUpdate {
         let mut diff = AppliedDiff::default();
 
         diff.my_account = cache.apply_diff_to_table::<Account>("my_account", &self.my_account);
+        diff.my_combat_batches = cache
+            .apply_diff_to_table::<CombatBatch>("my_combat_batches", &self.my_combat_batches)
+            .with_updates_by_pk(|row| &row.id);
         diff.my_instance =
             cache.apply_diff_to_table::<DungeonInstance>("my_instance", &self.my_instance);
         diff.my_instance_monsters = cache
@@ -386,6 +439,9 @@ impl __sdk::DbUpdate for DbUpdate {
         diff.my_party_members = cache
             .apply_diff_to_table::<PartyMember>("my_party_members", &self.my_party_members)
             .with_updates_by_pk(|row| &row.identity);
+        diff.my_player_combat = cache
+            .apply_diff_to_table::<PlayerCombat>("my_player_combat", &self.my_player_combat)
+            .with_updates_by_pk(|row| &row.identity);
         diff.my_ticket = cache.apply_diff_to_table::<QueueTicket>("my_ticket", &self.my_ticket);
         diff.queue_population = cache
             .apply_diff_to_table::<QueuePopulation>("queue_population", &self.queue_population)
@@ -399,6 +455,9 @@ impl __sdk::DbUpdate for DbUpdate {
             match &table_rows.table[..] {
                 "my_account" => db_update
                     .my_account
+                    .append(__sdk::parse_row_list_as_inserts(table_rows.rows)?),
+                "my_combat_batches" => db_update
+                    .my_combat_batches
                     .append(__sdk::parse_row_list_as_inserts(table_rows.rows)?),
                 "my_instance" => db_update
                     .my_instance
@@ -417,6 +476,9 @@ impl __sdk::DbUpdate for DbUpdate {
                     .append(__sdk::parse_row_list_as_inserts(table_rows.rows)?),
                 "my_party_members" => db_update
                     .my_party_members
+                    .append(__sdk::parse_row_list_as_inserts(table_rows.rows)?),
+                "my_player_combat" => db_update
+                    .my_player_combat
                     .append(__sdk::parse_row_list_as_inserts(table_rows.rows)?),
                 "my_ticket" => db_update
                     .my_ticket
@@ -440,6 +502,9 @@ impl __sdk::DbUpdate for DbUpdate {
                 "my_account" => db_update
                     .my_account
                     .append(__sdk::parse_row_list_as_deletes(table_rows.rows)?),
+                "my_combat_batches" => db_update
+                    .my_combat_batches
+                    .append(__sdk::parse_row_list_as_deletes(table_rows.rows)?),
                 "my_instance" => db_update
                     .my_instance
                     .append(__sdk::parse_row_list_as_deletes(table_rows.rows)?),
@@ -457,6 +522,9 @@ impl __sdk::DbUpdate for DbUpdate {
                     .append(__sdk::parse_row_list_as_deletes(table_rows.rows)?),
                 "my_party_members" => db_update
                     .my_party_members
+                    .append(__sdk::parse_row_list_as_deletes(table_rows.rows)?),
+                "my_player_combat" => db_update
+                    .my_player_combat
                     .append(__sdk::parse_row_list_as_deletes(table_rows.rows)?),
                 "my_ticket" => db_update
                     .my_ticket
@@ -480,12 +548,14 @@ impl __sdk::DbUpdate for DbUpdate {
 #[doc(hidden)]
 pub struct AppliedDiff<'r> {
     my_account: __sdk::TableAppliedDiff<'r, Account>,
+    my_combat_batches: __sdk::TableAppliedDiff<'r, CombatBatch>,
     my_instance: __sdk::TableAppliedDiff<'r, DungeonInstance>,
     my_instance_monsters: __sdk::TableAppliedDiff<'r, InstanceMonster>,
     my_instance_players: __sdk::TableAppliedDiff<'r, InstancePlayer>,
     my_notices: __sdk::TableAppliedDiff<'r, PlayerNotice>,
     my_party: __sdk::TableAppliedDiff<'r, Party>,
     my_party_members: __sdk::TableAppliedDiff<'r, PartyMember>,
+    my_player_combat: __sdk::TableAppliedDiff<'r, PlayerCombat>,
     my_ticket: __sdk::TableAppliedDiff<'r, QueueTicket>,
     queue_population: __sdk::TableAppliedDiff<'r, QueuePopulation>,
     __unused: std::marker::PhantomData<&'r ()>,
@@ -502,6 +572,11 @@ impl<'r> __sdk::AppliedDiff<'r> for AppliedDiff<'r> {
         callbacks: &mut __sdk::DbCallbacks<RemoteModule>,
     ) {
         callbacks.invoke_table_row_callbacks::<Account>("my_account", &self.my_account, event);
+        callbacks.invoke_table_row_callbacks::<CombatBatch>(
+            "my_combat_batches",
+            &self.my_combat_batches,
+            event,
+        );
         callbacks.invoke_table_row_callbacks::<DungeonInstance>(
             "my_instance",
             &self.my_instance,
@@ -522,6 +597,11 @@ impl<'r> __sdk::AppliedDiff<'r> for AppliedDiff<'r> {
         callbacks.invoke_table_row_callbacks::<PartyMember>(
             "my_party_members",
             &self.my_party_members,
+            event,
+        );
+        callbacks.invoke_table_row_callbacks::<PlayerCombat>(
+            "my_player_combat",
+            &self.my_player_combat,
             event,
         );
         callbacks.invoke_table_row_callbacks::<QueueTicket>("my_ticket", &self.my_ticket, event);
@@ -1191,23 +1271,27 @@ impl __sdk::SpacetimeModule for RemoteModule {
 
     fn register_tables(client_cache: &mut __sdk::ClientCache<Self>) {
         my_account_table::register_table(client_cache);
+        my_combat_batches_table::register_table(client_cache);
         my_instance_table::register_table(client_cache);
         my_instance_monsters_table::register_table(client_cache);
         my_instance_players_table::register_table(client_cache);
         my_notices_table::register_table(client_cache);
         my_party_table::register_table(client_cache);
         my_party_members_table::register_table(client_cache);
+        my_player_combat_table::register_table(client_cache);
         my_ticket_table::register_table(client_cache);
         queue_population_table::register_table(client_cache);
     }
     const ALL_TABLE_NAMES: &'static [&'static str] = &[
         "my_account",
+        "my_combat_batches",
         "my_instance",
         "my_instance_monsters",
         "my_instance_players",
         "my_notices",
         "my_party",
         "my_party_members",
+        "my_player_combat",
         "my_ticket",
         "queue_population",
     ];

@@ -274,6 +274,11 @@ impl Resource {
         self.current / self.max
     }
 
+    /// Sets the current amount (clamped to [0, max]): an authoritative correction.
+    pub fn set_current(&mut self, value: f32) {
+        self.current = if value.is_finite() { value.clamp(0.0, self.max) } else { 0.0 };
+    }
+
     /// Whether `cost` can be paid right now.
     #[must_use]
     pub fn can_pay(&self, cost: f32) -> bool {

@@ -784,6 +784,23 @@ impl EnemyBrain {
         Some(cast)
     }
 
+    /// Shows what an authoritative server says this enemy is doing: whom it fights, what it
+    /// casts, whether it is dead. For a networked client, whose brains never think; the
+    /// interface reads target, cast and state exactly as it does offline.
+    pub fn present(&mut self, target: Option<EntityId>, cast: Option<EnemyCast>, alive: bool) {
+        self.target = target;
+        self.cast = cast;
+        self.state = if !alive {
+            AiState::Dead
+        } else if cast.is_some() {
+            AiState::Cast
+        } else if target.is_some() {
+            AiState::Chase
+        } else {
+            AiState::Idle
+        };
+    }
+
     /// Whether an interrupt would do anything right now.
     #[must_use]
     pub fn is_interruptible(&self) -> bool {

@@ -226,7 +226,7 @@ impl Simulation {
     /// the `Healing` event exactly as the Warrior's self heal does, so a heal on an ally and
     /// a heal on yourself are the same event to the meter, the log and the interface.
     pub(super) fn heal_ally(&mut self, target: EntityId, amount: f32, ability: AbilityId) -> f32 {
-        if !self.world.is_alive(target) || !amount.is_finite() || amount <= 0.0 {
+        if self.remote_authority || !self.world.is_alive(target) || !amount.is_finite() || amount <= 0.0 {
             return 0.0;
         }
         let restored = self.world.heal(target, amount).applied;

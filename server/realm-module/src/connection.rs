@@ -44,6 +44,7 @@ pub fn init(ctx: &ReducerContext) {
     });
     crate::matchmaking::schedule(ctx);
     crate::instance::schedule(ctx);
+    crate::combat::schedule(ctx);
     log::info!("event=realm_initialized owner={}", ctx.sender().to_abbreviated_hex());
 }
 

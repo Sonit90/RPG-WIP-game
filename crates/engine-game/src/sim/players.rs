@@ -231,6 +231,17 @@ impl Simulation {
             .is_some()
     }
 
+    /// Has `entity`'s body moved from outside the tick rather than by its intent. A server
+    /// does this for networked players: each input frame is applied as it arrives, with the
+    /// same function the client predicted it with, so a frame is never applied twice or
+    /// stretched over a tick it did not belong to.
+    pub fn set_external_movement(&mut self, entity: EntityId, external: bool) {
+        self.externally_moved.retain(|e| *e != entity);
+        if external {
+            self.externally_moved.push(entity);
+        }
+    }
+
     /// Whether every player is dead: what a party wipe is.
     #[must_use]
     pub fn all_players_dead(&self) -> bool {

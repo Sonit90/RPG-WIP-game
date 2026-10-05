@@ -77,6 +77,8 @@ mod firemage_exec;
 mod playground_exec;
 /// More than one player in one simulation: per-player state swapped in and out.
 pub mod players;
+/// A networked client's simulation: the server runs the fight, this one presents it.
+pub mod remote;
 pub mod respawn;
 /// Casting the Warrior: Deflection, the incoming-damage pipeline and the charge.
 mod warrior_exec;
@@ -549,6 +551,12 @@ pub struct Simulation {
     party: Party,
     /// Every player but the active one. See [`players`].
     others: Vec<Option<players::PlayerSlot>>,
+    /// Players whose bodies are moved from outside the tick (a server applying input frames).
+    externally_moved: Vec<EntityId>,
+    /// A server runs the fight; see [`remote`].
+    remote_authority: bool,
+    /// Ability presses for the server, while it runs the fight.
+    remote_requests: Vec<PlayerCommand>,
     /// Seconds of out-of-combat time since the last regeneration tick.
     ///
     /// Regeneration happens once a second rather than every simulation tick: one heal of a
@@ -660,6 +668,9 @@ impl Simulation {
             last_active_stats: SimStats::default(),
             party: Party::new(),
             others: Vec::new(),
+            externally_moved: Vec::new(),
+            remote_authority: false,
+            remote_requests: Vec::new(),
         }
     }
 
@@ -667,6 +678,21 @@ impl Simulation {
     #[must_use]
     pub fn hero(&self) -> Hero {
         self.hero
+    }
+
+    /// Keeps only this frame's events that `keep` accepts. For a networked client: outcomes
+    /// it predicted are dropped, and the authoritative ones are added with
+    /// [`Simulation::inject_event`].
+    pub fn retain_events(&mut self, keep: impl FnMut(&CombatEvent) -> bool) {
+        self.events.retain(keep);
+        self.observed = self.observed.min(self.events.len());
+    }
+
+    /// Adds an event that happened elsewhere — on the authoritative server — to this frame's
+    /// stream, so presentation (effects, sound, numbers, the meter) observes it like a local
+    /// one.
+    pub fn inject_event(&mut self, event: CombatEvent) {
+        self.events.push(event);
     }
 
     /// Becomes `hero`, and returns whether anything changed.
@@ -1089,6 +1115,10 @@ impl Simulation {
 
     /// Queues a command for the next tick.
     pub fn push_command(&mut self, command: PlayerCommand) {
+        if self.is_remote_request(&command) {
+            self.remote_requests.push(command);
+            return;
+        }
         match command {
             PlayerCommand::Move { .. } => {
                 // Held, not queued: the newest movement intent replaces the previous one,
@@ -1198,6 +1228,10 @@ impl Simulation {
         let step = self.timestep.step_seconds();
         self.tick += 1;
         self.time += f64::from(step);
+        if self.remote_authority {
+            self.tick_presented(stats);
+            return;
+        }
 
         // Before anything moves: record where every body is, so presentation can draw
         // between this tick and the next instead of snapping between them. Nothing in
@@ -1654,7 +1688,35 @@ impl Simulation {
     /// Moves the active player one tick with their own intent, through the collided step.
     fn integrate_player(&mut self, step: f32) {
         let player = self.player.entity;
+        if self.externally_moved.contains(&player) {
+            // Moved by whoever owns it — a server applying the client's input frames one by
+            // one — and only read here.
+            self.intent.jump = false;
+            return;
+        }
         let intent = self.intent;
+        self.move_active_player(intent, step);
+        // Consumed, not held: a jump lasts one tick, and the next tick's intent comes from
+        // the next frame's input.
+        self.intent.jump = false;
+    }
+
+    /// Moves the player controlling `entity` one fixed step with `intent`, right now, through
+    /// exactly the path the tick moves a player by: their speed effects, death, collision
+    /// with whatever gates and barriers are standing. Returns false if no player controls
+    /// `entity`.
+    ///
+    /// For a server applying a networked player's input frames as they arrive; see
+    /// [`Simulation::set_external_movement`].
+    pub fn drive_player(&mut self, entity: EntityId, intent: MoveIntent) -> bool {
+        let step = self.timestep.step().as_secs_f32();
+        self.with_player(entity, |sim| sim.move_active_player(intent, step))
+            .is_some()
+    }
+
+    /// One collided step of the active player's body with `intent`.
+    fn move_active_player(&mut self, intent: MoveIntent, step: f32) {
+        let player = self.player.entity;
         let config = self.config.movement;
         let character = self.config.character;
 
@@ -1713,10 +1775,6 @@ impl Simulation {
                 *body = moved;
             }
         }
-
-        // Consumed, not held: a jump lasts one tick, and the next tick's intent comes from
-        // the next frame's input.
-        self.intent.jump = false;
     }
 
     /// Puts the player down at `position`, at rest and clear of geometry.
@@ -2424,7 +2482,7 @@ impl Simulation {
         // multiplier could never be.
         // A boss behind a sealed gate cannot be hurt: it is not in the fight yet, and a bolt
         // through the bars would start one the dungeon has not allowed.
-        if self.is_sealed(target) {
+        if self.is_sealed(target) || self.remote_authority {
             return;
         }
         // With several players, the one being hit (their defences) or the one hitting (their

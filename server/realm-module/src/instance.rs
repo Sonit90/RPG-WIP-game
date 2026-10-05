@@ -5,14 +5,10 @@
 //! its monsters. It shares nothing with any other instance: every query here starts from an
 //! instance id, and every view a client reads starts from the caller's own membership.
 
-use engine_core::math::Vec3;
-use engine_game::enemy::EnemyKind;
-use engine_game::movement::Body;
 use engine_realm::RealmError;
 use engine_realm::instance::{
     Countdown, InstanceState, MemberPresence, barrier_closed, should_clean_up,
 };
-use engine_realm::movement::apply_idle;
 use engine_realm::party::PartyState;
 use spacetimedb::{ReducerContext, ScheduleAt, Table, TimeDuration};
 
@@ -44,29 +40,11 @@ pub struct JanitorTimer {
     pub scheduled_at: ScheduleAt,
 }
 
-/// Drives [`physics_tick`].
-#[spacetimedb::table(accessor = physics_timer, scheduled(physics_tick))]
-pub struct PhysicsTimer {
-    /// Row id.
-    #[primary_key]
-    #[auto_inc]
-    pub scheduled_id: u64,
-    /// Ten times a second.
-    pub scheduled_at: ScheduleAt,
-}
-
-/// How long without input before the server integrates a player itself.
-const IDLE_AFTER_US: i64 = 200_000;
-
 /// Starts the periodic passes.
 pub fn schedule(ctx: &ReducerContext) {
     ctx.db.janitor_timer().insert(JanitorTimer {
         scheduled_id: 0,
         scheduled_at: ScheduleAt::Interval(TimeDuration::from_micros(2 * engine_realm::SECOND)),
-    });
-    ctx.db.physics_timer().insert(PhysicsTimer {
-        scheduled_id: 0,
-        scheduled_at: ScheduleAt::Interval(TimeDuration::from_micros(100_000)),
     });
 }
 
@@ -152,29 +130,10 @@ pub fn create(ctx: &ReducerContext, loaded: &Loaded) -> Result<(), RealmError> {
         });
     }
 
-    // The level's monsters. Static until server-side combat lands: placed, never simulated.
-    for placement in dungeon.scene.monsters.iter().filter(|m| m.enabled) {
-        let Some(kind) = EnemyKind::from_id(&placement.monster) else {
-            continue;
-        };
-        let archetype = kind.archetype();
-        ctx.db.instance_monster().insert(InstanceMonster {
-            id: 0,
-            instance_id: instance.id,
-            archetype: placement.monster.clone(),
-            name: placement
-                .name
-                .clone()
-                .unwrap_or_else(|| kind.name().to_owned()),
-            pack: placement.pack.clone().unwrap_or_default(),
-            position: placement.position.into(),
-            yaw: placement.yaw,
-            scale: placement.scale,
-            level: u32::from(placement.level),
-            health: archetype.max_health,
-            max_health: archetype.max_health,
-        });
-    }
+    // The fight: the real simulation with the party in it. Its first projection writes the
+    // monsters' rows and every player's health.
+    crate::combat::start(ctx, &instance)?;
+    crate::combat::decorate_placed(ctx, instance.id, &dungeon);
     let instance = advance(ctx, &instance, InstanceState::Ready)?;
 
     let countdown = Countdown::starting(micros(ctx.timestamp), dungeon.definition.countdown_seconds);
@@ -210,7 +169,8 @@ pub fn countdown_finish(ctx: &ReducerContext, timer: CountdownTimer) -> Result<(
     if instance.state != InstanceStateTag::Countdown {
         return Ok(());
     }
-    advance(ctx, &instance, InstanceState::Active)?;
+    let instance = advance(ctx, &instance, InstanceState::Active)?;
+    crate::combat::open_barrier(ctx, &instance);
     if let Some(party) = ctx.db.party().id().find(instance.party_id) {
         transition(ctx, &party, PartyState::InDungeon)?;
     }
@@ -218,39 +178,6 @@ pub fn countdown_finish(ctx: &ReducerContext, timer: CountdownTimer) -> Result<(
         notify(ctx, player.identity, "barrier_open", NoticeLevel::Info, "The barrier lifts. Go!");
     }
     log::info!("event=instance_start instance_id={} dungeon_id={}", instance.id, instance.dungeon_id);
-    Ok(())
-}
-
-/// Integrates players who stopped sending input, so nobody hangs mid-air.
-#[spacetimedb::reducer]
-pub fn physics_tick(ctx: &ReducerContext, _timer: PhysicsTimer) -> Result<(), String> {
-    if ctx.sender() != ctx.database_identity() {
-        return Err(RealmError::unauthorized("That operation is not available.").into());
-    }
-    let now = micros(ctx.timestamp);
-    for instance in ctx.db.dungeon_instance().live().filter(true) {
-        let Ok(dungeon) = crate::level::dungeon(&instance.dungeon_id) else {
-            continue;
-        };
-        let geometry = if instance.barrier_open { &dungeon.open } else { &dungeon.closed };
-        for player in ctx.db.instance_player().instance_id().filter(instance.id) {
-            let idle_for = now - micros(player.last_input_at);
-            let moving = !player.grounded
-                || player.velocity.x.abs() + player.velocity.z.abs() > 1e-3;
-            if idle_for < IDLE_AFTER_US || !moving {
-                continue;
-            }
-            let mut body = crate::movement::body_of(&player);
-            let frames = 6; // 100 ms at 60 Hz.
-            crate::level::with_buffers(|buffers| {
-                for _ in 0..frames {
-                    apply_idle(&mut body, &geometry.rules, &geometry.world, buffers);
-                }
-            });
-            let body = crate::movement::rescue_from_void(body, geometry.void_height, &dungeon, &player);
-            ctx.db.instance_player().identity().update(crate::movement::with_body(player, &body));
-        }
-    }
     Ok(())
 }
 
@@ -276,6 +203,7 @@ pub fn destroy(ctx: &ReducerContext, instance_id: u64, reason: &str) {
     for id in monsters {
         ctx.db.instance_monster().id().delete(id);
     }
+    crate::combat::forget(ctx, instance_id);
     ctx.db.dungeon_instance().id().delete(instance_id);
     log::info!("event=instance_cleanup instance_id={instance_id} reason={reason}");
 }
@@ -450,12 +378,4 @@ pub fn janitor(ctx: &ReducerContext, _timer: JanitorTimer) -> Result<(), String>
         ctx.db.rate_limit().key().delete(&key);
     }
     Ok(())
-}
-
-/// A body at the instance's spawn point for `slot`.
-pub fn spawn_body(dungeon: &crate::level::Dungeon, slot: usize) -> Body {
-    let point = dungeon.definition.spawn_point(slot);
-    let mut body = Body::at(Vec3::new(point.position[0], point.position[1], point.position[2]));
-    body.facing_yaw = point.yaw;
-    body
 }

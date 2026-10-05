@@ -9,7 +9,7 @@
 use engine_game::movement::{Body, MovementState};
 use engine_realm::RealmError;
 use engine_realm::instance::InstanceState;
-use engine_realm::movement::{InputBudget, InputFrame, accept_frames, apply_input};
+use engine_realm::movement::{InputBudget, InputFrame, accept_frames};
 use engine_realm::rate_limit::Operation;
 use spacetimedb::ReducerContext;
 
@@ -46,24 +46,6 @@ fn finite(v: engine_core::math::Vec3) -> bool {
     v.x.is_finite() && v.y.is_finite() && v.z.is_finite()
 }
 
-/// A body that fell out of the level goes back to its start point.
-pub fn rescue_from_void(
-    body: Body,
-    void_height: f32,
-    dungeon: &crate::level::Dungeon,
-    player: &InstancePlayer,
-) -> Body {
-    if body.position.y >= void_height && finite(body.position) {
-        return body;
-    }
-    log::warn!(
-        "event=void_rescue account_id={} instance_id={}",
-        player.account_id,
-        player.instance_id
-    );
-    crate::instance::spawn_body(dungeon, 0)
-}
-
 /// Applies a batch of movement input for the caller.
 #[spacetimedb::reducer]
 pub fn move_input(ctx: &ReducerContext, frames: Vec<NetInputFrame>) -> Result<(), String> {
@@ -84,13 +66,6 @@ pub fn move_input(ctx: &ReducerContext, frames: Vec<NetInputFrame>) -> Result<()
     if !state.accepts_movement() {
         return Err(RealmError::dungeon("You cannot move yet.").into());
     }
-    let dungeon = crate::level::dungeon(&instance.dungeon_id)?;
-    let geometry = if instance.barrier_open {
-        &dungeon.open
-    } else {
-        &dungeon.closed
-    };
-
     let frames: Vec<InputFrame> = frames
         .into_iter()
         .map(|frame| InputFrame {
@@ -116,20 +91,16 @@ pub fn move_input(ctx: &ReducerContext, frames: Vec<NetInputFrame>) -> Result<()
         );
     }
 
-    let mut body = body_of(&player);
-    let mut last_seq = player.last_seq;
-    crate::level::with_buffers(|buffers| {
-        for frame in &accepted {
-            apply_input(&mut body, frame, &geometry.rules, &geometry.world, buffers);
-            last_seq = frame.seq;
-        }
-    });
-    let body = rescue_from_void(body, geometry.void_height, &dungeon, &player);
-    let body = if finite(body.position) {
-        body
-    } else {
-        crate::instance::spawn_body(&dungeon, 0)
-    };
+    // Applied in the fight, one fixed step per frame through the same collided step the
+    // client predicted with — against whatever barrier and gate stand there now.
+    let (body, last_seq) = crate::combat::with_fight(ctx, &instance, |fight| {
+        fight.apply_frames(&player.account_id, &accepted)
+    })?
+    .ok_or_else(|| RealmError::dungeon("You are not in this fight.").to_wire())?;
+    if !finite(body.position) {
+        log::error!("event=body_not_finite account_id={} instance_id={}", player.account_id, player.instance_id);
+        return Err(RealmError::protocol("Movement failed.").into());
+    }
     ctx.db.instance_player().identity().update(InstancePlayer {
         last_seq,
         last_input_at: if accepted.is_empty() {

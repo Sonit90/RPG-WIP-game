@@ -195,3 +195,22 @@ fn removing_a_player_leaves_the_rest() {
     assert_eq!(party.sim.with_player(party.druid, |s| s.hero()), Some(Hero::Druid));
     run(&mut party.sim, 30);
 }
+
+#[test]
+fn under_a_remote_authority_presses_go_to_the_server_and_nothing_is_decided_locally() {
+    let mut party = party(EnemyKind::SkeletonWarrior, 12.0);
+    let enemy = party.enemy;
+    let before = health(&party.sim, enemy);
+    party.sim.set_remote_authority(true);
+    party.sim.push_command(PlayerCommand::SelectTarget { entity: enemy });
+    party.sim.push_command(PlayerCommand::UseAbility(0));
+    let events = run(&mut party.sim, 240);
+    assert_eq!(party.sim.player().target, Some(enemy), "targeting stays local");
+    assert_eq!(party.sim.take_remote_requests(), vec![PlayerCommand::UseAbility(0)]);
+    assert!(party.sim.take_remote_requests().is_empty());
+    assert!(!events.iter().any(|e| matches!(e, CombatEvent::Damage(_))));
+    assert!((health(&party.sim, enemy) - before).abs() < f32::EPSILON);
+    // What the server says is what the world shows.
+    party.sim.present_health(enemy, before * 0.25, before);
+    assert!((health(&party.sim, enemy) - before * 0.25).abs() < 1e-3);
+}

@@ -37,6 +37,7 @@
 
 pub mod api;
 pub mod catalog;
+pub mod combat;
 pub mod error;
 pub mod instance;
 pub mod loadout;

@@ -887,7 +887,7 @@ impl Simulation {
     /// holds for the player's own as well.
     pub(super) fn heal_self(&mut self, amount: f32, ability: FireAbility) -> u32 {
         let entity = self.player.entity;
-        if !self.world.is_alive(entity) {
+        if self.remote_authority || !self.world.is_alive(entity) {
             return 0;
         }
         let restored = self.world.heal(entity, amount).applied;

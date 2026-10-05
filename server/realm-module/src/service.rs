@@ -47,6 +47,7 @@ pub fn svc_enqueue(
     definition_id: String,
     level: u32,
     gear_score: u32,
+    loadout: String,
     dungeon_id: String,
     role: RoleTag,
 ) -> Result<(), String> {
@@ -98,6 +99,7 @@ pub fn svc_enqueue(
             definition_id,
             level,
             gear_score,
+            loadout,
             dungeon_id: dungeon_id.clone(),
             role,
             enqueued_at: ctx.timestamp,

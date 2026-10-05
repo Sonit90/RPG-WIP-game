@@ -8,6 +8,10 @@ use std::sync::mpsc::Sender;
 use std::thread::JoinHandle;
 
 use engine_core::math::Vec3;
+use engine_realm::combat::{
+    AbilityRef, ActionKind, CastState, CombatAction, CooldownState, EntityRef, Resources,
+    StatusState, WireEvent,
+};
 use engine_realm::instance::InstanceState;
 use engine_realm::movement::InputFrame;
 use engine_realm::party::{PartyState, ReadyResponse};
@@ -15,7 +19,8 @@ use engine_realm::{ErrorCategory, RealmError, Role};
 use spacetimedb_sdk::{DbContext, Table, TableWithPrimaryKey};
 
 use crate::bindings::{
-    self as b, DbConnection, MyAccountTableAccess, MyInstanceMonstersTableAccess,
+    self as b, DbConnection, MyAccountTableAccess, MyCombatBatchesTableAccess,
+    MyInstanceMonstersTableAccess, MyPlayerCombatTableAccess, combat_act,
     MyInstancePlayersTableAccess, MyInstanceTableAccess, MyNoticesTableAccess,
     MyPartyMembersTableAccess, MyPartyTableAccess, MyTicketTableAccess,
     QueuePopulationTableAccess, dismiss_notice, move_input, party_kick, party_leave, party_start,
@@ -24,7 +29,7 @@ use crate::bindings::{
 use crate::config::RealmEndpoints;
 use crate::model::{
     AccountInfo, InstanceInfo, MemberInfo, MonsterInfo, Notice, NoticeLevel, PartyInfo,
-    Population, RealmMirror, RealmUpdate, RemotePlayerState, TicketInfo,
+    PlayerCombatInfo, Population, RealmMirror, RealmUpdate, RemotePlayerState, TicketInfo,
 };
 use crate::session::{Action, NetEvent, WorkerMessage};
 
@@ -51,7 +56,7 @@ pub enum LinkSignal {
 }
 
 /// Every view the client subscribes to.
-const QUERIES: [&str; 9] = [
+const QUERIES: [&str; 11] = [
     "SELECT * FROM my_account",
     "SELECT * FROM my_ticket",
     "SELECT * FROM my_party",
@@ -61,6 +66,8 @@ const QUERIES: [&str; 9] = [
     "SELECT * FROM my_instance_monsters",
     "SELECT * FROM my_notices",
     "SELECT * FROM queue_population",
+    "SELECT * FROM my_player_combat",
+    "SELECT * FROM my_combat_batches",
 ];
 
 /// An open realm connection.
@@ -190,6 +197,30 @@ impl RealmLink {
         });
         if let Err(error) = result {
             log::debug!("realm: input not sent: {error}");
+        }
+    }
+
+    /// Presses a combat button.
+    pub fn act(&self, action: &CombatAction) {
+        let target = net_entity(&action.target);
+        let aimed = |p: [f32; 3]| b::V3 { x: p[0], y: p[1], z: p[2] };
+        let kind = match action.kind {
+            ActionKind::Target => b::NetAction::Target,
+            ActionKind::Ability(slot) => b::NetAction::Ability(slot),
+            ActionKind::AbilityAt(slot, p) => b::NetAction::AbilityAt(b::NetAimed {
+                slot,
+                position: aimed(p),
+            }),
+            ActionKind::Ultimate(p) => b::NetAction::Ultimate(aimed(p)),
+            ActionKind::Extra(index) => b::NetAction::Extra(index),
+        };
+        let result = self.connection.reducers.combat_act_then(target, kind, |_, outcome| {
+            if let Ok(Err(message)) = outcome {
+                log::debug!("realm: action refused: {message}");
+            }
+        });
+        if let Err(error) = result {
+            log::debug!("realm: action not sent: {error}");
         }
     }
 
@@ -377,7 +408,35 @@ fn register_callbacks(connection: &DbConnection, events: &Sender<NetEvent>) {
     });
     let tx = events.clone();
     db.my_instance_monsters().on_delete(move |_, row| {
-        let _ = tx.send(NetEvent::Realm(RealmUpdate::MonsterRemoved(row.id)));
+        let _ = tx.send(NetEvent::Realm(RealmUpdate::MonsterRemoved(row.key)));
+    });
+
+    let tx = events.clone();
+    db.my_player_combat().on_insert(move |_, row| {
+        let _ = tx.send(NetEvent::Realm(RealmUpdate::CombatUpsert(player_combat(row))));
+    });
+    let tx = events.clone();
+    db.my_player_combat().on_update(move |_, _, row| {
+        let _ = tx.send(NetEvent::Realm(RealmUpdate::CombatUpsert(player_combat(row))));
+    });
+    let tx = events.clone();
+    db.my_player_combat().on_delete(move |_, row| {
+        let _ = tx.send(NetEvent::Realm(RealmUpdate::CombatRemoved(row.account_id.clone())));
+    });
+
+    // Each batch once, as it is inserted. Batches already there when the subscription
+    // applies are history and are not replayed.
+    let tx = events.clone();
+    db.my_combat_batches().on_insert(move |ctx, row| {
+        if matches!(ctx.event, spacetimedb_sdk::Event::SubscribeApplied) {
+            return;
+        }
+        match serde_json::from_str::<Vec<WireEvent>>(&row.events) {
+            Ok(batch) => {
+                let _ = tx.send(NetEvent::Realm(RealmUpdate::CombatEvents(batch)));
+            }
+            Err(error) => log::warn!("realm: unreadable combat batch {}: {error}", row.id),
+        }
     });
 
     let tx = events.clone();
@@ -410,8 +469,14 @@ fn snapshot(db: &b::RemoteTables) -> RealmMirror {
         monsters: db
             .my_instance_monsters()
             .iter()
-            .map(|row| (row.id, monster(&row)))
+            .map(|row| (row.key, monster(&row)))
             .collect(),
+        combat: db
+            .my_player_combat()
+            .iter()
+            .map(|row| (row.account_id.clone(), player_combat(&row)))
+            .collect(),
+        events: Vec::new(),
         notices: {
             let mut notices: Vec<Notice> = db.my_notices().iter().map(|row| notice(&row)).collect();
             notices.sort_by_key(|notice| notice.id);
@@ -544,8 +609,78 @@ fn player(row: &b::InstancePlayer) -> RemotePlayerState {
     }
 }
 
+fn net_entity(reference: &EntityRef) -> b::NetEntity {
+    match reference {
+        EntityRef::None => b::NetEntity::Nobody,
+        EntityRef::Player(account) => b::NetEntity::Player(account.clone()),
+        EntityRef::Monster(key) => b::NetEntity::Monster(*key),
+    }
+}
+
+fn entity_ref(net: &b::NetEntity) -> EntityRef {
+    match net {
+        b::NetEntity::Nobody => EntityRef::None,
+        b::NetEntity::Player(account) => EntityRef::Player(account.clone()),
+        b::NetEntity::Monster(key) => EntityRef::Monster(*key),
+    }
+}
+
+fn cast(net: &b::NetCast) -> CastState {
+    CastState {
+        ability: match net.ability {
+            b::NetAbility::Nothing => AbilityRef::None,
+            b::NetAbility::Player(index) => AbilityRef::Player(index),
+            b::NetAbility::Monster(index) => AbilityRef::Monster(index),
+        },
+        elapsed: net.elapsed,
+        duration: net.duration,
+    }
+}
+
+fn statuses(rows: &[b::NetStatus]) -> Vec<StatusState> {
+    rows.iter()
+        .map(|status| StatusState {
+            kind: status.kind,
+            source: entity_ref(&status.source),
+            remaining: status.remaining,
+            duration: status.duration,
+            stacks: status.stacks,
+        })
+        .collect()
+}
+
+fn player_combat(row: &b::PlayerCombat) -> PlayerCombatInfo {
+    PlayerCombatInfo {
+        account_id: row.account_id.clone(),
+        alive: row.alive,
+        target: entity_ref(&row.target),
+        cast: row.cast.as_ref().map(cast),
+        resources: Resources {
+            heat: row.resources.heat,
+            energy: row.resources.energy,
+            mana: row.resources.mana,
+            max_mana: row.resources.max_mana,
+            deflection: row.resources.deflection,
+            astral: row.resources.astral,
+            global_cooldown: row.resources.global_cooldown,
+        },
+        cooldowns: row
+            .cooldowns
+            .iter()
+            .map(|c| CooldownState {
+                ability: c.ability,
+                charges: c.charges,
+                recharge: c.recharge,
+            })
+            .collect(),
+        statuses: statuses(&row.statuses),
+        received: std::time::Instant::now(),
+    }
+}
+
 fn monster(row: &b::InstanceMonster) -> MonsterInfo {
     MonsterInfo {
+        key: row.key,
         id: row.id,
         archetype: row.archetype.clone(),
         name: row.name.clone(),
@@ -555,6 +690,11 @@ fn monster(row: &b::InstanceMonster) -> MonsterInfo {
         level: row.level,
         health: row.health,
         max_health: row.max_health,
+        alive: row.alive,
+        target: entity_ref(&row.target),
+        cast: row.cast.as_ref().map(cast),
+        statuses: statuses(&row.statuses),
+        received: std::time::Instant::now(),
     }
 }
 

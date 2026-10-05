@@ -223,6 +223,8 @@ pub struct QueueTicket {
     pub level: u32,
     /// Its gear score, from the persistence API. Never from a client.
     pub gear_score: u32,
+    /// Its loadout as JSON, from the persistence API: what it wears into the fight.
+    pub loadout: String,
     /// Which dungeon.
     #[index(btree)]
     pub dungeon_id: String,
@@ -284,6 +286,8 @@ pub struct PartyMember {
     pub level: u32,
     /// Its gear score.
     pub gear_score: u32,
+    /// Its loadout as JSON.
+    pub loadout: String,
     /// Their ready-check answer.
     pub ready: ReadyTag,
     /// Connected or not.
@@ -397,6 +401,17 @@ pub struct InstanceMonster {
     pub health: f32,
     /// Maximum health.
     pub max_health: f32,
+    /// Its key in the fight: stable across a rebuild for every monster the level placed.
+    #[index(btree)]
+    pub key: u64,
+    /// Alive.
+    pub alive: bool,
+    /// Whom it is fighting.
+    pub target: NetEntity,
+    /// What it is casting.
+    pub cast: Option<NetCast>,
+    /// Statuses on it.
+    pub statuses: Vec<NetStatus>,
 }
 
 /// One bucket of the rate limiter, keyed `"<identity hex>:<operation>"`.
@@ -456,4 +471,171 @@ pub struct PendingResult {
     pub experience: u32,
     /// When it was recorded.
     pub created_at: Timestamp,
+}
+
+/// An entity as both ends can name it: `engine_realm::combat::EntityRef`.
+#[derive(SpacetimeType, Debug, Clone, PartialEq, Eq)]
+pub enum NetEntity {
+    /// Nobody.
+    Nobody,
+    /// A player, by account id.
+    Player(String),
+    /// A monster, by key.
+    Monster(u64),
+}
+
+/// An ability: `engine_realm::combat::AbilityRef`.
+#[derive(SpacetimeType, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NetAbility {
+    /// None.
+    Nothing,
+    /// A player ability, by index.
+    Player(u16),
+    /// A monster ability, by index.
+    Monster(u16),
+}
+
+/// A cast in progress.
+#[derive(SpacetimeType, Debug, Clone, Copy, PartialEq)]
+pub struct NetCast {
+    /// What.
+    pub ability: NetAbility,
+    /// Seconds in, when the row was written.
+    pub elapsed: f32,
+    /// Seconds in total.
+    pub duration: f32,
+}
+
+/// A status on an entity.
+#[derive(SpacetimeType, Debug, Clone, PartialEq)]
+pub struct NetStatus {
+    /// `StatusKind` index.
+    pub kind: u16,
+    /// Who applied it.
+    pub source: NetEntity,
+    /// Seconds left, when the row was written.
+    pub remaining: f32,
+    /// Seconds in total.
+    pub duration: f32,
+    /// Stacks.
+    pub stacks: u8,
+}
+
+/// One ability's cooldown.
+#[derive(SpacetimeType, Debug, Clone, Copy, PartialEq)]
+pub struct NetCooldown {
+    /// `FireAbility` index.
+    pub ability: u16,
+    /// Charges ready.
+    pub charges: u8,
+    /// Seconds to the next charge, when the row was written.
+    pub recharge: f32,
+}
+
+/// A class's resources.
+#[derive(SpacetimeType, Debug, Clone, Copy, PartialEq, Default)]
+pub struct NetResources {
+    /// Heat.
+    pub heat: f32,
+    /// Ultimate energy.
+    pub energy: f32,
+    /// Mana.
+    pub mana: f32,
+    /// Mana maximum.
+    pub max_mana: f32,
+    /// Deflection.
+    pub deflection: f32,
+    /// Astral power.
+    pub astral: f32,
+    /// Global cooldown left.
+    pub global_cooldown: f32,
+}
+
+/// A bar slot aimed at a point.
+#[derive(SpacetimeType, Debug, Clone, Copy, PartialEq)]
+pub struct NetAimed {
+    /// The bar slot.
+    pub slot: u8,
+    /// Where.
+    pub position: V3,
+}
+
+/// A button press: `engine_realm::combat::ActionKind`.
+#[derive(SpacetimeType, Debug, Clone, Copy, PartialEq)]
+pub enum NetAction {
+    /// Only change target.
+    Target,
+    /// A bar slot.
+    Ability(u8),
+    /// A bar slot aimed at a point.
+    AbilityAt(NetAimed),
+    /// The ultimate, at a point.
+    Ultimate(V3),
+    /// An extra button.
+    Extra(u8),
+}
+
+/// A player's combat state beyond health and position (which live on `InstancePlayer`).
+#[spacetimedb::table(accessor = player_combat)]
+#[derive(Debug, Clone)]
+pub struct PlayerCombat {
+    /// The player.
+    #[primary_key]
+    pub identity: Identity,
+    /// Which instance.
+    #[index(btree)]
+    pub instance_id: u64,
+    /// Their account id.
+    pub account_id: String,
+    /// Alive.
+    pub alive: bool,
+    /// Their selection.
+    pub target: NetEntity,
+    /// Their cast.
+    pub cast: Option<NetCast>,
+    /// Their resources.
+    pub resources: NetResources,
+    /// Their class's cooldowns.
+    pub cooldowns: Vec<NetCooldown>,
+    /// Statuses on them.
+    pub statuses: Vec<NetStatus>,
+    /// The fight tick this was written at.
+    pub tick: u64,
+}
+
+/// One instance's fight clock and what a rebuild needs that no other row holds.
+#[spacetimedb::table(accessor = instance_combat)]
+#[derive(Debug, Clone)]
+pub struct InstanceCombat {
+    /// The instance.
+    #[primary_key]
+    pub instance_id: u64,
+    /// Ticks run.
+    pub tick: u64,
+    /// When tick zero was, in server time: tick `n` is due at `origin + n / 60 s`.
+    pub origin: Timestamp,
+    /// Completion credited.
+    pub credited: f32,
+    /// Boss gate open.
+    pub unlocked: bool,
+}
+
+/// What happened in one instance during one combat pass: a JSON array of
+/// `engine_realm::combat::WireEvent`. Kept for a few seconds; clients apply each once.
+#[spacetimedb::table(accessor = combat_batch)]
+#[derive(Debug, Clone)]
+pub struct CombatBatch {
+    /// Increasing: the order to apply batches in.
+    #[primary_key]
+    #[auto_inc]
+    pub id: u64,
+    /// Which instance.
+    #[index(btree)]
+    pub instance_id: u64,
+    /// The fight tick at the end of the pass.
+    pub tick: u64,
+    /// When it was written.
+    pub created_at: Timestamp,
+    /// The events.
+    pub events: String,
 }

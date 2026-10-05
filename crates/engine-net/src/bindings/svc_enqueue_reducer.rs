@@ -15,6 +15,7 @@ pub(super) struct SvcEnqueueArgs {
     pub definition_id: String,
     pub level: u32,
     pub gear_score: u32,
+    pub loadout: String,
     pub dungeon_id: String,
     pub role: RoleTag,
 }
@@ -28,6 +29,7 @@ impl From<SvcEnqueueArgs> for super::Reducer {
             definition_id: args.definition_id,
             level: args.level,
             gear_score: args.gear_score,
+            loadout: args.loadout,
             dungeon_id: args.dungeon_id,
             role: args.role,
         }
@@ -57,6 +59,7 @@ pub trait svc_enqueue {
         definition_id: String,
         level: u32,
         gear_score: u32,
+        loadout: String,
         dungeon_id: String,
         role: RoleTag,
     ) -> __sdk::Result<()> {
@@ -67,6 +70,7 @@ pub trait svc_enqueue {
             definition_id,
             level,
             gear_score,
+            loadout,
             dungeon_id,
             role,
             |_, _| {},
@@ -87,6 +91,7 @@ pub trait svc_enqueue {
         definition_id: String,
         level: u32,
         gear_score: u32,
+        loadout: String,
         dungeon_id: String,
         role: RoleTag,
 
@@ -105,6 +110,7 @@ impl svc_enqueue for super::RemoteReducers {
         definition_id: String,
         level: u32,
         gear_score: u32,
+        loadout: String,
         dungeon_id: String,
         role: RoleTag,
 
@@ -120,6 +126,7 @@ impl svc_enqueue for super::RemoteReducers {
                 definition_id,
                 level,
                 gear_score,
+                loadout,
                 dungeon_id,
                 role,
             },

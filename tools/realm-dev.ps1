@@ -94,7 +94,9 @@ function Publish-Module {
     Push-Location $Module
     try { Invoke-Native { cargo build --target wasm32-unknown-unknown --release } 'module build' } finally { Pop-Location }
     Write-Step "Publishing '$Database'"
-    Invoke-Native { & $Spacetime publish $Database --server $Server --bin-path $Wasm --yes } 'publish'
+    # Realtime state only (queues, parties, instances) — accounts and characters live in
+    # Postgres. A breaking schema change clears it rather than refusing the publish.
+    Invoke-Native { & $Spacetime publish $Database --server $Server --bin-path $Wasm --delete-data=on-conflict --yes } 'publish'
     Write-Step 'Pointing the realm at the local API issuer'
     Invoke-Native { & $Spacetime call --server $Server $Database admin_configure '"http://127.0.0.1:8080"' '"mygame-realm"' '"service:realm-bridge"' } 'admin_configure'
     Write-Step 'Regenerating client bindings'

@@ -1492,7 +1492,7 @@ impl Simulation {
     /// The mirror of [`Simulation::deal_damage`]: the one place an enemy ability puts health
     /// back, so "every health change is observable" holds in both directions.
     fn heal_entity(&mut self, source: EntityId, target: EntityId, amount: f32, ability: AbilityId) {
-        if !self.world.is_alive(target) {
+        if self.remote_authority || !self.world.is_alive(target) {
             return;
         }
         let restored = self.world.heal(target, amount).applied;

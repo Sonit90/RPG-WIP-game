@@ -142,6 +142,7 @@ pub fn matchmaking_tick(ctx: &ReducerContext, _timer: MatchmakingTimer) -> Resul
                 role: ticket.role,
                 level: ticket.level,
                 gear_score: ticket.gear_score,
+                loadout: ticket.loadout.clone(),
                 ready: ReadyTag::Pending,
                 presence: PresenceTag::Present,
                 disconnected_at: None,

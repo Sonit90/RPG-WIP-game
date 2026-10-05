@@ -199,6 +199,7 @@ async fn queue(
         definition_id: row.definition_id.clone(),
         level: summary.level,
         gear_score: summary.gear_score,
+        loadout: serde_json::to_string(&row.loadout.0).unwrap_or_default(),
     };
     match state.realm.enqueue(&token, &snapshot, &dungeon.id, body.role).await {
         Ok(()) => {

@@ -17,6 +17,7 @@ use engine_realm::api::CharacterSummary;
 use engine_realm::instance::InstanceState;
 use engine_realm::movement::InputFrame;
 use engine_realm::party::{PartyState, ReadyResponse};
+use engine_realm::combat::{ActionKind, CombatAction, EntityRef};
 use engine_realm::{RealmError, Role};
 
 /// What a bot does.
@@ -40,6 +41,9 @@ pub struct BotConfig {
     pub start_if_leader: bool,
     /// Walk forward once the run is active.
     pub walk: bool,
+    /// Once the run is active, walk at the nearest living monster and press bar slot 0 on
+    /// it when in range.
+    pub hunt: bool,
     /// Queue automatically once connected.
     pub queue: bool,
 }
@@ -65,6 +69,7 @@ pub struct Bot {
     start_sent_for: Option<u64>,
     next_seq: u32,
     last_input: Instant,
+    last_act: Option<Instant>,
     /// Where it stood when the run went active.
     pub start_position: Option<Vec3>,
     /// The access token the bot's own API client holds (security probes only).
@@ -99,6 +104,7 @@ impl Bot {
             start_sent_for: None,
             next_seq: 1,
             last_input: Instant::now(),
+            last_act: None,
             start_position: None,
             probe_token: None,
         })
@@ -235,6 +241,10 @@ impl Bot {
             self.start_position = self.mirror.me().map(|me| me.position);
             self.next_seq = self.mirror.me().map_or(0, |me| me.last_seq) + 1;
         }
+        if active && self.config.hunt {
+            self.hunt();
+            return;
+        }
         if active && self.config.walk && self.last_input.elapsed() >= Duration::from_millis(33) {
             self.last_input = Instant::now();
             let frames: Vec<InputFrame> = (0..2)
@@ -252,6 +262,58 @@ impl Bot {
                 })
                 .collect();
             self.client.send(NetCommand::Input(frames));
+        }
+    }
+
+    /// Walks at the nearest living monster, then presses slot 0 on it every second.
+    fn hunt(&mut self) {
+        const RANGE: f32 = 22.0;
+        let Some(me) = self.mirror.me().map(|me| me.position) else {
+            return;
+        };
+        let Some((key, at)) = self
+            .mirror
+            .monsters
+            .values()
+            .filter(|m| m.alive)
+            .map(|m| (m.key, m.position))
+            .min_by(|a, b| (a.1 - me).length().total_cmp(&(b.1 - me).length()))
+        else {
+            return;
+        };
+        let offset = at - me;
+        let distance = Vec3::new(offset.x, 0.0, offset.z).length();
+        if distance > RANGE {
+            if self.last_input.elapsed() < Duration::from_millis(33) {
+                return;
+            }
+            self.last_input = Instant::now();
+            // Yaw zero faces −Z; the forward axis rotated by yaw is (−sin, −cos).
+            let yaw = (-offset.x).atan2(-offset.z);
+            let frames: Vec<InputFrame> = (0..2)
+                .map(|_| {
+                    let frame = InputFrame {
+                        seq: self.next_seq,
+                        forward: 1.0,
+                        right: 0.0,
+                        yaw,
+                        face_camera: true,
+                        jump: false,
+                    };
+                    self.next_seq += 1;
+                    frame
+                })
+                .collect();
+            self.client.send(NetCommand::Input(frames));
+            return;
+        }
+        if self.last_act.is_none_or(|at| at.elapsed() >= Duration::from_millis(1000)) {
+            self.last_act = Some(Instant::now());
+            log::info!("[{}] pressing slot 0 on monster {key} at {distance:.1} m", self.config.name);
+            self.client.send(NetCommand::Act(CombatAction {
+                target: EntityRef::Monster(key),
+                kind: ActionKind::Ability(0),
+            }));
         }
     }
 

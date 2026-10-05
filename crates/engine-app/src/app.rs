@@ -5667,11 +5667,17 @@ impl Application for App {
                 );
             }
             if let Some(online) = self.online.as_ref() {
-                // Online there is no combat yet (the server will own it): movement, jumping
-                // and targeting only, and none of it until the realm has placed the player.
+                // Online the server owns the fight: ability presses pass through to the
+                // simulation, which (under a remote authority) hands them to the server as
+                // requests. Movement waits until the realm has placed the player; items,
+                // talents and debug controls are not commands the realm takes.
                 let may_move = online.may_move();
                 self.commands.retain(|command| match command {
                     engine_game::PlayerCommand::Move { .. } | engine_game::PlayerCommand::Jump => may_move,
+                    engine_game::PlayerCommand::UseAbility(_)
+                    | engine_game::PlayerCommand::UseAbilityAt { .. }
+                    | engine_game::PlayerCommand::UseUltimate { .. }
+                    | engine_game::PlayerCommand::UseExtra(_) => may_move,
                     engine_game::PlayerCommand::SelectNearestTarget
                     | engine_game::PlayerCommand::CycleTarget
                     | engine_game::PlayerCommand::ClearTarget

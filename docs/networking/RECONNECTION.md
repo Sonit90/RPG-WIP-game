@@ -21,6 +21,11 @@ several; the realm counts them). It never removes anyone:
 | Ready check | cancelled at once — a disconnected player cannot confirm, and is never counted as accepting |
 | Party (Ready) / instance | presence → TemporarilyDisconnected; the run continues; the party waits; after `reconnect_grace` (300 s) the janitor applies a normal departure |
 
+While a player is away their character stays in the fight: monsters can still attack it, and
+it can die and respawn. Coming back, the client re-subscribes and receives the current
+`player_combat`, monster rows and health; event batches that already happened are not
+replayed.
+
 Graces are tunable live: `admin_set_timeouts <ready_check_s> <reconnect_grace_s> <queue_grace_s>`.
 
 `client_connected` with the same Identity (same account, any machine) marks the account

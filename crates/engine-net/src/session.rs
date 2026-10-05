@@ -101,6 +101,8 @@ pub enum NetCommand {
     StartDungeon,
     /// Movement input frames.
     Input(Vec<InputFrame>),
+    /// A combat button press (or only a target change).
+    Act(engine_realm::combat::CombatAction),
     /// Dismiss a notice.
     DismissNotice(u64),
 }
@@ -548,6 +550,13 @@ impl Worker {
                     && self.status == ConnectionStatus::Connected
                 {
                     link.send_input(&frames);
+                }
+            }
+            NetCommand::Act(action) => {
+                if let Some(link) = &self.link
+                    && self.status == ConnectionStatus::Connected
+                {
+                    link.act(&action);
                 }
             }
             NetCommand::DismissNotice(id) => {

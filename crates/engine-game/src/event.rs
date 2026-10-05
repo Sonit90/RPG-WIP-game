@@ -723,6 +723,12 @@ impl EventStream {
         }
     }
 
+    /// Keeps only the events `keep` accepts. A networked client drops the outcomes it
+    /// predicted (damage, healing, deaths) because the server's arrive instead.
+    pub fn retain(&mut self, keep: impl FnMut(&CombatEvent) -> bool) {
+        self.events.retain(keep);
+    }
+
     /// Appends an event.
     pub fn push(&mut self, event: CombatEvent) {
         self.events.push(event);

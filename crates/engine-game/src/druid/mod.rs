@@ -172,6 +172,11 @@ impl AstralPower {
         }
     }
 
+    /// Sets the stored Astral Power (clamped): an authoritative correction.
+    pub fn set(&mut self, value: f32) {
+        self.value = if value.is_finite() { value.clamp(0.0, self.max()) } else { 0.0 };
+    }
+
     /// How much is banked.
     #[must_use]
     pub fn value(&self) -> f32 {

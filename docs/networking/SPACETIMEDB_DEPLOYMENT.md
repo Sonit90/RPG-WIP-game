@@ -104,6 +104,9 @@ Ship `realm.json` beside `mygame.exe` (from `deploy/realm-client.example.json`) 
   schema against the old and refuses breaking changes (removed/re-typed columns). Additive
   changes — new tables, new reducers, new columns appended with `#[default(...)]` — publish in
   place, and connected clients keep their sessions.
+* Locally, `tools/realm-dev.ps1 publish` passes `--delete-data=on-conflict`: a breaking change
+  clears the realm's realtime tables (queues, parties, instances) instead of refusing. Never do
+  that to a production realm with players in it.
 * A breaking change needs a planned migration: add the new shape alongside the old, move data
   with an owner-only reducer, ship clients that read the new shape, then remove the old one in
   a later publish. Regenerate client bindings (`tools/realm-dev.ps1 publish` does it locally)

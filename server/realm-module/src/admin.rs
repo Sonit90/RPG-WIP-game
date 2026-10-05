@@ -104,8 +104,9 @@ pub fn admin_set_timeouts(
     Ok(())
 }
 
-/// Ends an instance as completed or failed. An operator tool (and the integration tests' way
-/// to exercise the result pipeline) until server-side combat can complete a dungeon itself.
+/// Ends an instance as completed or failed. An operator tool, and the integration tests' way
+/// to exercise the result pipeline without clearing the dungeon; a real run completes from
+/// `combat_tick` when the fight's dungeon run does.
 #[spacetimedb::reducer]
 pub fn admin_finish_instance(ctx: &ReducerContext, instance_id: u64, success: bool) -> Result<(), String> {
     require_owner(ctx)?;

@@ -1,7 +1,7 @@
 <#
 .SYNOPSIS
     The realm's end-to-end suite: brings the local stack up if it is down, then runs every
-    realm-bot scenario (slice, isolation, decline, reconnect, security, results).
+    realm-bot scenario (slice, isolation, decline, reconnect, security, results, combat).
 
 .DESCRIPTION
     Exits non-zero if any scenario fails. Each scenario prints its checks; the summary lines

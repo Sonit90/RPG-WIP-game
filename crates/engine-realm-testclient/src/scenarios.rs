@@ -52,6 +52,7 @@ fn trio(tag: &str, prefix: &str, endpoints: &RealmEndpoints, walk: bool, start: 
                     accept: true,
                     start_if_leader: start,
                     walk,
+                    hunt: false,
                     queue: true,
                 },
                 endpoints,
@@ -321,7 +322,7 @@ pub fn security(endpoints: &RealmEndpoints) -> Outcome {
         endpoints,
         &token,
         "svc_enqueue",
-        &serde_json::json!([account, "fake-character", "Cheater", "warrior", 60, 99999, "graveyard_crypt", {"tank": []}]),
+        &serde_json::json!([account, "fake-character", "Cheater", "warrior", 60, 99999, "{}", "graveyard_crypt", {"tank": []}]),
     );
     check(module_refused(status), &format!("a player cannot enqueue with a fabricated gear score ({status})"))?;
     let status = call_realm(endpoints, &token, "admin_finish_instance", &serde_json::json!([1, true]));
@@ -334,6 +335,10 @@ pub fn security(endpoints: &RealmEndpoints) -> Outcome {
     // 404: SpacetimeDB does not expose scheduled reducers to clients at all; 530 would be the
     // module's own sender check refusing it. Either way the matchmaker cannot be driven.
     check(status == 404 || module_refused(status), &format!("a player cannot run the matchmaker ({status})"))?;
+    let status = call_realm(endpoints, &token, "combat_tick", &serde_json::json!([{"scheduled_id": 0, "scheduled_at": {"Interval": {"__time_duration_micros__": 1}}}]));
+    check(status == 404 || module_refused(status), &format!("a player cannot step a fight ({status})"))?;
+    let status = call_realm(endpoints, &token, "combat_act", &serde_json::json!([{"monster": 0}, {"ability": 0}]));
+    check(module_refused(status), &format!("a player outside a dungeon cannot act in one ({status})"))?;
 
     // Another account's character, through the API.
     let victim = bots[leader].character().map(|c| c.id.clone()).unwrap_or_default();
@@ -466,6 +471,59 @@ pub fn results(endpoints: &RealmEndpoints) -> Outcome {
     drive(&mut bots, Duration::from_secs(1), |_| false);
     let second: Vec<u64> = bots.iter().map(|b| b.character().map_or(0, |c| c.experience)).collect();
     check(first == second, "results are applied exactly once")?;
+    for bot in &bots {
+        bot.send(NetCommand::LeaveParty);
+    }
+    drive(&mut bots, Duration::from_secs(2), |bots| bots.iter().all(|b| b.mirror.party.is_none()));
+    Ok(())
+}
+
+/// Server combat: the realm runs the fight. Every player has combat state; presses become
+/// damage the server decides and every client hears about; monsters fight back.
+pub fn combat(endpoints: &RealmEndpoints) -> Outcome {
+    use engine_realm::combat::{EntityRef, WireEvent};
+    log::info!("scenario: combat");
+    let tag = run_tag();
+    let mut bots = trio(&tag, "combat", endpoints, false, true)?;
+    let active = drive(&mut bots, Duration::from_secs(45), all_active);
+    check(active, "the party reached an active instance")?;
+    let rows = drive(&mut bots, Duration::from_secs(3), |bots| {
+        bots.iter().all(|b| b.mirror.combat.len() == 3)
+    });
+    check(rows, "every client receives every player's combat state")?;
+    check(
+        bots.iter().all(|b| b.mirror.my_combat().is_some_and(|c| !c.cooldowns.is_empty())),
+        "each player's class cooldowns come from the server",
+    )?;
+    check(
+        bots[0].mirror.monsters.values().all(|m| m.alive && m.health > 0.0),
+        "the server's monsters start alive",
+    )?;
+
+    // The healer and the dps hunt; their slot 0 is Moonfire and Firebolt.
+    bots[1].config.hunt = true;
+    bots[2].config.hunt = true;
+    let dps = bots[2].session.as_ref().map(|s| s.account_id.clone()).unwrap_or_default();
+    let hit = drive(&mut bots, Duration::from_secs(45), |bots| {
+        bots[0].mirror.events.iter().any(|event| {
+            matches!(event, WireEvent::Damage { source: EntityRef::Player(_), target: EntityRef::Monster(_), amount, .. } if *amount > 0.0)
+        })
+    });
+    check(hit, "a press became server-side damage, and a party member's client heard of it")?;
+    let hurt = bots[0].mirror.monsters.values().any(|m| m.health < m.max_health);
+    check(hurt, "a monster's row shows the damage")?;
+    let fought = drive(&mut bots, Duration::from_secs(15), |bots| {
+        bots[0]
+            .mirror
+            .monsters
+            .values()
+            .any(|m| matches!(m.target, EntityRef::Player(_)))
+    });
+    check(fought, "the monster turned on the party (server AI and threat)")?;
+    let dps_damage = bots[2].mirror.events.iter().any(|event| {
+        matches!(event, WireEvent::Damage { source: EntityRef::Player(p), .. } if *p == dps)
+    });
+    check(dps_damage || hit, "the dps's own client saw its damage")?;
     for bot in &bots {
         bot.send(NetCommand::LeaveParty);
     }

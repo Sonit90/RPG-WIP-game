@@ -103,3 +103,19 @@ fn queue_population(ctx: &AnonymousViewContext) -> Vec<QueuePopulation> {
         })
         .collect()
 }
+
+#[view(accessor = my_player_combat, public, primary_key = identity)]
+fn my_player_combat(ctx: &ViewContext) -> Vec<PlayerCombat> {
+    let Some(me) = ctx.db.instance_player().identity().find(ctx.sender()) else {
+        return Vec::new();
+    };
+    ctx.db.player_combat().instance_id().filter(me.instance_id).collect()
+}
+
+#[view(accessor = my_combat_batches, public, primary_key = id)]
+fn my_combat_batches(ctx: &ViewContext) -> Vec<CombatBatch> {
+    let Some(me) = ctx.db.instance_player().identity().find(ctx.sender()) else {
+        return Vec::new();
+    };
+    ctx.db.combat_batch().instance_id().filter(me.instance_id).collect()
+}

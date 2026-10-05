@@ -22,17 +22,20 @@ pub enum Operation {
     Movement,
     /// Clock synchronisation pings.
     TimeSync,
+    /// Combat button presses and target changes.
+    Combat,
 }
 
 impl Operation {
     /// Every operation.
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::Queue,
         Self::ReadyCheck,
         Self::Party,
         Self::Leader,
         Self::Movement,
         Self::TimeSync,
+        Self::Combat,
     ];
 
     /// The stable key the module stores buckets under.
@@ -45,6 +48,7 @@ impl Operation {
             Self::Leader => "leader",
             Self::Movement => "movement",
             Self::TimeSync => "time_sync",
+            Self::Combat => "combat",
         }
     }
 
@@ -59,6 +63,8 @@ impl Operation {
             // A client sends ~30 messages a second; double that is the ceiling.
             Self::Movement => Limit::new(60.0, 60.0),
             Self::TimeSync => Limit::new(10.0, 2.0),
+            // Mashing a key is a handful a second; a bot spamming every slot is not.
+            Self::Combat => Limit::new(30.0, 15.0),
         }
     }
 }

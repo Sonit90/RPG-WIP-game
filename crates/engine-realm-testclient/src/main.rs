@@ -52,6 +52,7 @@ fn main() -> ExitCode {
                 ("reconnect", scenarios::reconnect),
                 ("security", scenarios::security),
                 ("results", scenarios::results),
+                ("combat", scenarios::combat),
             ];
             let mut failed = false;
             for (name, run) in list {
@@ -82,6 +83,7 @@ fn main() -> ExitCode {
                 accept: !args.iter().any(|a| a == "--decline"),
                 start_if_leader: args.iter().any(|a| a == "--lead"),
                 walk: args.iter().any(|a| a == "--walk"),
+                hunt: args.iter().any(|a| a == "--hunt"),
                 queue: true,
             };
             let mut bot = match Bot::start(config, &endpoints) {

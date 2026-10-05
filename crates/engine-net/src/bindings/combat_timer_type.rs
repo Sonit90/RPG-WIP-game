@@ -6,47 +6,47 @@ use spacetimedb_sdk::__codegen::{self as __sdk, __lib, __sats, __ws};
 
 #[derive(__lib::ser::Serialize, __lib::de::Deserialize, Clone, PartialEq, Debug)]
 #[sats(crate = __lib)]
-pub struct PhysicsTimer {
+pub struct CombatTimer {
     pub scheduled_id: u64,
     pub scheduled_at: __sdk::ScheduleAt,
 }
 
-impl __sdk::InModule for PhysicsTimer {
+impl __sdk::InModule for CombatTimer {
     type Module = super::RemoteModule;
 }
 
-/// Column accessor struct for the table `PhysicsTimer`.
+/// Column accessor struct for the table `CombatTimer`.
 ///
 /// Provides typed access to columns for query building.
-pub struct PhysicsTimerCols {
-    pub scheduled_id: __sdk::__query_builder::Col<PhysicsTimer, u64>,
-    pub scheduled_at: __sdk::__query_builder::Col<PhysicsTimer, __sdk::ScheduleAt>,
+pub struct CombatTimerCols {
+    pub scheduled_id: __sdk::__query_builder::Col<CombatTimer, u64>,
+    pub scheduled_at: __sdk::__query_builder::Col<CombatTimer, __sdk::ScheduleAt>,
 }
 
-impl __sdk::__query_builder::HasCols for PhysicsTimer {
-    type Cols = PhysicsTimerCols;
+impl __sdk::__query_builder::HasCols for CombatTimer {
+    type Cols = CombatTimerCols;
     fn cols(table_name: &'static str) -> Self::Cols {
-        PhysicsTimerCols {
+        CombatTimerCols {
             scheduled_id: __sdk::__query_builder::Col::new(table_name, "scheduled_id"),
             scheduled_at: __sdk::__query_builder::Col::new(table_name, "scheduled_at"),
         }
     }
 }
 
-/// Indexed column accessor struct for the table `PhysicsTimer`.
+/// Indexed column accessor struct for the table `CombatTimer`.
 ///
 /// Provides typed access to indexed columns for query building.
-pub struct PhysicsTimerIxCols {
-    pub scheduled_id: __sdk::__query_builder::IxCol<PhysicsTimer, u64>,
+pub struct CombatTimerIxCols {
+    pub scheduled_id: __sdk::__query_builder::IxCol<CombatTimer, u64>,
 }
 
-impl __sdk::__query_builder::HasIxCols for PhysicsTimer {
-    type IxCols = PhysicsTimerIxCols;
+impl __sdk::__query_builder::HasIxCols for CombatTimer {
+    type IxCols = CombatTimerIxCols;
     fn ix_cols(table_name: &'static str) -> Self::IxCols {
-        PhysicsTimerIxCols {
+        CombatTimerIxCols {
             scheduled_id: __sdk::__query_builder::IxCol::new(table_name, "scheduled_id"),
         }
     }
 }
 
-impl __sdk::__query_builder::CanBeLookupTable for PhysicsTimer {}
+impl __sdk::__query_builder::CanBeLookupTable for CombatTimer {}
