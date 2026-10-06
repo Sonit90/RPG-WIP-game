@@ -25,8 +25,9 @@
 use engine_render_data::ui::{UiRect, UiScale};
 use engine_settings::{
     BindingScope, CAMERA_SENSITIVITY_MAX, CAMERA_SENSITIVITY_MIN, CAMERA_SENSITIVITY_STEP,
-    DisplaySettings, GameSettings, KeyName, MinimapOrientation, NameplateSetting, Resolution,
-    ShadowQuality, UI_SCALE_MAX, UI_SCALE_MIN, UI_SCALE_STEP, VOLUME_MAX, VOLUME_MIN, VOLUME_STEP,
+    DisplaySettings, FrameRateLimit, GameSettings, KeyName, MinimapOrientation, NameplateSetting,
+    Resolution, ShadowQuality, UI_SCALE_MAX, UI_SCALE_MIN, UI_SCALE_STEP, VOLUME_MAX, VOLUME_MIN,
+    VOLUME_STEP,
 };
 
 use engine_game::hero::Hero;
@@ -262,6 +263,13 @@ pub enum MenuAction {
     /// one in force — choosing from the dropdown alone changes nothing. Applying it is not
     /// free: the shadow atlas is recreated and the GPU is waited on.
     ShadowQualityCommitted(ShadowQuality),
+    /// The player applied a frame-rate limit. Apply it and persist it.
+    ///
+    /// Emitted by APPLY like a shadow level, and as cheap to carry out as it is to undo: the
+    /// loop is held to the new limit from the very next frame.
+    FrameRateCommitted(FrameRateLimit),
+    /// The player applied background energy saving on or off. Apply it and persist it.
+    PreserveEnergyCommitted(bool),
     /// The map screen opened.
     OpenedMap,
     /// The map screen closed back to the settings screen.
@@ -302,6 +310,9 @@ pub fn volume_of(settings: GameSettings, channel: VolumeChannel) -> f32 {
 mod layout {
     /// Width of the menu panel.
     pub const PANEL_WIDTH: f32 = 420.0;
+    /// Width of the graphics panel: wider, so PRESERVE ENERGY IN BACKGROUND fits beside its
+    /// box at the menu's glyph size.
+    pub const GRAPHICS_PANEL_WIDTH: f32 = 520.0;
     /// Height of one button.
     pub const BUTTON_HEIGHT: f32 = 52.0;
     /// Gap between buttons inside one group.
@@ -774,6 +785,10 @@ impl MenuSystem {
             tick.set_checked(settings.nameplates.auras);
         }
         self.set_shadow_quality(settings.graphics.shadows);
+        self.graphics.set_frame_rate(
+            settings.graphics.max_fps,
+            settings.graphics.preserve_energy_in_background,
+        );
         self.set_minimap_orientation(settings.map.minimap_orientation);
         self.map_key = settings.map.toggle_key;
         if let Some(Widget::Checkbox(tick)) = self.map.widget_mut(MapItem::ReducedMotion) {
@@ -871,7 +886,15 @@ impl MenuSystem {
             m.group_gap,
             m.hero_description_height,
         );
-        self.centred_panel(self.viewport, height)
+        let mut panel = self.centred_panel(self.viewport, height);
+        // Wider than the others and still centred, never wider than the window.
+        let width = m
+            .scale
+            .px(layout::GRAPHICS_PANEL_WIDTH)
+            .min(self.viewport.0 as f32);
+        panel.x = ((self.viewport.0 as f32 - width) * 0.5).max(0.0);
+        panel.width = width;
+        panel
     }
 
     fn layout_graphics(&mut self, viewport: (u32, u32)) {
@@ -1472,7 +1495,7 @@ impl MenuSystem {
         self.actions.push(MenuAction::ClosedMap);
     }
 
-    /// The graphics section: three dropdowns, APPLY and BACK, and the dialog that follows
+    /// The graphics section: four dropdowns, a box, APPLY and BACK, and the dialog that follows
     /// APPLY. Everything it decides leaves as an action.
     ///
     /// APPLY does **not** close the menu — the point is to look at the result and try
@@ -1480,12 +1503,25 @@ impl MenuSystem {
     /// to the game — the rule every section of the settings follows.
     fn update_graphics(&mut self, input: &UiInput) {
         match self.graphics.update(input) {
-            Some(GraphicsOutcome::Apply { display, shadows }) => {
-                // The shadows first: the display change starts a confirmation, and a level
-                // applied after it would land in the middle of the dialog.
+            Some(GraphicsOutcome::Apply {
+                display,
+                shadows,
+                max_fps,
+                preserve_energy,
+            }) => {
+                // The shadows and the frame rate first: the display change starts a
+                // confirmation, and a level applied after it would land in the middle of the
+                // dialog.
                 if let Some(quality) = shadows {
                     self.actions
                         .push(MenuAction::ShadowQualityCommitted(quality));
+                }
+                if let Some(limit) = max_fps {
+                    self.actions.push(MenuAction::FrameRateCommitted(limit));
+                }
+                if let Some(preserve) = preserve_energy {
+                    self.actions
+                        .push(MenuAction::PreserveEnergyCommitted(preserve));
                 }
                 if let Some(settings) = display {
                     self.actions
@@ -2473,7 +2509,10 @@ mod tests {
 
     fn settings_with_shadows(shadows: ShadowQuality) -> GameSettings {
         GameSettings {
-            graphics: engine_settings::GraphicsSettings { shadows },
+            graphics: engine_settings::GraphicsSettings {
+                shadows,
+                ..engine_settings::GraphicsSettings::default()
+            },
             ..GameSettings::default()
         }
     }

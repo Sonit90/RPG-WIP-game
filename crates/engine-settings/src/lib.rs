@@ -65,7 +65,7 @@ pub use display::{
     closest_resolution, resolution_options,
 };
 pub use gameplay::GameplaySettings;
-pub use graphics::{GraphicsSettings, ShadowQuality};
+pub use graphics::{BACKGROUND_FPS, FrameRateLimit, GraphicsSettings, ShadowQuality};
 pub use hud::{
     ACTION_BAR_SLOTS, ACTION_BARS, ActionBarConfig, BindingScope, HUD_FILE_NAME, HUD_OFFSET_LIMIT,
     HUD_SCALE_DEFAULT, HUD_SCALE_MAX, HUD_SCALE_MIN, HUD_SCALE_STEP, HeroBindingsConfig, HudAnchor,
@@ -735,6 +735,8 @@ mod tests {
             },
             graphics: GraphicsSettings {
                 shadows: ShadowQuality::Ultra,
+                max_fps: FrameRateLimit::Fps165,
+                preserve_energy_in_background: false,
             },
             binding_scope: BindingScope::Character,
             map: MapSettings {
@@ -756,6 +758,11 @@ mod tests {
         );
         assert!(text.contains("\"window_mode\":\"fullscreen\""), "{text}");
         assert!(text.contains("\"resolution_width\":2560"), "{text}");
+        assert!(text.contains("\"max_fps\":165"), "{text}");
+        assert!(
+            text.contains("\"preserve_energy_in_background\":false"),
+            "{text}"
+        );
     }
 
     #[test]

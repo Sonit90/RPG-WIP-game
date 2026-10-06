@@ -7,6 +7,7 @@
 //!                             -> ThirdPersonCamera -> Camera
 //! render           RenderWorld -> cull -> RenderList -> D3D12
 //! present          swap chain
+//! end_frame        reports, then the frame-rate limit's wait
 //! ```
 //!
 //! This module is the only place in the project where all three worlds meet, and it is
@@ -37,7 +38,7 @@ use engine_game::firemage::FireAbility;
 use engine_game::hero::Hero;
 use engine_game::input_map::Bindings;
 use engine_game::sim::Simulation;
-use engine_platform::{Window, WindowConfig, WindowEvent};
+use engine_platform::{FramePacer, Window, WindowConfig, WindowEvent};
 use engine_presentation::AudioDirector;
 use engine_presentation::MonsterModel;
 use engine_presentation::camera::ThirdPersonCamera;
@@ -562,6 +563,14 @@ pub struct App {
     report_interval: Option<Duration>,
     /// Whether the window should ever be shown. False for `--hidden`.
     show_window: bool,
+    /// Holds the loop to the player's frame-rate limit.
+    pacer: FramePacer,
+    /// Whether the player's frame-rate limit applies to this run at all. False for a
+    /// measurement: `--hidden`, a benchmark, a screenshot or a frame budget.
+    frame_rate_limited: bool,
+    /// The limit the last frame was held to, so a change is logged once rather than every
+    /// frame. `None` is unlimited.
+    frame_cap: Option<u32>,
     /// Whether it has been shown yet. The first presented frame flips this.
     window_shown: bool,
     /// Frames discarded from the statistics window before it starts collecting.
@@ -1352,6 +1361,9 @@ impl App {
             last_effect: None,
             report_interval,
             show_window: args.window,
+            pacer: FramePacer::new(),
+            frame_rate_limited: args.uses_frame_rate_limit(),
+            frame_cap: None,
             window_shown: false,
             warmup_frames: args.warmup,
             shadow_overrides: args.shadow_overrides,
@@ -1932,6 +1944,35 @@ impl App {
             // The renderer refused; the previous configuration is still the one running.
             self.menu.set_shadow_quality(previous);
         }
+    }
+
+    /// Waits out the rest of the frame under the frame-rate limit in force right now.
+    ///
+    /// Read from the settings every frame rather than cached, so a limit applied in the menu
+    /// and the window losing focus both take effect on the very next frame. A measurement run
+    /// is never limited (see [`Args::uses_frame_rate_limit`]).
+    fn pace_frame(&mut self, ctx: &EngineContext) {
+        let focused = ctx.input().is_focused();
+        let cap = if self.frame_rate_limited {
+            self.settings.settings().graphics.frame_rate_cap(focused)
+        } else {
+            None
+        };
+        if cap != self.frame_cap {
+            match cap {
+                Some(fps) => log::info!(
+                    "frame rate: limited to {fps} FPS ({})",
+                    if focused {
+                        "focused"
+                    } else {
+                        "in the background"
+                    }
+                ),
+                None => log::info!("frame rate: unlimited"),
+            }
+            self.frame_cap = cap;
+        }
+        self.pacer.wait(cap);
     }
 
     /// Puts the character at a numbered test station, or back at the start.
@@ -2906,6 +2947,35 @@ impl App {
                 MenuAction::ShadowQualityCommitted(quality) => {
                     self.play_ui_sound(engine_audio::SoundId::UiClick);
                     self.choose_shadow_quality(quality);
+                }
+                // Nothing to build and nothing that can fail: the next frame's wait reads the
+                // settings, so the limit is live as soon as it is stored.
+                MenuAction::FrameRateCommitted(limit) => {
+                    self.play_ui_sound(engine_audio::SoundId::UiClick);
+                    let mut settings = self.settings.settings();
+                    settings.graphics.max_fps = limit;
+                    self.settings.update(settings);
+                    if self.settings.save_if_dirty() {
+                        log::info!("settings: max fps is now {}", limit.label());
+                    }
+                    self.menu
+                        .graphics_menu_mut()
+                        .set_frame_rate(limit, settings.graphics.preserve_energy_in_background);
+                }
+                MenuAction::PreserveEnergyCommitted(preserve) => {
+                    self.play_ui_sound(engine_audio::SoundId::UiClick);
+                    let mut settings = self.settings.settings();
+                    settings.graphics.preserve_energy_in_background = preserve;
+                    self.settings.update(settings);
+                    if self.settings.save_if_dirty() {
+                        log::info!(
+                            "settings: background energy saving {}",
+                            if preserve { "on" } else { "off" }
+                        );
+                    }
+                    self.menu
+                        .graphics_menu_mut()
+                        .set_frame_rate(settings.graphics.max_fps, preserve);
                 }
                 MenuAction::OpenedMap => {
                     self.play_ui_sound(engine_audio::SoundId::UiClick);
@@ -6082,7 +6152,8 @@ impl Application for App {
         self.renderer.last_gpu_frame_ms()
     }
 
-    /// Reporting and overlay text only; the engine has already recorded the frame.
+    /// Reporting and overlay text, then the frame-rate limit's wait; the engine has already
+    /// recorded the frame.
     fn end_frame(&mut self, ctx: &mut EngineContext) {
         // The stage's timestamps are resolved a frame or two behind, so a frame with no
         // reading is skipped rather than recorded as zero.
@@ -6135,6 +6206,9 @@ impl Application for App {
         self.maybe_report(ctx);
         #[cfg(feature = "debug-overlay")]
         self.maybe_update_overlay(ctx);
+        // Last, after everything that measures this frame: the wait shows up in the next
+        // frame's delta — the frame time a player sees — and in no stage's CPU time.
+        self.pace_frame(ctx);
     }
 
     fn shutdown(&mut self, ctx: &mut EngineContext) {

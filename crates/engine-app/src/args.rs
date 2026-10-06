@@ -247,7 +247,10 @@ options:
                          on screen, not no rendering - which is what makes it useful for
                          an automated run that has to exercise the real render path.
                          Pair it with --frames.
-  --frames <count>       exit after rendering this many frames
+  --frames <count>       exit after rendering this many frames. A run with a frame
+                         budget, --hidden, --benchmark or --screenshot is a
+                         measurement: the settings' max FPS and background limit do
+                         not apply to it
   --benchmark            measure 800x450, 1280x720, 1920x1080 and 3840x2160 in one
                          process, resizing between them, then report and exit
   --benchmark-at <list>  the same, at a chosen list: 1280x720,1920x1080
@@ -939,6 +942,20 @@ impl Args {
             && self.frames.is_none()
     }
 
+    /// Whether the player's frame-rate limit and background energy saving apply to this run.
+    ///
+    /// Not for a run nobody is watching or that measures something — `--hidden`, a
+    /// benchmark, a screenshot or a frame budget. Those measure the machine, the same reason
+    /// vsync is off by default, and a hidden window never has focus: with energy saving on
+    /// it would be held to the background rate for its whole life.
+    #[must_use]
+    pub fn uses_frame_rate_limit(&self) -> bool {
+        self.window
+            && self.benchmark.is_none()
+            && self.screenshot.is_none()
+            && self.frames.is_none()
+    }
+
     /// Applies the command line on top of the default settings.
     ///
     /// Only the fields an option actually names are changed, so a default that moves
@@ -1511,6 +1528,30 @@ mod tests {
                 .expect("valid")
                 .uses_saved_display()
         );
+    }
+
+    #[test]
+    fn the_frame_rate_limit_applies_unless_the_run_is_a_measurement() {
+        let plain = parse::<[&str; 0], &str>([]).expect("empty is valid");
+        assert!(plain.uses_frame_rate_limit());
+        for flags in [
+            vec!["--hidden"],
+            vec!["--benchmark"],
+            vec!["--frames", "10"],
+            vec!["--screenshot", "shot.png"],
+        ] {
+            let args = parse(flags.clone()).expect("valid");
+            assert!(!args.uses_frame_rate_limit(), "{flags:?}");
+        }
+        // Choosing the window is not measuring with it: a player's limit still holds.
+        for flags in [
+            vec!["--width", "1280"],
+            vec!["--fullscreen"],
+            vec!["--vsync"],
+        ] {
+            let args = parse(flags.clone()).expect("valid");
+            assert!(args.uses_frame_rate_limit(), "{flags:?}");
+        }
     }
 
     #[test]

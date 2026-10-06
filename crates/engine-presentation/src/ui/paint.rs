@@ -11,7 +11,7 @@
 //! nothing after the first time.
 
 use engine_render_data::ui::{TextAlign, UiColor, UiDrawList, UiIcon, UiRect, UiScale};
-use engine_settings::{ShadowQuality, WindowMode};
+use engine_settings::{FrameRateLimit, ShadowQuality, WindowMode};
 
 use super::graphics_menu::{GraphicsItem, GraphicsMenu, shadow_label};
 use super::menu::{HeroItem, MapItem, MenuScreen, MenuSystem, PauseItem};
@@ -166,8 +166,8 @@ pub fn push_menu(
 
 /// The graphics section: two labelled display dropdowns, a line saying what the chosen mode
 /// does, a line saying what is in force, the shadow dropdown with a line saying what the
-/// chosen level buys, and APPLY and BACK side by side — and, after APPLY changed the display,
-/// the dialog over all of it.
+/// chosen level buys, the frame-rate dropdown and the background box, and APPLY and BACK side
+/// by side — and, after APPLY changed the display, the dialog over all of it.
 ///
 /// An open list is drawn last, so it covers the rows under it the way it also takes their
 /// clicks.
@@ -267,8 +267,8 @@ fn push_graphics(
     }
 }
 
-/// What a dropdown row says: a resolution from the monitor's list, a window mode, or a
-/// shadow level.
+/// What a dropdown row says: a resolution from the monitor's list, a window mode, a shadow
+/// level, or a frame-rate limit.
 fn dropdown_text<'a>(
     display: &'a GraphicsMenu,
     item: GraphicsItem,
@@ -295,7 +295,10 @@ fn dropdown_text<'a>(
         GraphicsItem::Shadows => ShadowQuality::ALL
             .get(index)
             .map_or("", |quality| shadow_label(*quality)),
-        GraphicsItem::Apply | GraphicsItem::Back => "",
+        GraphicsItem::MaxFps => FrameRateLimit::ALL
+            .get(index)
+            .map_or("", |limit| limit.label()),
+        GraphicsItem::PreserveEnergy | GraphicsItem::Apply | GraphicsItem::Back => "",
     }
 }
 
@@ -892,9 +895,32 @@ mod tests {
             "SHADOW QUALITY",
             "HIGH",
             ShadowQuality::High.description(),
+            "MAX FPS",
+            "UNLIMITED",
+            "PRESERVE ENERGY IN BACKGROUND",
         ] {
             assert!(text.contains(word), "{word} missing from {text}");
         }
+        // The longest label on the screen, beside its box, inside the panel: 5x7 glyphs
+        // advance six cells at the label's scale.
+        let panel = menu.graphics_panel();
+        let row = menu
+            .graphics_menu()
+            .screen()
+            .widget(crate::ui::graphics_menu::GraphicsItem::PreserveEnergy)
+            .expect("the box exists")
+            .rect();
+        let scale = menu.scale();
+        let label = "PRESERVE ENERGY IN BACKGROUND";
+        let text_width =
+            (label.len() * 6 - 1) as f32 * scale.text(MenuTheme::default().label_scale);
+        let box_size = (row.height - scale.px(16.0)).max(scale.px(8.0));
+        let text_right = row.x + scale.px(12.0) + box_size + scale.px(14.0) + text_width;
+        assert!(
+            text_right <= panel.right(),
+            "{text_right} runs past the panel's edge at {}",
+            panel.right()
+        );
         menu.graphics_menu_mut().begin_confirmation(15);
         let text = render(&menu).text().to_owned();
         assert!(text.contains("KEEP THESE DISPLAY SETTINGS?"), "{text}");

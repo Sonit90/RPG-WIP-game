@@ -14,6 +14,8 @@ workspace = true
 features = [
     "Win32_Foundation",
     "Win32_Graphics_Gdi",
+    # The frame pacer's high-resolution waitable timer takes security attributes.
+    "Win32_Security",
     # DPAPI, for the remembered online session (secure_store).
     "Win32_Security_Cryptography",
     # The clipboard, for pasting into text fields.
@@ -22,6 +24,7 @@ features = [
     "Win32_System_LibraryLoader",
     # Process memory counters, for the developer report: working set and private bytes.
     "Win32_System_ProcessStatus",
+    # The current process (memory), and the frame pacer's waitable timer.
     "Win32_System_Threading",
     "Win32_UI_HiDpi",
     "Win32_UI_Input_KeyboardAndMouse",

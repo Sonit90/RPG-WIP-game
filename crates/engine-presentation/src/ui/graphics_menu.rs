@@ -1,5 +1,5 @@
-//! The GRAPHICS screen: resolution, window mode and shadow quality, all applied together by
-//! APPLY.
+//! The GRAPHICS screen: resolution, window mode, shadow quality and the frame-rate limit, all
+//! applied together by APPLY.
 //!
 //! ```text
 //! ┌──────────── GRAPHICS ───────────┐
@@ -12,28 +12,32 @@
 //! │ SHADOW QUALITY                  │          when the display changed
 //! │ [ HIGH                      ▼ ] │
 //! │ SHARPER SHADOWS, AND ...        │
+//! │ MAX FPS                         │
+//! │ [ UNLIMITED                 ▼ ] │
+//! │ [x] PRESERVE ENERGY IN BACKGR.. │
 //! │ [ APPLY      ]  [ BACK       ]  │
 //! └─────────────────────────────────┘
 //! ```
 //!
 //! Choosing from a dropdown changes nothing but the choice; APPLY carries out every choice at
 //! once, and BACK forgets them. A display change can turn the screen black, so it is then
-//! confirmed by the dialog; a shadow level cannot strand anybody, so it is simply applied
-//! and saved.
+//! confirmed by the dialog; a shadow level and a frame-rate limit cannot strand anybody, so
+//! they are simply applied and saved — the limit from the very next frame.
 //!
 //! The menu never decides what is in force — the application tells it
-//! ([`GraphicsMenu::set_current`], [`GraphicsMenu::set_shadow_quality`]) after applying,
+//! ([`GraphicsMenu::set_current`], [`GraphicsMenu::set_shadow_quality`],
+//! [`GraphicsMenu::set_frame_rate`]) after applying,
 //! reverting, an Alt+Enter toggle or the shadow key, so the screen always shows the truth.
 //! The resolution list is the monitor's, given by the application
 //! ([`GraphicsMenu::set_options`]); this module only turns it into rows and remembers which
 //! one is chosen.
 
 use engine_render_data::ui::{UiRect, UiScale};
-use engine_settings::{DisplaySettings, Resolution, ShadowQuality, WindowMode};
+use engine_settings::{DisplaySettings, FrameRateLimit, Resolution, ShadowQuality, WindowMode};
 
 use super::input::UiInput;
 use super::screen::UiScreen;
-use super::widget::{Button, Dropdown, Widget, WidgetEvent};
+use super::widget::{Button, Checkbox, Dropdown, Widget, WidgetEvent};
 
 /// The GRAPHICS screen's items, in layout order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -44,17 +48,22 @@ pub enum GraphicsItem {
     WindowMode,
     /// The shadow quality dropdown.
     Shadows,
+    /// The frame-rate limit dropdown.
+    MaxFps,
+    /// Whether the game slows down while its window is in the background.
+    PreserveEnergy,
     /// Applies every choice. At the bottom, beside BACK.
     Apply,
     /// Returns to the settings screen, dropping unapplied choices.
     Back,
 }
 
-/// The three dropdowns, in the order they are laid out.
-const DROPDOWNS: [GraphicsItem; 3] = [
+/// The four dropdowns, in the order they are laid out.
+const DROPDOWNS: [GraphicsItem; 4] = [
     GraphicsItem::Resolution,
     GraphicsItem::WindowMode,
     GraphicsItem::Shadows,
+    GraphicsItem::MaxFps,
 ];
 
 /// What a shadow level's row says.
@@ -84,13 +93,17 @@ pub enum ConfirmItem {
 /// What the GRAPHICS screen asks for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GraphicsOutcome {
-    /// APPLY: what changed. The display, when present, is applied and then confirmed; the
-    /// shadow level, when present, is applied and saved.
+    /// APPLY: what changed. The display, when present, is applied and then confirmed; every
+    /// other field, when present, is applied and saved.
     Apply {
         /// The display settings to try, if they differ from what is in force.
         display: Option<DisplaySettings>,
         /// The shadow level to use, if it differs from the one in force.
         shadows: Option<ShadowQuality>,
+        /// The frame-rate limit to use, if it differs from the one in force.
+        max_fps: Option<FrameRateLimit>,
+        /// Background energy saving, if it differs from what is in force.
+        preserve_energy: Option<bool>,
     },
     /// The player kept the settings being confirmed.
     Keep,
@@ -148,6 +161,14 @@ pub struct GraphicsMenu {
     shadows: ShadowQuality,
     /// What the shadow dropdown says.
     pending_shadows: ShadowQuality,
+    /// The frame-rate limit in force.
+    max_fps: FrameRateLimit,
+    /// What the frame-rate dropdown says.
+    pending_max_fps: FrameRateLimit,
+    /// Whether background energy saving is in force.
+    preserve_energy: bool,
+    /// What its box says.
+    pending_preserve_energy: bool,
 }
 
 impl GraphicsMenu {
@@ -169,6 +190,21 @@ impl GraphicsMenu {
                 shadow_index(shadows),
             ),
         );
+        // Until the application says otherwise (`set_frame_rate`), a fresh install's.
+        let frame_rate = engine_settings::GraphicsSettings::default();
+        screen.push(
+            GraphicsItem::MaxFps,
+            Dropdown::new(
+                "MAX FPS",
+                FrameRateLimit::ALL.len(),
+                frame_rate_index(frame_rate.max_fps),
+            ),
+        );
+        screen.push(
+            GraphicsItem::PreserveEnergy,
+            Checkbox::new("PRESERVE ENERGY IN BACKGROUND")
+                .checked(frame_rate.preserve_energy_in_background),
+        );
         screen.push(GraphicsItem::Apply, Button::new("APPLY"));
         screen.push(GraphicsItem::Back, Button::new("BACK"));
         let mut confirm = UiScreen::new();
@@ -186,6 +222,10 @@ impl GraphicsMenu {
             dialog: UiRect::new(0.0, 0.0, 0.0, 0.0),
             shadows,
             pending_shadows: shadows,
+            max_fps: frame_rate.max_fps,
+            pending_max_fps: frame_rate.max_fps,
+            preserve_energy: frame_rate.preserve_energy_in_background,
+            pending_preserve_energy: frame_rate.preserve_energy_in_background,
         };
         menu.set_options(vec![current.resolution()], current.resolution(), current);
         menu
@@ -239,6 +279,28 @@ impl GraphicsMenu {
         self.sync_widgets();
     }
 
+    /// The frame-rate limit and the background switch in force.
+    #[must_use]
+    pub fn frame_rate(&self) -> (FrameRateLimit, bool) {
+        (self.max_fps, self.preserve_energy)
+    }
+
+    /// The frame-rate limit and background switch in force now — after APPLY, or on opening
+    /// the screen. The dropdown and the box follow.
+    pub fn set_frame_rate(&mut self, max_fps: FrameRateLimit, preserve_energy: bool) {
+        self.max_fps = max_fps;
+        self.pending_max_fps = max_fps;
+        self.preserve_energy = preserve_energy;
+        self.pending_preserve_energy = preserve_energy;
+        self.sync_widgets();
+    }
+
+    /// What the frame-rate dropdown and the background box say.
+    #[must_use]
+    pub fn pending_frame_rate(&self) -> (FrameRateLimit, bool) {
+        (self.pending_max_fps, self.pending_preserve_energy)
+    }
+
     /// What the display dropdowns say.
     #[must_use]
     pub fn pending(&self) -> DisplaySettings {
@@ -254,7 +316,10 @@ impl GraphicsMenu {
     /// Whether APPLY would change anything.
     #[must_use]
     pub fn has_changes(&self) -> bool {
-        self.has_display_changes() || self.pending_shadows != self.shadows
+        self.has_display_changes()
+            || self.pending_shadows != self.shadows
+            || self.pending_max_fps != self.max_fps
+            || self.pending_preserve_energy != self.preserve_energy
     }
 
     /// Whether APPLY would change the display.
@@ -334,6 +399,8 @@ impl GraphicsMenu {
     pub fn discard_changes(&mut self) {
         self.pending = self.current;
         self.pending_shadows = self.shadows;
+        self.pending_max_fps = self.max_fps;
+        self.pending_preserve_energy = self.preserve_energy;
         self.sync_widgets();
         self.screen.reset();
     }
@@ -379,6 +446,16 @@ impl GraphicsMenu {
         if let Some(Widget::Dropdown(dropdown)) = self.screen.widget_mut(GraphicsItem::Shadows) {
             dropdown.selected = shadows;
         }
+        let max_fps = frame_rate_index(self.pending_max_fps);
+        if let Some(Widget::Dropdown(dropdown)) = self.screen.widget_mut(GraphicsItem::MaxFps) {
+            dropdown.selected = max_fps;
+        }
+        let preserve = self.pending_preserve_energy;
+        if let Some(Widget::Checkbox(checkbox)) =
+            self.screen.widget_mut(GraphicsItem::PreserveEnergy)
+        {
+            checkbox.set_checked(preserve);
+        }
         let changes = self.has_changes();
         if let Some(Widget::Button(button)) = self.screen.widget_mut(GraphicsItem::Apply) {
             button.state.enabled = changes;
@@ -405,6 +482,18 @@ impl GraphicsMenu {
             UiRect::new(x, y, width, layout.row_height),
         );
         y += layout.row_height + layout.line_height + layout.group_gap;
+        // The frame rate, a group of its own: the limit, then what happens in the background.
+        y += layout.label_height;
+        self.screen.set_rect(
+            GraphicsItem::MaxFps,
+            UiRect::new(x, y, width, layout.row_height),
+        );
+        y += layout.row_height + layout.gap;
+        self.screen.set_rect(
+            GraphicsItem::PreserveEnergy,
+            UiRect::new(x, y, width, layout.row_height),
+        );
+        y += layout.row_height + layout.group_gap;
         // APPLY and BACK side by side at the bottom: the two ways off the screen.
         let half = (width - layout.gap) * 0.5;
         self.screen.set_rect(
@@ -488,6 +577,12 @@ impl GraphicsMenu {
             + row_height
             + line_height
             + group_gap
+            // MAX FPS and the background box.
+            + label_height
+            + row_height
+            + gap
+            + row_height
+            + group_gap
             // APPLY and BACK.
             + row_height
     }
@@ -540,13 +635,22 @@ impl GraphicsMenu {
             }
             let mut apply = false;
             let mut back = false;
+            let mut toggled = None;
             for (item, event) in self.screen.update(input) {
                 match (item, event) {
                     (GraphicsItem::Apply, WidgetEvent::Activated) => apply = true,
                     (GraphicsItem::Back, WidgetEvent::Activated) => back = true,
+                    (GraphicsItem::PreserveEnergy, WidgetEvent::Toggled(checked)) => {
+                        toggled = Some(*checked);
+                    }
                     (item, WidgetEvent::Chosen(index)) => chosen = Some((*item, *index)),
                     _ => {}
                 }
+            }
+            if let Some(checked) = toggled {
+                // Like a dropdown's choice: pending until APPLY.
+                self.pending_preserve_energy = checked;
+                self.sync_widgets();
             }
             if back {
                 return Some(GraphicsOutcome::Back);
@@ -555,6 +659,9 @@ impl GraphicsMenu {
                 return Some(GraphicsOutcome::Apply {
                     display: self.has_display_changes().then_some(self.pending),
                     shadows: (self.pending_shadows != self.shadows).then_some(self.pending_shadows),
+                    max_fps: (self.pending_max_fps != self.max_fps).then_some(self.pending_max_fps),
+                    preserve_energy: (self.pending_preserve_energy != self.preserve_energy)
+                        .then_some(self.pending_preserve_energy),
                 });
             }
         }
@@ -576,12 +683,25 @@ impl GraphicsMenu {
                         self.pending.window_mode = *mode;
                     }
                 }
-                GraphicsItem::Apply | GraphicsItem::Back => {}
+                GraphicsItem::MaxFps => {
+                    if let Some(limit) = FrameRateLimit::ALL.get(index) {
+                        self.pending_max_fps = *limit;
+                    }
+                }
+                GraphicsItem::PreserveEnergy | GraphicsItem::Apply | GraphicsItem::Back => {}
             }
             self.sync_widgets();
         }
         None
     }
+}
+
+/// Where `limit` is in [`FrameRateLimit::ALL`]: its row in the dropdown.
+fn frame_rate_index(limit: FrameRateLimit) -> usize {
+    FrameRateLimit::ALL
+        .iter()
+        .position(|candidate| *candidate == limit)
+        .unwrap_or(0)
 }
 
 /// Where `quality` is in [`ShadowQuality::ALL`]: its row in the dropdown.
@@ -701,6 +821,8 @@ mod tests {
             Some(GraphicsOutcome::Apply {
                 display: Some(wanted),
                 shadows: None,
+                max_fps: None,
+                preserve_energy: None,
             })
         );
     }
@@ -729,6 +851,8 @@ mod tests {
             Some(GraphicsOutcome::Apply {
                 display: None,
                 shadows: Some(ShadowQuality::Low),
+                max_fps: None,
+                preserve_energy: None,
             })
         );
         // Once applied, nothing is left to apply.
@@ -737,7 +861,10 @@ mod tests {
         // Both at once: one APPLY carries both.
         choose(&mut menu, GraphicsItem::Shadows, 4);
         choose(&mut menu, GraphicsItem::WindowMode, 2);
-        let Some(GraphicsOutcome::Apply { display, shadows }) = click(&mut menu, apply) else {
+        let Some(GraphicsOutcome::Apply {
+            display, shadows, ..
+        }) = click(&mut menu, apply)
+        else {
             panic!("APPLY asks for both");
         };
         assert_eq!(shadows, Some(ShadowQuality::Ultra));
@@ -746,6 +873,108 @@ mod tests {
         menu.discard_changes();
         assert_eq!(menu.pending_shadows(), ShadowQuality::Low);
         assert_eq!(dropdown(&menu, GraphicsItem::Shadows).selected, 1);
+    }
+
+    fn apply_rect(menu: &GraphicsMenu) -> UiRect {
+        menu.screen()
+            .widget(GraphicsItem::Apply)
+            .expect("apply")
+            .rect()
+    }
+
+    #[test]
+    fn a_frame_rate_limit_waits_for_apply_and_reports_only_itself() {
+        let mut menu = menu();
+        assert_eq!(
+            menu.frame_rate(),
+            (FrameRateLimit::Unlimited, true),
+            "a fresh install's"
+        );
+        assert_eq!(
+            dropdown(&menu, GraphicsItem::MaxFps).selected,
+            FrameRateLimit::ALL.len() - 1,
+            "unlimited is the last row"
+        );
+        // 144 is the third row.
+        choose(&mut menu, GraphicsItem::MaxFps, 2);
+        assert_eq!(menu.pending_frame_rate().0, FrameRateLimit::Fps144);
+        assert_eq!(
+            menu.frame_rate().0,
+            FrameRateLimit::Unlimited,
+            "not applied yet"
+        );
+        assert!(menu.has_changes());
+        assert!(!menu.has_display_changes());
+        let apply = apply_rect(&menu);
+        assert_eq!(
+            click(&mut menu, apply),
+            Some(GraphicsOutcome::Apply {
+                display: None,
+                shadows: None,
+                max_fps: Some(FrameRateLimit::Fps144),
+                preserve_energy: None,
+            })
+        );
+        menu.set_frame_rate(FrameRateLimit::Fps144, true);
+        assert!(!menu.has_changes());
+    }
+
+    #[test]
+    fn the_background_box_is_a_pending_choice_like_the_rest() {
+        let mut menu = menu();
+        let row = menu
+            .screen()
+            .widget(GraphicsItem::PreserveEnergy)
+            .expect("the box exists")
+            .rect();
+        assert_eq!(
+            click(&mut menu, row),
+            None,
+            "a tick applies nothing on its own"
+        );
+        assert!(!menu.pending_frame_rate().1);
+        assert!(menu.frame_rate().1, "still in force until APPLY");
+        let apply = apply_rect(&menu);
+        assert_eq!(
+            click(&mut menu, apply),
+            Some(GraphicsOutcome::Apply {
+                display: None,
+                shadows: None,
+                max_fps: None,
+                preserve_energy: Some(false),
+            })
+        );
+        // BACK forgets an unapplied tick, and the box shows the truth again.
+        menu.set_frame_rate(FrameRateLimit::Unlimited, false);
+        click(&mut menu, row);
+        assert!(menu.has_changes());
+        menu.discard_changes();
+        assert!(!menu.has_changes());
+        assert!(matches!(
+            menu.screen().widget(GraphicsItem::PreserveEnergy),
+            Some(Widget::Checkbox(checkbox)) if !checkbox.checked
+        ));
+    }
+
+    #[test]
+    fn the_frame_rate_group_fits_the_height_the_menu_reserves() {
+        let layout = layout();
+        let height = GraphicsMenu::content_height(
+            layout.padding,
+            layout.title_height,
+            layout.label_height,
+            layout.row_height,
+            layout.gap,
+            layout.group_gap,
+            layout.line_height,
+        );
+        let menu = menu();
+        let bottom = apply_rect(&menu).bottom() + layout.padding;
+        assert!(
+            (bottom - (layout.panel.y + height)).abs() < 0.01,
+            "laid out to {bottom}, reserved to {}",
+            layout.panel.y + height
+        );
     }
 
     #[test]
@@ -759,6 +988,8 @@ mod tests {
             GraphicsItem::Resolution,
             GraphicsItem::WindowMode,
             GraphicsItem::Shadows,
+            GraphicsItem::MaxFps,
+            GraphicsItem::PreserveEnergy,
         ] {
             assert!(
                 rect(item).bottom() < apply.y,
