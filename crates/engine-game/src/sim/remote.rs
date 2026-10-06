@@ -136,6 +136,27 @@ impl Simulation {
         }
     }
 
+    /// Shows how much `entity` absorbs as the server has it. Zero clears it.
+    pub fn present_absorb(&mut self, entity: EntityId, amount: f32) {
+        let amount = if amount.is_finite() {
+            amount.max(0.0)
+        } else {
+            0.0
+        };
+        match self
+            .presented_absorbs
+            .iter()
+            .position(|(id, _)| *id == entity)
+        {
+            Some(index) if amount <= 0.0 => {
+                self.presented_absorbs.swap_remove(index);
+            }
+            Some(index) => self.presented_absorbs[index].1 = amount,
+            None if amount > 0.0 => self.presented_absorbs.push((entity, amount)),
+            None => {}
+        }
+    }
+
     /// Shows the local player's cast as the server has it.
     pub fn present_cast(&mut self, cast: Option<(FireAbility, f32, f32)>) {
         self.player.cast = cast.map(|(ability, elapsed, duration)| ActiveCast {

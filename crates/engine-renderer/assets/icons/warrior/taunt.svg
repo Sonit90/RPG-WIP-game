@@ -1,0 +1,35 @@
+<svg version="1.1" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+<defs>
+	<linearGradient id="taunt_panel" gradientUnits="userSpaceOnUse" x1="0" y1="512" x2="512" y2="0">
+		<stop offset="0" stop-color="rgb(24,28,35)"/>
+		<stop offset="1" stop-color="rgb(11,13,17)"/>
+	</linearGradient>
+	<radialGradient id="taunt_forge" gradientUnits="userSpaceOnUse" cx="230" cy="270" r="260">
+		<stop offset="0" stop-opacity="0.55" stop-color="rgb(210,70,40)"/>
+		<stop offset="0.6" stop-opacity="0.16" stop-color="rgb(90,40,30)"/>
+		<stop offset="1" stop-opacity="0" stop-color="rgb(11,13,17)"/>
+	</radialGradient>
+	<linearGradient id="taunt_steel" gradientUnits="userSpaceOnUse" x1="120" y1="110" x2="320" y2="420">
+		<stop offset="0" stop-color="rgb(220,226,236)"/>
+		<stop offset="0.5" stop-color="rgb(132,145,163)"/>
+		<stop offset="1" stop-color="rgb(52,60,72)"/>
+	</linearGradient>
+	<linearGradient id="taunt_ember" gradientUnits="userSpaceOnUse" x1="300" y1="140" x2="470" y2="380">
+		<stop offset="0" stop-color="rgb(255,214,120)"/>
+		<stop offset="1" stop-color="rgb(226,92,46)"/>
+	</linearGradient>
+</defs>
+<rect x="0" y="0" width="512" height="512" fill="url(#taunt_panel)"/>
+<rect x="0" y="0" width="512" height="512" fill="url(#taunt_forge)"/>
+<!-- A war helm in profile, its visor open on a shout. -->
+<path d="M 110 300 C 100 200 150 120 240 112 C 300 108 334 150 338 196 L 338 236 L 300 236 L 300 276 L 338 276 L 338 330 C 330 392 270 416 214 410 C 160 404 118 372 110 300 Z" fill="url(#taunt_steel)" stroke="rgb(20,24,30)" stroke-width="14" stroke-linejoin="round"/>
+<path d="M 150 196 C 170 160 206 142 246 142" fill="none" stroke="rgb(240,244,250)" stroke-opacity="0.55" stroke-width="12" stroke-linecap="round"/>
+<path d="M 214 410 L 214 446 M 170 398 L 160 436" stroke="rgb(52,60,72)" stroke-width="18" stroke-linecap="round"/>
+<!-- The shout: three arcs of sound thrown at the enemy. -->
+<g fill="none" stroke="url(#taunt_ember)" stroke-linecap="round">
+	<path d="M 370 214 C 392 236 392 276 370 298" stroke-width="22"/>
+	<path d="M 408 178 C 448 218 448 294 408 334" stroke-width="20"/>
+	<path d="M 446 144 C 502 202 502 310 446 368" stroke-width="18"/>
+</g>
+<rect x="6" y="6" width="500" height="500" fill="none" stroke="rgb(196,154,92)" stroke-opacity="0.55" stroke-width="10"/>
+</svg>

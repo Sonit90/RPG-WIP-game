@@ -130,8 +130,16 @@ fn a_first_launch_writes_the_class_bar_and_the_second_reads_it_back() {
         assert!(!layout.is_enabled(HudElementId::ActionBar(index)));
     }
     for id in HudElementId::FRAMES {
-        assert!(layout.is_enabled(id), "{id:?} is not on by default");
+        // The party list is the one frame a fresh install hides: the raid frames are the
+        // group's default frames.
+        let expected = id != HudElementId::Party;
+        assert_eq!(layout.is_enabled(id), expected, "{id:?} default visibility");
     }
+    assert!(
+        layout.is_enabled(HudElementId::Raid),
+        "the raid frames are on by default"
+    );
+    assert!(layout.is_enabled(HudElementId::Tooltip));
 }
 
 #[test]

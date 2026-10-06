@@ -23,8 +23,8 @@
 //!
 //! What is **not** here:
 //!
-//! * The abilities. They are rows of [`crate::firemage::ABILITIES`], like every other
-//!   ability in the game, because there is one ability table and one executor.
+//! * The abilities' numbers. They are this class's rows in [`abilities`], assembled into the
+//!   one [`crate::ability::ABILITIES`] table, because there is one table and one executor.
 //! * Dodge, Parry, Block and Armour. They are stats every character could have, and they
 //!   live in [`crate::character::defense`] with the one roll that decides between them.
 //! * Threat. Threat is damage, in one place, for everybody; the Warrior's rows carry a
@@ -37,6 +37,8 @@
 //! Every magnitude in the kit is a named constant in [`tuning`]. Nothing in the executor
 //! writes a number down.
 
+/// The Warrior's rows of the ability table.
+pub mod abilities;
 /// Deflection: the resource, and the passive bonuses that shrink as it fills.
 pub mod deflection;
 

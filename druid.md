@@ -33,7 +33,7 @@ Nothing in this class is a second copy of a system that existed.
 
 | Mechanic | Where it lives |
 | --- | --- |
-| The thirteen abilities | Rows of `firemage::ABILITIES` — the one ability table, `engine-game/src/firemage/ability.rs` |
+| The thirteen abilities | The Druid's rows, `engine-game/src/druid/abilities.rs`, assembled into the one table `ability::ABILITIES` (`engine-game/src/ability/`) |
 | Costs, generation, empowerment eligibility | `firemage::DruidRow`, four columns on those rows |
 | Cooldowns, charges, the global cooldown | `AbilityBook`, unchanged |
 | Casting, queueing, cast bars, interrupts | `sim/firemage_exec.rs`, unchanged |

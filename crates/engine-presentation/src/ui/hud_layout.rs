@@ -48,9 +48,11 @@
 
 use engine_render_data::ui::{UiRect, UiScale};
 use engine_settings::hud::{
-    ACTION_BARS, HUD_SCALE_MAX, HUD_SCALE_MIN, HUD_SCALE_STEP, HudAnchor, HudConfig,
-    HudOrientation, HudPlacement,
+    ACTION_BARS, HUD_SCALE_MAX, HUD_SCALE_MIN, HUD_SCALE_STEP, HUD_SPACING_MAX, HUD_SPACING_MIN,
+    HUD_SPACING_STEP, HudAnchor, HudConfig, HudOrientation, HudPlacement,
 };
+
+use super::flow::{Flow, FlowAxis, FlowDirection};
 
 /// How much of an element must stay inside the viewport, per axis.
 ///
@@ -81,6 +83,71 @@ pub enum HudElementId {
     CastBar,
     /// The player's buffs.
     Buffs,
+    /// Where tooltips appear: a dock every ability and aura tooltip grows out of.
+    Tooltip,
+}
+
+/// One of an element's two size controls: what it means, and the range it allows.
+///
+/// Width and height are generic controls with element-specific units — a cast bar is sized
+/// in pixels, the buff bar in icons — so the editor draws one kind of control for all of them
+/// and each element says here what its numbers are.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ExtentSpec {
+    /// Smallest value.
+    pub min: f32,
+    /// Largest value.
+    pub max: f32,
+    /// One press of the control.
+    pub step: f32,
+    /// The value a fresh layout has.
+    pub default: f32,
+    /// What the number counts, for the editor: `"px"`, `"icons"`, `"rows"`.
+    pub unit: &'static str,
+}
+
+impl ExtentSpec {
+    /// `value` clamped and snapped to the steps, or the default for a stored zero.
+    #[must_use]
+    pub fn resolve(&self, value: f32) -> f32 {
+        if !(value.is_finite() && value > 0.0) {
+            return self.default;
+        }
+        let snapped = self.min + ((value - self.min) / self.step).round() * self.step;
+        snapped.clamp(self.min, self.max)
+    }
+}
+
+/// What the editor may change about an element, beyond position, scale and visibility which
+/// every element has.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct HudControls {
+    /// Horizontal and vertical are the element's to swap: a bar turned on its side.
+    pub orientation: bool,
+    /// Which way its items run across.
+    pub flow_x: bool,
+    /// Which way its items run down.
+    pub flow_y: bool,
+    /// The gap between its items.
+    pub spacing: bool,
+    /// Its width, in its own unit.
+    pub width: Option<ExtentSpec>,
+    /// Its height, in its own unit.
+    pub height: Option<ExtentSpec>,
+}
+
+impl HudControls {
+    /// Whether any layout control applies: what decides if the editor shows the section.
+    #[must_use]
+    pub fn has_layout(&self) -> bool {
+        self.orientation || self.flow_x || self.flow_y || self.spacing
+    }
+
+    /// Whether any size control applies beyond scale.
+    #[must_use]
+    pub fn has_extent(&self) -> bool {
+        self.width.is_some() || self.height.is_some()
+    }
 }
 
 impl HudElementId {
@@ -95,18 +162,117 @@ impl HudElementId {
     /// The elements that are neither a bar nor one of the four unit frames.
     pub const EXTRAS: [Self; 3] = [Self::Raid, Self::CastBar, Self::Buffs];
 
-    /// Every element, bars first.
+    /// Every element, in painter's order: the tooltip dock first, so it is under everything
+    /// in Edit HUD — it is a place, not a thing, and must never be what a click on a frame
+    /// dragged near the corner picks up — then the bars, the frames and the rest.
     pub fn all() -> impl Iterator<Item = Self> {
-        (0..ACTION_BARS)
-            .map(Self::ActionBar)
+        std::iter::once(Self::Tooltip)
+            .chain((0..ACTION_BARS).map(Self::ActionBar))
             .chain(Self::FRAMES)
             .chain(Self::EXTRAS)
     }
 
-    /// Whether this element's width and height can be set on their own.
+    /// Whether this element's width or height can be set on their own.
     #[must_use]
     pub fn is_resizable(self) -> bool {
-        self == Self::CastBar
+        self.controls().has_extent()
+    }
+
+    /// **What the editor may change about this element**, in one table.
+    ///
+    /// Every control the editor offers is generic; this is where an element opts in and says
+    /// what its sizes mean. A new element that is a grid of items gets direction and spacing
+    /// by answering here and drawing through [`Flow`].
+    #[must_use]
+    pub fn controls(self) -> HudControls {
+        use engine_settings::hud as cfg;
+        match self {
+            Self::ActionBar(_) => HudControls {
+                orientation: true,
+                flow_x: true,
+                flow_y: true,
+                spacing: true,
+                ..HudControls::default()
+            },
+            Self::Party => HudControls {
+                flow_y: true,
+                ..HudControls::default()
+            },
+            Self::Raid => HudControls {
+                flow_x: true,
+                flow_y: true,
+                spacing: true,
+                ..HudControls::default()
+            },
+            Self::CastBar => HudControls {
+                width: Some(ExtentSpec {
+                    min: cfg::CAST_BAR_WIDTH_MIN,
+                    max: cfg::CAST_BAR_WIDTH_MAX,
+                    step: cfg::CAST_BAR_WIDTH_STEP,
+                    default: cfg::CAST_BAR_WIDTH_DEFAULT,
+                    unit: "px",
+                }),
+                height: Some(ExtentSpec {
+                    min: cfg::CAST_BAR_HEIGHT_MIN,
+                    max: cfg::CAST_BAR_HEIGHT_MAX,
+                    step: cfg::CAST_BAR_HEIGHT_STEP,
+                    default: cfg::CAST_BAR_HEIGHT_DEFAULT,
+                    unit: "px",
+                }),
+                ..HudControls::default()
+            },
+            Self::Buffs => HudControls {
+                flow_x: true,
+                flow_y: true,
+                spacing: true,
+                width: Some(ExtentSpec {
+                    min: 1.0,
+                    max: 16.0,
+                    step: 1.0,
+                    default: super::aura_row::size::BUFFS_PER_LINE as f32,
+                    unit: "icons",
+                }),
+                height: Some(ExtentSpec {
+                    min: 1.0,
+                    max: 4.0,
+                    step: 1.0,
+                    default: super::aura_row::size::BUFF_LINES as f32,
+                    unit: "rows",
+                }),
+                ..HudControls::default()
+            },
+            Self::Tooltip => HudControls {
+                flow_x: true,
+                flow_y: true,
+                width: Some(ExtentSpec {
+                    min: 300.0,
+                    max: 560.0,
+                    step: 20.0,
+                    default: super::tooltip::DEFAULT_WIDTH,
+                    unit: "px",
+                }),
+                ..HudControls::default()
+            },
+            Self::Player | Self::Target | Self::TargetOfTarget => HudControls::default(),
+        }
+    }
+
+    /// Which way this element's items run when the player has not said.
+    #[must_use]
+    pub fn natural_direction(self) -> FlowDirection {
+        match self {
+            // The genre's buffs fill from the screen's right edge inwards.
+            Self::Buffs => FlowDirection {
+                right_to_left: true,
+                bottom_to_top: false,
+            },
+            // A tooltip docked bottom-right grows up and to the left, onto the screen.
+            Self::Tooltip => FlowDirection {
+                right_to_left: true,
+                bottom_to_top: true,
+            },
+            _ => FlowDirection::READING,
+        }
     }
 
     /// Whether this element is an action bar, and which one.
@@ -136,6 +302,7 @@ impl HudElementId {
             Self::Raid => out.push_str("RAID"),
             Self::CastBar => out.push_str("CAST BAR"),
             Self::Buffs => out.push_str("BUFFS"),
+            Self::Tooltip => out.push_str("TOOLTIP"),
         }
     }
 }
@@ -218,6 +385,17 @@ impl HudLayout {
         &self.config
     }
 
+    /// Edit HUD's own preferences: the grid, and snapping.
+    #[must_use]
+    pub fn editor_prefs(&self) -> engine_settings::hud::HudEditorPrefs {
+        self.config.editor
+    }
+
+    /// Replaces Edit HUD's preferences.
+    pub fn set_editor_prefs(&mut self, prefs: engine_settings::hud::HudEditorPrefs) {
+        self.config.editor = prefs;
+    }
+
     /// Replaces the whole arrangement. What loading a file does.
     pub fn set_config(&mut self, config: HudConfig) {
         self.config = config.validated();
@@ -242,6 +420,7 @@ impl HudLayout {
             HudElementId::Raid => self.config.frames.raid,
             HudElementId::CastBar => self.config.frames.cast_bar.placement,
             HudElementId::Buffs => self.config.frames.buffs,
+            HudElementId::Tooltip => self.config.frames.tooltip,
         }
     }
 
@@ -259,8 +438,242 @@ impl HudLayout {
             HudElementId::Raid => &mut self.config.frames.raid,
             HudElementId::Buffs => &mut self.config.frames.buffs,
             HudElementId::CastBar => &mut self.config.frames.cast_bar.placement,
+            HudElementId::Tooltip => &mut self.config.frames.tooltip,
         };
         *slot = placement;
+    }
+
+    /// Which way `id`'s items run, its natural direction filling in what was not chosen.
+    #[must_use]
+    pub fn direction(&self, id: HudElementId) -> FlowDirection {
+        let placement = self.placement(id);
+        FlowDirection::resolve(placement.flow_x, placement.flow_y, id.natural_direction())
+    }
+
+    /// Sets which way `id`'s items run, on the axes the element has.
+    pub fn set_direction(&mut self, id: HudElementId, direction: FlowDirection) {
+        let controls = id.controls();
+        let mut placement = self.placement(id);
+        let (x, y) = direction.stored();
+        if controls.flow_x {
+            placement.flow_x = x;
+        }
+        if controls.flow_y {
+            placement.flow_y = y;
+        }
+        self.set_placement(id, placement);
+    }
+
+    /// The gap between `id`'s items, as a multiple of its design gap.
+    #[must_use]
+    pub fn spacing(&self, id: HudElementId) -> f32 {
+        let spacing = self.placement(id).spacing;
+        if spacing.is_finite() {
+            spacing.clamp(HUD_SPACING_MIN, HUD_SPACING_MAX)
+        } else {
+            1.0
+        }
+    }
+
+    /// Widens or narrows the gap between `id`'s items by whole steps, keeping its centre.
+    pub fn nudge_spacing(
+        &mut self,
+        id: HudElementId,
+        steps: i32,
+        ui_scale: UiScale,
+        viewport: (u32, u32),
+    ) {
+        if !id.controls().spacing {
+            return;
+        }
+        let value = self.spacing(id) + HUD_SPACING_STEP * steps as f32;
+        let value = ((value / HUD_SPACING_STEP).round() * HUD_SPACING_STEP)
+            .clamp(HUD_SPACING_MIN, HUD_SPACING_MAX);
+        self.reshape_about_centre(id, ui_scale, viewport, |placement| {
+            placement.spacing = value;
+        });
+    }
+
+    /// `id`'s width and height in its own units, defaults and ranges applied. `None` for an
+    /// axis the element does not size.
+    #[must_use]
+    pub fn extent(&self, id: HudElementId) -> (Option<f32>, Option<f32>) {
+        if id == HudElementId::CastBar {
+            let (width, height) = self.cast_bar_size();
+            return (Some(width), Some(height));
+        }
+        let controls = id.controls();
+        let placement = self.placement(id);
+        (
+            controls.width.map(|spec| spec.resolve(placement.width)),
+            controls.height.map(|spec| spec.resolve(placement.height)),
+        )
+    }
+
+    /// Changes `id`'s width and height by whole steps of its own controls, keeping its centre.
+    pub fn nudge_extent(
+        &mut self,
+        id: HudElementId,
+        width_steps: i32,
+        height_steps: i32,
+        ui_scale: UiScale,
+        viewport: (u32, u32),
+    ) {
+        if id == HudElementId::CastBar {
+            self.nudge_cast_bar(width_steps, height_steps, ui_scale, viewport);
+            return;
+        }
+        let controls = id.controls();
+        let (width, height) = self.extent(id);
+        let next = |spec: Option<ExtentSpec>, value: Option<f32>, steps: i32| {
+            spec.zip(value)
+                .map(|(spec, value)| spec.resolve(value + spec.step * steps as f32))
+        };
+        let width = next(controls.width, width, width_steps);
+        let height = next(controls.height, height, height_steps);
+        self.reshape_about_centre(id, ui_scale, viewport, |placement| {
+            if let Some(width) = width {
+                placement.width = width;
+            }
+            if let Some(height) = height {
+                placement.height = height;
+            }
+        });
+    }
+
+    /// Applies `change` to `id`'s placement and moves it so its centre stays put: an element
+    /// that grew from its corner would walk away from where the player put it.
+    fn reshape_about_centre(
+        &mut self,
+        id: HudElementId,
+        ui_scale: UiScale,
+        viewport: (u32, u32),
+        change: impl FnOnce(&mut HudPlacement),
+    ) {
+        let before = self.rect_of(id, ui_scale, viewport);
+        let centre = (
+            before.x + before.width * 0.5,
+            before.y + before.height * 0.5,
+        );
+        let mut placement = self.placement(id);
+        change(&mut placement);
+        self.set_placement(id, placement);
+        let size = self.element_size(id);
+        let factor = ui_scale.factor() * self.scale_of(id);
+        let (w, h) = (size.0 * factor, size.1 * factor);
+        self.move_to(
+            id,
+            (centre.0 - w * 0.5, centre.1 - h * 0.5),
+            size,
+            ui_scale,
+            viewport,
+        );
+    }
+
+    /// Puts `id` back to where, how big and which way round a fresh layout has it, leaving
+    /// everything else alone. The cast bar's width and height go back with it.
+    pub fn reset_element(&mut self, id: HudElementId) {
+        let fresh = HudLayout::default();
+        self.set_placement(id, fresh.placement(id));
+        match id {
+            HudElementId::CastBar => {
+                self.config.frames.cast_bar = fresh.config.frames.cast_bar;
+            }
+            HudElementId::ActionBar(index) => {
+                if let (Some(bar), Some(default)) = (
+                    self.config.bars.get_mut(index),
+                    fresh.config.bars.get(index),
+                ) {
+                    bar.orientation = default.orientation;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Hangs `id` from `anchor` without moving it on screen: the offset is recomputed so the
+    /// element stays exactly where it is, and from now on it keeps its distance from that
+    /// corner or edge when the screen changes shape.
+    pub fn set_anchor(
+        &mut self,
+        id: HudElementId,
+        anchor: HudAnchor,
+        ui_scale: UiScale,
+        viewport: (u32, u32),
+    ) {
+        let rect = self.rect_of(id, ui_scale, viewport);
+        let region = self.region(viewport);
+        let mut placement = self.placement(id);
+        placement.anchor = anchor;
+        let (origin_x, origin_y) = anchor.origin();
+        let (align_x, align_y) = anchor.alignment();
+        placement.offset_x = (rect.x - region.x + rect.width * align_x) / region.width - origin_x;
+        placement.offset_y = (rect.y + rect.height * align_y) / region.height - origin_y;
+        self.set_placement(id, placement);
+    }
+
+    /// Moves `id` by `(dx, dy)` physical pixels, keeping the anchor the player chose. The
+    /// clamp still applies: a nudge cannot push an element out of reach.
+    pub fn nudge_position(
+        &mut self,
+        id: HudElementId,
+        delta: (f32, f32),
+        ui_scale: UiScale,
+        viewport: (u32, u32),
+    ) {
+        let before = self.rect_of(id, ui_scale, viewport);
+        let region = self.region(viewport);
+        let moved = clamp_in(
+            UiRect::new(
+                before.x + delta.0,
+                before.y + delta.1,
+                before.width,
+                before.height,
+            ),
+            region,
+        );
+        let mut placement = self.placement(id);
+        let (origin_x, origin_y) = placement.anchor.origin();
+        let (align_x, align_y) = placement.anchor.alignment();
+        placement.offset_x = (moved.x - region.x + moved.width * align_x) / region.width - origin_x;
+        placement.offset_y = (moved.y + moved.height * align_y) / region.height - origin_y;
+        self.set_placement(id, placement);
+    }
+
+    /// Bar `index`'s geometry: orientation, direction and spacing.
+    #[must_use]
+    pub fn bar_shape(&self, index: usize) -> super::action_bar::BarShape {
+        let id = HudElementId::ActionBar(index);
+        super::action_bar::BarShape {
+            orientation: self.orientation(index),
+            direction: self.direction(id),
+            spacing: self.spacing(id),
+        }
+    }
+
+    /// The buff bar's grid inside `rect`.
+    #[must_use]
+    pub fn buff_flow(&self, rect: UiRect) -> Flow {
+        let (columns, rows) = self.extent(HudElementId::Buffs);
+        Flow {
+            rect,
+            columns: columns.unwrap_or(1.0) as usize,
+            rows: rows.unwrap_or(1.0) as usize,
+            axis: FlowAxis::Rows,
+            direction: self.direction(HudElementId::Buffs),
+            gap_ratio: super::aura_row::size::GAP / super::aura_row::size::BUFF_ICON
+                * self.spacing(HudElementId::Buffs),
+        }
+    }
+
+    /// The raid frame's grid inside `rect`.
+    #[must_use]
+    pub fn raid_flow(&self, rect: UiRect) -> Flow {
+        super::raid_frame::flow(
+            rect,
+            self.direction(HudElementId::Raid),
+            self.spacing(HudElementId::Raid),
+        )
     }
 
     /// The cast bar's width and height, in logical pixels at the design size.
@@ -395,10 +808,25 @@ impl HudLayout {
     #[must_use]
     pub fn element_size(&self, id: HudElementId) -> (f32, f32) {
         match id {
-            HudElementId::ActionBar(index) => super::action_bar::bar_size(self.orientation(index)),
+            HudElementId::ActionBar(index) => super::action_bar::bar_size(self.bar_shape(index)),
             HudElementId::CastBar => self.cast_bar_size(),
-            HudElementId::Raid => super::raid_frame::raid_size(),
-            HudElementId::Buffs => super::aura_row::buff_bar_size(),
+            HudElementId::Raid => {
+                super::raid_frame::raid_size_spaced(self.spacing(HudElementId::Raid))
+            }
+            HudElementId::Buffs => {
+                use super::aura_row::size;
+                let (columns, rows) = self.extent(id);
+                Flow::design_size(
+                    (size::BUFF_ICON, size::BUFF_ICON),
+                    size::GAP * self.spacing(id),
+                    columns.unwrap_or(1.0) as usize,
+                    rows.unwrap_or(1.0) as usize,
+                )
+            }
+            HudElementId::Tooltip => (
+                self.extent(id).0.unwrap_or(super::tooltip::DEFAULT_WIDTH),
+                super::tooltip::DOCK_HEIGHT,
+            ),
             frame => super::unit_frame::frame_size(frame).unwrap_or((0.0, 0.0)),
         }
     }
@@ -578,7 +1006,7 @@ mod tests {
             id.write_label(&mut label);
             assert!(!label.is_empty(), "{id:?} has no name");
         }
-        assert_eq!(HudElementId::all().count(), ACTION_BARS + 7);
+        assert_eq!(HudElementId::all().count(), ACTION_BARS + 8);
     }
 
     #[test]

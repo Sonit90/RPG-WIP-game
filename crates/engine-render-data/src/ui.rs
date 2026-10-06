@@ -259,6 +259,8 @@ pub enum UiIcon {
     ShieldCharge,
     /// The interrupt: an edge driven forward, and a cast coming apart.
     ShieldBash,
+    /// Warrior: Taunt — a war helm shouting.
+    Taunt,
     /// The shield square on and braced. The one that does not move.
     ShieldBlock,
     /// A blade through the gauntlet, and the blood becoming a ward.
@@ -380,6 +382,24 @@ pub enum UiIcon {
     TagArea,
     /// A disclosure chevron: pointing right folded, down open.
     ControlChevron,
+    /// Edit HUD: An arrow pointing right; rotated, every direction the editor offers.
+    ControlArrow,
+    /// Edit HUD: One step more.
+    ControlPlus,
+    /// Edit HUD: One step less.
+    ControlMinus,
+    /// Edit HUD: Shown.
+    ControlEye,
+    /// Edit HUD: Hidden.
+    ControlEyeOff,
+    /// Edit HUD: The alignment grid.
+    ControlGrid,
+    /// Edit HUD: Snapping: a magnet.
+    ControlSnap,
+    /// Edit HUD: Back to the default.
+    ControlReset,
+    /// Edit HUD: Drag to move.
+    ControlMove,
 
     // Buffs and debuffs. An effect that *is* an ability — Rejuvenation, Shield Block — wears
     // that ability's icon; these are the ones that are not.
@@ -437,7 +457,7 @@ pub enum UiIcon {
 
 impl UiIcon {
     /// Every icon, in atlas order.
-    pub const ALL: [Self; 97] = [
+    pub const ALL: [Self; 107] = [
         Self::Firebolt,
         Self::Meteor,
         Self::FlameCone,
@@ -453,6 +473,7 @@ impl UiIcon {
         Self::ColossusStrike,
         Self::ShieldCharge,
         Self::ShieldBash,
+        Self::Taunt,
         Self::ShieldBlock,
         Self::PunctureBlood,
         Self::Adrenaline,
@@ -510,6 +531,15 @@ impl UiIcon {
         Self::TagInterrupt,
         Self::TagArea,
         Self::ControlChevron,
+        Self::ControlArrow,
+        Self::ControlPlus,
+        Self::ControlMinus,
+        Self::ControlEye,
+        Self::ControlEyeOff,
+        Self::ControlGrid,
+        Self::ControlSnap,
+        Self::ControlReset,
+        Self::ControlMove,
         Self::AuraBurning,
         Self::AuraBleeding,
         Self::AuraRecovering,

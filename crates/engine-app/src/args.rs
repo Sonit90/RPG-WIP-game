@@ -393,8 +393,16 @@ options:
   --effects <ids>        monster playground: open the Effects mode and put these effects
                          on the player at start, by registry id (fortitude,poisoned) or all
   --autocast             the player casts on its own: the nearest enemy is selected and the
-                         first three abilities are pressed in turn, every 0.6 s. Visual QA
-                         of combat — damage numbers, nameplates, cast bars — with --screenshot
+                         first three abilities are pressed in turn, a little over a global
+                         cooldown apart. Visual QA of combat — damage numbers, nameplates,
+                         cast bars — with --screenshot
+  --autocast-slots <l>   which bar slots --autocast presses, in turn, 1-based (1,7,3)
+  --hero <name>          development: start as this hero (firemage, warrior, druid)
+  --edit-hud [element]   development: start in Edit HUD, with this element selected
+                         (player, target, party, raid, buffs, cast_bar, tooltip, bar1..bar8,
+                         nameplates) for a screenshot of the inspector
+  --tooltip <ability>    development: hold this ability's tooltip open, by its written name
+                         (colossus_strike), for a screenshot of it
   --screenshot <p.png>   write frame --screenshot-frame (default 30), interface and all,
                          to a PNG: visual QA at any --width/--height, with --hidden
   -h, --help             print this help and exit";
@@ -808,6 +816,14 @@ pub struct Args {
     pub spawn_hostile: bool,
     /// Whether the player fights on its own, for screenshots of combat.
     pub autocast: bool,
+    /// Which bar slots `--autocast` presses, zero-based. Empty is the first three.
+    pub autocast_slots: Vec<usize>,
+    /// `--hero`: the hero to start as.
+    pub hero: Option<String>,
+    /// `--edit-hud`: start in Edit HUD, with this element (or nothing) selected.
+    pub edit_hud: Option<String>,
+    /// `--tooltip`: an ability whose tooltip is held open.
+    pub tooltip: Option<String>,
     /// Override how the minimap turns, for this run only: `rotating` or `north_up`.
     pub minimap: Option<String>,
     /// A Blender layout export to load instead of the built-in layout, if one was named.
@@ -891,6 +907,10 @@ impl Default for Args {
             effects: Vec::new(),
             spawn_hostile: false,
             autocast: false,
+            autocast_slots: Vec::new(),
+            hero: None,
+            edit_hud: None,
+            tooltip: None,
             map_expand: false,
             minimap: None,
             help: false,
@@ -998,7 +1018,7 @@ where
     S: AsRef<str>,
 {
     let mut args = Args::default();
-    let mut iter = arguments.into_iter();
+    let mut iter = arguments.into_iter().peekable();
 
     while let Some(argument) = iter.next() {
         let argument = argument.as_ref();
@@ -1101,7 +1121,9 @@ where
                 };
             }
             "--realm-config" => {
-                let raw = iter.next().ok_or(ArgsError::MissingValue("--realm-config"))?;
+                let raw = iter
+                    .next()
+                    .ok_or(ArgsError::MissingValue("--realm-config"))?;
                 args.realm_config = Some(raw.as_ref().to_owned());
             }
             "--dev-login" => {
@@ -1115,7 +1137,9 @@ where
                 args.dev_login = Some((email.to_owned(), password.to_owned()));
             }
             "--dev-autoplay" => {
-                let raw = iter.next().ok_or(ArgsError::MissingValue("--dev-autoplay"))?;
+                let raw = iter
+                    .next()
+                    .ok_or(ArgsError::MissingValue("--dev-autoplay"))?;
                 let raw = raw.as_ref();
                 let Some((character, role)) = raw.split_once(':') else {
                     return Err(ArgsError::InvalidValue {
@@ -1128,7 +1152,11 @@ where
             "--profile" => {
                 let raw = iter.next().ok_or(ArgsError::MissingValue("--profile"))?;
                 let raw = raw.as_ref();
-                if raw.is_empty() || !raw.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+                if raw.is_empty()
+                    || !raw
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+                {
                     return Err(ArgsError::InvalidValue {
                         option: "--profile",
                         value: raw.to_owned(),
@@ -1163,6 +1191,43 @@ where
                     })?;
             }
             "--autocast" => args.autocast = true,
+            "--autocast-slots" => {
+                let raw = iter
+                    .next()
+                    .ok_or(ArgsError::MissingValue("--autocast-slots"))?;
+                let raw = raw.as_ref();
+                args.autocast_slots = raw
+                    .split(',')
+                    .map(|slot| {
+                        slot.trim()
+                            .parse::<usize>()
+                            .ok()
+                            .filter(|n| (1..=10).contains(n))
+                    })
+                    .collect::<Option<Vec<usize>>>()
+                    .map(|slots| slots.into_iter().map(|slot| slot - 1).collect())
+                    .ok_or_else(|| ArgsError::InvalidValue {
+                        option: "--autocast-slots",
+                        value: raw.to_owned(),
+                    })?;
+            }
+            "--hero" => {
+                let raw = iter.next().ok_or(ArgsError::MissingValue("--hero"))?;
+                args.hero = Some(raw.as_ref().to_owned());
+            }
+            "--edit-hud" => {
+                // The element is optional: a following option is not an element.
+                args.edit_hud = Some(String::new());
+                if let Some(next) = iter.peek()
+                    && !next.as_ref().starts_with("--")
+                {
+                    args.edit_hud = iter.next().map(|value| value.as_ref().to_owned());
+                }
+            }
+            "--tooltip" => {
+                let raw = iter.next().ok_or(ArgsError::MissingValue("--tooltip"))?;
+                args.tooltip = Some(raw.as_ref().to_owned());
+            }
             "--spawn" => {
                 let raw = iter.next().ok_or(ArgsError::MissingValue("--spawn"))?;
                 args.spawn = raw

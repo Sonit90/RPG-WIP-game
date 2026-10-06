@@ -50,6 +50,7 @@ pub mod aura_row;
 /// The character sheet: stats, fifteen equipment slots, and the bag.
 pub mod character_menu;
 pub mod dungeon_map;
+pub mod flow;
 /// The look every unit frame, the raid frames and the cast bar share with the nameplates.
 pub mod frame_style;
 /// The online front-end: sign-in, characters, dungeons, roles, queue, ready check, party.
@@ -64,6 +65,7 @@ pub mod hud_edit;
 /// Where every arrangeable interface element sits, at any resolution.
 pub mod hud_layout;
 pub mod input;
+pub mod kit;
 /// The dungeon map's design tokens: colour, type, spacing, radii, motion.
 pub mod map_style;
 pub mod menu;
@@ -77,6 +79,7 @@ pub mod screen;
 pub mod slot_menu;
 pub mod talent_menu;
 pub mod targeting;
+pub mod tooltip;
 /// The player, target, target-of-target and party frames.
 pub mod unit_frame;
 pub mod widget;
@@ -94,7 +97,7 @@ pub use dungeon_map::{
 pub use ground_decal::{
     DecalBand, DecalScratch, GroundSurface, MAX_SEGMENTS, SEGMENT_LENGTH, build_band,
 };
-pub use hud_edit::{EditItem, EditOutcome, HudEditor};
+pub use hud_edit::{Control as EditControl, EditOutcome, EditTarget, HudEditor};
 pub use hud_layout::{HudElementId, HudLayout, MIN_VISIBLE_FRACTION, clamp_on_screen};
 pub use input::UiInput;
 pub use menu::{

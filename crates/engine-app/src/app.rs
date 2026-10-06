@@ -234,7 +234,7 @@ const UI_TEXT_SCALE: f32 = 2.0;
 
 /// Seconds between the abilities `--autocast` presses: a little over a global cooldown, so
 /// each press is one the player could have made.
-const AUTOCAST_SECONDS: f32 = 0.6;
+const AUTOCAST_SECONDS: f32 = engine_game::firemage::GLOBAL_COOLDOWN + 0.1;
 
 /// How often the overlay text is rebuilt.
 ///
@@ -525,6 +525,10 @@ pub struct App {
     autocast: Option<f32>,
     /// Which of the first three abilities `--autocast` presses next.
     autocast_slot: usize,
+    /// `--autocast-slots`: the bar slots it presses, in turn. Empty is the first three.
+    autocast_slots: Vec<usize>,
+    /// `--tooltip`: an ability whose tooltip is held open whatever the pointer is on.
+    forced_tooltip: Option<FireAbility>,
     /// Combat, drawn. Observes the same event stream the numbers and the meter read.
     vfx: VfxDirector,
     /// The audio device and the runtime it mixes. Silent on a machine with no sound card,
@@ -1333,6 +1337,8 @@ impl App {
             numbers: FloatingNumbers::new(),
             autocast: None,
             autocast_slot: 0,
+            autocast_slots: Vec::new(),
+            forced_tooltip: None,
             vfx: VfxDirector::new(vfx_visuals),
             audio,
             audio_director,
@@ -1467,6 +1473,31 @@ impl App {
         }
         if args.autocast {
             app.autocast = Some(AUTOCAST_SECONDS);
+            app.autocast_slots.clone_from(&args.autocast_slots);
+        }
+        if let Some(name) = args.hero.as_deref() {
+            match Hero::from_config_name(name) {
+                Some(hero) => app.swap_hero(hero),
+                None => log::warn!("--hero {name}: no such hero"),
+            }
+        }
+        if let Some(name) = args.edit_hud.as_deref() {
+            app.hud_editor.open();
+            app.hud_editor
+                .set_nameplates(app.settings.settings().nameplates);
+            if !name.is_empty() {
+                let target = HudEditor::target_named(name);
+                if target.is_none() {
+                    log::warn!("--edit-hud {name}: no such element");
+                }
+                app.hud_editor.select(target);
+            }
+        }
+        if let Some(name) = args.tooltip.as_deref() {
+            app.forced_tooltip = FireAbility::from_config_name(name);
+            if app.forced_tooltip.is_none() {
+                log::warn!("--tooltip {name}: no such ability");
+            }
         }
         // In the editor, the same request shows the editor's own preview.
         #[cfg(feature = "editor")]
@@ -2012,6 +2043,21 @@ impl App {
                 .update(&ui_input, &mut self.hud_layout, scale, viewport)
             {
                 EditOutcome::Changed => self.save_hud_layout(),
+                EditOutcome::NameplatesChanged => {
+                    // settings.cfg, through the one settings manager: the nameplate sizes are
+                    // read from there by the next frame's plate configuration.
+                    let mut settings = self.settings.settings();
+                    settings.nameplates = self.hud_editor.nameplates().validated();
+                    self.settings.update(settings);
+                    if self.settings.save_if_dirty() {
+                        log::info!(
+                            "settings: nameplates size {} debuffs {}% buffs {}%",
+                            settings.nameplates.size,
+                            settings.nameplates.debuff_size,
+                            settings.nameplates.buff_size
+                        );
+                    }
+                }
                 EditOutcome::Closed => {
                     self.save_hud_layout();
                     log::info!("hud: edit mode closed");
@@ -2220,11 +2266,10 @@ impl App {
                 .update(&ui_input, &view_projection, viewport, caster, &ground)
             {
                 TargetingOutcome::Confirmed { ability, position } => {
-                    let command = match ability.bar_slot() {
-                        Some(slot) => PlayerCommand::UseAbilityAt { slot, position },
-                        None => PlayerCommand::UseUltimate { position },
-                    };
-                    self.simulation.push_command(command);
+                    let hero = self.simulation.hero();
+                    if let Some(command) = hero.command_for(ability, Some(position), caster) {
+                        self.simulation.push_command(command);
+                    }
                 }
                 TargetingOutcome::Cancelled
                 | TargetingOutcome::Choosing
@@ -2250,9 +2295,9 @@ impl App {
                 continue;
             }
             let rect = self.hud_layout.rect_of(id, scale, viewport);
-            let orientation = self.hud_layout.orientation(index);
+            let shape = self.hud_layout.bar_shape(index);
             let Some(slot_index) =
-                action_bar::slot_at(rect, orientation, ui_input.pointer.0, ui_input.pointer.1)
+                action_bar::slot_at(rect, shape, ui_input.pointer.0, ui_input.pointer.1)
             else {
                 continue;
             };
@@ -2261,8 +2306,8 @@ impl App {
                 continue;
             };
             if ui_input.secondary_pressed {
-                open_menu = action_bar::slot_rect(rect, orientation, slot_index)
-                    .map(|cell| (address, cell));
+                open_menu =
+                    action_bar::slot_rect(rect, shape, slot_index).map(|cell| (address, cell));
             }
             let Some(ability) = slot.ability else {
                 continue;
@@ -2344,23 +2389,6 @@ impl App {
         if let Some(ability) = pressed {
             self.cast_or_target(ability);
         }
-    }
-
-    /// The rectangle of the slot the pointer is over, if it is over one.
-    ///
-    /// The slot is the one the pointer was over, remembered when it was found; only its
-    /// rectangle is worked out again, from the same layout the click was tested against, so
-    /// the two cannot disagree about where a slot is after a resize between the two calls.
-    fn hovered_slot_rect(&self, viewport: (u32, u32)) -> Option<UiRect> {
-        let address = self.hovered_slot?;
-        let id = HudElementId::ActionBar(address.bar);
-        if !self.hud_layout.is_enabled(id) {
-            return None;
-        }
-        let scale = self.game_ui.scale();
-        let bar = self.hud_layout.rect_of(id, scale, viewport);
-        let orientation = self.hud_layout.orientation(address.bar);
-        action_bar::slot_rect(bar, orientation, address.slot)
     }
 
     /// Carries out what the slot menu asked for, and writes the result to disk.
@@ -2562,15 +2590,12 @@ impl App {
             self.targeting.begin(ability);
             return;
         }
-        match ability.bar_slot() {
-            Some(slot) => self
-                .simulation
-                .push_command(PlayerCommand::UseAbility(slot)),
-            None => {
-                // The Ultimate is not on the bar and has no slot; it is placed, so this is
-                // only reached if a future Ultimate stops being ground-targeted.
-                self.targeting.begin(ability);
-            }
+        // Everything else is cast at once, through whichever command its button is: a bar
+        // slot, a button beside the bar (Taunt on `F`), or the Ultimate. Gameplay validates
+        // the selected target, range and line of sight; nothing here asks for a click.
+        let caster = self.simulation.player_position();
+        if let Some(command) = self.simulation.hero().command_for(ability, None, caster) {
+            self.simulation.push_command(command);
         }
     }
 
@@ -2809,6 +2834,9 @@ impl App {
                     self.cancel_mouse_look();
                     self.slot_menu.close();
                     self.hud_editor.open();
+                    // The Nameplates section edits what is in force, not what it last showed.
+                    self.hud_editor
+                        .set_nameplates(self.settings.settings().nameplates);
                     log::info!("hud: edit mode");
                 }
                 MenuAction::QuitRequested => {
@@ -3115,8 +3143,13 @@ impl App {
         if self.simulation.player().target.is_none() {
             return;
         }
+        let slot = if self.autocast_slots.is_empty() {
+            self.autocast_slot % 3
+        } else {
+            self.autocast_slots[self.autocast_slot % self.autocast_slots.len()]
+        };
         self.simulation
-            .push_command(PlayerCommand::UseAbility(self.autocast_slot % 3));
+            .push_command(PlayerCommand::UseAbility(slot));
         self.autocast_slot = self.autocast_slot.wrapping_add(1);
     }
 
@@ -3438,8 +3471,8 @@ impl App {
         }
         // A raid cell is a member, exactly as a party row is.
         if let Some(rect) = rect_of(HudElementId::Raid)
-            && let Some(cell) = engine_presentation::ui::raid_frame::raid_cell_at(
-                rect,
+            && let Some(cell) = engine_presentation::ui::raid_frame::raid_cell_in(
+                &self.hud_layout.raid_flow(rect),
                 self.snapshot.party.len(),
                 pointer,
             )
@@ -3450,6 +3483,7 @@ impl App {
         let row = engine_presentation::ui::unit_frame::party_row_at(
             rect,
             self.snapshot.party.len(),
+            self.hud_layout.direction(HudElementId::Party).bottom_to_top,
             pointer,
         )?;
         self.snapshot.party.get(row).map(|member| member.entity)
@@ -3579,29 +3613,31 @@ impl App {
         if self.hovered_ability.is_none()
             && let Some(pointer) = self.aura_pointer
         {
-            self.game_ui.push_aura_tooltip(pointer, viewport);
+            let dock = self
+                .hud_layout
+                .rect_of(HudElementId::Tooltip, scale, viewport);
+            let direction = self.hud_layout.direction(HudElementId::Tooltip);
+            self.game_ui
+                .push_aura_tooltip(pointer, dock, direction, viewport);
         }
-        if let Some(ability) = self.hovered_ability {
-            // The rectangle the tooltip points at is wherever the player put the slot, not
-            // wherever the class's fixed bar used to be.
-            let rect = match ability.bar_slot() {
-                Some(_) => self
-                    .hovered_slot_rect(viewport)
-                    .unwrap_or_else(|| self.game_ui.ultimate_rect(viewport)),
-                // Beside the bar: the Ultimate's own square, or one of the extras after it.
-                None => match self.simulation.hero().extra_index(ability) {
-                    Some(index) => self.game_ui.extra_rect(index, viewport),
-                    None => self.game_ui.ultimate_rect(viewport),
-                },
-            };
+        if let Some(ability) = self.hovered_ability.or(self.forced_tooltip) {
             // The view is looked up by ability rather than by slot: a slot the current hero
             // does not fill has no view, and a tooltip for a spell the player cannot cast is
-            // exactly what must not be drawn.
+            // exactly what must not be drawn. It opens from the tooltip dock — where the
+            // player put it — never from the button the pointer is on.
             if let Some(view) = self.snapshot.ability_view(ability).copied() {
-                let ignite_max = self.snapshot.ignite_max;
-                let mastery = self.snapshot.player.mastery;
+                let context = engine_presentation::ui::tooltip::AbilityContext {
+                    deflection: self.snapshot.player.warrior.deflection,
+                    astral_armed: self.snapshot.player.druid.armed,
+                    ignite_max: self.snapshot.ignite_max,
+                    mastery: self.snapshot.player.mastery,
+                };
+                let dock = self
+                    .hud_layout
+                    .rect_of(HudElementId::Tooltip, scale, viewport);
+                let direction = self.hud_layout.direction(HudElementId::Tooltip);
                 self.game_ui
-                    .push_ability_tooltip(rect, &view, ignite_max, mastery, viewport);
+                    .push_ability_tooltip(dock, direction, &view, context, viewport);
             }
         }
         self.push_affected_highlights(viewport);
@@ -3677,13 +3713,22 @@ impl App {
             let rect = self
                 .hud_layout
                 .rect_of(HudElementId::Buffs, scale, viewport);
-            self.game_ui.push_buff_bar_preview(rect);
+            let flow = self.hud_layout.buff_flow(rect);
+            self.game_ui.push_buff_bar_preview(&flow);
+        }
+        // And the tooltip dock: a sample tooltip, opened the way a real one is.
+        if self.hud_editor.is_active() && self.hud_layout.is_enabled(HudElementId::Tooltip) {
+            let dock = self
+                .hud_layout
+                .rect_of(HudElementId::Tooltip, scale, viewport);
+            let direction = self.hud_layout.direction(HudElementId::Tooltip);
+            self.game_ui.push_tooltip_preview(dock, direction, viewport);
         }
         push_hud_editor(
             self.game_ui.list_mut(),
             &self.hud_editor,
             &self.hud_layout,
-            &self.menu_theme,
+            None,
             &mut self.hud_scratch,
             scale,
             viewport,

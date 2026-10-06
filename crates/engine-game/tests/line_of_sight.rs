@@ -237,7 +237,7 @@ fn a_non_targeted_ability_works_through_a_wall_and_records_no_check() {
     assert_eq!(simulation.last_line_of_sight(), None);
 
     // Nor by a placed ability, once the global cooldown from the last one is over.
-    simulation.step_many(60);
+    simulation.step_until_ready();
     assert!(simulation.cast_at(FireAbility::Meteor, TARGET).is_ok());
     assert_eq!(simulation.last_line_of_sight(), None);
 }

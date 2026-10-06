@@ -14,6 +14,7 @@ pub struct NetResources {
     pub deflection: f32,
     pub astral: f32,
     pub global_cooldown: f32,
+    pub absorb: f32,
 }
 
 impl __sdk::InModule for NetResources {

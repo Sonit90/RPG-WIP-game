@@ -31,8 +31,8 @@ Nothing in this class is a second copy of a system that existed.
 
 | Mechanic | Where it lives |
 | --- | --- |
-| The eleven abilities | Rows of `firemage::ABILITIES` — the one ability table, `engine-game/src/firemage/ability.rs` |
-| Cooldowns, charges, the global cooldown | `AbilityBook`, unchanged |
+| The twelve abilities | The Warrior's rows, `engine-game/src/warrior/abilities.rs`, assembled into the one table `ability::ABILITIES` (`engine-game/src/ability/`) |
+| Cooldowns, charges, the global cooldown | `AbilityBook`, unchanged; the global cooldown is 1.5 s for every class (`firemage::GLOBAL_COOLDOWN`, shortened by haste) |
 | Casting, targeting, line of sight, facing | `sim/firemage_exec.rs`, unchanged |
 | Damage, healing, death, events, the meter | `Simulation::deal_damage`, `GameWorld::heal`, `CombatEvent` |
 | Threat | `enemy::threat::ThreatTable`, fed from damage, in one place |
@@ -141,7 +141,13 @@ the way down and free damage on the way up.
 
 Twenty, from the ability's own row (`WarriorRow::deflection_cost`). Pressing an empowerable
 ability with twenty banked spends it; pressing it with nineteen casts the normal version and
-takes nothing. The spend, the recalculation of both passive bonuses and the `DeflectionSpent`
+takes nothing. **Empowerment is always optional**: no Warrior ability is refused for a lack of
+Deflection, by design. Recuperate is the same column with `empower_at: 100` — it spends only a
+full bank — so every spend goes through one rule (`WarriorRow::empower_threshold`).
+
+A spender that reaches nobody keeps the bank: War Stomp, Colossus Strike and Shield Bash spend
+only once they have something to hit, so a Colossus Strike into empty air costs its cooldown
+and not twenty Deflection. The spend, the recalculation of both passive bonuses and the `DeflectionSpent`
 event are one operation, so "spending gives the defence straight back" is true of the same
 call rather than of the next tick.
 
@@ -310,12 +316,32 @@ Deflection for the Warrior.
   Recovery Pool while Adrenaline banks, and the absorb while it stands.
 * **Empowered abilities** use `SlotAvailability::Empowered` — the state Detonate-on-a-full-burn
   already had. One highlight, one colour, no second visual language.
-* **Tooltips** print `SPENDS 20 DEFLECTION` when the press will pay, and `NEEDS 20 DEFLECTION`
-  when it will not.
+* **Tooltips** have a *Resource* section — `Consumes 20 Deflection to empower, if available`,
+  then `Ready: 34 Deflection banked` or `Not empowered: 12 of 20 Deflection` — and an
+  *Empowered Effect* section saying what the twenty buys, accent-barred when this press will
+  pay. Both are generated: see [Ability text](#ability-text).
+* **Taunt** is `F`. The key issues Taunt's own command (`Hero::command_for`): it used to open the
+  Ultimate's placement circle, and the click after it cast Last Stand. Taunt reaches **30 m**,
+  needs line of sight, and turns the Warrior to the target rather than refusing for facing
+  (`AbilityDef::turns_to_target`). Out of range and out of sight are refused with the usual
+  message and cost nothing. `tests/taunt.rs` covers all of it.
 * **Nameplates** count stacking debuffs, so War Stomp's eighth stack is readable from across
   the room.
 * The **character sheet** has a `DEFENSIVE` section: Armour flat, the other three as
   percentages.
+
+## Ability text
+
+Descriptions are templates in the rows, filled from the table and the tuning constants by
+`ability::text` — `{duration}`, `{range}`, `{heal_per_stack}`, … — so a balance pass moves the
+sentence with the number. Each class answers its own tokens (`warrior::abilities::token`).
+House style: second person, sentence case, `sec` / `m` / `%`, resource and stat names
+capitalised. `AbilityDef::empowered` holds what the resource adds; `AbilityDef::resource_uses()`
+derives Cost / Empower / Generate from the columns, so the tooltip, the cast check and the spend
+cannot disagree. A unit test holds every token to resolving and every sentence to sentence case.
+
+> Recuperate: *Strike your target and gain a stack of Recuperate, restoring 0.2% of your maximum
+> Health every second for 10 sec. Stacks up to 5 times.*
 
 ## Feedback
 

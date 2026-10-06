@@ -37,6 +37,15 @@ use serde::{Deserialize, Serialize};
 
 use crate::{lenient, lenient_true};
 
+/// Smallest a plate's buff or debuff icons may be drawn, as a percentage of their design size.
+pub const NAMEPLATE_AURA_SIZE_MIN: f32 = 50.0;
+/// Largest a plate's buff or debuff icons may be drawn, as a percentage.
+pub const NAMEPLATE_AURA_SIZE_MAX: f32 = 200.0;
+/// The icons' design size.
+pub const NAMEPLATE_AURA_SIZE_DEFAULT: f32 = 100.0;
+/// One step of the icon size control.
+pub const NAMEPLATE_AURA_SIZE_STEP: f32 = 10.0;
+
 /// Smallest nameplate the slider offers.
 ///
 /// Below this the 5x7 font's glyph scale rounds down to one and the plate stops being
@@ -361,6 +370,16 @@ pub struct NameplateSettings {
     /// How far from the player an enemy can be and still have a plate, in metres.
     #[serde(deserialize_with = "lenient")]
     pub max_distance: f32,
+    /// How big the debuffs over an enemy's name are, as a percentage of their design size.
+    ///
+    /// Separate from [`NameplateSettings::size`]: what the player put on an enemy is what they
+    /// track across a pack, and making those icons readable must not also make every plate
+    /// bigger. Edited in Edit HUD's Nameplates section.
+    #[serde(deserialize_with = "lenient")]
+    pub debuff_size: f32,
+    /// How big an enemy's own buffs under its health bar are, as a percentage.
+    #[serde(deserialize_with = "lenient")]
+    pub buff_size: f32,
     /// Which revision of this section the file was written at.
     ///
     /// Field-level default rather than the section's: a file written before the field
@@ -385,12 +404,26 @@ impl Default for NameplateSettings {
             health_text: NameplateHealthText::default(),
             stacking: true,
             max_distance: NAMEPLATE_DISTANCE_DEFAULT,
+            debuff_size: NAMEPLATE_AURA_SIZE_DEFAULT,
+            buff_size: NAMEPLATE_AURA_SIZE_DEFAULT,
             revision: NAMEPLATE_SETTINGS_REVISION,
         }
     }
 }
 
 impl NameplateSettings {
+    /// The debuff icons' size as a multiple of their design size.
+    #[must_use]
+    pub fn debuff_scale(&self) -> f32 {
+        self.debuff_size / 100.0
+    }
+
+    /// The buff icons' size as a multiple of their design size.
+    #[must_use]
+    pub fn buff_scale(&self) -> f32 {
+        self.buff_size / 100.0
+    }
+
     /// The value of one setting.
     #[must_use]
     pub fn get(&self, setting: NameplateSetting) -> f32 {
@@ -465,6 +498,19 @@ impl NameplateSettings {
                 settings.max_distance
             );
             settings.max_distance = NAMEPLATE_DISTANCE_DEFAULT;
+        }
+        for (value, what) in [
+            (&mut settings.debuff_size, "debuff_size"),
+            (&mut settings.buff_size, "buff_size"),
+        ] {
+            if !value.is_finite()
+                || !(NAMEPLATE_AURA_SIZE_MIN..=NAMEPLATE_AURA_SIZE_MAX).contains(value)
+            {
+                log::warn!(
+                    "settings: nameplate {what} {value} is outside {NAMEPLATE_AURA_SIZE_MIN}..                     {NAMEPLATE_AURA_SIZE_MAX}; using {NAMEPLATE_AURA_SIZE_DEFAULT}"
+                );
+                *value = NAMEPLATE_AURA_SIZE_DEFAULT;
+            }
         }
         for setting in NameplateSetting::ALL {
             let value = settings.get(setting);

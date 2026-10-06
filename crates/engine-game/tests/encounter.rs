@@ -544,6 +544,7 @@ fn a_pack_wiped_by_one_shot_each_completes_and_does_not_stay_pulled() {
             .cast(engine_game::FireAbility::Firebolt)
             .expect("firebolt reaches 30 m");
         run(&mut simulation, 90);
+        simulation.step_until_ready();
     }
 
     for member in &members {

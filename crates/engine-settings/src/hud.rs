@@ -227,6 +227,47 @@ impl HudOrientation {
     }
 }
 
+/// Which way an element's items run across the screen: buffs, raid cells, action bar slots.
+///
+/// `Auto` is "the element's own natural direction" — the buff bar's is right to left, the
+/// raid frame's left to right — so a file written before directions existed keeps the
+/// arrangement it had, and each element's default is decided in one place by the interface
+/// that knows what the element is.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HudFlowX {
+    /// The element's natural direction.
+    #[default]
+    Auto,
+    /// The first item at the left edge, the rest to its right.
+    LeftToRight,
+    /// The first item at the right edge, the rest to its left.
+    RightToLeft,
+}
+
+/// Which way an element's items run down the screen. See [`HudFlowX`].
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HudFlowY {
+    /// The element's natural direction.
+    #[default]
+    Auto,
+    /// The first item at the top edge, the rest below it.
+    TopToBottom,
+    /// The first item at the bottom edge, the rest above it.
+    BottomToTop,
+}
+
+/// Smallest spacing multiplier: items touching.
+pub const HUD_SPACING_MIN: f32 = 0.0;
+/// Largest spacing multiplier.
+pub const HUD_SPACING_MAX: f32 = 4.0;
+/// One step of the spacing control.
+pub const HUD_SPACING_STEP: f32 = 0.25;
+/// Largest width or height an element may ask for, in its own unit. A guard against a
+/// hand-edited file, not a design limit: each element clamps to its own range.
+pub const HUD_EXTENT_LIMIT: f32 = 4096.0;
+
 /// Where one HUD element sits, how big it is, and whether it is there at all.
 ///
 /// The one shape every element shares. An action bar is this plus an orientation and ten
@@ -245,6 +286,17 @@ pub struct HudPlacement {
     pub offset_y: f32,
     /// How big the element is drawn, as a multiple of its design size.
     pub scale: f32,
+    /// Which way its items run across, for an element made of items.
+    pub flow_x: HudFlowX,
+    /// Which way its items run down, for an element made of items.
+    pub flow_y: HudFlowY,
+    /// The gap between its items, as a multiple of the element's own design gap.
+    pub spacing: f32,
+    /// Its width in the element's own unit — icons per row for the buff bar, pixels for the
+    /// tooltip — or zero for the element's default. Each element clamps it to its own range.
+    pub width: f32,
+    /// Its height in the element's own unit — rows of icons for the buff bar — or zero.
+    pub height: f32,
 }
 
 impl Default for HudPlacement {
@@ -255,6 +307,11 @@ impl Default for HudPlacement {
             offset_x: 0.0,
             offset_y: 0.0,
             scale: HUD_SCALE_DEFAULT,
+            flow_x: HudFlowX::Auto,
+            flow_y: HudFlowY::Auto,
+            spacing: 1.0,
+            width: 0.0,
+            height: 0.0,
         }
     }
 }
@@ -313,6 +370,25 @@ impl HudPlacement {
                 fallback.scale
             );
             placement.scale = fallback.scale;
+        }
+        if !(placement.spacing.is_finite()
+            && (HUD_SPACING_MIN..=HUD_SPACING_MAX).contains(&placement.spacing))
+        {
+            log::warn!(
+                "hud: {what} has spacing {}, outside {HUD_SPACING_MIN}..{HUD_SPACING_MAX}; using {}",
+                placement.spacing,
+                fallback.spacing
+            );
+            placement.spacing = fallback.spacing;
+        }
+        for (extent, default, axis) in [
+            (&mut placement.width, fallback.width, "width"),
+            (&mut placement.height, fallback.height, "height"),
+        ] {
+            if !(extent.is_finite() && (0.0..=HUD_EXTENT_LIMIT).contains(extent)) {
+                log::warn!("hud: {what} has {axis} {extent}, which is not a size; using {default}");
+                *extent = default;
+            }
         }
         placement
     }
@@ -558,6 +634,10 @@ pub struct HudFrames {
     /// shown in its default place. The player's *debuffs* are not placed on their own: they
     /// hang under the player frame and go wherever it goes.
     pub buffs: HudPlacement,
+    /// Where tooltips appear: one fixed dock, bottom right by default, that every ability and
+    /// aura tooltip grows out of. Its directions say which way a tooltip grows from the dock,
+    /// its width how wide a tooltip is.
+    pub tooltip: HudPlacement,
 }
 
 impl Default for HudFrames {
@@ -567,22 +647,30 @@ impl Default for HudFrames {
     ///                    [ TARGET ] [ TOT ]
     ///
     ///   [ PLAYER ]
-    ///   [ PARTY  ]
+    ///   ( party: hidden )
     ///   [ RAID ]                                   [ BUFFS ]
-    ///                    [ CAST BAR ]
+    ///                    [ CAST BAR ]                  [ TOOLTIP ]
     ///                   [ ACTION BAR 1 ]
     /// ```
+    ///
+    /// The raid frames are the group's frames by default; the classic party list is still
+    /// there, hidden, one click away in Edit HUD.
     fn default() -> Self {
         Self {
             player: HudPlacement::at(HudAnchor::Left, 0.030, -0.120),
             target: HudPlacement::at(HudAnchor::Top, -0.090, 0.030),
             target_of_target: HudPlacement::at(HudAnchor::Top, 0.140, 0.030).scaled(0.80),
-            party: HudPlacement::at(HudAnchor::Left, 0.030, 0.060),
-            raid: HudPlacement::at(HudAnchor::Left, 0.030, 0.330),
+            // Where the raid frames used to be, so the hidden list is never under the shown
+            // frames and can always be picked up again in Edit HUD.
+            party: HudPlacement::at(HudAnchor::Left, 0.030, 0.330).disabled(),
+            raid: HudPlacement::at(HudAnchor::Left, 0.030, 0.060),
             cast_bar: HudCastBar::default(),
             // Top right, the genre's place for them: below the corner buttons and clear of
             // the minimap's corner and the target-of-target frame from 720p up.
             buffs: HudPlacement::at(HudAnchor::TopRight, -0.170, 0.090),
+            // Bottom right, the genre's home for a tooltip: clear of the action bar and the
+            // cast bar, above the screen's corner.
+            tooltip: HudPlacement::at(HudAnchor::BottomRight, -0.012, -0.040),
         }
     }
 }
@@ -602,6 +690,7 @@ impl HudFrames {
             raid: self.raid.validated(fallback.raid, "the raid frames"),
             cast_bar: self.cast_bar.validated(),
             buffs: self.buffs.validated(fallback.buffs, "the buff bar"),
+            tooltip: self.tooltip.validated(fallback.tooltip, "the tooltip"),
         }
     }
 }
@@ -774,6 +863,28 @@ pub struct HudConfig {
     pub heroes: Vec<HeroBindingsConfig>,
     /// The unit frames.
     pub frames: HudFrames,
+    /// How Edit HUD itself behaves: the grid and snapping to it.
+    pub editor: HudEditorPrefs,
+}
+
+/// Edit HUD's own preferences: kept with the layout they help arrange.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct HudEditorPrefs {
+    /// Whether the alignment grid is drawn while editing.
+    pub grid: bool,
+    /// Whether a dragged element snaps to the grid, the screen's centre lines and the other
+    /// elements' edges.
+    pub snap: bool,
+}
+
+impl Default for HudEditorPrefs {
+    fn default() -> Self {
+        Self {
+            grid: false,
+            snap: true,
+        }
+    }
 }
 
 impl Default for HudConfig {
@@ -782,6 +893,7 @@ impl Default for HudConfig {
             bars: (0..ACTION_BARS).map(ActionBarConfig::default_bar).collect(),
             heroes: Vec::new(),
             frames: HudFrames::default(),
+            editor: HudEditorPrefs::default(),
         }
     }
 }
@@ -1220,14 +1332,56 @@ mod tests {
                 "bar {index} is enabled by default"
             );
         }
-        // Every frame a new player gets is on screen; the bars they have not asked for
-        // are not.
+        // A new player's group is shown as raid frames; the classic party list is kept, hidden.
         let frames = config.frames;
         assert!(frames.player.enabled);
         assert!(frames.target.enabled);
         assert!(frames.target_of_target.enabled);
-        assert!(frames.party.enabled);
+        assert!(
+            frames.raid.enabled,
+            "the raid frames are the default group frames"
+        );
+        assert!(!frames.party.enabled, "the party list is hidden by default");
+        assert!(frames.tooltip.enabled);
+        assert_eq!(frames.tooltip.anchor, HudAnchor::BottomRight);
         assert!(config.is_valid());
+    }
+
+    #[test]
+    fn the_layout_fields_round_trip_and_an_old_file_keeps_its_arrangement() {
+        let mut config = HudConfig::default();
+        config.frames.buffs.flow_x = HudFlowX::LeftToRight;
+        config.frames.buffs.flow_y = HudFlowY::BottomToTop;
+        config.frames.buffs.spacing = 2.0;
+        config.frames.buffs.width = 6.0;
+        config.frames.buffs.height = 3.0;
+        config.frames.tooltip.width = 420.0;
+        config.editor.grid = true;
+        let text = serde_json::to_string(&config).expect("serialises");
+        let back: HudConfig = serde_json::from_str(&text).expect("parses");
+        assert_eq!(back.validated(), config);
+
+        // A file from before directions existed: every element is `auto`, which the
+        // interface reads as the element's own natural direction.
+        let old = r#"{"frames":{"buffs":{"enabled":true,"anchor":"top_right","offset_x":-0.17,"offset_y":0.09,"scale":1.0}}}"#;
+        let loaded: HudConfig = serde_json::from_str(old).expect("parses");
+        let loaded = loaded.validated();
+        assert_eq!(loaded.frames.buffs.flow_x, HudFlowX::Auto);
+        assert!((loaded.frames.buffs.spacing - 1.0).abs() < f32::EPSILON);
+        assert_eq!(loaded.frames.tooltip, HudFrames::default().tooltip);
+        assert_eq!(loaded.editor, HudEditorPrefs::default());
+    }
+
+    #[test]
+    fn nonsense_spacing_and_sizes_fall_back_per_field() {
+        let mut config = HudConfig::default();
+        config.frames.buffs.spacing = f32::NAN;
+        config.frames.buffs.width = -3.0;
+        config.frames.raid.spacing = 99.0;
+        let repaired = config.validated();
+        assert!((repaired.frames.buffs.spacing - 1.0).abs() < f32::EPSILON);
+        assert_eq!(repaired.frames.buffs.width, 0.0);
+        assert!((repaired.frames.raid.spacing - 1.0).abs() < f32::EPSILON);
     }
 
     #[test]

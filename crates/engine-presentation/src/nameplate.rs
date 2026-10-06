@@ -178,6 +178,10 @@ pub struct PlateMetrics {
     pub cast_text_size: f32,
     /// A buff or debuff icon's edge, logical pixels.
     pub aura_edge: f32,
+    /// The debuff row's icons, as a multiple of `aura_edge`: the player's Enemy Debuff Size.
+    pub debuff_scale: f32,
+    /// The buff row's icons, as a multiple of `aura_edge`.
+    pub buff_scale: f32,
     /// The border around the bars.
     pub border: f32,
 }
@@ -192,6 +196,8 @@ impl PlateMetrics {
         cast_height: 17.0,
         cast_text_size: 12.5,
         aura_edge: 26.0,
+        debuff_scale: 1.0,
+        buff_scale: 1.0,
         border: 1.0,
     };
 
@@ -204,6 +210,8 @@ impl PlateMetrics {
         cast_height: 18.0,
         cast_text_size: 13.0,
         aura_edge: 27.0,
+        debuff_scale: 1.0,
+        buff_scale: 1.0,
         border: 1.0,
     };
 
@@ -216,8 +224,25 @@ impl PlateMetrics {
         cast_height: 19.0,
         cast_text_size: 13.5,
         aura_edge: 29.0,
+        debuff_scale: 1.0,
+        buff_scale: 1.0,
         border: 2.0,
     };
+
+    /// The same plate with its icon rows at the player's sizes.
+    #[must_use]
+    pub fn with_aura_scales(mut self, debuffs: f32, buffs: f32) -> Self {
+        let clean = |value: f32| {
+            if value.is_finite() && value > 0.0 {
+                value
+            } else {
+                1.0
+            }
+        };
+        self.debuff_scale = clean(debuffs);
+        self.buff_scale = clean(buffs);
+        self
+    }
 }
 
 /// Pixels between the name and the health bar, in logical pixels.
@@ -297,9 +322,9 @@ impl PlateGeometry {
         let px = |logical: f32| (logical * scale).round().max(1.0);
         let debuff_count = debuffs.min(MAX_NAMEPLATE_AURAS);
         let buff_count = buffs.min(MAX_NAMEPLATE_AURAS);
-        let row_style = || {
+        let row_style = |factor: f32| {
             AuraRowStyle::new(
-                px(metrics.aura_edge),
+                px(metrics.aura_edge * factor),
                 NAMEPLATE_AURAS_PER_LINE,
                 MAX_NAMEPLATE_AURAS,
             )
@@ -316,7 +341,7 @@ impl PlateGeometry {
         // the plate upward without moving the bar off the monster's head.
         let mut y = 0.0;
         let debuffs = (debuff_count > 0).then(|| {
-            let style = row_style();
+            let style = row_style(metrics.debuff_scale);
             let top = y;
             y += style.height_for(debuff_count) + px(AURA_GAP);
             (top, style)
@@ -332,7 +357,7 @@ impl PlateGeometry {
         // Under the health bar, the enemy's own buffs; under those, its cast.
         let mut below = bar.bottom();
         let buffs = (buff_count > 0).then(|| {
-            let style = row_style();
+            let style = row_style(metrics.buff_scale);
             let top = below + px(AURA_GAP);
             below = top + style.height_for(buff_count);
             (top, style)
@@ -458,6 +483,9 @@ pub struct Nameplate {
     pub health: f32,
     /// Health at full.
     pub max_health: f32,
+    /// Damage absorbed before health moves, from [`Simulation::absorb_of`]: drawn as its own
+    /// layer on the bar, like every other health bar.
+    pub absorb: f32,
     /// Where the recent-damage trail ends, in [0, 1]: at or above the health, draining down.
     pub trail_fraction: f32,
     /// Whether the enemy has died and this is its plate fading out.
@@ -619,6 +647,10 @@ pub struct NameplateConfig {
     /// with the one the player is fighting, and a room full of monsters reads in depth. One
     /// turns the falloff off.
     pub far_scale: f32,
+    /// The debuff icons over a name, as a multiple of their design size.
+    pub debuff_scale: f32,
+    /// The buff icons under a health bar, as a multiple of their design size.
+    pub buff_scale: f32,
 }
 
 impl Default for NameplateConfig {
@@ -640,6 +672,8 @@ impl Default for NameplateConfig {
             non_target_alpha: defaults.non_target_alpha(),
             smoothing_per_second: crate::nameplate_layout::DEFAULT_SMOOTHING,
             far_scale: 0.82,
+            debuff_scale: 1.0,
+            buff_scale: 1.0,
         }
     }
 }
@@ -682,6 +716,8 @@ impl NameplateConfig {
         self.horizontal_margin = settings.horizontal_margin;
         self.top_safe_zone = settings.top_safe_zone;
         self.non_target_alpha = settings.non_target_alpha();
+        self.debuff_scale = settings.debuff_scale();
+        self.buff_scale = settings.buff_scale();
         self
     }
 
@@ -975,7 +1011,9 @@ impl NameplateSet {
                 None
             };
 
-            let metrics = rank.metrics();
+            let metrics = rank
+                .metrics()
+                .with_aura_scales(config.debuff_scale, config.buff_scale);
             crate::ui::map_style::write_title_case(&mut self.scratch, name);
             let name_width = UiFont::SemiBold.width(&self.scratch, metrics.name_size);
             let scale = config.scale * config.distance_scale(distance);
@@ -1017,6 +1055,11 @@ impl NameplateSet {
                 },
                 health: health.current(),
                 max_health: health.max(),
+                absorb: if fading.is_some() {
+                    0.0
+                } else {
+                    simulation.absorb_of(entity)
+                },
                 trail_fraction: health.fraction(),
                 dead: fading.is_some(),
                 cast,
@@ -1414,6 +1457,43 @@ pub fn project_clip(clip: Vec4, viewport: (u32, u32)) -> Option<(f32, f32)> {
 )]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_enemy_debuff_size_scales_only_the_debuff_icons() {
+        let plain = PlateGeometry::new(PlateMetrics::NORMAL, None, 80.0, 1.0, 2, 2, false);
+        let larger = PlateGeometry::new(
+            PlateMetrics::NORMAL.with_aura_scales(1.5, 1.0),
+            None,
+            80.0,
+            1.0,
+            2,
+            2,
+            false,
+        );
+        let edge = |row: Option<(f32, AuraRowStyle)>| row.map(|(_, style)| style.edge);
+        assert!(
+            edge(larger.debuffs) > edge(plain.debuffs),
+            "the debuffs did not grow"
+        );
+        assert_eq!(
+            edge(larger.buffs),
+            edge(plain.buffs),
+            "the buffs grew with them"
+        );
+        assert_eq!(
+            larger.bar.width, plain.bar.width,
+            "the plate itself was rescaled"
+        );
+
+        // From the setting through the configuration.
+        let settings = engine_settings::NameplateSettings {
+            debuff_size: 150.0,
+            ..engine_settings::NameplateSettings::default()
+        };
+        let config = NameplateConfig::default().with_settings(settings);
+        assert!((config.debuff_scale - 1.5).abs() < 1e-6);
+        assert!((config.buff_scale - 1.0).abs() < 1e-6);
+    }
     use crate::camera::ThirdPersonCamera;
     use engine_game::arena::{self, ArenaConfig};
     use engine_game::command::PlayerCommand;

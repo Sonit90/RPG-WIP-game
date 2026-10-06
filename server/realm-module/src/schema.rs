@@ -549,6 +549,8 @@ pub struct NetResources {
     pub astral: f32,
     /// Global cooldown left.
     pub global_cooldown: f32,
+    /// Damage absorbed before health moves.
+    pub absorb: f32,
 }
 
 /// A bar slot aimed at a point.

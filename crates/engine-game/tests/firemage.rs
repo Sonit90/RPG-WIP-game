@@ -50,6 +50,7 @@ fn ignite(simulation: &mut Simulation, id: EntityId, stacks: u8) {
 
 /// Runs a cast to completion, however long it takes.
 fn cast_through(simulation: &mut Simulation, ability: FireAbility) {
+    simulation.step_until_ready();
     simulation.cast(ability).expect("the cast was refused");
     for _ in 0..300 {
         if simulation.casting().is_none() {

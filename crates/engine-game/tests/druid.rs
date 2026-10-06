@@ -77,6 +77,7 @@ fn has(simulation: &Simulation, id: EntityId, kind: StatusKind) -> bool {
 
 /// Runs a cast to completion, however long it takes.
 fn cast_through(simulation: &mut Simulation, ability: FireAbility) {
+    simulation.step_until_ready();
     simulation.cast(ability).expect("the cast was refused");
     for _ in 0..600 {
         if simulation.casting().is_none() {
@@ -94,7 +95,7 @@ fn arm(simulation: &mut Simulation) {
         .expect("a full bar arms");
     assert!(simulation.druid().astral.is_armed());
     // Off the global cooldown the button started, so the next cast is not refused for it.
-    simulation.step_many(60);
+    simulation.step_until_ready();
 }
 
 /// The healing the player did, from the event stream rather than from the health bar: an

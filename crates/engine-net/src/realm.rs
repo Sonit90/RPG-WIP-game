@@ -663,6 +663,7 @@ fn player_combat(row: &b::PlayerCombat) -> PlayerCombatInfo {
             deflection: row.resources.deflection,
             astral: row.resources.astral,
             global_cooldown: row.resources.global_cooldown,
+            absorb: row.resources.absorb,
         },
         cooldowns: row
             .cooldowns

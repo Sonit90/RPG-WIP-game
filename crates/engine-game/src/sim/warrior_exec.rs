@@ -40,8 +40,8 @@ use crate::event::{CombatEvent, ControlKind};
 use crate::firemage::{FireAbility, ZoneShape};
 use crate::hero::Hero;
 use crate::status::{Status, StatusKind};
+use crate::warrior::health_scaled;
 use crate::warrior::tuning::*;
-use crate::warrior::{DEFLECTION_SPEND, health_scaled};
 
 use super::Simulation;
 
@@ -145,14 +145,16 @@ impl Simulation {
     /// part-paid. The passive maximum health and armour bonuses are recomputed *before* the
     /// event is emitted, so "spending gives the defence straight back" is true of the very
     /// same call rather than of the next tick.
+    ///
+    /// The bank needed is the row's [`WarriorRow::empower_threshold`](crate::ability::WarriorRow::empower_threshold):
+    /// the cost itself for every spender, a full hundred for Recuperate.
     fn spend_deflection(&mut self, ability: FireAbility) -> bool {
-        let cost = ability.definition().warrior.deflection_cost;
-        self.spend_deflection_amount(ability, cost)
-    }
-
-    /// The same, for a spend whose size is a rule rather than a column — Recuperate's.
-    fn spend_deflection_amount(&mut self, ability: FireAbility, cost: f32) -> bool {
+        let row = ability.definition().warrior;
+        let cost = row.deflection_cost;
         if self.hero != Hero::Warrior || cost <= 0.0 {
+            return false;
+        }
+        if self.warrior.deflection.value() + f32::EPSILON < row.empower_threshold() {
             return false;
         }
         if !self.warrior.deflection.spend(cost) {
@@ -213,12 +215,7 @@ impl Simulation {
             return 0;
         }
 
-        let capped = self.hero == Hero::Warrior && self.warrior.deflection.is_full();
-        let stacks = if capped && self.spend_deflection_amount(ability, DEFLECTION_SPEND) {
-            2
-        } else {
-            1
-        };
+        let stacks = if self.spend_deflection(ability) { 2 } else { 1 };
         let source = self.player.entity;
         let status = Status::new(
             StatusKind::Recuperating,
@@ -239,6 +236,11 @@ impl Simulation {
     fn cast_war_stomp(&mut self) -> u32 {
         let ability = FireAbility::WarStomp;
         let definition = *ability.definition();
+        // Nothing caught, nothing paid: a spend is for an effect, and a stomp into empty air
+        // has none.
+        if self.hits.is_empty() {
+            return 0;
+        }
         let empowered = self.spend_deflection(ability);
         let stacks = if empowered { 2 } else { 1 };
         let stats = self.mage.stats();
@@ -272,6 +274,11 @@ impl Simulation {
     fn cast_colossus_strike(&mut self) -> u32 {
         let ability = FireAbility::ColossusStrike;
         let definition = *ability.definition();
+        // A smash with nobody in reach keeps the bank: the empowerment is a bigger bleed, and
+        // there is nobody to bleed.
+        if self.hits.is_empty() {
+            return 0;
+        }
         let empowered = self.spend_deflection(ability);
         let bleed_scale = if empowered {
             1.0 + COLOSSUS_BLEED_EMPOWERED
@@ -338,11 +345,11 @@ impl Simulation {
     fn cast_shield_bash(&mut self) -> u32 {
         let ability = FireAbility::ShieldBash;
         let definition = *ability.definition();
-        let empowered = self.spend_deflection(ability);
-        let stats = self.mage.stats();
         let Some(target) = self.hits.first().copied() else {
             return 0;
         };
+        let empowered = self.spend_deflection(ability);
+        let stats = self.mage.stats();
         self.strike(target, definition.base_damage(&stats), ability, true, 0.0);
         // The interrupt is the existing one, with the existing rules about what may be
         // interrupted. A second implementation would be a second answer to "can this cast be

@@ -667,6 +667,32 @@ mod tests {
     }
 
     #[test]
+    fn recuperate_stacks_reach_the_player_s_buffs() {
+        let mut simulation = arena::training_arena(&ArenaConfig::default());
+        simulation.step_once();
+        assert!(simulation.set_hero(engine_game::hero::Hero::Warrior));
+        simulation.select_nearest_target();
+        let target = simulation.player().target.expect("a dummy");
+        let at = simulation.world().position(target).expect("placed");
+        let player = simulation.player().entity;
+        if let Some(body) = simulation.world_mut().body_mut(player) {
+            body.position = at + engine_core::math::Vec3::new(0.0, 0.0, 2.0);
+        }
+        for _ in 0..3 {
+            simulation.push_command(engine_game::command::PlayerCommand::UseAbility(0));
+            for _ in 0..200 {
+                simulation.step_once();
+            }
+        }
+        let auras = auras_of(&simulation, player);
+        let recuperating = auras
+            .iter()
+            .find(|aura| aura.kind == AuraKind::Status(StatusKind::Recuperating))
+            .expect("Recuperate is listed on the Warrior");
+        assert_eq!(recuperating.stacks, 3);
+    }
+
+    #[test]
     fn a_remaining_time_fits_an_icon() {
         let mut out = String::new();
         let mut aura = Aura::timed(AuraKind::Ignite, 12.7, 30.0);

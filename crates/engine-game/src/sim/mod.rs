@@ -73,10 +73,10 @@ pub mod effect_exec;
 /// Enemy brains, their attacks and their telegraphs: the combat half of the AI.
 pub mod enemy_exec;
 mod firemage_exec;
-/// The test bed's controls: reset the player, dismiss chosen enemies, find standing ground.
-mod playground_exec;
 /// More than one player in one simulation: per-player state swapped in and out.
 pub mod players;
+/// The test bed's controls: reset the player, dismiss chosen enemies, find standing ground.
+mod playground_exec;
 /// A networked client's simulation: the server runs the fight, this one presents it.
 pub mod remote;
 pub mod respawn;
@@ -555,6 +555,11 @@ pub struct Simulation {
     externally_moved: Vec<EntityId>,
     /// A server runs the fight; see [`remote`].
     remote_authority: bool,
+    /// Absorbs the authority reported, per entity, while it is the authority.
+    ///
+    /// A client under [`Simulation::set_remote_authority`] runs no Puncture Blood of its own;
+    /// the server's number is laid in here and [`Simulation::absorb_of`] reads it.
+    presented_absorbs: Vec<(EntityId, f32)>,
     /// Ability presses for the server, while it runs the fight.
     remote_requests: Vec<PlayerCommand>,
     /// Seconds of out-of-combat time since the last regeneration tick.
@@ -670,6 +675,7 @@ impl Simulation {
             others: Vec::new(),
             externally_moved: Vec::new(),
             remote_authority: false,
+            presented_absorbs: Vec::new(),
             remote_requests: Vec::new(),
         }
     }
@@ -1174,6 +1180,44 @@ impl Simulation {
         self.tick_once(&mut stats);
         stats.total = started.elapsed();
         self.record_stats(stats);
+    }
+
+    /// **How much damage `entity` will absorb before its health moves.** Zero for none.
+    ///
+    /// The one question every health bar asks — player frame, target, party, raid and
+    /// nameplate alike — so a shield is drawn the same way whoever carries it and whatever
+    /// granted it. Every source of absorb answers here: today the Warrior's Puncture Blood
+    /// on any player, and whatever the authority reported for an entity while a server runs
+    /// the fight. A future shield adds its source to this function and every bar draws it.
+    #[must_use]
+    pub fn absorb_of(&self, entity: EntityId) -> f32 {
+        if self.remote_authority {
+            return self
+                .presented_absorbs
+                .iter()
+                .find(|(id, _)| *id == entity)
+                .map_or(0.0, |(_, amount)| *amount);
+        }
+        if entity == self.player.entity {
+            return self.warrior.absorb.remaining();
+        }
+        self.inactive_warrior(entity)
+            .map_or(0.0, |warrior| warrior.absorb.remaining())
+    }
+
+    /// Steps until the player could start another ability: no cast running and the global
+    /// cooldown over. Gives up after ten simulated seconds.
+    ///
+    /// What a headless driver or a test means by "press the next button": the global
+    /// cooldown is a rule of the game, and a script that waited a fixed number of ticks would
+    /// encode its length a second time.
+    pub fn step_until_ready(&mut self) {
+        for _ in 0..600 {
+            if self.player.cast.is_none() && self.mage.off_global_cooldown() {
+                return;
+            }
+            self.step_once();
+        }
     }
 
     /// Runs `count` fixed ticks. The events of the whole run are kept.

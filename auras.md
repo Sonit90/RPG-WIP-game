@@ -27,9 +27,10 @@ Every icon, everywhere, is drawn by one widget (`ui/aura_row.rs`):
 * a **blue border** (`DISPEL_BORDER`) when a dispel can remove it; any other icon only has a
   black hairline so it keeps an edge against bright spell effects;
 * a darkening wipe from the top for the share of its duration already gone;
-* the seconds left along the bottom (`12`, `1.4`, `5m`), the stack count in the top-right
-  corner;
-* **a tooltip on hover**: the name (red for a debuff), what kind of thing it is — the dispel
+* the seconds left along the bottom (`12`, `1.4`, `5m`), and the stack count as a badge
+  hanging over the top-right corner — read from the status's own stack count, so Recuperate's
+  five stacks, War Stomp's eight and every future stacking effect show the same way;
+* **a tooltip on hover**, opened from the tooltip dock like every other tooltip: the name (red for a debuff), what kind of thing it is — the dispel
   school in its colour (`Magic` blue, `Poison` green, `Curse` violet, `Disease` ochre) or
   `Buff` / `Debuff` — one sentence of what it does, and the time, stacks or absorb left. The
   tooltip panel of a dispellable debuff is edged in the dispel blue as well.

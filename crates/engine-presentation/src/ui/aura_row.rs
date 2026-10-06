@@ -18,7 +18,7 @@ use engine_render_data::ui::{TextAlign, UiColor, UiDrawList, UiRect};
 
 use crate::aura::{Aura, write_remaining};
 use crate::game_ui::{cap_centred_top, faded, plate_text_style};
-use crate::ui::map_style::{MapStyle, color, radius, space, type_scale};
+use crate::ui::map_style::color;
 
 /// The border a dispellable debuff wears: the one colour that says "a dispel takes this off".
 pub const DISPEL_BORDER: UiColor = [0.28, 0.58, 1.0, 1.0];
@@ -34,6 +34,9 @@ const TIME_COLOR: UiColor = [1.0, 0.96, 0.84, 1.0];
 
 /// The stack count in an icon's corner.
 const STACK_COLOR: UiColor = [1.0, 1.0, 1.0, 1.0];
+
+/// The edge of the stack count's badge: the accent the interface marks things to count with.
+const STACK_EDGE: UiColor = [0.867, 0.733, 0.502, 0.85];
 
 /// The dark edge on both.
 const TEXT_EDGE: UiColor = [0.0, 0.0, 0.0, 0.95];
@@ -277,18 +280,36 @@ pub fn push_aura_icon(
         use std::fmt::Write as _;
         scratch.clear();
         let _ = write!(scratch, "{}", aura.stacks);
-        // Top right, clear of the seconds along the bottom.
-        let size = (rect.width * 0.4).max(8.0);
+        // A badge in the top-right corner, hanging just over the edge: a count, read at a
+        // glance and never mistaken for the seconds along the bottom. Drawn from the aura's
+        // own stack count — the one the simulation keeps — for every stacking effect.
+        let size = (rect.width * 0.42).max(9.0);
+        let width = UiFont::SemiBold.width(scratch, size);
+        let pad = (size * 0.32).round().max(2.0);
+        let badge = UiRect::new(
+            (rect.right() - width - pad * 2.0 + rect.width * 0.12).round(),
+            (rect.y - rect.width * 0.12).round(),
+            (width + pad * 2.0).round(),
+            (size * 1.05).round(),
+        );
+        let corner = badge.height * 0.5;
+        list.panel(
+            badge,
+            corner,
+            faded([0.10, 0.10, 0.12, 0.95], alpha),
+            faded([0.02, 0.02, 0.03, 0.95], alpha),
+        );
+        list.panel_stroke(badge, corner, 1.0, faded(STACK_EDGE, alpha));
         list.styled_label(
             (
-                rect.right() - border,
-                cap_centred_top(UiFont::SemiBold, size, rect.y + border + size * 0.4),
+                badge.x + badge.width * 0.5,
+                cap_centred_top(UiFont::SemiBold, size, badge.y + badge.height * 0.5),
             ),
             scratch,
             faded(STACK_COLOR, alpha),
             UiFont::SemiBold,
             size,
-            TextAlign::Right,
+            TextAlign::Center,
             plate_text_style(outline, size, 0.03),
         );
     }
@@ -332,35 +353,30 @@ pub fn buff_bar_size() -> (f32, f32) {
     )
 }
 
-/// The player's buffs, filling `rect` from its top-right corner leftwards and down.
+/// The player's buffs, one per cell of `flow`: the bar the player arranged.
 ///
-/// Right to left because the bar's default home is the top-right of the screen, and a buff
-/// gained is then added at the end nearest the middle rather than pushing the others out
-/// towards the edge. `rect` is wherever the player put the bar, at whatever size.
+/// The first buff is in the corner the flow starts from — top right by default, because the
+/// bar's home is the top-right of the screen and a buff gained is then added at the end
+/// nearest the middle. Placed there rather than reversed after layout, so three buffs in a
+/// right-to-left bar sit against its right edge whatever the bar's capacity.
 pub fn push_buff_bar<'a>(
     list: &mut UiDrawList,
     hits: &mut AuraHits,
-    rect: UiRect,
-    buffs: impl Iterator<Item = &'a Aura> + Clone,
+    flow: &super::flow::Flow,
+    buffs: impl Iterator<Item = &'a Aura>,
     scratch: &mut String,
 ) {
-    let (design_width, _) = buff_bar_size();
-    let factor = rect.width / design_width.max(1.0);
-    let mut style = AuraRowStyle::new(
-        size::BUFF_ICON * factor,
-        size::BUFFS_PER_LINE,
-        size::BUFFS_PER_LINE * size::BUFF_LINES,
-    );
-    style.gap = (size::GAP * factor).round().max(1.0);
-    push_aura_row(
-        list,
-        hits,
-        buffs,
-        (rect.right(), rect.y),
-        AuraGrow::Left,
-        style,
-        scratch,
-    );
+    let Some(first) = flow.cell(0) else {
+        return;
+    };
+    let style = AuraRowStyle::new(first.width, flow.columns, flow.capacity());
+    for (index, aura) in buffs.enumerate() {
+        let Some(cell) = flow.cell(index) else {
+            break;
+        };
+        push_aura_icon(list, cell, aura, style, scratch);
+        hits.push(cell, *aura);
+    }
 }
 
 /// The player's debuffs, in rows hanging under the player frame `frame`.
@@ -402,6 +418,7 @@ pub fn push_party_debuffs(
     hits: &mut AuraHits,
     frame: UiRect,
     members: &[crate::snapshot::PartyMemberView],
+    upwards: bool,
     scratch: &mut String,
 ) {
     use super::unit_frame::size as frame_size;
@@ -414,7 +431,8 @@ pub fn push_party_debuffs(
         size::PARTY_DEBUFFS,
     );
     for (index, member) in members.iter().enumerate() {
-        let top = frame.y + padding + row_height * index as f32;
+        let row = super::unit_frame::party_row(index, upwards);
+        let top = frame.y + padding + row_height * row as f32;
         if top + row_height > frame.bottom() {
             break;
         }
@@ -441,12 +459,13 @@ pub fn push_party_debuffs(
 pub fn push_raid_debuffs(
     list: &mut UiDrawList,
     hits: &mut AuraHits,
-    frame: UiRect,
+    flow: &super::flow::Flow,
     members: &[crate::snapshot::PartyMemberView],
     scratch: &mut String,
 ) {
-    let (design_width, _) = super::raid_frame::raid_size();
-    let factor = frame.width / design_width.max(1.0);
+    let factor = flow.cell(0).map_or(1.0, |cell| {
+        cell.height / super::raid_frame::size::CELL_HEIGHT
+    });
     let style = AuraRowStyle::new(
         size::RAID_ICON * factor,
         size::RAID_DEBUFFS,
@@ -455,7 +474,7 @@ pub fn push_raid_debuffs(
     .with_time(false);
     let inset = (4.0 * factor).round();
     for (index, member) in members.iter().enumerate() {
-        let Some(cell) = super::raid_frame::cell_rect(frame, index) else {
+        let Some(cell) = flow.cell(index) else {
             break;
         };
         push_aura_row(
@@ -467,204 +486,6 @@ pub fn push_raid_debuffs(
             style,
             scratch,
         );
-    }
-}
-
-/// The lines of an aura's tooltip, kept between frames so a tooltip held over one icon wraps
-/// its description once rather than every frame.
-#[derive(Debug, Clone, Default)]
-pub struct AuraTooltip {
-    /// The effect and the width the description was wrapped for.
-    wrapped_for: Option<(crate::aura::AuraKind, u32)>,
-    /// The description, wrapped.
-    lines: Vec<String>,
-    /// The type line and the time line, rewritten each frame.
-    detail: String,
-    time: String,
-}
-
-impl AuraTooltip {
-    /// An empty tooltip.
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Draws the tooltip for `aura` beside the icon at `anchor`, kept on screen.
-    ///
-    /// ```text
-    /// Poisoned                    Poison
-    /// Taking Nature damage every second.
-    /// 6 seconds remaining
-    /// ```
-    pub fn push(
-        &mut self,
-        list: &mut UiDrawList,
-        anchor: UiRect,
-        aura: &Aura,
-        style: MapStyle,
-        viewport: (u32, u32),
-    ) {
-        use std::fmt::Write as _;
-        let pad = style.px(space::MD);
-        let text_width = style.px(240.0);
-        let key = (aura.kind, text_width as u32);
-        if self.wrapped_for != Some(key) {
-            self.lines = style.wrap(type_scale::BODY, aura.kind.description(), text_width);
-            self.wrapped_for = Some(key);
-        }
-
-        // What kind of thing it is: a dispel school in its own colour, or buff / debuff.
-        self.detail.clear();
-        let (kind_color, kind) = match aura.kind.dispel_school() {
-            Some(school) => (school_color(school), school_name(school)),
-            None if aura.is_harmful() => (color::TEXT_MUTED, "Debuff"),
-            None => (color::VERDANT, "Buff"),
-        };
-        self.detail.push_str(kind);
-
-        self.time.clear();
-        if aura.indefinite {
-            self.time.push_str("Until removed");
-        } else if aura.remaining > 0.0 {
-            if aura.remaining >= 60.0 {
-                let _ = write!(
-                    self.time,
-                    "{} min remaining",
-                    (aura.remaining / 60.0).ceil()
-                );
-            } else {
-                let _ = write!(self.time, "{:.0} seconds remaining", aura.remaining.ceil());
-            }
-        }
-        if aura.stacks > 1 {
-            if !self.time.is_empty() {
-                self.time.push_str("  ·  ");
-            }
-            let _ = write!(self.time, "{} stacks", aura.stacks);
-        }
-        if aura.amount > 0.0 {
-            if !self.time.is_empty() {
-                self.time.push_str("  ·  ");
-            }
-            let _ = write!(self.time, "{:.0} absorb left", aura.amount);
-        }
-
-        let title = aura.kind.name();
-        let heading = style.width(type_scale::HEADING, title)
-            + style.px(space::LG)
-            + style.width(type_scale::META, &self.detail);
-        let body = self
-            .lines
-            .iter()
-            .map(|line| style.width(type_scale::BODY, line))
-            .fold(0.0_f32, f32::max);
-        let footer = style.width(type_scale::META, &self.time);
-        let width = heading.max(body).max(footer) + pad * 2.0;
-        let body_line = style.line(type_scale::BODY);
-        let mut height =
-            pad * 2.0 + style.line(type_scale::HEADING) + body_line * self.lines.len() as f32;
-        if !self.time.is_empty() {
-            height += style.line(type_scale::META);
-        }
-
-        // Above the icon, preferring its right; below it when there is no room above.
-        let margin = style.px(8.0);
-        let mut x = anchor.x;
-        if x + width > viewport.0 as f32 - margin {
-            x = anchor.right() - width;
-        }
-        let mut y = anchor.y - height - style.px(6.0);
-        if y < margin {
-            y = anchor.bottom() + style.px(6.0);
-        }
-        let rect = UiRect::new(
-            x.max(margin).round(),
-            y.min(viewport.1 as f32 - height - margin)
-                .max(margin)
-                .round(),
-            width.round(),
-            height.round(),
-        );
-
-        let corner = style.px(radius::CONTROL);
-        list.shadow(
-            rect,
-            corner,
-            style.px(14.0),
-            color::alpha(color::SHADOW, 0.8),
-        );
-        list.panel(
-            rect,
-            corner,
-            [0.10, 0.11, 0.14, 0.98],
-            [0.07, 0.08, 0.10, 0.98],
-        );
-        let stroke = if aura.is_dispellable() {
-            color::alpha(DISPEL_BORDER, 0.8)
-        } else {
-            color::BORDER_STRONG
-        };
-        list.panel_stroke(rect, corner, style.px(1.0), stroke);
-
-        let mut line_y = rect.y + pad;
-        let heading_line = style.line(type_scale::HEADING);
-        let name_color = if aura.is_harmful() {
-            color::CRIMSON
-        } else {
-            color::TEXT_TITLE
-        };
-        list.label(
-            (
-                rect.x + pad,
-                style.centred_top(type_scale::HEADING, line_y + heading_line * 0.5),
-            ),
-            title,
-            name_color,
-            type_scale::HEADING.font,
-            style.size(type_scale::HEADING),
-            TextAlign::Left,
-        );
-        list.label(
-            (
-                rect.right() - pad,
-                style.centred_top(type_scale::META, line_y + heading_line * 0.5),
-            ),
-            &self.detail,
-            kind_color,
-            type_scale::META.font,
-            style.size(type_scale::META),
-            TextAlign::Right,
-        );
-        line_y += heading_line;
-        for line in &self.lines {
-            list.label(
-                (
-                    rect.x + pad,
-                    style.centred_top(type_scale::BODY, line_y + body_line * 0.5),
-                ),
-                line,
-                color::TEXT_PRIMARY,
-                type_scale::BODY.font,
-                style.size(type_scale::BODY),
-                TextAlign::Left,
-            );
-            line_y += body_line;
-        }
-        if !self.time.is_empty() {
-            let meta = style.line(type_scale::META);
-            list.label(
-                (
-                    rect.x + pad,
-                    style.centred_top(type_scale::META, line_y + meta * 0.5),
-                ),
-                &self.time,
-                color::TEXT_SECONDARY,
-                type_scale::META.font,
-                style.size(type_scale::META),
-                TextAlign::Left,
-            );
-        }
     }
 }
 
@@ -856,14 +677,16 @@ mod tests {
 
     #[test]
     fn a_tooltip_names_the_effect_its_school_and_its_time() {
+        // The aura's tooltip is the shared one: same panel, same dock as an ability's.
         let mut list = UiDrawList::new();
-        let mut tooltip = AuraTooltip::new();
-        let style = MapStyle::new(engine_render_data::ui::UiScale::new(1.0));
-        tooltip.push(
+        let mut model = crate::ui::tooltip::TooltipModel::new();
+        crate::ui::tooltip::fill_aura(&mut model, &poison());
+        crate::ui::tooltip::TooltipPanel::new().push(
             &mut list,
-            UiRect::new(400.0, 400.0, 24.0, 24.0),
-            &poison(),
-            style,
+            &model,
+            UiRect::new(800.0, 600.0, crate::ui::tooltip::DEFAULT_WIDTH, 64.0),
+            crate::ui::flow::FlowDirection::READING,
+            &crate::ui::kit::Kit::new(engine_render_data::ui::UiScale::new(1.0)),
             (1280, 720),
         );
         let texts: Vec<String> = list
@@ -876,7 +699,7 @@ mod tests {
             .collect();
         assert!(texts.contains(&"Poisoned".to_owned()));
         assert!(texts.contains(&"Poison".to_owned()));
-        assert!(texts.iter().any(|text| text.contains("seconds remaining")));
+        assert!(texts.iter().any(|text| text.contains("sec remaining")));
         assert!(texts.iter().any(|text| text.contains("Nature damage")));
     }
 }

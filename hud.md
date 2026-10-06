@@ -12,6 +12,11 @@ Status: **COMPLETE**. Every item in section 13 is done and tested.
 > attached under the player frame and each member's beside the party and raid frames. See
 > [auras.md](auras.md).
 
+> **Since (HUD polish pass):** Edit HUD is an inspector card rather than a column of buttons;
+> every element shares one generic layout (direction, spacing, width/height); tooltips open
+> from a movable dock; the party list is hidden and the raid frames shown by default. See
+> [§15](#15-edit-hud-the-inspector-and-the-generic-layout).
+
 ## Goals
 
 Eight independent action bars, per-slot spells and keybinds, movable and scalable unit
@@ -34,7 +39,7 @@ The inspection pass found a UI stack that already has most of the parts:
 | `UiSnapshot` | `snapshot.rs` | the only thing the UI reads about gameplay |
 | `SettingsManager` | `engine-settings` | the load/validate/save shape the HUD file copies |
 | `Bindings` / `KeyCode` | `engine-game/src/input_map.rs`, `engine-core/src/input.rs` | keys, and the collision check a new binding must pass |
-| `FireAbility` | `engine-game/src/firemage/ability.rs` | the spell registry the picker lists |
+| `FireAbility` | `engine-game/src/ability/table.rs` | the spell registry the picker lists |
 | `PlayerCommand::UseAbility(slot)` | `engine-game/src/command.rs` | how a pressed slot reaches the simulation |
 
 Two things do not exist and are added, minimally:
@@ -502,3 +507,59 @@ Everything else is as designed.
   `build_arranged` instead. They are what the collision, VFX and audio demo scenes would use
   if they ever wanted a HUD, and deleting them would have been a change to code this phase
   did not otherwise touch.
+
+## 15. Edit HUD, the inspector, and the generic layout
+
+### What the player sees
+
+* A small **Edit Mode** badge, top centre. Nothing opaque covers the world.
+* Every element outlined with a hairline and named with a chip; hidden ones are faint ghosts
+  that light up under the pointer. The **selected** element is drawn in the accent with a glow,
+  corner handles and a `Name  W×H` chip.
+* The **inspector**, a translucent card docked right (left when the selection is under it):
+  * nothing selected — every element by name (hidden ones marked with a crossed eye; the way
+    back to anything hidden or tucked under another), **Nameplates**, the alignment **grid** and
+    **snap to guides** switches, **Reset all**, **Done**;
+  * an element — **Position** (3×3 anchor grid, X/Y steppers that keep the chosen anchor),
+    **Size** (scale; width and height where the element has them), **Layout** (orientation,
+    fill across, fill down, spacing — where it has items), **Visibility**, **Reset**, **Done**;
+  * **Nameplates** — nameplate scale, **enemy debuff size**, enemy buff size (`settings.cfg`).
+* Dragging snaps an edge or centre to the screen's edges and centre lines, other elements'
+  edges and centres, and the grid when it is on; the guide in use is drawn in blue.
+
+### One layout system
+
+`HudElementId::controls()` is the one table of what each element offers; the inspector draws
+whatever it says. Elements made of items lay them out through `ui::flow::Flow`, a grid filled in
+either direction on either axis — direction is applied when a cell is *placed*, so the first
+buff of three in a right-to-left bar is against the right edge. Buffs, raid cells, action bar
+slots and party rows all use it, for painting and for hit-testing.
+
+| element | layout | width / height |
+| --- | --- | --- |
+| action bars | orientation, fill across, fill down, spacing | — |
+| buffs | fill across, fill down, spacing | icons per row (1–16), rows (1–4) |
+| raid | fill across, fill down, spacing | — |
+| party | fill down | — |
+| cast bar | — | px (120–640), px (12–48) |
+| tooltip dock | fill across, fill down (which way a tooltip grows) | px (300–560) |
+
+### Persistence
+
+All in `hud.cfg`, per element on `HudPlacement`: `flow_x`, `flow_y` (`auto` = the element's
+natural direction, so an older file keeps its arrangement), `spacing`, `width`, `height`; the
+tooltip dock is `frames.tooltip`; the editor's switches are `editor.grid` / `editor.snap`. The
+nameplate icon sizes are `nameplates.debuff_size` / `buff_size` in `settings.cfg`. Every field
+falls back on its own, like the rest of the file.
+
+### Defaults
+
+A fresh layout shows the **raid frames** where the party list was and hides the party list
+(where the raid frames were, so it is never under them); the tooltip dock is bottom right.
+
+### Shared kit
+
+`ui::kit` holds the panel, button (primary / secondary / ghost / danger with hover, pressed,
+active and disabled states), stepper, segmented control, switch, anchor grid, section heading
+and chip — drawn from the map's tokens (`ui::map_style`) in the proportional face. The tooltip,
+the editor and the action bar's labels are built from it.

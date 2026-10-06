@@ -308,6 +308,9 @@ pub struct PlayerView {
     pub health: f32,
     /// Maximum health.
     pub max_health: f32,
+    /// Damage absorbed before health moves: every shield on them, from
+    /// [`Simulation::absorb_of`]. Drawn as a layer of its own on every health bar.
+    pub absorb: f32,
     /// Current Heat.
     pub heat: f32,
     /// Which band Heat is in, which is what the bar colours itself from.
@@ -405,6 +408,9 @@ pub struct TargetView {
     pub health: f32,
     /// Maximum health.
     pub max_health: f32,
+    /// Damage absorbed before health moves: every shield on them, from
+    /// [`Simulation::absorb_of`]. Drawn as a layer of its own on every health bar.
+    pub absorb: f32,
     /// Metres away.
     pub distance: f32,
     /// Whether it is alive.
@@ -721,6 +727,9 @@ pub struct PartyMemberView {
     pub health: f32,
     /// Maximum health.
     pub max_health: f32,
+    /// Damage absorbed before health moves: every shield on them, from
+    /// [`Simulation::absorb_of`]. Drawn as a layer of its own on every health bar.
+    pub absorb: f32,
     /// Whether they are alive.
     pub alive: bool,
     /// Whether this is the local player, who is always the first member.
@@ -937,6 +946,7 @@ impl UiSnapshot {
             player: PlayerView {
                 health: 0.0,
                 max_health: 0.0,
+                absorb: 0.0,
                 warrior: WarriorView::default(),
                 heat: 0.0,
                 heat_tier: HeatTier::Cold,
@@ -991,6 +1001,7 @@ impl UiSnapshot {
         self.player = PlayerView {
             health: health.map_or(0.0, |health| health.current()),
             max_health: health.map_or(0.0, |health| health.max()),
+            absorb: simulation.absorb_of(player.entity),
             heat: mage.heat.value(),
             heat_tier: mage.heat.tier(),
             inferno_remaining: mage.heat.inferno_remaining(),
@@ -1051,6 +1062,7 @@ impl UiSnapshot {
                 label: world.label(*member),
                 health: health.current(),
                 max_health: health.max(),
+                absorb: simulation.absorb_of(*member),
                 alive: world.is_alive(*member),
                 is_player: index == 0,
                 statuses: statuses_of(simulation, *member),
@@ -1139,6 +1151,7 @@ fn target_view(simulation: &Simulation, entity: EntityId) -> Option<TargetView> 
             }),
         health: health.current(),
         max_health: health.max(),
+        absorb: simulation.absorb_of(entity),
         // No distance means the target is gone; a large number reads as "out of range"
         // everywhere it is used rather than as "right next to you".
         distance: world
@@ -1200,7 +1213,7 @@ fn ability_view(
     let deflection = simulation.warrior().deflection.value();
     let spends_deflection = simulation.hero() == Hero::Warrior
         && definition.warrior.is_empowerable()
-        && deflection + f32::EPSILON >= definition.warrior.deflection_cost;
+        && deflection + f32::EPSILON >= definition.warrior.empower_threshold();
 
     // Whether pressing this now spends a hundred Astral Power. Asked of the simulation's own
     // resource, exactly as the Warrior's spend is.

@@ -148,6 +148,8 @@ pub struct Resources {
     pub astral: f32,
     /// Global cooldown left, seconds.
     pub global_cooldown: f32,
+    /// Damage the player absorbs before health moves: every shield on them, summed.
+    pub absorb: f32,
 }
 
 /// Everything about one player a client needs beyond its own prediction.
@@ -197,6 +199,7 @@ impl PlayerState {
             || resource(r.max_mana, o.max_mana)
             || resource(r.deflection, o.deflection)
             || resource(r.astral, o.astral)
+            || resource(r.absorb, o.absorb)
             || ran_down(o.global_cooldown, r.global_cooldown)
             || self.cooldowns.len() != older.cooldowns.len()
             || self.cooldowns.iter().zip(&older.cooldowns).any(|(n, c)| {
@@ -687,6 +690,7 @@ impl CombatInstance {
                     deflection: sim.warrior().deflection.value(),
                     astral: sim.druid().astral.value(),
                     global_cooldown: mage.global_cooldown.remaining(),
+                    absorb: sim.absorb_of(entity),
                 };
                 let cooldowns = hero
                     .abilities()

@@ -50,51 +50,67 @@ fn rows() -> usize {
     MAX_PARTY.clamp(1, size::ROWS)
 }
 
-/// The raid frame's design size: room for the whole roster, whoever is in it.
+/// The raid frame's design size at the default spacing: room for the whole roster.
 #[must_use]
 pub fn raid_size() -> (f32, f32) {
-    let (columns, rows) = (columns() as f32, rows() as f32);
-    (
-        columns * size::CELL_WIDTH + (columns - 1.0) * size::GAP,
-        rows * size::CELL_HEIGHT + (rows - 1.0) * size::GAP,
+    raid_size_spaced(1.0)
+}
+
+/// The raid frame's design size with the gap between cells at `spacing` times its default.
+#[must_use]
+pub fn raid_size_spaced(spacing: f32) -> (f32, f32) {
+    super::flow::Flow::design_size(
+        (size::CELL_WIDTH, size::CELL_HEIGHT),
+        size::GAP * spacing.max(0.0),
+        columns(),
+        rows(),
     )
 }
 
-/// Where member `index`'s cell is inside a frame drawn in `rect`.
-///
-/// From the rectangle, so a scaled frame's cells scale with it, and so the cell a click is
-/// tested against is the cell that was drawn.
+/// The frame's cells inside `rect`: columns of one group, filled downwards first, in
+/// `direction`, `spacing` times the design gap apart.
+#[must_use]
+pub fn flow(
+    rect: UiRect,
+    direction: super::flow::FlowDirection,
+    spacing: f32,
+) -> super::flow::Flow {
+    super::flow::Flow {
+        rect,
+        columns: columns(),
+        rows: rows(),
+        axis: super::flow::FlowAxis::Columns,
+        direction,
+        // Against the cell's height, the axis groups stack along.
+        gap_ratio: size::GAP / size::CELL_HEIGHT * spacing.max(0.0),
+    }
+}
+
+/// Where member `index`'s cell is inside a frame drawn in `rect`, in reading order at the
+/// default spacing. The arranged HUD asks [`HudLayout::raid_flow`](super::hud_layout::HudLayout::raid_flow).
 #[must_use]
 pub fn cell_rect(rect: UiRect, index: usize) -> Option<UiRect> {
-    if index >= MAX_PARTY {
-        return None;
-    }
-    let (design_width, _) = raid_size();
-    let factor = if design_width > 0.0 {
-        rect.width / design_width
-    } else {
-        1.0
-    };
-    let (column, row) = (index / size::ROWS, index % size::ROWS);
-    let (width, height, gap) = (
-        size::CELL_WIDTH * factor,
-        size::CELL_HEIGHT * factor,
-        size::GAP * factor,
-    );
-    Some(UiRect::new(
-        (rect.x + column as f32 * (width + gap)).round(),
-        (rect.y + row as f32 * (height + gap)).round(),
-        width.round(),
-        height.round(),
-    ))
+    flow(rect, super::flow::FlowDirection::READING, 1.0).cell(index)
 }
 
 /// Which member's cell `pointer` is on, if it is on one.
 #[must_use]
 pub fn raid_cell_at(rect: UiRect, members: usize, pointer: (f32, f32)) -> Option<usize> {
-    (0..members.min(MAX_PARTY)).find(|index| {
-        cell_rect(rect, *index).is_some_and(|cell| cell.contains(pointer.0, pointer.1))
-    })
+    raid_cell_in(
+        &flow(rect, super::flow::FlowDirection::READING, 1.0),
+        members,
+        pointer,
+    )
+}
+
+/// Which member's cell `pointer` is on, in an arranged frame.
+#[must_use]
+pub fn raid_cell_in(
+    flow: &super::flow::Flow,
+    members: usize,
+    pointer: (f32, f32),
+) -> Option<usize> {
+    flow.index_at(members.min(MAX_PARTY), pointer)
 }
 
 /// Draws one cell per member into `rect`.
@@ -104,20 +120,19 @@ pub fn raid_cell_at(rect: UiRect, members: usize, pointer: (f32, f32)) -> Option
 /// written, so a frame allocates nothing after the first.
 pub fn push_raid_frame(
     list: &mut UiDrawList,
-    rect: UiRect,
+    flow: &super::flow::Flow,
     members: &[PartyMemberView],
     target: Option<EntityId>,
     theme: &PlateTheme,
     scratch: &mut String,
 ) {
-    let (design_width, _) = raid_size();
-    let factor = if design_width > 0.0 {
-        rect.width / design_width
-    } else {
-        1.0
-    };
+    // Text and corners scale with the cells, not with the frame: wider spacing is more room
+    // between the same cells.
+    let factor = flow
+        .cell(0)
+        .map_or(1.0, |cell| cell.height / size::CELL_HEIGHT);
     for (index, member) in members.iter().enumerate() {
-        let Some(cell) = cell_rect(rect, index) else {
+        let Some(cell) = flow.cell(index) else {
             break;
         };
         push_cell(
@@ -164,6 +179,31 @@ fn push_cell(
         )));
         list.panel(cell, radius, top, bottom);
         list.clip(UiClip::NONE);
+    }
+    // The shield, in the same place and colours as on every other health bar.
+    if member.alive {
+        let layers = super::frame_style::HealthLayers {
+            absorb: super::frame_style::HealthLayers::of(
+                member.health,
+                member.max_health,
+                member.absorb,
+            )
+            .absorb,
+            ..super::frame_style::HealthLayers::health(fraction)
+        };
+        let inset = (radius * 0.5).round();
+        super::frame_style::push_absorb_layer(
+            list,
+            UiRect::new(
+                cell.x,
+                cell.y + inset,
+                cell.width,
+                cell.height - inset * 2.0,
+            ),
+            layers,
+            theme,
+            1.0,
+        );
     }
     let (stroke, color) = if targeted {
         ((2.0 * factor).round().max(2.0), theme.border_target)
@@ -253,7 +293,7 @@ mod tests {
         let mut list = UiDrawList::new();
         push_raid_frame(
             &mut list,
-            rect,
+            &flow(rect, crate::ui::flow::FlowDirection::READING, 1.0),
             &snapshot.party[..1],
             None,
             &PlateTheme::default(),
@@ -273,7 +313,7 @@ mod tests {
         let mut list = UiDrawList::new();
         push_raid_frame(
             &mut list,
-            rect,
+            &flow(rect, crate::ui::flow::FlowDirection::READING, 1.0),
             &[member],
             None,
             &PlateTheme::default(),
@@ -314,7 +354,7 @@ mod tests {
         let entity = member.entity;
         push_raid_frame(
             &mut list,
-            rect,
+            &flow(rect, crate::ui::flow::FlowDirection::READING, 1.0),
             &[member],
             Some(entity),
             &theme,

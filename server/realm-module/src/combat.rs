@@ -301,6 +301,7 @@ fn project(ctx: &ReducerContext, instance_id: u64, fight: &mut CombatInstance) {
                     deflection: state.resources.deflection,
                     astral: state.resources.astral,
                     global_cooldown: state.resources.global_cooldown,
+                    absorb: state.resources.absorb,
                 },
                 cooldowns: state
                     .cooldowns

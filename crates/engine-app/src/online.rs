@@ -1268,6 +1268,8 @@ impl OnlineSession {
             let age = row.age();
             let statuses = self.presented_statuses(simulation, &row.statuses, age);
             simulation.present_statuses(entity, &statuses);
+            // Every player's shields, not only ours: party and raid frames draw them too.
+            simulation.present_absorb(entity, row.resources.absorb);
             if Some(&row.account_id) != mine.as_ref() {
                 continue;
             }

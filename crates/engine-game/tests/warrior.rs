@@ -1047,7 +1047,7 @@ fn recuperate_stacks_to_five_and_spends_a_capped_bank_for_two() {
                 .map_or(0, |statuses| statuses.stacks(StatusKind::Recuperating)),
             expected
         );
-        simulation.step_many(31);
+        simulation.step_until_ready();
     }
     simulation.cast(FireAbility::Recuperate).expect("in range");
     assert_eq!(
@@ -1128,5 +1128,33 @@ fn the_warriors_threat_tools_generate_more_threat_than_the_damage_they_deal() {
     assert!(
         (threat - dealt * multiplier).abs() < 1.0,
         "{threat} for {dealt} damage at x{multiplier}"
+    );
+}
+
+#[test]
+fn a_spender_that_reaches_nobody_keeps_the_bank() {
+    // Colossus Strike with nobody within its radius: the cooldown is spent, the Deflection is
+    // not — an empowerment is a bigger effect, and there is no effect to make bigger.
+    let mut simulation = warrior();
+    let far = simulation.player_position() + Vec3::new(200.0, 0.0, 200.0);
+    let player = simulation.player().entity;
+    if let Some(body) = simulation.world_mut().body_mut(player) {
+        body.position = far;
+    }
+    simulation.warrior_mut().deflection.set(60.0);
+    simulation.refresh_character();
+    simulation
+        .cast(FireAbility::ColossusStrike)
+        .expect("a self-centred smash is never refused for range");
+    assert!(
+        (deflection(&simulation) - 60.0).abs() < 1e-5,
+        "a smash into empty air spent {}",
+        60.0 - deflection(&simulation)
+    );
+    assert!(
+        !simulation
+            .mage()
+            .abilities
+            .is_ready(FireAbility::ColossusStrike)
     );
 }

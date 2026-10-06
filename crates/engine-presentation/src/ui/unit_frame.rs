@@ -99,7 +99,9 @@ pub fn frame_size(id: super::hud_layout::HudElementId) -> Option<(f32, f32)> {
         HudElementId::Raid => super::raid_frame::raid_size(),
         HudElementId::Buffs => super::aura_row::buff_bar_size(),
         // Its size is the player's to set, so it is the layout's to report.
-        HudElementId::ActionBar(_) | HudElementId::CastBar => return None,
+        HudElementId::ActionBar(_) | HudElementId::CastBar | HudElementId::Tooltip => {
+            return None;
+        }
     })
 }
 
@@ -202,10 +204,15 @@ fn push_health_bar(
     fill: (UiColor, UiColor),
     current: f32,
     maximum: f32,
+    absorb: f32,
     factor: f32,
 ) {
     let plate = &theme.plate;
-    frame_bar(list, rect, fraction, fill, plate);
+    let layers = super::frame_style::HealthLayers {
+        absorb: super::frame_style::HealthLayers::of(current, maximum, absorb).absorb,
+        ..super::frame_style::HealthLayers::health(fraction)
+    };
+    super::frame_style::frame_health_bar(list, rect, layers, fill, plate);
     let size = text_size(11.5, factor).min(rect.height * 0.9);
     let centre = rect.y + rect.height * 0.5;
     let pad = 4.0 * factor;
@@ -339,6 +346,7 @@ pub fn push_player_frame(
         friendly_fill(&theme.plate, player.health_fraction()),
         player.health,
         player.max_health,
+        player.absorb,
         factor,
     );
 
@@ -648,6 +656,7 @@ pub fn push_target_frame(
         },
         target.health,
         target.max_health,
+        target.absorb,
         factor,
     );
 
@@ -742,6 +751,7 @@ pub fn push_party_frame(
     list: &mut UiDrawList,
     rect: UiRect,
     members: &[PartyMemberView],
+    upwards: bool,
     theme: &UiTheme,
     scratch: &mut FrameScratch,
 ) {
@@ -753,7 +763,7 @@ pub fn push_party_frame(
     let row_height = size::PARTY_ROW * factor;
 
     for (index, member) in members.iter().enumerate() {
-        let top = inner.y + row_height * index as f32;
+        let top = inner.y + row_height * party_row(index, upwards) as f32;
         if top + row_height > rect.bottom() {
             // More members than the frame was laid out for. Drawing them outside it would
             // put health bars over whatever is underneath.
@@ -790,6 +800,7 @@ pub fn push_party_frame(
             friendly_fill(plate, fraction),
             member.health,
             member.max_health,
+            if member.alive { member.absorb } else { 0.0 },
             factor,
         );
     }
@@ -858,25 +869,34 @@ pub fn push_frames(
         );
     }
     if let Some(rect) = rect_of(HudElementId::Party) {
-        push_party_frame(list, rect, &snapshot.party, theme, scratch);
-        super::aura_row::push_party_debuffs(list, hits, rect, &snapshot.party, &mut scratch.detail);
+        let upwards = layout.direction(HudElementId::Party).bottom_to_top;
+        push_party_frame(list, rect, &snapshot.party, upwards, theme, scratch);
+        super::aura_row::push_party_debuffs(
+            list,
+            hits,
+            rect,
+            &snapshot.party,
+            upwards,
+            &mut scratch.detail,
+        );
     }
     if let Some(rect) = rect_of(HudElementId::Raid) {
+        let flow = layout.raid_flow(rect);
         super::raid_frame::push_raid_frame(
             list,
-            rect,
+            &flow,
             &snapshot.party,
             snapshot.target.as_ref().map(|target| target.entity),
             &theme.plate,
             &mut scratch.detail,
         );
-        super::aura_row::push_raid_debuffs(list, hits, rect, &snapshot.party, &mut scratch.detail);
+        super::aura_row::push_raid_debuffs(list, hits, &flow, &snapshot.party, &mut scratch.detail);
     }
     if let Some(rect) = rect_of(HudElementId::Buffs) {
         super::aura_row::push_buff_bar(
             list,
             hits,
-            rect,
+            &layout.buff_flow(rect),
             snapshot.player.auras.buffs(),
             &mut scratch.detail,
         );
@@ -889,6 +909,30 @@ pub fn frame_contains(placement: HudPlacement, rect: UiRect, pointer: (f32, f32)
     placement.enabled && rect.contains(pointer.0, pointer.1)
 }
 
+#[cfg(test)]
+fn push_party_frame_down(
+    list: &mut UiDrawList,
+    rect: UiRect,
+    members: &[PartyMemberView],
+    theme: &UiTheme,
+    scratch: &mut FrameScratch,
+) {
+    push_party_frame(list, rect, members, false, theme, scratch);
+}
+
+/// Which of the frame's rows member `index` is drawn in: from the top, or — for a frame the
+/// player turned upwards — from the bottom, the first member nearest the bottom edge.
+#[must_use]
+pub fn party_row(index: usize, upwards: bool) -> usize {
+    if upwards {
+        engine_game::party::MAX_PARTY
+            .saturating_sub(1)
+            .saturating_sub(index)
+    } else {
+        index
+    }
+}
+
 /// Which party row `pointer` is on, if it is on one.
 ///
 /// The counterpart of [`action_bar::slot_at`](super::action_bar::slot_at), and derived from
@@ -896,7 +940,12 @@ pub fn frame_contains(placement: HudPlacement, rect: UiRect, pointer: (f32, f32)
 /// is the row they were looking at. Rows past the end of the roster are not rows: an empty
 /// place in the frame is not a member to select.
 #[must_use]
-pub fn party_row_at(rect: UiRect, members: usize, pointer: (f32, f32)) -> Option<usize> {
+pub fn party_row_at(
+    rect: UiRect,
+    members: usize,
+    upwards: bool,
+    pointer: (f32, f32),
+) -> Option<usize> {
     if members == 0 || !rect.contains(pointer.0, pointer.1) {
         return None;
     }
@@ -907,7 +956,15 @@ pub fn party_row_at(rect: UiRect, members: usize, pointer: (f32, f32)) -> Option
     if row_height <= 0.0 || pointer.1 < inner.y {
         return None;
     }
-    let index = ((pointer.1 - inner.y) / row_height) as usize;
+    let row = ((pointer.1 - inner.y) / row_height) as usize;
+    // The row back to the member drawn in it: the inverse of `party_row`.
+    let index = if upwards {
+        engine_game::party::MAX_PARTY
+            .checked_sub(1)
+            .and_then(|last| last.checked_sub(row))?
+    } else {
+        row
+    };
     (index < members).then_some(index)
 }
 
@@ -992,7 +1049,9 @@ mod tests {
                 1.0,
             ));
         let snapshot = snapshot(&simulation);
-        let layout = HudLayout::default();
+        let mut layout = HudLayout::default();
+        // The party list is hidden by default; this is about the row it draws when shown.
+        layout.set_enabled(HudElementId::Party, true);
         let mut list = UiDrawList::new();
         let mut scratch = FrameScratch::new();
         let mut hits = super::super::aura_row::AuraHits::new();
@@ -1247,7 +1306,7 @@ mod tests {
                     &mut scratch,
                     size::TOT_WIDTH,
                 ),
-                HudElementId::Party => push_party_frame(
+                HudElementId::Party => push_party_frame_down(
                     &mut list,
                     rect,
                     &snapshot.party,
@@ -1255,6 +1314,7 @@ mod tests {
                     &mut scratch,
                 ),
                 HudElementId::ActionBar(_)
+                | HudElementId::Tooltip
                 | HudElementId::Raid
                 | HudElementId::CastBar
                 | HudElementId::Buffs => {
@@ -1362,18 +1422,33 @@ mod tests {
                 inner.x + inner.width * 0.5,
                 inner.y + row_height * (index as f32 + 0.5),
             );
-            assert_eq!(party_row_at(rect, 3, middle), Some(index));
+            assert_eq!(party_row_at(rect, 3, false, middle), Some(index));
         }
         let empty = (inner.x + inner.width * 0.5, inner.y + row_height * 3.5);
         assert_eq!(
-            party_row_at(rect, 3, empty),
+            party_row_at(rect, 3, false, empty),
             None,
             "an empty place in the frame is not a member to select"
         );
 
         // Outside the frame, and a party of nobody.
-        assert_eq!(party_row_at(rect, 3, (rect.x - 5.0, rect.y - 5.0)), None);
-        assert_eq!(party_row_at(rect, 0, (inner.x, inner.y)), None);
+        assert_eq!(
+            party_row_at(rect, 3, false, (rect.x - 5.0, rect.y - 5.0)),
+            None
+        );
+        assert_eq!(party_row_at(rect, 0, false, (inner.x, inner.y)), None);
+
+        // Turned upwards, the first member is in the bottom row and the hit test agrees.
+        let rows = engine_game::party::MAX_PARTY;
+        for index in 0..3 {
+            let row = party_row(index, true);
+            assert_eq!(row, rows - 1 - index);
+            let middle = (
+                inner.x + inner.width * 0.5,
+                inner.y + row_height * (row as f32 + 0.5),
+            );
+            assert_eq!(party_row_at(rect, 3, true, middle), Some(index));
+        }
     }
 
     #[test]

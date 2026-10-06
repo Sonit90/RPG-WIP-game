@@ -150,6 +150,15 @@ a pulled monster never leashes home while the player lives; entering or leaving 
 cancels the player's cast and stops every held fight sound, so a cast's gathering loop no longer
 plays on after the editor closes.
 
+## Absorb shields
+
+Every health bar — player, target, target of target, party rows, raid cells, nameplates — draws
+health and absorb from one description, `ui::frame_style::HealthLayers`: health, then the shield
+in pale silver after it, with a hairline where the two meet; a shield bigger than the missing
+health is drawn back from the bar's end with a bright edge. The amount is
+`Simulation::absorb_of(entity)`, the one query every source of absorb answers (today Puncture
+Blood, on any player; online, the server's number, synced as `NetResources.absorb`).
+
 ## Where it lives
 
 ```text

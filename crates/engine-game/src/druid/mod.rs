@@ -52,6 +52,9 @@
 use crate::combat::Resource;
 use crate::firemage::Timer;
 
+/// The Druid's rows of the ability table.
+pub mod abilities;
+
 /// Every magnitude the Druid's kit is made of, in one place.
 pub mod tuning {
     /// The Druid's Mana pool.
@@ -174,7 +177,11 @@ impl AstralPower {
 
     /// Sets the stored Astral Power (clamped): an authoritative correction.
     pub fn set(&mut self, value: f32) {
-        self.value = if value.is_finite() { value.clamp(0.0, self.max()) } else { 0.0 };
+        self.value = if value.is_finite() {
+            value.clamp(0.0, self.max())
+        } else {
+            0.0
+        };
     }
 
     /// How much is banked.

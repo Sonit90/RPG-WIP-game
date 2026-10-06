@@ -255,6 +255,10 @@ const ICONS: &[IconEntry] = &[
         constant: "RECUPERATE",
     },
     IconEntry {
+        file: "warrior/taunt.svg",
+        constant: "TAUNT",
+    },
+    IconEntry {
         file: "warrior/war_stomp.svg",
         constant: "WAR_STOMP",
     },
@@ -498,6 +502,43 @@ const ICONS: &[IconEntry] = &[
     IconEntry {
         file: "map/control_chevron.svg",
         constant: "CONTROL_CHEVRON",
+    },
+    // Edit HUD's controls.
+    IconEntry {
+        file: "ui/arrow.svg",
+        constant: "UI_ARROW",
+    },
+    IconEntry {
+        file: "ui/plus.svg",
+        constant: "UI_PLUS",
+    },
+    IconEntry {
+        file: "ui/minus.svg",
+        constant: "UI_MINUS",
+    },
+    IconEntry {
+        file: "ui/eye.svg",
+        constant: "UI_EYE",
+    },
+    IconEntry {
+        file: "ui/eye_off.svg",
+        constant: "UI_EYE_OFF",
+    },
+    IconEntry {
+        file: "ui/grid.svg",
+        constant: "UI_GRID",
+    },
+    IconEntry {
+        file: "ui/snap.svg",
+        constant: "UI_SNAP",
+    },
+    IconEntry {
+        file: "ui/reset.svg",
+        constant: "UI_RESET",
+    },
+    IconEntry {
+        file: "ui/move.svg",
+        constant: "UI_MOVE",
     },
     // The buffs and debuffs that have no ability icon of their own to borrow: shown under
     // nameplates, beside the player's frame and on the party's.

@@ -15,7 +15,7 @@
 
 use engine_core::math::Vec3;
 
-use super::ability::FireAbility;
+use crate::ability::FireAbility;
 
 /// The most zones that can burn at once.
 pub const MAX_ZONES: usize = 8;

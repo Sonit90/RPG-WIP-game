@@ -274,6 +274,45 @@ impl Hero {
         self.extras().position(|extra| extra == ability)
     }
 
+    /// **The command that casts `ability` for this hero**, wherever its button lives.
+    ///
+    /// The one answer to "which command is this button", for every place a press can come
+    /// from — a key, a click on a slot, a confirmed targeting circle. A bar ability is its
+    /// slot; a button beside the bar is its extra index; the Ultimate carries a position.
+    ///
+    /// `aim` is where a placed ability was put. An ability that is not placed has none, and
+    /// the Ultimate is then cast at `caster` — where the player stands — so a self-cast
+    /// Ultimate does not turn the character towards an arbitrary point.
+    ///
+    /// This is what was wrong with Taunt on `F`: the application sent every ability without
+    /// a bar slot through the Ultimate's placement circle, so the key opened a circle and the
+    /// click that followed cast the *Ultimate* rather than Taunt. `None` for an ability this
+    /// hero does not have.
+    #[must_use]
+    pub fn command_for(
+        self,
+        ability: FireAbility,
+        aim: Option<engine_core::math::Vec3>,
+        caster: engine_core::math::Vec3,
+    ) -> Option<crate::command::PlayerCommand> {
+        use crate::command::PlayerCommand;
+        if !self.has(ability) {
+            return None;
+        }
+        if let Some(slot) = ability.bar_slot() {
+            return Some(match aim {
+                Some(position) => PlayerCommand::UseAbilityAt { slot, position },
+                None => PlayerCommand::UseAbility(slot),
+            });
+        }
+        if let Some(index) = self.extra_index(ability) {
+            return Some(PlayerCommand::UseExtra(index));
+        }
+        (self.ultimate() == Some(ability)).then(|| PlayerCommand::UseUltimate {
+            position: aim.unwrap_or(caster),
+        })
+    }
+
     /// This hero's Ultimate: the ability on `R`, beside the bar.
     ///
     /// The FireMage's is Cataclysm, which has no design yet and is switched off — see
@@ -292,8 +331,41 @@ impl Hero {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    reason = "test code may assert on known-good values"
+)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_ability_maps_to_the_command_that_casts_it_and_no_other() {
+        use crate::command::PlayerCommand;
+        let caster = engine_core::math::Vec3::new(1.0, 0.0, 2.0);
+        for hero in Hero::ALL {
+            for &ability in hero.abilities() {
+                let command = hero
+                    .command_for(ability, None, caster)
+                    .expect("every ability of a hero has a command");
+                let cast = match command {
+                    PlayerCommand::UseAbility(slot) => hero.ability_at(slot),
+                    PlayerCommand::UseExtra(index) => hero.extras().nth(index),
+                    PlayerCommand::UseUltimate { position } => {
+                        assert_eq!(position, caster, "{ability:?} was aimed somewhere");
+                        hero.ultimate()
+                    }
+                    other => panic!("{ability:?} became {other:?}"),
+                };
+                assert_eq!(cast, Some(ability), "{hero:?} {ability:?} -> {command:?}");
+            }
+            // Another hero's ability is nobody's button here.
+            for other in Hero::ALL.into_iter().filter(|other| *other != hero) {
+                for &ability in other.abilities() {
+                    assert_eq!(hero.command_for(ability, None, caster), None);
+                }
+            }
+        }
+    }
     use crate::firemage::{ABILITIES, ABILITY_SLOTS};
 
     #[test]
@@ -367,6 +439,12 @@ mod tests {
             [FireAbility::Taunt]
         );
         assert_eq!(FireAbility::Taunt.key_hint(), "F");
+        // And pressing it is Taunt's own command, not the Ultimate's placement circle.
+        let here = engine_core::math::Vec3::ZERO;
+        assert_eq!(
+            Hero::Warrior.command_for(FireAbility::Taunt, None, here),
+            Some(crate::command::PlayerCommand::UseExtra(0))
+        );
     }
 
     #[test]

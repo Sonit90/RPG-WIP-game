@@ -362,10 +362,12 @@ impl Simulation {
                     .world
                     .position(target)
                     .ok_or(AbilityError::TargetInvalid)?;
-                // A target-pointed cleave *turns* the character towards the selection —
+                // A target-pointed cleave — and anything whose row says it turns, Taunt —
+                // *turns* the character towards the selection:
                 // choosing a target is how the player says which way the cleave points, and
                 // refusing it for facing would be refusing them for the camera.
-                if matches!(definition.target, TargetMode::TargetCone) {
+                if matches!(definition.target, TargetMode::TargetCone) || definition.turns_to_target
+                {
                     self.face_towards(position);
                 } else if !self.is_facing(position) {
                     return Err(AbilityError::FacingWrongWay);

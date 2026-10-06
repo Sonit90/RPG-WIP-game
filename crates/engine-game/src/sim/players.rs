@@ -163,7 +163,8 @@ impl Simulation {
             .config
             .rng_seed
             .wrapping_add(0x9E37_79B9_7F4A_7C15_u64.wrapping_mul(index as u64 + 1));
-        self.others.push(Some(PlayerSlot::new(entity, hero, seed, self.player_spawn)));
+        self.others
+            .push(Some(PlayerSlot::new(entity, hero, seed, self.player_spawn)));
         self.party.join(entity);
         let _ = self.with_slot(index, Simulation::refresh_character);
     }
@@ -178,9 +179,10 @@ impl Simulation {
     }
 
     fn slot_index(&self, entity: EntityId) -> Option<usize> {
-        self.others
-            .iter()
-            .position(|slot| slot.as_ref().is_some_and(|slot| slot.player.entity == entity))
+        self.others.iter().position(|slot| {
+            slot.as_ref()
+                .is_some_and(|slot| slot.player.entity == entity)
+        })
     }
 
     /// Whether `entity` is controlled by a player: the active one or any other.
@@ -215,6 +217,15 @@ impl Simulation {
         }
         let index = self.slot_index(entity)?;
         self.with_slot(index, body)
+    }
+
+    /// The class state of the player controlling `entity` while another player is active.
+    pub(super) fn inactive_warrior(&self, entity: EntityId) -> Option<&Warrior> {
+        self.others
+            .iter()
+            .flatten()
+            .find(|slot| slot.entity() == entity)
+            .map(|slot| &slot.warrior)
     }
 
     /// Runs `body` once with each player active, the active one first.
@@ -257,7 +268,9 @@ impl Simulation {
     /// target if a player is being hit, else the source if a player is acting. `None` when
     /// neither is a player other than the active one.
     pub(super) fn context_player(&self, source: EntityId, target: EntityId) -> Option<EntityId> {
-        if target == self.player.entity || source == self.player.entity && self.slot_index(target).is_none() {
+        if target == self.player.entity
+            || source == self.player.entity && self.slot_index(target).is_none()
+        {
             return None;
         }
         if self.slot_index(target).is_some() {

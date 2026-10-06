@@ -69,8 +69,8 @@ pub use graphics::{GraphicsSettings, ShadowQuality};
 pub use hud::{
     ACTION_BAR_SLOTS, ACTION_BARS, ActionBarConfig, BindingScope, HUD_FILE_NAME, HUD_OFFSET_LIMIT,
     HUD_SCALE_DEFAULT, HUD_SCALE_MAX, HUD_SCALE_MIN, HUD_SCALE_STEP, HeroBindingsConfig, HudAnchor,
-    HudBarBindings, HudCastBar, HudConfig, HudConfigManager, HudFrames, HudOrientation,
-    HudPlacement, HudSlotConfig,
+    HudBarBindings, HudCastBar, HudConfig, HudConfigManager, HudEditorPrefs, HudFlowX, HudFlowY,
+    HudFrames, HudOrientation, HudPlacement, HudSlotConfig,
 };
 pub use map::{KeyName, MapSettings, MinimapOrientation, TOGGLE_MAP_KEY_DEFAULT};
 pub use nameplate::{NameplateHealthText, NameplateSetting, NameplateSettings};

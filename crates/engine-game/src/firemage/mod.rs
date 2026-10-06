@@ -3,7 +3,7 @@
 //! ```text
 //! TalentGrid --> TalentEffects ----+
 //!                                  |
-//! ABILITIES (data) --> AbilityBook |--> FireMage --> the simulation applies it
+//! abilities (rows) -> AbilityBook  |--> FireMage --> the simulation applies it
 //!                                  |
 //! IgniteTracker / ZoneField -------+
 //! ```
@@ -28,7 +28,7 @@
 //! Mastery and the talents; burns and zones store coefficients and never numbers. A burn
 //! applied at 10 % haste ticks at 30 % haste the instant the mage has it.
 
-pub mod ability;
+pub mod abilities;
 pub mod ignite;
 pub mod resource;
 pub mod rng;
@@ -40,10 +40,13 @@ use engine_core::math::Vec3;
 
 use crate::entity::EntityId;
 
-pub use ability::{
-    ABILITIES, ABILITY_COUNT, ABILITY_SLOTS, AbilityBook, AbilityDef, AbilityError, AbilityState,
-    DruidRow, FireAbility, TARGET_CLEAVE_HALF_ANGLE, TargetMode, ThreatScale, ULTIMATE_ENABLED,
-    WarriorRow,
+// The shared ability types live in `crate::ability`; the FireMage's own rows are in
+// `abilities`. Re-exported here because the FireMage owns the one ability clock
+// (`FireMage::abilities`, `FireMage::global_cooldown`) every hero casts through.
+pub use crate::ability::table::ABILITY_SLOTS;
+pub use crate::ability::{
+    ABILITIES, ABILITY_COUNT, AbilityBook, AbilityDef, AbilityError, AbilityState, DruidRow,
+    FireAbility, TARGET_CLEAVE_HALF_ANGLE, TargetMode, ThreatScale, ULTIMATE_ENABLED, WarriorRow,
 };
 pub use ignite::{
     IGNITE_BASE_DURATION, IGNITE_BASE_MAX_STACKS, IGNITE_BASE_TICK_INTERVAL,
@@ -67,7 +70,12 @@ pub use talent::{
 pub use zone::{PendingImpact, Zone, ZoneField, ZoneKind, ZoneShape, ZoneTick};
 
 /// The global cooldown: how long after starting any ability before another may be started.
-pub const GLOBAL_COOLDOWN: f32 = 0.5;
+///
+/// **One rule for every class.** Every hero's abilities start this one timer on the one
+/// [`FireMage::global_cooldown`] clock, so the Warrior, the Druid and the FireMage cannot drift
+/// apart and no ability row carries a number of its own. Haste shortens it exactly as it
+/// shortens a cast ([`Stats::cast_time`]); at the base haste of zero it is exactly this.
+pub const GLOBAL_COOLDOWN: f32 = 1.5;
 
 /// Damage reduction while Flame Shield is up.
 pub const FLAME_SHIELD_REDUCTION: f32 = 0.30;
@@ -687,13 +695,20 @@ mod tests {
     }
 
     #[test]
-    fn the_global_cooldown_runs_for_half_a_second_and_is_shortened_by_haste() {
+    fn the_global_cooldown_runs_for_a_second_and_a_half_and_is_shortened_by_haste() {
         let mut mage = FireMage::new(1);
         assert!(mage.off_global_cooldown());
+        assert!((GLOBAL_COOLDOWN - 1.5).abs() < f32::EPSILON);
+        assert!((mage.global_cooldown_duration() - 1.5).abs() < 1e-6);
 
         mage.start_global_cooldown();
         assert!(!mage.off_global_cooldown());
-        mage.tick(GLOBAL_COOLDOWN);
+        mage.tick(1.4);
+        assert!(
+            !mage.off_global_cooldown(),
+            "it ended before a second and a half"
+        );
+        mage.tick(0.11);
         assert!(mage.off_global_cooldown());
 
         mage.mastery_buff.start(20.0);

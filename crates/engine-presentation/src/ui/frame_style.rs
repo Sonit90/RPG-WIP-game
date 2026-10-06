@@ -31,16 +31,97 @@ pub fn frame_bar(
     fill: (UiColor, UiColor),
     theme: &PlateTheme,
 ) {
+    frame_health_bar(list, rect, HealthLayers::health(fraction), fill, theme);
+}
+
+/// What a health bar shows, as shares of maximum health.
+///
+/// ```text
+/// [ health ████████████ ][ absorb ░░░░ ][ missing     ]
+///                                             or, when the shield outgrows the gap,
+/// [ health ████████████████████ ][░░ absorb ░░]|      <- the bright overflow edge
+/// ```
+///
+/// One description every health bar is drawn from — the player frame, the target and its
+/// target, party rows, raid cells and nameplates — so a shield looks the same on all of them
+/// and a future source of absorb (or temporary health) is one more number here, not a change
+/// to each bar.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct HealthLayers {
+    /// Current health over maximum, in `0..=1`.
+    pub health: f32,
+    /// Absorb over maximum. May exceed what is missing; never negative.
+    pub absorb: f32,
+}
+
+impl HealthLayers {
+    /// Health with no shield.
+    #[must_use]
+    pub fn health(fraction: f32) -> Self {
+        Self {
+            health: finite_fraction(fraction),
+            absorb: 0.0,
+        }
+    }
+
+    /// From the raw numbers. A zero maximum is an empty bar, not a division by zero.
+    #[must_use]
+    pub fn of(current: f32, maximum: f32, absorb: f32) -> Self {
+        if !(maximum.is_finite() && maximum > 0.0) {
+            return Self::default();
+        }
+        Self {
+            health: finite_fraction(current / maximum),
+            absorb: if absorb.is_finite() {
+                (absorb / maximum).max(0.0)
+            } else {
+                0.0
+            },
+        }
+    }
+
+    /// Where the absorb layer sits on a bar `width` wide, starting at zero: `(start, width)`.
+    ///
+    /// After the health while it fits; once health and shield together pass the end, the
+    /// shield is drawn back from the end instead, over the health, so its full size stays
+    /// visible. `None` when there is no shield.
+    #[must_use]
+    pub fn absorb_span(&self, width: f32) -> Option<(f32, f32, bool)> {
+        if self.absorb <= 0.0 || width <= 0.0 {
+            return None;
+        }
+        let shield = (self.absorb.min(1.0) * width).max(1.0);
+        let start = self.health * width;
+        if start + shield <= width + 0.5 {
+            Some((start, shield, false))
+        } else {
+            Some(((width - shield).max(0.0), shield, true))
+        }
+    }
+}
+
+fn finite_fraction(value: f32) -> f32 {
+    if value.is_finite() {
+        value.clamp(0.0, 1.0)
+    } else {
+        0.0
+    }
+}
+
+/// [`frame_bar`] with every layer of [`HealthLayers`]: the fill, then the absorb in pale
+/// silver, then the bright edge when the shield has run off the end, then the border.
+pub fn frame_health_bar(
+    list: &mut UiDrawList,
+    rect: UiRect,
+    layers: HealthLayers,
+    fill: (UiColor, UiColor),
+    theme: &PlateTheme,
+) {
     let border = 1.0;
     let inner = rect.inset(border);
     list.rect(inner, theme.bar_background);
-    let fraction = if fraction.is_finite() {
-        fraction.clamp(0.0, 1.0)
-    } else {
-        0.0
-    };
-    if fraction > 0.0 {
-        let width = (inner.width * fraction).round().max(1.0);
+    if layers.health > 0.0 {
+        let width = (inner.width * layers.health).round().max(1.0);
         list.panel(
             UiRect::new(inner.x, inner.y, width, inner.height),
             0.0,
@@ -48,7 +129,54 @@ pub fn frame_bar(
             fill.1,
         );
     }
+    push_absorb_layer(list, inner, layers, theme, 1.0);
     list.outline(rect, border, theme.border);
+}
+
+/// Draws only the absorb layer of `layers` inside `inner`, at `alpha`.
+///
+/// For a bar that draws its own fill — the raid cell, the nameplate — and wants the shield in
+/// the same place and the same colours as everywhere else.
+pub fn push_absorb_layer(
+    list: &mut UiDrawList,
+    inner: UiRect,
+    layers: HealthLayers,
+    theme: &PlateTheme,
+    alpha: f32,
+) {
+    let Some((start, width, overflow)) = layers.absorb_span(inner.width) else {
+        return;
+    };
+    let shield = UiRect::new(
+        (inner.x + start).round(),
+        inner.y,
+        width.round().max(1.0),
+        inner.height,
+    );
+    list.panel(
+        shield,
+        0.0,
+        faded(theme.absorb_top, alpha),
+        faded(theme.absorb_bottom, alpha),
+    );
+    // A one-pixel highlight along its top, so the layer reads as a sheet over the bar.
+    list.rect(
+        UiRect::new(shield.x, shield.y, shield.width, 1.0),
+        faded(theme.absorb_edge, 0.55 * alpha),
+    );
+    // Where the shield starts, a hairline: the boundary between health and shield.
+    list.rect(
+        UiRect::new(shield.x, shield.y, 1.0, shield.height),
+        faded([0.0, 0.0, 0.0, 0.55], alpha),
+    );
+    if overflow {
+        // More shield than missing health: a bright edge at the end says "and then some".
+        let edge = (inner.height * 0.18).clamp(2.0, 4.0).round();
+        list.rect(
+            UiRect::new(inner.right() - edge, inner.y, edge, inner.height),
+            faded(theme.absorb_edge, alpha),
+        );
+    }
 }
 
 /// A flat colour as a bar fill: itself at the top, a darker shade at the bottom.

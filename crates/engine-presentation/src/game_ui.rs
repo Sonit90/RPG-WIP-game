@@ -81,10 +81,6 @@ mod layout {
     pub const IGNITE_PIP: f32 = 10.0;
     /// Gap between Ignite pips.
     pub const IGNITE_PIP_GAP: f32 = 3.0;
-    /// Width of an ability tooltip.
-    pub const TOOLTIP_WIDTH: f32 = 300.0;
-    /// Height of one tooltip line.
-    pub const TOOLTIP_LINE: f32 = 16.0;
 }
 
 /// Every HUD measurement, converted from its design size to physical pixels once.
@@ -152,10 +148,6 @@ pub struct HudMetrics {
     pub ignite_pip: f32,
     /// `layout::IGNITE_PIP_GAP` in physical pixels.
     pub ignite_pip_gap: f32,
-    /// `layout::TOOLTIP_WIDTH` in physical pixels.
-    pub tooltip_width: f32,
-    /// `layout::TOOLTIP_LINE` in physical pixels.
-    pub tooltip_line: f32,
 }
 
 impl HudMetrics {
@@ -189,8 +181,6 @@ impl HudMetrics {
             corner_button_gap: scale.px(layout::CORNER_BUTTON_GAP),
             ignite_pip: scale.px(layout::IGNITE_PIP),
             ignite_pip_gap: scale.px(layout::IGNITE_PIP_GAP),
-            tooltip_width: scale.px(layout::TOOLTIP_WIDTH),
-            tooltip_line: scale.px(layout::TOOLTIP_LINE),
         }
     }
 }
@@ -310,12 +300,6 @@ pub struct UiTheme {
     pub ignite_pip: UiColor,
     /// An Ignite stack that is not there yet.
     pub ignite_pip_empty: UiColor,
-    /// The tooltip panel.
-    pub tooltip_panel: UiColor,
-    /// A tooltip's heading.
-    pub tooltip_title: UiColor,
-    /// A tooltip's body text.
-    pub tooltip_text: UiColor,
 }
 
 impl Default for UiTheme {
@@ -373,9 +357,6 @@ impl Default for UiTheme {
             slot_casting: [1.0, 1.0, 1.0, 1.0],
             ignite_pip: [1.0, 0.45, 0.12, 1.0],
             ignite_pip_empty: [0.22, 0.20, 0.20, 1.0],
-            tooltip_panel: [0.05, 0.06, 0.09, 0.96],
-            tooltip_title: [1.0, 0.80, 0.35, 1.0],
-            tooltip_text: [0.88, 0.90, 0.94, 1.0],
         }
     }
 }
@@ -549,6 +530,13 @@ pub struct PlateTheme {
     pub friendly_low_top: UiColor,
     /// A friendly health fill that is dangerously low, bottom edge.
     pub friendly_low_bottom: UiColor,
+    /// An absorb shield's layer on a health bar, top of its gradient: a pale silver, so a
+    /// shield reads as "not health, but in front of it" on a green bar and a red one alike.
+    pub absorb_top: UiColor,
+    /// An absorb shield's layer, bottom of its gradient.
+    pub absorb_bottom: UiColor,
+    /// The bright edge where a shield bigger than the missing health runs off the bar's end.
+    pub absorb_edge: UiColor,
     /// The panel every unit frame sits on.
     pub frame_panel: UiColor,
     /// The panel's border.
@@ -592,6 +580,9 @@ impl Default for PlateTheme {
             friendly_bottom: [0.14, 0.56, 0.18, 1.0],
             friendly_low_top: [0.96, 0.46, 0.16, 1.0],
             friendly_low_bottom: [0.78, 0.24, 0.06, 1.0],
+            absorb_top: [0.93, 0.95, 0.98, 0.80],
+            absorb_bottom: [0.66, 0.70, 0.76, 0.80],
+            absorb_edge: [1.0, 1.0, 1.0, 0.95],
             frame_panel: [0.035, 0.04, 0.055, 0.84],
             frame_border: [0.0, 0.0, 0.0, 0.9],
         }
@@ -686,9 +677,13 @@ pub struct GameUi {
     /// Every buff and debuff icon drawn this frame, for the tooltip lookup.
     aura_hits: crate::ui::aura_row::AuraHits,
     /// The tooltip over one of them, its wrapped description kept between frames.
-    aura_tooltip: crate::ui::aura_row::AuraTooltip,
-    /// Scratch for a tooltip's lines. Reused; never freed.
-    tooltip_lines: Vec<String>,
+    /// What the open tooltip says, rebuilt in place each frame it is shown.
+    tooltip: crate::ui::tooltip::TooltipModel,
+    /// The open tooltip, wrapped and laid out; wrapped again only when its text changes.
+    tooltip_panel: crate::ui::tooltip::TooltipPanel,
+    /// Where the arranged bar one was drawn last frame, which the Ultimate and the extras
+    /// hang off. `None` before the first arranged frame or with bar one hidden or upright.
+    bar_one: Option<UiRect>,
     /// Where the minimap is, when the level has one: the corner buttons move to its left
     /// and the dungeon's progress panel moves under it.
     minimap: Option<UiRect>,
@@ -751,8 +746,9 @@ impl GameUi {
             title: String::with_capacity(32),
             statuses: String::with_capacity(64),
             aura_hits: crate::ui::aura_row::AuraHits::new(),
-            aura_tooltip: crate::ui::aura_row::AuraTooltip::new(),
-            tooltip_lines: Vec::with_capacity(8),
+            tooltip: crate::ui::tooltip::TooltipModel::new(),
+            tooltip_panel: crate::ui::tooltip::TooltipPanel::new(),
+            bar_one: None,
             minimap: None,
             combat_text: engine_settings::CombatTextSettings::default(),
             combat_layout: Vec::with_capacity(crate::damage_numbers::MAX_FLOATING_NUMBERS),
@@ -837,18 +833,31 @@ impl GameUi {
     }
 
     /// The tooltip for the buff or debuff under `pointer`, if there is one: its name, what
-    /// kind of effect it is — the dispel school, in its colour — what it does and how long
-    /// it has left.
+    /// kind of effect it is — the dispel school, in its colour — what it does, its stacks and
+    /// how long it has left. Opened from the same dock as every other tooltip.
     ///
     /// Drawn last of the HUD, so it is over everything it describes. Returns whether a
     /// tooltip was drawn.
-    pub fn push_aura_tooltip(&mut self, pointer: (f32, f32), viewport: (u32, u32)) -> bool {
-        let Some((anchor, aura)) = self.aura_hits.at(pointer) else {
+    pub fn push_aura_tooltip(
+        &mut self,
+        pointer: (f32, f32),
+        dock: UiRect,
+        direction: crate::ui::flow::FlowDirection,
+        viewport: (u32, u32),
+    ) -> bool {
+        let Some((_, aura)) = self.aura_hits.at(pointer) else {
             return false;
         };
-        let style = crate::ui::map_style::MapStyle::new(self.metrics.scale);
-        self.aura_tooltip
-            .push(&mut self.list, anchor, &aura, style, viewport);
+        crate::ui::tooltip::fill_aura(&mut self.tooltip, &aura);
+        let kit = crate::ui::kit::Kit::new(self.metrics.scale);
+        self.tooltip_panel.push(
+            &mut self.list,
+            &self.tooltip,
+            dock,
+            direction,
+            &kit,
+            viewport,
+        );
         true
     }
 
@@ -873,11 +882,42 @@ impl GameUi {
         }
     }
 
+    /// A sample tooltip in the tooltip dock, for Edit HUD: a tooltip is only ever open while
+    /// the pointer is on something, and its place, width and direction cannot be judged from
+    /// an outline.
+    pub fn push_tooltip_preview(
+        &mut self,
+        dock: UiRect,
+        direction: crate::ui::flow::FlowDirection,
+        viewport: (u32, u32),
+    ) {
+        use crate::ui::tooltip::SectionKind;
+        let model = &mut self.tooltip;
+        model.clear();
+        model.title.push_str("Tooltip");
+        model.tag.push_str("Preview");
+        model.meta[0].0.push_str("Instant");
+        model.meta[0].1.push_str("8 sec cooldown");
+        model
+            .section(SectionKind::Description)
+            .text
+            .push_str("Every ability and aura tooltip opens here. Drag this to move it; set its width and which way it grows in the inspector.");
+        let kit = crate::ui::kit::Kit::new(self.metrics.scale);
+        self.tooltip_panel.push(
+            &mut self.list,
+            &self.tooltip,
+            dock,
+            direction,
+            &kit,
+            viewport,
+        );
+    }
+
     /// A sample row of buffs in the buff bar's rectangle, for Edit HUD.
     ///
     /// The bar is empty most of the time, and an empty rectangle cannot be judged for place or
     /// size: while the editor is open and nothing is running, this is what fills it.
-    pub fn push_buff_bar_preview(&mut self, rect: UiRect) {
+    pub fn push_buff_bar_preview(&mut self, flow: &crate::ui::flow::Flow) {
         use crate::aura::{Aura, AuraKind};
         use engine_game::status::StatusKind;
         const SAMPLE: [Aura; 5] = [
@@ -925,7 +965,7 @@ impl GameUi {
         crate::ui::aura_row::push_buff_bar(
             &mut self.list,
             &mut self.aura_hits,
-            rect,
+            flow,
             SAMPLE.iter(),
             &mut self.statuses,
         );
@@ -1041,6 +1081,16 @@ impl GameUi {
             );
             self.list
                 .panel(fill, 0.0, faded(top, alpha), faded(bottom, alpha));
+            let layers = crate::ui::frame_style::HealthLayers {
+                absorb: crate::ui::frame_style::HealthLayers::of(
+                    plate.health,
+                    plate.max_health,
+                    plate.absorb,
+                )
+                .absorb,
+                ..crate::ui::frame_style::HealthLayers::health(fraction)
+            };
+            crate::ui::frame_style::push_absorb_layer(&mut self.list, inner, layers, &theme, alpha);
         }
         let border_color = if plate.is_target {
             theme.border_target
@@ -1284,6 +1334,10 @@ impl GameUi {
             scale,
             viewport,
         );
+        let first = crate::ui::hud_layout::HudElementId::ActionBar(0);
+        self.bar_one = (layout.is_enabled(first)
+            && layout.orientation(0) == engine_settings::hud::HudOrientation::Horizontal)
+            .then(|| layout.rect_of(first, scale, viewport));
         self.push_action_bars(snapshot, layout, bars, viewport);
         // Not arrangeable, and drawn here for the same reason the cast bar is: the Ultimate
         // and the extras have a place of their own beside the bar, and the application
@@ -1480,10 +1534,10 @@ impl GameUi {
             let Some(bar) = bars.bar(index) else {
                 continue;
             };
-            let orientation = layout.orientation(index);
+            let shape = layout.bar_shape(index);
             let rect = layout.rect_of(id, scale, viewport);
             for (slot_index, slot) in bar.slots().iter().enumerate() {
-                let Some(cell) = action_bar::slot_rect(rect, orientation, slot_index) else {
+                let Some(cell) = action_bar::slot_rect(rect, shape, slot_index) else {
                     continue;
                 };
                 let Some(view) = slot
@@ -1903,47 +1957,43 @@ impl GameUi {
 
     /// One ability button: icon plate, state colour, cooldown sweep, charges and key.
     pub fn push_ability_button(&mut self, rect: UiRect, view: &AbilitySlotView, scale: f32) {
-        self.list.rect(rect, self.theme.panel);
+        let _ = scale;
+        let px = |logical: f32| self.metrics.scale.px(logical);
+        let corner = px(5.0);
+        // A recessed well, so an empty corner of the art still reads as a button.
+        self.list.panel(
+            rect,
+            corner,
+            [0.07, 0.08, 0.10, 0.92],
+            [0.03, 0.035, 0.045, 0.92],
+        );
 
-        // Art if the ability has any, its abbreviated name if it does not. Not both: the
-        // 5x7 font over a painted flame is unreadable, and a slot with a picture on it does
-        // not need to be labelled — which is the whole reason the picture is there.
-        //
-        // Inset by the outline so the art meets the frame rather than running under it.
+        // Art if the ability has any, its name if it does not: the art *is* the label.
+        let art = rect.inset(px(2.0));
         match icon_for(view.ability) {
-            Some(icon) => self.list.icon(
-                rect.inset(self.metrics.scale.px(self.theme.outline_pixels)),
-                icon,
-                self.theme.icon_tint(view.availability),
-            ),
+            Some(icon) => self
+                .list
+                .icon(art, icon, self.theme.icon_tint(view.availability)),
             None => {
-                self.title.clear();
-                for character in view.name.chars().take(ABILITY_ABBREVIATION) {
-                    self.title.push(character);
-                }
-                let (origin, align) =
-                    centered(rect.x + rect.width * 0.5, rect.y + rect.height * 0.5 - 4.0);
-                self.list
-                    .text_aligned(origin, &self.title, self.theme.text, scale, align);
+                crate::ui::map_style::write_title_case(&mut self.title, view.name);
+                // As large as fits across the button, never larger than a quarter of it.
+                let at_one = UiFont::SemiBold.width(&self.title, 1.0).max(1e-3);
+                let size = (rect.height * 0.24)
+                    .min((rect.width - px(6.0)) / at_one)
+                    .max(7.0);
+                self.list.styled_label(
+                    (
+                        rect.x + rect.width * 0.5,
+                        cap_centred_top(UiFont::SemiBold, size, rect.y + rect.height * 0.5),
+                    ),
+                    &self.title,
+                    self.theme.text,
+                    UiFont::SemiBold,
+                    size,
+                    TextAlign::Center,
+                    plate_text_style([0.0, 0.0, 0.0, 0.9], size, 0.0),
+                );
             }
-        }
-
-        // After the art, so the frame is never painted over by it. The ability the player is
-        // in the middle of — casting it, or choosing where to put it — takes a white frame
-        // instead of its availability colour: while one is happening, which one it is
-        // matters more than whether the others could be afforded.
-        let active = view.shows_active_frame();
-        let border = if active {
-            self.theme.slot_casting
-        } else {
-            self.theme.slot_color(view.availability)
-        };
-        let outline = self.metrics.scale.px(self.theme.outline_pixels);
-        self.list.outline(rect, outline, border);
-        if active {
-            // Doubled outward as well, so the slot reads at a glance rather than on
-            // inspection — the same trick the ready Ultimate uses.
-            self.list.outline(rect.inset(-outline), outline, border);
         }
 
         // The global cooldown, as a lighter sweep. Starting any ability locks every slot, so
@@ -1951,7 +2001,7 @@ impl GameUi {
         // the others were still available.
         if view.shows_global_cooldown() {
             self.list.radial_from(
-                rect,
+                art,
                 view.global_cooldown_fraction,
                 1.0 - view.global_cooldown_fraction,
                 self.theme.global_cooldown_radial,
@@ -1959,58 +2009,85 @@ impl GameUi {
         }
 
         // The ability's own cooldown, as a radial sweep over what is left, with the seconds
-        // until it is back. The global cooldown gets no number: half a second counted down
-        // in tenths on eleven buttons at once is noise, and it is over before it is read.
+        // until it is back. The global cooldown gets no number: it is the same on every
+        // button and over before a number on eleven of them could be read.
         if view.is_cooling() {
-            // The dark part starts where the elapsed part ended, so its leading edge sweeps
-            // clockwise from twelve o'clock as the cooldown runs down.
             self.list.radial_from(
-                rect,
+                art,
                 view.cooldown_fraction,
                 1.0 - view.cooldown_fraction,
                 self.theme.cooldown_radial,
             );
             self.title.clear();
             write_seconds(&mut self.title, view.cooldown_remaining);
-            let (origin, align) = centered(
-                rect.x + rect.width * 0.5,
-                rect.y + rect.height * 0.5 - self.metrics.scale.px(4.0),
-            );
-            self.list.text_aligned(
-                origin,
+            let size = (rect.height * 0.40).max(10.0);
+            self.list.styled_label(
+                (
+                    rect.x + rect.width * 0.5,
+                    cap_centred_top(UiFont::SemiBold, size, rect.y + rect.height * 0.52),
+                ),
                 &self.title,
-                self.theme.text,
-                self.metrics.scale.text(self.theme.hud_text_scale * 0.75),
-                align,
+                [1.0, 0.97, 0.90, 1.0],
+                UiFont::SemiBold,
+                size,
+                TextAlign::Center,
+                plate_text_style([0.0, 0.0, 0.0, 0.95], size, 0.04),
             );
         }
 
-        // Charges, only where there is more than one.
+        // The edge says what pressing it would do: quiet when it is simply ready, coloured
+        // when it is refused or empowered, white while it is the ability in progress.
+        let active = view.shows_active_frame();
+        let border = if active {
+            self.theme.slot_casting
+        } else {
+            self.theme.slot_color(view.availability)
+        };
+        let width = if active || view.availability != SlotAvailability::Ready {
+            px(2.0).max(2.0)
+        } else {
+            px(1.0).max(1.0)
+        };
+        if active || view.availability == SlotAvailability::Empowered {
+            self.list.glow(rect, corner, px(7.0), faded(border, 0.45));
+        }
+        self.list.panel_stroke(rect, corner, width, border);
+
+        // Charges, bottom right, only where there is more than one.
+        let small = (rect.height * 0.26).max(9.0);
+        let edge = plate_text_style([0.0, 0.0, 0.0, 0.95], small, 0.02);
         if view.shows_charges() {
             self.title.clear();
             write_integer(&mut self.title, i64::from(view.charges));
-            self.title.push('/');
-            write_integer(&mut self.title, i64::from(view.max_charges));
-            self.list.text_at(
-                (rect.x + 3.0, rect.bottom() - 10.0),
+            self.list.styled_label(
+                (
+                    rect.right() - px(4.0),
+                    cap_centred_top(UiFont::SemiBold, small, rect.bottom() - small * 0.6),
+                ),
                 &self.title,
                 self.theme.text,
-                scale,
+                UiFont::SemiBold,
+                small,
+                TextAlign::Right,
+                edge,
             );
         }
 
-        // The key that casts it, with whatever has to be held for it in front.
+        // The key that casts it, top left, with whatever has to be held for it in front.
         self.title.clear();
         self.title.push_str(view.key_modifiers.label_prefix());
         self.title.push_str(view.key);
-        self.list.text_at(
+        self.list.styled_label(
             (
-                rect.x + self.metrics.scale.px(3.0),
-                rect.y + self.metrics.scale.px(3.0),
+                rect.x + px(4.0),
+                cap_centred_top(UiFont::SemiBold, small, rect.y + small * 0.65),
             ),
             &self.title,
-            self.theme.text,
-            scale,
+            [0.92, 0.92, 0.90, 1.0],
+            UiFont::SemiBold,
+            small,
+            TextAlign::Left,
+            edge,
         );
     }
 
@@ -2033,6 +2110,17 @@ impl GameUi {
     /// Where the Ultimate button sits: larger, and separated from the bar.
     #[must_use]
     pub fn ultimate_rect(&self, viewport: (u32, u32)) -> UiRect {
+        // Beside bar one wherever the player put it: the fixed bar's position was where the
+        // button used to hang, and an arranged bar drawn elsewhere left it on top of slot ten.
+        if let Some(bar) = self.bar_one {
+            let size = bar.height.min(bar.width);
+            return UiRect::new(
+                bar.right() + self.metrics.ultimate_gap,
+                bar.y + (bar.height - size) * 0.5,
+                size,
+                size,
+            );
+        }
         let last = self.slot_rect(ABILITY_SLOTS - 1, viewport);
         let height = viewport.1 as f32;
         UiRect::new(
@@ -2047,12 +2135,12 @@ impl GameUi {
     #[must_use]
     pub fn extra_rect(&self, index: usize, viewport: (u32, u32)) -> UiRect {
         let ultimate = self.ultimate_rect(viewport);
-        let step = self.metrics.ultimate_size + self.metrics.ultimate_gap;
+        let step = ultimate.width + self.metrics.slot_gap;
         UiRect::new(
             ultimate.x + step * (index as f32 + 1.0),
             ultimate.y,
-            self.metrics.ultimate_size,
-            self.metrics.ultimate_size,
+            ultimate.width,
+            ultimate.height,
         )
     }
 
@@ -2367,255 +2455,43 @@ impl GameUi {
             - self.metrics.slot_size
             - self.metrics.resource_lift
             - 34.0;
-        let (origin, align) = centered(width * 0.5, y);
-        self.list.text_aligned(
-            origin,
-            error.as_str(),
-            self.theme.slot_invalid,
-            self.metrics.scale.text(self.theme.hud_text_scale * 0.75),
-            align,
+        let size = self.metrics.scale.px(17.0);
+        self.list.styled_label(
+            (width * 0.5, cap_centred_top(UiFont::SemiBold, size, y)),
+            error.message(),
+            [1.0, 0.36, 0.30, 1.0],
+            UiFont::SemiBold,
+            size,
+            TextAlign::Center,
+            plate_text_style([0.0, 0.0, 0.0, 0.9], size, 0.03),
         );
     }
 
-    /// An ability tooltip, anchored above `anchor`.
+    /// An ability tooltip, opened from the tooltip dock.
     ///
-    /// Every line is generated from the ability's own definition and from the *current*
-    /// Ignite maximum, so a tooltip cannot drift from what the ability does and Fire
-    /// Detonation's requirement follows Infernal Capacity without a second string.
+    /// Every line is generated from the ability's own definition and the live slot view —
+    /// see [`crate::ui::tooltip::fill_ability`] — so a tooltip cannot drift from what the
+    /// ability does. Drawn at `dock`, the rectangle the HUD layout resolves for
+    /// [`HudElementId::Tooltip`](crate::ui::hud_layout::HudElementId::Tooltip), growing in
+    /// `direction`; never where the pointer happens to be.
     pub fn push_ability_tooltip(
         &mut self,
-        anchor: UiRect,
+        dock: UiRect,
+        direction: crate::ui::flow::FlowDirection,
         view: &AbilitySlotView,
-        ignite_max: u8,
-        mastery: engine_game::firemage::FireMastery,
+        context: crate::ui::tooltip::AbilityContext,
         viewport: (u32, u32),
-    ) {
-        let definition = view.ability.definition();
-        self.tooltip_lines.clear();
-
-        let mut line = String::new();
-        line.push_str(definition.description);
-        self.tooltip_lines.push(line);
-
-        let mut line = String::new();
-        if definition.cast_time > 0.0 {
-            // The *current* cast time, haste included: a tooltip that printed the table's
-            // three seconds while Fire Mastery was running would be telling the player
-            // something the game has stopped believing.
-            line.push_str("CAST ");
-            write_tenths(&mut line, view.cast_time);
-            line.push_str(" S  ");
-        } else {
-            line.push_str("INSTANT  ");
-        }
-        if definition.cooldown > 0.0 {
-            line.push_str("CD ");
-            write_tenths(&mut line, definition.cooldown);
-            line.push_str(" S");
-        }
-        self.tooltip_lines.push(line);
-
-        let mut line = String::new();
-        if definition.range > 0.0 {
-            line.push_str("RANGE ");
-            write_integer(&mut line, definition.range as i64);
-            line.push_str(" M  ");
-        }
-        if definition.radius > 0.0 {
-            line.push_str("RADIUS ");
-            write_integer(&mut line, definition.radius as i64);
-            line.push_str(" M");
-        }
-        if !line.is_empty() {
-            self.tooltip_lines.push(line);
-        }
-
-        if view.max_charges > 1 {
-            let mut line = String::new();
-            line.push_str("CHARGES ");
-            write_integer(&mut line, i64::from(view.charges));
-            line.push('/');
-            write_integer(&mut line, i64::from(view.max_charges));
-            self.tooltip_lines.push(line);
-        }
-
-        if definition.duration > 0.0 {
-            let mut line = String::new();
-            line.push_str("DURATION ");
-            write_tenths(&mut line, definition.duration);
-            line.push_str(" S");
-            self.tooltip_lines.push(line);
-        }
-
-        if view.mana_cost > 0.0 {
-            let mut line = String::new();
-            line.push_str("MANA ");
-            write_integer(&mut line, view.mana_cost as i64);
-            self.tooltip_lines.push(line);
-        }
-
-        if view.healing > 0.0 {
-            let mut line = String::new();
-            line.push_str("HEALS ");
-            write_integer(&mut line, view.healing as i64);
-            if definition.tick_coefficient > 0.0 && definition.coefficient <= 0.0 {
-                line.push_str(" PER TICK");
-            }
-            self.tooltip_lines.push(line);
-        }
-
-        let mut line = String::new();
-        if definition.heat > 0.0 {
-            line.push_str("HEAT +");
-            write_integer(&mut line, definition.heat as i64);
-            line.push_str("  ");
-        }
-        if definition.energy > 0.0 {
-            line.push_str("ENERGY +");
-            write_integer(&mut line, definition.energy as i64);
-        }
-        if definition.energy_cost > 0.0 {
-            line.push_str("COSTS ");
-            write_integer(&mut line, definition.energy_cost as i64);
-            line.push_str(" ENERGY");
-        }
-        // What twenty Deflection buys, and whether pressing it now will buy it. Two facts
-        // rather than one: an ability the player cannot afford to empower still has to say
-        // what its empowered form is, or there is nothing to save for.
-        if definition.warrior.is_empowerable() {
-            if !line.is_empty() {
-                line.push_str("  ");
-            }
-            line.push_str(if view.spends_deflection {
-                "SPENDS "
-            } else {
-                "NEEDS "
-            });
-            write_integer(&mut line, definition.warrior.deflection_cost as i64);
-            line.push_str(" DEFLECTION");
-        }
-        if !line.is_empty() {
-            self.tooltip_lines.push(line);
-        }
-
-        // **The Astral Power lines.** What this cast puts into the bar, and what spending the
-        // bar on it would buy — generated from the same constants the executor reads, so a
-        // tooltip cannot promise an empowerment the ability does not give.
-        if view.astral_generation > 0.0 {
-            let mut line = String::new();
-            line.push_str("ASTRAL POWER +");
-            write_integer(&mut line, view.astral_generation as i64);
-            self.tooltip_lines.push(line);
-        }
-        if view.astral_empowerable {
-            let mut line = String::new();
-            line.push_str(if view.spends_astral {
-                "ASTRAL: "
-            } else {
-                "ASTRAL (NOT ARMED): "
-            });
-            line.push_str(astral_effect(view.ability));
-            self.tooltip_lines.push(line);
-        }
-
-        if view.damage > 0.0 {
-            let mut line = String::new();
-            line.push_str("DAMAGE ");
-            write_integer(&mut line, view.damage as i64);
-            if definition.tick_coefficient > 0.0 && definition.coefficient <= 0.0 {
-                line.push_str(" PER TICK");
-            }
-            self.tooltip_lines.push(line);
-        }
-
-        if view.ignite_scaling > 0.0 {
-            let mut line = String::new();
-            line.push('+');
-            write_integer(&mut line, (view.ignite_scaling * 100.0).round() as i64);
-            line.push_str("% PER IGNITE STACK ON THE TARGET");
-            self.tooltip_lines.push(line);
-        }
-
-        if view.ignite_stacks > 0 {
-            let mut line = String::new();
-            line.push_str("APPLIES ");
-            write_integer(&mut line, i64::from(view.ignite_stacks));
-            line.push_str(" IGNITE");
-            if view.ignite_chance < 1.0 {
-                line.push_str(", ");
-                write_integer(&mut line, (view.ignite_chance * 100.0).round() as i64);
-                line.push_str("% CHANCE");
-            }
-            self.tooltip_lines.push(line);
-        }
-
-        if view.ability == FireAbility::Detonate {
-            // The requirement, stated in the numbers that are true right now.
-            let mut line = String::new();
-            line.push_str("REQUIRES ");
-            write_integer(&mut line, i64::from(ignite_max));
-            line.push_str(" IGNITE STACKS");
-            self.tooltip_lines.push(line);
-            // Generated from the constant the explosion actually uses, so the tooltip
-            // cannot survive a balance pass while the number moves.
-            let mut line = String::new();
-            line.push_str("DEALS ");
-            write_integer(
-                &mut line,
-                (engine_game::sim::DETONATE_FRACTION * 100.0).round() as i64,
-            );
-            line.push_str("% OF THE BURN'S REMAINING DAMAGE, AT ONCE");
-            self.tooltip_lines.push(line);
-        }
-
-        if view.ability == FireAbility::FireMastery {
-            self.tooltip_lines.push(match mastery {
-                engine_game::firemage::FireMastery::Haste => "+15% HASTE FOR 20 S".to_owned(),
-                engine_game::firemage::FireMastery::Crit => {
-                    "+15% CRITICAL STRIKE FOR 20 S".to_owned()
-                }
-            });
-        }
-
-        let height = self.metrics.tooltip_line * (self.tooltip_lines.len() as f32 + 1.0)
-            + self.metrics.scale.px(10.0);
-        let width = self.metrics.tooltip_width;
-        let x = (anchor.x + anchor.width * 0.5 - width * 0.5).clamp(
-            self.metrics.scale.px(4.0),
-            (viewport.0 as f32 - width - self.metrics.scale.px(4.0))
-                .max(self.metrics.scale.px(4.0)),
-        );
-        let y = (anchor.y - height - self.metrics.scale.px(8.0)).max(self.metrics.scale.px(4.0));
-        let panel = UiRect::new(x, y, width, height);
-
-        self.list.rect(panel, self.theme.tooltip_panel);
-        self.list.outline(
-            panel,
-            self.metrics.scale.px(self.theme.outline_pixels),
-            self.theme.target_outline,
-        );
-        self.list.text_at(
-            (
-                panel.x + self.metrics.scale.px(8.0),
-                panel.y + self.metrics.scale.px(6.0),
-            ),
-            view.name,
-            self.theme.tooltip_title,
-            self.metrics.scale.text(1.5),
-        );
-        for (index, line) in self.tooltip_lines.iter().enumerate() {
-            self.list.text_at(
-                (
-                    panel.x + self.metrics.scale.px(8.0),
-                    panel.y
-                        + self.metrics.scale.px(6.0)
-                        + self.metrics.tooltip_line * (index as f32 + 1.4),
-                ),
-                line,
-                self.theme.tooltip_text,
-                self.metrics.scale.text(1.0),
-            );
-        }
+    ) -> UiRect {
+        crate::ui::tooltip::fill_ability(&mut self.tooltip, view, context);
+        let kit = crate::ui::kit::Kit::new(self.metrics.scale);
+        self.tooltip_panel.push(
+            &mut self.list,
+            &self.tooltip,
+            dock,
+            direction,
+            &kit,
+            viewport,
+        )
     }
 
     /// Floating combat text, projected through the camera.
@@ -2817,13 +2693,6 @@ impl GameUi {
     }
 }
 
-/// Characters of an ability's name shown in its slot.
-///
-/// Four fits a 48-pixel slot at half scale and is enough to tell one placeholder from
-/// another. Used only by the abilities that have no icon yet; the layout does not change
-/// when one gains art, because the icon fills the same plate the letters sat on.
-const ABILITY_ABBREVIATION: usize = 4;
-
 /// The picture that stands for an ability, if one has been drawn.
 ///
 /// The map lives here, in the layer that decides what the HUD *looks* like, rather than on
@@ -2859,7 +2728,7 @@ pub fn icon_for(ability: FireAbility) -> Option<UiIcon> {
         FireAbility::SpellReflect => Some(UiIcon::SpellReflect),
         FireAbility::LastStand => Some(UiIcon::LastStand),
         // No art yet: the slot shows the abbreviated name until an icon is drawn.
-        FireAbility::Taunt => None,
+        FireAbility::Taunt => Some(UiIcon::Taunt),
         FireAbility::Moonfire => Some(UiIcon::Moonfire),
         FireAbility::Sunfire => Some(UiIcon::Sunfire),
         FireAbility::Wrath => Some(UiIcon::Wrath),
@@ -2879,38 +2748,6 @@ pub fn icon_for(ability: FireAbility) -> Option<UiIcon> {
         // before the icon sets were painted.
         FireAbility::Cataclysm => None,
         FireAbility::Ignite => None,
-    }
-}
-
-/// What spending Astral Power on this ability buys, in one line.
-///
-/// Generated from the tuning constants rather than written out, so a balance pass that moves
-/// a number moves the tooltip with it. Every healing spell says the same thing because it
-/// *is* the same thing: one modifier, in one place — see `engine_game::druid::Druid`.
-#[must_use]
-pub fn astral_effect(ability: FireAbility) -> &'static str {
-    use engine_game::druid::tuning::{
-        ASTRAL_HEAL_BONUS, ASTRAL_MOONFIRE_DAMAGE, ASTRAL_SUNFIRE_DAMAGE, ASTRAL_WRATH_DURATION,
-    };
-    // Const assertions rather than formatting: the strings below are `'static` and the HUD
-    // font is uppercase, so the numbers are written once and checked against the constants
-    // here. A balance change that moves one of them fails this compile-time comparison.
-    const _: () = assert!(ASTRAL_MOONFIRE_DAMAGE == 0.50);
-    const _: () = assert!(ASTRAL_SUNFIRE_DAMAGE == 0.30);
-    const _: () = assert!(ASTRAL_HEAL_BONUS == 0.30);
-    const _: () = assert!(ASTRAL_WRATH_DURATION == 15.0);
-    match ability {
-        FireAbility::Moonfire => "+50% DAMAGE, AND THE BURN NEVER ENDS",
-        FireAbility::Sunfire => "+30% DAMAGE, AND THE PACK HEALS YOU FOR 30% OF WHAT IT TAKES",
-        FireAbility::Wrath => "15 S OF STACKING THE DEBUFF ON EVERYTHING WITHIN 10 M",
-        FireAbility::Rejuvenation
-        | FireAbility::Regrowth
-        | FireAbility::Lifebloom
-        | FireAbility::WildGrowth
-        | FireAbility::Swiftmend
-        | FireAbility::Nourish
-        | FireAbility::Tranquility => "+30% HEALING",
-        _ => "NOTHING",
     }
 }
 
@@ -3041,6 +2878,10 @@ mod tests {
             .iter()
             .filter_map(|command| match command {
                 UiCommand::Outline { rect, color, .. } => Some((*rect, *color)),
+                // A rounded edge is an outline too.
+                UiCommand::Panel {
+                    rect, stroke, top, ..
+                } if *stroke > 0.0 => Some((*rect, *top)),
                 _ => None,
             })
             .collect()
@@ -3285,6 +3126,29 @@ mod tests {
             .iter()
             .filter_map(|command| match command {
                 UiCommand::Rect { rect, .. } => Some(*rect),
+                // A filled rounded surface is a background as much as a rectangle is.
+                UiCommand::Panel {
+                    rect,
+                    stroke,
+                    feather,
+                    ..
+                } if *stroke <= 0.0 && *feather <= 0.0 => Some(*rect),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Every run of text in the list, bitmap and proportional alike.
+    fn all_texts(ui: &GameUi) -> Vec<String> {
+        ui.list()
+            .commands()
+            .iter()
+            .filter_map(|command| match command {
+                UiCommand::Text { range, .. }
+                | UiCommand::Label { range, .. }
+                | UiCommand::StyledLabel { range, .. } => {
+                    Some(ui.list().text_of(*range).to_owned())
+                }
                 _ => None,
             })
             .collect()
@@ -3312,6 +3176,19 @@ mod tests {
                 _ => None,
             })
             .collect()
+    }
+
+    /// Every run of proportional text, joined with spaces: what a wrapped tooltip *says*,
+    /// whichever line a phrase happened to land on.
+    fn said(ui: &GameUi) -> String {
+        let mut out = String::new();
+        for command in ui.list().commands() {
+            if let UiCommand::Label { range, .. } | UiCommand::StyledLabel { range, .. } = command {
+                out.push_str(ui.list().text_of(*range));
+                out.push(' ');
+            }
+        }
+        out
     }
 
     /// A `GameUi` with the metrics a frame would have, for asking about rectangles.
@@ -3409,30 +3286,86 @@ mod tests {
 
         let mut ui = GameUi::new();
         ui.push_ability_tooltip(
-            UiRect::new(100.0, 900.0, 48.0, 48.0),
+            UiRect::new(1500.0, 950.0, 380.0, 64.0),
+            crate::ui::flow::FlowDirection::READING,
             &view,
-            5,
-            engine_game::firemage::FireMastery::Haste,
+            tooltip_context(&snapshot),
             VIEWPORT,
         );
-        let found = texts(&ui);
+        let found = said(&ui);
         assert!(
-            found.iter().any(|text| text.starts_with("MANA")),
-            "the cost is missing: {found:?}"
+            found.contains("Costs 150 Mana"),
+            "the cost is missing: {found}"
         );
         assert!(
-            found.iter().any(|text| text.starts_with("ASTRAL POWER +")),
-            "what it generates is missing: {found:?}"
+            found.contains("Generates 12 Astral Power"),
+            "what it generates is missing: {found}"
+        );
+        assert!(found.contains("Ready: Astral Power is armed"), "{found}");
+        assert!(
+            found.contains("EMPOWERED EFFECT"),
+            "the empowered section is missing: {found}"
         );
         assert!(
-            found
-                .iter()
-                .any(|text| text.contains("NEVER ENDS") && text.starts_with("ASTRAL:")),
-            "what the empowerment does is missing: {found:?}"
+            found.contains("burn never expires."),
+            "what the empowerment does is missing: {found}"
         );
         // And the bar's highlight says the next press is the empowered one.
         assert_eq!(view.availability, SlotAvailability::Empowered);
         assert!(view.spends_astral);
+    }
+
+    fn tooltip_context(snapshot: &UiSnapshot) -> crate::ui::tooltip::AbilityContext {
+        crate::ui::tooltip::AbilityContext {
+            deflection: snapshot.player.warrior.deflection,
+            astral_armed: snapshot.player.druid.armed,
+            ignite_max: snapshot.ignite_max,
+            mastery: snapshot.player.mastery,
+        }
+    }
+
+    #[test]
+    fn a_warrior_tooltip_says_what_deflection_buys_and_whether_this_press_pays() {
+        use engine_game::firemage::FireAbility;
+        let mut simulation = sim();
+        assert!(simulation.set_hero(engine_game::hero::Hero::Warrior));
+        for (banked, ready) in [(5.0, false), (60.0, true)] {
+            simulation.warrior_mut().deflection.set(banked);
+            let snapshot = UiSnapshot::build(&simulation);
+            let view = *snapshot
+                .ability_view(FireAbility::ColossusStrike)
+                .expect("colossus strike is on the bar");
+            let mut ui = GameUi::new();
+            ui.push_ability_tooltip(
+                UiRect::new(1500.0, 950.0, 380.0, 64.0),
+                crate::ui::flow::FlowDirection::READING,
+                &view,
+                tooltip_context(&snapshot),
+                VIEWPORT,
+            );
+            let found = said(&ui);
+            assert!(found.starts_with("Colossus Strike "), "{found}");
+            assert!(found.contains("RESOURCE"), "{found}");
+            assert!(
+                found.contains("Consumes 20 Deflection to empower, if available"),
+                "{found}"
+            );
+            assert!(found.contains("EMPOWERED EFFECT"), "{found}");
+            assert!(
+                found.contains("The bleed deals 50% more damage."),
+                "{found}"
+            );
+            let status = if ready {
+                "Ready: 60 Deflection banked"
+            } else {
+                "Not empowered: 5 of 20 Deflection"
+            };
+            assert!(found.contains(status), "{banked}: {found}");
+            assert!(
+                !found.contains("SMASHES"),
+                "the old shouted text survived: {found}"
+            );
+        }
     }
 
     #[test]
@@ -3448,20 +3381,17 @@ mod tests {
 
         let mut ui = GameUi::new();
         ui.push_ability_tooltip(
-            UiRect::new(100.0, 900.0, 48.0, 48.0),
+            UiRect::new(1500.0, 950.0, 380.0, 64.0),
+            crate::ui::flow::FlowDirection::READING,
             &view,
-            5,
-            engine_game::firemage::FireMastery::Haste,
+            tooltip_context(&snapshot),
             VIEWPORT,
         );
-        let found = texts(&ui);
+        let found = said(&ui);
+        assert!(found.contains("Healing "), "{found}");
         assert!(
-            found.iter().any(|text| text.starts_with("HEALS")),
-            "{found:?}"
-        );
-        assert!(
-            !found.iter().any(|text| text.starts_with("DAMAGE")),
-            "a heal claimed to deal damage: {found:?}"
+            !found.contains("Damage "),
+            "a heal claimed to deal damage: {found}"
         );
     }
 
@@ -3604,7 +3534,7 @@ mod tests {
     #[test]
     fn the_ability_bar_draws_every_slot_with_its_hotkey() {
         let ui = built(&sim());
-        let found = texts(&ui);
+        let found = all_texts(&ui);
         for digit in ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"] {
             assert!(
                 found.iter().any(|text| text == digit),
@@ -3871,14 +3801,10 @@ mod tests {
         let slot = ui.slot_rect(casting, VIEWPORT);
         let white = UiTheme::default().slot_casting;
 
-        let framed: Vec<UiRect> = ui
-            .list()
-            .commands()
-            .iter()
-            .filter_map(|command| match command {
-                UiCommand::Outline { rect, color, .. } if *color == white => Some(*rect),
-                _ => None,
-            })
+        let framed: Vec<UiRect> = outlines(&ui)
+            .into_iter()
+            .filter(|(_, color)| *color == white)
+            .map(|(rect, _)| rect)
             .collect();
         assert!(
             framed.contains(&slot),
@@ -3940,11 +3866,9 @@ mod tests {
         let white = UiTheme::default().slot_casting;
         let rect = ui.slot_rect(slot, VIEWPORT);
         assert!(
-            ui.list().commands().iter().any(|command| matches!(
-                command,
-                UiCommand::Outline { rect: drawn, color, .. }
-                    if *drawn == rect && *color == white
-            )),
+            outlines(&ui)
+                .iter()
+                .any(|(drawn, color)| *drawn == rect && *color == white),
             "the aimed slot has no white frame"
         );
     }
@@ -3967,7 +3891,7 @@ mod tests {
         let mut simulation = sim();
         simulation.cast(FireAbility::Blink).expect("Blink is ready");
         let ui = built(&simulation);
-        let printed = texts(&ui);
+        let printed = all_texts(&ui);
 
         // Blink's own cooldown is twenty seconds, printed as whole ones.
         assert!(

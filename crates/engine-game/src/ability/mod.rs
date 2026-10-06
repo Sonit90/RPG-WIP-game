@@ -1,14 +1,32 @@
-//! What identifies an ability in an event.
+//! Abilities: the shared shape of an ability, the one table, the cooldown runtime, and the
+//! identity an event carries.
 //!
-//! The class itself - what the abilities are, what they cost, what they do - lives in
-//! [`crate::firemage`]. What is left here is the identity an event carries: a small integer
-//! that damage, casts and the combat meter can bucket by without knowing anything about fire.
+//! ```text
+//! table   FireAbility (which) -> AbilityDef (numbers) -> ABILITIES, assembled from
+//!         firemage::abilities + warrior::abilities + druid::abilities
+//! book    AbilityBook (cooldowns, charges), AbilityError (why a cast was refused)
+//! here    AbilityId: a small integer an event carries
+//! ```
+//!
+//! What a class's abilities *are* - their numbers - lives with the class. What every class
+//! shares lives here. The identity an event carries is a small integer that damage, casts and
+//! the combat meter can bucket by without knowing anything about a class.
 //!
 //! Keeping the two apart is what lets telemetry hold a fixed array instead of a map, and what
 //! would let a second class exist without the event stream learning a second ability enum.
 
 use crate::enemy::{ENEMY_ABILITY_COUNT, EnemyAbility};
-use crate::firemage::ability::{ABILITY_COUNT, FireAbility};
+pub mod book;
+pub mod table;
+#[cfg(test)]
+mod table_tests;
+pub mod text;
+
+pub use book::{AbilityBook, AbilityError, AbilityState};
+pub use table::{
+    ABILITIES, ABILITY_COUNT, AbilityDef, DruidRow, FireAbility, TARGET_CLEAVE_HALF_ANGLE,
+    TargetMode, ThreatScale, ULTIMATE_ENABLED, WarriorRow, longest_range,
+};
 
 /// How many distinct abilities can be named. The ten-slot bar plus the Ultimate.
 pub const ABILITY_SLOTS: usize = ABILITY_COUNT;

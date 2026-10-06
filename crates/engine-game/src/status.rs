@@ -503,8 +503,9 @@ pub static STATUS_DEFS: [StatusDef; STATUS_KIND_COUNT] = [
     StatusDef {
         kind: StatusKind::Recuperating,
         id: "recuperating",
-        overlay_name: "RECUPERATING",
-        name: "Recuperating",
+        overlay_name: "RECUPERATE",
+        // The ability's own name, so the buff the button gives reads as the button.
+        name: "Recuperate",
         description: "Healing a share of maximum health every second.",
         max_stacks: 5,
         damage_type: DamageType::Physical,

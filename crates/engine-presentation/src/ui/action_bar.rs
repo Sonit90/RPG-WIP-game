@@ -527,11 +527,59 @@ pub fn reserved_chord(chord: KeyChord, bindings: &Bindings) -> Option<&'static s
 /// place the player can drop a spell, so a bar that shrank to fit its contents would be a bar
 /// that got harder to fill the emptier it was.
 #[must_use]
-pub fn bar_size(orientation: HudOrientation) -> (f32, f32) {
-    let along = ACTION_BAR_SLOTS as f32 * SLOT_SIZE + (ACTION_BAR_SLOTS as f32 - 1.0) * SLOT_GAP;
-    match orientation {
+pub fn bar_size(shape: impl Into<BarShape>) -> (f32, f32) {
+    let shape = shape.into();
+    let along = ACTION_BAR_SLOTS as f32 * SLOT_SIZE
+        + (ACTION_BAR_SLOTS as f32 - 1.0) * SLOT_GAP * shape.spacing.max(0.0);
+    match shape.orientation {
         HudOrientation::Horizontal => (along, SLOT_SIZE),
         HudOrientation::Vertical => (SLOT_SIZE, along),
+    }
+}
+
+/// Everything about a bar's geometry beyond its rectangle: which way it runs, which end slot
+/// one is at, and how far apart the slots are.
+///
+/// Built from the layout ([`HudLayout::bar_shape`](super::hud_layout::HudLayout::bar_shape)),
+/// and from a bare [`HudOrientation`] for the places — tests, the old fixed HUD — that only
+/// know which way a bar runs.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BarShape {
+    /// Along a row or down a column.
+    pub orientation: HudOrientation,
+    /// Which end slot one is at.
+    pub direction: super::flow::FlowDirection,
+    /// The gap between slots as a multiple of [`SLOT_GAP`].
+    pub spacing: f32,
+}
+
+impl From<HudOrientation> for BarShape {
+    fn from(orientation: HudOrientation) -> Self {
+        Self {
+            orientation,
+            direction: super::flow::FlowDirection::READING,
+            spacing: 1.0,
+        }
+    }
+}
+
+impl BarShape {
+    /// The bar as a [`Flow`](super::flow::Flow) over `bar`.
+    #[must_use]
+    pub fn flow(&self, bar: UiRect) -> super::flow::Flow {
+        use super::flow::{Flow, FlowAxis};
+        let (columns, rows, axis) = match self.orientation {
+            HudOrientation::Horizontal => (ACTION_BAR_SLOTS, 1, FlowAxis::Rows),
+            HudOrientation::Vertical => (1, ACTION_BAR_SLOTS, FlowAxis::Columns),
+        };
+        Flow {
+            rect: bar,
+            columns,
+            rows,
+            axis,
+            direction: self.direction,
+            gap_ratio: SLOT_GAP / SLOT_SIZE * self.spacing.max(0.0),
+        }
     }
 }
 
@@ -541,34 +589,19 @@ pub fn bar_size(orientation: HudOrientation) -> (f32, f32) {
 /// scale and the player's interface size without either being passed in again — and so a
 /// slot can never be drawn somewhere the bar is not.
 #[must_use]
-pub fn slot_rect(bar: UiRect, orientation: HudOrientation, index: usize) -> Option<UiRect> {
+pub fn slot_rect(bar: UiRect, shape: impl Into<BarShape>, index: usize) -> Option<UiRect> {
     if index >= ACTION_BAR_SLOTS {
         return None;
     }
-    let count = ACTION_BAR_SLOTS as f32;
-    let (along, size) = match orientation {
-        HudOrientation::Horizontal => (bar.width, bar.height),
-        HudOrientation::Vertical => (bar.height, bar.width),
-    };
-    // The gap keeps its share of the length at every scale, which is what makes a bar at
-    // 150 % look like the same bar rather than like ten squares that drifted apart.
-    let gap = along * (SLOT_GAP / (count * SLOT_SIZE + (count - 1.0) * SLOT_GAP));
-    let step = (along - gap * (count - 1.0)) / count + gap;
-    let offset = index as f32 * step;
-    Some(match orientation {
-        HudOrientation::Horizontal => UiRect::new(bar.x + offset, bar.y, step - gap, size),
-        HudOrientation::Vertical => UiRect::new(bar.x, bar.y + offset, size, step - gap),
-    })
+    // The gap keeps its share of the slot at every scale, which is what makes a bar at 150 %
+    // look like the same bar rather than like ten squares that drifted apart.
+    shape.into().flow(bar).cell(index)
 }
 
 /// Which slot of a bar contains a point, if any.
 #[must_use]
-pub fn slot_at(bar: UiRect, orientation: HudOrientation, x: f32, y: f32) -> Option<usize> {
-    if !bar.contains(x, y) {
-        return None;
-    }
-    (0..ACTION_BAR_SLOTS)
-        .find(|index| slot_rect(bar, orientation, *index).is_some_and(|rect| rect.contains(x, y)))
+pub fn slot_at(bar: UiRect, shape: impl Into<BarShape>, x: f32, y: f32) -> Option<usize> {
+    shape.into().flow(bar).index_at(ACTION_BAR_SLOTS, (x, y))
 }
 
 #[cfg(test)]
