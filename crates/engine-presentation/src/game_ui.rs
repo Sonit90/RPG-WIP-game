@@ -834,15 +834,19 @@ impl GameUi {
 
     /// The tooltip for the buff or debuff under `pointer`, if there is one: its name, what
     /// kind of effect it is — the dispel school, in its colour — what it does, its stacks and
-    /// how long it has left. Opened from the same dock as every other tooltip.
+    /// how long it has left.
+    ///
+    /// Opened at the pointer, `width` wide — the tooltip dock's width — rather than at the
+    /// dock: an icon is small and the row it sits in is wide, so the panel belongs beside the
+    /// icon being read. It grows away from the nearer screen edges, below and right of the
+    /// pointer in the top-left quarter and above and left of it in the bottom-right.
     ///
     /// Drawn last of the HUD, so it is over everything it describes. Returns whether a
     /// tooltip was drawn.
     pub fn push_aura_tooltip(
         &mut self,
         pointer: (f32, f32),
-        dock: UiRect,
-        direction: crate::ui::flow::FlowDirection,
+        width: f32,
         viewport: (u32, u32),
     ) -> bool {
         let Some((_, aura)) = self.aura_hits.at(pointer) else {
@@ -850,6 +854,7 @@ impl GameUi {
         };
         crate::ui::tooltip::fill_aura(&mut self.tooltip, &aura);
         let kit = crate::ui::kit::Kit::new(self.metrics.scale);
+        let (dock, direction) = crate::ui::tooltip::pointer_dock(pointer, width, &kit, viewport);
         self.tooltip_panel.push(
             &mut self.list,
             &self.tooltip,
@@ -901,7 +906,7 @@ impl GameUi {
         model
             .section(SectionKind::Description)
             .text
-            .push_str("Every ability and aura tooltip opens here. Drag this to move it; set its width and which way it grows in the inspector.");
+            .push_str("Every ability tooltip opens here; buff and debuff tooltips open at the pointer, this wide. Drag this to move it; set its width and which way it grows in the inspector.");
         let kit = crate::ui::kit::Kit::new(self.metrics.scale);
         self.tooltip_panel.push(
             &mut self.list,

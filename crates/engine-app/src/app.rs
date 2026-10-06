@@ -3685,12 +3685,13 @@ impl App {
         if self.hovered_ability.is_none()
             && let Some(pointer) = self.aura_pointer
         {
-            let dock = self
+            // At the pointer, not the dock: only spell tooltips open from the dock. The dock
+            // still sets how wide it is.
+            let width = self
                 .hud_layout
-                .rect_of(HudElementId::Tooltip, scale, viewport);
-            let direction = self.hud_layout.direction(HudElementId::Tooltip);
-            self.game_ui
-                .push_aura_tooltip(pointer, dock, direction, viewport);
+                .rect_of(HudElementId::Tooltip, scale, viewport)
+                .width;
+            self.game_ui.push_aura_tooltip(pointer, width, viewport);
         }
         if let Some(ability) = self.hovered_ability.or(self.forced_tooltip) {
             // The view is looked up by ability rather than by slot: a slot the current hero

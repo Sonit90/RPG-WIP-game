@@ -9,12 +9,13 @@
 //!               docks at HudElementId::Tooltip and grows away from it
 //! ```
 //!
-//! ## A fixed dock, not the pointer
+//! ## Spells at a fixed dock, auras at the pointer
 //!
-//! A tooltip that follows the pointer lands on top of the thing being read and jumps every
-//! time the pointer moves between buttons. Every tooltip in the game — abilities, buffs and
-//! debuffs — opens from the same dock (bottom right by default), which the player can move,
-//! widen and point in another direction in Edit HUD like any other element.
+//! An ability tooltip that followed the pointer would land on top of the bar being read and
+//! jump every time the pointer moved between buttons, so it opens from a dock (bottom right
+//! by default), which the player can move, widen and point in another direction in Edit HUD
+//! like any other element. A buff or debuff icon is small and far from that dock, so its
+//! tooltip opens beside the pointer instead — see [`pointer_dock`] — at the dock's width.
 //!
 //! ## Text is wrapped, never clipped
 //!
@@ -226,6 +227,34 @@ impl TooltipModel {
 struct Line {
     section: usize,
     text: String,
+}
+
+/// A dock at `pointer` for a tooltip `width` wide, and the way it grows: away from the
+/// nearer screen edges, clear of the cursor by a small gap.
+#[must_use]
+pub fn pointer_dock(
+    pointer: (f32, f32),
+    width: f32,
+    kit: &Kit,
+    viewport: (u32, u32),
+) -> (UiRect, FlowDirection) {
+    let gap = kit.px(16.0);
+    let width = width.max(kit.px(200.0)).round();
+    let direction = FlowDirection {
+        right_to_left: pointer.0 > viewport.0 as f32 * 0.5,
+        bottom_to_top: pointer.1 > viewport.1 as f32 * 0.5,
+    };
+    let x = if direction.right_to_left {
+        pointer.0 - gap - width
+    } else {
+        pointer.0 + gap
+    };
+    let y = if direction.bottom_to_top {
+        pointer.1 - gap
+    } else {
+        pointer.1 + gap
+    };
+    (UiRect::new(x, y, width, 0.0), direction)
 }
 
 /// Draws a [`TooltipModel`] at the tooltip dock, wrapped, sized to fit and kept on screen.
@@ -890,6 +919,44 @@ mod tests {
             FHD,
         );
         assert!(rect.x >= 0.0 && rect.right() <= 1920.0 && rect.bottom() <= 1080.0);
+    }
+
+    #[test]
+    fn an_aura_tooltip_opens_beside_the_pointer_away_from_the_nearer_edges() {
+        let kit = Kit::new(engine_render_data::ui::UiScale::new(1.0));
+        let model = model_with("Burns for a while.");
+        for pointer in [
+            (100.0, 100.0),
+            (1800.0, 100.0),
+            (100.0, 1000.0),
+            (1800.0, 1000.0),
+        ] {
+            let (dock, direction) = pointer_dock(pointer, DEFAULT_WIDTH, &kit, FHD);
+            let rect = TooltipPanel::new().push(
+                &mut UiDrawList::new(),
+                &model,
+                dock,
+                direction,
+                &kit,
+                FHD,
+            );
+            // Beside the pointer, never under it, and on the screen's open side.
+            assert!(
+                !rect.contains(pointer.0, pointer.1),
+                "{pointer:?} -> {rect:?}"
+            );
+            assert_eq!(
+                rect.x > pointer.0,
+                pointer.0 < 960.0,
+                "{pointer:?} -> {rect:?}"
+            );
+            assert_eq!(
+                rect.y > pointer.1,
+                pointer.1 < 540.0,
+                "{pointer:?} -> {rect:?}"
+            );
+            assert!((rect.width - DEFAULT_WIDTH).abs() < 0.5);
+        }
     }
 
     #[test]
