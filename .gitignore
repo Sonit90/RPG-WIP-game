@@ -46,3 +46,6 @@ Desktop.ini
 # Local online stack: SpacetimeDB data and logs written by tools/realm-dev.ps1.
 /.realm-dev/
 deploy/.env
+
+# Backups of replaced icon art
+crates/engine-renderer/assets/icons/backup/
