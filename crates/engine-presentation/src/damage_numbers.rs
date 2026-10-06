@@ -1047,8 +1047,8 @@ mod tests {
         let mut numbers = FloatingNumbers::new();
         let mut simulation = sim();
         simulation.push_command(PlayerCommand::UseAbility(0));
-        // Firebolt is a one-second cast; the damage arrives when it lands.
-        simulation.step_many(70);
+        // Firebolt is a one-and-a-half-second cast; the damage arrives when it lands.
+        simulation.step_many(130);
 
         let time = simulation.time() as f32;
         let local = simulation.player().entity;

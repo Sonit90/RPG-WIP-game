@@ -3146,7 +3146,7 @@ mod tests {
         assert!(simulation.casting().is_some(), "no cast started");
         assert_eq!(dummy_health(&simulation, target), before, "it landed early");
 
-        simulation.step_many(70);
+        simulation.step_many(130);
         assert!(simulation.casting().is_none(), "the cast never finished");
         assert!(
             dummy_health(&simulation, target) < before,
@@ -3311,7 +3311,7 @@ mod tests {
     fn the_cast_stream_announces_both_ends() {
         let mut simulation = arena();
         simulation.cast(FireAbility::Firebolt).expect("in range");
-        simulation.step_many(70);
+        simulation.step_many(130);
 
         let started = simulation
             .events()

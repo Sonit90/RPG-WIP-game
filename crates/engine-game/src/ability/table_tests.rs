@@ -75,11 +75,11 @@ fn the_table_matches_the_design_document() {
     let firebolt = FireAbility::Firebolt.definition();
     assert_eq!(
         (firebolt.cast_time, firebolt.cooldown, firebolt.coefficient),
-        (1.0, 0.0, 1.00)
+        (1.5, 0.0, 1.5)
     );
     assert_eq!(
         (firebolt.fire().heat, firebolt.fire().ignite_chance),
-        (2.0, 0.50)
+        (3.0, 0.50)
     );
 
     let lance = FireAbility::FlameLance.definition();

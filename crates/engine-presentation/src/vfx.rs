@@ -1529,10 +1529,10 @@ mod tests {
         let mut simulation = arena(1);
 
         simulation.push_command(PlayerCommand::UseAbility(0));
-        // A one-second cast, then the flight. Stepped one frame at a time so the moment the
-        // bolt exists can be seen rather than inferred.
+        // A one-and-a-half-second cast, then the flight. Stepped one frame at a time so the
+        // moment the bolt exists can be seen rather than inferred.
         let mut seen_in_flight = false;
-        for _ in 0..70 {
+        for _ in 0..110 {
             simulation.step_once();
             director.observe(&simulation);
             director.update(&simulation, 1.0 / 60.0, &mut world, &flat_ground());
@@ -1938,7 +1938,7 @@ mod tests {
         let target = simulation.player().target.expect("a dummy is selected");
 
         simulation.push_command(PlayerCommand::UseAbility(0));
-        run(&mut director, &mut simulation, &mut world, 70);
+        run(&mut director, &mut simulation, &mut world, 130);
         assert!(director.ignited.iter().any(Option::is_some));
 
         simulation.world_mut().damage(target, 1e9);
