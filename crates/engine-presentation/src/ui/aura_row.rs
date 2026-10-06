@@ -315,23 +315,20 @@ pub fn push_aura_icon(
     }
 }
 
-/// The buff bar's and the player debuffs' measurements, logical pixels.
+/// The buff and debuff blocks' measurements, logical pixels.
 pub mod size {
-    /// A buff icon's edge.
+    /// An icon's edge in any of the four blocks.
     pub const BUFF_ICON: f32 = 30.0;
     /// Buff icons on one line.
-    pub const BUFFS_PER_LINE: usize = 8;
+    pub const BUFFS_PER_LINE: usize = 10;
     /// Lines of buffs.
     pub const BUFF_LINES: usize = 2;
     /// Between icons.
     pub const GAP: f32 = 4.0;
-    /// A debuff icon under the player frame. A touch smaller than a buff: the row sits under
-    /// a frame and must not crowd the one below it.
-    pub const DEBUFF_ICON: f32 = 28.0;
-    /// Debuffs on one line under the player frame: exactly the frame's width.
+    /// Debuffs on one line, the player's and the target's: about a frame's width.
     pub const DEBUFFS_PER_LINE: usize = 8;
-    /// Lines of debuffs under the player frame.
-    pub const DEBUFF_LINES: usize = 2;
+    /// Lines of debuffs.
+    pub const DEBUFF_LINES: usize = 1;
     /// A debuff icon beside a party row.
     pub const PARTY_ICON: f32 = 24.0;
     /// Debuffs beside one party row.
@@ -366,47 +363,30 @@ pub fn push_buff_bar<'a>(
     buffs: impl Iterator<Item = &'a Aura>,
     scratch: &mut String,
 ) {
+    push_aura_block(list, hits, flow, buffs, scratch);
+}
+
+/// Any block of aura icons, one per cell of `flow`: the player's buffs or debuffs, or the
+/// target's. Stacks in the corner and seconds along the bottom, exactly as a nameplate
+/// draws them, so an effect reads the same on the target frame as over the target's head.
+pub fn push_aura_block<'a>(
+    list: &mut UiDrawList,
+    hits: &mut AuraHits,
+    flow: &super::flow::Flow,
+    auras: impl Iterator<Item = &'a Aura>,
+    scratch: &mut String,
+) {
     let Some(first) = flow.cell(0) else {
         return;
     };
     let style = AuraRowStyle::new(first.width, flow.columns, flow.capacity());
-    for (index, aura) in buffs.enumerate() {
+    for (index, aura) in auras.enumerate() {
         let Some(cell) = flow.cell(index) else {
             break;
         };
         push_aura_icon(list, cell, aura, style, scratch);
         hits.push(cell, *aura);
     }
-}
-
-/// The player's debuffs, in rows hanging under the player frame `frame`.
-///
-/// Attached to the frame rather than placed on their own: a debuff is something the player
-/// reads *about themselves*, next to their health, and the row follows the frame wherever
-/// Edit HUD moves it and grows with it when it is scaled.
-pub fn push_player_debuffs<'a>(
-    list: &mut UiDrawList,
-    hits: &mut AuraHits,
-    frame: UiRect,
-    debuffs: impl Iterator<Item = &'a Aura> + Clone,
-    scratch: &mut String,
-) {
-    let factor = frame.width / super::unit_frame::size::PLAYER_WIDTH;
-    let mut style = AuraRowStyle::new(
-        size::DEBUFF_ICON * factor,
-        size::DEBUFFS_PER_LINE,
-        size::DEBUFFS_PER_LINE * size::DEBUFF_LINES,
-    );
-    style.gap = (size::GAP * factor).round().max(1.0);
-    push_aura_row(
-        list,
-        hits,
-        debuffs,
-        (frame.x, frame.bottom() + (4.0 * factor).round()),
-        AuraGrow::Right,
-        style,
-        scratch,
-    );
 }
 
 /// Each party member's debuffs, beside their row of the party frame `frame`.

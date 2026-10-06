@@ -631,9 +631,19 @@ pub struct HudFrames {
     /// The player's buffs: a block of icons wherever the player puts it.
     ///
     /// Section-level default, so a file written before the buff bar existed loads with it
-    /// shown in its default place. The player's *debuffs* are not placed on their own: they
-    /// hang under the player frame and go wherever it goes.
+    /// shown in its default place.
     pub buffs: HudPlacement,
+    /// The player's debuffs: a block of icons of their own, placed like the buffs.
+    pub debuffs: HudPlacement,
+    /// The target's helpful effects.
+    pub target_buffs: HudPlacement,
+    /// The target's harmful effects, stacks and all: what the target's nameplate carries.
+    pub target_debuffs: HudPlacement,
+    /// The hero's own resource — Heat, Deflection, or Mana and Astral Power — as a bar of
+    /// its own rather than a row of the player frame.
+    pub resource: HudPlacement,
+    /// Ultimate Energy, as a bar of its own.
+    pub energy: HudPlacement,
     /// Where tooltips appear: one fixed dock, bottom right by default, that every ability and
     /// aura tooltip grows out of. Its directions say which way a tooltip grows from the dock,
     /// its width how wide a tooltip is.
@@ -645,8 +655,11 @@ impl Default for HudFrames {
     ///
     /// ```text
     ///                    [ TARGET ] [ TOT ]
-    ///
-    ///   [ PLAYER ]
+    ///                    [ debuffs  ]
+    ///   [ PLAYER ]       [ buffs    ]
+    ///   [ resource ]
+    ///   [ energy ]
+    ///   [ debuffs ]
     ///   ( party: hidden )
     ///   [ RAID ]                                   [ BUFFS ]
     ///                    [ CAST BAR ]                  [ TOOLTIP ]
@@ -657,13 +670,21 @@ impl Default for HudFrames {
     /// there, hidden, one click away in Edit HUD.
     fn default() -> Self {
         Self {
-            player: HudPlacement::at(HudAnchor::Left, 0.030, -0.120),
+            // The player's column: frame, resource, energy and debuffs stacked down from it,
+            // spaced for interface scales up to 150 % and clear of the raid frames' top edge.
+            player: HudPlacement::at(HudAnchor::Left, 0.030, -0.200),
+            resource: HudPlacement::at(HudAnchor::Left, 0.030, -0.140),
+            energy: HudPlacement::at(HudAnchor::Left, 0.030, -0.105),
+            debuffs: HudPlacement::at(HudAnchor::Left, 0.030, -0.050),
             target: HudPlacement::at(HudAnchor::Top, -0.090, 0.030),
+            // Under the target frame: what is on it first, what it has second.
+            target_debuffs: HudPlacement::at(HudAnchor::Top, -0.090, 0.092),
+            target_buffs: HudPlacement::at(HudAnchor::Top, -0.090, 0.140),
             target_of_target: HudPlacement::at(HudAnchor::Top, 0.140, 0.030).scaled(0.80),
             // Where the raid frames used to be, so the hidden list is never under the shown
             // frames and can always be picked up again in Edit HUD.
             party: HudPlacement::at(HudAnchor::Left, 0.030, 0.330).disabled(),
-            raid: HudPlacement::at(HudAnchor::Left, 0.030, 0.060),
+            raid: HudPlacement::at(HudAnchor::Left, 0.030, 0.150),
             cast_bar: HudCastBar::default(),
             // Top right, the genre's place for them: below the corner buttons and clear of
             // the minimap's corner and the target-of-target frame from 720p up.
@@ -690,6 +711,17 @@ impl HudFrames {
             raid: self.raid.validated(fallback.raid, "the raid frames"),
             cast_bar: self.cast_bar.validated(),
             buffs: self.buffs.validated(fallback.buffs, "the buff bar"),
+            debuffs: self.debuffs.validated(fallback.debuffs, "the debuff bar"),
+            target_buffs: self
+                .target_buffs
+                .validated(fallback.target_buffs, "the target's buffs"),
+            target_debuffs: self
+                .target_debuffs
+                .validated(fallback.target_debuffs, "the target's debuffs"),
+            resource: self
+                .resource
+                .validated(fallback.resource, "the resource bar"),
+            energy: self.energy.validated(fallback.energy, "the energy bar"),
             tooltip: self.tooltip.validated(fallback.tooltip, "the tooltip"),
         }
     }

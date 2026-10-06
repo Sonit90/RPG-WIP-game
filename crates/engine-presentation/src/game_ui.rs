@@ -346,7 +346,7 @@ impl Default for UiTheme {
             slot_disabled: [0.25, 0.25, 0.28, 1.0],
             slot_no_resource: [0.70, 0.18, 0.18, 1.0],
             slot_invalid: [0.60, 0.15, 0.15, 1.0],
-            slot_empowered: [1.0, 0.75, 0.20, 1.0],
+            slot_empowered: [1.0, 0.88, 0.18, 1.0],
             icon: [1.0, 1.0, 1.0, 1.0],
             // Dimmed and slightly desaturated by the tint alone; no second copy of the art.
             icon_unavailable: [0.42, 0.40, 0.44, 1.0],
@@ -884,13 +884,13 @@ impl GameUi {
 
     /// A sample tooltip in the tooltip dock, for Edit HUD: a tooltip is only ever open while
     /// the pointer is on something, and its place, width and direction cannot be judged from
-    /// an outline.
+    /// an outline. Returns the panel it drew, so the dock can be made the same size.
     pub fn push_tooltip_preview(
         &mut self,
         dock: UiRect,
         direction: crate::ui::flow::FlowDirection,
         viewport: (u32, u32),
-    ) {
+    ) -> UiRect {
         use crate::ui::tooltip::SectionKind;
         let model = &mut self.tooltip;
         model.clear();
@@ -910,7 +910,7 @@ impl GameUi {
             direction,
             &kit,
             viewport,
-        );
+        )
     }
 
     /// A sample row of buffs in the buff bar's rectangle, for Edit HUD.
@@ -918,55 +918,57 @@ impl GameUi {
     /// The bar is empty most of the time, and an empty rectangle cannot be judged for place or
     /// size: while the editor is open and nothing is running, this is what fills it.
     pub fn push_buff_bar_preview(&mut self, flow: &crate::ui::flow::Flow) {
+        self.push_aura_preview(flow, false);
+    }
+
+    /// Ten sample effects in a block of aura icons, for Edit HUD: buffs, or debuffs with
+    /// stacks, so a block can be placed and sized against what it will hold.
+    pub fn push_aura_preview(&mut self, flow: &crate::ui::flow::Flow, harmful: bool) {
         use crate::aura::{Aura, AuraKind};
         use engine_game::status::StatusKind;
-        const SAMPLE: [Aura; 5] = [
+        const fn sample(kind: AuraKind, stacks: u8, remaining: f32) -> Aura {
             Aura {
-                kind: AuraKind::FlameShield,
-                stacks: 1,
-                remaining: 4.0,
-                duration: 5.0,
+                kind,
+                stacks,
+                remaining,
+                duration: 12.0,
                 indefinite: false,
                 amount: 0.0,
-            },
-            Aura {
-                kind: AuraKind::Status(StatusKind::Rejuvenation),
-                stacks: 1,
-                remaining: 12.0,
-                duration: 18.0,
-                indefinite: false,
-                amount: 0.0,
-            },
-            Aura {
-                kind: AuraKind::ShieldBlock,
-                stacks: 1,
-                remaining: 3.0,
-                duration: 6.0,
-                indefinite: false,
-                amount: 0.0,
-            },
-            Aura {
-                kind: AuraKind::Status(StatusKind::Recuperating),
-                stacks: 3,
-                remaining: 7.0,
-                duration: 10.0,
-                indefinite: false,
-                amount: 0.0,
-            },
-            Aura {
-                kind: AuraKind::Status(StatusKind::WildRush),
-                stacks: 1,
-                remaining: 5.0,
-                duration: 6.0,
-                indefinite: false,
-                amount: 0.0,
-            },
+            }
+        }
+        const BUFFS: [Aura; 10] = [
+            sample(AuraKind::FlameShield, 1, 4.0),
+            sample(AuraKind::Status(StatusKind::Rejuvenation), 1, 11.0),
+            sample(AuraKind::ShieldBlock, 1, 3.0),
+            sample(AuraKind::Status(StatusKind::Recuperating), 3, 7.0),
+            sample(AuraKind::Status(StatusKind::WildRush), 1, 5.0),
+            sample(AuraKind::Status(StatusKind::Lifebloom), 3, 6.0),
+            sample(AuraKind::Status(StatusKind::Fortitude), 1, 9.0),
+            sample(AuraKind::Status(StatusKind::BattleShout), 1, 10.0),
+            sample(AuraKind::Status(StatusKind::ArcaneIntellect), 1, 8.0),
+            sample(AuraKind::Status(StatusKind::Regeneration), 1, 2.0),
         ];
-        crate::ui::aura_row::push_buff_bar(
+        const DEBUFFS: [Aura; 10] = [
+            sample(AuraKind::Ignite, 5, 6.0),
+            sample(AuraKind::Status(StatusKind::Poisoned), 1, 9.0),
+            sample(AuraKind::Status(StatusKind::Rended), 3, 4.0),
+            sample(AuraKind::Status(StatusKind::Bleeding), 2, 5.0),
+            sample(AuraKind::Status(StatusKind::Crippled), 1, 3.0),
+            sample(AuraKind::Status(StatusKind::Sundered), 2, 8.0),
+            sample(AuraKind::Status(StatusKind::CurseOfWeakness), 1, 11.0),
+            sample(AuraKind::Status(StatusKind::WitheringPlague), 1, 7.0),
+            sample(AuraKind::Status(StatusKind::MagicVulnerability), 1, 10.0),
+            sample(AuraKind::Scorched, 1, 2.0),
+        ];
+        crate::ui::aura_row::push_aura_block(
             &mut self.list,
             &mut self.aura_hits,
             flow,
-            SAMPLE.iter(),
+            if harmful {
+                DEBUFFS.iter()
+            } else {
+                BUFFS.iter()
+            },
             &mut self.statuses,
         );
     }
@@ -2038,17 +2040,25 @@ impl GameUi {
         // The edge says what pressing it would do: quiet when it is simply ready, coloured
         // when it is refused or empowered, white while it is the ability in progress.
         let active = view.shows_active_frame();
+        // **Empowerable is said whatever else is true.** A press that will spend Deflection
+        // or Astral Power is outlined in yellow even while the button is cooling or the
+        // target is wrong: what the resource will buy is worth knowing before it is usable.
+        let empowerable = view.spends_deflection
+            || view.spends_astral
+            || view.availability == SlotAvailability::Empowered;
         let border = if active {
             self.theme.slot_casting
+        } else if empowerable {
+            self.theme.slot_empowered
         } else {
             self.theme.slot_color(view.availability)
         };
-        let width = if active || view.availability != SlotAvailability::Ready {
+        let width = if active || empowerable || view.availability != SlotAvailability::Ready {
             px(2.0).max(2.0)
         } else {
             px(1.0).max(1.0)
         };
-        if active || view.availability == SlotAvailability::Empowered {
+        if active || empowerable {
             self.list.glow(rect, corner, px(7.0), faded(border, 0.45));
         }
         self.list.panel_stroke(rect, corner, width, border);

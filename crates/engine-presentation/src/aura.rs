@@ -55,6 +55,14 @@ pub enum AuraKind {
     Adrenaline,
     /// Puncture Blood's absorb.
     BloodWard,
+    /// What unspent Deflection is worth right now, in tenths of a per cent: extra maximum
+    /// health and extra armour. Shown as a buff rather than printed on the player frame.
+    Deflection {
+        /// Extra maximum health, tenths of a per cent.
+        health: u16,
+        /// Extra armour, tenths of a per cent.
+        armor: u16,
+    },
     /// A monster's frenzy.
     Frenzy,
     /// A monster stunned.
@@ -113,6 +121,7 @@ impl AuraKind {
             Self::SpellReflect => UiIcon::SpellReflect,
             Self::Adrenaline => UiIcon::Adrenaline,
             Self::BloodWard => UiIcon::AuraBloodWard,
+            Self::Deflection { .. } => UiIcon::AuraDeflection,
             Self::Frenzy => UiIcon::AuraFrenzy,
             Self::Stunned => UiIcon::AuraStunned,
             Self::Silenced => UiIcon::AuraSilenced,
@@ -135,6 +144,7 @@ impl AuraKind {
             Self::SpellReflect => "Spell Reflect",
             Self::Adrenaline => "Adrenaline",
             Self::BloodWard => "Blood Ward",
+            Self::Deflection { .. } => "Deflection",
             Self::Frenzy => "Frenzy",
             Self::Stunned => "Stunned",
             Self::Silenced => "Silenced",
@@ -158,6 +168,9 @@ impl AuraKind {
             Self::SpellReflect => "Enemy spells go back to whoever cast them.",
             Self::Adrenaline => "Banking a share of the damage taken, to heal it back later.",
             Self::BloodWard => "Absorbing damage.",
+            Self::Deflection { .. } => {
+                "Unspent Deflection: more maximum health and armour, less the fuller the bar."
+            }
             Self::Frenzy => "Attacking faster.",
             Self::Stunned => "Cannot act.",
             Self::Silenced => "Cannot cast spells.",
@@ -179,6 +192,7 @@ impl AuraKind {
             | Self::SpellReflect
             | Self::Adrenaline
             | Self::BloodWard
+            | Self::Deflection { .. }
             | Self::Frenzy => false,
         }
     }
@@ -472,6 +486,18 @@ fn push_class_auras(simulation: &Simulation, list: &mut AuraList) {
                     list.push(Aura::timed(kind, timer.remaining(), duration(ability)));
                 }
             }
+            // What holding Deflection is worth, as a buff for as long as it is worth anything:
+            // the frame no longer prints it, and an icon with a tooltip is where a passive
+            // bonus belongs.
+            let tenths = |fraction: f32| (fraction * 1000.0).round().clamp(0.0, 65_535.0) as u16;
+            let health = tenths(warrior.deflection.max_health_bonus());
+            let armor = tenths(warrior.deflection.armor_bonus());
+            if health > 0 || armor > 0 {
+                list.push(Aura {
+                    indefinite: true,
+                    ..Aura::timed(AuraKind::Deflection { health, armor }, 0.0, 0.0)
+                });
+            }
             if warrior.absorb.is_active() {
                 list.push(Aura {
                     amount: warrior.absorb.remaining(),
@@ -554,6 +580,10 @@ mod tests {
             AuraKind::SpellReflect,
             AuraKind::Adrenaline,
             AuraKind::BloodWard,
+            AuraKind::Deflection {
+                health: 38,
+                armor: 38,
+            },
             AuraKind::Frenzy,
             AuraKind::Stunned,
             AuraKind::Silenced,

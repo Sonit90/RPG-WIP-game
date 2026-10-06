@@ -453,11 +453,13 @@ pub enum UiIcon {
     AuraWitheringPlague,
     /// Magic Vulnerability: a cracked orb of warding.
     AuraMagicVulnerability,
+    /// Unspent Deflection: a steel shield turning a blow aside.
+    AuraDeflection,
 }
 
 impl UiIcon {
     /// Every icon, in atlas order.
-    pub const ALL: [Self; 107] = [
+    pub const ALL: [Self; 108] = [
         Self::Firebolt,
         Self::Meteor,
         Self::FlameCone,
@@ -565,6 +567,7 @@ impl UiIcon {
         Self::AuraCurseOfWeakness,
         Self::AuraWitheringPlague,
         Self::AuraMagicVulnerability,
+        Self::AuraDeflection,
     ];
 
     /// How many icons there are.

@@ -153,29 +153,71 @@ pub fn push_absorb_layer(
         width.round().max(1.0),
         inner.height,
     );
+    // A translucent sheet first, so the health under an overflowing shield still shows.
     list.panel(
         shield,
         0.0,
-        faded(theme.absorb_top, alpha),
-        faded(theme.absorb_bottom, alpha),
+        faded(theme.absorb_top, 0.80 * alpha),
+        faded(theme.absorb_bottom, 0.80 * alpha),
     );
-    // A one-pixel highlight along its top, so the layer reads as a sheet over the bar.
+    // **The shield's texture**: bright diagonal hatching across the sheet, the genre's mark
+    // for "this health is not yours yet". Drawn as a staircase of short runs so it needs no
+    // texture and no clip — the bar may already be inside one.
+    push_hatching(list, shield, faded([1.0, 1.0, 1.0, 0.28], alpha));
+    // A highlight along its top and a shade along its bottom, so the layer reads as a sheet
+    // of glass laid over the bar rather than a second colour of health.
     list.rect(
         UiRect::new(shield.x, shield.y, shield.width, 1.0),
-        faded(theme.absorb_edge, 0.55 * alpha),
+        faded(theme.absorb_edge, 0.85 * alpha),
     );
-    // Where the shield starts, a hairline: the boundary between health and shield.
+    list.rect(
+        UiRect::new(shield.x, shield.bottom() - 1.0, shield.width, 1.0),
+        faded([0.0, 0.0, 0.0, 0.35], alpha),
+    );
+    // Where the shield starts, a bright seam: the boundary between health and shield.
     list.rect(
         UiRect::new(shield.x, shield.y, 1.0, shield.height),
-        faded([0.0, 0.0, 0.0, 0.55], alpha),
+        faded(theme.absorb_edge, 0.9 * alpha),
     );
     if overflow {
-        // More shield than missing health: a bright edge at the end says "and then some".
+        // More shield than missing health: a glowing edge at the end says "and then some".
         let edge = (inner.height * 0.18).clamp(2.0, 4.0).round();
-        list.rect(
-            UiRect::new(inner.right() - edge, inner.y, edge, inner.height),
-            faded(theme.absorb_edge, alpha),
-        );
+        let end = UiRect::new(inner.right() - edge, inner.y, edge, inner.height);
+        list.glow(end, 0.0, edge * 2.0, faded(theme.absorb_edge, 0.55 * alpha));
+        list.rect(end, faded(theme.absorb_edge, alpha));
+    }
+}
+
+/// Diagonal hatching inside `rect`: stripes rising to the right, every few pixels.
+///
+/// Each stripe is a stack of short horizontal runs, one per band of rows, stepped across as
+/// it climbs — a 45° line at the bars' sizes for a handful of rectangles, and every run is
+/// cut to `rect` so nothing spills over the border.
+fn push_hatching(list: &mut UiDrawList, rect: UiRect, color: UiColor) {
+    if rect.width < 2.0 || rect.height < 2.0 {
+        return;
+    }
+    let pitch = (rect.height * 0.55).clamp(5.0, 10.0).round();
+    let thickness = (pitch * 0.4).round().max(1.0);
+    let band = (rect.height / 6.0).round().clamp(1.0, 3.0);
+    let bands = (rect.height / band).ceil() as usize;
+    // Stripes start far enough left that the ones that climb in from outside cover the
+    // left-hand corner too.
+    let first = -(rect.height / pitch).ceil() as i32 - 1;
+    let last = (rect.width / pitch).ceil() as i32 + 1;
+    for stripe in first..=last {
+        for index in 0..bands {
+            let top = rect.y + index as f32 * band;
+            let height = band.min(rect.bottom() - top);
+            // Rising to the right: the lower the band, the further left the run.
+            let rise = rect.bottom() - (top + height * 0.5);
+            let left = rect.x + stripe as f32 * pitch + rise;
+            let x0 = left.max(rect.x);
+            let x1 = (left + thickness).min(rect.right());
+            if x1 - x0 >= 0.5 && height > 0.0 {
+                list.rect(UiRect::new(x0, top, x1 - x0, height), color);
+            }
+        }
     }
 }
 

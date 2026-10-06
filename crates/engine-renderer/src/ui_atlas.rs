@@ -570,6 +570,7 @@ fn icon_texels(icon: UiIcon) -> [&'static [u8]; ICON_VARIANTS] {
         UiIcon::AuraCurseOfWeakness => raster::AURA_CURSE_OF_WEAKNESS,
         UiIcon::AuraWitheringPlague => raster::AURA_WITHERING_PLAGUE,
         UiIcon::AuraMagicVulnerability => raster::AURA_MAGIC_VULNERABILITY,
+        UiIcon::AuraDeflection => raster::AURA_DEFLECTION,
     }
 }
 

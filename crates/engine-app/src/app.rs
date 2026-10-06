@@ -3775,30 +3775,57 @@ impl App {
                 .rect_of(HudElementId::CastBar, scale, viewport);
             self.game_ui.push_cast_bar_preview(rect);
         }
-        // The buff bar likewise: sample icons while nothing is running, so it can be placed.
-        if self.hud_editor.is_active()
-            && self.snapshot.player.auras.buffs().next().is_none()
-            && self.hud_layout.is_enabled(HudElementId::Buffs)
-        {
-            let rect = self
-                .hud_layout
-                .rect_of(HudElementId::Buffs, scale, viewport);
-            let flow = self.hud_layout.buff_flow(rect);
-            self.game_ui.push_buff_bar_preview(&flow);
+        // The buff and debuff blocks likewise: ten sample icons while nothing is running in
+        // them, so each can be placed and sized against what it will hold.
+        if self.hud_editor.is_active() {
+            let target = self.snapshot.target.as_ref().map(|target| &target.auras);
+            for (id, auras, harmful) in [
+                (HudElementId::Buffs, Some(&self.snapshot.player.auras), false),
+                (HudElementId::Debuffs, Some(&self.snapshot.player.auras), true),
+                (HudElementId::TargetBuffs, target, false),
+                (HudElementId::TargetDebuffs, target, true),
+            ] {
+                let empty = auras.is_none_or(|auras| {
+                    if harmful {
+                        auras.debuffs().next().is_none()
+                    } else {
+                        auras.buffs().next().is_none()
+                    }
+                });
+                if empty && self.hud_layout.is_enabled(id) {
+                    let rect = self.hud_layout.rect_of(id, scale, viewport);
+                    let flow = self.hud_layout.aura_flow(id, rect);
+                    self.game_ui.push_aura_preview(&flow, harmful);
+                }
+            }
         }
-        // And the tooltip dock: a sample tooltip, opened the way a real one is.
+        // And the tooltip dock: a sample tooltip, opened the way a real one is. The dock the
+        // editor drags is then made exactly the size of the tooltip it just previewed.
         if self.hud_editor.is_active() && self.hud_layout.is_enabled(HudElementId::Tooltip) {
             let dock = self
                 .hud_layout
                 .rect_of(HudElementId::Tooltip, scale, viewport);
             let direction = self.hud_layout.direction(HudElementId::Tooltip);
-            self.game_ui.push_tooltip_preview(dock, direction, viewport);
+            let drawn = self.game_ui.push_tooltip_preview(dock, direction, viewport);
+            let factor = scale.factor() * self.hud_layout.scale_of(HudElementId::Tooltip);
+            if factor > 0.0 {
+                self.hud_layout.set_tooltip_height(drawn.height / factor);
+            }
+        }
+        // The debuffs over every enemy on screen, for the Enemy Debuffs frame.
+        if self.hud_editor.is_active() {
+            self.hud_editor.set_enemy_debuff_rows(
+                self.nameplates
+                    .plates()
+                    .iter()
+                    .filter(|plate| !plate.dead)
+                    .map(|plate| plate.debuff_area(3)),
+            );
         }
         push_hud_editor(
             self.game_ui.list_mut(),
             &self.hud_editor,
             &self.hud_layout,
-            None,
             &mut self.hud_scratch,
             scale,
             viewport,

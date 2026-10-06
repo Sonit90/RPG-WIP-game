@@ -642,6 +642,10 @@ const ICONS: &[IconEntry] = &[
         file: "aura/magic_vulnerability.svg",
         constant: "AURA_MAGIC_VULNERABILITY",
     },
+    IconEntry {
+        file: "aura/deflection.svg",
+        constant: "AURA_DEFLECTION",
+    },
 ];
 
 /// One icon: a file under `assets/icons/` and the constant its texels are bound to.

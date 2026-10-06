@@ -6,13 +6,13 @@
 //!                          +-- drag an element       -> a new position (snaps, if on)
 //!                          +-- click an element      -> select it; the inspector shows it
 //!                          +-- inspector
-//!                                POSITION   anchor grid, X, Y
+//!                                POSITION   anchor grid
 //!                                SIZE       scale, width, height
 //!                                LAYOUT     orientation, directions, spacing
 //!                                VISIBILITY shown / hidden
 //!                                Reset element · Done
 //!                          +-- nothing selected: every element by name (the way back to
-//!                              one that is hidden), Nameplates, grid and snapping, Reset all
+//!                              one that is hidden), Nameplates, Enemy Debuffs, grid and snapping, Reset all
 //! ```
 //!
 //! ## It is not a panel over the game
@@ -76,8 +76,6 @@ mod layout {
     pub const SNAP: f32 = 8.0;
     /// The grid's pitch.
     pub const GRID: f32 = 32.0;
-    /// One press of the X or Y control, physical pixels at scale one.
-    pub const NUDGE: f32 = 4.0;
 }
 
 /// What the inspector is showing.
@@ -87,6 +85,9 @@ pub enum EditTarget {
     Element(HudElementId),
     /// The enemy nameplates in the world: not a rectangle on the screen, but arranged here.
     Nameplates,
+    /// The debuff rows over every enemy's nameplate: a frame of its own, about the real
+    /// enemies in the fight and not about the target.
+    EnemyDebuffs,
 }
 
 /// One control of the inspector, and what it does.
@@ -104,10 +105,6 @@ pub enum Control {
     Visible,
     /// Hangs the selected element from anchor `n` (row-major, 0 is top-left).
     Anchor(u8),
-    /// Moves it left or right one step.
-    MoveX(i8),
-    /// Moves it up or down one step.
-    MoveY(i8),
     /// One step of scale.
     Scale(i8),
     /// One step of width.
@@ -189,6 +186,9 @@ pub struct HudEditor {
     pointer_down: bool,
     /// The nameplate settings the Nameplates section edits.
     nameplates: NameplateSettings,
+    /// Where the debuff rows over the enemies on screen are this frame: what the Enemy
+    /// Debuffs frame outlines, and where a click selects it. Rebuilt in place.
+    enemy_debuffs: Vec<UiRect>,
 }
 
 impl Default for HudEditor {
@@ -214,6 +214,7 @@ impl HudEditor {
             pointer: (0.0, 0.0),
             pointer_down: false,
             nameplates: NameplateSettings::default(),
+            enemy_debuffs: Vec::with_capacity(32),
         }
     }
 
@@ -276,6 +277,12 @@ impl HudEditor {
         self.nameplates = settings;
     }
 
+    /// Tells the editor where the debuff rows over the enemies on screen are this frame.
+    pub fn set_enemy_debuff_rows(&mut self, rows: impl IntoIterator<Item = UiRect>) {
+        self.enemy_debuffs.clear();
+        self.enemy_debuffs.extend(rows);
+    }
+
     /// Shows `target` in the inspector — what clicking it does. For a development flag and
     /// tests; the player selects by clicking.
     pub fn select(&mut self, target: Option<EditTarget>) {
@@ -288,12 +295,18 @@ impl HudEditor {
     pub fn target_named(name: &str) -> Option<EditTarget> {
         let element = match name {
             "nameplates" => return Some(EditTarget::Nameplates),
+            "enemy_debuffs" => return Some(EditTarget::EnemyDebuffs),
             "player" => HudElementId::Player,
             "target" => HudElementId::Target,
             "tot" | "target_of_target" => HudElementId::TargetOfTarget,
             "party" => HudElementId::Party,
-            "raid" => HudElementId::Raid,
+            "raid" | "group" => HudElementId::Raid,
             "buffs" => HudElementId::Buffs,
+            "debuffs" => HudElementId::Debuffs,
+            "target_buffs" => HudElementId::TargetBuffs,
+            "target_debuffs" => HudElementId::TargetDebuffs,
+            "resource" => HudElementId::Resource,
+            "energy" => HudElementId::Energy,
             "cast_bar" => HudElementId::CastBar,
             "tooltip" => HudElementId::Tooltip,
             bar => {
@@ -449,9 +462,15 @@ impl HudEditor {
                 let settings = self.nameplates;
                 self.nameplates = NameplateSettings {
                     size: fresh.size,
-                    debuff_size: fresh.debuff_size,
                     buff_size: fresh.buff_size,
                     ..settings
+                };
+                return EditOutcome::NameplatesChanged;
+            }
+            Control::ResetElement if self.selected == Some(EditTarget::EnemyDebuffs) => {
+                self.nameplates = NameplateSettings {
+                    debuff_size: NameplateSettings::default().debuff_size,
+                    ..self.nameplates
                 };
                 return EditOutcome::NameplatesChanged;
             }
@@ -471,18 +490,6 @@ impl HudEditor {
                     layout.set_anchor(id, *anchor, scale, viewport);
                 }
             }
-            Control::MoveX(steps) => layout.nudge_position(
-                id,
-                (scale.px(layout::NUDGE) * f32::from(steps), 0.0),
-                scale,
-                viewport,
-            ),
-            Control::MoveY(steps) => layout.nudge_position(
-                id,
-                (0.0, scale.px(layout::NUDGE) * f32::from(steps)),
-                scale,
-                viewport,
-            ),
             Control::Scale(steps) => layout.nudge_scale(id, step(steps)),
             Control::Width(steps) => layout.nudge_extent(id, step(steps), 0, scale, viewport),
             Control::Height(steps) => layout.nudge_extent(id, 0, step(steps), scale, viewport),
@@ -544,6 +551,10 @@ impl HudEditor {
                     grab: (x - rect.x, y - rect.y),
                     moved: false,
                 });
+            } else if self.enemy_debuffs.iter().any(|rect| rect.contains(x, y)) {
+                // The debuffs over an enemy: not draggable — they go where the enemy goes —
+                // but selectable, for their size.
+                self.selected = Some(EditTarget::EnemyDebuffs);
             } else {
                 // A press on empty space deselects, so the inspector stops acting on
                 // something the player has stopped looking at.
@@ -729,11 +740,6 @@ impl HudEditor {
                     Control::Back,
                     UiRect::new(pad, pad, px(28.0), px(28.0)),
                 );
-                push(
-                    &mut self.controls,
-                    Control::Visible,
-                    UiRect::new(width - pad - px(28.0), pad, px(28.0), px(28.0)),
-                );
                 y += pad + header;
 
                 self.headings.push(Heading {
@@ -747,26 +753,6 @@ impl HudEditor {
                         kit::anchor_cell(UiRect::new(pad, y, grid, grid), usize::from(index));
                     push(&mut self.controls, Control::Anchor(index), cell);
                 }
-                let steppers_x = pad + grid + px(14.0);
-                let steppers_w = width - pad - steppers_x;
-                let stepper_gap = (grid - row * 2.0).max(gap);
-                self.push_stepper(
-                    Control::MoveX(-1),
-                    Control::MoveX(1),
-                    UiRect::new(steppers_x, y + px(6.0), steppers_w, row),
-                    &kit,
-                );
-                self.push_stepper(
-                    Control::MoveY(-1),
-                    Control::MoveY(1),
-                    UiRect::new(
-                        steppers_x,
-                        y + px(6.0) + row + stepper_gap * 0.5,
-                        steppers_w,
-                        row,
-                    ),
-                    &kit,
-                );
                 y += grid + gap * 1.5;
 
                 self.headings.push(Heading {
@@ -883,23 +869,31 @@ impl HudEditor {
                 y += px(34.0) + pad;
                 let _ = layout;
             }
-            Some(EditTarget::Nameplates) => {
+            Some(target @ (EditTarget::Nameplates | EditTarget::EnemyDebuffs)) => {
                 push(
                     &mut self.controls,
                     Control::Back,
                     UiRect::new(pad, pad, px(28.0), px(28.0)),
                 );
                 y += pad + header;
-                self.headings.push(Heading {
-                    top: y,
-                    title: "NAMEPLATES",
-                });
+                let (title, steppers): (&str, &[(Control, Control)]) =
+                    if target == EditTarget::EnemyDebuffs {
+                        (
+                            "ON EVERY ENEMY",
+                            &[(Control::PlateDebuffs(-1), Control::PlateDebuffs(1))],
+                        )
+                    } else {
+                        (
+                            "NAMEPLATES",
+                            &[
+                                (Control::PlateSize(-1), Control::PlateSize(1)),
+                                (Control::PlateBuffs(-1), Control::PlateBuffs(1)),
+                            ],
+                        )
+                    };
+                self.headings.push(Heading { top: y, title });
                 y += section;
-                for (minus, plus) in [
-                    (Control::PlateSize(-1), Control::PlateSize(1)),
-                    (Control::PlateDebuffs(-1), Control::PlateDebuffs(1)),
-                    (Control::PlateBuffs(-1), Control::PlateBuffs(1)),
-                ] {
+                for &(minus, plus) in steppers {
                     self.push_stepper(minus, plus, UiRect::new(pad, y, inner, row), &kit);
                     y += row + gap;
                 }
@@ -937,14 +931,16 @@ impl HudEditor {
                     );
                     index += 1;
                 }
-                let x = pad + (index % 2) as f32 * (column + gap);
-                let top = y + (index / 2) as f32 * (list_row + px(4.0));
-                push(
-                    &mut self.controls,
-                    Control::Select(EditTarget::Nameplates),
-                    UiRect::new(x, top, column, list_row),
-                );
-                index += 1;
+                for target in [EditTarget::Nameplates, EditTarget::EnemyDebuffs] {
+                    let x = pad + (index % 2) as f32 * (column + gap);
+                    let top = y + (index / 2) as f32 * (list_row + px(4.0));
+                    push(
+                        &mut self.controls,
+                        Control::Select(target),
+                        UiRect::new(x, top, column, list_row),
+                    );
+                    index += 1;
+                }
                 y += index.div_ceil(2) as f32 * (list_row + px(4.0)) + gap;
 
                 self.headings.push(Heading {
@@ -1026,8 +1022,13 @@ fn list_order() -> impl Iterator<Item = HudElementId> {
     HudElementId::FRAMES
         .into_iter()
         .chain([
+            HudElementId::Resource,
+            HudElementId::Energy,
             HudElementId::Raid,
             HudElementId::Buffs,
+            HudElementId::Debuffs,
+            HudElementId::TargetBuffs,
+            HudElementId::TargetDebuffs,
             HudElementId::CastBar,
             HudElementId::Tooltip,
         ])
@@ -1076,7 +1077,6 @@ pub fn push_hud_editor(
     list: &mut UiDrawList,
     editor: &HudEditor,
     layout: &HudLayout,
-    nameplate_preview: Option<UiRect>,
     label: &mut String,
     scale: UiScale,
     viewport: (u32, u32),
@@ -1227,9 +1227,29 @@ pub fn push_hud_editor(
         );
     }
 
-    // A sample of where the nameplates' icons sit, while the Nameplates section is open.
-    if let (Some(EditTarget::Nameplates), Some(rect)) = (editor.target(), nameplate_preview) {
-        list.panel_stroke(rect, kit.px(4.0), kit.px(2.0), tokens::ACCENT);
+    // The debuff rows over every enemy in the fight: a frame of their own, tied to the real
+    // plates rather than to the target. Outlined faintly always, so they can be found and
+    // clicked, and in the accent while they are what the inspector is editing.
+    let enemy_selected = editor.target() == Some(EditTarget::EnemyDebuffs);
+    for rect in &editor.enemy_debuffs {
+        let pad = kit.px(3.0);
+        let outline = UiRect::new(
+            rect.x - pad,
+            rect.y - pad,
+            rect.width + pad * 2.0,
+            rect.height + pad * 2.0,
+        );
+        if enemy_selected {
+            list.panel(
+                outline,
+                kit.px(3.0),
+                color::alpha(tokens::ACCENT, 0.10),
+                color::alpha(tokens::ACCENT, 0.10),
+            );
+            list.panel_stroke(outline, kit.px(3.0), kit.px(2.0), tokens::ACCENT);
+        } else {
+            list.panel_stroke(outline, kit.px(3.0), 1.0, [1.0, 1.0, 1.0, 0.30]);
+        }
     }
 
     // The mode's badge, top centre: says where the player is without covering the world.
@@ -1267,7 +1287,7 @@ pub fn push_hud_editor(
         TextAlign::Left,
     );
 
-    push_inspector(list, editor, layout, &kit, label, scale, viewport);
+    push_inspector(list, editor, layout, &kit, label);
 }
 
 /// The inspector card and every control on it.
@@ -1281,8 +1301,6 @@ fn push_inspector(
     layout: &HudLayout,
     kit: &Kit,
     label: &mut String,
-    scale: UiScale,
-    viewport: (u32, u32),
 ) {
     use std::fmt::Write as _;
     let panel = editor.panel;
@@ -1305,6 +1323,7 @@ fn push_inspector(
             ("", anchor_phrase(layout.placement(id).anchor))
         }
         Some(EditTarget::Nameplates) => ("Nameplates", "Enemy plates in the world"),
+        Some(EditTarget::EnemyDebuffs) => ("Enemy Debuffs", "Over every enemy in the fight"),
         None => ("Edit Mode", "Drag anything on screen. Click it for more."),
     };
     let title_text: &str = if title.is_empty() {
@@ -1351,8 +1370,6 @@ fn push_inspector(
         let interaction = editor.interaction(rect);
         match control {
             Control::Back
-            | Control::MoveX(1)
-            | Control::MoveY(1)
             | Control::Scale(1)
             | Control::Width(1)
             | Control::Height(1)
@@ -1360,23 +1377,6 @@ fn push_inspector(
             | Control::PlateSize(1)
             | Control::PlateDebuffs(1)
             | Control::PlateBuffs(1) => {}
-            Control::Visible if rect.width <= rect.height * 1.5 => {
-                // The header's eye.
-                let shown = selected.is_some_and(|id| layout.is_enabled(id));
-                kit::icon_button(
-                    list,
-                    kit,
-                    rect,
-                    if shown {
-                        UiIcon::ControlEye
-                    } else {
-                        UiIcon::ControlEyeOff
-                    },
-                    0.0,
-                    ButtonVariant::Ghost,
-                    interaction.active(!shown),
-                );
-            }
             Control::Visible => {
                 let shown = selected.is_some_and(|id| layout.is_enabled(id));
                 kit.text(
@@ -1437,9 +1437,7 @@ fn push_inspector(
                     kit::anchor_grid(list, kit, grid, &states);
                 }
             }
-            Control::MoveX(_)
-            | Control::MoveY(_)
-            | Control::Scale(_)
+            Control::Scale(_)
             | Control::Width(_)
             | Control::Height(_)
             | Control::Spacing(_)
@@ -1448,8 +1446,6 @@ fn push_inspector(
             | Control::PlateBuffs(_) => {
                 // The minus half: the stepper is drawn once, from here.
                 let plus = match control {
-                    Control::MoveX(_) => Control::MoveX(1),
-                    Control::MoveY(_) => Control::MoveY(1),
                     Control::Scale(_) => Control::Scale(1),
                     Control::Width(_) => Control::Width(1),
                     Control::Height(_) => Control::Height(1),
@@ -1461,15 +1457,9 @@ fn push_inspector(
                 let Some(plus_rect) = rect_of(plus) else {
                     continue;
                 };
-                let left = match control {
-                    Control::MoveX(_) | Control::MoveY(_) => {
-                        panel.x + pad + kit.px(layout::ANCHOR_GRID) + kit.px(14.0)
-                    }
-                    _ => panel.x + pad,
-                };
+                let left = panel.x + pad;
                 let row = UiRect::new(left, rect.y, plus_rect.right() - left, rect.height);
-                let (name, value) =
-                    stepper_text(control, selected, editor, layout, label, scale, viewport);
+                let (name, value) = stepper_text(control, selected, editor, layout, label);
                 label.clear();
                 label.push_str(&value);
                 kit::stepper(
@@ -1573,6 +1563,7 @@ fn push_inspector(
                         (!layout.is_enabled(id), label.as_str())
                     }
                     EditTarget::Nameplates => (false, "Nameplates"),
+                    EditTarget::EnemyDebuffs => (false, "Enemy Debuffs"),
                 };
                 kit::button(
                     list,
@@ -1672,21 +1663,11 @@ fn stepper_text(
     editor: &HudEditor,
     layout: &HudLayout,
     scratch: &mut String,
-    scale: UiScale,
-    viewport: (u32, u32),
 ) -> (&'static str, String) {
     use std::fmt::Write as _;
     let _ = scratch;
     let mut value = String::new();
     let name = match (control, selected) {
-        (Control::MoveX(_), Some(id)) => {
-            let _ = write!(value, "{}", layout.rect_of(id, scale, viewport).x.round());
-            "X"
-        }
-        (Control::MoveY(_), Some(id)) => {
-            let _ = write!(value, "{}", layout.rect_of(id, scale, viewport).y.round());
-            "Y"
-        }
         (Control::Scale(_), Some(id)) => {
             let _ = write!(value, "{}%", (layout.scale_of(id) * 100.0).round());
             "Scale"
@@ -2087,10 +2068,6 @@ mod tests {
         assert_eq!(layout.placement(id).anchor, HudAnchor::BottomRight);
         let after = layout.rect_of(id, UiScale::default(), FHD);
         assert!((after.x - before.x).abs() < 0.5 && (after.y - before.y).abs() < 0.5);
-        // A nudge keeps the chosen anchor.
-        click(&mut editor, &mut layout, Control::MoveX(1));
-        assert_eq!(layout.placement(id).anchor, HudAnchor::BottomRight);
-        assert!(layout.rect_of(id, UiScale::default(), FHD).x > after.x);
     }
 
     #[test]
@@ -2239,7 +2216,7 @@ mod tests {
         click(
             &mut editor,
             &mut layout,
-            Control::Select(EditTarget::Nameplates),
+            Control::Select(EditTarget::EnemyDebuffs),
         );
         let before = editor.nameplates();
         assert_eq!(
@@ -2250,6 +2227,35 @@ mod tests {
         assert!(after.debuff_size > before.debuff_size);
         assert_eq!(after.size, before.size, "the plate scale moved with it");
         assert_eq!(after.buff_size, before.buff_size);
+    }
+
+    #[test]
+    fn a_click_on_the_debuffs_over_an_enemy_selects_the_enemy_debuffs_frame() {
+        let (mut editor, mut layout) = editor();
+        // Somewhere no element is, as a plate over a monster would be.
+        let row = UiRect::new(900.0, 300.0, 90.0, 26.0);
+        assert!(HudEditor::element_at(&layout, (920.0, 310.0), UiScale::default(), FHD).is_none());
+        editor.set_enemy_debuff_rows([row]);
+        editor.update(&press((920.0, 310.0)), &mut layout, UiScale::default(), FHD);
+        assert_eq!(editor.target(), Some(EditTarget::EnemyDebuffs));
+        assert!(
+            !editor.is_dragging(),
+            "a plate's debuffs go where the enemy goes"
+        );
+        assert!(editor.control_rect(Control::PlateDebuffs(1)).is_some());
+        assert!(editor.control_rect(Control::PlateSize(1)).is_none());
+    }
+
+    #[test]
+    fn the_header_has_no_eye_and_the_position_has_no_arrows() {
+        let (mut editor, mut layout) = editor();
+        select(&mut editor, &mut layout, HudElementId::Player);
+        let visible: Vec<_> = editor
+            .controls
+            .iter()
+            .filter(|(control, _)| *control == Control::Visible)
+            .collect();
+        assert_eq!(visible.len(), 1, "one show-on-screen switch, no header eye");
     }
 
     #[test]
@@ -2286,7 +2292,6 @@ mod tests {
             &mut list,
             &editor,
             &layout,
-            None,
             &mut label,
             UiScale::default(),
             FHD,

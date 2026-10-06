@@ -1,0 +1,24 @@
+<svg version="1.1" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+<defs>
+<linearGradient id="deflection_panel" gradientUnits="userSpaceOnUse" x1="16" y1="496" x2="496" y2="16">
+<stop offset="0" stop-color="rgb(16, 26, 40)"></stop>
+<stop offset="1" stop-color="rgb(52, 78, 108)"></stop>
+</linearGradient>
+<radialGradient id="deflection_glow" gradientUnits="userSpaceOnUse" cx="300" cy="200" r="260">
+<stop offset="0" stop-color="rgb(170, 210, 255)" stop-opacity="0.50"></stop>
+<stop offset="0.6" stop-color="rgb(170, 210, 255)" stop-opacity="0.14"></stop>
+<stop offset="1" stop-color="rgb(170, 210, 255)" stop-opacity="0"></stop>
+</radialGradient>
+<clipPath id="deflection_tile"><path d="M 16 92 C 16 50 50 16 92 16 L 420 16 C 462 16 496 50 496 92 L 496 420 C 496 462 462 496 420 496 L 92 496 C 50 496 16 462 16 420 Z"></path></clipPath>
+</defs>
+<g clip-path="url(#deflection_tile)">
+<path fill="url(#deflection_panel)" d="M 0 0 L 512 0 L 512 512 L 0 512 Z"></path>
+<path fill="url(#deflection_glow)" d="M 0 0 L 512 0 L 512 512 L 0 512 Z"></path>
+<path fill="rgb(196,212,230)" d="M 236 120 L 372 164 L 362 290 C 352 362 302 410 236 440 C 170 410 120 362 110 290 L 100 164 Z"></path>
+<path fill="rgb(120,140,166)" d="M 236 120 L 372 164 L 362 290 C 352 362 302 410 236 440 Z"></path>
+<path fill="rgb(70,86,108)" d="M 236 168 L 330 198 L 322 286 C 314 338 282 372 236 394 C 190 372 158 338 150 286 L 142 198 Z"></path>
+<path fill="rgb(255,236,170)" d="M 60 108 L 250 228 L 236 250 Z"></path>
+<path fill="rgb(255,248,220)" d="M 250 228 L 470 92 L 478 112 L 262 246 Z"></path>
+<path fill="rgb(255,248,220)" d="M 228 214 L 274 214 L 286 236 L 274 258 L 228 258 L 216 236 Z" opacity="0.85"></path>
+</g>
+</svg>

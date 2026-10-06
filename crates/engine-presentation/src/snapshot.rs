@@ -438,6 +438,9 @@ pub struct TargetView {
     pub phase: Option<(usize, &'static str)>,
     /// Whether it is a boss, so a frame can say so without knowing the roster.
     pub boss: bool,
+    /// Every buff and debuff on it, stacks and clocks included: what the target's buff and
+    /// debuff blocks draw, read the same way its nameplate reads them.
+    pub auras: crate::aura::AuraList,
 }
 
 /// An enemy's cast, for its cast bar.
@@ -1178,6 +1181,7 @@ fn target_view(simulation: &Simulation, entity: EntityId) -> Option<TargetView> 
         boss: simulation
             .brain(entity)
             .is_some_and(|brain| brain.kind().is_boss()),
+        auras: crate::aura::auras_of(simulation, entity),
     })
 }
 
@@ -1222,7 +1226,10 @@ fn ability_view(
     // afford is dimmed before it is pressed rather than after.
     let short_of_mana = simulation.hero() == Hero::Druid
         && definition.druid().mana_cost > 0.0
-        && !simulation.druid().mana.can_pay(definition.druid().mana_cost);
+        && !simulation
+            .druid()
+            .mana
+            .can_pay(definition.druid().mana_cost);
     // The Astral Power button has a requirement of its own, and it is not a cooldown: a bar
     // that is not full, or one that is already armed, cannot be pressed.
     let cannot_arm = ability == FireAbility::AstralPower && !simulation.druid().astral.can_arm();

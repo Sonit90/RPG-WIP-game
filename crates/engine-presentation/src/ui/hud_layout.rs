@@ -83,6 +83,16 @@ pub enum HudElementId {
     CastBar,
     /// The player's buffs.
     Buffs,
+    /// The player's debuffs.
+    Debuffs,
+    /// The target's buffs.
+    TargetBuffs,
+    /// The target's debuffs.
+    TargetDebuffs,
+    /// The hero's own resource: Heat, Deflection, or Mana and Astral Power.
+    Resource,
+    /// Ultimate Energy.
+    Energy,
     /// Where tooltips appear: a dock every ability and aura tooltip grows out of.
     Tooltip,
 }
@@ -160,7 +170,30 @@ impl HudElementId {
     ];
 
     /// The elements that are neither a bar nor one of the four unit frames.
-    pub const EXTRAS: [Self; 3] = [Self::Raid, Self::CastBar, Self::Buffs];
+    pub const EXTRAS: [Self; 8] = [
+        Self::Raid,
+        Self::CastBar,
+        Self::Resource,
+        Self::Energy,
+        Self::Buffs,
+        Self::Debuffs,
+        Self::TargetBuffs,
+        Self::TargetDebuffs,
+    ];
+
+    /// The blocks of buff and debuff icons: one shape, four sources.
+    pub const AURAS: [Self; 4] = [
+        Self::Buffs,
+        Self::Debuffs,
+        Self::TargetBuffs,
+        Self::TargetDebuffs,
+    ];
+
+    /// Whether this element is a block of buff or debuff icons.
+    #[must_use]
+    pub fn is_aura_block(self) -> bool {
+        Self::AURAS.contains(&self)
+    }
 
     /// Every element, in painter's order: the tooltip dock first, so it is under everything
     /// in Edit HUD — it is a place, not a thing, and must never be what a click on a frame
@@ -221,26 +254,33 @@ impl HudElementId {
                 }),
                 ..HudControls::default()
             },
-            Self::Buffs => HudControls {
-                flow_x: true,
-                flow_y: true,
-                spacing: true,
-                width: Some(ExtentSpec {
-                    min: 1.0,
-                    max: 16.0,
-                    step: 1.0,
-                    default: super::aura_row::size::BUFFS_PER_LINE as f32,
-                    unit: "icons",
-                }),
-                height: Some(ExtentSpec {
-                    min: 1.0,
-                    max: 4.0,
-                    step: 1.0,
-                    default: super::aura_row::size::BUFF_LINES as f32,
-                    unit: "rows",
-                }),
-                ..HudControls::default()
-            },
+            Self::Buffs | Self::Debuffs | Self::TargetBuffs | Self::TargetDebuffs => {
+                use super::aura_row::size;
+                let (columns, rows) = match self {
+                    Self::Buffs => (size::BUFFS_PER_LINE, size::BUFF_LINES),
+                    _ => (size::DEBUFFS_PER_LINE, size::DEBUFF_LINES),
+                };
+                HudControls {
+                    flow_x: true,
+                    flow_y: true,
+                    spacing: true,
+                    width: Some(ExtentSpec {
+                        min: 1.0,
+                        max: 16.0,
+                        step: 1.0,
+                        default: columns as f32,
+                        unit: "icons",
+                    }),
+                    height: Some(ExtentSpec {
+                        min: 1.0,
+                        max: 4.0,
+                        step: 1.0,
+                        default: rows as f32,
+                        unit: "rows",
+                    }),
+                    ..HudControls::default()
+                }
+            }
             Self::Tooltip => HudControls {
                 flow_x: true,
                 flow_y: true,
@@ -253,7 +293,9 @@ impl HudElementId {
                 }),
                 ..HudControls::default()
             },
-            Self::Player | Self::Target | Self::TargetOfTarget => HudControls::default(),
+            Self::Player | Self::Target | Self::TargetOfTarget | Self::Resource | Self::Energy => {
+                HudControls::default()
+            }
         }
     }
 
@@ -298,10 +340,15 @@ impl HudElementId {
             Self::Player => out.push_str("PLAYER"),
             Self::Target => out.push_str("TARGET"),
             Self::TargetOfTarget => out.push_str("TARGET OF TARGET"),
-            Self::Party => out.push_str("PARTY"),
-            Self::Raid => out.push_str("RAID"),
+            Self::Party => out.push_str("PARTY LIST"),
+            Self::Raid => out.push_str("PARTY FRAMES"),
             Self::CastBar => out.push_str("CAST BAR"),
             Self::Buffs => out.push_str("BUFFS"),
+            Self::Debuffs => out.push_str("DEBUFFS"),
+            Self::TargetBuffs => out.push_str("TARGET BUFFS"),
+            Self::TargetDebuffs => out.push_str("TARGET DEBUFFS"),
+            Self::Resource => out.push_str("RESOURCE"),
+            Self::Energy => out.push_str("ULTIMATE ENERGY"),
             Self::Tooltip => out.push_str("TOOLTIP"),
         }
     }
@@ -317,6 +364,8 @@ pub struct HudLayout {
     config: HudConfig,
     /// Physical pixels a docked panel has taken from the left and the right edge.
     reserved: (f32, f32),
+    /// How tall the tooltip previewed in the dock is, logical pixels; `None` until measured.
+    tooltip_height: Option<f32>,
 }
 
 impl Default for HudLayout {
@@ -335,6 +384,7 @@ impl HudLayout {
         Self {
             config: config.validated(),
             reserved: (0.0, 0.0),
+            tooltip_height: None,
         }
     }
 
@@ -420,6 +470,11 @@ impl HudLayout {
             HudElementId::Raid => self.config.frames.raid,
             HudElementId::CastBar => self.config.frames.cast_bar.placement,
             HudElementId::Buffs => self.config.frames.buffs,
+            HudElementId::Debuffs => self.config.frames.debuffs,
+            HudElementId::TargetBuffs => self.config.frames.target_buffs,
+            HudElementId::TargetDebuffs => self.config.frames.target_debuffs,
+            HudElementId::Resource => self.config.frames.resource,
+            HudElementId::Energy => self.config.frames.energy,
             HudElementId::Tooltip => self.config.frames.tooltip,
         }
     }
@@ -437,6 +492,11 @@ impl HudLayout {
             HudElementId::Party => &mut self.config.frames.party,
             HudElementId::Raid => &mut self.config.frames.raid,
             HudElementId::Buffs => &mut self.config.frames.buffs,
+            HudElementId::Debuffs => &mut self.config.frames.debuffs,
+            HudElementId::TargetBuffs => &mut self.config.frames.target_buffs,
+            HudElementId::TargetDebuffs => &mut self.config.frames.target_debuffs,
+            HudElementId::Resource => &mut self.config.frames.resource,
+            HudElementId::Energy => &mut self.config.frames.energy,
             HudElementId::CastBar => &mut self.config.frames.cast_bar.placement,
             HudElementId::Tooltip => &mut self.config.frames.tooltip,
         };
@@ -489,7 +549,7 @@ impl HudLayout {
         let value = self.spacing(id) + HUD_SPACING_STEP * steps as f32;
         let value = ((value / HUD_SPACING_STEP).round() * HUD_SPACING_STEP)
             .clamp(HUD_SPACING_MIN, HUD_SPACING_MAX);
-        self.reshape_about_centre(id, ui_scale, viewport, |placement| {
+        self.reshape_from_start(id, ui_scale, viewport, |placement| {
             placement.spacing = value;
         });
     }
@@ -531,7 +591,7 @@ impl HudLayout {
         };
         let width = next(controls.width, width, width_steps);
         let height = next(controls.height, height, height_steps);
-        self.reshape_about_centre(id, ui_scale, viewport, |placement| {
+        self.reshape_from_start(id, ui_scale, viewport, |placement| {
             if let Some(width) = width {
                 placement.width = width;
             }
@@ -541,9 +601,14 @@ impl HudLayout {
         });
     }
 
-    /// Applies `change` to `id`'s placement and moves it so its centre stays put: an element
-    /// that grew from its corner would walk away from where the player put it.
-    fn reshape_about_centre(
+    /// Applies `change` to `id`'s placement and moves it so the edge its items fill from
+    /// stays put.
+    ///
+    /// A block that fills from the left keeps its left edge and grows or shrinks on the right;
+    /// one that fills from the right keeps its right edge. The same on the other axis. An
+    /// axis the element has no fill direction on keeps its centre: an element that grew from
+    /// its corner would walk away from where the player put it.
+    fn reshape_from_start(
         &mut self,
         id: HudElementId,
         ui_scale: UiScale,
@@ -551,9 +616,22 @@ impl HudLayout {
         change: impl FnOnce(&mut HudPlacement),
     ) {
         let before = self.rect_of(id, ui_scale, viewport);
-        let centre = (
-            before.x + before.width * 0.5,
-            before.y + before.height * 0.5,
+        let controls = id.controls();
+        let direction = self.direction(id);
+        // Where on each axis the fixed point is: 0 the start edge, 0.5 the centre, 1 the end.
+        let hold_x = match (controls.flow_x, direction.right_to_left) {
+            (false, _) => 0.5,
+            (true, false) => 0.0,
+            (true, true) => 1.0,
+        };
+        let hold_y = match (controls.flow_y, direction.bottom_to_top) {
+            (false, _) => 0.5,
+            (true, false) => 0.0,
+            (true, true) => 1.0,
+        };
+        let fixed = (
+            before.x + before.width * hold_x,
+            before.y + before.height * hold_y,
         );
         let mut placement = self.placement(id);
         change(&mut placement);
@@ -563,7 +641,7 @@ impl HudLayout {
         let (w, h) = (size.0 * factor, size.1 * factor);
         self.move_to(
             id,
-            (centre.0 - w * 0.5, centre.1 - h * 0.5),
+            (fixed.0 - w * hold_x, fixed.1 - h * hold_y),
             size,
             ui_scale,
             viewport,
@@ -612,34 +690,6 @@ impl HudLayout {
         self.set_placement(id, placement);
     }
 
-    /// Moves `id` by `(dx, dy)` physical pixels, keeping the anchor the player chose. The
-    /// clamp still applies: a nudge cannot push an element out of reach.
-    pub fn nudge_position(
-        &mut self,
-        id: HudElementId,
-        delta: (f32, f32),
-        ui_scale: UiScale,
-        viewport: (u32, u32),
-    ) {
-        let before = self.rect_of(id, ui_scale, viewport);
-        let region = self.region(viewport);
-        let moved = clamp_in(
-            UiRect::new(
-                before.x + delta.0,
-                before.y + delta.1,
-                before.width,
-                before.height,
-            ),
-            region,
-        );
-        let mut placement = self.placement(id);
-        let (origin_x, origin_y) = placement.anchor.origin();
-        let (align_x, align_y) = placement.anchor.alignment();
-        placement.offset_x = (moved.x - region.x + moved.width * align_x) / region.width - origin_x;
-        placement.offset_y = (moved.y + moved.height * align_y) / region.height - origin_y;
-        self.set_placement(id, placement);
-    }
-
     /// Bar `index`'s geometry: orientation, direction and spacing.
     #[must_use]
     pub fn bar_shape(&self, index: usize) -> super::action_bar::BarShape {
@@ -654,15 +704,33 @@ impl HudLayout {
     /// The buff bar's grid inside `rect`.
     #[must_use]
     pub fn buff_flow(&self, rect: UiRect) -> Flow {
-        let (columns, rows) = self.extent(HudElementId::Buffs);
+        self.aura_flow(HudElementId::Buffs, rect)
+    }
+
+    /// The grid of any block of aura icons — the player's buffs or debuffs, the target's —
+    /// inside `rect`.
+    #[must_use]
+    pub fn aura_flow(&self, id: HudElementId, rect: UiRect) -> Flow {
+        let (columns, rows) = self.extent(id);
         Flow {
             rect,
             columns: columns.unwrap_or(1.0) as usize,
             rows: rows.unwrap_or(1.0) as usize,
             axis: FlowAxis::Rows,
-            direction: self.direction(HudElementId::Buffs),
+            direction: self.direction(id),
             gap_ratio: super::aura_row::size::GAP / super::aura_row::size::BUFF_ICON
-                * self.spacing(HudElementId::Buffs),
+                * self.spacing(id),
+        }
+    }
+
+    /// Tells the layout how tall a tooltip opened from the dock is, in logical pixels at the
+    /// design size, so the dock Edit HUD drags is the size of the tooltip it previews.
+    ///
+    /// Runtime only, like [`HudLayout::set_reserved`]: a tooltip's height is a fact about its
+    /// words, not something the player arranged, and it never reaches the file.
+    pub fn set_tooltip_height(&mut self, height: f32) {
+        if height.is_finite() && height > 0.0 {
+            self.tooltip_height = Some(height);
         }
     }
 
@@ -813,7 +881,10 @@ impl HudLayout {
             HudElementId::Raid => {
                 super::raid_frame::raid_size_spaced(self.spacing(HudElementId::Raid))
             }
-            HudElementId::Buffs => {
+            HudElementId::Buffs
+            | HudElementId::Debuffs
+            | HudElementId::TargetBuffs
+            | HudElementId::TargetDebuffs => {
                 use super::aura_row::size;
                 let (columns, rows) = self.extent(id);
                 Flow::design_size(
@@ -825,7 +896,7 @@ impl HudLayout {
             }
             HudElementId::Tooltip => (
                 self.extent(id).0.unwrap_or(super::tooltip::DEFAULT_WIDTH),
-                super::tooltip::DOCK_HEIGHT,
+                self.tooltip_height.unwrap_or(super::tooltip::DOCK_HEIGHT),
             ),
             frame => super::unit_frame::frame_size(frame).unwrap_or((0.0, 0.0)),
         }
@@ -1006,7 +1077,7 @@ mod tests {
             id.write_label(&mut label);
             assert!(!label.is_empty(), "{id:?} has no name");
         }
-        assert_eq!(HudElementId::all().count(), ACTION_BARS + 8);
+        assert_eq!(HudElementId::all().count(), ACTION_BARS + 13);
     }
 
     #[test]
@@ -1301,6 +1372,41 @@ mod tests {
     }
 
     #[test]
+    fn a_block_keeps_the_edge_it_fills_from_when_it_is_resized() {
+        let mut layout = layout();
+        let scale = UiScale::default();
+        let id = HudElementId::Debuffs;
+        layout.move_to(id, (400.0, 400.0), layout.element_size(id), scale, FHD);
+        // From the left: the left edge stays, the right edge moves.
+        let before = layout.rect_of(id, scale, FHD);
+        layout.nudge_extent(id, -2, 0, scale, FHD);
+        let after = layout.rect_of(id, scale, FHD);
+        assert!((after.x - before.x).abs() < 0.5, "{before:?} -> {after:?}");
+        assert!(after.right() < before.right() - 1.0);
+        // From the right: the right edge stays.
+        let mut direction = layout.direction(id);
+        direction.right_to_left = true;
+        layout.set_direction(id, direction);
+        let before = layout.rect_of(id, scale, FHD);
+        layout.nudge_extent(id, -2, 0, scale, FHD);
+        let after = layout.rect_of(id, scale, FHD);
+        assert!(
+            (after.right() - before.right()).abs() < 0.5,
+            "{before:?} -> {after:?}"
+        );
+        assert!(after.x > before.x + 1.0);
+    }
+
+    #[test]
+    fn the_tooltip_dock_is_as_tall_as_the_tooltip_it_previews() {
+        let mut layout = layout();
+        layout.set_tooltip_height(180.0);
+        assert_eq!(layout.element_size(HudElementId::Tooltip).1, 180.0);
+        layout.set_tooltip_height(f32::NAN);
+        assert_eq!(layout.element_size(HudElementId::Tooltip).1, 180.0);
+    }
+
+    #[test]
     fn a_layout_is_validated_on_the_way_in() {
         let mut config = HudConfig::default();
         config.frames.player.scale = 99.0;
@@ -1393,7 +1499,7 @@ mod tests {
     fn the_raid_frames_and_the_cast_bar_are_elements_like_any_other() {
         let mut label = String::new();
         HudElementId::Raid.write_label(&mut label);
-        assert_eq!(label, "RAID");
+        assert_eq!(label, "PARTY FRAMES");
         HudElementId::CastBar.write_label(&mut label);
         assert_eq!(label, "CAST BAR");
         let ids: Vec<_> = HudElementId::all().collect();

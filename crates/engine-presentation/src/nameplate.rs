@@ -296,6 +296,8 @@ pub struct PlateGeometry {
     pub cast: Option<UiRect>,
     /// The cast bar's text size, in pixels per em.
     pub cast_text_size: f32,
+    /// A debuff icon's edge on this plate, in pixels, whether or not it has any.
+    pub debuff_edge: f32,
     /// How many debuff icons the row over the name was laid out for.
     pub debuff_count: usize,
     /// How many buff icons the row under the bar was laid out for.
@@ -383,6 +385,7 @@ impl PlateGeometry {
             health_text_size: metrics.health_text_size * scale,
             cast,
             cast_text_size: metrics.cast_text_size * scale,
+            debuff_edge: px(metrics.aura_edge * metrics.debuff_scale),
             debuff_count,
             buff_count,
         }
@@ -528,6 +531,28 @@ impl Nameplate {
     #[must_use]
     pub fn debuff_row(&self) -> Option<((f32, f32), AuraRowStyle)> {
         self.geometry.debuffs.map(|row| self.row_at(row))
+    }
+
+    /// Where the debuffs over this plate are, in screen pixels — or, on a plate with none,
+    /// where `sample` of them would go. What Edit HUD outlines as the Enemy Debuffs frame.
+    #[must_use]
+    pub fn debuff_area(&self, sample: usize) -> UiRect {
+        let centre = self.origin.0 + self.geometry.bar.x + self.geometry.bar.width * 0.5;
+        if let Some(((x, top), style)) = self.debuff_row() {
+            let count = self.geometry.debuff_count.max(1);
+            let width = style.width_for(count);
+            return UiRect::new(x - width * 0.5, top, width, style.height_for(count));
+        }
+        let edge = self.geometry.debuff_edge;
+        let gap = (edge * 0.12).round().max(1.0);
+        let count = sample.max(1) as f32;
+        let width = count * edge + (count - 1.0) * gap;
+        UiRect::new(
+            centre - width * 0.5,
+            self.origin.1 - edge - gap,
+            width,
+            edge,
+        )
     }
 
     /// The centre-top of the buff row under the health bar in screen pixels, and how it is

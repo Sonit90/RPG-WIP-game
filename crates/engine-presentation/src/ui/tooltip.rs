@@ -731,6 +731,17 @@ pub fn fill_aura(model: &mut TooltipModel, aura: &crate::aura::Aura) {
     let section = model.section(SectionKind::Details);
     section.color = color::TEXT_SECONDARY;
     let text = &mut section.text;
+    if let crate::aura::AuraKind::Deflection { health, armor } = aura.kind {
+        let _ = write!(
+            text,
+            "+{}.{}% maximum health  ·  +{}.{}% armour",
+            health / 10,
+            health % 10,
+            armor / 10,
+            armor % 10
+        );
+        return;
+    }
     if aura.stacks > 1 {
         let _ = write!(text, "{} stacks", aura.stacks);
     }
