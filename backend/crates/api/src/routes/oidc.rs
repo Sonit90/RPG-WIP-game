@@ -15,9 +15,15 @@ pub fn router() -> Router<AppState> {
 }
 
 async fn discovery(State(state): State<AppState>) -> impl IntoResponse {
-    ([(header::CACHE_CONTROL, "public, max-age=300")], Json(state.jwt.discovery()))
+    (
+        [(header::CACHE_CONTROL, "public, max-age=300")],
+        Json(state.jwt.discovery()),
+    )
 }
 
 async fn jwks(State(state): State<AppState>) -> impl IntoResponse {
-    ([(header::CACHE_CONTROL, "public, max-age=300")], Json(state.jwt.jwks()))
+    (
+        [(header::CACHE_CONTROL, "public, max-age=300")],
+        Json(state.jwt.jwks()),
+    )
 }

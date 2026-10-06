@@ -1,10 +1,10 @@
 //! Google OAuth2 (auth-code flow). Other providers can plug in alongside.
 
-use oauth2::{
-    basic::BasicClient, AuthUrl, AuthorizationCode, ClientId, ClientSecret,
-    CsrfToken, RedirectUrl, Scope, TokenResponse, TokenUrl,
-};
 use generic_auth_core::AppError;
+use oauth2::{
+    basic::BasicClient, AuthUrl, AuthorizationCode, ClientId, ClientSecret, CsrfToken, RedirectUrl,
+    Scope, TokenResponse, TokenUrl,
+};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone)]

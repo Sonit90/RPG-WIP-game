@@ -20,11 +20,11 @@ use spacetimedb_sdk::{DbContext, Table, TableWithPrimaryKey};
 
 use crate::bindings::{
     self as b, DbConnection, MyAccountTableAccess, MyCombatBatchesTableAccess,
-    MyInstanceMonstersTableAccess, MyPlayerCombatTableAccess, combat_act,
-    MyInstancePlayersTableAccess, MyInstanceTableAccess, MyNoticesTableAccess,
-    MyPartyMembersTableAccess, MyPartyTableAccess, MyTicketTableAccess,
-    QueuePopulationTableAccess, dismiss_notice, move_input, party_kick, party_leave, party_start,
-    party_transfer_leader, queue_leave, ready_check_respond, server_time,
+    MyInstanceMonstersTableAccess, MyInstancePlayersTableAccess, MyInstanceTableAccess,
+    MyNoticesTableAccess, MyPartyMembersTableAccess, MyPartyTableAccess, MyPlayerCombatTableAccess,
+    MyTicketTableAccess, QueuePopulationTableAccess, combat_act, dismiss_notice, move_input,
+    party_kick, party_leave, party_start, party_transfer_leader, queue_leave, ready_check_respond,
+    server_time,
 };
 use crate::config::RealmEndpoints;
 use crate::model::{
@@ -92,10 +92,10 @@ impl RealmLink {
         worker: Sender<WorkerMessage>,
         generation: u64,
     ) -> Result<Self, RealmError> {
-        let uri: spacetimedb_sdk::__codegen::http::Uri = endpoints
-            .spacetimedb_url
-            .parse()
-            .map_err(|_| RealmError::new(ErrorCategory::Connection, "The realm address is invalid."))?;
+        let uri: spacetimedb_sdk::__codegen::http::Uri =
+            endpoints.spacetimedb_url.parse().map_err(|_| {
+                RealmError::new(ErrorCategory::Connection, "The realm address is invalid.")
+            })?;
         let on_connect = worker.clone();
         let on_error = worker.clone();
         let on_disconnect = worker.clone();
@@ -137,7 +137,8 @@ impl RealmLink {
                 let _ = applied_events.send(NetEvent::Realm(RealmUpdate::Reset(Box::new(
                     snapshot(&ctx.db),
                 ))));
-                let _ = applied_worker.send(WorkerMessage::Link(generation, LinkSignal::Subscribed));
+                let _ =
+                    applied_worker.send(WorkerMessage::Link(generation, LinkSignal::Subscribed));
             })
             .on_error(move |_, error| {
                 log::error!("realm: subscription failed: {error}");
@@ -190,11 +191,14 @@ impl RealmLink {
                 jump: frame.jump,
             })
             .collect();
-        let result = self.connection.reducers.move_input_then(frames, |_, outcome| {
-            if let Ok(Err(message)) = outcome {
-                log::debug!("realm: input refused: {message}");
-            }
-        });
+        let result = self
+            .connection
+            .reducers
+            .move_input_then(frames, |_, outcome| {
+                if let Ok(Err(message)) = outcome {
+                    log::debug!("realm: input refused: {message}");
+                }
+            });
         if let Err(error) = result {
             log::debug!("realm: input not sent: {error}");
         }
@@ -203,7 +207,11 @@ impl RealmLink {
     /// Presses a combat button.
     pub fn act(&self, action: &CombatAction) {
         let target = net_entity(&action.target);
-        let aimed = |p: [f32; 3]| b::V3 { x: p[0], y: p[1], z: p[2] };
+        let aimed = |p: [f32; 3]| b::V3 {
+            x: p[0],
+            y: p[1],
+            z: p[2],
+        };
         let kind = match action.kind {
             ActionKind::Target => b::NetAction::Target,
             ActionKind::Ability(slot) => b::NetAction::Ability(slot),
@@ -214,11 +222,14 @@ impl RealmLink {
             ActionKind::Ultimate(p) => b::NetAction::Ultimate(aimed(p)),
             ActionKind::Extra(index) => b::NetAction::Extra(index),
         };
-        let result = self.connection.reducers.combat_act_then(target, kind, |_, outcome| {
-            if let Ok(Err(message)) = outcome {
-                log::debug!("realm: action refused: {message}");
-            }
-        });
+        let result = self
+            .connection
+            .reducers
+            .combat_act_then(target, kind, |_, outcome| {
+                if let Ok(Err(message)) = outcome {
+                    log::debug!("realm: action refused: {message}");
+                }
+            });
         if let Err(error) = result {
             log::debug!("realm: action not sent: {error}");
         }
@@ -271,12 +282,12 @@ impl RealmLink {
     /// Hands leadership over.
     pub fn party_transfer_leader(&self, account_id: String) {
         let events = self.events.clone();
-        let sent = self
-            .connection
-            .reducers
-            .party_transfer_leader_then(account_id, move |_, outcome| {
-                report(&events, Action::TransferLeader, outcome);
-            });
+        let sent =
+            self.connection
+                .reducers
+                .party_transfer_leader_then(account_id, move |_, outcome| {
+                    report(&events, Action::TransferLeader, outcome);
+                });
         self.report_send(Action::TransferLeader, sent);
     }
 
@@ -362,12 +373,12 @@ fn register_callbacks(connection: &DbConnection, events: &Sender<NetEvent>) {
     whole_view!(my_instance, |db: &b::RemoteTables| RealmUpdate::Instance(
         db.my_instance().iter().next().map(instance)
     ));
-    whole_view!(my_party_members, |db: &b::RemoteTables| RealmUpdate::Members(
-        db.my_party_members().iter().map(member).collect()
-    ));
-    whole_view!(queue_population, |db: &b::RemoteTables| RealmUpdate::Population(
-        db.queue_population().iter().map(population).collect()
-    ));
+    whole_view!(my_party_members, |db: &b::RemoteTables| {
+        RealmUpdate::Members(db.my_party_members().iter().map(member).collect())
+    });
+    whole_view!(queue_population, |db: &b::RemoteTables| {
+        RealmUpdate::Population(db.queue_population().iter().map(population).collect())
+    });
     {
         let tx = events.clone();
         db.my_party_members().on_update(move |ctx, _, _| {
@@ -413,15 +424,21 @@ fn register_callbacks(connection: &DbConnection, events: &Sender<NetEvent>) {
 
     let tx = events.clone();
     db.my_player_combat().on_insert(move |_, row| {
-        let _ = tx.send(NetEvent::Realm(RealmUpdate::CombatUpsert(player_combat(row))));
+        let _ = tx.send(NetEvent::Realm(RealmUpdate::CombatUpsert(player_combat(
+            row,
+        ))));
     });
     let tx = events.clone();
     db.my_player_combat().on_update(move |_, _, row| {
-        let _ = tx.send(NetEvent::Realm(RealmUpdate::CombatUpsert(player_combat(row))));
+        let _ = tx.send(NetEvent::Realm(RealmUpdate::CombatUpsert(player_combat(
+            row,
+        ))));
     });
     let tx = events.clone();
     db.my_player_combat().on_delete(move |_, row| {
-        let _ = tx.send(NetEvent::Realm(RealmUpdate::CombatRemoved(row.account_id.clone())));
+        let _ = tx.send(NetEvent::Realm(RealmUpdate::CombatRemoved(
+            row.account_id.clone(),
+        )));
     });
 
     // Each batch once, as it is inserted. Batches already there when the subscription
@@ -482,11 +499,7 @@ fn snapshot(db: &b::RemoteTables) -> RealmMirror {
             notices.sort_by_key(|notice| notice.id);
             notices
         },
-        population: db
-            .queue_population()
-            .iter()
-            .map(population)
-            .collect(),
+        population: db.queue_population().iter().map(population).collect(),
         revision: 0,
     }
 }

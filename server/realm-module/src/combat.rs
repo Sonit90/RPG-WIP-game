@@ -111,11 +111,26 @@ fn net_statuses(statuses: &[StatusState]) -> Vec<NetStatus> {
 }
 
 /// The party as the fight needs it, in spawn order.
-fn specs(ctx: &ReducerContext, instance: &DungeonInstance, dungeon: &crate::level::Dungeon) -> Vec<PlayerSpec> {
+fn specs(
+    ctx: &ReducerContext,
+    instance: &DungeonInstance,
+    dungeon: &crate::level::Dungeon,
+) -> Vec<PlayerSpec> {
     let catalog = crate::level::catalog().ok();
-    let mut players: Vec<InstancePlayer> = ctx.db.instance_player().instance_id().filter(instance.id).collect();
-    let member_of = |player: &InstancePlayer| ctx.db.party_member().identity().find(player.identity);
-    players.sort_by_key(|player| (member_of(player).map_or(u8::MAX, |m| m.slot), player.account_id.clone()));
+    let mut players: Vec<InstancePlayer> = ctx
+        .db
+        .instance_player()
+        .instance_id()
+        .filter(instance.id)
+        .collect();
+    let member_of =
+        |player: &InstancePlayer| ctx.db.party_member().identity().find(player.identity);
+    players.sort_by_key(|player| {
+        (
+            member_of(player).map_or(u8::MAX, |m| m.slot),
+            player.account_id.clone(),
+        )
+    });
     players
         .iter()
         .enumerate()
@@ -192,7 +207,11 @@ pub fn with_fight<R>(
 }
 
 /// The fight as the rows describe it.
-fn rebuild(ctx: &ReducerContext, instance: &DungeonInstance, combat: &InstanceCombat) -> Result<CombatInstance, RealmError> {
+fn rebuild(
+    ctx: &ReducerContext,
+    instance: &DungeonInstance,
+    combat: &InstanceCombat,
+) -> Result<CombatInstance, RealmError> {
     let dungeon = crate::level::dungeon(&instance.dungeon_id)?;
     let players = specs(ctx, instance, &dungeon);
     let barriers = barriers_of(&dungeon.scene, &dungeon.definition);
@@ -225,7 +244,13 @@ fn rebuild(ctx: &ReducerContext, instance: &DungeonInstance, combat: &InstanceCo
             })
             .collect(),
     };
-    let mut fight = CombatInstance::restore(&dungeon.scene, &players, &barriers, instance.barrier_open, &state);
+    let mut fight = CombatInstance::restore(
+        &dungeon.scene,
+        &players,
+        &barriers,
+        instance.barrier_open,
+        &state,
+    );
     // The rebuilt fight dropped what no row holds (summoned monsters); its first projection
     // writes every row again, which removes them.
     fight.forget_written();
@@ -242,11 +267,23 @@ fn rebuild(ctx: &ReducerContext, instance: &DungeonInstance, combat: &InstanceCo
 pub fn forget(ctx: &ReducerContext, instance_id: u64) {
     FIGHTS.with(|fights| fights.borrow_mut().remove(&instance_id));
     ctx.db.instance_combat().instance_id().delete(instance_id);
-    let players: Vec<_> = ctx.db.player_combat().instance_id().filter(instance_id).map(|row| row.identity).collect();
+    let players: Vec<_> = ctx
+        .db
+        .player_combat()
+        .instance_id()
+        .filter(instance_id)
+        .map(|row| row.identity)
+        .collect();
     for identity in players {
         ctx.db.player_combat().identity().delete(identity);
     }
-    let batches: Vec<u64> = ctx.db.combat_batch().instance_id().filter(instance_id).map(|row| row.id).collect();
+    let batches: Vec<u64> = ctx
+        .db
+        .combat_batch()
+        .instance_id()
+        .filter(instance_id)
+        .map(|row| row.id)
+        .collect();
     for id in batches {
         ctx.db.combat_batch().id().delete(id);
     }
@@ -255,7 +292,10 @@ pub fn forget(ctx: &ReducerContext, instance_id: u64) {
 /// Lifts the start barrier in the fight.
 pub fn open_barrier(ctx: &ReducerContext, instance: &DungeonInstance) {
     if let Err(error) = with_fight(ctx, instance, CombatInstance::open_start_barrier) {
-        log::error!("event=combat_barrier_failed instance_id={} error={error}", instance.id);
+        log::error!(
+            "event=combat_barrier_failed instance_id={} error={error}",
+            instance.id
+        );
     }
 }
 
@@ -275,7 +315,8 @@ fn project(ctx: &ReducerContext, instance_id: u64, fight: &mut CombatInstance) {
             continue;
         };
         let identity = row.identity;
-        let moved = (engine_core::math::Vec3::from(row.position) - state.body.position).length() > 1e-3
+        let moved = (engine_core::math::Vec3::from(row.position) - state.body.position).length()
+            > 1e-3
             || (row.yaw - state.body.facing_yaw).abs() > 1e-3
             || row.grounded != state.body.grounded;
         if moved || row.health != state.health || row.max_health != state.max_health {
@@ -350,10 +391,14 @@ fn project(ctx: &ReducerContext, instance_id: u64, fight: &mut CombatInstance) {
     }
 }
 
-fn monster_row(instance_id: u64, state: &MonsterState, existing: Option<InstanceMonster>) -> InstanceMonster {
-    let (id, pack, scale, level) = existing
-        .as_ref()
-        .map_or((0, String::new(), 1.0, 1), |row| (row.id, row.pack.clone(), row.scale, row.level));
+fn monster_row(
+    instance_id: u64,
+    state: &MonsterState,
+    existing: Option<InstanceMonster>,
+) -> InstanceMonster {
+    let (id, pack, scale, level) = existing.as_ref().map_or((0, String::new(), 1.0, 1), |row| {
+        (row.id, row.pack.clone(), row.scale, row.level)
+    });
     InstanceMonster {
         id,
         instance_id,
@@ -383,7 +428,12 @@ pub fn decorate_placed(ctx: &ReducerContext, instance_id: u64, dungeon: &crate::
         .iter()
         .filter(|m| m.enabled && engine_game::enemy::EnemyKind::from_id(&m.monster).is_some())
         .collect();
-    let rows: Vec<InstanceMonster> = ctx.db.instance_monster().instance_id().filter(instance_id).collect();
+    let rows: Vec<InstanceMonster> = ctx
+        .db
+        .instance_monster()
+        .instance_id()
+        .filter(instance_id)
+        .collect();
     for row in rows {
         // Placed monsters are keyed in spawn order, which is pack order; match by kind and
         // nearest placement rather than trusting the two orders to agree.
@@ -432,12 +482,21 @@ pub fn combat_tick(ctx: &ReducerContext, _timer: CombatTimer) -> Result<(), Stri
         let outcome = with_fight(ctx, &instance, |fight| {
             let events = fight.advance(u32::try_from(run).unwrap_or(0));
             project(ctx, instance.id, fight);
-            (events, fight.tick(), fight.credited(), fight.unlocked(), fight.completed())
+            (
+                events,
+                fight.tick(),
+                fight.credited(),
+                fight.unlocked(),
+                fight.completed(),
+            )
         });
         let (events, tick, credited, unlocked, completed) = match outcome {
             Ok(outcome) => outcome,
             Err(error) => {
-                log::error!("event=combat_tick_failed instance_id={} error={error}", instance.id);
+                log::error!(
+                    "event=combat_tick_failed instance_id={} error={error}",
+                    instance.id
+                );
                 continue;
             }
         };
@@ -452,19 +511,28 @@ pub fn combat_tick(ctx: &ReducerContext, _timer: CombatTimer) -> Result<(), Stri
                         events: json,
                     });
                 }
-                Err(error) => log::error!("event=combat_batch_unencodable instance_id={} error={error}", instance.id),
+                Err(error) => log::error!(
+                    "event=combat_batch_unencodable instance_id={} error={error}",
+                    instance.id
+                ),
             }
         }
-        ctx.db.instance_combat().instance_id().update(InstanceCombat {
-            tick,
-            origin,
-            credited,
-            unlocked,
-            ..combat
-        });
+        ctx.db
+            .instance_combat()
+            .instance_id()
+            .update(InstanceCombat {
+                tick,
+                origin,
+                credited,
+                unlocked,
+                ..combat
+            });
         if let Some(seconds) = completed {
             if InstanceState::from(instance.state) == InstanceState::Active {
-                log::info!("event=dungeon_cleared instance_id={} seconds={seconds:.1}", instance.id);
+                log::info!(
+                    "event=dungeon_cleared instance_id={} seconds={seconds:.1}",
+                    instance.id
+                );
                 crate::instance::finish(ctx, instance.id, true)?;
             }
         }
@@ -484,7 +552,11 @@ pub fn combat_tick(ctx: &ReducerContext, _timer: CombatTimer) -> Result<(), Stri
 
 /// A button press: an ability, or only a change of target.
 #[spacetimedb::reducer]
-pub fn combat_act(ctx: &ReducerContext, target: NetEntity, action: NetAction) -> Result<(), String> {
+pub fn combat_act(
+    ctx: &ReducerContext,
+    target: NetEntity,
+    action: NetAction,
+) -> Result<(), String> {
     rate_limit(ctx, Operation::Combat)?;
     let player = ctx
         .db
@@ -506,9 +578,10 @@ pub fn combat_act(ctx: &ReducerContext, target: NetEntity, action: NetAction) ->
     let kind = match action {
         NetAction::Target => ActionKind::Target,
         NetAction::Ability(slot) => ActionKind::Ability(slot),
-        NetAction::AbilityAt(aimed) => {
-            ActionKind::AbilityAt(aimed.slot, [aimed.position.x, aimed.position.y, aimed.position.z])
-        }
+        NetAction::AbilityAt(aimed) => ActionKind::AbilityAt(
+            aimed.slot,
+            [aimed.position.x, aimed.position.y, aimed.position.z],
+        ),
         NetAction::Ultimate(p) => ActionKind::Ultimate([p.x, p.y, p.z]),
         NetAction::Extra(index) => ActionKind::Extra(index),
     };
@@ -516,7 +589,9 @@ pub fn combat_act(ctx: &ReducerContext, target: NetEntity, action: NetAction) ->
         target: entity_ref(&target),
         kind,
     };
-    let result = with_fight(ctx, &instance, |fight| fight.act(&player.account_id, &request))?;
+    let result = with_fight(ctx, &instance, |fight| {
+        fight.act(&player.account_id, &request)
+    })?;
     result.map_err(|error| match error {
         ActionError::NotInFight => RealmError::dungeon("You are not in this fight.").to_wire(),
         ActionError::Malformed => RealmError::protocol("That action is not understood.").to_wire(),

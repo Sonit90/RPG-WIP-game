@@ -276,7 +276,11 @@ impl Resource {
 
     /// Sets the current amount (clamped to [0, max]): an authoritative correction.
     pub fn set_current(&mut self, value: f32) {
-        self.current = if value.is_finite() { value.clamp(0.0, self.max) } else { 0.0 };
+        self.current = if value.is_finite() {
+            value.clamp(0.0, self.max)
+        } else {
+            0.0
+        };
     }
 
     /// Whether `cost` can be paid right now.

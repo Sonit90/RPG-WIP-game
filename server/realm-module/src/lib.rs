@@ -35,4 +35,3 @@ mod schema;
 mod service;
 mod util;
 mod views;
-

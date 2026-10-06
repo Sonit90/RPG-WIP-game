@@ -45,7 +45,10 @@ pub fn init(ctx: &ReducerContext) {
     crate::matchmaking::schedule(ctx);
     crate::instance::schedule(ctx);
     crate::combat::schedule(ctx);
-    log::info!("event=realm_initialized owner={}", ctx.sender().to_abbreviated_hex());
+    log::info!(
+        "event=realm_initialized owner={}",
+        ctx.sender().to_abbreviated_hex()
+    );
 }
 
 /// Optional claims the realm reads beyond `iss`, `sub` and `aud`.

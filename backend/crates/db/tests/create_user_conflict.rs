@@ -14,8 +14,8 @@ use generic_auth_db::{
 };
 
 async fn pool() -> sqlx::PgPool {
-    let url = std::env::var("DATABASE_URL")
-        .expect("DATABASE_URL must be set for integration tests");
+    let url =
+        std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for integration tests");
     connect(&DbConfig {
         url,
         max_connections: 2,

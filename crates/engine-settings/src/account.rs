@@ -89,8 +89,8 @@ mod tests {
 
         let mut laptop = GameSettings::default();
         laptop.display.resolution_width = 1366;
-        let (merged, _) = apply_account_document(&document, &laptop, &HudConfig::default())
-            .expect("readable");
+        let (merged, _) =
+            apply_account_document(&document, &laptop, &HudConfig::default()).expect("readable");
         assert!((merged.camera_sensitivity - 1.7).abs() < 1e-6);
         assert!((merged.master_volume - 0.3).abs() < 1e-6);
         assert_eq!(merged.display.resolution_width, 1366);

@@ -20,7 +20,10 @@ pub async fn collect_results(state: AppState) {
     let mut unavailable = false;
     loop {
         interval.tick().await;
-        let token = match state.jwt.issue_service(&state.settings.realm.service_subject) {
+        let token = match state
+            .jwt
+            .issue_service(&state.settings.realm.service_subject)
+        {
             Ok(token) => token,
             Err(e) => {
                 tracing::error!(error = %e, "realm bridge: cannot sign a service token");

@@ -4,7 +4,7 @@
 //! repository modules per aggregate. Higher-level crates depend on this rather
 //! than on `sqlx` directly.
 
-use sqlx::postgres::{PgPoolOptions, PgPool};
+use sqlx::postgres::{PgPool, PgPoolOptions};
 use std::time::Duration;
 
 pub mod users;
@@ -30,8 +30,7 @@ pub type DbResult<T> = Result<T, DbError>;
 
 /// Embedded migrations from the workspace-root `migrations/` folder.
 /// The path is relative to the *crate* manifest, so we walk up two levels.
-pub static MIGRATOR: sqlx::migrate::Migrator =
-    sqlx::migrate!("../../migrations");
+pub static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../../migrations");
 
 /// Build a connection pool. The caller decides whether to run migrations.
 pub async fn connect(cfg: &DbConfig) -> DbResult<PgPool> {

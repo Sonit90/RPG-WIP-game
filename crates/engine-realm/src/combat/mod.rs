@@ -5,8 +5,7 @@ pub mod instance;
 pub mod wire;
 
 pub use instance::{
-    ActionError, ActionKind, CastState, CombatAction, CombatInstance, CooldownState,
-    MonsterRecord, MonsterState, PlayerRecord, PlayerSpec, PlayerState, Resources, Restore,
-    StatusState,
+    ActionError, ActionKind, CastState, CombatAction, CombatInstance, CooldownState, MonsterRecord,
+    MonsterState, PlayerRecord, PlayerSpec, PlayerState, Resources, Restore, StatusState,
 };
 pub use wire::{AbilityRef, EntityRef, WireEvent};

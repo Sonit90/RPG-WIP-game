@@ -20,7 +20,8 @@ use axum::{
     Json, Router,
 };
 use engine_realm::api::{
-    CharacterDetail, CharacterSummary, MoveItemRequest, QueueRequest, SettingsDocument, TalentsRequest,
+    CharacterDetail, CharacterSummary, MoveItemRequest, QueueRequest, SettingsDocument,
+    TalentsRequest,
 };
 use generic_auth_core::AppError;
 use realm_game::bridge::{BridgeError, Snapshot};
@@ -46,7 +47,11 @@ fn character_id(raw: &str) -> Result<Uuid, ApiError> {
     Uuid::parse_str(raw).map_err(|_| ApiError(AppError::NotFound))
 }
 
-async fn owned(state: &AppState, user: &AuthUser, id: &str) -> Result<store::CharacterRow, ApiError> {
+async fn owned(
+    state: &AppState,
+    user: &AuthUser,
+    id: &str,
+) -> Result<store::CharacterRow, ApiError> {
     let id = character_id(id)?;
     store::get(&state.db, user.user_id, id)
         .await
@@ -57,8 +62,13 @@ async fn owned(state: &AppState, user: &AuthUser, id: &str) -> Result<store::Cha
         })
 }
 
-async fn list_characters(State(state): State<AppState>, user: AuthUser) -> ApiResult<Json<Vec<CharacterSummary>>> {
-    let rows = store::list_or_provision(&state.db, user.user_id).await.map_err(ApiError)?;
+async fn list_characters(
+    State(state): State<AppState>,
+    user: AuthUser,
+) -> ApiResult<Json<Vec<CharacterSummary>>> {
+    let rows = store::list_or_provision(&state.db, user.user_id)
+        .await
+        .map_err(ApiError)?;
     Ok(Json(rows.iter().map(characters::summary).collect()))
 }
 
@@ -68,7 +78,9 @@ async fn get_character(
     Path(id): Path<String>,
 ) -> ApiResult<Json<CharacterDetail>> {
     let row = owned(&state, &user, &id).await?;
-    let completions = store::completions(&state.db, row.id).await.map_err(ApiError)?;
+    let completions = store::completions(&state.db, row.id)
+        .await
+        .map_err(ApiError)?;
     Ok(Json(characters::detail(&row, completions)))
 }
 
@@ -80,7 +92,10 @@ async fn move_item(
 ) -> ApiResult<Json<CharacterDetail>> {
     state
         .limits
-        .check(&format!("character:{}", user.user_id), rate_limit::CHARACTER_WRITES_PER_ACCOUNT)
+        .check(
+            &format!("character:{}", user.user_id),
+            rate_limit::CHARACTER_WRITES_PER_ACCOUNT,
+        )
         .map_err(ApiError)?;
     let row = owned(&state, &user, &id).await?;
     let hero = realm_game::catalog()
@@ -89,10 +104,14 @@ async fn move_item(
         .unwrap_or_default();
     let moved = engine_realm::loadout::move_item(hero, &row.loadout.0, &body.from, &body.to)
         .map_err(|e| ApiError(AppError::BadRequest(e.message)))?;
-    store::save_loadout(&state.db, user.user_id, row.id, &moved).await.map_err(ApiError)?;
+    store::save_loadout(&state.db, user.user_id, row.id, &moved)
+        .await
+        .map_err(ApiError)?;
     tracing::info!(account_id = %user.user_id, character_id = %row.id, "equipment changed");
     let row = owned(&state, &user, &id).await?;
-    let completions = store::completions(&state.db, row.id).await.map_err(ApiError)?;
+    let completions = store::completions(&state.db, row.id)
+        .await
+        .map_err(ApiError)?;
     Ok(Json(characters::detail(&row, completions)))
 }
 
@@ -104,7 +123,10 @@ async fn save_talents(
 ) -> ApiResult<StatusCode> {
     state
         .limits
-        .check(&format!("character:{}", user.user_id), rate_limit::CHARACTER_WRITES_PER_ACCOUNT)
+        .check(
+            &format!("character:{}", user.user_id),
+            rate_limit::CHARACTER_WRITES_PER_ACCOUNT,
+        )
         .map_err(ApiError)?;
     let row = owned(&state, &user, &id).await?;
     let hero = realm_game::catalog()
@@ -114,22 +136,34 @@ async fn save_talents(
     let mut talents: Vec<String> = Vec::new();
     for key in body.talents {
         if !engine_realm::talents::is_valid(hero, &key) {
-            return Err(ApiError(AppError::BadRequest(format!("{key} is not a talent this character has."))));
+            return Err(ApiError(AppError::BadRequest(format!(
+                "{key} is not a talent this character has."
+            ))));
         }
         if !talents.contains(&key) {
             talents.push(key);
         }
     }
-    store::save_talents(&state.db, user.user_id, row.id, &talents).await.map_err(ApiError)?;
+    store::save_talents(&state.db, user.user_id, row.id, &talents)
+        .await
+        .map_err(ApiError)?;
     tracing::info!(account_id = %user.user_id, character_id = %row.id, count = talents.len(), "talents changed");
     Ok(StatusCode::NO_CONTENT)
 }
 
-async fn get_settings(State(state): State<AppState>, user: AuthUser) -> ApiResult<Json<SettingsDocument>> {
-    let stored = store::settings(&state.db, user.user_id).await.map_err(ApiError)?;
+async fn get_settings(
+    State(state): State<AppState>,
+    user: AuthUser,
+) -> ApiResult<Json<SettingsDocument>> {
+    let stored = store::settings(&state.db, user.user_id)
+        .await
+        .map_err(ApiError)?;
     Ok(Json(match stored {
         Some((version, settings)) => SettingsDocument { version, settings },
-        None => SettingsDocument { version: 0, settings: serde_json::Value::Null },
+        None => SettingsDocument {
+            version: 0,
+            settings: serde_json::Value::Null,
+        },
     }))
 }
 
@@ -143,18 +177,30 @@ async fn put_settings(
 ) -> ApiResult<Json<SettingsDocument>> {
     state
         .limits
-        .check(&format!("settings:{}", user.user_id), rate_limit::SETTINGS_PER_ACCOUNT)
+        .check(
+            &format!("settings:{}", user.user_id),
+            rate_limit::SETTINGS_PER_ACCOUNT,
+        )
         .map_err(ApiError)?;
     if !body.settings.is_object() {
-        return Err(ApiError(AppError::BadRequest("Settings must be an object.".into())));
+        return Err(ApiError(AppError::BadRequest(
+            "Settings must be an object.".into(),
+        )));
     }
-    if serde_json::to_vec(&body.settings).map_or(usize::MAX, |bytes| bytes.len()) > MAX_SETTINGS_BYTES {
-        return Err(ApiError(AppError::BadRequest("Settings are too large.".into())));
+    if serde_json::to_vec(&body.settings).map_or(usize::MAX, |bytes| bytes.len())
+        > MAX_SETTINGS_BYTES
+    {
+        return Err(ApiError(AppError::BadRequest(
+            "Settings are too large.".into(),
+        )));
     }
     let version = store::save_settings(&state.db, user.user_id, body.version, &body.settings)
         .await
         .map_err(ApiError)?;
-    Ok(Json(SettingsDocument { version, settings: body.settings }))
+    Ok(Json(SettingsDocument {
+        version,
+        settings: body.settings,
+    }))
 }
 
 async fn queue(
@@ -166,7 +212,10 @@ async fn queue(
     let _ = headers;
     state
         .limits
-        .check(&format!("queue:{}", user.user_id), rate_limit::QUEUE_PER_ACCOUNT)
+        .check(
+            &format!("queue:{}", user.user_id),
+            rate_limit::QUEUE_PER_ACCOUNT,
+        )
         .map_err(ApiError)?;
     let row = owned(&state, &user, &body.character_id).await?;
     let catalog = realm_game::catalog();
@@ -201,7 +250,11 @@ async fn queue(
         gear_score: summary.gear_score,
         loadout: serde_json::to_string(&row.loadout.0).unwrap_or_default(),
     };
-    match state.realm.enqueue(&token, &snapshot, &dungeon.id, body.role).await {
+    match state
+        .realm
+        .enqueue(&token, &snapshot, &dungeon.id, body.role)
+        .await
+    {
         Ok(()) => {
             tracing::info!(
                 account_id = %user.user_id,
@@ -219,7 +272,9 @@ async fn queue(
         }
         Err(BridgeError::Unavailable(reason)) => {
             tracing::error!(reason = %reason, "realm unavailable for queue join");
-            Err(ApiError(AppError::internal("The game server is unavailable.")))
+            Err(ApiError(AppError::internal(
+                "The game server is unavailable.",
+            )))
         }
     }
 }

@@ -26,19 +26,23 @@ pub struct AppState {
 /// The access-token signing key: inline PEM, else the configured file. Development creates
 /// the file on first start; anywhere else a missing key stops the service.
 fn load_signing_key(settings: &Settings) -> anyhow::Result<String> {
-    if let Some(pem) = settings.auth.jwt_private_key_pem.as_ref().filter(|p| !p.trim().is_empty()) {
+    if let Some(pem) = settings
+        .auth
+        .jwt_private_key_pem
+        .as_ref()
+        .filter(|p| !p.trim().is_empty())
+    {
         // An env var cannot hold newlines everywhere: accept a PEM written with literal `\n`.
         return Ok(pem.replace("\\n", "\n"));
     }
-    let path = settings
-        .auth
-        .jwt_private_key_path
-        .clone()
-        .ok_or_else(|| anyhow::anyhow!("no signing key: set APP__AUTH__JWT_PRIVATE_KEY_PEM or _PATH"))?;
+    let path = settings.auth.jwt_private_key_path.clone().ok_or_else(|| {
+        anyhow::anyhow!("no signing key: set APP__AUTH__JWT_PRIVATE_KEY_PEM or _PATH")
+    })?;
     match std::fs::read_to_string(&path) {
         Ok(pem) => Ok(pem),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound && settings.app_env == "development" => {
-            let pem = generic_auth_auth::generate_signing_key_pem().map_err(|e| anyhow::anyhow!("{e}"))?;
+            let pem = generic_auth_auth::generate_signing_key_pem()
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
             if let Some(dir) = std::path::Path::new(&path).parent() {
                 std::fs::create_dir_all(dir)?;
             }
@@ -57,7 +61,8 @@ impl AppState {
             max_connections: settings.db.max_connections,
             min_connections: settings.db.min_connections,
             acquire_timeout_secs: settings.db.acquire_timeout_secs,
-        }).await?;
+        })
+        .await?;
 
         if settings.db.run_migrations_on_start {
             run_migrations(&db).await?;
@@ -78,7 +83,11 @@ impl AppState {
             .user_agent("mygame-realm-api/0.1")
             .timeout(std::time::Duration::from_secs(10))
             .build()?;
-        let limit_scale = if settings.app_env == "development" { 100.0 } else { 1.0 };
+        let limit_scale = if settings.app_env == "development" {
+            100.0
+        } else {
+            1.0
+        };
         let realm = realm_game::bridge::RealmBridge::new(
             http.clone(),
             &settings.realm.spacetimedb_url,

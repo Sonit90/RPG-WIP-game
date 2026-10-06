@@ -50,16 +50,31 @@ fn the_party_enters_with_its_own_classes_and_the_monsters_are_keyed() {
     let states = fight.player_states();
     assert_eq!(states.len(), 3);
     assert!(states.iter().all(|s| s.alive && s.health > 0.0));
-    let tank = fight.resolve(&EntityRef::Player("tank".into())).expect("tank");
+    let tank = fight
+        .resolve(&EntityRef::Player("tank".into()))
+        .expect("tank");
     let healer = fight
         .resolve(&EntityRef::Player("healer".into()))
         .expect("healer");
-    assert_eq!(fight.sim.with_player(tank, |s| s.hero()), Some(Hero::Warrior));
-    assert_eq!(fight.sim.with_player(healer, |s| s.hero()), Some(Hero::Druid));
+    assert_eq!(
+        fight.sim.with_player(tank, |s| s.hero()),
+        Some(Hero::Warrior)
+    );
+    assert_eq!(
+        fight.sim.with_player(healer, |s| s.hero()),
+        Some(Hero::Druid)
+    );
     let monsters = fight.monster_states();
-    assert!(monsters.len() > 10, "the crypt is populated: {}", monsters.len());
+    assert!(
+        monsters.len() > 10,
+        "the crypt is populated: {}",
+        monsters.len()
+    );
     for (index, monster) in monsters.iter().enumerate() {
-        assert_eq!(monster.key, index as u64, "placed monsters are keyed by spawn order");
+        assert_eq!(
+            monster.key, index as u64,
+            "placed monsters are keyed by spawn order"
+        );
     }
     // Two fights from the same level agree on every key.
     let again = CombatInstance::new(&scene, &players, &barriers).monster_states();
@@ -76,11 +91,19 @@ fn the_start_barrier_holds_until_it_is_lifted() {
     let frames: Vec<InputFrame> = (1..=600).map(walk).collect();
     let (body, last) = fight.apply_frames("dps", &frames).expect("dps is here");
     assert_eq!(last, 600);
-    assert!(body.position.z > -32.0, "held at the barrier: {:?}", body.position);
+    assert!(
+        body.position.z > -32.0,
+        "held at the barrier: {:?}",
+        body.position
+    );
     fight.open_start_barrier();
     let frames: Vec<InputFrame> = (601..=900).map(walk).collect();
     let (body, _) = fight.apply_frames("dps", &frames).expect("dps is here");
-    assert!(body.position.z < -33.0, "through the doorway: {:?}", body.position);
+    assert!(
+        body.position.z < -33.0,
+        "through the doorway: {:?}",
+        body.position
+    );
 }
 
 #[test]
@@ -88,8 +111,14 @@ fn an_action_names_its_target_and_the_damage_comes_back_named() {
     let (scene, barriers, players) = crypt();
     let mut fight = CombatInstance::new(&scene, &players, &barriers);
     fight.open_start_barrier();
-    let monster = fight.monster_states().into_iter().next().expect("a monster");
-    let mage = fight.resolve(&EntityRef::Player("dps".into())).expect("dps");
+    let monster = fight
+        .monster_states()
+        .into_iter()
+        .next()
+        .expect("a monster");
+    let mage = fight
+        .resolve(&EntityRef::Player("dps".into()))
+        .expect("dps");
     // Stand the mage fifteen metres from it.
     let near = monster.position + Vec3::new(0.0, 0.0, 15.0);
     if let Some(body) = fight.sim.world_mut().body_mut(mage) {
@@ -168,7 +197,9 @@ fn the_whole_crypt_can_be_cleared_and_the_run_completes() {
     let (scene, barriers, players) = crypt();
     let mut fight = CombatInstance::new(&scene, &players, &barriers);
     fight.open_start_barrier();
-    let mage = fight.resolve(&EntityRef::Player("dps".into())).expect("dps");
+    let mage = fight
+        .resolve(&EntityRef::Player("dps".into()))
+        .expect("dps");
     let mut saw_unlock = false;
     for _ in 0..400 {
         let living: Vec<EntityId> = fight

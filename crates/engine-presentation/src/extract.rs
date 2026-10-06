@@ -539,18 +539,25 @@ impl RenderExtractor {
 
     /// Stops drawing `entity` as a character.
     pub fn remove_remote_character(&mut self, entity: EntityId) {
-        self.remote_characters.retain(|remote| remote.entity != entity);
+        self.remote_characters
+            .retain(|remote| remote.entity != entity);
     }
 
     /// Whether `entity` is drawn as a remote character.
     #[must_use]
     pub fn is_remote_character(&self, entity: EntityId) -> bool {
-        self.remote_characters.iter().any(|remote| remote.entity == entity)
+        self.remote_characters
+            .iter()
+            .any(|remote| remote.entity == entity)
     }
 
     /// Sets the pose a remote character is drawn in this frame.
     pub fn set_remote_frame(&mut self, entity: EntityId, frame: RemoteFrame) {
-        if let Some(remote) = self.remote_characters.iter_mut().find(|r| r.entity == entity) {
+        if let Some(remote) = self
+            .remote_characters
+            .iter_mut()
+            .find(|r| r.entity == entity)
+        {
             remote.frame = Some(frame);
         }
     }

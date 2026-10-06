@@ -45,8 +45,9 @@ use crate::entity::EntityId;
 // (`FireMage::abilities`, `FireMage::global_cooldown`) every hero casts through.
 pub use crate::ability::table::ABILITY_SLOTS;
 pub use crate::ability::{
-    ABILITIES, ABILITY_COUNT, AbilityBook, AbilityDef, AbilityError, AbilityState, ClassRow, DruidRow, FireMageRow,
-    FireAbility, TARGET_CLEAVE_HALF_ANGLE, TargetMode, ThreatScale, ULTIMATE_ENABLED, WarriorRow,
+    ABILITIES, ABILITY_COUNT, AbilityBook, AbilityDef, AbilityError, AbilityState, ClassRow,
+    DruidRow, FireAbility, FireMageRow, TARGET_CLEAVE_HALF_ANGLE, TargetMode, ThreatScale,
+    ULTIMATE_ENABLED, WarriorRow,
 };
 pub use ignite::{
     IGNITE_BASE_DURATION, IGNITE_BASE_MAX_STACKS, IGNITE_BASE_TICK_INTERVAL,
@@ -730,12 +731,19 @@ mod tests {
     fn an_ability_off_the_global_cooldown_is_never_held_by_it_and_never_starts_it() {
         let mut mage = FireMage::new(1);
         mage.start_global_cooldown_for(FireAbility::Blink);
-        assert!(mage.off_global_cooldown(), "Blink started the global cooldown");
+        assert!(
+            mage.off_global_cooldown(),
+            "Blink started the global cooldown"
+        );
 
         mage.start_global_cooldown_for(FireAbility::Firebolt);
         assert!(mage.global_cooldown_holds(FireAbility::Firebolt));
         assert!(mage.global_cooldown_fraction_for(FireAbility::Firebolt) < 1.0);
-        for ability in [FireAbility::Blink, FireAbility::Detonate, FireAbility::FireMastery] {
+        for ability in [
+            FireAbility::Blink,
+            FireAbility::Detonate,
+            FireAbility::FireMastery,
+        ] {
             assert!(!mage.global_cooldown_holds(ability), "{ability:?}");
             assert_eq!(mage.global_cooldown_fraction_for(ability), 1.0);
         }

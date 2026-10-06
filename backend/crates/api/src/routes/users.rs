@@ -8,7 +8,7 @@ use crate::state::AppState;
 
 pub fn router() -> Router<AppState> {
     Router::new()
-        .route("/me",          get(me))
+        .route("/me", get(me))
         .route("/me/permissions", get(my_permissions))
 }
 
@@ -25,8 +25,9 @@ pub fn router() -> Router<AppState> {
 )]
 pub(crate) async fn me(State(state): State<AppState>, user: AuthUser) -> ApiResult<Json<User>> {
     let u = user_db::find_by_id(&state.db, user.user_id)
-        .await.map_err(|e| ApiError(e.into()))?
-        .ok_or_else(|| ApiError(generic_auth_core::AppError::NotFound))?;
+        .await
+        .map_err(|e| ApiError(e.into()))?
+        .ok_or(ApiError(generic_auth_core::AppError::NotFound))?;
     Ok(Json(u))
 }
 
@@ -41,9 +42,11 @@ pub(crate) async fn me(State(state): State<AppState>, user: AuthUser) -> ApiResu
     tag = "users",
 )]
 pub(crate) async fn my_permissions(
-    State(state): State<AppState>, user: AuthUser,
+    State(state): State<AppState>,
+    user: AuthUser,
 ) -> ApiResult<Json<Vec<String>>> {
     let perms = user_db::permissions_for(&state.db, user.user_id)
-        .await.map_err(|e| ApiError(e.into()))?;
+        .await
+        .map_err(|e| ApiError(e.into()))?;
     Ok(Json(perms))
 }

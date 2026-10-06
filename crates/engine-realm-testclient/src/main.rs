@@ -69,13 +69,20 @@ fn main() -> ExitCode {
             }
             // Let the logger thread flush.
             std::thread::sleep(Duration::from_millis(200));
-            if failed { ExitCode::FAILURE } else { ExitCode::SUCCESS }
+            if failed {
+                ExitCode::FAILURE
+            } else {
+                ExitCode::SUCCESS
+            }
         }
         Some("bot") => {
-            let role = value(&args, "--role").and_then(|r| Role::from_key(&r)).unwrap_or(Role::Dps);
+            let role = value(&args, "--role")
+                .and_then(|r| Role::from_key(&r))
+                .unwrap_or(Role::Dps);
             let config = BotConfig {
                 name: value(&args, "--name").unwrap_or_else(|| role.key().into()),
-                email: value(&args, "--email").unwrap_or_else(|| format!("{}@bots.mygame.test", role.key())),
+                email: value(&args, "--email")
+                    .unwrap_or_else(|| format!("{}@bots.mygame.test", role.key())),
                 password: value(&args, "--password").unwrap_or_else(|| "bot-password-1".into()),
                 definition: value(&args, "--character").unwrap_or_else(|| "firemage".into()),
                 role,
@@ -99,8 +106,12 @@ fn main() -> ExitCode {
             }
         }
         _ => {
-            eprintln!("usage: realm-bot scenario <slice|isolation|decline|reconnect|security|results|all>");
-            eprintln!("       realm-bot bot --email E --password P --character warrior --role tank [--walk] [--lead]");
+            eprintln!(
+                "usage: realm-bot scenario <slice|isolation|decline|reconnect|security|results|all>"
+            );
+            eprintln!(
+                "       realm-bot bot --email E --password P --character warrior --role tank [--walk] [--lead]"
+            );
             ExitCode::FAILURE
         }
     }

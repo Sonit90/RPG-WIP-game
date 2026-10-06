@@ -46,11 +46,21 @@ impl Default for Realm {
     }
 }
 
-fn default_true() -> bool { true }
-fn default_spacetimedb_url() -> String { "http://127.0.0.1:3000".into() }
-fn default_spacetimedb_database() -> String { "realm".into() }
-fn default_service_subject() -> String { "service:realm-bridge".into() }
-fn default_poll_secs() -> u64 { 5 }
+fn default_true() -> bool {
+    true
+}
+fn default_spacetimedb_url() -> String {
+    "http://127.0.0.1:3000".into()
+}
+fn default_spacetimedb_database() -> String {
+    "realm".into()
+}
+fn default_service_subject() -> String {
+    "service:realm-bridge".into()
+}
+fn default_poll_secs() -> u64 {
+    5
+}
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Http {
@@ -63,12 +73,19 @@ pub struct Http {
 pub struct Db {
     pub url: String,
     pub max_connections: u32,
-    #[serde(default = "default_min")] pub min_connections: u32,
-    #[serde(default = "default_acquire")] pub acquire_timeout_secs: u64,
-    #[serde(default)] pub run_migrations_on_start: bool,
+    #[serde(default = "default_min")]
+    pub min_connections: u32,
+    #[serde(default = "default_acquire")]
+    pub acquire_timeout_secs: u64,
+    #[serde(default)]
+    pub run_migrations_on_start: bool,
 }
-fn default_min() -> u32 { 2 }
-fn default_acquire() -> u64 { 10 }
+fn default_min() -> u32 {
+    2
+}
+fn default_acquire() -> u64 {
+    10
+}
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Auth {
@@ -109,12 +126,24 @@ pub struct Auth {
     pub google: GoogleAuth,
 }
 
-fn default_audience() -> String { "mygame-realm".into() }
-fn default_key_id() -> String { "realm-1".into() }
-fn default_email_code_ttl_min() -> i64 { 15 }
-fn default_email_code_max_attempts() -> i32 { 5 }
-fn default_email_code_resend_cooldown_secs() -> i64 { 15 }
-fn default_email_code_max_per_hour() -> i64 { 5 }
+fn default_audience() -> String {
+    "mygame-realm".into()
+}
+fn default_key_id() -> String {
+    "realm-1".into()
+}
+fn default_email_code_ttl_min() -> i64 {
+    15
+}
+fn default_email_code_max_attempts() -> i32 {
+    5
+}
+fn default_email_code_resend_cooldown_secs() -> i64 {
+    15
+}
+fn default_email_code_max_per_hour() -> i64 {
+    5
+}
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct GoogleAuth {

@@ -33,8 +33,8 @@ pub fn generate_email_code() -> String {
 /// to brute-force offline. Without the secret an attacker cannot precompute or
 /// reverse the stored value.
 pub fn hash_email_code(secret: &str, code: &str) -> String {
-    let mut mac = HmacSha256::new_from_slice(secret.as_bytes())
-        .expect("HMAC accepts keys of any length");
+    let mut mac =
+        HmacSha256::new_from_slice(secret.as_bytes()).expect("HMAC accepts keys of any length");
     mac.update(code.as_bytes());
     hex::encode(mac.finalize().into_bytes())
 }
@@ -46,8 +46,8 @@ pub fn verify_email_code(secret: &str, code: &str, stored_hex: &str) -> bool {
     let Ok(expected) = hex::decode(stored_hex) else {
         return false;
     };
-    let mut mac = HmacSha256::new_from_slice(secret.as_bytes())
-        .expect("HMAC accepts keys of any length");
+    let mut mac =
+        HmacSha256::new_from_slice(secret.as_bytes()).expect("HMAC accepts keys of any length");
     mac.update(code.as_bytes());
     mac.verify_slice(&expected).is_ok()
 }
@@ -61,7 +61,10 @@ mod tests {
         for _ in 0..1_000 {
             let code = generate_email_code();
             assert_eq!(code.len(), 6, "code must be 6 chars: {code}");
-            assert!(code.chars().all(|c| c.is_ascii_digit()), "non-digit in {code}");
+            assert!(
+                code.chars().all(|c| c.is_ascii_digit()),
+                "non-digit in {code}"
+            );
         }
     }
 

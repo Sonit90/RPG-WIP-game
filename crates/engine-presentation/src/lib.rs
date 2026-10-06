@@ -66,8 +66,7 @@ pub use environment::{
 };
 pub use extract::{
     RemoteFrame, RenderExtractor, VisualBindings, VisualStats, interpolated_player_position,
-    lerp_angle,
-    lerp_position,
+    lerp_angle, lerp_position,
 };
 pub use game_ui::{GameUi, UiTheme};
 pub use hud::{HudModel, write_lines};

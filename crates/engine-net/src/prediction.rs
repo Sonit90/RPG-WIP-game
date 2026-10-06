@@ -120,11 +120,7 @@ impl Prediction {
             return *current;
         }
         self.last_acked = acked;
-        while self
-            .pending
-            .front()
-            .is_some_and(|frame| frame.seq <= acked)
-        {
+        while self.pending.front().is_some_and(|frame| frame.seq <= acked) {
             self.pending.pop_front();
         }
         let mut body = authoritative;
@@ -177,11 +173,23 @@ mod tests {
         let mut server_seq = 0;
         for tick in 0..120 {
             let frame = client.record(1.0, 0.3, 0.2, false, tick == 10);
-            apply_input(&mut predicted, &frame, &level.rules, &level.world, &mut buffers);
+            apply_input(
+                &mut predicted,
+                &frame,
+                &level.rules,
+                &level.world,
+                &mut buffers,
+            );
             // The server applies everything sent, ten ticks behind.
             if tick % 2 == 1 {
                 for frame in client.take_outbox() {
-                    apply_input(&mut server, &frame, &level.rules, &level.world, &mut buffers);
+                    apply_input(
+                        &mut server,
+                        &frame,
+                        &level.rules,
+                        &level.world,
+                        &mut buffers,
+                    );
                     server_seq = frame.seq;
                 }
             }
@@ -207,7 +215,13 @@ mod tests {
         let mut predicted = Body::at(Vec3::ZERO);
         for _ in 0..30 {
             let frame = client.record(1.0, 0.0, 0.0, false, false);
-            apply_input(&mut predicted, &frame, &level.rules, &level.world, &mut buffers);
+            apply_input(
+                &mut predicted,
+                &frame,
+                &level.rules,
+                &level.world,
+                &mut buffers,
+            );
         }
         // The server applied nothing (say, the barrier was still closed) yet acknowledged.
         let server = Body::at(Vec3::ZERO);
@@ -247,7 +261,14 @@ mod tests {
         let mut buffers = QueryBuffers::new();
         let mut client = Prediction::new(10);
         let body = Body::at(Vec3::new(1.0, 0.0, 0.0));
-        let kept = client.reconcile(&body, Body::at(Vec3::ZERO), 5, &level.rules, &level.world, &mut buffers);
+        let kept = client.reconcile(
+            &body,
+            Body::at(Vec3::ZERO),
+            5,
+            &level.rules,
+            &level.world,
+            &mut buffers,
+        );
         assert_eq!(kept.position, body.position);
     }
 }

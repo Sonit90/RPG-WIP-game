@@ -114,34 +114,46 @@ pub async fn list_users(pool: &PgPool, limit: i64, offset: i64) -> DbResult<Vec<
         ORDER BY u.created_at DESC
         LIMIT $1 OFFSET $2
         "#,
-        limit, offset,
+        limit,
+        offset,
     )
     .fetch_all(pool)
     .await?;
-    Ok(rows.into_iter().map(|r| User {
-        id: r.id,
-        email: r.email,
-        display_name: r.display_name,
-        role: Role::parse(&r.role_name).unwrap_or(Role::User),
-        is_active: r.is_active,
-        email_verified: r.email_verified,
-        created_at: r.created_at,
-        updated_at: r.updated_at,
-    }).collect())
+    Ok(rows
+        .into_iter()
+        .map(|r| User {
+            id: r.id,
+            email: r.email,
+            display_name: r.display_name,
+            role: Role::parse(&r.role_name).unwrap_or(Role::User),
+            is_active: r.is_active,
+            email_verified: r.email_verified,
+            created_at: r.created_at,
+            updated_at: r.updated_at,
+        })
+        .collect())
 }
 
 pub async fn set_role(pool: &PgPool, user_id: Uuid, role: Role) -> DbResult<()> {
     let role_id = role_id_for(pool, role).await?;
-    sqlx::query!("UPDATE users SET role_id = $1, updated_at = now() WHERE id = $2",
-        role_id, user_id)
-        .execute(pool).await?;
+    sqlx::query!(
+        "UPDATE users SET role_id = $1, updated_at = now() WHERE id = $2",
+        role_id,
+        user_id
+    )
+    .execute(pool)
+    .await?;
     Ok(())
 }
 
 pub async fn set_active(pool: &PgPool, user_id: Uuid, active: bool) -> DbResult<()> {
-    sqlx::query!("UPDATE users SET is_active = $1, updated_at = now() WHERE id = $2",
-        active, user_id)
-        .execute(pool).await?;
+    sqlx::query!(
+        "UPDATE users SET is_active = $1, updated_at = now() WHERE id = $2",
+        active,
+        user_id
+    )
+    .execute(pool)
+    .await?;
     Ok(())
 }
 
@@ -150,7 +162,8 @@ pub async fn set_active(pool: &PgPool, user_id: Uuid, active: bool) -> DbResult<
 /// Returns `true` if a row was deleted, `false` if no such user existed.
 pub async fn delete_user(pool: &PgPool, user_id: Uuid) -> DbResult<bool> {
     let res = sqlx::query!("DELETE FROM users WHERE id = $1", user_id)
-        .execute(pool).await?;
+        .execute(pool)
+        .await?;
     Ok(res.rows_affected() > 0)
 }
 
@@ -202,13 +215,21 @@ pub async fn upsert_oauth_identity(
             SET email = EXCLUDED.email,
                 raw_profile = EXCLUDED.raw_profile
         "#,
-        user_id, provider, subject, email, raw_profile,
-    ).execute(pool).await?;
+        user_id,
+        provider,
+        subject,
+        email,
+        raw_profile,
+    )
+    .execute(pool)
+    .await?;
     Ok(())
 }
 
 pub async fn find_user_by_oauth(
-    pool: &PgPool, provider: &str, subject: &str,
+    pool: &PgPool,
+    provider: &str,
+    subject: &str,
 ) -> DbResult<Option<User>> {
     let row = sqlx::query!(
         r#"
@@ -219,8 +240,11 @@ pub async fn find_user_by_oauth(
         JOIN roles r ON r.id = u.role_id
         WHERE oi.provider = $1 AND oi.subject = $2
         "#,
-        provider, subject,
-    ).fetch_optional(pool).await?;
+        provider,
+        subject,
+    )
+    .fetch_optional(pool)
+    .await?;
     Ok(row.map(|r| User {
         id: r.id,
         email: r.email,
@@ -245,8 +269,13 @@ pub async fn store_refresh_token(
     let id = sqlx::query_scalar!(
         "INSERT INTO refresh_tokens (user_id, token_hash, expires_at, user_agent)
          VALUES ($1, $2, $3, $4) RETURNING id",
-        user_id, token_hash, expires_at, user_agent,
-    ).fetch_one(pool).await?;
+        user_id,
+        token_hash,
+        expires_at,
+        user_agent,
+    )
+    .fetch_one(pool)
+    .await?;
     Ok(id)
 }
 
@@ -254,17 +283,22 @@ pub async fn revoke_refresh_token(pool: &PgPool, token_hash: &str) -> DbResult<(
     sqlx::query!(
         "UPDATE refresh_tokens SET revoked_at = now() WHERE token_hash = $1",
         token_hash,
-    ).execute(pool).await?;
+    )
+    .execute(pool)
+    .await?;
     Ok(())
 }
 
 pub async fn lookup_refresh_token(
-    pool: &PgPool, token_hash: &str,
+    pool: &PgPool,
+    token_hash: &str,
 ) -> DbResult<Option<(Uuid, OffsetDateTime, Option<OffsetDateTime>)>> {
     let row = sqlx::query!(
         "SELECT user_id, expires_at, revoked_at FROM refresh_tokens WHERE token_hash = $1",
         token_hash,
-    ).fetch_optional(pool).await?;
+    )
+    .fetch_optional(pool)
+    .await?;
     Ok(row.map(|r| (r.user_id, r.expires_at, r.revoked_at)))
 }
 
@@ -430,13 +464,11 @@ pub async fn update_password_hash(
     user_id: Uuid,
     password_hash: &str,
 ) -> DbResult<()> {
-    sqlx::query(
-        "UPDATE users SET password_hash = $1, updated_at = now() WHERE id = $2",
-    )
-    .bind(password_hash)
-    .bind(user_id)
-    .execute(pool)
-    .await?;
+    sqlx::query("UPDATE users SET password_hash = $1, updated_at = now() WHERE id = $2")
+        .bind(password_hash)
+        .bind(user_id)
+        .execute(pool)
+        .await?;
     Ok(())
 }
 
@@ -455,6 +487,7 @@ pub async fn revoke_all_refresh_tokens(pool: &PgPool, user_id: Uuid) -> DbResult
 
 async fn role_id_for(pool: &PgPool, role: Role) -> DbResult<i16> {
     let id = sqlx::query_scalar!("SELECT id FROM roles WHERE name = $1", role.as_str())
-        .fetch_one(pool).await?;
+        .fetch_one(pool)
+        .await?;
     Ok(id)
 }

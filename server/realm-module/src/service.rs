@@ -12,7 +12,7 @@
 //! the service subject — may call anything here.
 
 use engine_realm::rate_limit::Operation;
-use engine_realm::{Role, RealmError};
+use engine_realm::{RealmError, Role};
 use spacetimedb::{Identity, ReducerContext, Table};
 
 use crate::schema::*;
@@ -37,7 +37,10 @@ pub fn player_identity(config: &RealmConfig, account_id: &str) -> Identity {
 }
 
 /// Puts a character into the queue. Called by the realm API on a player's behalf.
-#[allow(clippy::too_many_arguments, reason = "a reducer's arguments are its wire format")]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "a reducer's arguments are its wire format"
+)]
 #[spacetimedb::reducer]
 pub fn svc_enqueue(
     ctx: &ReducerContext,
@@ -58,7 +61,9 @@ pub fn svc_enqueue(
         RealmError::matchmaking("Connect to the realm before joining the queue.").to_wire()
     })?;
     if account.connections == 0 {
-        return Err(RealmError::matchmaking("Connect to the realm before joining the queue.").into());
+        return Err(
+            RealmError::matchmaking("Connect to the realm before joining the queue.").into(),
+        );
     }
     // The player's own call is what is being limited, even though the bridge relays it.
     crate::util::rate_limit_for(ctx, identity, Operation::Queue)?;

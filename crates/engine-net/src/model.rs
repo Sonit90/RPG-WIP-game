@@ -15,8 +15,10 @@ use std::time::Instant;
 
 use engine_core::math::Vec3;
 use engine_realm::Micros;
-use engine_realm::combat::{CastState, CooldownState, EntityRef, Resources, StatusState, WireEvent};
 use engine_realm::Role;
+use engine_realm::combat::{
+    CastState, CooldownState, EntityRef, Resources, StatusState, WireEvent,
+};
 use engine_realm::instance::InstanceState;
 use engine_realm::party::{PartyState, ReadyResponse};
 
@@ -373,7 +375,9 @@ impl RealmMirror {
     /// The local account id, once known.
     #[must_use]
     pub fn my_account_id(&self) -> Option<&str> {
-        self.account.as_ref().map(|account| account.account_id.as_str())
+        self.account
+            .as_ref()
+            .map(|account| account.account_id.as_str())
     }
 
     /// The local player's runtime state in the instance.

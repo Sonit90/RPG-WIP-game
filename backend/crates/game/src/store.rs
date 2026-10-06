@@ -29,7 +29,10 @@ fn db(e: sqlx::Error) -> AppError {
 const COLUMNS: &str = "id, account_id, definition_id, name, level, experience, loadout, talents";
 
 /// The account's characters, creating one of each starter definition it does not have yet.
-pub async fn list_or_provision(pool: &PgPool, account_id: Uuid) -> Result<Vec<CharacterRow>, AppError> {
+pub async fn list_or_provision(
+    pool: &PgPool,
+    account_id: Uuid,
+) -> Result<Vec<CharacterRow>, AppError> {
     let catalog = crate::catalog();
     for definition in catalog.starters() {
         let loadout = starting_loadout(definition.hero);
@@ -59,7 +62,11 @@ pub async fn list_or_provision(pool: &PgPool, account_id: Uuid) -> Result<Vec<Ch
 }
 
 /// One of the account's characters. `None` if it does not exist *or is someone else's*.
-pub async fn get(pool: &PgPool, account_id: Uuid, id: Uuid) -> Result<Option<CharacterRow>, AppError> {
+pub async fn get(
+    pool: &PgPool,
+    account_id: Uuid,
+    id: Uuid,
+) -> Result<Option<CharacterRow>, AppError> {
     sqlx::query_as::<_, CharacterRow>(&format!(
         "SELECT {COLUMNS} FROM game.characters WHERE id = $1 AND account_id = $2"
     ))
@@ -71,7 +78,12 @@ pub async fn get(pool: &PgPool, account_id: Uuid, id: Uuid) -> Result<Option<Cha
 }
 
 /// Replaces a character's loadout. `false` if it is not the account's.
-pub async fn save_loadout(pool: &PgPool, account_id: Uuid, id: Uuid, loadout: &Loadout) -> Result<bool, AppError> {
+pub async fn save_loadout(
+    pool: &PgPool,
+    account_id: Uuid,
+    id: Uuid,
+    loadout: &Loadout,
+) -> Result<bool, AppError> {
     let done = sqlx::query(
         "UPDATE game.characters SET loadout = $3, updated_at = now() WHERE id = $1 AND account_id = $2",
     )
@@ -85,7 +97,12 @@ pub async fn save_loadout(pool: &PgPool, account_id: Uuid, id: Uuid, loadout: &L
 }
 
 /// Replaces a character's talents. `false` if it is not the account's.
-pub async fn save_talents(pool: &PgPool, account_id: Uuid, id: Uuid, talents: &[String]) -> Result<bool, AppError> {
+pub async fn save_talents(
+    pool: &PgPool,
+    account_id: Uuid,
+    id: Uuid,
+    talents: &[String],
+) -> Result<bool, AppError> {
     let done = sqlx::query(
         "UPDATE game.characters SET talents = $3, updated_at = now() WHERE id = $1 AND account_id = $2",
     )
@@ -99,7 +116,10 @@ pub async fn save_talents(pool: &PgPool, account_id: Uuid, id: Uuid, talents: &[
 }
 
 /// How often a character finished each dungeon.
-pub async fn completions(pool: &PgPool, character_id: Uuid) -> Result<Vec<DungeonCompletion>, AppError> {
+pub async fn completions(
+    pool: &PgPool,
+    character_id: Uuid,
+) -> Result<Vec<DungeonCompletion>, AppError> {
     let rows: Vec<(String, i32)> = sqlx::query_as(
         "SELECT dungeon_id, count FROM game.dungeon_completions WHERE character_id = $1 ORDER BY dungeon_id",
     )
@@ -109,12 +129,18 @@ pub async fn completions(pool: &PgPool, character_id: Uuid) -> Result<Vec<Dungeo
     .map_err(db)?;
     Ok(rows
         .into_iter()
-        .map(|(dungeon_id, count)| DungeonCompletion { dungeon_id, count: u32::try_from(count).unwrap_or(0) })
+        .map(|(dungeon_id, count)| DungeonCompletion {
+            dungeon_id,
+            count: u32::try_from(count).unwrap_or(0),
+        })
         .collect())
 }
 
 /// The account's settings document and its version, if any were saved.
-pub async fn settings(pool: &PgPool, account_id: Uuid) -> Result<Option<(i64, serde_json::Value)>, AppError> {
+pub async fn settings(
+    pool: &PgPool,
+    account_id: Uuid,
+) -> Result<Option<(i64, serde_json::Value)>, AppError> {
     sqlx::query_as::<_, (i64, Json<serde_json::Value>)>(
         "SELECT version, settings FROM game.account_settings WHERE account_id = $1",
     )

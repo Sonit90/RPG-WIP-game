@@ -3,7 +3,7 @@
 
 use axum::{
     extract::{Path, Query, State},
-    routing::{delete, get, post, patch},
+    routing::{delete, get, patch, post},
     Json, Router,
 };
 use generic_auth_auth::permissions::{load_permissions, require, Permission};
@@ -19,10 +19,10 @@ use crate::state::AppState;
 
 pub fn router() -> Router<AppState> {
     Router::new()
-        .route("/users",                 get(list_users))
-        .route("/users/{id}",             delete(delete_user::<AppState>))
-        .route("/users/{id}/role",        patch(set_role))
-        .route("/users/{id}/active",      patch(set_active))
+        .route("/users", get(list_users))
+        .route("/users/{id}", delete(delete_user::<AppState>))
+        .route("/users/{id}/role", patch(set_role))
+        .route("/users/{id}/active", patch(set_active))
         .route("/users/{id}/permissions", post(grant_permission))
 }
 
@@ -33,7 +33,9 @@ pub struct Page {
     #[serde(default)]
     pub offset: i64,
 }
-fn default_limit() -> i64 { 50 }
+fn default_limit() -> i64 {
+    50
+}
 
 #[utoipa::path(
     get,
@@ -52,16 +54,21 @@ pub(crate) async fn list_users(
     user: VerifiedUser,
     Query(page): Query<Page>,
 ) -> ApiResult<Json<Vec<User>>> {
-    let perms = load_permissions(&state.db, user.user_id).await.map_err(ApiError)?;
+    let perms = load_permissions(&state.db, user.user_id)
+        .await
+        .map_err(ApiError)?;
     require(&perms, Permission::UsersRead).map_err(ApiError)?;
 
     let users = user_db::list_users(&state.db, page.limit.min(200), page.offset)
-        .await.map_err(|e| ApiError(e.into()))?;
+        .await
+        .map_err(|e| ApiError(e.into()))?;
     Ok(Json(users))
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
-pub struct SetRoleReq { pub role: Role }
+pub struct SetRoleReq {
+    pub role: Role,
+}
 
 #[utoipa::path(
     patch,
@@ -82,16 +89,21 @@ pub(crate) async fn set_role(
     Path(id): Path<Uuid>,
     Json(body): Json<SetRoleReq>,
 ) -> ApiResult<axum::http::StatusCode> {
-    let perms = load_permissions(&state.db, user.user_id).await.map_err(ApiError)?;
+    let perms = load_permissions(&state.db, user.user_id)
+        .await
+        .map_err(ApiError)?;
     require(&perms, Permission::UsersAssignRoles).map_err(ApiError)?;
 
     user_db::set_role(&state.db, id, body.role)
-        .await.map_err(|e| ApiError(e.into()))?;
+        .await
+        .map_err(|e| ApiError(e.into()))?;
     Ok(axum::http::StatusCode::NO_CONTENT)
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
-pub struct SetActiveReq { pub active: bool }
+pub struct SetActiveReq {
+    pub active: bool,
+}
 
 #[utoipa::path(
     patch,
@@ -112,16 +124,22 @@ pub(crate) async fn set_active(
     Path(id): Path<Uuid>,
     Json(body): Json<SetActiveReq>,
 ) -> ApiResult<axum::http::StatusCode> {
-    let perms = load_permissions(&state.db, user.user_id).await.map_err(ApiError)?;
+    let perms = load_permissions(&state.db, user.user_id)
+        .await
+        .map_err(ApiError)?;
     require(&perms, Permission::UsersManage).map_err(ApiError)?;
 
     user_db::set_active(&state.db, id, body.active)
-        .await.map_err(|e| ApiError(e.into()))?;
+        .await
+        .map_err(|e| ApiError(e.into()))?;
     Ok(axum::http::StatusCode::NO_CONTENT)
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
-pub struct GrantPermReq { pub permission: String, pub granted: bool }
+pub struct GrantPermReq {
+    pub permission: String,
+    pub granted: bool,
+}
 
 #[utoipa::path(
     post,
@@ -142,7 +160,9 @@ pub(crate) async fn grant_permission(
     Path(id): Path<Uuid>,
     Json(body): Json<GrantPermReq>,
 ) -> ApiResult<axum::http::StatusCode> {
-    let perms = load_permissions(&state.db, user.user_id).await.map_err(ApiError)?;
+    let perms = load_permissions(&state.db, user.user_id)
+        .await
+        .map_err(ApiError)?;
     require(&perms, Permission::UsersAssignRoles).map_err(ApiError)?;
 
     sqlx::query!(
@@ -152,9 +172,13 @@ pub(crate) async fn grant_permission(
         ON CONFLICT (user_id, permission_id)
         DO UPDATE SET granted = EXCLUDED.granted
         "#,
-        id, body.permission, body.granted,
-    ).execute(&state.db).await
-        .map_err(|e| ApiError(generic_auth_core::AppError::Database(e.to_string())))?;
+        id,
+        body.permission,
+        body.granted,
+    )
+    .execute(&state.db)
+    .await
+    .map_err(|e| ApiError(generic_auth_core::AppError::Database(e.to_string())))?;
     Ok(axum::http::StatusCode::NO_CONTENT)
 }
 
@@ -180,7 +204,10 @@ pub(crate) async fn delete_user<S>(
 where
     S: AdminUserStore + HasJwt + FindUserById + Clone + Send + Sync + 'static,
 {
-    let perms = state.user_permissions(user.user_id).await.map_err(ApiError)?;
+    let perms = state
+        .user_permissions(user.user_id)
+        .await
+        .map_err(ApiError)?;
     require(&perms, Permission::UsersManage).map_err(ApiError)?;
 
     if id == user.user_id {
@@ -214,13 +241,15 @@ mod tests {
     };
     use generic_auth_auth::permissions::Permission;
     use generic_auth_auth::JwtCodec;
-    use generic_auth_core::{models::{Role, User}, AppError};
+    use generic_auth_core::{
+        models::{Role, User},
+        AppError,
+    };
     use time::OffsetDateTime;
     use tower::ServiceExt as _;
     use uuid::Uuid;
 
     use crate::middleware::auth::{AdminUserStore, FindUserById, HasJwt};
-
 
     #[derive(Clone)]
     struct MockState {
@@ -234,7 +263,9 @@ mod tests {
     }
 
     impl HasJwt for MockState {
-        fn jwt_codec(&self) -> &JwtCodec { &self.jwt }
+        fn jwt_codec(&self) -> &JwtCodec {
+            &self.jwt
+        }
     }
 
     #[async_trait::async_trait]
@@ -296,7 +327,12 @@ mod tests {
         test_jwt().issue(id, Role::Admin).expect("issue jwt")
     }
 
-    async fn status_of(state: MockState, caller_id: Uuid, target: Uuid, with_token: bool) -> StatusCode {
+    async fn status_of(
+        state: MockState,
+        caller_id: Uuid,
+        target: Uuid,
+        with_token: bool,
+    ) -> StatusCode {
         let token = with_token.then(|| token_for(caller_id));
         app(state)
             .oneshot(req(target, token.as_deref()))
@@ -314,7 +350,10 @@ mod tests {
             perms: manage_perms(),
             delete_result: true,
         };
-        assert_eq!(status_of(state, id, Uuid::new_v4(), false).await, StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            status_of(state, id, Uuid::new_v4(), false).await,
+            StatusCode::UNAUTHORIZED
+        );
     }
 
     #[tokio::test]
@@ -326,7 +365,10 @@ mod tests {
             perms: manage_perms(),
             delete_result: true,
         };
-        assert_eq!(status_of(state, id, Uuid::new_v4(), true).await, StatusCode::FORBIDDEN);
+        assert_eq!(
+            status_of(state, id, Uuid::new_v4(), true).await,
+            StatusCode::FORBIDDEN
+        );
     }
 
     #[tokio::test]
@@ -338,7 +380,10 @@ mod tests {
             perms: HashSet::new(),
             delete_result: true,
         };
-        assert_eq!(status_of(state, id, Uuid::new_v4(), true).await, StatusCode::FORBIDDEN);
+        assert_eq!(
+            status_of(state, id, Uuid::new_v4(), true).await,
+            StatusCode::FORBIDDEN
+        );
     }
 
     #[tokio::test]
@@ -351,7 +396,10 @@ mod tests {
             delete_result: true,
         };
         // target == caller
-        assert_eq!(status_of(state, id, id, true).await, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            status_of(state, id, id, true).await,
+            StatusCode::BAD_REQUEST
+        );
     }
 
     #[tokio::test]
@@ -363,7 +411,10 @@ mod tests {
             perms: manage_perms(),
             delete_result: false, // row absent
         };
-        assert_eq!(status_of(state, id, Uuid::new_v4(), true).await, StatusCode::NOT_FOUND);
+        assert_eq!(
+            status_of(state, id, Uuid::new_v4(), true).await,
+            StatusCode::NOT_FOUND
+        );
     }
 
     #[tokio::test]
@@ -375,6 +426,9 @@ mod tests {
             perms: manage_perms(),
             delete_result: true,
         };
-        assert_eq!(status_of(state, id, Uuid::new_v4(), true).await, StatusCode::NO_CONTENT);
+        assert_eq!(
+            status_of(state, id, Uuid::new_v4(), true).await,
+            StatusCode::NO_CONTENT
+        );
     }
 }

@@ -1536,7 +1536,9 @@ impl App {
                 }),
             };
             let session = crate::online::OnlineSession::start(endpoints, Box::new(store), dev)
-                .map_err(|error| EngineError::unsupported(format!("start the network layer: {error}")))?;
+                .map_err(|error| {
+                    EngineError::unsupported(format!("start the network layer: {error}"))
+                })?;
             app.online = Some(session);
             // Until the realm places the player, nobody stands in the start area.
             app.extractor.set_player_opacity(0.0);
@@ -2619,9 +2621,7 @@ impl App {
     /// the click wastes the player's attention and hides the reason.
     fn cast_or_target(&mut self, ability: FireAbility) {
         let mage = self.simulation.mage();
-        if !mage.abilities.is_ready(ability)
-            || mage.global_cooldown_holds(ability)
-        {
+        if !mage.abilities.is_ready(ability) || mage.global_cooldown_holds(ability) {
             return;
         }
         if ability.definition().fire().energy_cost > 0.0 && !mage.energy.is_full() {
@@ -3783,8 +3783,16 @@ impl App {
         if self.hud_editor.is_active() {
             let target = self.snapshot.target.as_ref().map(|target| &target.auras);
             for (id, auras, harmful) in [
-                (HudElementId::Buffs, Some(&self.snapshot.player.auras), false),
-                (HudElementId::Debuffs, Some(&self.snapshot.player.auras), true),
+                (
+                    HudElementId::Buffs,
+                    Some(&self.snapshot.player.auras),
+                    false,
+                ),
+                (
+                    HudElementId::Debuffs,
+                    Some(&self.snapshot.player.auras),
+                    true,
+                ),
                 (HudElementId::TargetBuffs, target, false),
                 (HudElementId::TargetDebuffs, target, true),
             ] {
@@ -5688,7 +5696,12 @@ impl Application for App {
             engine_core::profile_scope!(profiler, "Online");
             let viewport = self.renderer.size();
             let scale = self.game_ui.scale();
-            online.update(ctx.input(), viewport, scale, ctx.time().real_delta().as_secs_f32());
+            online.update(
+                ctx.input(),
+                viewport,
+                scale,
+                ctx.time().real_delta().as_secs_f32(),
+            );
             online_front_end = online.front_end_active();
             for directive in online.take_directives() {
                 match directive {
@@ -5701,7 +5714,10 @@ impl Application for App {
                         *self.simulation.roster_mut().sheet_mut(hero) =
                             engine_realm::loadout::sheet_of(hero, &loadout);
                         self.simulation.refresh_character();
-                        log::info!("online: {} dressed from the persistent character", hero.name());
+                        log::info!(
+                            "online: {} dressed from the persistent character",
+                            hero.name()
+                        );
                     }
                 }
             }
@@ -5818,7 +5834,9 @@ impl Application for App {
                 // talents and debug controls are not commands the realm takes.
                 let may_move = online.may_move();
                 self.commands.retain(|command| match command {
-                    engine_game::PlayerCommand::Move { .. } | engine_game::PlayerCommand::Jump => may_move,
+                    engine_game::PlayerCommand::Move { .. } | engine_game::PlayerCommand::Jump => {
+                        may_move
+                    }
                     engine_game::PlayerCommand::UseAbility(_)
                     | engine_game::PlayerCommand::UseAbilityAt { .. }
                     | engine_game::PlayerCommand::UseUltimate { .. }
@@ -6018,7 +6036,10 @@ impl Application for App {
             // see-through things in front of the eye or between the eye and the character.
             // The character's opacity is read on the next extraction — a frame later, which
             // the fade's own easing is far slower than.
-            let player_shown = self.online.as_ref().is_none_or(|online| online.player_placed());
+            let player_shown = self
+                .online
+                .as_ref()
+                .is_none_or(|online| online.player_placed());
             self.extractor.set_player_opacity(if player_shown {
                 self.controller.character_opacity()
             } else {

@@ -292,7 +292,9 @@ impl Drop for RealmClient {
 #[must_use]
 pub fn reconnect_delay(attempt: u32) -> Duration {
     const STEPS: [u64; 6] = [500, 1_000, 2_000, 4_000, 8_000, 15_000];
-    let index = usize::try_from(attempt).unwrap_or(usize::MAX).min(STEPS.len() - 1);
+    let index = usize::try_from(attempt)
+        .unwrap_or(usize::MAX)
+        .min(STEPS.len() - 1);
     Duration::from_millis(STEPS[index])
 }
 
@@ -391,12 +393,10 @@ impl Worker {
             self.emit(NetEvent::RememberedEmail(stored.email));
         }
         loop {
-            let wait = self
-                .reconnect_at
-                .map_or(Duration::from_millis(500), |at| {
-                    at.saturating_duration_since(Instant::now())
-                        .min(Duration::from_millis(500))
-                });
+            let wait = self.reconnect_at.map_or(Duration::from_millis(500), |at| {
+                at.saturating_duration_since(Instant::now())
+                    .min(Duration::from_millis(500))
+            });
             match commands.recv_timeout(wait) {
                 Ok(WorkerMessage::Shutdown) | Err(RecvTimeoutError::Disconnected) => break,
                 Ok(WorkerMessage::Command(command)) => self.handle(command),
@@ -415,12 +415,7 @@ impl Worker {
     }
 
     fn timers(&mut self) {
-        if self
-            .tokens
-            .as_ref()
-            .is_some_and(Tokens::stale)
-            && self.session.is_some()
-        {
+        if self.tokens.as_ref().is_some_and(Tokens::stale) && self.session.is_some() {
             self.renew();
         }
         if let Some(at) = self.reconnect_at

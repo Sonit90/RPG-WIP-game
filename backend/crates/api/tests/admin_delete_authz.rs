@@ -21,11 +21,13 @@ use axum::{
 };
 use generic_auth_api::middleware::auth::{FindUserById, HasJwt, VerifiedUser};
 use generic_auth_auth::JwtCodec;
-use generic_auth_core::{models::{Role, User}, AppError};
+use generic_auth_core::{
+    models::{Role, User},
+    AppError,
+};
 use time::OffsetDateTime;
 use tower::ServiceExt as _;
 use uuid::Uuid;
-
 
 #[derive(Clone)]
 struct MockState {
@@ -74,7 +76,9 @@ fn bearer_token(user_id: Uuid) -> String {
 
 /// Stub route mirroring the real one: same method + `VerifiedUser` guard.
 fn test_app(state: MockState) -> Router {
-    async fn delete_stub(_: VerifiedUser) -> StatusCode { StatusCode::OK }
+    async fn delete_stub(_: VerifiedUser) -> StatusCode {
+        StatusCode::OK
+    }
     Router::new()
         .route("/admin/users/{id}", delete(delete_stub))
         .with_state(state)
@@ -109,12 +113,19 @@ async fn delete_with_verified_admin_passes_guard() {
     let token = bearer_token(user_id);
 
     let status = app
-        .oneshot(delete_req(&format!("/admin/users/{}", Uuid::new_v4()), Some(&token)))
+        .oneshot(delete_req(
+            &format!("/admin/users/{}", Uuid::new_v4()),
+            Some(&token),
+        ))
         .await
         .unwrap()
         .status();
 
-    assert_eq!(status, StatusCode::OK, "verified admin must clear the guard");
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "verified admin must clear the guard"
+    );
 }
 
 #[tokio::test]
@@ -124,10 +135,17 @@ async fn delete_with_unverified_user_is_forbidden() {
     let token = bearer_token(user_id);
 
     let status = app
-        .oneshot(delete_req(&format!("/admin/users/{}", Uuid::new_v4()), Some(&token)))
+        .oneshot(delete_req(
+            &format!("/admin/users/{}", Uuid::new_v4()),
+            Some(&token),
+        ))
         .await
         .unwrap()
         .status();
 
-    assert_eq!(status, StatusCode::FORBIDDEN, "unverified user must be blocked");
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "unverified user must be blocked"
+    );
 }

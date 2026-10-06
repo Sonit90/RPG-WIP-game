@@ -10,9 +10,9 @@ pub mod users;
 
 pub fn router(state: AppState) -> Router {
     let api_v1 = Router::new()
-        .nest("/auth",     auth::router())
-        .nest("/users",    users::router())
-        .nest("/admin",    admin::router())
+        .nest("/auth", auth::router())
+        .nest("/users", users::router())
+        .nest("/admin", admin::router())
         .merge(game::router())
         .with_state(state.clone());
 
@@ -23,4 +23,6 @@ pub fn router(state: AppState) -> Router {
         .nest("/api/v1", api_v1)
 }
 
-async fn health() -> &'static str { "ok" }
+async fn health() -> &'static str {
+    "ok"
+}

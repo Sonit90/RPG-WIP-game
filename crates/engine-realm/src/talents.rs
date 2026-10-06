@@ -30,7 +30,9 @@ pub fn talents_for(hero: Hero) -> Vec<(String, &'static TalentDef)> {
 /// Whether `key` names a talent `hero` can have.
 #[must_use]
 pub fn is_valid(hero: Hero, key: &str) -> bool {
-    talents_for(hero).iter().any(|(candidate, _)| candidate == key)
+    talents_for(hero)
+        .iter()
+        .any(|(candidate, _)| candidate == key)
 }
 
 /// The talent a key names, for `hero`.

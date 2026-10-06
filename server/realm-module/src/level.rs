@@ -52,17 +52,18 @@ pub fn dungeon(id: &str) -> Result<Rc<Dungeon>, RealmError> {
         .cloned()
         .ok_or_else(|| RealmError::dungeon("That dungeon does not exist."))?;
     let text = embedded_scene(&definition.scene).ok_or_else(|| {
-        log::error!("event=scene_missing dungeon_id={id} scene={}", definition.scene);
+        log::error!(
+            "event=scene_missing dungeon_id={id} scene={}",
+            definition.scene
+        );
         RealmError::dungeon("That dungeon is not available on this realm.")
     })?;
-    let scene = engine_environment::scene_file::parse(text, &definition.scene).map_err(|error| {
-        log::error!("event=scene_invalid dungeon_id={id} error={error}");
-        RealmError::dungeon("That dungeon is not available on this realm.")
-    })?;
-    let built = Rc::new(Dungeon {
-        definition,
-        scene,
-    });
+    let scene =
+        engine_environment::scene_file::parse(text, &definition.scene).map_err(|error| {
+            log::error!("event=scene_invalid dungeon_id={id} error={error}");
+            RealmError::dungeon("That dungeon is not available on this realm.")
+        })?;
+    let built = Rc::new(Dungeon { definition, scene });
     DUNGEONS.with(|cell| {
         cell.borrow_mut().insert(id.to_owned(), Rc::clone(&built));
     });

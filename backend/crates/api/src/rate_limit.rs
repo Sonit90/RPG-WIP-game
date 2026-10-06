@@ -33,24 +33,48 @@ pub struct Limits {
 }
 
 /// Login attempts per email: five, then one every twelve seconds.
-pub const LOGIN_PER_EMAIL: Rule = Rule { capacity: 5.0, per_second: 1.0 / 12.0 };
+pub const LOGIN_PER_EMAIL: Rule = Rule {
+    capacity: 5.0,
+    per_second: 1.0 / 12.0,
+};
 /// Login attempts per client address.
-pub const LOGIN_PER_ADDRESS: Rule = Rule { capacity: 20.0, per_second: 0.5 };
+pub const LOGIN_PER_ADDRESS: Rule = Rule {
+    capacity: 20.0,
+    per_second: 0.5,
+};
 /// Registrations per client address.
-pub const REGISTER_PER_ADDRESS: Rule = Rule { capacity: 3.0, per_second: 1.0 / 60.0 };
+pub const REGISTER_PER_ADDRESS: Rule = Rule {
+    capacity: 3.0,
+    per_second: 1.0 / 60.0,
+};
 /// Token refreshes per client address.
-pub const REFRESH_PER_ADDRESS: Rule = Rule { capacity: 30.0, per_second: 1.0 };
+pub const REFRESH_PER_ADDRESS: Rule = Rule {
+    capacity: 30.0,
+    per_second: 1.0,
+};
 /// Queue requests per account.
-pub const QUEUE_PER_ACCOUNT: Rule = Rule { capacity: 5.0, per_second: 1.0 };
+pub const QUEUE_PER_ACCOUNT: Rule = Rule {
+    capacity: 5.0,
+    per_second: 1.0,
+};
 /// Character writes (moves, talents) per account.
-pub const CHARACTER_WRITES_PER_ACCOUNT: Rule = Rule { capacity: 20.0, per_second: 4.0 };
+pub const CHARACTER_WRITES_PER_ACCOUNT: Rule = Rule {
+    capacity: 20.0,
+    per_second: 4.0,
+};
 /// Settings saves per account.
-pub const SETTINGS_PER_ACCOUNT: Rule = Rule { capacity: 5.0, per_second: 0.2 };
+pub const SETTINGS_PER_ACCOUNT: Rule = Rule {
+    capacity: 5.0,
+    per_second: 0.2,
+};
 
 impl Limits {
     /// Limits multiplied by `scale` (at least 1).
     pub fn scaled(scale: f64) -> Self {
-        Self { buckets: Mutex::default(), scale: scale.max(1.0) }
+        Self {
+            buckets: Mutex::default(),
+            scale: scale.max(1.0),
+        }
     }
 
     /// Spends one call of `rule` under `key`, or refuses with 429.
@@ -60,7 +84,10 @@ impl Limits {
 
     fn check_at(&self, key: &str, rule: Rule, now: Instant) -> Result<(), AppError> {
         let scale = if self.scale >= 1.0 { self.scale } else { 1.0 };
-        let rule = Rule { capacity: rule.capacity * scale, per_second: rule.per_second * scale };
+        let rule = Rule {
+            capacity: rule.capacity * scale,
+            per_second: rule.per_second * scale,
+        };
         let mut buckets = self
             .buckets
             .lock()
@@ -69,7 +96,10 @@ impl Limits {
             // A flood of distinct keys: forget idle ones rather than grow without bound.
             buckets.retain(|_, b| now.duration_since(b.at).as_secs() < 600);
         }
-        let bucket = buckets.entry(key.to_string()).or_insert(Bucket { tokens: rule.capacity, at: now });
+        let bucket = buckets.entry(key.to_string()).or_insert(Bucket {
+            tokens: rule.capacity,
+            at: now,
+        });
         let earned = now.duration_since(bucket.at).as_secs_f64() * rule.per_second;
         bucket.tokens = (bucket.tokens + earned).min(rule.capacity);
         bucket.at = now;
@@ -78,7 +108,9 @@ impl Limits {
             Ok(())
         } else {
             tracing::warn!(key = %key.split(':').next().unwrap_or(""), "rate limited");
-            Err(AppError::TooManyRequests("Too many attempts. Wait a moment and try again.".into()))
+            Err(AppError::TooManyRequests(
+                "Too many attempts. Wait a moment and try again.".into(),
+            ))
         }
     }
 }
@@ -88,7 +120,10 @@ impl Limits {
 /// `X-Forwarded-For` is honoured only when the socket peer is a loopback or private address,
 /// meaning the reverse proxy in front of this service. A client connecting directly cannot
 /// choose its own throttle key by sending the header.
-pub fn client_address(headers: &axum::http::HeaderMap, peer: Option<std::net::SocketAddr>) -> String {
+pub fn client_address(
+    headers: &axum::http::HeaderMap,
+    peer: Option<std::net::SocketAddr>,
+) -> String {
     let behind_proxy = peer.is_none_or(|p| match p.ip() {
         std::net::IpAddr::V4(v4) => v4.is_loopback() || v4.is_private(),
         std::net::IpAddr::V6(v6) => v6.is_loopback() || (v6.segments()[0] & 0xfe00) == 0xfc00,
@@ -101,7 +136,9 @@ pub fn client_address(headers: &axum::http::HeaderMap, peer: Option<std::net::So
         .filter(|v| !v.is_empty());
     match (behind_proxy, forwarded) {
         (true, Some(forwarded)) => forwarded,
-        _ => peer.map(|p| p.ip().to_string()).unwrap_or_else(|| "unknown".into()),
+        _ => peer
+            .map(|p| p.ip().to_string())
+            .unwrap_or_else(|| "unknown".into()),
     }
 }
 
@@ -111,7 +148,10 @@ pub struct ClientAddress(pub String);
 impl<S: Send + Sync> axum::extract::FromRequestParts<S> for ClientAddress {
     type Rejection = std::convert::Infallible;
 
-    async fn from_request_parts(parts: &mut axum::http::request::Parts, _: &S) -> Result<Self, Self::Rejection> {
+    async fn from_request_parts(
+        parts: &mut axum::http::request::Parts,
+        _: &S,
+    ) -> Result<Self, Self::Rejection> {
         let peer = parts
             .extensions
             .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
@@ -130,13 +170,23 @@ mod tests {
         let limits = Limits::default();
         let start = Instant::now();
         for _ in 0..5 {
-            assert!(limits.check_at("login:a@b.c", LOGIN_PER_EMAIL, start).is_ok());
+            assert!(limits
+                .check_at("login:a@b.c", LOGIN_PER_EMAIL, start)
+                .is_ok());
         }
-        assert!(limits.check_at("login:a@b.c", LOGIN_PER_EMAIL, start).is_err());
-        // Other keys are unaffected.
-        assert!(limits.check_at("login:x@y.z", LOGIN_PER_EMAIL, start).is_ok());
         assert!(limits
-            .check_at("login:a@b.c", LOGIN_PER_EMAIL, start + Duration::from_secs(13))
+            .check_at("login:a@b.c", LOGIN_PER_EMAIL, start)
+            .is_err());
+        // Other keys are unaffected.
+        assert!(limits
+            .check_at("login:x@y.z", LOGIN_PER_EMAIL, start)
+            .is_ok());
+        assert!(limits
+            .check_at(
+                "login:a@b.c",
+                LOGIN_PER_EMAIL,
+                start + Duration::from_secs(13)
+            )
             .is_ok());
     }
 
@@ -150,6 +200,9 @@ mod tests {
         // A direct client cannot pick its own key.
         let direct: std::net::SocketAddr = "198.51.100.7:5555".parse().unwrap();
         assert_eq!(client_address(&headers, Some(direct)), "198.51.100.7");
-        assert_eq!(client_address(&axum::http::HeaderMap::new(), None), "unknown");
+        assert_eq!(
+            client_address(&axum::http::HeaderMap::new(), None),
+            "unknown"
+        );
     }
 }

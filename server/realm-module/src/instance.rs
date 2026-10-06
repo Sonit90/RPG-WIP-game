@@ -49,7 +49,11 @@ pub fn schedule(ctx: &ReducerContext) {
 }
 
 /// Moves an instance to `next`, refusing what the lifecycle forbids.
-fn advance(ctx: &ReducerContext, instance: &DungeonInstance, next: InstanceState) -> Result<DungeonInstance, RealmError> {
+fn advance(
+    ctx: &ReducerContext,
+    instance: &DungeonInstance,
+    next: InstanceState,
+) -> Result<DungeonInstance, RealmError> {
     let current: InstanceState = instance.state.into();
     if !current.can_become(next) {
         log::error!(
@@ -67,7 +71,11 @@ fn advance(ctx: &ReducerContext, instance: &DungeonInstance, next: InstanceState
         ..instance.clone()
     };
     ctx.db.dungeon_instance().id().update(updated.clone());
-    log::info!("event=instance_state instance_id={} state={}", instance.id, next.key());
+    log::info!(
+        "event=instance_state instance_id={} state={}",
+        instance.id,
+        next.key()
+    );
     Ok(updated)
 }
 
@@ -76,17 +84,21 @@ pub fn create(ctx: &ReducerContext, loaded: &Loaded) -> Result<(), RealmError> {
     let dungeon = crate::level::dungeon(&loaded.party.dungeon_id)?;
     let party = transition(ctx, &loaded.party, PartyState::Starting)?;
 
-    let instance = ctx.db.dungeon_instance().try_insert(DungeonInstance {
-        id: 0,
-        party_id: party.id,
-        dungeon_id: party.dungeon_id.clone(),
-        state: InstanceStateTag::Created,
-        live: false,
-        countdown_ends_at: None,
-        barrier_open: false,
-        created_at: ctx.timestamp,
-        finished_at: None,
-    }).map_err(|_| RealmError::dungeon("This party already has a dungeon."))?;
+    let instance = ctx
+        .db
+        .dungeon_instance()
+        .try_insert(DungeonInstance {
+            id: 0,
+            party_id: party.id,
+            dungeon_id: party.dungeon_id.clone(),
+            state: InstanceStateTag::Created,
+            live: false,
+            countdown_ends_at: None,
+            barrier_open: false,
+            created_at: ctx.timestamp,
+            finished_at: None,
+        })
+        .map_err(|_| RealmError::dungeon("This party already has a dungeon."))?;
     ctx.db.party().id().update(Party {
         instance_id: Some(instance.id),
         ..party
@@ -94,8 +106,8 @@ pub fn create(ctx: &ReducerContext, loaded: &Loaded) -> Result<(), RealmError> {
     let instance = advance(ctx, &instance, InstanceState::Loading)?;
 
     // The party, behind the barrier, at the dungeon's start points in party order.
-    let max_health = engine_game::character::CharacterSheet::bare(engine_game::hero::Hero::Warrior)
-        .max_health();
+    let max_health =
+        engine_game::character::CharacterSheet::bare(engine_game::hero::Hero::Warrior).max_health();
     let catalog = crate::level::catalog()?;
     for member in &loaded.members {
         let point = dungeon.definition.spawn_point(usize::from(member.slot));
@@ -117,7 +129,11 @@ pub fn create(ctx: &ReducerContext, loaded: &Loaded) -> Result<(), RealmError> {
                 z: point.position[2],
             },
             velocity: V3::default(),
-            ground_normal: V3 { x: 0.0, y: 1.0, z: 0.0 },
+            ground_normal: V3 {
+                x: 0.0,
+                y: 1.0,
+                z: 0.0,
+            },
             yaw: point.yaw,
             grounded: true,
             last_seq: 0,
@@ -136,7 +152,8 @@ pub fn create(ctx: &ReducerContext, loaded: &Loaded) -> Result<(), RealmError> {
     crate::combat::decorate_placed(ctx, instance.id, &dungeon);
     let instance = advance(ctx, &instance, InstanceState::Ready)?;
 
-    let countdown = Countdown::starting(micros(ctx.timestamp), dungeon.definition.countdown_seconds);
+    let countdown =
+        Countdown::starting(micros(ctx.timestamp), dungeon.definition.countdown_seconds);
     let instance = advance(ctx, &instance, InstanceState::Countdown)?;
     ctx.db.dungeon_instance().id().update(DungeonInstance {
         countdown_ends_at: Some(timestamp(countdown.ends_at)),
@@ -175,9 +192,19 @@ pub fn countdown_finish(ctx: &ReducerContext, timer: CountdownTimer) -> Result<(
         transition(ctx, &party, PartyState::InDungeon)?;
     }
     for player in ctx.db.instance_player().instance_id().filter(instance.id) {
-        notify(ctx, player.identity, "barrier_open", NoticeLevel::Info, "The barrier lifts. Go!");
+        notify(
+            ctx,
+            player.identity,
+            "barrier_open",
+            NoticeLevel::Info,
+            "The barrier lifts. Go!",
+        );
     }
-    log::info!("event=instance_start instance_id={} dungeon_id={}", instance.id, instance.dungeon_id);
+    log::info!(
+        "event=instance_start instance_id={} dungeon_id={}",
+        instance.id,
+        instance.dungeon_id
+    );
     Ok(())
 }
 
@@ -189,7 +216,12 @@ pub fn destroy(ctx: &ReducerContext, instance_id: u64, reason: &str) {
     if let Ok(cleaning) = advance(ctx, &instance, InstanceState::CleaningUp) {
         let _ = advance(ctx, &cleaning, InstanceState::Destroyed);
     }
-    let players: Vec<InstancePlayer> = ctx.db.instance_player().instance_id().filter(instance_id).collect();
+    let players: Vec<InstancePlayer> = ctx
+        .db
+        .instance_player()
+        .instance_id()
+        .filter(instance_id)
+        .collect();
     for player in players {
         ctx.db.instance_player().identity().delete(player.identity);
     }
@@ -218,14 +250,22 @@ pub fn finish(ctx: &ReducerContext, instance_id: u64, success: bool) -> Result<(
         .id()
         .find(instance_id)
         .ok_or_else(|| RealmError::dungeon("That dungeon no longer exists."))?;
-    let next = if success { InstanceState::Completed } else { InstanceState::Failed };
+    let next = if success {
+        InstanceState::Completed
+    } else {
+        InstanceState::Failed
+    };
     let instance = advance(ctx, &instance, next)?;
     ctx.db.dungeon_instance().id().update(DungeonInstance {
         finished_at: Some(ctx.timestamp),
         ..instance.clone()
     });
     if let Some(party) = ctx.db.party().id().find(instance.party_id) {
-        let next = if success { PartyState::Completed } else { PartyState::Failed };
+        let next = if success {
+            PartyState::Completed
+        } else {
+            PartyState::Failed
+        };
         transition(ctx, &party, next)?;
     }
     let duration = micros(ctx.timestamp) - micros(instance.created_at);
@@ -233,7 +273,13 @@ pub fn finish(ctx: &ReducerContext, instance_id: u64, success: bool) -> Result<(
     for player in ctx.db.instance_player().instance_id().filter(instance_id) {
         let member = ctx.db.party_member().identity().find(player.identity);
         let result_id = format!("{instance_id}:{}", player.account_id);
-        if ctx.db.pending_result().result_id().find(&result_id).is_some() {
+        if ctx
+            .db
+            .pending_result()
+            .result_id()
+            .find(&result_id)
+            .is_some()
+        {
             continue;
         }
         ctx.db.pending_result().insert(PendingResult {
@@ -250,8 +296,16 @@ pub fn finish(ctx: &ReducerContext, instance_id: u64, success: bool) -> Result<(
         notify(
             ctx,
             player.identity,
-            if success { "dungeon_completed" } else { "dungeon_failed" },
-            if success { NoticeLevel::Info } else { NoticeLevel::Warning },
+            if success {
+                "dungeon_completed"
+            } else {
+                "dungeon_failed"
+            },
+            if success {
+                NoticeLevel::Info
+            } else {
+                NoticeLevel::Warning
+            },
             if success {
                 format!("Dungeon complete! +{experience} experience.")
             } else {

@@ -14,10 +14,10 @@ use engine_net::{
     RealmClient, RealmEndpoints, RealmMirror,
 };
 use engine_realm::api::CharacterSummary;
+use engine_realm::combat::{ActionKind, CombatAction, EntityRef};
 use engine_realm::instance::InstanceState;
 use engine_realm::movement::InputFrame;
 use engine_realm::party::{PartyState, ReadyResponse};
-use engine_realm::combat::{ActionKind, CombatAction, EntityRef};
 use engine_realm::{RealmError, Role};
 
 /// What a bot does.
@@ -163,7 +163,11 @@ impl Bot {
                     });
                     return;
                 }
-                log::warn!("[{}] {action:?} failed: {}", self.config.name, error.message);
+                log::warn!(
+                    "[{}] {action:?} failed: {}",
+                    self.config.name,
+                    error.message
+                );
                 self.failures.push((action, error));
             }
             NetEvent::SignedOut { reason } => {
@@ -217,7 +221,11 @@ impl Bot {
                 "[{}] ready check for party {}: {}",
                 self.config.name,
                 party.id,
-                if self.config.accept { "accept" } else { "decline" }
+                if self.config.accept {
+                    "accept"
+                } else {
+                    "decline"
+                }
             );
             self.client
                 .send(NetCommand::RespondReadyCheck(self.config.accept));
@@ -228,7 +236,11 @@ impl Bot {
             && self.mirror.i_lead()
             && self.start_sent_for != Some(party.id)
         {
-            log::info!("[{}] leading party {}: starting", self.config.name, party.id);
+            log::info!(
+                "[{}] leading party {}: starting",
+                self.config.name,
+                party.id
+            );
             self.client.send(NetCommand::StartDungeon);
             self.start_sent_for = Some(party.id);
         }
@@ -307,9 +319,15 @@ impl Bot {
             self.client.send(NetCommand::Input(frames));
             return;
         }
-        if self.last_act.is_none_or(|at| at.elapsed() >= Duration::from_millis(1000)) {
+        if self
+            .last_act
+            .is_none_or(|at| at.elapsed() >= Duration::from_millis(1000))
+        {
             self.last_act = Some(Instant::now());
-            log::info!("[{}] pressing slot 0 on monster {key} at {distance:.1} m", self.config.name);
+            log::info!(
+                "[{}] pressing slot 0 on monster {key} at {distance:.1} m",
+                self.config.name
+            );
             self.client.send(NetCommand::Act(CombatAction {
                 target: EntityRef::Monster(key),
                 kind: ActionKind::Ability(0),
@@ -323,7 +341,10 @@ impl Bot {
     /// # Errors
     ///
     /// Login failed.
-    pub fn acquire_probe_token(&mut self, endpoints: &RealmEndpoints) -> Result<String, RealmError> {
+    pub fn acquire_probe_token(
+        &mut self,
+        endpoints: &RealmEndpoints,
+    ) -> Result<String, RealmError> {
         let api = ApiClient::new(endpoints);
         let pair = api.login(&self.config.email, &self.config.password)?;
         self.probe_token = Some(pair.access_token.clone());

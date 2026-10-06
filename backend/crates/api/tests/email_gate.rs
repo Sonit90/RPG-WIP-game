@@ -15,11 +15,13 @@ use axum::{
 };
 use generic_auth_api::middleware::auth::{AuthUser, FindUserById, HasJwt, VerifiedUser};
 use generic_auth_auth::JwtCodec;
-use generic_auth_core::{models::{Role, User}, AppError};
+use generic_auth_core::{
+    models::{Role, User},
+    AppError,
+};
 use time::OffsetDateTime;
 use tower::ServiceExt as _;
 use uuid::Uuid;
-
 
 // ---- mock state ----------------------------------------------------------
 
@@ -84,8 +86,12 @@ fn get_req(path: &str, token: &str) -> Request<Body> {
 ///   /me, /me/permissions  → AuthUser (no email check)
 ///   /files                → VerifiedUser (email check)
 fn test_app(state: MockState) -> Router {
-    async fn auth_stub(_: AuthUser) -> StatusCode { StatusCode::OK }
-    async fn verified_stub(_: VerifiedUser) -> StatusCode { StatusCode::OK }
+    async fn auth_stub(_: AuthUser) -> StatusCode {
+        StatusCode::OK
+    }
+    async fn verified_stub(_: VerifiedUser) -> StatusCode {
+        StatusCode::OK
+    }
 
     Router::new()
         .route("/me", get(auth_stub))
@@ -102,11 +108,7 @@ async fn unverified_user_can_access_me() {
     let app = test_app(MockState::with_unverified_user(user_id));
     let token = bearer_token(user_id);
 
-    let status = app
-        .oneshot(get_req("/me", &token))
-        .await
-        .unwrap()
-        .status();
+    let status = app.oneshot(get_req("/me", &token)).await.unwrap().status();
 
     assert_ne!(
         status,
@@ -140,10 +142,7 @@ async fn unverified_user_cannot_access_files() {
     let app = test_app(MockState::with_unverified_user(user_id));
     let token = bearer_token(user_id);
 
-    let resp = app
-        .oneshot(get_req("/files", &token))
-        .await
-        .unwrap();
+    let resp = app.oneshot(get_req("/files", &token)).await.unwrap();
 
     assert_eq!(
         resp.status(),

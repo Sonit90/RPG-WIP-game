@@ -96,24 +96,26 @@ pub fn clipboard_text() -> Option<String> {
     // SAFETY: opened with no owner window and closed on every path below.
     unsafe { OpenClipboard(None) }.ok()?;
     // SAFETY: the clipboard is open; the handle stays valid until it is closed.
-    let text = unsafe { GetClipboardData(CF_UNICODETEXT) }.ok().and_then(|handle| {
-        let global = HGLOBAL(handle.0);
-        // SAFETY: a CF_UNICODETEXT handle is a global memory object holding a NUL-terminated
-        // UTF-16 string; it is locked for the read and unlocked straight after.
-        unsafe {
-            let pointer = GlobalLock(global).cast::<u16>();
-            if pointer.is_null() {
-                return None;
+    let text = unsafe { GetClipboardData(CF_UNICODETEXT) }
+        .ok()
+        .and_then(|handle| {
+            let global = HGLOBAL(handle.0);
+            // SAFETY: a CF_UNICODETEXT handle is a global memory object holding a NUL-terminated
+            // UTF-16 string; it is locked for the read and unlocked straight after.
+            unsafe {
+                let pointer = GlobalLock(global).cast::<u16>();
+                if pointer.is_null() {
+                    return None;
+                }
+                let mut len = 0usize;
+                while *pointer.add(len) != 0 && len < 1 << 20 {
+                    len += 1;
+                }
+                let text = String::from_utf16_lossy(std::slice::from_raw_parts(pointer, len));
+                let _ = GlobalUnlock(global);
+                Some(text)
             }
-            let mut len = 0usize;
-            while *pointer.add(len) != 0 && len < 1 << 20 {
-                len += 1;
-            }
-            let text = String::from_utf16_lossy(std::slice::from_raw_parts(pointer, len));
-            let _ = GlobalUnlock(global);
-            Some(text)
-        }
-    });
+        });
     // SAFETY: closes the clipboard this function opened.
     let _ = unsafe { CloseClipboard() };
     text

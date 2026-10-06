@@ -1,9 +1,8 @@
-use lettre::{
-    message::header::ContentType,
-    transport::smtp::authentication::Credentials,
-    AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor,
-};
 use lettre::transport::smtp::client::{Tls, TlsParameters};
+use lettre::{
+    message::header::ContentType, transport::smtp::authentication::Credentials, AsyncSmtpTransport,
+    AsyncTransport, Message, Tokio1Executor,
+};
 
 use crate::config::Email as EmailConfig;
 
@@ -35,20 +34,23 @@ async fn send_email(
 
     let creds = Credentials::new(cfg.smtp_username.clone(), cfg.smtp_password.clone());
 
-    let tls = TlsParameters::new(cfg.smtp_host.clone())
-        .map_err(|e| format!("TLS params error: {e}"))?;
+    let tls =
+        TlsParameters::new(cfg.smtp_host.clone()).map_err(|e| format!("TLS params error: {e}"))?;
 
     let mailer = AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(&cfg.smtp_host)
         .port(cfg.smtp_port)
         .tls(if cfg.smtp_port == 465 {
-            Tls::Wrapper(tls)       // SMTPS — direct TLS
+            Tls::Wrapper(tls) // SMTPS — direct TLS
         } else {
-            Tls::Required(tls)      // STARTTLS — port 587/2587
+            Tls::Required(tls) // STARTTLS — port 587/2587
         })
         .credentials(creds)
         .build();
 
-    mailer.send(email).await.map_err(|e| format!("email send failed: {e}"))?;
+    mailer
+        .send(email)
+        .await
+        .map_err(|e| format!("email send failed: {e}"))?;
     Ok(())
 }
 

@@ -31,13 +31,18 @@ pub async fn create_admin_user(
 #[async_trait::async_trait]
 impl CreateAdminPort for sqlx::PgPool {
     async fn create_user(&self, email: &str, password_hash: &str) -> Result<User, AppError> {
-        generic_auth_db::users::create_user(self, generic_auth_db::users::NewUser {
-            email: Some(email),
-            password_hash: Some(password_hash),
-            display_name: None,
-            role: generic_auth_core::models::Role::Admin,
-            email_verified: true,
-        }).await.map_err(Into::into)
+        generic_auth_db::users::create_user(
+            self,
+            generic_auth_db::users::NewUser {
+                email: Some(email),
+                password_hash: Some(password_hash),
+                display_name: None,
+                role: generic_auth_core::models::Role::Admin,
+                email_verified: true,
+            },
+        )
+        .await
+        .map_err(Into::into)
     }
 }
 
@@ -69,8 +74,15 @@ mod tests {
     #[async_trait::async_trait]
     impl CreateAdminPort for MockPort {
         async fn create_user(&self, email: &str, password_hash: &str) -> Result<User, AppError> {
-            self.calls.lock().unwrap().push((email.into(), password_hash.into()));
-            self.response.lock().unwrap().take().expect("response not set")
+            self.calls
+                .lock()
+                .unwrap()
+                .push((email.into(), password_hash.into()));
+            self.response
+                .lock()
+                .unwrap()
+                .take()
+                .expect("response not set")
         }
     }
 
@@ -89,7 +101,10 @@ mod tests {
     }
 
     fn args(email: &str, password: &str) -> CreateAdminArgs {
-        CreateAdminArgs { email: email.into(), password: password.into() }
+        CreateAdminArgs {
+            email: email.into(),
+            password: password.into(),
+        }
     }
 
     // ---- happy path -------------------------------------------------------
@@ -110,7 +125,11 @@ mod tests {
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].0, "admin@example.com");
         // password must be hashed, not raw
-        assert!(calls[0].1.starts_with("$argon2"), "expected Argon2 hash, got: {}", calls[0].1);
+        assert!(
+            calls[0].1.starts_with("$argon2"),
+            "expected Argon2 hash, got: {}",
+            calls[0].1
+        );
         assert_ne!(calls[0].1, "securepass");
     }
 
@@ -124,8 +143,13 @@ mod tests {
             .await
             .unwrap_err();
 
-        assert!(matches!(err, AppError::ValidationFields { ref fields, .. } if fields.contains_key("email")));
-        assert!(port.calls.lock().unwrap().is_empty(), "DB must not be called for invalid input");
+        assert!(
+            matches!(err, AppError::ValidationFields { ref fields, .. } if fields.contains_key("email"))
+        );
+        assert!(
+            port.calls.lock().unwrap().is_empty(),
+            "DB must not be called for invalid input"
+        );
     }
 
     #[tokio::test]
@@ -150,7 +174,9 @@ mod tests {
             .await
             .unwrap_err();
 
-        assert!(matches!(err, AppError::ValidationFields { ref fields, .. } if fields.contains_key("password")));
+        assert!(
+            matches!(err, AppError::ValidationFields { ref fields, .. } if fields.contains_key("password"))
+        );
         assert!(port.calls.lock().unwrap().is_empty());
     }
 

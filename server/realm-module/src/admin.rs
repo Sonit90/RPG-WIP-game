@@ -34,7 +34,9 @@ pub fn admin_configure(
 ) -> Result<(), String> {
     let config = require_owner(ctx)?;
     if issuer.is_empty() || audience.is_empty() || service_subject.is_empty() {
-        return Err(RealmError::protocol("Issuer, audience and service subject are required.").into());
+        return Err(
+            RealmError::protocol("Issuer, audience and service subject are required.").into(),
+        );
     }
     log::info!("event=realm_configured issuer={issuer} audience={audience}");
     ctx.db.realm_config().id().update(RealmConfig {
@@ -108,7 +110,11 @@ pub fn admin_set_timeouts(
 /// to exercise the result pipeline without clearing the dungeon; a real run completes from
 /// `combat_tick` when the fight's dungeon run does.
 #[spacetimedb::reducer]
-pub fn admin_finish_instance(ctx: &ReducerContext, instance_id: u64, success: bool) -> Result<(), String> {
+pub fn admin_finish_instance(
+    ctx: &ReducerContext,
+    instance_id: u64,
+    success: bool,
+) -> Result<(), String> {
     require_owner(ctx)?;
     crate::instance::finish(ctx, instance_id, success)?;
     Ok(())

@@ -83,7 +83,10 @@ impl RealmBridge {
     }
 
     async fn call(&self, token: &str, function: &str, args: Value) -> Result<String, BridgeError> {
-        let url = format!("{}/v1/database/{}/call/{}", self.base, self.database, function);
+        let url = format!(
+            "{}/v1/database/{}/call/{}",
+            self.base, self.database, function
+        );
         let response = self
             .http
             .post(&url)
@@ -103,7 +106,10 @@ impl RealmBridge {
             // 530: the reducer ran and returned an error — a refusal, with the realm's message.
             Err(BridgeError::Refused(body.trim().to_string()))
         } else {
-            Err(BridgeError::Unavailable(format!("{status}: {}", body.trim())))
+            Err(BridgeError::Unavailable(format!(
+                "{status}: {}",
+                body.trim()
+            )))
         }
     }
 
@@ -155,7 +161,9 @@ impl RealmBridge {
 
     /// Clears results that were persisted.
     pub async fn ack_results(&self, token: &str, ids: &[String]) -> Result<(), BridgeError> {
-        self.call(token, "svc_ack_results", json!([ids])).await.map(|_| ())
+        self.call(token, "svc_ack_results", json!([ids]))
+            .await
+            .map(|_| ())
     }
 }
 

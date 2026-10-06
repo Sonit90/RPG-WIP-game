@@ -281,7 +281,10 @@ impl Catalog {
         };
         for record in characters.characters {
             if out.character(&record.id).is_some() {
-                return Err(CatalogError(format!("character {:?} is listed twice", record.id)));
+                return Err(CatalogError(format!(
+                    "character {:?} is listed twice",
+                    record.id
+                )));
             }
             let hero = Hero::from_config_name(&record.hero).ok_or_else(|| {
                 CatalogError(format!(
@@ -290,7 +293,10 @@ impl Catalog {
                 ))
             })?;
             if record.roles.is_empty() {
-                return Err(CatalogError(format!("character {:?} has no role", record.id)));
+                return Err(CatalogError(format!(
+                    "character {:?} has no role",
+                    record.id
+                )));
             }
             out.characters.push(CharacterDefinition {
                 id: record.id,
@@ -304,10 +310,16 @@ impl Catalog {
         }
         for record in dungeons.dungeons {
             if out.dungeon(&record.id).is_some() {
-                return Err(CatalogError(format!("dungeon {:?} is listed twice", record.id)));
+                return Err(CatalogError(format!(
+                    "dungeon {:?} is listed twice",
+                    record.id
+                )));
             }
             if record.spawn_points.is_empty() {
-                return Err(CatalogError(format!("dungeon {:?} has no spawn point", record.id)));
+                return Err(CatalogError(format!(
+                    "dungeon {:?} has no spawn point",
+                    record.id
+                )));
             }
             if record.min_level > record.max_level {
                 return Err(CatalogError(format!(
@@ -349,7 +361,9 @@ impl Catalog {
     /// The character definition with this id.
     #[must_use]
     pub fn character(&self, id: &str) -> Option<&CharacterDefinition> {
-        self.characters.iter().find(|definition| definition.id == id)
+        self.characters
+            .iter()
+            .find(|definition| definition.id == id)
     }
 
     /// The dungeon with this id.
@@ -360,7 +374,9 @@ impl Catalog {
 
     /// The definitions a new account is given one of each.
     pub fn starters(&self) -> impl Iterator<Item = &CharacterDefinition> {
-        self.characters.iter().filter(|definition| definition.starter)
+        self.characters
+            .iter()
+            .filter(|definition| definition.starter)
     }
 }
 
@@ -392,7 +408,9 @@ mod tests {
         // Every role can be filled by some starter, or no starter party could ever form.
         for role in Role::ALL {
             assert!(
-                catalog.starters().any(|definition| definition.can_play(role)),
+                catalog
+                    .starters()
+                    .any(|definition| definition.can_play(role)),
                 "no starter character can play {role:?}"
             );
         }
@@ -406,7 +424,12 @@ mod tests {
     fn every_hero_has_a_definition() {
         let catalog = Catalog::builtin().expect("the shipped catalog parses");
         for hero in Hero::ALL {
-            assert!(catalog.characters().iter().any(|definition| definition.hero == hero));
+            assert!(
+                catalog
+                    .characters()
+                    .iter()
+                    .any(|definition| definition.hero == hero)
+            );
         }
     }
 
@@ -429,7 +452,11 @@ mod tests {
     fn admission_checks_level_and_gear() {
         let catalog = Catalog::builtin().expect("the shipped catalog parses");
         let dungeon = &catalog.dungeons()[0];
-        assert!(dungeon.admits(dungeon.min_level, dungeon.min_gear_score).is_ok());
+        assert!(
+            dungeon
+                .admits(dungeon.min_level, dungeon.min_gear_score)
+                .is_ok()
+        );
         assert!(dungeon.admits(dungeon.max_level + 1, 10_000).is_err());
         if dungeon.min_level > 0 {
             assert!(dungeon.admits(dungeon.min_level - 1, 10_000).is_err());

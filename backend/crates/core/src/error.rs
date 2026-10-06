@@ -84,14 +84,14 @@ fn friendly_message(e: &validator::ValidationError) -> String {
     }
     match e.code.as_ref() {
         "email" => "Must be a valid email address".into(),
-        "url"   => "Must be a valid URL".into(),
+        "url" => "Must be a valid URL".into(),
         "length" => {
             let min = e.params.get("min").and_then(|v| v.as_u64());
             let max = e.params.get("max").and_then(|v| v.as_u64());
             match (min, max) {
                 (Some(a), Some(b)) => format!("Must be between {a} and {b} characters long"),
-                (Some(a), None)    => format!("Must be at least {a} characters long"),
-                (None,    Some(b)) => format!("Must be at most {b} characters long"),
+                (Some(a), None) => format!("Must be at least {a} characters long"),
+                (None, Some(b)) => format!("Must be at most {b} characters long"),
                 _ => "Invalid length".into(),
             }
         }
@@ -100,12 +100,12 @@ fn friendly_message(e: &validator::ValidationError) -> String {
             let max = e.params.get("max");
             match (min, max) {
                 (Some(a), Some(b)) => format!("Must be between {a} and {b}"),
-                (Some(a), None)    => format!("Must be at least {a}"),
-                (None,    Some(b)) => format!("Must be at most {b}"),
+                (Some(a), None) => format!("Must be at least {a}"),
+                (None, Some(b)) => format!("Must be at most {b}"),
                 _ => "Out of range".into(),
             }
         }
         "required" => "This field is required".into(),
-        other      => format!("Invalid value ({other})"),
+        other => format!("Invalid value ({other})"),
     }
 }

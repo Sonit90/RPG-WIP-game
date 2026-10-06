@@ -98,7 +98,11 @@ pub fn move_input(ctx: &ReducerContext, frames: Vec<NetInputFrame>) -> Result<()
     })?
     .ok_or_else(|| RealmError::dungeon("You are not in this fight.").to_wire())?;
     if !finite(body.position) {
-        log::error!("event=body_not_finite account_id={} instance_id={}", player.account_id, player.instance_id);
+        log::error!(
+            "event=body_not_finite account_id={} instance_id={}",
+            player.account_id,
+            player.instance_id
+        );
         return Err(RealmError::protocol("Movement failed.").into());
     }
     ctx.db.instance_player().identity().update(InstancePlayer {

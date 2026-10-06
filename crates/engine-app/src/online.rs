@@ -35,11 +35,11 @@ use engine_core::math::Vec3;
 use engine_game::combat::Faction;
 use engine_game::enemy::{EnemyAbility, EnemyKind};
 use engine_game::firemage::FireAbility;
-use engine_game::sim::remote::{PresentedResources, PresentedStatus};
-use engine_game::status::StatusKind;
 use engine_game::hero::Hero;
 use engine_game::movement::{Body, MovementState};
 use engine_game::sim::dungeon_exec::EnemySpawnOptions;
+use engine_game::sim::remote::{PresentedResources, PresentedStatus};
+use engine_game::status::StatusKind;
 use engine_game::world::{EntityDesc, EntityKind};
 use engine_game::{EntityId, Simulation};
 use engine_net::clock::{ClockSync, local_now};
@@ -232,9 +232,13 @@ impl OnlineSession {
         dev: DevScript,
     ) -> Result<Self, String> {
         let catalog = Catalog::builtin().map_err(|error| error.to_string())?;
-        let local = [&endpoints.spacetimedb_url, &endpoints.auth_api_url, &endpoints.persistence_api_url]
-            .iter()
-            .all(|url| url.starts_with("http://127.0.0.1") || url.starts_with("http://localhost"));
+        let local = [
+            &endpoints.spacetimedb_url,
+            &endpoints.auth_api_url,
+            &endpoints.persistence_api_url,
+        ]
+        .iter()
+        .all(|url| url.starts_with("http://127.0.0.1") || url.starts_with("http://localhost"));
         if dev.login.is_some() && !local {
             return Err("--dev-login is only accepted against a realm on this machine".into());
         }
@@ -322,11 +326,12 @@ impl OnlineSession {
             return;
         }
         self.settings_in_flight = Some(document.clone());
-        self.client
-            .send(NetCommand::SaveSettings(engine_realm::api::SettingsDocument {
+        self.client.send(NetCommand::SaveSettings(
+            engine_realm::api::SettingsDocument {
                 version,
                 settings: document,
-            }));
+            },
+        ));
     }
 
     /// Asks the API to move an item on the selected character. The server validates it and
@@ -450,8 +455,14 @@ impl OnlineSession {
         if self.mirror.ticket.is_none()
             && self.mirror.party.is_none()
             && self.mirror.instance.is_none()
-            && self.dev_progress.queued_for.is_none_or(|at| at.elapsed() > Duration::from_secs(5))
-            && let Some(index) = self.characters.iter().position(|c| c.definition_id == definition)
+            && self
+                .dev_progress
+                .queued_for
+                .is_none_or(|at| at.elapsed() > Duration::from_secs(5))
+            && let Some(index) = self
+                .characters
+                .iter()
+                .position(|c| c.definition_id == definition)
         {
             self.selected_character = Some(index);
             self.on_action(FrontEndAction::ConfirmCharacter);
@@ -462,11 +473,15 @@ impl OnlineSession {
             self.dev_progress.queued_for = Some(Instant::now());
         }
         if let Some(party) = self.mirror.party.clone() {
-            if party.state == PartyState::ReadyCheck && self.dev_progress.answered != Some(party.id) {
+            if party.state == PartyState::ReadyCheck && self.dev_progress.answered != Some(party.id)
+            {
                 self.dev_progress.answered = Some(party.id);
                 self.on_action(FrontEndAction::Accept);
             }
-            if party.state == PartyState::Ready && self.mirror.i_lead() && self.dev_progress.started != Some(party.id) {
+            if party.state == PartyState::Ready
+                && self.mirror.i_lead()
+                && self.dev_progress.started != Some(party.id)
+            {
                 self.dev_progress.started = Some(party.id);
                 self.on_action(FrontEndAction::StartDungeon);
             }
@@ -553,7 +568,11 @@ impl OnlineSession {
                     self.directives.push(Directive::ApplyLoadout(hero, loadout));
                 }
                 // Keep the list's copy in step (gear score, level after a result).
-                if let Some(entry) = self.characters.iter_mut().find(|c| c.id == detail.summary.id) {
+                if let Some(entry) = self
+                    .characters
+                    .iter_mut()
+                    .find(|c| c.id == detail.summary.id)
+                {
                     *entry = detail.summary.clone();
                 }
             }
@@ -737,8 +756,12 @@ impl OnlineSession {
     fn build_view(&self) -> FrontEndView {
         let screen = self.screen();
         let connection = match self.status {
-            ConnectionStatus::Connected => Some((StatusLevel::Good, "Connected to the realm".to_owned())),
-            ConnectionStatus::Connecting => Some((StatusLevel::Busy, "Connecting to the realm...".to_owned())),
+            ConnectionStatus::Connected => {
+                Some((StatusLevel::Good, "Connected to the realm".to_owned()))
+            }
+            ConnectionStatus::Connecting => {
+                Some((StatusLevel::Busy, "Connecting to the realm...".to_owned()))
+            }
             ConnectionStatus::Reconnecting { attempt, .. } => Some((
                 StatusLevel::Warning,
                 format!("Reconnecting (attempt {attempt})"),
@@ -764,7 +787,12 @@ impl OnlineSession {
             .dungeons()
             .iter()
             .map(|d| {
-                let population = self.mirror.population.get(&d.id).copied().unwrap_or_default();
+                let population = self
+                    .mirror
+                    .population
+                    .get(&d.id)
+                    .copied()
+                    .unwrap_or_default();
                 DungeonCard {
                     name: d.name.clone(),
                     description: d.description.clone(),
@@ -785,7 +813,11 @@ impl OnlineSession {
         let now = self.server_now();
         let queue = self.mirror.ticket.as_ref().map(|ticket| {
             let waited = (now - ticket.enqueued_at).max(0);
-            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, reason = "a percentage")]
+            #[allow(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "a percentage"
+            )]
             let tolerance = (MatchmakingConfig::default().tolerance(waited) * 100.0).round() as u32;
             QueueCard {
                 dungeon: dungeon_name(&ticket.dungeon_id),
@@ -851,10 +883,9 @@ impl OnlineSession {
         let mut toasts: Vec<Toast> = self.toasts.iter().map(|(t, _)| t.clone()).collect();
         let now_instant = Instant::now();
         for notice in &self.mirror.notices {
-            let fresh = self
-                .seen_notices
-                .get(&notice.id)
-                .is_none_or(|at| now_instant.saturating_duration_since(*at) < Duration::from_secs(TOAST_SECONDS));
+            let fresh = self.seen_notices.get(&notice.id).is_none_or(|at| {
+                now_instant.saturating_duration_since(*at) < Duration::from_secs(TOAST_SECONDS)
+            });
             if !fresh || self.dismissed.contains(&notice.id) {
                 continue;
             }
@@ -916,7 +947,10 @@ impl OnlineSession {
 
     /// Mirrors the realm's instance into the local simulation: the local player placed and
     /// reconciled, other players and monsters spawned and posed, the barrier standing or not.
-    #[allow(clippy::too_many_lines, reason = "one pass over the instance, in order")]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one pass over the instance, in order"
+    )]
     pub fn sync_world(
         &mut self,
         simulation: &mut Simulation,
@@ -986,7 +1020,8 @@ impl OnlineSession {
                     .find(|b| b.kind == BarrierKind::Start);
                 if let Some(barrier) = start {
                     let world = simulation.collision_world_mut();
-                    self.world.barrier = Some(world.add_box(barrier.min, barrier.max, "start barrier"));
+                    self.world.barrier =
+                        Some(world.add_box(barrier.min, barrier.max, "start barrier"));
                     world.rebuild_broad_phase();
                 }
             }
@@ -998,7 +1033,8 @@ impl OnlineSession {
 
         // Other players.
         let me = self.mirror.my_account_id().map(str::to_owned);
-        let others: Vec<engine_net::model::RemotePlayerState> = self.mirror.others().cloned().collect();
+        let others: Vec<engine_net::model::RemotePlayerState> =
+            self.mirror.others().cloned().collect();
         let present: BTreeSet<String> = others.iter().map(|p| p.account_id.clone()).collect();
         let gone: Vec<String> = self
             .world
@@ -1018,24 +1054,28 @@ impl OnlineSession {
             if Some(&other.account_id) == me.as_ref() {
                 continue;
             }
-            let remote = self.world.remotes.entry(other.account_id.clone()).or_insert_with(|| {
-                let entity = simulation.world_mut().spawn(EntityDesc {
-                    kind: EntityKind::HealingDummy,
-                    faction: Faction::Player,
-                    position: other.position,
-                    max_health: other.max_health.max(1.0),
-                    radius: engine_core::tuning::player::RADIUS,
-                    height: engine_core::tuning::player::HEIGHT,
+            let remote = self
+                .world
+                .remotes
+                .entry(other.account_id.clone())
+                .or_insert_with(|| {
+                    let entity = simulation.world_mut().spawn(EntityDesc {
+                        kind: EntityKind::HealingDummy,
+                        faction: Faction::Player,
+                        position: other.position,
+                        max_health: other.max_health.max(1.0),
+                        radius: engine_core::tuning::player::RADIUS,
+                        height: engine_core::tuning::player::HEIGHT,
+                    });
+                    simulation.world_mut().set_label(entity, &other.name);
+                    simulation.party_mut().join(entity);
+                    RemoteEntity {
+                        entity,
+                        buffer: SnapshotBuffer::default(),
+                        last: None,
+                        definition: String::new(),
+                    }
                 });
-                simulation.world_mut().set_label(entity, &other.name);
-                simulation.party_mut().join(entity);
-                RemoteEntity {
-                    entity,
-                    buffer: SnapshotBuffer::default(),
-                    last: None,
-                    definition: String::new(),
-                }
-            });
             if remote.definition != other.definition_id {
                 remote.definition.clone_from(&other.definition_id);
                 if let Some(hero) = self.catalog.character(&other.definition_id).map(|d| d.hero)
@@ -1098,7 +1138,8 @@ impl OnlineSession {
                     name: Some(monster.name.clone()),
                     ..EnemySpawnOptions::default()
                 };
-                let entity = simulation.spawn_enemy_with(kind, monster.position, monster.yaw, &options);
+                let entity =
+                    simulation.spawn_enemy_with(kind, monster.position, monster.yaw, &options);
                 self.world.monsters.insert(
                     *key,
                     MonsterEntity {
@@ -1113,7 +1154,9 @@ impl OnlineSession {
             };
             if entry.last != Some((monster.position, monster.yaw)) {
                 entry.last = Some((monster.position, monster.yaw));
-                entry.buffer.push(now_seconds, monster.position, monster.yaw);
+                entry
+                    .buffer
+                    .push(now_seconds, monster.position, monster.yaw);
             }
             let (position, yaw) = entry
                 .buffer
@@ -1144,7 +1187,10 @@ impl OnlineSession {
                 movement: simulation.config().movement,
                 character: simulation.config().character,
             };
-            let current = simulation.player_body().copied().unwrap_or(Body::at(me.position));
+            let current = simulation
+                .player_body()
+                .copied()
+                .unwrap_or(Body::at(me.position));
             let authoritative = Body {
                 position: me.position,
                 velocity: me.velocity,
@@ -1234,13 +1280,20 @@ impl OnlineSession {
             .map_or(EntityRef::None, |(key, _)| EntityRef::Monster(*key))
     }
 
-    fn presented_statuses(&self, simulation: &Simulation, statuses: &[StatusState], age: f32) -> Vec<PresentedStatus> {
+    fn presented_statuses(
+        &self,
+        simulation: &Simulation,
+        statuses: &[StatusState],
+        age: f32,
+    ) -> Vec<PresentedStatus> {
         statuses
             .iter()
             .filter_map(|status| {
                 Some(PresentedStatus {
                     kind: *StatusKind::ALL.get(usize::from(status.kind))?,
-                    source: self.resolve(simulation, &status.source).unwrap_or(EntityId::INVALID),
+                    source: self
+                        .resolve(simulation, &status.source)
+                        .unwrap_or(EntityId::INVALID),
                     remaining: (status.remaining - age).max(0.0),
                     duration: status.duration,
                     stacks: status.stacks,
@@ -1317,7 +1370,8 @@ impl OnlineSession {
                     .map(|ability| (*ability, cast.elapsed + age, cast.duration)),
                 _ => None,
             });
-            let interruptible = cast.is_some_and(|(ability, _, _)| ability.definition().interruptible);
+            let interruptible =
+                cast.is_some_and(|(ability, _, _)| ability.definition().interruptible);
             simulation.present_enemy(entity, target, cast, interruptible);
         }
 
@@ -1347,7 +1401,9 @@ impl OnlineSession {
                 engine_game::PlayerCommand::UseAbilityAt { slot: s, position } => {
                     ActionKind::AbilityAt(slot(s), at(position))
                 }
-                engine_game::PlayerCommand::UseUltimate { position } => ActionKind::Ultimate(at(position)),
+                engine_game::PlayerCommand::UseUltimate { position } => {
+                    ActionKind::Ultimate(at(position))
+                }
                 engine_game::PlayerCommand::UseExtra(index) => ActionKind::Extra(slot(index)),
                 _ => continue,
             };
@@ -1366,7 +1422,11 @@ impl OnlineSession {
             .is_some_and(|instance| instance.state == engine_realm::instance::InstanceState::Active)
     }
 
-    fn leave_world(&mut self, simulation: &mut Simulation, extractor: &mut engine_presentation::RenderExtractor) {
+    fn leave_world(
+        &mut self,
+        simulation: &mut Simulation,
+        extractor: &mut engine_presentation::RenderExtractor,
+    ) {
         for (_, remote) in std::mem::take(&mut self.world.remotes) {
             extractor.remove_remote_character(remote.entity);
             simulation.party_mut().leave(remote.entity);

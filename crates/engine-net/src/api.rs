@@ -49,7 +49,13 @@ impl ApiClient {
             email: email.to_owned(),
             password: password.to_owned(),
         };
-        self.post(&self.auth, "/api/v1/auth/login", None, &body, Category::Auth)
+        self.post(
+            &self.auth,
+            "/api/v1/auth/login",
+            None,
+            &body,
+            Category::Auth,
+        )
     }
 
     /// Creates an account and signs in.
@@ -68,7 +74,13 @@ impl ApiClient {
             password: password.to_owned(),
             display_name: display_name.map(str::to_owned),
         };
-        self.post(&self.auth, "/api/v1/auth/register", None, &body, Category::Auth)
+        self.post(
+            &self.auth,
+            "/api/v1/auth/register",
+            None,
+            &body,
+            Category::Auth,
+        )
     }
 
     /// Exchanges a refresh token for a new pair. The old refresh token is spent.
@@ -80,7 +92,13 @@ impl ApiClient {
         let body = RefreshRequest {
             refresh_token: refresh_token.to_owned(),
         };
-        self.post(&self.auth, "/api/v1/auth/refresh", None, &body, Category::Auth)
+        self.post(
+            &self.auth,
+            "/api/v1/auth/refresh",
+            None,
+            &body,
+            Category::Auth,
+        )
     }
 
     /// Revokes a refresh token. Failure is logged and otherwise ignored: the local session is
@@ -113,7 +131,12 @@ impl ApiClient {
     ///
     /// The token is invalid, or the server is unreachable.
     pub fn characters(&self, token: &str) -> Result<Vec<CharacterSummary>, RealmError> {
-        self.get(&self.persistence, "/api/v1/characters", token, Category::Persistence)
+        self.get(
+            &self.persistence,
+            "/api/v1/characters",
+            token,
+            Category::Persistence,
+        )
     }
 
     /// One character in full.
@@ -156,7 +179,12 @@ impl ApiClient {
     ///
     /// The token is invalid, or the server is unreachable.
     pub fn settings(&self, token: &str) -> Result<SettingsDocument, RealmError> {
-        self.get(&self.persistence, "/api/v1/player/settings", token, Category::Persistence)
+        self.get(
+            &self.persistence,
+            "/api/v1/player/settings",
+            token,
+            Category::Persistence,
+        )
     }
 
     /// Saves the account's synced settings, replacing `document.version`.
@@ -331,8 +359,14 @@ mod tests {
         assert_eq!(error.message, "Incorrect email or password.");
         let error = classify(401, None, Category::Persistence);
         assert!(error.message.contains("expired"));
-        assert_eq!(classify(429, None, Category::Auth).category, ErrorCategory::RateLimited);
-        assert_eq!(classify(503, None, Category::Auth).category, ErrorCategory::Connection);
+        assert_eq!(
+            classify(429, None, Category::Auth).category,
+            ErrorCategory::RateLimited
+        );
+        assert_eq!(
+            classify(503, None, Category::Auth).category,
+            ErrorCategory::Connection
+        );
         let error = classify(409, Some("Taken.".into()), Category::Matchmaking);
         assert_eq!(error.category, ErrorCategory::Matchmaking);
         assert_eq!(error.message, "Taken.");

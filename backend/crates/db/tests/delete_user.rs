@@ -14,8 +14,8 @@ use generic_auth_db::{
 };
 
 async fn pool() -> sqlx::PgPool {
-    let url = std::env::var("DATABASE_URL")
-        .expect("DATABASE_URL must be set for integration tests");
+    let url =
+        std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for integration tests");
     connect(&DbConfig {
         url,
         max_connections: 2,
@@ -58,8 +58,5 @@ async fn delete_user_removes_row_and_reports_existence() {
 
     // Second delete finds nothing — drives the API's 404 path.
     let deleted_again = delete_user(&pool, user.id).await.expect("delete again");
-    assert!(
-        !deleted_again,
-        "deleting a missing user must return false"
-    );
+    assert!(!deleted_again, "deleting a missing user must return false");
 }

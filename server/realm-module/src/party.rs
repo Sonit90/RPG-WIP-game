@@ -109,13 +109,17 @@ fn callers_party(ctx: &ReducerContext) -> Result<(PartyMember, Loaded), RealmErr
         .identity()
         .find(ctx.sender())
         .ok_or_else(|| RealmError::party("You are not in a party."))?;
-    let loaded =
-        load(ctx, member.party_id).ok_or_else(|| RealmError::party("That party no longer exists."))?;
+    let loaded = load(ctx, member.party_id)
+        .ok_or_else(|| RealmError::party("That party no longer exists."))?;
     Ok((member, loaded))
 }
 
 /// Moves a party to `next`, refusing a transition the state machine forbids.
-pub fn transition(ctx: &ReducerContext, party: &Party, next: PartyState) -> Result<Party, RealmError> {
+pub fn transition(
+    ctx: &ReducerContext,
+    party: &Party,
+    next: PartyState,
+) -> Result<Party, RealmError> {
     let current: PartyState = party.state.into();
     if !current.can_become(next) {
         log::error!(
@@ -139,7 +143,11 @@ pub fn transition(ctx: &ReducerContext, party: &Party, next: PartyState) -> Resu
 pub fn ready_check_respond(ctx: &ReducerContext, accept: bool) -> Result<(), String> {
     rate_limit(ctx, Operation::ReadyCheck)?;
     let (member, loaded) = callers_party(ctx)?;
-    authorize(&loaded.view(ctx), &member.account_id, &PartyAction::RespondReady)?;
+    authorize(
+        &loaded.view(ctx),
+        &member.account_id,
+        &PartyAction::RespondReady,
+    )?;
     let answer = if accept {
         ReadyResponse::Accepted
     } else {
@@ -182,7 +190,11 @@ pub fn resolve_ready_check(ctx: &ReducerContext, party_id: u64) {
     match evaluate_ready_check(&view.members, now, micros(loaded.party.ready_deadline)) {
         ReadyCheckOutcome::Waiting => {}
         ReadyCheckOutcome::AllAccepted => {
-            let accounts: Vec<String> = loaded.members.iter().map(|m| m.account_id.clone()).collect();
+            let accounts: Vec<String> = loaded
+                .members
+                .iter()
+                .map(|m| m.account_id.clone())
+                .collect();
             let roll: u64 = ctx.random();
             let leader_account = pick_leader(&accounts, roll);
             let leader = leader_account
@@ -225,7 +237,8 @@ pub fn resolve_ready_check(ctx: &ReducerContext, party_id: u64) {
                         NoticeLevel::Warning,
                         "You did not confirm the dungeon and left the queue.",
                     );
-                } else if let Some(ticket) = ctx.db.queue_ticket().identity().find(member.identity) {
+                } else if let Some(ticket) = ctx.db.queue_ticket().identity().find(member.identity)
+                {
                     // Back to searching, keeping the original queue time.
                     ctx.db.queue_ticket().id().update(QueueTicket {
                         status: TicketStatus::Searching,
@@ -296,7 +309,10 @@ pub fn party_kick(ctx: &ReducerContext, target_account_id: String) -> Result<(),
 
 /// Hands leadership to another member. Leader only.
 #[spacetimedb::reducer]
-pub fn party_transfer_leader(ctx: &ReducerContext, target_account_id: String) -> Result<(), String> {
+pub fn party_transfer_leader(
+    ctx: &ReducerContext,
+    target_account_id: String,
+) -> Result<(), String> {
     rate_limit(ctx, Operation::Leader)?;
     let (member, loaded) = callers_party(ctx)?;
     authorize(
@@ -341,7 +357,13 @@ fn set_leader(ctx: &ReducerContext, loaded: &Loaded, leader: Option<Identity>) {
         .unwrap_or_default();
     for member in &loaded.members {
         if Some(member.identity) == leader {
-            notify(ctx, member.identity, "leader_changed", NoticeLevel::Info, "You now lead the party.");
+            notify(
+                ctx,
+                member.identity,
+                "leader_changed",
+                NoticeLevel::Info,
+                "You now lead the party.",
+            );
         } else {
             notify(
                 ctx,
@@ -434,7 +456,13 @@ pub fn depart(ctx: &ReducerContext, loaded: &Loaded, leaving: &PartyMember, how:
 
 /// Puts a former member back into the queue with their original queue time.
 fn requeue(ctx: &ReducerContext, loaded: &Loaded, member: &PartyMember) {
-    if ctx.db.queue_ticket().identity().find(member.identity).is_some() {
+    if ctx
+        .db
+        .queue_ticket()
+        .identity()
+        .find(member.identity)
+        .is_some()
+    {
         ctx.db.queue_ticket().identity().delete(member.identity);
     }
     ctx.db.queue_ticket().insert(QueueTicket {

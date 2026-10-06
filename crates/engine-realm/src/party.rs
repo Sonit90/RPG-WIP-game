@@ -357,7 +357,9 @@ pub fn apply_ready_response(
         (_, ReadyResponse::Pending) => Err(RealmError::protocol("That is not an answer.")),
         (ReadyResponse::Pending, answer) => Ok(answer),
         (current, answer) if current == answer => Ok(current),
-        _ => Err(RealmError::party("You have already answered the ready check.")),
+        _ => Err(RealmError::party(
+            "You have already answered the ready check.",
+        )),
     }
 }
 
@@ -642,8 +644,9 @@ mod tests {
         assert_eq!(pick_leader(&names, 4).as_deref(), Some("b"));
         assert_eq!(pick_leader(&[], 4), None);
         // Every member is reachable.
-        let picked: std::collections::BTreeSet<String> =
-            (0..30).filter_map(|roll| pick_leader(&names, roll)).collect();
+        let picked: std::collections::BTreeSet<String> = (0..30)
+            .filter_map(|roll| pick_leader(&names, roll))
+            .collect();
         assert_eq!(picked.len(), 3);
     }
 

@@ -238,7 +238,12 @@ mod tests {
         use InstanceState::*;
         let path = [Created, Loading, Ready, Countdown, Active, Completed];
         for pair in path.windows(2) {
-            assert!(pair[0].can_become(pair[1]), "{:?} -> {:?}", pair[0], pair[1]);
+            assert!(
+                pair[0].can_become(pair[1]),
+                "{:?} -> {:?}",
+                pair[0],
+                pair[1]
+            );
         }
         assert!(!Created.can_become(Active), "no skipping the countdown");
         assert!(!Countdown.can_become(Completed));
@@ -321,7 +326,13 @@ mod tests {
             config.reconnect_grace + 10 * SECOND,
             &config
         ));
-        assert!(should_clean_up(InstanceState::Active, &[], None, 0, &config));
+        assert!(should_clean_up(
+            InstanceState::Active,
+            &[],
+            None,
+            0,
+            &config
+        ));
     }
 
     #[test]

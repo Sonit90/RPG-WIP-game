@@ -82,7 +82,10 @@ impl MatchmakingConfig {
             return max;
         }
         // Both are positive and span is not zero.
-        #[allow(clippy::cast_precision_loss, reason = "microsecond spans are far below 2^52")]
+        #[allow(
+            clippy::cast_precision_loss,
+            reason = "microsecond spans are far below 2^52"
+        )]
         let t = (waited - self.expand_start) as f64 / span as f64;
         min + (max - min) * t
     }
@@ -480,7 +483,12 @@ mod tests {
         for id in 0..60_u64 {
             let role = Role::ALL[usize::try_from(id % 3).expect("small")];
             let gear = 80 + u32::try_from((id * 37) % 60).expect("small");
-            tickets.push(ticket(id + 1, role, gear, i64::try_from(id).expect("small") * SECOND));
+            tickets.push(ticket(
+                id + 1,
+                role,
+                gear,
+                i64::try_from(id).expect("small") * SECOND,
+            ));
         }
         let now = 90 * SECOND;
         let first = find_matches(&tickets, now, &config());

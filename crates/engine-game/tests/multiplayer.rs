@@ -40,12 +40,12 @@ fn party(kind: EnemyKind, distance: f32) -> Party {
         .and_then(|encounter| encounter.members().first().copied())
         .expect("the encounter spawned its member");
     let mage = sim.player().entity;
-    let warrior = sim
-        .world_mut()
-        .spawn(EntityDesc::player(config.player_spawn + Vec3::new(3.0, 0.0, 0.0)));
-    let druid = sim
-        .world_mut()
-        .spawn(EntityDesc::player(config.player_spawn + Vec3::new(-3.0, 0.0, 0.0)));
+    let warrior = sim.world_mut().spawn(EntityDesc::player(
+        config.player_spawn + Vec3::new(3.0, 0.0, 0.0),
+    ));
+    let druid = sim.world_mut().spawn(EntityDesc::player(
+        config.player_spawn + Vec3::new(-3.0, 0.0, 0.0),
+    ));
     sim.add_player(warrior, Hero::Warrior);
     sim.add_player(druid, Hero::Druid);
     Party {
@@ -79,8 +79,14 @@ fn every_player_is_known_and_keeps_their_own_hero() {
         vec![party.mage, party.warrior, party.druid]
     );
     assert_eq!(party.sim.hero(), Hero::FireMage);
-    assert_eq!(party.sim.with_player(party.warrior, |s| s.hero()), Some(Hero::Warrior));
-    assert_eq!(party.sim.with_player(party.druid, |s| s.hero()), Some(Hero::Druid));
+    assert_eq!(
+        party.sim.with_player(party.warrior, |s| s.hero()),
+        Some(Hero::Warrior)
+    );
+    assert_eq!(
+        party.sim.with_player(party.druid, |s| s.hero()),
+        Some(Hero::Druid)
+    );
     // Swapping in and out leaves the active player as it was.
     assert_eq!(party.sim.player().entity, party.mage);
     assert!(party.sim.with_player(party.enemy, |_| ()).is_none());
@@ -104,9 +110,18 @@ fn each_player_moves_with_their_own_intent() {
     assert!(party.sim.push_command_for(party.warrior, walk));
     run(&mut party.sim, 60);
     let moved = |a: Vec3, b: Vec3| (a - b).length();
-    assert!(moved(before(&party.sim, party.warrior), w0) > 2.0, "the warrior walked");
-    assert!(moved(before(&party.sim, party.mage), m0) < 0.05, "the mage stood still");
-    assert!(moved(before(&party.sim, party.druid), d0) < 0.05, "the druid stood still");
+    assert!(
+        moved(before(&party.sim, party.warrior), w0) > 2.0,
+        "the warrior walked"
+    );
+    assert!(
+        moved(before(&party.sim, party.mage), m0) < 0.05,
+        "the mage stood still"
+    );
+    assert!(
+        moved(before(&party.sim, party.druid), d0) < 0.05,
+        "the druid stood still"
+    );
 }
 
 #[test]
@@ -118,7 +133,9 @@ fn each_player_casts_their_own_abilities() {
             .sim
             .push_command_for(player, PlayerCommand::SelectTarget { entity: enemy });
         // Slot 0: Firebolt for the mage, Moonfire for the druid.
-        party.sim.push_command_for(player, PlayerCommand::UseAbility(0));
+        party
+            .sim
+            .push_command_for(player, PlayerCommand::UseAbility(0));
     }
     let events = run(&mut party.sim, 240);
     let dealt_by = |source: EntityId| {
@@ -128,7 +145,10 @@ fn each_player_casts_their_own_abilities() {
     };
     assert!(dealt_by(party.mage), "the mage's Firebolt landed");
     assert!(dealt_by(party.druid), "the druid's Moonfire landed");
-    assert!(!dealt_by(party.warrior), "the warrior did nothing and dealt nothing");
+    assert!(
+        !dealt_by(party.warrior),
+        "the warrior did nothing and dealt nothing"
+    );
 }
 
 #[test]
@@ -153,7 +173,12 @@ fn enemies_attack_whichever_player_they_choose_and_the_damage_lands_on_them() {
         matches!(event, CombatEvent::Damage(d) if d.target == warrior && d.source == party.enemy)
     });
     assert!(hit_warrior, "the skeleton fought the warrior");
-    assert!(health(&party.sim, warrior) < warrior_max || events.iter().any(|e| matches!(e, CombatEvent::Damage(d) if d.target == warrior)));
+    assert!(
+        health(&party.sim, warrior) < warrior_max
+            || events
+                .iter()
+                .any(|e| matches!(e, CombatEvent::Damage(d) if d.target == warrior))
+    );
 }
 
 #[test]
@@ -167,9 +192,14 @@ fn a_druid_heals_another_player() {
         .sim
         .push_command_for(party.druid, PlayerCommand::SelectTarget { entity: mage });
     // Slot 3: Rejuvenation, healing over time.
-    party.sim.push_command_for(party.druid, PlayerCommand::UseAbility(3));
+    party
+        .sim
+        .push_command_for(party.druid, PlayerCommand::UseAbility(3));
     run(&mut party.sim, 600);
-    assert!(health(&party.sim, mage) > wounded + 1.0, "the mage was healed");
+    assert!(
+        health(&party.sim, mage) > wounded + 1.0,
+        "the mage was healed"
+    );
 }
 
 #[test]
@@ -192,7 +222,10 @@ fn removing_a_player_leaves_the_rest() {
     party.sim.remove_player(party.warrior);
     assert_eq!(party.sim.player_count(), 2);
     assert!(!party.sim.is_player_entity(party.warrior));
-    assert_eq!(party.sim.with_player(party.druid, |s| s.hero()), Some(Hero::Druid));
+    assert_eq!(
+        party.sim.with_player(party.druid, |s| s.hero()),
+        Some(Hero::Druid)
+    );
     run(&mut party.sim, 30);
 }
 
@@ -202,11 +235,20 @@ fn under_a_remote_authority_presses_go_to_the_server_and_nothing_is_decided_loca
     let enemy = party.enemy;
     let before = health(&party.sim, enemy);
     party.sim.set_remote_authority(true);
-    party.sim.push_command(PlayerCommand::SelectTarget { entity: enemy });
+    party
+        .sim
+        .push_command(PlayerCommand::SelectTarget { entity: enemy });
     party.sim.push_command(PlayerCommand::UseAbility(0));
     let events = run(&mut party.sim, 240);
-    assert_eq!(party.sim.player().target, Some(enemy), "targeting stays local");
-    assert_eq!(party.sim.take_remote_requests(), vec![PlayerCommand::UseAbility(0)]);
+    assert_eq!(
+        party.sim.player().target,
+        Some(enemy),
+        "targeting stays local"
+    );
+    assert_eq!(
+        party.sim.take_remote_requests(),
+        vec![PlayerCommand::UseAbility(0)]
+    );
     assert!(party.sim.take_remote_requests().is_empty());
     assert!(!events.iter().any(|e| matches!(e, CombatEvent::Damage(_))));
     assert!((health(&party.sim, enemy) - before).abs() < f32::EPSILON);

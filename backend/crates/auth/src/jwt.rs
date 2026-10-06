@@ -113,8 +113,9 @@ pub fn generate_signing_key_pem() -> Result<String, AppError> {
 
 impl JwtCodec {
     pub fn new(cfg: JwtConfig) -> Result<Self, AppError> {
-        let secret = p256::SecretKey::from_pkcs8_pem(&cfg.private_key_pem)
-            .map_err(|e| AppError::internal(format!("signing key is not a P-256 PKCS#8 PEM: {e}")))?;
+        let secret = p256::SecretKey::from_pkcs8_pem(&cfg.private_key_pem).map_err(|e| {
+            AppError::internal(format!("signing key is not a P-256 PKCS#8 PEM: {e}"))
+        })?;
         let point = p256::EncodedPoint::from(secret.public_key());
         let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD;
         let x = point
@@ -129,7 +130,13 @@ impl JwtCodec {
             .map_err(|e| AppError::internal(format!("signing key: {e}")))?;
         let dec = DecodingKey::from_ec_components(&x, &y)
             .map_err(|e| AppError::internal(format!("verification key: {e}")))?;
-        Ok(Self { enc, dec, cfg, x, y })
+        Ok(Self {
+            enc,
+            dec,
+            cfg,
+            x,
+            y,
+        })
     }
 
     pub fn issuer(&self) -> &str {
@@ -172,12 +179,26 @@ impl JwtCodec {
 
     /// A player's access token.
     pub fn issue(&self, user_id: Uuid, role: Role) -> Result<String, AppError> {
-        self.sign(user_id.to_string(), role.as_str(), self.cfg.access_ttl_min * 60)
+        self.sign(
+            user_id.to_string(),
+            role.as_str(),
+            self.cfg.access_ttl_min * 60,
+        )
     }
 
     /// A player's access token carrying their display name.
-    pub fn issue_named(&self, user_id: Uuid, role: Role, name: Option<&str>) -> Result<String, AppError> {
-        self.sign_named(user_id.to_string(), role.as_str(), self.cfg.access_ttl_min * 60, name)
+    pub fn issue_named(
+        &self,
+        user_id: Uuid,
+        role: Role,
+        name: Option<&str>,
+    ) -> Result<String, AppError> {
+        self.sign_named(
+            user_id.to_string(),
+            role.as_str(),
+            self.cfg.access_ttl_min * 60,
+            name,
+        )
     }
 
     /// A token for an internal service identity (the realm bridge). Short-lived; the bridge
@@ -201,7 +222,10 @@ impl JwtCodec {
     pub fn verify(&self, token: &str) -> Result<PlayerClaims, AppError> {
         let claims = self.verify_any(token)?;
         let user_id = Uuid::parse_str(&claims.sub).map_err(|_| AppError::Unauthorized)?;
-        Ok(PlayerClaims { user_id, role: claims.role })
+        Ok(PlayerClaims {
+            user_id,
+            role: claims.role,
+        })
     }
 
     /// The JWKS document: the one public key, by id.
@@ -306,11 +330,9 @@ mod tests {
         let key = &jwks["keys"][0];
         assert_eq!(key["kty"], "EC");
         assert_eq!(key["kid"], "test");
-        let dec = DecodingKey::from_ec_components(
-            key["x"].as_str().unwrap(),
-            key["y"].as_str().unwrap(),
-        )
-        .unwrap();
+        let dec =
+            DecodingKey::from_ec_components(key["x"].as_str().unwrap(), key["y"].as_str().unwrap())
+                .unwrap();
         let token = codec.issue(Uuid::new_v4(), Role::User).unwrap();
         let mut v = Validation::new(Algorithm::ES256);
         v.set_audience(&["mygame-realm"]);

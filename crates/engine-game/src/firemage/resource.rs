@@ -105,7 +105,11 @@ impl Heat {
     /// Sets the heat value (clamped to [0, 100]): an authoritative correction. Inferno and
     /// the idle clock are left as they are.
     pub fn set(&mut self, value: f32) {
-        self.value = if value.is_finite() { value.clamp(0.0, 100.0) } else { 0.0 };
+        self.value = if value.is_finite() {
+            value.clamp(0.0, 100.0)
+        } else {
+            0.0
+        };
     }
 
     /// Current Heat, `0.0..=100.0`.
@@ -240,7 +244,11 @@ pub struct UltimateEnergy {
 impl UltimateEnergy {
     /// Sets the stored energy (clamped): an authoritative correction.
     pub fn set(&mut self, value: f32) {
-        self.value = if value.is_finite() { value.clamp(0.0, 100.0) } else { 0.0 };
+        self.value = if value.is_finite() {
+            value.clamp(0.0, 100.0)
+        } else {
+            0.0
+        };
     }
 
     /// Empty.

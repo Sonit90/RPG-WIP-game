@@ -19,7 +19,14 @@ pub struct TextField {
 impl std::fmt::Debug for TextField {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TextField")
-            .field("text", &if self.masked { "<masked>" } else { self.text.as_str() })
+            .field(
+                "text",
+                &if self.masked {
+                    "<masked>"
+                } else {
+                    self.text.as_str()
+                },
+            )
             .field("caret", &self.caret)
             .finish()
     }
@@ -78,7 +85,11 @@ impl TextField {
 
     /// Replaces the text and puts the caret at its end.
     pub fn set_text(&mut self, text: &str) {
-        self.text = text.chars().filter(|c| !c.is_control()).take(self.max_chars).collect();
+        self.text = text
+            .chars()
+            .filter(|c| !c.is_control())
+            .take(self.max_chars)
+            .collect();
         self.caret = self.text.chars().count();
     }
 
@@ -192,10 +203,22 @@ mod tests {
         assert_eq!(field.text(), "hello");
         field.apply(&['\u{8}'], FieldKeys::default());
         assert_eq!(field.text(), "hell");
-        field.apply(&[], FieldKeys { home: true, ..FieldKeys::default() });
+        field.apply(
+            &[],
+            FieldKeys {
+                home: true,
+                ..FieldKeys::default()
+            },
+        );
         field.apply(&typed("s"), FieldKeys::default());
         assert_eq!(field.text(), "shell");
-        field.apply(&[], FieldKeys { delete: true, ..FieldKeys::default() });
+        field.apply(
+            &[],
+            FieldKeys {
+                delete: true,
+                ..FieldKeys::default()
+            },
+        );
         assert_eq!(field.text(), "sell");
         field.apply(&['\u{8}', '\u{8}'], FieldKeys::default());
         assert_eq!(field.text(), "ell");
@@ -206,7 +229,13 @@ mod tests {
         let mut field = TextField::new(4);
         field.apply(&typed("äöüßx"), FieldKeys::default());
         assert_eq!(field.text(), "äöüß");
-        field.apply(&[], FieldKeys { left: true, ..FieldKeys::default() });
+        field.apply(
+            &[],
+            FieldKeys {
+                left: true,
+                ..FieldKeys::default()
+            },
+        );
         field.apply(&['\u{8}'], FieldKeys::default());
         assert_eq!(field.text(), "äöß");
     }

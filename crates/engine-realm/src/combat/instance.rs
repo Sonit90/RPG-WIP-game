@@ -19,6 +19,7 @@
 
 use std::collections::HashMap;
 
+use engine_collision::world::StaticId;
 use engine_core::math::Vec3;
 use engine_environment::EnvironmentScene;
 use engine_game::command::PlayerCommand;
@@ -30,7 +31,6 @@ use engine_game::hero::Hero;
 use engine_game::movement::{Body, MoveIntent};
 use engine_game::sim::Simulation;
 use engine_game::world::EntityDesc;
-use engine_collision::world::StaticId;
 use serde::{Deserialize, Serialize};
 
 use super::wire::{AbilityRef, EntityRef, WireEvent, encode};
@@ -191,7 +191,8 @@ impl PlayerState {
         let (r, o) = (&self.resources, &older.resources);
         self.alive != older.alive
             || self.target != older.target
-            || self.cast.map(|c| (c.ability, c.duration)) != older.cast.map(|c| (c.ability, c.duration))
+            || self.cast.map(|c| (c.ability, c.duration))
+                != older.cast.map(|c| (c.ability, c.duration))
             || matches!((self.cast, older.cast), (Some(n), Some(c)) if ((c.elapsed + elapsed) - n.elapsed).abs() > 0.2)
             || resource(r.heat, o.heat)
             || resource(r.energy, o.energy)
@@ -256,7 +257,8 @@ impl MonsterState {
             || self.max_health != other.max_health
             || self.alive != other.alive
             || self.target != other.target
-            || self.cast.map(|c| (c.ability, c.duration)) != other.cast.map(|c| (c.ability, c.duration))
+            || self.cast.map(|c| (c.ability, c.duration))
+                != other.cast.map(|c| (c.ability, c.duration))
             || statuses_differ(&other.statuses, &self.statuses, elapsed)
             || self.name != other.name
     }
@@ -333,11 +335,18 @@ impl CombatInstance {
     #[must_use]
     pub fn new(scene: &EnvironmentScene, players: &[PlayerSpec], barriers: &[Barrier]) -> Self {
         let size = u8::try_from(players.len().max(1)).unwrap_or(u8::MAX);
-        let mut sim =
-            engine_game::arena::environment_arena_for_party(scene, 0, DungeonScaling::for_party(size));
+        let mut sim = engine_game::arena::environment_arena_for_party(
+            scene,
+            0,
+            DungeonScaling::for_party(size),
+        );
         let mut members = Vec::with_capacity(players.len());
         for (index, spec) in players.iter().enumerate() {
-            let spawn = Vec3::new(spec.spawn.position[0], spec.spawn.position[1], spec.spawn.position[2]);
+            let spawn = Vec3::new(
+                spec.spawn.position[0],
+                spec.spawn.position[1],
+                spec.spawn.position[2],
+            );
             let entity = if index == 0 {
                 sim.player().entity
             } else {
@@ -387,9 +396,11 @@ impl CombatInstance {
         }
         for barrier in barriers.iter().filter(|b| b.kind == BarrierKind::Start) {
             let world = instance.sim.collision_world_mut();
-            instance
-                .start_barrier
-                .push(world.add_box(barrier.min, barrier.max, barrier_label(barrier.kind)));
+            instance.start_barrier.push(world.add_box(
+                barrier.min,
+                barrier.max,
+                barrier_label(barrier.kind),
+            ));
         }
         instance.sim.collision_world_mut().rebuild_broad_phase();
         instance
@@ -411,8 +422,10 @@ impl CombatInstance {
             instance.open_start_barrier();
         }
         instance.tick_base = state.tick;
-        let records: HashMap<u64, &MonsterRecord> = state.monsters.iter().map(|m| (m.key, m)).collect();
-        let placed: Vec<(u64, EntityId)> = instance.entities.iter().map(|(k, e)| (*k, *e)).collect();
+        let records: HashMap<u64, &MonsterRecord> =
+            state.monsters.iter().map(|m| (m.key, m)).collect();
+        let placed: Vec<(u64, EntityId)> =
+            instance.entities.iter().map(|(k, e)| (*k, *e)).collect();
         for (key, entity) in placed {
             match records.get(&key) {
                 Some(record) if record.alive => {
@@ -436,7 +449,11 @@ impl CombatInstance {
             instance.sim.unlock_dungeon();
         }
         for record in &state.players {
-            let Some(member) = instance.members.iter_mut().find(|m| m.account_id == record.account_id) else {
+            let Some(member) = instance
+                .members
+                .iter_mut()
+                .find(|m| m.account_id == record.account_id)
+            else {
                 continue;
             };
             member.last_seq = record.last_seq;
@@ -485,13 +502,17 @@ impl CombatInstance {
     /// Completion credited so far.
     #[must_use]
     pub fn credited(&self) -> f32 {
-        self.sim.dungeon_run().map_or(0.0, engine_game::dungeon_run::DungeonRun::credited)
+        self.sim
+            .dungeon_run()
+            .map_or(0.0, engine_game::dungeon_run::DungeonRun::credited)
     }
 
     /// Whether the boss gate is open.
     #[must_use]
     pub fn unlocked(&self) -> bool {
-        self.sim.dungeon_run().is_some_and(engine_game::dungeon_run::DungeonRun::is_unlocked)
+        self.sim
+            .dungeon_run()
+            .is_some_and(engine_game::dungeon_run::DungeonRun::is_unlocked)
     }
 
     /// Whether every player is down.
@@ -577,7 +598,9 @@ impl CombatInstance {
             ActionKind::Ultimate(p) if finite(&p) => Some(PlayerCommand::UseUltimate {
                 position: Vec3::new(p[0], p[1], p[2]),
             }),
-            ActionKind::Extra(index) if index < 2 => Some(PlayerCommand::UseExtra(usize::from(index))),
+            ActionKind::Extra(index) if index < 2 => {
+                Some(PlayerCommand::UseExtra(usize::from(index)))
+            }
             _ => return Err(ActionError::Malformed),
         };
         let select = match self.resolve(&action.target) {
@@ -705,7 +728,9 @@ impl CombatInstance {
                     })
                     .collect::<Vec<_>>();
                 let cast = sim.casting().map(|cast| CastState {
-                    ability: AbilityRef::of(engine_game::ability::AbilityId::from_fire(cast.ability)),
+                    ability: AbilityRef::of(engine_game::ability::AbilityId::from_fire(
+                        cast.ability,
+                    )),
                     elapsed: cast.elapsed,
                     duration: cast.duration,
                 });
@@ -780,9 +805,10 @@ impl CombatInstance {
         let tick = self.tick();
         let mut changed = Vec::new();
         for state in current {
-            let differs = self.written.get(&state.key).is_none_or(|(old, at)| {
-                old.differs(&state, seconds_between(*at, tick))
-            });
+            let differs = self
+                .written
+                .get(&state.key)
+                .is_none_or(|(old, at)| old.differs(&state, seconds_between(*at, tick)));
             if differs {
                 self.written.insert(state.key, (state.clone(), tick));
                 changed.push(state);

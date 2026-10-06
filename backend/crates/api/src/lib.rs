@@ -24,7 +24,8 @@ pub mod state;
 pub use state::AppState;
 
 pub async fn run(settings: Arc<config::Settings>) -> anyhow::Result<()> {
-    let state = AppState::build(settings.clone()).await
+    let state = AppState::build(settings.clone())
+        .await
         .context("building app state")?;
 
     let cors = build_cors_layer(&settings);
@@ -32,26 +33,29 @@ pub async fn run(settings: Arc<config::Settings>) -> anyhow::Result<()> {
     let mut app: Router = routes::router(state.clone());
 
     if settings.app_env != "production" {
-        app = app.merge(SwaggerUi::new("/api/docs")
-            .url("/api/docs/openapi.json", openapi::ApiDoc::openapi()));
+        app = app.merge(
+            SwaggerUi::new("/api/docs").url("/api/docs/openapi.json", openapi::ApiDoc::openapi()),
+        );
     }
 
-    let app = app
-        .layer(cors)
-        .layer(TraceLayer::new_for_http());
+    let app = app.layer(cors).layer(TraceLayer::new_for_http());
 
     if settings.realm.enabled {
         tokio::spawn(realm_bridge::collect_results(state.clone()));
     }
 
-    let listener = TcpListener::bind(&settings.http.bind).await
+    let listener = TcpListener::bind(&settings.http.bind)
+        .await
         .with_context(|| format!("bind {}", settings.http.bind))?;
     tracing::info!(addr = %settings.http.bind, "listening");
 
-    axum::serve(listener, app.into_make_service_with_connect_info::<std::net::SocketAddr>())
-        .with_graceful_shutdown(shutdown_signal())
-        .await
-        .context("axum::serve")?;
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal())
+    .await
+    .context("axum::serve")?;
 
     Ok(())
 }
@@ -61,22 +65,31 @@ fn build_cors_layer(settings: &config::Settings) -> CorsLayer {
         return CorsLayer::permissive();
     }
 
-    let origins: Vec<_> = settings.cors.allowed_origins.iter()
+    let origins: Vec<_> = settings
+        .cors
+        .allowed_origins
+        .iter()
         .filter_map(|o| o.parse().ok())
         .collect();
 
     CorsLayer::new()
         .allow_origin(AllowOrigin::list(origins))
         .allow_methods([
-            Method::GET, Method::POST, Method::PUT,
-            Method::PATCH, Method::DELETE, Method::OPTIONS,
+            Method::GET,
+            Method::POST,
+            Method::PUT,
+            Method::PATCH,
+            Method::DELETE,
+            Method::OPTIONS,
         ])
         .allow_headers(tower_http::cors::Any)
         .allow_credentials(false)
 }
 
 async fn shutdown_signal() {
-    let ctrl_c = async { let _ = signal::ctrl_c().await; };
+    let ctrl_c = async {
+        let _ = signal::ctrl_c().await;
+    };
     #[cfg(unix)]
     let term = async {
         let mut t = signal::unix::signal(signal::unix::SignalKind::terminate()).unwrap();

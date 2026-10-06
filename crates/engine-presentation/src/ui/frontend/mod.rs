@@ -392,7 +392,9 @@ struct Layout {
 
 impl Layout {
     fn new() -> Self {
-        Self { hits: Vec::with_capacity(32) }
+        Self {
+            hits: Vec::with_capacity(32),
+        }
     }
 
     fn add(&mut self, hit: Hit, rect: UiRect) -> UiRect {
@@ -451,7 +453,10 @@ impl FrontEndUi {
     #[must_use]
     pub fn wants_pointer(&self, view: &FrontEndView, viewport: (u32, u32), scale: UiScale) -> bool {
         view.screen != Screen::InWorld
-            || self.layout(view, viewport, scale).at(self.pointer).is_some()
+            || self
+                .layout(view, viewport, scale)
+                .at(self.pointer)
+                .is_some()
     }
 
     fn field_mut(&mut self, id: FieldId) -> &mut TextField {
@@ -586,36 +591,66 @@ impl FrontEndUi {
 
     fn layout(&self, view: &FrontEndView, viewport: (u32, u32), scale: UiScale) -> Layout {
         let mut layout = Layout::new();
-        #[allow(clippy::cast_precision_loss, reason = "viewport sizes are small integers")]
+        #[allow(
+            clippy::cast_precision_loss,
+            reason = "viewport sizes are small integers"
+        )]
         let (w, h) = (viewport.0 as f32, viewport.1 as f32);
         let px = |v: f32| scale.px(v);
 
         // Top bar: account and sign-out, on every signed-in screen but the world.
         if view.account.is_some() && !matches!(view.screen, Screen::Login | Screen::InWorld) {
-            layout.add(Hit::Logout, UiRect::new(w - px(140.0), px(18.0), px(120.0), px(34.0)));
+            layout.add(
+                Hit::Logout,
+                UiRect::new(w - px(140.0), px(18.0), px(120.0), px(34.0)),
+            );
         }
 
         match view.screen {
             Screen::Login => {
                 let panel = login_panel(w, h, scale, self.register);
                 let mut y = panel.y + px(118.0);
-                layout.add(Hit::Field(FieldId::Email), UiRect::new(panel.x + px(36.0), y, panel.width - px(72.0), px(44.0)));
+                layout.add(
+                    Hit::Field(FieldId::Email),
+                    UiRect::new(panel.x + px(36.0), y, panel.width - px(72.0), px(44.0)),
+                );
                 y += px(76.0);
                 if self.register {
-                    layout.add(Hit::Field(FieldId::DisplayName), UiRect::new(panel.x + px(36.0), y, panel.width - px(72.0), px(44.0)));
+                    layout.add(
+                        Hit::Field(FieldId::DisplayName),
+                        UiRect::new(panel.x + px(36.0), y, panel.width - px(72.0), px(44.0)),
+                    );
                     y += px(76.0);
                 }
-                layout.add(Hit::Field(FieldId::Password), UiRect::new(panel.x + px(36.0), y, panel.width - px(72.0), px(44.0)));
+                layout.add(
+                    Hit::Field(FieldId::Password),
+                    UiRect::new(panel.x + px(36.0), y, panel.width - px(72.0), px(44.0)),
+                );
                 y += px(60.0);
-                layout.add(Hit::Remember, UiRect::new(panel.x + px(36.0), y, px(200.0), px(28.0)));
+                layout.add(
+                    Hit::Remember,
+                    UiRect::new(panel.x + px(36.0), y, px(200.0), px(28.0)),
+                );
                 y += px(44.0);
-                layout.add(Hit::Submit, UiRect::new(panel.x + px(36.0), y, panel.width - px(72.0), px(48.0)));
+                layout.add(
+                    Hit::Submit,
+                    UiRect::new(panel.x + px(36.0), y, panel.width - px(72.0), px(48.0)),
+                );
                 y += px(60.0);
-                layout.add(Hit::ToggleRegister, UiRect::new(panel.x + px(36.0), y, panel.width - px(72.0), px(36.0)));
-                layout.add(Hit::Quit, UiRect::new(px(20.0), h - px(54.0), px(110.0), px(34.0)));
+                layout.add(
+                    Hit::ToggleRegister,
+                    UiRect::new(panel.x + px(36.0), y, panel.width - px(72.0), px(36.0)),
+                );
+                layout.add(
+                    Hit::Quit,
+                    UiRect::new(px(20.0), h - px(54.0), px(110.0), px(34.0)),
+                );
             }
             Screen::Characters => {
-                for (index, rect) in character_cards(view.characters.len(), w, h, scale).into_iter().enumerate() {
+                for (index, rect) in character_cards(view.characters.len(), w, h, scale)
+                    .into_iter()
+                    .enumerate()
+                {
                     layout.add(Hit::Character(index), rect);
                 }
                 let (back, next) = footer_buttons(w, h, scale);
@@ -627,7 +662,12 @@ impl FrontEndUi {
             Screen::Dungeons => {
                 let (list, _) = dungeon_panels(w, h, scale);
                 for index in 0..view.dungeons.len() {
-                    let row = UiRect::new(list.x + px(12.0), list.y + px(64.0) + px(74.0) * index as f32, list.width - px(24.0), px(64.0));
+                    let row = UiRect::new(
+                        list.x + px(12.0),
+                        list.y + px(64.0) + px(74.0) * index as f32,
+                        list.width - px(24.0),
+                        px(64.0),
+                    );
                     layout.add(Hit::Dungeon(index), row);
                 }
                 let (back, next) = footer_buttons(w, h, scale);
@@ -655,14 +695,38 @@ impl FrontEndUi {
             }
             Screen::Queue => {
                 let panel = centered(w, h, px(520.0), px(330.0));
-                layout.add(Hit::LeaveQueue, UiRect::new(panel.x + panel.width * 0.5 - px(110.0), panel.bottom() - px(70.0), px(220.0), px(44.0)));
+                layout.add(
+                    Hit::LeaveQueue,
+                    UiRect::new(
+                        panel.x + panel.width * 0.5 - px(110.0),
+                        panel.bottom() - px(70.0),
+                        px(220.0),
+                        px(44.0),
+                    ),
+                );
             }
             Screen::ReadyCheck => {
                 let panel = centered(w, h, px(560.0), px(400.0));
                 let answered = view.party.as_ref().is_some_and(|p| p.i_answered);
                 if !answered {
-                    layout.add(Hit::Accept, UiRect::new(panel.x + px(40.0), panel.bottom() - px(76.0), px(220.0), px(48.0)));
-                    layout.add(Hit::Decline, UiRect::new(panel.right() - px(260.0), panel.bottom() - px(76.0), px(220.0), px(48.0)));
+                    layout.add(
+                        Hit::Accept,
+                        UiRect::new(
+                            panel.x + px(40.0),
+                            panel.bottom() - px(76.0),
+                            px(220.0),
+                            px(48.0),
+                        ),
+                    );
+                    layout.add(
+                        Hit::Decline,
+                        UiRect::new(
+                            panel.right() - px(260.0),
+                            panel.bottom() - px(76.0),
+                            px(220.0),
+                            px(48.0),
+                        ),
+                    );
                 }
             }
             Screen::Party => {
@@ -671,15 +735,47 @@ impl FrontEndUi {
                     for (index, member) in party.members.iter().enumerate() {
                         let row = member_row(panel, index, scale);
                         if party.i_lead && !member.me {
-                            layout.add(Hit::MakeLeader(member.account_id.clone()), UiRect::new(row.right() - px(236.0), row.y + px(14.0), px(120.0), px(34.0)));
-                            layout.add(Hit::Kick(member.account_id.clone()), UiRect::new(row.right() - px(106.0), row.y + px(14.0), px(90.0), px(34.0)));
+                            layout.add(
+                                Hit::MakeLeader(member.account_id.clone()),
+                                UiRect::new(
+                                    row.right() - px(236.0),
+                                    row.y + px(14.0),
+                                    px(120.0),
+                                    px(34.0),
+                                ),
+                            );
+                            layout.add(
+                                Hit::Kick(member.account_id.clone()),
+                                UiRect::new(
+                                    row.right() - px(106.0),
+                                    row.y + px(14.0),
+                                    px(90.0),
+                                    px(34.0),
+                                ),
+                            );
                         }
                     }
                     if party.i_lead {
-                        layout.add(Hit::Start, UiRect::new(panel.right() - px(260.0), panel.bottom() - px(72.0), px(220.0), px(48.0)));
+                        layout.add(
+                            Hit::Start,
+                            UiRect::new(
+                                panel.right() - px(260.0),
+                                panel.bottom() - px(72.0),
+                                px(220.0),
+                                px(48.0),
+                            ),
+                        );
                     }
                 }
-                layout.add(Hit::LeaveParty, UiRect::new(panel.x + px(40.0), panel.bottom() - px(72.0), px(180.0), px(48.0)));
+                layout.add(
+                    Hit::LeaveParty,
+                    UiRect::new(
+                        panel.x + px(40.0),
+                        panel.bottom() - px(72.0),
+                        px(180.0),
+                        px(48.0),
+                    ),
+                );
             }
             Screen::InWorld => {
                 // A small "leave" control while in the dungeon.
@@ -692,16 +788,34 @@ impl FrontEndUi {
     // --- drawing ----------------------------------------------------------------------
 
     /// Draws the front-end for `view`.
-    pub fn draw(&self, list: &mut UiDrawList, view: &FrontEndView, viewport: (u32, u32), scale: UiScale) {
-        #[allow(clippy::cast_precision_loss, reason = "viewport sizes are small integers")]
+    pub fn draw(
+        &self,
+        list: &mut UiDrawList,
+        view: &FrontEndView,
+        viewport: (u32, u32),
+        scale: UiScale,
+    ) {
+        #[allow(
+            clippy::cast_precision_loss,
+            reason = "viewport sizes are small integers"
+        )]
         let (w, h) = (viewport.0 as f32, viewport.1 as f32);
         let layout = self.layout(view, viewport, scale);
         let hovered = layout.at(self.pointer).cloned();
-        let ctx = Painter { list, scale, hovered: hovered.as_ref() };
+        let ctx = Painter {
+            list,
+            scale,
+            hovered: hovered.as_ref(),
+        };
         let mut ctx = ctx;
 
         if view.screen != Screen::InWorld {
-            ctx.list.panel(UiRect::new(0.0, 0.0, w, h), 0.0, BACKDROP_TOP, BACKDROP_BOTTOM);
+            ctx.list.panel(
+                UiRect::new(0.0, 0.0, w, h),
+                0.0,
+                BACKDROP_TOP,
+                BACKDROP_BOTTOM,
+            );
             ctx.top_bar(view, w);
         }
         match view.screen {
@@ -727,29 +841,90 @@ impl FrontEndUi {
 
     fn draw_login(&self, ctx: &mut Painter<'_>, view: &FrontEndView, w: f32, h: f32) {
         let scale = ctx.scale;
-    let px = move |v: f32| scale.px(v);
+        let px = move |v: f32| scale.px(v);
         // The game's name over the form.
-        ctx.text_styled((w * 0.5, h * 0.12), "SHADOWS OF THE CRYPT", GOLD, UiFont::Display, 46.0, TextAlign::Center);
-        ctx.text((w * 0.5, h * 0.12 + px(60.0)), "Online", DIM, UiFont::Medium, 18.0, TextAlign::Center);
+        ctx.text_styled(
+            (w * 0.5, h * 0.12),
+            "SHADOWS OF THE CRYPT",
+            GOLD,
+            UiFont::Display,
+            46.0,
+            TextAlign::Center,
+        );
+        ctx.text(
+            (w * 0.5, h * 0.12 + px(60.0)),
+            "Online",
+            DIM,
+            UiFont::Medium,
+            18.0,
+            TextAlign::Center,
+        );
 
         let panel = login_panel(w, h, ctx.scale, self.register);
         ctx.panel(panel);
-        let title = if self.register { "CREATE ACCOUNT" } else { "SIGN IN" };
-        ctx.text((panel.x + panel.width * 0.5, panel.y + px(34.0)), title, GOLD, UiFont::Display, 28.0, TextAlign::Center);
+        let title = if self.register {
+            "CREATE ACCOUNT"
+        } else {
+            "SIGN IN"
+        };
+        ctx.text(
+            (panel.x + panel.width * 0.5, panel.y + px(34.0)),
+            title,
+            GOLD,
+            UiFont::Display,
+            28.0,
+            TextAlign::Center,
+        );
 
         let mut y = panel.y + px(118.0);
         let x = panel.x + px(36.0);
         let width = panel.width - px(72.0);
-        ctx.text((x, y - px(26.0)), "Email", DIM, UiFont::Medium, 15.0, TextAlign::Left);
-        self.draw_field(ctx, FieldId::Email, UiRect::new(x, y, width, px(44.0)), &self.email);
+        ctx.text(
+            (x, y - px(26.0)),
+            "Email",
+            DIM,
+            UiFont::Medium,
+            15.0,
+            TextAlign::Left,
+        );
+        self.draw_field(
+            ctx,
+            FieldId::Email,
+            UiRect::new(x, y, width, px(44.0)),
+            &self.email,
+        );
         y += px(76.0);
         if self.register {
-            ctx.text((x, y - px(26.0)), "Display name", DIM, UiFont::Medium, 15.0, TextAlign::Left);
-            self.draw_field(ctx, FieldId::DisplayName, UiRect::new(x, y, width, px(44.0)), &self.display_name);
+            ctx.text(
+                (x, y - px(26.0)),
+                "Display name",
+                DIM,
+                UiFont::Medium,
+                15.0,
+                TextAlign::Left,
+            );
+            self.draw_field(
+                ctx,
+                FieldId::DisplayName,
+                UiRect::new(x, y, width, px(44.0)),
+                &self.display_name,
+            );
             y += px(76.0);
         }
-        ctx.text((x, y - px(26.0)), "Password", DIM, UiFont::Medium, 15.0, TextAlign::Left);
-        self.draw_field(ctx, FieldId::Password, UiRect::new(x, y, width, px(44.0)), &self.password);
+        ctx.text(
+            (x, y - px(26.0)),
+            "Password",
+            DIM,
+            UiFont::Medium,
+            15.0,
+            TextAlign::Left,
+        );
+        self.draw_field(
+            ctx,
+            FieldId::Password,
+            UiRect::new(x, y, width, px(44.0)),
+            &self.password,
+        );
         y += px(60.0);
         // Remember me.
         let tick = UiRect::new(x, y + px(3.0), px(22.0), px(22.0));
@@ -757,7 +932,14 @@ impl FrontEndUi {
         if self.remember {
             ctx.list.panel(tick.inset(px(5.0)), px(2.0), GOLD, GOLD);
         }
-        ctx.text((tick.right() + px(10.0), y + px(4.0)), "Remember me on this computer", TEXT, UiFont::Regular, 16.0, TextAlign::Left);
+        ctx.text(
+            (tick.right() + px(10.0), y + px(4.0)),
+            "Remember me on this computer",
+            TEXT,
+            UiFont::Regular,
+            16.0,
+            TextAlign::Left,
+        );
         y += px(44.0);
         let busy = view.busy.is_some();
         let label = if busy {
@@ -767,33 +949,88 @@ impl FrontEndUi {
         } else {
             "Sign In"
         };
-        let ready = !busy && !self.email.text().trim().is_empty() && !self.password.text().is_empty();
-        ctx.button(UiRect::new(x, y, width, px(48.0)), label, ButtonKind::Primary, &Hit::Submit, ready);
+        let ready =
+            !busy && !self.email.text().trim().is_empty() && !self.password.text().is_empty();
+        ctx.button(
+            UiRect::new(x, y, width, px(48.0)),
+            label,
+            ButtonKind::Primary,
+            &Hit::Submit,
+            ready,
+        );
         y += px(60.0);
-        let toggle = if self.register { "I already have an account" } else { "Create a new account" };
-        ctx.link(UiRect::new(x, y, width, px(36.0)), toggle, &Hit::ToggleRegister);
+        let toggle = if self.register {
+            "I already have an account"
+        } else {
+            "Create a new account"
+        };
+        ctx.link(
+            UiRect::new(x, y, width, px(36.0)),
+            toggle,
+            &Hit::ToggleRegister,
+        );
         y += px(50.0);
         if let Some(error) = &view.error {
-            for (line_index, line) in UiFont::Medium.wrap(error, ctx.scale.px(15.0), width).iter().enumerate() {
-                ctx.text((panel.x + panel.width * 0.5, y + px(20.0) * line_index as f32), line, BAD, UiFont::Medium, 15.0, TextAlign::Center);
+            for (line_index, line) in UiFont::Medium
+                .wrap(error, ctx.scale.px(15.0), width)
+                .iter()
+                .enumerate()
+            {
+                ctx.text(
+                    (
+                        panel.x + panel.width * 0.5,
+                        y + px(20.0) * line_index as f32,
+                    ),
+                    line,
+                    BAD,
+                    UiFont::Medium,
+                    15.0,
+                    TextAlign::Center,
+                );
             }
         }
-        ctx.button(UiRect::new(px(20.0), h - px(54.0), px(110.0), px(34.0)), "Quit", ButtonKind::Secondary, &Hit::Quit, true);
+        ctx.button(
+            UiRect::new(px(20.0), h - px(54.0), px(110.0), px(34.0)),
+            "Quit",
+            ButtonKind::Secondary,
+            &Hit::Quit,
+            true,
+        );
     }
 
     fn draw_field(&self, ctx: &mut Painter<'_>, id: FieldId, rect: UiRect, field: &TextField) {
         let scale = ctx.scale;
-    let px = move |v: f32| scale.px(v);
+        let px = move |v: f32| scale.px(v);
         let focused = self.focus == Some(id);
         ctx.list.panel(rect, px(6.0), FIELD, FIELD);
-        ctx.list.panel_stroke(rect, px(6.0), px(if focused { 2.0 } else { 1.0 }), if focused { GOLD } else { [0.30, 0.32, 0.38, 1.0] });
+        ctx.list.panel_stroke(
+            rect,
+            px(6.0),
+            px(if focused { 2.0 } else { 1.0 }),
+            if focused {
+                GOLD
+            } else {
+                [0.30, 0.32, 0.38, 1.0]
+            },
+        );
         let size = 18.0;
         let baseline_top = rect.y + (rect.height - UiFont::Regular.line_height(px(size))) * 0.5;
         let shown = field.display();
-        ctx.list.label((rect.x + px(14.0), baseline_top), &shown, TEXT, UiFont::Regular, px(size), TextAlign::Left);
+        ctx.list.label(
+            (rect.x + px(14.0), baseline_top),
+            &shown,
+            TEXT,
+            UiFont::Regular,
+            px(size),
+            TextAlign::Left,
+        );
         if focused && (self.clock * 2.0).fract() < 0.6 {
-            let caret_x = rect.x + px(14.0) + UiFont::Regular.width(&field.display_before_caret(), px(size));
-            ctx.list.rect(UiRect::new(caret_x, rect.y + px(10.0), px(2.0), rect.height - px(20.0)), GOLD);
+            let caret_x =
+                rect.x + px(14.0) + UiFont::Regular.width(&field.display_before_caret(), px(size));
+            ctx.list.rect(
+                UiRect::new(caret_x, rect.y + px(10.0), px(2.0), rect.height - px(20.0)),
+                GOLD,
+            );
         }
     }
 }
@@ -806,11 +1043,28 @@ struct Painter<'a> {
 }
 
 impl Painter<'_> {
-    fn text(&mut self, origin: (f32, f32), text: &str, color: UiColor, font: UiFont, size: f32, align: TextAlign) {
-        self.list.label(origin, text, color, font, self.scale.px(size), align);
+    fn text(
+        &mut self,
+        origin: (f32, f32),
+        text: &str,
+        color: UiColor,
+        font: UiFont,
+        size: f32,
+        align: TextAlign,
+    ) {
+        self.list
+            .label(origin, text, color, font, self.scale.px(size), align);
     }
 
-    fn text_styled(&mut self, origin: (f32, f32), text: &str, color: UiColor, font: UiFont, size: f32, align: TextAlign) {
+    fn text_styled(
+        &mut self,
+        origin: (f32, f32),
+        text: &str,
+        color: UiColor,
+        font: UiFont,
+        size: f32,
+        align: TextAlign,
+    ) {
         let px = self.scale.px(1.0);
         self.list.styled_label(
             origin,
@@ -825,7 +1079,8 @@ impl Painter<'_> {
 
     fn panel(&mut self, rect: UiRect) {
         let px = self.scale.px(1.0);
-        self.list.shadow(rect, 12.0 * px, 24.0 * px, [0.0, 0.0, 0.0, 0.55]);
+        self.list
+            .shadow(rect, 12.0 * px, 24.0 * px, [0.0, 0.0, 0.0, 0.55]);
         self.list.panel(rect, 12.0 * px, PANEL_TOP, PANEL_BOTTOM);
         self.list.panel_stroke(rect, 12.0 * px, 1.5 * px, GOLD_EDGE);
     }
@@ -841,9 +1096,17 @@ impl Painter<'_> {
             (_, false) => ([0.13, 0.13, 0.15, 1.0], [0.10, 0.10, 0.12, 1.0], FAINT),
             (ButtonKind::Primary, true) => {
                 if hovered {
-                    ([0.72, 0.52, 0.18, 1.0], [0.50, 0.33, 0.09, 1.0], [1.0, 0.97, 0.88, 1.0])
+                    (
+                        [0.72, 0.52, 0.18, 1.0],
+                        [0.50, 0.33, 0.09, 1.0],
+                        [1.0, 0.97, 0.88, 1.0],
+                    )
                 } else {
-                    ([0.58, 0.40, 0.13, 1.0], [0.40, 0.26, 0.07, 1.0], [1.0, 0.95, 0.84, 1.0])
+                    (
+                        [0.58, 0.40, 0.13, 1.0],
+                        [0.40, 0.26, 0.07, 1.0],
+                        [1.0, 0.95, 0.84, 1.0],
+                    )
                 }
             }
             (ButtonKind::Secondary, true) => {
@@ -862,19 +1125,40 @@ impl Painter<'_> {
             }
         };
         if hovered {
-            self.list.glow(rect, 8.0 * px, 10.0 * px, [0.96, 0.78, 0.40, 0.18]);
+            self.list
+                .glow(rect, 8.0 * px, 10.0 * px, [0.96, 0.78, 0.40, 0.18]);
         }
         self.list.panel(rect, 8.0 * px, top, bottom);
-        self.list.panel_stroke(rect, 8.0 * px, 1.0 * px, [1.0, 0.9, 0.7, if enabled { 0.25 } else { 0.08 }]);
+        self.list.panel_stroke(
+            rect,
+            8.0 * px,
+            1.0 * px,
+            [1.0, 0.9, 0.7, if enabled { 0.25 } else { 0.08 }],
+        );
         let size = 17.0;
-        let top_y = rect.y + (rect.height - UiFont::SemiBold.line_height(self.scale.px(size))) * 0.5;
-        self.text((rect.x + rect.width * 0.5, top_y), label, text, UiFont::SemiBold, size, TextAlign::Center);
+        let top_y =
+            rect.y + (rect.height - UiFont::SemiBold.line_height(self.scale.px(size))) * 0.5;
+        self.text(
+            (rect.x + rect.width * 0.5, top_y),
+            label,
+            text,
+            UiFont::SemiBold,
+            size,
+            TextAlign::Center,
+        );
     }
 
     fn link(&mut self, rect: UiRect, label: &str, hit: &Hit) {
         let color = if self.is_hovered(hit) { GOLD } else { DIM };
         let top_y = rect.y + (rect.height - UiFont::Medium.line_height(self.scale.px(16.0))) * 0.5;
-        self.text((rect.x + rect.width * 0.5, top_y), label, color, UiFont::Medium, 16.0, TextAlign::Center);
+        self.text(
+            (rect.x + rect.width * 0.5, top_y),
+            label,
+            color,
+            UiFont::Medium,
+            16.0,
+            TextAlign::Center,
+        );
     }
 
     fn top_bar(&mut self, view: &FrontEndView, w: f32) {
@@ -883,21 +1167,55 @@ impl Painter<'_> {
         if let Some((level, text)) = &view.connection {
             let dot = (px(28.0), px(35.0));
             self.list.disc(dot, px(6.0), status_color(*level));
-            self.text((px(44.0), px(25.0)), text, DIM, UiFont::Medium, 15.0, TextAlign::Left);
+            self.text(
+                (px(44.0), px(25.0)),
+                text,
+                DIM,
+                UiFont::Medium,
+                15.0,
+                TextAlign::Left,
+            );
         }
         if let Some(account) = &view.account
             && !matches!(view.screen, Screen::Login | Screen::InWorld)
         {
-            self.text((w - px(160.0), px(25.0)), account, TEXT, UiFont::SemiBold, 16.0, TextAlign::Right);
-            self.button(UiRect::new(w - px(140.0), px(18.0), px(120.0), px(34.0)), "Log Out", ButtonKind::Secondary, &Hit::Logout, true);
+            self.text(
+                (w - px(160.0), px(25.0)),
+                account,
+                TEXT,
+                UiFont::SemiBold,
+                16.0,
+                TextAlign::Right,
+            );
+            self.button(
+                UiRect::new(w - px(140.0), px(18.0), px(120.0), px(34.0)),
+                "Log Out",
+                ButtonKind::Secondary,
+                &Hit::Logout,
+                true,
+            );
         }
     }
 
     fn heading(&mut self, title: &str, subtitle: &str, w: f32) {
         let scale = self.scale;
         let px = move |v: f32| scale.px(v);
-        self.text_styled((w * 0.5, px(70.0)), title, GOLD, UiFont::Display, 36.0, TextAlign::Center);
-        self.text((w * 0.5, px(122.0)), subtitle, DIM, UiFont::Regular, 17.0, TextAlign::Center);
+        self.text_styled(
+            (w * 0.5, px(70.0)),
+            title,
+            GOLD,
+            UiFont::Display,
+            36.0,
+            TextAlign::Center,
+        );
+        self.text(
+            (w * 0.5, px(122.0)),
+            subtitle,
+            DIM,
+            UiFont::Regular,
+            17.0,
+            TextAlign::Center,
+        );
     }
 
     fn banner(&mut self, text: &str, level: StatusLevel, w: f32, y: f32) {
@@ -905,23 +1223,62 @@ impl Painter<'_> {
         let px = move |v: f32| scale.px(v);
         let width = UiFont::Medium.width(text, px(16.0)) + px(48.0);
         let rect = UiRect::new((w - width) * 0.5, y, width, px(40.0));
-        self.list.panel(rect, px(8.0), [0.08, 0.06, 0.07, 0.95], [0.05, 0.04, 0.05, 0.95]);
-        self.list.panel_stroke(rect, px(8.0), px(1.5), status_color(level));
+        self.list.panel(
+            rect,
+            px(8.0),
+            [0.08, 0.06, 0.07, 0.95],
+            [0.05, 0.04, 0.05, 0.95],
+        );
+        self.list
+            .panel_stroke(rect, px(8.0), px(1.5), status_color(level));
         let top_y = rect.y + (rect.height - UiFont::Medium.line_height(px(16.0))) * 0.5;
-        self.text((w * 0.5, top_y), text, TEXT, UiFont::Medium, 16.0, TextAlign::Center);
+        self.text(
+            (w * 0.5, top_y),
+            text,
+            TEXT,
+            UiFont::Medium,
+            16.0,
+            TextAlign::Center,
+        );
     }
 
     fn reconnecting(&mut self, text: &str, w: f32, h: f32, clock: f32) {
         let scale = self.scale;
         let px = move |v: f32| scale.px(v);
-        self.list.rect(UiRect::new(0.0, 0.0, w, h), [0.0, 0.0, 0.0, 0.55]);
+        self.list
+            .rect(UiRect::new(0.0, 0.0, w, h), [0.0, 0.0, 0.0, 0.55]);
         let panel = centered(w, h, px(520.0), px(170.0));
         self.panel(panel);
-        self.text((w * 0.5, panel.y + px(28.0)), "Connection lost", BAD, UiFont::Display, 28.0, TextAlign::Center);
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, reason = "a small animation phase")]
+        self.text(
+            (w * 0.5, panel.y + px(28.0)),
+            "Connection lost",
+            BAD,
+            UiFont::Display,
+            28.0,
+            TextAlign::Center,
+        );
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "a small animation phase"
+        )]
         let dots = ".".repeat(((clock * 2.0) as usize % 3) + 1);
-        self.text((w * 0.5, panel.y + px(84.0)), &format!("{text}{dots}"), TEXT, UiFont::Medium, 18.0, TextAlign::Center);
-        self.text((w * 0.5, panel.y + px(118.0)), "Your character is safe. The party is waiting for you.", DIM, UiFont::Regular, 15.0, TextAlign::Center);
+        self.text(
+            (w * 0.5, panel.y + px(84.0)),
+            &format!("{text}{dots}"),
+            TEXT,
+            UiFont::Medium,
+            18.0,
+            TextAlign::Center,
+        );
+        self.text(
+            (w * 0.5, panel.y + px(118.0)),
+            "Your character is safe. The party is waiting for you.",
+            DIM,
+            UiFont::Regular,
+            15.0,
+            TextAlign::Center,
+        );
     }
 
     fn role_chip(&mut self, role: Role, x: f32, y: f32) -> f32 {
@@ -930,16 +1287,33 @@ impl Painter<'_> {
         let width = UiFont::SemiBold.width(role.name(), px(13.0)) + px(18.0);
         let rect = UiRect::new(x, y, width, px(22.0));
         let color = role_color(role);
-        self.list.panel(rect, px(11.0), [color[0] * 0.35, color[1] * 0.35, color[2] * 0.35, 0.95], [color[0] * 0.22, color[1] * 0.22, color[2] * 0.22, 0.95]);
+        self.list.panel(
+            rect,
+            px(11.0),
+            [color[0] * 0.35, color[1] * 0.35, color[2] * 0.35, 0.95],
+            [color[0] * 0.22, color[1] * 0.22, color[2] * 0.22, 0.95],
+        );
         self.list.panel_stroke(rect, px(11.0), px(1.0), color);
-        self.text((rect.x + width * 0.5, rect.y + px(2.0)), role.name(), color, UiFont::SemiBold, 13.0, TextAlign::Center);
+        self.text(
+            (rect.x + width * 0.5, rect.y + px(2.0)),
+            role.name(),
+            color,
+            UiFont::SemiBold,
+            13.0,
+            TextAlign::Center,
+        );
         width
     }
 }
 
 /// The in-world "Leave Party" control: under the minimap, clear of the HUD's top-right buttons.
 fn in_world_leave(w: f32, scale: UiScale) -> UiRect {
-    UiRect::new(w - scale.px(160.0), scale.px(360.0), scale.px(140.0), scale.px(32.0))
+    UiRect::new(
+        w - scale.px(160.0),
+        scale.px(360.0),
+        scale.px(140.0),
+        scale.px(32.0),
+    )
 }
 
 fn centered(w: f32, h: f32, width: f32, height: f32) -> UiRect {
@@ -992,7 +1366,12 @@ fn dungeon_panels(w: f32, h: f32, scale: UiScale) -> (UiRect, UiRect) {
     let left = (w - total) * 0.5;
     (
         UiRect::new(left, top, total * 0.36, height),
-        UiRect::new(left + total * 0.36 + px(24.0), top, total * 0.64 - px(24.0), height),
+        UiRect::new(
+            left + total * 0.36 + px(24.0),
+            top,
+            total * 0.64 - px(24.0),
+            height,
+        ),
     )
 }
 
@@ -1003,22 +1382,45 @@ fn role_tiles(w: f32, h: f32, scale: UiScale) -> Vec<UiRect> {
     let total = tile.0 * 3.0 + gap * 2.0;
     let top = (h - tile.1) * 0.5;
     (0..3)
-        .map(|i| UiRect::new((w - total) * 0.5 + i as f32 * (tile.0 + gap), top, tile.0, tile.1))
+        .map(|i| {
+            UiRect::new(
+                (w - total) * 0.5 + i as f32 * (tile.0 + gap),
+                top,
+                tile.0,
+                tile.1,
+            )
+        })
         .collect()
 }
 
 fn member_row(panel: UiRect, index: usize, scale: UiScale) -> UiRect {
     let px = |v: f32| scale.px(v);
-    UiRect::new(panel.x + px(30.0), panel.y + px(100.0) + index as f32 * px(76.0), panel.width - px(60.0), px(64.0))
+    UiRect::new(
+        panel.x + px(30.0),
+        panel.y + px(100.0) + index as f32 * px(76.0),
+        panel.width - px(60.0),
+        px(64.0),
+    )
 }
 
 fn draw_characters(ctx: &mut Painter<'_>, view: &FrontEndView, w: f32, h: f32) {
     let scale = ctx.scale;
     let px = move |v: f32| scale.px(v);
-    ctx.heading("CHOOSE YOUR CHARACTER", "Your progress, gear and talents travel with each character.", w);
+    ctx.heading(
+        "CHOOSE YOUR CHARACTER",
+        "Your progress, gear and talents travel with each character.",
+        w,
+    );
     if view.characters.is_empty() {
         let text = view.busy.as_deref().unwrap_or("Loading characters...");
-        ctx.text((w * 0.5, h * 0.5), text, DIM, UiFont::Medium, 18.0, TextAlign::Center);
+        ctx.text(
+            (w * 0.5, h * 0.5),
+            text,
+            DIM,
+            UiFont::Medium,
+            18.0,
+            TextAlign::Center,
+        );
     }
     for (index, (card, rect)) in view
         .characters
@@ -1029,21 +1431,61 @@ fn draw_characters(ctx: &mut Painter<'_>, view: &FrontEndView, w: f32, h: f32) {
         let selected = view.selected_character == Some(index);
         let hovered = ctx.is_hovered(&Hit::Character(index));
         if selected {
-            ctx.list.glow(rect, px(14.0), px(18.0), [0.96, 0.78, 0.40, 0.30]);
+            ctx.list
+                .glow(rect, px(14.0), px(18.0), [0.96, 0.78, 0.40, 0.30]);
         }
-        ctx.list.panel(rect, px(14.0), if hovered { [0.15, 0.16, 0.21, 0.98] } else { PANEL_TOP }, PANEL_BOTTOM);
-        ctx.list.panel_stroke(rect, px(14.0), px(if selected { 2.5 } else { 1.0 }), if selected { SELECTED } else { GOLD_EDGE });
+        ctx.list.panel(
+            rect,
+            px(14.0),
+            if hovered {
+                [0.15, 0.16, 0.21, 0.98]
+            } else {
+                PANEL_TOP
+            },
+            PANEL_BOTTOM,
+        );
+        ctx.list.panel_stroke(
+            rect,
+            px(14.0),
+            px(if selected { 2.5 } else { 1.0 }),
+            if selected { SELECTED } else { GOLD_EDGE },
+        );
         let cx = rect.x + rect.width * 0.5;
         // A crest: the class initial in a ring.
         let crest = (cx, rect.y + px(78.0));
         ctx.list.disc(crest, px(46.0), [0.20, 0.17, 0.12, 1.0]);
         ctx.list.disc(crest, px(42.0), [0.08, 0.08, 0.11, 1.0]);
         let initial: String = card.class.chars().take(1).collect();
-        ctx.text_styled((cx, crest.1 - px(26.0)), &initial, GOLD, UiFont::Display, 40.0, TextAlign::Center);
-        ctx.text_styled((cx, rect.y + px(140.0)), &card.name, TEXT, UiFont::SemiBold, 24.0, TextAlign::Center);
-        ctx.text((cx, rect.y + px(176.0)), &format!("Level {} {}", card.level, card.class), DIM, UiFont::Medium, 16.0, TextAlign::Center);
+        ctx.text_styled(
+            (cx, crest.1 - px(26.0)),
+            &initial,
+            GOLD,
+            UiFont::Display,
+            40.0,
+            TextAlign::Center,
+        );
+        ctx.text_styled(
+            (cx, rect.y + px(140.0)),
+            &card.name,
+            TEXT,
+            UiFont::SemiBold,
+            24.0,
+            TextAlign::Center,
+        );
+        ctx.text(
+            (cx, rect.y + px(176.0)),
+            &format!("Level {} {}", card.level, card.class),
+            DIM,
+            UiFont::Medium,
+            16.0,
+            TextAlign::Center,
+        );
         // Role chips, centred.
-        let widths: f32 = card.roles.iter().map(|r| UiFont::SemiBold.width(r.name(), px(13.0)) + px(18.0)).sum::<f32>()
+        let widths: f32 = card
+            .roles
+            .iter()
+            .map(|r| UiFont::SemiBold.width(r.name(), px(13.0)) + px(18.0))
+            .sum::<f32>()
             + px(8.0) * card.roles.len().saturating_sub(1) as f32;
         let mut x = cx - widths * 0.5;
         for role in &card.roles {
@@ -1051,53 +1493,175 @@ fn draw_characters(ctx: &mut Painter<'_>, view: &FrontEndView, w: f32, h: f32) {
         }
         // Stats.
         let line = |ctx: &mut Painter<'_>, y: f32, label: &str, value: &str| {
-            ctx.text((rect.x + px(28.0), y), label, DIM, UiFont::Medium, 15.0, TextAlign::Left);
-            ctx.text((rect.right() - px(28.0), y), value, TEXT, UiFont::SemiBold, 15.0, TextAlign::Right);
+            ctx.text(
+                (rect.x + px(28.0), y),
+                label,
+                DIM,
+                UiFont::Medium,
+                15.0,
+                TextAlign::Left,
+            );
+            ctx.text(
+                (rect.right() - px(28.0), y),
+                value,
+                TEXT,
+                UiFont::SemiBold,
+                15.0,
+                TextAlign::Right,
+            );
         };
-        line(ctx, rect.y + px(256.0), "Gear Score", &card.gear_score.to_string());
-        line(ctx, rect.y + px(284.0), "Equipment", &format!("{} / 15 slots", card.equipped));
+        line(
+            ctx,
+            rect.y + px(256.0),
+            "Gear Score",
+            &card.gear_score.to_string(),
+        );
+        line(
+            ctx,
+            rect.y + px(284.0),
+            "Equipment",
+            &format!("{} / 15 slots", card.equipped),
+        );
         // Experience bar.
-        let bar = UiRect::new(rect.x + px(28.0), rect.y + px(326.0), rect.width - px(56.0), px(10.0));
-        #[allow(clippy::cast_precision_loss, reason = "experience values are far below 2^24")]
-        let fraction = if card.next_level == 0 { 1.0 } else { card.experience as f32 / card.next_level as f32 };
-        ctx.list.panel(bar, px(5.0), [0.05, 0.05, 0.07, 1.0], [0.05, 0.05, 0.07, 1.0]);
-        ctx.list.panel(bar.fraction_of_width(fraction.clamp(0.0, 1.0)), px(5.0), [0.55, 0.40, 0.95, 1.0], [0.38, 0.26, 0.75, 1.0]);
-        let xp = if card.next_level == 0 { "Max level".to_owned() } else { format!("{} / {} XP", card.experience, card.next_level) };
-        ctx.text((cx, rect.y + px(342.0)), &xp, FAINT, UiFont::Medium, 13.0, TextAlign::Center);
+        let bar = UiRect::new(
+            rect.x + px(28.0),
+            rect.y + px(326.0),
+            rect.width - px(56.0),
+            px(10.0),
+        );
+        #[allow(
+            clippy::cast_precision_loss,
+            reason = "experience values are far below 2^24"
+        )]
+        let fraction = if card.next_level == 0 {
+            1.0
+        } else {
+            card.experience as f32 / card.next_level as f32
+        };
+        ctx.list.panel(
+            bar,
+            px(5.0),
+            [0.05, 0.05, 0.07, 1.0],
+            [0.05, 0.05, 0.07, 1.0],
+        );
+        ctx.list.panel(
+            bar.fraction_of_width(fraction.clamp(0.0, 1.0)),
+            px(5.0),
+            [0.55, 0.40, 0.95, 1.0],
+            [0.38, 0.26, 0.75, 1.0],
+        );
+        let xp = if card.next_level == 0 {
+            "Max level".to_owned()
+        } else {
+            format!("{} / {} XP", card.experience, card.next_level)
+        };
+        ctx.text(
+            (cx, rect.y + px(342.0)),
+            &xp,
+            FAINT,
+            UiFont::Medium,
+            13.0,
+            TextAlign::Center,
+        );
     }
     let (_, next) = footer_buttons(w, h, ctx.scale);
-    ctx.button(next, "Enter World", ButtonKind::Primary, &Hit::Continue, view.selected_character.is_some());
+    ctx.button(
+        next,
+        "Enter World",
+        ButtonKind::Primary,
+        &Hit::Continue,
+        view.selected_character.is_some(),
+    );
 }
 
 fn draw_dungeons(ctx: &mut Painter<'_>, view: &FrontEndView, w: f32, h: f32) {
     let scale = ctx.scale;
     let px = move |v: f32| scale.px(v);
-    ctx.heading("DUNGEON FINDER", "Choose a dungeon. The realm finds a Tank, a Healer and a DPS of similar gear.", w);
+    ctx.heading(
+        "DUNGEON FINDER",
+        "Choose a dungeon. The realm finds a Tank, a Healer and a DPS of similar gear.",
+        w,
+    );
     let (list, detail) = dungeon_panels(w, h, ctx.scale);
     ctx.panel(list);
-    ctx.text((list.x + px(20.0), list.y + px(18.0)), "DUNGEONS", GOLD, UiFont::SemiBold, 17.0, TextAlign::Left);
-    let character_gs = view.selected_character.and_then(|i| view.characters.get(i)).map(|c| (c.level, c.gear_score));
+    ctx.text(
+        (list.x + px(20.0), list.y + px(18.0)),
+        "DUNGEONS",
+        GOLD,
+        UiFont::SemiBold,
+        17.0,
+        TextAlign::Left,
+    );
+    let character_gs = view
+        .selected_character
+        .and_then(|i| view.characters.get(i))
+        .map(|c| (c.level, c.gear_score));
     for (index, dungeon) in view.dungeons.iter().enumerate() {
-        let row = UiRect::new(list.x + px(12.0), list.y + px(64.0) + px(74.0) * index as f32, list.width - px(24.0), px(64.0));
+        let row = UiRect::new(
+            list.x + px(12.0),
+            list.y + px(64.0) + px(74.0) * index as f32,
+            list.width - px(24.0),
+            px(64.0),
+        );
         let selected = view.selected_dungeon == Some(index);
         let hovered = ctx.is_hovered(&Hit::Dungeon(index));
-        let fill = if selected { [0.22, 0.18, 0.11, 1.0] } else if hovered { [0.15, 0.16, 0.21, 1.0] } else { [0.09, 0.10, 0.13, 1.0] };
+        let fill = if selected {
+            [0.22, 0.18, 0.11, 1.0]
+        } else if hovered {
+            [0.15, 0.16, 0.21, 1.0]
+        } else {
+            [0.09, 0.10, 0.13, 1.0]
+        };
         ctx.list.panel(row, px(8.0), fill, fill);
         if selected {
             ctx.list.panel_stroke(row, px(8.0), px(1.5), SELECTED);
         }
-        ctx.text((row.x + px(16.0), row.y + px(10.0)), &dungeon.name, TEXT, UiFont::SemiBold, 18.0, TextAlign::Left);
-        let meta = format!("{} | Levels {}-{}", dungeon.difficulty, dungeon.levels.0, dungeon.levels.1);
-        ctx.text((row.x + px(16.0), row.y + px(36.0)), &meta, DIM, UiFont::Medium, 14.0, TextAlign::Left);
+        ctx.text(
+            (row.x + px(16.0), row.y + px(10.0)),
+            &dungeon.name,
+            TEXT,
+            UiFont::SemiBold,
+            18.0,
+            TextAlign::Left,
+        );
+        let meta = format!(
+            "{} | Levels {}-{}",
+            dungeon.difficulty, dungeon.levels.0, dungeon.levels.1
+        );
+        ctx.text(
+            (row.x + px(16.0), row.y + px(36.0)),
+            &meta,
+            DIM,
+            UiFont::Medium,
+            14.0,
+            TextAlign::Left,
+        );
     }
     ctx.panel(detail);
     if let Some(dungeon) = view.selected_dungeon.and_then(|i| view.dungeons.get(i)) {
         let x = detail.x + px(32.0);
         let width = detail.width - px(64.0);
         let mut y = detail.y + px(26.0);
-        ctx.text_styled((x, y), &dungeon.name, GOLD, UiFont::Display, 32.0, TextAlign::Left);
+        ctx.text_styled(
+            (x, y),
+            &dungeon.name,
+            GOLD,
+            UiFont::Display,
+            32.0,
+            TextAlign::Left,
+        );
         y += px(54.0);
-        ctx.text((x, y), &format!("{} | Levels {}-{}", dungeon.difficulty, dungeon.levels.0, dungeon.levels.1), DIM, UiFont::Medium, 16.0, TextAlign::Left);
+        ctx.text(
+            (x, y),
+            &format!(
+                "{} | Levels {}-{}",
+                dungeon.difficulty, dungeon.levels.0, dungeon.levels.1
+            ),
+            DIM,
+            UiFont::Medium,
+            16.0,
+            TextAlign::Left,
+        );
         y += px(40.0);
         for line in UiFont::Regular.wrap(&dungeon.description, px(16.0), width) {
             ctx.text((x, y), &line, TEXT, UiFont::Regular, 16.0, TextAlign::Left);
@@ -1110,46 +1674,115 @@ fn draw_dungeons(ctx: &mut Painter<'_>, view: &FrontEndView, w: f32, h: f32) {
             _ => GOOD,
         };
         let info = [
-            ("Recommended gear score", dungeon.recommended_gear_score.to_string(), gs_color),
+            (
+                "Recommended gear score",
+                dungeon.recommended_gear_score.to_string(),
+                gs_color,
+            ),
             ("Group", "1 Tank | 1 Healer | 1 DPS".to_owned(), TEXT),
             (
                 "Searching now",
-                format!("{} Tank | {} Healer | {} DPS", dungeon.population[0], dungeon.population[1], dungeon.population[2]),
+                format!(
+                    "{} Tank | {} Healer | {} DPS",
+                    dungeon.population[0], dungeon.population[1], dungeon.population[2]
+                ),
                 TEXT,
             ),
         ];
         for (label, value, color) in info {
             ctx.text((x, y), label, DIM, UiFont::Medium, 15.0, TextAlign::Left);
-            ctx.text((x + width, y), &value, color, UiFont::SemiBold, 15.0, TextAlign::Right);
+            ctx.text(
+                (x + width, y),
+                &value,
+                color,
+                UiFont::SemiBold,
+                15.0,
+                TextAlign::Right,
+            );
             y += px(30.0);
         }
         if let Some((_, gs)) = character_gs {
-            ctx.text((x, y), "Your gear score", DIM, UiFont::Medium, 15.0, TextAlign::Left);
-            ctx.text((x + width, y), &gs.to_string(), gs_color, UiFont::SemiBold, 15.0, TextAlign::Right);
+            ctx.text(
+                (x, y),
+                "Your gear score",
+                DIM,
+                UiFont::Medium,
+                15.0,
+                TextAlign::Left,
+            );
+            ctx.text(
+                (x + width, y),
+                &gs.to_string(),
+                gs_color,
+                UiFont::SemiBold,
+                15.0,
+                TextAlign::Right,
+            );
             y += px(30.0);
         }
         y += px(14.0);
-        ctx.text((x, y), "REWARDS", GOLD, UiFont::SemiBold, 15.0, TextAlign::Left);
+        ctx.text(
+            (x, y),
+            "REWARDS",
+            GOLD,
+            UiFont::SemiBold,
+            15.0,
+            TextAlign::Left,
+        );
         y += px(28.0);
         for reward in &dungeon.rewards {
             ctx.list.disc((x + px(6.0), y + px(10.0)), px(3.0), GOLD);
-            ctx.text((x + px(18.0), y), reward, TEXT, UiFont::Regular, 15.0, TextAlign::Left);
+            ctx.text(
+                (x + px(18.0), y),
+                reward,
+                TEXT,
+                UiFont::Regular,
+                15.0,
+                TextAlign::Left,
+            );
             y += px(24.0);
         }
     } else {
-        ctx.text((detail.x + detail.width * 0.5, detail.y + detail.height * 0.5), "Select a dungeon", DIM, UiFont::Medium, 18.0, TextAlign::Center);
+        ctx.text(
+            (
+                detail.x + detail.width * 0.5,
+                detail.y + detail.height * 0.5,
+            ),
+            "Select a dungeon",
+            DIM,
+            UiFont::Medium,
+            18.0,
+            TextAlign::Center,
+        );
     }
     let (back, next) = footer_buttons(w, h, ctx.scale);
     ctx.button(back, "Back", ButtonKind::Secondary, &Hit::Back, true);
-    ctx.button(next, "Choose Role", ButtonKind::Primary, &Hit::Continue, view.selected_dungeon.is_some());
+    ctx.button(
+        next,
+        "Choose Role",
+        ButtonKind::Primary,
+        &Hit::Continue,
+        view.selected_dungeon.is_some(),
+    );
 }
 
 fn draw_roles(ctx: &mut Painter<'_>, view: &FrontEndView, w: f32, h: f32) {
     let scale = ctx.scale;
     let px = move |v: f32| scale.px(v);
     let character = view.selected_character.and_then(|i| view.characters.get(i));
-    let dungeon = view.selected_dungeon.and_then(|i| view.dungeons.get(i)).map_or("", |d| d.name.as_str());
-    ctx.heading("CHOOSE YOUR ROLE", &format!("{} | {}", character.map_or("", |c| c.name.as_str()), dungeon), w);
+    let dungeon = view
+        .selected_dungeon
+        .and_then(|i| view.dungeons.get(i))
+        .map_or("", |d| d.name.as_str());
+    ctx.heading(
+        "CHOOSE YOUR ROLE",
+        &format!(
+            "{} | {}",
+            character.map_or("", |c| c.name.as_str()),
+            dungeon
+        ),
+        w,
+    );
     let playable = character.map(|c| c.roles.clone()).unwrap_or_default();
     for (role, rect) in Role::ALL.into_iter().zip(role_tiles(w, h, ctx.scale)) {
         let can = playable.contains(&role);
@@ -1157,26 +1790,95 @@ fn draw_roles(ctx: &mut Painter<'_>, view: &FrontEndView, w: f32, h: f32) {
         let hovered = can && ctx.is_hovered(&Hit::Role(role));
         let color = role_color(role);
         if selected {
-            ctx.list.glow(rect, px(16.0), px(20.0), [color[0], color[1], color[2], 0.30]);
+            ctx.list.glow(
+                rect,
+                px(16.0),
+                px(20.0),
+                [color[0], color[1], color[2], 0.30],
+            );
         }
-        let top = if hovered { [0.16, 0.17, 0.22, 0.98] } else { PANEL_TOP };
+        let top = if hovered {
+            [0.16, 0.17, 0.22, 0.98]
+        } else {
+            PANEL_TOP
+        };
         ctx.list.panel(rect, px(16.0), top, PANEL_BOTTOM);
-        ctx.list.panel_stroke(rect, px(16.0), px(if selected { 2.5 } else { 1.0 }), if selected { color } else if can { GOLD_EDGE } else { [0.25, 0.25, 0.28, 1.0] });
+        ctx.list.panel_stroke(
+            rect,
+            px(16.0),
+            px(if selected { 2.5 } else { 1.0 }),
+            if selected {
+                color
+            } else if can {
+                GOLD_EDGE
+            } else {
+                [0.25, 0.25, 0.28, 1.0]
+            },
+        );
         let cx = rect.x + rect.width * 0.5;
-        let faded = |c: UiColor| if can { c } else { [c[0] * 0.4, c[1] * 0.4, c[2] * 0.4, 1.0] };
-        ctx.list.disc((cx, rect.y + px(90.0)), px(48.0), faded([color[0] * 0.3, color[1] * 0.3, color[2] * 0.3, 1.0]));
-        let letter = match role { Role::Tank => "T", Role::Healer => "H", Role::Dps => "D" };
-        ctx.text_styled((cx, rect.y + px(62.0)), letter, faded(color), UiFont::Display, 44.0, TextAlign::Center);
-        ctx.text_styled((cx, rect.y + px(158.0)), role.name(), faded(TEXT), UiFont::SemiBold, 26.0, TextAlign::Center);
-        let blurb = if can { role_blurb(role) } else { "Your character cannot fill this role." };
-        for (i, line) in UiFont::Regular.wrap(blurb, px(15.0), rect.width - px(48.0)).iter().enumerate() {
-            ctx.text((cx, rect.y + px(206.0) + px(22.0) * i as f32), line, if can { DIM } else { FAINT }, UiFont::Regular, 15.0, TextAlign::Center);
+        let faded = |c: UiColor| {
+            if can {
+                c
+            } else {
+                [c[0] * 0.4, c[1] * 0.4, c[2] * 0.4, 1.0]
+            }
+        };
+        ctx.list.disc(
+            (cx, rect.y + px(90.0)),
+            px(48.0),
+            faded([color[0] * 0.3, color[1] * 0.3, color[2] * 0.3, 1.0]),
+        );
+        let letter = match role {
+            Role::Tank => "T",
+            Role::Healer => "H",
+            Role::Dps => "D",
+        };
+        ctx.text_styled(
+            (cx, rect.y + px(62.0)),
+            letter,
+            faded(color),
+            UiFont::Display,
+            44.0,
+            TextAlign::Center,
+        );
+        ctx.text_styled(
+            (cx, rect.y + px(158.0)),
+            role.name(),
+            faded(TEXT),
+            UiFont::SemiBold,
+            26.0,
+            TextAlign::Center,
+        );
+        let blurb = if can {
+            role_blurb(role)
+        } else {
+            "Your character cannot fill this role."
+        };
+        for (i, line) in UiFont::Regular
+            .wrap(blurb, px(15.0), rect.width - px(48.0))
+            .iter()
+            .enumerate()
+        {
+            ctx.text(
+                (cx, rect.y + px(206.0) + px(22.0) * i as f32),
+                line,
+                if can { DIM } else { FAINT },
+                UiFont::Regular,
+                15.0,
+                TextAlign::Center,
+            );
         }
     }
     let (back, next) = footer_buttons(w, h, ctx.scale);
     ctx.button(back, "Back", ButtonKind::Secondary, &Hit::Back, true);
     let busy = view.busy.is_some();
-    ctx.button(next, if busy { "Joining..." } else { "Find Group" }, ButtonKind::Primary, &Hit::Continue, view.selected_role.is_some() && !busy);
+    ctx.button(
+        next,
+        if busy { "Joining..." } else { "Find Group" },
+        ButtonKind::Primary,
+        &Hit::Continue,
+        view.selected_role.is_some() && !busy,
+    );
 }
 
 fn draw_queue(ctx: &mut Painter<'_>, view: &FrontEndView, w: f32, h: f32, clock: f32) {
@@ -1184,14 +1886,32 @@ fn draw_queue(ctx: &mut Painter<'_>, view: &FrontEndView, w: f32, h: f32, clock:
     let px = move |v: f32| scale.px(v);
     let panel = centered(w, h, px(520.0), px(330.0));
     ctx.panel(panel);
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, reason = "a small animation phase")]
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "a small animation phase"
+    )]
     let dots = ".".repeat(((clock * 2.0) as usize % 3) + 1);
-    ctx.text_styled((w * 0.5, panel.y + px(28.0)), &format!("Searching for a group{dots}"), GOLD, UiFont::Display, 26.0, TextAlign::Center);
+    ctx.text_styled(
+        (w * 0.5, panel.y + px(28.0)),
+        &format!("Searching for a group{dots}"),
+        GOLD,
+        UiFont::Display,
+        26.0,
+        TextAlign::Center,
+    );
     // A spinner: three orbiting dots.
     let center = (w * 0.5, panel.y + px(110.0));
     for i in 0..3 {
         let angle = clock * 3.0 + i as f32 * std::f32::consts::TAU / 3.0;
-        ctx.list.disc((center.0 + angle.cos() * px(20.0), center.1 + angle.sin() * px(20.0)), px(5.0), GOLD);
+        ctx.list.disc(
+            (
+                center.0 + angle.cos() * px(20.0),
+                center.1 + angle.sin() * px(20.0),
+            ),
+            px(5.0),
+            GOLD,
+        );
     }
     if let Some(queue) = &view.queue {
         let rows = [
@@ -1199,17 +1919,45 @@ fn draw_queue(ctx: &mut Painter<'_>, view: &FrontEndView, w: f32, h: f32, clock:
             ("Character", queue.character.clone()),
             ("Role", queue.role.name().to_owned()),
             ("Time in queue", clock_text(queue.waited_seconds)),
-            ("Matchmaking range", format!("+/-{}% gear score", queue.tolerance_percent)),
+            (
+                "Matchmaking range",
+                format!("+/-{}% gear score", queue.tolerance_percent),
+            ),
         ];
         let mut y = panel.y + px(146.0);
         for (label, value) in rows {
-            ctx.text((panel.x + px(48.0), y), label, DIM, UiFont::Medium, 15.0, TextAlign::Left);
-            ctx.text((panel.right() - px(48.0), y), &value, TEXT, UiFont::SemiBold, 15.0, TextAlign::Right);
+            ctx.text(
+                (panel.x + px(48.0), y),
+                label,
+                DIM,
+                UiFont::Medium,
+                15.0,
+                TextAlign::Left,
+            );
+            ctx.text(
+                (panel.right() - px(48.0), y),
+                &value,
+                TEXT,
+                UiFont::SemiBold,
+                15.0,
+                TextAlign::Right,
+            );
             y += px(22.0);
         }
     }
-    let leave = UiRect::new(panel.x + panel.width * 0.5 - px(110.0), panel.bottom() - px(70.0), px(220.0), px(44.0));
-    ctx.button(leave, "Leave Queue", ButtonKind::Secondary, &Hit::LeaveQueue, true);
+    let leave = UiRect::new(
+        panel.x + panel.width * 0.5 - px(110.0),
+        panel.bottom() - px(70.0),
+        px(220.0),
+        px(44.0),
+    );
+    ctx.button(
+        leave,
+        "Leave Queue",
+        ButtonKind::Secondary,
+        &Hit::LeaveQueue,
+        true,
+    );
 }
 
 fn ready_label(state: ReadyState) -> (&'static str, UiColor) {
@@ -1224,32 +1972,120 @@ fn draw_ready_check(ctx: &mut Painter<'_>, view: &FrontEndView, w: f32, h: f32) 
     let scale = ctx.scale;
     let px = move |v: f32| scale.px(v);
     let panel = centered(w, h, px(560.0), px(400.0));
-    ctx.list.glow(panel, px(16.0), px(40.0), [0.96, 0.78, 0.40, 0.20]);
+    ctx.list
+        .glow(panel, px(16.0), px(40.0), [0.96, 0.78, 0.40, 0.20]);
     ctx.panel(panel);
-    ctx.text_styled((w * 0.5, panel.y + px(26.0)), "Dungeon Found!", GOLD, UiFont::Display, 34.0, TextAlign::Center);
+    ctx.text_styled(
+        (w * 0.5, panel.y + px(26.0)),
+        "Dungeon Found!",
+        GOLD,
+        UiFont::Display,
+        34.0,
+        TextAlign::Center,
+    );
     let Some(party) = &view.party else { return };
-    ctx.text((w * 0.5, panel.y + px(82.0)), &party.dungeon, TEXT, UiFont::SemiBold, 20.0, TextAlign::Center);
+    ctx.text(
+        (w * 0.5, panel.y + px(82.0)),
+        &party.dungeon,
+        TEXT,
+        UiFont::SemiBold,
+        20.0,
+        TextAlign::Center,
+    );
     let mut y = panel.y + px(132.0);
     for member in &party.members {
         let x = panel.x + px(48.0);
         ctx.role_chip(member.role, x, y);
-        let name = if member.me { format!("{} (you)", member.character) } else { member.character.clone() };
-        ctx.text((x + px(90.0), y + px(1.0)), &name, TEXT, UiFont::Medium, 17.0, TextAlign::Left);
+        let name = if member.me {
+            format!("{} (you)", member.character)
+        } else {
+            member.character.clone()
+        };
+        ctx.text(
+            (x + px(90.0), y + px(1.0)),
+            &name,
+            TEXT,
+            UiFont::Medium,
+            17.0,
+            TextAlign::Left,
+        );
         let (label, color) = ready_label(member.ready);
-        let label = if member.present { label } else { "Disconnected" };
+        let label = if member.present {
+            label
+        } else {
+            "Disconnected"
+        };
         let color = if member.present { color } else { BAD };
-        ctx.text((panel.right() - px(48.0), y + px(1.0)), label, color, UiFont::SemiBold, 17.0, TextAlign::Right);
+        ctx.text(
+            (panel.right() - px(48.0), y + px(1.0)),
+            label,
+            color,
+            UiFont::SemiBold,
+            17.0,
+            TextAlign::Right,
+        );
         y += px(40.0);
     }
-    let bar = UiRect::new(panel.x + px(48.0), panel.bottom() - px(110.0), panel.width - px(96.0), px(8.0));
-    ctx.list.panel(bar, px(4.0), [0.05, 0.05, 0.07, 1.0], [0.05, 0.05, 0.07, 1.0]);
-    ctx.list.panel(bar.fraction_of_width(party.fraction_left.clamp(0.0, 1.0)), px(4.0), GOLD, [0.7, 0.5, 0.2, 1.0]);
-    ctx.text((w * 0.5, bar.y - px(28.0)), &format!("{} s to answer", party.seconds_left), DIM, UiFont::Medium, 14.0, TextAlign::Center);
+    let bar = UiRect::new(
+        panel.x + px(48.0),
+        panel.bottom() - px(110.0),
+        panel.width - px(96.0),
+        px(8.0),
+    );
+    ctx.list.panel(
+        bar,
+        px(4.0),
+        [0.05, 0.05, 0.07, 1.0],
+        [0.05, 0.05, 0.07, 1.0],
+    );
+    ctx.list.panel(
+        bar.fraction_of_width(party.fraction_left.clamp(0.0, 1.0)),
+        px(4.0),
+        GOLD,
+        [0.7, 0.5, 0.2, 1.0],
+    );
+    ctx.text(
+        (w * 0.5, bar.y - px(28.0)),
+        &format!("{} s to answer", party.seconds_left),
+        DIM,
+        UiFont::Medium,
+        14.0,
+        TextAlign::Center,
+    );
     if party.i_answered {
-        ctx.text((w * 0.5, panel.bottom() - px(64.0)), "Waiting for the others...", DIM, UiFont::Medium, 17.0, TextAlign::Center);
+        ctx.text(
+            (w * 0.5, panel.bottom() - px(64.0)),
+            "Waiting for the others...",
+            DIM,
+            UiFont::Medium,
+            17.0,
+            TextAlign::Center,
+        );
     } else {
-        ctx.button(UiRect::new(panel.x + px(40.0), panel.bottom() - px(76.0), px(220.0), px(48.0)), "Accept", ButtonKind::Primary, &Hit::Accept, true);
-        ctx.button(UiRect::new(panel.right() - px(260.0), panel.bottom() - px(76.0), px(220.0), px(48.0)), "Decline", ButtonKind::Danger, &Hit::Decline, true);
+        ctx.button(
+            UiRect::new(
+                panel.x + px(40.0),
+                panel.bottom() - px(76.0),
+                px(220.0),
+                px(48.0),
+            ),
+            "Accept",
+            ButtonKind::Primary,
+            &Hit::Accept,
+            true,
+        );
+        ctx.button(
+            UiRect::new(
+                panel.right() - px(260.0),
+                panel.bottom() - px(76.0),
+                px(220.0),
+                px(48.0),
+            ),
+            "Decline",
+            ButtonKind::Danger,
+            &Hit::Decline,
+            true,
+        );
     }
 }
 
@@ -1259,41 +2095,154 @@ fn draw_party(ctx: &mut Painter<'_>, view: &FrontEndView, w: f32, h: f32) {
     let panel = centered(w, h, px(760.0), px(470.0));
     ctx.panel(panel);
     let Some(party) = &view.party else { return };
-    ctx.text_styled((panel.x + px(30.0), panel.y + px(24.0)), "Your Party", GOLD, UiFont::Display, 30.0, TextAlign::Left);
-    ctx.text((panel.right() - px(30.0), panel.y + px(34.0)), &party.dungeon, DIM, UiFont::SemiBold, 17.0, TextAlign::Right);
+    ctx.text_styled(
+        (panel.x + px(30.0), panel.y + px(24.0)),
+        "Your Party",
+        GOLD,
+        UiFont::Display,
+        30.0,
+        TextAlign::Left,
+    );
+    ctx.text(
+        (panel.right() - px(30.0), panel.y + px(34.0)),
+        &party.dungeon,
+        DIM,
+        UiFont::SemiBold,
+        17.0,
+        TextAlign::Right,
+    );
     for (index, member) in party.members.iter().enumerate() {
         let row = member_row(panel, index, ctx.scale);
-        let fill = if member.me { [0.15, 0.14, 0.11, 1.0] } else { [0.09, 0.10, 0.13, 1.0] };
+        let fill = if member.me {
+            [0.15, 0.14, 0.11, 1.0]
+        } else {
+            [0.09, 0.10, 0.13, 1.0]
+        };
         ctx.list.panel(row, px(10.0), fill, fill);
-        ctx.list.panel_stroke(row, px(10.0), px(1.0), if member.leader { SELECTED } else { [0.25, 0.26, 0.31, 1.0] });
-        ctx.list.disc((row.x + px(22.0), row.y + row.height * 0.5), px(6.0), if member.present { GOOD } else { BAD });
+        ctx.list.panel_stroke(
+            row,
+            px(10.0),
+            px(1.0),
+            if member.leader {
+                SELECTED
+            } else {
+                [0.25, 0.26, 0.31, 1.0]
+            },
+        );
+        ctx.list.disc(
+            (row.x + px(22.0), row.y + row.height * 0.5),
+            px(6.0),
+            if member.present { GOOD } else { BAD },
+        );
         ctx.role_chip(member.role, row.x + px(40.0), row.y + px(10.0));
         let mut name = member.character.clone();
         if member.me {
             name.push_str("  (you)");
         }
-        ctx.text((row.x + px(40.0), row.y + px(36.0)), &format!("{} | Level {} | GS {}", member.player, member.level, member.gear_score), DIM, UiFont::Medium, 14.0, TextAlign::Left);
-        ctx.text((row.x + px(140.0), row.y + px(9.0)), &name, TEXT, UiFont::SemiBold, 18.0, TextAlign::Left);
+        ctx.text(
+            (row.x + px(40.0), row.y + px(36.0)),
+            &format!(
+                "{} | Level {} | GS {}",
+                member.player, member.level, member.gear_score
+            ),
+            DIM,
+            UiFont::Medium,
+            14.0,
+            TextAlign::Left,
+        );
+        ctx.text(
+            (row.x + px(140.0), row.y + px(9.0)),
+            &name,
+            TEXT,
+            UiFont::SemiBold,
+            18.0,
+            TextAlign::Left,
+        );
         if member.leader {
             let x = row.x + px(150.0) + UiFont::SemiBold.width(&name, px(18.0)) + px(14.0);
-            ctx.text((x, row.y + px(12.0)), "LEADER", GOLD, UiFont::SemiBold, 13.0, TextAlign::Left);
+            ctx.text(
+                (x, row.y + px(12.0)),
+                "LEADER",
+                GOLD,
+                UiFont::SemiBold,
+                13.0,
+                TextAlign::Left,
+            );
         }
         if !member.present {
-            ctx.text((row.right() - px(250.0), row.y + px(22.0)), "Disconnected", BAD, UiFont::SemiBold, 15.0, TextAlign::Right);
+            ctx.text(
+                (row.right() - px(250.0), row.y + px(22.0)),
+                "Disconnected",
+                BAD,
+                UiFont::SemiBold,
+                15.0,
+                TextAlign::Right,
+            );
         }
         if party.i_lead && !member.me {
-            ctx.button(UiRect::new(row.right() - px(236.0), row.y + px(14.0), px(120.0), px(34.0)), "Make Leader", ButtonKind::Secondary, &Hit::MakeLeader(member.account_id.clone()), true);
-            ctx.button(UiRect::new(row.right() - px(106.0), row.y + px(14.0), px(90.0), px(34.0)), "Kick", ButtonKind::Danger, &Hit::Kick(member.account_id.clone()), true);
+            ctx.button(
+                UiRect::new(
+                    row.right() - px(236.0),
+                    row.y + px(14.0),
+                    px(120.0),
+                    px(34.0),
+                ),
+                "Make Leader",
+                ButtonKind::Secondary,
+                &Hit::MakeLeader(member.account_id.clone()),
+                true,
+            );
+            ctx.button(
+                UiRect::new(
+                    row.right() - px(106.0),
+                    row.y + px(14.0),
+                    px(90.0),
+                    px(34.0),
+                ),
+                "Kick",
+                ButtonKind::Danger,
+                &Hit::Kick(member.account_id.clone()),
+                true,
+            );
         }
     }
     let all_present = party.members.iter().all(|m| m.present);
     if party.i_lead {
         let busy = view.busy.is_some();
-        ctx.button(UiRect::new(panel.right() - px(260.0), panel.bottom() - px(72.0), px(220.0), px(48.0)), if busy { "Starting..." } else { "Start Dungeon" }, ButtonKind::Primary, &Hit::Start, all_present && !busy);
+        ctx.button(
+            UiRect::new(
+                panel.right() - px(260.0),
+                panel.bottom() - px(72.0),
+                px(220.0),
+                px(48.0),
+            ),
+            if busy { "Starting..." } else { "Start Dungeon" },
+            ButtonKind::Primary,
+            &Hit::Start,
+            all_present && !busy,
+        );
     } else {
-        ctx.text((panel.right() - px(40.0), panel.bottom() - px(60.0)), "Waiting for the leader to start...", DIM, UiFont::Medium, 16.0, TextAlign::Right);
+        ctx.text(
+            (panel.right() - px(40.0), panel.bottom() - px(60.0)),
+            "Waiting for the leader to start...",
+            DIM,
+            UiFont::Medium,
+            16.0,
+            TextAlign::Right,
+        );
     }
-    ctx.button(UiRect::new(panel.x + px(40.0), panel.bottom() - px(72.0), px(180.0), px(48.0)), "Leave Party", ButtonKind::Secondary, &Hit::LeaveParty, true);
+    ctx.button(
+        UiRect::new(
+            panel.x + px(40.0),
+            panel.bottom() - px(72.0),
+            px(180.0),
+            px(48.0),
+        ),
+        "Leave Party",
+        ButtonKind::Secondary,
+        &Hit::LeaveParty,
+        true,
+    );
 }
 
 fn draw_in_world(ctx: &mut Painter<'_>, view: &FrontEndView, w: f32, h: f32) {
@@ -1301,19 +2250,53 @@ fn draw_in_world(ctx: &mut Painter<'_>, view: &FrontEndView, w: f32, h: f32) {
     let px = move |v: f32| scale.px(v);
     match view.countdown {
         Some(CountdownDisplay::Seconds(n)) => {
-            ctx.text_styled((w * 0.5, h * 0.28), &n.to_string(), GOLD, UiFont::Display, 120.0, TextAlign::Center);
-            ctx.text_styled((w * 0.5, h * 0.28 + px(150.0)), "The barrier lifts soon", TEXT, UiFont::SemiBold, 22.0, TextAlign::Center);
+            ctx.text_styled(
+                (w * 0.5, h * 0.28),
+                &n.to_string(),
+                GOLD,
+                UiFont::Display,
+                120.0,
+                TextAlign::Center,
+            );
+            ctx.text_styled(
+                (w * 0.5, h * 0.28 + px(150.0)),
+                "The barrier lifts soon",
+                TEXT,
+                UiFont::SemiBold,
+                22.0,
+                TextAlign::Center,
+            );
         }
         Some(CountdownDisplay::Go) => {
-            ctx.text_styled((w * 0.5, h * 0.28), "GO!", GOLD, UiFont::Display, 120.0, TextAlign::Center);
+            ctx.text_styled(
+                (w * 0.5, h * 0.28),
+                "GO!",
+                GOLD,
+                UiFont::Display,
+                120.0,
+                TextAlign::Center,
+            );
         }
         _ => {}
     }
-    ctx.button(in_world_leave(w, ctx.scale), "Leave Party", ButtonKind::Secondary, &Hit::LeaveParty, true);
+    ctx.button(
+        in_world_leave(w, ctx.scale),
+        "Leave Party",
+        ButtonKind::Secondary,
+        &Hit::LeaveParty,
+        true,
+    );
     if let Some((level, text)) = &view.connection
         && *level != StatusLevel::Good
     {
-        ctx.text((w - px(180.0), px(366.0)), text, status_color(*level), UiFont::Medium, 14.0, TextAlign::Right);
+        ctx.text(
+            (w - px(180.0), px(366.0)),
+            text,
+            status_color(*level),
+            UiFont::Medium,
+            14.0,
+            TextAlign::Right,
+        );
     }
 }
 
@@ -1321,7 +2304,11 @@ fn draw_toasts(ctx: &mut Painter<'_>, view: &FrontEndView, w: f32, h: f32) {
     let scale = ctx.scale;
     let px = move |v: f32| scale.px(v);
     // In the world, above the action bars and clear of the unit frames at the top.
-    let mut y = if view.screen == Screen::InWorld { h - px(250.0) } else { h - px(180.0) };
+    let mut y = if view.screen == Screen::InWorld {
+        h - px(250.0)
+    } else {
+        h - px(180.0)
+    };
     for toast in view.toasts.iter().rev().take(4) {
         ctx.banner(&toast.message, toast.level, w, y);
         y -= px(48.0);
@@ -1333,8 +2320,20 @@ fn draw_toasts(ctx: &mut Painter<'_>, view: &FrontEndView, w: f32, h: f32) {
 mod tests {
     use super::*;
 
-    fn input<'a>(pointer: (f32, f32), pressed: bool, typed: &'a [char], clipboard: &'a dyn Fn() -> Option<String>) -> FrontInput<'a> {
-        FrontInput { pointer, pressed, typed, keys: FieldKeys::default(), escape: false, clipboard }
+    fn input<'a>(
+        pointer: (f32, f32),
+        pressed: bool,
+        typed: &'a [char],
+        clipboard: &'a dyn Fn() -> Option<String>,
+    ) -> FrontInput<'a> {
+        FrontInput {
+            pointer,
+            pressed,
+            typed,
+            keys: FieldKeys::default(),
+            escape: false,
+            clipboard,
+        }
     }
 
     fn center(rect: UiRect) -> (f32, f32) {
@@ -1356,11 +2355,21 @@ mod tests {
         // One character at a time, as frames would deliver them.
         let mut actions = Vec::new();
         for c in typed {
-            actions.extend(ui.update(&input((0.0, 0.0), false, &[c], &none), &view, VIEWPORT, scale(), 0.016));
+            actions.extend(ui.update(
+                &input((0.0, 0.0), false, &[c], &none),
+                &view,
+                VIEWPORT,
+                scale(),
+                0.016,
+            ));
         }
         assert_eq!(
             actions,
-            vec![FrontEndAction::Login { email: "me@x.y".into(), password: "secret".into(), remember: true }]
+            vec![FrontEndAction::Login {
+                email: "me@x.y".into(),
+                password: "secret".into(),
+                remember: true
+            }]
         );
     }
 
@@ -1380,9 +2389,20 @@ mod tests {
             ..FrontEndView::default()
         };
         let layout = ui.layout(&view, VIEWPORT, scale());
-        let accept = layout.hits.iter().find(|(hit, _)| *hit == Hit::Accept).map(|(_, r)| *r).expect("accept is laid out");
+        let accept = layout
+            .hits
+            .iter()
+            .find(|(hit, _)| *hit == Hit::Accept)
+            .map(|(_, r)| *r)
+            .expect("accept is laid out");
         let none = || None;
-        let actions = ui.update(&input(center(accept), true, &[], &none), &view, VIEWPORT, scale(), 0.016);
+        let actions = ui.update(
+            &input(center(accept), true, &[], &none),
+            &view,
+            VIEWPORT,
+            scale(),
+            0.016,
+        );
         assert_eq!(actions, vec![FrontEndAction::Accept]);
         // Drawing the same view produces commands and does not panic.
         let mut list = UiDrawList::new();
@@ -1405,14 +2425,32 @@ mod tests {
             leader,
             me,
         };
-        let mut party = PartyCard { dungeon: "Crypt".into(), members: vec![member(true, false), member(false, true)], i_lead: false, i_answered: true, seconds_left: 0, fraction_left: 0.0 };
-        let view = |party: PartyCard| FrontEndView { screen: Screen::Party, party: Some(party), ..FrontEndView::default() };
+        let mut party = PartyCard {
+            dungeon: "Crypt".into(),
+            members: vec![member(true, false), member(false, true)],
+            i_lead: false,
+            i_answered: true,
+            seconds_left: 0,
+            fraction_left: 0.0,
+        };
+        let view = |party: PartyCard| FrontEndView {
+            screen: Screen::Party,
+            party: Some(party),
+            ..FrontEndView::default()
+        };
         let hits = ui.layout(&view(party.clone()), VIEWPORT, scale()).hits;
-        assert!(!hits.iter().any(|(hit, _)| matches!(hit, Hit::Start | Hit::Kick(_) | Hit::MakeLeader(_))));
+        assert!(
+            !hits
+                .iter()
+                .any(|(hit, _)| matches!(hit, Hit::Start | Hit::Kick(_) | Hit::MakeLeader(_)))
+        );
         party.i_lead = true;
         let hits = ui.layout(&view(party), VIEWPORT, scale()).hits;
         assert!(hits.iter().any(|(hit, _)| *hit == Hit::Start));
-        assert!(hits.iter().any(|(hit, _)| *hit == Hit::Kick("other".into())));
+        assert!(
+            hits.iter()
+                .any(|(hit, _)| *hit == Hit::Kick("other".into()))
+        );
         assert!(!hits.iter().any(|(hit, _)| *hit == Hit::Kick("me".into())));
     }
 
@@ -1421,7 +2459,16 @@ mod tests {
         let ui = FrontEndUi::new();
         let view = FrontEndView {
             screen: Screen::Roles,
-            characters: vec![CharacterCard { name: "W".into(), class: "Warrior".into(), roles: vec![Role::Tank], level: 1, experience: 0, next_level: 400, gear_score: 40, equipped: 4 }],
+            characters: vec![CharacterCard {
+                name: "W".into(),
+                class: "Warrior".into(),
+                roles: vec![Role::Tank],
+                level: 1,
+                experience: 0,
+                next_level: 400,
+                gear_score: 40,
+                equipped: 4,
+            }],
             selected_character: Some(0),
             ..FrontEndView::default()
         };
@@ -1433,8 +2480,22 @@ mod tests {
     #[test]
     fn every_screen_draws() {
         let ui = FrontEndUi::new();
-        for screen in [Screen::Login, Screen::Characters, Screen::Dungeons, Screen::Roles, Screen::Queue, Screen::ReadyCheck, Screen::Party, Screen::InWorld] {
-            let view = FrontEndView { screen, reconnecting: Some("Reconnecting".into()), countdown: Some(CountdownDisplay::Seconds(3)), ..FrontEndView::default() };
+        for screen in [
+            Screen::Login,
+            Screen::Characters,
+            Screen::Dungeons,
+            Screen::Roles,
+            Screen::Queue,
+            Screen::ReadyCheck,
+            Screen::Party,
+            Screen::InWorld,
+        ] {
+            let view = FrontEndView {
+                screen,
+                reconnecting: Some("Reconnecting".into()),
+                countdown: Some(CountdownDisplay::Seconds(3)),
+                ..FrontEndView::default()
+            };
             let mut list = UiDrawList::new();
             ui.draw(&mut list, &view, VIEWPORT, scale());
             assert!(!list.is_empty(), "{screen:?} drew nothing");

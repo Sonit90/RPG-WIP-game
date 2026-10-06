@@ -122,7 +122,11 @@ pub fn matchmaking_tick(ctx: &ReducerContext, _timer: MatchmakingTimer) -> Resul
         });
         let dungeon_name = crate::level::catalog()
             .ok()
-            .and_then(|catalog| catalog.dungeon(&proposal.dungeon_id).map(|d| d.name.clone()))
+            .and_then(|catalog| {
+                catalog
+                    .dungeon(&proposal.dungeon_id)
+                    .map(|d| d.name.clone())
+            })
             .unwrap_or_else(|| proposal.dungeon_id.clone());
         for (slot, ticket) in tickets.iter().enumerate() {
             let display_name = ctx

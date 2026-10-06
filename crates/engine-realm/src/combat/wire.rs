@@ -17,13 +17,13 @@
 use engine_core::math::Vec3;
 use engine_game::ability::AbilityId;
 use engine_game::character::DefenseOutcome;
+use engine_game::combat::DamageType;
 use engine_game::enemy::{EnemyAbility, TelegraphShape};
 use engine_game::entity::EntityId;
 use engine_game::event::{AggroChange, CombatEvent, ControlKind, DamageEvent};
 use engine_game::firemage::{FireAbility, ZoneShape};
 use engine_game::sim::CastEnd;
 use engine_game::status::{StatusEnd, StatusKind};
-use engine_game::combat::DamageType;
 use serde::{Deserialize, Serialize};
 
 /// An entity, as both ends of the connection can name it.
@@ -132,9 +132,17 @@ pub enum WireTelegraph {
 /// One combat event on the wire.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "e")]
-#[allow(missing_docs, reason = "each field mirrors the CombatEvent field of the same name")]
+#[allow(
+    missing_docs,
+    reason = "each field mirrors the CombatEvent field of the same name"
+)]
 pub enum WireEvent {
-    AbilityUsed { source: EntityRef, ability: AbilityRef, targets: u32, facing: f32 },
+    AbilityUsed {
+        source: EntityRef,
+        ability: AbilityRef,
+        targets: u32,
+        facing: f32,
+    },
     Damage {
         source: EntityRef,
         target: EntityRef,
@@ -147,27 +155,125 @@ pub enum WireEvent {
         periodic: bool,
         position: [f32; 3],
     },
-    Healing { source: EntityRef, target: EntityRef, amount: f32, ability: AbilityRef },
-    StatusApplied { source: EntityRef, target: EntityRef, status: u16, duration: f32 },
-    StatusRemoved { target: EntityRef, status: u16, reason: u8 },
-    CastStarted { source: EntityRef, ability: AbilityRef, duration: f32 },
-    CastEnded { source: EntityRef, ability: AbilityRef, end: u8 },
-    Death { entity: EntityRef, killer: EntityRef },
-    ProjectileLaunched { source: EntityRef, target: EntityRef, from: [f32; 3], to: [f32; 3], ability: AbilityRef },
-    ImpactScheduled { source: EntityRef, ability: AbilityRef, position: [f32; 3], radius: f32, delay: f32 },
-    ImpactLanded { source: EntityRef, ability: AbilityRef, position: [f32; 3], radius: f32, targets: u32 },
-    AreaEffectStarted { id: u32, source: EntityRef, ability: AbilityRef, position: [f32; 3], shape: WireZone, duration: f32 },
-    AreaEffectEnded { id: u32, position: [f32; 3] },
-    TelegraphStarted { id: u32, source: EntityRef, ability: AbilityRef, anchor: [f32; 3], shape: WireTelegraph, delay: f32, follow: EntityRef },
-    TelegraphEnded { id: u32, anchor: [f32; 3], resolved: bool },
-    AttackDefended { attacker: EntityRef, defender: EntityRef, outcome: u8, ability: AbilityRef, position: [f32; 3] },
-    SpellReflected { source: EntityRef, target: EntityRef, ability: AbilityRef, amount: f32, empowered: bool },
-    ControlApplied { source: EntityRef, target: EntityRef, control: u8, seconds: f32, ability: AbilityRef },
-    Aggro { enemy: EntityRef, entity: EntityRef, change: u8 },
-    Absorbed { target: EntityRef, amount: f32, remaining: f32 },
-    DungeonProgress { credited: f32, fraction: f32 },
-    BossUnlocked { position: [f32; 3] },
-    DungeonCompleted { seconds: f32 },
+    Healing {
+        source: EntityRef,
+        target: EntityRef,
+        amount: f32,
+        ability: AbilityRef,
+    },
+    StatusApplied {
+        source: EntityRef,
+        target: EntityRef,
+        status: u16,
+        duration: f32,
+    },
+    StatusRemoved {
+        target: EntityRef,
+        status: u16,
+        reason: u8,
+    },
+    CastStarted {
+        source: EntityRef,
+        ability: AbilityRef,
+        duration: f32,
+    },
+    CastEnded {
+        source: EntityRef,
+        ability: AbilityRef,
+        end: u8,
+    },
+    Death {
+        entity: EntityRef,
+        killer: EntityRef,
+    },
+    ProjectileLaunched {
+        source: EntityRef,
+        target: EntityRef,
+        from: [f32; 3],
+        to: [f32; 3],
+        ability: AbilityRef,
+    },
+    ImpactScheduled {
+        source: EntityRef,
+        ability: AbilityRef,
+        position: [f32; 3],
+        radius: f32,
+        delay: f32,
+    },
+    ImpactLanded {
+        source: EntityRef,
+        ability: AbilityRef,
+        position: [f32; 3],
+        radius: f32,
+        targets: u32,
+    },
+    AreaEffectStarted {
+        id: u32,
+        source: EntityRef,
+        ability: AbilityRef,
+        position: [f32; 3],
+        shape: WireZone,
+        duration: f32,
+    },
+    AreaEffectEnded {
+        id: u32,
+        position: [f32; 3],
+    },
+    TelegraphStarted {
+        id: u32,
+        source: EntityRef,
+        ability: AbilityRef,
+        anchor: [f32; 3],
+        shape: WireTelegraph,
+        delay: f32,
+        follow: EntityRef,
+    },
+    TelegraphEnded {
+        id: u32,
+        anchor: [f32; 3],
+        resolved: bool,
+    },
+    AttackDefended {
+        attacker: EntityRef,
+        defender: EntityRef,
+        outcome: u8,
+        ability: AbilityRef,
+        position: [f32; 3],
+    },
+    SpellReflected {
+        source: EntityRef,
+        target: EntityRef,
+        ability: AbilityRef,
+        amount: f32,
+        empowered: bool,
+    },
+    ControlApplied {
+        source: EntityRef,
+        target: EntityRef,
+        control: u8,
+        seconds: f32,
+        ability: AbilityRef,
+    },
+    Aggro {
+        enemy: EntityRef,
+        entity: EntityRef,
+        change: u8,
+    },
+    Absorbed {
+        target: EntityRef,
+        amount: f32,
+        remaining: f32,
+    },
+    DungeonProgress {
+        credited: f32,
+        fraction: f32,
+    },
+    BossUnlocked {
+        position: [f32; 3],
+    },
+    DungeonCompleted {
+        seconds: f32,
+    },
 }
 
 /// The wire form of `event`, naming entities with `name`. `None` for events not carried.
@@ -176,9 +282,18 @@ pub enum WireEvent {
 pub fn encode(event: &CombatEvent, name: &dyn Fn(EntityId) -> EntityRef) -> Option<WireEvent> {
     let a = AbilityRef::of;
     Some(match *event {
-        CombatEvent::AbilityUsed { source, ability, targets, facing, .. } => {
-            WireEvent::AbilityUsed { source: name(source), ability: a(ability), targets, facing }
-        }
+        CombatEvent::AbilityUsed {
+            source,
+            ability,
+            targets,
+            facing,
+            ..
+        } => WireEvent::AbilityUsed {
+            source: name(source),
+            ability: a(ability),
+            targets,
+            facing,
+        },
         CombatEvent::Damage(d) => WireEvent::Damage {
             source: name(d.source),
             target: name(d.target),
@@ -191,16 +306,36 @@ pub fn encode(event: &CombatEvent, name: &dyn Fn(EntityId) -> EntityRef) -> Opti
             periodic: d.periodic,
             position: v3(d.position),
         },
-        CombatEvent::Healing { source, target, amount, ability, .. } => {
-            WireEvent::Healing { source: name(source), target: name(target), amount, ability: a(ability) }
-        }
-        CombatEvent::StatusApplied { source, target, status, duration, .. } => WireEvent::StatusApplied {
+        CombatEvent::Healing {
+            source,
+            target,
+            amount,
+            ability,
+            ..
+        } => WireEvent::Healing {
+            source: name(source),
+            target: name(target),
+            amount,
+            ability: a(ability),
+        },
+        CombatEvent::StatusApplied {
+            source,
+            target,
+            status,
+            duration,
+            ..
+        } => WireEvent::StatusApplied {
             source: name(source),
             target: name(target),
             status: status_index(status),
             duration,
         },
-        CombatEvent::StatusRemoved { target, status, reason, .. } => WireEvent::StatusRemoved {
+        CombatEvent::StatusRemoved {
+            target,
+            status,
+            reason,
+            ..
+        } => WireEvent::StatusRemoved {
             target: name(target),
             status: status_index(status),
             reason: match reason {
@@ -209,104 +344,191 @@ pub fn encode(event: &CombatEvent, name: &dyn Fn(EntityId) -> EntityRef) -> Opti
                 StatusEnd::Cleared => 2,
             },
         },
-        CombatEvent::CastStarted { source, ability, duration, .. } => {
-            WireEvent::CastStarted { source: name(source), ability: a(ability), duration }
-        }
-        CombatEvent::CastEnded { source, ability, end, .. } => WireEvent::CastEnded {
+        CombatEvent::CastStarted {
+            source,
+            ability,
+            duration,
+            ..
+        } => WireEvent::CastStarted {
+            source: name(source),
+            ability: a(ability),
+            duration,
+        },
+        CombatEvent::CastEnded {
+            source,
+            ability,
+            end,
+            ..
+        } => WireEvent::CastEnded {
             source: name(source),
             ability: a(ability),
             end: cast_end_index(end),
         },
-        CombatEvent::Death { entity, killer, .. } => WireEvent::Death { entity: name(entity), killer: name(killer) },
-        CombatEvent::ProjectileLaunched { source, target, from, to, ability, .. } => WireEvent::ProjectileLaunched {
+        CombatEvent::Death { entity, killer, .. } => WireEvent::Death {
+            entity: name(entity),
+            killer: name(killer),
+        },
+        CombatEvent::ProjectileLaunched {
+            source,
+            target,
+            from,
+            to,
+            ability,
+            ..
+        } => WireEvent::ProjectileLaunched {
             source: name(source),
             target: name(target),
             from: v3(from),
             to: v3(to),
             ability: a(ability),
         },
-        CombatEvent::ImpactScheduled { source, ability, position, radius, delay, .. } => WireEvent::ImpactScheduled {
+        CombatEvent::ImpactScheduled {
+            source,
+            ability,
+            position,
+            radius,
+            delay,
+            ..
+        } => WireEvent::ImpactScheduled {
             source: name(source),
             ability: a(ability),
             position: v3(position),
             radius,
             delay,
         },
-        CombatEvent::ImpactLanded { source, ability, position, radius, targets, .. } => WireEvent::ImpactLanded {
+        CombatEvent::ImpactLanded {
+            source,
+            ability,
+            position,
+            radius,
+            targets,
+            ..
+        } => WireEvent::ImpactLanded {
             source: name(source),
             ability: a(ability),
             position: v3(position),
             radius,
             targets,
         },
-        CombatEvent::AreaEffectStarted { id, source, ability, position, shape, duration, .. } => {
-            WireEvent::AreaEffectStarted {
-                id,
-                source: name(source),
-                ability: a(ability),
-                position: v3(position),
-                shape: match shape {
-                    ZoneShape::Circle { radius } => WireZone::Circle(radius),
-                    ZoneShape::Line { yaw, length, width } => WireZone::Line(yaw, length, width),
-                },
-                duration,
-            }
-        }
-        CombatEvent::AreaEffectEnded { id, position, .. } => WireEvent::AreaEffectEnded { id, position: v3(position) },
-        CombatEvent::TelegraphStarted { id, source, ability, anchor, shape, delay, follow, .. } => {
-            WireEvent::TelegraphStarted {
-                id,
-                source: name(source),
-                ability: a(ability),
-                anchor: v3(anchor),
-                shape: match shape {
-                    TelegraphShape::Single => WireTelegraph::Single,
-                    TelegraphShape::Circle { radius } => WireTelegraph::Circle(radius),
-                    TelegraphShape::Cone { yaw, range, half_angle } => WireTelegraph::Cone(yaw, range, half_angle),
-                    TelegraphShape::Line { yaw, length, width } => WireTelegraph::Line(yaw, length, width),
-                },
-                delay,
-                follow: follow.map_or(EntityRef::None, name),
-            }
-        }
-        CombatEvent::TelegraphEnded { id, anchor, resolved, .. } => {
-            WireEvent::TelegraphEnded { id, anchor: v3(anchor), resolved }
-        }
-        CombatEvent::AttackDefended { attacker, defender, outcome, ability, position, .. } => {
-            WireEvent::AttackDefended {
-                attacker: name(attacker),
-                defender: name(defender),
-                outcome: match outcome {
-                    DefenseOutcome::Hit => 0,
-                    DefenseOutcome::Blocked => 1,
-                    DefenseOutcome::Parried => 2,
-                    DefenseOutcome::Dodged => 3,
-                },
-                ability: a(ability),
-                position: v3(position),
-            }
-        }
-        CombatEvent::SpellReflected { source, target, ability, amount, empowered, .. } => WireEvent::SpellReflected {
+        CombatEvent::AreaEffectStarted {
+            id,
+            source,
+            ability,
+            position,
+            shape,
+            duration,
+            ..
+        } => WireEvent::AreaEffectStarted {
+            id,
+            source: name(source),
+            ability: a(ability),
+            position: v3(position),
+            shape: match shape {
+                ZoneShape::Circle { radius } => WireZone::Circle(radius),
+                ZoneShape::Line { yaw, length, width } => WireZone::Line(yaw, length, width),
+            },
+            duration,
+        },
+        CombatEvent::AreaEffectEnded { id, position, .. } => WireEvent::AreaEffectEnded {
+            id,
+            position: v3(position),
+        },
+        CombatEvent::TelegraphStarted {
+            id,
+            source,
+            ability,
+            anchor,
+            shape,
+            delay,
+            follow,
+            ..
+        } => WireEvent::TelegraphStarted {
+            id,
+            source: name(source),
+            ability: a(ability),
+            anchor: v3(anchor),
+            shape: match shape {
+                TelegraphShape::Single => WireTelegraph::Single,
+                TelegraphShape::Circle { radius } => WireTelegraph::Circle(radius),
+                TelegraphShape::Cone {
+                    yaw,
+                    range,
+                    half_angle,
+                } => WireTelegraph::Cone(yaw, range, half_angle),
+                TelegraphShape::Line { yaw, length, width } => {
+                    WireTelegraph::Line(yaw, length, width)
+                }
+            },
+            delay,
+            follow: follow.map_or(EntityRef::None, name),
+        },
+        CombatEvent::TelegraphEnded {
+            id,
+            anchor,
+            resolved,
+            ..
+        } => WireEvent::TelegraphEnded {
+            id,
+            anchor: v3(anchor),
+            resolved,
+        },
+        CombatEvent::AttackDefended {
+            attacker,
+            defender,
+            outcome,
+            ability,
+            position,
+            ..
+        } => WireEvent::AttackDefended {
+            attacker: name(attacker),
+            defender: name(defender),
+            outcome: match outcome {
+                DefenseOutcome::Hit => 0,
+                DefenseOutcome::Blocked => 1,
+                DefenseOutcome::Parried => 2,
+                DefenseOutcome::Dodged => 3,
+            },
+            ability: a(ability),
+            position: v3(position),
+        },
+        CombatEvent::SpellReflected {
+            source,
+            target,
+            ability,
+            amount,
+            empowered,
+            ..
+        } => WireEvent::SpellReflected {
             source: name(source),
             target: name(target),
             ability: a(ability),
             amount,
             empowered,
         },
-        CombatEvent::ControlApplied { source, target, control, seconds, ability, .. } => {
-            WireEvent::ControlApplied {
-                source: name(source),
-                target: name(target),
-                control: match control {
-                    ControlKind::Stun => 0,
-                    ControlKind::Silence => 1,
-                    ControlKind::Taunt => 2,
-                },
-                seconds,
-                ability: a(ability),
-            }
-        }
-        CombatEvent::Aggro { enemy, entity, change, .. } => WireEvent::Aggro {
+        CombatEvent::ControlApplied {
+            source,
+            target,
+            control,
+            seconds,
+            ability,
+            ..
+        } => WireEvent::ControlApplied {
+            source: name(source),
+            target: name(target),
+            control: match control {
+                ControlKind::Stun => 0,
+                ControlKind::Silence => 1,
+                ControlKind::Taunt => 2,
+            },
+            seconds,
+            ability: a(ability),
+        },
+        CombatEvent::Aggro {
+            enemy,
+            entity,
+            change,
+            ..
+        } => WireEvent::Aggro {
             enemy: name(enemy),
             entity: name(entity),
             change: match change {
@@ -316,11 +538,22 @@ pub fn encode(event: &CombatEvent, name: &dyn Fn(EntityId) -> EntityRef) -> Opti
                 AggroChange::Losing => 3,
             },
         },
-        CombatEvent::Absorbed { target, amount, remaining, .. } => {
-            WireEvent::Absorbed { target: name(target), amount, remaining }
-        }
-        CombatEvent::DungeonProgress { credited, fraction, .. } => WireEvent::DungeonProgress { credited, fraction },
-        CombatEvent::BossUnlocked { position, .. } => WireEvent::BossUnlocked { position: v3(position) },
+        CombatEvent::Absorbed {
+            target,
+            amount,
+            remaining,
+            ..
+        } => WireEvent::Absorbed {
+            target: name(target),
+            amount,
+            remaining,
+        },
+        CombatEvent::DungeonProgress {
+            credited, fraction, ..
+        } => WireEvent::DungeonProgress { credited, fraction },
+        CombatEvent::BossUnlocked { position, .. } => WireEvent::BossUnlocked {
+            position: v3(position),
+        },
         CombatEvent::DungeonCompleted { seconds, .. } => WireEvent::DungeonCompleted { seconds },
         _ => return None,
     })
@@ -332,7 +565,10 @@ fn cast_end_index(end: CastEnd) -> u8 {
         CastEnd::Moved => 1,
         CastEnd::Cancelled => 2,
         CastEnd::CasterDied => 3,
-        #[allow(unreachable_patterns, reason = "future cast endings travel as cancelled")]
+        #[allow(
+            unreachable_patterns,
+            reason = "future cast endings travel as cancelled"
+        )]
         _ => 2,
     }
 }
@@ -358,43 +594,74 @@ pub fn decode(
     let any = |r: &EntityRef| resolve(r).unwrap_or(EntityId::INVALID);
     let need = |r: &EntityRef| resolve(r);
     Some(match wire {
-        WireEvent::AbilityUsed { source, ability, targets, facing } => CombatEvent::AbilityUsed {
+        WireEvent::AbilityUsed {
+            source,
+            ability,
+            targets,
+            facing,
+        } => CombatEvent::AbilityUsed {
             source: need(source)?,
             ability: ability.id(),
             targets: *targets,
             facing: *facing,
             tick,
         },
-        WireEvent::Damage { source, target, amount, overkill, ability, damage_type, killed, critical, periodic, position } => {
-            CombatEvent::Damage(DamageEvent {
-                source: any(source),
-                target: need(target)?,
-                amount: *amount,
-                overkill: *overkill,
-                ability: ability.id(),
-                damage_type: DAMAGE_TYPES.get(usize::from(*damage_type)).copied().unwrap_or(DamageType::Physical),
-                killed: *killed,
-                critical: *critical,
-                periodic: *periodic,
-                position: vec(*position),
-                tick,
-            })
-        }
-        WireEvent::Healing { source, target, amount, ability } => CombatEvent::Healing {
+        WireEvent::Damage {
+            source,
+            target,
+            amount,
+            overkill,
+            ability,
+            damage_type,
+            killed,
+            critical,
+            periodic,
+            position,
+        } => CombatEvent::Damage(DamageEvent {
+            source: any(source),
+            target: need(target)?,
+            amount: *amount,
+            overkill: *overkill,
+            ability: ability.id(),
+            damage_type: DAMAGE_TYPES
+                .get(usize::from(*damage_type))
+                .copied()
+                .unwrap_or(DamageType::Physical),
+            killed: *killed,
+            critical: *critical,
+            periodic: *periodic,
+            position: vec(*position),
+            tick,
+        }),
+        WireEvent::Healing {
+            source,
+            target,
+            amount,
+            ability,
+        } => CombatEvent::Healing {
             source: any(source),
             target: need(target)?,
             amount: *amount,
             ability: ability.id(),
             tick,
         },
-        WireEvent::StatusApplied { source, target, status, duration } => CombatEvent::StatusApplied {
+        WireEvent::StatusApplied {
+            source,
+            target,
+            status,
+            duration,
+        } => CombatEvent::StatusApplied {
             source: any(source),
             target: need(target)?,
             status: status_of(*status)?,
             duration: *duration,
             tick,
         },
-        WireEvent::StatusRemoved { target, status, reason } => CombatEvent::StatusRemoved {
+        WireEvent::StatusRemoved {
+            target,
+            status,
+            reason,
+        } => CombatEvent::StatusRemoved {
             target: need(target)?,
             status: status_of(*status)?,
             reason: match reason {
@@ -404,20 +671,38 @@ pub fn decode(
             },
             tick,
         },
-        WireEvent::CastStarted { source, ability, duration } => CombatEvent::CastStarted {
+        WireEvent::CastStarted {
+            source,
+            ability,
+            duration,
+        } => CombatEvent::CastStarted {
             source: need(source)?,
             ability: ability.id(),
             duration: *duration,
             tick,
         },
-        WireEvent::CastEnded { source, ability, end } => CombatEvent::CastEnded {
+        WireEvent::CastEnded {
+            source,
+            ability,
+            end,
+        } => CombatEvent::CastEnded {
             source: need(source)?,
             ability: ability.id(),
             end: cast_end_of(*end),
             tick,
         },
-        WireEvent::Death { entity, killer } => CombatEvent::Death { entity: need(entity)?, killer: any(killer), tick },
-        WireEvent::ProjectileLaunched { source, target, from, to, ability } => CombatEvent::ProjectileLaunched {
+        WireEvent::Death { entity, killer } => CombatEvent::Death {
+            entity: need(entity)?,
+            killer: any(killer),
+            tick,
+        },
+        WireEvent::ProjectileLaunched {
+            source,
+            target,
+            from,
+            to,
+            ability,
+        } => CombatEvent::ProjectileLaunched {
             source: any(source),
             target: any(target),
             from: vec(*from),
@@ -425,7 +710,13 @@ pub fn decode(
             ability: ability.id(),
             tick,
         },
-        WireEvent::ImpactScheduled { source, ability, position, radius, delay } => CombatEvent::ImpactScheduled {
+        WireEvent::ImpactScheduled {
+            source,
+            ability,
+            position,
+            radius,
+            delay,
+        } => CombatEvent::ImpactScheduled {
             source: any(source),
             ability: ability.id(),
             position: vec(*position),
@@ -433,7 +724,13 @@ pub fn decode(
             delay: *delay,
             tick,
         },
-        WireEvent::ImpactLanded { source, ability, position, radius, targets } => CombatEvent::ImpactLanded {
+        WireEvent::ImpactLanded {
+            source,
+            ability,
+            position,
+            radius,
+            targets,
+        } => CombatEvent::ImpactLanded {
             source: any(source),
             ability: ability.id(),
             position: vec(*position),
@@ -441,57 +738,95 @@ pub fn decode(
             targets: *targets,
             tick,
         },
-        WireEvent::AreaEffectStarted { id, source, ability, position, shape, duration } => {
-            CombatEvent::AreaEffectStarted {
-                id: *id,
-                source: any(source),
-                ability: ability.id(),
-                position: vec(*position),
-                shape: match *shape {
-                    WireZone::Circle(radius) => ZoneShape::Circle { radius },
-                    WireZone::Line(yaw, length, width) => ZoneShape::Line { yaw, length, width },
+        WireEvent::AreaEffectStarted {
+            id,
+            source,
+            ability,
+            position,
+            shape,
+            duration,
+        } => CombatEvent::AreaEffectStarted {
+            id: *id,
+            source: any(source),
+            ability: ability.id(),
+            position: vec(*position),
+            shape: match *shape {
+                WireZone::Circle(radius) => ZoneShape::Circle { radius },
+                WireZone::Line(yaw, length, width) => ZoneShape::Line { yaw, length, width },
+            },
+            duration: *duration,
+            tick,
+        },
+        WireEvent::AreaEffectEnded { id, position } => CombatEvent::AreaEffectEnded {
+            id: *id,
+            position: vec(*position),
+            tick,
+        },
+        WireEvent::TelegraphStarted {
+            id,
+            source,
+            ability,
+            anchor,
+            shape,
+            delay,
+            follow,
+        } => CombatEvent::TelegraphStarted {
+            id: *id,
+            source: any(source),
+            ability: ability.id(),
+            anchor: vec(*anchor),
+            shape: match *shape {
+                WireTelegraph::Single => TelegraphShape::Single,
+                WireTelegraph::Circle(radius) => TelegraphShape::Circle { radius },
+                WireTelegraph::Cone(yaw, range, half_angle) => TelegraphShape::Cone {
+                    yaw,
+                    range,
+                    half_angle,
                 },
-                duration: *duration,
-                tick,
-            }
-        }
-        WireEvent::AreaEffectEnded { id, position } => CombatEvent::AreaEffectEnded { id: *id, position: vec(*position), tick },
-        WireEvent::TelegraphStarted { id, source, ability, anchor, shape, delay, follow } => {
-            CombatEvent::TelegraphStarted {
-                id: *id,
-                source: any(source),
-                ability: ability.id(),
-                anchor: vec(*anchor),
-                shape: match *shape {
-                    WireTelegraph::Single => TelegraphShape::Single,
-                    WireTelegraph::Circle(radius) => TelegraphShape::Circle { radius },
-                    WireTelegraph::Cone(yaw, range, half_angle) => TelegraphShape::Cone { yaw, range, half_angle },
-                    WireTelegraph::Line(yaw, length, width) => TelegraphShape::Line { yaw, length, width },
-                },
-                delay: *delay,
-                follow: resolve(follow),
-                tick,
-            }
-        }
-        WireEvent::TelegraphEnded { id, anchor, resolved } => {
-            CombatEvent::TelegraphEnded { id: *id, anchor: vec(*anchor), resolved: *resolved, tick }
-        }
-        WireEvent::AttackDefended { attacker, defender, outcome, ability, position } => {
-            CombatEvent::AttackDefended {
-                attacker: any(attacker),
-                defender: need(defender)?,
-                outcome: match outcome {
-                    1 => DefenseOutcome::Blocked,
-                    2 => DefenseOutcome::Parried,
-                    3 => DefenseOutcome::Dodged,
-                    _ => DefenseOutcome::Hit,
-                },
-                ability: ability.id(),
-                position: vec(*position),
-                tick,
-            }
-        }
-        WireEvent::SpellReflected { source, target, ability, amount, empowered } => CombatEvent::SpellReflected {
+                WireTelegraph::Line(yaw, length, width) => {
+                    TelegraphShape::Line { yaw, length, width }
+                }
+            },
+            delay: *delay,
+            follow: resolve(follow),
+            tick,
+        },
+        WireEvent::TelegraphEnded {
+            id,
+            anchor,
+            resolved,
+        } => CombatEvent::TelegraphEnded {
+            id: *id,
+            anchor: vec(*anchor),
+            resolved: *resolved,
+            tick,
+        },
+        WireEvent::AttackDefended {
+            attacker,
+            defender,
+            outcome,
+            ability,
+            position,
+        } => CombatEvent::AttackDefended {
+            attacker: any(attacker),
+            defender: need(defender)?,
+            outcome: match outcome {
+                1 => DefenseOutcome::Blocked,
+                2 => DefenseOutcome::Parried,
+                3 => DefenseOutcome::Dodged,
+                _ => DefenseOutcome::Hit,
+            },
+            ability: ability.id(),
+            position: vec(*position),
+            tick,
+        },
+        WireEvent::SpellReflected {
+            source,
+            target,
+            ability,
+            amount,
+            empowered,
+        } => CombatEvent::SpellReflected {
             source: any(source),
             target: any(target),
             ability: ability.id(),
@@ -499,7 +834,13 @@ pub fn decode(
             empowered: *empowered,
             tick,
         },
-        WireEvent::ControlApplied { source, target, control, seconds, ability } => CombatEvent::ControlApplied {
+        WireEvent::ControlApplied {
+            source,
+            target,
+            control,
+            seconds,
+            ability,
+        } => CombatEvent::ControlApplied {
             source: any(source),
             target: need(target)?,
             control: match control {
@@ -511,7 +852,11 @@ pub fn decode(
             ability: ability.id(),
             tick,
         },
-        WireEvent::Aggro { enemy, entity, change } => CombatEvent::Aggro {
+        WireEvent::Aggro {
+            enemy,
+            entity,
+            change,
+        } => CombatEvent::Aggro {
             enemy: need(enemy)?,
             entity: need(entity)?,
             change: match change {
@@ -522,7 +867,11 @@ pub fn decode(
             },
             tick,
         },
-        WireEvent::Absorbed { target, amount, remaining } => CombatEvent::Absorbed {
+        WireEvent::Absorbed {
+            target,
+            amount,
+            remaining,
+        } => CombatEvent::Absorbed {
             target: need(target)?,
             amount: *amount,
             remaining: *remaining,
@@ -533,8 +882,14 @@ pub fn decode(
             fraction: *fraction,
             tick,
         },
-        WireEvent::BossUnlocked { position } => CombatEvent::BossUnlocked { position: vec(*position), tick },
-        WireEvent::DungeonCompleted { seconds } => CombatEvent::DungeonCompleted { seconds: *seconds, tick },
+        WireEvent::BossUnlocked { position } => CombatEvent::BossUnlocked {
+            position: vec(*position),
+            tick,
+        },
+        WireEvent::DungeonCompleted { seconds } => CombatEvent::DungeonCompleted {
+            seconds: *seconds,
+            tick,
+        },
     })
 }
 
@@ -606,7 +961,10 @@ mod tests {
 
     #[test]
     fn unresolvable_targets_are_skipped() {
-        let wire = WireEvent::Death { entity: EntityRef::Monster(1), killer: EntityRef::None };
+        let wire = WireEvent::Death {
+            entity: EntityRef::Monster(1),
+            killer: EntityRef::None,
+        };
         assert!(decode(&wire, &|_| None, 0).is_none());
     }
 }

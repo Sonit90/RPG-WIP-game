@@ -45,13 +45,18 @@ async fn main() -> anyhow::Result<()> {
                 max_connections: 2,
                 min_connections: 1,
                 acquire_timeout_secs: settings.db.acquire_timeout_secs,
-            }).await?;
+            })
+            .await?;
 
             let user = create_admin_user(&db, CreateAdminArgs { email, password })
                 .await
                 .map_err(|e| anyhow::anyhow!("{e}"))?;
 
-            println!("Admin created: {} ({})", user.email.unwrap_or_default(), user.id);
+            println!(
+                "Admin created: {} ({})",
+                user.email.unwrap_or_default(),
+                user.id
+            );
             Ok(())
         }
     }
