@@ -350,7 +350,7 @@ impl Druid {
     /// Mana one cast of an ability costs.
     #[must_use]
     pub fn mana_cost(ability: crate::firemage::FireAbility) -> f32 {
-        ability.definition().druid.mana_cost
+        ability.definition().druid().mana_cost
     }
 
     /// Advances everything the Druid owns that is a clock.

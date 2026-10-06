@@ -366,7 +366,7 @@ mod tests {
             }
         }
     }
-    use crate::firemage::{ABILITIES, ABILITY_SLOTS};
+    use crate::firemage::{ABILITIES, ABILITY_SLOTS, FireMageRow};
 
     #[test]
     fn every_hero_round_trips_through_its_index_and_its_written_name() {
@@ -412,14 +412,13 @@ mod tests {
     #[test]
     fn the_other_two_heroes_generate_no_heat_and_no_ignite() {
         // What makes them different classes rather than a mage with different names: their
-        // rows generate nothing the FireMage's resources are made of. This is data, not a
-        // branch in the executor, and this test is what keeps it that way.
+        // rows carry no FireMage columns at all, so they cannot generate Heat, apply Ignite or
+        // cost Energy. The type holds that; this pins each hero's rows to its own class.
         for hero in [Hero::Warrior, Hero::Druid] {
             for ability in hero.abilities() {
                 let definition = &ABILITIES[ability.index()];
-                assert_eq!(definition.heat, 0.0, "{ability:?} generates Heat");
-                assert_eq!(definition.ignite_stacks, 0, "{ability:?} applies Ignite");
-                assert_eq!(definition.energy_cost, 0.0, "{ability:?} costs energy");
+                assert_eq!(definition.hero(), hero, "{ability:?}");
+                assert_eq!(*definition.fire(), FireMageRow::NONE, "{ability:?}");
             }
         }
         assert_eq!(Hero::Druid.abilities().len(), 13);

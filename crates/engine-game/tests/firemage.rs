@@ -786,7 +786,10 @@ fn the_ultimate_is_switched_off_but_still_exists() {
         Err(engine_game::firemage::AbilityError::UltimateDisabled)
     );
     // The architecture is untouched: the ability, its cost and its resource are all here.
-    assert_eq!(FireAbility::Cataclysm.definition().energy_cost, 100.0);
+    assert_eq!(
+        FireAbility::Cataclysm.definition().fire().energy_cost,
+        100.0
+    );
     assert!(simulation.mage().energy.is_full());
 }
 

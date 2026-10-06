@@ -182,7 +182,7 @@ fn mana_is_paid_by_the_heals_and_never_by_wrath() {
 
     cast_through(&mut simulation, FireAbility::Wrath);
     assert!(simulation.druid().mana.current() >= full, "wrath cost mana");
-    assert_eq!(FireAbility::Wrath.definition().druid.mana_cost, 0.0);
+    assert_eq!(FireAbility::Wrath.definition().druid().mana_cost, 0.0);
 
     simulation.player_mut().target = Some(healing_dummy(&simulation));
     simulation.step_many(60);
@@ -243,7 +243,7 @@ fn astral_power_is_generated_by_casting_and_never_spends_itself() {
     assert_eq!(simulation.druid().astral.value(), 0.0);
 
     cast_through(&mut simulation, FireAbility::Wrath);
-    let generated = FireAbility::Wrath.definition().druid.astral_generation;
+    let generated = FireAbility::Wrath.definition().druid().astral_generation;
     assert!((simulation.druid().astral.value() - generated).abs() < 1e-3);
 
     // Filling it does nothing on its own: no proc, no free empowerment.
@@ -278,8 +278,8 @@ fn the_button_arms_the_next_compatible_spell_and_that_spell_pays_for_it() {
     cast_through(&mut simulation, FireAbility::Moonfire);
     assert!(!simulation.druid().astral.is_armed());
     // The spend, and then what Moonfire itself generated.
-    let expected =
-        ASTRAL_MAXIMUM - ASTRAL_SPEND + FireAbility::Moonfire.definition().druid.astral_generation;
+    let expected = ASTRAL_MAXIMUM - ASTRAL_SPEND
+        + FireAbility::Moonfire.definition().druid().astral_generation;
     assert!((simulation.druid().astral.value() - expected).abs() < 1e-3);
 }
 
@@ -291,7 +291,7 @@ fn the_incompatible_abilities_never_consume_the_arming() {
         FireAbility::AstralPower,
     ] {
         assert!(
-            !ability.definition().druid.astral_empowerable,
+            !ability.definition().druid().astral_empowerable,
             "{ability:?} is empowerable"
         );
     }

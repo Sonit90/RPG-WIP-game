@@ -203,7 +203,7 @@ impl Simulation {
         if !self.mage.off_global_cooldown() {
             return Err(AbilityError::GlobalCooldown);
         }
-        if definition.energy_cost > 0.0 && !self.mage.energy.is_full() {
+        if definition.fire().energy_cost > 0.0 && !self.mage.energy.is_full() {
             return Err(AbilityError::NotEnoughEnergy);
         }
         // The Druid's own refusals — Mana, the Astral Power button, Swiftmend with nothing to
@@ -441,7 +441,7 @@ impl Simulation {
         let caster = self.player.entity;
         let effects = *self.mage.effects();
         self.mage.abilities.spend(ability, &effects);
-        if definition.energy_cost > 0.0 {
+        if definition.fire().energy_cost > 0.0 {
             self.mage.energy.spend_all();
         }
         let origin = self.world.position(caster).unwrap_or(Vec3::ZERO);
@@ -452,10 +452,10 @@ impl Simulation {
 
         // Heat is paid once per cast, whatever it hit. Per-target Heat made area abilities
         // reach the top of the bar for free, which is why the old cone needed a cap.
-        if definition.heat > 0.0 {
-            self.gain_heat(definition.heat);
+        if definition.fire().heat > 0.0 {
+            self.gain_heat(definition.fire().heat);
         }
-        self.mage.gain_energy(definition.energy);
+        self.mage.gain_energy(definition.fire().energy);
 
         // A ground ability with a delay schedules its impact and stops here.
         if definition.impact_delay > 0.0
@@ -548,7 +548,7 @@ impl Simulation {
         let primary_stacks = self
             .nearest_hit_to(impact.position)
             .map_or(0, |target| self.mage.ignite.stacks(target));
-        let scaling = 1.0 + f32::from(primary_stacks) * definition.ignite_bonus_per_stack;
+        let scaling = 1.0 + f32::from(primary_stacks) * definition.fire().ignite_bonus_per_stack;
         let base = definition.base_damage(&stats) * scaling * effects.meteor_damage_scale;
 
         let hit_count = self.hits.len() as u32;
@@ -573,8 +573,8 @@ impl Simulation {
                 effects.meteor_crit_damage_bonus,
             );
             critical |= crit;
-            if definition.ignite_stacks > 0 {
-                self.apply_ignite(target, definition.ignite_stacks);
+            if definition.fire().ignite_stacks > 0 {
+                self.apply_ignite(target, definition.fire().ignite_stacks);
             }
         }
 
@@ -705,7 +705,7 @@ impl Simulation {
                 });
             }
 
-            let scaling = 1.0 + f32::from(stacks) * definition.ignite_bonus_per_stack;
+            let scaling = 1.0 + f32::from(stacks) * definition.fire().ignite_bonus_per_stack;
             let base = definition.base_damage(&stats) * scaling;
             let crit = self.strike(target, base, ability, true, 0.0);
 
@@ -719,11 +719,11 @@ impl Simulation {
                         1.0
                     };
                     if self.mage.rng.chance(chance) {
-                        self.apply_ignite(target, definition.ignite_stacks);
+                        self.apply_ignite(target, definition.fire().ignite_stacks);
                     }
                 }
-                _ if definition.ignite_stacks > 0 => {
-                    self.apply_ignite(target, definition.ignite_stacks);
+                _ if definition.fire().ignite_stacks > 0 => {
+                    self.apply_ignite(target, definition.fire().ignite_stacks);
                 }
                 _ => {}
             }
@@ -926,8 +926,8 @@ impl Simulation {
             until_tick: definition.tick_interval,
             interval: definition.tick_interval,
             coefficient: definition.tick_coefficient,
-            ignite_stacks: definition.ignite_stacks,
-            ignite_chance: definition.ignite_chance,
+            ignite_stacks: definition.fire().ignite_stacks,
+            ignite_chance: definition.fire().ignite_chance,
         });
         // The shape carried is the shape the containment test uses, so a band of fire drawn
         // from this cannot claim a different footprint from the one that burns.

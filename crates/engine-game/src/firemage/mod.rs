@@ -45,7 +45,7 @@ use crate::entity::EntityId;
 // (`FireMage::abilities`, `FireMage::global_cooldown`) every hero casts through.
 pub use crate::ability::table::ABILITY_SLOTS;
 pub use crate::ability::{
-    ABILITIES, ABILITY_COUNT, AbilityBook, AbilityDef, AbilityError, AbilityState, DruidRow,
+    ABILITIES, ABILITY_COUNT, AbilityBook, AbilityDef, AbilityError, AbilityState, ClassRow, DruidRow, FireMageRow,
     FireAbility, TARGET_CLEAVE_HALF_ANGLE, TargetMode, ThreatScale, ULTIMATE_ENABLED, WarriorRow,
 };
 pub use ignite::{

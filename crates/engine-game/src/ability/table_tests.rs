@@ -77,7 +77,10 @@ fn the_table_matches_the_design_document() {
         (firebolt.cast_time, firebolt.cooldown, firebolt.coefficient),
         (1.0, 0.0, 1.00)
     );
-    assert_eq!((firebolt.heat, firebolt.ignite_chance), (2.0, 0.50));
+    assert_eq!(
+        (firebolt.fire().heat, firebolt.fire().ignite_chance),
+        (2.0, 0.50)
+    );
 
     let lance = FireAbility::FlameLance.definition();
     assert_eq!(
@@ -85,7 +88,11 @@ fn the_table_matches_the_design_document() {
         (1.5, 8.0, 2)
     );
     assert_eq!(
-        (lance.coefficient, lance.ignite_stacks, lance.heat),
+        (
+            lance.coefficient,
+            lance.fire().ignite_stacks,
+            lance.fire().heat
+        ),
         (2.60, 2, 4.0)
     );
 
@@ -95,7 +102,11 @@ fn the_table_matches_the_design_document() {
         (0.0, 10.0, 12.0)
     );
     assert_eq!(
-        (cone.coefficient, cone.ignite_stacks, cone.heat),
+        (
+            cone.coefficient,
+            cone.fire().ignite_stacks,
+            cone.fire().heat
+        ),
         (1.40, 2, 3.0)
     );
 
@@ -104,16 +115,19 @@ fn the_table_matches_the_design_document() {
         (meteor.cooldown, meteor.radius, meteor.cast_time),
         (20.0, 5.0, 0.0)
     );
-    assert_eq!(meteor.ignite_stacks, 0, "meteor applies no ignite");
+    assert_eq!(meteor.fire().ignite_stacks, 0, "meteor applies no ignite");
     assert_eq!(
-        (meteor.coefficient, meteor.ignite_bonus_per_stack),
+        (meteor.coefficient, meteor.fire().ignite_bonus_per_stack),
         (5.00, 0.15)
     );
 
     let pyroblast = FireAbility::Pyroblast.definition();
     assert_eq!((pyroblast.cast_time, pyroblast.cooldown), (3.0, 30.0));
     assert_eq!(
-        (pyroblast.coefficient, pyroblast.ignite_bonus_per_stack),
+        (
+            pyroblast.coefficient,
+            pyroblast.fire().ignite_bonus_per_stack
+        ),
         (6.50, 0.15)
     );
 
@@ -123,7 +137,7 @@ fn the_table_matches_the_design_document() {
     assert_eq!((firestorm.range, firestorm.width), (20.0, 10.0));
     assert_eq!(firestorm.target, TargetMode::Line);
     assert_eq!(
-        (firestorm.tick_coefficient, firestorm.ignite_chance),
+        (firestorm.tick_coefficient, firestorm.fire().ignite_chance),
         (0.70, 0.15)
     );
     assert_eq!(
@@ -155,9 +169,12 @@ fn the_table_matches_the_design_document() {
 #[test]
 fn only_the_ultimate_costs_a_resource() {
     for ability in Hero::FireMage.abilities() {
-        assert_eq!(ability.definition().energy_cost, 0.0);
+        assert_eq!(ability.definition().fire().energy_cost, 0.0);
     }
-    assert_eq!(FireAbility::Cataclysm.definition().energy_cost, 100.0);
+    assert_eq!(
+        FireAbility::Cataclysm.definition().fire().energy_cost,
+        100.0
+    );
 }
 
 #[test]

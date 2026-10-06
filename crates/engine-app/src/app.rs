@@ -2581,7 +2581,7 @@ impl App {
         if !mage.abilities.is_ready(ability) || !mage.off_global_cooldown() {
             return;
         }
-        if ability.definition().energy_cost > 0.0 && !mage.energy.is_full() {
+        if ability.definition().fire().energy_cost > 0.0 && !mage.energy.is_full() {
             return;
         }
         if ability.definition().target.is_aimed() {

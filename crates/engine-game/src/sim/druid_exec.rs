@@ -84,7 +84,7 @@ impl Simulation {
         if !self.is_druid() {
             return Ok(());
         }
-        let druid_row = ability.definition().druid;
+        let druid_row = ability.definition().druid();
         if druid_row.mana_cost > 0.0 && !self.druid.mana.can_pay(druid_row.mana_cost) {
             return Err(AbilityError::NotEnoughMana);
         }
@@ -151,7 +151,7 @@ impl Simulation {
 
     /// Pays this ability's Mana, if it costs any, and announces it.
     pub(super) fn spend_mana(&mut self, ability: FireAbility) {
-        let cost = ability.definition().druid.mana_cost;
+        let cost = ability.definition().druid().mana_cost;
         if !self.is_druid() || cost <= 0.0 || !self.druid.mana.pay(cost) {
             return;
         }
@@ -168,7 +168,7 @@ impl Simulation {
 
     /// Gives this ability's Astral Power back to the bar, and announces it.
     pub(super) fn gain_astral(&mut self, ability: FireAbility) {
-        let generated = ability.definition().druid.astral_generation;
+        let generated = ability.definition().druid().astral_generation;
         if !self.is_druid() || generated <= 0.0 {
             return;
         }
@@ -194,7 +194,7 @@ impl Simulation {
     /// [`crate::firemage::DruidRow::astral_empowerable`] column, so Nature's Cleanse, Wild
     /// Rush and the button itself are excluded by data rather than by a branch.
     pub(super) fn take_empowerment(&mut self, ability: FireAbility) -> bool {
-        if !self.is_druid() || !ability.definition().druid.astral_empowerable {
+        if !self.is_druid() || !ability.definition().druid().astral_empowerable {
             return false;
         }
         if !self.druid.astral.is_armed() || !self.druid.astral.consume() {
@@ -226,7 +226,11 @@ impl Simulation {
     /// the `Healing` event exactly as the Warrior's self heal does, so a heal on an ally and
     /// a heal on yourself are the same event to the meter, the log and the interface.
     pub(super) fn heal_ally(&mut self, target: EntityId, amount: f32, ability: AbilityId) -> f32 {
-        if self.remote_authority || !self.world.is_alive(target) || !amount.is_finite() || amount <= 0.0 {
+        if self.remote_authority
+            || !self.world.is_alive(target)
+            || !amount.is_finite()
+            || amount <= 0.0
+        {
             return 0.0;
         }
         let restored = self.world.heal(target, amount).applied;
@@ -532,7 +536,7 @@ impl Simulation {
     /// Lifebloom: fifteen seconds of healing, and a bloom when it runs out.
     fn cast_lifebloom(&mut self) -> u32 {
         let ability = FireAbility::Lifebloom;
-        let bloom = ability.definition().druid.bloom_coefficient * self.mage.stats().spell_power;
+        let bloom = ability.definition().druid().bloom_coefficient * self.mage.stats().spell_power;
         self.apply_druid_hot(ability, StatusKind::Lifebloom, bloom)
     }
 

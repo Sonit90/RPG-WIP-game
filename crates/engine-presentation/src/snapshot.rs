@@ -1212,17 +1212,17 @@ fn ability_view(
     // question answered once.
     let deflection = simulation.warrior().deflection.value();
     let spends_deflection = simulation.hero() == Hero::Warrior
-        && definition.warrior.is_empowerable()
-        && deflection + f32::EPSILON >= definition.warrior.empower_threshold();
+        && definition.warrior().is_empowerable()
+        && deflection + f32::EPSILON >= definition.warrior().empower_threshold();
 
     // Whether pressing this now spends a hundred Astral Power. Asked of the simulation's own
     // resource, exactly as the Warrior's spend is.
-    let spends_astral = simulation.astral_armed() && definition.druid.astral_empowerable;
+    let spends_astral = simulation.astral_armed() && definition.druid().astral_empowerable;
     // Mana, asked of the pool rather than of the number on the row: a spell the player cannot
     // afford is dimmed before it is pressed rather than after.
     let short_of_mana = simulation.hero() == Hero::Druid
-        && definition.druid.mana_cost > 0.0
-        && !simulation.druid().mana.can_pay(definition.druid.mana_cost);
+        && definition.druid().mana_cost > 0.0
+        && !simulation.druid().mana.can_pay(definition.druid().mana_cost);
     // The Astral Power button has a requirement of its own, and it is not a cooldown: a bar
     // that is not full, or one that is already armed, cannot be pressed.
     let cannot_arm = ability == FireAbility::AstralPower && !simulation.druid().astral.can_arm();
@@ -1231,7 +1231,7 @@ fn ability_view(
         // Cataclysm has no gameplay concept yet. The button stays where it is and says so,
         // rather than disappearing and taking its architecture with it.
         SlotAvailability::Disabled
-    } else if (definition.energy_cost > 0.0 && !mage.energy.is_full())
+    } else if (definition.fire().energy_cost > 0.0 && !mage.energy.is_full())
         || short_of_mana
         || cannot_arm
     {
@@ -1291,14 +1291,14 @@ fn ability_view(
         } else {
             definition.base_tick_damage(&stats)
         },
-        ignite_scaling: definition.ignite_bonus_per_stack,
-        ignite_stacks: definition.ignite_stacks,
-        ignite_chance: definition.ignite_chance,
-        deflection_cost: definition.warrior.deflection_cost,
+        ignite_scaling: definition.fire().ignite_bonus_per_stack,
+        ignite_stacks: definition.fire().ignite_stacks,
+        ignite_chance: definition.fire().ignite_chance,
+        deflection_cost: definition.warrior().deflection_cost,
         spends_deflection,
-        mana_cost: definition.druid.mana_cost,
-        astral_generation: definition.druid.astral_generation,
-        astral_empowerable: definition.druid.astral_empowerable,
+        mana_cost: definition.druid().mana_cost,
+        astral_generation: definition.druid().astral_generation,
+        astral_empowerable: definition.druid().astral_empowerable,
         spends_astral,
         // Healing and damage are the same coefficient read against the same spell power;
         // which of the two a row *is* is decided by who it is pointed at, so the interface

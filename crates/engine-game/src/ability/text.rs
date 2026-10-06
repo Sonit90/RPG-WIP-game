@@ -99,14 +99,14 @@ fn row_token(definition: &AbilityDef, key: &str) -> Option<TextValue> {
         "radius" => TextValue::Metres(definition.radius),
         "width" => TextValue::Metres(definition.width),
         "charges" => TextValue::Count(f32::from(definition.charges)),
-        "ignite_stacks" => TextValue::Count(f32::from(definition.ignite_stacks)),
-        "ignite_chance" => TextValue::Percent(definition.ignite_chance),
-        "ignite_bonus" => TextValue::Percent(definition.ignite_bonus_per_stack),
-        "cost" if definition.warrior.is_empowerable() => {
-            TextValue::Count(definition.warrior.deflection_cost)
+        "ignite_stacks" => TextValue::Count(f32::from(definition.fire().ignite_stacks)),
+        "ignite_chance" => TextValue::Percent(definition.fire().ignite_chance),
+        "ignite_bonus" => TextValue::Percent(definition.fire().ignite_bonus_per_stack),
+        "cost" if definition.warrior().is_empowerable() => {
+            TextValue::Count(definition.warrior().deflection_cost)
         }
-        "threshold" if definition.warrior.is_empowerable() => {
-            TextValue::Count(definition.warrior.empower_threshold())
+        "threshold" if definition.warrior().is_empowerable() => {
+            TextValue::Count(definition.warrior().empower_threshold())
         }
         _ => return None,
     })
@@ -294,31 +294,31 @@ impl AbilityDef {
                 at += 1;
             }
         };
-        if self.energy_cost > 0.0 {
+        if self.fire().energy_cost > 0.0 {
             push(ResourceUse {
                 resource: Resource::UltimateEnergy,
                 mode: ResourceMode::Cost,
-                amount: self.energy_cost,
-                threshold: self.energy_cost,
+                amount: self.fire().energy_cost,
+                threshold: self.fire().energy_cost,
             });
         }
-        if self.druid.mana_cost > 0.0 {
+        if self.druid().mana_cost > 0.0 {
             push(ResourceUse {
                 resource: Resource::Mana,
                 mode: ResourceMode::Cost,
-                amount: self.druid.mana_cost,
-                threshold: self.druid.mana_cost,
+                amount: self.druid().mana_cost,
+                threshold: self.druid().mana_cost,
             });
         }
-        if self.warrior.is_empowerable() {
+        if self.warrior().is_empowerable() {
             push(ResourceUse {
                 resource: Resource::Deflection,
                 mode: ResourceMode::Empower,
-                amount: self.warrior.deflection_cost,
-                threshold: self.warrior.empower_threshold(),
+                amount: self.warrior().deflection_cost,
+                threshold: self.warrior().empower_threshold(),
             });
         }
-        if self.druid.astral_empowerable {
+        if self.druid().astral_empowerable {
             push(ResourceUse {
                 resource: Resource::AstralPower,
                 mode: ResourceMode::Empower,
@@ -326,19 +326,19 @@ impl AbilityDef {
                 threshold: 0.0,
             });
         }
-        if self.heat > 0.0 {
+        if self.fire().heat > 0.0 {
             push(ResourceUse {
                 resource: Resource::Heat,
                 mode: ResourceMode::Generate,
-                amount: self.heat,
+                amount: self.fire().heat,
                 threshold: 0.0,
             });
         }
-        if self.druid.astral_generation > 0.0 {
+        if self.druid().astral_generation > 0.0 {
             push(ResourceUse {
                 resource: Resource::AstralPower,
                 mode: ResourceMode::Generate,
-                amount: self.druid.astral_generation,
+                amount: self.druid().astral_generation,
                 threshold: 0.0,
             });
         }

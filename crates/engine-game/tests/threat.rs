@@ -127,7 +127,7 @@ fn engage(simulation: &mut Simulation, enemy: EntityId, log: &mut Vec<CombatEven
 fn every_ability_threatens_at_its_roles_rate() {
     for definition in &ABILITIES {
         let scale = definition.threat;
-        match definition.hero {
+        match definition.hero() {
             Hero::FireMage => assert_eq!(scale, ThreatScale::DAMAGE_DEALER, "{:?}", definition.id),
             Hero::Warrior => assert!(
                 scale.damage >= 2.0,

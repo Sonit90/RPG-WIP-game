@@ -24,8 +24,8 @@ pub mod text;
 
 pub use book::{AbilityBook, AbilityError, AbilityState};
 pub use table::{
-    ABILITIES, ABILITY_COUNT, AbilityDef, DruidRow, FireAbility, TARGET_CLEAVE_HALF_ANGLE,
-    TargetMode, ThreatScale, ULTIMATE_ENABLED, WarriorRow, longest_range,
+    ABILITIES, ABILITY_COUNT, AbilityDef, ClassRow, DruidRow, FireAbility, FireMageRow,
+    TARGET_CLEAVE_HALF_ANGLE, TargetMode, ThreatScale, ULTIMATE_ENABLED, WarriorRow, longest_range,
 };
 
 /// How many distinct abilities can be named. The ten-slot bar plus the Ultimate.

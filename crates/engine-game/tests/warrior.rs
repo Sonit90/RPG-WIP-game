@@ -335,11 +335,11 @@ fn every_empowerable_ability_checks_and_consumes_exactly_twenty() {
     ];
     for ability in spenders {
         assert!(
-            ability.definition().warrior.is_empowerable(),
+            ability.definition().warrior().is_empowerable(),
             "{ability:?} is not a spender"
         );
         assert!(
-            (ability.definition().warrior.deflection_cost - DEFLECTION_SPEND).abs() < 1e-6,
+            (ability.definition().warrior().deflection_cost - DEFLECTION_SPEND).abs() < 1e-6,
             "{ability:?} costs something other than twenty"
         );
 
@@ -467,7 +467,7 @@ fn the_colossus_bleed_reads_maximum_health_on_every_tick_rather_than_snapshottin
     // not a number, so there is nowhere for the old health to have been kept.
     let coefficient = FireAbility::ColossusStrike
         .definition()
-        .warrior
+        .warrior()
         .tick_health_coefficient;
     let before_health = player_max_health(&simulation);
     let mut bonus = StatBlock::zero();

@@ -149,7 +149,7 @@ impl Simulation {
     /// The bank needed is the row's [`WarriorRow::empower_threshold`](crate::ability::WarriorRow::empower_threshold):
     /// the cost itself for every spender, a full hundred for Recuperate.
     fn spend_deflection(&mut self, ability: FireAbility) -> bool {
-        let row = ability.definition().warrior;
+        let row = ability.definition().warrior();
         let cost = row.deflection_cost;
         if self.hero != Hero::Warrior || cost <= 0.0 {
             return false;
@@ -293,7 +293,7 @@ impl Simulation {
         // fraction so that every tick reads the Warrior's maximum health at the moment it
         // happens. See `Status::source_health_per_tick`.
         let tick_flat = definition.base_tick_damage(&stats) * bleed_scale;
-        let tick_health = definition.warrior.tick_health_coefficient * bleed_scale;
+        let tick_health = definition.warrior().tick_health_coefficient * bleed_scale;
         let source = self.player.entity;
         let mut affected = 0;
         for index in 0..self.hits.len() {
