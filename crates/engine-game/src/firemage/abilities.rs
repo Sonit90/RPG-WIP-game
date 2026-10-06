@@ -133,6 +133,7 @@ pub(crate) const ROWS: [AbilityDef; 11] = [
         range: 35.0,
         radius: 10.0,
         requires_line_of_sight: true,
+        on_global_cooldown: false,
         cooldown_hasted: false,
         class: ClassRow::FireMage(FireMageRow {
             energy: 3.0,
@@ -147,6 +148,7 @@ pub(crate) const ROWS: [AbilityDef; 11] = [
         target: TargetMode::SelfCast,
         cooldown: 60.0,
         duration: 20.0,
+        on_global_cooldown: false,
         class: ClassRow::FireMage(FireMageRow::NONE),
         ..BASE
     },
@@ -167,6 +169,7 @@ pub(crate) const ROWS: [AbilityDef; 11] = [
         target: TargetMode::Movement,
         cooldown: 20.0,
         range: 10.0,
+        on_global_cooldown: false,
         class: ClassRow::FireMage(FireMageRow::NONE),
         ..BASE
     },

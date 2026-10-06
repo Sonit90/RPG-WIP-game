@@ -428,6 +428,38 @@ impl FireMage {
         self.global_cooldown.start(duration);
     }
 
+    /// **Whether the global cooldown holds `ability` back right now.**
+    ///
+    /// The one place the per-ability [`AbilityDef::on_global_cooldown`] column is read: an
+    /// ability off the global cooldown is never held, whatever the timer says. The cast
+    /// path, the input layer and the action bar all ask this rather than each combining the
+    /// column with the timer themselves.
+    ///
+    /// [`AbilityDef::on_global_cooldown`]: crate::ability::table::AbilityDef::on_global_cooldown
+    #[must_use]
+    pub fn global_cooldown_holds(&self, ability: FireAbility) -> bool {
+        ability.definition().on_global_cooldown && !self.off_global_cooldown()
+    }
+
+    /// [`FireMage::global_cooldown_fraction`] as `ability`'s button sees it: always one for
+    /// an ability the global cooldown does not hold, so it never draws the shared sweep.
+    #[must_use]
+    pub fn global_cooldown_fraction_for(&self, ability: FireAbility) -> f32 {
+        if ability.definition().on_global_cooldown {
+            self.global_cooldown_fraction()
+        } else {
+            1.0
+        }
+    }
+
+    /// Starts the global cooldown for a press of `ability` — or leaves it exactly as it is,
+    /// for an ability that is off it.
+    pub fn start_global_cooldown_for(&mut self, ability: FireAbility) {
+        if ability.definition().on_global_cooldown {
+            self.start_global_cooldown();
+        }
+    }
+
     /// Ends the global cooldown early. What a cast that did not complete gives back.
     pub fn clear_global_cooldown(&mut self) {
         self.global_cooldown.clear();
@@ -692,6 +724,21 @@ mod tests {
 
         mage.tick(VULNERABILITY_DURATION + 0.1);
         assert!(!mage.vulnerability.has(target));
+    }
+
+    #[test]
+    fn an_ability_off_the_global_cooldown_is_never_held_by_it_and_never_starts_it() {
+        let mut mage = FireMage::new(1);
+        mage.start_global_cooldown_for(FireAbility::Blink);
+        assert!(mage.off_global_cooldown(), "Blink started the global cooldown");
+
+        mage.start_global_cooldown_for(FireAbility::Firebolt);
+        assert!(mage.global_cooldown_holds(FireAbility::Firebolt));
+        assert!(mage.global_cooldown_fraction_for(FireAbility::Firebolt) < 1.0);
+        for ability in [FireAbility::Blink, FireAbility::Detonate, FireAbility::FireMastery] {
+            assert!(!mage.global_cooldown_holds(ability), "{ability:?}");
+            assert_eq!(mage.global_cooldown_fraction_for(ability), 1.0);
+        }
     }
 
     #[test]

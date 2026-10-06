@@ -2619,7 +2619,9 @@ impl App {
     /// the click wastes the player's attention and hides the reason.
     fn cast_or_target(&mut self, ability: FireAbility) {
         let mage = self.simulation.mage();
-        if !mage.abilities.is_ready(ability) || !mage.off_global_cooldown() {
+        if !mage.abilities.is_ready(ability)
+            || mage.global_cooldown_holds(ability)
+        {
             return;
         }
         if ability.definition().fire().energy_cost > 0.0 && !mage.energy.is_full() {

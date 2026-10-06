@@ -3216,6 +3216,29 @@ mod tests {
         // Checked after an *instant*, because pressing something during a cast queues it
         // rather than being refused — the queue is tested on its own elsewhere.
         let mut simulation = arena();
+        simulation.cast(FireAbility::FlameShield).expect("a self-cast");
+        assert!(simulation.casting().is_none(), "an instant started a cast");
+
+        // An unrelated, ready, free ability is held by the shared timer and by nothing else.
+        assert!(simulation.mage().abilities.is_ready(FireAbility::Firebolt));
+        assert_eq!(
+            simulation.cast(FireAbility::Firebolt),
+            Err(AbilityError::GlobalCooldown)
+        );
+    }
+
+    #[test]
+    fn blink_detonate_and_fire_mastery_ignore_the_global_cooldown_and_do_not_start_it() {
+        let mut simulation = arena();
+        for ability in [FireAbility::Blink, FireAbility::Detonate, FireAbility::FireMastery] {
+            assert!(!ability.definition().on_global_cooldown, "{ability:?}");
+        }
+
+        // Pressed while the global cooldown runs, they go off anyway...
+        simulation.cast(FireAbility::FlameShield).expect("a self-cast");
+        assert!(!simulation.mage().off_global_cooldown());
+        let left = simulation.mage().global_cooldown_remaining();
+        simulation.cast(FireAbility::FireMastery).expect("off the global cooldown");
         let target = simulation.player().target.expect("a dummy is selected");
         let maximum = simulation.mage().ignite_max();
         let duration = simulation.mage().ignite_duration();
@@ -3223,16 +3246,16 @@ mod tests {
             .mage_mut()
             .ignite
             .apply(target, maximum, maximum, duration);
-
         simulation.cast(FireAbility::Detonate).expect("a full burn");
-        assert!(simulation.casting().is_none(), "an instant started a cast");
+        simulation.cast(FireAbility::Blink).expect("off the global cooldown");
+        // ...and leave it exactly as it was rather than restarting it.
+        assert!((simulation.mage().global_cooldown_remaining() - left).abs() < 1e-6);
 
-        // An unrelated, ready, free ability is held by the shared timer and by nothing else.
-        assert!(simulation.mage().abilities.is_ready(FireAbility::Blink));
-        assert_eq!(
-            simulation.cast(FireAbility::Blink),
-            Err(AbilityError::GlobalCooldown)
-        );
+        // And from a standing start, none of them locks the bar.
+        let mut simulation = arena();
+        simulation.cast(FireAbility::Blink).expect("ready");
+        assert!(simulation.mage().off_global_cooldown());
+        assert!(simulation.cast(FireAbility::Firebolt).is_ok());
     }
 
     #[test]
@@ -3279,15 +3302,7 @@ mod tests {
         // The other half of the rule. An instant lands immediately and still locks the bar,
         // which is the whole reason the timer exists.
         let mut simulation = arena();
-        let target = simulation.player().target.expect("a dummy is selected");
-        let maximum = simulation.mage().ignite_max();
-        let duration = simulation.mage().ignite_duration();
-        simulation
-            .mage_mut()
-            .ignite
-            .apply(target, maximum, maximum, duration);
-
-        simulation.cast(FireAbility::Detonate).expect("a full burn");
+        simulation.cast(FireAbility::FlameShield).expect("a self-cast");
         assert!(
             !simulation.mage().off_global_cooldown(),
             "an instant that landed did not lock the bar"

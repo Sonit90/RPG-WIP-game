@@ -3756,20 +3756,23 @@ mod tests {
         // The point of the change: starting one ability locks the whole bar, so the whole
         // bar has to say so. A bar where only the pressed button reacts reads as though the
         // others were still available.
-        // Blink: instant, so it lands and takes its own fifteen-second cooldown while the
-        // shared half-second one runs on everything else.
+        // Flame Shield: instant, so it lands and takes its own cooldown while the shared
+        // one runs on everything else. Everything that *is* held by the shared timer, that
+        // is: Blink, Detonate and Fire Mastery are not, and must not pretend to be.
         let mut simulation = sim();
-        simulation.cast(FireAbility::Blink).expect("Blink is ready");
+        simulation
+            .cast(FireAbility::FlameShield)
+            .expect("Flame Shield is ready");
 
         let snapshot = UiSnapshot::build(&simulation);
-        assert!(
-            snapshot
-                .abilities
-                .iter()
-                .flatten()
-                .all(AbilitySlotView::is_on_global_cooldown),
-            "the global cooldown did not reach every slot"
-        );
+        for view in snapshot.abilities.iter().flatten() {
+            assert_eq!(
+                view.is_on_global_cooldown(),
+                view.ability.definition().on_global_cooldown,
+                "{:?}",
+                view.ability
+            );
+        }
         assert!(
             snapshot
                 .ultimate

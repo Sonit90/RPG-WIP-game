@@ -720,6 +720,14 @@ pub struct AbilityDef {
     /// often is the same stat paid twice, and at a geared 45 % it was worth +23 % on a single
     /// target against a balance goal of +5 to +10.
     pub cooldown_hasted: bool,
+    /// Whether casting it starts the global cooldown, and whether the global cooldown holds
+    /// it back.
+    ///
+    /// True for nearly everything. False for the few presses that are meant to be woven in
+    /// between the others — a Blink out of a cast's aftermath, a Detonate the moment the
+    /// burn is full, a cooldown popped on the way — which are paced by their own cooldowns
+    /// instead.
+    pub on_global_cooldown: bool,
     /// Which hero casts it, and the columns only that hero's abilities have.
     pub class: ClassRow,
 }
@@ -754,6 +762,7 @@ impl AbilityDef {
         turns_to_target: false,
         threat: ThreatScale::DAMAGE_DEALER,
         cooldown_hasted: true,
+        on_global_cooldown: true,
         class: ClassRow::FireMage(FireMageRow::NONE),
     };
 

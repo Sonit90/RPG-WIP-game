@@ -1284,7 +1284,7 @@ fn ability_view(
         max_charges,
         cooldown_remaining: mage.abilities.recharge_remaining(ability),
         cooldown_fraction: mage.abilities.recharge_fraction(ability, effects),
-        global_cooldown_fraction: mage.global_cooldown_fraction(),
+        global_cooldown_fraction: mage.global_cooldown_fraction_for(ability),
         casting: simulation
             .casting()
             .is_some_and(|cast| cast.ability == ability),

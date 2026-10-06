@@ -200,7 +200,7 @@ impl Simulation {
         if !self.mage.abilities.is_ready(ability) {
             return Err(AbilityError::OnCooldown);
         }
-        if !self.mage.off_global_cooldown() {
+        if self.mage.global_cooldown_holds(ability) {
             return Err(AbilityError::GlobalCooldown);
         }
         if definition.fire().energy_cost > 0.0 && !self.mage.energy.is_full() {
@@ -218,7 +218,7 @@ impl Simulation {
             self.face_towards(position);
         }
 
-        self.mage.start_global_cooldown();
+        self.mage.start_global_cooldown_for(ability);
         self.fire.casts_started += 1;
 
         let stats = self.mage.stats();
