@@ -64,15 +64,19 @@ CLIPS = {
 # Seconds into a cast clip at which the spell leaves the hands. Exported as the clip's glTF
 # extras; the game lines this moment up with the cast completing and plays the rest after.
 RELEASE = {"cast": 0.65, "cast_heavy": 1.0}
+# The cycles the game plays at the character's own pace, and so needs the pace of. Not the
+# forward walk: paced by its feet the warrior's read 1.35 m/s, and played against that it
+# hurried; the character definition's walk speed plays it at the rate it reads right at.
+LOCOMOTION = {"run", "walk_back", "run_back", "strafe_left", "strafe_right"}
 
 # The warrior: sword-and-shield downloads (made on Mixamo's Y Bot) in animations/warrior/,
-# with the casters' walk, idle, backpedal and strafes until sword-and-shield ones exist.
+# with the casters' backpedal until a sword-and-shield one exists.
 # Every melee clip plays whole from the top (the engine's `Motion` slots), so none has a
 # release; `cast` and `cast_heavy` are required slots and take a slash and a smash.
 W = "warrior/"
 WARRIOR = {
-    "idle": ("Idle.fbx", None, None, False),
-    "walk": ("Walking.fbx", None, None, False),
+    "idle": (W + "Sword And Shield Idle.fbx", None, None, False),
+    "walk": (W + "Sword And Shield Walk.fbx", None, None, False),
     "run": (W + "Sword And Shield Run.fbx", None, None, False),
     "jump": (W + "Sword And Shield Jump.fbx", 2, 13, True),     # take-off to the top
     "fall": (W + "Sword And Shield Jump.fbx", 18, 18, True),    # one pose on the way down
@@ -80,8 +84,10 @@ WARRIOR = {
     "cast": (W + "Sword And Shield Slash.fbx", None, None, False),
     "cast_heavy": (W + "Standing Melee Attack Downward.fbx", None, None, False),
     "walk_back": ("Walking Backwards.fbx", None, None, False),
-    "strafe_left": ("Left Strafe.fbx", None, None, False),
-    "strafe_right": ("Right Strafe.fbx", None, None, False),
+    # Mixamo names both directions "Strafe"; this pair was told apart by which way the
+    # planted foot slides.
+    "strafe_left": (W + "Sword And Shield Strafe.fbx", None, None, False),
+    "strafe_right": (W + "Sword And Shield Strafe (1).fbx", None, None, False),
     "death": (W + "Sword And Shield Death.fbx", None, None, False),
     "swing": (W + "Sword And Shield Slash.fbx", None, None, False),
     "cleave": (W + "Standing Melee Attack Horizontal.fbx", None, None, False),
@@ -92,8 +98,12 @@ WARRIOR = {
     "power_up": (W + "Sword And Shield Power Up.fbx", None, None, False),
     "battlecry": (W + "Standing Taunt Battlecry.fbx", None, None, False),
 }
+# How much faster than authored a clip is baked. Mixamo's melee attacks are paced for a
+# cinematic: two seconds and more for one blow, against a 1.5 s global cooldown.
+RATE = {}
+WARRIOR_RATE = {name: 2.0 for name in ("cast", "cast_heavy", "swing", "cleave", "smash", "bash", "lunge")}
 if args.clips == "warrior":
-    CLIPS, RELEASE = WARRIOR, {}
+    CLIPS, RELEASE, RATE = WARRIOR, {}, WARRIOR_RATE
 HEIGHT = args.height                      # Mixamo often reads a 1-unit model as centimetres
 ROOT = "mixamorig:Hips"
 
@@ -195,6 +205,26 @@ for name, (file, first, last, airborne) in CLIPS.items():
     authored_speed = travel.length / seconds if seconds > 0 else 0.0
     in_place = authored_speed < 0.5     # below this it is drift, not locomotion
     anchored = source.matrix_world.copy()
+    # An "In Place" cycle carries no travel to read its pace from, but a planted foot slides
+    # backwards under the hips at exactly that pace. Without it the game guesses the pace
+    # from the character's walk or run speed, and the feet slide whenever the guess is off.
+    if in_place and name in LOCOMOTION:
+        feet = ("mixamorig:LeftFoot", "mixamorig:RightFoot")
+        track = []
+        for frame in range(start, end + 1):
+            scene.frame_set(frame)
+            bpy.context.view_layer.update()
+            track.append({n: source.matrix_world @ source.pose.bones[n].head
+                          for n in feet + (ROOT,)})
+        sole = min(p[n].z for p in track for n in feet) + 0.03
+        slides = [((b[n] - a[n]) - (b[ROOT] - a[ROOT])).xy.length * scene.render.fps
+                  for a, b in zip(track, track[1:]) for n in feet if a[n].z < sole]
+        if slides:
+            slides.sort()
+            authored_speed = slides[len(slides) // 2]
+            in_place = False
+            travel = mathutils.Vector((0.0, 0.0, 0.0))
+            print("  ", name, "in place; feet pace it at", round(authored_speed, 2), "m/s")
 
     for pb in bones:
         if pb.name not in source.pose.bones:
@@ -232,11 +262,13 @@ for name, (file, first, last, airborne) in CLIPS.items():
         action["release"] = RELEASE[name]
     if not in_place:
         action["speed"] = round(authored_speed, 3)
-        print("  ", name, "authored at", round(authored_speed, 2), "m/s; travel removed")
+        if travel.length > 0:
+            print("  ", name, "authored at", round(authored_speed, 2), "m/s; travel removed")
     rig.animation_data.action = action
     previous = {}
     # Keys from frame 0, so the clip starts at time zero; a held pose gets a second key.
-    frames = [(frame - first, pose) for frame, pose in baked.items()]
+    rate = RATE.get(name, 1.0)
+    frames = [((frame - first) / rate, pose) for frame, pose in baked.items()]
     if first == last:
         frames.append((1, baked[first]))
     for frame, pose in frames:

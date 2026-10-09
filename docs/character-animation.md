@@ -99,8 +99,10 @@ that is not there is skipped. A new animation goes into that folder and gets a r
 **The warrior's table.** `--clips warrior` bakes `WARRIOR` instead: the sword-and-shield
 downloads in `assets/animations/warrior/`, plus one clip per melee `Motion` the engine binds
 (`swing`, `cleave`, `smash`, `bash`, `lunge`, `guard`, `power_up`, `battlecry`), each played whole
-from the top. It borrows the casters' idle, walk, backpedal and strafes until sword-and-shield
-ones are downloaded. Any Mixamo character will do for a download — the script scales each one
+from the top, and its attacks (`RATE`) baked at twice their authored speed: Mixamo paces one
+blow over two seconds and more, against a 1.5 s global cooldown. It borrows the casters'
+backpedal until a sword-and-shield one is downloaded. In-place runs and strafes (not the forward
+walk, which read too hurried) are paced by their planted foot's slide, so the game plays them at the right rate. Any Mixamo character will do for a download — the script scales each one
 until its legs match the character's, so Y Bot's (some 190 times larger on import) fits too.
 
 **Downloading from Mixamo:** FBX Binary, **Without Skin**, 30 fps. *In Place* is optional —
@@ -215,7 +217,7 @@ file that stands in for the Mixamo download *With Skin*, so step 4 of section 1 
 "C:/Program Files/Blender Foundation/Blender 5.2/blender.exe" -b --factory-startup \
   --python tools/blender/autorig_character.py -- \
   --mesh "path/to/Meshy_export.fbx" --out assets/characters/warrior.fbx \
-  --prop right --shield tower --head-scale 1.2
+  --prop right --shield tower \n  --shield-pose "assets/animations/warrior/Sword And Shield Idle.fbx" --head-scale 1.2
 ```
 
 | Option | What it does |
@@ -223,6 +225,7 @@ file that stands in for the Mixamo download *With Skin*, so step 4 of section 1 
 | `--mesh` | The unrigged model, `.fbx`, `.glb` or `.obj`, as downloaded: standing, arms down, facing the viewer, any scale |
 | `--prop right\|left` | A held prop that is its own loose part (anything a third of the height long front to back) is bound rigidly to that hand, so it does not bend with the fingers |
 | `--shield tower` | Builds a curved tower shield (steel rim and cross, red face, wooden back; three untextured materials) onto the outside of the left forearm, bound rigidly to `LeftForeArm` |
+| `--shield-pose` | An animation, the character's idle stance, whose first frame the shield is turned to stand vertical in. The warrior uses `animations/warrior/Sword And Shield Idle.fbx` |
 | `--head-scale` | Scales the head about the neck before rigging; the warrior uses 1.2 |
 | `--blend` | Saves the rigged model for inspection |
 

@@ -2,7 +2,7 @@
 
     blender -b --factory-startup --python tools/blender/autorig_character.py --
         --mesh <model.fbx|.glb|.obj> --out assets/characters/<hero>.fbx
-        [--prop right|left] [--shield tower] [--head-scale 1.2] [--blend <file.blend>]
+        [--prop right|left] [--shield tower [--shield-pose <idle.fbx>]] [--head-scale 1.2] [--blend <file.blend>]
         [--animations assets/animations]
 
 (one command; split here for reading)
@@ -13,6 +13,8 @@
 --prop        a held prop (sword, staff) that is its own loose part of the mesh: bound
               rigidly to that hand instead of being auto-weighted, so it does not bend
 --shield      builds a shield onto the outside of the left forearm, bound rigidly to it
+--shield-pose an animation (the character's idle stance) whose first frame the shield is
+              made to stand vertical in; without it the shield is square to the forearm
 --head-scale  scales the head about the neck before rigging (1.0 leaves it alone)
 --blend       optional .blend of the rigged result, to inspect in Blender
 --animations  the folder holding the Mixamo animation downloads; Idle.fbx is read from it
@@ -40,6 +42,7 @@ parser.add_argument("--animations", default=os.path.join(REPO, "assets", "animat
                     help="folder holding the animation downloads (default: assets/animations)")
 parser.add_argument("--prop", choices=("right", "left"), help="hand holding a separate prop")
 parser.add_argument("--shield", choices=("tower",), help="add a shield on the left forearm")
+parser.add_argument("--shield-pose", help="an animation whose first frame the shield stands upright in")
 parser.add_argument("--head-scale", type=float, default=1.0, help="head size multiplier")
 parser.add_argument("--blend", help="optional .blend to save alongside")
 args = parser.parse_args(sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else [])
@@ -323,7 +326,28 @@ def tower_shield():
     out = (V((1, 0, 0)) - forearm * forearm.x).normalized()
     long_side = out.cross(forearm)
     centre = (elbow + wrist) / 2 + out * 0.09
-    frame = mathutils.Matrix((forearm, long_side, out)).transposed().to_4x4()
+    axes = mathutils.Matrix((forearm, long_side, out)).transposed()
+    if args.shield_pose:
+        # Stand it up for the stance it is carried in. mixamo_character.py gives each bone
+        # the animation's world rotation, so in that pose the forearm turns by `turn`; the
+        # shield, rigid on the forearm, turns with it. Undo the turn on an upright frame that
+        # faces where the shield would face, and the shield is vertical in that pose.
+        new = imported(args.shield_pose)
+        source = next(o for o in new if o.type == "ARMATURE")
+        action = source.animation_data.action
+        bpy.context.scene.frame_set(int(action.frame_range[0]))
+        bpy.context.view_layer.update()
+        posed = (source.matrix_world.to_3x3()
+                 @ source.pose.bones[P + "LeftForeArm"].matrix.to_3x3()).normalized()
+        for o in new:
+            bpy.data.objects.remove(o)
+        bpy.data.actions.remove(action)
+        turn = posed @ rig.data.bones[P + "LeftForeArm"].matrix_local.to_3x3().normalized().inverted()
+        facing = turn @ out
+        facing = V((facing.x, facing.y, 0.0)).normalized()
+        up = V((0.0, 0.0, 1.0))
+        axes = turn.inverted() @ mathutils.Matrix((up.cross(facing), up, facing)).transposed()
+    frame = axes.to_4x4()
     frame.translation = centre
     mesh.transform(frame)
     return shield
