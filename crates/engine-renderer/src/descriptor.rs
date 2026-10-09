@@ -462,8 +462,16 @@ impl GpuDescriptorHeap {
         }
 
         let total = persistent_capacity + per_frame_capacity * frames_in_flight as u32;
-        let heap =
-            device.create_descriptor_heap(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, total, true)?;
+        // At least one descriptor underneath, whatever the regions ask for. An empty heap is
+        // legal to *ask for* - a renderer that binds nothing still starts - but a zero-sized
+        // shader-visible heap is not something every driver survives: creating one has been
+        // seen to fault inside the driver rather than return an error. The spare slot is
+        // never handed out; the allocators below are sized from the requested capacities.
+        let heap = device.create_descriptor_heap(
+            D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
+            total.max(1),
+            true,
+        )?;
 
         // SAFETY: FFI calls on the heap created immediately above. Both handles are
         // addresses into it and stay valid while it lives.
