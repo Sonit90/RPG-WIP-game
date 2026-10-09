@@ -315,12 +315,15 @@ def tower_shield():
     bm.to_mesh(mesh)
     bm.free()
 
+    # Strapped on, the forearm runs *across* the shield's back, as through a shield's straps:
+    # its long side is square to the forearm, so the shield stands upright whenever the arm
+    # is raised to guard — the pose every sword-and-shield clip carries it in.
     elbow, wrist = J["LeftForeArm"], J["LeftHand"]
-    up = (elbow - wrist).normalized()
-    out = (V((1, 0, 0)) - up * up.x).normalized()
-    across = up.cross(out)
-    centre = (elbow + wrist) / 2 - up * 0.15 + out * 0.09
-    frame = mathutils.Matrix((across, up, out)).transposed().to_4x4()
+    forearm = (elbow - wrist).normalized()
+    out = (V((1, 0, 0)) - forearm * forearm.x).normalized()
+    long_side = out.cross(forearm)
+    centre = (elbow + wrist) / 2 + out * 0.09
+    frame = mathutils.Matrix((forearm, long_side, out)).transposed().to_4x4()
     frame.translation = centre
     mesh.transform(frame)
     return shield

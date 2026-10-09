@@ -96,6 +96,13 @@ that is not there is skipped. A new animation goes into that folder and gets a r
 | `strafe_right` | `Right Strafe.fbx` | all | no | mirrored `strafe_left`, else the forward cycle |
 | `death` | `Death.fbx` | all | no | the character stays standing |
 
+**The warrior's table.** `--clips warrior` bakes `WARRIOR` instead: the sword-and-shield
+downloads in `assets/animations/warrior/`, plus one clip per melee `Motion` the engine binds
+(`swing`, `cleave`, `smash`, `bash`, `lunge`, `guard`, `power_up`, `battlecry`), each played whole
+from the top. It borrows the casters' idle, walk, backpedal and strafes until sword-and-shield
+ones are downloaded. Any Mixamo character will do for a download — the script scales each one
+until its legs match the character's, so Y Bot's (some 190 times larger on import) fits too.
+
 **Downloading from Mixamo:** FBX Binary, **Without Skin**, 30 fps. *In Place* is optional —
 the script handles either.
 

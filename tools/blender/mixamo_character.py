@@ -3,7 +3,7 @@
     blender -b --factory-startup --python tools/blender/mixamo_character.py --
         --character assets/characters/firemage.fbx
         --out assets/firemage.glb [--blend assets/firemage.blend] [--height 1.8]
-        [--animations assets/animations]
+        [--animations assets/animations] [--clips caster|warrior]
 
 (one command; split here for reading)
 
@@ -14,6 +14,7 @@
 --out        the .glb the game loads (assets/<hero file name>)
 --blend      optional .blend to inspect the result in Blender
 --height     how tall the character stands, metres
+--clips      which clip table below to bake: the casters' (default) or the warrior's
 
 The whole workflow, and why each step is there: docs/character-animation.md.
 
@@ -33,6 +34,8 @@ parser.add_argument("--animations", default=os.path.join(REPO, "assets", "animat
 parser.add_argument("--out", required=True, help="the .glb to write")
 parser.add_argument("--blend", help="optional .blend to save alongside")
 parser.add_argument("--height", type=float, default=1.8, help="standing height, metres")
+parser.add_argument("--clips", choices=("caster", "warrior"), default="caster",
+                    help="which clip table to bake (default: caster)")
 args = parser.parse_args(sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else [])
 
 D = os.path.join(args.animations, "")
@@ -61,6 +64,36 @@ CLIPS = {
 # Seconds into a cast clip at which the spell leaves the hands. Exported as the clip's glTF
 # extras; the game lines this moment up with the cast completing and plays the rest after.
 RELEASE = {"cast": 0.65, "cast_heavy": 1.0}
+
+# The warrior: sword-and-shield downloads (made on Mixamo's Y Bot) in animations/warrior/,
+# with the casters' walk, idle, backpedal and strafes until sword-and-shield ones exist.
+# Every melee clip plays whole from the top (the engine's `Motion` slots), so none has a
+# release; `cast` and `cast_heavy` are required slots and take a slash and a smash.
+W = "warrior/"
+WARRIOR = {
+    "idle": ("Idle.fbx", None, None, False),
+    "walk": ("Walking.fbx", None, None, False),
+    "run": (W + "Sword And Shield Run.fbx", None, None, False),
+    "jump": (W + "Sword And Shield Jump.fbx", 2, 13, True),     # take-off to the top
+    "fall": (W + "Sword And Shield Jump.fbx", 18, 18, True),    # one pose on the way down
+    "land": (W + "Sword And Shield Jump.fbx", 23, 26, False),   # from touchdown on
+    "cast": (W + "Sword And Shield Slash.fbx", None, None, False),
+    "cast_heavy": (W + "Standing Melee Attack Downward.fbx", None, None, False),
+    "walk_back": ("Walking Backwards.fbx", None, None, False),
+    "strafe_left": ("Left Strafe.fbx", None, None, False),
+    "strafe_right": ("Right Strafe.fbx", None, None, False),
+    "death": (W + "Sword And Shield Death.fbx", None, None, False),
+    "swing": (W + "Sword And Shield Slash.fbx", None, None, False),
+    "cleave": (W + "Standing Melee Attack Horizontal.fbx", None, None, False),
+    "smash": (W + "Standing Melee Attack Downward.fbx", None, None, False),
+    "bash": (W + "Sword And Shield Attack (2).fbx", None, None, False),
+    "lunge": (W + "Sword And Shield Attack.fbx", None, None, False),
+    "guard": (W + "Sword And Shield Block.fbx", None, None, False),
+    "power_up": (W + "Sword And Shield Power Up.fbx", None, None, False),
+    "battlecry": (W + "Standing Taunt Battlecry.fbx", None, None, False),
+}
+if args.clips == "warrior":
+    CLIPS, RELEASE = WARRIOR, {}
 HEIGHT = args.height                      # Mixamo often reads a 1-unit model as centimetres
 ROOT = "mixamorig:Hips"
 
@@ -124,6 +157,12 @@ for name, (file, first, last, airborne) in CLIPS.items():
     # standing height, so its hips are no guide to where the ground is; the lowest the toes
     # reach anywhere in the file is, since a Mixamo clip starts or ends on the ground.
     source.matrix_world = place @ turn @ source.matrix_world
+    # Downloads made on different Mixamo characters come in different sizes (Y Bot imports
+    # some 190 times larger than a rig rigged from a centimetre model), so each is scaled
+    # until its legs are as long as the character's: hips above toes, at rest.
+    leg = lambda arm: ((arm.matrix_world @ arm.data.bones[ROOT].head_local).z
+                       - (arm.matrix_world @ arm.data.bones["mixamorig:LeftToeBase"].head_local).z)
+    source.matrix_world = mathutils.Matrix.Scale(leg(rig) / leg(source), 4) @ source.matrix_world
     toes = lambda arm, posed: min(
         (arm.matrix_world @ (arm.pose.bones[n].head if posed else arm.data.bones[n].head_local)).z
         for n in ("mixamorig:LeftToeBase", "mixamorig:RightToeBase"))
