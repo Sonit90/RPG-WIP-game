@@ -208,13 +208,14 @@ file that stands in for the Mixamo download *With Skin*, so step 4 of section 1 
 "C:/Program Files/Blender Foundation/Blender 5.2/blender.exe" -b --factory-startup \
   --python tools/blender/autorig_character.py -- \
   --mesh "path/to/Meshy_export.fbx" --out assets/characters/warrior.fbx \
-  --prop right --head-scale 1.2
+  --prop right --shield tower --head-scale 1.2
 ```
 
 | Option | What it does |
 | --- | --- |
 | `--mesh` | The unrigged model, `.fbx`, `.glb` or `.obj`, as downloaded: standing, arms down, facing the viewer, any scale |
 | `--prop right\|left` | A held prop that is its own loose part (anything a third of the height long front to back) is bound rigidly to that hand, so it does not bend with the fingers |
+| `--shield tower` | Builds a curved tower shield (steel rim and cross, red face, wooden back; three untextured materials) onto the outside of the left forearm, bound rigidly to `LeftForeArm` |
 | `--head-scale` | Scales the head about the neck before rigging; the warrior uses 1.2 |
 | `--blend` | Saves the rigged model for inspection |
 

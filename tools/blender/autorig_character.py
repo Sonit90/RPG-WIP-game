@@ -2,7 +2,7 @@
 
     blender -b --factory-startup --python tools/blender/autorig_character.py --
         --mesh <model.fbx|.glb|.obj> --out assets/characters/<hero>.fbx
-        [--prop right|left] [--head-scale 1.2] [--blend <file.blend>]
+        [--prop right|left] [--shield tower] [--head-scale 1.2] [--blend <file.blend>]
         [--animations assets/animations]
 
 (one command; split here for reading)
@@ -12,6 +12,7 @@
 --out         the rigged character, the file mixamo_character.py takes as --character
 --prop        a held prop (sword, staff) that is its own loose part of the mesh: bound
               rigidly to that hand instead of being auto-weighted, so it does not bend
+--shield      builds a shield onto the outside of the left forearm, bound rigidly to it
 --head-scale  scales the head about the neck before rigging (1.0 leaves it alone)
 --blend       optional .blend of the rigged result, to inspect in Blender
 --animations  the folder holding the Mixamo animation downloads; Idle.fbx is read from it
@@ -28,7 +29,7 @@ the mesh, and arm twist comes from the animation rig's idle pose (arms down, lik
 Joint heights are measured on the model normalised to 1.8 m, feet on the origin. They suit an
 adult humanoid in a relaxed A-pose; a very different build may need the constants below moved.
 """
-import argparse, bpy, bmesh, mathutils, mathutils.kdtree, os, sys
+import argparse, bpy, bmesh, math, mathutils, mathutils.kdtree, os, sys
 from mathutils import Vector as V
 
 parser = argparse.ArgumentParser(prog="autorig_character.py")
@@ -38,6 +39,7 @@ REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 parser.add_argument("--animations", default=os.path.join(REPO, "assets", "animations"),
                     help="folder holding the animation downloads (default: assets/animations)")
 parser.add_argument("--prop", choices=("right", "left"), help="hand holding a separate prop")
+parser.add_argument("--shield", choices=("tower",), help="add a shield on the left forearm")
 parser.add_argument("--head-scale", type=float, default=1.0, help="head size multiplier")
 parser.add_argument("--blend", help="optional .blend to save alongside")
 args = parser.parse_args(sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else [])
@@ -241,14 +243,110 @@ for b in bones:
         b.use_connect = True
 bpy.ops.object.mode_set(mode="OBJECT")
 
+
+# --- Shield -----------------------------------------------------------------------------
+def material(name, color, metallic, roughness):
+    m = bpy.data.materials.new(name)
+    m.use_nodes = True
+    bsdf = m.node_tree.nodes["Principled BSDF"]
+    bsdf.inputs["Base Color"].default_value = (*color, 1.0)
+    bsdf.inputs["Metallic"].default_value = metallic
+    bsdf.inputs["Roughness"].default_value = roughness
+    return m
+
+
+def tower_shield():
+    """A curved tower shield strapped to the outside of the left forearm, as its own object.
+
+    Built in a local frame — x across, y up the forearm, z out of the face — then placed:
+    centred a little below the forearm's middle, standing off it by the gauntlet's thickness.
+    The face bows back towards the arm, and its top edge is arched.
+    """
+    width, tall, depth, radius, rim = 0.56, 1.05, 0.035, 0.75, 0.045
+    columns, rows = 14, 22
+    steel = material("ShieldSteel", (0.42, 0.43, 0.45), 1.0, 0.35)
+    paint = material("ShieldPaint", (0.33, 0.045, 0.035), 0.0, 0.6)
+    wood = material("ShieldBack", (0.22, 0.14, 0.08), 0.0, 0.8)
+    mesh = bpy.data.meshes.new("Shield")
+    shield = bpy.data.objects.new("Shield", mesh)
+    bpy.context.scene.collection.objects.link(shield)
+    for m in (steel, paint, wood):
+        mesh.materials.append(m)
+    bm = bmesh.new()
+    uv = bm.loops.layers.uv.new("UVMap")
+
+    def surface(u, t, out):
+        """Point on the front (out=1) or back (out=0) sheet; u across, t bottom to top."""
+        x = (u - 0.5) * width
+        y = -tall / 2 + t * (tall + 0.06 * math.cos(math.pi * (u - 0.5)))
+        z = -(radius - math.sqrt(radius * radius - x * x)) + (depth if out else 0.0)
+        return V((x, y, z))
+
+    grid = [[[bm.verts.new(surface(i / columns, j / rows, out)) for j in range(rows + 1)]
+             for i in range(columns + 1)] for out in (0, 1)]
+
+    def quad(corners, slot, uvs):
+        try:
+            face = bm.faces.new(corners)
+        except ValueError:
+            return
+        face.material_index = slot
+        face.smooth = True
+        for loop, coord in zip(face.loops, uvs):
+            loop[uv].uv = coord
+
+    for i in range(columns):
+        for j in range(rows):
+            u0, u1, t0, t1 = i / columns, (i + 1) / columns, j / rows, (j + 1) / rows
+            uvs = [(u0, t0), (u1, t0), (u1, t1), (u0, t1)]
+            front = [grid[1][i][j], grid[1][i + 1][j], grid[1][i + 1][j + 1], grid[1][i][j + 1]]
+            edge = min(u0, 1 - u1) * width < rim or min(t0, 1 - t1) * tall < rim
+            boss = abs((u0 + u1) / 2 - 0.5) * width < 0.035 or abs((t0 + t1) / 2 - 0.58) * tall < 0.03
+            quad(front, 0 if edge or boss else 1, uvs)
+            quad(list(reversed([grid[0][i][j], grid[0][i + 1][j], grid[0][i + 1][j + 1],
+                                grid[0][i][j + 1]])), 2, list(reversed(uvs)))
+    # The rim: the strip joining the two sheets all the way round.
+    ring = ([(i, 0) for i in range(columns)] + [(columns, j) for j in range(rows)]
+            + [(i, rows) for i in range(columns, 0, -1)] + [(0, j) for j in range(rows, 0, -1)])
+    for (i0, j0), (i1, j1) in zip(ring, ring[1:] + ring[:1]):
+        quad([grid[0][i0][j0], grid[0][i1][j1], grid[1][i1][j1], grid[1][i0][j0]], 0,
+             [(0, 0), (1, 0), (1, 1), (0, 1)])
+    bm.normal_update()
+    bm.to_mesh(mesh)
+    bm.free()
+
+    elbow, wrist = J["LeftForeArm"], J["LeftHand"]
+    up = (elbow - wrist).normalized()
+    out = (V((1, 0, 0)) - up * up.x).normalized()
+    across = up.cross(out)
+    centre = (elbow + wrist) / 2 - up * 0.15 + out * 0.09
+    frame = mathutils.Matrix((across, up, out)).transposed().to_4x4()
+    frame.translation = centre
+    mesh.transform(frame)
+    return shield
+
+
+shield = set()
+if args.shield:
+    piece = tower_shield()
+    first = len(model.data.vertices)
+    select_only(model, piece)
+    bpy.ops.object.join()
+    shield = set(range(first, len(model.data.vertices)))
+    co.extend(model.data.vertices[i].co.copy() for i in sorted(shield))
+    print("SHIELD verts", len(shield))
+
 # --- Skin -------------------------------------------------------------------------------
 select_only(rig, model)
 bpy.ops.object.parent_set(type="ARMATURE_AUTO")
 groups = model.vertex_groups
-if prop:
-    for g in groups:
-        g.remove(list(prop))
-    groups[P + args.prop.capitalize() + "Hand"].add(list(prop), 1.0, "REPLACE")
+# Rigid pieces: a held prop follows its hand, the shield the forearm it is strapped to.
+for verts, bone in ((prop, args.prop and P + args.prop.capitalize() + "Hand"),
+                    (shield, P + "LeftForeArm")):
+    if verts:
+        for g in groups:
+            g.remove(list(verts))
+        groups[bone].add(list(verts), 1.0, "REPLACE")
 
 # Vertices heat weighting gave nothing: the nearest bone, fully.
 segments = [(b.name, b.head_local, b.tail_local) for b in rig.data.bones
