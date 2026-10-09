@@ -49,3 +49,8 @@ deploy/.env
 
 # Backups of replaced icon art
 crates/engine-renderer/assets/icons/backup/
+
+# Claude Code: per-machine settings and agent worktrees. Shared config (settings.json,
+# agents/) is committed.
+.claude/settings.local.json
+.claude/worktrees/
