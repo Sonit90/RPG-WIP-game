@@ -315,7 +315,8 @@ pub struct DungeonInstance {
     pub dungeon_id: String,
     /// Where it is in its life.
     pub state: InstanceStateTag,
-    /// Whether it is running (countdown or active): the physics tick's index.
+    /// Whether its fight is ticking (countdown, active, or completed with a chest to loot):
+    /// the combat tick's index.
     #[index(btree)]
     pub live: bool,
     /// When the countdown ends.
@@ -473,6 +474,38 @@ pub struct PendingResult {
     pub created_at: Timestamp,
 }
 
+/// A player's roll from the boss's chest, on its way to their character.
+///
+/// Written at `finish` as `"rolled"` - durable, so a restart cannot lose it. Then exactly one
+/// thing settles it: the sim reports the chest opened (`"bag"`), the sim reports it mailed
+/// (`"mail"`), or the instance is torn down with it still rolled (`"mail"`, `"unclaimed"`).
+/// The bridge collects settled rows and the API delivers each once, under `loot_id`.
+///
+/// The bridge decodes rows by position (`backend/crates/game/src/bridge.rs`): a field added
+/// here is added there, at the same position.
+#[spacetimedb::table(accessor = pending_loot)]
+#[derive(Debug, Clone)]
+pub struct PendingLoot {
+    /// Idempotency key: `"<instance id>:<account id>:loot"`.
+    #[primary_key]
+    pub loot_id: String,
+    /// Whose.
+    pub account_id: String,
+    /// Which character.
+    pub character_id: String,
+    /// Which instance.
+    #[index(btree)]
+    pub instance_id: u64,
+    /// The item's stable key.
+    pub item: String,
+    /// `"rolled"` (not settled, never collected), `"bag"` or `"mail"`.
+    pub state: String,
+    /// For mail: `"bag_full"` or `"unclaimed"`. Empty otherwise.
+    pub reason: String,
+    /// When it was rolled.
+    pub created_at: Timestamp,
+}
+
 /// An entity as both ends can name it: `engine_realm::combat::EntityRef`.
 #[derive(SpacetimeType, Debug, Clone, PartialEq, Eq)]
 pub enum NetEntity {
@@ -575,6 +608,8 @@ pub enum NetAction {
     Ultimate(V3),
     /// An extra button.
     Extra(u8),
+    /// Open the boss's chest (appended last: the variant order is the wire format).
+    OpenChest,
 }
 
 /// A player's combat state beyond health and position (which live on `InstancePlayer`).

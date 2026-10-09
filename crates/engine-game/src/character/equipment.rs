@@ -78,7 +78,7 @@ impl MoveError {
     }
 }
 
-/// The fifteen slots on the body.
+/// The thirteen slots on the body.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Equipment {
     /// One optional stack per [`EquipSlot`], indexed by [`EquipSlot::index`].
@@ -286,7 +286,7 @@ mod tests {
     }
 
     #[test]
-    fn a_ring_fits_either_finger_and_a_trinket_any_of_four() {
+    fn a_ring_fits_either_finger_and_a_trinket_either_of_two() {
         let mut equipment = Equipment::empty();
         for slot in ItemFamily::Ring.slots() {
             assert!(equipment.equip(slot, stack(ItemFamily::Ring)).is_ok());
@@ -294,7 +294,7 @@ mod tests {
         for slot in ItemFamily::Trinket.slots() {
             assert!(equipment.equip(slot, stack(ItemFamily::Trinket)).is_ok());
         }
-        assert_eq!(equipment.count(), 6);
+        assert_eq!(equipment.count(), 4);
     }
 
     #[test]

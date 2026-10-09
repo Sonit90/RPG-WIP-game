@@ -27,6 +27,7 @@ mod combat;
 mod connection;
 mod instance;
 mod level;
+mod loot;
 mod matchmaking;
 mod movement;
 mod party;

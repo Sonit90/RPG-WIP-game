@@ -221,6 +221,7 @@ impl RealmLink {
             }),
             ActionKind::Ultimate(p) => b::NetAction::Ultimate(aimed(p)),
             ActionKind::Extra(index) => b::NetAction::Extra(index),
+            ActionKind::OpenChest => b::NetAction::OpenChest,
         };
         let result = self
             .connection

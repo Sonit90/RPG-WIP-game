@@ -215,7 +215,25 @@ pub struct OnlineSession {
     settings_version: Option<i64>,
     settings_synced: Option<serde_json::Value>,
     settings_in_flight: Option<serde_json::Value>,
+    /// The selected character's stored loadout, as the API last sent it.
+    stored_loadout: Option<(Hero, engine_realm::loadout::Loadout)>,
+    /// Chest loot (or its mail) the bridge may not have persisted yet.
+    loot_watch: Option<LootWatch>,
 }
+
+/// Re-fetching the character after chest loot, until the item shows up in the bag or mailbox.
+struct LootWatch {
+    /// Bag stacks plus letters before the loot; more than this means the item arrived.
+    held_before: usize,
+    /// Fetches sent so far.
+    attempt: usize,
+    /// When the next fetch is due.
+    next: Instant,
+}
+
+/// Seconds after the loot event (or leaving a won run) of each re-fetch of the character. The
+/// bridge collects loot every few seconds, so the item is usually stored by the second.
+const LOOT_FETCH_DELAYS: [u64; 4] = [4, 6, 10, 15];
 
 /// How long a toast stays.
 const TOAST_SECONDS: u64 = 6;
@@ -279,6 +297,8 @@ impl OnlineSession {
             settings_version: None,
             settings_synced: None,
             settings_in_flight: None,
+            stored_loadout: None,
+            loot_watch: None,
         })
     }
 
@@ -361,6 +381,27 @@ impl OnlineSession {
         });
     }
 
+    /// Takes mail `mail_id`'s item into the bag, on the persistent character. The API answers
+    /// with the character, which dresses the local sheet; a full bag is refused there.
+    pub fn take_mail(&mut self, mail_id: u64) {
+        self.send_mail(mail_id, true);
+    }
+
+    /// Marks mail `mail_id` read, on the persistent character.
+    pub fn read_mail(&mut self, mail_id: u64) {
+        self.send_mail(mail_id, false);
+    }
+
+    fn send_mail(&mut self, mail_id: u64, take: bool) {
+        if let Some(character_id) = self.selected_character_summary().map(|c| c.id.clone()) {
+            self.client.send(NetCommand::Mail {
+                character_id,
+                mail_id,
+                take,
+            });
+        }
+    }
+
     /// Directives for the application, drained.
     pub fn take_directives(&mut self) -> Vec<Directive> {
         std::mem::take(&mut self.directives)
@@ -382,6 +423,7 @@ impl OnlineSession {
         }
         self.events = events;
         self.age_notices();
+        self.poll_loot_watch();
         self.run_dev_script();
         let now = Instant::now();
         self.toasts
@@ -564,7 +606,15 @@ impl OnlineSession {
                     let loadout = engine_realm::loadout::Loadout {
                         equipment: detail.summary.equipment.clone(),
                         inventory: detail.inventory.clone(),
+                        mail: detail.mail.clone(),
                     };
+                    // The item has arrived once the bag and mailbox hold more than they did.
+                    if self.loot_watch.as_ref().is_some_and(|watch| {
+                        loadout.inventory.len() + loadout.mail.len() > watch.held_before
+                    }) {
+                        self.loot_watch = None;
+                    }
+                    self.stored_loadout = Some((hero, loadout.clone()));
                     self.directives.push(Directive::ApplyLoadout(hero, loadout));
                 }
                 // Keep the list's copy in step (gear score, level after a result).
@@ -941,6 +991,65 @@ impl OnlineSession {
         }
         self.seen_notices.retain(|id, _| live.contains(id));
         self.dismissed.retain(|id| live.contains(id));
+    }
+
+    /// Re-fetches the character while a run's item is still on its way to the stored bag.
+    fn poll_loot_watch(&mut self) {
+        let Some(watch) = self.loot_watch.as_mut() else {
+            return;
+        };
+        let now = Instant::now();
+        if now < watch.next {
+            return;
+        }
+        watch.attempt += 1;
+        let last = watch.attempt >= LOOT_FETCH_DELAYS.len();
+        if !last {
+            watch.next = now + Duration::from_secs(LOOT_FETCH_DELAYS[watch.attempt]);
+        }
+        if last {
+            self.loot_watch = None;
+        }
+        if let Some(id) = self.selected_character_summary().map(|c| c.id.clone()) {
+            self.client.send(NetCommand::FetchCharacter(id));
+        }
+    }
+
+    /// Starts re-fetching the character until `held_before` is exceeded. The bridge collects
+    /// loot every few seconds, so the item is usually stored by the second fetch.
+    fn watch_loot(&mut self, held_before: usize) {
+        self.loot_watch = Some(LootWatch {
+            held_before,
+            attempt: 0,
+            next: Instant::now() + Duration::from_secs(LOOT_FETCH_DELAYS[0]),
+        });
+    }
+
+    fn held_now(&self) -> usize {
+        self.stored_loadout.as_ref().map_or(0, |(_, loadout)| {
+            loadout.inventory.len() + loadout.mail.len()
+        })
+    }
+
+    /// The server gave the local player `key` (`mailed`: by mail, with `reason`, rather than
+    /// into the bag). The stored character does not have it yet, so it is put in the local one
+    /// at once; the re-fetch then replaces the lot with what is stored.
+    fn on_loot(&mut self, key: &str, mailed: Option<&str>) {
+        let held_before = self.held_now();
+        if let Some((hero, mut loadout)) = self.stored_loadout.clone() {
+            let placed = match mailed {
+                Some(reason) => {
+                    engine_realm::loadout::add_to_mail(&mut loadout, key, reason, unix_seconds())
+                        .is_ok()
+                }
+                None => engine_realm::loadout::add_to_bag(&mut loadout, key).is_ok(),
+            };
+            if placed {
+                self.stored_loadout = Some((hero, loadout.clone()));
+                self.directives.push(Directive::ApplyLoadout(hero, loadout));
+            }
+        }
+        self.watch_loot(held_before);
     }
 
     // --- the world -------------------------------------------------------------------
@@ -1378,6 +1487,31 @@ impl OnlineSession {
         // Events, as if they had happened here this frame.
         let tick = simulation.tick_count();
         for wire in self.mirror.take_events() {
+            let is_mine = |player: &EntityRef| {
+                mine.as_ref().is_some_and(
+                    |account| matches!(player, EntityRef::Player(who) if who == account),
+                )
+            };
+            match &wire {
+                engine_realm::combat::WireEvent::LootAwarded { player, item }
+                    if is_mine(player) =>
+                {
+                    self.on_loot(item, None);
+                }
+                engine_realm::combat::WireEvent::LootMailed {
+                    player,
+                    item,
+                    reason,
+                } if is_mine(player) => {
+                    let reason = if *reason == 0 {
+                        engine_realm::loadout::MAIL_BAG_FULL
+                    } else {
+                        engine_realm::loadout::MAIL_UNCLAIMED
+                    };
+                    self.on_loot(item, Some(reason));
+                }
+                _ => {}
+            }
             let resolve = |reference: &EntityRef| self.resolve(simulation, reference);
             if let Some(event) = engine_realm::combat::wire::decode(&wire, &resolve, tick) {
                 simulation.inject_event(event);
@@ -1386,7 +1520,9 @@ impl OnlineSession {
 
         // Presses, with the selection they were made against.
         let requests = simulation.take_remote_requests();
-        if requests.is_empty() || !self.may_act() {
+        let active = self.may_act();
+        let completed = self.run_completed();
+        if requests.is_empty() || !(active || completed) {
             return;
         }
         let target = simulation
@@ -1405,8 +1541,13 @@ impl OnlineSession {
                     ActionKind::Ultimate(at(position))
                 }
                 engine_game::PlayerCommand::UseExtra(index) => ActionKind::Extra(slot(index)),
+                engine_game::PlayerCommand::OpenChest => ActionKind::OpenChest,
                 _ => continue,
             };
+            // After the run only the chest can be opened.
+            if !active && kind != ActionKind::OpenChest {
+                continue;
+            }
             self.client.send(NetCommand::Act(CombatAction {
                 target: target.clone(),
                 kind,
@@ -1422,11 +1563,23 @@ impl OnlineSession {
             .is_some_and(|instance| instance.state == engine_realm::instance::InstanceState::Active)
     }
 
+    /// Whether the run is won and the instance lingers, so the chest can be opened.
+    fn run_completed(&self) -> bool {
+        self.mirror.instance.as_ref().is_some_and(|instance| {
+            instance.state == engine_realm::instance::InstanceState::Completed
+        })
+    }
+
     fn leave_world(
         &mut self,
         simulation: &mut Simulation,
         extractor: &mut engine_presentation::RenderExtractor,
     ) {
+        if self.world.instance.is_some() && self.run_completed() && self.loot_watch.is_none() {
+            // Whatever was never taken from the chest is mailed when the instance goes.
+            let held = self.held_now();
+            self.watch_loot(held);
+        }
         for (_, remote) in std::mem::take(&mut self.world.remotes) {
             extractor.remove_remote_character(remote.entity);
             simulation.party_mut().leave(remote.entity);
@@ -1460,4 +1613,11 @@ fn place_player(simulation: &mut Simulation, position: Vec3, yaw: f32) {
         *body = Body::at(position);
         body.facing_yaw = yaw;
     }
+}
+
+/// Unix time in whole seconds, for the stamp on mail shown before the server's copy arrives.
+fn unix_seconds() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(0))
 }

@@ -10,7 +10,12 @@ name = "mygame"
 path = "src/main.rs"
 
 [features]
-default = ["debug-overlay"]
+default = ["debug-overlay", "dev-tools"]
+# Developer-only controls: the HUD button that teleports to the boss and kills it. Default on
+# for development; `tools/package.ps1` never enables it, and verifies the shipped binary
+# does not contain it. Every use is `#[cfg(feature = "dev-tools")]`, so without it none of the
+# code is compiled at all.
+dev-tools = ["engine-game/dev-tools", "engine-presentation/dev-tools"]
 # Forwards to engine-renderer. A shipping build uses --no-default-features.
 debug-overlay = ["engine-renderer/debug-overlay"]
 # The in-game level editor, on F6. Off by default: a player's build must not carry the

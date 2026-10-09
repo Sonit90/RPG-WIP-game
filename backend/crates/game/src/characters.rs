@@ -38,6 +38,7 @@ pub fn detail(row: &CharacterRow, completions: Vec<DungeonCompletion>) -> Charac
     CharacterDetail {
         summary: summary(row),
         inventory: engine_realm::loadout::loadout_of(&sheet).inventory,
+        mail: row.loadout.0.mail.clone(),
         talents: row.talents.0.clone(),
         stats: stats_of(&sheet),
         completions,

@@ -173,6 +173,32 @@ impl ApiClient {
         )
     }
 
+    /// Takes a mail's item into the bag, or marks the mail read (`take = false`).
+    ///
+    /// # Errors
+    ///
+    /// The bag is full (a conflict), there is no such mail, the character is not the caller's,
+    /// or the server is unreachable.
+    pub fn mail(
+        &self,
+        token: &str,
+        id: &str,
+        mail_id: u64,
+        take: bool,
+    ) -> Result<CharacterDetail, RealmError> {
+        self.post(
+            &self.persistence,
+            &format!(
+                "/api/v1/characters/{}/mail/{mail_id}/{}",
+                path_segment(id),
+                if take { "take" } else { "read" }
+            ),
+            Some(token),
+            &serde_json::json!({}),
+            Category::Persistence,
+        )
+    }
+
     /// The account's synced settings, if any were ever saved.
     ///
     /// # Errors

@@ -16,6 +16,11 @@ publish.workspace = true
 # engine-environment is allowed for the same reason again: it is level *data* — placements,
 # primitives and spawn points — and it depends on engine-core alone. It carries no mesh, no
 # material and no handle, so gameplay still cannot name a thing that is drawn.
+[features]
+# Developer controls (teleport to the boss and kill it). Forwarded from engine-app's
+# `dev-tools`; the shipping build turns it off, so none of this code is compiled into it.
+dev-tools = []
+
 [dependencies]
 engine-collision = { workspace = true }
 engine-core = { workspace = true }

@@ -752,7 +752,7 @@ pub static STATUS_DEFS: [StatusDef; STATUS_KIND_COUNT] = [
         modifiers: &[
             EffectModifier::Stat {
                 stat: Stat::Haste,
-                per_stack: 30.0 * crate::character::RATING_PER_PERCENT,
+                per_stack: crate::character::stat::rating_for_fraction(0.30),
             },
             EffectModifier::DamageDealt { per_stack: 0.20 },
             EffectModifier::MoveSpeed { per_stack: 0.10 },

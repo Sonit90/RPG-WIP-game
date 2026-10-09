@@ -50,6 +50,11 @@ pub struct Bindings {
     /// that lives somewhere else is a key nothing can check for a collision, and an action
     /// bar slot bound to it would silently open the character panel mid-fight.
     pub character_sheet: KeyCode,
+    /// Open and close the mailbox.
+    ///
+    /// Here for the reason [`Bindings::character_sheet`] is: a key that lives somewhere else
+    /// is a key nothing can check for a collision.
+    pub mailbox: KeyCode,
     /// The first button beside the bar. A hero with more abilities than digits uses it.
     ///
     /// Here beside the Ultimate's key and for the same reason: a key that lives somewhere
@@ -57,6 +62,12 @@ pub struct Bindings {
     pub extra_one: KeyCode,
     /// The second button beside the bar.
     pub extra_two: KeyCode,
+    /// Interact with what is in reach: open the boss's chest and take your share.
+    ///
+    /// Here for the reason [`Bindings::character_sheet`] is: a key that lives somewhere else
+    /// is a key nothing can check for a collision, and an action bar slot bound to it would
+    /// silently open a chest mid-fight.
+    pub interact: KeyCode,
     /// Open and close the full-screen dungeon map.
     ///
     /// Here for the reason [`Bindings::character_sheet`] is: a key nothing can check for a
@@ -83,8 +94,13 @@ impl Default for Bindings {
             // C, which is where the genre has put the character sheet for as long as there
             // have been character sheets.
             character_sheet: KeyCode::C,
+            // J: free of the genre's fixed keys and of the developer's, and under the right
+            // hand next to the sheet's neighbours.
+            mailbox: KeyCode::J,
             // M, where the genre has always put the map.
             toggle_map: KeyCode::M,
+            // E, where the genre has always put "use".
+            interact: KeyCode::E,
             ultimate: KeyCode::R,
             // F and G: the two keys next to the digits that nothing else in the game wants.
             extra_one: KeyCode::F,
@@ -104,9 +120,10 @@ impl Bindings {
     /// ones. A test walks the whole list, which is what stops two actions from quietly
     /// sharing a key again.
     #[must_use]
-    pub fn named_keys(&self) -> [KeyCode; 13] {
+    pub fn named_keys(&self) -> [KeyCode; 15] {
         [
             self.toggle_map,
+            self.interact,
             self.extra_one,
             self.extra_two,
             self.forward,
@@ -118,6 +135,7 @@ impl Bindings {
             self.select_self,
             self.ultimate,
             self.character_sheet,
+            self.mailbox,
             self.reset_dummies,
         ]
     }
@@ -149,7 +167,9 @@ impl Bindings {
             (self.extra_one, "THE FIRST EXTRA ABILITY"),
             (self.extra_two, "THE SECOND EXTRA ABILITY"),
             (self.character_sheet, "THE CHARACTER SHEET"),
+            (self.mailbox, "THE MAILBOX"),
             (self.toggle_map, "THE DUNGEON MAP"),
+            (self.interact, "INTERACT"),
             (self.reset_dummies, "RESET DUMMIES"),
         ];
         named

@@ -594,6 +594,38 @@ fn describe(event: &CombatEvent) -> String {
         CombatEvent::DungeonCompleted { seconds, tick } => {
             format!("dungeon completed in {} on {tick}", fixed(seconds))
         }
+        CombatEvent::ChestSpawned {
+            chest,
+            position,
+            tick,
+            ..
+        } => format!(
+            "chest {chest} at {},{} on {tick}",
+            fixed(position.x),
+            fixed(position.z)
+        ),
+        CombatEvent::ChestOpened { chest, by, tick } => {
+            format!("chest {chest} opened by {} on {tick}", by.index())
+        }
+        CombatEvent::LootAwarded { player, item, tick } => {
+            format!("loot {} to {} on {tick}", item.0, player.index())
+        }
+        CombatEvent::LootMailed {
+            player,
+            item,
+            reason,
+            tick,
+        } => format!(
+            "loot {} mailed to {} ({reason:?}) on {tick}",
+            item.0,
+            player.index()
+        ),
+        CombatEvent::MailTaken { player, item, tick } => {
+            format!("mail {} taken by {} on {tick}", item.0, player.index())
+        }
+        CombatEvent::MailBagFull { player, tick } => {
+            format!("mail bag full for {} on {tick}", player.index())
+        }
         CombatEvent::Aggro {
             enemy,
             entity,

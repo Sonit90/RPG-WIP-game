@@ -47,7 +47,7 @@
 /// Eight action bars: what is in each slot, which key presses it, and where it is drawn.
 pub mod action_bar;
 pub mod aura_row;
-/// The character sheet: stats, fifteen equipment slots, and the bag.
+/// The character sheet: stats, thirteen equipment slots, and the bag.
 pub mod character_menu;
 pub mod dungeon_map;
 pub mod flow;
@@ -68,6 +68,10 @@ pub mod hud_edit;
 pub mod hud_layout;
 pub mod input;
 pub mod kit;
+/// The loot toast and the prompt over a waiting chest.
+pub mod loot_hud;
+/// The mailbox: letters with items the bag had no room for, and a way to take them.
+pub mod mailbox;
 /// The dungeon map's design tokens: colour, type, spacing, radii, motion.
 pub mod map_style;
 pub mod menu;
@@ -103,6 +107,7 @@ pub use ground_fill::{FillMesh, MAX_FILL_INDICES, MAX_FILL_VERTICES, build_fill}
 pub use hud_edit::{Control as EditControl, EditOutcome, EditTarget, HudEditor};
 pub use hud_layout::{HudElementId, HudLayout, MIN_VISIBLE_FRACTION, clamp_on_screen};
 pub use input::UiInput;
+pub use mailbox::{MailboxMenu, MailboxOutcome, push_mailbox};
 pub use menu::{
     MenuAction, MenuScreen, MenuSystem, NameplateItem, PauseItem, SettingsItem, VolumeChannel,
     volume_of,

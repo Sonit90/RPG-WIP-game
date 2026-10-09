@@ -586,6 +586,65 @@ pub enum CombatEvent {
         /// The simulation tick it happened on.
         tick: u64,
     },
+    /// The boss's chest appeared above where it fell and began to drop.
+    ChestSpawned {
+        /// The chest's identity.
+        chest: u32,
+        /// Where it comes to rest (on the ground).
+        position: Vec3,
+        /// How far above `position` it starts, in metres.
+        drop_height: f32,
+        /// How long it takes to land, in seconds.
+        fall_seconds: f32,
+        /// The simulation tick it happened on.
+        tick: u64,
+    },
+    /// A player opened the chest. Emitted once, for the first opener; the lid animation.
+    ChestOpened {
+        /// The chest's identity.
+        chest: u32,
+        /// Who opened it.
+        by: EntityId,
+        /// The simulation tick it happened on.
+        tick: u64,
+    },
+    /// A player's item was put in their bag.
+    LootAwarded {
+        /// Who received it.
+        player: EntityId,
+        /// What they received.
+        item: crate::character::ItemId,
+        /// The simulation tick it happened on.
+        tick: u64,
+    },
+    /// A player's item went to their mailbox instead of their bag: the bag was full when they
+    /// opened the chest, or they never opened it. The claim is spent.
+    LootMailed {
+        /// Whose mailbox received it.
+        player: EntityId,
+        /// What was mailed.
+        item: crate::character::ItemId,
+        /// Why it was mailed.
+        reason: crate::character::MailReason,
+        /// The simulation tick it happened on.
+        tick: u64,
+    },
+    /// A player took a letter's item into their bag.
+    MailTaken {
+        /// Who took it.
+        player: EntityId,
+        /// What they took.
+        item: crate::character::ItemId,
+        /// The simulation tick it happened on.
+        tick: u64,
+    },
+    /// A player tried to take a letter's item with a full bag. The letter is kept.
+    MailBagFull {
+        /// Who was refused.
+        player: EntityId,
+        /// The simulation tick it happened on.
+        tick: u64,
+    },
 }
 
 impl CombatEvent {
@@ -628,7 +687,13 @@ impl CombatEvent {
             | Self::DungeonProgress { tick, .. }
             | Self::BossUnlocked { tick, .. }
             | Self::AddSummoned { tick, .. }
-            | Self::DungeonCompleted { tick, .. } => tick,
+            | Self::DungeonCompleted { tick, .. }
+            | Self::ChestSpawned { tick, .. }
+            | Self::ChestOpened { tick, .. }
+            | Self::LootAwarded { tick, .. }
+            | Self::LootMailed { tick, .. }
+            | Self::MailTaken { tick, .. }
+            | Self::MailBagFull { tick, .. } => tick,
             Self::Damage(damage) => damage.tick,
         }
     }

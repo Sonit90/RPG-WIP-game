@@ -11,7 +11,9 @@
 )]
 
 use engine_game::arena::{self, ArenaConfig};
-use engine_game::character::{EquipSlot, ItemSlot, ItemStack, Stat, item_by_key};
+use engine_game::character::{
+    EquipSlot, ItemFamily, ItemSlot, ItemStack, Stat, item_by_key, starting_item,
+};
 use engine_game::hero::Hero;
 use engine_game::sim::Simulation;
 use engine_presentation::character_save::{apply_config, config_of};
@@ -51,16 +53,49 @@ impl Drop for TempDir {
     }
 }
 
-/// A running arena with one step taken.
-fn simulation() -> Simulation {
+/// A running arena with one step taken, and every hero as new: wearing and carrying nothing.
+fn fresh() -> Simulation {
     let mut simulation = arena::training_arena(&ArenaConfig::default());
     simulation.step_once();
     simulation
 }
 
+/// [`fresh`], with every hero handed four white pieces to wear and five to carry, so there is
+/// something to move around.
+fn simulation() -> Simulation {
+    let mut simulation = fresh();
+    for hero in Hero::ALL {
+        let sheet = simulation.roster_mut().sheet_mut(hero);
+        for slot in [
+            EquipSlot::Chest,
+            EquipSlot::Legs,
+            EquipSlot::Wrist,
+            EquipSlot::Feet,
+        ] {
+            let def = starting_item(slot.family()).expect("a white piece");
+            sheet
+                .equipment_mut()
+                .equip(slot, ItemStack::one(def.id))
+                .expect("fits");
+        }
+        for family in [
+            ItemFamily::Head,
+            ItemFamily::Shoulder,
+            ItemFamily::Back,
+            ItemFamily::Ring,
+            ItemFamily::Trinket,
+        ] {
+            let def = starting_item(family).expect("a white piece");
+            sheet.inventory_mut().add(ItemStack::one(def.id));
+        }
+    }
+    simulation.refresh_character();
+    simulation
+}
+
 /// A simulation whose roster came out of `path`, the way the application starts up.
 fn restart(path: &PathBuf) -> Simulation {
-    let mut simulation = simulation();
+    let mut simulation = fresh();
     let manager = CharacterConfigManager::load(path);
     if manager.existed() {
         apply_config(manager.config(), simulation.roster_mut());
@@ -138,14 +173,15 @@ fn a_drag_in_the_panel_reaches_the_simulation_and_survives_a_restart() {
 }
 
 #[test]
-fn a_first_launch_dresses_the_roster_and_the_second_reads_it_back() {
+fn a_first_launch_starts_with_nothing_and_the_second_reads_it_back() {
     let dir = TempDir::new("first-launch");
     let manager = CharacterConfigManager::load(dir.file());
     assert!(!manager.existed(), "a file appeared out of nowhere");
 
-    // Nothing to apply, so the simulation keeps the starting gear it dressed itself in.
+    // Nothing to apply, so the simulation keeps what it started with: no items at all.
     let simulation = restart(&dir.file());
-    assert_eq!(simulation.sheet().equipment().count(), 4);
+    assert_eq!(simulation.sheet().equipment().count(), 0);
+    assert_eq!(simulation.sheet().inventory().count(), 0);
     save(&simulation, &dir.file());
 
     let second = CharacterConfigManager::load(dir.file());
@@ -308,6 +344,7 @@ fn a_save_written_by_a_later_build_costs_that_item_and_nothing_else() {
             EquippedEntry::new("feet", "simple_cloth_boots"),
         ],
         inventory: Vec::new(),
+        ..HeroLoadout::default()
     });
     manager.update(config);
     manager.save();

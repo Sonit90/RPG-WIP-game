@@ -19,10 +19,13 @@
 //! is checked on the way in, so a file cannot put a cloak on a finger even by hand.
 
 use engine_game::character::{
-    CharacterSheet, EquipSlot, Inventory, ItemStack, Roster, item_by_key,
+    CharacterSheet, EquipSlot, Inventory, ItemStack, MailItem, MailReason, MailSender, Roster,
+    item_by_key,
 };
 use engine_game::hero::Hero;
-use engine_settings::character::{CharacterConfig, EquippedEntry, HeroLoadout, InventoryEntry};
+use engine_settings::character::{
+    CharacterConfig, EquippedEntry, HeroLoadout, InventoryEntry, MailEntry,
+};
 
 /// Writes `roster` into a configuration ready to be saved.
 ///
@@ -58,14 +61,67 @@ pub fn loadout_of(sheet: &CharacterSheet) -> HeroLoadout {
             .inventory
             .push(InventoryEntry::new(index, def.key, stack.quantity));
     }
+    for letter in sheet.mailbox().letters() {
+        let Some(def) = engine_game::character::item(letter.item) else {
+            continue;
+        };
+        loadout.mail.push(MailEntry {
+            id: letter.id,
+            item: def.key.to_owned(),
+            sender: sender_key(letter.sender).to_owned(),
+            reason: reason_key(letter.reason).to_owned(),
+            received_at: letter.received_at,
+            read: letter.read,
+        });
+    }
+    loadout.next_mail_id = sheet.mailbox().next_id();
     loadout
+}
+
+fn sender_key(sender: MailSender) -> &'static str {
+    match sender {
+        MailSender::DungeonChest => "dungeon_chest",
+        MailSender::System => "system",
+    }
+}
+
+fn reason_key(reason: MailReason) -> &'static str {
+    match reason {
+        MailReason::BagFull => "bag_full",
+        MailReason::Unclaimed => "unclaimed",
+        MailReason::SlotRemoved => "slot_removed",
+    }
+}
+
+/// A sender this build does not know is filed under the only sender there is.
+fn sender_of(key: &str) -> MailSender {
+    match key {
+        "dungeon_chest" => MailSender::DungeonChest,
+        "system" => MailSender::System,
+        other => {
+            log::warn!("character: unknown mail sender {other:?}");
+            MailSender::DungeonChest
+        }
+    }
+}
+
+/// A reason this build does not know reads as the gentler one: the player simply has an item.
+fn reason_of(key: &str) -> MailReason {
+    match key {
+        "bag_full" => MailReason::BagFull,
+        "unclaimed" => MailReason::Unclaimed,
+        "slot_removed" => MailReason::SlotRemoved,
+        other => {
+            log::warn!("character: unknown mail reason {other:?}");
+            MailReason::Unclaimed
+        }
+    }
 }
 
 /// Replaces every character in `roster` with what `config` saved for it.
 ///
 /// A hero the file does not mention is left exactly as it was, which is what lets a save
-/// written before a hero existed still load: the new hero keeps the starting gear the caller
-/// dressed it in.
+/// written before a hero existed still load: the new hero keeps what the caller gave it.
 pub fn apply_config(config: &CharacterConfig, roster: &mut Roster) {
     for hero in Hero::ALL {
         let Some(loadout) = config.loadout(hero.config_name()) else {
@@ -80,12 +136,22 @@ pub fn apply_config(config: &CharacterConfig, roster: &mut Roster) {
 /// Every entry is checked on the way in — the slot has to exist, the item has to exist, and
 /// the item has to fit — so a hand-edited file produces a legal character or a poorer one,
 /// never an illegal one.
+///
+/// **An item saved in a slot that has since been removed** (`trinket3`, `trinket4`) is not
+/// lost: it goes to the first free bag cell, or, when the bag is full, into the mailbox.
 #[must_use]
 pub fn sheet_of(hero: Hero, loadout: &HeroLoadout) -> CharacterSheet {
     let mut sheet = CharacterSheet::bare(hero);
+    let mut rehome = Vec::new();
 
     for entry in &loadout.equipment {
         let Some(slot) = EquipSlot::from_key(&entry.slot) else {
+            if EquipSlot::REMOVED_KEYS.contains(&entry.slot.as_str())
+                && let Some(def) = item_by_key(&entry.item)
+            {
+                rehome.push(ItemStack::one(def.id));
+                continue;
+            }
             log::warn!("character: {:?} is not a slot this build has", entry.slot);
             continue;
         };
@@ -124,6 +190,35 @@ pub fn sheet_of(hero: Hero, loadout: &HeroLoadout) -> CharacterSheet {
     }
     *sheet.inventory_mut() = inventory;
 
+    // An item this build no longer has cannot be shown or taken, so its letter goes with it;
+    // every other letter keeps its id, and the counter never falls behind them.
+    for entry in &loadout.mail {
+        let Some(def) = item_by_key(&entry.item) else {
+            log::warn!("character: {:?} is not an item this build has", entry.item);
+            continue;
+        };
+        sheet.mailbox_mut().restore(MailItem {
+            id: entry.id,
+            item: def.id,
+            sender: sender_of(&entry.sender),
+            reason: reason_of(&entry.reason),
+            received_at: entry.received_at,
+            read: entry.read,
+        });
+    }
+    sheet.mailbox_mut().reserve_ids_up_to(loadout.next_mail_id);
+
+    if !rehome.is_empty() {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0.0, |elapsed| elapsed.as_secs_f64());
+        for stack in rehome {
+            if sheet.rehome_removed_slot_item(stack, now).is_none() {
+                log::info!("character: a bag was full; mailed an item from a removed slot");
+            }
+        }
+    }
+
     sheet
 }
 
@@ -136,9 +231,102 @@ mod tests {
     use super::*;
     use engine_game::character::{ItemFamily, ItemSlot, starting_item};
 
+    /// Every hero wearing four white pieces and carrying five, as new heroes once started.
+    fn dressed_roster() -> Roster {
+        let mut roster = Roster::bare();
+        for hero in Hero::ALL {
+            let sheet = roster.sheet_mut(hero);
+            for slot in [
+                EquipSlot::Chest,
+                EquipSlot::Legs,
+                EquipSlot::Wrist,
+                EquipSlot::Feet,
+            ] {
+                let def = starting_item(slot.family()).expect("a white piece");
+                sheet
+                    .equipment_mut()
+                    .equip(slot, ItemStack::one(def.id))
+                    .expect("fits");
+            }
+            for family in [
+                ItemFamily::Head,
+                ItemFamily::Shoulder,
+                ItemFamily::Back,
+                ItemFamily::Ring,
+                ItemFamily::Trinket,
+            ] {
+                let def = starting_item(family).expect("a white piece");
+                sheet.inventory_mut().add(ItemStack::one(def.id));
+            }
+        }
+        roster
+    }
+
+    fn old_save_with_trinkets_in_slots_three_and_four() -> CharacterConfig {
+        let trinket = starting_item(ItemFamily::Trinket).expect("a trinket");
+        let mut config = CharacterConfig::default();
+        config.set_loadout(HeroLoadout {
+            hero: "warrior".to_owned(),
+            equipment: vec![
+                EquippedEntry::new("trinket1", trinket.key),
+                EquippedEntry::new("trinket3", trinket.key),
+                EquippedEntry::new("trinket4", trinket.key),
+            ],
+            inventory: vec![InventoryEntry::new(0, trinket.key, 1)],
+            ..HeroLoadout::default()
+        });
+        config
+    }
+
+    #[test]
+    fn an_item_in_a_removed_trinket_slot_moves_to_the_first_free_bag_cell() {
+        let mut roster = Roster::bare();
+        apply_config(
+            &old_save_with_trinkets_in_slots_three_and_four(),
+            &mut roster,
+        );
+        let sheet = roster.sheet(Hero::Warrior);
+        assert!(sheet.equipment().get(EquipSlot::Trinket1).is_some());
+        assert_eq!(sheet.equipment().count(), 1);
+        // Cell 0 was taken; the two displaced trinkets take 1 and 2.
+        assert_eq!(sheet.inventory().count(), 3);
+        assert!(sheet.inventory().get(1).is_some());
+        assert!(sheet.inventory().get(2).is_some());
+        assert!(sheet.mailbox().is_empty());
+    }
+
+    #[test]
+    fn an_item_in_a_removed_trinket_slot_is_mailed_when_the_bag_is_full() {
+        let trinket = starting_item(ItemFamily::Trinket).expect("a trinket");
+        let mut config = old_save_with_trinkets_in_slots_three_and_four();
+        let mut loadout = config.loadout("warrior").expect("warrior").clone();
+        loadout.inventory = (0..engine_game::character::INVENTORY_SLOTS)
+            .map(|cell| InventoryEntry::new(cell, trinket.key, 1))
+            .collect();
+        config.set_loadout(loadout);
+
+        let mut roster = Roster::bare();
+        apply_config(&config, &mut roster);
+        let sheet = roster.sheet(Hero::Warrior);
+        assert_eq!(
+            sheet.inventory().count(),
+            engine_game::character::INVENTORY_SLOTS
+        );
+        assert_eq!(sheet.mailbox().len(), 2);
+        for letter in sheet.mailbox().letters() {
+            assert_eq!(letter.reason, MailReason::SlotRemoved);
+            assert_eq!(letter.item, trinket.id);
+        }
+
+        // The migrated roster saves and loads again without losing or doubling anything.
+        let mut again = Roster::bare();
+        apply_config(&config_of(&roster), &mut again);
+        assert_eq!(again, roster);
+    }
+
     #[test]
     fn a_roster_survives_a_round_trip_through_the_file_format() {
-        let mut roster = Roster::starting();
+        let mut roster = dressed_roster();
         let ring = starting_item(ItemFamily::Ring).expect("a ring");
         let (index, _) = roster
             .sheet(Hero::Druid)
@@ -166,8 +354,59 @@ mod tests {
     }
 
     #[test]
+    fn mail_survives_a_round_trip_through_the_file_format() {
+        let ring = starting_item(ItemFamily::Ring).expect("a ring");
+        let mut roster = dressed_roster();
+        let mailbox = roster.sheet_mut(Hero::Warrior).mailbox_mut();
+        let first = mailbox.send(ring.id, MailSender::DungeonChest, MailReason::BagFull, 42.5);
+        let second = mailbox.send(
+            ring.id,
+            MailSender::DungeonChest,
+            MailReason::Unclaimed,
+            99.0,
+        );
+        mailbox.mark_read(first);
+        let ids_before = (first, second);
+
+        let config = config_of(&roster);
+        let mut loaded = Roster::bare();
+        apply_config(&config, &mut loaded);
+
+        assert_eq!(loaded, roster, "the mailbox changed on the way through");
+        let mailbox = loaded.sheet(Hero::Warrior).mailbox();
+        assert_eq!(mailbox.len(), 2);
+        assert!(mailbox.get(ids_before.0).is_some_and(|letter| letter.read));
+        assert_eq!(mailbox.unread_count(), 1);
+        assert!(loaded.sheet(Hero::Druid).mailbox().is_empty());
+    }
+
+    #[test]
+    fn ids_are_not_reused_after_a_letter_is_taken_and_saved() {
+        let ring = starting_item(ItemFamily::Ring).expect("a ring");
+        let mut roster = dressed_roster();
+        let sheet = roster.sheet_mut(Hero::Druid);
+        let id = sheet.mailbox_mut().send(
+            ring.id,
+            MailSender::DungeonChest,
+            MailReason::Unclaimed,
+            0.0,
+        );
+        sheet.take_mail(id).expect("room in the bag");
+
+        let mut loaded = Roster::bare();
+        apply_config(&config_of(&roster), &mut loaded);
+        let next = loaded.sheet_mut(Hero::Druid).mailbox_mut().send(
+            ring.id,
+            MailSender::DungeonChest,
+            MailReason::Unclaimed,
+            0.0,
+        );
+        assert!(next > id, "id {id} was handed out twice");
+    }
+
+    #[test]
     fn every_hero_is_written_including_one_wearing_nothing() {
-        let mut roster = Roster::starting();
+        let mut roster = dressed_roster();
         *roster.sheet_mut(Hero::Warrior) = CharacterSheet::bare(Hero::Warrior);
         let config = config_of(&roster);
 
@@ -175,7 +414,7 @@ mod tests {
         let warrior = config.loadout("warrior").expect("the warrior is written");
         assert!(warrior.equipment.is_empty());
 
-        let mut loaded = Roster::starting();
+        let mut loaded = dressed_roster();
         apply_config(&config, &mut loaded);
         assert_eq!(
             loaded.sheet(Hero::Warrior).equipment().count(),
@@ -207,7 +446,7 @@ mod tests {
         let mut config = CharacterConfig::default();
         config.set_loadout(HeroLoadout::new("firemage"));
 
-        let mut roster = Roster::starting();
+        let mut roster = dressed_roster();
         apply_config(&config, &mut roster);
         assert_eq!(roster.sheet(Hero::FireMage).equipment().count(), 0);
         assert_eq!(
@@ -227,6 +466,7 @@ mod tests {
                 EquippedEntry::new("legs", "simple_cloth_leggings"),
             ],
             inventory: vec![InventoryEntry::new(0, "also_not_a_thing", 1)],
+            ..HeroLoadout::default()
         });
 
         let mut roster = Roster::bare();
@@ -244,7 +484,7 @@ mod tests {
             hero: "druid".to_owned(),
             // Hand-edited: a cloak on a finger.
             equipment: vec![EquippedEntry::new("ring1", "worn_travellers_cloak")],
-            inventory: Vec::new(),
+            ..HeroLoadout::default()
         });
 
         let mut roster = Roster::bare();
@@ -261,8 +501,8 @@ mod tests {
         let mut config = CharacterConfig::default();
         config.set_loadout(HeroLoadout {
             hero: "firemage".to_owned(),
-            equipment: Vec::new(),
             inventory: vec![InventoryEntry::new(900, "plain_copper_band", 1)],
+            ..HeroLoadout::default()
         });
 
         let mut roster = Roster::bare();

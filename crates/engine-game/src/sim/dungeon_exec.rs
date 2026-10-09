@@ -165,6 +165,7 @@ impl Simulation {
             }
         }
         self.dungeon = None;
+        self.clear_loot_chest();
     }
 
     /// The name an enemy is shown under: the one its level gave it, or its monster's.
@@ -346,6 +347,12 @@ impl Simulation {
                 self.events
                     .push(CombatEvent::DungeonCompleted { seconds, tick });
                 log::info!("dungeon completed in {seconds:.1} s");
+                // The boss's chest drops where it fell; failing that, where the party stands.
+                let at = boss
+                    .and_then(|boss| self.world.position(boss))
+                    .or_else(|| self.world.position(self.player.entity))
+                    .unwrap_or(Vec3::ZERO);
+                self.spawn_loot_chest(at);
             }
         }
     }
@@ -497,6 +504,7 @@ impl Simulation {
 
     /// Puts the run back to its start: nothing credited, gate shut, boss sealed.
     pub(super) fn reset_dungeon_run(&mut self) {
+        self.clear_loot_chest();
         self.dismiss_summons();
         self.pending_credit.clear();
         let Some(run) = self.dungeon.as_mut() else {
@@ -549,6 +557,120 @@ impl Simulation {
     #[must_use]
     pub fn gate_is_closed(&self) -> bool {
         self.gate_static.is_some()
+    }
+}
+
+/// Developer controls for a dungeon run. Compiled only with the `dev-tools` feature, which the
+/// shipping build never enables.
+#[cfg(feature = "dev-tools")]
+impl Simulation {
+    /// The dungeon's boss, if this is a dungeon run whose boss is alive and not yet beaten.
+    #[must_use]
+    pub fn dev_boss(&self) -> Option<EntityId> {
+        let run = self.dungeon.as_ref()?;
+        if run.is_completed() {
+            return None;
+        }
+        let index = run.rules().boss_encounter?;
+        let boss = self.encounters.get(index)?.members().first().copied()?;
+        self.world.is_alive(boss).then_some(boss)
+    }
+
+    /// **Teleports the player beside the boss and kills it, completing the run.**
+    ///
+    /// Everything goes through the paths a real run uses, so everything downstream fires as
+    /// it would for a real kill (progress, `BossUnlocked`, the boss encounter completing,
+    /// `DungeonCompleted`, the chest and its rolls):
+    ///
+    /// 1. every other living enemy is slain with [`Simulation::slay`], which pays the
+    ///    completion credit that opens the boss gate;
+    /// 2. if the credit did not open the gate (a requirement above what the level offers) it
+    ///    is opened with [`Simulation::unlock_dungeon`];
+    /// 3. the player is put down on walkable ground beside the boss;
+    /// 4. the boss encounter is marked as pulled, and the boss slain. The next tick sees the
+    ///    encounter completed and completes the run.
+    ///
+    /// Answers whether there was a boss to kill.
+    pub fn dev_teleport_and_kill_boss(&mut self) -> bool {
+        let Some(boss) = self.dev_boss() else {
+            return false;
+        };
+        let Some(boss_index) = self
+            .dungeon
+            .as_ref()
+            .and_then(|run| run.rules().boss_encounter)
+        else {
+            return false;
+        };
+        let boss_members: Vec<EntityId> = self
+            .encounters
+            .get(boss_index)
+            .map(|encounter| encounter.members().to_vec())
+            .unwrap_or_default();
+
+        // 1. Everything that stands between the party and the boss.
+        let others: Vec<EntityId> = self
+            .enemies()
+            .map(|(entity, _)| entity)
+            .filter(|entity| *entity != boss && !boss_members.contains(entity))
+            .collect();
+        for entity in others {
+            self.slay(entity);
+        }
+        self.flush_credits();
+
+        // 2. The gate, if the credit was not enough to open it.
+        self.unlock_dungeon();
+
+        // 3. Beside the boss, on the ground.
+        let boss_at = self.world.position(boss).unwrap_or(Vec3::ZERO);
+        self.dev_stand_beside(boss_at, self.world.radius(boss));
+
+        // 4. The boss: pulled, then killed through the damage path. Its adds, if any had
+        // been called, go too, so the encounter has nobody left alive.
+        if let Some(run) = self.dungeon.as_mut() {
+            run.note_started(self.time);
+        }
+        if let Some(encounter) = self.encounters.get_mut(boss_index) {
+            encounter.activate();
+        }
+        for member in boss_members {
+            if member != boss {
+                self.slay(member);
+            }
+        }
+        self.slay(boss);
+        log::info!("dev-tools: teleported to the boss and killed it");
+        true
+    }
+
+    /// Puts the player on walkable ground a few metres from `target`, trying a ring of
+    /// positions and keeping the first where the controller finds floor at the boss's height.
+    fn dev_stand_beside(&mut self, target: Vec3, boss_radius: f32) {
+        let player = self.player.entity;
+        let distance = boss_radius + 3.0;
+        let mut chosen = None;
+        for step in 0..16u8 {
+            let angle = f32::from(step) * std::f32::consts::TAU / 16.0;
+            let candidate = Vec3::new(
+                target.x + angle.sin() * distance,
+                target.y + 0.1,
+                target.z + angle.cos() * distance,
+            );
+            self.teleport_player(candidate);
+            let landed = self
+                .world
+                .body(player)
+                .is_some_and(|body| body.grounded && (body.position.y - target.y).abs() < 1.5);
+            if landed {
+                chosen = Some(candidate);
+                break;
+            }
+        }
+        if chosen.is_none() {
+            // Nowhere on the ring has floor: fall back to the boss's own spot.
+            self.teleport_player(target + Vec3::new(0.0, 0.1, 0.0));
+        }
     }
 }
 

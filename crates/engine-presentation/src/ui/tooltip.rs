@@ -33,14 +33,17 @@
 use std::hash::{Hash, Hasher};
 
 use engine_game::ability::text::{self as ability_text, ResourceMode};
+use engine_game::character::stat::{HEALTH_PER_STAMINA, armor_reduction};
+use engine_game::character::{EquipSlot, ItemDef, ItemSlot, ItemStack, Stat, StatBlock};
 use engine_game::firemage::{FireAbility, FireMastery, TargetMode};
+use engine_game::hero::Hero;
 use engine_render_data::ui::{TextAlign, UiColor, UiDrawList, UiRect};
 
 use super::flow::FlowDirection;
 use super::kit::{Kit, tokens};
 use super::map_style::{TextStyle, color, type_scale};
 use crate::game_ui::{write_integer, write_tenths};
-use crate::snapshot::AbilitySlotView;
+use crate::snapshot::{AbilitySlotView, CharacterView};
 
 /// A tooltip's width when the player has not set one, logical pixels.
 pub const DEFAULT_WIDTH: f32 = 380.0;
@@ -68,6 +71,12 @@ pub enum SectionKind {
     Requirements,
     /// Time left, stacks, an absorb's size: the state of an effect that is running.
     Details,
+    /// An item's stat lines, in the body size and the stat green.
+    Stats,
+    /// What an item's stats are worth to the character looking at it.
+    Numbers,
+    /// An item against the one it would replace; lines starting `+` are green, `-` red.
+    Comparison,
 }
 
 impl SectionKind {
@@ -75,7 +84,9 @@ impl SectionKind {
     #[must_use]
     pub fn heading(self) -> Option<&'static str> {
         match self {
-            Self::Description | Self::Effect | Self::Details => None,
+            Self::Description | Self::Effect | Self::Details | Self::Stats => None,
+            Self::Numbers => Some("WHAT IT DOES FOR YOU"),
+            Self::Comparison => Some("COMPARED TO EQUIPPED"),
             Self::Resource => Some("RESOURCE"),
             Self::Empowered => Some("EMPOWERED EFFECT"),
             Self::Additional => Some("ADDITIONAL EFFECT"),
@@ -90,6 +101,8 @@ impl SectionKind {
             Self::Resource => color::FROST,
             Self::Empowered => color::AMBER,
             Self::Requirements => color::EMBER,
+            Self::Stats => color::VERDANT,
+            Self::Numbers | Self::Comparison => color::BRONZE_BRIGHT,
             _ => color::TEXT_MUTED,
         }
     }
@@ -98,7 +111,7 @@ impl SectionKind {
     #[must_use]
     pub fn style(self) -> TextStyle {
         match self {
-            Self::Effect | Self::Details => tokens::TOOLTIP_META,
+            Self::Effect | Self::Details | Self::Numbers | Self::Comparison => tokens::TOOLTIP_META,
             _ => tokens::TOOLTIP_BODY,
         }
     }
@@ -255,6 +268,36 @@ pub fn pointer_dock(
         pointer.1 + gap
     };
     (UiRect::new(x, y, width, 0.0), direction)
+}
+
+/// A dock beside `slot` for a tooltip `width` wide: to its right, or to its left when there is
+/// no room, top-aligned with the slot and clamped on screen by the panel.
+///
+/// What an item's tooltip opens from. An item is read where it lies: a tooltip in a corner of
+/// the screen, or one that follows the pointer onto the neighbouring slot, makes the player
+/// look away from the thing they are reading about. Anchored to the slot's rectangle it
+/// never covers the slot itself and does not move while the pointer wanders over it.
+#[must_use]
+pub fn slot_dock(
+    slot: UiRect,
+    width: f32,
+    kit: &Kit,
+    viewport: (u32, u32),
+) -> (UiRect, FlowDirection) {
+    let gap = kit.px(10.0);
+    let margin = kit.px(8.0);
+    let width = width.max(kit.px(200.0)).round();
+    let fits_right = slot.right() + gap + width <= viewport.0 as f32 - margin;
+    let direction = FlowDirection {
+        right_to_left: !fits_right,
+        bottom_to_top: false,
+    };
+    let x = if fits_right {
+        slot.right() + gap
+    } else {
+        slot.x - gap - width
+    };
+    (UiRect::new(x, slot.y, width, 0.0), direction)
 }
 
 /// Draws a [`TooltipModel`] at the tooltip dock, wrapped, sized to fit and kept on screen.
@@ -429,13 +472,22 @@ impl TooltipPanel {
             }
             let style = kind.style();
             let line_height = kit.style.line(style);
+            let ink = if kind == SectionKind::Comparison {
+                match line.text.as_bytes().first() {
+                    Some(b'+') => color::VERDANT,
+                    Some(b'-') => color::CRIMSON,
+                    _ => section.color,
+                }
+            } else {
+                section.color
+            };
             kit.text(
                 list,
                 rect.x + pad,
                 cursor + line_height * 0.5,
                 &line.text,
                 style,
-                section.color,
+                ink,
                 TextAlign::Left,
             );
             cursor += line_height;
@@ -797,6 +849,287 @@ pub fn fill_aura(model: &mut TooltipModel, aura: &crate::aura::Aura) {
     }
 }
 
+/// Where the item a tooltip describes is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ItemPlace {
+    /// Worn, in this slot.
+    Equipped(EquipSlot),
+    /// In the bag.
+    Bag,
+    /// Not in a slot at all: a loot toast, a reward row.
+    Loose,
+    /// Waiting in the mailbox.
+    Mailed,
+}
+
+/// What an item's tooltip needs to know beyond the item: who is reading it and what they wear.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ItemContext {
+    /// Where the item is.
+    pub place: ItemPlace,
+    /// The reader's stats as they are now.
+    pub total: StatBlock,
+    /// What putting the item on would take off, for an item that is not already worn.
+    pub replaces: Option<ItemStack>,
+}
+
+impl ItemContext {
+    /// The item in `slot` on `character`, with its context.
+    #[must_use]
+    pub fn for_slot(character: &CharacterView, slot: ItemSlot) -> Option<(ItemStack, Self)> {
+        let stack = character.at(slot)?;
+        Some(match slot {
+            ItemSlot::Equipment(worn) => (
+                stack,
+                Self {
+                    place: ItemPlace::Equipped(worn),
+                    total: character.total,
+                    replaces: None,
+                },
+            ),
+            ItemSlot::Inventory(_) => (stack, Self::loose(character, stack, ItemPlace::Bag)),
+        })
+    }
+
+    /// The context of an item that is not worn, against what it would replace.
+    #[must_use]
+    pub fn loose(character: &CharacterView, stack: ItemStack, place: ItemPlace) -> Self {
+        let replaces = super::character_menu::equip_target(character, stack)
+            .and_then(|slot| character.equipment[slot.index()]);
+        Self {
+            place,
+            total: character.total,
+            replaces,
+        }
+    }
+}
+
+/// An item's stats with the placeholder main stat folded into the hero's own.
+fn effective(stats: &StatBlock, hero: Hero) -> StatBlock {
+    let mut folded = *stats;
+    let main = folded.get(Stat::MainStat);
+    if main != 0.0 {
+        folded.add(hero.main_stat(), main);
+        folded.set(Stat::MainStat, 0.0);
+    }
+    folded
+}
+
+/// `total` with `remove` taken out and `add` put in.
+fn swapped(total: &StatBlock, remove: &StatBlock, add: &StatBlock) -> StatBlock {
+    let mut out = *total;
+    for stat in Stat::ALL {
+        out.add(stat, add.get(stat) - remove.get(stat));
+    }
+    out
+}
+
+/// What a stat is worth as a fraction in `stats`: a rating's percentage, or armour's
+/// reduction. `None` for a stat that is not a percentage.
+fn worth(stat: Stat, stats: &StatBlock) -> Option<f32> {
+    if stat == Stat::Armor {
+        Some(armor_reduction(stats.get(stat)))
+    } else if stat.is_rating() {
+        Some(stats.percent(stat))
+    } else {
+        None
+    }
+}
+
+/// Writes `value` whole when it is whole and to one decimal otherwise.
+fn write_amount(out: &mut String, value: f32) {
+    if (value - value.round()).abs() < 0.05 {
+        write_integer(out, value.round() as i64);
+    } else {
+        write_tenths(out, value);
+    }
+}
+
+/// Writes a signed amount: `+2`, `-3`.
+fn write_signed(out: &mut String, value: f32) {
+    out.push(if value < 0.0 { '-' } else { '+' });
+    write_amount(out, value.abs());
+}
+
+/// Writes a fraction as a percentage to two decimals.
+fn write_percent(out: &mut String, fraction: f32) {
+    use std::fmt::Write as _;
+    let _ = write!(out, "{:.2}%", fraction * 100.0);
+}
+
+/// Fills `model` with an item: its name in its quality's colour, where it goes, the stats it
+/// grants, what they are worth to `hero` in numbers and - for an item not yet worn - how it
+/// compares to what it would replace.
+///
+/// Built like [`fill_ability`], from the item table and the reader's own sheet: no sentence
+/// here is written for one item.
+pub fn fill_item(model: &mut TooltipModel, def: &ItemDef, hero: Hero, context: &ItemContext) {
+    model.clear();
+    super::map_style::write_title_case(&mut model.title, def.name);
+    let quality = super::character_menu::quality_color(def.quality);
+    model.title_color = quality;
+    model.border = color::alpha(quality, 0.6);
+    super::map_style::write_title_case(&mut model.tag, def.family.name());
+    model.tag_color = color::TEXT_SECONDARY;
+
+    // Meta: how good it is, then where it is.
+    let (rank, level) = &mut model.meta[0];
+    super::map_style::write_title_case(rank, def.quality.name());
+    level.push_str("Item level ");
+    write_integer(level, i64::from(def.item_level));
+    let place = &mut model.meta[1].0;
+    match context.place {
+        ItemPlace::Equipped(slot) => {
+            place.push_str("Equipped - ");
+            super::map_style::push_title_case(place, slot.name());
+        }
+        ItemPlace::Bag => place.push_str("In your bag"),
+        ItemPlace::Loose => place.push_str("New"),
+        ItemPlace::Mailed => place.push_str("In your mail"),
+    }
+
+    // The stats, as the genre prints them: "+2 Haste".
+    let stats = model.section(SectionKind::Stats);
+    stats.color = color::VERDANT;
+    if def.stats.is_empty() {
+        stats.color = color::TEXT_MUTED;
+        stats.text.push_str("Grants no combat stats");
+    }
+    for (stat, value) in def.stats.entries() {
+        if !stats.text.is_empty() {
+            stats.text.push('\n');
+        }
+        write_signed(&mut stats.text, value);
+        stats.text.push(' ');
+        super::map_style::push_title_case(&mut stats.text, stat.display_for(hero));
+    }
+
+    // What they do for this character, in the numbers combat uses.
+    let mine = effective(&def.stats, hero);
+    let (before, after) = match (context.place, context.replaces) {
+        (ItemPlace::Equipped(_), _) => (
+            swapped(&context.total, &mine, &StatBlock::zero()),
+            context.total,
+        ),
+        (_, Some(worn)) => {
+            let gone = effective(&worn.stats(), hero);
+            (context.total, swapped(&context.total, &gone, &mine))
+        }
+        (_, None) => (
+            context.total,
+            swapped(&context.total, &StatBlock::zero(), &mine),
+        ),
+    };
+    if !def.stats.is_empty() {
+        let numbers = model.section(SectionKind::Numbers);
+        numbers.color = color::TEXT_SECONDARY;
+        for stat in Stat::ALL {
+            let value = mine.get(stat);
+            if value == 0.0 {
+                continue;
+            }
+            if !numbers.text.is_empty() {
+                numbers.text.push('\n');
+            }
+            super::map_style::push_title_case(&mut numbers.text, stat.name());
+            numbers.text.push_str(": ");
+            if let Some((now, was)) = worth(stat, &after).zip(worth(stat, &before)) {
+                write_signed(&mut numbers.text, (now - was) * 100.0);
+                numbers.text.push_str("%  (");
+                write_percent(&mut numbers.text, was);
+                numbers.text.push_str(" > ");
+                write_percent(&mut numbers.text, now);
+                numbers.text.push(')');
+            } else if stat == Stat::Stamina {
+                write_signed(&mut numbers.text, value * HEALTH_PER_STAMINA);
+                numbers.text.push_str(" maximum health");
+            } else {
+                write_signed(&mut numbers.text, value);
+                numbers.text.push_str(if stat == Stat::Strength {
+                    " attack power"
+                } else {
+                    " spell power"
+                });
+            }
+        }
+    }
+
+    // Against what it would replace.
+    if !matches!(context.place, ItemPlace::Equipped(_))
+        && let Some(worn) = context.replaces.and_then(ItemStack::def)
+    {
+        let theirs = effective(&worn.stats, hero);
+        let compare = model.section(SectionKind::Comparison);
+        compare.color = color::TEXT_SECONDARY;
+        compare.text.push_str("vs. ");
+        super::map_style::push_title_case(&mut compare.text, worn.name);
+        for stat in Stat::ALL {
+            let delta = mine.get(stat) - theirs.get(stat);
+            if delta.abs() < 0.001 {
+                continue;
+            }
+            compare.text.push('\n');
+            write_signed(&mut compare.text, delta);
+            compare.text.push(' ');
+            super::map_style::push_title_case(&mut compare.text, stat.name());
+        }
+    }
+
+    model.footer.push_str(match context.place {
+        ItemPlace::Equipped(_) => "Right-click to unequip - drag to move",
+        ItemPlace::Bag => "Right-click to equip - drag to move",
+        ItemPlace::Loose => "Added to your bag",
+        ItemPlace::Mailed => "Sent to your mail",
+    });
+}
+
+/// An item tooltip with its own storage, docked beside whatever shows the item.
+///
+/// The one way an item is explained anywhere in the interface - the character sheet's slots,
+/// the loot toast, a reward row on the dungeon map - so they cannot disagree. Holds a model
+/// and a panel and rewrites them in place, so hovering costs no allocation once warm.
+#[derive(Debug, Default)]
+pub struct ItemTooltip {
+    model: TooltipModel,
+    panel: TooltipPanel,
+}
+
+impl ItemTooltip {
+    /// An empty tooltip with its storage reserved.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            model: TooltipModel::new(),
+            panel: TooltipPanel::new(),
+        }
+    }
+
+    /// Draws the tooltip of `stack` next to `anchor` (see [`slot_dock`]) and returns its
+    /// rectangle. Nothing is drawn for a stack whose item the table does not know.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "a tooltip is this many independent facts"
+    )]
+    pub fn push(
+        &mut self,
+        list: &mut UiDrawList,
+        kit: &Kit,
+        stack: ItemStack,
+        hero: Hero,
+        context: &ItemContext,
+        anchor: UiRect,
+        viewport: (u32, u32),
+    ) -> Option<UiRect> {
+        let def = stack.def()?;
+        fill_item(&mut self.model, def, hero, context);
+        let (dock, direction) = slot_dock(anchor, kit.px(DEFAULT_WIDTH), kit, viewport);
+        Some(
+            self.panel
+                .push(list, &self.model, dock, direction, kit, viewport),
+        )
+    }
+}
+
 /// `8 sec`, `1.5 sec`, `2 min`.
 fn write_seconds_phrase(out: &mut String, seconds: f32) {
     if seconds >= 60.0 && (seconds % 60.0).abs() < 0.05 {
@@ -979,5 +1312,112 @@ mod tests {
         let kit = Kit::new(UiScale::default());
         assert!(kit.style.size(tokens::TOOLTIP_BODY) >= 15.0);
         assert!(kit.style.size(tokens::TOOLTIP_TITLE) >= 19.0);
+    }
+
+    fn loot_item() -> &'static ItemDef {
+        engine_game::character::loot_pool()
+            .iter()
+            .find(|def| def.stats.entries().count() == 2)
+            .expect("a two-stat loot item")
+    }
+
+    fn character() -> CharacterView {
+        let mut simulation = crate::snapshot::dressed_training_arena();
+        simulation.step_once();
+        crate::snapshot::UiSnapshot::build(&simulation).character
+    }
+
+    #[test]
+    fn an_item_tooltip_names_the_item_in_its_quality_colour_and_prints_signed_stats() {
+        let def = loot_item();
+        let character = character();
+        let context = ItemContext::loose(&character, ItemStack::one(def.id), ItemPlace::Bag);
+        let mut model = TooltipModel::new();
+        fill_item(&mut model, def, Hero::FireMage, &context);
+        assert_eq!(
+            model.title_color,
+            super::super::character_menu::quality_color(def.quality)
+        );
+        assert_eq!(model.meta[0].0, "Uncommon");
+        assert!(model.meta[0].1.starts_with("Item level"));
+        let stats = &model.find(SectionKind::Stats).expect("stat lines").text;
+        assert!(stats.lines().all(|line| line.starts_with('+')), "{stats}");
+        assert!(!stats.to_lowercase().contains("main stat"), "{stats}");
+        assert!(model.footer.contains("Right-click to equip"));
+    }
+
+    #[test]
+    fn a_rating_is_explained_in_percent_with_the_before_and_after() {
+        let def = engine_game::character::loot_pool()
+            .iter()
+            .find(|def| def.stats.get(Stat::Haste) > 0.0)
+            .expect("a haste item");
+        let character = character();
+        let context = ItemContext::loose(&character, ItemStack::one(def.id), ItemPlace::Bag);
+        let mut model = TooltipModel::new();
+        fill_item(&mut model, def, Hero::FireMage, &context);
+        let numbers = &model.find(SectionKind::Numbers).expect("numbers").text;
+        assert!(numbers.contains("Haste: +"), "{numbers}");
+        assert!(numbers.contains("0.00% >"), "{numbers}");
+    }
+
+    #[test]
+    fn an_item_that_replaces_another_is_compared_with_it() {
+        let character = character();
+        let ring = engine_game::character::loot_pool()
+            .iter()
+            .find(|def| def.family == engine_game::character::ItemFamily::Feet)
+            .expect("boots");
+        let context = ItemContext::loose(&character, ItemStack::one(ring.id), ItemPlace::Bag);
+        assert!(
+            context.replaces.is_some(),
+            "the starting boots are not replaced"
+        );
+        let mut model = TooltipModel::new();
+        fill_item(&mut model, ring, Hero::FireMage, &context);
+        let compare = model.find(SectionKind::Comparison).expect("a comparison");
+        assert!(compare.text.starts_with("vs. "), "{}", compare.text);
+    }
+
+    #[test]
+    fn a_slot_dock_opens_to_the_right_and_flips_left_at_the_screen_edge() {
+        let kit = Kit::new(UiScale::default());
+        let width = kit.px(DEFAULT_WIDTH);
+        let slot = UiRect::new(200.0, 300.0, 64.0, 64.0);
+        let (dock, direction) = slot_dock(slot, width, &kit, FHD);
+        assert!(dock.x >= slot.right() && !direction.right_to_left);
+
+        let edge = UiRect::new(1800.0, 300.0, 64.0, 64.0);
+        let (dock, direction) = slot_dock(edge, width, &kit, FHD);
+        assert!(direction.right_to_left);
+        let rect = TooltipPanel::new().push(
+            &mut UiDrawList::new(),
+            &model_with("Text."),
+            dock,
+            direction,
+            &kit,
+            FHD,
+        );
+        assert!(
+            rect.right() <= edge.x,
+            "{rect:?} covers the slot at {edge:?}"
+        );
+    }
+
+    #[test]
+    fn a_tall_item_tooltip_is_clamped_vertically_and_still_beside_the_slot() {
+        let kit = Kit::new(UiScale::default());
+        let bottom = UiRect::new(200.0, 1040.0, 64.0, 64.0);
+        let (dock, direction) = slot_dock(bottom, kit.px(DEFAULT_WIDTH), &kit, FHD);
+        let rect = TooltipPanel::new().push(
+            &mut UiDrawList::new(),
+            &model_with("A line."),
+            dock,
+            direction,
+            &kit,
+            FHD,
+        );
+        assert!(rect.bottom() <= 1080.0);
+        assert!(rect.x >= bottom.right());
     }
 }

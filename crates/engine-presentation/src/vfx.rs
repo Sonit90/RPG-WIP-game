@@ -337,9 +337,37 @@ pub struct VfxDirector {
     mastery: Option<VfxHandle>,
     /// The gathering effect, while a cast is running.
     cast: Option<VfxHandle>,
+    /// Chest flourishes waiting for their moment: the dust of a landing, the burst of a lid.
+    chest_fx: Vec<ChestFx>,
+    /// Seconds until the waiting chest next sheds a sparkle.
+    chest_sparkle: f32,
+    /// Counts sparkles, to spread them around the chest deterministically.
+    chest_sparkles: u32,
     enabled: bool,
     refused: u64,
 }
+
+/// What a delayed chest flourish is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ChestFxKind {
+    /// A puff of dust where the chest hit the ground.
+    Dust,
+    /// Gold light out of the opened box.
+    Burst,
+}
+
+/// A chest flourish and how long until it plays.
+#[derive(Debug, Clone, Copy)]
+struct ChestFx {
+    delay: f32,
+    position: Vec3,
+    kind: ChestFxKind,
+}
+
+/// The warm gold the chest's light is tinted.
+const CHEST_GOLD: [f32; 4] = [1.0, 0.78, 0.25, 1.0];
+/// The grey-brown of kicked-up dust.
+const CHEST_DUST: [f32; 4] = [0.62, 0.55, 0.45, 0.9];
 
 impl VfxDirector {
     /// A director drawing with `visuals`.
@@ -362,6 +390,9 @@ impl VfxDirector {
             gate: None,
             mastery: None,
             cast: None,
+            chest_fx: Vec::with_capacity(4),
+            chest_sparkle: 0.0,
+            chest_sparkles: 0,
             enabled: true,
             refused: 0,
         }
@@ -426,6 +457,7 @@ impl VfxDirector {
         self.shield = None;
         self.mastery = None;
         self.cast = None;
+        self.chest_fx.clear();
         self.particles.clear();
         for pool in &mut self.pools {
             for entity in pool.iter() {
@@ -735,6 +767,40 @@ impl VfxDirector {
                     );
                 }
             }
+            // The chest: dust where it lands, once it has finished falling, and a burst of
+            // gold as the lid goes. Both are delayed to line up with the chest director's
+            // animation, which runs on real time from the frame it first saw the chest.
+            CombatEvent::ChestSpawned {
+                position,
+                fall_seconds,
+                ..
+            } => self.chest_fx.push(ChestFx {
+                delay: fall_seconds,
+                position,
+                kind: ChestFxKind::Dust,
+            }),
+            CombatEvent::ChestOpened { .. } => {
+                if let Some(chest) = simulation.loot_chest() {
+                    self.chest_fx.push(ChestFx {
+                        delay: crate::chest::ANTICIPATION_SECONDS,
+                        position: chest.position(),
+                        kind: ChestFxKind::Burst,
+                    });
+                }
+            }
+            // Taking the item: a golden flash on whoever received it.
+            CombatEvent::LootAwarded { player, .. } => {
+                if let Some(position) = simulation.world().position(player) {
+                    self.spawn(
+                        VfxSpawn::at(VfxId::BlinkArrival, position)
+                            .with_radius(1.4)
+                            .tinted(CHEST_GOLD),
+                    );
+                }
+            }
+            CombatEvent::LootMailed { .. }
+            | CombatEvent::MailTaken { .. }
+            | CombatEvent::MailBagFull { .. } => {}
             // A point of Deflection and a shield taking a hit move no picture of their own:
             // both happen several times a second in a pack, and the block that caused them
             // has already been drawn.
@@ -925,6 +991,7 @@ impl VfxDirector {
         self.advance_bolts(delta);
         self.prune();
         self.sync_states(simulation);
+        self.advance_chest(simulation, delta);
 
         // Where an attached effect's owner is now. An entity that has gone answers `None`,
         // and the effect riding it ends rather than hanging over an empty patch of floor.
@@ -1114,6 +1181,96 @@ impl VfxDirector {
             SyncedAura::Mastery => self.mastery = next,
             SyncedAura::Cast => self.cast = next,
         }
+    }
+
+    /// Plays the chest flourishes that have come due and keeps a waiting chest sparkling.
+    ///
+    /// The sparkle is read from the chest's state rather than an event, like the chest itself,
+    /// so one that is already sitting there when the player arrives still twinkles.
+    fn advance_chest(&mut self, simulation: &Simulation, delta: f32) {
+        let mut index = 0;
+        while index < self.chest_fx.len() {
+            self.chest_fx[index].delay -= delta;
+            if self.chest_fx[index].delay > 0.0 {
+                index += 1;
+                continue;
+            }
+            let fx = self.chest_fx.swap_remove(index);
+            match fx.kind {
+                ChestFxKind::Dust => {
+                    self.spawn(
+                        VfxSpawn::at(VfxId::Impact, fx.position)
+                            .with_radius(2.2)
+                            .tinted(CHEST_DUST),
+                    );
+                    self.spawn(
+                        VfxSpawn::at(VfxId::Impact, fx.position)
+                            .with_radius(1.2)
+                            .raised(0.15)
+                            .tinted([0.8, 0.72, 0.6, 0.8]),
+                    );
+                }
+                ChestFxKind::Burst => {
+                    let at = fx.position + Vec3::new(0.0, 0.7, 0.0);
+                    self.spawn(
+                        VfxSpawn::at(VfxId::BlinkArrival, at)
+                            .with_radius(1.6)
+                            .tinted(CHEST_GOLD),
+                    );
+                    self.spawn(
+                        VfxSpawn::at(VfxId::CastCharge, at)
+                            .with_radius(0.8)
+                            .lasting(1.4)
+                            .tinted(CHEST_GOLD),
+                    );
+                    self.spawn(
+                        VfxSpawn::at(VfxId::Impact, at)
+                            .with_radius(1.0)
+                            .tinted(CHEST_GOLD),
+                    );
+                }
+            }
+        }
+
+        let Some(chest) = simulation.loot_chest() else {
+            self.chest_sparkle = 0.0;
+            return;
+        };
+        if !chest.landed(simulation.time()) {
+            return;
+        }
+        // Looted by this player: the chest has nothing left for them, so it stops glinting
+        // (the chest director stills its glow to match).
+        let local = simulation.player().entity;
+        if chest
+            .claims()
+            .iter()
+            .any(|claim| claim.player == local && claim.claimed)
+        {
+            self.chest_sparkle = 0.0;
+            return;
+        }
+        self.chest_sparkle -= delta;
+        if self.chest_sparkle > 0.0 {
+            return;
+        }
+        // Waiting, a glint every little while; open, a slower drift of gold dust.
+        self.chest_sparkle = if chest.opened() { 1.1 } else { 0.55 };
+        self.chest_sparkles = self.chest_sparkles.wrapping_add(1);
+        let angle = self.chest_sparkles as f32 * 2.399_963;
+        let radius = 0.25 + 0.25 * ((self.chest_sparkles * 7) % 5) as f32 / 4.0;
+        let at = chest.position()
+            + Vec3::new(
+                angle.cos() * radius,
+                if chest.opened() { 0.55 } else { 0.5 },
+                angle.sin() * radius * 0.7,
+            );
+        self.spawn(
+            VfxSpawn::at(VfxId::BlinkArrival, at)
+                .with_radius(0.3)
+                .lasting(0.9)
+                .tinted(CHEST_GOLD),
+        );
     }
 
     /// Starts an effect, counting the refusal if the system is full.

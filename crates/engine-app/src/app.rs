@@ -43,6 +43,7 @@ use engine_presentation::AudioDirector;
 use engine_presentation::MonsterModel;
 use engine_presentation::camera::ThirdPersonCamera;
 use engine_presentation::character::CharacterVisual;
+use engine_presentation::chest::{ChestDirector, ChestPrompt, ChestVisuals};
 #[cfg(feature = "debug-overlay")]
 use engine_presentation::collision_debug::{CollisionDebug, DebugBindings};
 #[cfg(feature = "debug-overlay")]
@@ -68,12 +69,15 @@ use engine_presentation::ui::dungeon_map::{
 use engine_presentation::ui::ground_decal::{DecalBand, GroundSurface};
 use engine_presentation::ui::hud_edit::{EditOutcome, HudEditor, push_hud_editor};
 use engine_presentation::ui::hud_layout::{HudElementId, HudLayout};
+use engine_presentation::ui::loot_hud::LootHud;
+use engine_presentation::ui::mailbox::{MailboxMenu, MailboxOutcome, push_mailbox};
 use engine_presentation::ui::monster_playground::{
     PlaygroundAction, PlaygroundKeys, PlaygroundPanels,
 };
 use engine_presentation::ui::slot_menu::{SlotMenu, SlotMenuOutcome, push_slot_menu};
 use engine_presentation::ui::talent_menu::{TalentMenu, TalentMenuOutcome, TalentTheme};
 use engine_presentation::ui::targeting::{GroundTargeting, TargetingOutcome};
+use engine_presentation::ui::tooltip::ItemTooltip;
 use engine_presentation::ui::unit_frame::FrameScratch;
 use engine_presentation::ui::{
     MenuAction, MenuScratch, MenuSystem, MenuTheme, UiInput, VolumeChannel,
@@ -222,6 +226,7 @@ const AFFECTED_MARK_SIZE: f32 = 46.0;
 ///
 /// The font is a 5x7 bitmap; 2.0 gives a 10x14 pixel cell, which is what the Phase 3
 /// overlay used and is legible at 1080p without being a magnified blur.
+#[cfg(feature = "debug-overlay")]
 const UI_TEXT_SCALE: f32 = 2.0;
 
 /// Seconds between the abilities `--autocast` presses: a little over a global cooldown, so
@@ -418,6 +423,25 @@ pub struct App {
     character_theme: CharacterTheme,
     /// Scratch the character sheet formats its numbers into. Reused; never freed.
     character_scratch: String,
+    /// The item tooltip the character sheet docks beside a slot, its strings kept.
+    item_tooltip: ItemTooltip,
+    /// The mailbox window, opened from its corner button or the mailbox key.
+    mailbox_menu: MailboxMenu,
+    /// Development loot (sample mail, a spawned chest) is on the character: never written to
+    /// the character file, so a screenshot run cannot leave letters in the player's save.
+    dev_loot: bool,
+    /// Development: seconds until the chest is opened for the player (`--open-chest-after`).
+    dev_open_chest: Option<f32>,
+    /// The loot toast, and the pill over a waiting chest.
+    loot_hud: LootHud,
+    /// The boss's chest: falls, bounces, opens.
+    chest: ChestDirector,
+    /// What the interact key would do this frame, if anything.
+    chest_prompt: Option<ChestPrompt>,
+    /// A right-button press that landed on the chest and might still be a click.
+    chest_click: Option<(i32, i32)>,
+    /// Where the pointer was at the last interface update, for hover-only UI like the toast.
+    ui_pointer: (f32, f32),
     /// What each character wears and carries, and the file it lives in.
     character_config: CharacterConfigManager,
     /// Which ability button the pointer is over, for the tooltip.
@@ -733,6 +757,7 @@ impl App {
             decal_visuals.quad_bounds,
         )?);
         let vfx_visuals = upload_vfx_visuals(&mut renderer)?;
+        let chest_visuals = upload_chest_visuals(&mut renderer)?;
         #[cfg(feature = "debug-overlay")]
         let debug_visuals = upload_debug_visuals(&mut renderer)?;
         crate::startup::stage("GPU upload: shared");
@@ -1082,8 +1107,8 @@ impl App {
         action_bars.store(&mut fresh, binding_scope, simulation.hero());
         hud_config.update(fresh);
         hud_config.save_if_dirty();
-        // What each character owns. A first launch has no file, and the roster keeps the
-        // starting gear the simulation dressed it in; afterwards the file *is* what they
+        // What each character owns. A first launch has no file, and the roster keeps what
+        // the simulation gave it (nothing); afterwards the file *is* what they
         // own, empty slots and all.
         let character_config = CharacterConfigManager::load_from_game_directory();
         if character_config.existed() {
@@ -1320,6 +1345,15 @@ impl App {
             character_menu: CharacterMenu::with_scale(ui_scale),
             character_theme: CharacterTheme::default(),
             character_scratch: String::with_capacity(64),
+            item_tooltip: ItemTooltip::new(),
+            mailbox_menu: MailboxMenu::with_scale(ui_scale),
+            dev_loot: args.sample_mail > 0 || args.spawn_chest,
+            dev_open_chest: args.open_chest_after,
+            loot_hud: LootHud::new(),
+            chest: ChestDirector::new(chest_visuals),
+            chest_prompt: None,
+            chest_click: None,
+            ui_pointer: (0.0, 0.0),
             character_config,
             hovered_ability: None,
             aura_pointer: None,
@@ -1475,6 +1509,9 @@ impl App {
         {
             app.dungeon_map.set_orientation(mode);
         }
+        if args.open_sheet {
+            app.open_character_sheet();
+        }
         if args.open_map && app.dungeon_map.open() {
             app.dungeon_map.select(args.map_select);
             if args.map_expand {
@@ -1510,6 +1547,18 @@ impl App {
                 }
                 app.hud_editor.select(target);
             }
+        }
+        // Letters are stamped with simulation time plus this epoch, so a mailbox saved today and
+        // read tomorrow shows when each arrived. Online the realm stamps them.
+        if app.online.is_none() {
+            let launched = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0.0, |elapsed| elapsed.as_secs_f64());
+            app.simulation.set_mail_epoch(launched);
+            app.apply_dev_loot(args);
+        }
+        if args.open_mail {
+            app.open_mailbox();
         }
         if let Some(name) = args.tooltip.as_deref() {
             app.forced_tooltip = FireAbility::from_config_name(name);
@@ -1731,6 +1780,7 @@ impl App {
     fn on_map_opened(&mut self) {
         self.talent_menu.close();
         self.character_menu.close();
+        self.mailbox_menu.close();
         if self.targeting.is_active() {
             self.targeting.cancel();
         }
@@ -2076,6 +2126,7 @@ impl App {
         let viewport = self.renderer.size();
         let scale = self.game_ui.scale();
         let ui_input = UiInput::from_input(ctx.input());
+        self.ui_pointer = ui_input.pointer;
         self.aura_pointer = None;
         self.snapshot
             .refresh(&self.simulation, self.aiming_ability());
@@ -2238,6 +2289,32 @@ impl App {
             return;
         }
 
+        // The mailbox key, on the same terms as the character key.
+        if ctx.input().was_key_pressed(self.bindings.mailbox) {
+            if self.mailbox_menu.is_open() {
+                self.mailbox_menu.close();
+            } else {
+                self.open_mailbox();
+            }
+            return;
+        }
+
+        // The mailbox, which covers everything while it is up.
+        if self.mailbox_menu.is_open() {
+            self.hovered_ability = None;
+            self.hovered_slot = None;
+            let wheel = ctx.input().wheel_delta();
+            let outcome = self.mailbox_menu.update(
+                &ui_input,
+                wheel,
+                self.simulation.mailbox(),
+                &self.snapshot.character,
+                viewport,
+            );
+            self.apply_mailbox_outcome(outcome);
+            return;
+        }
+
         // The character sheet, which covers everything while it is up. Above the talent
         // menu in this chain only because two windows cannot both be open: opening either
         // closes the other, so the order decides nothing beyond which is asked first.
@@ -2280,12 +2357,32 @@ impl App {
             return;
         }
 
+        // The developer boss button (dev builds only).
+        #[cfg(feature = "dev-tools")]
+        if ui_input.pointer_pressed
+            && self.dev_boss_button_visible()
+            && self
+                .game_ui
+                .dev_boss_button_rect(viewport)
+                .contains(ui_input.pointer.0, ui_input.pointer.1)
+        {
+            self.simulation.dev_teleport_and_kill_boss();
+            return;
+        }
+
         // The two corner buttons.
         let talent_button = self.game_ui.talent_button_rect(viewport);
         if ui_input.pointer_pressed
             && talent_button.contains(ui_input.pointer.0, ui_input.pointer.1)
         {
             self.open_talents();
+            return;
+        }
+        let mailbox_button = self.game_ui.mailbox_button_rect(viewport);
+        if ui_input.pointer_pressed
+            && mailbox_button.contains(ui_input.pointer.0, ui_input.pointer.1)
+        {
+            self.open_mailbox();
             return;
         }
         let character_button = self.game_ui.character_button_rect(viewport);
@@ -2471,17 +2568,128 @@ impl App {
     /// one closes the other here rather than in either window's own update.
     fn open_character_sheet(&mut self) {
         self.talent_menu.close();
+        self.mailbox_menu.close();
         self.dungeon_map.close();
         self.hovered_ability = None;
         self.hovered_slot = None;
         self.character_menu.open();
     }
 
+    /// Opens the mailbox, closing whatever other window was up.
+    /// Whether the developer "kill the boss" button is up: only in a dungeon whose boss is
+    /// still alive, and never online, where the server decides who dies.
+    #[cfg(feature = "dev-tools")]
+    fn dev_boss_button_visible(&self) -> bool {
+        self.online.is_none() && self.simulation.dev_boss().is_some()
+    }
+
+    fn open_mailbox(&mut self) {
+        self.talent_menu.close();
+        self.character_menu.close();
+        self.dungeon_map.close();
+        self.hovered_ability = None;
+        self.hovered_slot = None;
+        self.mailbox_menu.open();
+    }
+
+    /// Development: the startup requests that put loot where a screenshot can see it.
+    ///
+    /// `--sample-mail` files loot from the pool in the local mailbox, arrived a few seconds,
+    /// minutes, hours and days ago; `--spawn-chest` drops the chest ahead of the player.
+    fn apply_dev_loot(&mut self, args: &Args) {
+        let pool = engine_game::character::loot_pool();
+        if args.sample_mail > 0 && !pool.is_empty() {
+            const AGES: [f64; 5] = [20.0, 150.0, 5_400.0, 90_000.0, 260_000.0];
+            for index in 0..args.sample_mail {
+                // A spread over the pool that does not depend on the clock, so two runs of a
+                // screenshot show the same letters.
+                let item = pool[(index * 7 + 3) % pool.len()].id;
+                let reason = if index % 2 == 0 {
+                    engine_game::character::MailReason::BagFull
+                } else {
+                    engine_game::character::MailReason::Unclaimed
+                };
+                self.simulation.mail_item_aged(
+                    item,
+                    reason,
+                    AGES[(args.sample_mail - 1 - index) % AGES.len()],
+                );
+            }
+            log::info!("dev: {} sample letter(s) mailed", args.sample_mail);
+        }
+        if args.spawn_chest {
+            let yaw = self.controller.yaw;
+            let ahead = Vec3::new(-yaw.sin(), 0.0, -yaw.cos());
+            let right = Vec3::new(yaw.cos(), 0.0, -yaw.sin());
+            // Ahead and a little to the side, so the camera behind the player sees it clear of
+            // the player's own body.
+            let at = self.simulation.player_position() + ahead * 3.5 + right * 1.6;
+            self.simulation.spawn_loot_chest_at(at);
+            log::info!("dev: loot chest dropped at {at:?}");
+        }
+    }
+
     /// Opens the talent window, closing the character sheet.
     fn open_talents(&mut self) {
         self.character_menu.close();
+        self.mailbox_menu.close();
         self.dungeon_map.close();
         self.talent_menu.open();
+    }
+
+    /// Does what the mailbox window asked for.
+    ///
+    /// Offline the request is a command the simulation applies (and the character is written
+    /// to disk once the item has moved); online it is a call to the API, whose answer dresses
+    /// the sheet and whose refusal - a full bag - surfaces as the front-end's toast.
+    fn apply_mailbox_outcome(&mut self, outcome: MailboxOutcome) {
+        let ids: Vec<u64> = match outcome {
+            MailboxOutcome::Idle => return,
+            MailboxOutcome::Close => {
+                self.play_ui_sound(engine_audio::SoundId::UiCancel);
+                return;
+            }
+            MailboxOutcome::Take { id } => vec![id],
+            MailboxOutcome::MarkRead { id } => {
+                match self.online.as_mut() {
+                    Some(online) => online.read_mail(id),
+                    None => {
+                        self.simulation
+                            .push_command(PlayerCommand::MarkMailRead { id });
+                        self.save_characters();
+                    }
+                }
+                return;
+            }
+            MailboxOutcome::TakeAll => {
+                // Newest first, as listed, and no more than the bag has room for: the rest
+                // would only be refused one by one.
+                let free = self
+                    .snapshot
+                    .character
+                    .inventory
+                    .iter()
+                    .filter(|cell| cell.is_none())
+                    .count();
+                let letters = self.simulation.mailbox().letters();
+                if letters.len() > free {
+                    self.mailbox_menu.notify_bag_full();
+                }
+                letters
+                    .iter()
+                    .rev()
+                    .take(free)
+                    .map(|letter| letter.id)
+                    .collect()
+            }
+        };
+        for id in ids {
+            match self.online.as_mut() {
+                Some(online) => online.take_mail(id),
+                None => self.simulation.push_command(PlayerCommand::TakeMail { id }),
+            }
+        }
+        self.play_ui_sound(engine_audio::SoundId::UiClick);
     }
 
     /// Writes what every character is wearing and carrying.
@@ -2491,7 +2699,7 @@ impl App {
     fn save_characters(&mut self) {
         // Online the persistent character lives on the server; the local file is the offline
         // game's and is left as it was.
-        if self.online.is_some() {
+        if self.online.is_some() || self.dev_loot {
             return;
         }
         let config = engine_presentation::character_save::config_of(self.simulation.roster());
@@ -2814,6 +3022,10 @@ impl App {
             }
             if self.character_menu.is_open() {
                 self.character_menu.close();
+                return;
+            }
+            if self.mailbox_menu.is_open() {
+                self.mailbox_menu.close();
                 return;
             }
             if self.talent_menu.is_open() {
@@ -3307,6 +3519,7 @@ impl App {
         self.dungeon_map.set_scale(scale);
         self.playground_panels.set_scale(scale);
         self.character_menu.set_scale(scale);
+        self.mailbox_menu.set_scale(scale);
         self.slot_menu.set_scale(scale);
         self.hud_editor.layout(scale, self.renderer.size());
         if persist && self.settings.save_if_dirty() {
@@ -3437,12 +3650,25 @@ impl App {
                     && self.hovered_ability.is_none())
                 .then_some(cursor);
                 self.click_travel = 0;
+                // A right-click on the chest is the interact gesture; like the selection
+                // click it only counts if the camera did not move in between.
+                self.chest_click = (self.mouse_look.mode() == Some(LookMode::Steer)
+                    && self.hovered_ability.is_none()
+                    && self.chest_prompt.is_some()
+                    && self.chest_under(cursor))
+                .then_some(cursor);
                 self.begin_mouse_look(cursor);
                 return;
             }
             Some(LookChange::Ended) => {
                 self.end_mouse_look();
                 self.finish_click();
+                if self.chest_click.take().is_some()
+                    && self.click_travel <= CLICK_SLOP_PIXELS
+                    && self.chest_prompt.is_some()
+                {
+                    self.simulation.push_command(PlayerCommand::OpenChest);
+                }
                 return;
             }
             None => {}
@@ -3464,6 +3690,71 @@ impl App {
             self.controller.rotate(delta_x as f32, delta_y as f32);
         }
         self.recenter_cursor();
+    }
+
+    /// The pill over a waiting chest and the loot toast.
+    fn push_loot_ui(&mut self, viewport: (u32, u32)) {
+        let kit = engine_presentation::ui::kit::Kit::new(self.game_ui.scale());
+        if let Some(prompt) = self.chest_prompt
+            && let Some(anchor) = self.chest.prompt_anchor()
+            && let Some(at) = engine_presentation::nameplate::project(
+                anchor,
+                &self.camera.view_projection(),
+                viewport,
+            )
+        {
+            let key = self.bindings.interact.name().unwrap_or("E");
+            LootHud::push_prompt(self.game_ui.list_mut(), &kit, at, key, prompt.opened);
+        }
+        self.loot_hud.push_toast(
+            self.game_ui.list_mut(),
+            &kit,
+            &self.snapshot.character,
+            self.ui_pointer,
+            viewport,
+        );
+    }
+
+    /// Reads the frame's mail events: a taken letter is written to disk, a refused one says
+    /// so in the window. Also runs the development timer that opens the chest.
+    fn observe_mail(&mut self, delta: f32) {
+        let local = self.simulation.player().entity;
+        let mut taken = false;
+        let mut bag_full = false;
+        for event in self.simulation.events() {
+            match *event {
+                engine_game::event::CombatEvent::MailTaken { player, .. } if player == local => {
+                    taken = true
+                }
+                engine_game::event::CombatEvent::MailBagFull { player, .. } if player == local => {
+                    bag_full = true
+                }
+                _ => {}
+            }
+        }
+        if taken {
+            self.save_characters();
+        }
+        if bag_full {
+            self.mailbox_menu.notify_bag_full();
+        }
+        self.mailbox_menu.advance(delta);
+        if let Some(left) = self.dev_open_chest.as_mut() {
+            *left -= delta;
+            if *left <= 0.0 {
+                self.dev_open_chest = None;
+                self.simulation.push_command(PlayerCommand::OpenChest);
+            }
+        }
+    }
+
+    /// Whether the ray under `cursor` meets the loot chest.
+    fn chest_under(&self, cursor: (i32, i32)) -> bool {
+        let viewport = self.renderer.size();
+        let view_projection = self.camera.view_projection();
+        let pointer = (cursor.0 as f32, cursor.1 as f32);
+        engine_presentation::ui::targeting::cursor_ray(pointer, &view_projection, viewport)
+            .is_some_and(|(origin, direction)| self.chest.pick(origin, direction).is_some())
     }
 
     /// Turns a press that did not become a drag into a selection.
@@ -3669,6 +3960,9 @@ impl App {
             .info()
             .map(|_| self.dungeon_map.minimap_layout(viewport).bounds());
         self.game_ui.set_minimap_bounds(minimap);
+        #[cfg(feature = "dev-tools")]
+        self.game_ui
+            .set_dev_boss_button(self.dev_boss_button_visible());
         self.game_ui.build_arranged(
             &self.snapshot,
             self.nameplates.plates(),
@@ -3720,6 +4014,7 @@ impl App {
             }
         }
         self.push_affected_highlights(viewport);
+        self.push_loot_ui(viewport);
         if self.scene.is_monsters() {
             self.playground_panels.push(
                 self.game_ui.list_mut(),
@@ -3750,12 +4045,23 @@ impl App {
             &mut self.talent_scratch,
             viewport,
         );
+        push_mailbox(
+            self.game_ui.list_mut(),
+            &self.mailbox_menu,
+            self.simulation.mailbox(),
+            &self.snapshot.character,
+            self.ui_pointer,
+            unix_now(),
+            &mut self.item_tooltip,
+            viewport,
+        );
         push_character_menu(
             self.game_ui.list_mut(),
             &self.character_menu,
             &self.snapshot,
             &self.character_theme,
             &mut self.character_scratch,
+            &mut self.item_tooltip,
             viewport,
         );
 
@@ -4223,6 +4529,10 @@ impl App {
     #[cfg(feature = "editor")]
     fn silence_the_fight(&mut self) {
         self.simulation.cancel_cast();
+        if self.online.is_none() {
+            self.simulation.mail_unclaimed_loot();
+            self.save_characters();
+        }
         self.telegraphs.clear();
         if let Ok(mut audio) = self.audio.system().lock() {
             self.audio_director.clear(&mut audio);
@@ -5836,6 +6146,7 @@ impl Application for App {
             if self.targeting.is_active()
                 || self.talent_menu.is_open()
                 || self.character_menu.is_open()
+                || self.mailbox_menu.is_open()
                 || self.hud_editor.is_active()
                 || self.slot_menu.is_open()
                 || self.dungeon_map.is_open()
@@ -5854,6 +6165,7 @@ impl Application for App {
             let on_map = self
                 .dungeon_map
                 .wants_pointer((pointer.0 as f32, pointer.1 as f32), self.renderer.size())
+                || self.mailbox_menu.is_open()
                 || (self.scene.is_monsters()
                     && self
                         .playground_panels
@@ -5879,6 +6191,16 @@ impl Application for App {
                     &mut self.commands,
                 );
             }
+            // The interact key: open the chest, or take what is left in it. Not while a window
+            // has the keyboard's attention or a search field is typing.
+            if self.chest_prompt.is_some()
+                && !self.playground_owns_keyboard()
+                && !self.character_menu.is_open()
+                && !self.mailbox_menu.is_open()
+                && ctx.input().was_key_pressed(self.bindings.interact)
+            {
+                self.commands.push(engine_game::PlayerCommand::OpenChest);
+            }
             if let Some(online) = self.online.as_ref() {
                 // Online the server owns the fight: ability presses pass through to the
                 // simulation, which (under a remote authority) hands them to the server as
@@ -5892,7 +6214,8 @@ impl Application for App {
                     engine_game::PlayerCommand::UseAbility(_)
                     | engine_game::PlayerCommand::UseAbilityAt { .. }
                     | engine_game::PlayerCommand::UseUltimate { .. }
-                    | engine_game::PlayerCommand::UseExtra(_) => may_move,
+                    | engine_game::PlayerCommand::UseExtra(_)
+                    | engine_game::PlayerCommand::OpenChest => may_move,
                     engine_game::PlayerCommand::SelectNearestTarget
                     | engine_game::PlayerCommand::CycleTarget
                     | engine_game::PlayerCommand::ClearTarget
@@ -6041,6 +6364,25 @@ impl Application for App {
                 DecalBand::edged(DECAL_BORDER_WIDTH, DECAL_BORDER_LIFT),
                 &ground,
             );
+            // The chest, drawn from the same frame's events and state. Gone when the realm's
+            // instance is left: the client simulation never holds an online chest of its own.
+            let delta = ctx.time().real_delta().as_secs_f32();
+            if self
+                .online
+                .as_ref()
+                .is_some_and(|online| online.front_end_active())
+            {
+                self.chest.clear(self.extractor.render_world_mut());
+            }
+            self.chest
+                .update(&self.simulation, delta, self.extractor.render_world_mut());
+            self.chest_prompt = self.chest.prompt(&self.simulation);
+            // A reward for the local player: save it now rather than on the way out.
+            if self.loot_hud.observe(&self.simulation) {
+                self.save_characters();
+            }
+            self.loot_hud.advance(delta);
+            self.observe_mail(delta);
             // The player's own indicator is built from the position the character is drawn
             // at this frame, so it comes after the simulation has advanced.
             self.update_targeting_decal();
@@ -6343,6 +6685,12 @@ impl Application for App {
         // The same last chance for the interface layout: a drag interrupted by a crash-free
         // quit, or a write that failed earlier.
         self.save_hud_layout();
+        // Whatever the player left in the chest goes to their mailbox, and the character is
+        // written with it. Offline only; online the realm settles the chest.
+        if self.online.is_none() {
+            self.simulation.mail_unclaimed_loot();
+            self.save_characters();
+        }
         // And for a level being edited: work nobody saved goes to the autosave beside it
         // rather than nowhere.
         #[cfg(feature = "editor")]
@@ -7222,6 +7570,21 @@ fn upload_decal_visuals(renderer: &mut Renderer) -> Result<DecalVisuals, EngineE
     })
 }
 
+/// Uploads the chest's three models: the body, the lid and the treasure.
+///
+/// Once at startup, like the environment and the effects; the chest is then a handful of
+/// entities moved around, never a GPU resource created mid-fight.
+fn upload_chest_visuals(renderer: &mut Renderer) -> Result<ChestVisuals, EngineError> {
+    use engine_assets::procedural::{chest_body, chest_lid, chest_treasure};
+    let visuals = ChestVisuals {
+        body: renderer.create_model(&chest_body())?,
+        lid: renderer.create_model(&chest_lid())?,
+        treasure: renderer.create_model(&chest_treasure())?,
+    };
+    log::info!("chest: 3 models");
+    Ok(visuals)
+}
+
 /// Uploads the six shapes every effect is drawn with, and the one material they share.
 ///
 /// **One material for the whole VFX system.** Colour is per instance — `InstanceStyle`'s
@@ -7491,6 +7854,13 @@ fn upload_debug_visuals(renderer: &mut Renderer) -> Result<DebugBindings, Engine
         capsule_material,
         contact_material,
     })
+}
+
+/// The current unix time in seconds, for the mailbox's "2 min ago".
+fn unix_now() -> f64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0.0, |elapsed| elapsed.as_secs_f64())
 }
 
 #[cfg(test)]

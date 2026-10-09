@@ -83,6 +83,7 @@ impl Simulation {
                     | PlayerCommand::UseAbilityAt { .. }
                     | PlayerCommand::UseUltimate { .. }
                     | PlayerCommand::UseExtra(_)
+                    | PlayerCommand::OpenChest
             )
     }
 

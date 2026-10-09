@@ -53,7 +53,7 @@
 //! | [`telemetry`] | The combat meter |
 //! | [`command`] | What the player asked for |
 //! | [`input_map`] | Keys to commands — the only module that knows a key |
-//! | [`character`] | Stats, items, the fifteen equipment slots and the bag |
+//! | [`character`] | Stats, items, the thirteen equipment slots and the bag |
 //! | [`druid`] | Mana, Astral Power and the Druid's own state |
 //! | [`arena`] | The training arena |
 //! | [`demo`] | The collision demo scene: geometry, no combat |

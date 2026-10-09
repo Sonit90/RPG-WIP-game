@@ -1,6 +1,6 @@
 # The Character Sheet
 
-Seven stats, fifteen equipment slots, a bag of thirty-two cells, and one drag that does all
+Seven stats, thirteen equipment slots, a bag of thirty-two cells, and one drag that does all
 four things a player can do with an item. Opened with `C` or the button beside the talent
 button; the game keeps running behind it.
 
@@ -10,7 +10,7 @@ button; the game keeps running behind it.
 
 ```text
 CharacterSheet ─┬─ hero          which hero this sheet is for
-                ├─ equipment     15 slots, each holding an ItemStack or nothing
+                ├─ equipment     13 slots, each holding an ItemStack or nothing
                 └─ inventory     32 cells, likewise
 
                 stats() = hero.base_stats() + every worn item's stats
@@ -86,7 +86,7 @@ was gained — so `SpiritSurge` is an array of remaining times rather than a cou
 timer. `proc_chance(0.0)` is zero and the roll is strictly less-than, so at the current Spirit
 rating of zero the mechanic cannot fire. Turning it on means putting Spirit on an item.
 
-## The fifteen slots
+## The thirteen slots
 
 ```text
         HEAD                              BACK
@@ -95,11 +95,14 @@ rating of zero the mechanic cannot fire. Turning it on means putting Spirit on a
        HANDS      │  character   │        FEET
         LEGS      └──────────────┘
 
-            RING1 RING2 TRINKET1..4
+              RING1 RING2
+          TRINKET1 TRINKET2
 ```
 
-Fifteen, not fourteen: Head, Shoulder, Chest, Back, Hands, Legs, Feet, Wrist, Necklace, two
-Rings and four Trinkets is a list fifteen entries long.
+Head, Shoulder, Chest, Back, Hands, Legs, Feet, Wrist, Necklace, two Rings and two Trinkets.
+There used to be four trinket slots; saves that still name `trinket3` / `trinket4` (offline
+`character.cfg`, online loadout) have those items moved to the first free bag cell on load, or
+mailed (reason `SlotRemoved`, from the System) when the bag is full.
 
 An item carries an `ItemFamily`, not a slot. A ring is a ring, and `ItemFamily::accepts` says
 which of the two fingers will take it. **That one comparison is the whole equipment
@@ -116,10 +119,9 @@ ItemDef  id · name · key · family · quality · item level · icon · StatBlo
 character is a list of names, moving an item copies four bytes, and the interface never names
 a row of the table.
 
-Every character starts wearing a white, zero-stat piece in **Chest, Legs, Wrist and Feet**,
-and carrying the white pieces for Head, Shoulder, Back, Ring and Trinket so there is something
-to drag the first time the panel is opened. All of them grant nothing, and the tooltip says
-`GRANTS NO COMBAT STATS`.
+**A new hero has no items at all**: nothing worn, nothing in the bag. The twelve authored white,
+zero-stat pieces stay in the table (existing saves reference them by key); the tooltip says
+`GRANTS NO COMBAT STATS` for them.
 
 One item in the table grants anything at all: `REINFORCED IRON BAND`, uncommon, +10 Stamina,
 which no character starts with. It exists so that "equipping ten Stamina raises maximum health

@@ -20,6 +20,7 @@
 //! downstream — not the renderer, not the animation controller, not gameplay — can tell the
 //! difference, and that is the property this module exists to demonstrate.
 
+pub mod chest;
 pub mod druid;
 pub mod dummy;
 pub mod environment;
@@ -35,6 +36,7 @@ use engine_core::math::{Vec2, Vec3};
 
 use crate::mesh::{Geometry, MeshVertex, SubMesh};
 
+pub use chest::{chest_body, chest_lid, chest_treasure};
 pub use druid::{druid, druid_character};
 pub use dummy::{DummyVariant, training_dummy};
 pub use environment::{environment_library, environment_model};
@@ -271,6 +273,23 @@ impl MeshBuilder {
         }
         self.indices
             .extend_from_slice(&[first, first + 1, first + 2, first, first + 2, first + 3]);
+    }
+
+    /// Appends one vertex with its own normal and returns its index.
+    ///
+    /// For surfaces whose normal changes along them - a barrel-vaulted lid - where
+    /// [`MeshBuilder::quad`]'s one-normal-per-face would facet a curve into a stack of flat
+    /// strips. The caller wires the returned indices up with [`MeshBuilder::triangle`].
+    pub fn vertex(&mut self, position: Vec3, normal: Vec3, uv: Vec2) -> u32 {
+        let index = self.vertices.len() as u32;
+        self.vertices.push(MeshVertex::new(position, normal, uv));
+        index
+    }
+
+    /// Appends one triangle over vertices from [`MeshBuilder::vertex`], counter-clockwise
+    /// seen from outside.
+    pub fn triangle(&mut self, a: u32, b: u32, c: u32) {
+        self.indices.extend_from_slice(&[a, b, c]);
     }
 
     /// Appends a flat horizontal N-gon centred on `(0, y, 0)`, facing up.

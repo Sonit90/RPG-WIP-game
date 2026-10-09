@@ -111,8 +111,50 @@ impl EquippedEntry {
     }
 }
 
-/// One character: which hero, what they wear, what they carry.
-#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// One letter in a character's mailbox.
+///
+/// Sender and reason are names, like everything in this file; a name this build does not know
+/// is kept as it is and resolved one layer up.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MailEntry {
+    /// Unique within the character's mailbox.
+    pub id: u64,
+    /// The attachment's stable name.
+    pub item: String,
+    /// Who sent it: `"dungeon_chest"`.
+    pub sender: String,
+    /// Why it was sent: `"bag_full"` or `"unclaimed"`.
+    pub reason: String,
+    /// When it arrived, in seconds on the clock the game stamped it with.
+    pub received_at: f64,
+    /// Whether the player has opened it.
+    pub read: bool,
+}
+
+impl Default for MailEntry {
+    fn default() -> Self {
+        Self {
+            id: 0,
+            item: String::new(),
+            sender: "dungeon_chest".to_owned(),
+            reason: "unclaimed".to_owned(),
+            received_at: 0.0,
+            read: false,
+        }
+    }
+}
+
+impl MailEntry {
+    /// Whether this letter is worth keeping: it names an item and its time is a number.
+    #[must_use]
+    pub fn is_plausible(&self) -> bool {
+        !self.item.trim().is_empty() && self.received_at.is_finite()
+    }
+}
+
+/// One character: which hero, what they wear, what they carry, what they have been mailed.
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct HeroLoadout {
     /// The hero's stable name: `"firemage"`, `"warrior"`, `"druid"`.
@@ -121,6 +163,10 @@ pub struct HeroLoadout {
     pub equipment: Vec<EquippedEntry>,
     /// What is carried, one entry per filled cell, with its position.
     pub inventory: Vec<InventoryEntry>,
+    /// Letters waiting in the mailbox, oldest first. Absent in files written before mail.
+    pub mail: Vec<MailEntry>,
+    /// The id the next letter gets, so ids are never reused after a letter is taken.
+    pub next_mail_id: u64,
 }
 
 impl HeroLoadout {
@@ -131,6 +177,8 @@ impl HeroLoadout {
             hero: hero.into(),
             equipment: Vec::new(),
             inventory: Vec::new(),
+            mail: Vec::new(),
+            next_mail_id: 0,
         }
     }
 
@@ -170,12 +218,29 @@ impl HeroLoadout {
         for entry in &mut self.inventory {
             entry.quantity = entry.quantity.max(1);
         }
+
+        let mut seen_letters: Vec<u64> = Vec::with_capacity(self.mail.len());
+        self.mail.retain(|entry| {
+            if !entry.is_plausible() || seen_letters.contains(&entry.id) {
+                log::warn!(
+                    "character: dropping mail {} for hero {:?}",
+                    entry.id,
+                    self.hero
+                );
+                return false;
+            }
+            seen_letters.push(entry.id);
+            true
+        });
+        if let Some(highest) = seen_letters.iter().max() {
+            self.next_mail_id = self.next_mail_id.max(highest.saturating_add(1));
+        }
         self
     }
 }
 
 /// Every character the player owns.
-#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct CharacterConfig {
     /// One loadout per hero. A hero with no entry has never been saved.
@@ -399,6 +464,7 @@ mod tests {
                 EquippedEntry::new("feet", "simple_cloth_boots"),
             ],
             inventory: vec![InventoryEntry::new(5, "plain_copper_band", 1)],
+            ..HeroLoadout::default()
         }
     }
 
@@ -484,6 +550,7 @@ mod tests {
                             quantity: 0,
                         },
                     ],
+                    ..HeroLoadout::default()
                 },
                 HeroLoadout::new(""),
                 HeroLoadout::new("warrior"),
@@ -516,9 +583,71 @@ mod tests {
                 hero: "necromancer".to_owned(),
                 equipment: vec![EquippedEntry::new("phylactery", "soul_jar")],
                 inventory: Vec::new(),
+                ..HeroLoadout::default()
             }],
         }
         .validated();
         assert_eq!(config.heroes[0].equipment[0].item, "soul_jar");
+    }
+
+    fn letter(id: u64, item: &str) -> MailEntry {
+        MailEntry {
+            id,
+            item: item.to_owned(),
+            ..MailEntry::default()
+        }
+    }
+
+    #[test]
+    fn mail_is_saved_and_loaded_back() {
+        let path = temp("mail-round-trip");
+        let mut manager = CharacterConfigManager::load(&path);
+        let mut hero = HeroLoadout::new("warrior");
+        hero.mail = vec![
+            MailEntry {
+                reason: "bag_full".to_owned(),
+                received_at: 1_750_000_000.5,
+                read: true,
+                ..letter(3, "plain_copper_band")
+            },
+            letter(7, "tarnished_pendant"),
+        ];
+        hero.next_mail_id = 12;
+        let mut config = CharacterConfig::default();
+        config.set_loadout(hero);
+        manager.update(config.clone());
+        manager.save();
+
+        let reloaded = CharacterConfigManager::load(&path);
+        assert_eq!(reloaded.config(), &config);
+        assert_eq!(reloaded.config().heroes[0].next_mail_id, 12);
+    }
+
+    #[test]
+    fn a_file_written_before_mail_still_loads() {
+        let path = temp("pre-mail");
+        fs::write(
+            &path,
+            r#"{"heroes":[{"hero":"druid","equipment":[],"inventory":[]}]}"#,
+        )
+        .expect("a writable file");
+        let manager = CharacterConfigManager::load(&path);
+        assert!(manager.existed());
+        let druid = manager.config().loadout("druid").expect("the druid");
+        assert!(druid.mail.is_empty());
+    }
+
+    #[test]
+    fn implausible_and_duplicate_letters_are_dropped_and_ids_stay_ahead() {
+        let mut hero = HeroLoadout::new("firemage");
+        hero.mail = vec![
+            letter(4, "plain_copper_band"),
+            letter(4, "tarnished_pendant"),
+            letter(5, ""),
+            letter(9, "tarnished_pendant"),
+        ];
+        let hero = hero.validated();
+        assert_eq!(hero.mail.len(), 2);
+        assert_eq!(hero.next_mail_id, 10, "a new letter could reuse an id");
     }
 }

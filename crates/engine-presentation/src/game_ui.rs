@@ -687,6 +687,9 @@ pub struct GameUi {
     /// Where the minimap is, when the level has one: the corner buttons move to its left
     /// and the dungeon's progress panel moves under it.
     minimap: Option<UiRect>,
+    /// Whether the developer "kill the boss" button is shown this frame.
+    #[cfg(feature = "dev-tools")]
+    dev_boss_button: bool,
     /// How floating combat text is sized and whether criticals are emphasised.
     combat_text: engine_settings::CombatTextSettings,
     /// This frame's floating text, laid out and then moved apart. Reused; never freed.
@@ -750,6 +753,8 @@ impl GameUi {
             tooltip_panel: crate::ui::tooltip::TooltipPanel::new(),
             bar_one: None,
             minimap: None,
+            #[cfg(feature = "dev-tools")]
+            dev_boss_button: false,
             combat_text: engine_settings::CombatTextSettings::default(),
             combat_layout: Vec::with_capacity(crate::damage_numbers::MAX_FLOATING_NUMBERS),
             combat_nudges: Vec::with_capacity(crate::damage_numbers::MAX_FLOATING_NUMBERS),
@@ -1294,6 +1299,9 @@ impl GameUi {
         self.push_ability_bar(snapshot, viewport);
         self.push_talent_button(snapshot, viewport);
         self.push_character_button(viewport);
+        self.push_mailbox_button(snapshot, viewport);
+        #[cfg(feature = "dev-tools")]
+        self.push_dev_boss_button(viewport);
         self.push_cast_bar(snapshot, viewport);
         self.push_enemy_cast_bar(snapshot, viewport);
         self.push_dungeon_progress(snapshot, viewport);
@@ -1353,6 +1361,9 @@ impl GameUi {
 
         self.push_talent_button(snapshot, viewport);
         self.push_character_button(viewport);
+        self.push_mailbox_button(snapshot, viewport);
+        #[cfg(feature = "dev-tools")]
+        self.push_dev_boss_button(viewport);
         // The player's cast bar is an arranged element too: wherever, and whatever size,
         // the player put it in Edit HUD.
         if layout.is_enabled(crate::ui::hud_layout::HudElementId::CastBar) {
@@ -2183,6 +2194,69 @@ impl GameUi {
         self.minimap = bounds;
     }
 
+    /// Shows or hides the developer boss button for this frame.
+    #[cfg(feature = "dev-tools")]
+    pub fn set_dev_boss_button(&mut self, shown: bool) {
+        self.dev_boss_button = shown;
+    }
+
+    /// Where the developer boss button sits: under the row of corner buttons, as wide as the
+    /// three of them.
+    #[cfg(feature = "dev-tools")]
+    #[must_use]
+    pub fn dev_boss_button_rect(&self, viewport: (u32, u32)) -> UiRect {
+        let talent = self.talent_button_rect(viewport);
+        let mailbox = self.mailbox_button_rect(viewport);
+        let height = self.metrics.talent_button_size * 0.5;
+        UiRect::new(
+            mailbox.x,
+            talent.bottom() + self.metrics.corner_button_gap,
+            talent.right() - mailbox.x,
+            height,
+        )
+    }
+
+    /// The developer boss button: deliberately unlike the game's own buttons, a muted dark
+    /// slab with an orange dashed outline, so it cannot be mistaken for game UI.
+    #[cfg(feature = "dev-tools")]
+    pub fn push_dev_boss_button(&mut self, viewport: (u32, u32)) {
+        if !self.dev_boss_button {
+            return;
+        }
+        const ORANGE: [f32; 4] = [0.95, 0.55, 0.12, 0.9];
+        let rect = self.dev_boss_button_rect(viewport);
+        self.list.rect(rect, [0.10, 0.09, 0.08, 0.72]);
+        // The dashed outline: dashes along each edge, a gap between them.
+        let thickness = self.metrics.scale.px(2.0).max(1.0);
+        let dash = self.metrics.scale.px(8.0);
+        let step = dash * 1.7;
+        let mut x = rect.x;
+        while x < rect.right() {
+            let length = dash.min(rect.right() - x);
+            self.list
+                .rect(UiRect::new(x, rect.y, length, thickness), ORANGE);
+            self.list.rect(
+                UiRect::new(x, rect.bottom() - thickness, length, thickness),
+                ORANGE,
+            );
+            x += step;
+        }
+        let mut y = rect.y;
+        while y < rect.bottom() {
+            let length = dash.min(rect.bottom() - y);
+            self.list
+                .rect(UiRect::new(rect.x, y, thickness, length), ORANGE);
+            self.list.rect(
+                UiRect::new(rect.right() - thickness, y, thickness, length),
+                ORANGE,
+            );
+            y += step;
+        }
+        let (origin, align) = centered(rect.x + rect.width * 0.5, rect.y + rect.height * 0.5 - 8.0);
+        self.list
+            .text_aligned(origin, "DEV: KILL BOSS", ORANGE, 1.5, align);
+    }
+
     /// Where the character button sits: beside the talent button, further left.
     ///
     /// The same size and the same row, because the two are the same kind of thing — a window
@@ -2215,6 +2289,59 @@ impl GameUi {
         let (origin, align) = centered(rect.x + rect.width * 0.5, rect.bottom() - 16.0);
         self.list
             .text_aligned(origin, "C", self.theme.target_outline, 1.5, align);
+    }
+
+    /// Where the mailbox button sits: beside the character button, further left.
+    #[must_use]
+    pub fn mailbox_button_rect(&self, viewport: (u32, u32)) -> UiRect {
+        let character = self.character_button_rect(viewport);
+        UiRect::new(
+            character.x - self.metrics.corner_button_gap - self.metrics.talent_button_size,
+            character.y,
+            self.metrics.talent_button_size,
+            self.metrics.talent_button_size,
+        )
+    }
+
+    /// The mailbox button, with a badge counting the letters not yet read.
+    pub fn push_mailbox_button(&mut self, snapshot: &UiSnapshot, viewport: (u32, u32)) {
+        let rect = self.mailbox_button_rect(viewport);
+        let unread = snapshot.mail_unread;
+        self.list.rect(rect, self.theme.panel);
+        let border = if unread > 0 {
+            self.theme.slot_empowered
+        } else {
+            self.theme.target_outline
+        };
+        self.list.outline(
+            rect,
+            self.metrics.scale.px(self.theme.outline_pixels),
+            border,
+        );
+
+        let (origin, align) = centered(rect.x + rect.width * 0.5, rect.y + 8.0);
+        self.list
+            .text_aligned(origin, "MAIL", self.theme.text, 1.5, align);
+        let (origin, align) = centered(rect.x + rect.width * 0.5, rect.bottom() - 16.0);
+        self.list
+            .text_aligned(origin, "J", self.theme.target_outline, 1.5, align);
+
+        if unread > 0 {
+            // A pill hanging off the top-right corner, like the badge on any mail icon.
+            self.title.clear();
+            if unread > 9 {
+                self.title.push_str("9+");
+            } else {
+                write_integer(&mut self.title, i64::from(unread));
+            }
+            let radius = self.metrics.scale.px(11.0);
+            let centre = (rect.right() - radius * 0.1, rect.y + radius * 0.1);
+            self.list.disc(centre, radius + 1.0, [0.0, 0.0, 0.0, 0.7]);
+            self.list.disc(centre, radius, [0.86, 0.30, 0.26, 1.0]);
+            let (origin, align) = centered(centre.0, centre.1 - 7.0);
+            self.list
+                .text_aligned(origin, &self.title, [1.0, 1.0, 1.0, 1.0], 1.5, align);
+        }
     }
 
     /// The talent button, with the points waiting to be spent.

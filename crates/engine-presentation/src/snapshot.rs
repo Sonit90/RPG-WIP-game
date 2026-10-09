@@ -65,6 +65,44 @@ fn warrior_view(simulation: &Simulation) -> WarriorView {
     }
 }
 
+/// A training arena whose heroes wear four white pieces and carry five more, as new heroes
+/// once started. New heroes now have nothing; the character-sheet tests need something to
+/// move around.
+#[cfg(test)]
+#[allow(clippy::expect_used, reason = "test helper over known-good table rows")]
+pub(crate) fn dressed_training_arena() -> Simulation {
+    use engine_game::character::{ItemFamily, starting_item};
+    let mut simulation =
+        engine_game::arena::training_arena(&engine_game::arena::ArenaConfig::default());
+    for hero in Hero::ALL {
+        let sheet = simulation.roster_mut().sheet_mut(hero);
+        for slot in [
+            EquipSlot::Chest,
+            EquipSlot::Legs,
+            EquipSlot::Wrist,
+            EquipSlot::Feet,
+        ] {
+            let def = starting_item(slot.family()).expect("a white piece");
+            sheet
+                .equipment_mut()
+                .equip(slot, ItemStack::one(def.id))
+                .expect("fits");
+        }
+        for family in [
+            ItemFamily::Head,
+            ItemFamily::Shoulder,
+            ItemFamily::Back,
+            ItemFamily::Ring,
+            ItemFamily::Trinket,
+        ] {
+            let def = starting_item(family).expect("a white piece");
+            sheet.inventory_mut().add(ItemStack::one(def.id));
+        }
+    }
+    simulation.refresh_character();
+    simulation
+}
+
 /// Reads the current character sheet.
 ///
 /// A free function rather than a method on the view, because building one is a question for
@@ -879,6 +917,9 @@ pub struct UiSnapshot {
     pub notification: NotificationView,
     /// Talent points left to spend.
     pub talent_points: u32,
+    /// Letters in the active character's mailbox that have not been read: the badge on the
+    /// mailbox button.
+    pub mail_unread: u32,
     /// The whole talent grid.
     pub talents: Vec<TalentView>,
     /// The mage's current spell power, which every tooltip number is a percentage of.
@@ -978,6 +1019,7 @@ impl UiSnapshot {
             combat: CombatView::default(),
             notification: NotificationView::default(),
             talent_points: 0,
+            mail_unread: 0,
             talents: Vec::with_capacity(TALENTS.len()),
             spell_power: 0.0,
             haste: 0.0,
@@ -1106,6 +1148,7 @@ impl UiSnapshot {
         };
 
         self.talent_points = mage.talents.available_points();
+        self.mail_unread = u32::try_from(simulation.mailbox().unread_count()).unwrap_or(u32::MAX);
         self.talents.clear();
         for talent in &TALENTS {
             self.talents.push(TalentView {

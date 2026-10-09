@@ -536,6 +536,8 @@ pub fn combat_tick(ctx: &ReducerContext, _timer: CombatTimer) -> Result<(), Stri
                 crate::instance::finish(ctx, instance.id, true)?;
             }
         }
+        // After `finish`, which writes the rolls these events settle.
+        crate::loot::on_events(ctx, instance.id, &events);
     }
     let stale: Vec<u64> = ctx
         .db
@@ -572,7 +574,14 @@ pub fn combat_act(
         .ok_or_else(|| RealmError::dungeon("That dungeon no longer exists.").to_wire())?;
     let state: InstanceState = instance.state.into();
     let only_target = matches!(action, NetAction::Target);
-    if state != InstanceState::Active && !(only_target && state == InstanceState::Countdown) {
+    // The chest is opened after the run completes; everything else needs a live fight.
+    let allowed = match state {
+        InstanceState::Active => true,
+        InstanceState::Countdown => only_target,
+        InstanceState::Completed => matches!(action, NetAction::OpenChest),
+        _ => false,
+    };
+    if !allowed {
         return Err(RealmError::dungeon("You cannot act yet.").into());
     }
     let kind = match action {
@@ -584,6 +593,7 @@ pub fn combat_act(
         ),
         NetAction::Ultimate(p) => ActionKind::Ultimate([p.x, p.y, p.z]),
         NetAction::Extra(index) => ActionKind::Extra(index),
+        NetAction::OpenChest => ActionKind::OpenChest,
     };
     let request = CombatAction {
         target: entity_ref(&target),

@@ -123,6 +123,10 @@ pub struct AudioDirector {
     /// Where the player was last frame, and how far it has walked since its last step.
     last_player: Option<Vec3>,
     stride: f32,
+    /// Seconds until each chest lands, counting down in real time.
+    chest_thuds: Vec<f32>,
+    /// Seconds until the opened chest's gold chime.
+    chest_chimes: Vec<f32>,
     /// The next id handed to a scheduled impact, so its whistle can be found again.
     next_incoming: u32,
     enabled: bool,
@@ -175,6 +179,8 @@ impl AudioDirector {
         self.shield = None;
         self.mastery = None;
         self.cast = None;
+        self.chest_thuds.clear();
+        self.chest_chimes.clear();
         self.last_player = None;
         self.stride = 0.0;
     }
@@ -194,6 +200,35 @@ impl AudioDirector {
                 + usize::from(self.mastery.is_some())
                 + usize::from(self.cast.is_some()),
             refused: self.refused,
+        }
+    }
+
+    /// Counts down the chest's delayed sounds and plays the ones that are due.
+    fn advance_chest(&mut self, delta: f32, audio: &mut AudioSystem) {
+        for (list, sound, pitch) in [
+            (&mut self.chest_thuds, SoundId::HeavyImpact, 0.55),
+            (&mut self.chest_chimes, SoundId::FireMasteryActivate, 1.6),
+        ] {
+            let mut due = 0;
+            list.retain_mut(|remaining| {
+                *remaining -= delta;
+                if *remaining <= 0.0 {
+                    due += 1;
+                    false
+                } else {
+                    true
+                }
+            });
+            for _ in 0..due {
+                let cue = SoundCue {
+                    pitch,
+                    ..SoundCue::ui(sound)
+                };
+                let handle = audio.play(cue);
+                if handle.is_none() {
+                    self.refused += 1;
+                }
+            }
         }
     }
 
@@ -486,6 +521,41 @@ impl AudioDirector {
                 let origin = self.chest_of(simulation.player().entity, simulation);
                 self.request(SoundCue::at(SoundId::FireMasteryActivate, origin), audio);
             }
+            // The chest. The thud is not positional: it lands once, with a bang a player ought
+            // to hear wherever the camera happens to be, and it is held until the chest has
+            // finished falling. The rest are the existing catalogue pitched to suit.
+            CombatEvent::ChestSpawned { fall_seconds, .. } => {
+                self.chest_thuds.push(fall_seconds);
+            }
+            CombatEvent::ChestOpened { .. } => {
+                self.request(
+                    SoundCue {
+                        pitch: 0.65,
+                        ..SoundCue::ui(SoundId::BlinkArrive)
+                    },
+                    audio,
+                );
+                self.chest_chimes.push(crate::chest::ANTICIPATION_SECONDS);
+            }
+            // Only the local player hears their own reward.
+            CombatEvent::LootAwarded { player, .. } => {
+                if player == simulation.player().entity {
+                    self.request(SoundCue::ui(SoundId::UiSelect), audio);
+                    self.request(
+                        SoundCue {
+                            pitch: 1.35,
+                            ..SoundCue::ui(SoundId::FireMasteryActivate)
+                        },
+                        audio,
+                    );
+                }
+            }
+            CombatEvent::LootMailed { player, .. } | CombatEvent::MailTaken { player, .. } => {
+                if player == simulation.player().entity {
+                    self.request(SoundCue::ui(SoundId::UiSelect), audio);
+                }
+            }
+            CombatEvent::MailBagFull { .. } => {}
             // Nothing to hear, or a state the frame synchronises instead. A phase change is
             // seen rather than heard: this phase authors no new cues. A point of Deflection
             // is deliberately silent — it happens several times a second in a pack, and the
@@ -518,6 +588,7 @@ impl AudioDirector {
             return;
         }
         self.advance_bolts(delta, audio);
+        self.advance_chest(delta, audio);
         self.sync_states(simulation, audio);
         self.walk(simulation, delta, audio);
         self.prune(audio);

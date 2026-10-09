@@ -74,6 +74,9 @@ pub enum ActionKind {
     Ultimate([f32; 3]),
     /// The extra button `n`.
     Extra(u8),
+    /// Take the player's item from the boss's chest. The simulation checks that the chest
+    /// has landed, that they are close enough and that it is not already taken.
+    OpenChest,
 }
 
 /// A button press, with the target the player had selected when they pressed it.
@@ -515,6 +518,20 @@ impl CombatInstance {
             .is_some_and(engine_game::dungeon_run::DungeonRun::is_unlocked)
     }
 
+    /// The item the boss's chest rolled for `account`, as its stable key, whether or not they
+    /// have opened the chest. `None` when there is no chest or no roll for them.
+    ///
+    /// What the realm persists at the end of the run: the item is theirs either way.
+    #[must_use]
+    pub fn loot_of(&self, account: &str) -> Option<&'static str> {
+        let entity = self.member(account)?.entity;
+        self.sim
+            .chest_loot()
+            .find(|(player, _, _)| *player == entity)
+            .and_then(|(_, item, _)| engine_game::character::item(item))
+            .map(|def| def.key)
+    }
+
     /// Whether every player is down.
     #[must_use]
     pub fn wiped(&self) -> bool {
@@ -600,6 +617,11 @@ impl CombatInstance {
             }),
             ActionKind::Extra(index) if index < 2 => {
                 Some(PlayerCommand::UseExtra(usize::from(index)))
+            }
+            ActionKind::OpenChest => {
+                // Not a targeting press: the selection is left as it is.
+                self.sim.push_command_for(entity, PlayerCommand::OpenChest);
+                return Ok(());
             }
             _ => return Err(ActionError::Malformed),
         };

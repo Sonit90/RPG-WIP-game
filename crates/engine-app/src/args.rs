@@ -386,6 +386,17 @@ options:
   --minimap <mode>       rotating or north_up, for this run only (settings.cfg keeps
                          the player's choice)
   --open-map             open the full-screen dungeon map once the level has loaded
+  --open-sheet           open the character sheet at startup, for a screenshot of it
+  --open-mail            open the mailbox at startup, for a screenshot of it
+  --sample-mail <n>      development: mail n random loot items to the local character at
+                         startup (offline only; with it, nothing is written to the
+                         character file)
+  --spawn-chest          development: drop the loot chest a few metres in front of the
+                         player at startup (offline only), as a cleared dungeon does;
+                         nothing is written to the character file
+  --open-chest-after <s> development: open that chest s seconds after startup. Pair
+                         --spawn-chest with --fixed-step and --screenshot-frame to
+                         capture it falling, landed and open
   --map-select <n>       select the n-th encounter on it (0 is the first pack)
   --map-expand           open every card and ability of that selection
   --spawn <ids>          monster playground: choose these monsters and spawn them, passive,
@@ -803,6 +814,16 @@ pub struct Args {
     pub screenshot_frame: u64,
     /// Open the full-screen dungeon map once the level has loaded. For screenshots.
     pub open_map: bool,
+    /// Open the character sheet at startup. For screenshots.
+    pub open_sheet: bool,
+    /// Open the mailbox at startup. For screenshots.
+    pub open_mail: bool,
+    /// Mail this many random loot items to the local character at startup. Development.
+    pub sample_mail: usize,
+    /// Drop the loot chest in front of the player at startup. Development.
+    pub spawn_chest: bool,
+    /// Open that chest this many seconds after startup. Development.
+    pub open_chest_after: Option<f32>,
     /// Select this encounter on the map once it is open. For screenshots.
     pub map_select: Option<usize>,
     /// Open every monster card and ability of the selection. For screenshots.
@@ -904,6 +925,11 @@ impl Default for Args {
             screenshot: None,
             screenshot_frame: 30,
             open_map: false,
+            open_sheet: false,
+            open_mail: false,
+            sample_mail: 0,
+            spawn_chest: false,
+            open_chest_after: None,
             map_select: None,
             spawn: Vec::new(),
             test_health: engine_game::playground::PlaygroundConfig::DEFAULT_TEST_HEALTH,
@@ -1122,6 +1148,13 @@ where
                 args.screenshot_frame = next_value(&mut iter, "--screenshot-frame")?;
             }
             "--open-map" => args.open_map = true,
+            "--open-sheet" => args.open_sheet = true,
+            "--open-mail" => args.open_mail = true,
+            "--sample-mail" => args.sample_mail = next_value(&mut iter, "--sample-mail")?,
+            "--spawn-chest" => args.spawn_chest = true,
+            "--open-chest-after" => {
+                args.open_chest_after = Some(next_value(&mut iter, "--open-chest-after")?);
+            }
             "--online" => args.network_mode = NetworkMode::Online,
             "--offline" => args.network_mode = NetworkMode::Offline,
             "--network-mode" => {

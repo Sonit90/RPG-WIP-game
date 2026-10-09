@@ -23,10 +23,49 @@ use engine_game::warrior::PASSIVE_MAX_HEALTH_AT_ZERO;
 use engine_game::{ItemFamily, PlayerCommand};
 
 /// A running arena with one step taken, so everything is initialised.
+///
+/// Every hero is handed the white kit (four pieces worn, five in the bag): a new hero starts
+/// with nothing, and these tests are about moving things around.
 fn simulation() -> Simulation {
     let mut simulation = arena::training_arena(&ArenaConfig::default());
+    for hero in Hero::ALL {
+        let sheet = simulation.roster_mut().sheet_mut(hero);
+        for slot in [
+            EquipSlot::Chest,
+            EquipSlot::Legs,
+            EquipSlot::Wrist,
+            EquipSlot::Feet,
+        ] {
+            let def = starting_item(slot.family()).expect("a white piece");
+            sheet
+                .equipment_mut()
+                .equip(slot, ItemStack::one(def.id))
+                .expect("fits");
+        }
+        for family in [
+            ItemFamily::Head,
+            ItemFamily::Shoulder,
+            ItemFamily::Back,
+            ItemFamily::Ring,
+            ItemFamily::Trinket,
+        ] {
+            let def = starting_item(family).expect("a white piece");
+            sheet.inventory_mut().add(ItemStack::one(def.id));
+        }
+    }
     simulation.step_once();
     simulation
+}
+
+#[test]
+fn a_new_hero_has_no_items_at_all() {
+    let mut simulation = arena::training_arena(&ArenaConfig::default());
+    simulation.step_once();
+    for hero in Hero::ALL {
+        let sheet = simulation.roster().sheet(hero);
+        assert_eq!(sheet.equipment().count(), 0, "{hero:?}");
+        assert_eq!(sheet.inventory().count(), 0, "{hero:?}");
+    }
 }
 
 /// The player's maximum health as the world reports it.
@@ -297,7 +336,7 @@ fn swapping_hero_swaps_the_gear_the_bag_and_the_stats() {
 }
 
 #[test]
-fn a_ring_fits_either_finger_and_a_trinket_any_of_the_four() {
+fn a_ring_fits_either_finger_and_a_trinket_either_of_the_two() {
     let mut simulation = simulation();
     let ring = carried_for(&simulation, EquipSlot::Ring1);
     simulation
@@ -314,12 +353,7 @@ fn a_ring_fits_either_finger_and_a_trinket_any_of_the_four() {
         .expect("and it moves between them");
 
     let trinket = carried_for(&simulation, EquipSlot::Trinket1);
-    for slot in [
-        EquipSlot::Trinket1,
-        EquipSlot::Trinket2,
-        EquipSlot::Trinket3,
-        EquipSlot::Trinket4,
-    ] {
+    for slot in [EquipSlot::Trinket1, EquipSlot::Trinket2] {
         let from = simulation
             .sheet()
             .inventory()
@@ -362,7 +396,7 @@ fn no_sequence_of_moves_ever_changes_how_many_items_a_character_owns() {
 }
 
 #[test]
-fn the_starting_characters_wear_white_pieces_that_grant_nothing() {
+fn the_white_kit_is_white_pieces_that_grant_nothing() {
     let mut simulation = simulation();
     for hero in Hero::ALL {
         simulation.set_hero(hero);

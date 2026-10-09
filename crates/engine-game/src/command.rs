@@ -134,6 +134,24 @@ pub enum PlayerCommand {
         /// Where the character's feet should end up.
         position: Vec3,
     },
+    /// Open the boss's chest and take this player's item from it. Edge-triggered.
+    ///
+    /// No target: there is at most one chest, and the rules (it has landed, the player is in
+    /// range and has not already taken their share) are the simulation's. A command that
+    /// fails them does nothing. A full bag mails the item instead.
+    OpenChest,
+    /// Move a letter's item from the current character's mailbox into their bag.
+    ///
+    /// A full bag keeps the letter and says so with [`crate::event::CombatEvent::MailBagFull`].
+    TakeMail {
+        /// Which letter.
+        id: u64,
+    },
+    /// Mark a letter in the current character's mailbox as read.
+    MarkMailRead {
+        /// Which letter.
+        id: u64,
+    },
 }
 
 impl PlayerCommand {

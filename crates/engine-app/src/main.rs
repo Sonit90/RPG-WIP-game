@@ -42,6 +42,12 @@ fn main() -> ExitCode {
     }
 
     log::info!("{} {}", env!("CARGO_BIN_NAME"), env!("CARGO_PKG_VERSION"));
+    // This text exists in the binary only when the developer tools are compiled in (the string
+    // is reachable, so the linker keeps it). `tools/package.ps1` searches the shipping binary
+    // for exactly `mygame-dev-tools-marker` and fails the package if it is found, so "the real
+    // build has no dev tools" is checked rather than assumed.
+    #[cfg(feature = "dev-tools")]
+    log::info!("developer tools enabled (mygame-dev-tools-marker): not for release builds");
 
     // Online, the world is a realm dungeon: the level is the dungeon's, whatever scene the
     // command line's default would have chosen. Its monsters come from the server.

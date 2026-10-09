@@ -1520,7 +1520,11 @@ fn draw_characters(ctx: &mut Painter<'_>, view: &FrontEndView, w: f32, h: f32) {
             ctx,
             rect.y + px(284.0),
             "Equipment",
-            &format!("{} / 15 slots", card.equipped),
+            &format!(
+                "{} / {} slots",
+                card.equipped,
+                engine_game::character::EquipSlot::COUNT
+            ),
         );
         // Experience bar.
         let bar = UiRect::new(

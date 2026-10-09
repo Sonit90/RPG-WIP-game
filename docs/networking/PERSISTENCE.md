@@ -11,7 +11,14 @@ database technology was added: the auth service already ran Postgres 16.
 | `game.characters` | id, account, catalog definition, name, level, experience, **loadout** (JSONB: worn items by slot key, bag cells by index — the same vocabulary `character.cfg` uses), **talents** (JSONB keys). One per definition per account. |
 | `game.dungeon_completions` | per character and dungeon: count, best time, last completion |
 | `game.dungeon_results` | every result the realm reported, keyed by the realm's idempotency key |
+| `game.loot_deliveries` | every boss-chest item the realm reported (`backend/migrations/0004_loot_deliveries.sql`), keyed by its idempotency key, with where it went |
 | `game.account_settings` | the account settings document, with an optimistic version |
+
+The loadout JSONB also holds the character's **mail** (`mail`: letters with an id, the item's
+stable key, sender, subject, reason `bag_full` / `unclaimed`, unix `received_at` and a `read`
+flag). Mail is part of the loadout rather than a table of its own, so taking a letter is one
+locked read-modify-write of the same row that holds the bag, and a letter can never be both
+taken and still waiting.
 
 **Derived, never stored:** gear score (10 × summed item level of what is worn) and stats
 (definition + level + gear) are computed with `engine-realm` from the loadout, so they cannot
@@ -25,6 +32,12 @@ disagree with it.
 * `GET /api/v1/characters/{id}` — loadout, bag, talents, stats, completions.
 * `POST /api/v1/characters/{id}/equipment/move` — validated with the gameplay rules
   (`CharacterSheet::move_item`): the slot exists, the item fits, the swap is legal both ways.
+* `POST /api/v1/characters/{id}/mail/{mail_id}/take` — moves the letter's item into the first
+  free bag cell and removes the letter (`take_mail`); a full bag is a 409 `Your bag is full.`
+  and the letter stays.
+* `POST /api/v1/characters/{id}/mail/{mail_id}/read` — marks the letter read.
+  Both answer with the character in full, which the client applies exactly as it applies a
+  move, so the mailbox window redraws from the server's copy.
 * `PUT /api/v1/characters/{id}/talents` — every key must be a talent the character's hero
   has.
 
@@ -56,6 +69,31 @@ decided by the realm from server state; there is no endpoint through which a cli
 completion, loot or experience (`security` scenario: `admin_finish_instance` and
 `svc_ack_results` are refused to players).
 
+## Loot (exactly once)
+
+```text
+realm instance::finish ─► pending_loot "rolled" (one per member, written once, durable)
+combat events ─► LootAwarded ─► "bag"   LootMailed ─► "mail" (+ bag_full | unclaimed)
+instance destroy ─► rows still "rolled" ─► "mail" + unclaimed
+API bridge (with results, every 5 s): svc_take_loot (settled rows only)
+  ─► for each: apply_loot in one Postgres transaction
+       INSERT loot_deliveries ON CONFLICT (loot_id) DO NOTHING      (loot_id = "<instance>:<account>:loot")
+       if new: lock the character; `bag` ─► first free cell, or the mailbox as `bag_full` if
+               there is none; `mail` ─► the mailbox with the reason it was sent for
+  ─► svc_ack_loot(ids) ─► realm deletes them
+```
+
+The roll is made by the realm's simulation at the end of the run (`pending_loot`, state
+`rolled`) and never again, so a restart mid-fight loses nothing and a row settles once: later
+events for the same player are ignored. A player who opens the chest settles their row to
+`bag`; one whose bag was full settles to `mail`; one who never opened it is settled to `mail`
+(`unclaimed`) when the instance is destroyed. Only settled rows leave the realm.
+
+`loot_deliveries.outcome` says where the item went: `bag`, `mail`, `mail_bag_full`, or - when
+nothing could be given - `no_character` / `unknown_item`, so an item a player earned can be
+found and re-granted. Nothing is dropped silently, and as with results there is no endpoint
+through which a client reports loot.
+
 ## Account settings
 
 ```text
@@ -75,5 +113,5 @@ hud.cfg ────────────────────────
 ## Write frequency
 
 Nothing is written per frame. Postgres sees: sign-in (provisioning once), equipment and talent
-changes, settings changes (at most every 2 s, only when changed), queue joins (read only), and
-results. Runtime HP and positions never leave the realm.
+changes, settings changes (at most every 2 s, only when changed), queue joins (read only),
+results, chest loot and mail actions (taking or reading a letter). Runtime HP and positions never leave the realm.

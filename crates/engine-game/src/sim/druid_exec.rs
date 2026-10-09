@@ -233,6 +233,8 @@ impl Simulation {
         {
             return 0.0;
         }
+        // Versatility: healing *done* by this player.
+        let amount = amount * (1.0 + self.versatility_of(self.player.entity));
         let restored = self.world.heal(target, amount).applied;
         if restored <= 0.0 {
             return 0.0;

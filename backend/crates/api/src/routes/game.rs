@@ -5,6 +5,8 @@
 //! | `GET  /characters` | the account's characters (starters created on first call) |
 //! | `GET  /characters/{id}` | one character in full |
 //! | `POST /characters/{id}/equipment/move` | move an item, validated server-side |
+//! | `POST /characters/{id}/mail/{mail_id}/take` | move a mail's item into the bag (409 if full) |
+//! | `POST /characters/{id}/mail/{mail_id}/read` | mark mail read |
 //! | `PUT  /characters/{id}/talents` | replace talents, validated against the catalog |
 //! | `GET  /player/settings` | the account's synced settings |
 //! | `PUT  /player/settings` | save them, with optimistic versioning |
@@ -38,6 +40,8 @@ pub fn router() -> Router<AppState> {
         .route("/characters", get(list_characters))
         .route("/characters/{id}", get(get_character))
         .route("/characters/{id}/equipment/move", post(move_item))
+        .route("/characters/{id}/mail/{mail_id}/take", post(take_mail))
+        .route("/characters/{id}/mail/{mail_id}/read", post(read_mail))
         .route("/characters/{id}/talents", put(save_talents))
         .route("/player/settings", get(get_settings).put(put_settings))
         .route("/realm/queue", post(queue))
@@ -102,17 +106,83 @@ async fn move_item(
         .character(&row.definition_id)
         .map(|definition| definition.hero)
         .unwrap_or_default();
-    let moved = engine_realm::loadout::move_item(hero, &row.loadout.0, &body.from, &body.to)
-        .map_err(|e| ApiError(AppError::BadRequest(e.message)))?;
-    store::save_loadout(&state.db, user.user_id, row.id, &moved)
-        .await
-        .map_err(ApiError)?;
+    // Under the row lock, from the stored loadout: `row` above may predate a chest drop.
+    store::update_loadout(&state.db, user.user_id, row.id, |stored| {
+        engine_realm::loadout::move_item(hero, stored, &body.from, &body.to)
+            .map_err(|e| AppError::BadRequest(e.message))
+    })
+    .await
+    .map_err(ApiError)?
+    .ok_or(ApiError(AppError::NotFound))?;
     tracing::info!(account_id = %user.user_id, character_id = %row.id, "equipment changed");
     let row = owned(&state, &user, &id).await?;
     let completions = store::completions(&state.db, row.id)
         .await
         .map_err(ApiError)?;
     Ok(Json(characters::detail(&row, completions)))
+}
+
+/// Both mail routes: a locked read-modify-write of the loadout, then the character in full.
+async fn mail_change(
+    state: &AppState,
+    user: &AuthUser,
+    id: &str,
+    change: impl FnOnce(&mut engine_realm::loadout::Loadout) -> Result<(), AppError>,
+) -> ApiResult<Json<CharacterDetail>> {
+    state
+        .limits
+        .check(
+            &format!("character:{}", user.user_id),
+            rate_limit::CHARACTER_WRITES_PER_ACCOUNT,
+        )
+        .map_err(ApiError)?;
+    let character = character_id(id)?;
+    store::update_loadout(&state.db, user.user_id, character, |stored| {
+        let mut loadout = stored.clone();
+        change(&mut loadout)?;
+        Ok(loadout)
+    })
+    .await
+    .map_err(ApiError)?
+    .ok_or(ApiError(AppError::NotFound))?;
+    let row = owned(state, user, id).await?;
+    let completions = store::completions(&state.db, row.id)
+        .await
+        .map_err(ApiError)?;
+    Ok(Json(characters::detail(&row, completions)))
+}
+
+async fn take_mail(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path((id, mail_id)): Path<(String, u64)>,
+) -> ApiResult<Json<CharacterDetail>> {
+    use engine_realm::loadout::{take_mail, TakeMailError};
+    let account = user.user_id;
+    let detail = mail_change(&state, &user, &id, |loadout| {
+        take_mail(loadout, mail_id).map(|_| ()).map_err(|error| match error {
+            TakeMailError::BagFull => AppError::Conflict("Your bag is full.".into()),
+            TakeMailError::NotFound => AppError::NotFound,
+        })
+    })
+    .await?;
+    tracing::info!(account_id = %account, character_id = %id, mail_id, "mail taken");
+    Ok(detail)
+}
+
+async fn read_mail(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path((id, mail_id)): Path<(String, u64)>,
+) -> ApiResult<Json<CharacterDetail>> {
+    mail_change(&state, &user, &id, |loadout| {
+        if engine_realm::loadout::mark_mail_read(loadout, mail_id) {
+            Ok(())
+        } else {
+            Err(AppError::NotFound)
+        }
+    })
+    .await
 }
 
 async fn save_talents(

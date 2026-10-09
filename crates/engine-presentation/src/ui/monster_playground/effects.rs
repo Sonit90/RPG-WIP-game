@@ -111,7 +111,9 @@ pub(super) fn modifier_lines(kind: StatusKind) -> Vec<String> {
                 if stat.is_rating() {
                     format!(
                         "{} {name}{per}",
-                        percent(per_stack / (engine_game::character::RATING_PER_PERCENT * 100.0))
+                        percent(
+                            engine_game::character::StatBlock::of(stat, per_stack).percent(stat)
+                        )
                     )
                 } else {
                     format!("{per_stack:+.0} {name}{per}")
@@ -324,8 +326,11 @@ impl PlaygroundPanels {
                     let value = sheet.get(stat);
                     let rating = stat.is_rating();
                     let percent = sheet.percent(stat) * 100.0;
-                    let change_percent =
-                        change / (engine_game::character::RATING_PER_PERCENT * 100.0) * 100.0;
+                    // What the bonus is worth *on this sheet*: ratings are not linear, so the
+                    // change is the difference between the sheet with and without it.
+                    let mut without = sheet;
+                    without.add(stat, -change);
+                    let change_percent = (sheet.percent(stat) - without.percent(stat)) * 100.0;
                     line(label, tone, &move |out| {
                         if rating {
                             let _ = write!(out, "{percent:.1}%");

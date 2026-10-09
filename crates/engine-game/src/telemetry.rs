@@ -222,6 +222,13 @@ impl CombatMeter {
                 | CombatEvent::BossUnlocked { .. }
                 | CombatEvent::AddSummoned { .. }
                 | CombatEvent::DungeonCompleted { .. }
+                // The chest and its loot are not damage either.
+                | CombatEvent::ChestSpawned { .. }
+                | CombatEvent::ChestOpened { .. }
+                | CombatEvent::LootAwarded { .. }
+                | CombatEvent::LootMailed { .. }
+                | CombatEvent::MailTaken { .. }
+                | CombatEvent::MailBagFull { .. }
                 // The Warrior's defensive stream. A Block, a Parry, a Dodge, a point of
                 // Deflection and a shield taking a hit all *prevent* damage rather than
                 // move any, and the healing they cause arrives as `Healing` like every

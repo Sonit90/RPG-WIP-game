@@ -74,6 +74,15 @@ pub enum NetCommand {
         /// To.
         to: SlotRef,
     },
+    /// Take a mail's item into the bag (`take`), or only mark the mail read.
+    Mail {
+        /// Which character.
+        character_id: String,
+        /// Which mail.
+        mail_id: u64,
+        /// Take the item, rather than only reading.
+        take: bool,
+    },
     /// Load the account's synced settings.
     FetchSettings,
     /// Save the account's synced settings.
@@ -118,6 +127,8 @@ pub enum Action {
     Characters,
     /// Moving an item.
     MoveItem,
+    /// Taking or reading mail.
+    Mail,
     /// Loading or saving settings.
     Settings,
     /// Joining the queue.
@@ -492,6 +503,17 @@ impl Worker {
                 {
                     Ok(detail) => self.emit(NetEvent::Character(Box::new(detail))),
                     Err(error) => self.fail(Action::MoveItem, error),
+                }
+            }
+            NetCommand::Mail {
+                character_id,
+                mail_id,
+                take,
+            } => {
+                let Some(token) = self.access() else { return };
+                match self.api.mail(&token, &character_id, mail_id, take) {
+                    Ok(detail) => self.emit(NetEvent::Character(Box::new(detail))),
+                    Err(error) => self.fail(Action::Mail, error),
                 }
             }
             NetCommand::FetchSettings => {

@@ -2,8 +2,11 @@
 //! a caller can never read or write a character that is not theirs — the WHERE clause, not a
 //! check after the fact, is the ownership rule.
 
-use engine_realm::api::{DungeonCompletion, DungeonResult};
-use engine_realm::loadout::{starting_loadout, Loadout};
+use engine_realm::api::{DungeonCompletion, DungeonResult, LootDelivery};
+use engine_realm::loadout::{
+    add_to_bag, add_to_mail, migrate_removed_slots, starting_loadout, BagError, Loadout,
+    MAIL_BAG_FULL, MAIL_UNCLAIMED,
+};
 use generic_auth_core::AppError;
 use sqlx::types::Json;
 use sqlx::PgPool;
@@ -94,6 +97,50 @@ pub async fn save_loadout(
     .await
     .map_err(db)?;
     Ok(done.rows_affected() == 1)
+}
+
+fn unix_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(0))
+}
+
+/// Read-modify-write of a character's loadout under a row lock, so a concurrent write (a
+/// chest drop applied by the bridge) cannot be overwritten with a stale copy. `change` gets
+/// the stored loadout and returns the new one, or the error to report; nothing is saved then.
+/// `Ok(None)` if the character is not the account's.
+pub async fn update_loadout<F>(
+    pool: &PgPool,
+    account_id: Uuid,
+    id: Uuid,
+    change: F,
+) -> Result<Option<Loadout>, AppError>
+where
+    F: FnOnce(&Loadout) -> Result<Loadout, AppError>,
+{
+    let mut tx = pool.begin().await.map_err(db)?;
+    let stored: Option<Json<Loadout>> = sqlx::query_scalar(
+        "SELECT loadout FROM game.characters WHERE id = $1 AND account_id = $2 FOR UPDATE",
+    )
+    .bind(id)
+    .bind(account_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(db)?;
+    let Some(Json(mut current)) = stored else {
+        return Ok(None);
+    };
+    // A character saved while there were four trinket slots: rehome those items first.
+    migrate_removed_slots(&mut current, unix_now());
+    let changed = change(&current)?;
+    sqlx::query("UPDATE game.characters SET loadout = $2, updated_at = now() WHERE id = $1")
+        .bind(id)
+        .bind(Json(&changed))
+        .execute(&mut *tx)
+        .await
+        .map_err(db)?;
+    tx.commit().await.map_err(db)?;
+    Ok(Some(changed))
 }
 
 /// Replaces a character's talents. `false` if it is not the account's.
@@ -264,5 +311,99 @@ pub async fn apply_result(pool: &PgPool, result: &DungeonResult) -> Result<bool,
         experience = result.experience,
         "dungeon result applied"
     );
+    Ok(true)
+}
+
+/// Delivers one chest item exactly once. Returns whether it was new.
+///
+/// One transaction: record the delivery under its idempotency key (stop if seen), lock the
+/// character, then put the item in the first free bag cell (`bag`, when there is room) or in
+/// the mailbox (`mail`, or a `bag` delivery that found the bag full). Nothing is ever dropped
+/// silently: when it cannot be given, the row says why.
+pub async fn apply_loot(pool: &PgPool, delivery: &LootDelivery) -> Result<bool, AppError> {
+    let account_id = Uuid::parse_str(&delivery.account_id)
+        .map_err(|_| AppError::validation("loot has a malformed account id"))?;
+    let character_id = Uuid::parse_str(&delivery.character_id).ok();
+    let kind = if delivery.kind == "bag" { "bag" } else { "mail" };
+    let mut tx = pool.begin().await.map_err(db)?;
+    let recorded = sqlx::query(
+        "INSERT INTO game.loot_deliveries (loot_id, account_id, character_id, item, kind, reason, outcome)
+         VALUES ($1, $2, $3, $4, $5, $6, 'pending')
+         ON CONFLICT (loot_id) DO NOTHING",
+    )
+    .bind(&delivery.loot_id)
+    .bind(account_id)
+    .bind(character_id)
+    .bind(&delivery.item)
+    .bind(kind)
+    .bind(&delivery.reason)
+    .execute(&mut *tx)
+    .await
+    .map_err(db)?;
+    if recorded.rows_affected() == 0 {
+        tx.commit().await.map_err(db)?;
+        return Ok(false);
+    }
+    let stored: Option<Json<Loadout>> = match character_id {
+        Some(id) => sqlx::query_scalar(
+            "SELECT loadout FROM game.characters WHERE id = $1 AND account_id = $2 FOR UPDATE",
+        )
+        .bind(id)
+        .bind(account_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(db)?,
+        None => None,
+    };
+    let outcome = match (character_id, stored) {
+        (Some(id), Some(Json(mut loadout))) => {
+            let now = unix_now();
+            migrate_removed_slots(&mut loadout, now);
+            let outcome = if kind == "bag" {
+                match add_to_bag(&mut loadout, &delivery.item) {
+                    Ok(_) => Ok("bag"),
+                    Err(BagError::Full) => {
+                        add_to_mail(&mut loadout, &delivery.item, MAIL_BAG_FULL, now)
+                            .map(|_| "mail_bag_full")
+                    }
+                    Err(error) => Err(error),
+                }
+            } else {
+                let reason = if delivery.reason == MAIL_BAG_FULL {
+                    MAIL_BAG_FULL
+                } else {
+                    MAIL_UNCLAIMED
+                };
+                add_to_mail(&mut loadout, &delivery.item, reason, now).map(|_| "mail")
+            };
+            match outcome {
+                Ok(outcome) => {
+                    sqlx::query(
+                        "UPDATE game.characters SET loadout = $2, updated_at = now() WHERE id = $1",
+                    )
+                    .bind(id)
+                    .bind(Json(&loadout))
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(db)?;
+                    outcome
+                }
+                Err(_) => "unknown_item",
+            }
+        }
+        _ => "no_character",
+    };
+    sqlx::query("UPDATE game.loot_deliveries SET outcome = $2 WHERE loot_id = $1")
+        .bind(&delivery.loot_id)
+        .bind(outcome)
+        .execute(&mut *tx)
+        .await
+        .map_err(db)?;
+    tx.commit().await.map_err(db)?;
+    if outcome == "bag" || outcome.starts_with("mail") {
+        tracing::info!(loot_id = %delivery.loot_id, item = %delivery.item, outcome, "dungeon loot delivered");
+    } else {
+        tracing::warn!(loot_id = %delivery.loot_id, item = %delivery.item, outcome, "dungeon loot not delivered");
+    }
     Ok(true)
 }

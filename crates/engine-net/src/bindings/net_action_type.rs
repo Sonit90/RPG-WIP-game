@@ -19,6 +19,8 @@ pub enum NetAction {
     Ultimate(V3),
 
     Extra(u8),
+
+    OpenChest,
 }
 
 impl __sdk::InModule for NetAction {

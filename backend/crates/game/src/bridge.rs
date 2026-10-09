@@ -11,7 +11,7 @@
 //! module accepts `svc_*` calls from that identity and nobody else. The realm never calls out,
 //! so it needs no secret and no route to this service.
 
-use engine_realm::api::DungeonResult;
+use engine_realm::api::{DungeonResult, LootDelivery};
 use engine_realm::Role;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -69,6 +69,21 @@ struct PendingRow {
     success: bool,
     duration_us: i64,
     experience: u32,
+    #[allow(dead_code)]
+    created_at: Value,
+}
+
+/// One `PendingLoot` row, positional like [`PendingRow`]: `server/realm-module/src/schema.rs`.
+#[derive(Deserialize)]
+struct LootRow {
+    loot_id: String,
+    account_id: String,
+    character_id: String,
+    #[allow(dead_code)]
+    instance_id: u64,
+    item: String,
+    state: String,
+    reason: String,
     #[allow(dead_code)]
     created_at: Value,
 }
@@ -159,6 +174,31 @@ impl RealmBridge {
             .collect())
     }
 
+    /// Chest items waiting in the realm's outbox.
+    pub async fn take_loot(&self, token: &str) -> Result<Vec<LootDelivery>, BridgeError> {
+        let body = self.call(token, "svc_take_loot", json!([])).await?;
+        let rows: Vec<LootRow> = serde_json::from_str(&body)
+            .map_err(|e| BridgeError::Unavailable(format!("unreadable loot: {e}")))?;
+        Ok(rows
+            .into_iter()
+            .map(|row| LootDelivery {
+                loot_id: row.loot_id,
+                account_id: row.account_id,
+                character_id: row.character_id,
+                item: row.item,
+                kind: row.state,
+                reason: row.reason,
+            })
+            .collect())
+    }
+
+    /// Clears chest items that were persisted.
+    pub async fn ack_loot(&self, token: &str, ids: &[String]) -> Result<(), BridgeError> {
+        self.call(token, "svc_ack_loot", json!([ids]))
+            .await
+            .map(|_| ())
+    }
+
     /// Clears results that were persisted.
     pub async fn ack_results(&self, token: &str, ids: &[String]) -> Result<(), BridgeError> {
         self.call(token, "svc_ack_results", json!([ids]))
@@ -178,6 +218,15 @@ mod tests {
         assert_eq!(rows[0].result_id, "12:acct");
         assert!(rows[0].success);
         assert_eq!(rows[0].experience, 250);
+    }
+
+    #[test]
+    fn loot_rows_read_positionally() {
+        let body = r#"[["12:acct:loot","acct","char",12,"head_haste_critical_strike","mail","unclaimed",[1791124476846797]]]"#;
+        let rows: Vec<LootRow> = serde_json::from_str(body).unwrap();
+        assert_eq!(rows[0].loot_id, "12:acct:loot");
+        assert_eq!(rows[0].state, "mail");
+        assert_eq!(rows[0].reason, "unclaimed");
     }
 
     #[test]

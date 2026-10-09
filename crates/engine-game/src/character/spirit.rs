@@ -12,14 +12,11 @@
 //!
 //! # It is defined, and it does not fire
 //!
-//! Every hero starts with a Spirit rating of zero and no item in the game grants any, so
-//! [`SpiritSurge::roll`] cannot succeed: [`proc_chance`] of zero is zero, and the roll is
-//! strictly less-than. Displaying Spirit on the character sheet therefore cannot cause a
-//! proc, which is the property the sheet has to have — a stat is a number, not a trigger.
-//!
-//! What is here is the *definition*: the chance curve, the duration, the per-stack
-//! multiplier, and the aggregation into the character's stats. Enabling the mechanic means
-//! putting Spirit on an item, and nothing else.
+//! Every hero starts with a Spirit rating of zero, so a character in starting gear cannot
+//! proc: [`proc_chance`] of zero is zero, and the roll is strictly less-than. Displaying
+//! Spirit on the character sheet therefore cannot cause a proc, which is the property the
+//! sheet has to have — a stat is a number, not a trigger. Only gear that grants Spirit (see
+//! the loot pool in [`super::item`]) turns the mechanic on.
 //!
 //! # Each stack keeps its own clock
 //!
@@ -28,7 +25,7 @@
 //! than all four at once. That is what "stacks, each lasting 10 seconds" means, and it is
 //! why this is an array of remaining times rather than a count and one timer.
 
-use super::stat::{RATING_PER_PERCENT, Stat, StatBlock};
+use super::stat::{Stat, StatBlock, secondary_fraction};
 
 /// How long one stack of the Spirit buff lasts, in seconds.
 pub const SPIRIT_BUFF_DURATION: f32 = 10.0;
@@ -48,22 +45,17 @@ pub const SPIRIT_ULTIMATE_POINTS: u32 = 1;
 /// multiplier, not because a player is expected to reach it.
 pub const SPIRIT_MAX_STACKS: usize = 10;
 
-/// Spirit rating that buys one per cent of proc chance.
-///
-/// The same exchange rate every other secondary stat uses, restated through the shared
-/// constant rather than as its own number so the four ratings stay comparable.
-pub const SPIRIT_RATING_PER_PERCENT: f32 = RATING_PER_PERCENT;
-
 /// The chance one cast procs Spirit, as a fraction, for a given Spirit rating.
 ///
-/// Linear in the rating and clamped to one. Zero rating is zero chance, which is what makes
-/// the whole mechanic inert on the current roster.
+/// The shared secondary-stat curve [`secondary_fraction`], `x / (x + 100)`, so Spirit is
+/// comparable with the other three ratings. Zero rating is zero chance, which is what keeps
+/// the mechanic inert on a character wearing nothing that grants it.
 #[must_use]
 pub fn proc_chance(spirit_rating: f32) -> f32 {
     if !spirit_rating.is_finite() || spirit_rating <= 0.0 {
         return 0.0;
     }
-    (spirit_rating / (SPIRIT_RATING_PER_PERCENT * 100.0)).clamp(0.0, 1.0)
+    secondary_fraction(spirit_rating)
 }
 
 /// What one proc handed over.
@@ -215,15 +207,15 @@ mod tests {
 
     #[test]
     fn a_rating_buys_a_chance_and_the_chance_is_bounded() {
-        assert!((proc_chance(SPIRIT_RATING_PER_PERCENT * 10.0) - 0.10).abs() < 1e-6);
-        assert_eq!(proc_chance(SPIRIT_RATING_PER_PERCENT * 1_000.0), 1.0);
+        assert!((proc_chance(2.0) - 2.0 / 102.0).abs() < 1e-6);
+        assert!((proc_chance(100.0) - 0.5).abs() < 1e-6);
+        assert!(proc_chance(1.0e9) <= 1.0);
     }
 
     #[test]
     fn a_proc_hands_over_a_point_and_a_stack() {
         let mut surge = SpiritSurge::new();
-        let rating = SPIRIT_RATING_PER_PERCENT * 100.0;
-        let proc = surge.roll(rating, 0.0);
+        let proc = surge.roll(100.0, 0.0);
         assert_eq!(
             proc,
             Some(SpiritProc {

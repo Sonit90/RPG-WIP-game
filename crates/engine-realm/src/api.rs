@@ -105,6 +105,9 @@ pub struct CharacterDetail {
     pub summary: CharacterSummary,
     /// What it carries.
     pub inventory: Vec<BagItem>,
+    /// What waits in the mailbox.
+    #[serde(default)]
+    pub mail: Vec<crate::loadout::MailItem>,
     /// Talents bought, by key.
     pub talents: Vec<String>,
     /// Derived stats, `(key, value)`.
@@ -193,6 +196,23 @@ pub struct DungeonResult {
     pub experience: u32,
 }
 
+/// One chest item to deliver to a character, as the bridge hands it to the persistence store.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LootDelivery {
+    /// Idempotency key.
+    pub loot_id: String,
+    /// Whose.
+    pub account_id: String,
+    /// Which character.
+    pub character_id: String,
+    /// The item's stable key.
+    pub item: String,
+    /// `"bag"` (the player opened the chest: bag if there is room, else mail) or `"mail"`.
+    pub kind: String,
+    /// For mail, why: `"bag_full"` or `"unclaimed"`.
+    pub reason: String,
+}
+
 #[cfg(test)]
 #[allow(clippy::expect_used, reason = "test code asserts on known-good values")]
 mod tests {
@@ -224,6 +244,7 @@ mod tests {
                 equipment: vec![],
             },
             inventory: vec![],
+            mail: vec![],
             talents: vec![],
             stats: vec![("str".into(), 1.0)],
             completions: vec![],

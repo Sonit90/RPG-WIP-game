@@ -23,17 +23,20 @@
 //!
 //! | Module | Owns |
 //! | --- | --- |
-//! | [`stat`] | The seven stats, the block they live in, and health from Stamina |
+//! | [`stat`] | The stats, the block they live in, rating conversion and health from Stamina |
 //! | [`item`] | What an item is, where it fits, and the table of every one |
-//! | [`equipment`] | The fifteen worn slots, the bag, and how a slot is addressed |
+//! | [`equipment`] | The thirteen worn slots, the bag, and how a slot is addressed |
 //! | [`spirit`] | The Spirit proc and its stacking main-stat buff |
+//! | [`mail`] | The mailbox: items sent to a character instead of lost |
 
 /// What an incoming attack meets: Dodge, Parry, Block and Armour, rolled once.
 pub mod defense;
-/// The fifteen worn slots, the bag, and the one rule that moves an item between them.
+/// The thirteen worn slots, the bag, and the one rule that moves an item between them.
 pub mod equipment;
 /// What an item is, where it can go, and the one table every item is a row of.
 pub mod item;
+/// The mailbox: items that could not be handed over, kept for the player to collect.
+pub mod mail;
 /// Spirit: the chance to bank a point of Ultimate, and the stacking buff it grants.
 pub mod spirit;
 /// Every stat a character has, as one table rather than as fields.
@@ -47,14 +50,15 @@ pub use equipment::{
 };
 pub use item::{
     EquipSlot, ITEMS, ItemDef, ItemFamily, ItemIcon, ItemId, ItemQuality, ItemStack, item,
-    item_by_key, starting_item,
+    item_by_key, loot_pool, starting_item,
 };
+pub use mail::{MAIL_SOFT_CAP, MailItem, MailReason, MailSender, Mailbox, TakeMailError};
 pub use spirit::{
     SPIRIT_BUFF_DURATION, SPIRIT_MAIN_STAT_PER_STACK, SPIRIT_MAX_STACKS, SpiritProc, SpiritSurge,
 };
 pub use stat::{
     ARMOR_HALVING_POINT, ARMOR_MAX_REDUCTION, HEALTH_PER_STAMINA, RATING_PER_PERCENT, Stat,
-    StatBlock, StatGroup, armor_reduction,
+    StatBlock, StatGroup, armor_reduction, secondary_fraction,
 };
 
 /// The main stat every hero starts with, before any gear.
@@ -90,30 +94,11 @@ pub const WARRIOR_BASE_ARMOR: f32 = 500.0;
 /// cannot be played in the gear it starts in.
 pub const WARRIOR_BASE_AVOIDANCE_RATING: f32 = 3.0 * RATING_PER_PERCENT;
 
-/// The slots a fresh character is dressed in.
-///
-/// Chest, Legs, Wrist and Feet, each with the white zero-stat piece for that family. Every
-/// other slot starts bare.
-pub const STARTING_SLOTS: [EquipSlot; 4] = [
-    EquipSlot::Chest,
-    EquipSlot::Legs,
-    EquipSlot::Wrist,
-    EquipSlot::Feet,
-];
+/// The slots a fresh character is dressed in: none. A new hero has no items at all.
+pub const STARTING_SLOTS: [EquipSlot; 0] = [];
 
-/// What a fresh character has in the bag.
-///
-/// The white pieces for the slots they are *not* wearing, so there is something to drag on
-/// the first time the panel is opened, and so every equipment restriction can be exercised
-/// by hand. All of them grant nothing, which is what keeps "no starting equipment modifies
-/// a secondary stat" true whether a piece is worn or carried.
-pub const STARTING_BAG: [ItemFamily; 5] = [
-    ItemFamily::Head,
-    ItemFamily::Shoulder,
-    ItemFamily::Back,
-    ItemFamily::Ring,
-    ItemFamily::Trinket,
-];
+/// What a fresh character has in the bag: nothing.
+pub const STARTING_BAG: [ItemFamily; 0] = [];
 
 /// One character: which hero, what they wear, and what they carry.
 ///
@@ -128,6 +113,8 @@ pub struct CharacterSheet {
     equipment: Equipment,
     /// What is carried.
     inventory: Inventory,
+    /// Items sent to this character instead of being lost.
+    mailbox: Mailbox,
 }
 
 impl CharacterSheet {
@@ -138,10 +125,11 @@ impl CharacterSheet {
             hero,
             equipment: Equipment::empty(),
             inventory: Inventory::empty(),
+            mailbox: Mailbox::new(),
         }
     }
 
-    /// A fresh character: the four white pieces worn, the rest of the set in the bag.
+    /// A fresh character: no items worn and none carried (see [`STARTING_SLOTS`]).
     #[must_use]
     pub fn starting(hero: Hero) -> Self {
         let mut sheet = Self::bare(hero);
@@ -157,6 +145,27 @@ impl CharacterSheet {
             }
         }
         sheet
+    }
+
+    /// **Finds a home for an item whose equipment slot no longer exists.**
+    ///
+    /// The first free bag cell if there is one (answers its index); otherwise a letter in the
+    /// mailbox ([`MailReason::SlotRemoved`]) and `None`. Either way the item is kept.
+    pub fn rehome_removed_slot_item(
+        &mut self,
+        stack: ItemStack,
+        received_at: f64,
+    ) -> Option<usize> {
+        if let Some(index) = self.inventory.add(stack) {
+            return Some(index);
+        }
+        self.mailbox.send(
+            stack.item,
+            MailSender::System,
+            MailReason::SlotRemoved,
+            received_at,
+        );
+        None
     }
 
     /// Which hero this sheet is for.
@@ -193,6 +202,40 @@ impl CharacterSheet {
         &mut self.inventory
     }
 
+    /// This character's letters.
+    #[must_use]
+    pub fn mailbox(&self) -> &Mailbox {
+        &self.mailbox
+    }
+
+    /// This character's letters, mutably. For delivering mail and for a save being loaded.
+    pub fn mailbox_mut(&mut self) -> &mut Mailbox {
+        &mut self.mailbox
+    }
+
+    /// How many letters have not been read.
+    #[must_use]
+    pub fn unread_mail_count(&self) -> usize {
+        self.mailbox.unread_count()
+    }
+
+    /// Marks a letter read. Returns whether it exists.
+    pub fn mark_read(&mut self, id: u64) -> bool {
+        self.mailbox.mark_read(id)
+    }
+
+    /// **Moves a letter's attachment into the first free bag cell and removes the letter.**
+    ///
+    /// Answers the cell it landed in.
+    ///
+    /// # Errors
+    ///
+    /// [`TakeMailError::NotFound`] for an unknown id, [`TakeMailError::BagFull`] when there is
+    /// no free cell. In both cases **nothing is changed**: a full bag keeps the letter.
+    pub fn take_mail(&mut self, id: u64) -> Result<ItemSlot, TakeMailError> {
+        self.mailbox.take_into(id, &mut self.inventory)
+    }
+
     /// The hero's own stats, before anything is worn.
     #[must_use]
     pub fn base_stats(&self) -> StatBlock {
@@ -200,11 +243,23 @@ impl CharacterSheet {
     }
 
     /// The sum of every worn item's stats. Nothing else contributes.
+    ///
+    /// **Where [`Stat::MainStat`] is resolved.** Items are hero-agnostic, so a piece says
+    /// "main stat" and this sheet - the one place that knows its [`Hero`] - turns it into
+    /// Intellect or Strength. The placeholder is zeroed in the result, so nothing downstream
+    /// (the panel, the combat bridge, the Spirit buff) ever sees it, and a sheet cannot grow a
+    /// "Main stat" row. Folding here rather than in `stats()` also keeps `gear_stats()` a
+    /// faithful "what gear gives me" for the tooltip comparison.
     #[must_use]
     pub fn gear_stats(&self) -> StatBlock {
         let mut total = StatBlock::zero();
         for (_, stack) in self.equipment.worn() {
             total.add_block(&stack.stats());
+        }
+        let main = total.get(Stat::MainStat);
+        if main != 0.0 {
+            total.add(self.main_stat(), main);
+            total.set(Stat::MainStat, 0.0);
         }
         total
     }
@@ -353,7 +408,7 @@ impl Default for Roster {
 }
 
 impl Roster {
-    /// Every hero, freshly dressed.
+    /// Every hero as a new character: no items at all.
     #[must_use]
     pub fn starting() -> Self {
         Self {
@@ -394,6 +449,34 @@ impl Roster {
 mod tests {
     use super::*;
     use crate::character::stat::StatGroup;
+
+    /// The white kit new heroes used to start with: four pieces worn, five in the bag.
+    fn kit(hero: Hero) -> CharacterSheet {
+        let mut sheet = CharacterSheet::bare(hero);
+        for slot in [
+            EquipSlot::Chest,
+            EquipSlot::Legs,
+            EquipSlot::Wrist,
+            EquipSlot::Feet,
+        ] {
+            let def = item::starting_item(slot.family()).expect("a white piece");
+            sheet
+                .equipment_mut()
+                .equip(slot, ItemStack::one(def.id))
+                .expect("fits");
+        }
+        for family in [
+            ItemFamily::Head,
+            ItemFamily::Shoulder,
+            ItemFamily::Back,
+            ItemFamily::Ring,
+            ItemFamily::Trinket,
+        ] {
+            let def = item::starting_item(family).expect("a white piece");
+            sheet.inventory_mut().add(ItemStack::one(def.id));
+        }
+        sheet
+    }
 
     #[test]
     fn the_base_stamina_is_the_health_the_game_is_already_tuned_against() {
@@ -438,29 +521,44 @@ mod tests {
     }
 
     #[test]
-    fn a_fresh_character_wears_the_four_white_pieces_and_carries_the_rest() {
+    fn a_fresh_character_has_no_items_at_all() {
         for hero in Hero::ALL {
             let sheet = CharacterSheet::starting(hero);
-            for slot in STARTING_SLOTS {
-                let stack = sheet
-                    .equipment()
-                    .get(slot)
-                    .unwrap_or_else(|| panic!("{hero:?} is missing its {}", slot.name()));
-                let def = stack.def().expect("a real item");
-                assert_eq!(def.quality, ItemQuality::Common);
-                assert!(def.grants_nothing());
-            }
-            for slot in EquipSlot::ALL {
-                if !STARTING_SLOTS.contains(&slot) {
-                    assert_eq!(sheet.equipment().get(slot), None, "{}", slot.name());
-                }
-            }
-            assert_eq!(sheet.inventory().count(), STARTING_BAG.len());
-            assert!(
-                sheet.gear_stats().is_empty(),
-                "starting gear grants nothing"
-            );
+            assert_eq!(sheet.equipment().count(), 0);
+            assert_eq!(sheet.inventory().count(), 0);
+            assert!(sheet.mailbox().is_empty());
+            assert!(sheet.gear_stats().is_empty());
         }
+        let roster = Roster::starting();
+        for sheet in roster.sheets() {
+            assert_eq!(sheet.equipment().count() + sheet.inventory().count(), 0);
+        }
+    }
+
+    #[test]
+    fn an_item_from_a_removed_slot_goes_to_the_first_free_bag_cell() {
+        let mut sheet = CharacterSheet::bare(Hero::Warrior);
+        let def = item::starting_item(ItemFamily::Trinket).expect("a trinket");
+        sheet.inventory_mut().put(0, Some(ItemStack::one(def.id)));
+        let home = sheet.rehome_removed_slot_item(ItemStack::one(def.id), 5.0);
+        assert_eq!(home, Some(1));
+        assert_eq!(sheet.inventory().get(1), Some(ItemStack::one(def.id)));
+        assert!(sheet.mailbox().is_empty());
+    }
+
+    #[test]
+    fn an_item_from_a_removed_slot_is_mailed_when_the_bag_is_full() {
+        let mut sheet = CharacterSheet::bare(Hero::Warrior);
+        let def = item::starting_item(ItemFamily::Trinket).expect("a trinket");
+        while sheet.inventory_mut().add(ItemStack::one(def.id)).is_some() {}
+        assert_eq!(
+            sheet.rehome_removed_slot_item(ItemStack::one(def.id), 5.0),
+            None
+        );
+        let letters = sheet.mailbox().letters();
+        assert_eq!(letters.len(), 1);
+        assert_eq!(letters[0].item, def.id);
+        assert_eq!(letters[0].reason, MailReason::SlotRemoved);
     }
 
     #[test]
@@ -477,8 +575,34 @@ mod tests {
     }
 
     #[test]
+    fn worn_main_stat_becomes_the_wearers_own_main_stat() {
+        let helm = item_by_key("head_haste_main_stat").expect("a main stat helm");
+        for hero in Hero::ALL {
+            let mut sheet = CharacterSheet::starting(hero);
+            sheet
+                .equipment_mut()
+                .equip(EquipSlot::Head, ItemStack::one(helm.id))
+                .expect("fits");
+            let stats = sheet.stats();
+            assert_eq!(
+                stats.get(hero.main_stat()),
+                BASE_MAIN_STAT + 2.0,
+                "{hero:?}"
+            );
+            assert_eq!(stats.get(Stat::Haste), 2.0);
+            assert_eq!(stats.get(Stat::MainStat), 0.0, "the placeholder leaked");
+            let other = if hero.main_stat() == Stat::Strength {
+                Stat::Intellect
+            } else {
+                Stat::Strength
+            };
+            assert_eq!(stats.get(other), 0.0, "{hero:?} gained the wrong stat");
+        }
+    }
+
+    #[test]
     fn dragging_from_the_bag_onto_a_slot_equips_it() {
-        let mut sheet = CharacterSheet::starting(Hero::Druid);
+        let mut sheet = kit(Hero::Druid);
         let (index, ring) = sheet
             .inventory()
             .contents()
@@ -498,7 +622,7 @@ mod tests {
 
     #[test]
     fn dragging_from_a_slot_into_the_bag_takes_it_off() {
-        let mut sheet = CharacterSheet::starting(Hero::FireMage);
+        let mut sheet = kit(Hero::FireMage);
         let chest = sheet.equipment().get(EquipSlot::Chest).expect("a chest");
         let free = sheet
             .inventory()
@@ -520,7 +644,7 @@ mod tests {
 
     #[test]
     fn two_compatible_slots_swap_rather_than_duplicating() {
-        let mut sheet = CharacterSheet::starting(Hero::FireMage);
+        let mut sheet = kit(Hero::FireMage);
         let (index, ring) = sheet
             .inventory()
             .contents()
@@ -546,7 +670,7 @@ mod tests {
 
     #[test]
     fn an_incompatible_drop_changes_nothing_at_all() {
-        let mut sheet = CharacterSheet::starting(Hero::Warrior);
+        let mut sheet = kit(Hero::Warrior);
         let before = sheet.clone();
         let (cloak, _) = sheet
             .inventory()
@@ -566,7 +690,7 @@ mod tests {
 
     #[test]
     fn a_swap_that_would_send_the_wrong_item_back_is_refused_whole() {
-        let mut sheet = CharacterSheet::starting(Hero::Warrior);
+        let mut sheet = kit(Hero::Warrior);
         let before = sheet.clone();
         // The bag's ring onto the worn chest: the ring does not fit the chest slot.
         let (ring, _) = sheet
@@ -586,7 +710,7 @@ mod tests {
 
     #[test]
     fn an_empty_source_and_a_slot_onto_itself_are_both_refused() {
-        let mut sheet = CharacterSheet::starting(Hero::Druid);
+        let mut sheet = kit(Hero::Druid);
         assert_eq!(
             sheet.move_item(
                 ItemSlot::Equipment(EquipSlot::Head),
@@ -612,7 +736,7 @@ mod tests {
 
     #[test]
     fn no_move_ever_changes_how_many_items_the_character_has() {
-        let mut sheet = CharacterSheet::starting(Hero::FireMage);
+        let mut sheet = kit(Hero::FireMage);
         let total = |sheet: &CharacterSheet| sheet.equipment().count() + sheet.inventory().count();
         let expected = total(&sheet);
 
@@ -627,7 +751,10 @@ mod tests {
 
     #[test]
     fn every_hero_has_its_own_gear_and_its_own_bag() {
-        let mut roster = Roster::starting();
+        let mut roster = Roster::bare();
+        for hero in Hero::ALL {
+            *roster.sheet_mut(hero) = kit(hero);
+        }
         roster
             .sheet_mut(Hero::Warrior)
             .move_item(

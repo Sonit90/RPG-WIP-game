@@ -892,6 +892,8 @@ impl Simulation {
         if self.remote_authority || !self.world.is_alive(entity) {
             return 0;
         }
+        // Versatility: healing *done* by this player.
+        let amount = amount * (1.0 + self.versatility_of(entity));
         let restored = self.world.heal(entity, amount).applied;
         if restored <= 0.0 {
             return 0;

@@ -16,7 +16,7 @@
 
 use engine_core::math::Vec3;
 use engine_game::ability::AbilityId;
-use engine_game::character::DefenseOutcome;
+use engine_game::character::{DefenseOutcome, MailReason};
 use engine_game::combat::DamageType;
 use engine_game::enemy::{EnemyAbility, TelegraphShape};
 use engine_game::entity::EntityId;
@@ -273,6 +273,28 @@ pub enum WireEvent {
     },
     DungeonCompleted {
         seconds: f32,
+    },
+    ChestSpawned {
+        chest: u32,
+        position: [f32; 3],
+        drop_height: f32,
+        fall_seconds: f32,
+    },
+    ChestOpened {
+        chest: u32,
+        by: EntityRef,
+    },
+    LootAwarded {
+        player: EntityRef,
+        /// The item's stable key (`engine_game::character::item_by_key`).
+        item: String,
+    },
+    LootMailed {
+        player: EntityRef,
+        /// The item's stable key.
+        item: String,
+        /// `0` the bag was full, `1` never opened.
+        reason: u8,
     },
 }
 
@@ -555,6 +577,40 @@ pub fn encode(event: &CombatEvent, name: &dyn Fn(EntityId) -> EntityRef) -> Opti
             position: v3(position),
         },
         CombatEvent::DungeonCompleted { seconds, .. } => WireEvent::DungeonCompleted { seconds },
+        CombatEvent::ChestSpawned {
+            chest,
+            position,
+            drop_height,
+            fall_seconds,
+            ..
+        } => WireEvent::ChestSpawned {
+            chest,
+            position: v3(position),
+            drop_height,
+            fall_seconds,
+        },
+        CombatEvent::ChestOpened { chest, by, .. } => WireEvent::ChestOpened {
+            chest,
+            by: name(by),
+        },
+        CombatEvent::LootAwarded { player, item, .. } => WireEvent::LootAwarded {
+            player: name(player),
+            item: engine_game::character::item(item)?.key.to_owned(),
+        },
+        CombatEvent::LootMailed {
+            player,
+            item,
+            reason,
+            ..
+        } => WireEvent::LootMailed {
+            player: name(player),
+            item: engine_game::character::item(item)?.key.to_owned(),
+            reason: match reason {
+                MailReason::BagFull => 0,
+                MailReason::Unclaimed => 1,
+                MailReason::SlotRemoved => 2,
+            },
+        },
         _ => return None,
     })
 }
@@ -890,6 +946,42 @@ pub fn decode(
             seconds: *seconds,
             tick,
         },
+        WireEvent::ChestSpawned {
+            chest,
+            position,
+            drop_height,
+            fall_seconds,
+        } => CombatEvent::ChestSpawned {
+            chest: *chest,
+            position: vec(*position),
+            drop_height: *drop_height,
+            fall_seconds: *fall_seconds,
+            tick,
+        },
+        WireEvent::ChestOpened { chest, by } => CombatEvent::ChestOpened {
+            chest: *chest,
+            by: need(by)?,
+            tick,
+        },
+        WireEvent::LootAwarded { player, item } => CombatEvent::LootAwarded {
+            player: need(player)?,
+            item: engine_game::character::item_by_key(item)?.id,
+            tick,
+        },
+        WireEvent::LootMailed {
+            player,
+            item,
+            reason,
+        } => CombatEvent::LootMailed {
+            player: need(player)?,
+            item: engine_game::character::item_by_key(item)?.id,
+            reason: match *reason {
+                0 => MailReason::BagFull,
+                2 => MailReason::SlotRemoved,
+                _ => MailReason::Unclaimed,
+            },
+            tick,
+        },
     })
 }
 
@@ -957,6 +1049,91 @@ mod tests {
             }
             other => panic!("decoded into {other:?}"),
         }
+    }
+
+    #[test]
+    fn chest_events_round_trip_through_json() {
+        let server = EntityId::new(3, 1);
+        let client = EntityId::new(8, 2);
+        let def = &engine_game::character::loot_pool()[0];
+        let name = |_: EntityId| EntityRef::Player("acct".into());
+        let resolve = |r: &EntityRef| matches!(r, EntityRef::Player(_)).then_some(client);
+        let events = [
+            CombatEvent::ChestSpawned {
+                chest: 4,
+                position: Vec3::new(1.0, 0.0, -2.0),
+                drop_height: 20.0,
+                fall_seconds: 2.5,
+                tick: 1,
+            },
+            CombatEvent::ChestOpened {
+                chest: 4,
+                by: server,
+                tick: 2,
+            },
+            CombatEvent::LootAwarded {
+                player: server,
+                item: def.id,
+                tick: 3,
+            },
+            CombatEvent::LootMailed {
+                player: server,
+                item: def.id,
+                reason: MailReason::Unclaimed,
+                tick: 4,
+            },
+        ];
+        for event in events {
+            let wire = encode(&event, &name).expect("carried");
+            let json = serde_json::to_string(&wire).expect("serializes");
+            let back: WireEvent = serde_json::from_str(&json).expect("deserializes");
+            assert_eq!(back, wire);
+            let decoded = decode(&back, &resolve, 9).expect("resolves");
+            match (event, decoded) {
+                (
+                    CombatEvent::ChestSpawned { chest: a, .. },
+                    CombatEvent::ChestSpawned {
+                        chest: b,
+                        fall_seconds,
+                        tick,
+                        ..
+                    },
+                ) => {
+                    assert_eq!(a, b);
+                    assert!((fall_seconds - 2.5).abs() < f32::EPSILON);
+                    assert_eq!(tick, 9);
+                }
+                (CombatEvent::ChestOpened { .. }, CombatEvent::ChestOpened { by, .. }) => {
+                    assert_eq!(by, client);
+                }
+                (
+                    CombatEvent::LootAwarded { .. },
+                    CombatEvent::LootAwarded { player, item, .. },
+                ) => {
+                    assert_eq!(player, client);
+                    assert_eq!(item, def.id);
+                }
+                (
+                    CombatEvent::LootMailed { .. },
+                    CombatEvent::LootMailed {
+                        player,
+                        item,
+                        reason,
+                        ..
+                    },
+                ) => {
+                    assert_eq!(player, client);
+                    assert_eq!(item, def.id);
+                    assert_eq!(reason, MailReason::Unclaimed);
+                }
+                (sent, got) => panic!("{sent:?} came back as {got:?}"),
+            }
+        }
+        let unknown = WireEvent::LootAwarded {
+            player: EntityRef::Player("acct".into()),
+            item: "no_such_item".into(),
+        };
+        assert!(decode(&unknown, &resolve, 0).is_none());
     }
 
     #[test]

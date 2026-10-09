@@ -32,6 +32,8 @@ pub mod camera;
 pub mod character;
 /// The character file and the roster, in both directions.
 pub mod character_save;
+/// The boss's loot chest: falls, bounces, opens.
+pub mod chest;
 pub mod collision_debug;
 pub mod collision_hud;
 pub mod damage_numbers;
@@ -58,6 +60,7 @@ pub mod vfx;
 pub use audio::{AudioDirector, AudioDirectorStats, HEAVY_DAMAGE, STRIDE};
 pub use camera::ThirdPersonCamera;
 pub use character_save::{apply_config, config_of};
+pub use chest::{ChestDirector, ChestVisuals};
 pub use collision_debug::{CollisionDebug, DebugBindings};
 pub use collision_hud::CollisionHudModel;
 pub use damage_numbers::{

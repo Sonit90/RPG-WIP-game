@@ -1,10 +1,13 @@
 <#
 .SYNOPSIS
     Builds a clean release distribution of the game and verifies it contains no test or
-    benchmark infrastructure.
+    benchmark infrastructure and no developer tools.
 
 .DESCRIPTION
     Produces dist/mygame/ containing only what the game needs to run.
+
+    The build never enables the `dev-tools` feature (the developer "kill the boss" button);
+    the verification greps the binary for its marker and fails the package if it is there.
 
     The verification is the point of the script, not a formality: it fails if any test or
     benchmark binary appears in the package, so "no test code ships" is checked rather
@@ -68,9 +71,13 @@ Write-Host 'Building release binary...' -ForegroundColor Cyan
 
 # --bin mygame, not --workspace: the benchmark and showcase crates have their own binaries
 # and must not be built, let alone copied.
-$buildArguments = @('build', '--release', '--bin', 'mygame')
-if (-not $Overlay) {
-    $buildArguments += @('--no-default-features')
+#
+# --no-default-features always: the default features include `dev-tools` (the developer
+# "kill the boss" button), which must never be in a shipped build. The debug overlay is the
+# only default feature a package may keep, so it is asked for by name.
+$buildArguments = @('build', '--release', '--bin', 'mygame', '--no-default-features')
+if ($Overlay) {
+    $buildArguments += @('--features', 'debug-overlay')
 }
 
 $buildExit = Invoke-Native 'cargo' $buildArguments
@@ -152,6 +159,15 @@ $symbolQuery = ($symbolPatterns | ForEach-Object { "/C:`"$_`"" }) -join ' '
 $symbolExit = Invoke-Native 'cmd' @('/c', "findstr $symbolQuery `"$($executables[0].FullName)`" >nul")
 if ($symbolExit -eq 0) {
     $failures += 'the binary contains test, benchmark or showcase symbols'
+}
+
+# 3b. No developer tools. The `dev-tools` feature compiles a fingerprint into the binary (see the
+#     startup log line in crates/engine-app/src/main.rs); finding it means the feature leaked
+#     into the shipped build.
+$devToolsMarker = 'mygame-dev-tools-marker'
+$devExit = Invoke-Native 'cmd' @('/c', "findstr /C:`"$devToolsMarker`" `"$($executables[0].FullName)`" >nul")
+if ($devExit -eq 0) {
+    $failures += 'the binary contains developer tools (the dev-tools feature was enabled)'
 }
 
 # 4. The package actually starts and exits cleanly. Two frames is enough to prove the

@@ -73,6 +73,8 @@ pub mod effect_exec;
 /// Enemy brains, their attacks and their telegraphs: the combat half of the AI.
 pub mod enemy_exec;
 mod firemage_exec;
+/// The boss's chest: dropped on dungeon completion, one rolled item per player.
+pub mod loot;
 /// More than one player in one simulation: per-player state swapped in and out.
 pub mod players;
 /// The test bed's controls: reset the player, dismiss chosen enemies, find standing ground.
@@ -83,9 +85,18 @@ pub mod respawn;
 /// Casting the Warrior: Deflection, the incoming-damage pipeline and the charge.
 mod warrior_exec;
 
+pub use loot::{
+    CHEST_DROP_HEIGHT, CHEST_FALL_SECONDS, CHEST_INTERACT_RANGE, ChestClaim, LootChest,
+};
+
 pub use firemage_exec::{
     CONE_HALF_ANGLE, CastAim, DETONATE_FRACTION, FireCounters, horizontal_distance,
 };
+
+/// The share of Versatility that also reduces damage taken: half.
+///
+/// A player with Versatility `v` deals and heals `1 + v` as much and takes `1 - v / 2`.
+pub const VERSATILITY_MITIGATION_SHARE: f32 = 0.5;
 
 /// How long the player may be below the world before the fall is fatal, in seconds.
 ///
@@ -524,6 +535,12 @@ pub struct Simulation {
     pending_credit: Vec<EntityId>,
     /// The boss gate's collision, while it stands.
     gate_static: Option<engine_collision::world::StaticId>,
+    /// The chest the finished dungeon left behind, until a reset or a new level clears it.
+    chest: Option<loot::LootChest>,
+    /// The last chest identity handed out, so a second dungeon's chest is a new chest.
+    next_chest: u32,
+    /// Added to simulation time to stamp a letter. See `Simulation::set_mail_epoch`.
+    mail_epoch: f64,
     events: EventStream,
     meter: CombatMeter,
     targets: TargetQuery,
@@ -657,6 +674,9 @@ impl Simulation {
             dungeon: None,
             pending_credit: Vec::with_capacity(8),
             gate_static: None,
+            chest: None,
+            next_chest: 0,
+            mail_epoch: 0.0,
             events: EventStream::with_capacity(256),
             meter: CombatMeter::new(),
             targets: TargetQuery::with_capacity(64),
@@ -840,6 +860,21 @@ impl Simulation {
         damage_type: DamageType,
     ) {
         self.deal_damage(source, target, amount, ability, damage_type, false);
+    }
+
+    /// A player's Versatility as a fraction (`x / (x + 100)`), from their own sheet, gear and
+    /// effects. Zero for anything that is not a player.
+    ///
+    /// Reads the player through [`Simulation::with_player`], so in a party it is the named
+    /// player's rating and not whoever happens to be active.
+    pub(crate) fn versatility_of(&mut self, entity: EntityId) -> f32 {
+        if !self.is_player_entity(entity) {
+            return 0.0;
+        }
+        self.with_player(entity, |sim| {
+            sim.character_stats().percent(Stat::Versatility)
+        })
+        .unwrap_or(0.0)
     }
 
     /// Moves an item between two slots on the current character, and recomputes everything
@@ -1647,6 +1682,9 @@ impl Simulation {
                 }
                 PlayerCommand::ResetDummies => self.reset_dummies(),
                 PlayerCommand::Teleport { position } => self.teleport_player(position),
+                PlayerCommand::OpenChest => self.open_chest(),
+                PlayerCommand::TakeMail { id } => self.take_mail(id),
+                PlayerCommand::MarkMailRead { id } => self.mark_mail_read(id),
                 PlayerCommand::Move { .. } => {}
             }
         }
@@ -1931,6 +1969,7 @@ impl Simulation {
                             continue;
                         }
                         if heals {
+                            let amount = amount * (1.0 + self.versatility_of(source));
                             let restored = self.world.heal(id, amount).applied;
                             if restored > 0.0 {
                                 let tick = self.tick;
@@ -2543,6 +2582,10 @@ impl Simulation {
         let mut amount = amount
             * self.damage_taken_multiplier(target, damage_type)
             * self.damage_dealt_multiplier(source);
+        // **Versatility**, from each player's own sheet: a player deals more, a player takes
+        // less. Applied here, the one place health goes down, so no ability can bypass it.
+        amount *= 1.0 + self.versatility_of(source);
+        amount *= 1.0 - self.versatility_of(target) * VERSATILITY_MITIGATION_SHARE;
         if target != self.player.entity {
             amount *= 1.0 - self.status_damage_reduction(target);
         }

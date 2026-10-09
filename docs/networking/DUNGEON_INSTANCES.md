@@ -116,10 +116,24 @@ players, monsters and party in the same transaction. A disconnect alone never en
 
 ## Completion and results
 
-`instance::finish(instance, success)` (today reachable only by the owner through
-`admin_finish_instance`; server combat will call it) moves the instance and party to
+`instance::finish(instance, success)` (called by server combat when the last encounter falls,
+and by the owner through `admin_finish_instance`) moves the instance and party to
 Completed/Failed and writes one `pending_result` per player with the server-decided
-experience. See [PERSISTENCE.md](PERSISTENCE.md).
+experience, plus one `pending_loot` roll per member. See [PERSISTENCE.md](PERSISTENCE.md).
+
+### The chest
+
+A **Completed** instance stays `live`: its fight keeps ticking, up to `finished_linger`
+(120 s), so the boss's chest can fall and be opened (`OpenChest` is the one action a
+Completed instance accepts; everything else needs an Active fight). A Failed instance stops
+at once. Each member's roll is settled by the combat events of those ticks (`LootAwarded` →
+bag, `LootMailed` → mail).
+
+When the janitor destroys the instance (`instance::destroy`), whatever was never opened is
+mailed first: every row still `rolled` is settled as mail with reason `unclaimed`, so leaving
+the chest does not lose the item. The API bridge then delivers the settled rows once each
+(see [Loot](PERSISTENCE.md#loot-exactly-once)); the item is in the player's bag or mailbox the
+next time the character is fetched.
 
 ## Tests
 

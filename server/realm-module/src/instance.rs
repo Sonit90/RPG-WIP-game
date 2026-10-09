@@ -66,7 +66,12 @@ fn advance(
     }
     let updated = DungeonInstance {
         state: next.into(),
-        live: matches!(next, InstanceState::Countdown | InstanceState::Active),
+        // A completed run keeps ticking so the boss's chest can fall and be opened; it stops
+        // when the janitor tears the instance down. A failed run stops at once.
+        live: matches!(
+            next,
+            InstanceState::Countdown | InstanceState::Active | InstanceState::Completed
+        ),
         barrier_open: !barrier_closed(next),
         ..instance.clone()
     };
@@ -213,6 +218,8 @@ pub fn destroy(ctx: &ReducerContext, instance_id: u64, reason: &str) {
     let Some(instance) = ctx.db.dungeon_instance().id().find(instance_id) else {
         return;
     };
+    // Chest items nobody took go to their owners' mail.
+    crate::loot::mail_unclaimed(ctx, instance_id);
     if let Ok(cleaning) = advance(ctx, &instance, InstanceState::CleaningUp) {
         let _ = advance(ctx, &cleaning, InstanceState::Destroyed);
     }
@@ -270,6 +277,30 @@ pub fn finish(ctx: &ReducerContext, instance_id: u64, success: bool) -> Result<(
     }
     let duration = micros(ctx.timestamp) - micros(instance.created_at);
     let experience = if success { 250 } else { 0 };
+    // Each player's roll from the boss's chest, read before the fight can change. Nothing for
+    // a failed run, or one ended without a chest (an admin finish).
+    let rolls: Vec<(String, String)> = if success {
+        let accounts: Vec<String> = ctx
+            .db
+            .instance_player()
+            .instance_id()
+            .filter(instance_id)
+            .map(|player| player.account_id)
+            .collect();
+        crate::combat::with_fight(ctx, &instance, |fight| {
+            accounts
+                .iter()
+                .filter_map(|account| {
+                    fight
+                        .loot_of(account)
+                        .map(|key| (account.clone(), key.to_owned()))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
     for player in ctx.db.instance_player().instance_id().filter(instance_id) {
         let member = ctx.db.party_member().identity().find(player.identity);
         let result_id = format!("{instance_id}:{}", player.account_id);
@@ -281,6 +312,16 @@ pub fn finish(ctx: &ReducerContext, instance_id: u64, success: bool) -> Result<(
             .is_some()
         {
             continue;
+        }
+        if let Some((_, key)) = rolls.iter().find(|(account, _)| *account == player.account_id) {
+            let character = member.as_ref().map(|m| m.character_id.clone());
+            crate::loot::roll(
+                ctx,
+                instance_id,
+                &player.account_id,
+                character.unwrap_or_default(),
+                key,
+            );
         }
         ctx.db.pending_result().insert(PendingResult {
             result_id,

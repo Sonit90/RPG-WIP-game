@@ -38,5 +38,10 @@ engine-audio = { workspace = true }
 engine-settings = { workspace = true }
 log = { workspace = true }
 
+[features]
+# The developer button on the HUD. Forwarded from engine-app's `dev-tools`; off in the
+# shipping build, where none of its code is compiled.
+dev-tools = []
+
 [lints]
 workspace = true
