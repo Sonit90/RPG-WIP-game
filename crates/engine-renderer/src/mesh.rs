@@ -836,6 +836,61 @@ impl GpuMesh {
         })
     }
 
+    /// An empty mesh over caller-owned buffers, for geometry that is rewritten at run time.
+    ///
+    /// Draws nothing until the first [`GpuMesh::repoint`]. Crate-private: only the dynamic
+    /// mesh facility knows the buffers are upload-heap copies it will keep re-aiming this at.
+    pub(crate) fn empty_over(vertex_buffer: BufferSlice, index_buffer: BufferSlice) -> Self {
+        let mut mesh = Self {
+            vertex_view: D3D12_VERTEX_BUFFER_VIEW::default(),
+            index_view: D3D12_INDEX_BUFFER_VIEW::default(),
+            vertex_buffer,
+            index_buffer,
+            vertex_count: 0,
+            index_count: 0,
+            bounds: Sphere::new(Vec3::ZERO, 0.0),
+        };
+        let (vertex, index) = (mesh.vertex_buffer.clone(), mesh.index_buffer.clone());
+        mesh.repoint(vertex, index, 0, 0, mesh.bounds);
+        mesh
+    }
+
+    /// Re-aims the mesh at `vertex_buffer`/`index_buffer`, holding `vertex_count` vertices and
+    /// `index_count` indices.
+    ///
+    /// The views are what recording reads, and they are copied into the command list at record
+    /// time, so a repoint between frames never disturbs a frame already recorded. A view is
+    /// never given a size of zero even for an empty mesh: the buffers are capacity-sized, so
+    /// the view stays valid, and `index_count` of zero is what suppresses the draw.
+    pub(crate) fn repoint(
+        &mut self,
+        vertex_buffer: BufferSlice,
+        index_buffer: BufferSlice,
+        vertex_count: u32,
+        index_count: u32,
+        bounds: Sphere,
+    ) {
+        let vertex_bytes = (vertex_count as usize * size_of::<MeshVertex>())
+            .clamp(size_of::<MeshVertex>(), vertex_buffer.size());
+        let index_bytes = (index_count as usize * size_of::<Index>())
+            .clamp(size_of::<Index>(), index_buffer.size());
+        self.vertex_view = D3D12_VERTEX_BUFFER_VIEW {
+            BufferLocation: vertex_buffer.gpu_address(),
+            SizeInBytes: vertex_bytes as u32,
+            StrideInBytes: size_of::<MeshVertex>() as u32,
+        };
+        self.index_view = D3D12_INDEX_BUFFER_VIEW {
+            BufferLocation: index_buffer.gpu_address(),
+            SizeInBytes: index_bytes as u32,
+            Format: DXGI_FORMAT_R32_UINT,
+        };
+        self.vertex_buffer = vertex_buffer;
+        self.index_buffer = index_buffer;
+        self.vertex_count = vertex_count;
+        self.index_count = index_count;
+        self.bounds = bounds;
+    }
+
     /// The vertex-buffer view to bind.
     #[must_use]
     pub fn vertex_view(&self) -> &D3D12_VERTEX_BUFFER_VIEW {

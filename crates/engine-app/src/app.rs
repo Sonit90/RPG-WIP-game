@@ -92,6 +92,9 @@ use engine_settings::{
 };
 use engine_settings::{NameplateSetting, SettingsManager};
 
+use crate::area_indicator::{
+    FillEntity, FillWriter, TARGET_FILL_LIFT, TelegraphView, TelegraphVisuals, sync_decal_band,
+};
 use crate::args::{Args, Scene};
 use crate::audio_device::AudioHost;
 use crate::benchmark::{Action, Boundary, FrameReport, ResolutionBenchmark};
@@ -204,18 +207,6 @@ const DECAL_BORDER_WIDTH: f32 = 0.28;
 /// reads as painted on the ground rather than hovering over it, and is far below what the eye
 /// resolves at the camera's distance.
 const DECAL_BORDER_LIFT: f32 = 0.05;
-
-/// How wide the translucent band inside the border is, in metres.
-///
-/// The whole of the indicator's interior: everything further in is bare terrain. A band is
-/// what makes the enclosed area read as enclosed without an opaque disc hiding the ground the
-/// player is aiming at.
-const DECAL_GLOW_WIDTH: f32 = 0.85;
-
-/// How far above the ground the translucent band sits, in metres.
-///
-/// Below the border, so the two never tie for depth where they meet.
-const DECAL_GLOW_LIFT: f32 = 0.035;
 
 /// How far the cursor may travel during a left press and still count as a click.
 ///
@@ -457,10 +448,17 @@ pub struct App {
     decal_scratch: engine_presentation::ui::ground_decal::DecalScratch,
     /// Scratch for the border band's piece transforms.
     decal_border: Vec<engine_core::transform::Transform>,
-    /// Scratch for the translucent band's piece transforms.
-    decal_glow: Vec<engine_core::transform::Transform>,
+    /// The translucent interior of the indicator: one dynamic mesh, created the first time
+    /// something is aimed and reused for the rest of the session.
+    target_fill: Option<FillEntity>,
+    /// Builds the interior's geometry without allocating after the first frame.
+    fill_writer: FillWriter,
     /// The meshes and materials the indicator is drawn with.
     decal_visuals: DecalVisuals,
+    /// Monster telegraphs on the floor, read from the same events the VFX director reads.
+    telegraphs: engine_presentation::telegraph_indicator::TelegraphIndicators,
+    /// Draws `telegraphs` as a static border with a fill that grows to the strike.
+    telegraph_view: TelegraphView,
     /// Enemies inside the circle this frame. Reused; never freed.
     affected: Vec<engine_game::EntityId>,
     /// Whether the right button is held and the mouse is turning the camera.
@@ -729,6 +727,11 @@ impl App {
         renderer.begin_upload_batch()?;
         let visuals = upload_visuals(&mut renderer)?;
         let decal_visuals = upload_decal_visuals(&mut renderer)?;
+        let telegraph_view = TelegraphView::new(TelegraphVisuals::upload(
+            &mut renderer,
+            decal_visuals.quad_mesh,
+            decal_visuals.quad_bounds,
+        )?);
         let vfx_visuals = upload_vfx_visuals(&mut renderer)?;
         #[cfg(feature = "debug-overlay")]
         let debug_visuals = upload_debug_visuals(&mut renderer)?;
@@ -1324,8 +1327,11 @@ impl App {
             targeting_decal: None,
             decal_scratch: engine_presentation::ui::ground_decal::DecalScratch::new(),
             decal_border: Vec::new(),
-            decal_glow: Vec::new(),
+            target_fill: None,
+            fill_writer: FillWriter::default(),
             decal_visuals,
+            telegraphs: engine_presentation::telegraph_indicator::TelegraphIndicators::new(),
+            telegraph_view,
             affected: Vec::with_capacity(32),
             mouse_look: MouseLook::new(),
             motion: RelativeMotion::new(),
@@ -3890,6 +3896,7 @@ impl App {
         // director keeps them rather than rebuilding a hundred pieces of trigonometry per
         // zone per frame. Moving the ground is the one thing that invalidates them.
         self.vfx.invalidate_ground();
+        self.telegraph_view.invalidate_ground();
         if let Some(entity) = self.terrain_entity.take() {
             self.extractor.render_world_mut().despawn(entity);
         }
@@ -4216,6 +4223,7 @@ impl App {
     #[cfg(feature = "editor")]
     fn silence_the_fight(&mut self) {
         self.simulation.cancel_cast();
+        self.telegraphs.clear();
         if let Ok(mut audio) = self.audio.system().lock() {
             self.audio_director.clear(&mut audio);
         }
@@ -4749,23 +4757,32 @@ impl App {
         }
     }
 
+    /// Draws the ground indicator for the ability being aimed, and finds what it covers.
+    ///
+    /// Runs *after* the simulation has advanced, with the extraction: the character is drawn
+    /// at its interpolated position, and an indicator anchored on the caster has to be built
+    /// from that same position in the same frame or it trails the character by a tick and
+    /// twitches as it moves. A circle under the cursor has nothing to trail.
     fn update_targeting_decal(&mut self) {
         let Some(target) = self.targeting.active() else {
             if let Some(decal) = self.targeting_decal.take() {
                 let world = self.extractor.render_world_mut();
-                for entity in decal.border.into_iter().chain(decal.glow) {
+                for entity in decal.border {
                     world.despawn(entity);
                 }
+            }
+            if let Some(fill) = &self.target_fill {
+                fill.hide(self.extractor.render_world_mut());
             }
             self.affected.clear();
             return;
         };
 
         let visuals = self.decal_visuals;
-        let (border_material, glow_material) = if target.valid {
-            (visuals.border_valid, visuals.glow_valid)
+        let (border_material, fill_material) = if target.valid {
+            (visuals.border_valid, visuals.fill_valid)
         } else {
-            (visuals.border_invalid, visuals.glow_invalid)
+            (visuals.border_invalid, visuals.fill_invalid)
         };
 
         // The surface the outline is laid on. A level with a height field is sampled; one
@@ -4779,12 +4796,35 @@ impl App {
             None => GroundSurface::Plane(engine_presentation::ui::targeting::GROUND_HEIGHT),
         };
 
+        // A cone or a line is anchored on the caster and aimed at the cursor. The targeting
+        // state computed that from the simulation's tick position when the mouse last moved,
+        // which is not where the character is drawn. Re-derive both from the interpolated
+        // position, with the formula the targeting state uses (zero yaw faces -Z), so the
+        // shape stays put under the character however it moves. The cast itself still
+        // uses the simulation's position, which is the one gameplay measures from.
+        let (anchor, facing) = match target.shape {
+            engine_presentation::ui::targeting::TargetShape::Cone { .. }
+            | engine_presentation::ui::targeting::TargetShape::Line { .. } => {
+                let caster =
+                    engine_presentation::extract::interpolated_player_position(&self.simulation);
+                let dx = target.position.x - caster.x;
+                let dz = target.position.z - caster.z;
+                let facing = if dx.abs() > 1e-4 || dz.abs() > 1e-4 {
+                    (-dx).atan2(-dz)
+                } else {
+                    target.facing
+                };
+                (
+                    Vec3::new(caster.x, ground.height_at(caster.x, caster.z), caster.z),
+                    facing,
+                )
+            }
+            _ => (target.anchor, target.facing),
+        };
+
         // The border's outer rim is the ability's edge, so the line the player aims with is
-        // the boundary the executor tests. The band sits inside it, starting where the
-        // border ends, so the two touch without overlapping.
+        // the boundary the executor tests. The fill covers everything inside it.
         let border = DecalBand::edged(DECAL_BORDER_WIDTH, DECAL_BORDER_LIFT);
-        let glow = DecalBand::edged(DECAL_GLOW_WIDTH, DECAL_GLOW_LIFT)
-            .with_inset(DECAL_BORDER_WIDTH + DECAL_GLOW_WIDTH * 0.5);
 
         // Three shapes, one system, and now one geometry too: a circle sits under the cursor
         // while a cone and a line are anchored on the caster, and all of them are an outline
@@ -4792,21 +4832,12 @@ impl App {
         // be lying about the area it covers.
         engine_presentation::ui::ground_decal::build_band(
             target.shape,
-            target.anchor,
-            target.facing,
+            anchor,
+            facing,
             border,
             &ground,
             &mut self.decal_scratch,
             &mut self.decal_border,
-        );
-        engine_presentation::ui::ground_decal::build_band(
-            target.shape,
-            target.anchor,
-            target.facing,
-            glow,
-            &ground,
-            &mut self.decal_scratch,
-            &mut self.decal_glow,
         );
 
         let mut decal = self.targeting_decal.take().unwrap_or_default();
@@ -4819,15 +4850,37 @@ impl App {
             border_material,
             visuals.quad_bounds,
         );
-        sync_decal_band(
-            world,
-            &mut decal.glow,
-            &self.decal_glow,
-            visuals.quad_mesh,
-            glow_material,
-            visuals.quad_bounds,
-        );
         self.targeting_decal = Some(decal);
+
+        // The interior: one dynamic mesh made the first time something is aimed.
+        if self.target_fill.is_none() {
+            match FillEntity::create(
+                &mut self.renderer,
+                self.extractor.render_world_mut(),
+                fill_material,
+            ) {
+                Ok(fill) => self.target_fill = Some(fill),
+                Err(error) => log::warn!("targeting fill: could not create its mesh: {error}"),
+            }
+        }
+        if let Some(fill) = &self.target_fill {
+            self.fill_writer.write(
+                &mut self.renderer,
+                fill.mesh(),
+                target.shape,
+                anchor,
+                facing,
+                1.0,
+                TARGET_FILL_LIFT,
+                &ground,
+            );
+            fill.place(
+                self.extractor.render_world_mut(),
+                anchor,
+                target.shape,
+                fill_material,
+            );
+        }
 
         // Everything the shape currently covers, so the interface can mark it. The shape
         // decides, not the app: a future cone marks what a cone covers with no change here.
@@ -4848,7 +4901,7 @@ impl App {
             // the same set, or the interface is lying while the player aims.
             if target
                 .shape
-                .contains_body(target.anchor, target.facing, position, world.radius(id))
+                .contains_body(anchor, facing, position, world.radius(id))
             {
                 self.affected.push(id);
             }
@@ -5759,7 +5812,6 @@ impl Application for App {
             {
                 self.update_firemage_ui(ctx);
             }
-            self.update_targeting_decal();
             if self.scene.is_character() {
                 self.update_animation_override(ctx);
             }
@@ -5973,6 +6025,25 @@ impl Application for App {
                 self.jobs.as_ref(),
             );
             self.renderer.set_particles(self.vfx.particles());
+            // Monster telegraphs: tracked from the same events and drawn into the same
+            // world. Gated with the effects, so a run without VFX draws none of them.
+            if self.vfx.enabled() {
+                self.telegraphs.observe(&self.simulation);
+                self.telegraphs
+                    .advance(ctx.time().real_delta().as_secs_f32(), &self.simulation);
+            } else {
+                self.telegraphs.clear();
+            }
+            self.telegraph_view.update(
+                &mut self.renderer,
+                self.extractor.render_world_mut(),
+                &self.telegraphs,
+                DecalBand::edged(DECAL_BORDER_WIDTH, DECAL_BORDER_LIFT),
+                &ground,
+            );
+            // The player's own indicator is built from the position the character is drawn
+            // at this frame, so it comes after the simulation has advanced.
+            self.update_targeting_decal();
             self.vfx_ms = vfx_started.elapsed().as_secs_f64() * 1e3;
             // After extraction, because it spawns into the same `RenderWorld` and would
             // otherwise be drawing last frame's collision state beside this frame's
@@ -7058,18 +7129,16 @@ fn imported_character(
     definition
 }
 
-/// The entities the ground indicator is drawn with: one per piece of each band.
+/// The entities the ground indicator's border is drawn with: one per piece.
 ///
-/// Two pools rather than two entities. The indicator is an *outline* laid on the terrain, cut
-/// into short pieces so each can sit at the height under it, and a pool is what lets the piece
-/// count change with the shape and the radius without respawning anything: a piece the current
-/// shape does not need is hidden, not despawned, and is reused the moment it is.
+/// An *outline* laid on the terrain, cut into short pieces so each can sit at the height under
+/// it. A pool is what lets the piece count change with the shape and the radius without
+/// respawning anything: a piece the current shape does not need is hidden, not despawned, and
+/// is reused the moment it is. The interior is a single dynamic mesh, owned by the app.
 #[derive(Debug, Default)]
 struct TargetingDecal {
     /// The bright line around the footprint, one entity per piece.
     border: Vec<engine_render_data::RenderEntity>,
-    /// The translucent band just inside it, one entity per piece.
-    glow: Vec<engine_render_data::RenderEntity>,
 }
 
 /// The mesh and materials the ground indicator is drawn with.
@@ -7087,50 +7156,10 @@ struct DecalVisuals {
     border_valid: MaterialHandle,
     /// The border of a placement that would be refused.
     border_invalid: MaterialHandle,
-    /// The translucent band inside a valid placement.
-    glow_valid: MaterialHandle,
-    /// The translucent band inside a refused one.
-    glow_invalid: MaterialHandle,
-}
-
-/// Points `pool` at `transforms`, spawning, reusing and hiding entities as the count changes.
-///
-/// The piece count of the indicator changes with the ability - a cone is not a circle, and a
-/// twelve-metre radius is not a five-metre one - and it changes while the level is being
-/// edited under it. Despawning and respawning on every change would churn render-world slots
-/// every frame a brush stroke moved the ground; a pool grows to the largest outline the
-/// session has drawn and then never allocates again. Surplus entities are hidden rather than
-/// removed, because the next shape is very likely to want them back.
-fn sync_decal_band(
-    world: &mut engine_render_data::RenderWorld,
-    pool: &mut Vec<engine_render_data::RenderEntity>,
-    transforms: &[engine_core::transform::Transform],
-    mesh: MeshHandle,
-    material: MaterialHandle,
-    bounds: engine_core::math::Sphere,
-) {
-    for (entity, transform) in pool.iter().zip(transforms) {
-        world.set_transform(*entity, *transform, bounds);
-        world.set_material(*entity, material);
-        world.set_visible(*entity, true);
-    }
-    for transform in transforms.iter().skip(pool.len()) {
-        pool.push(world.spawn(engine_render_data::RenderEntityDesc {
-            transform: *transform,
-            mesh,
-            material,
-            bounds,
-            visible: true,
-            style: engine_render_data::InstanceStyle::NEUTRAL,
-            // The targeting indicator: a shape painted on the ground to say where a spell
-            // will land. It is interface, not matter - it casts nothing, and a shadow
-            // falling across it must not make the area it marks harder to read.
-            shadow: engine_render_data::ShadowCasting::NONE,
-        }));
-    }
-    for entity in pool.iter().skip(transforms.len()) {
-        world.set_visible(*entity, false);
-    }
+    /// The translucent fill of a valid placement.
+    fill_valid: MaterialHandle,
+    /// The translucent fill of a refused one.
+    fill_invalid: MaterialHandle,
 }
 
 /// Uploads the ground indicator's geometry and colours.
@@ -7142,7 +7171,7 @@ fn sync_decal_band(
 ///
 /// **Two surface classes, deliberately.** The border is opaque: it is a line the player has to
 /// read against grass, rock and shadow alike, it needs no blending to do that, and an opaque
-/// material is what lets every piece of it collapse into one instanced draw. The band inside
+/// material is what lets every piece of it collapse into one instanced draw. The fill inside
 /// it is transparent, because its whole job is to mark an area *without* hiding the ground -
 /// which is the one thing the opaque disc it replaces could not do.
 fn upload_decal_visuals(renderer: &mut Renderer) -> Result<DecalVisuals, EngineError> {
@@ -7168,19 +7197,19 @@ fn upload_decal_visuals(renderer: &mut Renderer) -> Result<DecalVisuals, EngineE
             .with_emissive(Vec3::new(1.05, 0.14, 0.10)),
     )?;
     // Low enough that the terrain reads through it plainly. The number is the difference
-    // between "this area is marked" and "this area is covered": at this alpha the band adds
-    // about a fifth of its own colour over whatever the ground is.
-    let glow_valid = renderer.create_material(
+    // between "this area is marked" and "this area is covered": at this alpha the fill adds
+    // about a quarter of its own colour over whatever the ground is.
+    let fill_valid = renderer.create_material(
         MaterialDesc::colored(0.01, 0.006, 0.002)
             .with_roughness(1.0)
             .with_emissive(Vec3::new(0.95, 0.48, 0.13))
-            .with_opacity(0.22),
+            .with_opacity(0.25),
     )?;
-    let glow_invalid = renderer.create_material(
+    let fill_invalid = renderer.create_material(
         MaterialDesc::colored(0.01, 0.003, 0.002)
             .with_roughness(1.0)
             .with_emissive(Vec3::new(0.88, 0.12, 0.09))
-            .with_opacity(0.22),
+            .with_opacity(0.25),
     )?;
 
     Ok(DecalVisuals {
@@ -7188,8 +7217,8 @@ fn upload_decal_visuals(renderer: &mut Renderer) -> Result<DecalVisuals, EngineE
         quad_bounds,
         border_valid,
         border_invalid,
-        glow_valid,
-        glow_invalid,
+        fill_valid,
+        fill_invalid,
     })
 }
 
@@ -7482,14 +7511,16 @@ mod tests {
     fn every_aimed_ability_asks_for_geometry_the_indicator_can_draw() {
         // An ability whose shape fell through to a circle of radius zero would open a
         // targeting state and draw nothing, which is exactly what a missing indicator looks
-        // like. Both bands are checked, at the exact widths and lifts the app uses, because
-        // the band that gets its inset wrong is the band that collapses to a dot.
+        // like. The border is checked at the exact width and lift the app uses, and the fill
+        // must build some triangles for the same shape.
         use engine_presentation::ui::ground_decal::{DecalScratch, GroundSurface, build_band};
+        use engine_presentation::ui::ground_fill::{FillMesh, build_fill};
         use engine_presentation::ui::targeting::TargetShape;
 
         let ground = GroundSurface::Plane(0.0);
         let mut scratch = DecalScratch::new();
         let mut pieces = Vec::new();
+        let mut fill = FillMesh::new();
 
         // Every hero's, not only the mage's: the Warrior's cleave and the Druid's Starfall
         // are aimed too, and an indicator that only knew about fire would draw nothing for
@@ -7502,29 +7533,39 @@ mod tests {
             assert!(shape.extent() > 0.0, "{ability:?} has nothing to draw");
 
             let border = DecalBand::edged(DECAL_BORDER_WIDTH, DECAL_BORDER_LIFT);
-            let glow = DecalBand::edged(DECAL_GLOW_WIDTH, DECAL_GLOW_LIFT)
-                .with_inset(DECAL_BORDER_WIDTH + DECAL_GLOW_WIDTH * 0.5);
-            for (name, band) in [("border", border), ("glow", glow)] {
-                build_band(
-                    shape,
-                    Vec3::ZERO,
-                    0.0,
-                    band,
-                    &ground,
-                    &mut scratch,
-                    &mut pieces,
-                );
-                assert!(
-                    pieces.len() >= 4,
-                    "{ability:?}: the {name} band is {} pieces",
-                    pieces.len(),
-                );
-                assert!(
-                    pieces.len() <= engine_presentation::ui::ground_decal::MAX_SEGMENTS,
-                    "{ability:?}: the {name} band is over budget at {} pieces",
-                    pieces.len(),
-                );
-            }
+            build_band(
+                shape,
+                Vec3::ZERO,
+                0.0,
+                border,
+                &ground,
+                &mut scratch,
+                &mut pieces,
+            );
+            assert!(
+                pieces.len() >= 4,
+                "{ability:?}: the border is {} pieces",
+                pieces.len(),
+            );
+            assert!(
+                pieces.len() <= engine_presentation::ui::ground_decal::MAX_SEGMENTS,
+                "{ability:?}: the border is over budget at {} pieces",
+                pieces.len(),
+            );
+
+            build_fill(
+                shape,
+                Vec3::ZERO,
+                0.0,
+                1.0,
+                crate::area_indicator::TARGET_FILL_LIFT,
+                &ground,
+                &mut fill,
+            );
+            assert!(
+                !fill.positions.is_empty() && !fill.indices.is_empty(),
+                "{ability:?}: the fill is empty",
+            );
         }
     }
 }

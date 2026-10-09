@@ -658,14 +658,12 @@ const CONE_EMITTERS: [EmitterDesc; 2] = [
     },
 ];
 
-const CONE_LAYERS: [MeshLayer; 1] = [MeshLayer {
-    shape: VfxShape::Cone,
-    window: Window::new(0.0, 0.8),
-    radius: (0.35, 1.0),
-    color: [1.0, 0.50, 0.16, 0.8],
-    emissive: (2.0, 0.0),
-    ..MeshLayer::disc()
-}];
+/// No geometry: the cone is its fire alone.
+///
+/// A bordered wedge laid on the floor at the moment of the cast read as a second, different
+/// shape from the aiming indicator the player had just released, so the footprint is said
+/// once - by the indicator, before the cast - and the cast itself is the spray of particles.
+const CONE_LAYERS: [MeshLayer; 0] = [];
 
 const LINE_EMITTERS: [EmitterDesc; 2] = [
     EmitterDesc {

@@ -175,18 +175,16 @@ const SHIELD_TINT: [f32; 4] = [1.0, 0.62, 0.30, 1.0];
 /// Colour of the Fire Mastery aura, which reuses the shell at a different size and hue.
 const MASTERY_TINT: [f32; 4] = [1.0, 0.90, 0.45, 1.0];
 
-/// A line telegraph — a spear, a volley, a charge's path. Bone-white, so a line on the floor
-/// never reads as the player's own line of fire.
-const LINE_TELEGRAPH_TINT: [f32; 4] = [0.92, 0.90, 0.82, 0.75];
-
-/// A mark that follows a player: violet, the one colour on the floor that moves.
-const MARK_TINT: [f32; 4] = [0.72, 0.35, 1.0, 0.9];
-
 /// The sealed boss gate: a violet wall of light across the doorway.
 const GATE_TINT: [f32; 4] = [0.55, 0.30, 0.95, 0.85];
 
 /// An add arriving, and the gate breaking.
 const CRYPT_TINT: [f32; 4] = [0.65, 0.35, 0.95, 1.0];
+
+/// The most telegraph shapes remembered at once.
+///
+/// Each is dropped by its own end event; the cap only bounds the list if one is ever missed.
+const MAX_TELEGRAPHS: usize = 64;
 
 /// One uploaded shape, and the bounds the culler tests it with.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -322,11 +320,13 @@ pub struct VfxDirector {
     ignited: Vec<Option<(u32, VfxHandle)>>,
     /// The area playing for each live zone, by the gameplay id the event carried.
     areas: Vec<(u32, VfxHandle)>,
-    /// The shape on the floor for each enemy attack that is coming, by telegraph id.
+    /// The shape of each enemy attack that is coming, by telegraph id.
     ///
-    /// The shape is kept beside the handle so that when the attack lands, the explosion is
-    /// drawn at the size the telegraph promised rather than at a size picked here.
-    telegraphs: Vec<(u32, VfxHandle, TelegraphShape)>,
+    /// The floor indicator is drawn by `TelegraphIndicators`, not here; the shape is kept so
+    /// that when the attack lands, the explosion is drawn at the size the telegraph promised
+    /// rather than at a size picked here. Bounded by [`MAX_TELEGRAPHS`]: nothing prunes an
+    /// entry but its own end event, so a missed one must not leak.
+    telegraphs: Vec<(u32, TelegraphShape)>,
     /// The gathering effect on each enemy that is casting, by entity slot.
     enemy_casts: Vec<(u32, VfxHandle)>,
     /// The mage's defensive shell, while Flame Shield is up.
@@ -559,63 +559,20 @@ impl VfxDirector {
                     );
                 }
             }
-            // An enemy attack that is coming: the floor says where and the clock says when.
-            // Its lifetime is the cast's own, so the shape closes exactly as the attack
-            // lands - the timing is gameplay's, not a guess made here.
-            CombatEvent::TelegraphStarted {
-                anchor,
-                shape,
-                delay,
-                id,
-                follow,
-                ..
-            } => {
-                let spawn = match shape {
-                    // A mark rides its victim: stepping out of it is not the answer, taking it
-                    // away from everybody else is — so it is drawn where they are.
-                    TelegraphShape::Circle { radius } if follow.is_some() => follow.map(|victim| {
-                        VfxSpawn::at(VfxId::Telegraph, Vec3::ZERO)
-                            .with_radius(radius.max(0.5))
-                            .lasting(delay.max(0.05))
-                            .tinted(MARK_TINT)
-                            .attached_to(victim.index() as u32)
-                    }),
-                    TelegraphShape::Circle { radius } => Some(
-                        VfxSpawn::at(VfxId::Telegraph, anchor)
-                            .with_radius(radius.max(0.5))
-                            .lasting(delay.max(0.05)),
-                    ),
-                    // A spear, a volley or a charge's path: the band along the ground the
-                    // player's own line effect is drawn with, in bone rather than fire.
-                    TelegraphShape::Line { yaw, length, width } => Some(
-                        VfxSpawn::at(VfxId::LineFire, anchor)
-                            .facing(yaw)
-                            .with_radius(width.max(0.5))
-                            .with_length(length.max(0.5))
-                            .lasting(delay.max(0.05))
-                            .tinted(LINE_TELEGRAPH_TINT),
-                    ),
-                    TelegraphShape::Cone {
-                        yaw,
-                        range,
-                        half_angle: _,
-                    } => Some(
-                        VfxSpawn::at(VfxId::ConeWave, anchor)
-                            .facing(yaw)
-                            .with_radius(range.max(0.5))
-                            .lasting(delay.max(0.05))
-                            .raised(0.35),
-                    ),
-                    // A single-target attack covers no ground; there is nothing to draw and
-                    // the cast bar is what says it is coming.
-                    TelegraphShape::Single => None,
-                };
-                if let Some(handle) = spawn.and_then(|spawn| self.spawn(spawn)) {
-                    self.telegraphs.push((id, handle, shape));
+            // An enemy attack that is coming. The footprint on the floor is drawn by the
+            // telegraph indicator (static, filled by the time left); all this keeps is the
+            // shape, so a landing can be answered at the size that was promised.
+            CombatEvent::TelegraphStarted { shape, id, .. } => {
+                if matches!(shape, TelegraphShape::Single) {
+                    return;
                 }
+                if self.telegraphs.len() >= MAX_TELEGRAPHS {
+                    self.telegraphs.remove(0);
+                }
+                self.telegraphs.push((id, shape));
             }
-            // It landed, or it did not. Either way the shape comes off the floor; only a
-            // landing gets an explosion, and it is drawn at the size that was promised.
+            // It landed, or it did not. Only a landing gets an explosion, and it is drawn at
+            // the size that was promised.
             CombatEvent::TelegraphEnded {
                 id,
                 anchor,
@@ -625,12 +582,11 @@ impl VfxDirector {
                 let Some(index) = self
                     .telegraphs
                     .iter()
-                    .position(|(telegraph, _, _)| *telegraph == id)
+                    .position(|(telegraph, _)| *telegraph == id)
                 else {
                     return;
                 };
-                let (_, handle, shape) = self.telegraphs.swap_remove(index);
-                self.system.stop_and_clear(handle);
+                let (_, shape) = self.telegraphs.remove(index);
                 if resolved {
                     let radius = match shape {
                         TelegraphShape::Circle { radius } => radius,
@@ -1020,8 +976,6 @@ impl VfxDirector {
         }
         self.areas
             .retain(|(_, handle)| self.system.contains(*handle));
-        self.telegraphs
-            .retain(|(_, handle, _)| self.system.contains(*handle));
         self.enemy_casts
             .retain(|(_, handle)| self.system.contains(*handle));
     }
@@ -1665,11 +1619,12 @@ mod tests {
 
     #[test]
     fn an_enemy_telegraph_and_a_line_of_fire_are_laid_the_same_way() {
-        // One code path for every footprint: a circle under an incoming rock, a wedge, and a
-        // strip of burning ground all become pieces on the terrain.
+        // One code path for every footprint: a circle under an incoming rock and a strip of
+        // burning ground both become pieces on the terrain. (The cone's cast draws no
+        // footprint at all - its fire is particles only.)
         let slope = ramp(0.35);
         let ground = GroundSurface::Terrain(&slope);
-        for effect in [VfxId::Telegraph, VfxId::LineFire, VfxId::ConeWave] {
+        for effect in [VfxId::Telegraph, VfxId::LineFire] {
             let mut director = VfxDirector::new(visuals());
             let mut world = RenderWorld::new();
             let simulation = arena(1);

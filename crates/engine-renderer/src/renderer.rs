@@ -512,6 +512,9 @@ pub struct Renderer {
     /// Meshes replaced by [`Renderer::replace_mesh`], kept alive until the GPU has passed the
     /// last frame that could have drawn them.
     retired_meshes: Vec<(u64, GpuMesh)>,
+    /// The CPU side of each dynamic mesh, keyed by its index in `meshes`. See
+    /// [`Renderer::create_dynamic_mesh`].
+    dynamic_meshes: HashMap<usize, crate::dynamic_mesh::DynamicMesh>,
     /// Which phase each material is drawn in, indexed by material handle.
     ///
     /// A parallel array beside `material_features` rather than a field read back out of the
@@ -818,6 +821,7 @@ impl Renderer {
             material_features: Vec::new(),
             material_descs: Vec::new(),
             retired_meshes: Vec::new(),
+            dynamic_meshes: HashMap::new(),
             material_surfaces: Vec::new(),
             transparent_draws_last_frame: 0,
             material_tables: Vec::new(),
@@ -2565,6 +2569,66 @@ impl Renderer {
         self.retired_meshes
             .push((self.frames.last_signaled_value(), old));
         Ok(())
+    }
+
+    /// Creates a mesh whose geometry is rewritten at run time, up to once per frame.
+    ///
+    /// `max_vertices` and `max_indices` fix the capacity for the mesh's whole life. All the
+    /// GPU memory is allocated here - `frames_in_flight + 1` persistently mapped upload-heap
+    /// copies - so [`Renderer::write_dynamic_mesh`] allocates nothing, which is what
+    /// [`Renderer::replace_mesh`] cannot offer: it suballocates from an arena that never
+    /// frees piecemeal. The mesh draws nothing until its first write. The handle works
+    /// anywhere a mesh handle does; see [`crate::dynamic_mesh`] for the safety argument.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RendererError::InvalidConfig`] for a zero capacity, or
+    /// [`RendererError::Api`] if a D3D12 call fails.
+    pub fn create_dynamic_mesh(
+        &mut self,
+        max_vertices: usize,
+        max_indices: usize,
+    ) -> Result<MeshHandle, RendererError> {
+        let (dynamic, mesh) = crate::dynamic_mesh::DynamicMesh::new(
+            &self.context,
+            self.frames.frames_in_flight(),
+            max_vertices,
+            max_indices,
+        )?;
+        let index = self.meshes.len();
+        self.meshes.push(mesh);
+        self.dynamic_meshes.insert(index, dynamic);
+        Ok(MeshHandle::new(index as u32, 1))
+    }
+
+    /// Replaces the geometry of a dynamic mesh.
+    ///
+    /// Takes slices rather than [`MeshData`] so a caller can reuse its buffers and allocate
+    /// nothing per frame. An empty `indices` slice is allowed and means "draw nothing".
+    /// `bounds` is the local-space sphere used for culling.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RendererError::InvalidConfig`] if `handle` is not a dynamic mesh or the
+    /// geometry exceeds the capacity given to [`Renderer::create_dynamic_mesh`].
+    pub fn write_dynamic_mesh(
+        &mut self,
+        handle: MeshHandle,
+        vertices: &[MeshVertex],
+        indices: &[crate::mesh::Index],
+        bounds: engine_core::math::Sphere,
+    ) -> Result<(), RendererError> {
+        let index = handle.index();
+        let frame = self.frames.frame_index();
+        let (Some(dynamic), Some(mesh)) = (
+            self.dynamic_meshes.get_mut(&index),
+            self.meshes.get_mut(index),
+        ) else {
+            return Err(RendererError::InvalidConfig {
+                reason: format!("mesh {index} is not a dynamic mesh"),
+            });
+        };
+        dynamic.write(mesh, frame, vertices, indices, bounds)
     }
 
     /// Uploads a skinned mesh and returns a handle to it.

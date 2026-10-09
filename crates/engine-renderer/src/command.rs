@@ -658,7 +658,13 @@ impl CommandContext {
     ///
     /// Flushes pending barriers first: a draw that reads a resource still in its old state
     /// is undefined.
+    ///
+    /// A draw of zero indices is skipped: that is what an emptied dynamic mesh asks for, and
+    /// it would only cost a call and a statistic.
     pub fn draw_indexed(&mut self, index_count: u32, instance_count: u32, start_instance: u32) {
+        if index_count == 0 {
+            return;
+        }
         self.flush_barriers();
         // SAFETY: FFI call on the open list. The bound pipeline, vertex buffers and index
         // buffer were set by the caller and outlive the submission.

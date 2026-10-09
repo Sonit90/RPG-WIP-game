@@ -17,6 +17,7 @@ pub mod culling;
 pub mod depth;
 pub mod descriptor;
 pub mod device;
+mod dynamic_mesh;
 pub mod error;
 // Not behind `debug-overlay`. The font is a bit-pattern table and the atlas is the texture
 // every glyph and every ability icon is drawn from; both are what *game* UI is made of, and

@@ -60,6 +60,8 @@ pub mod frontend;
 pub mod graphics_menu;
 /// The ground indicator's geometry: an outline laid onto the terrain surface.
 pub mod ground_decal;
+/// The ground indicator's interior: a terrain-conforming triangle mesh filling a shape.
+pub mod ground_fill;
 /// Edit HUD: the interface made draggable.
 pub mod hud_edit;
 /// Where every arrangeable interface element sits, at any resolution.
@@ -97,6 +99,7 @@ pub use dungeon_map::{
 pub use ground_decal::{
     DecalBand, DecalScratch, GroundSurface, MAX_SEGMENTS, SEGMENT_LENGTH, build_band,
 };
+pub use ground_fill::{FillMesh, MAX_FILL_INDICES, MAX_FILL_VERTICES, build_fill};
 pub use hud_edit::{Control as EditControl, EditOutcome, EditTarget, HudEditor};
 pub use hud_layout::{HudElementId, HudLayout, MIN_VISIBLE_FRACTION, clamp_on_screen};
 pub use input::UiInput;

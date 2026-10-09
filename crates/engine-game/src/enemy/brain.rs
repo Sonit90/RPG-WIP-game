@@ -1182,16 +1182,24 @@ impl EnemyBrain {
             };
         }
 
-        let facing = percept
-            .victim()
-            .map(|target| yaw_towards(percept.position, target.position));
+        // A caster laying an area on the floor is planted: the shape was fixed when the cast
+        // started, so a caster that kept turning would point one way while the telegraph it
+        // is about to fire points another. A cone or a line holds the yaw it was aimed with;
+        // a circle holds whatever yaw the caster already had (`None` with no velocity turns
+        // nothing). Only a single-target cast keeps tracking its victim, because that is
+        // what it is aimed at.
+        let facing = match cast.shape {
+            TelegraphShape::Cone { yaw, .. } | TelegraphShape::Line { yaw, .. } => Some(yaw),
+            shape if shape.is_area() => None,
+            _ => percept
+                .victim()
+                .map(|target| yaw_towards(percept.position, target.position)),
+        };
         if cast.remaining() > crate::TIME_EPSILON {
             return AiDecision {
                 intent: MoveIntent {
                     direction: Vec3::ZERO,
                     jump: false,
-                    // A caster turns to follow its target while charging, but the *shape*
-                    // does not: the anchor was fixed when the cast started.
                     facing,
                 },
                 request: AiRequest::None,

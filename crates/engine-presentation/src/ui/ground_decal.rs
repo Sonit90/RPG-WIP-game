@@ -471,7 +471,7 @@ fn ring_segments(arc: f32) -> usize {
 }
 
 /// A point in the caster's frame - `x` across, `z` along, -Z forward - placed in the world.
-fn local_to_world(anchor: Vec3, facing: f32, x: f32, z: f32) -> (f32, f32) {
+pub(crate) fn local_to_world(anchor: Vec3, facing: f32, x: f32, z: f32) -> (f32, f32) {
     let (sin, cos) = facing.sin_cos();
     (anchor.x + x * cos + z * sin, anchor.z - x * sin + z * cos)
 }

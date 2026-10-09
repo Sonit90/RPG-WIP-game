@@ -48,6 +48,8 @@ pub mod nameplate;
 pub mod nameplate_layout;
 pub mod shadow_debug;
 pub mod snapshot;
+/// Monster telegraphs tracked for drawing as static, filling ground indicators.
+pub mod telegraph_indicator;
 /// The reusable UI framework and the game's menus.
 pub mod ui;
 /// Combat drawn: the layer that decides what an ability looks like.
@@ -80,6 +82,9 @@ pub use shadow_debug::ShadowCasterDebug;
 pub use snapshot::{
     AbilitySlotView, CastView, CharacterView, CombatView, NotificationView, PartyMemberView,
     PlayerView, SlotAvailability, StatusList, StatusView, TargetView, UiSnapshot,
+};
+pub use telegraph_indicator::{
+    IndicatorKind, MAX_INDICATORS, TelegraphIndicator, TelegraphIndicators,
 };
 pub use ui::{
     CharacterMenu, CharacterMenuOutcome, CharacterTheme, MenuAction, MenuScreen, MenuSystem,

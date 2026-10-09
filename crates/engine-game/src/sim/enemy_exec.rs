@@ -276,6 +276,13 @@ impl Simulation {
                     }
                 }
                 AiRequest::BeginCast(ability) => {
+                    // Planted from the first tick of the cast. Without this the chase's
+                    // momentum decelerates over the next few ticks and the caster visibly
+                    // slides away from the apex of the telegraph it just put down.
+                    if let Some(body) = self.world.body_mut(entity) {
+                        body.velocity.x = 0.0;
+                        body.velocity.z = 0.0;
+                    }
                     if let Some(cast) = runtime.brain.cast_mut() {
                         self.plan_cast(entity, cast, &percept);
                     }

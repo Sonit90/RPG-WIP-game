@@ -5,6 +5,7 @@
 
 mod alloc_count;
 mod app;
+mod area_indicator;
 mod args;
 mod audio_device;
 mod benchmark;
