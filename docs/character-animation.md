@@ -194,3 +194,43 @@ small name map for non-Mixamo rigs), with per-character clips overriding the lib
 animation is then added once for every character, and a character file is just mesh and rig.
 The math is the same as `engine_assets::mirror` without the reflection; the requirement is
 that characters are rigged in the library's rest pose (T-pose).
+
+---
+
+## 10. Without Mixamo: rigging a model locally
+
+Mixamo's auto-rigger refuses some models outright — a Meshy export of the warrior was turned
+away with *"Unable to map your existing skeleton"* as FBX and as OBJ, though it has no
+skeleton. `tools/blender/autorig_character.py` does the rigging in Blender instead and writes a
+file that stands in for the Mixamo download *With Skin*, so step 4 of section 1 runs unchanged:
+
+```bash
+"C:/Program Files/Blender Foundation/Blender 5.2/blender.exe" -b --factory-startup \
+  --python tools/blender/autorig_character.py -- \
+  --mesh "path/to/Meshy_export.fbx" --out assets/characters/warrior.fbx \
+  --prop right --head-scale 1.2
+```
+
+| Option | What it does |
+| --- | --- |
+| `--mesh` | The unrigged model, `.fbx`, `.glb` or `.obj`, as downloaded: standing, arms down, facing the viewer, any scale |
+| `--prop right\|left` | A held prop that is its own loose part (anything a third of the height long front to back) is bound rigidly to that hand, so it does not bend with the fingers |
+| `--head-scale` | Scales the head about the neck before rigging; the warrior uses 1.2 |
+| `--blend` | Saves the rigged model for inspection |
+
+What it does, and why:
+
+| Step | Why |
+| --- | --- |
+| Normalises the model to 1.8 m, feet on the origin, and measures elbows, wrists, hands, knees and ankles as cross-sections of the mesh. | The joint heights are constants measured at that size. |
+| Builds the skeleton from `assets/animations/Idle.fbx` — the same 33 `mixamorig:` bones. | No other character's file is needed. |
+| Lays the hips, spine, neck and head out in the animation rig's **exact** rest orientation, only scaled. | `mixamo_character.py` copies world rotation. A spine bone a few tens of degrees off bends the torso and stretches the neck in every clip. |
+| Takes arm twist from the animation rig's *idle* pose. | Its arms hang down like the model's, so a clip turns the hand — and the sword in it — only as far as the idle differs. Taken from the T-pose rest, the sword points sideways. |
+| Heat-weights the mesh, then gives small loose parts the blended weights of the nearest body surface. | Straps, pads and pouches heat-weight badly and fly off in motion. |
+| Writes the result at the animation downloads' size. | `mixamo_character.py` scales the animations by the character's own factor; a model exported in metres sinks a metre into the floor. |
+
+The constants suit an adult humanoid in a relaxed A-pose. For a very different build, check the
+joints with `--blend` before baking animations.
+
+The source of truth for a rigged hero is then the model as downloaded plus this command —
+keep the download beside `assets/characters/`.
