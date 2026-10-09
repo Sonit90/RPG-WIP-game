@@ -33,6 +33,7 @@
 
 use engine_core::math::{Vec2, Vec3};
 
+use crate::animation::AnimationClip;
 use crate::character::{AnimationSlot, CharacterDef};
 use crate::library::ModelId;
 use crate::material::MaterialAsset;
@@ -40,8 +41,8 @@ use crate::mesh::SubMesh;
 use crate::model::ModelAsset;
 use crate::procedural::humanoid::{
     self, ARM_L, ARM_R, CHEST, FOOT_L, FOOT_R, FOREARM_L, FOREARM_R, HAND_L, HAND_R, HEAD, HIPS,
-    MODEL_HEIGHT, NECK, PROP, SHIN_L, SHIN_R, SHOULDER_L, SHOULDER_R, SPINE, SkinBuilder, Style,
-    THIGH_L, THIGH_R, limb,
+    HIPS_REST_Y, MODEL_HEIGHT, NECK, PROP, SHIN_L, SHIN_R, SHOULDER_L, SHOULDER_R, SPINE,
+    SkinBuilder, Style, THIGH_L, THIGH_R, limb, rotation, translation,
 };
 use crate::texture::{TextureAsset, TextureFormat};
 
@@ -451,6 +452,274 @@ fn style() -> Style {
     }
 }
 
+/// Where in the damage cast the staff lands its thrust, in seconds: the moment the wind-up is
+/// placed against the cast bar, and the moment an instant plays out from.
+const CAST_RELEASE: f32 = 0.40;
+/// Where in the big damage cast both arms drive the staff forward and down.
+const CAST_HEAVY_RELEASE: f32 = 0.78;
+/// Where in the heal the open palm reaches its ally.
+const CAST_HEAL_RELEASE: f32 = 0.48;
+/// Where in the big heal both arms sweep forward to bestow it.
+const CAST_HEAL_HEAVY_RELEASE: f32 = 0.88;
+
+/// A damage spell (0.70 s): the staff is drawn back, then thrust forward and up as it fires.
+///
+/// Aggressive and staff-led, with a body twist through the chest. The staff hangs off the
+/// right hand, so the right arm's thrust carries the glow; the free left hand punches the
+/// spell on its way. The wind-up is placed against the cast bar, the release at
+/// [`CAST_RELEASE`]; everything after is the follow-through.
+fn cast(style: &Style) -> AnimationClip {
+    let (wind, release, end) = (0.20, CAST_RELEASE, 0.70);
+    AnimationClip::new(
+        "cast",
+        false,
+        vec![
+            rotation(
+                SHOULDER_R,
+                &[
+                    (0.0, 0.0, 0.0, style.arm_down_r),
+                    (wind, 0.0, 20.0, style.arm_down_r - 20.0),
+                    (release, 0.0, -100.0, style.arm_down_r - 30.0),
+                    (end, 0.0, 0.0, style.arm_down_r),
+                ],
+            ),
+            rotation(
+                SHOULDER_L,
+                &[
+                    (0.0, 0.0, 0.0, style.arm_down_l),
+                    (wind, 0.0, 8.0, style.arm_down_l + 10.0),
+                    (release, 0.0, -85.0, style.arm_down_l + 22.0),
+                    (end, 0.0, 0.0, style.arm_down_l),
+                ],
+            ),
+            // The twist: wound round to the staff side, then snapped through.
+            rotation(
+                CHEST,
+                &[
+                    (0.0, 0.0, 0.0, 0.0),
+                    (wind, 18.0, 0.0, 0.0),
+                    (release, -12.0, 8.0, 0.0),
+                    (end, 0.0, 0.0, 0.0),
+                ],
+            ),
+            rotation(
+                HEAD,
+                &[
+                    (0.0, 0.0, 0.0, 0.0),
+                    (release, 0.0, 8.0, 0.0),
+                    (end, 0.0, 0.0, 0.0),
+                ],
+            ),
+            translation(
+                HIPS,
+                &[
+                    (0.0, 0.0, HIPS_REST_Y, 0.0),
+                    (wind, 0.0, HIPS_REST_Y - 0.02, 0.0),
+                    (release, 0.0, HIPS_REST_Y - 0.04, 0.0),
+                    (end, 0.0, HIPS_REST_Y, 0.0),
+                ],
+            ),
+        ],
+    )
+    .with_release(CAST_RELEASE)
+}
+
+/// The big damage spell (1.15 s): the staff raised overhead in both hands, then driven
+/// forward and down with the whole body behind it.
+fn cast_heavy(style: &Style) -> AnimationClip {
+    let (gather, release, end) = (0.40, CAST_HEAVY_RELEASE, 1.15);
+    AnimationClip::new(
+        "cast_heavy",
+        false,
+        vec![
+            rotation(
+                SHOULDER_R,
+                &[
+                    (0.0, 0.0, 0.0, style.arm_down_r),
+                    (gather, 0.0, -30.0, style.arm_down_r - 130.0),
+                    (release, 0.0, -80.0, style.arm_down_r - 40.0),
+                    (end, 0.0, 0.0, style.arm_down_r),
+                ],
+            ),
+            rotation(
+                SHOULDER_L,
+                &[
+                    (0.0, 0.0, 0.0, style.arm_down_l),
+                    (gather, 0.0, -30.0, style.arm_down_l + 130.0),
+                    (release, 0.0, -80.0, style.arm_down_l + 40.0),
+                    (end, 0.0, 0.0, style.arm_down_l),
+                ],
+            ),
+            rotation(
+                SPINE,
+                &[
+                    (0.0, 0.0, 0.0, 0.0),
+                    (gather, 0.0, -18.0, 0.0),
+                    (release, 0.0, 22.0, 0.0),
+                    (end, 0.0, 0.0, 0.0),
+                ],
+            ),
+            translation(
+                HIPS,
+                &[
+                    (0.0, 0.0, HIPS_REST_Y, 0.0),
+                    (gather, 0.0, HIPS_REST_Y + 0.03, 0.0),
+                    (release, 0.0, HIPS_REST_Y - 0.07, 0.0),
+                    (end, 0.0, HIPS_REST_Y, 0.0),
+                ],
+            ),
+        ],
+    )
+    .with_release(CAST_HEAVY_RELEASE)
+}
+
+/// A heal (0.90 s): the free hand rises from low to reach the ally, palm up, and the staff
+/// lifts a little so its glow rises with it.
+///
+/// Soft, open and upward, with no twist through the body. The left forearm turns about its
+/// own axis (a yaw, which is how this rig's forearm rolls) to open the palm to the sky; the
+/// head tilts towards the reaching hand, which is on the character's left.
+fn cast_heal(style: &Style) -> AnimationClip {
+    let (rise, release, end) = (0.24, CAST_HEAL_RELEASE, 0.90);
+    AnimationClip::new(
+        "cast_heal",
+        false,
+        vec![
+            rotation(
+                SHOULDER_L,
+                &[
+                    (0.0, 0.0, 0.0, style.arm_down_l),
+                    (rise, 0.0, -30.0, style.arm_down_l + 22.0),
+                    (release, 0.0, -70.0, style.arm_down_l + 40.0),
+                    (end, 0.0, 0.0, style.arm_down_l),
+                ],
+            ),
+            rotation(
+                FOREARM_L,
+                &[
+                    (0.0, 0.0, 0.0, 0.0),
+                    (release, -40.0, 0.0, 0.0),
+                    (end, 0.0, 0.0, 0.0),
+                ],
+            ),
+            rotation(
+                SHOULDER_R,
+                &[
+                    (0.0, 0.0, 0.0, style.arm_down_r),
+                    (rise, 0.0, -12.0, style.arm_down_r - 8.0),
+                    (release, 0.0, -25.0, style.arm_down_r - 15.0),
+                    (end, 0.0, 0.0, style.arm_down_r),
+                ],
+            ),
+            rotation(
+                CHEST,
+                &[
+                    (0.0, 0.0, 0.0, 0.0),
+                    (release, 0.0, -6.0, 0.0),
+                    (end, 0.0, 0.0, 0.0),
+                ],
+            ),
+            rotation(
+                HEAD,
+                &[
+                    (0.0, 0.0, 0.0, 0.0),
+                    (release, 0.0, -2.0, -6.0),
+                    (end, 0.0, 0.0, 0.0),
+                ],
+            ),
+        ],
+    )
+    .with_release(CAST_HEAL_RELEASE)
+}
+
+/// The big heal (1.40 s): both arms open into a wide V to the sky, then sweep forward and
+/// down together, bestowing.
+fn cast_heal_heavy(style: &Style) -> AnimationClip {
+    let (open, release, end) = (0.50, CAST_HEAL_HEAVY_RELEASE, 1.40);
+    AnimationClip::new(
+        "cast_heal_heavy",
+        false,
+        vec![
+            rotation(
+                SHOULDER_R,
+                &[
+                    (0.0, 0.0, 0.0, style.arm_down_r),
+                    (open, 0.0, -15.0, style.arm_down_r - 115.0),
+                    (release, 0.0, -65.0, style.arm_down_r - 45.0),
+                    (end, 0.0, 0.0, style.arm_down_r),
+                ],
+            ),
+            rotation(
+                SHOULDER_L,
+                &[
+                    (0.0, 0.0, 0.0, style.arm_down_l),
+                    (open, 0.0, -15.0, style.arm_down_l + 115.0),
+                    (release, 0.0, -65.0, style.arm_down_l + 45.0),
+                    (end, 0.0, 0.0, style.arm_down_l),
+                ],
+            ),
+            // Leaning back opens the chest to the sky; the bow at the release is slight.
+            rotation(
+                SPINE,
+                &[
+                    (0.0, 0.0, 0.0, 0.0),
+                    (open, 0.0, -8.0, 0.0),
+                    (release, 0.0, 6.0, 0.0),
+                    (end, 0.0, 0.0, 0.0),
+                ],
+            ),
+            rotation(
+                CHEST,
+                &[
+                    (0.0, 0.0, 0.0, 0.0),
+                    (open, 0.0, -6.0, 0.0),
+                    (release, 0.0, 4.0, 0.0),
+                    (end, 0.0, 0.0, 0.0),
+                ],
+            ),
+            rotation(
+                HEAD,
+                &[
+                    (0.0, 0.0, 0.0, 0.0),
+                    (open, 0.0, -14.0, 0.0),
+                    (release, 0.0, 4.0, 0.0),
+                    (end, 0.0, 0.0, 0.0),
+                ],
+            ),
+            // Up onto the toes as the arms open, back down as they bestow.
+            translation(
+                HIPS,
+                &[
+                    (0.0, 0.0, HIPS_REST_Y, 0.0),
+                    (open, 0.0, HIPS_REST_Y + 0.03, 0.0),
+                    (release, 0.0, HIPS_REST_Y - 0.02, 0.0),
+                    (end, 0.0, HIPS_REST_Y, 0.0),
+                ],
+            ),
+        ],
+    )
+    .with_release(CAST_HEAL_HEAVY_RELEASE)
+}
+
+/// Every clip the Druid ships with: the shared hero set with its casts replaced by its own,
+/// plus the two heals.
+///
+/// Each cast marks its release, which the shared hero set does not, so a Druid's instant
+/// plays the follow-through from there rather than nothing at all.
+fn clips(style: &Style) -> Vec<AnimationClip> {
+    let mut clips: Vec<AnimationClip> = humanoid::hero_clips(style)
+        .into_iter()
+        .map(|clip| match clip.name.as_str() {
+            "cast" => cast(style),
+            "cast_heavy" => cast_heavy(style),
+            _ => clip,
+        })
+        .collect();
+    clips.push(cast_heal(style));
+    clips.push(cast_heal_heavy(style));
+    clips
+}
+
 /// Builds the Druid in human form.
 ///
 /// # Errors
@@ -501,7 +770,7 @@ pub fn druid() -> Result<ModelAsset, crate::AssetError> {
 
     Ok(ModelAsset::rigid(MODEL_NAME, lod0, materials, textures)
         .with_lod(lod1, 25.0)
-        .with_animation(humanoid::skeleton()?, humanoid::hero_clips(&style())))
+        .with_animation(humanoid::skeleton()?, clips(&style())))
 }
 
 /// The Druid's character definition: which model, how tall, and which clip plays when.
@@ -517,6 +786,8 @@ pub fn druid_character() -> CharacterDef {
         .with_clip(AnimationSlot::Land, "land")
         .with_clip(AnimationSlot::Cast, "cast")
         .with_clip(AnimationSlot::CastHeavy, "cast_heavy")
+        .with_clip(AnimationSlot::CastHeal, "cast_heal")
+        .with_clip(AnimationSlot::CastHealHeavy, "cast_heal_heavy")
         .with_clip(AnimationSlot::Death, "death")
         .with_directional_clips()
 }
@@ -554,13 +825,60 @@ mod tests {
         assert_eq!(report.lods, 2);
         assert_eq!(report.materials, 5);
         assert_eq!(report.bones as usize, humanoid::BONE_COUNT);
-        // The shared eight and a death.
-        assert_eq!(report.clips, 9);
+        // The shared eight, a death, and the two heals.
+        assert_eq!(report.clips, 11);
         assert!(
             (100..700).contains(&report.triangles),
             "a stylized prototype character should stay cheap: {} triangles",
             report.triangles
         );
+    }
+
+    #[test]
+    fn every_druid_cast_is_bound_and_releases_before_its_last_frame() {
+        let model = model();
+        let Ok(bindings) = druid_character().resolve(&model) else {
+            panic!("the Druid's own definition must resolve against its own model");
+        };
+        for slot in [
+            AnimationSlot::Cast,
+            AnimationSlot::CastHeavy,
+            AnimationSlot::CastHeal,
+            AnimationSlot::CastHealHeavy,
+        ] {
+            let Some(index) = bindings.get(slot) else {
+                panic!("{slot:?} is not bound");
+            };
+            let clip = &model.clips[index];
+            assert!(!clip.looping, "{slot:?} plays once");
+            assert!(
+                clip.release_time() < clip.duration - 1e-3,
+                "{slot:?} releases at {} of {} s, so it has no follow-through",
+                clip.release_time(),
+                clip.duration
+            );
+        }
+    }
+
+    #[test]
+    fn the_heals_are_not_the_damage_casts() {
+        let model = model();
+        let clip = |name: &str| {
+            let Some(index) = model.clip_index(name) else {
+                panic!("the Druid has no {name} clip");
+            };
+            &model.clips[index]
+        };
+        for (heal, damage) in [("cast_heal", "cast"), ("cast_heal_heavy", "cast_heavy")] {
+            let (heal, damage) = (clip(heal), clip(damage));
+            assert_ne!(heal.name, damage.name);
+            assert!(
+                (heal.duration - damage.duration).abs() > 1e-3,
+                "{} is as long as {}",
+                heal.name,
+                damage.name
+            );
+        }
     }
 
     #[test]

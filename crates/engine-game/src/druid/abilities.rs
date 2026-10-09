@@ -9,7 +9,9 @@ use super::tuning::{
     REJUVENATION_MANA, SUNFIRE_MANA, SWIFTMEND_MANA, TRANQUILITY_MANA, WILD_GROWTH_MANA,
 };
 use crate::ability::text::TextValue;
-use crate::ability::{AbilityDef, ClassRow, DruidRow, FireAbility, TargetMode, ThreatScale};
+use crate::ability::{
+    AbilityDef, ClassRow, DruidRow, FireAbility, Motion, TargetMode, ThreatScale,
+};
 use crate::combat::DamageType;
 
 /// What every Druid row starts from: nature, healer threat, and a [`DruidRow`].
@@ -84,6 +86,7 @@ pub(crate) const ROWS: [AbilityDef; 13] = [
         description: "Heal a friendly target every {tick_interval} for {duration}.",
         empowered: "Heals for {heal_bonus} more.",
         target: TargetMode::Friendly,
+        motion: Motion::Heal,
         range: 40.0,
         duration: 18.0,
         tick_coefficient: 0.45,
@@ -102,6 +105,7 @@ pub(crate) const ROWS: [AbilityDef; 13] = [
         description: "Heal a friendly target for a large amount, then again every {tick_interval} for {duration}.",
         empowered: "Heals for {heal_bonus} more.",
         target: TargetMode::Friendly,
+        motion: Motion::Heal,
         cast_time: 1.5,
         range: 40.0,
         duration: 12.0,
@@ -122,6 +126,7 @@ pub(crate) const ROWS: [AbilityDef; 13] = [
         description: "Heal a friendly target every {tick_interval} for {duration}. When Lifebloom expires naturally, it blooms for a large additional heal.",
         empowered: "Heals for {heal_bonus} more.",
         target: TargetMode::Friendly,
+        motion: Motion::Heal,
         range: 40.0,
         duration: 15.0,
         tick_coefficient: 0.25,
@@ -140,6 +145,7 @@ pub(crate) const ROWS: [AbilityDef; 13] = [
         description: "Heal your target and every injured ally within {radius} of it every {tick_interval} for {duration}.",
         empowered: "Heals for {heal_bonus} more.",
         target: TargetMode::Friendly,
+        motion: Motion::Heal,
         cooldown: 15.0,
         range: 40.0,
         radius: 15.0,
@@ -160,6 +166,7 @@ pub(crate) const ROWS: [AbilityDef; 13] = [
         description: "Consume one of your heal-over-time effects on a friendly target to instantly heal it for a large amount.",
         empowered: "Heals for {heal_bonus} more.",
         target: TargetMode::Friendly,
+        motion: Motion::Heal,
         cooldown: 12.0,
         range: 40.0,
         coefficient: 4.00,
@@ -177,6 +184,7 @@ pub(crate) const ROWS: [AbilityDef; 13] = [
         description: "Heal a friendly target, healing for {per_hot} more for each of your heal-over-time effects already on it, with no limit.",
         empowered: "Heals for {heal_bonus} more.",
         target: TargetMode::Friendly,
+        motion: Motion::Heal,
         cast_time: 2.0,
         range: 40.0,
         coefficient: 2.80,
@@ -193,6 +201,7 @@ pub(crate) const ROWS: [AbilityDef; 13] = [
         name: "NATURES CLEANSE",
         description: "Remove all Magic, Poison, Curse and Disease effects from a friendly target.",
         target: TargetMode::Friendly,
+        motion: Motion::Heal,
         cooldown: 8.0,
         range: 40.0,
         class: ClassRow::Druid(DruidRow {
@@ -226,6 +235,7 @@ pub(crate) const ROWS: [AbilityDef; 13] = [
         description: "Channel for {cast_time}, healing every ally within {radius} every {tick_interval}.",
         empowered: "Heals for {heal_bonus} more.",
         target: TargetMode::Friendly,
+        motion: Motion::Heal,
         cast_time: 6.0,
         cooldown: 120.0,
         range: 40.0,

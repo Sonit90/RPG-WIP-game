@@ -90,11 +90,17 @@ that is not there is skipped. A new animation goes into that folder and gets a r
 | `land` | `Land.fbx` | 6–12 | yes | `fall` |
 | `cast` | `Cast.fbx` | all | yes | bind pose |
 | `cast_heavy` | `CastHeavy.fbx` | all | yes | `cast` |
+| `cast_heal` | — | — | no | `cast` |
+| `cast_heal_heavy` | — | — | no | `cast_heal`, else `cast_heavy` |
 | `walk_back` | `Walking Backwards.fbx` | all | no | the walk, reversed |
 | `run_back` | — | — | no | the run, reversed |
 | `strafe_left` | `Left Strafe.fbx` | all | no | mirrored `strafe_right`, else the forward cycle |
 | `strafe_right` | `Right Strafe.fbx` | all | no | mirrored `strafe_left`, else the forward cycle |
 | `death` | `Death.fbx` | all | no | the character stays standing |
+
+Abilities flagged `Motion::Heal` (the Druid's heals on allies) play `cast_heal` and
+`cast_heal_heavy`, timed to the cast bar like the ordinary cast; a model without them casts its
+heals with `cast` and `cast_heavy`.
 
 **The warrior's table.** `--clips warrior` bakes `WARRIOR` instead: the sword-and-shield
 downloads in `assets/animations/warrior/`, plus one clip per melee `Motion` the engine binds

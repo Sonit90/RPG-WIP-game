@@ -15,7 +15,7 @@
 )]
 
 use engine_core::math::Vec3;
-use engine_game::ability::{AbilityId, Motion};
+use engine_game::ability::{AbilityId, Motion, TargetMode};
 use engine_game::arena::{self, ArenaConfig};
 use engine_game::character::stat::RATING_PER_PERCENT;
 use engine_game::character::{DefenseOutcome, Stat, StatBlock};
@@ -1168,6 +1168,11 @@ fn every_warrior_row_has_a_motion_of_its_own_and_no_other_hero_does() {
         let motion = ability.definition().motion;
         if ability.hero() == Hero::Warrior {
             assert_ne!(motion, Motion::Cast, "{ability:?} has no motion of its own");
+        } else if ability.hero() == Hero::Druid
+            && ability.definition().target == TargetMode::Friendly
+        {
+            // The Druid's heals are a flavour of cast, not a motion of their own.
+            assert_eq!(motion, Motion::Heal, "{ability:?} is a Druid heal");
         } else {
             assert_eq!(motion, Motion::Cast, "{ability:?} is not a Warrior row");
         }

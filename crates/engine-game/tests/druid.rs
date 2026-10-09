@@ -11,7 +11,7 @@
 )]
 
 use engine_core::math::Vec3;
-use engine_game::ability::AbilityId;
+use engine_game::ability::{AbilityId, Motion, TargetMode};
 use engine_game::arena::{self, ArenaConfig};
 use engine_game::combat::DamageType;
 use engine_game::druid::tuning::*;
@@ -1290,4 +1290,23 @@ fn a_moonfire_tick_is_announced_as_periodic_and_its_hit_is_not() {
     }
     assert_eq!(hits, 1, "one direct hit");
     assert!(ticks >= 2, "the burn ticked {ticks} times in six seconds");
+}
+
+#[test]
+fn every_druid_heal_is_a_heal_motion_and_every_other_druid_row_is_a_plain_cast() {
+    // The motion is data on the row, so the visual layer never matches on an ability's
+    // identity: a heal on an ally plays the heal cast clips, a damage spell or a self buff
+    // keeps the ordinary cast.
+    for ability in FireAbility::ALL {
+        if ability.hero() != Hero::Druid {
+            continue;
+        }
+        let definition = ability.definition();
+        let expected = if definition.target == TargetMode::Friendly {
+            Motion::Heal
+        } else {
+            Motion::Cast
+        };
+        assert_eq!(definition.motion, expected, "{ability:?}");
+    }
 }

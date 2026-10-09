@@ -79,11 +79,17 @@ pub enum AnimationSlot {
     PowerUp,
     /// A shout. Optional, as [Self::Swing].
     Battlecry,
+    /// Casting a heal on an ally. Optional: a model without it casts its heals with the
+    /// ordinary [`Self::Cast`] clip.
+    CastHeal,
+    /// Casting a big heal on an ally. Optional: a model without it falls back to
+    /// [`Self::CastHeal`], then [`Self::CastHeavy`], then [`Self::Cast`].
+    CastHealHeavy,
 }
 
 impl AnimationSlot {
     /// Every slot, in a stable order. The array [`ClipBindings`] is indexed by.
-    pub const ALL: [Self; 21] = [
+    pub const ALL: [Self; 23] = [
         Self::Idle,
         Self::Walk,
         Self::Run,
@@ -105,6 +111,8 @@ impl AnimationSlot {
         Self::Guard,
         Self::PowerUp,
         Self::Battlecry,
+        Self::CastHeal,
+        Self::CastHealHeavy,
     ];
 
     /// The slots every character is expected to fill. The rest are refinements a character
@@ -148,6 +156,8 @@ impl AnimationSlot {
             Self::Guard => 18,
             Self::PowerUp => 19,
             Self::Battlecry => 20,
+            Self::CastHeal => 21,
+            Self::CastHealHeavy => 22,
         }
     }
 
@@ -176,6 +186,8 @@ impl AnimationSlot {
             Self::Guard => "GUARD",
             Self::PowerUp => "POWER UP",
             Self::Battlecry => "BATTLECRY",
+            Self::CastHeal => "CAST HEAL",
+            Self::CastHealHeavy => "CAST HEAL HEAVY",
         }
     }
 

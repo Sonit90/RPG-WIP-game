@@ -372,6 +372,9 @@ pub enum Motion {
     PowerUp,
     /// A shout.
     Battlecry,
+    /// Mending an ally. Unlike the Warrior's motions it is a *flavour of cast*: played through
+    /// the heal cast clips and timed to the cast bar like the ordinary cast.
+    Heal,
 }
 
 /// How an ability picks what it hits.

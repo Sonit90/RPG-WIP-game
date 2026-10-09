@@ -107,6 +107,11 @@ pub enum CastVisual {
     /// Something big. Chosen from the cast's own length rather than from its identity, so a
     /// new ability gets a sensible animation without this file learning its name.
     Heavy,
+    /// A heal on an ally. Chosen from the row's [`Motion::Heal`] rather than from the spell's
+    /// identity. A model with no heal clips plays the ordinary cast.
+    Heal,
+    /// A big heal on an ally: [`CastVisual::Heal`], long enough to read as heavy.
+    HealHeavy,
 }
 
 impl CastVisual {
@@ -123,12 +128,29 @@ impl CastVisual {
         }
     }
 
+    /// Which visual a cast of `duration` seconds and `motion` deserves.
+    ///
+    /// Heavy or light by length, as [`CastVisual::for_duration`]; a [`Motion::Heal`] row gets
+    /// the heal variant of whichever it is.
+    #[must_use]
+    pub fn for_cast(duration: f32, motion: Motion) -> Self {
+        let heavy = duration >= Self::HEAVY_SECONDS;
+        match (motion == Motion::Heal, heavy) {
+            (false, false) => Self::Normal,
+            (false, true) => Self::Heavy,
+            (true, false) => Self::Heal,
+            (true, true) => Self::HealHeavy,
+        }
+    }
+
     /// The slot this cast plays in.
     #[must_use]
     pub fn slot(self) -> AnimationSlot {
         match self {
             Self::Normal => AnimationSlot::Cast,
             Self::Heavy => AnimationSlot::CastHeavy,
+            Self::Heal => AnimationSlot::CastHeal,
+            Self::HealHeavy => AnimationSlot::CastHealHeavy,
         }
     }
 }
@@ -138,7 +160,9 @@ impl CastVisual {
 /// The one place the gameplay vocabulary (what the row says the body does) meets the asset
 /// vocabulary (which clip a model has). [`Motion::Cast`] is `None`: it is the ordinary cast
 /// animation, which the controller already plays through [`CastVisual`] and the instant's
-/// borrowed follow-through, so it needs no slot of its own.
+/// borrowed follow-through, so it needs no slot of its own. [`Motion::Heal`] names
+/// [`AnimationSlot::CastHeal`], which is a flavour of cast rather than a motion: see
+/// [`is_motion_slot`].
 #[must_use]
 pub fn slot_for_motion(motion: Motion) -> Option<AnimationSlot> {
     match motion {
@@ -151,10 +175,14 @@ pub fn slot_for_motion(motion: Motion) -> Option<AnimationSlot> {
         Motion::Guard => Some(AnimationSlot::Guard),
         Motion::PowerUp => Some(AnimationSlot::PowerUp),
         Motion::Battlecry => Some(AnimationSlot::Battlecry),
+        Motion::Heal => Some(AnimationSlot::CastHeal),
     }
 }
 
 /// Whether `slot` is one of the per-ability motions rather than a cast or locomotion role.
+///
+/// [`AnimationSlot::CastHeal`] is not one: it is timed to the cast bar and follows through
+/// from its release, like the ordinary cast, rather than playing whole from the top.
 fn is_motion_slot(slot: AnimationSlot) -> bool {
     matches!(
         slot,
@@ -237,7 +265,9 @@ pub struct CharacterState {
     /// one of its own.
     ///
     /// Resolved by the extractor from the ability's table row, so this file never sees which
-    /// ability it was. `None` for an ordinary cast, for a character with no event stream, and
+    /// ability it was. A motion slot plays whole from the top; [`AnimationSlot::CastHeal`] (a
+    /// heal) is not one, and an instant heal follows through with the heal clip from its
+    /// release instead. `None` for an ordinary cast, for a character with no event stream, and
     /// for monsters, which keep their whole-instant blows.
     pub released_motion: Option<AnimationSlot>,
     /// Whether the character is dead. A model with a death clip plays it and holds its last
@@ -529,7 +559,7 @@ impl CharacterVisual {
         // cast with a cast time keeps the CastVisual it was shown with.
         let motion = state
             .released_motion
-            .filter(|&slot| instant && self.clips.get(slot).is_some());
+            .filter(|&slot| instant && is_motion_slot(slot) && self.clips.get(slot).is_some());
         let mut motion_started = false;
         if let Some(slot) = motion
             && released
@@ -544,10 +574,12 @@ impl CharacterVisual {
         } else if released && state.cast.is_none() && state.grounded && !stepping {
             // The spell left the hands: the rest of the clip plays out. A cast that was
             // showing follows through with its own clip; an instant has none and borrows the
-            // ordinary cast's.
-            let slot = self
-                .was_casting
-                .map_or(AnimationSlot::Cast, CastVisual::slot);
+            // ordinary cast's, or the heal cast's when its row is a heal.
+            let flick = state
+                .released_motion
+                .filter(|&slot| !is_motion_slot(slot))
+                .unwrap_or(AnimationSlot::Cast);
+            let slot = self.was_casting.map_or(flick, CastVisual::slot);
             if self.has_follow_through(slot) {
                 self.follow_through = Some(slot);
             }
@@ -696,6 +728,14 @@ impl CharacterVisual {
                 self.clips.get_or(slot, AnimationSlot::Fall)
             }
             AnimationSlot::CastHeavy => self.clips.get_or(slot, AnimationSlot::Cast),
+            // A model with no heal clips casts its heals as it casts everything else.
+            AnimationSlot::CastHeal => self.clips.get_or(slot, AnimationSlot::Cast),
+            AnimationSlot::CastHealHeavy => self
+                .clips
+                .get(slot)
+                .or_else(|| self.clips.get(AnimationSlot::CastHeal))
+                .or_else(|| self.clips.get(AnimationSlot::CastHeavy))
+                .or_else(|| self.clips.get(AnimationSlot::Cast)),
             other => self.clips.get(other),
         }
     }
@@ -1746,6 +1786,102 @@ mod tests {
             panic!("the update must succeed");
         };
         assert_eq!(visual.slot(), AnimationSlot::Walk);
+    }
+
+    fn druid_visual() -> CharacterVisual {
+        let Ok(model) = druid() else {
+            panic!("the Druid must build");
+        };
+        let model = Arc::new(model);
+        let binding = binding(&model);
+        match CharacterVisual::new(druid_character(), model, binding) {
+            Ok(visual) => visual,
+            Err(error) => panic!("the Druid's own definition must resolve: {error}"),
+        }
+    }
+
+    /// A cast of `kind` at the start, as the extractor reports it.
+    fn casting_as(kind: CastVisual) -> CharacterState {
+        CharacterState {
+            cast: Some(kind),
+            ..casting(0.5, 1)
+        }
+    }
+
+    /// Whether `visual` is playing the clip bound to `slot`.
+    fn plays(visual: &CharacterVisual, slot: AnimationSlot) -> bool {
+        visual.player.current().is_some() && visual.player.current() == visual.clips.get(slot)
+    }
+
+    #[test]
+    fn the_druid_casts_heals_and_damage_with_clips_of_their_own() {
+        for (kind, slot) in [
+            (CastVisual::Normal, AnimationSlot::Cast),
+            (CastVisual::Heavy, AnimationSlot::CastHeavy),
+            (CastVisual::Heal, AnimationSlot::CastHeal),
+            (CastVisual::HealHeavy, AnimationSlot::CastHealHeavy),
+        ] {
+            let mut visual = druid_visual();
+            let Ok(()) = visual.update(0.016, casting_as(kind)) else {
+                panic!("the update must succeed");
+            };
+            assert_eq!(visual.slot(), slot, "{kind:?}");
+            assert!(plays(&visual, slot), "{kind:?} plays the wrong clip");
+        }
+    }
+
+    #[test]
+    fn a_model_without_heal_clips_casts_its_heals_with_the_ordinary_cast() {
+        for (kind, slot) in [
+            (CastVisual::Heal, AnimationSlot::Cast),
+            (CastVisual::HealHeavy, AnimationSlot::CastHeavy),
+        ] {
+            let mut visual = mage();
+            assert!(visual.clips.get(kind.slot()).is_none());
+            let Ok(()) = visual.update(0.016, casting_as(kind)) else {
+                panic!("the update must succeed");
+            };
+            assert!(plays(&visual, slot), "{kind:?}");
+        }
+    }
+
+    #[test]
+    fn a_druid_instant_heal_follows_through_with_the_heal_clip_from_its_release() {
+        let mut visual = druid_visual();
+        let healed = CharacterState {
+            released: Some(7),
+            released_motion: Some(AnimationSlot::CastHeal),
+            ..CharacterState::default()
+        };
+        let Ok(()) = visual.update(0.016, healed) else {
+            panic!("the update must succeed");
+        };
+        assert_eq!(visual.slot(), AnimationSlot::CastHeal);
+        assert!(plays(&visual, AnimationSlot::CastHeal));
+        let Some(clip) = visual.player.current() else {
+            panic!("a clip is playing");
+        };
+        let release = visual.asset.clips[clip].release_time();
+        assert!(
+            release > 0.1 && visual.player.time() >= release,
+            "started {} s in, before the release at {release} s",
+            visual.player.time()
+        );
+    }
+
+    #[test]
+    fn a_cast_visual_is_heavy_by_length_and_a_heal_by_its_motion() {
+        let long = CastVisual::HEAVY_SECONDS;
+        assert_eq!(CastVisual::for_cast(1.0, Motion::Cast), CastVisual::Normal);
+        assert_eq!(CastVisual::for_cast(long, Motion::Cast), CastVisual::Heavy);
+        assert_eq!(CastVisual::for_cast(1.0, Motion::Heal), CastVisual::Heal);
+        assert_eq!(
+            CastVisual::for_cast(long, Motion::Heal),
+            CastVisual::HealHeavy
+        );
+        assert_eq!(CastVisual::for_cast(0.0, Motion::Swing), CastVisual::Normal);
+        assert_eq!(slot_for_motion(Motion::Heal), Some(AnimationSlot::CastHeal));
+        assert!(!is_motion_slot(AnimationSlot::CastHeal));
     }
 
     #[test]

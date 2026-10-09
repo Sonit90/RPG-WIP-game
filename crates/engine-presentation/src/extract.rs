@@ -986,7 +986,8 @@ impl RenderExtractor {
             // `MovementState`'s own documentation says not to have.
             rising: body.state == MovementState::Jumping,
             height: game.height(player),
-            cast: cast.map(|cast| CastVisual::for_duration(cast.duration)),
+            cast: cast
+                .map(|cast| CastVisual::for_cast(cast.duration, cast.ability.definition().motion)),
             cast_progress: cast.map_or(0.0, |cast| cast.fraction()),
             cast_started: last_tick(simulation, |event| match event {
                 CombatEvent::CastStarted { source, tick, .. } if *source == player => Some(*tick),
