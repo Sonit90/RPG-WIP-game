@@ -468,6 +468,16 @@ pub fn warrior_character() -> CharacterDef {
         .with_clip(AnimationSlot::Cast, "cast")
         .with_clip(AnimationSlot::CastHeavy, "cast_heavy")
         .with_clip(AnimationSlot::Death, "death")
+        // The melee motions. The procedural stand-in has none of these clips, and the slots
+        // are optional, so `resolve` skips them; the Mixamo-rigged model supplies them.
+        .with_clip(AnimationSlot::Swing, "swing")
+        .with_clip(AnimationSlot::Cleave, "cleave")
+        .with_clip(AnimationSlot::Smash, "smash")
+        .with_clip(AnimationSlot::Bash, "bash")
+        .with_clip(AnimationSlot::Lunge, "lunge")
+        .with_clip(AnimationSlot::Guard, "guard")
+        .with_clip(AnimationSlot::PowerUp, "power_up")
+        .with_clip(AnimationSlot::Battlecry, "battlecry")
         .with_directional_clips()
 }
 

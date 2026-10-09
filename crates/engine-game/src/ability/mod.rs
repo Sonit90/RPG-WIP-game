@@ -24,7 +24,7 @@ pub mod text;
 
 pub use book::{AbilityBook, AbilityError, AbilityState};
 pub use table::{
-    ABILITIES, ABILITY_COUNT, AbilityDef, ClassRow, DruidRow, FireAbility, FireMageRow,
+    ABILITIES, ABILITY_COUNT, AbilityDef, ClassRow, DruidRow, FireAbility, FireMageRow, Motion,
     TARGET_CLEAVE_HALF_ANGLE, TargetMode, ThreatScale, ULTIMATE_ENABLED, WarriorRow, longest_range,
 };
 

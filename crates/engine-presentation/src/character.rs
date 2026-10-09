@@ -41,6 +41,7 @@ use engine_assets::{
 };
 use engine_core::math::{Mat4, Quat, Sphere, Vec3};
 use engine_core::transform::Transform;
+use engine_game::ability::Motion;
 use engine_render_data::{InstanceStyle, ModelBinding, PartGeometry, RenderWorld, SkinnedInstance};
 
 /// How long a cross-fade between locomotion clips takes, in seconds.
@@ -132,6 +133,42 @@ impl CastVisual {
     }
 }
 
+/// The animation slot an ability's [`Motion`] plays in, if it has one of its own.
+///
+/// The one place the gameplay vocabulary (what the row says the body does) meets the asset
+/// vocabulary (which clip a model has). [`Motion::Cast`] is `None`: it is the ordinary cast
+/// animation, which the controller already plays through [`CastVisual`] and the instant's
+/// borrowed follow-through, so it needs no slot of its own.
+#[must_use]
+pub fn slot_for_motion(motion: Motion) -> Option<AnimationSlot> {
+    match motion {
+        Motion::Cast => None,
+        Motion::Swing => Some(AnimationSlot::Swing),
+        Motion::Cleave => Some(AnimationSlot::Cleave),
+        Motion::Smash => Some(AnimationSlot::Smash),
+        Motion::Bash => Some(AnimationSlot::Bash),
+        Motion::Lunge => Some(AnimationSlot::Lunge),
+        Motion::Guard => Some(AnimationSlot::Guard),
+        Motion::PowerUp => Some(AnimationSlot::PowerUp),
+        Motion::Battlecry => Some(AnimationSlot::Battlecry),
+    }
+}
+
+/// Whether `slot` is one of the per-ability motions rather than a cast or locomotion role.
+fn is_motion_slot(slot: AnimationSlot) -> bool {
+    matches!(
+        slot,
+        AnimationSlot::Swing
+            | AnimationSlot::Cleave
+            | AnimationSlot::Smash
+            | AnimationSlot::Bash
+            | AnimationSlot::Lunge
+            | AnimationSlot::Guard
+            | AnimationSlot::PowerUp
+            | AnimationSlot::Battlecry
+    )
+}
+
 /// Which way the character is moving relative to the way it faces.
 ///
 /// The camera pins a character's facing while it strafes and backpedals, so speed alone
@@ -196,6 +233,13 @@ pub struct CharacterState {
     /// The tick of the latest ability this character used — a cast completing, or an
     /// instant going off. The cast clip's follow-through plays from here.
     pub released: Option<u64>,
+    /// The motion slot of the ability in [`CharacterState::released`], if its row asks for
+    /// one of its own.
+    ///
+    /// Resolved by the extractor from the ability's table row, so this file never sees which
+    /// ability it was. `None` for an ordinary cast, for a character with no event stream, and
+    /// for monsters, which keep their whole-instant blows.
+    pub released_motion: Option<AnimationSlot>,
     /// Whether the character is dead. A model with a death clip plays it and holds its last
     /// frame; one without stands where it was, as every character did before deaths.
     pub dead: bool,
@@ -216,6 +260,7 @@ impl Default for CharacterState {
             cast_progress: 0.0,
             cast_started: None,
             released: None,
+            released_motion: None,
             dead: false,
         }
     }
@@ -471,13 +516,32 @@ impl CharacterVisual {
 
         // A monster's blow is not cut short by the step it is taken on: it swings while it
         // closes, and a swing that vanished on the first frame of movement was never seen.
+        // A hero's motion is no different: a warrior swings while it moves.
         let stepping = state.speed > IDLE_SPEED && !self.whole_instants;
-        if started || !state.grounded || stepping {
-            // A new cast, a jump or a step all cut the follow-through short.
+        let motion_playing = self.follow_through.is_some_and(is_motion_slot);
+        if started || !state.grounded || state.dead || (stepping && !motion_playing) {
+            // A new cast, a jump, a death or a step all cut the follow-through short; a step
+            // does not cut a motion.
             self.follow_through = None;
         }
         let instant = self.was_casting.is_none();
-        if released && state.cast.is_none() && state.grounded && !stepping {
+        // The ability's own motion, when this model has the clip for it. Instants only: a
+        // cast with a cast time keeps the CastVisual it was shown with.
+        let motion = state
+            .released_motion
+            .filter(|&slot| instant && self.clips.get(slot).is_some());
+        let mut motion_started = false;
+        if let Some(slot) = motion
+            && released
+            && state.cast.is_none()
+            && state.grounded
+            && !state.dead
+        {
+            // The blow itself, from its first frame: unlike a flick, a motion has no wind-up
+            // the player already saw.
+            self.follow_through = Some(slot);
+            motion_started = true;
+        } else if released && state.cast.is_none() && state.grounded && !stepping {
             // The spell left the hands: the rest of the clip plays out. A cast that was
             // showing follows through with its own clip; an instant has none and borrows the
             // ordinary cast's.
@@ -516,7 +580,7 @@ impl CharacterVisual {
                 self.player
                     .seek(state.cast_progress.clamp(0.0, 1.0) * release);
             } else if released && self.follow_through == Some(slot) {
-                if instant && self.whole_instants {
+                if motion_started || (instant && self.whole_instants) {
                     // The same clip twice in a row is not a new `play`; the blow still has
                     // to start from its wind-up.
                     self.player.restart();
@@ -1500,6 +1564,199 @@ mod tests {
             panic!("the update must succeed");
         };
         assert_eq!(visual.slot(), AnimationSlot::Idle);
+    }
+
+    /// The warrior, delivered with a `swing` clip and a `smash` clip, both copies of its cast.
+    ///
+    /// The procedural stand-in has none of the motion clips, so a test that wants one gives it
+    /// one: what is under test is which clip the controller plays and when, not what it looks
+    /// like.
+    fn warrior_with_motions() -> CharacterVisual {
+        let Ok(mut model) = warrior() else {
+            panic!("the Warrior must build");
+        };
+        let Some(cast) = model.clip_index("cast") else {
+            panic!("the Warrior has a cast clip");
+        };
+        for name in ["swing", "smash"] {
+            let mut clip = model.clips[cast].clone();
+            clip.name = name.to_owned();
+            clip.looping = false;
+            model.clips.push(clip);
+        }
+        let model = Arc::new(model);
+        let binding = binding(&model);
+        match CharacterVisual::new(warrior_character(), model, binding) {
+            Ok(visual) => visual,
+            Err(error) => panic!("the Warrior's own definition must resolve: {error}"),
+        }
+    }
+
+    /// The tick a motion was released on, with the slot its row asked for.
+    fn swung(tick: u64, slot: AnimationSlot) -> CharacterState {
+        CharacterState {
+            released: Some(tick),
+            released_motion: Some(slot),
+            ..CharacterState::default()
+        }
+    }
+
+    #[test]
+    fn an_ability_motion_with_a_bound_clip_plays_that_slot_from_the_top() {
+        let mut visual = warrior_with_motions();
+        let Ok(()) = visual.update(0.016, swung(10, AnimationSlot::Swing)) else {
+            panic!("the update must succeed");
+        };
+        assert_eq!(visual.slot(), AnimationSlot::Swing);
+        assert!(
+            visual.player.time() < 0.05,
+            "started {} s in",
+            visual.player.time()
+        );
+
+        // A different ability, a different slot.
+        let Ok(()) = visual.update(0.016, swung(20, AnimationSlot::Smash)) else {
+            panic!("the update must succeed");
+        };
+        assert_eq!(visual.slot(), AnimationSlot::Smash);
+        assert!(visual.player.time() < 0.05);
+    }
+
+    #[test]
+    fn the_same_motion_twice_in_a_row_restarts() {
+        let mut visual = warrior_with_motions();
+        let Ok(()) = visual.update(0.016, swung(10, AnimationSlot::Swing)) else {
+            panic!("the update must succeed");
+        };
+        // The same event seen again does not restart it.
+        let Ok(()) = visual.update(0.2, swung(10, AnimationSlot::Swing)) else {
+            panic!("the update must succeed");
+        };
+        let played = visual.player.time();
+        assert!(played > 0.15, "only {played} s in");
+
+        // A new use of the same ability is a new swing, from the top.
+        let Ok(()) = visual.update(0.016, swung(40, AnimationSlot::Swing)) else {
+            panic!("the update must succeed");
+        };
+        assert_eq!(visual.slot(), AnimationSlot::Swing);
+        assert!(visual.player.time() < played, "{}", visual.player.time());
+        assert!(visual.player.time() < 0.05);
+    }
+
+    #[test]
+    fn a_motion_keeps_playing_while_the_character_moves_and_a_jump_cuts_it() {
+        let mut visual = warrior_with_motions();
+        let Ok(()) = visual.update(0.016, swung(10, AnimationSlot::Swing)) else {
+            panic!("the update must succeed");
+        };
+        for _ in 0..3 {
+            let Ok(()) = visual.update(
+                0.016,
+                CharacterState {
+                    speed: 6.0,
+                    ..swung(10, AnimationSlot::Swing)
+                },
+            ) else {
+                panic!("the update must succeed");
+            };
+            assert_eq!(visual.slot(), AnimationSlot::Swing, "a step cut the swing");
+        }
+
+        let Ok(()) = visual.update(
+            0.016,
+            CharacterState {
+                grounded: false,
+                rising: true,
+                ..swung(10, AnimationSlot::Swing)
+            },
+        ) else {
+            panic!("the update must succeed");
+        };
+        assert_eq!(visual.slot(), AnimationSlot::Jump);
+    }
+
+    #[test]
+    fn a_motion_ends_with_its_clip() {
+        let mut visual = warrior_with_motions();
+        let Ok(()) = visual.update(0.016, swung(10, AnimationSlot::Swing)) else {
+            panic!("the update must succeed");
+        };
+        let Ok(()) = visual.update(10.0, swung(10, AnimationSlot::Swing)) else {
+            panic!("the update must succeed");
+        };
+        let Ok(()) = visual.update(0.016, swung(10, AnimationSlot::Swing)) else {
+            panic!("the update must succeed");
+        };
+        assert_eq!(visual.slot(), AnimationSlot::Idle);
+    }
+
+    #[test]
+    fn a_model_without_the_motion_clip_borrows_the_cast_follow_through() {
+        // The mage has no swing: its instant plays out the cast clip, exactly as it did
+        // before abilities had motions.
+        let mut visual = mage_with_release();
+        let Ok(()) = visual.update(0.016, swung(5, AnimationSlot::Swing)) else {
+            panic!("the update must succeed");
+        };
+        assert_eq!(visual.slot(), AnimationSlot::Cast);
+        let release = cast_clip(&visual).release_time();
+        assert!(visual.player.time() >= release);
+
+        // And it is still cut short by a step, being the cast's and not a motion's.
+        let Ok(()) = visual.update(
+            0.016,
+            CharacterState {
+                speed: 3.0,
+                ..swung(5, AnimationSlot::Swing)
+            },
+        ) else {
+            panic!("the update must succeed");
+        };
+        assert_eq!(visual.slot(), AnimationSlot::Walk);
+    }
+
+    #[test]
+    fn an_ordinary_cast_ability_behaves_exactly_as_it_did_before_motions() {
+        assert_eq!(slot_for_motion(Motion::Cast), None);
+        // Even on a model that has motion clips, a released ability with no motion borrows
+        // the cast clip's follow-through (the warrior's has no release: it plays nothing).
+        let mut visual = warrior_with_motions();
+        let landed = CharacterState {
+            released: Some(5),
+            ..CharacterState::default()
+        };
+        let Ok(()) = visual.update(0.016, landed) else {
+            panic!("the update must succeed");
+        };
+        assert!(!is_motion_slot(visual.slot()), "{:?}", visual.slot());
+
+        let mut visual = mage_with_release();
+        let Ok(()) = visual.update(0.016, landed) else {
+            panic!("the update must succeed");
+        };
+        assert_eq!(visual.slot(), AnimationSlot::Cast);
+        let Ok(()) = visual.update(
+            0.016,
+            CharacterState {
+                speed: 3.0,
+                ..landed
+            },
+        ) else {
+            panic!("the update must succeed");
+        };
+        assert_eq!(visual.slot(), AnimationSlot::Walk);
+    }
+
+    #[test]
+    fn every_motion_but_the_plain_cast_names_a_slot() {
+        use Motion::*;
+        for motion in [Swing, Cleave, Smash, Bash, Lunge, Guard, PowerUp, Battlecry] {
+            let Some(slot) = slot_for_motion(motion) else {
+                panic!("{motion:?} has no slot");
+            };
+            assert!(is_motion_slot(slot) && slot.is_optional(), "{motion:?}");
+        }
     }
 
     #[test]

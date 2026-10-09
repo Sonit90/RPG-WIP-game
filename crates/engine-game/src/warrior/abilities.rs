@@ -5,7 +5,9 @@
 //! shared shape of a row and the cooldown runtime live in [`crate::ability`].
 
 use crate::ability::text::TextValue;
-use crate::ability::{AbilityDef, ClassRow, FireAbility, TargetMode, ThreatScale, WarriorRow};
+use crate::ability::{
+    AbilityDef, ClassRow, FireAbility, Motion, TargetMode, ThreatScale, WarriorRow,
+};
 use crate::combat::DamageType;
 
 /// What every Warrior row starts from: physical, tank threat, and a [`WarriorRow`].
@@ -33,6 +35,7 @@ pub(crate) const ROWS: [AbilityDef; 12] = [
             empower_at: 100.0,
             ..WarriorRow::NONE
         }),
+        motion: Motion::Swing,
         ..BASE
     },
     AbilityDef {
@@ -50,6 +53,7 @@ pub(crate) const ROWS: [AbilityDef; 12] = [
             deflection_cost: 20.0,
             ..WarriorRow::NONE
         }),
+        motion: Motion::Cleave,
         ..BASE
     },
     AbilityDef {
@@ -71,6 +75,7 @@ pub(crate) const ROWS: [AbilityDef; 12] = [
             tick_health_coefficient: 0.0075,
             ..WarriorRow::NONE
         }),
+        motion: Motion::Smash,
         ..BASE
     },
     AbilityDef {
@@ -88,6 +93,7 @@ pub(crate) const ROWS: [AbilityDef; 12] = [
             deflection_cost: 20.0,
             ..WarriorRow::NONE
         }),
+        motion: Motion::Lunge,
         ..BASE
     },
     AbilityDef {
@@ -104,6 +110,7 @@ pub(crate) const ROWS: [AbilityDef; 12] = [
             deflection_cost: 20.0,
             ..WarriorRow::NONE
         }),
+        motion: Motion::Bash,
         ..BASE
     },
     AbilityDef {
@@ -118,6 +125,7 @@ pub(crate) const ROWS: [AbilityDef; 12] = [
             deflection_cost: 20.0,
             ..WarriorRow::NONE
         }),
+        motion: Motion::Guard,
         ..BASE
     },
     AbilityDef {
@@ -132,6 +140,7 @@ pub(crate) const ROWS: [AbilityDef; 12] = [
             deflection_cost: 20.0,
             ..WarriorRow::NONE
         }),
+        motion: Motion::PowerUp,
         ..BASE
     },
     AbilityDef {
@@ -147,6 +156,7 @@ pub(crate) const ROWS: [AbilityDef; 12] = [
             deflection_cost: 20.0,
             ..WarriorRow::NONE
         }),
+        motion: Motion::PowerUp,
         ..BASE
     },
     AbilityDef {
@@ -157,6 +167,7 @@ pub(crate) const ROWS: [AbilityDef; 12] = [
         cooldown: 45.0,
         duration: 10.0,
         class: ClassRow::Warrior(WarriorRow::NONE),
+        motion: Motion::Battlecry,
         ..BASE
     },
     AbilityDef {
@@ -171,6 +182,7 @@ pub(crate) const ROWS: [AbilityDef; 12] = [
             deflection_cost: 20.0,
             ..WarriorRow::NONE
         }),
+        motion: Motion::Guard,
         ..BASE
     },
     AbilityDef {
@@ -183,6 +195,7 @@ pub(crate) const ROWS: [AbilityDef; 12] = [
         requires_line_of_sight: true,
         turns_to_target: true,
         class: ClassRow::Warrior(WarriorRow::NONE),
+        motion: Motion::Battlecry,
         ..BASE
     },
     AbilityDef {
@@ -197,6 +210,7 @@ pub(crate) const ROWS: [AbilityDef; 12] = [
             deflection_cost: 20.0,
             ..WarriorRow::NONE
         }),
+        motion: Motion::Battlecry,
         ..BASE
     },
 ];

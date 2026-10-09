@@ -15,7 +15,7 @@
 )]
 
 use engine_core::math::Vec3;
-use engine_game::ability::AbilityId;
+use engine_game::ability::{AbilityId, Motion};
 use engine_game::arena::{self, ArenaConfig};
 use engine_game::character::stat::RATING_PER_PERCENT;
 use engine_game::character::{DefenseOutcome, Stat, StatBlock};
@@ -1157,4 +1157,19 @@ fn a_spender_that_reaches_nobody_keeps_the_bank() {
             .abilities
             .is_ready(FireAbility::ColossusStrike)
     );
+}
+
+#[test]
+fn every_warrior_row_has_a_motion_of_its_own_and_no_other_hero_does() {
+    // The motion is data on the row, so the visual layer never matches on an ability's
+    // identity: the Warrior is the melee hero and each of its abilities asks the body for a
+    // motion; the other heroes' rows keep the ordinary cast, exactly as before the column.
+    for ability in FireAbility::ALL {
+        let motion = ability.definition().motion;
+        if ability.hero() == Hero::Warrior {
+            assert_ne!(motion, Motion::Cast, "{ability:?} has no motion of its own");
+        } else {
+            assert_eq!(motion, Motion::Cast, "{ability:?} is not a Warrior row");
+        }
+    }
 }

@@ -33,7 +33,7 @@ use engine_render_data::{
     PartGeometry, RenderEntity, RenderEntityDesc, RenderWorld, ShadowCasting,
 };
 
-use crate::character::{CastVisual, CharacterState, CharacterVisual, Heading};
+use crate::character::{CastVisual, CharacterState, CharacterVisual, Heading, slot_for_motion};
 use crate::monster_visual::{MonsterFrame, MonsterModel, MonsterVisuals};
 
 /// Which mesh and material each kind of thing is drawn with.
@@ -959,6 +959,21 @@ impl RenderExtractor {
         let speed = body.horizontal_speed();
         let heading = heading(body.velocity, body.facing_yaw);
         let cast = simulation.casting();
+        // The latest ability the player used, from the same event the release tick comes
+        // from, so the motion and the tick it plays on can never describe two different uses.
+        let used = simulation
+            .events()
+            .iter()
+            .rev()
+            .find_map(|event| match event {
+                CombatEvent::AbilityUsed {
+                    source,
+                    ability,
+                    tick,
+                    ..
+                } if *source == player => Some((*tick, ability.fire())),
+                _ => None,
+            });
         let state = CharacterState {
             position,
             facing_yaw,
@@ -977,10 +992,12 @@ impl RenderExtractor {
                 CombatEvent::CastStarted { source, tick, .. } if *source == player => Some(*tick),
                 _ => None,
             }),
-            released: last_tick(simulation, |event| match event {
-                CombatEvent::AbilityUsed { source, tick, .. } if *source == player => Some(*tick),
-                _ => None,
-            }),
+            released: used.map(|(tick, _)| tick),
+            // Read off the ability's own row, so the visual layer never learns which ability
+            // it was: only which kind of motion its row asks the body for.
+            released_motion: used
+                .and_then(|(_, ability)| ability)
+                .and_then(|ability| slot_for_motion(ability.definition().motion)),
             // A model with a death clip plays it and holds the last frame; one without keeps
             // standing. Respawning clears it and the character stands straight back up.
             dead: !simulation.player_alive(),
@@ -1025,6 +1042,7 @@ impl RenderExtractor {
                 cast_progress: 0.0,
                 cast_started: None,
                 released: None,
+                released_motion: None,
                 dead: frame.dead,
             };
             if let Err(error) = remote.visual.update(self.view.delta_seconds, state) {

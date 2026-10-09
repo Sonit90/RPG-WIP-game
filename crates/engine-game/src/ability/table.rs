@@ -346,6 +346,34 @@ impl FireAbility {
     }
 }
 
+/// How the caster's body shows an ability: a presentation hint carried as data on the row,
+/// so the visual layer never matches on an ability's identity.
+///
+/// Nothing in the simulation reads it. The visual layer maps it to an animation clip the
+/// model may or may not have, and [Motion::Cast] means no motion of its own: the ordinary
+/// cast animation, which is what every ability showed before this column existed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Motion {
+    /// The ordinary cast: a spell flick, or a cast bar's wind-up.
+    Cast,
+    /// A single slash with the weapon.
+    Swing,
+    /// A wide sweep that catches everything in front of the caster.
+    Cleave,
+    /// A heavy overhead blow at the ground.
+    Smash,
+    /// A shove with the shield.
+    Bash,
+    /// A forward lunge or charge into the target.
+    Lunge,
+    /// Raising a guard against what is coming.
+    Guard,
+    /// Gathering strength: a flex, a clenched fist.
+    PowerUp,
+    /// A shout.
+    Battlecry,
+}
+
 /// How an ability picks what it hits.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum TargetMode {
@@ -728,6 +756,8 @@ pub struct AbilityDef {
     /// burn is full, a cooldown popped on the way — which are paced by their own cooldowns
     /// instead.
     pub on_global_cooldown: bool,
+    /// How the caster's body shows it. Presentation only; see [Motion].
+    pub motion: Motion,
     /// Which hero casts it, and the columns only that hero's abilities have.
     pub class: ClassRow,
 }
@@ -763,6 +793,7 @@ impl AbilityDef {
         threat: ThreatScale::DAMAGE_DEALER,
         cooldown_hasted: true,
         on_global_cooldown: true,
+        motion: Motion::Cast,
         class: ClassRow::FireMage(FireMageRow::NONE),
     };
 

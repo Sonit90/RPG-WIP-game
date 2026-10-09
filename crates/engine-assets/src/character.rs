@@ -62,11 +62,28 @@ pub enum AnimationSlot {
     /// Dying, ending on the ground, and held there. Optional: every hero and monster has one,
     /// and a model delivered without it simply stops where it stood.
     Death,
+    /// A one-handed slash. Optional: an ability whose motion is a swing borrows the ordinary
+    /// cast's follow-through on a model without it.
+    Swing,
+    /// A sweeping blow around the body. Optional, as [Self::Swing].
+    Cleave,
+    /// A two-handed overhead smash. Optional, as [Self::Swing].
+    Smash,
+    /// A shove with the shield. Optional, as [Self::Swing].
+    Bash,
+    /// A forward charge or lunge. Optional, as [Self::Swing].
+    Lunge,
+    /// Raising the guard. Optional, as [Self::Swing].
+    Guard,
+    /// Gathering strength: a flex or a clenched fist. Optional, as [Self::Swing].
+    PowerUp,
+    /// A shout. Optional, as [Self::Swing].
+    Battlecry,
 }
 
 impl AnimationSlot {
     /// Every slot, in a stable order. The array [`ClipBindings`] is indexed by.
-    pub const ALL: [Self; 13] = [
+    pub const ALL: [Self; 21] = [
         Self::Idle,
         Self::Walk,
         Self::Run,
@@ -80,6 +97,14 @@ impl AnimationSlot {
         Self::StrafeLeft,
         Self::StrafeRight,
         Self::Death,
+        Self::Swing,
+        Self::Cleave,
+        Self::Smash,
+        Self::Bash,
+        Self::Lunge,
+        Self::Guard,
+        Self::PowerUp,
+        Self::Battlecry,
     ];
 
     /// The slots every character is expected to fill. The rest are refinements a character
@@ -115,6 +140,14 @@ impl AnimationSlot {
             Self::StrafeLeft => 10,
             Self::StrafeRight => 11,
             Self::Death => 12,
+            Self::Swing => 13,
+            Self::Cleave => 14,
+            Self::Smash => 15,
+            Self::Bash => 16,
+            Self::Lunge => 17,
+            Self::Guard => 18,
+            Self::PowerUp => 19,
+            Self::Battlecry => 20,
         }
     }
 
@@ -135,6 +168,14 @@ impl AnimationSlot {
             Self::StrafeLeft => "STRAFE L",
             Self::StrafeRight => "STRAFE R",
             Self::Death => "DEATH",
+            Self::Swing => "SWING",
+            Self::Cleave => "CLEAVE",
+            Self::Smash => "SMASH",
+            Self::Bash => "BASH",
+            Self::Lunge => "LUNGE",
+            Self::Guard => "GUARD",
+            Self::PowerUp => "POWER UP",
+            Self::Battlecry => "BATTLECRY",
         }
     }
 

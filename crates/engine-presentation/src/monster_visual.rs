@@ -255,6 +255,7 @@ impl MonsterVisuals {
             cast_progress: frame.cast.map_or(0.0, |(_, fraction)| fraction),
             cast_started,
             released,
+            released_motion: None,
             dead: frame.dead,
         };
         let started = std::time::Instant::now();

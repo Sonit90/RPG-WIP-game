@@ -46,7 +46,7 @@ use crate::entity::EntityId;
 pub use crate::ability::table::ABILITY_SLOTS;
 pub use crate::ability::{
     ABILITIES, ABILITY_COUNT, AbilityBook, AbilityDef, AbilityError, AbilityState, ClassRow,
-    DruidRow, FireAbility, FireMageRow, TARGET_CLEAVE_HALF_ANGLE, TargetMode, ThreatScale,
+    DruidRow, FireAbility, FireMageRow, Motion, TARGET_CLEAVE_HALF_ANGLE, TargetMode, ThreatScale,
     ULTIMATE_ENABLED, WarriorRow,
 };
 pub use ignite::{
