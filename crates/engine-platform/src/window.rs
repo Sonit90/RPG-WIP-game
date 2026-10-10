@@ -9,6 +9,10 @@ use std::sync::OnceLock;
 use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{BLACK_BRUSH, ClientToScreen, GetStockObject, HBRUSH};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::UI::Input::{
+    GetRawInputData, HRAWINPUT, MOUSE_MOVE_ABSOLUTE, RAWINPUT, RAWINPUTDEVICE, RAWINPUTHEADER,
+    RID_INPUT, RIM_TYPEMOUSE, RegisterRawInputDevices,
+};
 /// The largest window edge, in pixels, that [`Window::set_client_size`] may ask for.
 ///
 /// 16384 is D3D12's own maximum texture dimension at feature level 11_0, so a window this
@@ -18,7 +22,7 @@ use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 const MAX_WINDOW_EDGE: i32 = 16384;
 
 use windows::Win32::UI::WindowsAndMessaging::{
-    AdjustWindowRectEx, CREATESTRUCTW, CS_HREDRAW, CS_OWNDC, CS_VREDRAW, CW_USEDEFAULT,
+    AdjustWindowRectEx, CREATESTRUCTW, CS_HREDRAW, CS_OWNDC, CS_VREDRAW, CW_USEDEFAULT, ClipCursor,
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GWL_EXSTYLE, GWL_STYLE,
     GWLP_USERDATA, GetClientRect, GetSystemMetrics, GetWindowLongPtrW, GetWindowRect, HWND_TOP,
     IDC_ARROW, IsIconic, IsWindowVisible, LoadCursorW, MINMAXINFO, MSG, PM_REMOVE, PeekMessageW,
@@ -27,8 +31,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
     SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOOWNERZORDER, SWP_NOZORDER, SetCursorPos,
     SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowCursor, ShowWindow, TranslateMessage,
     WINDOW_EX_STYLE, WINDOW_STYLE, WM_ACTIVATEAPP, WM_CHAR, WM_CLOSE, WM_DESTROY, WM_DISPLAYCHANGE,
-    WM_ERASEBKGND, WM_GETMINMAXINFO, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP,
-    WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCCREATE, WM_QUIT,
+    WM_ERASEBKGND, WM_GETMINMAXINFO, WM_INPUT, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP,
+    WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_MOVE, WM_NCCREATE, WM_QUIT,
     WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SIZE, WM_SYSCHAR, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_XBUTTONDOWN,
     WM_XBUTTONUP, WNDCLASSEXW, WS_OVERLAPPED, WS_OVERLAPPEDWINDOW, WS_POPUP, WS_SYSMENU,
     WS_VISIBLE,
@@ -77,6 +81,9 @@ struct WindowState {
     resizable: bool,
     /// The first half of a UTF-16 surrogate pair `WM_CHAR` delivered, waiting for the second.
     high_surrogate: Option<u16>,
+    /// Whether the cursor is confined to the client area (mouse-look). Tracked so a resize
+    /// or move re-applies the clip, and so deactivation can release it.
+    cursor_confined: bool,
 }
 
 /// An exclusive fullscreen switch this window made, and whether it is undone for now.
@@ -171,6 +178,7 @@ impl Window {
             },
             exclusive: None,
             resizable: config.resizable,
+            cursor_confined: false,
         }));
 
         let title = HSTRING::from(config.title.as_str());
@@ -212,6 +220,8 @@ impl Window {
             activate: config.activate,
             quit_received: false,
         };
+
+        register_raw_mouse(hwnd);
 
         let command = match (config.visible, config.activate) {
             (false, _) => SW_HIDE,
@@ -325,6 +335,18 @@ impl Window {
         // SAFETY: FFI call that only adjusts this process's cursor display counter. The
         // returned counter is not needed: the desired state is tracked above.
         let _ = unsafe { ShowCursor(visible) };
+    }
+
+    /// Confines the cursor to the client area, or releases it.
+    ///
+    /// Mouse-look hides the cursor and recentres it, but a recentre can lag and the player
+    /// can out-run it; without a clip the cursor then leaves the window (or hits the screen
+    /// edge) and clicks land on the desktop. While confined, the clip follows the window
+    /// through resizes and moves, and it is released when the application is deactivated
+    /// so alt-tab never traps the pointer.
+    pub fn confine_cursor(&mut self, confine: bool) {
+        self.state_mut().cursor_confined = confine;
+        apply_cursor_clip(self.hwnd, confine);
     }
 
     /// Whether the cursor is currently shown.
@@ -920,7 +942,27 @@ unsafe extern "system" fn window_proc(
                 }
                 _ => {}
             }
+            if state.cursor_confined {
+                apply_cursor_clip(hwnd, true);
+            }
             LRESULT(0)
+        }
+        // The client area moved on screen: a confining clip must follow it.
+        WM_MOVE => {
+            if state.cursor_confined {
+                apply_cursor_clip(hwnd, true);
+            }
+            LRESULT(0)
+        }
+        // Raw mouse input, registered in `register_raw_mouse`.
+        WM_INPUT => {
+            if let Some((dx, dy)) = read_raw_mouse_delta(lparam) {
+                state
+                    .events
+                    .push(WindowEvent::Input(InputEvent::MouseDelta { dx, dy }));
+            }
+            // SAFETY: WM_INPUT requires DefWindowProc so the system can clean up.
+            unsafe { DefWindowProcW(hwnd, message, wparam, lparam) }
         }
         WM_KEYDOWN | WM_SYSKEYDOWN => {
             // Bit 30 of lparam is the previous key state: set means this is auto-repeat.
@@ -1013,6 +1055,11 @@ unsafe extern "system" fn window_proc(
         }
         WM_ACTIVATEAPP => {
             let focused = wparam.0 != 0;
+            if state.cursor_confined {
+                // Never leave the pointer trapped in a window that is no longer in front;
+                // take the clip again when the application comes back.
+                apply_cursor_clip(hwnd, focused);
+            }
             state
                 .events
                 .push(WindowEvent::Input(InputEvent::FocusChanged { focused }));
@@ -1103,6 +1150,90 @@ unsafe extern "system" fn window_proc(
         // SAFETY: FFI call with the parameters Windows supplied.
         _ => unsafe { DefWindowProcW(hwnd, message, wparam, lparam) },
     }
+}
+
+/// Registers for raw relative mouse input on `hwnd`.
+///
+/// Without `RIDEV_NOLEGACY`, so `WM_MOUSEMOVE` and the button messages the interface relies
+/// on keep flowing. A failure is only logged: mouse-look then falls back to cursor
+/// positions.
+fn register_raw_mouse(hwnd: HWND) {
+    let device = RAWINPUTDEVICE {
+        usUsagePage: 0x01,
+        usUsage: 0x02,
+        dwFlags: Default::default(),
+        hwndTarget: hwnd,
+    };
+    // SAFETY: `device` is a valid one-element array that outlives the call, and the size
+    // argument is its element size.
+    let result =
+        unsafe { RegisterRawInputDevices(&[device], std::mem::size_of::<RAWINPUTDEVICE>() as u32) };
+    if let Err(error) = result {
+        log::warn!("raw mouse input unavailable, using cursor positions: {error}");
+    }
+}
+
+/// Reads the relative motion out of a `WM_INPUT` message, if it is a relative mouse move.
+fn read_raw_mouse_delta(lparam: LPARAM) -> Option<(i32, i32)> {
+    // SAFETY: RAWINPUT is plain data for which all-zero is a valid value.
+    let mut raw: RAWINPUT = unsafe { std::mem::zeroed() };
+    let mut size = std::mem::size_of::<RAWINPUT>() as u32;
+    // SAFETY: `lparam` is the HRAWINPUT of the WM_INPUT being handled; `raw` is a writable
+    // buffer of `size` bytes and `size` is a valid in/out parameter.
+    let copied = unsafe {
+        GetRawInputData(
+            HRAWINPUT(lparam.0 as *mut _),
+            RID_INPUT,
+            Some(std::ptr::from_mut(&mut raw).cast()),
+            &mut size,
+            std::mem::size_of::<RAWINPUTHEADER>() as u32,
+        )
+    };
+    if copied == u32::MAX || raw.header.dwType != RIM_TYPEMOUSE.0 {
+        return None;
+    }
+    // SAFETY: the header says this is mouse data, so the `mouse` union member is active.
+    let mouse = unsafe { raw.data.mouse };
+    if mouse.usFlags.0 & MOUSE_MOVE_ABSOLUTE.0 != 0 {
+        return None;
+    }
+    let (dx, dy) = (mouse.lLastX, mouse.lLastY);
+    ((dx, dy) != (0, 0)).then_some((dx, dy))
+}
+
+/// Applies or releases the cursor clip for the client area of `hwnd`.
+fn apply_cursor_clip(hwnd: HWND, confine: bool) {
+    if !confine {
+        // SAFETY: a null rectangle releases the clip; no pointers are involved.
+        let _ = unsafe { ClipCursor(None) };
+        return;
+    }
+    let mut rect = RECT::default();
+    // SAFETY: `hwnd` is live and `rect` is a valid out-parameter.
+    if unsafe { GetClientRect(hwnd, &mut rect) }.is_err() {
+        return;
+    }
+    let mut top_left = POINT {
+        x: rect.left,
+        y: rect.top,
+    };
+    let mut bottom_right = POINT {
+        x: rect.right,
+        y: rect.bottom,
+    };
+    // SAFETY: `hwnd` is live and the points are valid in/out parameters. The BOOL results
+    // only fail for an invalid window, which the clip call would also fail on.
+    let _ = unsafe { ClientToScreen(hwnd, &mut top_left) };
+    // SAFETY: as above.
+    let _ = unsafe { ClientToScreen(hwnd, &mut bottom_right) };
+    let screen = RECT {
+        left: top_left.x,
+        top: top_left.y,
+        right: bottom_right.x,
+        bottom: bottom_right.y,
+    };
+    // SAFETY: `screen` is a valid RECT that outlives the call; the system copies it.
+    let _ = unsafe { ClipCursor(Some(&screen)) };
 }
 
 /// Queries the live client size straight from Windows.

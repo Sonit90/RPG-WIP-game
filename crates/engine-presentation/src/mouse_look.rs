@@ -155,6 +155,17 @@ impl MouseLook {
 /// delivered whenever the window gets around to it, and a comparison against the centre
 /// reads that lag as a mouse movement and snaps the camera round. Here the warp is
 /// cancelled by matching the message it produces, so it does not matter when it arrives.
+///
+/// # Raw input first, positions as the fallback
+///
+/// Matching warp messages is fragile: the message can be coalesced away by the event queue or
+/// replaced by one Windows synthesises from the cursor's current state. A warp that is never
+/// matched makes the next move count the whole warp distance (the camera snaps) and, because
+/// it stays pending, stops the cursor being recentred, so it runs into the window edge and
+/// the camera stops turning. So the primary source is raw relative device motion
+/// ([`RelativeMotion::raw`]), which no cursor warp or screen edge can disturb. Once any raw
+/// motion has arrived, cursor positions only maintain the reference point. The position path
+/// remains for devices that produce no raw relative input (remote desktop, some tablets).
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct RelativeMotion {
     /// The last cursor position seen, in client pixels.
@@ -163,6 +174,9 @@ pub struct RelativeMotion {
     delta: (i32, i32),
     /// Where a warp this code asked for is expected to land, until its message arrives.
     warp: Option<(i32, i32)>,
+    /// Whether raw relative motion has ever arrived. Sticky across holds: a device that
+    /// reported raw motion once will keep doing so.
+    raw_seen: bool,
 }
 
 impl RelativeMotion {
@@ -173,7 +187,17 @@ impl RelativeMotion {
             cursor: (0, 0),
             delta: (0, 0),
             warp: None,
+            raw_seen: false,
         }
+    }
+
+    /// Adds raw relative device motion, in device counts.
+    ///
+    /// Marks raw input as the source of truth from now on; see the type docs.
+    pub fn raw(&mut self, dx: i32, dy: i32) {
+        self.delta.0 = self.delta.0.saturating_add(dx);
+        self.delta.1 = self.delta.1.saturating_add(dy);
+        self.raw_seen = true;
     }
 
     /// Starts tracking at `position`, discarding whatever came before.
@@ -190,10 +214,13 @@ impl RelativeMotion {
     ///
     /// A movement that lands exactly where a warp was asked to put the cursor *is* that
     /// warp: it moves the reference point without counting as movement.
+    ///
+    /// Once raw input has been seen this only moves the reference point: the position is
+    /// not trusted to carry motion, because a warp whose message was lost looks like a jump.
     pub fn moved(&mut self, position: (i32, i32)) {
         if self.warp == Some(position) {
             self.warp = None;
-        } else {
+        } else if !self.raw_seen {
             self.delta.0 += position.0 - self.cursor.0;
             self.delta.1 += position.1 - self.cursor.1;
         }
@@ -208,10 +235,11 @@ impl RelativeMotion {
     /// Whether a warp is still waiting for its message.
     ///
     /// A second warp while one is outstanding would leave the first unmatched forever, so
-    /// the caller warps only when this is false.
+    /// the caller warps only when this is false. With raw input the warp is cosmetic and
+    /// never needs matching, so this is always false then.
     #[must_use]
     pub fn warp_pending(&self) -> bool {
-        self.warp.is_some()
+        !self.raw_seen && self.warp.is_some()
     }
 
     /// The last cursor position seen.
@@ -502,6 +530,45 @@ mod tests {
         assert_eq!(motion.take(), (12, -8));
         assert_eq!(motion.take(), (0, 0), "movement was counted twice");
         assert_eq!(motion.cursor(), (12, -8));
+    }
+
+    #[test]
+    fn raw_deltas_accumulate_and_take_resets() {
+        let mut motion = RelativeMotion::new();
+        motion.start_at((0, 0));
+        motion.raw(3, -1);
+        motion.raw(4, 5);
+        assert_eq!(motion.take(), (7, 4));
+        assert_eq!(motion.take(), (0, 0));
+    }
+
+    #[test]
+    fn once_raw_input_is_seen_positions_add_nothing() {
+        let mut motion = RelativeMotion::new();
+        motion.start_at((640, 360));
+        motion.raw(2, 2);
+        motion.note_warp((640, 360));
+        assert!(!motion.warp_pending(), "recentring is unconditional");
+        // A warp whose message was lost: the next move is a huge jump.
+        motion.moved((100, 900));
+        motion.moved((110, 905));
+        assert_eq!(motion.take(), (2, 2), "position jumps leaked into rotation");
+        assert_eq!(motion.cursor(), (110, 905));
+
+        // Sticky across holds.
+        motion.start_at((50, 50));
+        motion.moved((500, 500));
+        assert_eq!(motion.take(), (0, 0));
+    }
+
+    #[test]
+    fn without_raw_input_the_position_path_still_works() {
+        let mut motion = RelativeMotion::new();
+        motion.start_at((0, 0));
+        motion.moved((5, 6));
+        assert_eq!(motion.take(), (5, 6));
+        motion.note_warp((1, 1));
+        assert!(motion.warp_pending());
     }
 
     #[test]

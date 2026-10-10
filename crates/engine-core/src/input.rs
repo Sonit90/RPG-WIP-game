@@ -779,6 +779,18 @@ pub enum InputEvent {
         /// The button.
         button: MouseButton,
     },
+    /// Raw relative device motion, in device counts.
+    ///
+    /// Unlike `MouseMoved` this is independent of the cursor: recentring the cursor with
+    /// `SetCursorPos` or hitting a screen edge neither adds to nor swallows it, which is
+    /// what mouse-look needs. [`InputState`] ignores it (its per-frame delta stays
+    /// position-based for UI); mouse-look consumes it straight from the event stream.
+    MouseDelta {
+        /// Horizontal counts; positive is right.
+        dx: i32,
+        /// Vertical counts; positive is down.
+        dy: i32,
+    },
     /// The wheel turned, in notches. Positive is away from the user.
     MouseWheel {
         /// Notches turned; fractional on high-resolution wheels.
@@ -938,6 +950,8 @@ impl InputState {
                 self.mouse.delta.1 += y - self.mouse.position.1;
                 self.mouse.position = (x, y);
             }
+            // Raw motion is for mouse-look, which reads it from the event stream.
+            InputEvent::MouseDelta { .. } => {}
             InputEvent::MouseButtonDown { button } => self.mouse.buttons |= button.mask(),
             InputEvent::MouseButtonUp { button } => self.mouse.buttons &= !button.mask(),
             InputEvent::MouseWheel { delta } => self.mouse.wheel += delta,

@@ -26,7 +26,9 @@ features = [
     "Win32_System_ProcessStatus",
     # The current process (memory), and the frame pacer's waitable timer.
     "Win32_System_Threading",
+    # Raw mouse input: relative motion that no cursor warp can disturb.
     "Win32_UI_HiDpi",
+    "Win32_UI_Input",
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_WindowsAndMessaging",
 ]

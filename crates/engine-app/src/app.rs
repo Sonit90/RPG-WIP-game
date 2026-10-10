@@ -2084,6 +2084,8 @@ impl App {
         // never a rotation.
         self.motion.start_at(cursor);
         self.window.set_cursor_visible(false);
+        // Keep the cursor inside the client area so it can never leave the window.
+        self.window.confine_cursor(true);
         self.recenter_cursor();
     }
 
@@ -2104,6 +2106,8 @@ impl App {
     /// Shows the cursor again and puts it back where mouse-look started.
     fn end_mouse_look(&mut self) {
         self.window.set_cursor_visible(true);
+        // Released first: restoring the position outside the clip would be clamped.
+        self.window.confine_cursor(false);
         let (x, y) = self.cursor_before_look;
         if let Err(error) = self.window.set_cursor_position(x, y) {
             log::warn!("could not restore the cursor: {error}");
@@ -6003,6 +6007,13 @@ impl Application for App {
                 // of its own, and only here can it be told apart from the player's hand.
                 WindowEvent::Input(InputEvent::MouseMoved { x, y }) => {
                     self.motion.moved((x, y));
+                }
+                // Raw device motion is the primary mouse-look source; only counted while
+                // looking, so motion before the press never turns the camera.
+                WindowEvent::Input(InputEvent::MouseDelta { dx, dy })
+                    if self.mouse_look.is_active() =>
+                {
+                    self.motion.raw(dx, dy);
                 }
                 WindowEvent::Input(InputEvent::FocusChanged { focused: false }) => {
                     // The cursor's hidden state is process-wide; leaving it hidden while
