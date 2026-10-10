@@ -78,6 +78,21 @@ A reproducible timing run:
 cargo run --release --bin mygame -- --frames 60000 --report 1
 ```
 
+## Standalone build
+
+The `standalone` feature embeds all runtime content (models, scenes, audio, catalog) into a
+single `mygame.exe` that runs on any machine without the `assets/` folder. On first launch the
+content is unpacked to `%LOCALAPPDATA%\mygame\assets-<hash>`. The static CRT removes the
+Visual C++ runtime dependency:
+
+```powershell
+$env:RUSTFLAGS = "-C target-feature=+crt-static"
+cargo build --release --bin mygame --features standalone
+Remove-Item Env:RUSTFLAGS
+```
+
+The executable is `target/release/mygame.exe`.
+
 ## Level editor
 
 The in-game level editor is behind the `editor` Cargo feature, so a normal build does not
