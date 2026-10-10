@@ -12,6 +12,8 @@ mod benchmark;
 mod map_bake;
 mod online;
 mod run_profile;
+#[cfg(feature = "standalone")]
+mod standalone;
 mod startup;
 
 use std::process::ExitCode;
@@ -28,7 +30,14 @@ fn main() -> ExitCode {
         return ExitCode::FAILURE;
     }
 
-    let mut args = match args::parse(std::env::args().skip(1)) {
+    #[cfg(feature = "standalone")]
+    standalone::install();
+    #[cfg(feature = "standalone")]
+    let command_line = standalone::default_arguments(std::env::args().skip(1).collect());
+    #[cfg(not(feature = "standalone"))]
+    let command_line = std::env::args().skip(1);
+
+    let mut args = match args::parse(command_line) {
         Ok(args) => args,
         Err(error) => {
             eprintln!("error: {error}\n\n{}", args::USAGE);

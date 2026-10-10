@@ -31,6 +31,10 @@ startup-timing = ["engine-renderer/startup-timing"]
 # default and never in a shipping build: without it the game uses the system allocator
 # directly. Development builds measure with `--features alloc-count`.
 alloc-count = []
+# A single-file build: the content under assets/ that the game reads is embedded in the
+# executable and unpacked to %LOCALAPPDATA%\mygame on first launch, and the game opens on
+# the Graveyard unless told otherwise. See `src/standalone.rs`.
+standalone = []
 
 [dependencies]
 engine-assets = { workspace = true }
