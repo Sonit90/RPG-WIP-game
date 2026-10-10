@@ -181,7 +181,16 @@ impl AudioHost {
         let channels = config.channels;
 
         let started = std::time::Instant::now();
-        let bank = SoundBank::synthesised(sample_rate);
+        let mut bank = SoundBank::synthesised(sample_rate);
+        // Recorded WAVs replace synthesised sounds id by id; the first root holding an
+        // `audio/` directory wins.
+        if let Some(root) = engine_assets::disk::asset_roots()
+            .into_iter()
+            .map(|root| root.join("audio"))
+            .find(|root| root.is_dir())
+        {
+            bank.load_overrides(&root);
+        }
         log::info!(
             "audio: {} sound(s), {:.1} MiB synthesised in {:.1} ms at {sample_rate} Hz, off the \
              critical path",

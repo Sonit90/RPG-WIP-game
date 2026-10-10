@@ -20,6 +20,7 @@ use engine_audio::{AudioSystem, CHANNELS, DEFAULT_MAX_VOICES, SoundBank, SoundId
 use engine_core::math::Vec3;
 use engine_game::arena::{self, ArenaConfig};
 use engine_game::command::PlayerCommand;
+use engine_game::enemy::EnemyKind;
 use engine_game::firemage::FireAbility;
 use engine_game::hero::Hero;
 use engine_game::sim::Simulation;
@@ -279,4 +280,40 @@ fn the_listener_follows_the_camera_and_nothing_else() {
     let listener = audio.listener();
     assert_eq!(listener.position, camera.position());
     assert!((listener.forward - camera.forward()).length() < 1e-4);
+}
+
+#[test]
+fn the_player_dying_is_heard() {
+    let mut simulation = arena(1);
+    let mut audio = runtime();
+    let mut director = AudioDirector::new();
+    let player = simulation.player().entity;
+    simulation.slay(player);
+    assert!(!simulation.player_alive(), "the player is dead");
+    director.observe(&simulation, &mut audio);
+    assert_eq!(
+        audio.playing(SoundId::Death),
+        1,
+        "the player's death plays the death sound"
+    );
+}
+
+#[test]
+fn a_skeleton_dies_as_bones_and_the_player_does_not() {
+    let mut simulation = arena(1);
+    let mut audio = runtime();
+    let mut director = AudioDirector::new();
+    let kind = EnemyKind::from_id("skeleton_warrior").expect("the skeleton warrior exists");
+    let skeleton = simulation.spawn_enemy(kind, Vec3::new(4.0, 0.0, 4.0), 0.0);
+    simulation.step_once();
+    director.observe(&simulation, &mut audio);
+
+    simulation.slay(skeleton);
+    director.observe(&simulation, &mut audio);
+    assert_eq!(
+        audio.playing(SoundId::DeathSkeleton),
+        1,
+        "bones, not the common death"
+    );
+    assert_eq!(audio.playing(SoundId::Death), 0);
 }

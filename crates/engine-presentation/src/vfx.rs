@@ -139,17 +139,6 @@ pub const BOLT_MIN_FLIGHT: f32 = 0.06;
 /// How high above its feet a character's effects are centred, as a fraction of its height.
 pub const CHEST_FRACTION: f32 = 0.6;
 
-/// Radius of the effect that plays when a character lands, in metres.
-const LANDING_RADIUS: f32 = 0.9;
-
-/// Falling speed above which a landing shows dust, in metres per second.
-///
-/// Walking off a step is not an impact. This is about a metre of drop.
-pub const LANDING_SPEED: f32 = 4.5;
-
-/// Colour of dust, which is the one effect in the class that is not fire.
-const DUST_TINT: [f32; 4] = [0.55, 0.50, 0.44, 0.7];
-
 /// A blocked attack: the pale flash of a shield taking a blow.
 const BLOCKED_TINT: [f32; 4] = [0.80, 0.82, 0.88, 0.9];
 
@@ -578,19 +567,6 @@ impl VfxDirector {
             } => self.ignite(target, duration, simulation),
             CombatEvent::StatusRemoved { target, .. } => self.extinguish(target),
             CombatEvent::Death { entity, .. } => self.extinguish(entity),
-            // A hard landing kicks up dust. A step down does not.
-            CombatEvent::Landed {
-                position, speed, ..
-            } => {
-                if speed >= LANDING_SPEED {
-                    let force = (speed / LANDING_SPEED).min(2.0);
-                    self.spawn(
-                        VfxSpawn::at(VfxId::Impact, position)
-                            .with_radius(LANDING_RADIUS * force)
-                            .tinted(DUST_TINT),
-                    );
-                }
-            }
             // An enemy attack that is coming. The footprint on the floor is drawn by the
             // telegraph indicator (static, filled by the time left); all this keeps is the
             // shape, so a landing can be answered at the size that was promised.
@@ -807,6 +783,7 @@ impl VfxDirector {
             CombatEvent::Damage(_)
             | CombatEvent::Healing { .. }
             | CombatEvent::Jumped { .. }
+            | CombatEvent::Landed { .. }
             | CombatEvent::DeflectionGained { .. }
             | CombatEvent::AstralPowerGained { .. }
             | CombatEvent::AstralPowerArmed { .. }

@@ -572,6 +572,10 @@ pub struct Simulation {
     externally_moved: Vec<EntityId>,
     /// A server runs the fight; see [`remote`].
     remote_authority: bool,
+    /// Set for the length of a [`Simulation::slay`]: the hit skips every multiplier, so
+    /// "kill" is not turned into "nearly kill" by the target's Versatility or a damage
+    /// reduction.
+    slaying: bool,
     /// Absorbs the authority reported, per entity, while it is the authority.
     ///
     /// A client under [`Simulation::set_remote_authority`] runs no Puncture Blood of its own;
@@ -695,6 +699,7 @@ impl Simulation {
             others: Vec::new(),
             externally_moved: Vec::new(),
             remote_authority: false,
+            slaying: false,
             presented_absorbs: Vec::new(),
             remote_requests: Vec::new(),
         }
@@ -2491,6 +2496,7 @@ impl Simulation {
         if remaining <= 0.0 {
             return;
         }
+        self.slaying = true;
         self.deal_damage(
             EntityId::INVALID,
             entity,
@@ -2499,6 +2505,7 @@ impl Simulation {
             DamageType::Physical,
             false,
         );
+        self.slaying = false;
     }
 
     /// Whether `entity` is something that may attack the player.
@@ -2579,15 +2586,18 @@ impl Simulation {
         // Every effect that changes damage, from the registry: what the target's effects make
         // it take, what the source's make it deal. The player's flat reductions are applied
         // with the rest of their defences below; anybody else's are applied here.
-        let mut amount = amount
-            * self.damage_taken_multiplier(target, damage_type)
-            * self.damage_dealt_multiplier(source);
-        // **Versatility**, from each player's own sheet: a player deals more, a player takes
-        // less. Applied here, the one place health goes down, so no ability can bypass it.
-        amount *= 1.0 + self.versatility_of(source);
-        amount *= 1.0 - self.versatility_of(target) * VERSATILITY_MITIGATION_SHARE;
-        if target != self.player.entity {
-            amount *= 1.0 - self.status_damage_reduction(target);
+        let mut amount = amount;
+        if !self.slaying {
+            amount *= self.damage_taken_multiplier(target, damage_type)
+                * self.damage_dealt_multiplier(source);
+            // **Versatility**, from each player's own sheet: a player deals more, a player
+            // takes less. Applied here, the one place health goes down, so no ability can
+            // bypass it.
+            amount *= 1.0 + self.versatility_of(source);
+            amount *= 1.0 - self.versatility_of(target) * VERSATILITY_MITIGATION_SHARE;
+            if target != self.player.entity {
+                amount *= 1.0 - self.status_damage_reduction(target);
+            }
         }
         if target == self.player.entity && source != target && self.is_hostile_to_player(source) {
             match self.defend_player(source, amount, ability, damage_type) {

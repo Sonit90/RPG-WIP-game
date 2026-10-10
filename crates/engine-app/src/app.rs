@@ -608,6 +608,8 @@ pub struct App {
     camera_spin: f32,
     /// `--fixed-step`, until the first frame hands it to the engine's clock.
     fixed_step: Option<Duration>,
+    /// F7 was pressed; the player is killed right after this frame's simulation step.
+    kill_player_requested: bool,
     /// When the measured window opened, and at which frame.
     ///
     /// The run's own average frame rate covers the warm-up too, and at 900 frames the
@@ -1408,6 +1410,7 @@ impl App {
             warmup_frames: args.warmup,
             shadow_overrides: args.shadow_overrides,
             camera_spin: args.camera_spin,
+            kill_player_requested: false,
             fixed_step: args
                 .fixed_step_ms
                 .filter(|ms| ms.is_finite() && *ms > 0.0)
@@ -1841,10 +1844,12 @@ impl App {
                 }
             }
             KILL_PLAYER_KEY => {
-                // Nothing is queued and nothing is bypassed: killing an already-dead player
-                // does nothing, so a held key cannot stack up deaths or corrupt the clock.
+                // Nothing is bypassed: killing an already-dead player does nothing, so a held
+                // key cannot stack up deaths or corrupt the clock. The kill itself waits for
+                // the simulation stage, because `advance` starts a new event batch and a death
+                // emitted before it would never reach the sound, the effects or the numbers.
                 if self.simulation.player_alive() {
-                    self.simulation.kill_player();
+                    self.kill_player_requested = true;
                     log::info!("F7: player killed");
                 } else {
                     log::info!("F7: the player is already dead");
@@ -6236,6 +6241,9 @@ impl Application for App {
             // twice. There is no menu case here — a shared world does not stop because one
             // player opened a settings screen.
             let ticks = self.simulation.advance(ctx.time().real_delta());
+            if std::mem::take(&mut self.kill_player_requested) {
+                self.simulation.kill_player();
+            }
             if let Some(online) = self.online.as_mut() {
                 // Every tick the simulation predicted is one input frame for the server: the
                 // same intent, so the server applies exactly what the client already showed.

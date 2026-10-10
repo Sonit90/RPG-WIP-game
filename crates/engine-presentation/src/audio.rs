@@ -42,7 +42,7 @@
 
 use engine_audio::{AudioStats, AudioSystem, Listener, SoundCue, SoundId, VoiceHandle};
 use engine_core::math::Vec3;
-use engine_game::enemy::{EnemyAbility, EnemyCue, TelegraphShape};
+use engine_game::enemy::{EnemyAbility, EnemyCue};
 use engine_game::entity::EntityId;
 use engine_game::event::CombatEvent;
 use engine_game::firemage::FireAbility;
@@ -305,14 +305,12 @@ impl AudioDirector {
             // An enemy attack that is coming. The sound rises where the attack will land,
             // not where the caster is: what the player needs to hear is *where not to be*.
             CombatEvent::TelegraphStarted {
-                id, anchor, shape, ..
+                id, anchor, ..
             } => {
-                let sound = match shape {
-                    TelegraphShape::Cone { .. } => SoundId::FlameLanceCast,
-                    _ => SoundId::MeteorIncoming,
-                };
-                if let Some(handle) = self.request(SoundCue::at(sound, anchor).looped(true), audio)
-                {
+                if let Some(handle) = self.request(
+                    SoundCue::at(SoundId::EnemyTelegraph, anchor).looped(true),
+                    audio,
+                ) {
                     self.telegraphs.push(Held { key: id, handle });
                 }
             }
@@ -327,7 +325,7 @@ impl AudioDirector {
                     audio.stop(held.handle);
                 }
                 if resolved {
-                    self.request(SoundCue::at(SoundId::DetonateExplosion, anchor), audio);
+                    self.request(SoundCue::at(SoundId::EnemyTelegraphBurst, anchor), audio);
                 }
             }
             // A cast started: the gathering bed runs for exactly as long as the cast does,
@@ -449,7 +447,14 @@ impl AudioDirector {
             CombatEvent::Death { entity, .. } => {
                 let position = self.chest_of(entity, simulation);
                 self.extinguish(entity, audio);
-                self.request(SoundCue::at(SoundId::Death, position), audio);
+                // An enemy dies the way its body would; the player, and anything without a
+                // body of its own, gets the common death.
+                let sound = simulation
+                    .brain(entity)
+                    .map_or(SoundId::Death, |brain| {
+                        death_sound(brain.archetype().look.model)
+                    });
+                self.request(SoundCue::at(sound, position), audio);
             }
             // A teleport is two sounds, because it is two places.
             CombatEvent::Teleported { from, to, .. } => {
@@ -615,15 +620,13 @@ impl AudioDirector {
         audio: &mut AudioSystem,
     ) {
         self.end_enemy_cast(source, audio);
-        // Reused from the player's own casts rather than given sounds of their own: a
-        // gather is a gather, and this phase adds no new audio assets.
         // By the ability's own cue rather than by a row per attack: gameplay says what kind of
         // gathering it is, and this is the one place that decides what that kind sounds
-        // like. Every enemy attack reuses one of the three gathers that already exist.
+        // like.
         let sound = match ability.definition().cue {
-            EnemyCue::Heavy => SoundId::PyroblastCast,
-            EnemyCue::Sweep => SoundId::FlameLanceCast,
-            EnemyCue::Quick => SoundId::FireboltCast,
+            EnemyCue::Heavy => SoundId::EnemyCastHeavy,
+            EnemyCue::Sweep => SoundId::EnemyCastSweep,
+            EnemyCue::Quick => SoundId::EnemyCastQuick,
         };
         let origin = self.chest_of(source, simulation);
         let key = source.index() as u32;
@@ -894,12 +897,29 @@ pub fn activation_sound(ability: FireAbility) -> Option<SoundId> {
 #[must_use]
 pub fn charge_sound(ability: FireAbility) -> Option<SoundId> {
     match ability {
+        FireAbility::Firebolt => Some(SoundId::FireboltCharge),
         FireAbility::FlameLance => Some(SoundId::FlameLanceCast),
         FireAbility::Pyroblast => Some(SoundId::PyroblastCast),
         FireAbility::Cataclysm => Some(SoundId::CataclysmCast),
         // Everything else is instant, or its cast is short enough that the activation is the
-        // whole sound. A bed on a 1.5 s Firebolt would be heard as a stutter, not a gather.
+        // whole sound.
         _ => None,
+    }
+}
+
+/// What a monster sounds like when it dies, by the model it is drawn with.
+///
+/// By model rather than by archetype: the empowered forms and the borrowed stand-ins share
+/// a body with the monster they are drawn as, and a body is what a death sounds like.
+#[must_use]
+pub fn death_sound(model: &str) -> SoundId {
+    match model {
+        "skeleton_warrior" | "skeleton_bonecaster" | "crypt_archer" => SoundId::DeathSkeleton,
+        "grave_acolyte" => SoundId::DeathAcolyte,
+        "grave_brute" => SoundId::DeathBrute,
+        "crypt_ghoul" => SoundId::DeathGhoul,
+        "lord_ashgrave" => SoundId::DeathBoss,
+        _ => SoundId::Death,
     }
 }
 

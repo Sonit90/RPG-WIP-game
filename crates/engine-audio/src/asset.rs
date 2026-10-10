@@ -227,6 +227,8 @@ pub const DEFAULT_MAX_DISTANCE: f32 = 55.0;
 /// Nothing else in the engine changes — least of all gameplay.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SoundId {
+    /// Fire gathering in the hand while Firebolt is being cast.
+    FireboltCharge,
     /// Firebolt leaving the hand.
     FireboltCast,
     /// The bolt in the air. Loops for as long as the cosmetic bolt flies.
@@ -285,14 +287,28 @@ pub enum SoundId {
     HitCritical,
     /// A hit big enough to be felt rather than heard.
     HeavyImpact,
-    /// Something dying.
+    /// Something dying: the player, and any enemy without a death of its own.
     Death,
-    /// Leaving the ground.
-    Jump,
-    /// Touching it again.
-    Land,
-    /// Touching it hard.
-    LandHeavy,
+    /// A skeleton falling apart.
+    DeathSkeleton,
+    /// A robed acolyte fading out.
+    DeathAcolyte,
+    /// A brute hitting the floor.
+    DeathBrute,
+    /// A ghoul's last screech.
+    DeathGhoul,
+    /// A boss going down.
+    DeathBoss,
+    /// An enemy winding up a quick attack. Loops for as long as the cast does.
+    EnemyCastQuick,
+    /// An enemy winding up a sweeping attack. Loops for as long as the cast does.
+    EnemyCastSweep,
+    /// An enemy winding up a heavy attack. Loops for as long as the cast does.
+    EnemyCastHeavy,
+    /// The warning hum over a telegraphed area, for as long as it is on the ground.
+    EnemyTelegraph,
+    /// A telegraphed area going off.
+    EnemyTelegraphBurst,
     /// One step.
     Footstep,
     /// The arena's wind. Loops forever.
@@ -308,11 +324,12 @@ pub enum SoundId {
 }
 
 /// How many sounds there are.
-pub const SOUND_COUNT: usize = 39;
+pub const SOUND_COUNT: usize = 47;
 
 impl SoundId {
     /// Every sound, in table order. The order is the order of [`SOUNDS`].
     pub const ALL: [Self; SOUND_COUNT] = [
+        Self::FireboltCharge,
         Self::FireboltCast,
         Self::FireboltTravel,
         Self::FireboltImpact,
@@ -343,9 +360,16 @@ impl SoundId {
         Self::HitCritical,
         Self::HeavyImpact,
         Self::Death,
-        Self::Jump,
-        Self::Land,
-        Self::LandHeavy,
+        Self::DeathSkeleton,
+        Self::DeathAcolyte,
+        Self::DeathBrute,
+        Self::DeathGhoul,
+        Self::DeathBoss,
+        Self::EnemyCastQuick,
+        Self::EnemyCastSweep,
+        Self::EnemyCastHeavy,
+        Self::EnemyTelegraph,
+        Self::EnemyTelegraphBurst,
         Self::Footstep,
         Self::AmbientWind,
         Self::AmbientEmber,
@@ -396,6 +420,16 @@ const UI: &str = "ui";
 /// noises — and what stops the bank holding four nearly identical recordings.
 pub static SOUNDS: [SoundDesc; SOUND_COUNT] = [
     // ---- Firebolt: the filler, so it is short, bright and cheap ----------------------
+    SoundDesc::sfx(
+        "firebolt_charge",
+        ABILITIES,
+        Recipe::new(0.6)
+            .noise(0.7, 900.0, 1_600.0)
+            .tremolo(11.0, 0.3)
+            .looped(),
+        PRIORITY_CAST,
+    )
+    .gain(0.4),
     SoundDesc::sfx(
         "firebolt_cast",
         ABILITIES,
@@ -761,41 +795,131 @@ pub static SOUNDS: [SoundDesc; SOUND_COUNT] = [
     .variations(2)
     .gain(0.7)
     .limit(4, 0.05),
-    // ---- The character ------------------------------------------------------------------
     SoundDesc::sfx(
-        "jump",
-        CHARACTERS,
-        Recipe::new(0.25)
-            .noise(0.7, 1_800.0, 500.0)
-            .tone(0.3, 180.0, 320.0)
-            .envelope(0.004, 0.0, 2.8),
-        PRIORITY_FOOTSTEP,
+        "death_skeleton",
+        IMPACTS,
+        Recipe::new(0.9)
+            .noise(0.9, 1_800.0, 180.0)
+            .tone(0.3, 900.0, 300.0)
+            .crackle(0.25, 30.0)
+            .envelope(0.004, 0.05, 2.0),
+        PRIORITY_DEATH,
     )
     .variations(2)
-    .gain(0.4),
+    .gain(0.7)
+    .limit(4, 0.05),
     SoundDesc::sfx(
-        "land",
-        CHARACTERS,
-        Recipe::new(0.28)
-            .noise(0.9, 1_400.0, 300.0)
-            .tone(0.5, 150.0, 60.0)
-            .envelope(0.002, 0.0, 3.0),
-        PRIORITY_FOOTSTEP,
+        "death_acolyte",
+        IMPACTS,
+        Recipe::new(0.9)
+            .noise(0.9, 1_800.0, 180.0)
+            .tone(0.5, 420.0, 140.0)
+            .crackle(0.25, 30.0)
+            .envelope(0.004, 0.05, 2.0),
+        PRIORITY_DEATH,
     )
     .variations(2)
-    .gain(0.5),
+    .gain(0.7)
+    .limit(4, 0.05),
     SoundDesc::sfx(
-        "land_heavy",
-        CHARACTERS,
+        "death_brute",
+        IMPACTS,
+        Recipe::new(0.9)
+            .noise(0.9, 1_800.0, 180.0)
+            .tone(0.8, 140.0, 40.0)
+            .crackle(0.25, 30.0)
+            .envelope(0.004, 0.05, 2.0),
+        PRIORITY_DEATH,
+    )
+    .variations(2)
+    .gain(0.7)
+    .limit(4, 0.05),
+    SoundDesc::sfx(
+        "death_ghoul",
+        IMPACTS,
+        Recipe::new(0.9)
+            .noise(0.9, 1_800.0, 180.0)
+            .tone(0.5, 700.0, 200.0)
+            .crackle(0.25, 30.0)
+            .envelope(0.004, 0.05, 2.0),
+        PRIORITY_DEATH,
+    )
+    .variations(2)
+    .gain(0.7)
+    .limit(4, 0.05),
+    SoundDesc::sfx(
+        "death_boss",
+        IMPACTS,
+        Recipe::new(0.9)
+            .noise(0.9, 1_800.0, 180.0)
+            .tone(0.9, 160.0, 35.0)
+            .crackle(0.25, 30.0)
+            .envelope(0.004, 0.05, 2.0),
+        PRIORITY_DEATH,
+    )
+    .gain(0.7)
+    .limit(4, 0.05),
+    // ---- Enemies: darker and lower than the mage, so a gather says whose it is ---------
+    SoundDesc::sfx(
+        "enemy_cast_quick",
+        ABILITIES,
         Recipe::new(0.5)
-            .noise(1.0, 1_200.0, 160.0)
-            .tone(0.8, 120.0, 38.0)
-            .crackle(0.2, 40.0)
-            .envelope(0.002, 0.01, 2.4),
+            .noise(0.7, 700.0, 1_100.0)
+            .tremolo(12.0, 0.3)
+            .looped(),
+        PRIORITY_CAST,
+    )
+    .gain(0.4)
+    .limit(4, 0.0),
+    SoundDesc::sfx(
+        "enemy_cast_sweep",
+        ABILITIES,
+        Recipe::new(0.7)
+            .noise(0.8, 500.0, 900.0)
+            .tone(0.2, 110.0, 130.0)
+            .tremolo(7.0, 0.3)
+            .looped(),
+        PRIORITY_CAST,
+    )
+    .gain(0.45)
+    .limit(4, 0.0),
+    SoundDesc::sfx(
+        "enemy_cast_heavy",
+        ABILITIES,
+        Recipe::new(1.0)
+            .noise(0.6, 300.0, 600.0)
+            .tone(0.4, 70.0, 90.0)
+            .tremolo(4.0, 0.35)
+            .looped(),
+        PRIORITY_CAST,
+    )
+    .gain(0.5)
+    .limit(4, 0.0),
+    SoundDesc::sfx(
+        "enemy_telegraph",
+        ABILITIES,
+        Recipe::new(1.0)
+            .noise(0.4, 400.0, 400.0)
+            .tone(0.5, 180.0, 180.0)
+            .tremolo(6.0, 0.4)
+            .looped(),
+        PRIORITY_CAST,
+    )
+    .gain(0.4)
+    .limit(6, 0.0),
+    SoundDesc::sfx(
+        "enemy_telegraph_burst",
+        IMPACTS,
+        Recipe::new(0.9)
+            .noise(1.0, 2_000.0, 200.0)
+            .tone(0.6, 120.0, 45.0)
+            .envelope(0.003, 0.05, 2.2),
         PRIORITY_IMPACT,
     )
     .variations(2)
-    .gain(0.75),
+    .gain(0.75)
+    .limit(4, 0.05),
+    // ---- The character ------------------------------------------------------------------
     SoundDesc::sfx(
         "footstep",
         CHARACTERS,

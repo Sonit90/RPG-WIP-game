@@ -507,7 +507,6 @@ thing looks like that". Nine effects serve eleven abilities.
 | Fire Mastery | Buff | `Shield` reused: smaller, gold, above the head |
 | Blink | Mobility | `BlinkDeparture` at `from`, `BlinkArrival` at `to` |
 | Cataclysm | Ultimate | `Cataclysm` on `ImpactScheduled` (gameplay currently disabled) |
-| — | Landing | `Impact` tinted as dust, above 4.5 m/s of fall |
 
 Reuse is the point: a Meteor and a Detonate are the same explosion at different radii and
 tints, and the Fire Mastery aura is the shield ring at a third of the size.
@@ -951,8 +950,7 @@ the damage in every case.
    constant hides the common case.
 6. **The Ultimate's gameplay is still disabled**, so its effect is reachable only through the
    demo scene and the stress driver.
-7. **Jump has no effect**, only landing above a speed threshold. `Jumped` is emitted and
-   unused.
+7. **Jumping and landing have no effect.** `Jumped` and `Landed` are emitted and unused.
 8. **Effect instances cap at 128** while particles cap at 16,384 — mismatched under
    artificial stress, untouched because real combat peaks at 24 instances.
 9. **No hit reaction animation or ragdoll.** Feedback on a target is a flash and a number.

@@ -36,6 +36,9 @@ Desktop.ini
 !/assets/scenes/
 # The character and dungeon catalogs are data the server, client and API compile in.
 !/assets/catalog/
+# Sound effects are small, generated once and tuned by ear: they ship with the game.
+# `assets/audio_candidates/` stays local: it is the shortlist, not the game.
+!/assets/audio/
 # The editor's crash-recovery copies: rewritten every couple of minutes on one machine, and
 # meaningless anywhere else. The level itself is the file without `.autosave`.
 /assets/scenes/*.autosave.json

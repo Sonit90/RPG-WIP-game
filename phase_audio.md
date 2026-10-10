@@ -133,8 +133,6 @@ What `CombatEvent` already carries, and what audio needs from each:
 | `StatusApplied / StatusRemoved { target, status }` | Ignite ignition and the burning loop |
 | `Death { entity }` | death sound |
 | `Teleported { entity, from, to }` | Blink departure at `from`, arrival at `to` |
-| `Jumped { entity, position }` | jump |
-| `Landed { entity, position, speed }` | landing, scaled by fall speed |
 
 Every one of these already carries a **world position** or an entity whose position the
 observer can resolve — which is exactly what a positional audio system needs and is the
@@ -333,7 +331,7 @@ so the bank a machine synthesises is the bank every other machine synthesises.
 assets/audio/
 ├── abilities/     casts, projectiles, the sounds an ability makes
 ├── impacts/       hits, criticals, explosions, death
-├── characters/    footsteps, jump, landing
+├── characters/    footsteps
 ├── environment/   ambience
 └── ui/            the interface
 ```
@@ -612,9 +610,7 @@ Firebolt, and restarting would click each time. Verified at 1, 10 and 50 burning
 **Milestone 15 — defensive and mobility.** Flame Shield and Fire Mastery are *states*: the bed
 is synchronised each frame against `mage().flame_shield.is_active()` and
 `mastery_buff.is_active()` and anchored to the player, so it follows them and ends the instant
-the timer does. Blink is two sounds at two positions. Jump is one sound; landing is `land` or
-`land_heavy` chosen by fall speed against the same `LANDING_SPEED` threshold the dust effect
-uses, with gain scaled by how hard it was.
+the timer does. Blink is two sounds at two positions. Jumping and landing are silent.
 
 **Milestone 16 — impact and damage feedback.** Driven entirely by `CombatEvent::Damage`; there
 is **no audio call anywhere in damage calculation**. Normal hits, hits at or above 40 damage
@@ -684,10 +680,10 @@ pool is never the thing that says no.
 | 90 | The interface |
 | 85 | Critical strikes |
 | 75 | Death |
-| 65 | Ability impacts, Blink, heavy landings |
+| 65 | Ability impacts, Blink |
 | 50 | Ability casts |
 | 35 | Loops: burning, ground fire, shields, projectiles in flight |
-| 20 | Footsteps, jumps, ordinary landings |
+| 20 | Footsteps |
 | 10 | Ambience |
 
 With the pool full, the weakest voice — lowest priority, then quietest, then oldest — is

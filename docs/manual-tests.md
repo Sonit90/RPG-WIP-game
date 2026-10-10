@@ -546,7 +546,7 @@ lands on the same frame as the flash. Heavier spells are lower and longer. The M
 from where it is going to land and stops the instant it lands. The line of fire is a bed you
 can hear yourself walk into and out of, and it stops when the fire does. Detonate is heard on
 the target, not on the caster. The shield hums for exactly its duration; Blink is two sounds
-at two places; a jump and a hard landing are different sounds. Footsteps keep time with the
+at two places; jumping and landing are silent. Footsteps keep time with the
 legs and stop when you do. Cancelling a cast takes its gather away and replaces it with a
 fizzle on the same frame. With the whole pack burning, the fire is *one* fire and individual
 hits are still audible over it — critical strikes especially.
