@@ -158,6 +158,10 @@ impl PlayerCommand {
     /// The yaw a [`PlayerCommand::Move`] locks the character's facing to, if it locks it.
     ///
     /// `None` means "face the way you are going", which is the ordinary case.
+    ///
+    /// Moving backwards locks too: the character keeps its back to where it is going and
+    /// backpedals, rather than turning round to run. A diagonal backwards faces the opposite
+    /// diagonal, so the stride stays on the line of travel.
     #[must_use]
     pub fn facing_lock(self) -> Option<f32> {
         match self {
@@ -166,6 +170,11 @@ impl PlayerCommand {
                 face_camera: true,
                 ..
             } => Some(yaw),
+            Self::Move { forward, .. } if forward < 0.0 => {
+                let direction = self.move_direction();
+                // Yaw zero faces -Z; this is the yaw that faces `-direction`.
+                Some(direction.x.atan2(direction.z))
+            }
             _ => None,
         }
     }
@@ -322,6 +331,45 @@ mod tests {
         }
         .move_direction();
         assert!(close(direction, Vec3::X), "{direction:?}");
+    }
+
+    #[test]
+    fn moving_backwards_keeps_facing_away_from_the_travel() {
+        let yaw = 0.7;
+        let back = PlayerCommand::Move {
+            forward: -1.0,
+            right: 0.0,
+            yaw,
+            face_camera: false,
+        };
+        let facing = back.facing_lock().expect("backwards locks the facing");
+        assert!((facing - yaw).abs() < EPSILON, "{facing}");
+
+        // Diagonal back-left faces forward-right: still directly away from the travel.
+        let diagonal = PlayerCommand::Move {
+            forward: -1.0,
+            right: -1.0,
+            yaw: 0.0,
+            face_camera: false,
+        };
+        let facing = diagonal.facing_lock().expect("backwards locks the facing");
+        let ahead = Vec3::new(-facing.sin(), 0.0, -facing.cos());
+        let travel = diagonal.move_direction();
+        assert!(
+            ahead.dot(travel) < -0.99 * travel.length(),
+            "{ahead:?} {travel:?}"
+        );
+
+        // Forwards and sideways still face the way they go.
+        for (forward, right) in [(1.0, 0.0), (0.0, 1.0), (1.0, -1.0)] {
+            let command = PlayerCommand::Move {
+                forward,
+                right,
+                yaw,
+                face_camera: false,
+            };
+            assert_eq!(command.facing_lock(), None, "{command:?}");
+        }
     }
 
     #[test]
