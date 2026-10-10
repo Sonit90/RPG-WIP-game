@@ -91,7 +91,8 @@ cargo build --release --bin mygame --features standalone
 Remove-Item Env:RUSTFLAGS
 ```
 
-The executable is `target/release/mygame.exe`.
+The executable is `target/release/mygame.exe`. `tools\build_standalone.bat` runs the same
+build from any directory.
 
 ## Level editor
 
