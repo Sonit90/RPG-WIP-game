@@ -162,6 +162,9 @@ impl PlayerCommand {
     /// Moving backwards locks too: the character keeps its back to where it is going and
     /// backpedals, rather than turning round to run. A diagonal backwards faces the opposite
     /// diagonal, so the stride stays on the line of travel.
+    ///
+    /// A pure strafe locks to the camera's yaw: the character keeps looking ahead and
+    /// sidesteps, rather than turning to face left or right.
     #[must_use]
     pub fn facing_lock(self) -> Option<f32> {
         match self {
@@ -170,6 +173,12 @@ impl PlayerCommand {
                 face_camera: true,
                 ..
             } => Some(yaw),
+            Self::Move {
+                forward,
+                right,
+                yaw,
+                ..
+            } if forward.abs() <= f32::EPSILON && right.abs() > f32::EPSILON => Some(yaw),
             Self::Move { forward, .. } if forward < 0.0 => {
                 let direction = self.move_direction();
                 // Yaw zero faces -Z; this is the yaw that faces `-direction`.
@@ -360,8 +369,8 @@ mod tests {
             "{ahead:?} {travel:?}"
         );
 
-        // Forwards and sideways still face the way they go.
-        for (forward, right) in [(1.0, 0.0), (0.0, 1.0), (1.0, -1.0)] {
+        // Forwards and forward diagonals still face the way they go.
+        for (forward, right) in [(1.0, 0.0), (1.0, -1.0), (0.0, 0.0)] {
             let command = PlayerCommand::Move {
                 forward,
                 right,
@@ -369,6 +378,20 @@ mod tests {
                 face_camera: false,
             };
             assert_eq!(command.facing_lock(), None, "{command:?}");
+        }
+    }
+
+    #[test]
+    fn strafing_keeps_facing_ahead() {
+        let yaw = -1.3;
+        for right in [1.0, -1.0] {
+            let command = PlayerCommand::Move {
+                forward: 0.0,
+                right,
+                yaw,
+                face_camera: false,
+            };
+            assert_eq!(command.facing_lock(), Some(yaw), "{command:?}");
         }
     }
 

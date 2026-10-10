@@ -463,6 +463,12 @@ fn face_movement(body: &mut Body, intent: MoveIntent) {
         body.facing_yaw = yaw;
         return;
     }
+    // With no movement asked for, the body keeps the facing it had: what is left of its
+    // velocity is it slowing down, and a backpedal that is released must not turn round to
+    // face the way it was sliding.
+    if intent.direction.x.hypot(intent.direction.z) <= f32::EPSILON {
+        return;
+    }
     // Below walking pace the direction is numerical noise, and turning to face it makes a
     // standing character spin.
     if body.horizontal_speed() > 0.1 {
@@ -783,6 +789,23 @@ mod tests {
             (free.facing_yaw.abs() - std::f32::consts::PI).abs() < 1e-2,
             "{}",
             free.facing_yaw
+        );
+    }
+
+    #[test]
+    fn releasing_a_backpedal_does_not_turn_the_body_round() {
+        // Backpedal, then let go: the body slides to a stop still facing ahead, rather than
+        // turning to face the way its leftover velocity points.
+        let config = MovementConfig::default();
+        let mut body = Body::at(Vec3::ZERO);
+        run(&mut body, MoveIntent::steered(Vec3::Z, 0.0), &config, 30);
+        assert!(body.horizontal_speed() > 0.1);
+
+        run(&mut body, MoveIntent::NONE, &config, 30);
+        assert!(
+            body.facing_yaw.abs() < 1e-4,
+            "the body turned round on release: {}",
+            body.facing_yaw
         );
     }
 }
