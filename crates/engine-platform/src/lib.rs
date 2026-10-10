@@ -31,4 +31,4 @@ pub use error::PlatformError;
 pub use event::{EventQueue, WindowEvent, key_from_virtual_code};
 pub use memory::{ProcessMemory, process_memory};
 pub use pacing::FramePacer;
-pub use window::Window;
+pub use window::{CursorClip, Window};

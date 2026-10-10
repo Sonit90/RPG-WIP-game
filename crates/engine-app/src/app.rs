@@ -38,7 +38,7 @@ use engine_game::firemage::FireAbility;
 use engine_game::hero::Hero;
 use engine_game::input_map::Bindings;
 use engine_game::sim::Simulation;
-use engine_platform::{FramePacer, Window, WindowConfig, WindowEvent};
+use engine_platform::{CursorClip, FramePacer, Window, WindowConfig, WindowEvent};
 use engine_presentation::AudioDirector;
 use engine_presentation::MonsterModel;
 use engine_presentation::camera::ThirdPersonCamera;
@@ -2073,28 +2073,38 @@ impl App {
         true
     }
 
-    /// Hides the cursor and parks it at the centre while the camera is being turned.
+    /// Hides the cursor and holds it while the camera is being turned.
     ///
-    /// The position it was at is remembered, not the centre: the cursor goes back where the
-    /// player pressed the button, so holding the right button to look around leaves the
-    /// pointer where they left it.
+    /// With raw mouse input the cursor is pinned where the button went down and never moves:
+    /// the camera turns from the device's motion, and when the button comes up the pointer is
+    /// exactly where the player left it, still over whatever they were targeting. Without raw
+    /// input the camera needs cursor positions, so the cursor is parked at the centre inside
+    /// the window and put back where it was pressed afterwards.
     fn begin_mouse_look(&mut self, cursor: (i32, i32)) {
         self.cursor_before_look = cursor;
         // Movement is measured from here on. Where the cursor happens to be is the origin,
         // never a rotation.
         self.motion.start_at(cursor);
         self.window.set_cursor_visible(false);
-        // Keep the cursor inside the client area so it can never leave the window.
-        self.window.confine_cursor(true);
-        self.recenter_cursor();
+        if self.window.raw_mouse() {
+            self.window
+                .set_cursor_clip(CursorClip::Pinned(cursor.0, cursor.1));
+        } else {
+            self.window.set_cursor_clip(CursorClip::Client);
+            self.recenter_cursor();
+        }
     }
 
     /// Warps the cursor to the client centre and records that the warp is not movement.
     ///
-    /// Skipped while a previous warp has not been seen yet: warping twice would leave the
-    /// first one unmatched, and it would be counted as a rotation when its message arrived.
+    /// Only for the fallback without raw input; a pinned cursor is never moved. Skipped while
+    /// a previous warp has not been seen yet: warping twice would leave the first one
+    /// unmatched, and it would be counted as a rotation when its message arrived.
     fn recenter_cursor(&mut self) {
-        if self.motion.warp_pending() || self.motion.cursor() == self.window.client_center() {
+        if self.window.raw_mouse()
+            || self.motion.warp_pending()
+            || self.motion.cursor() == self.window.client_center()
+        {
             return;
         }
         match self.window.center_cursor() {
@@ -2107,7 +2117,7 @@ impl App {
     fn end_mouse_look(&mut self) {
         self.window.set_cursor_visible(true);
         // Released first: restoring the position outside the clip would be clamped.
-        self.window.confine_cursor(false);
+        self.window.set_cursor_clip(CursorClip::Free);
         let (x, y) = self.cursor_before_look;
         if let Err(error) = self.window.set_cursor_position(x, y) {
             log::warn!("could not restore the cursor: {error}");

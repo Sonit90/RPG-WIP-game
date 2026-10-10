@@ -81,9 +81,29 @@ struct WindowState {
     resizable: bool,
     /// The first half of a UTF-16 surrogate pair `WM_CHAR` delivered, waiting for the second.
     high_surrogate: Option<u16>,
-    /// Whether the cursor is confined to the client area (mouse-look). Tracked so a resize
-    /// or move re-applies the clip, and so deactivation can release it.
-    cursor_confined: bool,
+    /// Where the cursor is held (mouse-look). Tracked so a resize or move re-applies the
+    /// clip, and so deactivation can release it.
+    cursor_clip: CursorClip,
+    /// Whether raw mouse input was registered, so mouse-look can read motion without the
+    /// cursor having to move.
+    raw_mouse: bool,
+}
+
+/// Where the cursor may go.
+///
+/// Mouse-look holds the cursor still: with raw input the cursor never needs to move for the
+/// camera to turn, so it is pinned where the button went down and the pointer is exactly where
+/// the player left it, ready to target. Without raw input the camera reads cursor positions,
+/// so the cursor has to move and is only kept inside the window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CursorClip {
+    /// Anywhere on the desktop.
+    #[default]
+    Free,
+    /// Inside the client area.
+    Client,
+    /// Held at one client-area point, in client pixels.
+    Pinned(i32, i32),
 }
 
 /// An exclusive fullscreen switch this window made, and whether it is undone for now.
@@ -178,7 +198,8 @@ impl Window {
             },
             exclusive: None,
             resizable: config.resizable,
-            cursor_confined: false,
+            cursor_clip: CursorClip::Free,
+            raw_mouse: false,
         }));
 
         let title = HSTRING::from(config.title.as_str());
@@ -214,14 +235,14 @@ impl Window {
             }
         };
 
-        let window = Self {
+        let mut window = Self {
             hwnd,
             state,
             activate: config.activate,
             quit_received: false,
         };
 
-        register_raw_mouse(hwnd);
+        window.state_mut().raw_mouse = register_raw_mouse(hwnd);
 
         let command = match (config.visible, config.activate) {
             (false, _) => SW_HIDE,
@@ -337,16 +358,22 @@ impl Window {
         let _ = unsafe { ShowCursor(visible) };
     }
 
-    /// Confines the cursor to the client area, or releases it.
+    /// Restricts where the cursor may go, or releases it with [`CursorClip::Free`].
     ///
-    /// Mouse-look hides the cursor and recentres it, but a recentre can lag and the player
-    /// can out-run it; without a clip the cursor then leaves the window (or hits the screen
-    /// edge) and clicks land on the desktop. While confined, the clip follows the window
-    /// through resizes and moves, and it is released when the application is deactivated
-    /// so alt-tab never traps the pointer.
-    pub fn confine_cursor(&mut self, confine: bool) {
-        self.state_mut().cursor_confined = confine;
-        apply_cursor_clip(self.hwnd, confine);
+    /// The clip follows the window through resizes and moves, and it is released while the
+    /// application is deactivated so alt-tab never traps the pointer.
+    pub fn set_cursor_clip(&mut self, clip: CursorClip) {
+        self.state_mut().cursor_clip = clip;
+        apply_cursor_clip(self.hwnd, clip);
+    }
+
+    /// Whether raw mouse motion is delivered as [`InputEvent::MouseDelta`].
+    ///
+    /// When it is, mouse-look can pin the cursor in place; when it is not, the cursor has to
+    /// move for any motion to be seen.
+    #[must_use]
+    pub fn raw_mouse(&self) -> bool {
+        self.state_ref().raw_mouse
     }
 
     /// Whether the cursor is currently shown.
@@ -942,15 +969,15 @@ unsafe extern "system" fn window_proc(
                 }
                 _ => {}
             }
-            if state.cursor_confined {
-                apply_cursor_clip(hwnd, true);
+            if state.cursor_clip != CursorClip::Free {
+                apply_cursor_clip(hwnd, state.cursor_clip);
             }
             LRESULT(0)
         }
         // The client area moved on screen: a confining clip must follow it.
         WM_MOVE => {
-            if state.cursor_confined {
-                apply_cursor_clip(hwnd, true);
+            if state.cursor_clip != CursorClip::Free {
+                apply_cursor_clip(hwnd, state.cursor_clip);
             }
             LRESULT(0)
         }
@@ -1055,10 +1082,15 @@ unsafe extern "system" fn window_proc(
         }
         WM_ACTIVATEAPP => {
             let focused = wparam.0 != 0;
-            if state.cursor_confined {
+            if state.cursor_clip != CursorClip::Free {
                 // Never leave the pointer trapped in a window that is no longer in front;
                 // take the clip again when the application comes back.
-                apply_cursor_clip(hwnd, focused);
+                let clip = if focused {
+                    state.cursor_clip
+                } else {
+                    CursorClip::Free
+                };
+                apply_cursor_clip(hwnd, clip);
             }
             state
                 .events
@@ -1157,7 +1189,7 @@ unsafe extern "system" fn window_proc(
 /// Without `RIDEV_NOLEGACY`, so `WM_MOUSEMOVE` and the button messages the interface relies
 /// on keep flowing. A failure is only logged: mouse-look then falls back to cursor
 /// positions.
-fn register_raw_mouse(hwnd: HWND) {
+fn register_raw_mouse(hwnd: HWND) -> bool {
     let device = RAWINPUTDEVICE {
         usUsagePage: 0x01,
         usUsage: 0x02,
@@ -1168,8 +1200,12 @@ fn register_raw_mouse(hwnd: HWND) {
     // argument is its element size.
     let result =
         unsafe { RegisterRawInputDevices(&[device], std::mem::size_of::<RAWINPUTDEVICE>() as u32) };
-    if let Err(error) = result {
-        log::warn!("raw mouse input unavailable, using cursor positions: {error}");
+    match result {
+        Ok(()) => true,
+        Err(error) => {
+            log::warn!("raw mouse input unavailable, using cursor positions: {error}");
+            false
+        }
     }
 }
 
@@ -1201,18 +1237,30 @@ fn read_raw_mouse_delta(lparam: LPARAM) -> Option<(i32, i32)> {
     ((dx, dy) != (0, 0)).then_some((dx, dy))
 }
 
-/// Applies or releases the cursor clip for the client area of `hwnd`.
-fn apply_cursor_clip(hwnd: HWND, confine: bool) {
-    if !confine {
-        // SAFETY: a null rectangle releases the clip; no pointers are involved.
-        let _ = unsafe { ClipCursor(None) };
-        return;
-    }
-    let mut rect = RECT::default();
-    // SAFETY: `hwnd` is live and `rect` is a valid out-parameter.
-    if unsafe { GetClientRect(hwnd, &mut rect) }.is_err() {
-        return;
-    }
+/// Applies `clip` to the cursor, in screen space for `hwnd`'s client area.
+fn apply_cursor_clip(hwnd: HWND, clip: CursorClip) {
+    let rect = match clip {
+        CursorClip::Free => {
+            // SAFETY: a null rectangle releases the clip; no pointers are involved.
+            let _ = unsafe { ClipCursor(None) };
+            return;
+        }
+        CursorClip::Client => {
+            let mut rect = RECT::default();
+            // SAFETY: `hwnd` is live and `rect` is a valid out-parameter.
+            if unsafe { GetClientRect(hwnd, &mut rect) }.is_err() {
+                return;
+            }
+            rect
+        }
+        // A one-pixel rectangle: the cursor cannot move at all.
+        CursorClip::Pinned(x, y) => RECT {
+            left: x,
+            top: y,
+            right: x + 1,
+            bottom: y + 1,
+        },
+    };
     let mut top_left = POINT {
         x: rect.left,
         y: rect.top,

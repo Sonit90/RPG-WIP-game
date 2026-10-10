@@ -166,6 +166,9 @@ impl MouseLook {
 /// ([`RelativeMotion::raw`]), which no cursor warp or screen edge can disturb. Once any raw
 /// motion has arrived, cursor positions only maintain the reference point. The position path
 /// remains for devices that produce no raw relative input (remote desktop, some tablets).
+///
+/// With raw input the application pins the cursor where the button went down instead of
+/// recentring it, so the pointer never moves and is still on the player's target afterwards.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct RelativeMotion {
     /// The last cursor position seen, in client pixels.
