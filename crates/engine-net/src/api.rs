@@ -200,23 +200,25 @@ impl ApiClient {
         )
     }
 
-    /// Breaks one bag item down into a resource.
+    /// Breaks the whole stacks in the bag cells `indices` down into a resource.
     ///
     /// # Errors
     ///
-    /// The index is not a bag item, the character is not the caller's, or the server is
-    /// unreachable.
+    /// A cell is not a bag item, the tray is empty or too big, the character is not the
+    /// caller's, or the server is unreachable.
     pub fn salvage(
         &self,
         token: &str,
         id: &str,
-        index: u32,
+        indices: &[u32],
     ) -> Result<CharacterDetail, RealmError> {
         self.post(
             &self.persistence,
             &format!("/api/v1/characters/{}/salvage", path_segment(id)),
             Some(token),
-            &SalvageRequest { index },
+            &SalvageRequest {
+                indices: indices.to_vec(),
+            },
             Category::Persistence,
         )
     }

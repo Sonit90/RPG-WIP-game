@@ -249,6 +249,13 @@ pub struct SalvageRule {
     pub base: u32,
     /// Added for every item level of the item.
     pub per_item_level: u32,
+    /// How many bag cells one salvage may break down (the tray's size).
+    #[serde(default = "default_salvage_slots")]
+    pub slots: u32,
+}
+
+fn default_salvage_slots() -> u32 {
+    16
 }
 
 /// A fixed-rate trade of one resource for another.

@@ -154,8 +154,8 @@ pub struct MoveItemRequest {
 /// `POST /api/v1/characters/{id}/salvage`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SalvageRequest {
-    /// The bag cell to break down one item of.
-    pub index: u32,
+    /// The bag cells to break down, whole stacks at once.
+    pub indices: Vec<u32>,
 }
 
 /// `POST /api/v1/characters/{id}/exchange`.
@@ -188,6 +188,8 @@ pub struct SalvageInfo {
     pub base: u32,
     /// Added per item level.
     pub per_item_level: u32,
+    /// How many bag cells one salvage may take (the tray's size).
+    pub slots: u32,
 }
 
 /// One exchange in [`EconomyInfo`].

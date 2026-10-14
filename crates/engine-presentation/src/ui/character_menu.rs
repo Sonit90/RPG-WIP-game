@@ -108,6 +108,11 @@ mod layout {
     pub const CARD_GAP: f32 = 16.0;
 }
 
+/// Edge of one bag cell, in design pixels: what other screens that show bag items match.
+pub const BAG_CELL: f32 = layout::CELL;
+/// Gap between two bag cells, in design pixels.
+pub const BAG_CELL_GAP: f32 = layout::CELL_GAP;
+
 /// The five slots down the left of the character, in drawn order.
 const LEFT_COLUMN: [EquipSlot; 5] = [
     EquipSlot::Head,

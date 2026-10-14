@@ -126,11 +126,14 @@ and the `level = key_level` guard means a key can never advance twice for one ru
 * `Loadout.resources: BTreeMap<String, u64>` (serde default empty) — inside the same JSONB as
   the bag, so salvage is one locked read-modify-write.
 * Catalog `assets/catalog/economy.json`: resource definitions (id, name, description), salvage
-  yield (`resource`, `base`, `per_item_level`), exchanges (`id`, `from`, `from_amount`, `to`,
-  `to_amount`).
-* `POST /characters/{id}/salvage {index}`: a *bag* item only (never worn); removes one of the
-  stack, adds `base + per_item_level × item_level` of the salvage resource. Answers with the
-  character.
+  yield (`resource`, `base`, `per_item_level`, `slots`), exchanges (`id`, `from`, `from_amount`,
+  `to`, `to_amount`).
+* `POST /characters/{id}/salvage {indices}`: the Workshop's salvage tray. *Bag* cells only
+  (never worn); each cell's **whole stack** is broken down for `(base + per_item_level ×
+  item_level) × quantity` of the salvage resource, summed. At most `slots` cells (16 in
+  `economy.json`, the tray's size), no repeats, no empty cells. All-or-nothing: any refusal
+  leaves the character untouched. The server recomputes the yield; the client's total is only
+  a preview. Answers with the character.
 * `POST /characters/{id}/exchange {exchange_id, times}`: validated against the catalog,
   refuses insufficient funds. Answers with the character.
 

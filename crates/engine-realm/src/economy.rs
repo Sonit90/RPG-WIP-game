@@ -29,6 +29,12 @@ pub enum EconomyError {
     EmptyCell,
     /// The stored item no longer exists, so it has no level to salvage by.
     UnknownItem,
+    /// A salvage named no bag cells.
+    NothingToSalvage,
+    /// A salvage named more cells than the tray holds (its size).
+    TooManyCells(u32),
+    /// A salvage named the same bag cell twice.
+    DuplicateCell,
     /// No exchange has this id.
     UnknownExchange,
     /// The number of trades is outside `1..=`[`MAX_EXCHANGE_TIMES`].
@@ -44,6 +50,11 @@ impl fmt::Display for EconomyError {
         match self {
             Self::EmptyCell => f.write_str("There is no item there to salvage."),
             Self::UnknownItem => f.write_str("That item cannot be salvaged."),
+            Self::NothingToSalvage => f.write_str("Put something in the tray to salvage."),
+            Self::TooManyCells(slots) => {
+                write!(f, "The tray holds at most {slots} items at once.")
+            }
+            Self::DuplicateCell => f.write_str("An item is in the tray twice."),
             Self::UnknownExchange => f.write_str("That exchange does not exist."),
             Self::InvalidTimes => write!(
                 f,
@@ -60,9 +71,11 @@ impl std::error::Error for EconomyError {}
 impl From<EconomyError> for RealmError {
     fn from(error: EconomyError) -> Self {
         match error {
-            EconomyError::UnknownExchange | EconomyError::InvalidTimes => {
-                Self::protocol(error.to_string())
-            }
+            EconomyError::UnknownExchange
+            | EconomyError::InvalidTimes
+            | EconomyError::NothingToSalvage
+            | EconomyError::TooManyCells(_)
+            | EconomyError::DuplicateCell => Self::protocol(error.to_string()),
             _ => Self::persistence(error.to_string()),
         }
     }
@@ -76,38 +89,56 @@ pub fn add_resources(loadout: &mut Loadout, gains: &[(String, u64)]) {
     }
 }
 
-/// Breaks one item of the bag stack in `index` down into the salvage resource.
+/// Breaks the whole bag stacks in the cells `indices` down into the salvage resource.
 ///
-/// Only the bag: worn gear is never salvaged. Removes one of the stack (the cell empties when
-/// the last one goes) and pays `base + per_item_level × item level`. Returns the resource id
-/// and the amount.
+/// Only the bag: worn gear is never salvaged. Every cell empties and pays
+/// `(base + per_item_level × item level) × quantity`; the cells' payments are summed. Returns
+/// the resource id and the total.
 ///
 /// # Errors
 ///
-/// [`EconomyError::EmptyCell`] for an empty cell, [`EconomyError::UnknownItem`] for a stored
-/// item that no longer exists (the loadout is left as it was).
-pub fn salvage(
+/// [`EconomyError::NothingToSalvage`] for no cells, [`EconomyError::TooManyCells`] for more than
+/// the rule's `slots`, [`EconomyError::DuplicateCell`] for a cell named twice,
+/// [`EconomyError::EmptyCell`] for an empty cell, [`EconomyError::UnknownItem`] for a stored item
+/// that no longer exists, [`EconomyError::Overflow`] for a total that does not fit. The loadout
+/// is unchanged on every error.
+pub fn salvage_many(
     loadout: &mut Loadout,
-    index: u32,
+    indices: &[u32],
     economy: &Economy,
 ) -> Result<(String, u64), EconomyError> {
-    let position = loadout
-        .inventory
-        .iter()
-        .position(|entry| entry.index == index && entry.quantity > 0)
-        .ok_or(EconomyError::EmptyCell)?;
-    let def = item_by_key(&loadout.inventory[position].item).ok_or(EconomyError::UnknownItem)?;
     let rule = &economy.salvage;
-    let amount = u64::from(rule.base)
-        .saturating_add(u64::from(rule.per_item_level) * u64::from(def.item_level));
-
-    let entry = &mut loadout.inventory[position];
-    entry.quantity -= 1;
-    if entry.quantity == 0 {
-        loadout.inventory.remove(position);
+    if indices.is_empty() {
+        return Err(EconomyError::NothingToSalvage);
     }
-    add_resources(loadout, &[(rule.resource.clone(), amount)]);
-    Ok((rule.resource.clone(), amount))
+    if indices.len() > rule.slots as usize {
+        return Err(EconomyError::TooManyCells(rule.slots));
+    }
+    let per_item = |item_level: u16| {
+        u64::from(rule.base).saturating_add(u64::from(rule.per_item_level) * u64::from(item_level))
+    };
+    // Validate and total first, so a refusal has touched nothing.
+    let mut total = 0_u64;
+    for (at, index) in indices.iter().enumerate() {
+        if indices[..at].contains(index) {
+            return Err(EconomyError::DuplicateCell);
+        }
+        let entry = loadout
+            .inventory
+            .iter()
+            .find(|entry| entry.index == *index && entry.quantity > 0)
+            .ok_or(EconomyError::EmptyCell)?;
+        let def = item_by_key(&entry.item).ok_or(EconomyError::UnknownItem)?;
+        total = per_item(def.item_level)
+            .checked_mul(u64::from(entry.quantity))
+            .and_then(|stack| total.checked_add(stack))
+            .ok_or(EconomyError::Overflow)?;
+    }
+    loadout
+        .inventory
+        .retain(|entry| !indices.contains(&entry.index));
+    add_resources(loadout, &[(rule.resource.clone(), total)]);
+    Ok((rule.resource.clone(), total))
 }
 
 /// Makes the exchange `exchange_id` `times` times over.
@@ -188,51 +219,68 @@ mod tests {
         loadout
     }
 
-    #[test]
-    fn salvage_pays_base_plus_item_level_and_removes_one() {
-        let economy = economy();
-        let mut loadout = loadout_with_stack(2);
-        let (resource, amount) = salvage(&mut loadout, 4, &economy).expect("a bag item");
-        assert_eq!(resource, "bone_shard");
-        assert_eq!(
-            amount,
-            u64::from(economy.salvage.base)
-                + u64::from(economy.salvage.per_item_level) * u64::from(item().item_level)
-        );
-        assert_eq!(loadout.inventory[0].quantity, 1);
-        assert_eq!(loadout.resources.get("bone_shard"), Some(&amount));
-        // The last one empties the cell.
-        salvage(&mut loadout, 4, &economy).expect("the last one");
-        assert!(loadout.inventory.is_empty());
-        assert_eq!(loadout.resources.get("bone_shard"), Some(&(amount * 2)));
+    fn stack_at(index: u32, quantity: u16) -> BagItem {
+        BagItem {
+            index,
+            item: item().key.into(),
+            quantity,
+        }
+    }
+
+    fn per_item(economy: &Economy) -> u64 {
+        u64::from(economy.salvage.base)
+            + u64::from(economy.salvage.per_item_level) * u64::from(item().item_level)
     }
 
     #[test]
-    fn salvage_refuses_empty_cells_worn_gear_and_unknown_items() {
+    fn salvage_pays_the_whole_stack_and_empties_the_cell() {
+        let economy = economy();
+        let mut loadout = loadout_with_stack(3);
+        let (resource, amount) = salvage_many(&mut loadout, &[4], &economy).expect("a bag item");
+        assert_eq!(resource, "bone_shard");
+        assert_eq!(amount, per_item(&economy) * 3);
+        assert!(loadout.inventory.is_empty());
+        assert_eq!(loadout.resources.get("bone_shard"), Some(&amount));
+    }
+
+    #[test]
+    fn salvage_sums_several_cells_and_keeps_the_rest() {
+        let economy = economy();
+        let mut loadout = loadout_with_stack(2);
+        loadout.inventory.push(stack_at(7, 1));
+        loadout.inventory.push(stack_at(9, 5));
+        let (_, amount) = salvage_many(&mut loadout, &[7, 4], &economy).expect("two cells");
+        assert_eq!(amount, per_item(&economy) * 3);
+        assert_eq!(loadout.inventory, vec![stack_at(9, 5)]);
+    }
+
+    #[test]
+    fn salvage_refuses_bad_trays_and_changes_nothing() {
         let economy = economy();
         let mut loadout = loadout_with_stack(1);
+        loadout.inventory.push(stack_at(6, 1));
         loadout.equipment.push(EquippedItem {
             slot: "chest".into(),
             item: item().key.into(),
         });
-        // Worn gear is not in the bag, so nothing addresses it.
-        assert_eq!(
-            salvage(&mut loadout, 5, &economy),
-            Err(EconomyError::EmptyCell)
-        );
         loadout.inventory.push(BagItem {
             index: 9,
             item: "no_such_item".into(),
             quantity: 1,
         });
-        let before_unknown = loadout.clone();
-        assert_eq!(
-            salvage(&mut loadout, 9, &economy),
-            Err(EconomyError::UnknownItem)
-        );
-        assert_eq!(loadout, before_unknown);
-        assert_eq!(loadout.equipment.len(), 1);
-        assert!(loadout.resources.is_empty());
+        let before = loadout.clone();
+        let too_many: Vec<u32> = (0..=economy.salvage.slots).collect();
+        for (indices, error) in [
+            (vec![], EconomyError::NothingToSalvage),
+            (too_many, EconomyError::TooManyCells(economy.salvage.slots)),
+            (vec![4, 4], EconomyError::DuplicateCell),
+            // A valid cell does not carry an empty one (worn gear is not in the bag).
+            (vec![4, 5], EconomyError::EmptyCell),
+            (vec![4, 9], EconomyError::UnknownItem),
+        ] {
+            assert_eq!(salvage_many(&mut loadout, &indices, &economy), Err(error));
+            assert_eq!(loadout, before);
+        }
     }
 
     #[test]

@@ -25,6 +25,8 @@
 
 pub mod text_field;
 
+use engine_game::character::equipment::{INVENTORY_COLUMNS, INVENTORY_SLOTS};
+use engine_game::character::{ItemIcon, ItemQuality};
 use engine_realm::Role;
 use engine_realm::instance::CountdownDisplay;
 use engine_render_data::font::UiFont;
@@ -193,7 +195,11 @@ pub struct BagRow {
     pub quantity: u16,
     /// Item level.
     pub item_level: u16,
-    /// What salvaging one yields, as text ("+8 Crypt Dust").
+    /// The picture the cell shows.
+    pub icon: ItemIcon,
+    /// The rank the cell's edge is coloured by.
+    pub quality: ItemQuality,
+    /// What salvaging the whole stack yields, as text ("+8 Crypt Dust").
     pub yields: String,
 }
 
@@ -211,8 +217,14 @@ pub struct ExchangeRow {
 /// The salvage and exchange screen.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct WorkshopCard {
-    /// Bag items that can be broken down.
+    /// The occupied bag cells.
     pub bag: Vec<BagRow>,
+    /// The bag cells in the salvage tray, in the order they were put there.
+    pub tray: Vec<u32>,
+    /// How many cells the tray has.
+    pub tray_slots: usize,
+    /// What salvaging the tray yields, as text ("+34 Bone Shard"); empty for an empty tray.
+    pub tray_yield: String,
     /// Resources held: display name and amount.
     pub resources: Vec<(String, u64)>,
     /// Available exchanges.
@@ -470,8 +482,12 @@ pub enum FrontEndAction {
     LeaveParty,
     /// Leave a finished run and return to the hub.
     ReturnToHub,
-    /// Break down the bag item in this cell.
-    Salvage(u32),
+    /// Put the bag cell's item in the salvage tray.
+    StageSalvage(u32),
+    /// Take the bag cell's item back out of the salvage tray.
+    UnstageSalvage(u32),
+    /// Break down everything in the salvage tray.
+    SalvageTray,
     /// Make this exchange once.
     Exchange(String),
 }
@@ -525,7 +541,11 @@ enum Hit {
     LeaveParty,
     ReturnToHub,
     Kick(String),
-    Salvage(u32),
+    /// A bag cell on the workshop screen, by bag index.
+    BagCell(u32),
+    /// A tray cell on the workshop screen, by position in the tray.
+    TrayCell(usize),
+    SalvageTray,
     Exchange(String),
     /// A panel with nothing to press: it only keeps the pointer from the camera.
     Panel,
@@ -806,7 +826,17 @@ impl FrontEndUi {
             Hit::InsertKey => actions.push(FrontEndAction::InsertKey),
             Hit::WithdrawKey => actions.push(FrontEndAction::WithdrawKey),
             Hit::ReturnToHub => actions.push(FrontEndAction::ReturnToHub),
-            Hit::Salvage(index) => actions.push(FrontEndAction::Salvage(index)),
+            Hit::BagCell(index) => actions.push(FrontEndAction::StageSalvage(index)),
+            Hit::TrayCell(position) => {
+                if let Some(index) = view
+                    .workshop
+                    .as_ref()
+                    .and_then(|workshop| workshop.tray.get(position))
+                {
+                    actions.push(FrontEndAction::UnstageSalvage(*index));
+                }
+            }
+            Hit::SalvageTray => actions.push(FrontEndAction::SalvageTray),
             Hit::Exchange(id) => actions.push(FrontEndAction::Exchange(id)),
             Hit::Panel => {}
             Hit::Dungeon(index) => actions.push(FrontEndAction::SelectDungeon(index)),
@@ -951,20 +981,27 @@ impl FrontEndUi {
                 }
             }
             Screen::Workshop => {
-                let (bag, exchange) = dungeon_panels(w, h, scale);
+                let panels = workshop_panels(w, h, scale);
+                let exchange = panels.exchange;
                 if let Some(workshop) = &view.workshop {
                     let idle = view.busy.is_none();
-                    for (index, row) in workshop
-                        .bag
-                        .iter()
-                        .enumerate()
-                        .take(workshop_rows(bag, scale))
-                    {
-                        if idle {
+                    if idle {
+                        for row in &workshop.bag {
+                            if !workshop.tray.contains(&row.index) {
+                                layout.add(
+                                    Hit::BagCell(row.index),
+                                    bag_cell_rect(panels.bag, row.index as usize, scale),
+                                );
+                            }
+                        }
+                        for position in 0..workshop.tray.len().min(TRAY_CELLS) {
                             layout.add(
-                                Hit::Salvage(row.index),
-                                workshop_button(workshop_row(bag, index, scale), scale),
+                                Hit::TrayCell(position),
+                                tray_cell_rect(panels.salvage, position, scale),
                             );
+                        }
+                        if !workshop.tray.is_empty() {
+                            layout.add(Hit::SalvageTray, salvage_button(panels.salvage, scale));
                         }
                     }
                     for (index, row) in workshop
@@ -1833,9 +1870,95 @@ fn queue_panel(h: f32, scale: UiScale) -> (UiRect, UiRect) {
     (panel, leave)
 }
 
-/// How many rows of the workshop's lists fit in `panel`.
+/// How many cells the salvage tray draws: two rows of the bag's width.
+const TRAY_CELLS: usize = INVENTORY_COLUMNS * 2;
+
+/// The workshop's three panels: the bag on the left, the salvage tray and the exchanges stacked
+/// on the right.
+struct WorkshopPanels {
+    bag: UiRect,
+    salvage: UiRect,
+    exchange: UiRect,
+}
+
+fn workshop_panels(w: f32, h: f32, scale: UiScale) -> WorkshopPanels {
+    let px = |v: f32| scale.px(v);
+    let top = px(156.0);
+    let height = h - top - px(108.0);
+    let total = (w - px(120.0)).min(px(1200.0));
+    let left = (w - total) * 0.5;
+    // Wide enough for a row of bag cells and the panel's padding either side.
+    let bag_width = cells_width(INVENTORY_COLUMNS, scale) + px(40.0);
+    let right = left + bag_width + px(24.0);
+    let right_width = total - bag_width - px(24.0);
+    let salvage_height = px(230.0);
+    WorkshopPanels {
+        bag: UiRect::new(left, top, bag_width, height),
+        salvage: UiRect::new(right, top, right_width, salvage_height),
+        exchange: UiRect::new(
+            right,
+            top + salvage_height + px(12.0),
+            right_width,
+            height - salvage_height - px(12.0),
+        ),
+    }
+}
+
+/// The width of `columns` item cells and the gaps between them: the character sheet's cell.
+fn cells_width(columns: usize, scale: UiScale) -> f32 {
+    use super::character_menu::{BAG_CELL, BAG_CELL_GAP};
+    scale.px(BAG_CELL) * columns as f32 + scale.px(BAG_CELL_GAP) * (columns as f32 - 1.0)
+}
+
+/// The rect of the item cell in `column`, `row` of a grid whose first cell is at `origin`.
+fn item_cell(origin: (f32, f32), column: usize, row: usize, scale: UiScale) -> UiRect {
+    use super::character_menu::{BAG_CELL, BAG_CELL_GAP};
+    let cell = scale.px(BAG_CELL);
+    let pitch = cell + scale.px(BAG_CELL_GAP);
+    UiRect::new(
+        origin.0 + pitch * column as f32,
+        origin.1 + pitch * row as f32,
+        cell,
+        cell,
+    )
+}
+
+/// Bag cell `index` in the bag panel.
+fn bag_cell_rect(bag: UiRect, index: usize, scale: UiScale) -> UiRect {
+    let origin = (bag.x + scale.px(20.0), bag.y + scale.px(52.0));
+    item_cell(
+        origin,
+        index % INVENTORY_COLUMNS,
+        index / INVENTORY_COLUMNS,
+        scale,
+    )
+}
+
+/// Tray cell `position` in the salvage panel.
+fn tray_cell_rect(salvage: UiRect, position: usize, scale: UiScale) -> UiRect {
+    let origin = (salvage.x + scale.px(20.0), salvage.y + scale.px(46.0));
+    item_cell(
+        origin,
+        position % INVENTORY_COLUMNS,
+        position / INVENTORY_COLUMNS,
+        scale,
+    )
+}
+
+/// The Salvage button, at the bottom right of the salvage panel.
+fn salvage_button(salvage: UiRect, scale: UiScale) -> UiRect {
+    let px = |v: f32| scale.px(v);
+    UiRect::new(
+        salvage.x + px(20.0) + cells_width(INVENTORY_COLUMNS, scale) - px(150.0),
+        salvage.bottom() - px(48.0),
+        px(150.0),
+        px(36.0),
+    )
+}
+
+/// How many rows of the exchange list fit in `panel`.
 fn workshop_rows(panel: UiRect, scale: UiScale) -> usize {
-    let rows = ((panel.height - scale.px(96.0)) / scale.px(44.0)).floor();
+    let rows = ((panel.height - scale.px(64.0)) / scale.px(44.0)).floor();
     if rows < 1.0 {
         return 0;
     }
@@ -1852,7 +1975,7 @@ fn workshop_row(panel: UiRect, index: usize, scale: UiScale) -> UiRect {
     let px = |v: f32| scale.px(v);
     UiRect::new(
         panel.x + px(12.0),
-        panel.y + px(64.0) + px(44.0) * index as f32,
+        panel.y + px(52.0) + px(44.0) * index as f32,
         panel.width - px(24.0),
         px(38.0),
     )
@@ -2658,6 +2781,67 @@ fn draw_queue_panel(ctx: &mut Painter<'_>, queue: &QueueCard, h: f32, clock: f32
     );
 }
 
+/// One item cell, as the character sheet draws a bag cell: a well, or a pocket tinted by the
+/// item's quality with its icon, and the stack size when there is more than one.
+fn draw_item_cell(
+    ctx: &mut Painter<'_>,
+    rect: UiRect,
+    row: Option<&BagRow>,
+    dimmed: bool,
+    hit: Option<&Hit>,
+) {
+    let px = ctx.scale.px(1.0);
+    let corner = 6.0 * px;
+    let hovered = hit.is_some_and(|hit| ctx.is_hovered(hit));
+    let Some(row) = row else {
+        ctx.list.panel(rect, corner, FIELD, FIELD);
+        ctx.list
+            .panel_stroke(rect, corner, px, [0.30, 0.32, 0.38, 1.0]);
+        return;
+    };
+    let quality = super::character_menu::quality_color(row.quality);
+    let fade = if dimmed { 0.35 } else { 1.0 };
+    let tint = |amount: f32| {
+        [
+            FIELD[0] + (quality[0] - FIELD[0]) * amount * fade,
+            FIELD[1] + (quality[1] - FIELD[1]) * amount * fade,
+            FIELD[2] + (quality[2] - FIELD[2]) * amount * fade,
+            1.0,
+        ]
+    };
+    ctx.list.panel(rect, corner, tint(0.22), tint(0.08));
+    ctx.list.icon(
+        rect.inset(rect.width * 0.14),
+        super::character_menu::icon_for_item(row.icon),
+        [1.0, 1.0, 1.0, fade],
+    );
+    if row.quantity > 1 {
+        ctx.text(
+            (rect.right() - 5.0 * px, rect.bottom() - 18.0 * px),
+            &row.quantity.to_string(),
+            [1.0, 1.0, 1.0, fade],
+            UiFont::SemiBold,
+            13.0,
+            TextAlign::Right,
+        );
+    }
+    if hovered {
+        ctx.list
+            .glow(rect, corner, 10.0 * px, [0.96, 0.78, 0.40, 0.35]);
+    }
+    let edge = if hovered {
+        GOLD
+    } else {
+        [quality[0], quality[1], quality[2], 0.85 * fade]
+    };
+    ctx.list.panel_stroke(
+        rect,
+        corner,
+        if hovered { 2.0 * px } else { 1.5 * px },
+        edge,
+    );
+}
+
 fn draw_workshop(ctx: &mut Painter<'_>, view: &FrontEndView, w: f32, h: f32) {
     let scale = ctx.scale;
     let px = move |v: f32| scale.px(v);
@@ -2674,10 +2858,10 @@ fn draw_workshop(ctx: &mut Painter<'_>, view: &FrontEndView, w: f32, h: f32) {
         format!("Holding: {}", parts.join("  \u{b7}  "))
     };
     ctx.heading("SALVAGE & EXCHANGE", &holding, w);
-    let (bag, exchange) = dungeon_panels(w, h, scale);
-    ctx.panel(bag);
-    ctx.panel(exchange);
-    for (panel, title) in [(bag, "BAG"), (exchange, "EXCHANGE")] {
+    let panels = workshop_panels(w, h, scale);
+    let (bag, salvage, exchange) = (panels.bag, panels.salvage, panels.exchange);
+    for (panel, title) in [(bag, "BAG"), (salvage, "SALVAGE"), (exchange, "EXCHANGE")] {
+        ctx.panel(panel);
         ctx.text(
             (panel.x + px(20.0), panel.y + px(18.0)),
             title,
@@ -2687,64 +2871,87 @@ fn draw_workshop(ctx: &mut Painter<'_>, view: &FrontEndView, w: f32, h: f32) {
             TextAlign::Left,
         );
     }
-    if workshop.bag.is_empty() {
-        ctx.text(
-            (bag.x + bag.width * 0.5, bag.y + px(90.0)),
-            "Your bag is empty.",
-            DIM,
-            UiFont::Medium,
-            16.0,
-            TextAlign::Center,
+    let find = |index: u32| workshop.bag.iter().find(|row| row.index == index);
+
+    // The whole bag, laid out like the character sheet's. What is in the tray stays visible
+    // but dimmed, so the player sees where it came from.
+    for index in 0..INVENTORY_SLOTS {
+        let row = find(u32::try_from(index).unwrap_or(u32::MAX));
+        let staged = row.is_some_and(|row| workshop.tray.contains(&row.index));
+        let hit = row.map(|row| Hit::BagCell(row.index));
+        draw_item_cell(
+            ctx,
+            bag_cell_rect(bag, index, scale),
+            row,
+            staged,
+            hit.as_ref(),
         );
     }
-    let visible = workshop_rows(bag, scale);
-    for (index, row) in workshop.bag.iter().enumerate().take(visible) {
-        let rect = workshop_row(bag, index, scale);
-        ctx.list.panel(
-            rect,
-            px(8.0),
-            [0.09, 0.10, 0.13, 1.0],
-            [0.09, 0.10, 0.13, 1.0],
-        );
-        let name = if row.quantity > 1 {
-            format!("{} x{}", row.name, row.quantity)
-        } else {
-            row.name.clone()
-        };
-        ctx.text(
-            (rect.x + px(12.0), rect.y + px(3.0)),
-            &name,
-            TEXT,
-            UiFont::SemiBold,
-            14.0,
-            TextAlign::Left,
-        );
-        ctx.text(
-            (rect.x + px(12.0), rect.y + px(21.0)),
-            &format!("Item level {} \u{b7} {}", row.item_level, row.yields),
-            DIM,
-            UiFont::Medium,
-            12.0,
-            TextAlign::Left,
-        );
-        ctx.button(
-            workshop_button(rect, scale),
-            "Salvage",
-            ButtonKind::Danger,
-            &Hit::Salvage(row.index),
-            view.busy.is_none(),
-        );
-    }
-    if workshop.bag.len() > visible {
-        ctx.text(
-            (bag.x + bag.width * 0.5, bag.bottom() - px(26.0)),
-            &format!("and {} more", workshop.bag.len() - visible),
-            FAINT,
-            UiFont::Medium,
-            13.0,
-            TextAlign::Center,
+    let grid_bottom = bag_cell_rect(bag, INVENTORY_SLOTS.saturating_sub(1), scale).bottom();
+    let hovered_row = match ctx.hovered {
+        Some(Hit::BagCell(index)) => find(*index),
+        Some(Hit::TrayCell(position)) => {
+            workshop.tray.get(*position).and_then(|index| find(*index))
+        }
+        _ => None,
+    };
+    let hint = match hovered_row {
+        Some(row) => {
+            let name = if row.quantity > 1 {
+                format!("{} x{}", row.name, row.quantity)
+            } else {
+                row.name.clone()
+            };
+            format!(
+                "{name} \u{b7} Item level {} \u{b7} {}",
+                row.item_level, row.yields
+            )
+        }
+        None if workshop.bag.is_empty() => "Your bag is empty.".to_owned(),
+        None => "Click an item to put it in the salvage tray.".to_owned(),
+    };
+    ctx.text(
+        (bag.x + px(20.0), grid_bottom + px(12.0)),
+        &hint,
+        if hovered_row.is_some() { TEXT } else { DIM },
+        UiFont::Medium,
+        14.0,
+        TextAlign::Left,
+    );
+
+    // The tray: the same cells, filled in the order the player chose.
+    for position in 0..workshop.tray_slots.min(TRAY_CELLS) {
+        let row = workshop.tray.get(position).and_then(|index| find(*index));
+        let hit = row.map(|_| Hit::TrayCell(position));
+        draw_item_cell(
+            ctx,
+            tray_cell_rect(salvage, position, scale),
+            row,
+            false,
+            hit.as_ref(),
         );
     }
+    let button = salvage_button(salvage, scale);
+    let (line, color) = if workshop.tray_yield.is_empty() {
+        ("Nothing in the tray.", DIM)
+    } else {
+        (workshop.tray_yield.as_str(), TEXT)
+    };
+    ctx.text(
+        (salvage.x + px(20.0), button.y + px(9.0)),
+        line,
+        color,
+        UiFont::SemiBold,
+        16.0,
+        TextAlign::Left,
+    );
+    ctx.button(
+        button,
+        "Salvage",
+        ButtonKind::Danger,
+        &Hit::SalvageTray,
+        !workshop.tray.is_empty() && view.busy.is_none(),
+    );
     if workshop.exchanges.is_empty() {
         ctx.text(
             (exchange.x + exchange.width * 0.5, exchange.y + px(90.0)),
@@ -3912,18 +4119,29 @@ mod tests {
         assert!(!guest.iter().any(|row| row.starts_with("Key upgraded")));
     }
 
-    #[test]
-    fn the_workshop_offers_what_can_be_done() {
-        let mut ui = FrontEndUi::new();
+    fn rusty_sword(index: u32) -> BagRow {
+        BagRow {
+            index,
+            name: "RUSTY SWORD".into(),
+            quantity: 1,
+            item_level: 6,
+            icon: ItemIcon::Helm,
+            quality: ItemQuality::Common,
+            yields: "+8 Crypt Dust".into(),
+        }
+    }
+
+    fn workshop_view(tray: Vec<u32>) -> FrontEndView {
         let mut view = view_of(Screen::Workshop, None);
         view.workshop = Some(WorkshopCard {
-            bag: vec![BagRow {
-                index: 4,
-                name: "RUSTY SWORD".into(),
-                quantity: 1,
-                item_level: 6,
-                yields: "+8 Crypt Dust".into(),
-            }],
+            bag: vec![rusty_sword(4), rusty_sword(11)],
+            tray_yield: if tray.is_empty() {
+                String::new()
+            } else {
+                "+16 Crypt Dust".into()
+            },
+            tray,
+            tray_slots: 16,
             resources: vec![("Crypt Dust".into(), 12)],
             exchanges: vec![
                 ExchangeRow {
@@ -3938,10 +4156,33 @@ mod tests {
                 },
             ],
         });
+        view
+    }
+
+    #[test]
+    fn the_workshop_stages_and_unstages_before_it_salvages() {
+        let mut ui = FrontEndUi::new();
+        let view = workshop_view(vec![]);
         assert_eq!(
-            click(&mut ui, &view, &Hit::Salvage(4)),
-            vec![FrontEndAction::Salvage(4)]
+            click(&mut ui, &view, &Hit::BagCell(4)),
+            vec![FrontEndAction::StageSalvage(4)]
         );
+        // An empty tray has nothing to salvage.
+        assert!(rect_of(&ui, &view, &Hit::SalvageTray).is_none());
+        assert!(rect_of(&ui, &view, &Hit::TrayCell(0)).is_none());
+
+        let mut view = workshop_view(vec![11, 4]);
+        assert_eq!(
+            click(&mut ui, &view, &Hit::TrayCell(0)),
+            vec![FrontEndAction::UnstageSalvage(11)]
+        );
+        assert_eq!(
+            click(&mut ui, &view, &Hit::SalvageTray),
+            vec![FrontEndAction::SalvageTray]
+        );
+        // What is in the tray cannot be put there twice.
+        assert!(rect_of(&ui, &view, &Hit::BagCell(4)).is_none());
+        assert!(rect_of(&ui, &view, &Hit::BagCell(11)).is_none());
         assert_eq!(
             click(&mut ui, &view, &Hit::Exchange("dust_to_shard".into())),
             vec![FrontEndAction::Exchange("dust_to_shard".into())]
@@ -3953,9 +4194,57 @@ mod tests {
         );
         // While a request is in flight nothing else can be sent.
         view.busy = Some("Salvaging...".into());
-        assert!(rect_of(&ui, &view, &Hit::Salvage(4)).is_none());
+        for hit in [Hit::SalvageTray, Hit::TrayCell(0), Hit::BagCell(4)] {
+            assert!(rect_of(&ui, &view, &hit).is_none());
+        }
         let mut list = UiDrawList::new();
         ui.draw(&mut list, &view, VIEWPORT, scale());
+        assert!(!list.is_empty());
+    }
+
+    #[test]
+    fn the_tray_is_two_rows_of_bag_sized_cells_inside_the_smallest_window() {
+        use super::super::character_menu::BAG_CELL;
+        let small = (1280, 720);
+        let ui = FrontEndUi::new();
+        let view = workshop_view((0..16).map(|i| i + 100).collect());
+        let panels = workshop_panels(1280.0, 720.0, scale());
+        let tray: Vec<UiRect> = (0..16)
+            .map(|position| tray_cell_rect(panels.salvage, position, scale()))
+            .collect();
+        assert_eq!(tray.len(), 16);
+        for cell in &tray {
+            assert!((cell.width - BAG_CELL).abs() < 1e-3);
+            assert!((cell.height - BAG_CELL).abs() < 1e-3);
+        }
+        // Eight to a row, two rows, aligned like the bag grid.
+        assert_eq!(tray.iter().filter(|c| c.y == tray[0].y).count(), 8);
+        assert_eq!(tray.iter().filter(|c| c.y == tray[8].y).count(), 8);
+        assert!(tray[8].y > tray[0].y);
+        let bag_cell = bag_cell_rect(panels.bag, 0, scale());
+        assert_eq!((bag_cell.width, bag_cell.height), (BAG_CELL, BAG_CELL));
+        assert_eq!(
+            tray[1].x - tray[0].x,
+            bag_cell_rect(panels.bag, 1, scale()).x - bag_cell.x
+        );
+        // Everything laid out and every panel stays on screen and does not overlap.
+        let layout = ui.layout(&view, small, scale());
+        for (_, rect) in &layout.hits {
+            assert!(rect.x >= 0.0 && rect.y >= 0.0, "{rect:?}");
+            assert!(rect.right() <= 1280.0 && rect.bottom() <= 720.0, "{rect:?}");
+        }
+        for panel in [panels.bag, panels.salvage, panels.exchange] {
+            assert!(panel.right() <= 1280.0 && panel.bottom() <= 720.0);
+        }
+        assert!(panels.salvage.bottom() <= panels.exchange.y);
+        let last_bag = bag_cell_rect(panels.bag, INVENTORY_SLOTS - 1, scale());
+        assert!(last_bag.bottom() <= panels.bag.bottom());
+        let last_tray = tray[15];
+        assert!(last_tray.bottom() <= salvage_button(panels.salvage, scale()).y);
+        let (back, _) = footer_buttons(1280.0, 720.0, scale());
+        assert!(panels.exchange.bottom() <= back.y);
+        let mut list = UiDrawList::new();
+        FrontEndUi::new().draw(&mut list, &view, small, scale());
         assert!(!list.is_empty());
     }
 

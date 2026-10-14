@@ -84,12 +84,12 @@ pub enum NetCommand {
         /// Take the item, rather than only reading.
         take: bool,
     },
-    /// Break one bag item down into a resource.
+    /// Break the whole stacks in some bag cells down into a resource.
     Salvage {
         /// Which character.
         character_id: String,
-        /// The bag index of the item.
-        index: u32,
+        /// The bag cells, from the salvage tray.
+        indices: Vec<u32>,
     },
     /// Exchange resources through a catalog exchange.
     Exchange {
@@ -553,10 +553,10 @@ impl Worker {
             }
             NetCommand::Salvage {
                 character_id,
-                index,
+                indices,
             } => {
                 let Some(token) = self.access() else { return };
-                match self.api.salvage(&token, &character_id, index) {
+                match self.api.salvage(&token, &character_id, &indices) {
                     Ok(detail) => self.emit(NetEvent::Character(Box::new(detail))),
                     Err(error) => self.fail(Action::Salvage, error),
                 }

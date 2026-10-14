@@ -215,7 +215,7 @@ async fn salvage_persists_resources_and_removes_the_item() {
     let economy = realm_game::catalog().economy();
     store::update_loadout(&pool, account, row.id, |current| {
         let mut loadout = current.clone();
-        engine_realm::economy::salvage(&mut loadout, cell.get(), economy)
+        engine_realm::economy::salvage_many(&mut loadout, &[cell.get()], economy)
             .map_err(|e| generic_auth_core::AppError::BadRequest(e.to_string()))?;
         Ok(loadout)
     })

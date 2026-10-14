@@ -7,7 +7,7 @@
 //! | `POST /characters/{id}/equipment/move` | move an item, validated server-side |
 //! | `POST /characters/{id}/mail/{mail_id}/take` | move a mail's item into the bag (409 if full) |
 //! | `POST /characters/{id}/mail/{mail_id}/read` | mark mail read |
-//! | `POST /characters/{id}/salvage` | break one bag item down into a resource |
+//! | `POST /characters/{id}/salvage` | break bag items down into a resource |
 //! | `POST /characters/{id}/exchange` | trade resources at a catalog rate |
 //! | `GET  /economy` | the economy catalog: resources, salvage rule, exchanges |
 //! | `PUT  /characters/{id}/talents` | replace talents, validated against the catalog |
@@ -215,12 +215,12 @@ async fn salvage(
     let economy = realm_game::catalog().economy();
     let account = user.user_id;
     let detail = mail_change(&state, &user, &id, |loadout| {
-        engine_realm::economy::salvage(loadout, body.index, economy)
+        engine_realm::economy::salvage_many(loadout, &body.indices, economy)
             .map(|_| ())
             .map_err(economy_error)
     })
     .await?;
-    tracing::info!(account_id = %account, character_id = %id, index = body.index, "item salvaged");
+    tracing::info!(account_id = %account, character_id = %id, items = body.indices.len(), "items salvaged");
     Ok(detail)
 }
 
@@ -255,6 +255,9 @@ fn economy_error(error: engine_realm::economy::EconomyError) -> AppError {
     match error {
         EconomyError::EmptyCell
         | EconomyError::UnknownItem
+        | EconomyError::NothingToSalvage
+        | EconomyError::TooManyCells(_)
+        | EconomyError::DuplicateCell
         | EconomyError::UnknownExchange
         | EconomyError::InvalidTimes => AppError::BadRequest(message),
         EconomyError::Insufficient(_) | EconomyError::Overflow => AppError::Conflict(message),
@@ -277,6 +280,7 @@ async fn get_economy(_user: AuthUser) -> Json<EconomyInfo> {
             resource: economy.salvage.resource.clone(),
             base: economy.salvage.base,
             per_item_level: economy.salvage.per_item_level,
+            slots: economy.salvage.slots,
         },
         exchanges: economy
             .exchanges

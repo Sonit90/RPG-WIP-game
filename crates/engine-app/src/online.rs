@@ -38,6 +38,7 @@ use std::time::{Duration, Instant};
 use engine_collision::world::{QueryBuffers, StaticId};
 use engine_core::math::Vec3;
 use engine_game::arena::{ArenaConfig, spawn_group, spawn_healing_dummy};
+use engine_game::character::{ItemIcon, ItemQuality};
 use engine_game::combat::Faction;
 use engine_game::enemy::{EnemyAbility, EnemyKind};
 use engine_game::event::CombatEvent;
@@ -356,6 +357,8 @@ pub struct OnlineSession {
     settings_in_flight: Option<serde_json::Value>,
     /// The selected character's stored loadout, as the API last sent it.
     stored_loadout: Option<(Hero, engine_realm::loadout::Loadout)>,
+    /// The bag cells put in the Workshop's salvage tray, in the order they were put there.
+    salvage_tray: Vec<u32>,
     /// Chest loot (or its mail) the bridge may not have persisted yet.
     loot_watch: Option<LootWatch>,
 }
@@ -449,6 +452,7 @@ impl OnlineSession {
             settings_synced: None,
             settings_in_flight: None,
             stored_loadout: None,
+            salvage_tray: Vec::new(),
             loot_watch: None,
         })
     }
@@ -878,6 +882,7 @@ impl OnlineSession {
                 self.returning = None;
                 self.run_start = None;
                 self.stored_loadout = None;
+                self.salvage_tray.clear();
                 self.loot_watch = None;
                 // Logging out lands on the sign-in form; only the first page is the title.
                 if self.stage != Screen::Title {
@@ -932,6 +937,13 @@ impl OnlineSession {
                     }) {
                         self.loot_watch = None;
                     }
+                    // A salvage empties the cells it broke down; an exchange leaves the tray be.
+                    self.salvage_tray.retain(|index| {
+                        loadout
+                            .inventory
+                            .iter()
+                            .any(|entry| entry.index == *index && entry.quantity > 0)
+                    });
                     self.stored_loadout = Some((hero, loadout.clone()));
                     self.directives.push(Directive::ApplyLoadout(hero, loadout));
                 }
@@ -1081,6 +1093,7 @@ impl OnlineSession {
             FrontEndAction::OpenWorkshop => {
                 self.stage = Screen::Workshop;
                 self.error = None;
+                self.salvage_tray.clear();
                 // The bag as the server has it, and the catalog if it never arrived.
                 if let Some(id) = self.selected_character_summary().map(|c| c.id.clone()) {
                     self.client.send(NetCommand::FetchCharacter(id));
@@ -1123,6 +1136,7 @@ impl OnlineSession {
             }
             FrontEndAction::Back => {
                 self.error = None;
+                self.salvage_tray.clear();
                 self.stage = match self.stage {
                     Screen::Roles => Screen::Dungeons,
                     Screen::Dungeons | Screen::Workshop => Screen::Hub,
@@ -1160,13 +1174,25 @@ impl OnlineSession {
                 self.stage = Screen::Hub;
             }
             FrontEndAction::ReturnToHub => self.return_to_hub(),
-            FrontEndAction::Salvage(index) => {
+            FrontEndAction::StageSalvage(index) => {
+                if !self.salvage_tray.contains(&index)
+                    && self.salvage_tray.len() < self.salvage_slots()
+                    && self.bag_has(index)
+                {
+                    self.salvage_tray.push(index);
+                }
+            }
+            FrontEndAction::UnstageSalvage(index) => self.salvage_tray.retain(|i| *i != index),
+            FrontEndAction::SalvageTray => {
+                if self.salvage_tray.is_empty() {
+                    return;
+                }
                 if let Some(character_id) = self.selected_character_summary().map(|c| c.id.clone())
                 {
                     self.set_busy(BusyKind::Workshop, "Salvaging...");
                     self.client.send(NetCommand::Salvage {
                         character_id,
-                        index,
+                        indices: self.salvage_tray.clone(),
                     });
                 }
             }
@@ -1357,6 +1383,25 @@ impl OnlineSession {
         })
     }
 
+    /// How many cells the salvage tray has: the economy catalog's, else the bundled one's.
+    fn salvage_slots(&self) -> usize {
+        let slots = self.economy.as_ref().map_or_else(
+            || self.catalog.economy().salvage.slots,
+            |economy| economy.salvage.slots,
+        );
+        slots as usize
+    }
+
+    /// Whether bag cell `index` holds something.
+    fn bag_has(&self, index: u32) -> bool {
+        self.stored_loadout.as_ref().is_some_and(|(_, loadout)| {
+            loadout
+                .inventory
+                .iter()
+                .any(|entry| entry.index == index && entry.quantity > 0)
+        })
+    }
+
     /// The salvage and exchange page for the selected character.
     fn workshop_card(&self) -> WorkshopCard {
         let Some(character) = self.selected_character_summary() else {
@@ -1376,7 +1421,7 @@ impl OnlineSession {
             };
         };
         let rule = &economy.salvage;
-        let bag = self
+        let bag: Vec<BagRow> = self
             .stored_loadout
             .as_ref()
             .map(|(_, loadout)| {
@@ -1387,20 +1432,44 @@ impl OnlineSession {
                     .map(|entry| {
                         let item = engine_game::character::item_by_key(&entry.item);
                         let level = item.map_or(0, |def| def.item_level);
-                        let amount = u64::from(rule.base)
-                            + u64::from(rule.per_item_level) * u64::from(level);
+                        let amount = (u64::from(rule.base)
+                            + u64::from(rule.per_item_level) * u64::from(level))
+                            * u64::from(entry.quantity);
                         BagRow {
                             index: entry.index,
                             name: item
                                 .map_or_else(|| entry.item.clone(), |def| def.name.to_owned()),
                             quantity: entry.quantity,
                             item_level: level,
+                            icon: item.map_or(ItemIcon::Trinket, |def| def.icon),
+                            quality: item.map_or(ItemQuality::Common, |def| def.quality),
                             yields: format!("+{amount} {}", self.resource_name(&rule.resource)),
                         }
                     })
                     .collect()
             })
             .unwrap_or_default();
+        // Only cells that still hold something; the yield is the sum of their stacks.
+        let tray: Vec<u32> = self
+            .salvage_tray
+            .iter()
+            .copied()
+            .filter(|index| bag.iter().any(|row| row.index == *index))
+            .collect();
+        let tray_total: u64 = tray
+            .iter()
+            .filter_map(|index| bag.iter().find(|row| row.index == *index))
+            .map(|row| {
+                let level = u64::from(row.item_level);
+                (u64::from(rule.base) + u64::from(rule.per_item_level) * level)
+                    * u64::from(row.quantity)
+            })
+            .sum();
+        let tray_yield = if tray.is_empty() {
+            String::new()
+        } else {
+            format!("+{tray_total} {}", self.resource_name(&rule.resource))
+        };
         let exchanges = economy
             .exchanges
             .iter()
@@ -1418,6 +1487,9 @@ impl OnlineSession {
             .collect();
         WorkshopCard {
             bag,
+            tray,
+            tray_slots: self.salvage_slots(),
+            tray_yield,
             resources: self.named_resources(&character.resources),
             exchanges,
         }

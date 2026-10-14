@@ -17,7 +17,7 @@
       "description": "A coal that still glows from the Hollow Steward's lantern. Rare."
     }
   ],
-  "salvage": { "resource": "bone_shard", "base": 1, "per_item_level": 1 },
+  "salvage": { "resource": "bone_shard", "base": 1, "per_item_level": 1, "slots": 16 },
   "exchanges": [
     {
       "id": "dust_to_ember",
