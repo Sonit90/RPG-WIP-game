@@ -47,6 +47,10 @@ pub struct Snapshot {
     pub gear_score: u32,
     /// The stored loadout as JSON: what the realm dresses the character in for the fight.
     pub loadout: String,
+    /// The dungeon the character's key opens; empty when it has no key.
+    pub key_dungeon_id: String,
+    /// The key's level; 0 when it has no key.
+    pub key_level: u32,
 }
 
 /// SpacetimeDB's JSON for a unit enum variant: the variant's name in snake_case.
@@ -71,6 +75,22 @@ struct PendingRow {
     experience: u32,
     #[allow(dead_code)]
     created_at: Value,
+    key_level: u32,
+    key_owner: bool,
+    key_level_after: u32,
+    /// JSON text: `[["crypt_dust", 9], ...]`.
+    resources: String,
+}
+
+/// The resources a result row carries. Malformed text pays nothing (and says so).
+fn parse_resources(text: &str, result_id: &str) -> Vec<(String, u32)> {
+    if text.trim().is_empty() {
+        return Vec::new();
+    }
+    serde_json::from_str(text).unwrap_or_else(|e| {
+        tracing::warn!(result_id, error = %e, "result resources are malformed; paying none");
+        Vec::new()
+    })
 }
 
 /// One `PendingLoot` row, positional like [`PendingRow`]: `server/realm-module/src/schema.rs`.
@@ -149,6 +169,8 @@ impl RealmBridge {
                 snapshot.loadout,
                 dungeon_id,
                 role_json(role),
+                snapshot.key_dungeon_id,
+                snapshot.key_level,
             ]),
         )
         .await
@@ -163,6 +185,7 @@ impl RealmBridge {
         Ok(rows
             .into_iter()
             .map(|row| DungeonResult {
+                resources: parse_resources(&row.resources, &row.result_id),
                 result_id: row.result_id,
                 account_id: row.account_id,
                 character_id: row.character_id,
@@ -170,6 +193,9 @@ impl RealmBridge {
                 success: row.success,
                 duration_us: row.duration_us,
                 experience: row.experience,
+                key_level: row.key_level,
+                key_owner: row.key_owner,
+                key_level_after: row.key_level_after,
             })
             .collect())
     }
@@ -213,11 +239,38 @@ mod tests {
 
     #[test]
     fn pending_rows_read_positionally() {
-        let body = r#"[["12:acct","acct","char","graveyard_crypt",12,true,5000000,250,[1791124476846797]]]"#;
+        let body = r#"[["12:acct","acct","char","graveyard_crypt",12,true,5000000,250,[1791124476846797],3,true,4,"[[\"crypt_dust\",9]]"]]"#;
         let rows: Vec<PendingRow> = serde_json::from_str(body).unwrap();
         assert_eq!(rows[0].result_id, "12:acct");
         assert!(rows[0].success);
         assert_eq!(rows[0].experience, 250);
+        assert_eq!(rows[0].key_level, 3);
+        assert!(rows[0].key_owner);
+        assert_eq!(rows[0].key_level_after, 4);
+        assert_eq!(
+            parse_resources(&rows[0].resources, "12:acct"),
+            vec![("crypt_dust".to_string(), 9)]
+        );
+    }
+
+    #[test]
+    fn a_non_owner_row_without_resources_reads() {
+        let body =
+            r#"[["12:b","acct","char","graveyard_crypt",12,false,5000000,0,[1],0,false,0,"[]"]]"#;
+        let rows: Vec<PendingRow> = serde_json::from_str(body).unwrap();
+        assert!(!rows[0].key_owner);
+        assert!(parse_resources(&rows[0].resources, "12:b").is_empty());
+    }
+
+    #[test]
+    fn malformed_or_empty_resources_pay_nothing() {
+        assert!(parse_resources("not json", "r").is_empty());
+        assert!(parse_resources("", "r").is_empty());
+        assert!(parse_resources(r#"[["dust","many"]]"#, "r").is_empty());
+        assert_eq!(
+            parse_resources(r#"[["a",1],["b",2]]"#, "r"),
+            vec![("a".to_string(), 1), ("b".to_string(), 2)]
+        );
     }
 
     #[test]

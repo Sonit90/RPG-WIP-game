@@ -95,6 +95,23 @@ pub struct CharacterSummary {
     pub gear_score: u32,
     /// What it wears.
     pub equipment: Vec<EquippedItem>,
+    /// The character's dungeon key, if it has one.
+    #[serde(default)]
+    pub key: Option<KeySummary>,
+    /// Resources held, `(resource id, amount)`, sorted by id.
+    #[serde(default)]
+    pub resources: Vec<(String, u64)>,
+}
+
+/// A character's dungeon key, as the API reports it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KeySummary {
+    /// The dungeon it opens.
+    pub dungeon_id: String,
+    /// That dungeon's display name.
+    pub dungeon_name: String,
+    /// Key level.
+    pub level: u32,
 }
 
 /// `GET /api/v1/characters/{id}`: everything about one character.
@@ -132,6 +149,71 @@ pub struct MoveItemRequest {
     pub from: SlotRef,
     /// Where it goes.
     pub to: SlotRef,
+}
+
+/// `POST /api/v1/characters/{id}/salvage`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SalvageRequest {
+    /// The bag cell to break down one item of.
+    pub index: u32,
+}
+
+/// `POST /api/v1/characters/{id}/exchange`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExchangeRequest {
+    /// Which exchange in the economy catalog.
+    pub exchange_id: String,
+    /// How many trades.
+    pub times: u32,
+}
+
+/// One resource in [`EconomyInfo`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResourceInfo {
+    /// Stable id.
+    pub id: String,
+    /// Display name.
+    pub name: String,
+    /// One sentence for the tooltip.
+    #[serde(default)]
+    pub description: String,
+}
+
+/// What salvaging an item yields, in [`EconomyInfo`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SalvageInfo {
+    /// The resource id it yields.
+    pub resource: String,
+    /// Yielded for any item.
+    pub base: u32,
+    /// Added per item level.
+    pub per_item_level: u32,
+}
+
+/// One exchange in [`EconomyInfo`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExchangeInfo {
+    /// Stable id.
+    pub id: String,
+    /// Resource paid.
+    pub from: String,
+    /// Cost of one trade.
+    pub from_amount: u32,
+    /// Resource received.
+    pub to: String,
+    /// Yield of one trade.
+    pub to_amount: u32,
+}
+
+/// `GET /api/v1/economy`: the economy catalog.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EconomyInfo {
+    /// Every resource.
+    pub resources: Vec<ResourceInfo>,
+    /// The salvage rule.
+    pub salvage: SalvageInfo,
+    /// Every exchange.
+    pub exchanges: Vec<ExchangeInfo>,
 }
 
 /// `PUT /api/v1/characters/{id}/talents`.
@@ -194,6 +276,18 @@ pub struct DungeonResult {
     pub duration_us: i64,
     /// Experience awarded by the realm.
     pub experience: u32,
+    /// The key level the run was played at (0: no key).
+    #[serde(default)]
+    pub key_level: u32,
+    /// Whether this character's key opened the run.
+    #[serde(default)]
+    pub key_owner: bool,
+    /// The level the key becomes on success (owner only; 0 otherwise).
+    #[serde(default)]
+    pub key_level_after: u32,
+    /// Resources paid, `(resource id, amount)`.
+    #[serde(default)]
+    pub resources: Vec<(String, u32)>,
 }
 
 /// One chest item to deliver to a character, as the bridge hands it to the persistence store.
@@ -242,6 +336,8 @@ mod tests {
                 experience: 0,
                 gear_score: 40,
                 equipment: vec![],
+                key: None,
+                resources: vec![],
             },
             inventory: vec![],
             mail: vec![],

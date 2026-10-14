@@ -7,6 +7,9 @@
 //! | `POST /characters/{id}/equipment/move` | move an item, validated server-side |
 //! | `POST /characters/{id}/mail/{mail_id}/take` | move a mail's item into the bag (409 if full) |
 //! | `POST /characters/{id}/mail/{mail_id}/read` | mark mail read |
+//! | `POST /characters/{id}/salvage` | break one bag item down into a resource |
+//! | `POST /characters/{id}/exchange` | trade resources at a catalog rate |
+//! | `GET  /economy` | the economy catalog: resources, salvage rule, exchanges |
 //! | `PUT  /characters/{id}/talents` | replace talents, validated against the catalog |
 //! | `GET  /player/settings` | the account's synced settings |
 //! | `PUT  /player/settings` | save them, with optimistic versioning |
@@ -22,8 +25,8 @@ use axum::{
     Json, Router,
 };
 use engine_realm::api::{
-    CharacterDetail, CharacterSummary, MoveItemRequest, QueueRequest, SettingsDocument,
-    TalentsRequest,
+    CharacterDetail, CharacterSummary, EconomyInfo, ExchangeInfo, ExchangeRequest, MoveItemRequest,
+    QueueRequest, ResourceInfo, SalvageInfo, SalvageRequest, SettingsDocument, TalentsRequest,
 };
 use generic_auth_core::AppError;
 use realm_game::bridge::{BridgeError, Snapshot};
@@ -42,6 +45,9 @@ pub fn router() -> Router<AppState> {
         .route("/characters/{id}/equipment/move", post(move_item))
         .route("/characters/{id}/mail/{mail_id}/take", post(take_mail))
         .route("/characters/{id}/mail/{mail_id}/read", post(read_mail))
+        .route("/characters/{id}/salvage", post(salvage))
+        .route("/characters/{id}/exchange", post(exchange))
+        .route("/economy", get(get_economy))
         .route("/characters/{id}/talents", put(save_talents))
         .route("/player/settings", get(get_settings).put(put_settings))
         .route("/realm/queue", post(queue))
@@ -66,6 +72,21 @@ async fn owned(
         })
 }
 
+/// One character in full: completions and key read fresh next to the row.
+async fn detail_of(
+    state: &AppState,
+    user: &AuthUser,
+    row: &store::CharacterRow,
+) -> ApiResult<Json<CharacterDetail>> {
+    let completions = store::completions(&state.db, row.id)
+        .await
+        .map_err(ApiError)?;
+    let key = store::get_key(&state.db, user.user_id, row.id)
+        .await
+        .map_err(ApiError)?;
+    Ok(Json(characters::detail(row, completions, key.as_ref())))
+}
+
 async fn list_characters(
     State(state): State<AppState>,
     user: AuthUser,
@@ -73,7 +94,14 @@ async fn list_characters(
     let rows = store::list_or_provision(&state.db, user.user_id)
         .await
         .map_err(ApiError)?;
-    Ok(Json(rows.iter().map(characters::summary).collect()))
+    let keys = store::keys_of(&state.db, user.user_id)
+        .await
+        .map_err(ApiError)?;
+    Ok(Json(
+        rows.iter()
+            .map(|row| characters::summary(row, keys.get(&row.id)))
+            .collect(),
+    ))
 }
 
 async fn get_character(
@@ -82,10 +110,7 @@ async fn get_character(
     Path(id): Path<String>,
 ) -> ApiResult<Json<CharacterDetail>> {
     let row = owned(&state, &user, &id).await?;
-    let completions = store::completions(&state.db, row.id)
-        .await
-        .map_err(ApiError)?;
-    Ok(Json(characters::detail(&row, completions)))
+    detail_of(&state, &user, &row).await
 }
 
 async fn move_item(
@@ -116,13 +141,10 @@ async fn move_item(
     .ok_or(ApiError(AppError::NotFound))?;
     tracing::info!(account_id = %user.user_id, character_id = %row.id, "equipment changed");
     let row = owned(&state, &user, &id).await?;
-    let completions = store::completions(&state.db, row.id)
-        .await
-        .map_err(ApiError)?;
-    Ok(Json(characters::detail(&row, completions)))
+    detail_of(&state, &user, &row).await
 }
 
-/// Both mail routes: a locked read-modify-write of the loadout, then the character in full.
+/// The mail, salvage and exchange routes: a locked read-modify-write of the loadout, then the character in full.
 async fn mail_change(
     state: &AppState,
     user: &AuthUser,
@@ -146,10 +168,7 @@ async fn mail_change(
     .map_err(ApiError)?
     .ok_or(ApiError(AppError::NotFound))?;
     let row = owned(state, user, id).await?;
-    let completions = store::completions(&state.db, row.id)
-        .await
-        .map_err(ApiError)?;
-    Ok(Json(characters::detail(&row, completions)))
+    detail_of(state, user, &row).await
 }
 
 async fn take_mail(
@@ -160,10 +179,12 @@ async fn take_mail(
     use engine_realm::loadout::{take_mail, TakeMailError};
     let account = user.user_id;
     let detail = mail_change(&state, &user, &id, |loadout| {
-        take_mail(loadout, mail_id).map(|_| ()).map_err(|error| match error {
-            TakeMailError::BagFull => AppError::Conflict("Your bag is full.".into()),
-            TakeMailError::NotFound => AppError::NotFound,
-        })
+        take_mail(loadout, mail_id)
+            .map(|_| ())
+            .map_err(|error| match error {
+                TakeMailError::BagFull => AppError::Conflict("Your bag is full.".into()),
+                TakeMailError::NotFound => AppError::NotFound,
+            })
     })
     .await?;
     tracing::info!(account_id = %account, character_id = %id, mail_id, "mail taken");
@@ -183,6 +204,92 @@ async fn read_mail(
         }
     })
     .await
+}
+
+async fn salvage(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(id): Path<String>,
+    Json(body): Json<SalvageRequest>,
+) -> ApiResult<Json<CharacterDetail>> {
+    let economy = realm_game::catalog().economy();
+    let account = user.user_id;
+    let detail = mail_change(&state, &user, &id, |loadout| {
+        engine_realm::economy::salvage(loadout, body.index, economy)
+            .map(|_| ())
+            .map_err(economy_error)
+    })
+    .await?;
+    tracing::info!(account_id = %account, character_id = %id, index = body.index, "item salvaged");
+    Ok(detail)
+}
+
+async fn exchange(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(id): Path<String>,
+    Json(body): Json<ExchangeRequest>,
+) -> ApiResult<Json<CharacterDetail>> {
+    let economy = realm_game::catalog().economy();
+    let account = user.user_id;
+    let detail = mail_change(&state, &user, &id, |loadout| {
+        engine_realm::economy::exchange(loadout, &body.exchange_id, body.times, economy)
+            .map_err(economy_error)
+    })
+    .await?;
+    tracing::info!(
+        account_id = %account,
+        character_id = %id,
+        exchange_id = %body.exchange_id,
+        times = body.times,
+        "resources exchanged"
+    );
+    Ok(detail)
+}
+
+/// A refused salvage or exchange as the HTTP error: the request was wrong (400) or the state
+/// it needs is not there (409); the message is the player-facing sentence.
+fn economy_error(error: engine_realm::economy::EconomyError) -> AppError {
+    use engine_realm::economy::EconomyError;
+    let message = error.to_string();
+    match error {
+        EconomyError::EmptyCell
+        | EconomyError::UnknownItem
+        | EconomyError::UnknownExchange
+        | EconomyError::InvalidTimes => AppError::BadRequest(message),
+        EconomyError::Insufficient(_) | EconomyError::Overflow => AppError::Conflict(message),
+    }
+}
+
+async fn get_economy(_user: AuthUser) -> Json<EconomyInfo> {
+    let economy = realm_game::catalog().economy();
+    Json(EconomyInfo {
+        resources: economy
+            .resources
+            .iter()
+            .map(|resource| ResourceInfo {
+                id: resource.id.clone(),
+                name: resource.name.clone(),
+                description: resource.description.clone(),
+            })
+            .collect(),
+        salvage: SalvageInfo {
+            resource: economy.salvage.resource.clone(),
+            base: economy.salvage.base,
+            per_item_level: economy.salvage.per_item_level,
+        },
+        exchanges: economy
+            .exchanges
+            .iter()
+            .map(|exchange| ExchangeInfo {
+                id: exchange.id.clone(),
+                from: exchange.from.clone(),
+                from_amount: exchange.from_amount,
+                to: exchange.to.clone(),
+                to_amount: exchange.to_amount,
+            })
+            .collect(),
+    })
 }
 
 async fn save_talents(
@@ -302,7 +409,10 @@ async fn queue(
     let dungeon = catalog
         .dungeon(&body.dungeon_id)
         .ok_or_else(|| ApiError(AppError::BadRequest("That dungeon does not exist.".into())))?;
-    let summary = characters::summary(&row);
+    let key = store::get_key(&state.db, user.user_id, row.id)
+        .await
+        .map_err(ApiError)?;
+    let summary = characters::summary(&row, key.as_ref());
     dungeon
         .admits(summary.level, summary.gear_score)
         .map_err(|e| ApiError(AppError::BadRequest(e.message)))?;
@@ -319,6 +429,11 @@ async fn queue(
         level: summary.level,
         gear_score: summary.gear_score,
         loadout: serde_json::to_string(&row.loadout.0).unwrap_or_default(),
+        key_dungeon_id: key
+            .as_ref()
+            .map(|key| key.dungeon_id.clone())
+            .unwrap_or_default(),
+        key_level: key.as_ref().map_or(0, |key| key.level),
     };
     match state
         .realm
