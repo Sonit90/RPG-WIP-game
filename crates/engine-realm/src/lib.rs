@@ -48,6 +48,7 @@ pub mod key;
 pub mod loadout;
 pub mod matchmaking;
 pub mod movement;
+pub mod ops;
 pub mod party;
 pub mod progression;
 pub mod rate_limit;

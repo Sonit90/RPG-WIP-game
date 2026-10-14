@@ -1,5 +1,5 @@
 use config::{Config, Environment, File};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Settings {
@@ -12,6 +12,8 @@ pub struct Settings {
     pub email: Email,
     #[serde(default)]
     pub realm: Realm,
+    #[serde(default)]
+    pub ops: Ops,
 }
 
 /// The SpacetimeDB realm this service bridges to.
@@ -206,4 +208,73 @@ impl Settings {
         s.auth.jwt_issuer = s.auth.jwt_issuer.trim_end_matches('/').to_string();
         Ok(s)
     }
+}
+
+/// The operator dashboard's settings.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct Ops {
+    #[serde(default)]
+    pub anomaly: Anomaly,
+}
+
+/// What counts as suspicious (`[ops.anomaly]`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Anomaly {
+    /// A completed run faster than this many seconds is flagged. 0 turns the check off.
+    #[serde(default = "default_min_completion_seconds")]
+    pub min_completion_seconds: f64,
+    /// ...or faster than this percent of its dungeon's median completed run.
+    #[serde(default = "default_relative_fast_percent")]
+    pub relative_fast_percent: f64,
+    /// Completed runs a dungeon needs before the relative check applies.
+    #[serde(default = "default_relative_min_samples")]
+    pub relative_min_samples: usize,
+    /// A player's DPS above this is flagged.
+    #[serde(default = "default_max_dps")]
+    pub max_dps: f64,
+    /// A player's total damage in one run above this is flagged.
+    #[serde(default = "default_max_total_damage")]
+    pub max_total_damage: i64,
+    /// A boss kill faster than this many seconds is flagged.
+    #[serde(default = "default_min_boss_kill_seconds")]
+    pub min_boss_kill_seconds: f64,
+    /// Rows per list in the report.
+    #[serde(default = "default_list_limit")]
+    pub list_limit: usize,
+}
+
+impl Default for Anomaly {
+    fn default() -> Self {
+        Self {
+            min_completion_seconds: default_min_completion_seconds(),
+            relative_fast_percent: default_relative_fast_percent(),
+            relative_min_samples: default_relative_min_samples(),
+            max_dps: default_max_dps(),
+            max_total_damage: default_max_total_damage(),
+            min_boss_kill_seconds: default_min_boss_kill_seconds(),
+            list_limit: default_list_limit(),
+        }
+    }
+}
+
+fn default_min_completion_seconds() -> f64 {
+    60.0
+}
+fn default_relative_fast_percent() -> f64 {
+    50.0
+}
+fn default_relative_min_samples() -> usize {
+    5
+}
+fn default_max_dps() -> f64 {
+    5000.0
+}
+fn default_max_total_damage() -> i64 {
+    5_000_000
+}
+fn default_min_boss_kill_seconds() -> f64 {
+    10.0
+}
+fn default_list_limit() -> usize {
+    20
 }

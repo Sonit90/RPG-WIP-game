@@ -21,6 +21,7 @@ pub enum Permission {
     MappingsManageOwn,
     MappingsManageAny,
     JobsRun,
+    OpsView,
 }
 
 impl Permission {
@@ -39,6 +40,7 @@ impl Permission {
             Permission::MappingsManageOwn => "mappings.manage_own",
             Permission::MappingsManageAny => "mappings.manage_any",
             Permission::JobsRun => "jobs.run",
+            Permission::OpsView => "ops.view",
         }
     }
 }

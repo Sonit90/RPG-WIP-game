@@ -6,6 +6,7 @@ pub mod admin;
 pub mod auth;
 pub mod game;
 pub mod oidc;
+pub mod ops;
 pub mod users;
 
 pub fn router(state: AppState) -> Router {
@@ -18,6 +19,9 @@ pub fn router(state: AppState) -> Router {
 
     Router::new()
         .route("/health", get(health))
+        // The operator dashboard: a static page; its data calls need an `ops.view` token.
+        .route("/admin", get(ops::dashboard))
+        .route("/admin/", get(ops::dashboard))
         // Discovery and the JWKS live at the issuer's root, where verifiers look for them.
         .merge(oidc::router().with_state(state))
         .nest("/api/v1", api_v1)

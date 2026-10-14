@@ -68,5 +68,7 @@ fn init_tracing() {
     tracing_subscriber::registry()
         .with(filter)
         .with(fmt::layer().with_target(true).compact())
+        // The dashboard's list of recent errors.
+        .with(generic_auth_api::ops::errlog::ErrorLogLayer)
         .init();
 }

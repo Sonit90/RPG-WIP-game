@@ -21,6 +21,8 @@ pub struct AppState {
     pub limits: Arc<crate::rate_limit::Limits>,
     /// The bridge to the SpacetimeDB realm.
     pub realm: realm_game::bridge::RealmBridge,
+    /// The operator dashboard's state: uptime, system sampler, snapshot cache, bridge stats.
+    pub ops: Arc<crate::ops::OpsState>,
 }
 
 /// The access-token signing key: inline PEM, else the configured file. Development creates
@@ -93,6 +95,7 @@ impl AppState {
             &settings.realm.spacetimedb_url,
             &settings.realm.spacetimedb_database,
         );
+        let ops = Arc::new(crate::ops::OpsState::new(settings.realm.enabled));
         Ok(Self {
             settings,
             db,
@@ -100,6 +103,7 @@ impl AppState {
             http,
             limits: Arc::new(crate::rate_limit::Limits::scaled(limit_scale)),
             realm,
+            ops,
         })
     }
 }

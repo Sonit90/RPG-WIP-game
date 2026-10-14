@@ -140,3 +140,158 @@ pub fn dismiss_notice(ctx: &ReducerContext, notice_id: u64) -> Result<(), String
     }
     Ok(())
 }
+
+/// The operator's view of the live realm, as JSON text (`engine_realm::ops::AdminSnapshot`).
+///
+/// For the bridge only; anyone else receives an empty string. Read-only and on demand: it
+/// walks the tables once and builds nothing a tick depends on, so it costs nothing while
+/// nobody asks. The persistence API's `/admin/ops` endpoints are the only callers.
+#[spacetimedb::procedure]
+pub fn svc_admin_snapshot(ctx: &mut spacetimedb::ProcedureContext) -> String {
+    ctx.with_tx(|tx| {
+        if crate::service::require_service(tx).is_err() {
+            return String::new();
+        }
+        serde_json::to_string(&engine_realm::ops::build_snapshot(&snapshot_input(tx)))
+            .unwrap_or_default()
+    })
+}
+
+/// Copies the tables into the builder's plain rows.
+fn snapshot_input(ctx: &ReducerContext) -> engine_realm::ops::SnapshotInput {
+    use engine_realm::Role;
+    use engine_realm::instance::InstanceState;
+    use engine_realm::ops::*;
+    use engine_realm::party::PartyState;
+    use spacetimedb::Table;
+    use std::collections::BTreeMap;
+
+    let micros = crate::util::micros;
+
+    let online_accounts = u32::try_from(
+        ctx.db
+            .account()
+            .iter()
+            .filter(|a| a.connections > 0)
+            .count(),
+    )
+    .unwrap_or(u32::MAX);
+
+    let mut queue: BTreeMap<String, QueueCount> = BTreeMap::new();
+    for ticket in ctx.db.queue_ticket().iter() {
+        let count = queue
+            .entry(ticket.dungeon_id.clone())
+            .or_insert_with(|| QueueCount {
+                dungeon_id: ticket.dungeon_id.clone(),
+                ..QueueCount::default()
+            });
+        if ticket.status == TicketStatus::Matched {
+            count.matched += 1;
+            continue;
+        }
+        match ticket.role {
+            RoleTag::Tank => count.tanks += 1,
+            RoleTag::Healer => count.healers += 1,
+            RoleTag::Dps => count.dps += 1,
+        }
+    }
+
+    let party_states = ctx
+        .db
+        .party()
+        .iter()
+        .map(|party| PartyState::from(party.state).key().to_owned())
+        .collect();
+
+    let instances = ctx
+        .db
+        .dungeon_instance()
+        .iter()
+        .map(|instance| {
+            let combat = ctx.db.instance_combat().instance_id().find(instance.id);
+            let players = ctx
+                .db
+                .instance_player()
+                .instance_id()
+                .filter(instance.id)
+                .map(|p| PlayerRow {
+                    alive: ctx
+                        .db
+                        .player_combat()
+                        .identity()
+                        .find(p.identity)
+                        .map(|c| c.alive),
+                    account_id: p.account_id,
+                    name: p.name,
+                    definition_id: p.definition_id,
+                    role: Role::from(p.role).key().to_owned(),
+                    present: p.presence == PresenceTag::Present,
+                    x: p.position.x,
+                    y: p.position.y,
+                    z: p.position.z,
+                    health: p.health,
+                    max_health: p.max_health,
+                })
+                .collect();
+            let members = ctx
+                .db
+                .party_member()
+                .party_id()
+                .filter(instance.party_id)
+                .map(|m| MemberRow {
+                    account_id: m.account_id,
+                    character_id: m.character_id,
+                    level: m.level,
+                    gear_score: m.gear_score,
+                    loadout: m.loadout,
+                })
+                .collect();
+            let monsters = ctx
+                .db
+                .instance_monster()
+                .instance_id()
+                .filter(instance.id)
+                .map(|m| MonsterRow {
+                    key: m.key,
+                    is_boss: engine_game::enemy::EnemyKind::from_id(&m.archetype)
+                        .is_some_and(|kind| kind.is_boss()),
+                    kind: m.archetype,
+                    name: m.name,
+                    x: m.position.x,
+                    z: m.position.z,
+                    alive: m.alive,
+                })
+                .collect();
+            InstanceInput {
+                row: InstanceRow {
+                    id: instance.id,
+                    party_id: instance.party_id,
+                    dungeon_id: instance.dungeon_id.clone(),
+                    key_level: instance.key_level,
+                    state: InstanceState::from(instance.state).key().to_owned(),
+                    created_at_us: micros(instance.created_at),
+                    run_starts_at_us: instance.countdown_ends_at.map(micros),
+                    finished_at_us: instance.finished_at.map(micros),
+                },
+                // Key modifiers are not modelled yet; the field exists for when they are.
+                modifiers: Vec::new(),
+                live: instance.live,
+                players,
+                members,
+                monsters,
+                combat: combat.map(|c| CombatRow {
+                    tick: c.tick,
+                    origin_us: micros(c.origin),
+                }),
+            }
+        })
+        .collect();
+
+    SnapshotInput {
+        now_us: micros(ctx.timestamp),
+        online_accounts,
+        queue: queue.into_values().collect(),
+        party_states,
+        instances,
+    }
+}

@@ -218,6 +218,16 @@ impl RealmBridge {
             .collect())
     }
 
+    /// The operator's snapshot of the live realm (`svc_admin_snapshot`). The procedure returns
+    /// the document as JSON text, which SpacetimeDB wraps in a JSON string.
+    pub async fn admin_snapshot(
+        &self,
+        token: &str,
+    ) -> Result<engine_realm::ops::AdminSnapshot, BridgeError> {
+        let body = self.call(token, "svc_admin_snapshot", json!([])).await?;
+        parse_snapshot(&body)
+    }
+
     /// Clears chest items that were persisted.
     pub async fn ack_loot(&self, token: &str, ids: &[String]) -> Result<(), BridgeError> {
         self.call(token, "svc_ack_loot", json!([ids]))
@@ -233,6 +243,23 @@ impl RealmBridge {
     }
 }
 
+/// Reads the snapshot procedure's reply: a JSON string holding the document, or (leniently)
+/// the document itself. An empty string is what the module returns to a caller it refuses.
+fn parse_snapshot(body: &str) -> Result<engine_realm::ops::AdminSnapshot, BridgeError> {
+    let unreadable =
+        |e: serde_json::Error| BridgeError::Unavailable(format!("unreadable snapshot: {e}"));
+    let value: Value = serde_json::from_str(body).map_err(unreadable)?;
+    let document = match value {
+        Value::String(text) if text.is_empty() => {
+            return Err(BridgeError::Refused(
+                "the realm refused the snapshot".into(),
+            ));
+        }
+        Value::String(text) => serde_json::from_str(&text).map_err(unreadable)?,
+        other => other,
+    };
+    serde_json::from_value(document).map_err(unreadable)
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -286,5 +313,24 @@ mod tests {
     fn roles_encode_as_spacetimedb_sum_types() {
         assert_eq!(role_json(Role::Tank), json!({"tank": []}));
         assert_eq!(role_json(Role::Dps), json!({"dps": []}));
+    }
+
+    #[test]
+    fn snapshots_read_from_a_json_string_or_a_bare_document() {
+        let document = r#"{"generated_at_us":5,"online_accounts":2,"queue":[],"parties":{"ready":1},"instances":[],"max_ticks_behind":0}"#;
+        let wrapped = serde_json::to_string(document).unwrap();
+        for body in [wrapped.as_str(), document] {
+            let snapshot = parse_snapshot(body).unwrap();
+            assert_eq!(snapshot.online_accounts, 2);
+            assert_eq!(snapshot.parties["ready"], 1);
+        }
+        assert!(matches!(
+            parse_snapshot(r#""""#),
+            Err(BridgeError::Refused(_))
+        ));
+        assert!(matches!(
+            parse_snapshot("not json"),
+            Err(BridgeError::Unavailable(_))
+        ));
     }
 }
