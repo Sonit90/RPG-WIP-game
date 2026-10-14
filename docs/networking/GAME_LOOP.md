@@ -145,9 +145,9 @@ API has applied the result).
 
 ## Hub
 
-The hub is the client's local world while the player is not in an instance: the start area of
-the loaded level with training dummies the local simulation spawns (local authority, the same
-combat code as offline). Nothing done in the hub is persistent except through API calls
+The hub is the client's local world while the player is not in an instance: its own level
+(`assets/scenes/my_level.json`, named by `assets/catalog/hub.json`) with training dummies the
+local simulation spawns (local authority, the same combat code as offline). Nothing done in the hub is persistent except through API calls
 (equipment, salvage, exchange), so it needs no server simulation. While queued the player keeps
 playing in the hub; the queue panel shows dungeon, role, state and elapsed time (from the
 ticket's server `enqueued_at`).
@@ -159,6 +159,24 @@ entered. Enemies are removed with `Simulation::despawn_enemy`, never with the wo
 the latter leaves the enemy's runtime in its slot, and the next entity to take the slot (a hub
 dummy) would inherit its name, rank and mind.
 
-**Known limitation:** the hub reuses the dungeon level's geometry (the renderer loads one
-environment per process). A dedicated hub scene needs runtime scene switching — a separate
-ticket.
+**Level switching.** The client starts with the dungeon level loaded (`--scene graveyard`,
+monsters cleared) and keeps the hub scene parked. Every frame, before `sync_world`,
+`App::sync_online_level` (`engine-app/src/app.rs`) compares `OnlineSession::wanted_level` (the
+dungeon while the realm has an instance for the player, the hub otherwise) with the loaded level
+and, if they differ, swaps them with `App::load_level` — the same sequence the level editor uses
+to open a level (upload missing models, re-place, rebuild collision, terrain and water in one
+upload batch, take the scene's lighting and map). The swap rebuilds the collision world, so the
+session drops its static handles (`OnlineSession::level_rebuilt`). The parked dungeon always has
+its monsters and run cleared: the server owns them.
+
+In the hub scene the player arrives at the scene's `spawns.player`, the lone dummy stands at
+`spawns.featured_dummy`, the group of three at `spawns.group_center` and the friendly dummy a few
+metres to the player's left; no barrier is added, the scene's own boundary (`half_extent`) bounds
+the hub. If `hub.json` or the scene cannot be read the client logs a warning and keeps the old
+behaviour: the hub is the dungeon's start area, bounded by its start barrier.
+
+**Known limitations:** each swap re-places the level's objects (a few hundred render entities)
+and, if the level has a map picture that is not cached, bakes it. Water bodies are re-uploaded on
+every swap into a level that has any (`rebuild_water` creates new models); neither shipped level
+has water, so nothing leaks today, but a hub or dungeon with water should cache its bindings
+first.

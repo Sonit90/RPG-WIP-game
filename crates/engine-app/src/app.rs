@@ -345,6 +345,12 @@ pub struct App {
     /// The online game, when `--network-mode online` started one. `None` is the offline game,
     /// exactly as it always was.
     online: Option<crate::online::OnlineSession>,
+    /// Which online level is loaded. Only meaningful while `parked_level` is `Some`.
+    online_level: crate::online::OnlineLevel,
+    /// The online level that is not loaded: the hub scene while the dungeon is up, the dungeon
+    /// (monsters and run cleared, the server owns them) while the hub is. `None` offline, and
+    /// online when the hub scene could not be read, which leaves the hub in the dungeon.
+    parked_level: Option<ParkedLevel>,
     /// The hub's Equipment button was pressed: the character sheet opens next frame, so the
     /// press that asked for it is not also read by the sheet.
     open_sheet_next_frame: bool,
@@ -1299,6 +1305,8 @@ impl App {
             commands: Vec::with_capacity(16),
             heroes,
             online: None,
+            online_level: crate::online::OnlineLevel::Dungeon,
+            parked_level: None,
             open_sheet_next_frame: false,
             settings_offered_at: None,
             menu: MenuSystem::new(game_settings.settings(), env!("CARGO_PKG_VERSION")),
@@ -1597,10 +1605,22 @@ impl App {
                     engine_realm::Role::from_key(role).map(|role| (character.clone(), role))
                 }),
             };
-            let session = crate::online::OnlineSession::start(endpoints, Box::new(store), dev)
-                .map_err(|error| {
-                    EngineError::unsupported(format!("start the network layer: {error}"))
-                })?;
+            let mut session =
+                crate::online::OnlineSession::start(endpoints, Box::new(store), dev).map_err(
+                    |error| EngineError::unsupported(format!("start the network layer: {error}")),
+                )?;
+            // The hub is its own scene, swapped in whenever the player is not in an instance.
+            // Without it (no file, or no dungeon level loaded to swap with) the hub stays in
+            // the dungeon's start area.
+            if app.environment.is_some()
+                && let Some((scene, path)) = load_hub_scene()
+            {
+                session.set_hub_spawns(crate::online::HubSpawns::from_scene(&scene));
+                app.parked_level = Some(ParkedLevel {
+                    scene,
+                    source: Some(path),
+                });
+            }
             app.online = Some(session);
             // Until the realm places the player, nobody stands in the start area.
             app.extractor.set_player_opacity(0.0);
@@ -4508,6 +4528,80 @@ impl App {
         );
     }
 
+    /// Replaces the loaded level with `scene`, wherever it was read from.
+    ///
+    /// The one sequence for "the level is a different level": upload what the scene names
+    /// that the library lacks, put the placements back, rebuild the collision world, the
+    /// terrain and the water — all in one upload batch — and take the scene's light and the
+    /// map with it. The level editor opens a level from the browser through it, and the
+    /// online client swaps between the hub and the dungeon through it.
+    ///
+    /// The simulation's entities are not touched: the caller decides who stands where in
+    /// the new level, and the collision rebuild clears every static handle anyone held.
+    fn load_level(
+        &mut self,
+        scene: engine_environment::EnvironmentScene,
+        source: Option<std::path::PathBuf>,
+    ) -> Result<(), EngineError> {
+        self.map_source = source;
+        self.lighting = engine_presentation::scene_lighting(&scene.lighting);
+        self.clear_color = scene.lighting.clear_color();
+        self.environment = Some(scene);
+        self.renderer.begin_upload_batch()?;
+        if let Some(scene) = self.environment.as_ref() {
+            upload_missing_models(&mut self.renderer, self.placer.visuals_mut(), scene);
+            let world = self.extractor.render_world_mut();
+            self.placer.clear(world);
+            self.placer
+                .place(world, scene, controller_eye_guess(scene), LOD_BIAS);
+        }
+        self.rebuild_environment_collision();
+        self.rebuild_terrain();
+        self.rebuild_water();
+        self.renderer.end_upload_batch()?;
+        self.setup_dungeon_map(false);
+        Ok(())
+    }
+
+    /// Loads the level the online session wants (the hub, or the dungeon while in an
+    /// instance) if it is not the one that is up, parking the other.
+    ///
+    /// The session's static handles are dropped afterwards: the collision rebuild cleared
+    /// the world they pointed into. A level that fails to load is reported and the swap is
+    /// not retried every frame; the session carries on in the level that is up.
+    fn sync_online_level(&mut self) {
+        let Some(online) = self.online.as_ref() else {
+            return;
+        };
+        let wanted = online.wanted_level();
+        if wanted == self.online_level {
+            return;
+        }
+        let (Some(parked), Some(current)) = (self.parked_level.take(), self.environment.take())
+        else {
+            return;
+        };
+        // The dungeon is parked as the client builds it online: the server owns the monsters,
+        // the completion and the boss, so none of them come back with the level.
+        let mut leaving = current;
+        if self.online_level == crate::online::OnlineLevel::Dungeon {
+            leaving.monsters.clear();
+            leaving.dungeon = None;
+        }
+        self.parked_level = Some(ParkedLevel {
+            scene: leaving,
+            source: self.map_source.take(),
+        });
+        self.online_level = wanted;
+        log::info!("online: loading the {wanted:?} level '{}'", parked.scene.name);
+        if let Err(error) = self.load_level(parked.scene, parked.source) {
+            log::error!("online: could not load the {wanted:?} level: {error}");
+        }
+        if let Some(online) = self.online.as_mut() {
+            online.level_rebuilt();
+        }
+    }
+
     /// Rebuilds the static collision world from the environment scene as it stands now.
     ///
     /// The floor and the boundary first, then every blocking placement, then one broad-phase
@@ -4515,7 +4609,6 @@ impl App {
     /// called rather than re-written, so an edited level is solid in exactly the way a loaded
     /// one is. It costs one pass over a few hundred shapes and is paid on the frames an
     /// author is editing, where nothing else is running.
-    #[cfg(feature = "editor")]
     fn rebuild_environment_collision(&mut self) {
         let Some(scene) = self.environment.as_ref() else {
             return;
@@ -4746,10 +4839,9 @@ impl App {
                         path.display(),
                         scene.len()
                     );
-                    self.map_source = Some(path.clone());
-                    self.editor.opened(&scene, path);
-                    self.environment = Some(scene);
-                    changed = true;
+                    self.editor.opened(&scene, path.clone());
+                    self.load_level(scene, Some(path))?;
+                    self.rebuild_spawn_markers(true);
                     opened_level = true;
                 }
                 Err(error) => {
@@ -4812,11 +4904,10 @@ impl App {
             self.renderer.end_upload_batch()?;
         }
 
-        // The map: a level opened from the browser gets its own; an edit moves the markers
-        // and may leave the picture out of date; a bake asked for is answered here, where
-        // the renderer is.
+        // The map: a level opened from the browser got its own in `load_level`; an edit moves
+        // the markers and may leave the picture out of date; a bake asked for is answered
+        // here, where the renderer is.
         if opened_level {
-            self.setup_dungeon_map(false);
             let picture = self.map_picture_info();
             self.editor.set_map_picture(picture);
         } else if changed || terrain_changed || water_changed {
@@ -6291,6 +6382,9 @@ impl Application for App {
             if std::mem::take(&mut self.kill_player_requested) {
                 self.simulation.kill_player();
             }
+            // Before the world is laid in: entering an instance must find the dungeon's
+            // collision, and leaving it the hub's.
+            self.sync_online_level();
             if let Some(online) = self.online.as_mut() {
                 // Every tick the simulation predicted is one input frame for the server: the
                 // same intent, so the server applies exactly what the client already showed.
@@ -6936,6 +7030,40 @@ fn graveyard_path() -> std::path::PathBuf {
                 .unwrap_or_else(|| std::path::PathBuf::from("assets"))
                 .join(engine_game::dungeon::GRAVEYARD_CRYPT_FILE)
         })
+}
+
+/// An online level that is loaded in the background of the one in use: its scene, and the
+/// file it came from (the map picture is cached beside it).
+struct ParkedLevel {
+    scene: engine_environment::EnvironmentScene,
+    source: Option<std::path::PathBuf>,
+}
+
+/// Reads the online hub's scene, named by `assets/catalog/hub.json`.
+///
+/// `None` with a warning when the catalog names no scene or the file cannot be read, which
+/// keeps the hub in the dungeon's start area.
+fn load_hub_scene() -> Option<(engine_environment::EnvironmentScene, std::path::PathBuf)> {
+    let file = crate::online::hub_scene_file()?;
+    let roots = engine_assets::disk::asset_roots();
+    let Some(path) = roots
+        .iter()
+        .map(|root| root.join(&file))
+        .find(|path| path.is_file())
+    else {
+        log::warn!("online: hub scene {file} not found under any asset root");
+        return None;
+    };
+    match engine_environment::scene_file::load(&path) {
+        Ok(scene) => {
+            log::info!("online: hub scene '{}' from {}", scene.name, path.display());
+            Some((scene, path))
+        }
+        Err(error) => {
+            log::warn!("online: hub scene {} not loaded: {error}", path.display());
+            None
+        }
+    }
 }
 
 /// The monster table, as the level editor lists it.

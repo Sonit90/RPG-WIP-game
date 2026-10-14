@@ -205,6 +205,53 @@ struct HubWorld {
     barrier: Option<StaticId>,
 }
 
+/// Which of the two levels the online client has loaded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OnlineLevel {
+    /// The hub scene, `assets/catalog/hub.json`.
+    Hub,
+    /// The dungeon the instance runs in.
+    Dungeon,
+}
+
+/// Where the hub scene puts the player and the practice dummies.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct HubSpawns {
+    /// Where the player arrives.
+    pub player: Vec3,
+    /// Which way they face, radians.
+    pub yaw: f32,
+    /// The lone dummy.
+    pub featured: Vec3,
+    /// Centre of the group of three.
+    pub group_center: Vec3,
+    /// Metres between the group's dummies.
+    pub group_spacing: f32,
+}
+
+impl HubSpawns {
+    /// Reads the spawns off a hub scene, each lifted onto the scene's ground so a terrain
+    /// under the hub does not bury them.
+    #[must_use]
+    pub fn from_scene(scene: &engine_environment::EnvironmentScene) -> Self {
+        let player = scene.player_spawn();
+        let grounded = |position: Vec3| {
+            Vec3::new(
+                position.x,
+                position.y.max(scene.ground_at(position)),
+                position.z,
+            )
+        };
+        Self {
+            player: player.position,
+            yaw: player.yaw,
+            featured: grounded(scene.spawns.featured_dummy),
+            group_center: grounded(scene.spawns.group_center),
+            group_spacing: scene.spawns.group_spacing,
+        }
+    }
+}
+
 /// What a pending request is waiting for, so it can be cleared when the server has answered.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BusyKind {
@@ -278,6 +325,9 @@ pub struct OnlineSession {
     economy: Option<EconomyInfo>,
     /// The hub in the local simulation, while the player stands in it.
     hub: Option<HubWorld>,
+    /// Where the hub's scene puts things, once the client has loaded it. Without it the hub
+    /// is the dungeon's start area.
+    hub_spawns: Option<HubSpawns>,
     /// The character as it was when the current run began.
     run_start: Option<CharacterMark>,
     /// The instance whose Return to Hub was pressed.
@@ -378,6 +428,7 @@ impl OnlineSession {
             intro: parse_intro(INTRO_JSON),
             economy: None,
             hub: None,
+            hub_spawns: None,
             run_start: None,
             returning: None,
             saving: None,
@@ -400,6 +451,33 @@ impl OnlineSession {
             stored_loadout: None,
             loot_watch: None,
         })
+    }
+
+    /// Which level the client should have loaded: the dungeon while the realm has an instance
+    /// for the player, the hub scene otherwise.
+    #[must_use]
+    pub fn wanted_level(&self) -> OnlineLevel {
+        if self.mirror.instance.is_some() {
+            OnlineLevel::Dungeon
+        } else {
+            OnlineLevel::Hub
+        }
+    }
+
+    /// Tells the session where the hub scene puts the player and the dummies. Once set, the
+    /// hub is built there and has no barrier of its own: the scene's boundary bounds it.
+    pub fn set_hub_spawns(&mut self, spawns: HubSpawns) {
+        self.hub_spawns = Some(spawns);
+    }
+
+    /// The level's collision world was rebuilt, which clears every static the session
+    /// added. The handles it kept now name nothing (or, worse, a new shape in a recycled
+    /// slot), so they are dropped rather than removed later.
+    pub fn level_rebuilt(&mut self) {
+        self.world.barrier = None;
+        if let Some(hub) = self.hub.as_mut() {
+            hub.barrier = None;
+        }
     }
 
     /// Whether the full-screen front-end is up (no world input, no HUD). The hub and the
@@ -2260,15 +2338,30 @@ impl OnlineSession {
         }
     }
 
-    /// The start area as a place to practise: the player at the dungeon's first spawn point
-    /// with full health, a lone dummy ahead, a group of three nearby and a friendly dummy to
-    /// heal, all under local authority, and the start barrier standing so the area is bounded.
+    /// The hub as a place to practise: the player at the hub's spawn with full health, a lone
+    /// dummy ahead, a group of three nearby and a friendly dummy to heal, all under local
+    /// authority.
+    ///
+    /// With the hub scene loaded ([`Self::set_hub_spawns`]) everything stands where the scene
+    /// says and the scene's own boundary bounds the area. Without it the hub is the
+    /// dungeon's start area, laid out from its first spawn point, with the start barrier
+    /// standing so the area is bounded.
     fn enter_hub(&mut self, simulation: &mut Simulation) {
-        let Some(dungeon) = self.catalog.dungeons().first().cloned() else {
-            return;
+        let (spawn, yaw, layout, barrier_box) = if let Some(spawns) = self.hub_spawns {
+            let mut layout = hub_layout(spawns.player, spawns.yaw);
+            layout.single = spawns.featured;
+            layout.group_center = spawns.group_center;
+            (spawns.player, spawns.yaw, layout, None)
+        } else {
+            let Some(dungeon) = self.catalog.dungeons().first().cloned() else {
+                return;
+            };
+            let point = dungeon.spawn_point(0);
+            let spawn = Vec3::new(point.position[0], point.position[1], point.position[2]);
+            let [min, max] = [dungeon.start_barrier.min(), dungeon.start_barrier.max()]
+                .map(|corner| Vec3::new(corner[0], corner[1], corner[2]));
+            (spawn, point.yaw, hub_layout(spawn, point.yaw), Some((min, max)))
         };
-        let point = dungeon.spawn_point(0);
-        let spawn = Vec3::new(point.position[0], point.position[1], point.position[2]);
         // Whatever the level was built with, and whatever was left from before, gives way.
         let player = simulation.player().entity;
         let strays: Vec<EntityId> = (0..simulation.world().slot_count())
@@ -2279,7 +2372,6 @@ impl OnlineSession {
             simulation.party_mut().leave(id);
             simulation.despawn_enemy(id);
         }
-        let layout = hub_layout(spawn, point.yaw);
         let mut entities = vec![
             simulation
                 .world_mut()
@@ -2289,6 +2381,10 @@ impl OnlineSession {
             group_count: 3,
             group_center: layout.group_center,
             dummy_health: HUB_DUMMY_HEALTH,
+            group_spacing: self.hub_spawns.map_or_else(
+                || ArenaConfig::default().group_spacing,
+                |spawns| spawns.group_spacing,
+            ),
             ..ArenaConfig::default()
         };
         spawn_group(simulation.world_mut(), &config, &mut entities);
@@ -2300,17 +2396,18 @@ impl OnlineSession {
         simulation.party_mut().join(healing);
         entities.push(healing);
 
-        let [min, max] = [dungeon.start_barrier.min(), dungeon.start_barrier.max()]
-            .map(|corner| Vec3::new(corner[0], corner[1], corner[2]));
-        let world = simulation.collision_world_mut();
-        let barrier = Some(world.add_box(min, max, "hub barrier"));
-        world.rebuild_broad_phase();
+        let barrier = barrier_box.map(|(min, max)| {
+            let world = simulation.collision_world_mut();
+            let id = world.add_box(min, max, "hub barrier");
+            world.rebuild_broad_phase();
+            id
+        });
 
         // Full health first (a restore also sends a body back to where it was created), then
         // arrive at the spawn point: a teleport the camera snaps to, not a run it follows.
         simulation.world_mut().restore(player);
         let from = simulation.player_position();
-        place_player(simulation, spawn, point.yaw);
+        place_player(simulation, spawn, yaw);
         simulation.world_mut().reset_history(player);
         let tick = simulation.tick_count();
         simulation.inject_event(CombatEvent::Teleported {
@@ -2319,7 +2416,7 @@ impl OnlineSession {
             to: spawn,
             tick,
         });
-        simulation.set_player_spawn(spawn, point.yaw);
+        simulation.set_player_spawn(spawn, yaw);
         simulation.cancel_cast();
         simulation.select_nearest_target();
         self.hub = Some(HubWorld { entities, barrier });
@@ -2346,6 +2443,32 @@ impl OnlineSession {
 
 /// The title screen's words, bundled with the game.
 const INTRO_JSON: &str = include_str!("../../../assets/catalog/intro.json");
+
+/// Which level file the hub is, bundled with the game.
+const HUB_JSON: &str = include_str!("../../../assets/catalog/hub.json");
+
+/// The hub scene's path relative to the asset root, from `assets/catalog/hub.json`.
+///
+/// `None` when the file is not JSON or names no scene, which keeps the hub in the dungeon's
+/// start area.
+#[must_use]
+pub fn hub_scene_file() -> Option<String> {
+    parse_hub_scene(HUB_JSON)
+}
+
+/// Reads the hub scene's path out of the catalog file's text.
+fn parse_hub_scene(text: &str) -> Option<String> {
+    let Ok(document) = serde_json::from_str::<serde_json::Value>(text) else {
+        log::warn!("online: the hub catalog is not valid JSON; the hub stays in the dungeon");
+        return None;
+    };
+    document
+        .get("scene")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+        .map(str::to_owned)
+}
 
 /// How long a request may wait for its answer before the interface stops showing it.
 const BUSY_TIMEOUT: Duration = Duration::from_secs(20);
@@ -2765,6 +2888,77 @@ mod tests {
         let turned = hub_layout(spawn, std::f32::consts::FRAC_PI_2);
         assert!(((turned.single - spawn).length() - 6.0).abs() < 1e-4);
         assert!(turned.single.x < spawn.x - 5.0);
+    }
+
+    fn session() -> OnlineSession {
+        let endpoints = RealmEndpoints::resolve(None).expect("the default endpoints are valid");
+        OnlineSession::start(
+            endpoints,
+            Box::new(MemoryTokenStore::default()),
+            DevScript::default(),
+        )
+        .expect("the session starts")
+    }
+
+    #[test]
+    fn the_hub_catalog_names_a_scene_and_tolerates_a_bad_file() {
+        assert_eq!(
+            hub_scene_file().as_deref(),
+            Some("scenes/my_level.json"),
+            "the shipped catalog names the hub scene"
+        );
+        assert_eq!(parse_hub_scene("{ nope"), None);
+        assert_eq!(parse_hub_scene(r#"{ "version": 1 }"#), None);
+        assert_eq!(parse_hub_scene(r#"{ "scene": "  " }"#), None);
+        assert_eq!(
+            parse_hub_scene(r#"{ "scene": " scenes/x.json " }"#).as_deref(),
+            Some("scenes/x.json")
+        );
+    }
+
+    #[test]
+    fn the_level_follows_the_instance() {
+        let mut session = session();
+        assert_eq!(session.wanted_level(), OnlineLevel::Hub);
+        session.mirror.instance = Some(instance(InstanceState::Active));
+        assert_eq!(session.wanted_level(), OnlineLevel::Dungeon);
+        session.mirror.instance = None;
+        assert_eq!(session.wanted_level(), OnlineLevel::Hub);
+    }
+
+    #[test]
+    fn a_hub_scene_places_the_hub_without_a_barrier() {
+        let mut session = session();
+        let spawns = HubSpawns {
+            player: Vec3::new(1.0, 0.0, 2.0),
+            yaw: 0.0,
+            featured: Vec3::new(1.0, 0.0, -12.0),
+            group_center: Vec3::new(14.0, 0.0, -18.0),
+            group_spacing: 3.0,
+        };
+        session.set_hub_spawns(spawns);
+        let mut simulation = engine_game::arena::training_arena(&ArenaConfig::default());
+        let statics = simulation.collision_world().len();
+
+        session.enter_hub(&mut simulation);
+        assert_eq!(simulation.world().len(), 6);
+        assert_eq!(
+            simulation.collision_world().len(),
+            statics,
+            "the scene's own boundary bounds the hub"
+        );
+        let at = simulation.player_position();
+        assert!((at - spawns.player).length() < 1e-4);
+        let hub = session.hub.as_ref().expect("the hub stands");
+        let single = hub.entities[0];
+        let position = simulation.world().body(single).expect("a body").position;
+        assert!((position - spawns.featured).length() < 1e-4);
+
+        // A rebuilt collision world drops the handles; leaving then touches nothing.
+        session.level_rebuilt();
+        session.leave_hub(&mut simulation);
+        assert_eq!(simulation.world().len(), 1);
+        assert_eq!(simulation.collision_world().len(), statics);
     }
 
     #[test]
