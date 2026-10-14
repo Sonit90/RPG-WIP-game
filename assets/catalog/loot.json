@@ -1,0 +1,470 @@
+{
+  "version": 1,
+  "_comment": "Dungeon loot for the Graveyard Crypt. Item ids are stable keys; their numeric ids are assigned by position in this file (never reorder, only append). Stat names are engine-game Stat keys. Rares are item level 8; epics are item level 12 with roughly 1.5x a rare's stats.",
+  "items": [
+    {
+      "id": "gravewardens_cowl",
+      "name": "Gravewarden's Cowl",
+      "slot": "head",
+      "rarity": "rare",
+      "item_level": 8,
+      "icon": "head",
+      "stats": {
+        "stamina": 6,
+        "main_stat": 5,
+        "critical_strike": 4
+      }
+    },
+    {
+      "id": "gate_wardens_helm",
+      "name": "Helm of the Gate Warden",
+      "slot": "head",
+      "rarity": "rare",
+      "item_level": 8,
+      "icon": "head",
+      "stats": {
+        "stamina": 7,
+        "armor": 10,
+        "main_stat": 4
+      }
+    },
+    {
+      "id": "mourners_pauldrons",
+      "name": "Mourner's Pauldrons",
+      "slot": "shoulder",
+      "rarity": "rare",
+      "item_level": 8,
+      "icon": "shoulder",
+      "stats": {
+        "stamina": 5,
+        "main_stat": 4,
+        "haste": 4
+      }
+    },
+    {
+      "id": "ossuary_vestment",
+      "name": "Ossuary Vestment",
+      "slot": "chest",
+      "rarity": "rare",
+      "item_level": 8,
+      "icon": "chest",
+      "stats": {
+        "stamina": 8,
+        "main_stat": 6,
+        "versatility": 4
+      }
+    },
+    {
+      "id": "gate_wardens_cuirass",
+      "name": "Gate Warden's Cuirass",
+      "slot": "chest",
+      "rarity": "rare",
+      "item_level": 8,
+      "icon": "chest",
+      "stats": {
+        "stamina": 8,
+        "armor": 12,
+        "main_stat": 4
+      }
+    },
+    {
+      "id": "shroud_of_quiet_vigil",
+      "name": "Shroud of Quiet Vigil",
+      "slot": "back",
+      "rarity": "rare",
+      "item_level": 8,
+      "icon": "back",
+      "stats": {
+        "stamina": 4,
+        "main_stat": 3,
+        "spirit": 4
+      }
+    },
+    {
+      "id": "gravediggers_grips",
+      "name": "Gravedigger's Grips",
+      "slot": "hands",
+      "rarity": "rare",
+      "item_level": 8,
+      "icon": "hands",
+      "stats": {
+        "main_stat": 5,
+        "critical_strike": 5
+      }
+    },
+    {
+      "id": "crypt_stitched_leggings",
+      "name": "Crypt-Stitched Leggings",
+      "slot": "legs",
+      "rarity": "rare",
+      "item_level": 8,
+      "icon": "legs",
+      "stats": {
+        "stamina": 7,
+        "main_stat": 5,
+        "haste": 4
+      }
+    },
+    {
+      "id": "treads_of_the_still_hour",
+      "name": "Treads of the Still Hour",
+      "slot": "feet",
+      "rarity": "rare",
+      "item_level": 8,
+      "icon": "feet",
+      "stats": {
+        "stamina": 5,
+        "haste": 5
+      }
+    },
+    {
+      "id": "bone_bound_bracers",
+      "name": "Bone-Bound Bracers",
+      "slot": "wrist",
+      "rarity": "rare",
+      "item_level": 8,
+      "icon": "wrist",
+      "stats": {
+        "stamina": 4,
+        "versatility": 4,
+        "main_stat": 3
+      }
+    },
+    {
+      "id": "candlewick_pendant",
+      "name": "Candlewick Pendant",
+      "slot": "necklace",
+      "rarity": "rare",
+      "item_level": 8,
+      "icon": "necklace",
+      "stats": {
+        "stamina": 4,
+        "spirit": 5,
+        "main_stat": 3
+      }
+    },
+    {
+      "id": "band_of_faded_vows",
+      "name": "Band of Faded Vows",
+      "slot": "ring",
+      "rarity": "rare",
+      "item_level": 8,
+      "icon": "ring",
+      "stats": {
+        "main_stat": 4,
+        "critical_strike": 5
+      }
+    },
+    {
+      "id": "signet_of_the_cloister",
+      "name": "Signet of the Cloister",
+      "slot": "ring",
+      "rarity": "rare",
+      "item_level": 8,
+      "icon": "ring",
+      "stats": {
+        "stamina": 5,
+        "versatility": 5
+      }
+    },
+    {
+      "id": "hollow_lantern_charm",
+      "name": "Hollow Lantern Charm",
+      "slot": "trinket",
+      "rarity": "rare",
+      "item_level": 8,
+      "icon": "trinket",
+      "stats": {
+        "haste": 6,
+        "main_stat": 4
+      }
+    },
+    {
+      "id": "ossified_heart",
+      "name": "Ossified Heart",
+      "slot": "trinket",
+      "rarity": "rare",
+      "item_level": 8,
+      "icon": "trinket",
+      "stats": {
+        "stamina": 6,
+        "spirit": 6
+      }
+    },
+    {
+      "id": "crown_of_the_hollow_steward",
+      "name": "Crown of the Hollow Steward",
+      "slot": "head",
+      "rarity": "epic",
+      "item_level": 12,
+      "icon": "head",
+      "stats": {
+        "stamina": 9,
+        "main_stat": 8,
+        "critical_strike": 6,
+        "haste": 4
+      }
+    },
+    {
+      "id": "stewards_funerary_raiment",
+      "name": "Steward's Funerary Raiment",
+      "slot": "chest",
+      "rarity": "epic",
+      "item_level": 12,
+      "icon": "chest",
+      "stats": {
+        "stamina": 12,
+        "main_stat": 9,
+        "versatility": 6,
+        "spirit": 4
+      }
+    },
+    {
+      "id": "ember_of_the_last_lantern",
+      "name": "Ember of the Last Lantern",
+      "slot": "necklace",
+      "rarity": "epic",
+      "item_level": 12,
+      "icon": "necklace",
+      "stats": {
+        "stamina": 6,
+        "main_stat": 5,
+        "haste": 8
+      }
+    },
+    {
+      "id": "ashgraves_seal",
+      "name": "Ashgrave's Seal",
+      "slot": "ring",
+      "rarity": "epic",
+      "item_level": 12,
+      "icon": "ring",
+      "stats": {
+        "main_stat": 7,
+        "critical_strike": 8,
+        "versatility": 4
+      }
+    },
+    {
+      "id": "heart_of_the_crypt",
+      "name": "Heart of the Crypt",
+      "slot": "trinket",
+      "rarity": "epic",
+      "item_level": 12,
+      "icon": "trinket",
+      "stats": {
+        "main_stat": 7,
+        "haste": 9,
+        "spirit": 4
+      }
+    }
+  ],
+  "boss_tables": {
+    "lord_ashgrave": [
+      {
+        "item": "gravewardens_cowl",
+        "weight": 10
+      },
+      {
+        "item": "gate_wardens_helm",
+        "weight": 10
+      },
+      {
+        "item": "mourners_pauldrons",
+        "weight": 10
+      },
+      {
+        "item": "ossuary_vestment",
+        "weight": 10
+      },
+      {
+        "item": "gate_wardens_cuirass",
+        "weight": 10
+      },
+      {
+        "item": "shroud_of_quiet_vigil",
+        "weight": 10
+      },
+      {
+        "item": "gravediggers_grips",
+        "weight": 10
+      },
+      {
+        "item": "crypt_stitched_leggings",
+        "weight": 10
+      },
+      {
+        "item": "treads_of_the_still_hour",
+        "weight": 10
+      },
+      {
+        "item": "bone_bound_bracers",
+        "weight": 10
+      },
+      {
+        "item": "candlewick_pendant",
+        "weight": 10
+      },
+      {
+        "item": "band_of_faded_vows",
+        "weight": 10
+      },
+      {
+        "item": "signet_of_the_cloister",
+        "weight": 10
+      },
+      {
+        "item": "hollow_lantern_charm",
+        "weight": 10
+      },
+      {
+        "item": "ossified_heart",
+        "weight": 10
+      },
+      {
+        "item": "crown_of_the_hollow_steward",
+        "weight": 14
+      },
+      {
+        "item": "stewards_funerary_raiment",
+        "weight": 10
+      },
+      {
+        "item": "ember_of_the_last_lantern",
+        "weight": 10
+      },
+      {
+        "item": "ashgraves_seal",
+        "weight": 10
+      },
+      {
+        "item": "heart_of_the_crypt",
+        "weight": 10
+      }
+    ]
+  },
+  "mob_table": {
+    "equipment_chance": 0.002,
+    "entries": [
+      {
+        "item": "gravewardens_cowl",
+        "weight": 10
+      },
+      {
+        "item": "mourners_pauldrons",
+        "weight": 10
+      },
+      {
+        "item": "shroud_of_quiet_vigil",
+        "weight": 10
+      },
+      {
+        "item": "gravediggers_grips",
+        "weight": 10
+      },
+      {
+        "item": "crypt_stitched_leggings",
+        "weight": 10
+      },
+      {
+        "item": "treads_of_the_still_hour",
+        "weight": 10
+      },
+      {
+        "item": "bone_bound_bracers",
+        "weight": 10
+      },
+      {
+        "item": "candlewick_pendant",
+        "weight": 10
+      },
+      {
+        "item": "band_of_faded_vows",
+        "weight": 10
+      },
+      {
+        "item": "hollow_lantern_charm",
+        "weight": 10
+      },
+      {
+        "item": "ember_of_the_last_lantern",
+        "weight": 6
+      }
+    ]
+  },
+  "rewards": {
+    "equipment_per_completion": 2
+  },
+  "quality": {
+    "_comment": "Percent of an item's base stats. Low qualities are common; 110 is a jackpot (0.05% at key level 1). Buckets whose min is at least high_bucket_from have their weight multiplied by 1 + high_bucket_weight_per_key_level x (key level - 1), so higher keys raise the odds of a good roll. Within a bucket every whole percent is equally likely.",
+    "high_bucket_from": 95,
+    "high_bucket_weight_per_key_level": 0.1,
+    "buckets": [
+      {
+        "min": 50,
+        "max": 59,
+        "weight": 22.0
+      },
+      {
+        "min": 60,
+        "max": 69,
+        "weight": 24.0
+      },
+      {
+        "min": 70,
+        "max": 79,
+        "weight": 22.0
+      },
+      {
+        "min": 80,
+        "max": 89,
+        "weight": 16.0
+      },
+      {
+        "min": 90,
+        "max": 94,
+        "weight": 7.0
+      },
+      {
+        "min": 95,
+        "max": 99,
+        "weight": 5.55
+      },
+      {
+        "min": 100,
+        "max": 104,
+        "weight": 2.5
+      },
+      {
+        "min": 105,
+        "max": 109,
+        "weight": 0.9
+      },
+      {
+        "min": 110,
+        "max": 110,
+        "weight": 0.05
+      }
+    ]
+  },
+  "epic": {
+    "_comment": "Chance that one equipment roll is an epic: base_chance + per_key_level x (key level - 1), capped at max_chance. On an epic the item is picked among the table's epics, otherwise among the rest.",
+    "base_chance": 0.025,
+    "per_key_level": 0.002,
+    "max_chance": 0.08
+  },
+  "currency": {
+    "_comment": "Aether Shards, the modifier reroll currency. The Graveyard Crypt places 36 ordinary monsters and the boss calls 2 more (38 kills in a full clear, no elites), so per_mob_chance 0.033 x 38 = 1.25 shards per player per run. elite_chance applies to elite monsters (none in the crypt).",
+    "resource": "aether_shard",
+    "per_mob_chance": 0.033,
+    "elite_chance": 0.25,
+    "amount": 1
+  },
+  "gold": {
+    "_comment": "Gold per player: every monster kill pays a whole number in [per_mob_min, per_mob_max], and the boss pays boss_amount.",
+    "resource": "gold",
+    "per_mob_min": 1,
+    "per_mob_max": 3,
+    "boss_amount": 50
+  }
+}

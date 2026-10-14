@@ -255,11 +255,21 @@ impl Simulation {
         }
         let mut pending = std::mem::take(&mut self.pending_credit);
         let mut open = false;
+        // What died and may drop loot, as `(boss, elite)`; rolled once the table is back.
+        let drops_loot = self.loot_rules.is_some() && !self.remote_authority;
+        let mut kills = Vec::new();
         pending.retain(|entity| {
             let Some(Some(runtime)) = self.enemies.get_mut(entity.index()) else {
                 // Not reachable yet: the AI loop has the table out. Kept for the next flush.
                 return self.enemies.is_empty();
             };
+            if drops_loot {
+                let archetype = runtime.brain.archetype();
+                kills.push((
+                    archetype.tier == crate::enemy::MonsterTier::Boss,
+                    archetype.role == crate::enemy::MonsterRole::Elite,
+                ));
+            }
             if runtime.credited || runtime.completion <= 0.0 {
                 return false;
             }
@@ -282,6 +292,9 @@ impl Simulation {
             false
         });
         self.pending_credit = pending;
+        for (boss, elite) in kills {
+            self.drop_kill_loot(boss, elite);
+        }
         if open {
             self.open_gate();
         }

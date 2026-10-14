@@ -227,6 +227,8 @@ impl CombatMeter {
                 | CombatEvent::ChestOpened { .. }
                 | CombatEvent::LootAwarded { .. }
                 | CombatEvent::LootMailed { .. }
+                | CombatEvent::MobLoot { .. }
+                | CombatEvent::MobCurrency { .. }
                 | CombatEvent::MailTaken { .. }
                 | CombatEvent::MailBagFull { .. }
                 // The Warrior's defensive stream. A Block, a Parry, a Dodge, a point of

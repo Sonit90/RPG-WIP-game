@@ -2284,7 +2284,7 @@ impl OnlineSession {
                 )
             };
             match &wire {
-                engine_realm::combat::WireEvent::LootAwarded { player, item }
+                engine_realm::combat::WireEvent::LootAwarded { player, item, .. }
                     if is_mine(player) =>
                 {
                     self.on_loot(item, None);
@@ -2293,6 +2293,7 @@ impl OnlineSession {
                     player,
                     item,
                     reason,
+                    ..
                 } if is_mine(player) => {
                     let reason = if *reason == 0 {
                         engine_realm::loadout::MAIL_BAG_FULL
@@ -2432,7 +2433,12 @@ impl OnlineSession {
             let spawn = Vec3::new(point.position[0], point.position[1], point.position[2]);
             let [min, max] = [dungeon.start_barrier.min(), dungeon.start_barrier.max()]
                 .map(|corner| Vec3::new(corner[0], corner[1], corner[2]));
-            (spawn, point.yaw, hub_layout(spawn, point.yaw), Some((min, max)))
+            (
+                spawn,
+                point.yaw,
+                hub_layout(spawn, point.yaw),
+                Some((min, max)),
+            )
         };
         // Whatever the level was built with, and whatever was left from before, gives way.
         let player = simulation.player().entity;

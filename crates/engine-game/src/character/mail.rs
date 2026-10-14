@@ -26,7 +26,7 @@
 //! (`Simulation::set_mail_epoch`, unix seconds in the offline game, zero by default), which
 //! keeps a replay deterministic and still lets a real date be shown.
 
-use super::{Inventory, ItemId, ItemSlot, ItemStack};
+use super::{Inventory, ItemId, ItemProps, ItemSlot, ItemStack};
 
 /// The number of letters past which sending logs a warning. Not a limit: see the module docs.
 pub const MAIL_SOFT_CAP: usize = 200;
@@ -81,6 +81,8 @@ pub struct MailItem {
     pub id: u64,
     /// The attachment.
     pub item: ItemId,
+    /// The attachment's quality, enhancement and broken state.
+    pub props: ItemProps,
     /// Who sent it.
     pub sender: MailSender,
     /// Why it was sent.
@@ -145,7 +147,7 @@ impl Mailbox {
         self.letters.iter().filter(|letter| !letter.read).count()
     }
 
-    /// Delivers a new, unread letter and returns its id.
+    /// Delivers a new, unread letter of an item with the default props and returns its id.
     ///
     /// Never refuses; past [`MAIL_SOFT_CAP`] it only warns.
     pub fn send(
@@ -155,11 +157,24 @@ impl Mailbox {
         reason: MailReason,
         received_at: f64,
     ) -> u64 {
+        self.send_stack(ItemStack::one(item), sender, reason, received_at)
+    }
+
+    /// Delivers a new, unread letter carrying `stack` - its props included - and returns its
+    /// id. Never refuses; past [`MAIL_SOFT_CAP`] it only warns.
+    pub fn send_stack(
+        &mut self,
+        stack: ItemStack,
+        sender: MailSender,
+        reason: MailReason,
+        received_at: f64,
+    ) -> u64 {
         let id = self.next_id;
         self.next_id += 1;
         self.letters.push(MailItem {
             id,
-            item,
+            item: stack.item,
+            props: stack.props,
             sender,
             reason,
             received_at,
@@ -225,7 +240,7 @@ impl Mailbox {
     ) -> Result<ItemSlot, TakeMailError> {
         let letter = *self.get(id).ok_or(TakeMailError::NotFound)?;
         let cell = bag
-            .add(ItemStack::one(letter.item))
+            .add(ItemStack::with_props(letter.item, letter.props))
             .ok_or(TakeMailError::BagFull)?;
         self.remove(id);
         Ok(ItemSlot::Inventory(cell))
@@ -293,6 +308,30 @@ mod tests {
     }
 
     #[test]
+    fn a_letter_keeps_the_props_of_its_attachment() {
+        let mut sheet = CharacterSheet::starting(Hero::Warrior);
+        let props = ItemProps::new(107, 3, false);
+        let id = sheet.mailbox_mut().send_stack(
+            ItemStack::with_props(loot_pool()[0].id, props),
+            MailSender::DungeonChest,
+            MailReason::BagFull,
+            1.0,
+        );
+        assert_eq!(
+            sheet.mailbox().get(id).map(|letter| letter.props),
+            Some(props)
+        );
+        let cell = sheet.take_mail(id).expect("room");
+        let ItemSlot::Inventory(cell) = cell else {
+            panic!("mail goes to the bag");
+        };
+        assert_eq!(
+            sheet.inventory().get(cell),
+            Some(ItemStack::with_props(loot_pool()[0].id, props))
+        );
+    }
+
+    #[test]
     fn an_unknown_letter_is_not_found() {
         let mut sheet = CharacterSheet::starting(Hero::Warrior);
         assert_eq!(sheet.take_mail(77), Err(TakeMailError::NotFound));
@@ -324,6 +363,7 @@ mod tests {
         let letter = MailItem {
             id: 5,
             item: loot_pool()[0].id,
+            props: ItemProps::STANDARD,
             sender: MailSender::DungeonChest,
             reason: MailReason::BagFull,
             received_at: 0.0,

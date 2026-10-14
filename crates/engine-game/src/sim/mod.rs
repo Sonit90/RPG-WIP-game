@@ -541,6 +541,16 @@ pub struct Simulation {
     next_chest: u32,
     /// Added to simulation time to stamp a letter. See `Simulation::set_mail_epoch`.
     mail_epoch: f64,
+    /// The data-driven loot rules, once a host has set them. `None` keeps the legacy chest:
+    /// one uniform pick from the built-in pool per player, and no monster drops.
+    loot_rules: Option<crate::loot::LootRules>,
+    /// The dungeon key level the loot is rolled at.
+    loot_key_level: u32,
+    /// The run's reward bonus, per cent. See `Simulation::set_loot_rules`.
+    loot_bonus_pct: u32,
+    /// The loot's own generator. Separate from the enemies' so that a monster dropping an item
+    /// (or not) can never change which player a mark finds or which adds the boss calls.
+    loot_rng: crate::firemage::Rng,
     events: EventStream,
     meter: CombatMeter,
     targets: TargetQuery,
@@ -681,6 +691,10 @@ impl Simulation {
             chest: None,
             next_chest: 0,
             mail_epoch: 0.0,
+            loot_rules: None,
+            loot_key_level: 1,
+            loot_bonus_pct: 0,
+            loot_rng: crate::firemage::Rng::new(seed ^ 0x4C4F_4F54_5F52_4E47),
             events: EventStream::with_capacity(256),
             meter: CombatMeter::new(),
             targets: TargetQuery::with_capacity(64),

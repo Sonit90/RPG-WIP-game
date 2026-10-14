@@ -8,15 +8,24 @@
 //!      │
 //!      ├─► ITEMS      the authored starting table. The interface never names a row of it.
 //!      ├─► loot_pool  the 110 generated Uncommon pieces bosses drop
-//!      └─► ItemStack  an id and a quantity: what a slot actually holds
+//!      ├─► catalog    items registered at runtime from the data catalog (`assets/catalog`)
+//!      └─► ItemStack  an id, a quantity and the instance's [`ItemProps`]: what a slot holds
 //! ```
 //!
 //! # Why the table is static and the slot holds an id
 //!
-//! An equipment slot and an inventory cell hold an [`ItemStack`] — two small numbers —
-//! rather than an item. Everything that makes an item what it is lives in [`ITEMS`], read
-//! through [`item`]. So a saved character is a list of ids, moving an item copies four
-//! bytes, and correcting a typo in an item name changes nothing anywhere else.
+//! An equipment slot and an inventory cell hold an [`ItemStack`] — an id, a quantity and three
+//! small numbers of instance state ([`ItemProps`]) — rather than an item. Everything that
+//! makes an item what it is lives in [`ITEMS`], read through [`item`]. So a saved character is
+//! a list of ids, moving an item copies a handful of bytes, and correcting a typo in an item
+//! name changes nothing anywhere else.
+//!
+//! # Instance properties
+//!
+//! Two copies of the same ring are not the same ring: each rolled its own quality (50 to 110
+//! per cent of the base stats), may have been enhanced, and may have broken. [`ItemProps`]
+//! carries that, and [`ItemProps::multiplier`] is the one function every stat read goes
+//! through. Stacks only merge when their props are equal ([`ItemStack::can_merge`]).
 //!
 //! # Why a family, and not just a slot
 //!
@@ -26,7 +35,7 @@
 //! back slot later would be a change to one match arm rather than to every item that could
 //! go in it.
 
-use std::sync::LazyLock;
+use std::sync::{LazyLock, OnceLock};
 
 use super::stat::{Stat, StatBlock};
 
@@ -245,6 +254,19 @@ impl ItemFamily {
     }
 }
 
+impl ItemFamily {
+    /// The family authored under `key` (`"head"`, `"ring"` ...), if this build has one.
+    ///
+    /// How the data catalog names a family. The same fragments the generated loot keys use.
+    #[must_use]
+    pub fn from_key(key: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .zip(LOOT_FAMILY_KEYS)
+            .find_map(|(family, name)| (name == key).then_some(family))
+    }
+}
+
 /// How good an item is. Decides the colour its name is drawn in.
 ///
 /// The colours themselves are the interface's, not gameplay's: this enum carries the rank
@@ -276,6 +298,14 @@ impl ItemQuality {
         Self::Epic,
         Self::Legendary,
     ];
+
+    /// The quality authored under `key` (`"rare"`), if this build has one.
+    #[must_use]
+    pub fn from_key(key: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|quality| quality.name().eq_ignore_ascii_case(key))
+    }
 
     /// Uppercase display name.
     #[must_use]
@@ -337,6 +367,13 @@ impl ItemIcon {
         Self::Ring,
         Self::Trinket,
     ];
+
+    /// The icon authored under `key`, which is the key of the family it belongs to
+    /// (`"head"` is the helm).
+    #[must_use]
+    pub fn from_key(key: &str) -> Option<Self> {
+        ItemFamily::from_key(key).map(Self::of_family)
+    }
 
     /// The icon a bare slot draws when nothing is in it.
     #[must_use]
@@ -419,6 +456,17 @@ impl ItemDef {
     #[must_use]
     pub fn fits(&self, slot: EquipSlot) -> bool {
         self.family.accepts(slot)
+    }
+
+    /// What a copy with `props` grants: the stats scaled by [`ItemProps::multiplier`].
+    #[must_use]
+    pub fn stats_for(&self, props: ItemProps) -> StatBlock {
+        let mut stats = self.stats;
+        let factor = props.multiplier();
+        for stat in Stat::STORED {
+            stats.scale(stat, factor);
+        }
+        stats
     }
 }
 
@@ -559,6 +607,12 @@ pub const ITEMS: [ItemDef; 12] = [
 /// slot.
 #[must_use]
 pub fn item(id: ItemId) -> Option<&'static ItemDef> {
+    if id.0 >= CATALOG_ID_BASE {
+        // Registered at runtime, in file order: the row is the id's offset.
+        return CATALOG
+            .get()
+            .and_then(|rows| rows.get(usize::from(id.0 - CATALOG_ID_BASE)));
+    }
     if id.0 >= LOOT_ID_BASE {
         // The generated pool is laid out family-major with a fixed id stride, so the row is
         // arithmetic rather than a search. Checked against the row's own id, which also
@@ -577,26 +631,162 @@ pub fn item(id: ItemId) -> Option<&'static ItemDef> {
 /// Keys are what online persistence stores, so they are permanent - see [`loot_pool`].
 #[must_use]
 pub fn item_by_key(key: &str) -> Option<&'static ItemDef> {
-    ITEMS.iter().chain(loot_pool()).find(|def| def.key == key)
+    ITEMS
+        .iter()
+        .chain(loot_pool())
+        .chain(CATALOG.get().into_iter().flatten())
+        .find(|def| def.key == key)
 }
 
-/// What a slot holds: which item, and how many.
+/// The lowest quality an item rolls, in per cent of its base stats.
+pub const QUALITY_MIN: u8 = 50;
+
+/// The highest quality an item rolls, in per cent of its base stats. A jackpot.
+pub const QUALITY_MAX: u8 = 110;
+
+/// The quality of an item that never rolled one: the starting set, legacy rows and anything
+/// stored before quality existed. Exactly its base stats.
+pub const QUALITY_DEFAULT: u8 = 100;
+
+/// What one enhancement level adds, in per cent of the base stats.
 ///
-/// Two numbers, `Copy`, so moving one between slots is an assignment. Everything else about
-/// the item is a table lookup away.
+/// A constant rather than a catalog value because it is part of how a stack's stats are
+/// *read*, and engine-game cannot read the catalog; the economy catalog states the same
+/// number (`enhancement.step_pct`) and refuses to load if the two disagree.
+pub const ENHANCE_STEP_PCT: u8 = 1;
+
+/// The share of its stats an item loses when it breaks: a broken item grants
+/// `quality x (1 - BROKEN_PENALTY)` per cent and loses its enhancement.
+pub const BROKEN_PENALTY: f32 = 0.15;
+
+/// The highest enhancement level a stored value is trusted to hold. The catalog's
+/// `enhancement.max_level` is the real limit; this only bounds a hand-edited row.
+pub const ENHANCEMENT_CEILING: u8 = 20;
+
+/// What makes one copy of an item different from another.
+///
+/// `Copy` and three bytes of payload, so it rides inside every [`ItemStack`] for free. The
+/// default is the legacy item: quality 100, not enhanced, not broken, which is exactly the
+/// item's base stats - so every item that predates this type is unchanged by it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ItemProps {
+    /// Rolled quality, `QUALITY_MIN..=QUALITY_MAX` per cent of the base stats.
+    pub quality: u8,
+    /// Enhancement level; each adds [`ENHANCE_STEP_PCT`] per cent. Zero while broken.
+    pub enhancement: u8,
+    /// Whether a failed enhancement broke it.
+    pub broken: bool,
+}
+
+impl Default for ItemProps {
+    fn default() -> Self {
+        Self::STANDARD
+    }
+}
+
+impl ItemProps {
+    /// Quality 100, not enhanced, not broken: the item as the table states it.
+    pub const STANDARD: Self = Self {
+        quality: QUALITY_DEFAULT,
+        enhancement: 0,
+        broken: false,
+    };
+
+    /// Props from stored or rolled numbers, clamped into the legal ranges: a forged row can
+    /// be wrong but cannot be stronger than the rules allow. A broken item has no enhancement.
+    #[must_use]
+    pub fn new(quality: u8, enhancement: u8, broken: bool) -> Self {
+        Self {
+            quality: quality.clamp(QUALITY_MIN, QUALITY_MAX),
+            enhancement: if broken {
+                0
+            } else {
+                enhancement.min(ENHANCEMENT_CEILING)
+            },
+            broken,
+        }
+    }
+
+    /// Props of a freshly rolled item: this quality, nothing else.
+    #[must_use]
+    pub fn rolled(quality: u8) -> Self {
+        Self::new(quality, 0, false)
+    }
+
+    /// Whether these are the legacy defaults.
+    #[must_use]
+    pub fn is_standard(self) -> bool {
+        self == Self::STANDARD
+    }
+
+    /// "Base Quality": the rolled quality, in per cent.
+    #[must_use]
+    pub fn base_quality_pct(self) -> f32 {
+        f32::from(self.quality)
+    }
+
+    /// "Enhancement": what the enhancement levels add, in per cent. Zero when broken.
+    #[must_use]
+    pub fn enhancement_pct(self) -> f32 {
+        if self.broken {
+            0.0
+        } else {
+            f32::from(self.enhancement) * f32::from(ENHANCE_STEP_PCT)
+        }
+    }
+
+    /// "Total": the share of the base stats the item grants, in per cent.
+    ///
+    /// `quality + enhancement x step` normally; `quality x (1 - BROKEN_PENALTY)` once broken.
+    #[must_use]
+    pub fn total_pct(self) -> f32 {
+        if self.broken {
+            self.base_quality_pct() * (1.0 - BROKEN_PENALTY)
+        } else {
+            self.base_quality_pct() + self.enhancement_pct()
+        }
+    }
+
+    /// **What the base stats are multiplied by.** The one function every stat read goes through.
+    #[must_use]
+    pub fn multiplier(self) -> f32 {
+        self.total_pct() / 100.0
+    }
+}
+
+/// What a slot holds: which item, how many, and this copy's [`ItemProps`].
+///
+/// `Copy`, so moving one between slots is an assignment. Everything else about the item is a
+/// table lookup away.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ItemStack {
     /// Which item.
     pub item: ItemId,
     /// How many. At least one; a stack of zero is an empty slot, which is `None`.
     pub quantity: u16,
+    /// Quality, enhancement and broken state of this copy.
+    pub props: ItemProps,
 }
 
 impl ItemStack {
-    /// One of `item`.
+    /// One of `item`, with the default props.
     #[must_use]
     pub fn one(item: ItemId) -> Self {
-        Self { item, quantity: 1 }
+        Self {
+            item,
+            quantity: 1,
+            props: ItemProps::STANDARD,
+        }
+    }
+
+    /// One of `item` with these props.
+    #[must_use]
+    pub fn with_props(item: ItemId, props: ItemProps) -> Self {
+        Self {
+            item,
+            quantity: 1,
+            props,
+        }
     }
 
     /// `quantity` of `item`, clamped to at least one and to what the item stacks to.
@@ -606,6 +796,7 @@ impl ItemStack {
         Self {
             item,
             quantity: quantity.clamp(1, cap),
+            props: ItemProps::STANDARD,
         }
     }
 
@@ -615,16 +806,33 @@ impl ItemStack {
         item(self.item)
     }
 
-    /// What this stack grants when it is worn. Nothing, if the item is unknown.
+    /// What this stack grants when it is worn: the row's stats scaled by
+    /// [`ItemProps::multiplier`]. Nothing, if the item is unknown.
     #[must_use]
     pub fn stats(self) -> StatBlock {
-        self.def().map_or(StatBlock::zero(), |def| def.stats)
+        self.def()
+            .map_or(StatBlock::zero(), |def| def.stats_for(self.props))
     }
 
     /// Whether it may be worn in `slot`. An unknown item fits nowhere.
     #[must_use]
     pub fn fits(self, slot: EquipSlot) -> bool {
         self.def().is_some_and(|def| def.fits(slot))
+    }
+
+    /// Whether `other` may join this stack: the same item with equal props.
+    #[must_use]
+    pub fn can_merge(self, other: Self) -> bool {
+        self.item == other.item && self.props == other.props
+    }
+
+    /// The item level this copy counts for, scaled by its props like its stats are. What the
+    /// gear score sums.
+    #[must_use]
+    pub fn effective_item_level(self) -> f32 {
+        self.def().map_or(0.0, |def| {
+            f32::from(def.item_level) * self.props.multiplier()
+        })
     }
 }
 
@@ -761,6 +969,86 @@ static LOOT: LazyLock<Vec<ItemDef>> = LazyLock::new(|| {
 #[must_use]
 pub fn loot_pool() -> &'static [ItemDef] {
     &LOOT
+}
+
+/// First identifier of the catalog items. Authored items and the generated pool live below it.
+pub const CATALOG_ID_BASE: u16 = 2000;
+
+/// One item of the data catalog, as plain owned data: what `engine-realm` reads out of
+/// `assets/catalog/loot.json` and hands to [`register_catalog_items`]. This crate keeps no
+/// serde, so the file format is the caller's.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CatalogItem {
+    /// Its stable key. Permanent: persistence stores it.
+    pub key: String,
+    /// Display name; uppercased on registration like every other row.
+    pub name: String,
+    /// What kind of thing it is.
+    pub family: ItemFamily,
+    /// How good it is.
+    pub quality: ItemQuality,
+    /// Its item level.
+    pub item_level: u16,
+    /// Which picture it draws with.
+    pub icon: ItemIcon,
+    /// Its base stats, at quality 100.
+    pub stats: Vec<(Stat, f32)>,
+}
+
+/// The registered catalog rows, in registration order. Set once.
+static CATALOG: OnceLock<Vec<ItemDef>> = OnceLock::new();
+
+/// **Registers the data catalog's items**, so [`item`] and [`item_by_key`] find them.
+///
+/// Ids are assigned `CATALOG_ID_BASE + position`, in the order given, which is file order:
+/// the client, the server and the API all read the same file, so they agree on every id with
+/// no coordination. Strings are leaked to `'static` like the generated pool's, once.
+///
+/// Idempotent: the first call wins and returns `true`; any later call changes nothing and
+/// returns `false` (logging a warning if it was given a different list, which means two
+/// catalogs disagree inside one process). Rows past what an id can number are dropped.
+pub fn register_catalog_items(items: Vec<CatalogItem>) -> bool {
+    let capacity = usize::from(u16::MAX - CATALOG_ID_BASE);
+    let mut installed = false;
+    let rows = CATALOG.get_or_init(|| {
+        installed = true;
+        items
+            .iter()
+            .take(capacity)
+            .enumerate()
+            .map(|(index, row)| {
+                let mut stats = StatBlock::zero();
+                for (stat, value) in &row.stats {
+                    stats.add(*stat, *value);
+                }
+                ItemDef {
+                    // Bounded by `capacity` above.
+                    id: ItemId(CATALOG_ID_BASE + index as u16),
+                    name: Box::leak(row.name.to_uppercase().into_boxed_str()),
+                    key: Box::leak(row.key.clone().into_boxed_str()),
+                    family: row.family,
+                    quality: row.quality,
+                    item_level: row.item_level,
+                    icon: row.icon,
+                    stats,
+                    max_stack: 1,
+                }
+            })
+            .collect()
+    });
+    if !installed
+        && (rows.len() != items.len().min(capacity)
+            || rows.iter().zip(&items).any(|(def, row)| def.key != row.key))
+    {
+        log::warn!("catalog items registered twice with different contents; keeping the first");
+    }
+    installed
+}
+
+/// The registered catalog rows, in file order. Empty until [`register_catalog_items`] runs.
+#[must_use]
+pub fn catalog_items() -> &'static [ItemDef] {
+    CATALOG.get().map_or(&[], Vec::as_slice)
 }
 
 #[cfg(test)]
@@ -953,5 +1241,117 @@ mod tests {
         let ring = starting_item(ItemFamily::Ring).expect("a ring");
         assert_eq!(ItemStack::new(ring.id, 0).quantity, 1);
         assert_eq!(ItemStack::new(ring.id, 40).quantity, ring.max_stack);
+    }
+
+    #[test]
+    fn legacy_props_are_the_items_own_stats() {
+        let props = ItemProps::default();
+        assert_eq!(props, ItemProps::STANDARD);
+        assert!(props.is_standard());
+        assert_eq!(props.multiplier(), 1.0);
+        let ring = item_by_key("reinforced_iron_band").expect("the stamina ring");
+        let stack = ItemStack::one(ring.id);
+        assert_eq!(stack.props, ItemProps::STANDARD);
+        assert_eq!(stack.stats().get(Stat::Stamina), 10.0);
+    }
+
+    #[test]
+    fn quality_and_enhancement_scale_stats_by_the_one_formula() {
+        let ring = item_by_key("reinforced_iron_band").expect("the stamina ring");
+        let stamina = |props| {
+            ItemStack::with_props(ring.id, props)
+                .stats()
+                .get(Stat::Stamina)
+        };
+        assert!((stamina(ItemProps::rolled(106)) - 10.6).abs() < 1e-4);
+        assert!((stamina(ItemProps::rolled(50)) - 5.0).abs() < 1e-4);
+        // +1 per cent per level, exactly: a +7 on a 106 is 113 per cent.
+        let props = ItemProps::new(106, 7, false);
+        assert_eq!(props.base_quality_pct(), 106.0);
+        assert_eq!(props.enhancement_pct(), 7.0);
+        assert_eq!(props.total_pct(), 113.0);
+        assert!((stamina(props) - 11.3).abs() < 1e-4);
+        // One level more adds exactly one per cent of the base stats.
+        let step = stamina(ItemProps::new(100, 1, false)) - stamina(ItemProps::new(100, 0, false));
+        assert!((step - 0.1).abs() < 1e-5);
+    }
+
+    #[test]
+    fn a_broken_item_grants_eighty_five_per_cent_of_its_quality_and_no_enhancement() {
+        let broken = ItemProps::new(100, 9, true);
+        assert_eq!(broken.enhancement, 0, "breaking drops the enhancement");
+        assert!((broken.total_pct() - 85.0).abs() < 1e-4);
+        assert_eq!(broken.enhancement_pct(), 0.0);
+        let ring = item_by_key("reinforced_iron_band").expect("the stamina ring");
+        let stamina = ItemStack::with_props(ring.id, broken)
+            .stats()
+            .get(Stat::Stamina);
+        assert!((stamina - 8.5).abs() < 1e-4);
+        // Quality counts: a 110 that broke is 93.5 per cent.
+        assert!((ItemProps::new(110, 0, true).total_pct() - 93.5).abs() < 1e-4);
+    }
+
+    #[test]
+    fn props_are_clamped_into_the_legal_ranges() {
+        assert_eq!(ItemProps::new(0, 0, false).quality, QUALITY_MIN);
+        assert_eq!(ItemProps::new(255, 0, false).quality, QUALITY_MAX);
+        assert_eq!(
+            ItemProps::new(100, 200, false).enhancement,
+            ENHANCEMENT_CEILING
+        );
+    }
+
+    #[test]
+    fn stacks_only_merge_with_equal_props() {
+        let ring = item_by_key("reinforced_iron_band").expect("the stamina ring");
+        let plain = ItemStack::one(ring.id);
+        assert!(plain.can_merge(ItemStack::one(ring.id)));
+        assert!(!plain.can_merge(ItemStack::with_props(ring.id, ItemProps::rolled(101))));
+        assert!(!plain.can_merge(ItemStack::with_props(ring.id, ItemProps::new(100, 0, true))));
+        assert!(!plain.can_merge(ItemStack::one(ItemId(1))));
+    }
+
+    #[test]
+    fn registered_catalog_items_get_deterministic_ids_after_the_built_in_tables() {
+        let ids = crate::loot::tests::test_items();
+        for (offset, id) in ids.into_iter().enumerate() {
+            assert_eq!(
+                id.0,
+                CATALOG_ID_BASE + offset as u16,
+                "ids follow file order"
+            );
+            let def = item(id).expect("registered");
+            assert_eq!(item_by_key(def.key), Some(def));
+            assert_eq!(def.name, def.name.to_uppercase(), "names are uppercase");
+        }
+        assert_eq!(catalog_items().len(), 4);
+        // Registering again changes nothing, even with different contents.
+        assert!(!register_catalog_items(Vec::new()));
+        assert_eq!(catalog_items().len(), 4);
+        // Built-in ids and keys are untouched.
+        const { assert!(CATALOG_ID_BASE > LOOT_ID_BASE + 11 * 16) };
+        assert_eq!(
+            item(ItemId(1)).map(|def| def.key),
+            Some("simple_cloth_chestpiece")
+        );
+        assert_eq!(item(ItemId(CATALOG_ID_BASE + 100)), None);
+    }
+
+    #[test]
+    fn data_keys_resolve_to_families_qualities_and_icons() {
+        assert_eq!(ItemFamily::from_key("head"), Some(ItemFamily::Head));
+        assert_eq!(ItemFamily::from_key("trinket"), Some(ItemFamily::Trinket));
+        assert_eq!(ItemFamily::from_key("sword"), None);
+        assert_eq!(ItemQuality::from_key("epic"), Some(ItemQuality::Epic));
+        assert_eq!(ItemQuality::from_key("RARE"), Some(ItemQuality::Rare));
+        assert_eq!(ItemIcon::from_key("ring"), Some(ItemIcon::Ring));
+        assert_eq!(
+            Stat::from_key("critical_strike"),
+            Some(Stat::CriticalStrike)
+        );
+        assert_eq!(Stat::from_key("nope"), None);
+        for stat in Stat::STORED {
+            assert_eq!(Stat::from_key(stat.key()), Some(stat));
+        }
     }
 }

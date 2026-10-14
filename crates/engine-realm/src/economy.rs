@@ -15,6 +15,8 @@ use std::fmt;
 
 use engine_game::character::item_by_key;
 
+use crate::loot::ensure_items_registered;
+
 use crate::catalog::Economy;
 use crate::error::RealmError;
 use crate::loadout::Loadout;
@@ -107,6 +109,7 @@ pub fn salvage_many(
     indices: &[u32],
     economy: &Economy,
 ) -> Result<(String, u64), EconomyError> {
+    ensure_items_registered();
     let rule = &economy.salvage;
     if indices.is_empty() {
         return Err(EconomyError::NothingToSalvage);
@@ -211,20 +214,14 @@ mod tests {
 
     fn loadout_with_stack(quantity: u16) -> Loadout {
         let mut loadout = Loadout::default();
-        loadout.inventory.push(BagItem {
-            index: 4,
-            item: item().key.into(),
-            quantity,
-        });
+        loadout
+            .inventory
+            .push(BagItem::new(4, item().key, quantity));
         loadout
     }
 
     fn stack_at(index: u32, quantity: u16) -> BagItem {
-        BagItem {
-            index,
-            item: item().key.into(),
-            quantity,
-        }
+        BagItem::new(index, item().key, quantity)
     }
 
     fn per_item(economy: &Economy) -> u64 {
@@ -259,15 +256,10 @@ mod tests {
         let economy = economy();
         let mut loadout = loadout_with_stack(1);
         loadout.inventory.push(stack_at(6, 1));
-        loadout.equipment.push(EquippedItem {
-            slot: "chest".into(),
-            item: item().key.into(),
-        });
-        loadout.inventory.push(BagItem {
-            index: 9,
-            item: "no_such_item".into(),
-            quantity: 1,
-        });
+        loadout
+            .equipment
+            .push(EquippedItem::new("chest", item().key));
+        loadout.inventory.push(BagItem::new(9, "no_such_item", 1));
         let before = loadout.clone();
         let too_many: Vec<u32> = (0..=economy.salvage.slots).collect();
         for (indices, error) in [

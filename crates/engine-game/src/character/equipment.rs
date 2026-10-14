@@ -197,9 +197,24 @@ impl Inventory {
 
     /// Puts `stack` in the first empty cell and answers where it went.
     ///
+    /// A stack joins an existing one first when the item allows more than one per cell and the
+    /// two are the same item with equal props ([`ItemStack::can_merge`]); a copy with different
+    /// quality or enhancement never merges. Equipment stacks to one, so it never does.
+    ///
     /// `None` means the bag is full and **nothing was taken**: a caller that unequipped
     /// something to make this call has to put it back.
     pub fn add(&mut self, stack: ItemStack) -> Option<usize> {
+        let cap = stack.def().map_or(1, |def| def.max_stack.max(1));
+        if let Some(index) = self.slots.iter().position(|cell| {
+            cell.is_some_and(|held| {
+                held.can_merge(stack)
+                    && u32::from(held.quantity) + u32::from(stack.quantity) <= u32::from(cap)
+            })
+        }) && let Some(held) = self.slots[index].as_mut()
+        {
+            held.quantity += stack.quantity;
+            return Some(index);
+        }
         let index = self.slots.iter().position(Option::is_none)?;
         self.slots[index] = Some(stack);
         Some(index)

@@ -776,7 +776,9 @@ impl VfxDirector {
             }
             CombatEvent::LootMailed { .. }
             | CombatEvent::MailTaken { .. }
-            | CombatEvent::MailBagFull { .. } => {}
+            | CombatEvent::MailBagFull { .. }
+            | CombatEvent::MobLoot { .. }
+            | CombatEvent::MobCurrency { .. } => {}
             // A point of Deflection and a shield taking a hit move no picture of their own:
             // both happen several times a second in a pack, and the block that caused them
             // has already been drawn.

@@ -614,6 +614,10 @@ pub enum CombatEvent {
         player: EntityId,
         /// What they received.
         item: crate::character::ItemId,
+        /// Its quality, enhancement and broken state.
+        props: crate::character::ItemProps,
+        /// Which of the player's chest items this is, in roll order, starting at zero.
+        index: u8,
         /// The simulation tick it happened on.
         tick: u64,
     },
@@ -624,8 +628,37 @@ pub enum CombatEvent {
         player: EntityId,
         /// What was mailed.
         item: crate::character::ItemId,
+        /// Its quality, enhancement and broken state.
+        props: crate::character::ItemProps,
+        /// Which of the player's chest items this is, in roll order, starting at zero.
+        index: u8,
         /// Why it was mailed.
         reason: crate::character::MailReason,
+        /// The simulation tick it happened on.
+        tick: u64,
+    },
+    /// A normal monster dropped a piece of equipment for a player. Personal loot like the
+    /// chest's: the realm persists it to the player's bag or mailbox. Only a simulation with
+    /// local authority (the server) emits it.
+    MobLoot {
+        /// Who it dropped for.
+        player: EntityId,
+        /// What dropped.
+        item: crate::character::ItemId,
+        /// Its quality, enhancement and broken state.
+        props: crate::character::ItemProps,
+        /// The simulation tick it happened on.
+        tick: u64,
+    },
+    /// A monster dropped currency (the modifier-reroll shard, or gold) for a player. Only a
+    /// simulation with local authority (the server) emits it.
+    MobCurrency {
+        /// Who it dropped for.
+        player: EntityId,
+        /// The resource's id in the economy catalog.
+        resource: &'static str,
+        /// How many.
+        amount: u32,
         /// The simulation tick it happened on.
         tick: u64,
     },
@@ -692,6 +725,8 @@ impl CombatEvent {
             | Self::ChestOpened { tick, .. }
             | Self::LootAwarded { tick, .. }
             | Self::LootMailed { tick, .. }
+            | Self::MobLoot { tick, .. }
+            | Self::MobCurrency { tick, .. }
             | Self::MailTaken { tick, .. }
             | Self::MailBagFull { tick, .. } => tick,
             Self::Damage(damage) => damage.tick,

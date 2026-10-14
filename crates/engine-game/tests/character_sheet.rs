@@ -14,7 +14,8 @@
 use engine_game::arena::{self, ArenaConfig};
 use engine_game::character::stat::{HEALTH_PER_STAMINA, StatGroup};
 use engine_game::character::{
-    BASE_MAIN_STAT, BASE_STAMINA, EquipSlot, ItemSlot, ItemStack, Stat, item_by_key, starting_item,
+    BASE_MAIN_STAT, BASE_STAMINA, EquipSlot, ItemProps, ItemSlot, ItemStack, Stat, item_by_key,
+    starting_item,
 };
 use engine_game::firemage::BASE_SPELL_POWER;
 use engine_game::hero::Hero;
@@ -164,6 +165,38 @@ fn equipping_ten_stamina_raises_the_maximum_health_by_a_hundred() {
         )
         .expect("it comes off again");
     assert_eq!(max_health(&simulation), before);
+}
+
+#[test]
+fn an_items_quality_enhancement_and_breakage_reach_the_players_health() {
+    let mut simulation = simulation();
+    let ring = item_by_key("reinforced_iron_band").expect("the stamina ring");
+    let cell = free_cell(&simulation);
+    let stamina_with = |simulation: &mut Simulation, props: ItemProps| {
+        simulation
+            .roster_mut()
+            .sheet_mut(Hero::FireMage)
+            .inventory_mut()
+            .put(cell, Some(ItemStack::with_props(ring.id, props)));
+        simulation
+            .move_item(
+                ItemSlot::Inventory(cell),
+                ItemSlot::Equipment(EquipSlot::Ring1),
+            )
+            .expect("a ring goes on a finger");
+        let stamina = simulation.character_stats().get(Stat::Stamina) - BASE_STAMINA;
+        simulation
+            .move_item(
+                ItemSlot::Equipment(EquipSlot::Ring1),
+                ItemSlot::Inventory(cell),
+            )
+            .expect("it comes off again");
+        stamina
+    };
+    // A base of ten Stamina: 106 per cent quality with +7 is 113 per cent; a break leaves 85.
+    assert!((stamina_with(&mut simulation, ItemProps::new(106, 7, false)) - 11.3).abs() < 1e-3);
+    assert!((stamina_with(&mut simulation, ItemProps::new(100, 0, true)) - 8.5).abs() < 1e-3);
+    assert!((stamina_with(&mut simulation, ItemProps::default()) - 10.0).abs() < 1e-3);
 }
 
 #[test]
