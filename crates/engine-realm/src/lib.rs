@@ -26,6 +26,9 @@
 //! | [`role`] | Tank, Healer, DPS |
 //! | [`catalog`] | which characters and dungeons exist |
 //! | [`loadout`] | what a character wears, and its gear score |
+//! | [`economy`] | resources, salvage and exchanges |
+//! | [`key`] | dungeon keys: validity, progression, scaling |
+//! | [`rewards`] | what a finished run pays |
 //! | [`matchmaking`] | which queued tickets become a party |
 //! | [`party`] | the party state machine, the ready check, who may do what |
 //! | [`instance`] | the dungeon instance lifecycle, countdown and barrier |
@@ -38,14 +41,17 @@
 pub mod api;
 pub mod catalog;
 pub mod combat;
+pub mod economy;
 pub mod error;
 pub mod instance;
+pub mod key;
 pub mod loadout;
 pub mod matchmaking;
 pub mod movement;
 pub mod party;
 pub mod progression;
 pub mod rate_limit;
+pub mod rewards;
 pub mod role;
 pub mod talents;
 

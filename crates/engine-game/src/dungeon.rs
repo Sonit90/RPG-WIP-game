@@ -395,6 +395,10 @@ pub fn dungeon_scene() -> engine_environment::EnvironmentScene {
 pub struct DungeonScaling {
     /// How many players the dungeon is being run by.
     pub party_size: u8,
+    /// What a dungeon key multiplies monster health by on top of the party size. 1.0 without one.
+    pub key_health: f32,
+    /// What a dungeon key multiplies monster damage by on top of the party size. 1.0 without one.
+    pub key_damage: f32,
 }
 
 impl Default for DungeonScaling {
@@ -412,7 +416,17 @@ impl DungeonScaling {
     pub fn for_party(size: u8) -> Self {
         Self {
             party_size: size.clamp(1, 5),
+            key_health: 1.0,
+            key_damage: 1.0,
         }
+    }
+
+    /// The same scaling with a dungeon key's multipliers applied on top.
+    #[must_use]
+    pub fn with_key(mut self, health_mult: f32, damage_mult: f32) -> Self {
+        self.key_health = health_mult;
+        self.key_damage = damage_mult;
+        self
     }
 
     /// What monster health is multiplied by.
@@ -421,13 +435,14 @@ impl DungeonScaling {
     /// under half of a party's, because a party's tank and healer deal little.
     #[must_use]
     pub fn health(&self) -> f32 {
-        match self.party_size {
+        let party = match self.party_size {
             1 => 0.45,
             2 => 0.7,
             3 => 1.0,
             4 => 1.25,
             _ => 1.5,
-        }
+        };
+        party * self.key_health
     }
 
     /// What monster damage is multiplied by.
@@ -437,11 +452,12 @@ impl DungeonScaling {
     /// standing in a telegraph stops mattering.
     #[must_use]
     pub fn damage(&self) -> f32 {
-        match self.party_size {
+        let party = match self.party_size {
             1 => 0.6,
             2 => 0.8,
             _ => 1.0,
-        }
+        };
+        party * self.key_damage
     }
 }
 
@@ -674,6 +690,16 @@ pub fn build_level_file(
 mod tests {
     use super::*;
     use crate::enemy::EnemyKind;
+
+    #[test]
+    fn a_key_multiplies_health_and_damage_on_top_of_the_party() {
+        let plain = DungeonScaling::for_party(1);
+        assert!((plain.health() - 0.45).abs() < 1e-6);
+        let keyed = plain.with_key(2.0, 1.5);
+        assert!((keyed.health() - 0.9).abs() < 1e-6);
+        assert!((keyed.damage() - 0.9).abs() < 1e-6);
+        assert!((DungeonScaling::default().health() - 1.0).abs() < 1e-6);
+    }
 
     #[test]
     fn the_dungeon_has_the_content_the_design_says_it_has() {

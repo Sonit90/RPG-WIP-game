@@ -2,11 +2,11 @@
 //!
 //! ```text
 //! assets/catalog/characters.json ─┐
-//!                                 ├─► Catalog ─► module (validation), client (screens),
-//! assets/catalog/dungeons.json  ──┘              persistence API (starter characters)
+//! assets/catalog/dungeons.json  ──┼─► Catalog ─► module (validation), client (screens),
+//! assets/catalog/economy.json   ──┘              persistence API (starter characters)
 //! ```
 //!
-//! Both files are compiled into every program that reads them ([`Catalog::builtin`]), so the
+//! All three files are compiled into every program that reads them ([`Catalog::builtin`]), so the
 //! server, the client and the API cannot disagree about which dungeons exist: they were built
 //! from the same bytes. Adding a dungeon or a character is a row in a JSON file and nothing
 //! anywhere iterates a hardcoded list of three.
@@ -24,6 +24,8 @@ use crate::role::Role;
 const CHARACTERS_JSON: &str = include_str!("../../../assets/catalog/characters.json");
 /// The dungeon catalog as written.
 const DUNGEONS_JSON: &str = include_str!("../../../assets/catalog/dungeons.json");
+/// The economy catalog as written.
+const ECONOMY_JSON: &str = include_str!("../../../assets/catalog/economy.json");
 
 /// The catalog format this build reads.
 pub const CATALOG_VERSION: u32 = 1;
@@ -116,6 +118,45 @@ impl BarrierBox {
     }
 }
 
+/// How a dungeon key's level changes the run.
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
+pub struct KeyRules {
+    /// The lowest key level. A new key starts here.
+    pub min_level: u32,
+    /// The highest key level a key can be raised to.
+    pub max_level: u32,
+    /// Monster health grows by this fraction of the base for every level above the first.
+    pub health_per_level: f32,
+    /// Monster damage grows by this fraction of the base for every level above the first.
+    pub damage_per_level: f32,
+}
+
+/// One resource a run pays out: `amount` at key level 1, plus `per_level` for every level above.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct ResourceReward {
+    /// The resource's id in the economy catalog.
+    pub id: String,
+    /// Paid at the first key level.
+    pub amount: u32,
+    /// Added for every key level above the first.
+    #[serde(default)]
+    pub per_level: u32,
+}
+
+/// What finishing a dungeon pays, before the key level scales it.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
+pub struct RewardTable {
+    /// Experience at the first key level.
+    #[serde(default)]
+    pub experience: u32,
+    /// Experience added for every key level above the first.
+    #[serde(default)]
+    pub experience_per_level: u32,
+    /// The resources paid.
+    #[serde(default)]
+    pub resources: Vec<ResourceReward>,
+}
+
 /// A dungeon a party can queue for.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DungeonDefinition {
@@ -139,6 +180,10 @@ pub struct DungeonDefinition {
     pub recommended_gear_score: u32,
     /// What finishing it can give, for the selection screen.
     pub rewards: Vec<String>,
+    /// How its keys scale the run.
+    pub keys: KeyRules,
+    /// What finishing it pays, per key level.
+    pub reward_table: RewardTable,
     /// Seconds between the leader starting and the barrier lifting.
     pub countdown_seconds: u32,
     /// Where each party member appears, in party order. At least one per role.
@@ -183,11 +228,116 @@ impl DungeonDefinition {
     }
 }
 
-/// Every character and dungeon definition.
+/// A kind of resource a character can hold.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct ResourceDefinition {
+    /// Stable identifier. What a loadout's resource map is keyed by.
+    pub id: String,
+    /// Display name.
+    pub name: String,
+    /// One sentence for the tooltip.
+    #[serde(default)]
+    pub description: String,
+}
+
+/// What breaking an item down yields.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct SalvageRule {
+    /// The resource it yields.
+    pub resource: String,
+    /// Yielded for any item.
+    pub base: u32,
+    /// Added for every item level of the item.
+    pub per_item_level: u32,
+}
+
+/// A fixed-rate trade of one resource for another.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct ExchangeRule {
+    /// Stable identifier.
+    pub id: String,
+    /// The resource paid.
+    pub from: String,
+    /// How much of it one trade costs.
+    pub from_amount: u32,
+    /// The resource received.
+    pub to: String,
+    /// How much of it one trade gives.
+    pub to_amount: u32,
+}
+
+/// Resources, salvage and exchanges.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Economy {
+    version: u32,
+    /// Every resource that exists.
+    pub resources: Vec<ResourceDefinition>,
+    /// What salvaging an item yields.
+    pub salvage: SalvageRule,
+    /// Every trade on offer.
+    pub exchanges: Vec<ExchangeRule>,
+}
+
+impl Economy {
+    /// The resource with this id.
+    #[must_use]
+    pub fn resource(&self, id: &str) -> Option<&ResourceDefinition> {
+        self.resources.iter().find(|resource| resource.id == id)
+    }
+
+    /// The exchange with this id.
+    #[must_use]
+    pub fn exchange(&self, id: &str) -> Option<&ExchangeRule> {
+        self.exchanges.iter().find(|exchange| exchange.id == id)
+    }
+
+    fn validate(&self) -> Result<(), CatalogError> {
+        for (index, resource) in self.resources.iter().enumerate() {
+            if self.resources[..index].iter().any(|r| r.id == resource.id) {
+                return Err(CatalogError(format!(
+                    "resource {:?} is listed twice",
+                    resource.id
+                )));
+            }
+        }
+        if self.resource(&self.salvage.resource).is_none() {
+            return Err(CatalogError(format!(
+                "salvage yields unknown resource {:?}",
+                self.salvage.resource
+            )));
+        }
+        for (index, exchange) in self.exchanges.iter().enumerate() {
+            if self.exchanges[..index].iter().any(|e| e.id == exchange.id) {
+                return Err(CatalogError(format!(
+                    "exchange {:?} is listed twice",
+                    exchange.id
+                )));
+            }
+            for id in [&exchange.from, &exchange.to] {
+                if self.resource(id).is_none() {
+                    return Err(CatalogError(format!(
+                        "exchange {:?} names unknown resource {id:?}",
+                        exchange.id
+                    )));
+                }
+            }
+            if exchange.from_amount == 0 || exchange.to_amount == 0 {
+                return Err(CatalogError(format!(
+                    "exchange {:?} has a zero amount",
+                    exchange.id
+                )));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Every character, dungeon and economy definition.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Catalog {
     characters: Vec<CharacterDefinition>,
     dungeons: Vec<DungeonDefinition>,
+    economy: Economy,
 }
 
 /// Why a catalog could not be read.
@@ -243,6 +393,9 @@ struct DungeonRecord {
     recommended_gear_score: u32,
     #[serde(default)]
     rewards: Vec<String>,
+    keys: KeyRules,
+    #[serde(default)]
+    reward_table: RewardTable,
     countdown_seconds: u32,
     spawn_points: Vec<StartPoint>,
     start_barrier: BarrierBox,
@@ -255,29 +408,38 @@ impl Catalog {
     ///
     /// Only if the shipped JSON is broken, which `cargo test` catches before anything ships.
     pub fn builtin() -> Result<Self, CatalogError> {
-        Self::parse(CHARACTERS_JSON, DUNGEONS_JSON)
+        Self::parse(CHARACTERS_JSON, DUNGEONS_JSON, ECONOMY_JSON)
     }
 
-    /// A catalog from the two documents' text.
+    /// A catalog from the three documents' text.
     ///
     /// # Errors
     ///
     /// Malformed JSON, an unknown version, a duplicate id, an unknown hero, a character with
-    /// no role, a dungeon with no spawn point or an impossible level range.
-    pub fn parse(characters: &str, dungeons: &str) -> Result<Self, CatalogError> {
+    /// no role, a dungeon with no spawn point or an impossible level range or key rules, a
+    /// reward naming a resource that does not exist, or an economy that contradicts itself.
+    pub fn parse(characters: &str, dungeons: &str, economy: &str) -> Result<Self, CatalogError> {
         let characters: CharacterFile = serde_json::from_str(characters)
             .map_err(|error| CatalogError(format!("characters.json: {error}")))?;
         let dungeons: DungeonFile = serde_json::from_str(dungeons)
             .map_err(|error| CatalogError(format!("dungeons.json: {error}")))?;
-        if characters.version != CATALOG_VERSION || dungeons.version != CATALOG_VERSION {
+        let economy: Economy = serde_json::from_str(economy)
+            .map_err(|error| CatalogError(format!("economy.json: {error}")))?;
+        if characters.version != CATALOG_VERSION
+            || dungeons.version != CATALOG_VERSION
+            || economy.version != CATALOG_VERSION
+        {
             return Err(CatalogError(format!(
                 "this build reads catalog version {CATALOG_VERSION}"
             )));
         }
 
+        economy.validate()?;
+
         let mut out = Self {
             characters: Vec::with_capacity(characters.characters.len()),
             dungeons: Vec::with_capacity(dungeons.dungeons.len()),
+            economy,
         };
         for record in characters.characters {
             if out.character(&record.id).is_some() {
@@ -327,6 +489,30 @@ impl Catalog {
                     record.id
                 )));
             }
+            let keys = record.keys;
+            if keys.min_level < 1 || keys.max_level < keys.min_level {
+                return Err(CatalogError(format!(
+                    "dungeon {:?} has an impossible key level range",
+                    record.id
+                )));
+            }
+            if !(keys.health_per_level >= 0.0 && keys.damage_per_level >= 0.0) {
+                return Err(CatalogError(format!(
+                    "dungeon {:?} has a negative key multiplier",
+                    record.id
+                )));
+            }
+            if let Some(unknown) = record
+                .reward_table
+                .resources
+                .iter()
+                .find(|reward| out.economy.resource(&reward.id).is_none())
+            {
+                return Err(CatalogError(format!(
+                    "dungeon {:?} rewards unknown resource {:?}",
+                    record.id, unknown.id
+                )));
+            }
             out.dungeons.push(DungeonDefinition {
                 id: record.id,
                 name: record.name,
@@ -338,6 +524,8 @@ impl Catalog {
                 min_gear_score: record.min_gear_score,
                 recommended_gear_score: record.recommended_gear_score,
                 rewards: record.rewards,
+                keys,
+                reward_table: record.reward_table,
                 countdown_seconds: record.countdown_seconds,
                 spawn_points: record.spawn_points,
                 start_barrier: record.start_barrier,
@@ -356,6 +544,12 @@ impl Catalog {
     #[must_use]
     pub fn dungeons(&self) -> &[DungeonDefinition] {
         &self.dungeons
+    }
+
+    /// Resources, salvage and exchanges.
+    #[must_use]
+    pub fn economy(&self) -> &Economy {
+        &self.economy
     }
 
     /// The character definition with this id.
@@ -439,13 +633,84 @@ mod tests {
         let twice = r#"{"version":1,"characters":[
             {"id":"a","name":"A","class":"C","hero":"warrior","roles":["tank"]},
             {"id":"a","name":"A","class":"C","hero":"warrior","roles":["tank"]}]}"#;
-        assert!(Catalog::parse(twice, dungeons).is_err());
+        assert!(Catalog::parse(twice, dungeons, ECONOMY_JSON).is_err());
         let unknown = r#"{"version":1,"characters":[
             {"id":"a","name":"A","class":"C","hero":"bard","roles":["tank"]}]}"#;
-        assert!(Catalog::parse(unknown, dungeons).is_err());
+        assert!(Catalog::parse(unknown, dungeons, ECONOMY_JSON).is_err());
         let roleless = r#"{"version":1,"characters":[
             {"id":"a","name":"A","class":"C","hero":"warrior","roles":[]}]}"#;
-        assert!(Catalog::parse(roleless, dungeons).is_err());
+        assert!(Catalog::parse(roleless, dungeons, ECONOMY_JSON).is_err());
+    }
+
+    /// The shipped dungeons document with one substring replaced.
+    fn dungeons_with(from: &str, to: &str) -> String {
+        assert!(
+            DUNGEONS_JSON.contains(from),
+            "{from} is not in the shipped file"
+        );
+        DUNGEONS_JSON.replacen(from, to, 1)
+    }
+
+    fn parse_with_dungeons(dungeons: &str) -> Result<Catalog, CatalogError> {
+        Catalog::parse(CHARACTERS_JSON, dungeons, ECONOMY_JSON)
+    }
+
+    #[test]
+    fn keys_rewards_and_economy_are_read() {
+        let catalog = Catalog::builtin().expect("the shipped catalog parses");
+        let crypt = catalog.dungeon("graveyard_crypt").expect("the crypt");
+        assert_eq!(crypt.keys.min_level, 1);
+        assert_eq!(crypt.keys.max_level, 20);
+        assert!((crypt.keys.health_per_level - 0.10).abs() < 1e-6);
+        assert!((crypt.keys.damage_per_level - 0.05).abs() < 1e-6);
+        assert_eq!(crypt.reward_table.experience, 200);
+        assert_eq!(crypt.reward_table.experience_per_level, 50);
+        assert_eq!(
+            crypt.reward_table.resources,
+            vec![ResourceReward {
+                id: "crypt_dust".into(),
+                amount: 5,
+                per_level: 2
+            }]
+        );
+        let economy = catalog.economy();
+        assert_eq!(economy.resources.len(), 3);
+        assert_eq!(economy.salvage.resource, "bone_shard");
+        let trade = economy.exchange("dust_to_ember").expect("a trade");
+        assert_eq!((trade.from_amount, trade.to_amount), (20, 1));
+        assert!(economy.exchange("nope").is_none());
+    }
+
+    #[test]
+    fn bad_key_rules_are_refused() {
+        let inverted = dungeons_with("\"max_level\": 20", "\"max_level\": 0");
+        assert!(parse_with_dungeons(&inverted).is_err());
+        let zero_min = dungeons_with(
+            "\"min_level\": 1,\n        \"max_level\": 20",
+            "\"min_level\": 0,\n        \"max_level\": 20",
+        );
+        assert!(parse_with_dungeons(&zero_min).is_err());
+        let negative = dungeons_with("\"health_per_level\": 0.10", "\"health_per_level\": -0.1");
+        assert!(parse_with_dungeons(&negative).is_err());
+    }
+
+    #[test]
+    fn rewards_must_name_real_resources() {
+        let unknown = dungeons_with("\"id\": \"crypt_dust\"", "\"id\": \"moon_cheese\"");
+        assert!(parse_with_dungeons(&unknown).is_err());
+    }
+
+    #[test]
+    fn economy_references_are_checked() {
+        let edit = |from: &str, to: &str| ECONOMY_JSON.replacen(from, to, 1);
+        for bad in [
+            edit("\"resource\": \"bone_shard\"", "\"resource\": \"nothing\""),
+            edit("\"to\": \"steward_ember\"", "\"to\": \"nothing\""),
+            edit("\"from_amount\": 20", "\"from_amount\": 0"),
+        ] {
+            assert_ne!(bad, ECONOMY_JSON);
+            assert!(Catalog::parse(CHARACTERS_JSON, DUNGEONS_JSON, &bad).is_err());
+        }
     }
 
     #[test]

@@ -12,6 +12,17 @@
       "min_gear_score": 0,
       "recommended_gear_score": 40,
       "rewards": ["Experience", "Crypt-forged gear", "Steward's Reliquary"],
+      "keys": {
+        "min_level": 1,
+        "max_level": 20,
+        "health_per_level": 0.10,
+        "damage_per_level": 0.05
+      },
+      "reward_table": {
+        "experience": 200,
+        "experience_per_level": 50,
+        "resources": [{ "id": "crypt_dust", "amount": 5, "per_level": 2 }]
+      },
       "countdown_seconds": 5,
       "spawn_points": [
         { "position": [0.0, 0.0, -8.0], "yaw": 0.0 },

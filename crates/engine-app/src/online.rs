@@ -607,6 +607,7 @@ impl OnlineSession {
                         equipment: detail.summary.equipment.clone(),
                         inventory: detail.inventory.clone(),
                         mail: detail.mail.clone(),
+                        ..Default::default()
                     };
                     // The item has arrived once the bag and mailbox hold more than they did.
                     if self.loot_watch.as_ref().is_some_and(|watch| {

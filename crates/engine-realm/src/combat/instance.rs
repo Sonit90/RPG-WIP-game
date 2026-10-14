@@ -330,18 +330,25 @@ pub struct CombatInstance {
 }
 
 impl CombatInstance {
-    /// The fight for `scene` with `players` in it, the start barrier standing.
+    /// The fight for `scene` with `players` in it, the start barrier standing. `key_scaling` is
+    /// the dungeon key's `(health, damage)` multipliers (see [`crate::key::scaling`]); `(1.0,
+    /// 1.0)` for no key.
     ///
     /// # Panics
     ///
     /// Never for a non-empty party; an empty one is given a fight with nobody to drive.
     #[must_use]
-    pub fn new(scene: &EnvironmentScene, players: &[PlayerSpec], barriers: &[Barrier]) -> Self {
+    pub fn new(
+        scene: &EnvironmentScene,
+        players: &[PlayerSpec],
+        barriers: &[Barrier],
+        key_scaling: (f32, f32),
+    ) -> Self {
         let size = u8::try_from(players.len().max(1)).unwrap_or(u8::MAX);
         let mut sim = engine_game::arena::environment_arena_for_party(
             scene,
             0,
-            DungeonScaling::for_party(size),
+            DungeonScaling::for_party(size).with_key(key_scaling.0, key_scaling.1),
         );
         let mut members = Vec::with_capacity(players.len());
         for (index, spec) in players.iter().enumerate() {
@@ -417,10 +424,11 @@ impl CombatInstance {
         scene: &EnvironmentScene,
         players: &[PlayerSpec],
         barriers: &[Barrier],
+        key_scaling: (f32, f32),
         barrier_open: bool,
         state: &Restore,
     ) -> Self {
-        let mut instance = Self::new(scene, players, barriers);
+        let mut instance = Self::new(scene, players, barriers, key_scaling);
         if barrier_open {
             instance.open_start_barrier();
         }

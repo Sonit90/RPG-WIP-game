@@ -46,7 +46,7 @@ fn walk(seq: u32) -> InputFrame {
 #[test]
 fn the_party_enters_with_its_own_classes_and_the_monsters_are_keyed() {
     let (scene, barriers, players) = crypt();
-    let mut fight = CombatInstance::new(&scene, &players, &barriers);
+    let mut fight = CombatInstance::new(&scene, &players, &barriers, (1.0, 1.0));
     let states = fight.player_states();
     assert_eq!(states.len(), 3);
     assert!(states.iter().all(|s| s.alive && s.health > 0.0));
@@ -77,7 +77,7 @@ fn the_party_enters_with_its_own_classes_and_the_monsters_are_keyed() {
         );
     }
     // Two fights from the same level agree on every key.
-    let again = CombatInstance::new(&scene, &players, &barriers).monster_states();
+    let again = CombatInstance::new(&scene, &players, &barriers, (1.0, 1.0)).monster_states();
     assert_eq!(
         monsters.iter().map(|m| (m.key, m.kind)).collect::<Vec<_>>(),
         again.iter().map(|m| (m.key, m.kind)).collect::<Vec<_>>()
@@ -87,7 +87,7 @@ fn the_party_enters_with_its_own_classes_and_the_monsters_are_keyed() {
 #[test]
 fn the_start_barrier_holds_until_it_is_lifted() {
     let (scene, barriers, players) = crypt();
-    let mut fight = CombatInstance::new(&scene, &players, &barriers);
+    let mut fight = CombatInstance::new(&scene, &players, &barriers, (1.0, 1.0));
     let frames: Vec<InputFrame> = (1..=600).map(walk).collect();
     let (body, last) = fight.apply_frames("dps", &frames).expect("dps is here");
     assert_eq!(last, 600);
@@ -109,7 +109,7 @@ fn the_start_barrier_holds_until_it_is_lifted() {
 #[test]
 fn an_action_names_its_target_and_the_damage_comes_back_named() {
     let (scene, barriers, players) = crypt();
-    let mut fight = CombatInstance::new(&scene, &players, &barriers);
+    let mut fight = CombatInstance::new(&scene, &players, &barriers, (1.0, 1.0));
     fight.open_start_barrier();
     let monster = fight
         .monster_states()
@@ -152,7 +152,7 @@ fn an_action_names_its_target_and_the_damage_comes_back_named() {
 #[test]
 fn malformed_and_foreign_actions_are_refused() {
     let (scene, barriers, players) = crypt();
-    let mut fight = CombatInstance::new(&scene, &players, &barriers);
+    let mut fight = CombatInstance::new(&scene, &players, &barriers, (1.0, 1.0));
     let press = |kind| CombatAction {
         target: EntityRef::None,
         kind,
@@ -179,7 +179,7 @@ fn malformed_and_foreign_actions_are_refused() {
 #[test]
 fn only_changed_monsters_are_written_again() {
     let (scene, barriers, players) = crypt();
-    let mut fight = CombatInstance::new(&scene, &players, &barriers);
+    let mut fight = CombatInstance::new(&scene, &players, &barriers, (1.0, 1.0));
     let (first, gone) = fight.changed_monsters();
     assert!(!first.is_empty());
     assert!(gone.is_empty());
@@ -195,7 +195,7 @@ fn only_changed_monsters_are_written_again() {
 #[test]
 fn the_whole_crypt_can_be_cleared_and_the_run_completes() {
     let (scene, barriers, players) = crypt();
-    let mut fight = CombatInstance::new(&scene, &players, &barriers);
+    let mut fight = CombatInstance::new(&scene, &players, &barriers, (1.0, 1.0));
     fight.open_start_barrier();
     let mage = fight
         .resolve(&EntityRef::Player("dps".into()))
@@ -234,7 +234,7 @@ fn the_whole_crypt_can_be_cleared_and_the_run_completes() {
 #[test]
 fn a_rebuilt_fight_keeps_keys_the_dead_and_the_bodies() {
     let (scene, barriers, players) = crypt();
-    let mut fight = CombatInstance::new(&scene, &players, &barriers);
+    let mut fight = CombatInstance::new(&scene, &players, &barriers, (1.0, 1.0));
     fight.open_start_barrier();
     let monsters = fight.monster_states();
     let victim = monsters[0].key;
@@ -261,7 +261,8 @@ fn a_rebuilt_fight_keeps_keys_the_dead_and_the_bodies() {
             last_seq: 60,
         }],
     };
-    let mut rebuilt = CombatInstance::restore(&scene, &players, &barriers, true, &state);
+    let mut rebuilt =
+        CombatInstance::restore(&scene, &players, &barriers, (1.0, 1.0), true, &state);
     assert_eq!(rebuilt.tick(), 1234);
     assert!(rebuilt.resolve(&EntityRef::Monster(victim)).is_none());
     let survivor = rebuilt

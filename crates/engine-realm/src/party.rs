@@ -1,22 +1,25 @@
 //! The party: its state machine, its ready check, and who may do what to it.
 //!
 //! ```text
-//!            all accept                 leader starts            countdown ends
-//! ReadyCheck ──────────▶ Ready ─────────────────▶ Starting ────────────────▶ InDungeon
-//!     │                    │                         │                         │
-//!     │ decline/timeout/   │ member leaves/kicked    │ (a member leaves:      │ success / wipe
-//!     │ disconnect         │ before the start        │  the run continues)    ▼
-//!     ▼                    ▼                         │                Completed / Failed
-//! Disbanded ◀──────────────┴─────────────────────────┘ everyone gone
+//!            all accept          a member inserts      key owner starts      countdown ends
+//! ReadyCheck ──────────▶ ChoosingKey ──────────▶ Ready ────────────▶ Starting ─────────▶ InDungeon
+//!     │                    │      ▲   key owner     │                   │                   │
+//!     │ decline/timeout/   │      └── withdraws ────┤                   │ (a member leaves: │ success / wipe
+//!     │ disconnect         │ member leaves/kicked   │                   │  the run          ▼
+//!     ▼                    ▼ before the start       ▼                   │  continues)  Completed / Failed
+//! Disbanded ◀──────────────┴────────────────────────┴───────────────────┘ everyone gone
 //! ```
+//!
+//! There is no leader while the party is choosing a key: whoever inserts their own key becomes
+//! the leader, and withdrawing it gives the leadership up again.
 //!
 //! States are one enum and every transition goes through [`PartyState::can_become`], so there
 //! is no combination of booleans in which a party is both "starting" and "disbanded".
 //!
 //! Who may do what is [`authorize`]: one function, given the party as plain data, the actor
 //! and the action. The module calls it before every party mutation and refuses with its error.
-//! Being the leader is a field the server set ([`pick_leader`], from the server's own random
-//! roll); nothing a client sends can make it so.
+//! Being the leader is a field the server set (the key owner before the run, [`successor`]
+//! from the server's own random roll during it); nothing a client sends can make it so.
 
 use crate::error::RealmError;
 use crate::role::Role;
@@ -27,7 +30,9 @@ use crate::{Micros, SECOND};
 pub enum PartyState {
     /// Formed by the matchmaker; waiting for every member to accept.
     ReadyCheck,
-    /// Everyone accepted and a leader was chosen; waiting for the leader to start.
+    /// Everyone accepted; waiting for a member to insert their dungeon key. No leader yet.
+    ChoosingKey,
+    /// A key is inserted and its owner leads; waiting for the leader to start.
     Ready,
     /// The instance exists and is counting down.
     Starting,
@@ -43,8 +48,9 @@ pub enum PartyState {
 
 impl PartyState {
     /// Every state.
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
         Self::ReadyCheck,
+        Self::ChoosingKey,
         Self::Ready,
         Self::Starting,
         Self::InDungeon,
@@ -56,11 +62,14 @@ impl PartyState {
     /// Whether a party in this state may move to `next`.
     #[must_use]
     pub fn can_become(self, next: Self) -> bool {
-        use PartyState::{Completed, Disbanded, Failed, InDungeon, Ready, ReadyCheck, Starting};
+        use PartyState::{
+            ChoosingKey, Completed, Disbanded, Failed, InDungeon, Ready, ReadyCheck, Starting,
+        };
         matches!(
             (self, next),
-            (ReadyCheck, Ready | Disbanded)
-                | (Ready, Starting | Disbanded)
+            (ReadyCheck, ChoosingKey | Disbanded)
+                | (ChoosingKey, Ready | Disbanded)
+                | (Ready, ChoosingKey | Starting | Disbanded)
                 | (Starting, InDungeon | Failed | Disbanded)
                 | (InDungeon, Completed | Failed | Disbanded)
                 | (Completed | Failed, Disbanded)
@@ -87,6 +96,7 @@ impl PartyState {
     pub fn key(self) -> &'static str {
         match self {
             Self::ReadyCheck => "ready_check",
+            Self::ChoosingKey => "choosing_key",
             Self::Ready => "ready",
             Self::Starting => "starting",
             Self::InDungeon => "in_dungeon",
@@ -128,6 +138,8 @@ pub struct MemberView {
     pub ready: ReadyResponse,
     /// Connected or not.
     pub presence: Presence,
+    /// Whether their snapshotted key opens this party's dungeon at a valid level.
+    pub has_key_for_dungeon: bool,
 }
 
 /// A party, as the rules need to see it.
@@ -137,6 +149,8 @@ pub struct PartyView {
     pub state: PartyState,
     /// The leader's account, once there is one.
     pub leader: Option<String>,
+    /// The account whose key is inserted, once one is.
+    pub key_owner: Option<String>,
     /// Its members.
     pub members: Vec<MemberView>,
 }
@@ -183,6 +197,10 @@ pub enum PartyAction {
     Leave,
     /// Start the dungeon.
     Start,
+    /// Put the actor's own key in.
+    InsertKey,
+    /// Take the inserted key back out.
+    WithdrawKey,
 }
 
 /// Whether `actor` may do `action` to `party`.
@@ -216,10 +234,7 @@ pub fn authorize(party: &PartyView, actor: &str, action: &PartyAction) -> Result
         }
         PartyAction::TransferLeader { target } => {
             leader_only("transfer leadership")?;
-            if !matches!(
-                party.state,
-                PartyState::Ready | PartyState::Starting | PartyState::InDungeon
-            ) {
+            if !matches!(party.state, PartyState::Starting | PartyState::InDungeon) {
                 return Err(RealmError::party("Leadership cannot change right now."));
             }
             if target == actor {
@@ -253,10 +268,33 @@ pub fn authorize(party: &PartyView, actor: &str, action: &PartyAction) -> Result
             leader_only("start the dungeon")?;
             validate_start(party)
         }
+        PartyAction::InsertKey => match party.state {
+            PartyState::ChoosingKey => {
+                if party.member(actor).is_some_and(|m| m.has_key_for_dungeon) {
+                    Ok(())
+                } else {
+                    Err(RealmError::party("You have no key for this dungeon."))
+                }
+            }
+            PartyState::Ready => Err(RealmError::party("A key is already inserted.")),
+            _ => Err(RealmError::party("No key can be inserted right now.")),
+        },
+        PartyAction::WithdrawKey => {
+            if party.state != PartyState::Ready {
+                return Err(RealmError::party("There is no key to withdraw."));
+            }
+            if party.key_owner.as_deref() != Some(actor) {
+                return Err(RealmError::unauthorized(
+                    "Only the key's owner can withdraw it.",
+                ));
+            }
+            Ok(())
+        }
     }
 }
 
-/// Whether the party can start: ready, complete, everyone accepted and connected.
+/// Whether the party can start: ready, led by its key owner, complete, everyone accepted and
+/// connected.
 ///
 /// # Errors
 ///
@@ -264,6 +302,15 @@ pub fn authorize(party: &PartyView, actor: &str, action: &PartyAction) -> Result
 pub fn validate_start(party: &PartyView) -> Result<(), RealmError> {
     if party.state != PartyState::Ready {
         return Err(RealmError::party("The party is not ready to start."));
+    }
+    match (&party.key_owner, &party.leader) {
+        (Some(owner), Some(leader)) if owner == leader => {}
+        (None, _) => return Err(RealmError::party("The party has no key inserted.")),
+        _ => {
+            return Err(RealmError::party(
+                "Only the key's owner can start the dungeon.",
+            ));
+        }
     }
     if !party.is_complete() {
         return Err(RealmError::party(
@@ -421,7 +468,9 @@ pub fn departure_effect(party: &PartyView, leaving: &str) -> DepartureEffect {
         return DepartureEffect::Disband;
     }
     match party.state {
-        PartyState::ReadyCheck | PartyState::Ready => DepartureEffect::DisbandAndRequeue,
+        PartyState::ReadyCheck | PartyState::ChoosingKey | PartyState::Ready => {
+            DepartureEffect::DisbandAndRequeue
+        }
         _ => DepartureEffect::ContinueWithout,
     }
 }
@@ -452,6 +501,7 @@ mod tests {
             role,
             ready: ReadyResponse::Accepted,
             presence: Presence::Present,
+            has_key_for_dungeon: false,
         }
     }
 
@@ -459,6 +509,7 @@ mod tests {
         PartyView {
             state: PartyState::Ready,
             leader: Some("tank".into()),
+            key_owner: Some("tank".into()),
             members: vec![
                 member("tank", Role::Tank),
                 member("healer", Role::Healer),
@@ -467,12 +518,31 @@ mod tests {
         }
     }
 
+    /// Everyone accepted, nobody has put a key in; the tank and the dps have one to offer.
+    fn choosing_party() -> PartyView {
+        let mut party = ready_party();
+        party.state = PartyState::ChoosingKey;
+        party.leader = None;
+        party.key_owner = None;
+        party.members[0].has_key_for_dungeon = true;
+        party.members[2].has_key_for_dungeon = true;
+        party
+    }
+
     #[test]
     fn transitions_follow_the_diagram() {
         use PartyState::*;
-        assert!(ReadyCheck.can_become(Ready));
+        assert!(ReadyCheck.can_become(ChoosingKey));
         assert!(ReadyCheck.can_become(Disbanded));
+        assert!(
+            !ReadyCheck.can_become(Ready),
+            "a key is always chosen first"
+        );
         assert!(!ReadyCheck.can_become(Starting));
+        assert!(ChoosingKey.can_become(Ready));
+        assert!(ChoosingKey.can_become(Disbanded));
+        assert!(!ChoosingKey.can_become(Starting));
+        assert!(Ready.can_become(ChoosingKey));
         assert!(Ready.can_become(Starting));
         assert!(!Ready.can_become(InDungeon));
         assert!(Starting.can_become(InDungeon));
@@ -492,6 +562,8 @@ mod tests {
             PartyAction::RespondReady,
             PartyAction::Leave,
             PartyAction::Start,
+            PartyAction::InsertKey,
+            PartyAction::WithdrawKey,
             PartyAction::Kick {
                 target: "dps".into(),
             },
@@ -533,9 +605,11 @@ mod tests {
             )
             .is_ok()
         );
+        let mut running = ready_party();
+        running.state = PartyState::InDungeon;
         assert!(
             authorize(
-                &party,
+                &running,
                 "tank",
                 &PartyAction::TransferLeader {
                     target: "healer".into()
@@ -543,6 +617,64 @@ mod tests {
             )
             .is_ok()
         );
+    }
+
+    #[test]
+    fn leadership_cannot_be_handed_over_while_ready() {
+        let party = ready_party();
+        let transfer = PartyAction::TransferLeader {
+            target: "healer".into(),
+        };
+        assert!(authorize(&party, "tank", &transfer).is_err());
+        let mut starting = ready_party();
+        starting.state = PartyState::Starting;
+        assert!(authorize(&starting, "tank", &transfer).is_ok());
+    }
+
+    #[test]
+    fn a_member_with_a_key_can_insert_it_while_choosing() {
+        let party = choosing_party();
+        assert!(authorize(&party, "tank", &PartyAction::InsertKey).is_ok());
+        assert!(authorize(&party, "dps", &PartyAction::InsertKey).is_ok());
+        let keyless = authorize(&party, "healer", &PartyAction::InsertKey).expect_err("no key");
+        assert_eq!(keyless.message, "You have no key for this dungeon.");
+        let stranger = authorize(&party, "stranger", &PartyAction::InsertKey).expect_err("no");
+        assert_eq!(stranger.category, crate::ErrorCategory::Authorization);
+    }
+
+    #[test]
+    fn a_second_key_is_refused_once_ready() {
+        let mut party = ready_party();
+        party.members[2].has_key_for_dungeon = true;
+        let error = authorize(&party, "dps", &PartyAction::InsertKey).expect_err("taken");
+        assert_eq!(error.message, "A key is already inserted.");
+        let mut checking = choosing_party();
+        checking.state = PartyState::ReadyCheck;
+        assert!(authorize(&checking, "tank", &PartyAction::InsertKey).is_err());
+    }
+
+    #[test]
+    fn only_the_key_owner_can_withdraw_it() {
+        let party = ready_party();
+        assert!(authorize(&party, "tank", &PartyAction::WithdrawKey).is_ok());
+        let error = authorize(&party, "healer", &PartyAction::WithdrawKey).expect_err("not owner");
+        assert_eq!(error.category, crate::ErrorCategory::Authorization);
+        assert!(authorize(&choosing_party(), "tank", &PartyAction::WithdrawKey).is_err());
+    }
+
+    #[test]
+    fn the_party_starts_only_with_its_key_owner_leading() {
+        let mut no_key = ready_party();
+        no_key.key_owner = None;
+        assert!(authorize(&no_key, "tank", &PartyAction::Start).is_err());
+        // The leader is not the owner.
+        let mut other = ready_party();
+        other.key_owner = Some("healer".into());
+        assert!(authorize(&other, "tank", &PartyAction::Start).is_err());
+        assert!(authorize(&other, "healer", &PartyAction::Start).is_err());
+        assert!(authorize(&ready_party(), "tank", &PartyAction::Start).is_ok());
+        // Nobody leads while a key is being chosen, so nobody can start.
+        assert!(authorize(&choosing_party(), "tank", &PartyAction::Start).is_err());
     }
 
     #[test]
@@ -580,6 +712,9 @@ mod tests {
         let mut party = ready_party();
         party.state = PartyState::Starting;
         assert!(validate_start(&party).is_err(), "cannot start twice");
+        let mut party = ready_party();
+        party.key_owner = None;
+        assert!(validate_start(&party).is_err(), "needs a key");
     }
 
     #[test]
@@ -671,6 +806,10 @@ mod tests {
         let party = ready_party();
         assert_eq!(
             departure_effect(&party, "dps"),
+            DepartureEffect::DisbandAndRequeue
+        );
+        assert_eq!(
+            departure_effect(&choosing_party(), "dps"),
             DepartureEffect::DisbandAndRequeue
         );
         let mut running = ready_party();

@@ -1,0 +1,37 @@
+{
+  "version": 1,
+  "resources": [
+    {
+      "id": "crypt_dust",
+      "name": "Crypt Dust",
+      "description": "Grey dust swept from the floors of the crypt. The common currency of the dungeon."
+    },
+    {
+      "id": "bone_shard",
+      "name": "Bone Shard",
+      "description": "A splinter of old bone, left when gear is broken down."
+    },
+    {
+      "id": "steward_ember",
+      "name": "Steward's Ember",
+      "description": "A coal that still glows from the Hollow Steward's lantern. Rare."
+    }
+  ],
+  "salvage": { "resource": "bone_shard", "base": 1, "per_item_level": 1 },
+  "exchanges": [
+    {
+      "id": "dust_to_ember",
+      "from": "crypt_dust",
+      "from_amount": 20,
+      "to": "steward_ember",
+      "to_amount": 1
+    },
+    {
+      "id": "shards_to_dust",
+      "from": "bone_shard",
+      "from_amount": 10,
+      "to": "crypt_dust",
+      "to_amount": 3
+    }
+  ]
+}

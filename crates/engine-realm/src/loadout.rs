@@ -14,6 +14,8 @@
 //! persistence API computes it from the loadout it owns with [`gear_score`], and the realm
 //! module reads it from the API. Nothing a client sends can change it.
 
+use std::collections::BTreeMap;
+
 use engine_game::character::MailItem as SimMail;
 use engine_game::character::{
     CharacterSheet, EquipSlot, INVENTORY_SLOTS, Inventory, ItemSlot, ItemStack, MailReason,
@@ -96,6 +98,9 @@ pub struct Loadout {
     /// What is waiting in the mailbox. Absent in rows saved before mail existed.
     #[serde(default)]
     pub mail: Vec<MailItem>,
+    /// Reagents held, by resource id (see the economy catalog). Absent in older rows.
+    #[serde(default)]
+    pub resources: BTreeMap<String, u64>,
 }
 
 /// Where an item is, in stored form: a slot key or a bag cell.
@@ -305,8 +310,9 @@ pub fn move_item(
         })
     })?;
     let mut moved = loadout_of(&sheet);
-    // Moving gear never touches the mailbox.
+    // Moving gear never touches the mailbox or the resources.
     moved.mail.clone_from(&loadout.mail);
+    moved.resources.clone_from(&loadout.resources);
     Ok(moved)
 }
 
