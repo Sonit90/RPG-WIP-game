@@ -272,7 +272,7 @@ dispel. Nothing about it survives an encounter.
 * **Thirteen abilities on ten digits**: the bar holds the first ten, Wild Rush and Astral
   Power sit on the two buttons beside the Ultimate (`F` and `G`), and Tranquility is the
   Ultimate on `R`. Nothing renumbers the keyboard for the other two heroes.
-* **The empowered highlight** is the one the Warrior's Deflection already used: a compatible
+* **The empowered highlight** is the one the Warrior's empowered abilities once used: a compatible
   ability lights up while the bar is armed, so "this press will be empowered" has one visual
   language across the classes.
 * **Tooltips** are generated from the same rows and constants the executor reads: the cost,

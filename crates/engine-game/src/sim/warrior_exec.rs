@@ -1,4 +1,4 @@
-//! Casting the Warrior: Deflection in, Deflection out, and the eleven abilities between.
+//! Casting the Warrior: Valor in, Battle Fervor out, and the eleven abilities between.
 //!
 //! ```text
 //! an attack arrives
@@ -6,13 +6,15 @@
 //!      ├─ Spell Reflect?  ──► back to the caster, and nothing lands
 //!      │
 //!      ├─ DefenseProfile::roll  (one roll, one outcome)
-//!      │        └─ defensive? ──┬─ +0.2 (or +0.4) Deflection
-//!      │                        ├─ Battle Trance: 1 % max HP, three times a second
+//!      │        └─ defensive? ──┬─ Battle Trance: 1 % max HP, three times a second
 //!      │                        └─ Spell Reflect: −0.1 s off its cooldown
 //!      ├─ mitigate: block share, armour, flat reduction
 //!      ├─ absorb: Puncture Blood's shield stands in front of health
 //!      └─ Adrenaline banks its share of what actually landed
 //! ```
+//!
+//! And on the outgoing side, a War Stomp, a Colossus Strike or a Shield Charge that lands pays
+//! one Valor; the fifth empties the bar and applies a stack of Battle Fervor.
 //!
 //! A child module of [`super`], exactly like [`super::firemage_exec`], and for the same
 //! reason: it needs the simulation's own state, and the tick loop should not be buried in
@@ -59,8 +61,8 @@ impl Simulation {
 
     /// **What an attack on the player meets right now.**
     ///
-    /// Derived on every call and never stored: the Warrior's armour changes on the tick they
-    /// spend Deflection, and their Block changes on the tick Shield Block starts. A stored
+    /// Derived on every call and never stored: the Warrior's armour changes on the tick War
+    /// Stomp reaches a full stack, and their Block changes on the tick Shield Block starts. A stored
     /// profile would be a snapshot of the one thing in the class that must not be one.
     #[must_use]
     pub fn defense_profile(&self) -> DefenseProfile {
@@ -94,8 +96,8 @@ impl Simulation {
     ///
     /// Stamina and gear, *without* the class's own multipliers. Shield Block and Last Stand
     /// both scale from this rather than from [`Simulation::player_max_health`], and both for
-    /// the same reason: the live maximum already contains the Deflection bonus and Last
-    /// Stand's own, so scaling from it would make Shield Block's Block chance drift every
+    /// the same reason: the live maximum already contains Last Stand's and Battle
+    /// Fervor's own, so scaling from it would make Shield Block's Block chance drift every
     /// time an attack was blocked and would make Last Stand a bonus derived from a number it
     /// had just increased. What a player means by "my health pool" for the purposes of gear
     /// is this one.
@@ -114,11 +116,10 @@ impl Simulation {
 
     /// **Pushes the Warrior's live multipliers into the world's maximum health.**
     ///
-    /// Called whenever Deflection moves, Last Stand starts or ends, or a tick passes. The
+    /// Called whenever Last Stand or Battle Fervor starts or ends, or a tick passes. The
     /// current health is *kept* rather than scaled — see
-    /// [`crate::combat::Health::set_max_keeping_current`] — because a resource that moves by
-    /// two tenths every time an attack is blocked would otherwise be a stream of free
-    /// healing.
+    /// [`crate::combat::Health::set_max_keeping_current`] — because a buff that comes and goes
+    /// mid-fight would otherwise be a stream of free healing.
     pub(super) fn refresh_warrior_health(&mut self) {
         let stats = self.character_stats();
         let base = health_from_stamina(stats.get(Stat::Stamina));
@@ -129,48 +130,64 @@ impl Simulation {
             .set_max_health_keeping_current(self.player.entity, max);
     }
 
-    /// The maximum health multiplier the current hero has. One for everybody but the Warrior.
+    /// The maximum health multiplier the current hero has: the Warrior's own (Last Stand), and
+    /// whatever the effects on the player multiply it by — Battle Fervor's per-stack share.
     pub(super) fn warrior_health_multiplier(&self) -> f32 {
-        if self.hero == Hero::Warrior {
+        let class = if self.hero == Hero::Warrior {
             self.warrior.max_health_multiplier()
         } else {
             1.0
-        }
+        };
+        let effects = self
+            .world
+            .statuses(self.player.entity)
+            .map_or(1.0, crate::status::StatusSet::max_health_multiplier);
+        class * effects
     }
 
-    /// **Spends this ability's Deflection, if there is any to spend.**
+    /// **Pays this ability's Valor, if its row pays any.**
     ///
-    /// Returns whether the ability is empowered. An ability whose row asks for twenty and
-    /// finds nineteen is cast in its normal form: it is not refused, and nothing is
-    /// part-paid. The passive maximum health and armour bonuses are recomputed *before* the
-    /// event is emitted, so "spending gives the defence straight back" is true of the very
-    /// same call rather than of the next tick.
-    ///
-    /// The bank needed is the row's [`WarriorRow::empower_threshold`](crate::ability::WarriorRow::empower_threshold):
-    /// the cost itself for every spender, a full hundred for Recuperate.
-    fn spend_deflection(&mut self, ability: FireAbility) -> bool {
+    /// One call per successful cast, whatever the number of targets, so a stomp that caught
+    /// five enemies pays what a stomp that caught one does. When the stack is the fifth the
+    /// bar is already empty on return and one stack of Battle Fervor has been applied:
+    /// filling the bar and being rewarded for it are one operation.
+    fn gain_valor(&mut self, ability: FireAbility) {
         let row = ability.definition().warrior();
-        let cost = row.deflection_cost;
-        if self.hero != Hero::Warrior || cost <= 0.0 {
-            return false;
+        if self.hero != Hero::Warrior || row.valor <= 0.0 {
+            return;
         }
-        if self.warrior.deflection.value() + f32::EPSILON < row.empower_threshold() {
-            return false;
-        }
-        if !self.warrior.deflection.spend(cost) {
-            return false;
-        }
-        self.refresh_warrior_health();
+        let filled = self.warrior.valor.gain();
         let tick = self.tick;
-        let value = self.warrior.deflection.value();
-        self.events.push(CombatEvent::DeflectionSpent {
+        self.events.push(CombatEvent::ValorGained {
             entity: self.player.entity,
-            amount: cost,
-            value,
+            value: self.warrior.valor.stacks(),
+            filled,
             ability: AbilityId::from_fire(ability),
             tick,
         });
-        true
+        if filled {
+            self.apply_battle_fervor(ability);
+        }
+    }
+
+    /// Adds one stack of Battle Fervor to the Warrior and refreshes the whole status.
+    ///
+    /// The stack count is capped by the status's own ceiling ([`FERVOR_MAX_STACKS`]), and the
+    /// duration restarts at [`FERVOR_DURATION`] whether or not the stack count could rise: a
+    /// full Fervor is still worth refreshing.
+    fn apply_battle_fervor(&mut self, ability: FireAbility) {
+        let source = self.player.entity;
+        let status = Status::new(
+            StatusKind::BattleFervor,
+            source,
+            AbilityId::from_fire(ability),
+            FERVOR_DURATION,
+            0.0,
+        )
+        .with_stacks(1);
+        self.apply_status(source, status, FERVOR_DURATION);
+        // The maximum-health share, if it is tuned above zero, is there on this tick.
+        self.refresh_warrior_health();
     }
 
     /// **Applies a Warrior ability whose targets have already been collected.**
@@ -197,10 +214,8 @@ impl Simulation {
 
     /// Recuperate: swing, and stack the heal.
     ///
-    /// The one ability whose Deflection interaction is a *rule* rather than a cost: at a
-    /// full hundred it spends twenty and applies two stacks, which is the outlet for a
-    /// player who has nothing else to spend on. Below a hundred it is unchanged, so normal
-    /// Recuperate gameplay never has to think about the resource.
+    /// Pays no Valor: it is the Warrior's basic strike, and the bar belongs to the three
+    /// heavy abilities.
     fn cast_recuperate(&mut self) -> u32 {
         let ability = FireAbility::Recuperate;
         let definition = *ability.definition();
@@ -215,7 +230,6 @@ impl Simulation {
             return 0;
         }
 
-        let stacks = if self.spend_deflection(ability) { 2 } else { 1 };
         let source = self.player.entity;
         let status = Status::new(
             StatusKind::Recuperating,
@@ -226,7 +240,7 @@ impl Simulation {
         )
         .every(definition.tick_interval)
         .scaling_with_source_health(RECUPERATE_HEAL_PER_STACK)
-        .with_stacks(stacks);
+        .with_stacks(1);
         self.apply_status(source, status, definition.duration);
         affected
     }
@@ -236,13 +250,10 @@ impl Simulation {
     fn cast_war_stomp(&mut self) -> u32 {
         let ability = FireAbility::WarStomp;
         let definition = *ability.definition();
-        // Nothing caught, nothing paid: a spend is for an effect, and a stomp into empty air
-        // has none.
+        // Nothing caught, nothing paid: a stomp into empty air earns no Valor.
         if self.hits.is_empty() {
             return 0;
         }
-        let empowered = self.spend_deflection(ability);
-        let stacks = if empowered { 2 } else { 1 };
         let stats = self.mage.stats();
         let source = self.player.entity;
         let mut affected = 0;
@@ -259,10 +270,11 @@ impl Simulation {
                 definition.duration,
                 0.0,
             )
-            .with_stacks(stacks);
+            .with_stacks(1);
             self.apply_status(target, status, definition.duration);
             affected += 1;
         }
+        self.gain_valor(ability);
         // The debuff is a number to the enemy's mind, pushed in immediately rather than on
         // the next tick, so a stomp slows the swing that was about to happen.
         self.sync_war_stomp();
@@ -274,17 +286,10 @@ impl Simulation {
     fn cast_colossus_strike(&mut self) -> u32 {
         let ability = FireAbility::ColossusStrike;
         let definition = *ability.definition();
-        // A smash with nobody in reach keeps the bank: the empowerment is a bigger bleed, and
-        // there is nobody to bleed.
+        // A smash with nobody in reach earns no Valor.
         if self.hits.is_empty() {
             return 0;
         }
-        let empowered = self.spend_deflection(ability);
-        let bleed_scale = if empowered {
-            1.0 + COLOSSUS_BLEED_EMPOWERED
-        } else {
-            1.0
-        };
         let stats = self.mage.stats();
         let max_health = self.player_max_health();
         let impact = definition.base_damage_with_health(&stats, max_health);
@@ -292,8 +297,8 @@ impl Simulation {
         // it is a share of attack power, and the health half is deliberately left as a
         // fraction so that every tick reads the Warrior's maximum health at the moment it
         // happens. See `Status::source_health_per_tick`.
-        let tick_flat = definition.base_tick_damage(&stats) * bleed_scale;
-        let tick_health = definition.warrior().tick_health_coefficient * bleed_scale;
+        let tick_flat = definition.base_tick_damage(&stats);
+        let tick_health = definition.warrior().tick_health_coefficient;
         let source = self.player.entity;
         let mut affected = 0;
         for index in 0..self.hits.len() {
@@ -314,69 +319,50 @@ impl Simulation {
             self.apply_status(target, status, definition.duration);
             affected += 1;
         }
+        self.gain_valor(ability);
         affected
     }
 
     /// Shield Charge: **starts running.**
     ///
-    /// Nothing lands here. The Warrior is given a destination and the movement stage walks
+    /// Nothing lands here, and no Valor is paid: that happens on arrival. The Warrior is given a destination and the movement stage walks
     /// them to it at [`SHIELD_CHARGE_SPEED`] metres a second, through the same collision
     /// world every other step goes through — which is the difference between a charge and a
     /// Blink, and the reason the two are no longer the same `dash`.
     fn cast_shield_charge(&mut self) -> u32 {
-        let ability = FireAbility::ShieldCharge;
         let Some(target) = self.player.target.filter(|id| self.world.is_alive(*id)) else {
             return 0;
         };
         let Some(destination) = self.world.position(target) else {
             return 0;
         };
-        let empowered = self.spend_deflection(ability);
         self.warrior.charge = Some(crate::warrior::ChargeMotion {
             target,
             destination,
             elapsed: 0.0,
-            empowered,
         });
         0
     }
 
-    /// Shield Bash: the interrupt, and the silence twenty Deflection buys.
+    /// Shield Bash: damage, and the interrupt.
     fn cast_shield_bash(&mut self) -> u32 {
         let ability = FireAbility::ShieldBash;
         let definition = *ability.definition();
         let Some(target) = self.hits.first().copied() else {
             return 0;
         };
-        let empowered = self.spend_deflection(ability);
         let stats = self.mage.stats();
         self.strike(target, definition.base_damage(&stats), ability, true, 0.0);
         // The interrupt is the existing one, with the existing rules about what may be
         // interrupted. A second implementation would be a second answer to "can this cast be
         // stopped".
         self.interrupt(target);
-        if empowered && self.is_enemy(target) {
-            // Enemies only, and never the Warrior: a silence is applied to the thing that
-            // was bashed, and the only thing that can be bashed is something hostile.
-            if let Some(Some(runtime)) = self.enemies.get_mut(target.index()) {
-                runtime.brain.silence(SHIELD_BASH_SILENCE);
-            }
-            let tick = self.tick;
-            self.events.push(CombatEvent::ControlApplied {
-                source: self.player.entity,
-                target,
-                control: ControlKind::Silence,
-                seconds: SHIELD_BASH_SILENCE,
-                ability: AbilityId::from_fire(ability),
-                tick,
-            });
-        }
         1
     }
 
     /// Taunt: the target attacks the Warrior for the ability's duration.
     ///
-    /// No damage and no Deflection. The enemy's threat table does the rest: the taunt forces
+    /// No damage and no Valor. The enemy's threat table does the rest: the taunt forces
     /// its target and lifts the Warrior to the top of its threat, and the switch itself is
     /// announced by the AI the next time the enemy thinks, like every other change of target.
     fn cast_taunt(&mut self) -> u32 {
@@ -411,8 +397,6 @@ impl Simulation {
     fn cast_shield_block(&mut self) -> u32 {
         let ability = FireAbility::ShieldBlock;
         let definition = *ability.definition();
-        let empowered = self.spend_deflection(ability);
-        self.warrior.shield_block_empowered = empowered;
         self.warrior.shield_block = crate::firemage::Timer::idle();
         self.warrior.shield_block.start(definition.duration);
         0
@@ -427,22 +411,16 @@ impl Simulation {
     fn cast_puncture_blood(&mut self) -> u32 {
         let ability = FireAbility::PunctureBlood;
         let definition = *ability.definition();
-        let empowered = self.spend_deflection(ability);
         let entity = self.player.entity;
         let current = self.player_health();
         let max = self.player_max_health();
         let cost = current * PUNCTURE_HEALTH_COST;
-        let scale = if empowered {
-            PUNCTURE_EMPOWERED_SCALE
-        } else {
-            1.0
-        };
-        let shield = max * PUNCTURE_SHIELD * scale;
+        let shield = max * PUNCTURE_SHIELD;
 
         // Applied straight to the health rather than through `deal_damage`: this is the
         // Warrior cutting themselves, not an attack. Running it through the incoming
         // pipeline would let their own armour reduce it, their own shield absorb it and
-        // their own Deflection be generated by it — three ways for the cost to be avoided.
+        // their own Block roll away from it — three ways for the cost to be avoided.
         let position = self.world.position(entity).unwrap_or(Vec3::ZERO);
         let result = self.world.damage(entity, cost);
         let tick = self.tick;
@@ -478,12 +456,7 @@ impl Simulation {
     fn cast_adrenaline(&mut self) -> u32 {
         let ability = FireAbility::Adrenaline;
         let definition = *ability.definition();
-        let empowered = self.spend_deflection(ability);
-        self.warrior.adrenaline_share = if empowered {
-            ADRENALINE_EMPOWERED_SHARE
-        } else {
-            ADRENALINE_SHARE
-        };
+        self.warrior.adrenaline_share = ADRENALINE_SHARE;
         // A second Adrenaline is a fresh window, not a continuation: whatever the last one
         // banked has already been paid out.
         self.warrior.recovery_pool = 0.0;
@@ -492,7 +465,7 @@ impl Simulation {
         0
     }
 
-    /// Battle Trance: ten seconds where defending heals and pays double.
+    /// Battle Trance: ten seconds where defending heals.
     fn cast_battle_trance(&mut self) -> u32 {
         let definition = *FireAbility::BattleTrance.definition();
         self.warrior.battle_trance = crate::firemage::Timer::idle();
@@ -504,8 +477,6 @@ impl Simulation {
     fn cast_spell_reflect(&mut self) -> u32 {
         let ability = FireAbility::SpellReflect;
         let definition = *ability.definition();
-        let empowered = self.spend_deflection(ability);
-        self.warrior.spell_reflect_empowered = empowered;
         self.warrior.spell_reflect = crate::firemage::Timer::idle();
         self.warrior.spell_reflect.start(definition.duration);
         0
@@ -520,7 +491,6 @@ impl Simulation {
     fn cast_last_stand(&mut self) -> u32 {
         let ability = FireAbility::LastStand;
         let definition = *ability.definition();
-        let empowered = self.spend_deflection(ability);
         let before = self.player_max_health();
         let bonus = health_scaled(
             LAST_STAND_BASE,
@@ -529,11 +499,6 @@ impl Simulation {
         );
 
         self.warrior.last_stand_bonus = bonus;
-        self.warrior.last_stand_reduction = if empowered {
-            LAST_STAND_EMPOWERED_REDUCTION
-        } else {
-            LAST_STAND_REDUCTION
-        };
         self.warrior.last_stand = crate::firemage::Timer::idle();
         self.warrior.last_stand.start(definition.duration);
         self.refresh_warrior_health();
@@ -577,7 +542,7 @@ impl Simulation {
     ///
     /// The one place an incoming attack is answered. Everything that pays out on a defensive
     /// event reads the single [`DefenseOutcome`] this produces, which is what makes
-    /// "duplicate combat events cannot generate duplicate Deflection" structural rather than
+    /// "duplicate combat events cannot pay a defensive event twice" structural rather than
     /// a rule somebody has to remember.
     pub(super) fn defend_player(
         &mut self,
@@ -644,22 +609,6 @@ impl Simulation {
         if self.hero != Hero::Warrior {
             return;
         }
-        let entity = self.player.entity;
-
-        let gain = self.warrior.deflection_per_event();
-        let gained = self.warrior.deflection.gain(gain);
-        if gained > 0.0 {
-            self.refresh_warrior_health();
-            let tick = self.tick;
-            let value = self.warrior.deflection.value();
-            self.events.push(CombatEvent::DeflectionGained {
-                entity,
-                amount: gained,
-                value,
-                tick,
-            });
-        }
-
         // Battle Trance: one per cent of maximum health, three times a second, with no
         // ceiling on the total.
         if self.warrior.take_trance_activation() {
@@ -705,23 +654,13 @@ impl Simulation {
         ability: AbilityId,
         damage_type: DamageType,
     ) {
-        let empowered = self.warrior.spell_reflect_empowered;
-        // Consumed by the reflection it paid for, not by the buff running out: "the next
-        // successfully reflected spell" is exactly one spell.
-        self.warrior.spell_reflect_empowered = false;
-        let scale = if empowered {
-            1.0 + SPELL_REFLECT_EMPOWERED_DAMAGE
-        } else {
-            1.0
-        };
-        let reflected = amount * scale;
+        let reflected = amount;
         let tick = self.tick;
         self.events.push(CombatEvent::SpellReflected {
             source: self.player.entity,
             target: attacker,
             ability,
             amount: reflected,
-            empowered,
             tick,
         });
         // Credited to Spell Reflect rather than to the enemy's own row, so the damage meter
@@ -819,12 +758,7 @@ impl Simulation {
         let ability = FireAbility::ShieldCharge;
         let definition = *ability.definition();
         let stats = self.mage.stats();
-        let scale = if charge.empowered {
-            1.0 + SHIELD_CHARGE_EMPOWERED_DAMAGE
-        } else {
-            1.0
-        };
-        let base = definition.base_damage(&stats) * scale;
+        let base = definition.base_damage(&stats);
 
         self.hits.clear();
         self.collect_in_shape(
@@ -840,8 +774,7 @@ impl Simulation {
             affected += 1;
         }
 
-        // The stun is the primary target's alone, and its duration is never changed by
-        // Deflection: what twenty buys is damage.
+        // The stun is the primary target's alone.
         if self.world.is_alive(charge.target)
             && let Some(Some(runtime)) = self.enemies.get_mut(charge.target.index())
         {
@@ -855,6 +788,12 @@ impl Simulation {
                 ability: AbilityId::from_fire(ability),
                 tick,
             });
+        }
+
+        // One Valor for the charge, paid on arrival and only if the impact hit something: a
+        // charge that timed out against a wall earns nothing.
+        if affected > 0 {
+            self.gain_valor(ability);
         }
 
         let tick = self.tick;

@@ -166,7 +166,6 @@ fn a_mage_generates_one_threat_per_point_of_damage() {
 fn a_tank_generates_two_threat_per_point_of_damage() {
     let (mut simulation, enemy, _) = fight(Hero::Warrior);
     let player = simulation.player().entity;
-    simulation.warrior_mut().deflection.set(0.0);
     // Recuperate is the Warrior's filler, not a threat tool: it is the plain tank rate.
     assert_eq!(
         FireAbility::Recuperate.definition().threat,

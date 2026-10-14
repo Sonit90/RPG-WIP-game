@@ -78,7 +78,7 @@ impl Hero {
     pub fn description(self) -> &'static str {
         match self {
             Self::FireMage => "RANGED FIRE. BANK A BURN, THEN SPEND IT",
-            Self::Warrior => "TANK. BLOCK, PARRY AND DODGE INTO DEFLECTION",
+            Self::Warrior => "TANK. BUILD VALOR INTO BATTLE FERVOR",
             Self::Druid => "HUMAN FORM. MOON, STARS AND A HEAL",
         }
     }

@@ -486,27 +486,14 @@ fn describe(event: &CombatEvent) -> String {
             attacker.index(),
             ability.slot()
         ),
-        CombatEvent::DeflectionGained {
+        CombatEvent::ValorGained {
             entity,
-            amount,
             value,
-            tick,
-        } => format!(
-            "deflection +{} = {} for {} at {tick}",
-            fixed(amount),
-            fixed(value),
-            entity.index()
-        ),
-        CombatEvent::DeflectionSpent {
-            entity,
-            amount,
-            value,
+            filled,
             ability,
             tick,
         } => format!(
-            "deflection -{} = {} for {} on {} at {tick}",
-            fixed(amount),
-            fixed(value),
+            "valor {value} filled {filled} for {} on {} at {tick}",
             entity.index(),
             ability.slot()
         ),
@@ -539,10 +526,9 @@ fn describe(event: &CombatEvent) -> String {
             target,
             ability,
             amount,
-            empowered,
             tick,
         } => format!(
-            "reflect {} for {} from {} to {} empowered {empowered} at {tick}",
+            "reflect {} for {} from {} to {} at {tick}",
             ability.slot(),
             fixed(amount),
             source.index(),

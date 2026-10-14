@@ -11,7 +11,7 @@ pub struct NetResources {
     pub energy: f32,
     pub mana: f32,
     pub max_mana: f32,
-    pub deflection: f32,
+    pub valor: f32,
     pub astral: f32,
     pub global_cooldown: f32,
     pub absorb: f32,

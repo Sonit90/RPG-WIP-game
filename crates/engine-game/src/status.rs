@@ -23,7 +23,10 @@ use crate::character::Stat;
 use crate::combat::DamageType;
 use crate::druid::tuning::{NATURES_EXPOSURE_PER_STACK, WILD_RUSH_REDUCTION, WILD_RUSH_SPEED};
 use crate::entity::EntityId;
-use crate::warrior::tuning::WAR_STOMP_ATTACK_SPEED_PER_STACK;
+use crate::warrior::tuning::{
+    FERVOR_DAMAGE_PER_STACK, FERVOR_DAMAGE_TAKEN_PER_STACK, FERVOR_DURATION,
+    FERVOR_MAX_HEALTH_PER_STACK, FERVOR_MAX_STACKS, WAR_STOMP_ATTACK_SPEED_PER_STACK,
+};
 
 /// Seconds between the damage ticks of a lasting status.
 ///
@@ -123,6 +126,12 @@ pub enum StatusKind {
     WitheringPlague,
     /// More magic damage taken, and some physical.
     MagicVulnerability,
+    /// The Warrior's reward for a full bar of Valor: more damage dealt and less taken, per
+    /// stack, to three.
+    ///
+    /// Applied by the Warrior's own executor when Valor fills, to the Warrior and to nobody
+    /// else. Every number it carries is read from [`crate::warrior::tuning`].
+    BattleFervor,
 }
 
 /// How a harmful effect is classified for dispelling.
@@ -242,6 +251,12 @@ pub enum EffectModifier {
         /// Fraction per stack.
         per_stack: f32,
     },
+    /// More (or, negative, less) maximum health, as a fraction per stack. Multiplies the
+    /// health Stamina gives, the same way the Warrior's Last Stand does.
+    MaxHealth {
+        /// Fraction per stack.
+        per_stack: f32,
+    },
 }
 
 /// Whether an effect is something the bearer wants.
@@ -314,7 +329,7 @@ impl GenericApplication {
 }
 
 /// How many effects exist.
-pub const STATUS_KIND_COUNT: usize = 27;
+pub const STATUS_KIND_COUNT: usize = 28;
 
 impl StatusKind {
     /// Every effect, in registry order.
@@ -346,6 +361,7 @@ impl StatusKind {
         Self::CurseOfWeakness,
         Self::WitheringPlague,
         Self::MagicVulnerability,
+        Self::BattleFervor,
     ];
 
     /// Its row in [`STATUS_DEFS`].
@@ -820,6 +836,28 @@ pub static STATUS_DEFS: [StatusDef; STATUS_KIND_COUNT] = [
         generic: GenericApplication::new(24.0, 0.0, 0.0),
         ..DEBUFF
     },
+    StatusDef {
+        kind: StatusKind::BattleFervor,
+        id: "battle_fervor",
+        overlay_name: "BATTLE FERVOR",
+        name: "Battle Fervor",
+        description: "10% more damage dealt and 3% less damage taken per stack.",
+        max_stacks: FERVOR_MAX_STACKS,
+        modifiers: &[
+            EffectModifier::DamageDealt {
+                per_stack: FERVOR_DAMAGE_PER_STACK,
+            },
+            EffectModifier::DamageTaken {
+                schools: Schools::ALL,
+                per_stack: -FERVOR_DAMAGE_TAKEN_PER_STACK,
+            },
+            EffectModifier::MaxHealth {
+                per_stack: FERVOR_MAX_HEALTH_PER_STACK,
+            },
+        ],
+        generic: GenericApplication::new(FERVOR_DURATION, 0.0, 0.0),
+        ..BUFF
+    },
 ];
 
 /// Why a status ended.
@@ -1271,6 +1309,18 @@ impl StatusSet {
         let mut multiplier = 1.0;
         for (status, modifier) in self.modifiers() {
             if let EffectModifier::DamageDealt { per_stack } = *modifier {
+                multiplier *= (1.0 + per_stack * f32::from(status.stacks)).max(0.0);
+            }
+        }
+        multiplier
+    }
+
+    /// What the bearer's maximum health is multiplied by. One when nothing changes it.
+    #[must_use]
+    pub fn max_health_multiplier(&self) -> f32 {
+        let mut multiplier = 1.0;
+        for (status, modifier) in self.modifiers() {
+            if let EffectModifier::MaxHealth { per_stack } = *modifier {
                 multiplier *= (1.0 + per_stack * f32::from(status.stacks)).max(0.0);
             }
         }

@@ -230,20 +230,19 @@ impl CombatMeter {
                 | CombatEvent::MailTaken { .. }
                 | CombatEvent::MailBagFull { .. }
                 // The Warrior's defensive stream. A Block, a Parry, a Dodge, a point of
-                // Deflection and a shield taking a hit all *prevent* damage rather than
+                // Valor and a shield taking a hit all *prevent* damage rather than
                 // move any, and the healing they cause arrives as `Healing` like every
                 // other heal. A reflected spell is the same: it is announced here and it
                 // deals its damage through `Damage`, credited to Spell Reflect, so counting
                 // the announcement as well would report it twice.
                 | CombatEvent::AttackDefended { .. }
-                | CombatEvent::DeflectionGained { .. }
+                | CombatEvent::ValorGained { .. }
                 | CombatEvent::AstralPowerGained { .. }
                 | CombatEvent::AstralPowerArmed { .. }
                 | CombatEvent::AstralPowerSpent { .. }
                 | CombatEvent::ManaSpent { .. }
                 | CombatEvent::ManaRestored { .. }
                 | CombatEvent::Dispelled { .. }
-                | CombatEvent::DeflectionSpent { .. }
                 | CombatEvent::AbsorbApplied { .. }
                 | CombatEvent::Absorbed { .. }
                 | CombatEvent::SpellReflected { .. }

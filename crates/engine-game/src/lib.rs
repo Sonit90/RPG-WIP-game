@@ -108,7 +108,7 @@ pub mod sim;
 pub mod status;
 pub mod targeting;
 pub mod telemetry;
-/// The Warrior: Deflection, and the state its eleven abilities leave behind.
+/// The Warrior: Valor, Battle Fervor, and the state its eleven abilities leave behind.
 pub mod warrior;
 pub mod world;
 
@@ -136,5 +136,5 @@ pub use party::{MAX_PARTY, Party};
 pub use sim::{Player, SimConfig, SimStats, Simulation};
 pub use status::{DispelSchool, StatusKind, StatusSet};
 pub use telemetry::CombatMeter;
-pub use warrior::{Deflection, Warrior};
+pub use warrior::{Valor, Warrior};
 pub use world::{EntityDesc, EntityKind, GameWorld};

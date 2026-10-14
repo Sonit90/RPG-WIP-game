@@ -89,7 +89,7 @@ pub enum HudElementId {
     TargetBuffs,
     /// The target's debuffs.
     TargetDebuffs,
-    /// The hero's own resource: Heat, Deflection, or Mana and Astral Power.
+    /// The hero's own resource: Heat, Valor, or Mana and Astral Power.
     Resource,
     /// Ultimate Energy.
     Energy,

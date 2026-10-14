@@ -1605,10 +1605,10 @@ impl App {
                     engine_realm::Role::from_key(role).map(|role| (character.clone(), role))
                 }),
             };
-            let mut session =
-                crate::online::OnlineSession::start(endpoints, Box::new(store), dev).map_err(
-                    |error| EngineError::unsupported(format!("start the network layer: {error}")),
-                )?;
+            let mut session = crate::online::OnlineSession::start(endpoints, Box::new(store), dev)
+                .map_err(|error| {
+                    EngineError::unsupported(format!("start the network layer: {error}"))
+                })?;
             // The hub is its own scene, swapped in whenever the player is not in an instance.
             // Without it (no file, or no dungeon level loaded to swap with) the hub stays in
             // the dungeon's start area.
@@ -4058,7 +4058,6 @@ impl App {
             // player put it — never from the button the pointer is on.
             if let Some(view) = self.snapshot.ability_view(ability).copied() {
                 let context = engine_presentation::ui::tooltip::AbilityContext {
-                    deflection: self.snapshot.player.warrior.deflection,
                     astral_armed: self.snapshot.player.druid.armed,
                     ignite_max: self.snapshot.ignite_max,
                     mastery: self.snapshot.player.mastery,
@@ -4603,7 +4602,10 @@ impl App {
             source: self.map_source.take(),
         });
         self.online_level = wanted;
-        log::info!("online: loading the {wanted:?} level '{}'", parked.scene.name);
+        log::info!(
+            "online: loading the {wanted:?} level '{}'",
+            parked.scene.name
+        );
         if let Err(error) = self.load_level(parked.scene, parked.source) {
             log::error!("online: could not load the {wanted:?} level: {error}");
         }

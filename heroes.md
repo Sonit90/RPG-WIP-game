@@ -111,7 +111,7 @@ cheaper than one.
 * **No hero is persisted.** Every session starts as the FireMage. Bar one's *arrangement* is
   saved, so the bar comes back as whatever hero last wrote it, and the swap rewrites it.
 * **Each class has its own resources, and the two it is not playing sit at rest.** The Druid
-  has Mana and Astral Power (`druid.md`), the Warrior has Deflection (`warrior.md`), and the
+  has Mana and Astral Power (`druid.md`), the Warrior has Valor (`warrior.md`), and the
   FireMage's Heat and Ignite do not move for either of them — because no row of theirs
   generates any, not because anything branches on who is casting.
 * **They borrow the mage's sounds and effects rather than having their own.** The stand-ins are chosen by

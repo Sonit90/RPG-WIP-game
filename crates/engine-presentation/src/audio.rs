@@ -483,7 +483,13 @@ impl AudioDirector {
                 let origin = self.chest_of(defender, simulation);
                 self.request(SoundCue::at(sound, origin), audio);
             }
-            CombatEvent::DeflectionSpent { entity, .. } => {
+            // The fifth Valor is the one moment worth a sound: it empties the bar and Battle
+            // Fervor arrives. The four before it are silent.
+            CombatEvent::ValorGained {
+                entity,
+                filled: true,
+                ..
+            } => {
                 let origin = self.chest_of(entity, simulation);
                 self.request(SoundCue::at(SoundId::FireMasteryActivate, origin), audio);
             }
@@ -562,16 +568,16 @@ impl AudioDirector {
             }
             CombatEvent::MailBagFull { .. } => {}
             // Nothing to hear, or a state the frame synchronises instead. A phase change is
-            // seen rather than heard: this phase authors no new cues. A point of Deflection
-            // is deliberately silent — it happens several times a second in a pack, and the
-            // sound of the block that produced it has already played.
+            // seen rather than heard: this phase authors no new cues. A point of Valor
+            // short of a full bar is deliberately silent: the cast that paid it has already
+            // made its own sound.
             // Jumping and landing are seen, not heard: the movement they belong to is
             // constant, and a cue on every hop turns traversal into noise.
             CombatEvent::Jumped { .. }
             | CombatEvent::Landed { .. }
             | CombatEvent::Healing { .. }
             | CombatEvent::PhaseChanged { .. }
-            | CombatEvent::DeflectionGained { .. }
+            | CombatEvent::ValorGained { .. }
             | CombatEvent::AstralPowerGained { .. }
             | CombatEvent::AstralPowerArmed { .. }
             | CombatEvent::AstralPowerSpent { .. }

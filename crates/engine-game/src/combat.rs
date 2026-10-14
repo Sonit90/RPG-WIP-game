@@ -202,9 +202,9 @@ impl Health {
     /// Changes the maximum, keeping the **absolute** current health.
     ///
     /// What a temporary buff does, and the opposite of [`Health::set_max`], which is what a
-    /// change of *gear* does. The distinction is load-bearing for the Warrior: Deflection
-    /// moves the maximum by a fraction of a per cent every time an attack is blocked, and a
-    /// fraction-preserving change would turn that into a stream of free healing on the way
+    /// change of *gear* does. The distinction is load-bearing for the Warrior: Last Stand and
+    /// Battle Fervor move the maximum while a fight is running, and a
+    /// fraction-preserving change would turn that into free healing on the way
     /// down and free damage on the way up. A buff that grants maximum health does not heal;
     /// one that expires does not kill, because the current value is clamped rather than
     /// scaled.

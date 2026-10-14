@@ -586,8 +586,6 @@ impl TooltipPanel {
 /// decides what pressing it now would do.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct AbilityContext {
-    /// The Warrior's banked Deflection.
-    pub deflection: f32,
     /// Whether the Druid's Astral Power is armed.
     pub astral_armed: bool,
     /// The current maximum Ignite stacks.
@@ -699,28 +697,12 @@ pub fn fill_ability(model: &mut TooltipModel, view: &AbilitySlotView, context: A
             if entry.mode == ResourceMode::Empower {
                 empowers = true;
                 let ready = match entry.resource {
-                    ability_text::Resource::Deflection => view.spends_deflection,
                     ability_text::Resource::AstralPower => view.spends_astral,
                     _ => false,
                 };
                 will_empower |= ready;
                 section.text.push('\n');
                 match entry.resource {
-                    ability_text::Resource::Deflection if ready => {
-                        let _ = write!(
-                            section.text,
-                            "Ready: {} Deflection banked",
-                            context.deflection.floor()
-                        );
-                    }
-                    ability_text::Resource::Deflection => {
-                        let _ = write!(
-                            section.text,
-                            "Not empowered: {} of {} Deflection",
-                            context.deflection.floor(),
-                            entry.threshold.max(entry.amount)
-                        );
-                    }
                     ability_text::Resource::AstralPower if ready => {
                         section.text.push_str("Ready: Astral Power is armed");
                     }
@@ -812,17 +794,6 @@ pub fn fill_aura(model: &mut TooltipModel, aura: &crate::aura::Aura) {
     let section = model.section(SectionKind::Details);
     section.color = color::TEXT_SECONDARY;
     let text = &mut section.text;
-    if let crate::aura::AuraKind::Deflection { health, armor } = aura.kind {
-        let _ = write!(
-            text,
-            "+{}.{}% maximum health  ·  +{}.{}% armour",
-            health / 10,
-            health % 10,
-            armor / 10,
-            armor % 10
-        );
-        return;
-    }
     if aura.stacks > 1 {
         let _ = write!(text, "{} stacks", aura.stacks);
     }

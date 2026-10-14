@@ -639,7 +639,7 @@ pub struct HudFrames {
     pub target_buffs: HudPlacement,
     /// The target's harmful effects, stacks and all: what the target's nameplate carries.
     pub target_debuffs: HudPlacement,
-    /// The hero's own resource — Heat, Deflection, or Mana and Astral Power — as a bar of
+    /// The hero's own resource — Heat, Valor, or Mana and Astral Power — as a bar of
     /// its own rather than a row of the player frame.
     pub resource: HudPlacement,
     /// Ultimate Energy, as a bar of its own.

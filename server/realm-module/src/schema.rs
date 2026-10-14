@@ -680,8 +680,8 @@ pub struct NetResources {
     pub mana: f32,
     /// Mana maximum.
     pub max_mana: f32,
-    /// Deflection.
-    pub deflection: f32,
+    /// Valor stacks.
+    pub valor: f32,
     /// Astral power.
     pub astral: f32,
     /// Global cooldown left.

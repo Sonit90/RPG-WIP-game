@@ -485,6 +485,8 @@ fn icon_texels(icon: UiIcon) -> [&'static [u8]; ICON_VARIANTS] {
         UiIcon::BattleTrance => raster::BATTLE_TRANCE,
         UiIcon::SpellReflect => raster::SPELL_REFLECT,
         UiIcon::LastStand => raster::LAST_STAND,
+        UiIcon::Valor => raster::VALOR,
+        UiIcon::BattleFervor => raster::BATTLE_FERVOR,
         UiIcon::Moonfire => raster::MOONFIRE,
         UiIcon::Sunfire => raster::SUNFIRE,
         UiIcon::Wrath => raster::WRATH,
@@ -570,7 +572,6 @@ fn icon_texels(icon: UiIcon) -> [&'static [u8]; ICON_VARIANTS] {
         UiIcon::AuraCurseOfWeakness => raster::AURA_CURSE_OF_WEAKNESS,
         UiIcon::AuraWitheringPlague => raster::AURA_WITHERING_PLAGUE,
         UiIcon::AuraMagicVulnerability => raster::AURA_MAGIC_VULNERABILITY,
-        UiIcon::AuraDeflection => raster::AURA_DEFLECTION,
     }
 }
 

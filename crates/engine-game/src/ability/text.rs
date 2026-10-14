@@ -22,7 +22,7 @@
 //! ## House style
 //!
 //! Second person, present tense, sentence case, a full stop at the end. Durations are `sec`,
-//! distances `m`, shares `%`. Resource names and stat names are capitalised (`Deflection`,
+//! distances `m`, shares `%`. Resource names and stat names are capitalised (`Valor`,
 //! `Health`, `Block`). Nothing here is upper case for the old bitmap font: every tooltip is set
 //! in the proportional face.
 
@@ -102,12 +102,6 @@ fn row_token(definition: &AbilityDef, key: &str) -> Option<TextValue> {
         "ignite_stacks" => TextValue::Count(f32::from(definition.fire().ignite_stacks)),
         "ignite_chance" => TextValue::Percent(definition.fire().ignite_chance),
         "ignite_bonus" => TextValue::Percent(definition.fire().ignite_bonus_per_stack),
-        "cost" if definition.warrior().is_empowerable() => {
-            TextValue::Count(definition.warrior().deflection_cost)
-        }
-        "threshold" if definition.warrior().is_empowerable() => {
-            TextValue::Count(definition.warrior().empower_threshold())
-        }
         _ => return None,
     })
 }
@@ -182,7 +176,7 @@ pub fn write_empowered(out: &mut String, ability: FireAbility) {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Resource {
     /// The Warrior's.
-    Deflection,
+    Valor,
     /// The Druid's spending resource.
     Mana,
     /// The Druid's empowering resource.
@@ -198,7 +192,7 @@ impl Resource {
     #[must_use]
     pub fn name(self) -> &'static str {
         match self {
-            Self::Deflection => "Deflection",
+            Self::Valor => "Valor",
             Self::Mana => "Mana",
             Self::AstralPower => "Astral Power",
             Self::Heat => "Heat",
@@ -237,8 +231,7 @@ impl ResourceUse {
     ///
     /// ```text
     /// Costs 300 Mana
-    /// Consumes 20 Deflection to empower, if available
-    /// Consumes 20 Deflection to empower, at 100 Deflection
+    /// Consumes armed Astral Power to empower
     /// Generates 4 Heat
     /// ```
     pub fn write_line(&self, out: &mut String) {
@@ -283,8 +276,8 @@ impl AbilityDef {
     /// Everything this ability does with a class resource, derived from its columns.
     ///
     /// Derived rather than a second column, so the tooltip, the cast check and the spend can
-    /// never disagree: a row with a Deflection cost *is* an optional empowerment, because that
-    /// is what the executor does with one.
+    /// never disagree: a row with a Valor column *is* a generator, because that is what the
+    /// executor does with one.
     pub fn resource_uses(&self) -> impl Iterator<Item = ResourceUse> + '_ {
         let mut uses: [Option<ResourceUse>; 4] = [None; 4];
         let mut at = 0;
@@ -310,19 +303,19 @@ impl AbilityDef {
                 threshold: self.druid().mana_cost,
             });
         }
-        if self.warrior().is_empowerable() {
-            push(ResourceUse {
-                resource: Resource::Deflection,
-                mode: ResourceMode::Empower,
-                amount: self.warrior().deflection_cost,
-                threshold: self.warrior().empower_threshold(),
-            });
-        }
         if self.druid().astral_empowerable {
             push(ResourceUse {
                 resource: Resource::AstralPower,
                 mode: ResourceMode::Empower,
                 amount: 0.0,
+                threshold: 0.0,
+            });
+        }
+        if self.warrior().valor > 0.0 {
+            push(ResourceUse {
+                resource: Resource::Valor,
+                mode: ResourceMode::Generate,
+                amount: self.warrior().valor,
                 threshold: 0.0,
             });
         }
@@ -431,15 +424,7 @@ mod tests {
         let stomp: Vec<_> = FireAbility::WarStomp.definition().resource_uses().collect();
         assert_eq!(stomp.len(), 1);
         stomp[0].write_line(&mut line);
-        assert_eq!(line, "Consumes 20 Deflection to empower, if available");
-
-        line.clear();
-        let recuperate: Vec<_> = FireAbility::Recuperate
-            .definition()
-            .resource_uses()
-            .collect();
-        recuperate[0].write_line(&mut line);
-        assert_eq!(line, "Consumes 20 Deflection to empower, at 100 Deflection");
+        assert_eq!(line, "Generates 1 Valor");
 
         line.clear();
         let rejuvenation: Vec<_> = FireAbility::Rejuvenation

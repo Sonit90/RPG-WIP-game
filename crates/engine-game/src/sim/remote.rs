@@ -51,8 +51,8 @@ pub struct PresentedResources {
     pub energy: f32,
     /// Mana.
     pub mana: f32,
-    /// Deflection.
-    pub deflection: f32,
+    /// Valor stacks.
+    pub valor: f32,
     /// Astral power.
     pub astral: f32,
     /// Global cooldown left now.
@@ -187,7 +187,9 @@ impl Simulation {
         self.mage.heat.set(resources.heat);
         self.mage.energy.set(resources.energy);
         self.druid.mana.set_current(resources.mana);
-        self.warrior.deflection.set(resources.deflection);
+        self.warrior
+            .valor
+            .set(resources.valor.round().clamp(0.0, 255.0) as u8);
         self.druid.astral.set(resources.astral);
         if resources.global_cooldown > 0.0 {
             self.mage.global_cooldown.start(resources.global_cooldown);
