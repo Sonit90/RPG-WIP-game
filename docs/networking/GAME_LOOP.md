@@ -162,15 +162,16 @@ entered. Enemies are removed with `Simulation::despawn_enemy`, never with the wo
 the latter leaves the enemy's runtime in its slot, and the next entity to take the slot (a hub
 dummy) would inherit its name, rank and mind.
 
-**Level switching.** The client starts with the dungeon level loaded (`--scene graveyard`,
-monsters cleared) and keeps the hub scene parked. Every frame, before `sync_world`,
+**Level switching.** The client starts with the dungeon level loaded (`--scene graveyard`;
+the simulation is built without its monsters) and keeps the hub scene parked. Every frame, before `sync_world`,
 `App::sync_online_level` (`engine-app/src/app.rs`) compares `OnlineSession::wanted_level` (the
 dungeon while the realm has an instance for the player, the hub otherwise) with the loaded level
 and, if they differ, swaps them with `App::load_level` — the same sequence the level editor uses
 to open a level (upload missing models, re-place, rebuild collision, terrain and water in one
 upload batch, take the scene's lighting and map). The swap rebuilds the collision world, so the
-session drops its static handles (`OnlineSession::level_rebuilt`). The parked dungeon always has
-its monsters and run cleared: the server owns them.
+session drops its static handles (`OnlineSession::level_rebuilt`). A level load spawns nobody, so the
+dungeon is parked whole: its placements still give the map its encounter markers, and the server
+owns the monsters themselves.
 
 In the hub scene the player arrives at the scene's `spawns.player`, the lone dummy stands at
 `spawns.featured_dummy`, the group of three at `spawns.group_center` and the friendly dummy a few

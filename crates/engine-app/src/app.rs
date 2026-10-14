@@ -348,7 +348,7 @@ pub struct App {
     /// Which online level is loaded. Only meaningful while `parked_level` is `Some`.
     online_level: crate::online::OnlineLevel,
     /// The online level that is not loaded: the hub scene while the dungeon is up, the dungeon
-    /// (monsters and run cleared, the server owns them) while the hub is. `None` offline, and
+    /// while the hub is. `None` offline, and
     /// online when the hub scene could not be read, which leaves the hub in the dungeon.
     parked_level: Option<ParkedLevel>,
     /// The hub's Equipment button was pressed: the character sheet opens next frame, so the
@@ -4581,15 +4581,10 @@ impl App {
         else {
             return;
         };
-        // The dungeon is parked as the client builds it online: the server owns the monsters,
-        // the completion and the boss, so none of them come back with the level.
-        let mut leaving = current;
-        if self.online_level == crate::online::OnlineLevel::Dungeon {
-            leaving.monsters.clear();
-            leaving.dungeon = None;
-        }
+        // Parked whole: a level load spawns nobody (the server owns the dungeon's monsters
+        // online), and the map's encounter markers are read off the scene's placements.
         self.parked_level = Some(ParkedLevel {
-            scene: leaving,
+            scene: current,
             source: self.map_source.take(),
         });
         self.online_level = wanted;
