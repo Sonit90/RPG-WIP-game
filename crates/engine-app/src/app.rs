@@ -345,6 +345,9 @@ pub struct App {
     /// The online game, when `--network-mode online` started one. `None` is the offline game,
     /// exactly as it always was.
     online: Option<crate::online::OnlineSession>,
+    /// The hub's Equipment button was pressed: the character sheet opens next frame, so the
+    /// press that asked for it is not also read by the sheet.
+    open_sheet_next_frame: bool,
     /// When the account settings were last offered for sync.
     settings_offered_at: Option<Instant>,
     /// The pause and settings menus. Owns no gameplay and no file: it emits actions.
@@ -1296,6 +1299,7 @@ impl App {
             commands: Vec::with_capacity(16),
             heroes,
             online: None,
+            open_sheet_next_frame: false,
             settings_offered_at: None,
             menu: MenuSystem::new(game_settings.settings(), env!("CARGO_PKG_VERSION")),
             menu_actions: Vec::with_capacity(4),
@@ -6081,6 +6085,16 @@ impl Application for App {
         // The online game: the network layer's events, then the front-end screens, then what
         // they asked the application to do. Offline this is one `None` check.
         let mut online_front_end = false;
+        if std::mem::take(&mut self.open_sheet_next_frame) {
+            self.open_character_sheet();
+        }
+        // A window of the game over the hub's panels owns the mouse.
+        let window_open = self.character_menu.is_open()
+            || self.mailbox_menu.is_open()
+            || self.talent_menu.is_open()
+            || self.menu.is_open()
+            || self.slot_menu.is_open()
+            || self.hud_editor.is_active();
         if let Some(online) = self.online.as_mut() {
             engine_core::profile_scope!(profiler, "Online");
             let viewport = self.renderer.size();
@@ -6090,6 +6104,7 @@ impl Application for App {
                 viewport,
                 scale,
                 ctx.time().real_delta().as_secs_f32(),
+                window_open,
             );
             online_front_end = online.front_end_active();
             for directive in online.take_directives() {
@@ -6098,6 +6113,9 @@ impl Application for App {
                     crate::online::Directive::Quit => ctx.request_exit(),
                     crate::online::Directive::ApplyAccountSettings(document) => {
                         self.apply_account_settings(&document);
+                    }
+                    crate::online::Directive::OpenCharacterMenu => {
+                        self.open_sheet_next_frame = true;
                     }
                     crate::online::Directive::ApplyLoadout(hero, loadout) => {
                         *self.simulation.roster_mut().sheet_mut(hero) =
@@ -6130,7 +6148,11 @@ impl Application for App {
         }
 
         if online_front_end {
-            // The front-end owns the whole screen: no menu, no camera, no world input.
+            // The front-end owns the whole screen: no menu, no camera, no world input. A
+            // window left open would be waiting under it when the hub comes back.
+            self.character_menu.close();
+            self.mailbox_menu.close();
+            self.talent_menu.close();
             self.commands.clear();
             self.cancel_mouse_look();
         } else {
@@ -6227,10 +6249,14 @@ impl Application for App {
             {
                 self.commands.push(engine_game::PlayerCommand::OpenChest);
             }
-            if let Some(online) = self.online.as_ref() {
-                // Online the server owns the fight: ability presses pass through to the
-                // simulation, which (under a remote authority) hands them to the server as
-                // requests. Movement waits until the realm has placed the player; items,
+            // In the hub the local simulation is the authority: the whole command set is the
+            // offline game's, and abilities hit the training dummies with the same combat code.
+            if let Some(online) = self.online.as_ref()
+                && !online.in_hub()
+            {
+                // In an instance the server owns the fight: ability presses pass through to
+                // the simulation, which (under a remote authority) hands them to the server
+                // as requests. Movement waits until the realm has placed the player; items,
                 // talents and debug controls are not commands the realm takes.
                 let may_move = online.may_move();
                 self.commands.retain(|command| match command {

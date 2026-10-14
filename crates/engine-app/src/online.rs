@@ -26,14 +26,21 @@
 //!   request, and health, casts, cooldowns, resources and statuses are laid into the world
 //!   from the server's rows, its events injected for effects, numbers and sound;
 //! * nothing here can change HP, cooldowns, rewards or the party: those are requests.
+//!
+//! Outside an instance the player stands in the **hub**: the dungeon level's start area with
+//! training dummies the local simulation spawns, under *local* authority (the offline combat
+//! code, nothing sent to the server). The hub is torn down before an instance is entered and
+//! rebuilt when it is left; see [`OnlineSession::sync_hub`].
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::time::{Duration, Instant};
 
 use engine_collision::world::{QueryBuffers, StaticId};
 use engine_core::math::Vec3;
+use engine_game::arena::{ArenaConfig, spawn_group, spawn_healing_dummy};
 use engine_game::combat::Faction;
 use engine_game::enemy::{EnemyAbility, EnemyKind};
+use engine_game::event::CombatEvent;
 use engine_game::firemage::FireAbility;
 use engine_game::hero::Hero;
 use engine_game::movement::{Body, MovementState};
@@ -45,6 +52,7 @@ use engine_game::{EntityId, Simulation};
 use engine_net::clock::{ClockSync, local_now};
 use engine_net::interpolation::SnapshotBuffer;
 use engine_net::model::NoticeLevel;
+use engine_net::model::RunSummaryInfo;
 use engine_net::prediction::Prediction;
 use engine_net::{
     Action, ConnectionStatus, GameSession, NetCommand, NetEvent, NetworkClient, RealmClient,
@@ -52,13 +60,14 @@ use engine_net::{
 };
 use engine_presentation::RemoteFrame;
 use engine_presentation::ui::frontend::{
-    CharacterCard, DungeonCard, FieldKeys, FrontEndAction, FrontEndUi, FrontEndView, FrontInput,
-    MemberRow, PartyCard, QueueCard, ReadyState, Screen, StatusLevel, Toast,
+    BagRow, CharacterCard, CompletionCard, DungeonCard, ExchangeRow, FieldKeys, FrontEndAction,
+    FrontEndUi, FrontEndView, FrontInput, HubCard, IntroCard, KeyCard, MemberRow, PartyCard,
+    QueueCard, ReadyState, Screen, StatusLevel, Toast, WorkshopCard,
 };
-use engine_realm::api::CharacterSummary;
+use engine_realm::api::{CharacterSummary, EconomyInfo};
 use engine_realm::catalog::Catalog;
 use engine_realm::combat::{AbilityRef, ActionKind, CombatAction, EntityRef, StatusState};
-use engine_realm::instance::{Countdown, CountdownDisplay};
+use engine_realm::instance::{Countdown, CountdownDisplay, InstanceState};
 use engine_realm::matchmaking::MatchmakingConfig;
 use engine_realm::movement::{BarrierKind, MovementRules, barriers_of};
 use engine_realm::party::{PartyState, ReadyResponse};
@@ -133,7 +142,12 @@ struct DevProgress {
     logged_in_tried: bool,
     queued_for: Option<std::time::Instant>,
     answered: Option<u64>,
+    key_sent: Option<u64>,
     started: Option<u64>,
+    /// When the run in front of the player ended, to return to the hub a moment later.
+    run_ended: Option<Instant>,
+    /// When the hub was last found idle, to queue again a moment later.
+    idle_since: Option<Instant>,
 }
 
 /// What the application should do this frame, beyond drawing.
@@ -147,6 +161,8 @@ pub enum Directive {
     ApplyAccountSettings(serde_json::Value),
     /// Dress this hero's sheet in the character's stored loadout.
     ApplyLoadout(Hero, engine_realm::loadout::Loadout),
+    /// Open the character sheet (the hub's Equipment button).
+    OpenCharacterMenu,
 }
 
 /// One other player, as the world shows them.
@@ -177,6 +193,67 @@ struct WorldLink {
     last_authoritative: Option<(Vec3, f32)>,
     last_send: Option<Instant>,
     buffers: Option<QueryBuffers>,
+    /// The run was won while the player was in it, so unclaimed loot is mailed on leaving.
+    completed: bool,
+}
+
+/// The hub's contents in the local simulation: what to take down when it is left.
+struct HubWorld {
+    /// The training dummies and the friendly dummy.
+    entities: Vec<EntityId>,
+    /// The dungeon's start barrier, standing so the hub is bounded.
+    barrier: Option<StaticId>,
+}
+
+/// What a pending request is waiting for, so it can be cleared when the server has answered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BusyKind {
+    /// Loading the character list after signing in.
+    Characters,
+    /// Joining the queue: the API's answer.
+    JoinQueue,
+    /// Leaving the queue: the ticket going away.
+    LeaveQueue,
+    /// Inserting the key: the party leaving `ChoosingKey`.
+    InsertKey,
+    /// Withdrawing the key: the party leaving `Ready`.
+    WithdrawKey,
+    /// Starting the dungeon: the instance appearing.
+    Start,
+    /// Leaving the party: the party going away.
+    LeaveParty,
+    /// A salvage or an exchange: the API's answer.
+    Workshop,
+    /// Signing out.
+    SignOut,
+    /// Signing in.
+    SignIn,
+}
+
+/// A request in flight, as the interface shows it.
+struct Busy {
+    kind: BusyKind,
+    text: String,
+    since: Instant,
+}
+
+/// What a character looked like when a run began, to tell when its result has been saved.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CharacterMark {
+    level: u32,
+    experience: u64,
+    key_level: u32,
+    resources: u64,
+}
+
+/// Waiting for the API to apply a finished run's result to the character.
+struct SavingRewards {
+    /// The character before the run.
+    before: CharacterMark,
+    /// Re-fetches sent so far.
+    attempt: usize,
+    /// When the next is due.
+    next: Instant,
 }
 
 /// The online game's state.
@@ -193,8 +270,20 @@ pub struct OnlineSession {
     selected_role: Option<Role>,
     /// Where the player is in the screens the server does not decide.
     stage: Screen,
-    busy: Option<String>,
+    busy: Option<Busy>,
     error: Option<String>,
+    /// The title screen's words.
+    intro: IntroCard,
+    /// The economy catalog, fetched once after signing in.
+    economy: Option<EconomyInfo>,
+    /// The hub in the local simulation, while the player stands in it.
+    hub: Option<HubWorld>,
+    /// The character as it was when the current run began.
+    run_start: Option<CharacterMark>,
+    /// The instance whose Return to Hub was pressed.
+    returning: Option<u64>,
+    /// A finished run's result, not yet seen on the stored character.
+    saving: Option<SavingRewards>,
     clock: ClockSync,
     toasts: VecDeque<(Toast, Instant)>,
     /// When each server notice was first shown; dismissed after [`TOAST_SECONDS`].
@@ -276,11 +365,22 @@ impl OnlineSession {
             selected_character: None,
             selected_dungeon: Some(0),
             selected_role: None,
-            stage: Screen::Login,
+            // The title comes first, once per launch.
+            stage: Screen::Title,
             // Resuming a remembered session is a sign-in in progress; a scripted login is not
             // yet.
-            busy: dev.login.is_none().then(|| "Signing in...".to_owned()),
+            busy: dev.login.is_none().then(|| Busy {
+                kind: BusyKind::SignIn,
+                text: "Signing in...".to_owned(),
+                since: Instant::now(),
+            }),
             error: None,
+            intro: parse_intro(INTRO_JSON),
+            economy: None,
+            hub: None,
+            run_start: None,
+            returning: None,
+            saving: None,
             clock: ClockSync::default(),
             toasts: VecDeque::new(),
             seen_notices: BTreeMap::new(),
@@ -302,10 +402,18 @@ impl OnlineSession {
         })
     }
 
-    /// Whether the full-screen front-end is up (no world input, no HUD).
+    /// Whether the full-screen front-end is up (no world input, no HUD). The hub and the
+    /// instance are the playable world with overlays, not front-end pages.
     #[must_use]
     pub fn front_end_active(&self) -> bool {
-        self.view.screen != Screen::InWorld
+        !self.view.screen.is_overlay()
+    }
+
+    /// Whether the player stands in the hub: the local simulation is the authority here, so
+    /// the application lets every local command through.
+    #[must_use]
+    pub fn in_hub(&self) -> bool {
+        self.view.screen == Screen::Hub
     }
 
     /// Whether the pointer is over online interface.
@@ -314,23 +422,28 @@ impl OnlineSession {
         self.ui.wants_pointer(&self.view, viewport, scale)
     }
 
-    /// Whether the local player may move: inside an instance that accepts movement.
+    /// Whether the local player may move: in the hub, or inside an instance that accepts
+    /// movement.
     #[must_use]
     pub fn may_move(&self) -> bool {
-        self.view.screen == Screen::InWorld
-            && self
-                .mirror
-                .instance
-                .as_ref()
-                .is_some_and(|instance| instance.state.accepts_movement())
-            && self.mirror.me().is_some()
+        match self.view.screen {
+            Screen::Hub => self.hub.is_some(),
+            Screen::InWorld => {
+                self.mirror
+                    .instance
+                    .as_ref()
+                    .is_some_and(|instance| instance.state.accepts_movement())
+                    && self.mirror.me().is_some()
+            }
+            _ => false,
+        }
     }
 
-    /// Whether the realm has placed the local player in an instance (until then the start
-    /// area stands empty behind the front-end).
+    /// Whether the local player stands somewhere: in the hub, or placed by the realm in an
+    /// instance (until then the start area stands empty behind the front-end).
     #[must_use]
     pub fn player_placed(&self) -> bool {
-        self.world.prediction.is_some()
+        self.hub.is_some() || self.world.prediction.is_some()
     }
 
     /// Offers the current account settings document; uploads it when it differs from what
@@ -407,13 +520,15 @@ impl OnlineSession {
         std::mem::take(&mut self.directives)
     }
 
-    /// Drains network events and runs the front-end for one frame.
+    /// Drains network events and runs the front-end for one frame. `modal`: a window of the
+    /// game (the character sheet, the pause menu) is over the interface and owns the mouse.
     pub fn update(
         &mut self,
         input: &engine_core::input::InputState,
         viewport: (u32, u32),
         scale: UiScale,
         delta_seconds: f32,
+        modal: bool,
     ) {
         self.events.clear();
         let mut events = std::mem::take(&mut self.events);
@@ -424,6 +539,9 @@ impl OnlineSession {
         self.events = events;
         self.age_notices();
         self.poll_loot_watch();
+        self.poll_saving();
+        self.settle_busy();
+        self.adopt_session_state();
         self.run_dev_script();
         let now = Instant::now();
         self.toasts
@@ -444,10 +562,11 @@ impl OnlineSession {
         let clipboard = engine_platform::secure_store::clipboard_text;
         let front_input = FrontInput {
             pointer,
-            pressed: input.was_mouse_button_pressed(engine_core::input::MouseButton::Left),
+            pressed: input.was_mouse_button_pressed(engine_core::input::MouseButton::Left)
+                && !modal,
             typed: input.typed(),
             keys,
-            escape: input.was_key_pressed(KeyCode::Escape),
+            escape: input.was_key_pressed(KeyCode::Escape) && !modal,
             clipboard: &clipboard,
         };
         let actions = self
@@ -466,6 +585,11 @@ impl OnlineSession {
 
     /// Development automation, one step a frame.
     fn run_dev_script(&mut self) {
+        // Nobody is at the keyboard to press Continue.
+        if self.stage == Screen::Title && (self.dev.login.is_some() || self.dev.autoplay.is_some())
+        {
+            self.on_action(FrontEndAction::ContinueFromTitle);
+        }
         if let Some((email, password)) = self.dev.login.clone()
             && self.session.is_none()
             && self.busy.is_none()
@@ -494,31 +618,77 @@ impl OnlineSession {
         if self.status != ConnectionStatus::Connected || self.session.is_none() {
             return;
         }
-        if self.mirror.ticket.is_none()
+
+        // A finished run: look at it for a moment, then return to the hub.
+        let run_over = self.mirror.instance.as_ref().is_some_and(|instance| {
+            matches!(
+                instance.state,
+                InstanceState::Completed | InstanceState::Failed
+            ) && self
+                .mirror
+                .run_summary
+                .as_ref()
+                .is_some_and(|summary| summary.instance_id == instance.id)
+        });
+        if run_over && self.returning.is_none() {
+            let ended = *self.dev_progress.run_ended.get_or_insert_with(Instant::now);
+            if ended.elapsed() > Duration::from_secs(3) {
+                self.on_action(FrontEndAction::ReturnToHub);
+            }
+        } else if !run_over {
+            self.dev_progress.run_ended = None;
+        }
+
+        // In the hub with nothing going on: queue again after a few seconds.
+        let idle = self.mirror.ticket.is_none()
             && self.mirror.party.is_none()
             && self.mirror.instance.is_none()
-            && self
+            && self.saving.is_none()
+            && self.busy.is_none()
+            && self.stage != Screen::Title;
+        if idle {
+            let since = *self
                 .dev_progress
-                .queued_for
-                .is_none_or(|at| at.elapsed() > Duration::from_secs(5))
-            && let Some(index) = self
-                .characters
-                .iter()
-                .position(|c| c.definition_id == definition)
-        {
-            self.selected_character = Some(index);
-            self.on_action(FrontEndAction::ConfirmCharacter);
-            self.selected_dungeon = Some(0);
-            self.on_action(FrontEndAction::ConfirmDungeon);
-            self.selected_role = Some(role);
-            self.on_action(FrontEndAction::JoinQueue);
-            self.dev_progress.queued_for = Some(Instant::now());
+                .idle_since
+                .get_or_insert_with(Instant::now);
+            if since.elapsed() > Duration::from_secs(3)
+                && self
+                    .dev_progress
+                    .queued_for
+                    .is_none_or(|at| at.elapsed() > Duration::from_secs(5))
+                && let Some(index) = self
+                    .characters
+                    .iter()
+                    .position(|c| c.definition_id == definition)
+            {
+                if matches!(self.stage, Screen::Characters | Screen::Login) {
+                    self.selected_character = Some(index);
+                    self.on_action(FrontEndAction::ConfirmCharacter);
+                }
+                self.on_action(FrontEndAction::OpenDungeonFinder);
+                self.selected_dungeon = Some(0);
+                self.on_action(FrontEndAction::ConfirmDungeon);
+                self.selected_role = Some(role);
+                self.on_action(FrontEndAction::JoinQueue);
+                self.dev_progress.queued_for = Some(Instant::now());
+            }
+        } else {
+            self.dev_progress.idle_since = None;
         }
+
         if let Some(party) = self.mirror.party.clone() {
             if party.state == PartyState::ReadyCheck && self.dev_progress.answered != Some(party.id)
             {
                 self.dev_progress.answered = Some(party.id);
                 self.on_action(FrontEndAction::Accept);
+            }
+            // Every client offers its own key, once; the first to arrive wins and the others
+            // are refused, which is expected.
+            if party.state == PartyState::ChoosingKey
+                && self.dev_progress.key_sent != Some(party.id)
+            {
+                self.dev_progress.key_sent = Some(party.id);
+                self.on_action(FrontEndAction::InsertKey);
             }
             if party.state == PartyState::Ready
                 && self.mirror.i_lead()
@@ -527,6 +697,54 @@ impl OnlineSession {
                 self.dev_progress.started = Some(party.id);
                 self.on_action(FrontEndAction::StartDungeon);
             }
+        }
+    }
+
+    /// Sets the request the interface waits on.
+    fn set_busy(&mut self, kind: BusyKind, text: &str) {
+        self.busy = Some(Busy {
+            kind,
+            text: text.to_owned(),
+            since: Instant::now(),
+        });
+    }
+
+    /// Clears a request the realm has visibly answered, or one nothing answered for too long.
+    fn settle_busy(&mut self) {
+        let Some(busy) = &self.busy else { return };
+        let settled = busy_settled(busy.kind, &self.mirror);
+        let stuck = busy.kind != BusyKind::SignIn && busy.since.elapsed() > BUSY_TIMEOUT;
+        if settled || stuck {
+            if stuck && !settled {
+                self.toast(
+                    StatusLevel::Warning,
+                    "The server is taking a while to answer.",
+                );
+            }
+            self.busy = None;
+        }
+    }
+
+    /// A restored session may already hold a ticket or a party: land on that character's hub
+    /// instead of the list.
+    fn adopt_session_state(&mut self) {
+        if self.stage != Screen::Characters || self.characters.is_empty() {
+            return;
+        }
+        let name = self
+            .mirror
+            .ticket
+            .as_ref()
+            .map(|ticket| ticket.character_name.clone())
+            .or_else(|| {
+                self.mirror
+                    .my_membership()
+                    .map(|member| member.character_name.clone())
+            });
+        let Some(name) = name else { return };
+        if let Some(index) = self.characters.iter().position(|c| c.name == name) {
+            self.selected_character = Some(index);
+            self.on_action(FrontEndAction::ConfirmCharacter);
         }
     }
 
@@ -554,18 +772,22 @@ impl OnlineSession {
                 self.status = status;
             }
             NetEvent::SigningIn => {
-                self.busy = Some("Signing in...".into());
+                self.set_busy(BusyKind::SignIn, "Signing in...");
                 self.error = None;
             }
             NetEvent::RememberedEmail(email) => self.ui.set_email(&email),
             NetEvent::SignedIn(session) => {
                 self.ui.clear_password();
-                self.busy = None;
                 self.error = None;
-                self.stage = Screen::Characters;
+                // The title is shown once per launch, whenever the session turns up.
+                if self.stage != Screen::Title {
+                    self.stage = Screen::Characters;
+                }
                 self.session = Some(session);
+                self.set_busy(BusyKind::Characters, "Loading characters...");
                 self.client.send(NetCommand::FetchCharacters);
                 self.client.send(NetCommand::FetchSettings);
+                self.client.send(NetCommand::FetchEconomy);
             }
             NetEvent::SignedOut { reason } => {
                 self.ui.clear_password();
@@ -573,7 +795,16 @@ impl OnlineSession {
                 self.session = None;
                 self.characters.clear();
                 self.selected_character = None;
-                self.stage = Screen::Login;
+                self.economy = None;
+                self.saving = None;
+                self.returning = None;
+                self.run_start = None;
+                self.stored_loadout = None;
+                self.loot_watch = None;
+                // Logging out lands on the sign-in form; only the first page is the title.
+                if self.stage != Screen::Title {
+                    self.stage = Screen::Login;
+                }
                 self.error = reason.map(|reason| reason.message);
                 self.mirror = RealmMirror::default();
             }
@@ -581,11 +812,17 @@ impl OnlineSession {
                 if self.selected_character.is_none() && !characters.is_empty() {
                     self.selected_character = Some(0);
                 }
+                if self
+                    .selected_character
+                    .is_some_and(|index| index >= characters.len())
+                {
+                    self.selected_character = None;
+                }
                 self.characters = characters;
-                self.busy = None;
+                self.clear_busy(BusyKind::Characters);
+                self.check_saving();
             }
-            // The hub UI phase consumes the economy catalog.
-            NetEvent::Economy(_) => {}
+            NetEvent::Economy(economy) => self.economy = Some(*economy),
             NetEvent::Settings(document) => {
                 self.settings_version = Some(document.version);
                 if document.version > 0 && document.settings.is_object() {
@@ -628,8 +865,10 @@ impl OnlineSession {
                 {
                     *entry = detail.summary.clone();
                 }
+                self.clear_busy(BusyKind::Workshop);
+                self.check_saving();
             }
-            NetEvent::QueueAccepted => self.busy = None,
+            NetEvent::QueueAccepted => self.clear_busy(BusyKind::JoinQueue),
             NetEvent::Realm(update) => self.mirror.apply(update),
             NetEvent::Clock(clock) => self.clock = clock,
             NetEvent::Failed {
@@ -643,9 +882,26 @@ impl OnlineSession {
                 self.settings_version = None;
                 self.client.send(NetCommand::FetchSettings);
             }
+            // The catalog bundled with the game names the resources until the API answers.
+            NetEvent::Failed {
+                action: Action::Economy,
+                error,
+            } => log::info!("online: economy not loaded: {}", error.message),
+            // A re-fetch while the result is being saved: the schedule tries again.
+            NetEvent::Failed {
+                action: Action::Characters,
+                error,
+            } if self.saving.is_some() => {
+                log::info!("online: character not refreshed: {}", error.message);
+            }
             NetEvent::Failed { action, error } => {
                 self.busy = None;
                 log::info!("online: {action:?} refused: {}", error.message);
+                if action == Action::LeaveParty {
+                    // Still in the run: the panel's button works again.
+                    self.returning = None;
+                    self.saving = None;
+                }
                 match action {
                     Action::SignIn => self.error = Some(error.message),
                     _ if error.category == ErrorCategory::Connection => {
@@ -660,6 +916,17 @@ impl OnlineSession {
         }
     }
 
+    /// Clears the busy text if it is waiting for `kind`.
+    fn clear_busy(&mut self, kind: BusyKind) {
+        if self.busy.as_ref().is_some_and(|busy| busy.kind == kind) {
+            self.busy = None;
+        }
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one arm per action the interface offers"
+    )]
     fn on_action(&mut self, action: FrontEndAction) {
         match action {
             FrontEndAction::Login {
@@ -688,23 +955,61 @@ impl OnlineSession {
                     remember,
                 });
             }
-            FrontEndAction::Logout => self.client.send(NetCommand::Logout),
+            FrontEndAction::ContinueFromTitle => {
+                if self.stage == Screen::Title {
+                    self.stage = if self.session.is_some() {
+                        Screen::Characters
+                    } else {
+                        Screen::Login
+                    };
+                }
+            }
+            FrontEndAction::Logout => {
+                self.set_busy(BusyKind::SignOut, "Signing out...");
+                self.client.send(NetCommand::Logout);
+            }
             FrontEndAction::Quit => self.directives.push(Directive::Quit),
             FrontEndAction::SelectCharacter(index) => {
                 self.selected_character = Some(index);
                 self.selected_role = None;
             }
+            FrontEndAction::ChangeCharacter => {
+                if self.can_change_character() {
+                    self.selected_role = None;
+                    self.error = None;
+                    self.stage = Screen::Characters;
+                }
+            }
             FrontEndAction::ConfirmCharacter => {
                 if let Some(id) = self.selected_character_summary().map(|c| c.id.clone()) {
                     // The persistent character, once: its loadout dresses the local sheet.
+                    self.stored_loadout = None;
                     self.client.send(NetCommand::FetchCharacter(id));
                 }
                 if let Some(hero) = self.selected_hero() {
                     self.directives.push(Directive::SetHero(hero));
                     self.hero = Some(hero);
                 }
-                self.stage = Screen::Dungeons;
+                self.stage = Screen::Hub;
                 self.error = None;
+            }
+            FrontEndAction::OpenDungeonFinder => {
+                if self.can_find_dungeon() {
+                    self.stage = Screen::Dungeons;
+                    self.error = None;
+                }
+            }
+            FrontEndAction::OpenEquipment => self.directives.push(Directive::OpenCharacterMenu),
+            FrontEndAction::OpenWorkshop => {
+                self.stage = Screen::Workshop;
+                self.error = None;
+                // The bag as the server has it, and the catalog if it never arrived.
+                if let Some(id) = self.selected_character_summary().map(|c| c.id.clone()) {
+                    self.client.send(NetCommand::FetchCharacter(id));
+                }
+                if self.economy.is_none() {
+                    self.client.send(NetCommand::FetchEconomy);
+                }
             }
             FrontEndAction::SelectDungeon(index) => self.selected_dungeon = Some(index),
             FrontEndAction::ConfirmDungeon => {
@@ -729,7 +1034,9 @@ impl OnlineSession {
                     return;
                 };
                 self.error = None;
-                self.busy = Some("Joining the queue...".into());
+                self.set_busy(BusyKind::JoinQueue, "Joining the queue...");
+                // Back to the hub: the queue panel shows once the ticket exists.
+                self.stage = Screen::Hub;
                 self.client.send(NetCommand::JoinQueue {
                     character_id: character,
                     dungeon_id: dungeon,
@@ -740,10 +1047,14 @@ impl OnlineSession {
                 self.error = None;
                 self.stage = match self.stage {
                     Screen::Roles => Screen::Dungeons,
-                    _ => Screen::Characters,
+                    Screen::Dungeons | Screen::Workshop => Screen::Hub,
+                    other => other,
                 };
             }
-            FrontEndAction::LeaveQueue => self.client.send(NetCommand::LeaveQueue),
+            FrontEndAction::LeaveQueue => {
+                self.set_busy(BusyKind::LeaveQueue, "Leaving the queue...");
+                self.client.send(NetCommand::LeaveQueue);
+            }
             FrontEndAction::Accept => {
                 self.answered_party = self.mirror.party.as_ref().map(|p| p.id);
                 self.client.send(NetCommand::RespondReadyCheck(true));
@@ -752,18 +1063,143 @@ impl OnlineSession {
                 self.answered_party = self.mirror.party.as_ref().map(|p| p.id);
                 self.client.send(NetCommand::RespondReadyCheck(false));
             }
+            FrontEndAction::InsertKey => {
+                self.set_busy(BusyKind::InsertKey, "Inserting your key...");
+                self.client.send(NetCommand::InsertKey);
+            }
+            FrontEndAction::WithdrawKey => {
+                self.set_busy(BusyKind::WithdrawKey, "Withdrawing your key...");
+                self.client.send(NetCommand::WithdrawKey);
+            }
             FrontEndAction::StartDungeon => {
-                self.busy = Some("Starting...".into());
+                self.set_busy(BusyKind::Start, "Starting dungeon...");
                 self.client.send(NetCommand::StartDungeon);
             }
             FrontEndAction::Kick(account) => self.client.send(NetCommand::Kick(account)),
-            FrontEndAction::MakeLeader(account) => {
-                self.client.send(NetCommand::TransferLeader(account));
-            }
             FrontEndAction::LeaveParty => {
+                self.set_busy(BusyKind::LeaveParty, "Leaving the party...");
                 self.client.send(NetCommand::LeaveParty);
-                self.stage = Screen::Dungeons;
+                self.stage = Screen::Hub;
             }
+            FrontEndAction::ReturnToHub => self.return_to_hub(),
+            FrontEndAction::Salvage(index) => {
+                if let Some(character_id) = self.selected_character_summary().map(|c| c.id.clone())
+                {
+                    self.set_busy(BusyKind::Workshop, "Salvaging...");
+                    self.client.send(NetCommand::Salvage {
+                        character_id,
+                        index,
+                    });
+                }
+            }
+            FrontEndAction::Exchange(exchange_id) => {
+                if let Some(character_id) = self.selected_character_summary().map(|c| c.id.clone())
+                {
+                    self.set_busy(BusyKind::Workshop, "Exchanging...");
+                    self.client.send(NetCommand::Exchange {
+                        character_id,
+                        exchange_id,
+                        times: 1,
+                    });
+                }
+            }
+        }
+    }
+
+    /// Whether the Dungeon Finder may be opened: not while searching, grouped or saving.
+    fn can_find_dungeon(&self) -> bool {
+        self.mirror.ticket.is_none()
+            && self.mirror.party.is_none()
+            && self.saving.is_none()
+            && self.busy.is_none()
+    }
+
+    /// Whether the character may be changed: not while searching or grouped.
+    fn can_change_character(&self) -> bool {
+        self.mirror.ticket.is_none() && self.mirror.party.is_none() && self.busy.is_none()
+    }
+
+    /// Return to Hub on the completion panel: leave the party, and wait for the run's result to
+    /// show on the stored character. Never blocks: the wait ends with the fetch schedule.
+    fn return_to_hub(&mut self) {
+        let Some(instance) = self.mirror.instance.as_ref() else {
+            return;
+        };
+        if !matches!(
+            instance.state,
+            InstanceState::Completed | InstanceState::Failed
+        ) || self.returning.is_some()
+        {
+            return;
+        }
+        self.returning = Some(instance.id);
+        let earned = self
+            .mirror
+            .run_summary
+            .as_ref()
+            .filter(|summary| summary.instance_id == instance.id)
+            .is_some_and(expects_rewards);
+        let now_mark = self.selected_character_summary().map(character_mark);
+        // The character before the run, unless the result has already landed on it.
+        let before = self.run_start.or(now_mark);
+        if earned
+            && let (Some(before), Some(now)) = (before, now_mark)
+            && before == now
+        {
+            self.saving = Some(SavingRewards {
+                before,
+                attempt: 0,
+                next: Instant::now() + Duration::from_secs(LOOT_FETCH_DELAYS[0]),
+            });
+            self.send_character_fetches();
+        }
+        self.client.send(NetCommand::LeaveParty);
+    }
+
+    /// Asks the API for the selected character and for the list.
+    fn send_character_fetches(&self) {
+        if let Some(id) = self.selected_character_summary().map(|c| c.id.clone()) {
+            self.client.send(NetCommand::FetchCharacter(id));
+        }
+        self.client.send(NetCommand::FetchCharacters);
+    }
+
+    /// Re-fetches the character on the saving schedule, and gives up with a toast.
+    fn poll_saving(&mut self) {
+        let now = Instant::now();
+        let Some(attempt) = self
+            .saving
+            .as_ref()
+            .filter(|saving| now >= saving.next)
+            .map(|saving| saving.attempt)
+        else {
+            return;
+        };
+        self.send_character_fetches();
+        if let Some(delay) = LOOT_FETCH_DELAYS.get(attempt + 1) {
+            if let Some(saving) = self.saving.as_mut() {
+                saving.attempt += 1;
+                saving.next = now + Duration::from_secs(*delay);
+            }
+        } else {
+            self.saving = None;
+            self.toast(
+                StatusLevel::Warning,
+                "Rewards are being saved; they will appear shortly.",
+            );
+        }
+    }
+
+    /// Ends the wait for a run's result once the stored character shows it.
+    fn check_saving(&mut self) {
+        let landed = self.saving.as_ref().is_some_and(|saving| {
+            self.selected_character_summary()
+                .map(character_mark)
+                .is_some_and(|mark| mark != saving.before)
+        });
+        if landed {
+            self.saving = None;
+            self.toast(StatusLevel::Good, "Rewards saved.");
         }
     }
 
@@ -784,26 +1220,162 @@ impl OnlineSession {
 
     /// Which screen the realm's state puts the player on.
     fn screen(&self) -> Screen {
-        if self.session.is_none() {
-            return Screen::Login;
-        }
-        if self.mirror.instance.is_some() {
-            return Screen::InWorld;
-        }
-        if let Some(party) = &self.mirror.party {
-            return match party.state {
-                PartyState::ReadyCheck => Screen::ReadyCheck,
-                PartyState::Ready => Screen::Party,
-                _ => Screen::InWorld,
+        route(self.session.is_some(), self.stage, &self.mirror)
+    }
+
+    /// A resource's display name: the economy catalog's, else the bundled one, else its id.
+    fn resource_name(&self, id: &str) -> String {
+        self.economy
+            .as_ref()
+            .and_then(|economy| economy.resources.iter().find(|r| r.id == id))
+            .map(|resource| resource.name.clone())
+            .or_else(|| {
+                self.catalog
+                    .economy()
+                    .resource(id)
+                    .map(|resource| resource.name.clone())
+            })
+            .unwrap_or_else(|| id.to_owned())
+    }
+
+    fn dungeon_name(&self, id: &str) -> String {
+        self.catalog
+            .dungeon(id)
+            .map_or_else(|| id.to_owned(), |d| d.name.clone())
+    }
+
+    /// A character's resources with their display names.
+    fn named_resources(&self, held: &[(String, u64)]) -> Vec<(String, u64)> {
+        held.iter()
+            .filter(|(_, amount)| *amount > 0)
+            .map(|(id, amount)| (self.resource_name(id), *amount))
+            .collect()
+    }
+
+    fn key_card(&self, character: &CharacterSummary) -> Option<KeyCard> {
+        character.key.as_ref().map(|key| KeyCard {
+            dungeon: if key.dungeon_name.is_empty() {
+                self.dungeon_name(&key.dungeon_id)
+            } else {
+                key.dungeon_name.clone()
+            },
+            level: key.level,
+        })
+    }
+
+    /// The hub panel for the selected character.
+    fn hub_card(&self) -> Option<HubCard> {
+        let character = self.selected_character_summary()?;
+        Some(HubCard {
+            name: character.name.clone(),
+            class: character.class.clone(),
+            level: character.level,
+            experience: character.experience,
+            next_level: engine_realm::progression::experience_to_next(character.level),
+            key: self.key_card(character),
+            resources: self.named_resources(&character.resources),
+            can_find_dungeon: self.can_find_dungeon(),
+            can_change_character: self.can_change_character(),
+        })
+    }
+
+    /// The salvage and exchange page for the selected character.
+    fn workshop_card(&self) -> WorkshopCard {
+        let Some(character) = self.selected_character_summary() else {
+            return WorkshopCard::default();
+        };
+        let held = |id: &str| {
+            character
+                .resources
+                .iter()
+                .find(|(resource, _)| resource == id)
+                .map_or(0, |(_, amount)| *amount)
+        };
+        let Some(economy) = self.economy.as_ref() else {
+            return WorkshopCard {
+                resources: self.named_resources(&character.resources),
+                ..WorkshopCard::default()
             };
+        };
+        let rule = &economy.salvage;
+        let bag = self
+            .stored_loadout
+            .as_ref()
+            .map(|(_, loadout)| {
+                loadout
+                    .inventory
+                    .iter()
+                    .filter(|entry| entry.quantity > 0)
+                    .map(|entry| {
+                        let item = engine_game::character::item_by_key(&entry.item);
+                        let level = item.map_or(0, |def| def.item_level);
+                        let amount = u64::from(rule.base)
+                            + u64::from(rule.per_item_level) * u64::from(level);
+                        BagRow {
+                            index: entry.index,
+                            name: item
+                                .map_or_else(|| entry.item.clone(), |def| def.name.to_owned()),
+                            quantity: entry.quantity,
+                            item_level: level,
+                            yields: format!("+{amount} {}", self.resource_name(&rule.resource)),
+                        }
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let exchanges = economy
+            .exchanges
+            .iter()
+            .map(|exchange| ExchangeRow {
+                id: exchange.id.clone(),
+                label: format!(
+                    "{} {} for {} {}",
+                    exchange.from_amount,
+                    self.resource_name(&exchange.from),
+                    exchange.to_amount,
+                    self.resource_name(&exchange.to)
+                ),
+                affordable: held(&exchange.from) >= u64::from(exchange.from_amount),
+            })
+            .collect();
+        WorkshopCard {
+            bag,
+            resources: self.named_resources(&character.resources),
+            exchanges,
         }
-        if self.mirror.ticket.is_some() {
-            return Screen::Queue;
+    }
+
+    /// The loot line of the completion panel.
+    fn loot_line(&self, summary: &RunSummaryInfo, state: InstanceState) -> Option<String> {
+        if !summary.success {
+            return None;
         }
-        match self.stage {
-            Screen::Login => Screen::Characters,
-            other => other,
+        if !summary.loot_item.is_empty() {
+            return Some(
+                engine_game::character::item_by_key(&summary.loot_item)
+                    .map_or_else(|| summary.loot_item.clone(), |def| def.name.to_owned()),
+            );
         }
+        // The chest can be opened while the instance lingers.
+        (state == InstanceState::Completed).then(|| "Open the chest to claim your loot".to_owned())
+    }
+
+    /// The text of the request in flight, or of the wait the realm itself shows.
+    fn busy_text(&self, screen: Screen) -> Option<String> {
+        if let Some(busy) = &self.busy {
+            return Some(busy.text.clone());
+        }
+        // Between the start and the instance appearing; once it has, the world shows it.
+        if let Some(party) = &self.mirror.party
+            && self.mirror.instance.is_none()
+        {
+            match party.state {
+                PartyState::Starting => return Some("Starting dungeon...".to_owned()),
+                PartyState::InDungeon => return Some("Entering the dungeon...".to_owned()),
+                _ => {}
+            }
+        }
+        (screen == Screen::Hub && self.saving.is_some()).then(|| "Saving rewards...".to_owned())
     }
 
     fn build_view(&self) -> FrontEndView {
@@ -833,6 +1405,8 @@ impl OnlineSession {
                 next_level: engine_realm::progression::experience_to_next(c.level),
                 gear_score: c.gear_score,
                 equipped: c.equipment.len(),
+                key: self.key_card(c),
+                resources: c.resources.iter().map(|(_, amount)| *amount).sum(),
             })
             .collect();
         let dungeons = self
@@ -858,13 +1432,9 @@ impl OnlineSession {
                 }
             })
             .collect();
-        let dungeon_name = |id: &str| {
-            self.catalog
-                .dungeon(id)
-                .map_or_else(|| id.to_owned(), |d| d.name.clone())
-        };
         let now = self.server_now();
         let queue = self.mirror.ticket.as_ref().map(|ticket| {
+            // Real time in the queue: the server's clock now, less when the ticket was made.
             let waited = (now - ticket.enqueued_at).max(0);
             #[allow(
                 clippy::cast_possible_truncation,
@@ -873,15 +1443,17 @@ impl OnlineSession {
             )]
             let tolerance = (MatchmakingConfig::default().tolerance(waited) * 100.0).round() as u32;
             QueueCard {
-                dungeon: dungeon_name(&ticket.dungeon_id),
+                dungeon: self.dungeon_name(&ticket.dungeon_id),
                 role: ticket.role,
                 character: ticket.character_name.clone(),
                 waited_seconds: u64::try_from(waited / engine_realm::SECOND).unwrap_or(0),
                 tolerance_percent: tolerance,
+                matched: ticket.matched,
             }
         });
         let me = self.mirror.my_account_id().map(str::to_owned);
         let party = self.mirror.party.as_ref().map(|party| {
+            let owner = party.key_owner.as_deref();
             let members = self
                 .mirror
                 .members
@@ -890,9 +1462,16 @@ impl OnlineSession {
                     account_id: m.account_id.clone(),
                     character: m.character_name.clone(),
                     player: m.display_name.clone(),
+                    class: self
+                        .catalog
+                        .character(&m.definition_id)
+                        .map(|definition| definition.class.clone())
+                        .unwrap_or_default(),
                     role: m.role,
                     level: m.level,
                     gear_score: m.gear_score,
+                    key_level: (m.key_dungeon_id == party.dungeon_id && m.key_level >= 1)
+                        .then_some(m.key_level),
                     ready: match m.ready {
                         ReadyResponse::Pending => ReadyState::Waiting,
                         ReadyResponse::Accepted => ReadyState::Ready,
@@ -900,6 +1479,7 @@ impl OnlineSession {
                     },
                     present: m.present,
                     leader: party.leader.as_deref() == Some(m.account_id.as_str()),
+                    owner: owner == Some(m.account_id.as_str()),
                     me: me.as_deref() == Some(m.account_id.as_str()),
                 })
                 .collect();
@@ -908,7 +1488,21 @@ impl OnlineSession {
             #[allow(clippy::cast_precision_loss, reason = "microsecond spans")]
             let fraction = left as f32 / timeout.max(1) as f32;
             PartyCard {
-                dungeon: dungeon_name(&party.dungeon_id),
+                dungeon: self.dungeon_name(&party.dungeon_id),
+                description: self
+                    .catalog
+                    .dungeon(&party.dungeon_id)
+                    .map(|d| d.description.clone())
+                    .unwrap_or_default(),
+                key_level: party.key_level,
+                key_owner: owner.and_then(|account| {
+                    self.mirror
+                        .members
+                        .iter()
+                        .find(|m| m.account_id == account)
+                        .map(|m| m.character_name.clone())
+                }),
+                i_own_key: owner.is_some() && owner == me.as_deref(),
                 members,
                 i_lead: self.mirror.i_lead(),
                 i_answered: self.answered_party == Some(party.id)
@@ -920,6 +1514,40 @@ impl OnlineSession {
                 fraction_left: fraction,
             }
         });
+        let completion = self
+            .mirror
+            .instance
+            .as_ref()
+            .filter(|instance| {
+                matches!(
+                    instance.state,
+                    InstanceState::Completed | InstanceState::Failed
+                )
+            })
+            .and_then(|instance| {
+                let summary = self
+                    .mirror
+                    .run_summary
+                    .as_ref()
+                    .filter(|summary| summary.instance_id == instance.id)?;
+                Some(CompletionCard {
+                    success: summary.success,
+                    dungeon: summary.dungeon_name.clone(),
+                    key_level: summary.key_level,
+                    key_owner: summary.key_owner,
+                    key_level_after: summary.key_level_after,
+                    duration_seconds: u64::try_from(summary.duration_us / engine_realm::SECOND)
+                        .unwrap_or(0),
+                    experience: summary.experience,
+                    resources: summary
+                        .resources
+                        .iter()
+                        .map(|(id, amount)| (self.resource_name(id), *amount))
+                        .collect(),
+                    loot: self.loot_line(summary, instance.state),
+                    returning: self.returning == Some(instance.id),
+                })
+            });
         let countdown = self.mirror.instance.as_ref().and_then(|instance| {
             let ends = instance.countdown_ends_at?;
             match (Countdown { ends_at: ends }).display(now) {
@@ -956,10 +1584,14 @@ impl OnlineSession {
             screen,
             connection,
             account: self.session.as_ref().map(|s| s.display_name.clone()),
-            busy: self.busy.clone(),
+            busy: self.busy_text(screen),
             error: self.error.clone(),
             characters,
             selected_character: self.selected_character,
+            intro: self.intro.clone(),
+            hub: (screen == Screen::Hub).then(|| self.hub_card()).flatten(),
+            workshop: (screen == Screen::Workshop).then(|| self.workshop_card()),
+            completion,
             dungeons,
             selected_dungeon: self.selected_dungeon,
             selected_role: self.selected_role,
@@ -1075,13 +1707,18 @@ impl OnlineSession {
             if self.world.instance.is_some() {
                 self.leave_world(simulation, extractor);
             }
+            // Out of an instance the player stands in the hub.
+            self.sync_hub(simulation);
             return;
         };
 
         // Entering.
         if self.world.instance != Some(instance.id) {
+            // The hub's dummies and barrier are gone before the server's world is laid in.
+            self.leave_hub(simulation);
             self.leave_world(simulation, extractor);
             self.world.instance = Some(instance.id);
+            self.run_start = self.selected_character_summary().map(character_mark);
             log::info!("online: entering instance {}", instance.id);
             // The server runs this fight; the local simulation predicts movement and
             // presents what the server decides.
@@ -1095,7 +1732,7 @@ impl OnlineSession {
                 .collect();
             for id in strays {
                 simulation.party_mut().leave(id);
-                simulation.world_mut().despawn(id);
+                simulation.despawn_enemy(id);
             }
             if let Some(me) = self.mirror.me() {
                 place_player(simulation, me.position, me.yaw);
@@ -1114,6 +1751,7 @@ impl OnlineSession {
                 self.directives.push(Directive::SetHero(hero));
             }
         }
+        self.world.completed |= instance.state == InstanceState::Completed;
         if self.world.prediction.is_none()
             && let Some(me) = self.mirror.me()
         {
@@ -1235,7 +1873,7 @@ impl OnlineSession {
             .collect();
         for key in gone {
             if let Some(monster) = self.world.monsters.remove(&key) {
-                simulation.world_mut().despawn(monster.entity);
+                simulation.despawn_enemy(monster.entity);
             }
         }
         for (key, monster) in &monsters {
@@ -1578,7 +2216,7 @@ impl OnlineSession {
         simulation: &mut Simulation,
         extractor: &mut engine_presentation::RenderExtractor,
     ) {
-        if self.world.instance.is_some() && self.run_completed() && self.loot_watch.is_none() {
+        if self.world.instance.is_some() && self.world.completed && self.loot_watch.is_none() {
             // Whatever was never taken from the chest is mailed when the instance goes.
             let held = self.held_now();
             self.watch_loot(held);
@@ -1589,7 +2227,7 @@ impl OnlineSession {
             simulation.world_mut().despawn(remote.entity);
         }
         for (_, monster) in std::mem::take(&mut self.world.monsters) {
-            simulation.world_mut().despawn(monster.entity);
+            simulation.despawn_enemy(monster.entity);
         }
         if simulation.is_remote_authority() {
             simulation.set_remote_authority(false);
@@ -1606,6 +2244,267 @@ impl OnlineSession {
             log::info!("online: left the instance");
         }
         self.world = WorldLink::default();
+        self.returning = None;
+    }
+
+    // --- the hub ---------------------------------------------------------------------
+
+    /// Stands the hub up or takes it down so it matches the screen: it exists on every page
+    /// from the hub through the party screens (the world shows behind them), and not on the
+    /// title, sign-in or character pages, nor in an instance.
+    fn sync_hub(&mut self, simulation: &mut Simulation) {
+        match (hub_screen(self.view.screen), self.hub.is_some()) {
+            (true, false) => self.enter_hub(simulation),
+            (false, true) => self.leave_hub(simulation),
+            _ => {}
+        }
+    }
+
+    /// The start area as a place to practise: the player at the dungeon's first spawn point
+    /// with full health, a lone dummy ahead, a group of three nearby and a friendly dummy to
+    /// heal, all under local authority, and the start barrier standing so the area is bounded.
+    fn enter_hub(&mut self, simulation: &mut Simulation) {
+        let Some(dungeon) = self.catalog.dungeons().first().cloned() else {
+            return;
+        };
+        let point = dungeon.spawn_point(0);
+        let spawn = Vec3::new(point.position[0], point.position[1], point.position[2]);
+        // Whatever the level was built with, and whatever was left from before, gives way.
+        let player = simulation.player().entity;
+        let strays: Vec<EntityId> = (0..simulation.world().slot_count())
+            .filter_map(|slot| simulation.world().id_at(slot))
+            .filter(|id| *id != player)
+            .collect();
+        for id in strays {
+            simulation.party_mut().leave(id);
+            simulation.despawn_enemy(id);
+        }
+        let layout = hub_layout(spawn, point.yaw);
+        let mut entities = vec![
+            simulation
+                .world_mut()
+                .spawn(EntityDesc::dummy(layout.single, HUB_DUMMY_HEALTH)),
+        ];
+        let config = ArenaConfig {
+            group_count: 3,
+            group_center: layout.group_center,
+            dummy_health: HUB_DUMMY_HEALTH,
+            ..ArenaConfig::default()
+        };
+        spawn_group(simulation.world_mut(), &config, &mut entities);
+        let healing = spawn_healing_dummy(
+            simulation.world_mut(),
+            layout.healing,
+            HUB_HEALING_DUMMY_HEALTH,
+        );
+        simulation.party_mut().join(healing);
+        entities.push(healing);
+
+        let [min, max] = [dungeon.start_barrier.min(), dungeon.start_barrier.max()]
+            .map(|corner| Vec3::new(corner[0], corner[1], corner[2]));
+        let world = simulation.collision_world_mut();
+        let barrier = Some(world.add_box(min, max, "hub barrier"));
+        world.rebuild_broad_phase();
+
+        // Full health first (a restore also sends a body back to where it was created), then
+        // arrive at the spawn point: a teleport the camera snaps to, not a run it follows.
+        simulation.world_mut().restore(player);
+        let from = simulation.player_position();
+        place_player(simulation, spawn, point.yaw);
+        simulation.world_mut().reset_history(player);
+        let tick = simulation.tick_count();
+        simulation.inject_event(CombatEvent::Teleported {
+            entity: player,
+            from,
+            to: spawn,
+            tick,
+        });
+        simulation.set_player_spawn(spawn, point.yaw);
+        simulation.cancel_cast();
+        simulation.select_nearest_target();
+        self.hub = Some(HubWorld { entities, barrier });
+        log::info!("online: the hub stands");
+    }
+
+    /// Takes the hub's dummies and barrier out of the simulation.
+    fn leave_hub(&mut self, simulation: &mut Simulation) {
+        let Some(hub) = self.hub.take() else {
+            return;
+        };
+        for id in hub.entities {
+            simulation.party_mut().leave(id);
+            simulation.world_mut().despawn(id);
+        }
+        if let Some(barrier) = hub.barrier {
+            let world = simulation.collision_world_mut();
+            world.remove_static(barrier);
+            world.rebuild_broad_phase();
+        }
+        log::info!("online: the hub is taken down");
+    }
+}
+
+/// The title screen's words, bundled with the game.
+const INTRO_JSON: &str = include_str!("../../../assets/catalog/intro.json");
+
+/// How long a request may wait for its answer before the interface stops showing it.
+const BUSY_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// Health of the hub's training dummies: a full rotation does not delete one.
+const HUB_DUMMY_HEALTH: f32 = 200_000.0;
+
+/// Health of the hub's friendly dummy.
+const HUB_HEALING_DUMMY_HEALTH: f32 = 2_000_000.0;
+
+/// Reads the title screen's words. Any field that is missing or empty keeps the default, and a
+/// file that is not JSON at all is all defaults.
+fn parse_intro(text: &str) -> IntroCard {
+    let mut intro = IntroCard::default();
+    let Ok(document) = serde_json::from_str::<serde_json::Value>(text) else {
+        log::warn!("online: the intro text is not valid JSON; using the defaults");
+        return intro;
+    };
+    let string = |key: &str| {
+        document
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+            .map(str::to_owned)
+    };
+    if let Some(title) = string("title") {
+        intro.title = title;
+    }
+    if let Some(subtitle) = string("subtitle") {
+        intro.subtitle = subtitle;
+    }
+    if let Some(label) = string("continue_label") {
+        intro.continue_label = label;
+    }
+    let lore: Vec<String> = document
+        .get("lore")
+        .and_then(serde_json::Value::as_array)
+        .map(|paragraphs| {
+            paragraphs
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .map(str::trim)
+                .filter(|paragraph| !paragraph.is_empty())
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default();
+    if !lore.is_empty() {
+        intro.lore = lore;
+    }
+    intro
+}
+
+/// Which screen the server state and the player's own place put them on.
+///
+/// The server decides what it can (an instance, a party's stage), so a reconnect lands where
+/// the game is; `stage` is only the player's place among the pages the server has no opinion
+/// on. The title comes first and only once, so it outranks everything until it is left.
+fn route(signed_in: bool, stage: Screen, mirror: &RealmMirror) -> Screen {
+    if !signed_in {
+        return if stage == Screen::Title {
+            Screen::Title
+        } else {
+            Screen::Login
+        };
+    }
+    if stage == Screen::Title {
+        return Screen::Title;
+    }
+    if mirror.instance.is_some() {
+        return Screen::InWorld;
+    }
+    if let Some(party) = &mirror.party {
+        match party.state {
+            PartyState::ReadyCheck => return Screen::ReadyCheck,
+            PartyState::ChoosingKey => return Screen::KeySelect,
+            // Between the start and the instance appearing the party page waits.
+            PartyState::Ready | PartyState::Starting | PartyState::InDungeon => {
+                return Screen::Party;
+            }
+            PartyState::Completed | PartyState::Failed | PartyState::Disbanded => {}
+        }
+    }
+    // A ticket is the hub with the queue panel; the pages opened from the hub stay.
+    if mirror.ticket.is_some()
+        && !matches!(stage, Screen::Dungeons | Screen::Roles | Screen::Workshop)
+    {
+        return Screen::Hub;
+    }
+    match stage {
+        Screen::Login | Screen::Title => Screen::Characters,
+        other => other,
+    }
+}
+
+/// Whether the local simulation holds the hub on `screen`: from the hub through the party
+/// pages, the world stands behind them.
+fn hub_screen(screen: Screen) -> bool {
+    matches!(
+        screen,
+        Screen::Hub
+            | Screen::Dungeons
+            | Screen::Roles
+            | Screen::Workshop
+            | Screen::ReadyCheck
+            | Screen::KeySelect
+            | Screen::Party
+    )
+}
+
+/// Whether the realm has visibly answered the request `kind` is waiting on.
+fn busy_settled(kind: BusyKind, mirror: &RealmMirror) -> bool {
+    let state = mirror.party.as_ref().map(|party| party.state);
+    match kind {
+        BusyKind::LeaveQueue => mirror.ticket.is_none(),
+        BusyKind::JoinQueue => mirror.ticket.is_some() || mirror.party.is_some(),
+        BusyKind::InsertKey => state != Some(PartyState::ChoosingKey),
+        BusyKind::WithdrawKey => state != Some(PartyState::Ready),
+        BusyKind::Start => mirror.instance.is_some() || state != Some(PartyState::Ready),
+        BusyKind::LeaveParty => mirror.party.is_none(),
+        // Answered by their own events.
+        BusyKind::Characters | BusyKind::Workshop | BusyKind::SignOut | BusyKind::SignIn => false,
+    }
+}
+
+/// Whether a run's result changes the character (so there is something to wait for).
+fn expects_rewards(summary: &RunSummaryInfo) -> bool {
+    summary.experience > 0
+        || !summary.resources.is_empty()
+        || summary.key_level_after != summary.key_level
+}
+
+/// What a result changes on a character.
+fn character_mark(character: &CharacterSummary) -> CharacterMark {
+    CharacterMark {
+        level: character.level,
+        experience: character.experience,
+        key_level: character.key.as_ref().map_or(0, |key| key.level),
+        resources: character.resources.iter().map(|(_, amount)| *amount).sum(),
+    }
+}
+
+/// Where the hub's dummies stand relative to the spawn point.
+struct HubLayout {
+    single: Vec3,
+    group_center: Vec3,
+    healing: Vec3,
+}
+
+/// The hub's dummies: one six metres ahead, a group off to the right, a friendly one to the
+/// left. "Ahead" is where the spawn point faces.
+fn hub_layout(spawn: Vec3, yaw: f32) -> HubLayout {
+    let forward = Vec3::new(-yaw.sin(), 0.0, -yaw.cos());
+    let right = Vec3::new(yaw.cos(), 0.0, -yaw.sin());
+    HubLayout {
+        single: spawn + forward * 6.0,
+        group_center: spawn + forward * 12.0 + right * 7.0,
+        healing: spawn + forward * 3.0 - right * 4.0,
     }
 }
 
@@ -1623,4 +2522,296 @@ fn unix_seconds() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(0))
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, reason = "test code asserts on known-good values")]
+mod tests {
+    use super::*;
+    use engine_net::MemoryTokenStore;
+    use engine_net::model::{InstanceInfo, PartyInfo, TicketInfo};
+
+    fn party(state: PartyState) -> PartyInfo {
+        PartyInfo {
+            id: 1,
+            dungeon_id: "graveyard_crypt".into(),
+            state,
+            leader: None,
+            key_owner: None,
+            key_level: 0,
+            ready_deadline: 0,
+            instance_id: None,
+        }
+    }
+
+    fn instance(state: InstanceState) -> InstanceInfo {
+        InstanceInfo {
+            id: 7,
+            dungeon_id: "graveyard_crypt".into(),
+            state,
+            countdown_ends_at: None,
+            barrier_open: false,
+        }
+    }
+
+    fn ticket() -> TicketInfo {
+        TicketInfo {
+            dungeon_id: "graveyard_crypt".into(),
+            role: Role::Dps,
+            character_name: "Ember".into(),
+            gear_score: 40,
+            enqueued_at: 0,
+            matched: false,
+        }
+    }
+
+    fn mirror_with(party_state: Option<PartyState>) -> RealmMirror {
+        RealmMirror {
+            party: party_state.map(party),
+            ..RealmMirror::default()
+        }
+    }
+
+    #[test]
+    fn a_fresh_launch_is_the_title_then_the_sign_in_form() {
+        let mirror = RealmMirror::default();
+        assert_eq!(route(false, Screen::Title, &mirror), Screen::Title);
+        // Signed in by a remembered session, the title still comes first.
+        assert_eq!(route(true, Screen::Title, &mirror), Screen::Title);
+        // Past the title, nobody signed in is on the form; logging out never returns to it.
+        assert_eq!(route(false, Screen::Login, &mirror), Screen::Login);
+        assert_eq!(route(false, Screen::Hub, &mirror), Screen::Login);
+        assert_eq!(route(true, Screen::Login, &mirror), Screen::Characters);
+    }
+
+    #[test]
+    fn the_players_own_place_is_kept_when_the_server_has_no_opinion() {
+        let mirror = RealmMirror::default();
+        for stage in [
+            Screen::Characters,
+            Screen::Hub,
+            Screen::Dungeons,
+            Screen::Roles,
+            Screen::Workshop,
+        ] {
+            assert_eq!(route(true, stage, &mirror), stage);
+        }
+    }
+
+    #[test]
+    fn the_party_decides_the_screen_by_its_state() {
+        for (state, screen) in [
+            (PartyState::ReadyCheck, Screen::ReadyCheck),
+            (PartyState::ChoosingKey, Screen::KeySelect),
+            (PartyState::Ready, Screen::Party),
+            (PartyState::Starting, Screen::Party),
+            (PartyState::InDungeon, Screen::Party),
+        ] {
+            let mirror = mirror_with(Some(state));
+            assert_eq!(route(true, Screen::Hub, &mirror), screen, "{state:?}");
+            // Wherever the player was looking, a reconnect lands on the party page.
+            assert_eq!(route(true, Screen::Dungeons, &mirror), screen, "{state:?}");
+        }
+        // A party that is over leaves the player where they were.
+        for state in [
+            PartyState::Completed,
+            PartyState::Failed,
+            PartyState::Disbanded,
+        ] {
+            assert_eq!(
+                route(true, Screen::Hub, &mirror_with(Some(state))),
+                Screen::Hub
+            );
+        }
+    }
+
+    #[test]
+    fn a_ticket_is_the_hub_and_an_instance_is_the_world() {
+        let queued = RealmMirror {
+            ticket: Some(ticket()),
+            ..RealmMirror::default()
+        };
+        // A reconnect with a ticket lands in the hub, whatever page the player was on...
+        assert_eq!(route(true, Screen::Characters, &queued), Screen::Hub);
+        assert_eq!(route(true, Screen::Hub, &queued), Screen::Hub);
+        // ...but a page opened from the hub (the workshop) is not taken from them.
+        assert_eq!(route(true, Screen::Workshop, &queued), Screen::Workshop);
+        // An instance outranks everything, including a lingering ticket and the party.
+        let running = RealmMirror {
+            ticket: Some(ticket()),
+            party: Some(party(PartyState::InDungeon)),
+            instance: Some(instance(InstanceState::Active)),
+            ..RealmMirror::default()
+        };
+        assert_eq!(route(true, Screen::Hub, &running), Screen::InWorld);
+        for state in [InstanceState::Completed, InstanceState::Failed] {
+            let over = RealmMirror {
+                instance: Some(instance(state)),
+                ..RealmMirror::default()
+            };
+            assert_eq!(route(true, Screen::Hub, &over), Screen::InWorld);
+        }
+        // Signed out, nothing the realm says matters.
+        assert_eq!(route(false, Screen::Hub, &running), Screen::Login);
+    }
+
+    #[test]
+    fn the_hub_stands_behind_the_pages_opened_from_it() {
+        for screen in [
+            Screen::Hub,
+            Screen::Dungeons,
+            Screen::Roles,
+            Screen::Workshop,
+            Screen::ReadyCheck,
+            Screen::KeySelect,
+            Screen::Party,
+        ] {
+            assert!(hub_screen(screen), "{screen:?}");
+        }
+        for screen in [
+            Screen::Title,
+            Screen::Login,
+            Screen::Characters,
+            Screen::InWorld,
+        ] {
+            assert!(!hub_screen(screen), "{screen:?}");
+        }
+    }
+
+    #[test]
+    fn a_request_is_settled_by_what_the_realm_shows() {
+        let none = RealmMirror::default();
+        assert!(busy_settled(BusyKind::LeaveQueue, &none));
+        let queued = RealmMirror {
+            ticket: Some(ticket()),
+            ..RealmMirror::default()
+        };
+        assert!(!busy_settled(BusyKind::LeaveQueue, &queued));
+        assert!(busy_settled(BusyKind::JoinQueue, &queued));
+        assert!(!busy_settled(BusyKind::JoinQueue, &none));
+
+        let choosing = mirror_with(Some(PartyState::ChoosingKey));
+        assert!(!busy_settled(BusyKind::InsertKey, &choosing));
+        let ready = mirror_with(Some(PartyState::Ready));
+        assert!(busy_settled(BusyKind::InsertKey, &ready));
+        assert!(!busy_settled(BusyKind::WithdrawKey, &ready));
+        assert!(busy_settled(BusyKind::WithdrawKey, &choosing));
+        assert!(!busy_settled(BusyKind::Start, &ready));
+        assert!(busy_settled(
+            BusyKind::Start,
+            &mirror_with(Some(PartyState::Starting))
+        ));
+        assert!(!busy_settled(BusyKind::LeaveParty, &ready));
+        assert!(busy_settled(BusyKind::LeaveParty, &none));
+        // Answered by their own events, never by the mirror.
+        assert!(!busy_settled(BusyKind::Workshop, &none));
+        assert!(!busy_settled(BusyKind::SignIn, &none));
+    }
+
+    #[test]
+    fn the_intro_falls_back_field_by_field() {
+        let default = IntroCard::default();
+        // The file the game ships with parses.
+        let shipped = parse_intro(INTRO_JSON);
+        assert!(!shipped.title.is_empty() && !shipped.lore.is_empty());
+        // Not JSON at all: all defaults.
+        assert_eq!(parse_intro("{ nope"), default);
+        // Wrong types and empty strings keep the default for that field only.
+        let partial = parse_intro(
+            r#"{"title":"  MY GAME ","subtitle":"","lore":[1,"  ","One."],"continue_label":7}"#,
+        );
+        assert_eq!(partial.title, "MY GAME");
+        assert_eq!(partial.subtitle, default.subtitle);
+        assert_eq!(partial.lore, vec!["One.".to_owned()]);
+        assert_eq!(partial.continue_label, default.continue_label);
+    }
+
+    #[test]
+    fn a_result_is_waited_for_only_when_it_changes_the_character() {
+        let summary = |experience, resources: Vec<(String, u32)>, after| RunSummaryInfo {
+            instance_id: 7,
+            dungeon_id: "graveyard_crypt".into(),
+            dungeon_name: "Graveyard Crypt".into(),
+            success: experience > 0,
+            key_level: 3,
+            key_owner: true,
+            key_level_after: after,
+            duration_us: 0,
+            experience,
+            resources,
+            loot_item: String::new(),
+        };
+        assert!(expects_rewards(&summary(300, vec![], 3)));
+        assert!(expects_rewards(&summary(
+            0,
+            vec![("crypt_dust".into(), 4)],
+            3
+        )));
+        assert!(expects_rewards(&summary(0, vec![], 4)));
+        // A failure changes nothing: there is nothing to wait for.
+        assert!(!expects_rewards(&summary(0, vec![], 3)));
+    }
+
+    #[test]
+    fn the_hub_dummies_stand_ahead_of_the_spawn() {
+        let spawn = Vec3::new(0.0, 0.0, -8.0);
+        // Yaw zero faces -Z.
+        let layout = hub_layout(spawn, 0.0);
+        assert!((layout.single - Vec3::new(0.0, 0.0, -14.0)).length() < 1e-4);
+        assert!(layout.group_center.z < layout.single.z);
+        assert!(layout.group_center.x > 0.0, "the group is to the right");
+        assert!(layout.healing.x < 0.0, "the friendly dummy is to the left");
+        // Turning the spawn turns the layout with it, and keeps the distances.
+        let turned = hub_layout(spawn, std::f32::consts::FRAC_PI_2);
+        assert!(((turned.single - spawn).length() - 6.0).abs() < 1e-4);
+        assert!(turned.single.x < spawn.x - 5.0);
+    }
+
+    #[test]
+    fn the_hub_is_stood_up_and_taken_down_without_leaving_anything_behind() {
+        let endpoints = RealmEndpoints::resolve(None).expect("the default endpoints are valid");
+        let mut session = OnlineSession::start(
+            endpoints,
+            Box::new(MemoryTokenStore::default()),
+            DevScript::default(),
+        )
+        .expect("the session starts");
+        // The level the client builds online: a player and the scene's own dummies.
+        let mut simulation = engine_game::arena::training_arena(&ArenaConfig::default());
+        let statics = simulation.collision_world().len();
+        // A monster left from an instance: its runtime goes with it, or the dummy that takes
+        // its slot would inherit its name, rank and mind.
+        simulation.spawn_enemy_with(
+            EnemyKind::Melee,
+            Vec3::new(3.0, 0.0, -3.0),
+            0.0,
+            &EnemySpawnOptions {
+                name: Some("Lord Ashgrave".into()),
+                ..EnemySpawnOptions::default()
+            },
+        );
+
+        session.enter_hub(&mut simulation);
+        assert_eq!(simulation.enemies().count(), 0, "no enemy runtime survives");
+        // The player, a lone dummy, a group of three and a friendly dummy; the level's own
+        // dummies are gone.
+        assert_eq!(simulation.world().len(), 6);
+        assert_eq!(simulation.collision_world().len(), statics + 1);
+        assert!(!simulation.is_remote_authority(), "the hub is local");
+        let spawn = session
+            .catalog
+            .dungeons()
+            .first()
+            .expect("a dungeon")
+            .spawn_point(0);
+        let at = simulation.player_position();
+        assert!((at.x - spawn.position[0]).abs() < 1e-4 && (at.z - spawn.position[2]).abs() < 1e-4);
+
+        // Entering again changes nothing, and leaving removes exactly what was added.
+        session.leave_hub(&mut simulation);
+        assert_eq!(simulation.world().len(), 1, "only the player is left");
+        assert_eq!(simulation.collision_world().len(), statics);
+        session.leave_hub(&mut simulation);
+        assert_eq!(simulation.world().len(), 1);
+    }
 }

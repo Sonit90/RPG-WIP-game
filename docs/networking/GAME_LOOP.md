@@ -33,8 +33,9 @@ decides come from the realm mirror (`OnlineSession::screen`), so a reconnect lan
 ```text
 Title ─► Login ─► Characters ─► Hub ◄────────────────────────────────┐
                                  │ Dungeon Finder (Dungeons ─► Roles)  │
+                                 │ Salvage & Exchange (Workshop)       │
                                  ▼                                     │
-                    ticket ─► Queue (hub stays playable, panel shows)  │
+                    ticket ─► Hub + queue panel (stays playable)       │
            party ReadyCheck ─► ReadyCheck (match proposal)             │
           party ChoosingKey ─► KeySelect                               │
                 party Ready ─► Party (leader = key owner: Start)       │
@@ -150,6 +151,13 @@ combat code as offline). Nothing done in the hub is persistent except through AP
 (equipment, salvage, exchange), so it needs no server simulation. While queued the player keeps
 playing in the hub; the queue panel shows dungeon, role, state and elapsed time (from the
 ticket's server `enqueued_at`).
+
+The hub is built and taken down by `OnlineSession::sync_hub` (`engine-app/src/online.rs`) from the
+screen the client is on, not by directives: it stands behind the Hub and every page opened from it
+(Dungeon Finder, Workshop, ready check, key selection, party) and is gone before an instance is
+entered. Enemies are removed with `Simulation::despawn_enemy`, never with the world's `despawn`:
+the latter leaves the enemy's runtime in its slot, and the next entity to take the slot (a hub
+dummy) would inherit its name, rank and mind.
 
 **Known limitation:** the hub reuses the dungeon level's geometry (the renderer loads one
 environment per process). A dedicated hub scene needs runtime scene switching — a separate

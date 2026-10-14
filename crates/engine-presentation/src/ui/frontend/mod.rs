@@ -9,10 +9,16 @@
 //! ```
 //!
 //! The screens never decide anything about the realm. Which screen shows is the view's
-//! `screen`, chosen by the app from what the *server* says (a ticket exists → Queue, a party in
-//! its ready check → ReadyCheck ...), so a reconnect lands on the right screen by construction.
-//! The only state kept here is the interface's own: what is typed in the login fields, which
-//! field has focus, whether the sign-in form is in "create account" mode.
+//! `screen`, chosen by the app from what the *server* says (a party in its ready check →
+//! ReadyCheck, a party choosing its key → KeySelect ...), so a reconnect lands on the right
+//! screen by construction. The only state kept here is the interface's own: what is typed in
+//! the login fields, which field has focus, whether the sign-in form is in "create account"
+//! mode.
+//!
+//! Two screens are not full-screen front-ends but overlays on the playable world: the
+//! [`Screen::Hub`] (the player's panel, and the queue panel while a ticket exists) and
+//! [`Screen::InWorld`] (the countdown, the leave control and, once a run ends, the completion
+//! panel). Only the rectangles they draw take the pointer.
 //!
 //! Layout is a pure function of the view, the viewport and the UI scale; `update` and `draw`
 //! both call it, so what is clicked is always what was drawn.
@@ -29,23 +35,38 @@ pub use text_field::{FieldKeys, FieldOutcome, TextField};
 /// Which screen is up.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Screen {
-    /// Sign in or create an account.
+    /// The game's name and a little lore, before anything else. Once per launch.
     #[default]
+    Title,
+    /// Sign in or create an account.
     Login,
     /// Choose a character.
     Characters,
+    /// The hub: the playable start area with the player's panel (and the queue panel while
+    /// searching) over it.
+    Hub,
     /// Choose a dungeon.
     Dungeons,
     /// Choose a role.
     Roles,
-    /// Searching for a group.
-    Queue,
+    /// Salvage bag items and exchange resources.
+    Workshop,
     /// "Dungeon found": accept or decline.
     ReadyCheck,
-    /// The party, waiting for its leader.
+    /// The party is choosing whose key to use.
+    KeySelect,
+    /// The party, waiting for its leader (the key's owner).
     Party,
     /// In the dungeon: no full-screen interface, only overlays.
     InWorld,
+}
+
+impl Screen {
+    /// Whether the screen is drawn over the playable world instead of covering it.
+    #[must_use]
+    pub fn is_overlay(self) -> bool {
+        matches!(self, Self::Hub | Self::InWorld)
+    }
 }
 
 /// How good some status is.
@@ -80,6 +101,147 @@ pub struct CharacterCard {
     pub gear_score: u32,
     /// Items worn.
     pub equipped: usize,
+    /// The dungeon key it holds.
+    pub key: Option<KeyCard>,
+    /// Resources held, all kinds together.
+    pub resources: u64,
+}
+
+/// A dungeon key, as the cards show it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeyCard {
+    /// The dungeon it opens.
+    pub dungeon: String,
+    /// Its level.
+    pub level: u32,
+}
+
+impl PartyCard {
+    /// The level of the local player's key, when it opens this party's dungeon.
+    #[must_use]
+    pub fn my_key(&self) -> Option<u32> {
+        self.members.iter().find(|m| m.me).and_then(|m| m.key_level)
+    }
+}
+
+impl KeyCard {
+    /// "Graveyard Crypt key . level 3".
+    fn text(&self) -> String {
+        format!("{} key \u{b7} level {}", self.dungeon, self.level)
+    }
+}
+
+/// The title screen's words, from `assets/catalog/intro.json`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IntroCard {
+    /// The game's name.
+    pub title: String,
+    /// A line under it.
+    pub subtitle: String,
+    /// Paragraphs of lore.
+    pub lore: Vec<String>,
+    /// What the button says.
+    pub continue_label: String,
+}
+
+impl Default for IntroCard {
+    fn default() -> Self {
+        Self {
+            title: "SHADOWS OF THE CRYPT".into(),
+            subtitle: "Online".into(),
+            lore: vec![
+                "The dead of the old churchyard no longer rest. Beneath the stones a crypt \
+                 keeps opening, and every key that fits it leads a little deeper."
+                    .into(),
+            ],
+            continue_label: "Continue".into(),
+        }
+    }
+}
+
+/// The hub's panel: who the player is, what they hold, what they may do.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HubCard {
+    /// Character name.
+    pub name: String,
+    /// Class.
+    pub class: String,
+    /// Level.
+    pub level: u32,
+    /// Experience into the level.
+    pub experience: u64,
+    /// Experience the level needs (0 at the cap).
+    pub next_level: u64,
+    /// The dungeon key.
+    pub key: Option<KeyCard>,
+    /// Resources held: display name and amount.
+    pub resources: Vec<(String, u64)>,
+    /// Whether the Dungeon Finder may be opened (not while searching or saving rewards).
+    pub can_find_dungeon: bool,
+    /// Whether the character may be changed (not while queued or in a party).
+    pub can_change_character: bool,
+}
+
+/// One bag cell on the workshop screen.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BagRow {
+    /// The bag cell, as the API addresses it.
+    pub index: u32,
+    /// Item name.
+    pub name: String,
+    /// How many.
+    pub quantity: u16,
+    /// Item level.
+    pub item_level: u16,
+    /// What salvaging one yields, as text ("+8 Crypt Dust").
+    pub yields: String,
+}
+
+/// One exchange on the workshop screen.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExchangeRow {
+    /// The catalog id.
+    pub id: String,
+    /// "10 Crypt Dust for 1 Ember Shard".
+    pub label: String,
+    /// Whether the character can pay for one trade.
+    pub affordable: bool,
+}
+
+/// The salvage and exchange screen.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct WorkshopCard {
+    /// Bag items that can be broken down.
+    pub bag: Vec<BagRow>,
+    /// Resources held: display name and amount.
+    pub resources: Vec<(String, u64)>,
+    /// Available exchanges.
+    pub exchanges: Vec<ExchangeRow>,
+}
+
+/// How a run ended, for the panel over the world.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompletionCard {
+    /// Whether the boss fell.
+    pub success: bool,
+    /// Dungeon name.
+    pub dungeon: String,
+    /// The key level the run used.
+    pub key_level: u32,
+    /// Whether the local player's key was the one used.
+    pub key_owner: bool,
+    /// The owner's key level after the run.
+    pub key_level_after: u32,
+    /// How long it took.
+    pub duration_seconds: u64,
+    /// Experience granted.
+    pub experience: u32,
+    /// Resources granted: display name and amount.
+    pub resources: Vec<(String, u32)>,
+    /// The loot line: the item's name, or a prompt to open the chest. `None`: no loot.
+    pub loot: Option<String>,
+    /// Whether Return to Hub was pressed and the rewards are being saved.
+    pub returning: bool,
 }
 
 /// One dungeon on the selection screen.
@@ -116,6 +278,8 @@ pub struct QueueCard {
     pub waited_seconds: u64,
     /// Current matchmaking range, +/- percent.
     pub tolerance_percent: u32,
+    /// A group was found and the ready check is opening.
+    pub matched: bool,
 }
 
 /// A member's ready-check state.
@@ -138,30 +302,44 @@ pub struct MemberRow {
     pub character: String,
     /// Player display name.
     pub player: String,
+    /// Class.
+    pub class: String,
     /// Role.
     pub role: Role,
     /// Level.
     pub level: u32,
     /// Gear score.
     pub gear_score: u32,
+    /// The level of the key they brought, when it opens this party's dungeon.
+    pub key_level: Option<u32>,
     /// Ready-check answer.
     pub ready: ReadyState,
     /// Connected.
     pub present: bool,
     /// Leads the party.
     pub leader: bool,
+    /// Their key is the one in the lock.
+    pub owner: bool,
     /// Is the local player.
     pub me: bool,
 }
 
 /// The local player's party.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct PartyCard {
     /// Dungeon name.
     pub dungeon: String,
+    /// A sentence about it.
+    pub description: String,
+    /// The key level in the lock (0 while none is).
+    pub key_level: u32,
+    /// Whose key it is, by character name.
+    pub key_owner: Option<String>,
+    /// Whether the local player's key is the one in the lock.
+    pub i_own_key: bool,
     /// Members, in party order.
     pub members: Vec<MemberRow>,
-    /// Whether the local player leads.
+    /// Whether the local player leads (the key's owner).
     pub i_lead: bool,
     /// Whether the local player has answered the ready check.
     pub i_answered: bool,
@@ -197,6 +375,14 @@ pub struct FrontEndView {
     pub characters: Vec<CharacterCard>,
     /// Which is selected.
     pub selected_character: Option<usize>,
+    /// The title screen's words.
+    pub intro: IntroCard,
+    /// The hub panel, while a character is chosen.
+    pub hub: Option<HubCard>,
+    /// The salvage and exchange screen.
+    pub workshop: Option<WorkshopCard>,
+    /// The panel over the world once a run has ended.
+    pub completion: Option<CompletionCard>,
     /// The dungeon catalog.
     pub dungeons: Vec<DungeonCard>,
     /// Which is selected.
@@ -238,10 +424,20 @@ pub enum FrontEndAction {
         /// Keep the session.
         remember: bool,
     },
+    /// Leave the title screen.
+    ContinueFromTitle,
     /// Sign out.
     Logout,
     /// Leave the game.
     Quit,
+    /// Open the Dungeon Finder from the hub.
+    OpenDungeonFinder,
+    /// Open the character sheet.
+    OpenEquipment,
+    /// Open the salvage and exchange screen.
+    OpenWorkshop,
+    /// Back to the character list.
+    ChangeCharacter,
     /// Highlight a character.
     SelectCharacter(usize),
     /// Continue with the highlighted character.
@@ -262,14 +458,22 @@ pub enum FrontEndAction {
     Accept,
     /// Decline the ready check.
     Decline,
-    /// Start the dungeon (leader).
+    /// Put the local player's key in the lock.
+    InsertKey,
+    /// Take the key back out (its owner).
+    WithdrawKey,
+    /// Start the dungeon (the key's owner).
     StartDungeon,
     /// Remove a member (leader).
     Kick(String),
-    /// Hand over leadership (leader).
-    MakeLeader(String),
     /// Leave the party.
     LeaveParty,
+    /// Leave a finished run and return to the hub.
+    ReturnToHub,
+    /// Break down the bag item in this cell.
+    Salvage(u32),
+    /// Make this exchange once.
+    Exchange(String),
 }
 
 /// The frame's input, as the front-end reads it.
@@ -306,15 +510,25 @@ enum Hit {
     Character(usize),
     Continue,
     Back,
+    DungeonFinder,
+    Equipment,
+    Workshop,
+    ChangeCharacter,
     Dungeon(usize),
     Role(Role),
     LeaveQueue,
     Accept,
     Decline,
+    InsertKey,
+    WithdrawKey,
     Start,
     LeaveParty,
+    ReturnToHub,
     Kick(String),
-    MakeLeader(String),
+    Salvage(u32),
+    Exchange(String),
+    /// A panel with nothing to press: it only keeps the pointer from the camera.
+    Panel,
 }
 
 /// The front-end's own state: typed text, focus, form mode.
@@ -340,6 +554,8 @@ impl Default for FrontEndUi {
 
 const BACKDROP_TOP: UiColor = [0.015, 0.02, 0.035, 0.90];
 const BACKDROP_BOTTOM: UiColor = [0.04, 0.03, 0.05, 0.96];
+const TITLE_TOP: UiColor = [0.01, 0.015, 0.03, 0.55];
+const TITLE_BOTTOM: UiColor = [0.02, 0.015, 0.03, 0.82];
 const PANEL_TOP: UiColor = [0.11, 0.12, 0.16, 0.97];
 const PANEL_BOTTOM: UiColor = [0.06, 0.065, 0.09, 0.97];
 const GOLD: UiColor = [0.96, 0.82, 0.48, 1.0];
@@ -452,7 +668,7 @@ impl FrontEndUi {
     /// Whether the pointer is over front-end interface (the app then keeps it from the camera).
     #[must_use]
     pub fn wants_pointer(&self, view: &FrontEndView, viewport: (u32, u32), scale: UiScale) -> bool {
-        view.screen != Screen::InWorld
+        !view.screen.is_overlay()
             || self
                 .layout(view, viewport, scale)
                 .at(self.pointer)
@@ -535,9 +751,17 @@ impl FrontEndUi {
             }
         }
 
+        if view.screen == Screen::Title
+            && input.typed.iter().any(|c| matches!(c, '\r' | '\n' | ' '))
+        {
+            actions.push(FrontEndAction::ContinueFromTitle);
+        }
+
         if input.escape {
             match view.screen {
-                Screen::Dungeons | Screen::Roles => actions.push(FrontEndAction::Back),
+                Screen::Dungeons | Screen::Roles | Screen::Workshop => {
+                    actions.push(FrontEndAction::Back);
+                }
                 Screen::Login if self.register => self.register = false,
                 _ => {}
             }
@@ -569,11 +793,22 @@ impl FrontEndUi {
             Hit::Logout => actions.push(FrontEndAction::Logout),
             Hit::Character(index) => actions.push(FrontEndAction::SelectCharacter(index)),
             Hit::Continue => actions.push(match view.screen {
+                Screen::Title => FrontEndAction::ContinueFromTitle,
                 Screen::Characters => FrontEndAction::ConfirmCharacter,
                 Screen::Dungeons => FrontEndAction::ConfirmDungeon,
                 _ => FrontEndAction::JoinQueue,
             }),
             Hit::Back => actions.push(FrontEndAction::Back),
+            Hit::DungeonFinder => actions.push(FrontEndAction::OpenDungeonFinder),
+            Hit::Equipment => actions.push(FrontEndAction::OpenEquipment),
+            Hit::Workshop => actions.push(FrontEndAction::OpenWorkshop),
+            Hit::ChangeCharacter => actions.push(FrontEndAction::ChangeCharacter),
+            Hit::InsertKey => actions.push(FrontEndAction::InsertKey),
+            Hit::WithdrawKey => actions.push(FrontEndAction::WithdrawKey),
+            Hit::ReturnToHub => actions.push(FrontEndAction::ReturnToHub),
+            Hit::Salvage(index) => actions.push(FrontEndAction::Salvage(index)),
+            Hit::Exchange(id) => actions.push(FrontEndAction::Exchange(id)),
+            Hit::Panel => {}
             Hit::Dungeon(index) => actions.push(FrontEndAction::SelectDungeon(index)),
             Hit::Role(role) => actions.push(FrontEndAction::SelectRole(role)),
             Hit::LeaveQueue => actions.push(FrontEndAction::LeaveQueue),
@@ -582,7 +817,6 @@ impl FrontEndUi {
             Hit::Start => actions.push(FrontEndAction::StartDungeon),
             Hit::LeaveParty => actions.push(FrontEndAction::LeaveParty),
             Hit::Kick(account) => actions.push(FrontEndAction::Kick(account)),
-            Hit::MakeLeader(account) => actions.push(FrontEndAction::MakeLeader(account)),
         }
         actions
     }
@@ -598,8 +832,8 @@ impl FrontEndUi {
         let (w, h) = (viewport.0 as f32, viewport.1 as f32);
         let px = |v: f32| scale.px(v);
 
-        // Top bar: account and sign-out, on every signed-in screen but the world.
-        if view.account.is_some() && !matches!(view.screen, Screen::Login | Screen::InWorld) {
+        // Top bar: account and sign-out, on every signed-in full-screen page.
+        if shows_account(view) {
             layout.add(
                 Hit::Logout,
                 UiRect::new(w - px(140.0), px(18.0), px(120.0), px(34.0)),
@@ -607,6 +841,10 @@ impl FrontEndUi {
         }
 
         match view.screen {
+            Screen::Title => {
+                layout.add(Hit::Continue, title_continue(w, h, scale));
+                layout.add(Hit::Quit, quit_button(h, scale));
+            }
             Screen::Login => {
                 let panel = login_panel(w, h, scale, self.register);
                 let mut y = panel.y + px(118.0);
@@ -641,10 +879,7 @@ impl FrontEndUi {
                     Hit::ToggleRegister,
                     UiRect::new(panel.x + px(36.0), y, panel.width - px(72.0), px(36.0)),
                 );
-                layout.add(
-                    Hit::Quit,
-                    UiRect::new(px(20.0), h - px(54.0), px(110.0), px(34.0)),
-                );
+                layout.add(Hit::Quit, quit_button(h, scale));
             }
             Screen::Characters => {
                 for (index, rect) in character_cards(view.characters.len(), w, h, scale)
@@ -657,6 +892,28 @@ impl FrontEndUi {
                 let _ = back;
                 if view.selected_character.is_some() {
                     layout.add(Hit::Continue, next);
+                }
+            }
+            Screen::Hub => {
+                if let Some(hub) = &view.hub {
+                    let rects = hub_rects(hub.resources.len(), view.busy.is_some(), w, h, scale);
+                    layout.add(Hit::Panel, rects.panel);
+                    if hub.can_find_dungeon {
+                        layout.add(Hit::DungeonFinder, rects.finder);
+                    }
+                    layout.add(Hit::Equipment, rects.equipment);
+                    layout.add(Hit::Workshop, rects.workshop);
+                    if hub.can_change_character {
+                        layout.add(Hit::ChangeCharacter, rects.change);
+                    }
+                    layout.add(Hit::Logout, rects.logout);
+                }
+                if let Some(queue) = &view.queue {
+                    let (panel, leave) = queue_panel(h, scale);
+                    layout.add(Hit::Panel, panel);
+                    if !queue.matched {
+                        layout.add(Hit::LeaveQueue, leave);
+                    }
                 }
             }
             Screen::Dungeons => {
@@ -689,97 +946,101 @@ impl FrontEndUi {
                 }
                 let (back, next) = footer_buttons(w, h, scale);
                 layout.add(Hit::Back, back);
-                if view.selected_role.is_some() {
+                if view.selected_role.is_some() && view.busy.is_none() {
                     layout.add(Hit::Continue, next);
                 }
             }
-            Screen::Queue => {
-                let panel = centered(w, h, px(520.0), px(330.0));
-                layout.add(
-                    Hit::LeaveQueue,
-                    UiRect::new(
-                        panel.x + panel.width * 0.5 - px(110.0),
-                        panel.bottom() - px(70.0),
-                        px(220.0),
-                        px(44.0),
-                    ),
-                );
-            }
-            Screen::ReadyCheck => {
-                let panel = centered(w, h, px(560.0), px(400.0));
-                let answered = view.party.as_ref().is_some_and(|p| p.i_answered);
-                if !answered {
-                    layout.add(
-                        Hit::Accept,
-                        UiRect::new(
-                            panel.x + px(40.0),
-                            panel.bottom() - px(76.0),
-                            px(220.0),
-                            px(48.0),
-                        ),
-                    );
-                    layout.add(
-                        Hit::Decline,
-                        UiRect::new(
-                            panel.right() - px(260.0),
-                            panel.bottom() - px(76.0),
-                            px(220.0),
-                            px(48.0),
-                        ),
-                    );
-                }
-            }
-            Screen::Party => {
-                let panel = centered(w, h, px(760.0), px(470.0));
-                if let Some(party) = &view.party {
-                    for (index, member) in party.members.iter().enumerate() {
-                        let row = member_row(panel, index, scale);
-                        if party.i_lead && !member.me {
+            Screen::Workshop => {
+                let (bag, exchange) = dungeon_panels(w, h, scale);
+                if let Some(workshop) = &view.workshop {
+                    let idle = view.busy.is_none();
+                    for (index, row) in workshop
+                        .bag
+                        .iter()
+                        .enumerate()
+                        .take(workshop_rows(bag, scale))
+                    {
+                        if idle {
                             layout.add(
-                                Hit::MakeLeader(member.account_id.clone()),
-                                UiRect::new(
-                                    row.right() - px(236.0),
-                                    row.y + px(14.0),
-                                    px(120.0),
-                                    px(34.0),
-                                ),
-                            );
-                            layout.add(
-                                Hit::Kick(member.account_id.clone()),
-                                UiRect::new(
-                                    row.right() - px(106.0),
-                                    row.y + px(14.0),
-                                    px(90.0),
-                                    px(34.0),
-                                ),
+                                Hit::Salvage(row.index),
+                                workshop_button(workshop_row(bag, index, scale), scale),
                             );
                         }
                     }
-                    if party.i_lead {
-                        layout.add(
-                            Hit::Start,
-                            UiRect::new(
-                                panel.right() - px(260.0),
-                                panel.bottom() - px(72.0),
-                                px(220.0),
-                                px(48.0),
-                            ),
-                        );
+                    for (index, row) in workshop
+                        .exchanges
+                        .iter()
+                        .enumerate()
+                        .take(workshop_rows(exchange, scale))
+                    {
+                        if row.affordable && idle {
+                            layout.add(
+                                Hit::Exchange(row.id.clone()),
+                                workshop_button(workshop_row(exchange, index, scale), scale),
+                            );
+                        }
                     }
                 }
-                layout.add(
-                    Hit::LeaveParty,
-                    UiRect::new(
-                        panel.x + px(40.0),
-                        panel.bottom() - px(72.0),
-                        px(180.0),
-                        px(48.0),
-                    ),
-                );
+                let (back, _) = footer_buttons(w, h, scale);
+                layout.add(Hit::Back, back);
+            }
+            Screen::ReadyCheck => {
+                let panel = ready_panel(w, h, scale);
+                let answered = view.party.as_ref().is_some_and(|p| p.i_answered);
+                if !answered {
+                    let (accept, decline) = ready_buttons(panel, scale);
+                    layout.add(Hit::Accept, accept);
+                    layout.add(Hit::Decline, decline);
+                }
+            }
+            Screen::KeySelect => {
+                let panel = key_panel(w, h, scale);
+                let (leave, insert) = key_buttons(panel, scale);
+                if let Some(party) = &view.party
+                    && view.busy.is_none()
+                {
+                    if party.my_key().is_some() {
+                        layout.add(Hit::InsertKey, insert);
+                    }
+                    layout.add(Hit::LeaveParty, leave);
+                }
+            }
+            Screen::Party => {
+                let panel = party_panel(w, h, scale);
+                if let Some(party) = &view.party {
+                    let idle = view.busy.is_none();
+                    for (index, member) in party.members.iter().enumerate() {
+                        let row = member_row(panel, index, PARTY_ROWS_TOP, scale);
+                        if party.i_lead && !member.me && idle {
+                            layout.add(
+                                Hit::Kick(member.account_id.clone()),
+                                kick_button(row, scale),
+                            );
+                        }
+                    }
+                    let buttons = party_buttons(panel, scale);
+                    if party.i_own_key && idle {
+                        layout.add(Hit::WithdrawKey, buttons.withdraw);
+                    }
+                    if start_enabled(view, party) {
+                        layout.add(Hit::Start, buttons.start);
+                    }
+                    if idle {
+                        layout.add(Hit::LeaveParty, buttons.leave);
+                    }
+                }
             }
             Screen::InWorld => {
-                // A small "leave" control while in the dungeon.
-                layout.add(Hit::LeaveParty, in_world_leave(w, scale));
+                if let Some(card) = &view.completion {
+                    let (panel, button) = completion_rects(card, w, h, scale);
+                    layout.add(Hit::Panel, panel);
+                    if !card.returning {
+                        layout.add(Hit::ReturnToHub, button);
+                    }
+                } else {
+                    // A small "leave" control while in the dungeon.
+                    layout.add(Hit::LeaveParty, in_world_leave(w, scale));
+                }
             }
         }
         layout
@@ -809,26 +1070,33 @@ impl FrontEndUi {
         };
         let mut ctx = ctx;
 
-        if view.screen != Screen::InWorld {
-            ctx.list.panel(
-                UiRect::new(0.0, 0.0, w, h),
-                0.0,
-                BACKDROP_TOP,
-                BACKDROP_BOTTOM,
-            );
+        if !view.screen.is_overlay() {
+            // The title lets the world show through; every other page covers it.
+            let (top, bottom) = if view.screen == Screen::Title {
+                (TITLE_TOP, TITLE_BOTTOM)
+            } else {
+                (BACKDROP_TOP, BACKDROP_BOTTOM)
+            };
+            ctx.list
+                .panel(UiRect::new(0.0, 0.0, w, h), 0.0, top, bottom);
             ctx.top_bar(view, w);
         }
         match view.screen {
+            Screen::Title => draw_title(&mut ctx, view, w, h, self.clock),
             Screen::Login => self.draw_login(&mut ctx, view, w, h),
             Screen::Characters => draw_characters(&mut ctx, view, w, h),
+            Screen::Hub => draw_hub(&mut ctx, view, w, h, self.clock),
             Screen::Dungeons => draw_dungeons(&mut ctx, view, w, h),
             Screen::Roles => draw_roles(&mut ctx, view, w, h),
-            Screen::Queue => draw_queue(&mut ctx, view, w, h, self.clock),
+            Screen::Workshop => draw_workshop(&mut ctx, view, w, h),
             Screen::ReadyCheck => draw_ready_check(&mut ctx, view, w, h),
+            Screen::KeySelect => draw_key_select(&mut ctx, view, w, h),
             Screen::Party => draw_party(&mut ctx, view, w, h),
             Screen::InWorld => draw_in_world(&mut ctx, view, w, h),
         }
+        // Over the world a refusal is a toast; a full page keeps the sentence on screen.
         if let Some(error) = &view.error
+            && !view.screen.is_overlay()
             && view.screen != Screen::Login
         {
             ctx.banner(error, StatusLevel::Bad, w, h - ctx.scale.px(120.0));
@@ -990,7 +1258,7 @@ impl FrontEndUi {
             }
         }
         ctx.button(
-            UiRect::new(px(20.0), h - px(54.0), px(110.0), px(34.0)),
+            quit_button(h, ctx.scale),
             "Quit",
             ButtonKind::Secondary,
             &Hit::Quit,
@@ -1177,7 +1445,7 @@ impl Painter<'_> {
             );
         }
         if let Some(account) = &view.account
-            && !matches!(view.screen, Screen::Login | Screen::InWorld)
+            && shows_account(view)
         {
             self.text(
                 (w - px(160.0), px(25.0)),
@@ -1336,12 +1604,14 @@ fn footer_buttons(w: f32, h: f32, scale: UiScale) -> (UiRect, UiRect) {
 
 fn character_cards(count: usize, w: f32, h: f32, scale: UiScale) -> Vec<UiRect> {
     let px = |v: f32| scale.px(v);
-    let card = (px(280.0), px(380.0));
+    let card = (px(280.0), px(440.0));
     let gap = px(28.0);
     let per_row = (((w - px(80.0)) + gap) / (card.0 + gap)).floor().max(1.0) as usize;
     let rows = count.div_ceil(per_row).max(1);
     let total_height = rows as f32 * card.1 + (rows as f32 - 1.0) * gap;
-    let top = ((h - total_height) * 0.5).max(px(170.0));
+    // Centred, but never under the heading nor over the footer's Enter World button.
+    let lowest = (h - px(112.0) - total_height).max(px(150.0));
+    let top = ((h - total_height) * 0.5).clamp(px(150.0), lowest);
     (0..count)
         .map(|index| {
             let row = index / per_row;
@@ -1393,13 +1663,208 @@ fn role_tiles(w: f32, h: f32, scale: UiScale) -> Vec<UiRect> {
         .collect()
 }
 
-fn member_row(panel: UiRect, index: usize, scale: UiScale) -> UiRect {
+/// Where the first member's row starts inside the party panel (below the key information).
+const PARTY_ROWS_TOP: f32 = 196.0;
+/// Where the first member's row starts inside the key-selection panel.
+const KEY_ROWS_TOP: f32 = 150.0;
+
+fn member_row(panel: UiRect, index: usize, top: f32, scale: UiScale) -> UiRect {
     let px = |v: f32| scale.px(v);
     UiRect::new(
         panel.x + px(30.0),
-        panel.y + px(100.0) + index as f32 * px(76.0),
+        panel.y + px(top) + index as f32 * px(76.0),
         panel.width - px(60.0),
         px(64.0),
+    )
+}
+
+fn kick_button(row: UiRect, scale: UiScale) -> UiRect {
+    let px = |v: f32| scale.px(v);
+    UiRect::new(
+        row.right() - px(106.0),
+        row.y + px(14.0),
+        px(90.0),
+        px(34.0),
+    )
+}
+
+/// Whether the account name and sign-out sit in the top bar.
+fn shows_account(view: &FrontEndView) -> bool {
+    view.account.is_some()
+        && !matches!(
+            view.screen,
+            Screen::Title | Screen::Login | Screen::Hub | Screen::InWorld
+        )
+}
+
+/// Whether the local player may start the dungeon now: the key's owner, with everyone here.
+fn start_enabled(view: &FrontEndView, party: &PartyCard) -> bool {
+    party.i_lead
+        && party.i_own_key
+        && party.members.iter().all(|m| m.present)
+        && view.busy.is_none()
+}
+
+fn quit_button(h: f32, scale: UiScale) -> UiRect {
+    let px = |v: f32| scale.px(v);
+    UiRect::new(px(20.0), h - px(54.0), px(110.0), px(34.0))
+}
+
+fn title_continue(w: f32, h: f32, scale: UiScale) -> UiRect {
+    let px = |v: f32| scale.px(v);
+    UiRect::new(w * 0.5 - px(150.0), h - px(190.0), px(300.0), px(56.0))
+}
+
+fn ready_panel(w: f32, h: f32, scale: UiScale) -> UiRect {
+    centered(w, h, scale.px(640.0), scale.px(400.0))
+}
+
+fn ready_buttons(panel: UiRect, scale: UiScale) -> (UiRect, UiRect) {
+    let px = |v: f32| scale.px(v);
+    (
+        UiRect::new(
+            panel.x + px(40.0),
+            panel.bottom() - px(76.0),
+            px(220.0),
+            px(48.0),
+        ),
+        UiRect::new(
+            panel.right() - px(260.0),
+            panel.bottom() - px(76.0),
+            px(220.0),
+            px(48.0),
+        ),
+    )
+}
+
+fn key_panel(w: f32, h: f32, scale: UiScale) -> UiRect {
+    centered(w, h, scale.px(760.0), scale.px(500.0))
+}
+
+/// Leave Party and Insert Key.
+fn key_buttons(panel: UiRect, scale: UiScale) -> (UiRect, UiRect) {
+    let px = |v: f32| scale.px(v);
+    (
+        UiRect::new(
+            panel.x + px(40.0),
+            panel.bottom() - px(72.0),
+            px(180.0),
+            px(48.0),
+        ),
+        UiRect::new(
+            panel.right() - px(320.0),
+            panel.bottom() - px(72.0),
+            px(280.0),
+            px(48.0),
+        ),
+    )
+}
+
+fn party_panel(w: f32, h: f32, scale: UiScale) -> UiRect {
+    centered(w, h, scale.px(760.0), scale.px(560.0))
+}
+
+struct PartyButtons {
+    leave: UiRect,
+    withdraw: UiRect,
+    start: UiRect,
+}
+
+fn party_buttons(panel: UiRect, scale: UiScale) -> PartyButtons {
+    let px = |v: f32| scale.px(v);
+    let y = panel.bottom() - px(72.0);
+    PartyButtons {
+        leave: UiRect::new(panel.x + px(40.0), y, px(180.0), px(48.0)),
+        withdraw: UiRect::new(panel.x + px(240.0), y, px(190.0), px(48.0)),
+        start: UiRect::new(panel.right() - px(260.0), y, px(220.0), px(48.0)),
+    }
+}
+
+/// The hub panel and its five buttons.
+struct HubRects {
+    panel: UiRect,
+    finder: UiRect,
+    equipment: UiRect,
+    workshop: UiRect,
+    change: UiRect,
+    logout: UiRect,
+}
+
+/// The hub panel in the bottom-right corner (clear of the minimap above it and the action bars
+/// beside it), tall enough for `resource_lines` resources and, while something is in flight, a
+/// status line.
+fn hub_rects(resource_lines: usize, status_line: bool, w: f32, h: f32, scale: UiScale) -> HubRects {
+    let px = |v: f32| scale.px(v);
+    let lines = resource_lines.max(1) as f32;
+    let width = px(280.0);
+    let x = w - width - px(20.0);
+    let status = if status_line { px(22.0) } else { 0.0 };
+    let to_buttons = px(112.0) + lines * px(19.0) + px(8.0) + status;
+    let height = to_buttons + px(38.0) * 5.0 - px(6.0) + px(14.0);
+    let y = h - height - px(20.0);
+    let button = |i: f32| {
+        UiRect::new(
+            x + px(16.0),
+            y + to_buttons + i * px(38.0),
+            width - px(32.0),
+            px(32.0),
+        )
+    };
+    HubRects {
+        panel: UiRect::new(x, y, width, height),
+        finder: button(0.0),
+        equipment: button(1.0),
+        workshop: button(2.0),
+        change: button(3.0),
+        logout: button(4.0),
+    }
+}
+
+/// The queue panel in the bottom-left corner of the hub, and its Leave Queue button.
+fn queue_panel(h: f32, scale: UiScale) -> (UiRect, UiRect) {
+    let px = |v: f32| scale.px(v);
+    let panel = UiRect::new(px(20.0), h - px(104.0) - px(20.0), px(380.0), px(104.0));
+    let leave = UiRect::new(
+        panel.right() - px(150.0),
+        panel.bottom() - px(48.0),
+        px(134.0),
+        px(34.0),
+    );
+    (panel, leave)
+}
+
+/// How many rows of the workshop's lists fit in `panel`.
+fn workshop_rows(panel: UiRect, scale: UiScale) -> usize {
+    let rows = ((panel.height - scale.px(96.0)) / scale.px(44.0)).floor();
+    if rows < 1.0 {
+        return 0;
+    }
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "a small positive row count"
+    )]
+    let rows = rows as usize;
+    rows
+}
+
+fn workshop_row(panel: UiRect, index: usize, scale: UiScale) -> UiRect {
+    let px = |v: f32| scale.px(v);
+    UiRect::new(
+        panel.x + px(12.0),
+        panel.y + px(64.0) + px(44.0) * index as f32,
+        panel.width - px(24.0),
+        px(38.0),
+    )
+}
+
+fn workshop_button(row: UiRect, scale: UiScale) -> UiRect {
+    let px = |v: f32| scale.px(v);
+    UiRect::new(
+        row.right() - px(124.0),
+        row.y + px(4.0),
+        px(112.0),
+        px(30.0),
     )
 }
 
@@ -1526,42 +1991,42 @@ fn draw_characters(ctx: &mut Painter<'_>, view: &FrontEndView, w: f32, h: f32) {
                 engine_game::character::EquipSlot::COUNT
             ),
         );
+        // The dungeon key, and what the character holds.
+        match &card.key {
+            Some(key) => ctx.text(
+                (cx, rect.y + px(312.0)),
+                &key.text(),
+                GOLD,
+                UiFont::SemiBold,
+                14.0,
+                TextAlign::Center,
+            ),
+            None => ctx.text(
+                (cx, rect.y + px(312.0)),
+                "No dungeon key",
+                FAINT,
+                UiFont::Medium,
+                14.0,
+                TextAlign::Center,
+            ),
+        }
+        line(
+            ctx,
+            rect.y + px(338.0),
+            "Resources",
+            &card.resources.to_string(),
+        );
         // Experience bar.
         let bar = UiRect::new(
             rect.x + px(28.0),
-            rect.y + px(326.0),
+            rect.y + px(390.0),
             rect.width - px(56.0),
             px(10.0),
         );
-        #[allow(
-            clippy::cast_precision_loss,
-            reason = "experience values are far below 2^24"
-        )]
-        let fraction = if card.next_level == 0 {
-            1.0
-        } else {
-            card.experience as f32 / card.next_level as f32
-        };
-        ctx.list.panel(
-            bar,
-            px(5.0),
-            [0.05, 0.05, 0.07, 1.0],
-            [0.05, 0.05, 0.07, 1.0],
-        );
-        ctx.list.panel(
-            bar.fraction_of_width(fraction.clamp(0.0, 1.0)),
-            px(5.0),
-            [0.55, 0.40, 0.95, 1.0],
-            [0.38, 0.26, 0.75, 1.0],
-        );
-        let xp = if card.next_level == 0 {
-            "Max level".to_owned()
-        } else {
-            format!("{} / {} XP", card.experience, card.next_level)
-        };
+        xp_bar(ctx, bar, card.experience, card.next_level);
         ctx.text(
-            (cx, rect.y + px(342.0)),
-            &xp,
+            (cx, rect.y + px(406.0)),
+            &xp_text(card.experience, card.next_level),
             FAINT,
             UiFont::Medium,
             13.0,
@@ -1885,10 +2350,265 @@ fn draw_roles(ctx: &mut Painter<'_>, view: &FrontEndView, w: f32, h: f32) {
     );
 }
 
-fn draw_queue(ctx: &mut Painter<'_>, view: &FrontEndView, w: f32, h: f32, clock: f32) {
+/// An experience bar filled to `experience / next_level` (full at the cap, `next_level` 0).
+fn xp_bar(ctx: &mut Painter<'_>, bar: UiRect, experience: u64, next_level: u64) {
+    let px = ctx.scale.px(1.0);
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "experience values are far below 2^24"
+    )]
+    let fraction = if next_level == 0 {
+        1.0
+    } else {
+        experience as f32 / next_level as f32
+    };
+    ctx.list.panel(
+        bar,
+        5.0 * px,
+        [0.05, 0.05, 0.07, 1.0],
+        [0.05, 0.05, 0.07, 1.0],
+    );
+    ctx.list.panel(
+        bar.fraction_of_width(fraction.clamp(0.0, 1.0)),
+        5.0 * px,
+        [0.55, 0.40, 0.95, 1.0],
+        [0.38, 0.26, 0.75, 1.0],
+    );
+}
+
+fn xp_text(experience: u64, next_level: u64) -> String {
+    if next_level == 0 {
+        "Max level".to_owned()
+    } else {
+        format!("{experience} / {next_level} XP")
+    }
+}
+
+fn draw_title(ctx: &mut Painter<'_>, view: &FrontEndView, w: f32, h: f32, clock: f32) {
     let scale = ctx.scale;
     let px = move |v: f32| scale.px(v);
-    let panel = centered(w, h, px(520.0), px(330.0));
+    let intro = &view.intro;
+    let top = h * 0.14;
+    ctx.text_styled(
+        (w * 0.5, top),
+        &intro.title,
+        GOLD,
+        UiFont::Display,
+        56.0,
+        TextAlign::Center,
+    );
+    ctx.text(
+        (w * 0.5, top + px(84.0)),
+        &intro.subtitle,
+        DIM,
+        UiFont::Medium,
+        20.0,
+        TextAlign::Center,
+    );
+    let width = (w - px(80.0)).min(px(720.0));
+    let mut y = top + px(160.0);
+    for paragraph in &intro.lore {
+        for line in UiFont::Regular.wrap(paragraph, px(18.0), width) {
+            ctx.text(
+                (w * 0.5, y),
+                &line,
+                TEXT,
+                UiFont::Regular,
+                18.0,
+                TextAlign::Center,
+            );
+            y += px(28.0);
+        }
+        y += px(14.0);
+    }
+    let button = title_continue(w, h, scale);
+    ctx.button(
+        button,
+        &intro.continue_label,
+        ButtonKind::Primary,
+        &Hit::Continue,
+        true,
+    );
+    // The hint breathes, so the page is seen to be waiting for the player.
+    let pulse = 0.55 + 0.45 * (clock * 2.4).sin().abs();
+    ctx.text(
+        (w * 0.5, button.bottom() + px(16.0)),
+        "or press Enter",
+        [DIM[0], DIM[1], DIM[2], pulse],
+        UiFont::Medium,
+        14.0,
+        TextAlign::Center,
+    );
+    if let Some(busy) = &view.busy {
+        ctx.text(
+            (w * 0.5, button.y - px(34.0)),
+            busy,
+            BUSY,
+            UiFont::Medium,
+            16.0,
+            TextAlign::Center,
+        );
+    }
+    ctx.button(
+        quit_button(h, scale),
+        "Quit",
+        ButtonKind::Secondary,
+        &Hit::Quit,
+        true,
+    );
+}
+
+fn draw_hub(ctx: &mut Painter<'_>, view: &FrontEndView, w: f32, h: f32, clock: f32) {
+    let scale = ctx.scale;
+    let px = move |v: f32| scale.px(v);
+    if let Some(hub) = &view.hub {
+        let rects = hub_rects(hub.resources.len(), view.busy.is_some(), w, h, scale);
+        let panel = rects.panel;
+        ctx.panel(panel);
+        let x = panel.x + px(16.0);
+        let width = panel.width - px(32.0);
+        ctx.text_styled(
+            (x, panel.y + px(10.0)),
+            &hub.name,
+            TEXT,
+            UiFont::SemiBold,
+            18.0,
+            TextAlign::Left,
+        );
+        ctx.text(
+            (x, panel.y + px(34.0)),
+            &format!("Level {} {}", hub.level, hub.class),
+            DIM,
+            UiFont::Medium,
+            13.0,
+            TextAlign::Left,
+        );
+        xp_bar(
+            ctx,
+            UiRect::new(x, panel.y + px(56.0), width, px(8.0)),
+            hub.experience,
+            hub.next_level,
+        );
+        ctx.text(
+            (x, panel.y + px(68.0)),
+            &xp_text(hub.experience, hub.next_level),
+            FAINT,
+            UiFont::Medium,
+            12.0,
+            TextAlign::Left,
+        );
+        match &hub.key {
+            Some(key) => ctx.text(
+                (x, panel.y + px(88.0)),
+                &key.text(),
+                GOLD,
+                UiFont::SemiBold,
+                14.0,
+                TextAlign::Left,
+            ),
+            None => ctx.text(
+                (x, panel.y + px(88.0)),
+                "No dungeon key",
+                FAINT,
+                UiFont::Medium,
+                14.0,
+                TextAlign::Left,
+            ),
+        }
+        let first = panel.y + px(112.0);
+        if hub.resources.is_empty() {
+            ctx.text(
+                (x, first),
+                "No resources yet",
+                FAINT,
+                UiFont::Medium,
+                13.0,
+                TextAlign::Left,
+            );
+        }
+        for (index, (name, amount)) in hub.resources.iter().enumerate() {
+            let y = first + px(19.0) * index as f32;
+            ctx.text((x, y), name, DIM, UiFont::Medium, 13.0, TextAlign::Left);
+            ctx.text(
+                (x + width, y),
+                &amount.to_string(),
+                TEXT,
+                UiFont::SemiBold,
+                13.0,
+                TextAlign::Right,
+            );
+        }
+        if let Some(busy) = &view.busy {
+            ctx.text(
+                (
+                    x,
+                    first + px(19.0) * hub.resources.len().max(1) as f32 + px(6.0),
+                ),
+                busy,
+                BUSY,
+                UiFont::Medium,
+                13.0,
+                TextAlign::Left,
+            );
+        }
+        ctx.button(
+            rects.finder,
+            "Dungeon Finder",
+            ButtonKind::Primary,
+            &Hit::DungeonFinder,
+            hub.can_find_dungeon,
+        );
+        ctx.button(
+            rects.equipment,
+            "Equipment",
+            ButtonKind::Secondary,
+            &Hit::Equipment,
+            true,
+        );
+        ctx.button(
+            rects.workshop,
+            "Salvage & Exchange",
+            ButtonKind::Secondary,
+            &Hit::Workshop,
+            true,
+        );
+        ctx.button(
+            rects.change,
+            "Change Character",
+            ButtonKind::Secondary,
+            &Hit::ChangeCharacter,
+            hub.can_change_character,
+        );
+        ctx.button(
+            rects.logout,
+            "Log Out",
+            ButtonKind::Secondary,
+            &Hit::Logout,
+            true,
+        );
+    }
+    if let Some(queue) = &view.queue {
+        draw_queue_panel(ctx, queue, h, clock);
+    }
+    if let Some((level, text)) = &view.connection
+        && *level != StatusLevel::Good
+    {
+        ctx.text(
+            (px(24.0), px(24.0)),
+            text,
+            status_color(*level),
+            UiFont::Medium,
+            14.0,
+            TextAlign::Left,
+        );
+    }
+}
+
+/// The queue ticket over the hub: where it is, for how long, and the way out.
+fn draw_queue_panel(ctx: &mut Painter<'_>, queue: &QueueCard, h: f32, clock: f32) {
+    let scale = ctx.scale;
+    let px = move |v: f32| scale.px(v);
+    let (panel, leave) = queue_panel(h, scale);
     ctx.panel(panel);
     #[allow(
         clippy::cast_possible_truncation,
@@ -1896,72 +2616,186 @@ fn draw_queue(ctx: &mut Painter<'_>, view: &FrontEndView, w: f32, h: f32, clock:
         reason = "a small animation phase"
     )]
     let dots = ".".repeat(((clock * 2.0) as usize % 3) + 1);
-    ctx.text_styled(
-        (w * 0.5, panel.y + px(28.0)),
-        &format!("Searching for a group{dots}"),
-        GOLD,
-        UiFont::Display,
-        26.0,
-        TextAlign::Center,
+    let (title, color) = if queue.matched {
+        ("Match found!".to_owned(), GOOD)
+    } else {
+        (format!("Searching{dots}"), GOLD)
+    };
+    ctx.text(
+        (panel.x + px(18.0), panel.y + px(12.0)),
+        &title,
+        color,
+        UiFont::SemiBold,
+        19.0,
+        TextAlign::Left,
     );
-    // A spinner: three orbiting dots.
-    let center = (w * 0.5, panel.y + px(110.0));
-    for i in 0..3 {
-        let angle = clock * 3.0 + i as f32 * std::f32::consts::TAU / 3.0;
-        ctx.list.disc(
-            (
-                center.0 + angle.cos() * px(20.0),
-                center.1 + angle.sin() * px(20.0),
-            ),
-            px(5.0),
-            GOLD,
-        );
-    }
-    if let Some(queue) = &view.queue {
-        let rows = [
-            ("Dungeon", queue.dungeon.clone()),
-            ("Character", queue.character.clone()),
-            ("Role", queue.role.name().to_owned()),
-            ("Time in queue", clock_text(queue.waited_seconds)),
-            (
-                "Matchmaking range",
-                format!("+/-{}% gear score", queue.tolerance_percent),
-            ),
-        ];
-        let mut y = panel.y + px(146.0);
-        for (label, value) in rows {
-            ctx.text(
-                (panel.x + px(48.0), y),
-                label,
-                DIM,
-                UiFont::Medium,
-                15.0,
-                TextAlign::Left,
-            );
-            ctx.text(
-                (panel.right() - px(48.0), y),
-                &value,
-                TEXT,
-                UiFont::SemiBold,
-                15.0,
-                TextAlign::Right,
-            );
-            y += px(22.0);
-        }
-    }
-    let leave = UiRect::new(
-        panel.x + panel.width * 0.5 - px(110.0),
-        panel.bottom() - px(70.0),
-        px(220.0),
-        px(44.0),
+    ctx.text(
+        (panel.x + px(18.0), panel.y + px(42.0)),
+        &format!("{} \u{b7} {}", queue.dungeon, queue.role.name()),
+        TEXT,
+        UiFont::Medium,
+        14.0,
+        TextAlign::Left,
+    );
+    ctx.text(
+        (panel.x + px(18.0), panel.y + px(66.0)),
+        &format!(
+            "In queue {} \u{b7} range +/-{}%",
+            clock_text(queue.waited_seconds),
+            queue.tolerance_percent
+        ),
+        DIM,
+        UiFont::Medium,
+        14.0,
+        TextAlign::Left,
     );
     ctx.button(
         leave,
         "Leave Queue",
         ButtonKind::Secondary,
         &Hit::LeaveQueue,
-        true,
+        !queue.matched,
     );
+}
+
+fn draw_workshop(ctx: &mut Painter<'_>, view: &FrontEndView, w: f32, h: f32) {
+    let scale = ctx.scale;
+    let px = move |v: f32| scale.px(v);
+    let empty = WorkshopCard::default();
+    let workshop = view.workshop.as_ref().unwrap_or(&empty);
+    let holding = if workshop.resources.is_empty() {
+        "You hold no resources yet.".to_owned()
+    } else {
+        let parts: Vec<String> = workshop
+            .resources
+            .iter()
+            .map(|(name, amount)| format!("{name} {amount}"))
+            .collect();
+        format!("Holding: {}", parts.join("  \u{b7}  "))
+    };
+    ctx.heading("SALVAGE & EXCHANGE", &holding, w);
+    let (bag, exchange) = dungeon_panels(w, h, scale);
+    ctx.panel(bag);
+    ctx.panel(exchange);
+    for (panel, title) in [(bag, "BAG"), (exchange, "EXCHANGE")] {
+        ctx.text(
+            (panel.x + px(20.0), panel.y + px(18.0)),
+            title,
+            GOLD,
+            UiFont::SemiBold,
+            17.0,
+            TextAlign::Left,
+        );
+    }
+    if workshop.bag.is_empty() {
+        ctx.text(
+            (bag.x + bag.width * 0.5, bag.y + px(90.0)),
+            "Your bag is empty.",
+            DIM,
+            UiFont::Medium,
+            16.0,
+            TextAlign::Center,
+        );
+    }
+    let visible = workshop_rows(bag, scale);
+    for (index, row) in workshop.bag.iter().enumerate().take(visible) {
+        let rect = workshop_row(bag, index, scale);
+        ctx.list.panel(
+            rect,
+            px(8.0),
+            [0.09, 0.10, 0.13, 1.0],
+            [0.09, 0.10, 0.13, 1.0],
+        );
+        let name = if row.quantity > 1 {
+            format!("{} x{}", row.name, row.quantity)
+        } else {
+            row.name.clone()
+        };
+        ctx.text(
+            (rect.x + px(12.0), rect.y + px(3.0)),
+            &name,
+            TEXT,
+            UiFont::SemiBold,
+            14.0,
+            TextAlign::Left,
+        );
+        ctx.text(
+            (rect.x + px(12.0), rect.y + px(21.0)),
+            &format!("Item level {} \u{b7} {}", row.item_level, row.yields),
+            DIM,
+            UiFont::Medium,
+            12.0,
+            TextAlign::Left,
+        );
+        ctx.button(
+            workshop_button(rect, scale),
+            "Salvage",
+            ButtonKind::Danger,
+            &Hit::Salvage(row.index),
+            view.busy.is_none(),
+        );
+    }
+    if workshop.bag.len() > visible {
+        ctx.text(
+            (bag.x + bag.width * 0.5, bag.bottom() - px(26.0)),
+            &format!("and {} more", workshop.bag.len() - visible),
+            FAINT,
+            UiFont::Medium,
+            13.0,
+            TextAlign::Center,
+        );
+    }
+    if workshop.exchanges.is_empty() {
+        ctx.text(
+            (exchange.x + exchange.width * 0.5, exchange.y + px(90.0)),
+            "No exchanges are offered.",
+            DIM,
+            UiFont::Medium,
+            16.0,
+            TextAlign::Center,
+        );
+    }
+    for (index, row) in workshop
+        .exchanges
+        .iter()
+        .enumerate()
+        .take(workshop_rows(exchange, scale))
+    {
+        let rect = workshop_row(exchange, index, scale);
+        ctx.list.panel(
+            rect,
+            px(8.0),
+            [0.09, 0.10, 0.13, 1.0],
+            [0.09, 0.10, 0.13, 1.0],
+        );
+        ctx.text(
+            (rect.x + px(12.0), rect.y + px(11.0)),
+            &row.label,
+            if row.affordable { TEXT } else { FAINT },
+            UiFont::SemiBold,
+            14.0,
+            TextAlign::Left,
+        );
+        ctx.button(
+            workshop_button(rect, scale),
+            "Exchange",
+            ButtonKind::Primary,
+            &Hit::Exchange(row.id.clone()),
+            row.affordable && view.busy.is_none(),
+        );
+    }
+    let (back, _) = footer_buttons(w, h, scale);
+    ctx.button(back, "Back", ButtonKind::Secondary, &Hit::Back, true);
+    if let Some(busy) = &view.busy {
+        ctx.text(
+            (w * 0.5 + px(140.0), back.y + px(15.0)),
+            busy,
+            BUSY,
+            UiFont::Medium,
+            16.0,
+            TextAlign::Left,
+        );
+    }
 }
 
 fn ready_label(state: ReadyState) -> (&'static str, UiColor) {
@@ -1975,7 +2809,7 @@ fn ready_label(state: ReadyState) -> (&'static str, UiColor) {
 fn draw_ready_check(ctx: &mut Painter<'_>, view: &FrontEndView, w: f32, h: f32) {
     let scale = ctx.scale;
     let px = move |v: f32| scale.px(v);
-    let panel = centered(w, h, px(560.0), px(400.0));
+    let panel = ready_panel(w, h, scale);
     ctx.list
         .glow(panel, px(16.0), px(40.0), [0.96, 0.78, 0.40, 0.20]);
     ctx.panel(panel);
@@ -1996,9 +2830,9 @@ fn draw_ready_check(ctx: &mut Painter<'_>, view: &FrontEndView, w: f32, h: f32) 
         20.0,
         TextAlign::Center,
     );
-    let mut y = panel.y + px(132.0);
+    let mut y = panel.y + px(128.0);
     for member in &party.members {
-        let x = panel.x + px(48.0);
+        let x = panel.x + px(36.0);
         ctx.role_chip(member.role, x, y);
         let name = if member.me {
             format!("{} (you)", member.character)
@@ -2013,6 +2847,23 @@ fn draw_ready_check(ctx: &mut Painter<'_>, view: &FrontEndView, w: f32, h: f32) 
             17.0,
             TextAlign::Left,
         );
+        let name_end = x + px(90.0) + UiFont::Medium.width(&name, px(17.0)) + px(10.0);
+        ctx.text(
+            (name_end, y + px(3.0)),
+            &member.class,
+            DIM,
+            UiFont::Medium,
+            14.0,
+            TextAlign::Left,
+        );
+        ctx.text(
+            (panel.right() - px(160.0), y + px(3.0)),
+            &format!("Lv {} \u{b7} GS {}", member.level, member.gear_score),
+            DIM,
+            UiFont::Medium,
+            14.0,
+            TextAlign::Right,
+        );
         let (label, color) = ready_label(member.ready);
         let label = if member.present {
             label
@@ -2021,7 +2872,7 @@ fn draw_ready_check(ctx: &mut Painter<'_>, view: &FrontEndView, w: f32, h: f32) 
         };
         let color = if member.present { color } else { BAD };
         ctx.text(
-            (panel.right() - px(48.0), y + px(1.0)),
+            (panel.right() - px(36.0), y + px(1.0)),
             label,
             color,
             UiFont::SemiBold,
@@ -2059,49 +2910,125 @@ fn draw_ready_check(ctx: &mut Painter<'_>, view: &FrontEndView, w: f32, h: f32) 
     if party.i_answered {
         ctx.text(
             (w * 0.5, panel.bottom() - px(64.0)),
-            "Waiting for the others...",
+            "Waiting for players...",
             DIM,
             UiFont::Medium,
             17.0,
             TextAlign::Center,
         );
     } else {
-        ctx.button(
-            UiRect::new(
-                panel.x + px(40.0),
-                panel.bottom() - px(76.0),
-                px(220.0),
-                px(48.0),
-            ),
-            "Accept",
-            ButtonKind::Primary,
-            &Hit::Accept,
-            true,
+        let (accept, decline) = ready_buttons(panel, scale);
+        ctx.button(accept, "Accept", ButtonKind::Primary, &Hit::Accept, true);
+        ctx.button(decline, "Decline", ButtonKind::Danger, &Hit::Decline, true);
+    }
+}
+
+/// One party member's row: role, name, class, level, gear score and their key.
+fn draw_member_row(ctx: &mut Painter<'_>, row: UiRect, member: &MemberRow, right_pad: f32) {
+    let scale = ctx.scale;
+    let px = move |v: f32| scale.px(v);
+    let fill = if member.me {
+        [0.15, 0.14, 0.11, 1.0]
+    } else {
+        [0.09, 0.10, 0.13, 1.0]
+    };
+    ctx.list.panel(row, px(10.0), fill, fill);
+    ctx.list.panel_stroke(
+        row,
+        px(10.0),
+        px(1.0),
+        if member.leader || member.owner {
+            SELECTED
+        } else {
+            [0.25, 0.26, 0.31, 1.0]
+        },
+    );
+    ctx.list.disc(
+        (row.x + px(22.0), row.y + row.height * 0.5),
+        px(6.0),
+        if member.present { GOOD } else { BAD },
+    );
+    ctx.role_chip(member.role, row.x + px(40.0), row.y + px(10.0));
+    let mut name = member.character.clone();
+    if member.me {
+        name.push_str("  (you)");
+    }
+    ctx.text(
+        (row.x + px(140.0), row.y + px(9.0)),
+        &name,
+        TEXT,
+        UiFont::SemiBold,
+        18.0,
+        TextAlign::Left,
+    );
+    let tag = match (member.leader, member.owner) {
+        (true, true) => Some("LEADER \u{b7} KEY OWNER"),
+        (true, false) => Some("LEADER"),
+        (false, true) => Some("KEY OWNER"),
+        (false, false) => None,
+    };
+    if let Some(tag) = tag {
+        let x = row.x + px(150.0) + UiFont::SemiBold.width(&name, px(18.0)) + px(14.0);
+        ctx.text(
+            (x, row.y + px(12.0)),
+            tag,
+            GOLD,
+            UiFont::SemiBold,
+            13.0,
+            TextAlign::Left,
         );
-        ctx.button(
-            UiRect::new(
-                panel.right() - px(260.0),
-                panel.bottom() - px(76.0),
-                px(220.0),
-                px(48.0),
-            ),
-            "Decline",
-            ButtonKind::Danger,
-            &Hit::Decline,
-            true,
+    }
+    ctx.text(
+        (row.x + px(40.0), row.y + px(36.0)),
+        &format!(
+            "{} \u{b7} Lv {} \u{b7} GS {} \u{b7} {}",
+            member.class, member.level, member.gear_score, member.player
+        ),
+        DIM,
+        UiFont::Medium,
+        14.0,
+        TextAlign::Left,
+    );
+    let right = row.right() - right_pad;
+    match member.key_level {
+        Some(level) => ctx.text(
+            (right, row.y + px(10.0)),
+            &format!("Key level {level}"),
+            GOLD,
+            UiFont::SemiBold,
+            15.0,
+            TextAlign::Right,
+        ),
+        None => ctx.text(
+            (right, row.y + px(11.0)),
+            "No key for this dungeon",
+            FAINT,
+            UiFont::Medium,
+            14.0,
+            TextAlign::Right,
+        ),
+    }
+    if !member.present {
+        ctx.text(
+            (right, row.y + px(36.0)),
+            "Disconnected",
+            BAD,
+            UiFont::SemiBold,
+            14.0,
+            TextAlign::Right,
         );
     }
 }
 
-fn draw_party(ctx: &mut Painter<'_>, view: &FrontEndView, w: f32, h: f32) {
+fn draw_key_select(ctx: &mut Painter<'_>, view: &FrontEndView, w: f32, h: f32) {
     let scale = ctx.scale;
     let px = move |v: f32| scale.px(v);
-    let panel = centered(w, h, px(760.0), px(470.0));
+    let panel = key_panel(w, h, scale);
     ctx.panel(panel);
     let Some(party) = &view.party else { return };
     ctx.text_styled(
         (panel.x + px(30.0), panel.y + px(24.0)),
-        "Your Party",
+        "Choose a Key",
         GOLD,
         UiFont::Display,
         30.0,
@@ -2115,120 +3042,177 @@ fn draw_party(ctx: &mut Painter<'_>, view: &FrontEndView, w: f32, h: f32) {
         17.0,
         TextAlign::Right,
     );
-    for (index, member) in party.members.iter().enumerate() {
-        let row = member_row(panel, index, ctx.scale);
-        let fill = if member.me {
-            [0.15, 0.14, 0.11, 1.0]
-        } else {
-            [0.09, 0.10, 0.13, 1.0]
-        };
-        ctx.list.panel(row, px(10.0), fill, fill);
-        ctx.list.panel_stroke(
-            row,
-            px(10.0),
-            px(1.0),
-            if member.leader {
-                SELECTED
-            } else {
-                [0.25, 0.26, 0.31, 1.0]
-            },
-        );
-        ctx.list.disc(
-            (row.x + px(22.0), row.y + row.height * 0.5),
-            px(6.0),
-            if member.present { GOOD } else { BAD },
-        );
-        ctx.role_chip(member.role, row.x + px(40.0), row.y + px(10.0));
-        let mut name = member.character.clone();
-        if member.me {
-            name.push_str("  (you)");
-        }
+    for (i, line) in UiFont::Regular
+        .wrap(
+            "Choose whose key to use. The key's owner leads the party and sets the difficulty.",
+            px(15.0),
+            panel.width - px(60.0),
+        )
+        .iter()
+        .enumerate()
+    {
         ctx.text(
-            (row.x + px(40.0), row.y + px(36.0)),
-            &format!(
-                "{} | Level {} | GS {}",
-                member.player, member.level, member.gear_score
-            ),
-            DIM,
+            (panel.x + px(30.0), panel.y + px(78.0) + px(22.0) * i as f32),
+            line,
+            TEXT,
+            UiFont::Regular,
+            15.0,
+            TextAlign::Left,
+        );
+    }
+    for (index, member) in party.members.iter().enumerate() {
+        draw_member_row(
+            ctx,
+            member_row(panel, index, KEY_ROWS_TOP, scale),
+            member,
+            px(20.0),
+        );
+    }
+    let (leave, insert) = key_buttons(panel, scale);
+    let mine = party.my_key();
+    let busy = view.busy.is_some();
+    ctx.button(
+        insert,
+        &mine.map_or_else(
+            || "Insert My Key".to_owned(),
+            |level| format!("Insert My Key (level {level})"),
+        ),
+        ButtonKind::Primary,
+        &Hit::InsertKey,
+        mine.is_some() && !busy,
+    );
+    ctx.button(
+        leave,
+        "Leave Party",
+        ButtonKind::Secondary,
+        &Hit::LeaveParty,
+        !busy,
+    );
+    let note = if let Some(busy) = &view.busy {
+        Some((busy.clone(), BUSY))
+    } else if mine.is_none() {
+        Some((format!("You have no key for {}.", party.dungeon), BAD))
+    } else {
+        None
+    };
+    if let Some((text, color)) = note {
+        ctx.text(
+            (panel.right() - px(40.0), panel.bottom() - px(100.0)),
+            &text,
+            color,
             UiFont::Medium,
+            15.0,
+            TextAlign::Right,
+        );
+    }
+}
+
+fn draw_party(ctx: &mut Painter<'_>, view: &FrontEndView, w: f32, h: f32) {
+    let scale = ctx.scale;
+    let px = move |v: f32| scale.px(v);
+    let panel = party_panel(w, h, scale);
+    ctx.panel(panel);
+    let Some(party) = &view.party else { return };
+    ctx.text_styled(
+        (panel.x + px(30.0), panel.y + px(24.0)),
+        "Your Party",
+        GOLD,
+        UiFont::Display,
+        30.0,
+        TextAlign::Left,
+    );
+    ctx.text(
+        (panel.right() - px(30.0), panel.y + px(34.0)),
+        &party.dungeon,
+        TEXT,
+        UiFont::SemiBold,
+        18.0,
+        TextAlign::Right,
+    );
+    for (i, line) in UiFont::Regular
+        .wrap(&party.description, px(14.0), panel.width - px(60.0))
+        .iter()
+        .take(2)
+        .enumerate()
+    {
+        ctx.text(
+            (panel.x + px(30.0), panel.y + px(72.0) + px(20.0) * i as f32),
+            line,
+            DIM,
+            UiFont::Regular,
             14.0,
             TextAlign::Left,
         );
+    }
+    ctx.text(
+        (panel.x + px(30.0), panel.y + px(122.0)),
+        &format!("Key level {}", party.key_level),
+        GOLD,
+        UiFont::SemiBold,
+        18.0,
+        TextAlign::Left,
+    );
+    if let Some(owner) = &party.key_owner {
         ctx.text(
-            (row.x + px(140.0), row.y + px(9.0)),
-            &name,
+            (panel.right() - px(30.0), panel.y + px(124.0)),
+            &format!("{owner}'s key"),
             TEXT,
             UiFont::SemiBold,
-            18.0,
-            TextAlign::Left,
+            16.0,
+            TextAlign::Right,
         );
-        if member.leader {
-            let x = row.x + px(150.0) + UiFont::SemiBold.width(&name, px(18.0)) + px(14.0);
-            ctx.text(
-                (x, row.y + px(12.0)),
-                "LEADER",
-                GOLD,
-                UiFont::SemiBold,
-                13.0,
-                TextAlign::Left,
-            );
-        }
-        if !member.present {
-            ctx.text(
-                (row.right() - px(250.0), row.y + px(22.0)),
-                "Disconnected",
-                BAD,
-                UiFont::SemiBold,
-                15.0,
-                TextAlign::Right,
-            );
-        }
-        if party.i_lead && !member.me {
+    }
+    let roles: Vec<&str> = party.members.iter().map(|m| m.role.name()).collect();
+    ctx.text(
+        (panel.x + px(30.0), panel.y + px(152.0)),
+        &format!("Roles: {}", roles.join(", ")),
+        DIM,
+        UiFont::Medium,
+        14.0,
+        TextAlign::Left,
+    );
+    for (index, member) in party.members.iter().enumerate() {
+        let row = member_row(panel, index, PARTY_ROWS_TOP, scale);
+        let kickable = party.i_lead && !member.me;
+        draw_member_row(
+            ctx,
+            row,
+            member,
+            if kickable { px(120.0) } else { px(20.0) },
+        );
+        if kickable {
             ctx.button(
-                UiRect::new(
-                    row.right() - px(236.0),
-                    row.y + px(14.0),
-                    px(120.0),
-                    px(34.0),
-                ),
-                "Make Leader",
-                ButtonKind::Secondary,
-                &Hit::MakeLeader(member.account_id.clone()),
-                true,
-            );
-            ctx.button(
-                UiRect::new(
-                    row.right() - px(106.0),
-                    row.y + px(14.0),
-                    px(90.0),
-                    px(34.0),
-                ),
+                kick_button(row, scale),
                 "Kick",
                 ButtonKind::Danger,
                 &Hit::Kick(member.account_id.clone()),
-                true,
+                view.busy.is_none(),
             );
         }
     }
-    let all_present = party.members.iter().all(|m| m.present);
-    if party.i_lead {
-        let busy = view.busy.is_some();
+    let buttons = party_buttons(panel, scale);
+    let idle = view.busy.is_none();
+    if party.i_own_key {
         ctx.button(
-            UiRect::new(
-                panel.right() - px(260.0),
-                panel.bottom() - px(72.0),
-                px(220.0),
-                px(48.0),
-            ),
-            if busy { "Starting..." } else { "Start Dungeon" },
+            buttons.withdraw,
+            "Withdraw Key",
+            ButtonKind::Secondary,
+            &Hit::WithdrawKey,
+            idle,
+        );
+    }
+    if party.i_lead && party.i_own_key {
+        ctx.button(
+            buttons.start,
+            if idle { "Start Dungeon" } else { "Starting..." },
             ButtonKind::Primary,
             &Hit::Start,
-            all_present && !busy,
+            start_enabled(view, party),
         );
     } else {
         ctx.text(
             (panel.right() - px(40.0), panel.bottom() - px(60.0)),
-            "Waiting for the leader to start...",
+            "Waiting for the key's owner to start...",
             DIM,
             UiFont::Medium,
             16.0,
@@ -2236,17 +3220,31 @@ fn draw_party(ctx: &mut Painter<'_>, view: &FrontEndView, w: f32, h: f32) {
         );
     }
     ctx.button(
-        UiRect::new(
-            panel.x + px(40.0),
-            panel.bottom() - px(72.0),
-            px(180.0),
-            px(48.0),
-        ),
+        buttons.leave,
         "Leave Party",
         ButtonKind::Secondary,
         &Hit::LeaveParty,
-        true,
+        idle,
     );
+    if let Some(busy) = &view.busy {
+        ctx.text(
+            (w * 0.5, panel.bottom() - px(104.0)),
+            busy,
+            BUSY,
+            UiFont::Medium,
+            16.0,
+            TextAlign::Center,
+        );
+    } else if party.i_lead && !party.members.iter().all(|m| m.present) {
+        ctx.text(
+            (w * 0.5, panel.bottom() - px(104.0)),
+            "Waiting for everyone to be connected.",
+            BUSY,
+            UiFont::Medium,
+            15.0,
+            TextAlign::Center,
+        );
+    }
 }
 
 fn draw_in_world(ctx: &mut Painter<'_>, view: &FrontEndView, w: f32, h: f32) {
@@ -2283,13 +3281,20 @@ fn draw_in_world(ctx: &mut Painter<'_>, view: &FrontEndView, w: f32, h: f32) {
         }
         _ => {}
     }
-    ctx.button(
-        in_world_leave(w, ctx.scale),
-        "Leave Party",
-        ButtonKind::Secondary,
-        &Hit::LeaveParty,
-        true,
-    );
+    if let Some(card) = &view.completion {
+        draw_completion(ctx, card, w, h);
+    } else {
+        if let Some(busy) = &view.busy {
+            ctx.banner(busy, StatusLevel::Busy, w, px(14.0));
+        }
+        ctx.button(
+            in_world_leave(w, ctx.scale),
+            "Leave Party",
+            ButtonKind::Secondary,
+            &Hit::LeaveParty,
+            true,
+        );
+    }
     if let Some((level, text)) = &view.connection
         && *level != StatusLevel::Good
     {
@@ -2304,11 +3309,132 @@ fn draw_in_world(ctx: &mut Painter<'_>, view: &FrontEndView, w: f32, h: f32) {
     }
 }
 
+/// The lines of the completion panel: label, value, colour.
+fn completion_rows(card: &CompletionCard) -> Vec<(String, String, UiColor)> {
+    let mut rows = vec![("Key level".to_owned(), card.key_level.to_string(), TEXT)];
+    if card.key_owner {
+        rows.push(if card.success {
+            (
+                "Key upgraded".to_owned(),
+                format!("{} -> {}", card.key_level, card.key_level_after),
+                GOOD,
+            )
+        } else {
+            ("Key".to_owned(), "Your key is unchanged".to_owned(), DIM)
+        });
+    }
+    rows.push(("Time".to_owned(), clock_text(card.duration_seconds), TEXT));
+    if card.success {
+        rows.push((
+            "Experience".to_owned(),
+            format!("+{}", card.experience),
+            TEXT,
+        ));
+        for (name, amount) in &card.resources {
+            rows.push((name.clone(), format!("+{amount}"), TEXT));
+        }
+        if let Some(loot) = &card.loot {
+            rows.push(("Loot".to_owned(), loot.clone(), GOLD));
+        }
+    }
+    rows
+}
+
+/// The completion panel and its button.
+fn completion_rects(card: &CompletionCard, w: f32, h: f32, scale: UiScale) -> (UiRect, UiRect) {
+    let px = |v: f32| scale.px(v);
+    let height = px(176.0) + px(26.0) * completion_rows(card).len() as f32;
+    let panel = UiRect::new(
+        (w - px(520.0)) * 0.5,
+        ((h - height) * 0.3).max(px(16.0)),
+        px(520.0),
+        height,
+    );
+    let button = UiRect::new(
+        panel.x + px(130.0),
+        panel.bottom() - px(62.0),
+        panel.width - px(260.0),
+        px(44.0),
+    );
+    (panel, button)
+}
+
+fn draw_completion(ctx: &mut Painter<'_>, card: &CompletionCard, w: f32, h: f32) {
+    let scale = ctx.scale;
+    let px = move |v: f32| scale.px(v);
+    let (panel, button) = completion_rects(card, w, h, scale);
+    if card.success {
+        ctx.list
+            .glow(panel, px(16.0), px(40.0), [0.96, 0.78, 0.40, 0.22]);
+    }
+    ctx.panel(panel);
+    ctx.text_styled(
+        (panel.x + panel.width * 0.5, panel.y + px(20.0)),
+        if card.success {
+            "Dungeon Complete"
+        } else {
+            "Run Failed"
+        },
+        if card.success { GOLD } else { BAD },
+        UiFont::Display,
+        34.0,
+        TextAlign::Center,
+    );
+    ctx.text(
+        (panel.x + panel.width * 0.5, panel.y + px(68.0)),
+        &card.dungeon,
+        TEXT,
+        UiFont::SemiBold,
+        19.0,
+        TextAlign::Center,
+    );
+    let mut y = panel.y + px(108.0);
+    for (label, value, color) in completion_rows(card) {
+        ctx.text(
+            (panel.x + px(40.0), y),
+            &label,
+            DIM,
+            UiFont::Medium,
+            16.0,
+            TextAlign::Left,
+        );
+        ctx.text(
+            (panel.right() - px(40.0), y),
+            &value,
+            color,
+            UiFont::SemiBold,
+            16.0,
+            TextAlign::Right,
+        );
+        y += px(26.0);
+    }
+    ctx.button(
+        button,
+        if card.returning {
+            "Saving rewards..."
+        } else {
+            "Return to Hub"
+        },
+        ButtonKind::Primary,
+        &Hit::ReturnToHub,
+        !card.returning,
+    );
+}
+
 fn draw_toasts(ctx: &mut Painter<'_>, view: &FrontEndView, w: f32, h: f32) {
     let scale = ctx.scale;
     let px = move |v: f32| scale.px(v);
-    // In the world, above the action bars and clear of the unit frames at the top.
-    let mut y = if view.screen == Screen::InWorld {
+    // Under the completion panel, which owns the middle of the screen; otherwise, in the
+    // world, above the action bars and clear of the unit frames at the top.
+    if let Some(card) = &view.completion {
+        let mut y = completion_rects(card, w, h, scale).0.bottom() + px(12.0);
+        for toast in view.toasts.iter().rev().take(4) {
+            ctx.banner(&toast.message, toast.level, w, y);
+            y += px(48.0);
+        }
+        return;
+    }
+    let mut y = if view.screen.is_overlay() {
         h - px(250.0)
     } else {
         h - px(180.0)
@@ -2350,10 +3476,124 @@ mod tests {
         UiScale::new(1.0)
     }
 
+    /// Where `hit` is laid out in `view`, if it is clickable at all.
+    fn rect_of(ui: &FrontEndUi, view: &FrontEndView, hit: &Hit) -> Option<UiRect> {
+        ui.layout(view, VIEWPORT, scale())
+            .hits
+            .iter()
+            .find(|(candidate, _)| candidate == hit)
+            .map(|(_, rect)| *rect)
+    }
+
+    /// Clicks the middle of `hit` and returns what the front-end asked for.
+    fn click(ui: &mut FrontEndUi, view: &FrontEndView, hit: &Hit) -> Vec<FrontEndAction> {
+        let rect = rect_of(ui, view, hit).expect("the control is laid out");
+        let none = || None;
+        ui.update(
+            &input(center(rect), true, &[], &none),
+            view,
+            VIEWPORT,
+            scale(),
+            0.016,
+        )
+    }
+
+    fn member(me: bool, leader: bool, owner: bool, key: Option<u32>) -> MemberRow {
+        MemberRow {
+            account_id: if me { "me".into() } else { "other".into() },
+            character: "C".into(),
+            player: "P".into(),
+            class: "Mage".into(),
+            role: Role::Tank,
+            level: 1,
+            gear_score: 40,
+            key_level: key,
+            ready: ReadyState::Ready,
+            present: true,
+            leader,
+            owner,
+            me,
+        }
+    }
+
+    fn party(members: Vec<MemberRow>, i_lead: bool, i_own_key: bool) -> PartyCard {
+        PartyCard {
+            dungeon: "Crypt".into(),
+            description: "A crypt.".into(),
+            key_level: 3,
+            key_owner: Some("C".into()),
+            i_own_key,
+            members,
+            i_lead,
+            i_answered: true,
+            ..PartyCard::default()
+        }
+    }
+
+    fn view_of(screen: Screen, party: Option<PartyCard>) -> FrontEndView {
+        FrontEndView {
+            screen,
+            party,
+            ..FrontEndView::default()
+        }
+    }
+
+    fn hub_view() -> FrontEndView {
+        FrontEndView {
+            screen: Screen::Hub,
+            account: Some("Sonit".into()),
+            hub: Some(HubCard {
+                name: "Ember".into(),
+                class: "Mage".into(),
+                level: 4,
+                experience: 120,
+                next_level: 400,
+                key: Some(KeyCard {
+                    dungeon: "Graveyard Crypt".into(),
+                    level: 2,
+                }),
+                resources: vec![("Crypt Dust".into(), 12)],
+                can_find_dungeon: true,
+                can_change_character: true,
+            }),
+            ..FrontEndView::default()
+        }
+    }
+
+    fn queue_card(matched: bool) -> QueueCard {
+        QueueCard {
+            dungeon: "Graveyard Crypt".into(),
+            role: Role::Dps,
+            character: "Ember".into(),
+            waited_seconds: 75,
+            tolerance_percent: 10,
+            matched,
+        }
+    }
+
+    fn completion(success: bool, owner: bool, returning: bool) -> CompletionCard {
+        CompletionCard {
+            success,
+            dungeon: "Graveyard Crypt".into(),
+            key_level: 3,
+            key_owner: owner,
+            key_level_after: if success { 4 } else { 3 },
+            duration_seconds: 754,
+            experience: if success { 350 } else { 0 },
+            resources: if success {
+                vec![("Crypt Dust".into(), 11)]
+            } else {
+                Vec::new()
+            },
+            loot: success.then(|| "Open the chest to claim your loot".to_owned()),
+            returning,
+        }
+    }
+
     #[test]
     fn typing_and_enter_signs_in() {
         let mut ui = FrontEndUi::new();
-        let view = FrontEndView::default();
+        let view = view_of(Screen::Login, None);
         let none = || None;
         let typed: Vec<char> = "me@x.y\tsecret\r".chars().collect();
         // One character at a time, as frames would deliver them.
@@ -2378,36 +3618,52 @@ mod tests {
     }
 
     #[test]
-    fn clicking_the_drawn_button_is_the_action() {
+    fn the_title_continues_on_click_enter_and_space() {
         let mut ui = FrontEndUi::new();
-        let view = FrontEndView {
-            screen: Screen::ReadyCheck,
-            party: Some(PartyCard {
-                dungeon: "Crypt".into(),
-                members: vec![],
-                i_lead: false,
-                i_answered: false,
-                seconds_left: 20,
-                fraction_left: 0.5,
-            }),
-            ..FrontEndView::default()
-        };
-        let layout = ui.layout(&view, VIEWPORT, scale());
-        let accept = layout
-            .hits
-            .iter()
-            .find(|(hit, _)| *hit == Hit::Accept)
-            .map(|(_, r)| *r)
-            .expect("accept is laid out");
+        let view = view_of(Screen::Title, None);
+        assert_eq!(
+            click(&mut ui, &view, &Hit::Continue),
+            vec![FrontEndAction::ContinueFromTitle]
+        );
         let none = || None;
+        for key in ['\r', ' '] {
+            let actions = ui.update(
+                &input((0.0, 0.0), false, &[key], &none),
+                &view,
+                VIEWPORT,
+                scale(),
+                0.016,
+            );
+            assert_eq!(actions, vec![FrontEndAction::ContinueFromTitle]);
+        }
+        // Typing on the sign-in form is not a way past the title, and Enter there signs in.
+        let login = view_of(Screen::Login, None);
         let actions = ui.update(
-            &input(center(accept), true, &[], &none),
-            &view,
+            &input((0.0, 0.0), false, &[' '], &none),
+            &login,
             VIEWPORT,
             scale(),
             0.016,
         );
-        assert_eq!(actions, vec![FrontEndAction::Accept]);
+        assert!(!actions.contains(&FrontEndAction::ContinueFromTitle));
+    }
+
+    #[test]
+    fn clicking_the_drawn_button_is_the_action() {
+        let mut ui = FrontEndUi::new();
+        let mut card = party(vec![], false, false);
+        card.i_answered = false;
+        card.seconds_left = 20;
+        card.fraction_left = 0.5;
+        let view = view_of(Screen::ReadyCheck, Some(card));
+        assert_eq!(
+            click(&mut ui, &view, &Hit::Accept),
+            vec![FrontEndAction::Accept]
+        );
+        assert_eq!(
+            click(&mut ui, &view, &Hit::Decline),
+            vec![FrontEndAction::Decline]
+        );
         // Drawing the same view produces commands and does not panic.
         let mut list = UiDrawList::new();
         ui.draw(&mut list, &view, VIEWPORT, scale());
@@ -2415,47 +3671,292 @@ mod tests {
     }
 
     #[test]
+    fn an_answered_ready_check_has_nothing_to_press() {
+        let ui = FrontEndUi::new();
+        let view = view_of(Screen::ReadyCheck, Some(party(vec![], false, false)));
+        assert!(rect_of(&ui, &view, &Hit::Accept).is_none());
+        assert!(rect_of(&ui, &view, &Hit::Decline).is_none());
+    }
+
+    #[test]
     fn only_the_leader_gets_leader_controls() {
         let ui = FrontEndUi::new();
-        let member = |me: bool, leader: bool| MemberRow {
-            account_id: if me { "me".into() } else { "other".into() },
-            character: "C".into(),
-            player: "P".into(),
-            role: Role::Tank,
-            level: 1,
-            gear_score: 40,
-            ready: ReadyState::Ready,
-            present: true,
-            leader,
-            me,
-        };
-        let mut party = PartyCard {
-            dungeon: "Crypt".into(),
-            members: vec![member(true, false), member(false, true)],
-            i_lead: false,
-            i_answered: true,
-            seconds_left: 0,
-            fraction_left: 0.0,
-        };
-        let view = |party: PartyCard| FrontEndView {
-            screen: Screen::Party,
-            party: Some(party),
-            ..FrontEndView::default()
-        };
-        let hits = ui.layout(&view(party.clone()), VIEWPORT, scale()).hits;
+        let members = vec![
+            member(true, false, false, Some(2)),
+            member(false, true, true, Some(3)),
+        ];
+        let hits = ui
+            .layout(
+                &view_of(Screen::Party, Some(party(members.clone(), false, false))),
+                VIEWPORT,
+                scale(),
+            )
+            .hits;
         assert!(
             !hits
                 .iter()
-                .any(|(hit, _)| matches!(hit, Hit::Start | Hit::Kick(_) | Hit::MakeLeader(_)))
+                .any(|(hit, _)| matches!(hit, Hit::Start | Hit::Kick(_) | Hit::WithdrawKey))
         );
-        party.i_lead = true;
-        let hits = ui.layout(&view(party), VIEWPORT, scale()).hits;
+        let mut members = members;
+        members[0].leader = true;
+        members[0].owner = true;
+        let hits = ui
+            .layout(
+                &view_of(Screen::Party, Some(party(members, true, true))),
+                VIEWPORT,
+                scale(),
+            )
+            .hits;
         assert!(hits.iter().any(|(hit, _)| *hit == Hit::Start));
         assert!(
             hits.iter()
                 .any(|(hit, _)| *hit == Hit::Kick("other".into()))
         );
         assert!(!hits.iter().any(|(hit, _)| *hit == Hit::Kick("me".into())));
+    }
+
+    #[test]
+    fn start_needs_the_key_owner_and_withdraw_is_the_owners_alone() {
+        let ui = FrontEndUi::new();
+        let members = vec![
+            member(true, true, false, Some(2)),
+            member(false, false, true, Some(3)),
+        ];
+        // A leader who does not own the key (the server never says so, but the screen must
+        // not offer what the server would refuse).
+        let view = view_of(Screen::Party, Some(party(members.clone(), true, false)));
+        assert!(rect_of(&ui, &view, &Hit::Start).is_none());
+        assert!(rect_of(&ui, &view, &Hit::WithdrawKey).is_none());
+        // The owner who leads gets both.
+        let view = view_of(Screen::Party, Some(party(members.clone(), true, true)));
+        assert!(rect_of(&ui, &view, &Hit::Start).is_some());
+        assert!(rect_of(&ui, &view, &Hit::WithdrawKey).is_some());
+        // Everyone can leave.
+        assert!(rect_of(&ui, &view, &Hit::LeaveParty).is_some());
+        // Nobody is offered Make Leader: the server refuses it before the start.
+        let mut ui = FrontEndUi::new();
+        assert_eq!(
+            click(&mut ui, &view, &Hit::Start),
+            vec![FrontEndAction::StartDungeon]
+        );
+        assert_eq!(
+            click(&mut ui, &view, &Hit::WithdrawKey),
+            vec![FrontEndAction::WithdrawKey]
+        );
+        // Once started, the screen is busy and offers neither.
+        let mut busy = view;
+        busy.busy = Some("Starting dungeon...".into());
+        assert!(rect_of(&ui, &busy, &Hit::Start).is_none());
+        assert!(rect_of(&ui, &busy, &Hit::WithdrawKey).is_none());
+        // A member who is not connected holds the start back.
+        let mut away = view_of(Screen::Party, Some(party(members, true, true)));
+        if let Some(card) = away.party.as_mut() {
+            card.members[1].present = false;
+        }
+        assert!(rect_of(&ui, &away, &Hit::Start).is_none());
+    }
+
+    #[test]
+    fn insert_key_is_clickable_only_with_a_valid_key() {
+        let mut ui = FrontEndUi::new();
+        let with_key = view_of(
+            Screen::KeySelect,
+            Some(party(
+                vec![
+                    member(true, false, false, Some(2)),
+                    member(false, false, false, None),
+                ],
+                false,
+                false,
+            )),
+        );
+        assert_eq!(
+            click(&mut ui, &with_key, &Hit::InsertKey),
+            vec![FrontEndAction::InsertKey]
+        );
+        let without = view_of(
+            Screen::KeySelect,
+            Some(party(
+                vec![
+                    member(true, false, false, None),
+                    member(false, false, false, Some(3)),
+                ],
+                false,
+                false,
+            )),
+        );
+        assert!(rect_of(&ui, &without, &Hit::InsertKey).is_none());
+        assert_eq!(
+            click(&mut ui, &without, &Hit::LeaveParty),
+            vec![FrontEndAction::LeaveParty]
+        );
+        // The disabled button still draws, with its reason.
+        let mut list = UiDrawList::new();
+        ui.draw(&mut list, &without, VIEWPORT, scale());
+        assert!(!list.is_empty());
+        // After pressing it the screen waits for the server rather than inviting a second try.
+        let mut waiting = with_key;
+        waiting.busy = Some("Inserting your key...".into());
+        assert!(rect_of(&ui, &waiting, &Hit::InsertKey).is_none());
+    }
+
+    #[test]
+    fn the_hub_buttons_are_their_actions() {
+        let mut ui = FrontEndUi::new();
+        let view = hub_view();
+        for (hit, action) in [
+            (Hit::DungeonFinder, FrontEndAction::OpenDungeonFinder),
+            (Hit::Equipment, FrontEndAction::OpenEquipment),
+            (Hit::Workshop, FrontEndAction::OpenWorkshop),
+            (Hit::ChangeCharacter, FrontEndAction::ChangeCharacter),
+            (Hit::Logout, FrontEndAction::Logout),
+        ] {
+            assert_eq!(click(&mut ui, &view, &hit), vec![action]);
+        }
+    }
+
+    #[test]
+    fn a_queued_hub_offers_leave_queue_and_no_second_search_or_character_change() {
+        let mut ui = FrontEndUi::new();
+        let mut view = hub_view();
+        view.queue = Some(queue_card(false));
+        if let Some(hub) = view.hub.as_mut() {
+            hub.can_find_dungeon = false;
+            hub.can_change_character = false;
+        }
+        assert!(rect_of(&ui, &view, &Hit::DungeonFinder).is_none());
+        assert!(rect_of(&ui, &view, &Hit::ChangeCharacter).is_none());
+        assert_eq!(
+            click(&mut ui, &view, &Hit::LeaveQueue),
+            vec![FrontEndAction::LeaveQueue]
+        );
+        // Once a group is found the ticket can no longer be withdrawn from here.
+        view.queue = Some(queue_card(true));
+        assert!(rect_of(&ui, &view, &Hit::LeaveQueue).is_none());
+        let mut list = UiDrawList::new();
+        ui.draw(&mut list, &view, VIEWPORT, scale());
+        assert!(!list.is_empty());
+    }
+
+    #[test]
+    fn the_hub_takes_the_pointer_only_over_its_own_panels() {
+        let mut ui = FrontEndUi::new();
+        let mut view = hub_view();
+        view.queue = Some(queue_card(false));
+        let none = || None;
+        let over = |ui: &mut FrontEndUi, at: (f32, f32)| {
+            ui.update(
+                &input(at, false, &[], &none),
+                &view,
+                VIEWPORT,
+                scale(),
+                0.016,
+            );
+            ui.wants_pointer(&view, VIEWPORT, scale())
+        };
+        let panel = rect_of(&ui, &view, &Hit::Panel).expect("a panel blocks the pointer");
+        assert!(over(&mut ui, center(panel)));
+        // The middle of the screen is the world's: mouse-look must keep working there.
+        assert!(!over(&mut ui, (960.0, 540.0)));
+        // A full-screen page takes it everywhere.
+        let page = view_of(Screen::Party, None);
+        ui.update(
+            &input((960.0, 540.0), false, &[], &none),
+            &page,
+            VIEWPORT,
+            scale(),
+            0.016,
+        );
+        assert!(ui.wants_pointer(&page, VIEWPORT, scale()));
+    }
+
+    #[test]
+    fn return_to_hub_is_clickable_until_it_is_pressed() {
+        let mut ui = FrontEndUi::new();
+        let mut view = view_of(Screen::InWorld, None);
+        view.completion = Some(completion(true, true, false));
+        assert_eq!(
+            click(&mut ui, &view, &Hit::ReturnToHub),
+            vec![FrontEndAction::ReturnToHub]
+        );
+        // The in-world Leave is the early exit; the panel replaces it once the run is over.
+        assert!(rect_of(&ui, &view, &Hit::LeaveParty).is_none());
+        view.completion = Some(completion(true, true, true));
+        assert!(rect_of(&ui, &view, &Hit::ReturnToHub).is_none());
+        view.completion = None;
+        assert_eq!(
+            click(&mut ui, &view, &Hit::LeaveParty),
+            vec![FrontEndAction::LeaveParty]
+        );
+    }
+
+    #[test]
+    fn the_completion_panel_says_what_the_run_gave() {
+        let rows = |card: &CompletionCard| -> Vec<String> {
+            completion_rows(card)
+                .into_iter()
+                .map(|(label, value, _)| format!("{label}: {value}"))
+                .collect()
+        };
+        let won = rows(&completion(true, true, false));
+        assert!(won.contains(&"Key upgraded: 3 -> 4".to_owned()));
+        assert!(won.contains(&"Time: 12:34".to_owned()));
+        assert!(won.contains(&"Experience: +350".to_owned()));
+        assert!(won.contains(&"Crypt Dust: +11".to_owned()));
+        assert!(won.contains(&"Loot: Open the chest to claim your loot".to_owned()));
+        let lost = rows(&completion(false, true, false));
+        assert!(lost.contains(&"Key: Your key is unchanged".to_owned()));
+        assert!(!lost.iter().any(|row| row.starts_with("Experience")));
+        // Only the key's owner hears about the key.
+        let guest = rows(&completion(true, false, false));
+        assert!(!guest.iter().any(|row| row.starts_with("Key upgraded")));
+    }
+
+    #[test]
+    fn the_workshop_offers_what_can_be_done() {
+        let mut ui = FrontEndUi::new();
+        let mut view = view_of(Screen::Workshop, None);
+        view.workshop = Some(WorkshopCard {
+            bag: vec![BagRow {
+                index: 4,
+                name: "RUSTY SWORD".into(),
+                quantity: 1,
+                item_level: 6,
+                yields: "+8 Crypt Dust".into(),
+            }],
+            resources: vec![("Crypt Dust".into(), 12)],
+            exchanges: vec![
+                ExchangeRow {
+                    id: "dust_to_shard".into(),
+                    label: "10 Crypt Dust for 1 Ember Shard".into(),
+                    affordable: true,
+                },
+                ExchangeRow {
+                    id: "shard_to_dust".into(),
+                    label: "1 Ember Shard for 5 Crypt Dust".into(),
+                    affordable: false,
+                },
+            ],
+        });
+        assert_eq!(
+            click(&mut ui, &view, &Hit::Salvage(4)),
+            vec![FrontEndAction::Salvage(4)]
+        );
+        assert_eq!(
+            click(&mut ui, &view, &Hit::Exchange("dust_to_shard".into())),
+            vec![FrontEndAction::Exchange("dust_to_shard".into())]
+        );
+        assert!(rect_of(&ui, &view, &Hit::Exchange("shard_to_dust".into())).is_none());
+        assert_eq!(
+            click(&mut ui, &view, &Hit::Back),
+            vec![FrontEndAction::Back]
+        );
+        // While a request is in flight nothing else can be sent.
+        view.busy = Some("Salvaging...".into());
+        assert!(rect_of(&ui, &view, &Hit::Salvage(4)).is_none());
+        let mut list = UiDrawList::new();
+        ui.draw(&mut list, &view, VIEWPORT, scale());
+        assert!(!list.is_empty());
     }
 
     #[test]
@@ -2472,6 +3973,8 @@ mod tests {
                 next_level: 400,
                 gear_score: 40,
                 equipped: 4,
+                key: None,
+                resources: 0,
             }],
             selected_character: Some(0),
             ..FrontEndView::default()
@@ -2485,24 +3988,67 @@ mod tests {
     fn every_screen_draws() {
         let ui = FrontEndUi::new();
         for screen in [
+            Screen::Title,
             Screen::Login,
             Screen::Characters,
+            Screen::Hub,
             Screen::Dungeons,
             Screen::Roles,
-            Screen::Queue,
+            Screen::Workshop,
             Screen::ReadyCheck,
+            Screen::KeySelect,
             Screen::Party,
             Screen::InWorld,
         ] {
-            let view = FrontEndView {
+            // Empty, and again with everything a screen can show.
+            let full = FrontEndView {
                 screen,
-                reconnecting: Some("Reconnecting".into()),
-                countdown: Some(CountdownDisplay::Seconds(3)),
+                account: Some("Sonit".into()),
+                busy: Some("Working...".into()),
+                error: Some("Something was refused.".into()),
+                characters: vec![CharacterCard {
+                    name: "Ember".into(),
+                    class: "Mage".into(),
+                    roles: vec![Role::Dps],
+                    level: 4,
+                    experience: 10,
+                    next_level: 400,
+                    gear_score: 40,
+                    equipped: 4,
+                    key: Some(KeyCard {
+                        dungeon: "Graveyard Crypt".into(),
+                        level: 2,
+                    }),
+                    resources: 12,
+                }],
+                selected_character: Some(0),
+                hub: hub_view().hub,
+                queue: Some(queue_card(false)),
+                workshop: Some(WorkshopCard::default()),
+                party: Some(party(
+                    vec![
+                        member(true, true, true, Some(2)),
+                        member(false, false, false, None),
+                    ],
+                    true,
+                    true,
+                )),
+                completion: Some(completion(true, true, false)),
                 ..FrontEndView::default()
             };
-            let mut list = UiDrawList::new();
-            ui.draw(&mut list, &view, VIEWPORT, scale());
-            assert!(!list.is_empty(), "{screen:?} drew nothing");
+            for view in [
+                FrontEndView {
+                    screen,
+                    reconnecting: Some("Reconnecting".into()),
+                    countdown: Some(CountdownDisplay::Seconds(3)),
+                    ..FrontEndView::default()
+                },
+                full,
+            ] {
+                let mut list = UiDrawList::new();
+                ui.draw(&mut list, &view, VIEWPORT, scale());
+                assert!(!list.is_empty(), "{screen:?} drew nothing");
+            }
         }
     }
 }
