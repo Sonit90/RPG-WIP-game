@@ -1,7 +1,7 @@
 //! `realm-bot`: headless realm clients.
 //!
 //! ```text
-//! realm-bot scenario <slice|isolation|decline|reconnect|security|results|combat|loop|all>
+//! realm-bot scenario <slice|isolation|decline|reconnect|security|results|combat|loop|chat|all>
 //! realm-bot bot --email E --password P --character warrior --role tank [--dungeon D] [--walk] [--lead]
 //! ```
 //!
@@ -54,6 +54,7 @@ fn main() -> ExitCode {
                 ("results", scenarios::results),
                 ("combat", scenarios::combat),
                 ("loop", scenarios::game_loop),
+                ("chat", scenarios::chat),
             ];
             let mut failed = false;
             for (name, run) in list {
@@ -109,7 +110,7 @@ fn main() -> ExitCode {
         }
         _ => {
             eprintln!(
-                "usage: realm-bot scenario <slice|isolation|decline|reconnect|security|results|combat|loop|all>"
+                "usage: realm-bot scenario <slice|isolation|decline|reconnect|security|results|combat|loop|chat|all>"
             );
             eprintln!(
                 "       realm-bot bot --email E --password P --character warrior --role tank [--walk] [--lead]"

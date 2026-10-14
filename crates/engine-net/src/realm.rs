@@ -8,6 +8,7 @@ use std::sync::mpsc::Sender;
 use std::thread::JoinHandle;
 
 use engine_core::math::Vec3;
+use engine_realm::chat::Channel;
 use engine_realm::combat::{
     AbilityRef, ActionKind, CastState, CombatAction, CooldownState, EntityRef, Resources,
     StatusState, WireEvent,
@@ -19,18 +20,18 @@ use engine_realm::{ErrorCategory, RealmError, Role};
 use spacetimedb_sdk::{DbContext, Table, TableWithPrimaryKey};
 
 use crate::bindings::{
-    self as b, DbConnection, MyAccountTableAccess, MyCombatBatchesTableAccess,
+    self as b, DbConnection, MyAccountTableAccess, MyChatTableAccess, MyCombatBatchesTableAccess,
     MyInstanceMonstersTableAccess, MyInstancePlayersTableAccess, MyInstanceTableAccess,
     MyNoticesTableAccess, MyPartyMembersTableAccess, MyPartyTableAccess, MyPlayerCombatTableAccess,
-    MyRunSummaryTableAccess, MyTicketTableAccess, QueuePopulationTableAccess, combat_act,
-    dismiss_notice, move_input, party_insert_key, party_kick, party_leave, party_start,
+    MyRunSummaryTableAccess, MyTicketTableAccess, QueuePopulationTableAccess, chat_send,
+    combat_act, dismiss_notice, move_input, party_insert_key, party_kick, party_leave, party_start,
     party_transfer_leader, party_withdraw_key, queue_leave, ready_check_respond, server_time,
 };
 use crate::config::RealmEndpoints;
 use crate::model::{
-    AccountInfo, InstanceInfo, MemberInfo, MonsterInfo, Notice, NoticeLevel, PartyInfo,
-    PlayerCombatInfo, Population, RealmMirror, RealmUpdate, RemotePlayerState, RunSummaryInfo,
-    TicketInfo,
+    AccountInfo, ChatMessageInfo, InstanceInfo, MemberInfo, MonsterInfo, Notice, NoticeLevel,
+    PartyInfo, PlayerCombatInfo, Population, RealmMirror, RealmUpdate, RemotePlayerState,
+    RunSummaryInfo, TicketInfo,
 };
 use crate::session::{Action, NetEvent, WorkerMessage};
 
@@ -57,7 +58,7 @@ pub enum LinkSignal {
 }
 
 /// Every view the client subscribes to.
-const QUERIES: [&str; 12] = [
+const QUERIES: [&str; 13] = [
     "SELECT * FROM my_account",
     "SELECT * FROM my_ticket",
     "SELECT * FROM my_party",
@@ -70,6 +71,7 @@ const QUERIES: [&str; 12] = [
     "SELECT * FROM my_player_combat",
     "SELECT * FROM my_combat_batches",
     "SELECT * FROM my_run_summary",
+    "SELECT * FROM my_chat",
 ];
 
 /// An open realm connection.
@@ -326,6 +328,18 @@ impl RealmLink {
         self.report_send(Action::WithdrawKey, sent);
     }
 
+    /// Says something. The server names the sender; `target` is a whisper's character name.
+    pub fn send_chat(&self, channel: Channel, target: String, text: String) {
+        let events = self.events.clone();
+        let sent = self.connection.reducers.chat_send_then(
+            channel.as_u8(),
+            target,
+            text,
+            move |_, outcome| report(&events, Action::Chat, outcome),
+        );
+        self.report_send(Action::Chat, sent);
+    }
+
     /// Dismisses a notice.
     pub fn dismiss_notice(&self, id: u64) {
         let _ = self.connection.reducers.dismiss_notice(id);
@@ -497,6 +511,13 @@ fn register_callbacks(connection: &DbConnection, events: &Sender<NetEvent>) {
     });
 
     let tx = events.clone();
+    db.my_chat().on_insert(move |_, row| {
+        if let Some(message) = chat_message(row) {
+            let _ = tx.send(NetEvent::Realm(RealmUpdate::Chat(message)));
+        }
+    });
+
+    let tx = events.clone();
     db.my_notices().on_insert(move |_, row| {
         let _ = tx.send(NetEvent::Realm(RealmUpdate::NoticeAdded(notice(row))));
     });
@@ -540,6 +561,17 @@ fn snapshot(db: &b::RemoteTables) -> RealmMirror {
             notices
         },
         population: db.queue_population().iter().map(population).collect(),
+        chat: {
+            let mut lines: Vec<ChatMessageInfo> = db
+                .my_chat()
+                .iter()
+                .filter_map(|row| chat_message(&row))
+                .collect();
+            lines.sort_by_key(|line| line.id);
+            let excess = lines.len().saturating_sub(crate::model::CHAT_HISTORY);
+            lines.drain(..excess);
+            lines
+        },
         run_summary: latest_run_summary(db),
         revision: 0,
     }
@@ -802,6 +834,20 @@ fn notice(row: &b::PlayerNotice) -> Notice {
         },
         message: row.message.clone(),
     }
+}
+
+/// A chat row, or `None` for a channel this client does not know.
+fn chat_message(row: &b::ChatLine) -> Option<ChatMessageInfo> {
+    Some(ChatMessageInfo {
+        id: row.id,
+        channel: Channel::from_u8(row.channel)?,
+        sender_account: row.sender_account.clone(),
+        sender_name: row.sender_name.clone(),
+        recipient_account: row.recipient_account.clone(),
+        recipient_name: row.recipient_name.clone(),
+        text: row.text.clone(),
+        sent_at: micros(row.sent_at),
+    })
 }
 
 fn population(row: b::QueuePopulation) -> (String, Population) {

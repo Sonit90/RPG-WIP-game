@@ -5,7 +5,7 @@
 //! `my_instance_players` receives the players of *its* instance and nothing else — there is
 //! no parameter to point it at someone else's.
 
-use spacetimedb::{AnonymousViewContext, SpacetimeType, ViewContext, view};
+use spacetimedb::{AnonymousViewContext, SpacetimeType, Timestamp, ViewContext, view};
 
 use crate::schema::*;
 
@@ -83,6 +83,34 @@ fn my_notices(ctx: &ViewContext) -> Vec<PlayerNotice> {
         .identity()
         .filter(ctx.sender())
         .collect()
+}
+
+/// One chat line as a client sees it: names and account ids, no identities.
+#[derive(SpacetimeType, Debug, Clone)]
+pub struct ChatLine {
+    /// Message id; larger is newer.
+    pub id: u64,
+    /// `engine_realm::chat::Channel::as_u8`.
+    pub channel: u8,
+    /// The sender's account id.
+    pub sender_account: String,
+    /// The sender's character name.
+    pub sender_name: String,
+    /// A whisper's target account id.
+    pub recipient_account: Option<String>,
+    /// A whisper's target character name.
+    pub recipient_name: Option<String>,
+    /// The text.
+    pub text: String,
+    /// When it was sent.
+    pub sent_at: Timestamp,
+}
+
+/// Chat the caller may read: the Server channel, their party's, and whispers they sent or
+/// were sent. There is no parameter to ask for anyone else's.
+#[view(accessor = my_chat, public, primary_key = id)]
+fn my_chat(ctx: &ViewContext) -> Vec<ChatLine> {
+    crate::chat::readable_by(ctx)
 }
 
 /// How many players are searching for one dungeon, per role.

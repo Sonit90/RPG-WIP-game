@@ -35,11 +35,13 @@
 //! | [`progression`] | levels and experience |
 //! | [`movement`] | one input frame applied to one body, and the input budget |
 //! | [`talents`] | stable talent keys, validated server-side |
+//! | [`chat`] | channels, what a message may say, who may read it |
 //! | [`rate_limit`] | token buckets for every client-callable operation |
 //! | [`error`] | the error categories a player can be shown |
 
 pub mod api;
 pub mod catalog;
+pub mod chat;
 pub mod combat;
 pub mod economy;
 pub mod error;

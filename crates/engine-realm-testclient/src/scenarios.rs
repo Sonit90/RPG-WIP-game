@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 
 use engine_core::math::Vec3;
 use engine_net::{Action, NetCommand, RealmEndpoints};
+use engine_realm::chat::Channel;
 use engine_realm::instance::InstanceState;
 use engine_realm::party::PartyState;
 use engine_realm::{ErrorCategory, Role};
@@ -1160,5 +1161,225 @@ pub fn combat(endpoints: &RealmEndpoints) -> Outcome {
     drive(&mut bots, Duration::from_secs(2), |bots| {
         bots.iter().all(|b| b.mirror.party.is_none())
     });
+    Ok(())
+}
+
+/// Whether `bot` has been shown a chat line with exactly this text.
+fn heard<'a>(bot: &'a Bot, text: &str) -> Option<&'a engine_net::model::ChatMessageInfo> {
+    bot.mirror.chat.iter().find(|m| m.text == text)
+}
+
+/// Whether the server refused `bot`'s chat with a refusal of `category`.
+fn chat_refused(bot: &Bot, category: ErrorCategory) -> bool {
+    bot.failures
+        .iter()
+        .any(|(action, error)| *action == Action::Chat && error.category == category)
+}
+
+fn said(bot: &Bot, channel: Channel, target: &str, text: &str) {
+    bot.send(NetCommand::SendChat {
+        channel,
+        target: target.to_owned(),
+        text: text.to_owned(),
+    });
+}
+
+fn noticed(bot: &Bot, fragment: &str) -> bool {
+    bot.mirror
+        .notices
+        .iter()
+        .any(|notice| notice.message.contains(fragment))
+}
+
+/// Chat: a Server line reaches everyone, a Party line only the party, a whisper only its two
+/// ends; the sender's name is the server's, a whisper to nobody or oneself is refused with a
+/// notice, text is cleaned and bounded, and a flood is rate limited.
+///
+/// Three bots form a party (and stay in its key selection); a fourth, alone in the queue,
+/// is the outsider.
+pub fn chat(endpoints: &RealmEndpoints) -> Outcome {
+    log::info!("scenario: chat");
+    let tag = run_tag();
+    let mut bots = trio(&tag, "chat", endpoints, false, false)?;
+    let formed = drive(&mut bots, Duration::from_secs(40), |bots| {
+        bots.iter()
+            .all(|b| b.mirror.party.is_some() && b.mirror.members.len() == 3)
+    });
+    check(formed, "the three bots formed a party")?;
+    bots.push(
+        Bot::start(
+            BotConfig {
+                name: "chat-outsider".into(),
+                email: format!("chat-outsider-{tag}@bots.mygame.test"),
+                password: "bot-password-1".into(),
+                definition: "firemage".into(),
+                role: Role::Dps,
+                dungeon: "graveyard_crypt".into(),
+                accept: true,
+                insert_key: false,
+                start_if_leader: false,
+                walk: false,
+                hunt: false,
+                queue: true,
+            },
+            endpoints,
+        )
+        .map_err(|e| e.message)?,
+    );
+    let queued = drive(&mut bots, Duration::from_secs(30), |bots| {
+        bots[3].mirror.ticket.is_some() && bots[3].mirror.party.is_none()
+    });
+    check(queued, "the outsider is queued alone, with no party")?;
+    let outsider_name = bots[3]
+        .mirror
+        .ticket
+        .as_ref()
+        .map(|t| t.character_name.clone())
+        .unwrap_or_default();
+    let leader_name = bots[0]
+        .mirror
+        .my_membership()
+        .map(|m| m.character_name.clone())
+        .unwrap_or_default();
+    check(
+        !outsider_name.is_empty() && !leader_name.is_empty(),
+        "both have character names",
+    )?;
+    let settle = |bots: &mut [Bot]| drive(bots, Duration::from_secs(2), |_| false);
+
+    // Server: everyone, under the sender's own character name and account.
+    let server_text = format!("hello realm {tag}");
+    said(&bots[3], Channel::Server, "", &server_text);
+    let everyone = drive(&mut bots, Duration::from_secs(10), |bots| {
+        bots.iter().all(|b| heard(b, &server_text).is_some())
+    });
+    check(everyone, "a Server message reached all four players")?;
+    let line = heard(&bots[0], &server_text);
+    check(
+        line.is_some_and(|m| m.sender_name == outsider_name),
+        "the sender's name is the server's: their character",
+    )?;
+    check(
+        line.is_some_and(|m| Some(m.sender_account.as_str()) == bots[3].mirror.my_account_id()),
+        "the sender's account is the connection's own",
+    )?;
+
+    // Party: only the party.
+    let party_text = format!("party line {tag}");
+    said(&bots[0], Channel::Party, "", &party_text);
+    let party_heard = drive(&mut bots, Duration::from_secs(10), |bots| {
+        bots[..3].iter().all(|b| heard(b, &party_text).is_some())
+    });
+    check(party_heard, "a Party message reached the whole party")?;
+    settle(&mut bots);
+    check(
+        heard(&bots[3], &party_text).is_none(),
+        "the outsider did not see the Party message",
+    )?;
+    said(&bots[3], Channel::Party, "", "party? I have none");
+    settle(&mut bots);
+    check(
+        chat_refused(&bots[3], ErrorCategory::Party),
+        "a Party message from outside a party was refused",
+    )?;
+    check(
+        bots.iter()
+            .all(|b| heard(b, "party? I have none").is_none()),
+        "and reached no one",
+    )?;
+
+    // Whisper: its two ends.
+    let whisper_text = format!("psst {tag}");
+    said(
+        &bots[0],
+        Channel::Whisper,
+        &outsider_name.to_uppercase(),
+        &whisper_text,
+    );
+    let whispered = drive(&mut bots, Duration::from_secs(10), |bots| {
+        heard(&bots[0], &whisper_text).is_some() && heard(&bots[3], &whisper_text).is_some()
+    });
+    check(
+        whispered,
+        "the whisper reached the recipient and the sender",
+    )?;
+    settle(&mut bots);
+    check(
+        heard(&bots[1], &whisper_text).is_none() && heard(&bots[2], &whisper_text).is_none(),
+        "the sender's party mates did not see the whisper",
+    )?;
+    check(
+        bots[3].mirror.last_whisperer() == Some(leader_name.as_str()),
+        "the recipient can reply to the whisperer",
+    )?;
+    check(
+        heard(&bots[0], &whisper_text)
+            .is_some_and(|m| m.recipient_name.as_deref() == Some(outsider_name.as_str())),
+        "the whisper names its recipient",
+    )?;
+
+    // Refused whispers say so in a notice, and are heard by no one.
+    let nobody = format!("Nobody{tag}");
+    said(&bots[0], Channel::Whisper, &nobody, "anyone there?");
+    let told = drive(&mut bots, Duration::from_secs(10), |bots| {
+        noticed(&bots[0], &format!("No player named {nobody} is online."))
+    });
+    check(told, "a whisper to nobody left a notice for the sender")?;
+    said(
+        &bots[0],
+        Channel::Whisper,
+        &leader_name.to_uppercase(),
+        "me myself",
+    );
+    let told = drive(&mut bots, Duration::from_secs(10), |bots| {
+        noticed(&bots[0], "You cannot whisper yourself.")
+    });
+    check(told, "a whisper to oneself left a notice")?;
+    settle(&mut bots);
+    check(
+        bots.iter()
+            .all(|b| heard(b, "anyone there?").is_none() && heard(b, "me myself").is_none()),
+        "refused whispers were stored for no one",
+    )?;
+
+    // Text is cleaned and bounded.
+    let dirty = format!("a\u{7}b\tc {tag}");
+    said(&bots[1], Channel::Server, "", &dirty);
+    let clean = format!("abc {tag}");
+    let cleaned = drive(&mut bots, Duration::from_secs(10), |bots| {
+        heard(&bots[0], &clean).is_some()
+    });
+    check(cleaned, "control characters were stripped from the text")?;
+    said(&bots[1], Channel::Server, "", &"x".repeat(201));
+    settle(&mut bots);
+    check(
+        chat_refused(&bots[1], ErrorCategory::Protocol),
+        "a message over 200 characters was refused",
+    )?;
+    check(
+        bots[0].mirror.chat.iter().all(|m| m.text.len() <= 200),
+        "and stored for no one",
+    )?;
+
+    // A flood is held to the rate.
+    for i in 0..12 {
+        said(&bots[2], Channel::Server, "", &format!("flood {i} {tag}"));
+    }
+    settle(&mut bots);
+    check(
+        chat_refused(&bots[2], ErrorCategory::RateLimited),
+        "a flood of Server messages was rate limited",
+    )?;
+    let landed = (0..12)
+        .filter(|i| heard(&bots[0], &format!("flood {i} {tag}")).is_some())
+        .count();
+    check(landed < 12, "not every flooded message was delivered")?;
+
+    for bot in &mut bots {
+        bot.config.queue = false;
+        bot.send(NetCommand::LeaveParty);
+        bot.send(NetCommand::LeaveQueue);
+    }
+    drive(&mut bots, Duration::from_secs(2), |_| false);
     Ok(())
 }

@@ -137,6 +137,15 @@ pub enum NetCommand {
     Act(engine_realm::combat::CombatAction),
     /// Dismiss a notice.
     DismissNotice(u64),
+    /// Say something. The server names the sender.
+    SendChat {
+        /// The channel.
+        channel: engine_realm::chat::Channel,
+        /// A whisper's character name; empty otherwise.
+        target: String,
+        /// The text.
+        text: String,
+    },
 }
 
 /// Which request a failure belongs to.
@@ -178,6 +187,8 @@ pub enum Action {
     InsertKey,
     /// Withdrawing the key.
     WithdrawKey,
+    /// Sending a chat message.
+    Chat,
 }
 
 /// The realm connection's state.
@@ -648,6 +659,11 @@ impl Worker {
                     link.act(&action);
                 }
             }
+            NetCommand::SendChat {
+                channel,
+                target,
+                text,
+            } => self.with_link(Action::Chat, |link| link.send_chat(channel, target, text)),
             NetCommand::DismissNotice(id) => {
                 if let Some(link) = &self.link {
                     link.dismiss_notice(id);
