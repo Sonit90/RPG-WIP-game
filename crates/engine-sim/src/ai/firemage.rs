@@ -1,4 +1,4 @@
-//! The rotation AI: what a competent player would press, and when they would deviate.
+//! The FireMage's rotation: what a competent player would press, and when they would deviate.
 //!
 //! Two priority systems, one per build, plus the decisions both share. It is deliberately
 //! *not* a fixed script: the Detonate decision in particular is evaluated against the state
@@ -6,12 +6,33 @@
 //! to die anyway" are different rotations and a simulator that only knew the first would
 //! overstate the Ignite-maintenance build.
 //!
+//! # Haste (Detonation) priority
+//!
+//! 1. **Fire Mastery** on cooldown, once there is a burn (two stacks) or 30 Heat to amplify.
+//! 2. **Detonate** when the burn is full and (it would kill the target anyway, or it is about
+//!    to expire, or it is fresh enough to be worth the cycle).
+//! 3. **Flame Cone** / **Firestorm** when two or more enemies stand in the pack.
+//! 4. **Flame Lance** while the burn is below maximum stacks.
+//! 5. **Meteor** and **Pyroblast** from three stacks.
+//! 6. **Flame Lance** (a charge to spare), then **Firebolt** as the filler.
+//!
+//! # Crit (Ignite maintenance) priority
+//!
+//! 1. **Fire Mastery** as above. 2. **Detonate** only when holding the burn is worthless.
+//! 3. At a full burn: **Pyroblast**, then **Meteor**. 4. Below a full burn: **Flame Lance**.
+//! 5. Area abilities, then the payoff spells, then **Flame Lance** and **Firebolt**.
+//!
+//! Buffs and debuffs kept up: Ignite on the primary target (and as many of the pack as the
+//! area spells reach), Fire Mastery's haste or crit window, and Heat.
+//!
 //! Nothing here computes damage. It presses buttons; the game decides what they do.
 
 use engine_core::math::Vec3;
 use engine_game::entity::EntityId;
 use engine_game::firemage::FireAbility;
 use engine_game::sim::Simulation;
+
+use super::{Rotation, centroid, ready_to_act};
 
 /// Which rotation is being played.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -103,8 +124,8 @@ impl RotationAi {
     }
 
     /// Takes at most one action this tick.
-    pub fn act(&mut self, simulation: &mut Simulation, pack: &[EntityId]) {
-        if simulation.casting().is_some() || !simulation.mage().off_global_cooldown() {
+    fn act_once(&mut self, simulation: &mut Simulation, pack: &[EntityId]) {
+        if !ready_to_act(simulation) {
             return;
         }
         let living: Vec<EntityId> = pack
@@ -332,21 +353,46 @@ impl RotationAi {
     }
 }
 
-/// The middle of the living pack: where an area ability is aimed.
-fn centroid(simulation: &Simulation, living: &[EntityId]) -> Vec3 {
-    if living.is_empty() {
-        return Vec3::ZERO;
+impl Rotation for RotationAi {
+    fn act(&mut self, simulation: &mut Simulation, pack: &[EntityId]) {
+        self.act_once(simulation, pack);
     }
-    let mut sum = Vec3::ZERO;
-    let mut count = 0.0;
-    for id in living {
-        if let Some(position) = simulation.world().position(*id) {
-            sum = Vec3::new(sum.x + position.x, sum.y, sum.z + position.z);
-            count += 1.0;
+
+    fn tracked_cooldowns(&self) -> &'static [FireAbility] {
+        &[
+            FireAbility::FlameLance,
+            FireAbility::FlameCone,
+            FireAbility::Meteor,
+            FireAbility::Pyroblast,
+            FireAbility::Firestorm,
+            FireAbility::FireMastery,
+        ]
+    }
+
+    fn name(&self) -> &'static str {
+        match self.style {
+            Style::Haste => "FireMage / Haste (Detonation)",
+            Style::Crit => "FireMage / Crit (Ignite maintenance)",
         }
     }
-    if count == 0.0 {
-        return Vec3::ZERO;
+
+    fn priority(&self) -> &'static [&'static str] {
+        match self.style {
+            Style::Haste => &[
+                "Fire Mastery on cooldown, once there is a burn (2 stacks) or 30 Heat to amplify.",
+                "Detonate a full burn when it would kill the target anyway, is about to expire, or is fresh (80% of its duration left).",
+                "Flame Cone / Firestorm when two or more enemies stand in the pack.",
+                "Flame Lance while the burn is below maximum stacks.",
+                "Meteor, then Pyroblast, from 3 Ignite stacks.",
+                "Flame Lance with a spare charge, then Firebolt as the filler.",
+            ],
+            Style::Crit => &[
+                "Fire Mastery on cooldown, once there is a burn (2 stacks) or 30 Heat to amplify.",
+                "Detonate only when holding the burn is worthless (lethal anyway, or about to expire).",
+                "At a full burn: Pyroblast, then Meteor.",
+                "Below a full burn: Flame Lance to rebuild it.",
+                "Flame Cone / Firestorm for a pack, then the payoff spells, then Flame Lance and Firebolt.",
+            ],
+        }
     }
-    Vec3::new(sum.x / count, 0.0, sum.z / count)
 }

@@ -1,15 +1,21 @@
 //! Builds: a set of talents, a Fire Mastery specialisation, and a rotation to play them.
 //!
+//! [`Build`] is the FireMage's; [`ClassBuild`] wraps any class's build, and [`builds_for`] is
+//! the table of what the matrix runs.
+//!
 //! The talent definitions are [`engine_game::firemage::TALENTS`] and nothing else. This
 //! module decides which *combinations* to try; it does not restate what any of them do.
 
+use engine_game::character::stat::{Stat, StatBlock, rating_for_fraction};
 use engine_game::firemage::{
     DEFAULT_TALENT_BUDGET, FireMastery, Gear, TALENT_COUNT, TalentGrid, TalentId,
 };
+use engine_game::sim::Simulation;
 
-use crate::ai::Style;
+use crate::ai::{DruidRotation, Rotation, RotationAi, Style, WarriorRotation};
+use crate::class::Class;
 
-/// One build the simulator can run.
+/// One FireMage build: talents, specialisation, rotation style and gear.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Build {
     /// What to call it in the report.
@@ -224,6 +230,140 @@ pub fn search_space(budget: u32) -> Vec<Build> {
 #[must_use]
 pub fn default_budget() -> u32 {
     DEFAULT_TALENT_BUDGET
+}
+
+impl Build {
+    /// The same build under another name, for the report's "Default / Build A / Build B".
+    #[must_use]
+    pub fn named(&self, name: &str) -> Self {
+        Self {
+            name: name.to_owned(),
+            ..self.clone()
+        }
+    }
+
+    /// This build's built-in gear as the stat block the game's pipeline takes.
+    ///
+    /// The talent-search and gear-band studies state their gear as percentages of haste and
+    /// crit on a character sheet ([`Gear::totalling`]). The game converts a rating to a
+    /// fraction through `secondary_fraction`; this is its inverse, so a percentage becomes
+    /// the rating that produces it and then travels the real pipeline like any other gear.
+    #[must_use]
+    pub fn gear_stats(&self) -> StatBlock {
+        let mut stats = StatBlock::zero();
+        stats.add(Stat::Intellect, self.gear.spell_power);
+        stats.add(Stat::Haste, rating_for_fraction(self.gear.haste));
+        stats.add(
+            Stat::CriticalStrike,
+            rating_for_fraction(self.gear.crit_chance),
+        );
+        stats
+    }
+}
+
+/// A Warrior build: nothing to choose yet.
+///
+/// The Warrior has no talent system. The type exists so the build table has a row to put
+/// "Default" in now and "Build A" in later: adding a talent system to the class is adding
+/// fields here, and nothing else in the simulator changes.
+#[derive(Debug, Clone, PartialEq)]
+pub struct WarriorBuild {
+    /// What to call it in the report.
+    pub name: String,
+}
+
+/// A Druid build: nothing to choose yet, for the same reason as [`WarriorBuild`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct DruidBuild {
+    /// What to call it in the report.
+    pub name: String,
+}
+
+/// **A build of any class.** The one type the matrix, the encounter and the report handle.
+///
+/// An enum over each class's own build type rather than a trait object: the report needs to
+/// say which talents a build bought, and "which class" is a fact the encounter has to match
+/// on anyway to apply a Mage's talents and Fire Mastery.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ClassBuild {
+    /// A FireMage: talents, a specialisation and a rotation style.
+    Mage(Build),
+    /// A Warrior.
+    Warrior(WarriorBuild),
+    /// A Druid.
+    Druid(DruidBuild),
+}
+
+impl ClassBuild {
+    /// Which class this is a build of.
+    #[must_use]
+    pub fn class(&self) -> Class {
+        match self {
+            Self::Mage(_) => Class::Mage,
+            Self::Warrior(_) => Class::Warrior,
+            Self::Druid(_) => Class::Druid,
+        }
+    }
+
+    /// What to call it in the report.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        match self {
+            Self::Mage(build) => &build.name,
+            Self::Warrior(build) => &build.name,
+            Self::Druid(build) => &build.name,
+        }
+    }
+
+    /// The rotation that plays it.
+    #[must_use]
+    pub fn rotation(&self) -> Box<dyn Rotation> {
+        match self {
+            Self::Mage(build) => Box::new(RotationAi::new(build.style)),
+            Self::Warrior(_) => Box::new(WarriorRotation::new()),
+            Self::Druid(_) => Box::new(DruidRotation::new()),
+        }
+    }
+
+    /// Puts the build's talents and specialisation on a simulation whose hero is already set.
+    pub fn apply(&self, simulation: &mut Simulation) {
+        if let Self::Mage(build) = self {
+            simulation.mage_mut().set_talents(build.talents());
+            simulation.mage_mut().mastery = build.mastery;
+        }
+    }
+
+    /// The talents it bought, for a report line.
+    #[must_use]
+    pub fn talent_names(&self) -> String {
+        match self {
+            Self::Mage(build) => build.talent_names(),
+            Self::Warrior(_) | Self::Druid(_) => "NONE (class has no talents yet)".to_owned(),
+        }
+    }
+}
+
+/// **The build table: every build of a class the matrix runs.**
+///
+/// Warrior and Druid have no talents, so each has its `Default` and nothing else. A class
+/// that grows talents adds `Build A` and `Build B` rows here.
+#[must_use]
+pub fn builds_for(class: Class) -> Vec<ClassBuild> {
+    match class {
+        Class::Warrior => vec![ClassBuild::Warrior(WarriorBuild {
+            name: "Default".to_owned(),
+        })],
+        Class::Druid => vec![ClassBuild::Druid(DruidBuild {
+            name: "Default".to_owned(),
+        })],
+        Class::Mage => vec![
+            // No talents: the class as it is before a single point is spent, played with the
+            // Detonation rotation because that rotation needs nothing from the grid.
+            ClassBuild::Mage(Build::new("Default", &[], FireMastery::Haste, Style::Haste)),
+            ClassBuild::Mage(designed_haste_build().named("Build A")),
+            ClassBuild::Mage(designed_crit_build().named("Build B")),
+        ],
+    }
 }
 
 #[cfg(test)]

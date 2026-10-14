@@ -25,8 +25,12 @@ use engine_game::firemage::Rng;
 use engine_game::sim::{FireCounters, SimConfig, Simulation};
 use engine_game::world::{EntityDesc, EntityKind};
 
-use crate::ai::RotationAi;
-use crate::build::Build;
+use engine_game::character::stat::StatBlock;
+use engine_game::hero::Hero;
+
+use crate::ai::Rotation;
+use crate::build::ClassBuild;
+use crate::metrics::{Metrics, Recorder};
 
 /// How a fight is set up.
 #[derive(Debug, Clone, PartialEq)]
@@ -119,6 +123,8 @@ pub struct RunResult {
     pub counters: FireCounters,
     /// Seconds the fight ran.
     pub seconds: f64,
+    /// Casts, resources, cooldown usage and aura uptimes.
+    pub metrics: Metrics,
 }
 
 impl Default for RunResult {
@@ -133,6 +139,7 @@ impl Default for RunResult {
             by_ability: [0.0; engine_game::ability::ABILITY_SLOTS],
             counters: FireCounters::default(),
             seconds: 0.0,
+            metrics: Metrics::default(),
         }
     }
 }
@@ -145,6 +152,7 @@ impl RunResult {
         self.overkill += other.overkill;
         self.deaths += other.deaths;
         self.seconds += other.seconds;
+        self.metrics.accumulate(&other.metrics);
         for (slot, value) in other.by_ability.iter().enumerate() {
             self.by_ability[slot] += value;
         }
@@ -184,6 +192,7 @@ impl RunResult {
         result.dps = scale(self.dps);
         result.overkill = scale(self.overkill);
         result.seconds = scale(self.seconds);
+        result.metrics = self.metrics.averaged(runs);
         for value in &mut result.by_ability {
             *value = scale(*value);
         }
@@ -216,12 +225,16 @@ pub struct Encounter {
     config: ScenarioConfig,
     rng: Rng,
     until_move: f32,
+    hero: Hero,
 }
 
 impl Encounter {
-    /// Builds the fight described by `config`, with `build`'s talents and specialisation.
+    /// Builds the fight described by `config` for `build`, wearing `gear`.
+    ///
+    /// `gear` is a stat block in the game's units, handed to the simulation through the same
+    /// door equipment uses, so the rating curve and the main-stat bridge are the game's own.
     #[must_use]
-    pub fn new(config: &ScenarioConfig, build: &Build, seed: u64) -> Self {
+    pub fn new(config: &ScenarioConfig, build: &ClassBuild, gear: &StatBlock, seed: u64) -> Self {
         let arena = ArenaConfig {
             arena_half_extent: 60.0,
             ..ArenaConfig::default()
@@ -258,10 +271,10 @@ impl Encounter {
         }
 
         simulation.set_player_entity(player);
+        simulation.set_hero(build.class().hero());
+        simulation.set_stat_bonus(*gear);
         simulation.select_nearest_target();
-        simulation.mage_mut().set_talents(build.talents());
-        simulation.mage_mut().mastery = build.mastery;
-        simulation.mage_mut().gear = build.gear;
+        build.apply(&mut simulation);
 
         Self {
             simulation,
@@ -270,13 +283,15 @@ impl Encounter {
             config: config.clone(),
             rng: Rng::new(seed ^ 0x9E37_79B9_7F4A_7C15),
             until_move: config.move_interval,
+            hero: build.class().hero(),
         }
     }
 
     /// Runs the fight to its end and reports what happened.
-    pub fn run(&mut self, ai: &mut RotationAi) -> RunResult {
+    pub fn run(&mut self, ai: &mut dyn Rotation) -> RunResult {
         let step = self.simulation.timestep().step_seconds();
         let ticks = (self.config.duration / step).round() as u32;
+        let mut recorder = Recorder::new(self.hero);
 
         for _ in 0..ticks {
             if self.living().is_empty() {
@@ -286,10 +301,13 @@ impl Encounter {
             }
             self.wander(step);
             ai.act(&mut self.simulation, &self.targets);
+            recorder.observe_events(&self.simulation);
             self.simulation.step_once();
+            recorder.observe(&self.simulation, &self.targets);
         }
 
-        self.result()
+        let metrics = recorder.finish(&self.simulation);
+        self.result(metrics)
     }
 
     /// The living targets.
@@ -342,7 +360,7 @@ impl Encounter {
     }
 
     /// Collects the meter and the counters into a result.
-    fn result(&self) -> RunResult {
+    fn result(&self, metrics: Metrics) -> RunResult {
         let meter = self.simulation.meter();
         let mut by_ability = [0.0; engine_game::ability::ABILITY_SLOTS];
         for (slot, totals) in meter.abilities().iter().enumerate() {
@@ -359,6 +377,7 @@ impl Encounter {
             by_ability,
             counters: self.simulation.fire_counters(),
             seconds,
+            metrics,
         }
     }
 
@@ -374,7 +393,8 @@ impl Encounter {
 #[must_use]
 pub fn run_scenario(
     config: &ScenarioConfig,
-    build: &Build,
+    build: &ClassBuild,
+    gear: &StatBlock,
     iterations: u32,
     seed: u64,
 ) -> RunResult {
@@ -385,9 +405,9 @@ pub fn run_scenario(
         let run_seed = seed
             .wrapping_mul(0x5851_F42D_4C95_7F2D)
             .wrapping_add(u64::from(iteration) + 1);
-        let mut encounter = Encounter::new(config, build, run_seed);
-        let mut ai = RotationAi::new(build.style);
-        let result = encounter.run(&mut ai);
+        let mut encounter = Encounter::new(config, build, gear, run_seed);
+        let mut ai = build.rotation();
+        let result = encounter.run(ai.as_mut());
         total.accumulate(&result);
     }
     total.averaged(iterations.max(1))
