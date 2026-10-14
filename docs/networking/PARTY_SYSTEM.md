@@ -22,8 +22,10 @@ before writing. There is no flag soup.
   ready-check screen.
 * `ready_check_respond(accept)`: answering twice with the same answer is harmless; changing
   an answer is refused.
-* **All accept** → `Ready`, leader picked with the realm's own RNG (`ctx.random()`), the
-  members' queue tickets removed.
+* **All accept** → `ChoosingKey`, no leader yet, the members' queue tickets removed. A member
+  inserts their own key (`party_insert_key`) → `Ready` with that member as leader; the owner
+  may withdraw it (`party_withdraw_key`) → back to `ChoosingKey`. See
+  [GAME_LOOP.md](GAME_LOOP.md#dungeon-keys).
 * **Any decline or disconnect** → cancelled at once. Members who had accepted or not yet
   answered go back to searching with their **original** queue time; the decliner and the
   disconnected leave the queue. A disconnected member is never counted as accepting.
@@ -35,10 +37,12 @@ before writing. There is no flag soup.
 | Action | Who | When |
 | --- | --- | --- |
 | Answer the ready check | any member | `ReadyCheck` |
-| Start | leader | `Ready`, full 1/1/1 roster, everyone accepted and connected |
+| Insert own key | any member with a valid key for the dungeon | `ChoosingKey` |
+| Withdraw key | the key's owner | `Ready` |
+| Start | leader (= key owner) | `Ready`, key inserted, full 1/1/1 roster, everyone accepted and connected |
 | Kick | leader, not themselves | `Ready`, `InDungeon` |
-| Transfer leadership | leader, to a member | `Ready`, `Starting`, `InDungeon` |
-| Leave | any member | any state but `ReadyCheck` (decline instead) |
+| Transfer leadership | leader, to a member | `Starting`, `InDungeon` |
+| Leave | any member | any state but `ReadyCheck` (decline instead); before the run it disbands and re-queues the others |
 
 Every reducer builds a plain `PartyView` and asks `authorize`; the answer is the whole
 permission model. Non-members get `Authorization` errors; leader-only actions from others get
@@ -58,7 +62,8 @@ reconnect grace expires, the janitor applies the departure above.
 ## Client
 
 The party screen lists role, character, player, level, gear score, connection and leader. The
-leader sees **Make Leader**, **Kick** and **Start Dungeon**; everyone sees **Leave Party**. None
+key-selection screen offers **Insert My Key**; once a key is in, its owner leads and sees
+**Start Dungeon**, **Withdraw Key** and **Kick**; everyone sees **Leave Party**. None
 of those buttons is drawn for someone who may not use it, and the server refuses them anyway.
 
 ## Tests

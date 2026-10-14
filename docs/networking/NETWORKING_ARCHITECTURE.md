@@ -70,7 +70,8 @@ Clients send **intent**, never state:
 | A client may send | The server decides |
 | --- | --- |
 | "queue character C as role R" (via the API) | ownership, role legality, level/gear admission, gear score |
-| "accept / decline the ready check" | outcome, re-queue, leader (random, server-side) |
+| "accept / decline the ready check" | outcome, re-queue |
+| "insert my key", "withdraw my key" | ownership and validity of the snapshotted key; the owner becomes leader |
 | "start", "kick X", "make X leader", "leave" | authorization via `engine_realm::party::authorize` |
 | input frames: axes, camera yaw, jump, sequence number | position, velocity, collision, barrier, speed |
 | "press bar slot N (at point P) with target T" | whether it casts, every hit, heal, status, death, completion |
