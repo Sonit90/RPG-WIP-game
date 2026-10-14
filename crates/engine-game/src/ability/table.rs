@@ -528,22 +528,17 @@ impl ThreatScale {
 /// The Warrior's columns of the ability table.
 ///
 /// Carried only by Warrior rows, as [`ClassRow::Warrior`]. The
-/// **magnitudes** of what twenty Deflection buys are not here: they differ in kind from one
-/// ability to the next — a silence, five per cent of Block, half again on a bleed — and they
-/// live as named constants in [`crate::warrior::tuning`], which is one place a designer
-/// reads rather than a column that would be a different quantity in every row.
+/// magnitudes of the kit — Valor, Battle Fervor, the defensive numbers — are not here: they
+/// differ in kind from one ability to the next and live as named constants in
+/// [`crate::warrior::tuning`], which is one place a designer reads rather than a column that
+/// would be a different quantity in every row.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct WarriorRow {
-    /// Deflection this ability spends to be empowered, or zero if it has no empowered form.
+    /// Valor one successful cast of this ability generates, or zero if it generates none.
     ///
-    /// Twenty for every spender in the kit, as one number rather than nine.
-    pub deflection_cost: f32,
-    /// How much Deflection must be banked before the cost is paid, or zero for "the cost".
-    ///
-    /// Every spender empowers as soon as it can afford itself; Recuperate is the exception
-    /// the design makes, and spends only a **full** bank — it is the outlet for a Warrior with
-    /// nothing else to spend on, and must never compete with the real spenders below that.
-    pub empower_at: f32,
+    /// One for War Stomp, Colossus Strike and Shield Charge, as a column rather than a rule
+    /// so the executor has one place to ask "does this ability pay Valor".
+    pub valor: f32,
     /// Impact damage as a fraction of the **caster's current** maximum health.
     ///
     /// Added to whatever [`AbilityDef::coefficient`] produced. `0.01` is "and 1 % of your
@@ -562,23 +557,10 @@ impl WarriorRow {
     /// Every column at zero: the defaults a row overrides, and what
     /// [`AbilityDef::warrior`] answers for a row that is not the Warrior's.
     pub const NONE: Self = Self {
-        deflection_cost: 0.0,
-        empower_at: 0.0,
+        valor: 0.0,
         health_coefficient: 0.0,
         tick_health_coefficient: 0.0,
     };
-
-    /// Whether twenty Deflection buys this ability anything.
-    #[must_use]
-    pub const fn is_empowerable(&self) -> bool {
-        self.deflection_cost > 0.0
-    }
-
-    /// How much must be banked for a press to empower: the cost, or more where the row says.
-    #[must_use]
-    pub fn empower_threshold(&self) -> f32 {
-        self.deflection_cost.max(self.empower_at)
-    }
 }
 
 /// The Druid's columns of the ability table.
@@ -650,7 +632,7 @@ impl FireMageRow {
 /// Which hero a row belongs to, and the columns only that hero has.
 ///
 /// The whole of "which class an ability belongs to". A Warrior row cannot carry Heat or a
-/// Druid row Deflection: the data a class does not have is not there to be zero.
+/// Druid row Valor: the data a class does not have is not there to be zero.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ClassRow {
     /// A FireMage ability, and what it does with Heat, Energy and Ignite.

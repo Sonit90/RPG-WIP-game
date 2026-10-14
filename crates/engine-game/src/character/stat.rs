@@ -305,7 +305,7 @@ pub const ARMOR_MAX_REDUCTION: f32 = 0.75;
 /// What `armor` takes off a physical hit, as a fraction in `0.0..=ARMOR_MAX_REDUCTION`.
 ///
 /// **The one definition.** The damage pipeline, the character sheet and the Warrior's
-/// Deflection bonus all read it, so there is no second answer to "what is my armour worth".
+/// armour bonuses all read it, so there is no second answer to "what is my armour worth".
 #[must_use]
 pub fn armor_reduction(armor: f32) -> f32 {
     if !armor.is_finite() || armor <= 0.0 {

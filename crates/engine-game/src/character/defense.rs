@@ -18,8 +18,8 @@
 //! Dodge, Parry, Block and Armour are four stats that answer one question — *how much of
 //! this attack lands* — and the answer has an order. Rolling them at the call site would be
 //! four chances for a caller to roll two of them for the same swing, and the Warrior's whole
-//! resource is paid out **once per successful defensive event**: a duplicate roll is a
-//! duplicate point of Deflection. So the roll happens exactly once, here, and the caller is
+//! payouts (Battle Trance's heal, Spell Reflect's cooldown) are made **once per successful
+//! defensive event**: a duplicate roll is a duplicate payment. So the roll happens exactly once, here, and the caller is
 //! handed a [`DefenseOutcome`] it can neither reproduce nor re-ask for.
 //!
 //! # Only one outcome per attack
@@ -27,7 +27,7 @@
 //! The three avoidance rolls are a single chained roll against one random number, in the
 //! order dodge, parry, block. An attack is dodged *or* parried *or* blocked *or* it hits;
 //! there is no such thing as a parried block. That is what lets
-//! [`crate::warrior::Deflection`] be fed straight from the outcome without a de-duplication
+//! Battle Trance and Spell Reflect be fed straight from the outcome without a de-duplication
 //! table.
 //!
 //! # What is rollable
@@ -45,7 +45,7 @@ use crate::firemage::rng::Rng;
 ///
 /// Thirty per cent: a block is worth much less than a dodge, which is what makes Block a
 /// *frequency* stat rather than a bigger avoidance stat. The Warrior wants many small
-/// defensive events, because each one is a point of Deflection and a Battle Trance heal.
+/// defensive events, because each one is a Battle Trance heal and a Spell Reflect cooldown tick.
 pub const BLOCK_REDUCTION: f32 = 0.30;
 
 /// The most of an attack that avoidance may ever answer for, as a fraction.
@@ -58,7 +58,7 @@ pub const AVOIDANCE_CAP: f32 = 0.80;
 /// What happened to one incoming attack.
 ///
 /// Exactly one of these per attack, produced by exactly one roll. Everything downstream —
-/// the damage that lands, the Deflection that is generated, the Battle Trance heal, the
+/// the damage that lands, the Battle Trance heal, the
 /// Spell Reflect cooldown, the sound and the floating text — reads this one value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DefenseOutcome {
@@ -75,7 +75,7 @@ pub enum DefenseOutcome {
 impl DefenseOutcome {
     /// Whether this is a successful defensive event.
     ///
-    /// **The one definition of what generates Deflection.** Block, Parry and Dodge; not a
+    /// **The one definition of a defensive event.** Block, Parry and Dodge; not a
     /// hit, and not the mere possession of the stats that could have produced one.
     #[must_use]
     pub fn is_defensive(self) -> bool {
@@ -104,7 +104,7 @@ impl DefenseOutcome {
 ///
 /// Derived from a [`StatBlock`] on every use and never stored, for the reason the whole
 /// character module gives: a stored profile is a snapshot, and the Warrior's armour changes
-/// on the tick they spend Deflection.
+/// on the tick War Stomp's armour bonus appears.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DefenseProfile {
     /// Flat armour, after every percentage bonus.
@@ -115,8 +115,7 @@ pub struct DefenseProfile {
     pub parry: f32,
     /// Chance to dodge, as a fraction.
     pub dodge: f32,
-    /// How much a block stops, as a fraction. [`BLOCK_REDUCTION`] plus whatever Shield
-    /// Block's Deflection spend added.
+    /// How much a block stops, as a fraction. [`BLOCK_REDUCTION`].
     pub block_reduction: f32,
     /// Whether critical strikes against this character are turned into ordinary hits.
     ///
@@ -179,8 +178,7 @@ impl DefenseProfile {
 
     /// The total chance that an attack produces a defensive event at all.
     ///
-    /// What the character sheet prints and what the Warrior's Deflection generation is
-    /// proportional to.
+    /// What the character sheet prints and how often the Warrior's defensive events fire.
     #[must_use]
     pub fn defensive_chance(&self) -> f32 {
         let (dodge, parry, block) = self.avoidance();

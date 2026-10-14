@@ -1,17 +1,19 @@
-//! The Warrior: Deflection, and the state the eleven abilities leave behind them.
+//! The Warrior: Valor, Battle Fervor, and the state the eleven abilities leave behind them.
 //!
 //! ```text
+//!   War Stomp / Colossus Strike / Shield Charge          (one Valor per cast)
+//!                       │
+//!                       ▼
+//!             Valor ○ ○ ○ ○ ○  ──── fifth pip ────► Valor 0, +1 Battle Fervor
+//!                                                      (30 s, three stacks:
+//!                                                       +10 % dealt, −3 % taken each)
+//!
 //!                 Block / Parry / Dodge          (character::defense, one roll per attack)
 //!                          │
-//!            ┌─────────────┼──────────────┬────────────────────────┐
-//!            ▼             ▼              ▼                        ▼
-//!      +0.2 Deflection   Battle Trance   Spell Reflect          the hit itself
-//!            │           1 % max HP      −0.1 s cooldown        (armour, block share)
-//!            ▼           (3 a second)
-//!    passive max HP / armour shrink
-//!            │
-//!            ▼
-//!      spend 20 on an ability ──► empowered effect, and the passives come straight back
+//!            ┌─────────────┴──────────────┐
+//!            ▼                            ▼
+//!      Battle Trance                 Spell Reflect
+//!      1 % max HP (3 a second)       −0.1 s cooldown
 //! ```
 //!
 //! # What is here and what is not
@@ -39,13 +41,10 @@
 
 /// The Warrior's rows of the ability table.
 pub mod abilities;
-/// Deflection: the resource, and the passive bonuses that shrink as it fills.
-pub mod deflection;
+/// Valor: the resource that turns into Battle Fervor when it fills.
+pub mod valor;
 
-pub use deflection::{
-    DEFLECTION_MAXIMUM, DEFLECTION_PER_EVENT, DEFLECTION_PER_EVENT_IN_TRANCE, DEFLECTION_SPEND,
-    Deflection, PASSIVE_ARMOR_AT_ZERO, PASSIVE_MAX_HEALTH_AT_ZERO,
-};
+pub use valor::Valor;
 
 use crate::entity::EntityId;
 use crate::firemage::Timer;
@@ -73,10 +72,28 @@ pub mod tuning {
     /// visible as a change to the geared target rather than silent.
     pub const GEARED_HEALTH_MULTIPLE: f32 = 1.6;
 
-    /// Shield Charge: how much more the impact hits for when twenty Deflection is spent.
-    pub const SHIELD_CHARGE_EMPOWERED_DAMAGE: f32 = 0.50;
+    /// Valor: the most stacks the bar holds. The fifth is spent on the call that gains it.
+    pub const VALOR_MAX: u8 = 5;
 
-    /// Shield Charge: seconds the primary target is stunned. Never changed by Deflection.
+    /// Battle Fervor: seconds it lasts. Gaining a stack refreshes the whole status.
+    pub const FERVOR_DURATION: f32 = 30.0;
+
+    /// Battle Fervor: the most stacks it holds.
+    pub const FERVOR_MAX_STACKS: u8 = 3;
+
+    /// Battle Fervor: damage dealt gained per stack, as a fraction.
+    pub const FERVOR_DAMAGE_PER_STACK: f32 = 0.10;
+
+    /// Battle Fervor: damage taken lost per stack, as a fraction, of every damage type.
+    pub const FERVOR_DAMAGE_TAKEN_PER_STACK: f32 = 0.03;
+
+    /// Battle Fervor: maximum health gained per stack, as a fraction.
+    ///
+    /// Zero by default: the hook is there and tested, and a designer who wants it sets it to
+    /// `0.01`.
+    pub const FERVOR_MAX_HEALTH_PER_STACK: f32 = 0.0;
+
+    /// Shield Charge: seconds the primary target is stunned.
     pub const SHIELD_CHARGE_STUN: f32 = 0.5;
 
     /// Shield Charge: metres a second the Warrior actually runs.
@@ -94,9 +111,6 @@ pub mod tuning {
     /// would be steered by a dead ability for the rest of the fight.
     pub const SHIELD_CHARGE_TIMEOUT: f32 = 3.0;
 
-    /// Shield Bash: seconds of silence twenty Deflection buys. Enemies only.
-    pub const SHIELD_BASH_SILENCE: f32 = 4.0;
-
     /// Shield Block: the Block chance it grants before any health scaling.
     pub const SHIELD_BLOCK_BASE: f32 = 0.06;
 
@@ -105,9 +119,6 @@ pub mod tuning {
     /// At [`GEARED_HEALTH_MULTIPLE`] this is `0.30 × 0.6 = +18 %`, which with
     /// [`SHIELD_BLOCK_BASE`] is the design's `+24 %`.
     pub const SHIELD_BLOCK_HEALTH_SCALE: f32 = 0.30;
-
-    /// Shield Block: the extra Block effectiveness twenty Deflection buys, for the duration.
-    pub const SHIELD_BLOCK_EMPOWERED: f32 = 0.05;
 
     /// Battle Trance: the share of maximum health one defensive event restores.
     pub const BATTLE_TRANCE_HEAL: f32 = 0.01;
@@ -128,20 +139,8 @@ pub mod tuning {
     /// Last Stand: damage taken reduction, as a fraction.
     pub const LAST_STAND_REDUCTION: f32 = 0.10;
 
-    /// Last Stand: damage taken reduction when twenty Deflection is spent.
-    pub const LAST_STAND_EMPOWERED_REDUCTION: f32 = 0.15;
-
     /// Spell Reflect: seconds off the remaining cooldown per successful defensive event.
     pub const SPELL_REFLECT_COOLDOWN_PER_EVENT: f32 = 0.1;
-
-    /// Spell Reflect: how much more the next reflected spell deals for twenty Deflection.
-    pub const SPELL_REFLECT_EMPOWERED_DAMAGE: f32 = 0.50;
-
-    /// Colossus Strike: how much more its bleed deals for twenty Deflection.
-    ///
-    /// The bleed only. The impact is unchanged, which is what makes the spend an
-    /// area-over-time decision rather than a burst one.
-    pub const COLOSSUS_BLEED_EMPOWERED: f32 = 0.50;
 
     /// Puncture Blood: the share of **current** health it costs.
     pub const PUNCTURE_HEALTH_COST: f32 = 0.30;
@@ -149,19 +148,10 @@ pub mod tuning {
     /// Puncture Blood: the absorb it grants, as a share of **maximum** health.
     pub const PUNCTURE_SHIELD: f32 = 0.30;
 
-    /// Puncture Blood: what twenty Deflection multiplies the absorb by.
-    ///
-    /// One and a fifth: thirty per cent of maximum health becomes thirty-six. The health
-    /// **cost** is untouched, which is the whole reason to spend on it in an emergency.
-    pub const PUNCTURE_EMPOWERED_SCALE: f32 = 1.20;
-
     /// Adrenaline: the share of damage taken that is banked.
     pub const ADRENALINE_SHARE: f32 = 0.30;
 
-    /// Adrenaline: the share banked when twenty Deflection is spent.
-    pub const ADRENALINE_EMPOWERED_SHARE: f32 = 0.40;
-
-    /// Adrenaline: seconds the banked pool is paid back over. Never changed by Deflection.
+    /// Adrenaline: seconds the banked pool is paid back over.
     pub const ADRENALINE_RECOVERY_SECONDS: f32 = 6.0;
 
     /// Recuperate: maximum health restored a second, per stack.
@@ -291,8 +281,6 @@ pub struct ChargeMotion {
     pub destination: Vec3,
     /// Seconds the charge has been running, against [`tuning::SHIELD_CHARGE_TIMEOUT`].
     pub elapsed: f32,
-    /// Whether twenty Deflection was spent when it was started.
-    pub empowered: bool,
 }
 
 /// Battle Trance's rate limit: three healing activations a second, deterministically.
@@ -339,12 +327,10 @@ impl TranceLimit {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Warrior {
     /// The resource.
-    pub deflection: Deflection,
+    pub valor: Valor,
     /// Shield Block: seconds of extra Block and no critical strikes taken.
     pub shield_block: Timer,
-    /// Whether the running Shield Block was empowered.
-    pub shield_block_empowered: bool,
-    /// Battle Trance: seconds of healing defensive events and doubled Deflection.
+    /// Battle Trance: seconds of healing defensive events.
     pub battle_trance: Timer,
     /// Last Stand: seconds of extra maximum health and reduced damage.
     pub last_stand: Timer,
@@ -353,12 +339,8 @@ pub struct Warrior {
     /// Held rather than recomputed, so the bonus does not chase its own tail: the value is
     /// derived from the maximum health *before* the buff, once.
     pub last_stand_bonus: f32,
-    /// The damage reduction the running Last Stand grants.
-    pub last_stand_reduction: f32,
     /// Spell Reflect: seconds enemy spells go back where they came from.
     pub spell_reflect: Timer,
-    /// Whether the next spell this reflects deals extra damage.
-    pub spell_reflect_empowered: bool,
     /// Adrenaline: seconds damage is being banked.
     pub adrenaline: Timer,
     /// The share of damage the running Adrenaline banks.
@@ -389,15 +371,12 @@ impl Warrior {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            deflection: Deflection::empty(),
+            valor: Valor::empty(),
             shield_block: Timer::idle(),
-            shield_block_empowered: false,
             battle_trance: Timer::idle(),
             last_stand: Timer::idle(),
             last_stand_bonus: 0.0,
-            last_stand_reduction: 0.0,
             spell_reflect: Timer::idle(),
-            spell_reflect_empowered: false,
             adrenaline: Timer::idle(),
             adrenaline_share: 0.0,
             recovery_pool: 0.0,
@@ -408,19 +387,7 @@ impl Warrior {
         }
     }
 
-    /// Deflection one successful defensive event is worth right now.
-    ///
-    /// Doubled by Battle Trance, and by nothing else.
-    #[must_use]
-    pub fn deflection_per_event(&self) -> f32 {
-        if self.battle_trance.is_active() {
-            DEFLECTION_PER_EVENT_IN_TRANCE
-        } else {
-            DEFLECTION_PER_EVENT
-        }
-    }
-
-    /// **The maximum health multiplier**, from Deflection and Last Stand.
+    /// **The maximum health multiplier**, from Last Stand.
     ///
     /// One place, read by the one function that pushes maximum health into the world, so a
     /// character sheet and a health bar cannot disagree about how big the Warrior is.
@@ -431,10 +398,10 @@ impl Warrior {
         } else {
             0.0
         };
-        1.0 + self.deflection.max_health_bonus() + last_stand
+        1.0 + last_stand
     }
 
-    /// **The armour multiplier**, from Deflection and a full stack of War Stomp.
+    /// **The armour multiplier**, from a full stack of War Stomp.
     #[must_use]
     pub fn armor_multiplier(&self) -> f32 {
         let stomp = if self.war_stomp_armor {
@@ -442,31 +409,25 @@ impl Warrior {
         } else {
             0.0
         };
-        1.0 + self.deflection.armor_bonus() + stomp
+        1.0 + stomp
     }
 
     /// The extra Block chance Shield Block is granting, at `max_health`.
     ///
-    /// Zero when it is not running. The empowered five per cent is added here rather than at
-    /// the cast, so the whole of "what is my Block right now" is one call.
+    /// Zero when it is not running, so the whole of "what is my Block right now" is one call.
     #[must_use]
     pub fn shield_block_bonus(&self, max_health: f32) -> f32 {
         if !self.shield_block.is_active() {
             return 0.0;
         }
-        let empowered = if self.shield_block_empowered {
-            SHIELD_BLOCK_EMPOWERED
-        } else {
-            0.0
-        };
-        health_scaled(SHIELD_BLOCK_BASE, SHIELD_BLOCK_HEALTH_SCALE, max_health) + empowered
+        health_scaled(SHIELD_BLOCK_BASE, SHIELD_BLOCK_HEALTH_SCALE, max_health)
     }
 
     /// The flat damage reduction the Warrior currently has, as a fraction.
     #[must_use]
     pub fn damage_reduction(&self) -> f32 {
         if self.last_stand.is_active() {
-            self.last_stand_reduction
+            LAST_STAND_REDUCTION
         } else {
             0.0
         }
@@ -612,21 +573,6 @@ mod tests {
     }
 
     #[test]
-    fn the_event_is_worth_double_only_while_the_trance_is_up() {
-        let mut warrior = Warrior::new();
-        assert_eq!(warrior.deflection_per_event(), DEFLECTION_PER_EVENT);
-        warrior.start_battle_trance(1.0);
-        assert_eq!(
-            warrior.deflection_per_event(),
-            DEFLECTION_PER_EVENT_IN_TRANCE
-        );
-        for _ in 0..61 {
-            warrior.tick(STEP);
-        }
-        assert_eq!(warrior.deflection_per_event(), DEFLECTION_PER_EVENT);
-    }
-
-    #[test]
     fn an_absorb_stands_in_front_of_health_until_it_is_used_up() {
         let mut absorb = Absorb::none();
         absorb.grant(300.0, 10.0);
@@ -669,9 +615,8 @@ mod tests {
     #[test]
     fn the_multipliers_are_one_when_nothing_is_running() {
         let warrior = Warrior::new();
-        // A fresh Warrior has no Deflection, which is the *strongest* passive state.
-        assert!((warrior.max_health_multiplier() - 1.05).abs() < 1e-6);
-        assert!((warrior.armor_multiplier() - 1.10).abs() < 1e-6);
+        assert_eq!(warrior.max_health_multiplier(), 1.0);
+        assert_eq!(warrior.armor_multiplier(), 1.0);
         assert_eq!(warrior.damage_reduction(), 0.0);
         assert!(!warrior.immune_to_critical());
         assert_eq!(warrior.shield_block_bonus(BASE_MAX_HEALTH), 0.0);

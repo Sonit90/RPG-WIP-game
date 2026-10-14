@@ -258,13 +258,8 @@ pub struct UiTheme {
     pub energy: UiColor,
     /// The Ultimate Energy bar once it is full.
     pub energy_full: UiColor,
-    /// The Warrior's Deflection bar below the cap.
-    ///
-    /// Warm rather than cool, and the *filling* of it is the warning: a full bar is a full
-    /// bank and no passive defence at all. See [`UiTheme::deflection_color`].
-    pub deflection: UiColor,
-    /// The Deflection bar at a hundred, where the passive bonuses are worth nothing.
-    pub deflection_capped: UiColor,
+    /// The Warrior's Valor pips: warm gold, for a resource that turns into a buff.
+    pub valor: UiColor,
     /// The Druid's Mana bar.
     pub mana: UiColor,
     /// The Astral Power bar while it is filling.
@@ -338,8 +333,7 @@ impl Default for UiTheme {
             heat_inferno: [1.0, 0.30, 0.10, 1.0],
             energy: [0.35, 0.55, 0.95, 1.0],
             energy_full: [0.65, 0.85, 1.0, 1.0],
-            deflection: [0.85, 0.72, 0.30, 1.0],
-            deflection_capped: [1.0, 0.55, 0.20, 1.0],
+            valor: [0.92, 0.76, 0.28, 1.0],
             mana: [0.30, 0.50, 0.95, 1.0],
             astral: [0.55, 0.45, 0.85, 1.0],
             astral_armed: [0.75, 0.85, 1.0, 1.0],
@@ -422,21 +416,6 @@ impl UiTheme {
             self.astral_armed
         } else {
             self.astral
-        }
-    }
-
-    /// What colour the Deflection bar is at `value`.
-    ///
-    /// One of two: the ordinary bar, and the capped one. The cap is worth calling out
-    /// because it is the one state the design asks the player to get out of — not with a
-    /// penalty, but because the passive maximum health and armour bonuses are worth nothing
-    /// there and there is a full bank to spend.
-    #[must_use]
-    pub fn deflection_color(&self, capped: bool) -> UiColor {
-        if capped {
-            self.deflection_capped
-        } else {
-            self.deflection
         }
     }
 
@@ -2056,12 +2035,10 @@ impl GameUi {
         // The edge says what pressing it would do: quiet when it is simply ready, coloured
         // when it is refused or empowered, white while it is the ability in progress.
         let active = view.shows_active_frame();
-        // **Empowerable is said whatever else is true.** A press that will spend Deflection
-        // or Astral Power is outlined in yellow even while the button is cooling or the
-        // target is wrong: what the resource will buy is worth knowing before it is usable.
-        let empowerable = view.spends_deflection
-            || view.spends_astral
-            || view.availability == SlotAvailability::Empowered;
+        // **Empowerable is said whatever else is true.** A press that will spend Astral Power
+        // is outlined in yellow even while the button is cooling or the target is wrong:
+        // what the resource will buy is worth knowing before it is usable.
+        let empowerable = view.spends_astral || view.availability == SlotAvailability::Empowered;
         let border = if active {
             self.theme.slot_casting
         } else if empowerable {
@@ -3459,7 +3436,6 @@ mod tests {
 
     fn tooltip_context(snapshot: &UiSnapshot) -> crate::ui::tooltip::AbilityContext {
         crate::ui::tooltip::AbilityContext {
-            deflection: snapshot.player.warrior.deflection,
             astral_armed: snapshot.player.druid.armed,
             ignite_max: snapshot.ignite_max,
             mastery: snapshot.player.mastery,
@@ -3467,16 +3443,21 @@ mod tests {
     }
 
     #[test]
-    fn a_warrior_tooltip_says_what_deflection_buys_and_whether_this_press_pays() {
+    fn a_warrior_tooltip_says_which_abilities_pay_valor() {
         use engine_game::firemage::FireAbility;
-        let mut simulation = sim();
-        assert!(simulation.set_hero(engine_game::hero::Hero::Warrior));
-        for (banked, ready) in [(5.0, false), (60.0, true)] {
-            simulation.warrior_mut().deflection.set(banked);
+        let simulation = {
+            let mut simulation = sim();
+            assert!(simulation.set_hero(engine_game::hero::Hero::Warrior));
+            simulation
+        };
+        for (ability, pays) in [
+            (FireAbility::ColossusStrike, true),
+            (FireAbility::WarStomp, true),
+            (FireAbility::ShieldCharge, true),
+            (FireAbility::ShieldBlock, false),
+        ] {
             let snapshot = UiSnapshot::build(&simulation);
-            let view = *snapshot
-                .ability_view(FireAbility::ColossusStrike)
-                .expect("colossus strike is on the bar");
+            let view = *snapshot.ability_view(ability).expect("on the bar");
             let mut ui = GameUi::new();
             ui.push_ability_tooltip(
                 UiRect::new(1500.0, 950.0, 380.0, 64.0),
@@ -3486,27 +3467,16 @@ mod tests {
                 VIEWPORT,
             );
             let found = said(&ui);
-            assert!(found.starts_with("Colossus Strike "), "{found}");
-            assert!(found.contains("RESOURCE"), "{found}");
-            assert!(
-                found.contains("Consumes 20 Deflection to empower, if available"),
-                "{found}"
+            assert_eq!(
+                found.contains("Generates 1 Valor"),
+                pays,
+                "{ability:?}: {found}"
             );
-            assert!(found.contains("EMPOWERED EFFECT"), "{found}");
             assert!(
-                found.contains("The bleed deals 50% more damage."),
-                "{found}"
+                !found.contains("EMPOWERED EFFECT"),
+                "the Warrior has no empowered form: {found}"
             );
-            let status = if ready {
-                "Ready: 60 Deflection banked"
-            } else {
-                "Not empowered: 5 of 20 Deflection"
-            };
-            assert!(found.contains(status), "{banked}: {found}");
-            assert!(
-                !found.contains("SMASHES"),
-                "the old shouted text survived: {found}"
-            );
+            assert!(!found.contains("SMASHES"), "{found}");
         }
     }
 

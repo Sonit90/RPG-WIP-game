@@ -273,6 +273,10 @@ pub enum UiIcon {
     SpellReflect,
     /// A sword driven in, a shield set against it, and the light behind.
     LastStand,
+    /// A gold laurel round a star: the Warrior's resource.
+    Valor,
+    /// A flame climbing three chevrons: the buff a full bar of Valor buys.
+    BattleFervor,
 
     // The Druid's thirteen. Green where the mage's are fire and the Warrior's steel, with
     // moonlight and sun on the two that are not healing, and one violet for the resource.
@@ -453,13 +457,11 @@ pub enum UiIcon {
     AuraWitheringPlague,
     /// Magic Vulnerability: a cracked orb of warding.
     AuraMagicVulnerability,
-    /// Unspent Deflection: a steel shield turning a blow aside.
-    AuraDeflection,
 }
 
 impl UiIcon {
     /// Every icon, in atlas order.
-    pub const ALL: [Self; 108] = [
+    pub const ALL: [Self; 109] = [
         Self::Firebolt,
         Self::Meteor,
         Self::FlameCone,
@@ -482,6 +484,8 @@ impl UiIcon {
         Self::BattleTrance,
         Self::SpellReflect,
         Self::LastStand,
+        Self::Valor,
+        Self::BattleFervor,
         Self::Moonfire,
         Self::Sunfire,
         Self::Wrath,
@@ -567,7 +571,6 @@ impl UiIcon {
         Self::AuraCurseOfWeakness,
         Self::AuraWitheringPlague,
         Self::AuraMagicVulnerability,
-        Self::AuraDeflection,
     ];
 
     /// How many icons there are.

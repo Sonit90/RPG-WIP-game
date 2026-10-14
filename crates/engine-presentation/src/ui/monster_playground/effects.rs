@@ -142,6 +142,9 @@ pub(super) fn modifier_lines(kind: StatusKind) -> Vec<String> {
             EffectModifier::DamageDealt { per_stack } => {
                 format!("{} damage dealt{per}", percent(per_stack))
             }
+            EffectModifier::MaxHealth { per_stack } => {
+                format!("{} maximum health{per}", percent(per_stack))
+            }
         })
         .collect()
 }

@@ -145,9 +145,9 @@ const BLOCKED_TINT: [f32; 4] = [0.80, 0.82, 0.88, 0.9];
 /// A parried or dodged attack: cooler and thinner, because nothing touched the character.
 const AVOIDED_TINT: [f32; 4] = [0.62, 0.78, 0.95, 0.7];
 
-/// Deflection being spent: the resource's own colour, and the one moment it is worth
-/// drawing.
-const DEFLECTION_TINT: [f32; 4] = [0.95, 0.82, 0.35, 1.0];
+/// Valor filling into Battle Fervor: the resource's own colour, and the one moment it is
+/// worth drawing.
+const VALOR_TINT: [f32; 4] = [0.95, 0.82, 0.35, 1.0];
 
 /// Puncture Blood's shell.
 const ABSORB_TINT: [f32; 4] = [0.85, 0.25, 0.30, 0.85];
@@ -665,16 +665,20 @@ impl VfxDirector {
                     .tinted(tint),
                 );
             }
-            // Spending is the one moment the resource is worth showing: the passive bonuses
-            // have just come back, and the player pressed something to make it happen.
-            CombatEvent::DeflectionSpent { entity, .. } => {
+            // A full bar is the one moment the resource is worth showing: it has just become
+            // Battle Fervor.
+            CombatEvent::ValorGained {
+                entity,
+                filled: true,
+                ..
+            } => {
                 let Some(position) = simulation.world().position(entity) else {
                     return;
                 };
                 self.spawn(
                     VfxSpawn::at(VfxId::BlinkArrival, position)
                         .with_radius(1.2)
-                        .tinted(DEFLECTION_TINT),
+                        .tinted(VALOR_TINT),
                 );
             }
             CombatEvent::AbsorbApplied {
@@ -777,14 +781,13 @@ impl VfxDirector {
             CombatEvent::LootMailed { .. }
             | CombatEvent::MailTaken { .. }
             | CombatEvent::MailBagFull { .. } => {}
-            // A point of Deflection and a shield taking a hit move no picture of their own:
-            // both happen several times a second in a pack, and the block that caused them
-            // has already been drawn.
+            // A point of Valor short of a full bar and a shield taking a hit move no picture of
+            // their own: the cast and the block that caused them have already been drawn.
             CombatEvent::Damage(_)
             | CombatEvent::Healing { .. }
             | CombatEvent::Jumped { .. }
             | CombatEvent::Landed { .. }
-            | CombatEvent::DeflectionGained { .. }
+            | CombatEvent::ValorGained { .. }
             | CombatEvent::AstralPowerGained { .. }
             | CombatEvent::AstralPowerArmed { .. }
             | CombatEvent::AstralPowerSpent { .. }

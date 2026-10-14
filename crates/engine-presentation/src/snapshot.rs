@@ -28,7 +28,7 @@ use engine_game::firemage::{
 use engine_game::hero::Hero;
 use engine_game::sim::Simulation;
 use engine_game::status::StatusKind;
-use engine_game::warrior::{DEFLECTION_MAXIMUM, DEFLECTION_SPEND};
+use engine_game::warrior::tuning::VALOR_MAX;
 use engine_game::world::EntityKind;
 
 /// Reads everything the Warrior's readouts show.
@@ -43,17 +43,18 @@ fn warrior_view(simulation: &Simulation) -> WarriorView {
     }
     let warrior = simulation.warrior();
     let profile = simulation.defense_profile();
+    let statuses = simulation.world().statuses(simulation.player().entity);
+    let fervor_stacks = statuses.map_or(0, |set| set.stacks(StatusKind::BattleFervor));
+    let fervor_remaining = statuses.map_or(0.0, |set| set.remaining(StatusKind::BattleFervor));
     WarriorView {
         active: true,
-        deflection: warrior.deflection.value(),
-        max_health_bonus: warrior.deflection.max_health_bonus(),
-        armor_bonus: warrior.deflection.armor_bonus(),
+        valor: warrior.valor.stacks(),
+        fervor_stacks,
+        fervor_remaining,
         shield_block: warrior.shield_block.remaining(),
-        shield_block_empowered: warrior.shield_block_empowered,
         battle_trance: warrior.battle_trance.remaining(),
         last_stand: warrior.last_stand.remaining(),
         spell_reflect: warrior.spell_reflect.remaining(),
-        spell_reflect_empowered: warrior.spell_reflect_empowered,
         adrenaline: warrior.adrenaline.remaining(),
         recovery_pool: warrior.recovery_pool,
         absorb: warrior.absorb.remaining(),
@@ -185,8 +186,8 @@ impl StatusList {
 
 /// **The Warrior's own readouts.**
 ///
-/// Everything the interface needs to say what Deflection is worth right now, and what the
-/// class currently has running. Every field is read from the simulation rather than derived
+/// Everything the interface needs to say how much Valor is banked, how much Battle Fervor
+/// the Warrior has, and what the class currently has running. Every field is read from the simulation rather than derived
 /// here, which is the rule the rest of this module already follows: a bar that works out its
 /// own bonus is a bar that can disagree with the damage pipeline.
 ///
@@ -195,24 +196,20 @@ impl StatusList {
 pub struct WarriorView {
     /// Whether the player is the Warrior at all.
     pub active: bool,
-    /// Deflection banked, in `0..=100`.
-    pub deflection: f32,
-    /// The maximum health bonus Deflection is currently worth, as a fraction.
-    pub max_health_bonus: f32,
-    /// The armour bonus Deflection is currently worth, as a fraction.
-    pub armor_bonus: f32,
+    /// Valor banked, in `0..VALOR_MAX`.
+    pub valor: u8,
+    /// Stacks of Battle Fervor on the Warrior.
+    pub fervor_stacks: u8,
+    /// Seconds of Battle Fervor left.
+    pub fervor_remaining: f32,
     /// Seconds of Shield Block left.
     pub shield_block: f32,
-    /// Whether the running Shield Block was empowered.
-    pub shield_block_empowered: bool,
     /// Seconds of Battle Trance left.
     pub battle_trance: f32,
     /// Seconds of Last Stand left.
     pub last_stand: f32,
     /// Seconds of Spell Reflect left.
     pub spell_reflect: f32,
-    /// Whether the next spell reflected will be empowered.
-    pub spell_reflect_empowered: bool,
     /// Seconds of Adrenaline left.
     pub adrenaline: f32,
     /// What Adrenaline has banked so far, in points of health.
@@ -232,22 +229,10 @@ pub struct WarriorView {
 }
 
 impl WarriorView {
-    /// Deflection as a fraction, for a bar.
+    /// Valor as a fraction, for a bar.
     #[must_use]
-    pub fn deflection_fraction(&self) -> f32 {
-        (self.deflection / DEFLECTION_MAXIMUM).clamp(0.0, 1.0)
-    }
-
-    /// Whether there is enough banked to empower an ability.
-    #[must_use]
-    pub fn can_empower(&self) -> bool {
-        self.deflection + f32::EPSILON >= DEFLECTION_SPEND
-    }
-
-    /// Whether the bar is full, which is where the passive bonuses are worth nothing.
-    #[must_use]
-    pub fn is_capped(&self) -> bool {
-        self.deflection >= DEFLECTION_MAXIMUM
+    pub fn valor_fraction(&self) -> f32 {
+        (f32::from(self.valor) / f32::from(VALOR_MAX)).clamp(0.0, 1.0)
     }
 }
 
@@ -618,14 +603,8 @@ pub struct AbilitySlotView {
     pub ignite_stacks: u8,
     /// Chance those stacks land, for the abilities that roll for it.
     pub ignite_chance: f32,
-    /// Deflection this ability spends to be empowered. Zero if it has no empowered form.
-    pub deflection_cost: f32,
-    /// Whether pressing it **now** will spend that Deflection.
-    ///
-    /// Its own field rather than left to the button to work out from the cost and the
-    /// resource: "this press will cost you twenty" is a fact about the simulation, and a
-    /// button that computes it is a button that can be wrong about it.
-    pub spends_deflection: bool,
+    /// Valor one successful cast of this ability pays. Zero if it pays none.
+    pub valor_generation: f32,
     /// Mana one cast costs. Zero for everything that costs none.
     pub mana_cost: f32,
     /// Astral Power one successful cast generates.
@@ -634,9 +613,7 @@ pub struct AbilitySlotView {
     pub astral_empowerable: bool,
     /// **Whether pressing it now will be empowered.**
     ///
-    /// Armed, and compatible. The same field `spends_deflection` is for the Warrior, and it
-    /// drives the same highlight — one visual language for "this press buys something
-    /// extra", whichever class is holding the bar.
+    /// Armed, and compatible. It drives the empowered highlight on the bar.
     pub spends_astral: bool,
     /// What one healing event of this ability restores right now, at the current spell
     /// power and *without* the empowerment. Zero for an ability that heals nothing.
@@ -1254,14 +1231,6 @@ fn ability_view(
             .distance_between(simulation.player().entity, id)
     });
 
-    // Whether pressing this now spends twenty Deflection. Asked of the simulation's own
-    // resource, so the highlight on the button and the spend in the executor are the same
-    // question answered once.
-    let deflection = simulation.warrior().deflection.value();
-    let spends_deflection = simulation.hero() == Hero::Warrior
-        && definition.warrior().is_empowerable()
-        && deflection + f32::EPSILON >= definition.warrior().empower_threshold();
-
     // Whether pressing this now spends a hundred Astral Power. Asked of the simulation's own
     // resource, exactly as the Warrior's spend is.
     let spends_astral = simulation.astral_armed() && definition.druid().astral_empowerable;
@@ -1306,11 +1275,10 @@ fn ability_view(
             }
             _ => SlotAvailability::InvalidTarget,
         }
-    } else if spends_deflection || spends_astral {
+    } else if spends_astral {
         // **The empowered highlight.** The same state Detonate-on-a-full-burn already uses,
         // reached by a second class for its own reason: it is ready, and pressing it right
-        // now buys something extra. One state, one colour on the bar, and no second visual
-        // language for the Warrior.
+        // now buys something extra.
         SlotAvailability::Empowered
     } else {
         SlotAvailability::Ready
@@ -1344,8 +1312,7 @@ fn ability_view(
         ignite_scaling: definition.fire().ignite_bonus_per_stack,
         ignite_stacks: definition.fire().ignite_stacks,
         ignite_chance: definition.fire().ignite_chance,
-        deflection_cost: definition.warrior().deflection_cost,
-        spends_deflection,
+        valor_generation: definition.warrior().valor,
         mana_cost: definition.druid().mana_cost,
         astral_generation: definition.druid().astral_generation,
         astral_empowerable: definition.druid().astral_empowerable,

@@ -82,7 +82,7 @@ mod playground_exec;
 /// A networked client's simulation: the server runs the fight, this one presents it.
 pub mod remote;
 pub mod respawn;
-/// Casting the Warrior: Deflection, the incoming-damage pipeline and the charge.
+/// Casting the Warrior: Valor, the incoming-damage pipeline and the charge.
 mod warrior_exec;
 
 pub use loot::{
@@ -462,7 +462,7 @@ pub struct Simulation {
     /// One slot, overwritten, exactly like [`Simulation::last_line_of_sight`]: the question
     /// a developer asks is always about the swing that just landed.
     last_defense: Option<crate::character::DefenseOutcome>,
-    /// The Warrior: Deflection, its timers, its absorb and its banked pool.
+    /// The Warrior: Valor, its timers, its absorb and its banked pool.
     ///
     /// Beside the FireMage rather than instead of it, for the reason the FireMage's own
     /// state sits here while a Druid is being played: the class that is not being played
@@ -908,7 +908,7 @@ impl Simulation {
         let main = self.hero.main_stat();
 
         // Stamina, and then whatever the class is currently multiplying it by: the
-        // Warrior's Deflection bonus and Last Stand. The *fraction* is preserved here
+        // Warrior's Last Stand and Battle Fervor. The *fraction* is preserved here
         // because this is the gear path — see `refresh_warrior_health` for the buff path,
         // which keeps the absolute health instead.
         let max = health_from_stamina(stats.get(Stat::Stamina)) * self.warrior_health_multiplier();

@@ -18,6 +18,7 @@
 //! its empty state rather than disappearing: a target frame that vanished between targets
 //! would be a hole in the layout the player cannot aim at.
 
+use engine_game::warrior::tuning::VALOR_MAX;
 use engine_render_data::ui::{TextAlign, UiColor, UiDrawList, UiRect, UiScale};
 use engine_settings::hud::HudPlacement;
 
@@ -181,6 +182,66 @@ fn push_labelled_bar(
 ) {
     let plate = &theme.plate;
     frame_bar(list, rect, fraction, fill, plate);
+    let size = text_size(11.5, factor).min(rect.height * 0.9);
+    let centre = rect.y + rect.height * 0.5;
+    let pad = 4.0 * factor;
+    frame_text(
+        list,
+        rect.x + pad,
+        centre,
+        label,
+        plate.health_text,
+        size,
+        TextAlign::Left,
+        plate,
+    );
+    frame_text(
+        list,
+        rect.right() - pad,
+        centre,
+        value,
+        plate.health_text,
+        size,
+        TextAlign::Right,
+        plate,
+    );
+}
+
+/// A resource drawn as `count` separate pips, `filled` of them lit, with the label on the
+/// left and `value` on the right like [`push_labelled_bar`].
+///
+/// For a resource that is a number of whole things — the Warrior's Valor — where a smooth bar
+/// would suggest a fraction nobody can have.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one row of a frame is this many facts"
+)]
+fn push_pip_bar(
+    list: &mut UiDrawList,
+    theme: &UiTheme,
+    rect: UiRect,
+    filled: usize,
+    count: usize,
+    fill: (UiColor, UiColor),
+    label: &str,
+    value: &str,
+    factor: f32,
+) {
+    let plate = &theme.plate;
+    let gap = (2.0 * factor).round().max(1.0);
+    let width = ((rect.width - gap * count.saturating_sub(1) as f32) / count.max(1) as f32)
+        .floor()
+        .max(1.0);
+    for index in 0..count {
+        let pip = UiRect::new(
+            rect.x + index as f32 * (width + gap),
+            rect.y,
+            width,
+            rect.height,
+        );
+        let lit = if index < filled { 1.0 } else { 0.0 };
+        frame_bar(list, pip, lit, fill, plate);
+    }
     let size = text_size(11.5, factor).min(rect.height * 0.9);
     let centre = rect.y + rect.height * 0.5;
     let pad = 4.0 * factor;
@@ -447,7 +508,7 @@ fn push_unit_bar(
 /// Draws the player's frame: their health, with their name inside it.
 ///
 /// Nothing else. The class's resource and the Ultimate's energy are bars of their own, and
-/// every effect on the player — Deflection's bonus, a shield, respawn protection — is an
+/// every effect on the player — Battle Fervor, a shield, respawn protection — is an
 /// icon in the buff and debuff blocks, where it has a tooltip.
 pub fn push_player_frame(
     list: &mut UiDrawList,
@@ -479,7 +540,7 @@ pub fn push_player_frame(
 
 /// **The hero's own resource, as a bar of its own.**
 ///
-/// The Warrior has Deflection, the FireMage Heat, the Druid Mana over Astral Power — one
+/// The Warrior has five pips of Valor, the FireMage Heat, the Druid Mana over Astral Power — one
 /// element, one branch, and no hero is shown a bar that can never move. The Druid's two bars
 /// split the element's height; everyone else's one bar fills it.
 pub fn push_resource_bar(
@@ -531,18 +592,17 @@ pub fn push_resource_bar(
     scratch.detail.clear();
     if player.warrior.active {
         let warrior = &player.warrior;
-        write_integer(&mut scratch.detail, warrior.deflection.round() as i64);
-        // The empowered marker, on the resource itself: twenty banked is an ability's worth.
-        if warrior.can_empower() {
-            scratch.detail.push_str("  *");
-        }
-        push_labelled_bar(
+        write_integer(&mut scratch.detail, i64::from(warrior.valor));
+        scratch.detail.push('/');
+        write_integer(&mut scratch.detail, i64::from(VALOR_MAX));
+        push_pip_bar(
             list,
             theme,
             rect,
-            warrior.deflection_fraction(),
-            shaded(theme.deflection_color(warrior.is_capped())),
-            "Deflection",
+            usize::from(warrior.valor),
+            usize::from(VALOR_MAX),
+            shaded(theme.valor),
+            "Valor",
             &scratch.detail,
             factor,
         );

@@ -8,7 +8,7 @@
       "hero": "warrior",
       "roles": ["tank"],
       "starter": true,
-      "description": "Plate and shield. Blocks, parries and dodges into Deflection, and holds the enemy's attention."
+      "description": "Plate and shield. Builds Valor into Battle Fervor, and holds the enemy's attention."
     },
     {
       "id": "druid",

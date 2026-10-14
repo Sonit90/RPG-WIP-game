@@ -298,6 +298,14 @@ const ICONS: &[IconEntry] = &[
         file: "warrior/last_stand.svg",
         constant: "LAST_STAND",
     },
+    IconEntry {
+        file: "warrior/valor.svg",
+        constant: "VALOR",
+    },
+    IconEntry {
+        file: "warrior/battle_fervor.svg",
+        constant: "BATTLE_FERVOR",
+    },
     // The Druid's thirteen.
     IconEntry {
         file: "druid/moonfire.svg",
@@ -641,10 +649,6 @@ const ICONS: &[IconEntry] = &[
     IconEntry {
         file: "aura/magic_vulnerability.svg",
         constant: "AURA_MAGIC_VULNERABILITY",
-    },
-    IconEntry {
-        file: "aura/deflection.svg",
-        constant: "AURA_DEFLECTION",
     },
 ];
 

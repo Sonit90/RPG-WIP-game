@@ -11,7 +11,7 @@
 //! same `engine-game`, which the realm's protocol version already requires.
 //!
 //! Only what presentation and the interface consume is carried. Resource bookkeeping events
-//! (`ManaSpent`, `DeflectionGained` …) are not: resources are corrected from state, not
+//! (`ManaSpent`, `ValorGained` …) are not: resources are corrected from state, not
 //! replayed.
 
 use engine_core::math::Vec3;
@@ -245,7 +245,6 @@ pub enum WireEvent {
         target: EntityRef,
         ability: AbilityRef,
         amount: f32,
-        empowered: bool,
     },
     ControlApplied {
         source: EntityRef,
@@ -518,14 +517,12 @@ pub fn encode(event: &CombatEvent, name: &dyn Fn(EntityId) -> EntityRef) -> Opti
             target,
             ability,
             amount,
-            empowered,
             ..
         } => WireEvent::SpellReflected {
             source: name(source),
             target: name(target),
             ability: a(ability),
             amount,
-            empowered,
         },
         CombatEvent::ControlApplied {
             source,
@@ -881,13 +878,11 @@ pub fn decode(
             target,
             ability,
             amount,
-            empowered,
         } => CombatEvent::SpellReflected {
             source: any(source),
             target: any(target),
             ability: ability.id(),
             amount: *amount,
-            empowered: *empowered,
             tick,
         },
         WireEvent::ControlApplied {

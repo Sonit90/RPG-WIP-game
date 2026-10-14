@@ -145,8 +145,8 @@ pub struct Resources {
     pub mana: f32,
     /// Druid mana maximum.
     pub max_mana: f32,
-    /// Warrior deflection.
-    pub deflection: f32,
+    /// Warrior Valor stacks.
+    pub valor: f32,
     /// Druid astral power.
     pub astral: f32,
     /// Global cooldown left, seconds.
@@ -201,7 +201,7 @@ impl PlayerState {
             || resource(r.energy, o.energy)
             || resource(r.mana, o.mana)
             || resource(r.max_mana, o.max_mana)
-            || resource(r.deflection, o.deflection)
+            || resource(r.valor, o.valor)
             || resource(r.astral, o.astral)
             || resource(r.absorb, o.absorb)
             || ran_down(o.global_cooldown, r.global_cooldown)
@@ -740,7 +740,7 @@ impl CombatInstance {
                     energy: mage.energy.value(),
                     mana: sim.druid().mana.current(),
                     max_mana: sim.druid().mana.max(),
-                    deflection: sim.warrior().deflection.value(),
+                    valor: f32::from(sim.warrior().valor.stacks()),
                     astral: sim.druid().astral.value(),
                     global_cooldown: mage.global_cooldown.remaining(),
                     absorb: sim.absorb_of(entity),

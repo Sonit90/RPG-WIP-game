@@ -752,7 +752,7 @@ fn player_combat(row: &b::PlayerCombat) -> PlayerCombatInfo {
             energy: row.resources.energy,
             mana: row.resources.mana,
             max_mana: row.resources.max_mana,
-            deflection: row.resources.deflection,
+            valor: row.resources.valor,
             astral: row.resources.astral,
             global_cooldown: row.resources.global_cooldown,
             absorb: row.resources.absorb,

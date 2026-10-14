@@ -2247,7 +2247,7 @@ impl OnlineSession {
                     heat: row.resources.heat,
                     energy: row.resources.energy,
                     mana: row.resources.mana,
-                    deflection: row.resources.deflection,
+                    valor: row.resources.valor,
                     astral: row.resources.astral,
                     global_cooldown: (row.resources.global_cooldown - age).max(0.0),
                 },
@@ -2432,7 +2432,12 @@ impl OnlineSession {
             let spawn = Vec3::new(point.position[0], point.position[1], point.position[2]);
             let [min, max] = [dungeon.start_barrier.min(), dungeon.start_barrier.max()]
                 .map(|corner| Vec3::new(corner[0], corner[1], corner[2]));
-            (spawn, point.yaw, hub_layout(spawn, point.yaw), Some((min, max)))
+            (
+                spawn,
+                point.yaw,
+                hub_layout(spawn, point.yaw),
+                Some((min, max)),
+            )
         };
         // Whatever the level was built with, and whatever was left from before, gives way.
         let player = simulation.player().entity;
