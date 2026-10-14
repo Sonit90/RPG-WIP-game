@@ -16,6 +16,7 @@ pub mod email;
 pub mod error;
 pub mod middleware;
 pub mod openapi;
+pub mod ops;
 pub mod rate_limit;
 pub mod realm_bridge;
 pub mod routes;

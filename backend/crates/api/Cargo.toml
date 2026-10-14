@@ -49,6 +49,9 @@ dotenvy = "0.15"
 clap = { workspace = true }
 utoipa = { workspace = true }
 utoipa-swagger-ui = { workspace = true }
+sysinfo = { version = "0.36.1", default-features = false, features = ["system"] }
+engine-game = { version = "0.1.0", path = "../../../crates/engine-game" }
 
 [dev-dependencies]
+http-body-util = "0.1"
 tower = { workspace = true }

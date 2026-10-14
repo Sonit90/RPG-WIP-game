@@ -24,6 +24,7 @@ pub fn router() -> Router<AppState> {
         .route("/users/{id}/role", patch(set_role))
         .route("/users/{id}/active", patch(set_active))
         .route("/users/{id}/permissions", post(grant_permission))
+        .merge(super::ops::router::<AppState>())
 }
 
 #[derive(Debug, Deserialize, ToSchema, IntoParams)]

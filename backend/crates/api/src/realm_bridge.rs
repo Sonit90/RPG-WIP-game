@@ -34,6 +34,7 @@ pub async fn collect_results(state: AppState) {
         };
         let results = match state.realm.take_results(&token).await {
             Ok(results) => {
+                state.ops.bridge_pass_ok(results.len());
                 if unavailable {
                     tracing::info!("realm bridge: realm reachable again");
                     unavailable = false;
@@ -45,6 +46,9 @@ pub async fn collect_results(state: AppState) {
                     tracing::warn!(error = %e, "realm bridge: cannot collect results");
                     unavailable = true;
                 }
+                state
+                    .ops
+                    .bridge_pass_failed(&format!("cannot collect results: {e}"));
                 continue;
             }
         };
@@ -75,6 +79,8 @@ async fn persist_results(
     }
     if !persisted.is_empty() {
         if let Err(e) = state.realm.ack_results(token, &persisted).await {
+            crate::ops::errlog::error_log()
+                .push("bridge", &format!("result acknowledgement failed: {e}"));
             tracing::warn!(error = %e, count = persisted.len(), "realm bridge: acknowledgement failed; results will be re-delivered");
         }
     }
@@ -90,6 +96,7 @@ async fn collect_loot(state: &AppState, token: &str) {
             return;
         }
     };
+    state.ops.bridge_loot_pending(deliveries.len());
     let mut persisted = Vec::with_capacity(deliveries.len());
     for delivery in &deliveries {
         match store::apply_loot(&state.db, delivery).await {
@@ -103,6 +110,8 @@ async fn collect_loot(state: &AppState, token: &str) {
     }
     if !persisted.is_empty() {
         if let Err(e) = state.realm.ack_loot(token, &persisted).await {
+            crate::ops::errlog::error_log()
+                .push("bridge", &format!("loot acknowledgement failed: {e}"));
             tracing::warn!(error = %e, count = persisted.len(), "realm bridge: loot acknowledgement failed; it will be re-delivered");
         }
     }

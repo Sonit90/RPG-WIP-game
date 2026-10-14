@@ -62,3 +62,20 @@ spacetimedb_url = "http://127.0.0.1:3000"
 spacetimedb_database = "realm"
 service_subject = "service:realm-bridge"
 result_poll_secs = 5
+
+# The operator dashboard (docs/networking/ADMIN.md).
+[ops.anomaly]
+# Completed runs faster than this many seconds are flagged. 0 turns the check off.
+min_completion_seconds = 60
+# ...or faster than this percent of the dungeon's median completed run.
+relative_fast_percent = 50
+# A dungeon needs at least this many completed runs for the relative check.
+relative_min_samples = 5
+# Reports (game.dungeon_damage_reports): flag a player above this DPS, ...
+max_dps = 5000.0
+# ... a run's total damage above this, ...
+max_total_damage = 5000000
+# ... and a boss killed in fewer seconds than this.
+min_boss_kill_seconds = 10.0
+# How many rows each list in the report carries.
+list_limit = 20
