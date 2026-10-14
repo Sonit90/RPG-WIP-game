@@ -24,11 +24,13 @@ pub enum Operation {
     TimeSync,
     /// Combat button presses and target changes.
     Combat,
+    /// Sending a chat message.
+    Chat,
 }
 
 impl Operation {
     /// Every operation.
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
         Self::Queue,
         Self::ReadyCheck,
         Self::Party,
@@ -36,6 +38,7 @@ impl Operation {
         Self::Movement,
         Self::TimeSync,
         Self::Combat,
+        Self::Chat,
     ];
 
     /// The stable key the module stores buckets under.
@@ -49,6 +52,7 @@ impl Operation {
             Self::Movement => "movement",
             Self::TimeSync => "time_sync",
             Self::Combat => "combat",
+            Self::Chat => "chat",
         }
     }
 
@@ -65,6 +69,8 @@ impl Operation {
             Self::TimeSync => Limit::new(10.0, 2.0),
             // Mashing a key is a handful a second; a bot spamming every slot is not.
             Self::Combat => Limit::new(30.0, 15.0),
+            // A burst of five lines, then one a second: a conversation, not a flood.
+            Self::Chat => Limit::new(5.0, 1.0),
         }
     }
 }

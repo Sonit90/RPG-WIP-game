@@ -1824,6 +1824,10 @@ impl App {
     /// [`Bindings::write_commands`], so the simulation sees commands rather than events and
     /// a replay can supply the same commands without a keyboard.
     fn handle_key(&mut self, key: KeyCode) {
+        // Typing to another player: a letter is a letter, not a command.
+        if self.chat_typing() {
+            return;
+        }
         // In the editor the keyboard is the editor's: `H` hides the selection there, and a
         // key that also interrupted a dummy's cast or killed the player behind the panels
         // would be two actions from one press. The rendering switches stay, because a level
@@ -2168,6 +2172,8 @@ impl App {
     fn update_firemage_ui(&mut self, ctx: &mut EngineContext) {
         let viewport = self.renderer.size();
         let scale = self.game_ui.scale();
+        // Keys typed into chat are not the interface's: no window toggles, no ability keys.
+        let chat_keys = self.chat_typing();
         let ui_input = UiInput::from_input(ctx.input());
         self.ui_pointer = ui_input.pointer;
         self.aura_pointer = None;
@@ -2272,7 +2278,7 @@ impl App {
         // the wheel, and nothing under it — the bar, its keys, a click on the world — hears
         // this frame. Closed, it still answers the minimap: a hover, and a click that opens it.
         if self.dungeon_map.info().is_some() {
-            if ctx.input().was_key_pressed(self.bindings.toggle_map) {
+            if !chat_keys && ctx.input().was_key_pressed(self.bindings.toggle_map) {
                 match self.dungeon_map.toggle() {
                     MapOutcome::Opened => self.on_map_opened(),
                     MapOutcome::Closed => self.play_ui_sound(engine_audio::SoundId::UiCancel),
@@ -2283,7 +2289,7 @@ impl App {
             let wheel = ctx.input().wheel_delta();
             // The map's own keys, only while it is open: arrows zoom and step through the
             // encounters, Home frames the dungeon, the full stop finds the player.
-            if self.dungeon_map.is_open() {
+            if self.dungeon_map.is_open() && !chat_keys {
                 let input = ctx.input();
                 self.dungeon_map.handle_keys(
                     MapKeys {
@@ -2323,7 +2329,7 @@ impl App {
         // keys are: it toggles a window, and whether a press opens or closes one is a
         // question about the interface rather than about the character. Read after the slot
         // menu so a rebinding capture that is waiting for a key gets it first.
-        if ctx.input().was_key_pressed(self.bindings.character_sheet) {
+        if !chat_keys && ctx.input().was_key_pressed(self.bindings.character_sheet) {
             if self.character_menu.is_open() {
                 self.character_menu.close();
             } else {
@@ -2333,7 +2339,7 @@ impl App {
         }
 
         // The mailbox key, on the same terms as the character key.
-        if ctx.input().was_key_pressed(self.bindings.mailbox) {
+        if !chat_keys && ctx.input().was_key_pressed(self.bindings.mailbox) {
             if self.mailbox_menu.is_open() {
                 self.mailbox_menu.close();
             } else {
@@ -2553,14 +2559,15 @@ impl App {
             let (Some(key), Some(ability)) = (slot.key, slot.ability) else {
                 continue;
             };
-            if ctx.input().was_chord_pressed(key) {
+            if !chat_keys && ctx.input().was_chord_pressed(key) {
                 pressed = Some(ability);
             }
         }
         // Whichever ability *this* hero keeps on the Ultimate key, rather than the mage's:
         // the Warrior's Last Stand and the Druid's Tranquility live in the same slot, and a
         // key that always meant Cataclysm was a key two of the three heroes could not press.
-        if ctx.input().was_key_pressed(self.bindings.ultimate)
+        if !chat_keys
+            && ctx.input().was_key_pressed(self.bindings.ultimate)
             && let Some(ultimate) = self.simulation.hero().ultimate()
         {
             pressed = Some(ultimate);
@@ -2570,7 +2577,7 @@ impl App {
             let Some(key) = self.bindings.extra_key(index) else {
                 continue;
             };
-            if ctx.input().was_key_pressed(key) {
+            if !chat_keys && ctx.input().was_key_pressed(key) {
                 pressed = Some(ability);
             }
         }
@@ -3056,6 +3063,7 @@ impl App {
             if self.hud_editor.is_active()
                 || self.slot_menu.is_open()
                 || self.playground_owns_keyboard()
+                || self.chat_typing()
             {
                 return;
             }
@@ -3306,6 +3314,13 @@ impl App {
                 self.settings.settings().camera_sensitivity
             );
         }
+    }
+
+    /// Whether the chat line has the keyboard, so no key this frame is play.
+    fn chat_typing(&self) -> bool {
+        self.online
+            .as_ref()
+            .is_some_and(|online| online.chat_typing())
     }
 
     /// Whether the playground's search field has the keyboard, so no key this frame is play.
@@ -6310,8 +6325,8 @@ impl Application for App {
             self.commands.clear();
             // The collision scene issues movement and jump only: it has no abilities and no
             // targets, and its digits stand the character at a test station instead.
-            if self.playground_owns_keyboard() {
-                // The playground's search field is typing: every key is a letter in it.
+            if self.playground_owns_keyboard() || self.chat_typing() {
+                // A text field is typing (the playground's search, chat): every key is a letter in it.
             } else if self.scene.is_collision() {
                 self.bindings.write_movement_commands(
                     ctx.input(),
@@ -6329,6 +6344,7 @@ impl Application for App {
             // has the keyboard's attention or a search field is typing.
             if self.chest_prompt.is_some()
                 && !self.playground_owns_keyboard()
+                && !self.chat_typing()
                 && !self.character_menu.is_open()
                 && !self.mailbox_menu.is_open()
                 && ctx.input().was_key_pressed(self.bindings.interact)

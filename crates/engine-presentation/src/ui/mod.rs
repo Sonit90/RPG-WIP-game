@@ -49,6 +49,8 @@ pub mod action_bar;
 pub mod aura_row;
 /// The character sheet: stats, thirteen equipment slots, and the bag.
 pub mod character_menu;
+/// The chat panel: a log, an input line behind Enter, and the slash commands.
+pub mod chat;
 pub mod dungeon_map;
 pub mod flow;
 /// The look every unit frame, the raid frames and the cast bar share with the nameplates.

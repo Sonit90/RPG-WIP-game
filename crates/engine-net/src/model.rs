@@ -16,6 +16,7 @@ use std::time::Instant;
 use engine_core::math::Vec3;
 use engine_realm::Micros;
 use engine_realm::Role;
+use engine_realm::chat::Channel;
 use engine_realm::combat::{
     CastState, CooldownState, EntityRef, Resources, StatusState, WireEvent,
 };
@@ -277,6 +278,30 @@ pub struct Population {
     pub dps: u32,
 }
 
+/// One chat line, as the server stored it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChatMessageInfo {
+    /// Message id; larger is newer.
+    pub id: u64,
+    /// The channel.
+    pub channel: Channel,
+    /// The sender's account id.
+    pub sender_account: String,
+    /// The sender's character name, set by the server.
+    pub sender_name: String,
+    /// A whisper's target account id.
+    pub recipient_account: Option<String>,
+    /// A whisper's target character name.
+    pub recipient_name: Option<String>,
+    /// The text.
+    pub text: String,
+    /// When it was sent, server time.
+    pub sent_at: Micros,
+}
+
+/// The most chat lines the mirror keeps.
+pub const CHAT_HISTORY: usize = 200;
+
 /// One change to the mirror, as the network thread reports it.
 #[derive(Debug, Clone, PartialEq)]
 pub enum RealmUpdate {
@@ -314,6 +339,8 @@ pub enum RealmUpdate {
     Population(Vec<(String, Population)>),
     /// The run summary row (inserted, updated or deleted).
     RunSummary(Option<RunSummaryInfo>),
+    /// One chat line arrived (or was there when the subscription applied).
+    Chat(ChatMessageInfo),
 }
 
 /// The client's copy of its slice of the realm.
@@ -343,6 +370,8 @@ pub struct RealmMirror {
     pub population: BTreeMap<String, Population>,
     /// How the latest run ended, for the completion screen.
     pub run_summary: Option<RunSummaryInfo>,
+    /// Chat the player may read, oldest first, at most [`CHAT_HISTORY`].
+    pub chat: Vec<ChatMessageInfo>,
     /// Counts every applied update; lets a reader notice change without diffing.
     pub revision: u64,
 }
@@ -409,6 +438,15 @@ impl RealmMirror {
                 self.population = rows.into_iter().collect();
             }
             RealmUpdate::RunSummary(summary) => self.run_summary = summary,
+            RealmUpdate::Chat(message) => {
+                if self.chat.iter().any(|existing| existing.id == message.id) {
+                    return;
+                }
+                self.chat.push(message);
+                self.chat.sort_by_key(|message| message.id);
+                let excess = self.chat.len().saturating_sub(CHAT_HISTORY);
+                self.chat.drain(..excess);
+            }
         }
     }
 
@@ -440,6 +478,17 @@ impl RealmMirror {
             (Some(party), Some(me)) => party.leader.as_deref() == Some(me),
             _ => false,
         }
+    }
+
+    /// The character name of whoever whispered the player last, for a reply.
+    #[must_use]
+    pub fn last_whisperer(&self) -> Option<&str> {
+        let me = self.my_account_id()?;
+        self.chat
+            .iter()
+            .rev()
+            .find(|message| message.channel == Channel::Whisper && message.sender_account != me)
+            .map(|message| message.sender_name.as_str())
     }
 
     /// Takes the combat events that arrived since the last call.
@@ -565,6 +614,73 @@ mod tests {
         };
         mirror.apply(RealmUpdate::Reset(Box::new(fresh)));
         assert_eq!(mirror.run_summary.map(|s| s.instance_id), Some(2));
+    }
+
+    fn line(id: u64, channel: Channel, sender: &str) -> ChatMessageInfo {
+        ChatMessageInfo {
+            id,
+            channel,
+            sender_account: sender.into(),
+            sender_name: sender.to_uppercase(),
+            recipient_account: None,
+            recipient_name: None,
+            text: format!("line {id}"),
+            sent_at: 0,
+        }
+    }
+
+    #[test]
+    fn chat_is_deduplicated_ordered_and_bounded() {
+        let mut mirror = RealmMirror::default();
+        for id in [3, 1, 3, 2] {
+            mirror.apply(RealmUpdate::Chat(line(id, Channel::Server, "a")));
+        }
+        assert_eq!(
+            mirror.chat.iter().map(|m| m.id).collect::<Vec<_>>(),
+            vec![1, 2, 3]
+        );
+        for id in 4..(CHAT_HISTORY as u64 + 10) {
+            mirror.apply(RealmUpdate::Chat(line(id, Channel::Server, "a")));
+        }
+        assert_eq!(mirror.chat.len(), CHAT_HISTORY);
+        assert_eq!(
+            mirror.chat.last().map(|m| m.id),
+            Some(CHAT_HISTORY as u64 + 9)
+        );
+        assert!(mirror.chat.first().is_some_and(|m| m.id > 1));
+    }
+
+    #[test]
+    fn chat_survives_leaving_an_instance_and_is_replaced_by_a_reset() {
+        let mut mirror = RealmMirror::default();
+        mirror.apply(RealmUpdate::Chat(line(1, Channel::Party, "a")));
+        mirror.apply(RealmUpdate::Instance(None));
+        assert_eq!(mirror.chat.len(), 1);
+        let fresh = RealmMirror {
+            chat: vec![line(5, Channel::Server, "b")],
+            ..RealmMirror::default()
+        };
+        mirror.apply(RealmUpdate::Reset(Box::new(fresh)));
+        assert_eq!(
+            mirror.chat.iter().map(|m| m.id).collect::<Vec<_>>(),
+            vec![5]
+        );
+    }
+
+    #[test]
+    fn a_reply_goes_to_whoever_whispered_last() {
+        let mut mirror = RealmMirror::default();
+        mirror.apply(RealmUpdate::Account(Some(AccountInfo {
+            account_id: "me".into(),
+            display_name: "Me".into(),
+        })));
+        assert_eq!(mirror.last_whisperer(), None);
+        mirror.apply(RealmUpdate::Chat(line(1, Channel::Whisper, "ann")));
+        mirror.apply(RealmUpdate::Chat(line(2, Channel::Whisper, "bob")));
+        // My own whisper and a party line do not change who I reply to.
+        mirror.apply(RealmUpdate::Chat(line(3, Channel::Whisper, "me")));
+        mirror.apply(RealmUpdate::Chat(line(4, Channel::Party, "cy")));
+        assert_eq!(mirror.last_whisperer(), Some("BOB"));
     }
 
     #[test]

@@ -11,6 +11,9 @@ pub mod admin_configure_reducer;
 pub mod admin_finish_instance_reducer;
 pub mod admin_set_matchmaking_reducer;
 pub mod admin_set_timeouts_reducer;
+pub mod chat_line_type;
+pub mod chat_message_type;
+pub mod chat_send_reducer;
 pub mod combat_act_reducer;
 pub mod combat_batch_type;
 pub mod combat_timer_type;
@@ -26,6 +29,7 @@ pub mod janitor_timer_type;
 pub mod matchmaking_timer_type;
 pub mod move_input_reducer;
 pub mod my_account_table;
+pub mod my_chat_table;
 pub mod my_combat_batches_table;
 pub mod my_instance_monsters_table;
 pub mod my_instance_players_table;
@@ -85,6 +89,9 @@ pub use admin_configure_reducer::admin_configure;
 pub use admin_finish_instance_reducer::admin_finish_instance;
 pub use admin_set_matchmaking_reducer::admin_set_matchmaking;
 pub use admin_set_timeouts_reducer::admin_set_timeouts;
+pub use chat_line_type::ChatLine;
+pub use chat_message_type::ChatMessage;
+pub use chat_send_reducer::chat_send;
 pub use combat_act_reducer::combat_act;
 pub use combat_batch_type::CombatBatch;
 pub use combat_timer_type::CombatTimer;
@@ -100,6 +107,7 @@ pub use janitor_timer_type::JanitorTimer;
 pub use matchmaking_timer_type::MatchmakingTimer;
 pub use move_input_reducer::move_input;
 pub use my_account_table::*;
+pub use my_chat_table::*;
 pub use my_combat_batches_table::*;
 pub use my_instance_monsters_table::*;
 pub use my_instance_players_table::*;
@@ -182,6 +190,11 @@ pub enum Reducer {
         reconnect_grace_seconds: u32,
         queue_disconnect_grace_seconds: u32,
     },
+    ChatSend {
+        channel: u8,
+        target: String,
+        text: String,
+    },
     CombatAct {
         target: NetEntity,
         action: NetAction,
@@ -238,6 +251,7 @@ impl __sdk::Reducer for Reducer {
             Reducer::AdminFinishInstance { .. } => "admin_finish_instance",
             Reducer::AdminSetMatchmaking { .. } => "admin_set_matchmaking",
             Reducer::AdminSetTimeouts { .. } => "admin_set_timeouts",
+            Reducer::ChatSend { .. } => "chat_send",
             Reducer::CombatAct { .. } => "combat_act",
             Reducer::DismissNotice { .. } => "dismiss_notice",
             Reducer::MoveInput { .. } => "move_input",
@@ -293,6 +307,15 @@ impl __sdk::Reducer for Reducer {
                 ready_check_seconds: ready_check_seconds.clone(),
                 reconnect_grace_seconds: reconnect_grace_seconds.clone(),
                 queue_disconnect_grace_seconds: queue_disconnect_grace_seconds.clone(),
+            }),
+            Reducer::ChatSend {
+                channel,
+                target,
+                text,
+            } => __sats::bsatn::to_vec(&chat_send_reducer::ChatSendArgs {
+                channel: channel.clone(),
+                target: target.clone(),
+                text: text.clone(),
             }),
             Reducer::CombatAct { target, action } => {
                 __sats::bsatn::to_vec(&combat_act_reducer::CombatActArgs {
@@ -379,6 +402,7 @@ impl __sdk::Reducer for Reducer {
 #[doc(hidden)]
 pub struct DbUpdate {
     my_account: __sdk::TableUpdate<Account>,
+    my_chat: __sdk::TableUpdate<ChatLine>,
     my_combat_batches: __sdk::TableUpdate<CombatBatch>,
     my_instance: __sdk::TableUpdate<DungeonInstance>,
     my_instance_monsters: __sdk::TableUpdate<InstanceMonster>,
@@ -401,6 +425,9 @@ impl TryFrom<__ws::v2::TransactionUpdate> for DbUpdate {
                 "my_account" => db_update
                     .my_account
                     .append(my_account_table::parse_table_update(table_update)?),
+                "my_chat" => db_update
+                    .my_chat
+                    .append(my_chat_table::parse_table_update(table_update)?),
                 "my_combat_batches" => db_update
                     .my_combat_batches
                     .append(my_combat_batches_table::parse_table_update(table_update)?),
@@ -461,6 +488,9 @@ impl __sdk::DbUpdate for DbUpdate {
         let mut diff = AppliedDiff::default();
 
         diff.my_account = cache.apply_diff_to_table::<Account>("my_account", &self.my_account);
+        diff.my_chat = cache
+            .apply_diff_to_table::<ChatLine>("my_chat", &self.my_chat)
+            .with_updates_by_pk(|row| &row.id);
         diff.my_combat_batches = cache
             .apply_diff_to_table::<CombatBatch>("my_combat_batches", &self.my_combat_batches)
             .with_updates_by_pk(|row| &row.id);
@@ -501,6 +531,9 @@ impl __sdk::DbUpdate for DbUpdate {
             match &table_rows.table[..] {
                 "my_account" => db_update
                     .my_account
+                    .append(__sdk::parse_row_list_as_inserts(table_rows.rows)?),
+                "my_chat" => db_update
+                    .my_chat
                     .append(__sdk::parse_row_list_as_inserts(table_rows.rows)?),
                 "my_combat_batches" => db_update
                     .my_combat_batches
@@ -551,6 +584,9 @@ impl __sdk::DbUpdate for DbUpdate {
                 "my_account" => db_update
                     .my_account
                     .append(__sdk::parse_row_list_as_deletes(table_rows.rows)?),
+                "my_chat" => db_update
+                    .my_chat
+                    .append(__sdk::parse_row_list_as_deletes(table_rows.rows)?),
                 "my_combat_batches" => db_update
                     .my_combat_batches
                     .append(__sdk::parse_row_list_as_deletes(table_rows.rows)?),
@@ -600,6 +636,7 @@ impl __sdk::DbUpdate for DbUpdate {
 #[doc(hidden)]
 pub struct AppliedDiff<'r> {
     my_account: __sdk::TableAppliedDiff<'r, Account>,
+    my_chat: __sdk::TableAppliedDiff<'r, ChatLine>,
     my_combat_batches: __sdk::TableAppliedDiff<'r, CombatBatch>,
     my_instance: __sdk::TableAppliedDiff<'r, DungeonInstance>,
     my_instance_monsters: __sdk::TableAppliedDiff<'r, InstanceMonster>,
@@ -625,6 +662,7 @@ impl<'r> __sdk::AppliedDiff<'r> for AppliedDiff<'r> {
         callbacks: &mut __sdk::DbCallbacks<RemoteModule>,
     ) {
         callbacks.invoke_table_row_callbacks::<Account>("my_account", &self.my_account, event);
+        callbacks.invoke_table_row_callbacks::<ChatLine>("my_chat", &self.my_chat, event);
         callbacks.invoke_table_row_callbacks::<CombatBatch>(
             "my_combat_batches",
             &self.my_combat_batches,
@@ -1329,6 +1367,7 @@ impl __sdk::SpacetimeModule for RemoteModule {
 
     fn register_tables(client_cache: &mut __sdk::ClientCache<Self>) {
         my_account_table::register_table(client_cache);
+        my_chat_table::register_table(client_cache);
         my_combat_batches_table::register_table(client_cache);
         my_instance_table::register_table(client_cache);
         my_instance_monsters_table::register_table(client_cache);
@@ -1343,6 +1382,7 @@ impl __sdk::SpacetimeModule for RemoteModule {
     }
     const ALL_TABLE_NAMES: &'static [&'static str] = &[
         "my_account",
+        "my_chat",
         "my_combat_batches",
         "my_instance",
         "my_instance_monsters",

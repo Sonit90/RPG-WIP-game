@@ -23,6 +23,7 @@
 //! the transactional shell around them.
 
 mod admin;
+mod chat;
 mod combat;
 mod connection;
 mod instance;

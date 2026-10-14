@@ -60,6 +60,7 @@ use engine_net::{
     RealmEndpoints, RealmMirror, StoredSession, TokenStore,
 };
 use engine_presentation::RemoteFrame;
+use engine_presentation::ui::chat::{ChatEvent, ChatInput, ChatLineView, ChatPanel, ChatView};
 use engine_presentation::ui::frontend::{
     BagRow, CharacterCard, CompletionCard, DungeonCard, ExchangeRow, FieldKeys, FrontEndAction,
     FrontEndUi, FrontEndView, FrontInput, HubCard, IntroCard, KeyCard, MemberRow, PartyCard,
@@ -304,6 +305,19 @@ struct SavingRewards {
     next: Instant,
 }
 
+/// The chat log as drawn: rebuilt only when the mirror's chat changes.
+#[derive(Default)]
+struct ChatLines {
+    /// What the lines were built from: how many, the newest id, whose account.
+    key: Option<(usize, Option<u64>, Option<String>)>,
+    lines: Vec<ChatLineView>,
+    /// Where the pointer was this frame, for the panel's hit test.
+    pointer: (f32, f32),
+}
+
+/// The log lines the panel keeps to draw.
+const CHAT_LOG_LINES: usize = engine_presentation::ui::chat::LOG_LINES;
+
 /// The online game's state.
 pub struct OnlineSession {
     client: RealmClient,
@@ -351,6 +365,9 @@ pub struct OnlineSession {
     epoch: Instant,
     dev: DevScript,
     dev_progress: DevProgress,
+    /// The chat panel's input line, and the log lines drawn from the mirror.
+    chat: ChatPanel,
+    chat_lines: ChatLines,
     /// The account settings: the stored version, what was last stored, what is in flight.
     settings_version: Option<i64>,
     settings_synced: Option<serde_json::Value>,
@@ -448,6 +465,8 @@ impl OnlineSession {
             epoch: Instant::now(),
             dev,
             dev_progress: DevProgress::default(),
+            chat: ChatPanel::new(),
+            chat_lines: ChatLines::default(),
             settings_version: None,
             settings_synced: None,
             settings_in_flight: None,
@@ -502,6 +521,10 @@ impl OnlineSession {
     #[must_use]
     pub fn wants_pointer(&self, viewport: (u32, u32), scale: UiScale) -> bool {
         self.ui.wants_pointer(&self.view, viewport, scale)
+            || (self.chat_visible()
+                && self
+                    .chat
+                    .contains(self.chat_lines.pointer, viewport, scale, self.chat_lift()))
     }
 
     /// Whether the local player may move: in the hub, or inside an instance that accepts
@@ -642,13 +665,23 @@ impl OnlineSession {
         #[allow(clippy::cast_precision_loss, reason = "client pixel coordinates")]
         let pointer = (pointer.0 as f32, pointer.1 as f32);
         let clipboard = engine_platform::secure_store::clipboard_text;
+        self.chat_lines.pointer = pointer;
+        self.update_chat(input, keys, &clipboard, modal, delta_seconds);
+        // While the chat line is open (or was, this frame) the keyboard is chat's alone, and a
+        // click on the panel is not a click on the screen behind it.
+        let captured = self.chat.captures_keyboard();
+        let over_chat = self.chat_visible()
+            && self
+                .chat
+                .contains(pointer, viewport, scale, self.chat_lift());
         let front_input = FrontInput {
             pointer,
             pressed: input.was_mouse_button_pressed(engine_core::input::MouseButton::Left)
-                && !modal,
-            typed: input.typed(),
-            keys,
-            escape: input.was_key_pressed(KeyCode::Escape) && !modal,
+                && !modal
+                && !over_chat,
+            typed: if captured { &[] } else { input.typed() },
+            keys: if captured { FieldKeys::default() } else { keys },
+            escape: input.was_key_pressed(KeyCode::Escape) && !modal && !captured,
             clipboard: &clipboard,
         };
         let actions = self
@@ -663,6 +696,110 @@ impl OnlineSession {
     /// Draws the online interface into `list`.
     pub fn draw(&self, list: &mut UiDrawList, viewport: (u32, u32), scale: UiScale) {
         self.ui.draw(list, &self.view, viewport, scale);
+        if self.chat_visible() {
+            let view = ChatView {
+                lines: &self.chat_lines.lines,
+                in_party: self.mirror.party.is_some(),
+                reply_to: None,
+                lift: self.chat_lift(),
+            };
+            self.chat.draw(list, &view, viewport, scale);
+        }
+    }
+
+    /// Whether the chat panel is on screen: signed in, connected, past the sign-in and
+    /// character screens.
+    fn chat_visible(&self) -> bool {
+        self.status == ConnectionStatus::Connected
+            && self.session.is_some()
+            && !matches!(
+                self.view.screen,
+                Screen::Title | Screen::Login | Screen::Characters
+            )
+    }
+
+    /// How far the panel rides up the corner: clear of the hub's queue panel.
+    fn chat_lift(&self) -> f32 {
+        if self.view.screen == Screen::Hub && self.view.queue.is_some() {
+            112.0
+        } else {
+            0.0
+        }
+    }
+
+    /// Whether the chat line has the keyboard this frame, so the application must read none of
+    /// it as play (movement, abilities, window toggles, Escape for the pause menu).
+    #[must_use]
+    pub fn chat_typing(&self) -> bool {
+        self.chat.captures_keyboard()
+    }
+
+    /// Rebuilds the log lines when the mirror's chat changed.
+    fn refresh_chat_lines(&mut self) {
+        let key = (
+            self.mirror.chat.len(),
+            self.mirror.chat.last().map(|message| message.id),
+            self.mirror.my_account_id().map(str::to_owned),
+        );
+        if self.chat_lines.key.as_ref() == Some(&key) {
+            return;
+        }
+        let me = key.2.clone();
+        let start = self.mirror.chat.len().saturating_sub(CHAT_LOG_LINES);
+        self.chat_lines.lines = self.mirror.chat[start..]
+            .iter()
+            .map(|message| {
+                ChatLineView::format(
+                    message.channel,
+                    &message.sender_name,
+                    message.recipient_name.as_deref(),
+                    me.as_deref() == Some(message.sender_account.as_str()),
+                    &message.text,
+                )
+            })
+            .collect();
+        self.chat_lines.key = Some(key);
+    }
+
+    /// One frame of chat: the input line, and what the player sent.
+    fn update_chat(
+        &mut self,
+        input: &engine_core::input::InputState,
+        keys: FieldKeys,
+        clipboard: &dyn Fn() -> Option<String>,
+        modal: bool,
+        delta_seconds: f32,
+    ) {
+        use engine_core::input::KeyCode;
+        self.refresh_chat_lines();
+        let available = self.chat_visible() && !modal;
+        let reply = self.mirror.last_whisperer().map(str::to_owned);
+        let view = ChatView {
+            lines: &self.chat_lines.lines,
+            in_party: self.mirror.party.is_some(),
+            reply_to: reply.as_deref(),
+            lift: 0.0,
+        };
+        let chat_input = ChatInput {
+            typed: input.typed(),
+            keys,
+            // Alt+Enter is the fullscreen toggle.
+            enter: input.was_key_pressed(KeyCode::Enter) && !input.modifiers().alt(),
+            escape: input.was_key_pressed(KeyCode::Escape),
+            clipboard,
+        };
+        match self
+            .chat
+            .update(&chat_input, &view, available, delta_seconds)
+        {
+            ChatEvent::None => {}
+            ChatEvent::Send(send) => self.client.send(NetCommand::SendChat {
+                channel: send.channel,
+                target: send.target,
+                text: send.text,
+            }),
+            ChatEvent::Refused(reason) => self.toast(StatusLevel::Warning, reason),
+        }
     }
 
     /// Development automation, one step a frame.
@@ -983,6 +1120,15 @@ impl OnlineSession {
                 error,
             } if self.saving.is_some() => {
                 log::info!("online: character not refreshed: {}", error.message);
+            }
+            // A refused chat line (rate limit, no party, no character) is a toast, nothing more:
+            // it must not cancel whatever the interface is waiting on.
+            NetEvent::Failed {
+                action: Action::Chat,
+                error,
+            } => {
+                log::info!("online: chat refused: {}", error.message);
+                self.toast(StatusLevel::Warning, error.message);
             }
             NetEvent::Failed { action, error } => {
                 self.busy = None;

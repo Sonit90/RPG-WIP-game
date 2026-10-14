@@ -530,6 +530,7 @@ pub fn janitor(ctx: &ReducerContext, _timer: JanitorTimer) -> Result<(), String>
     for id in old_notices {
         ctx.db.player_notice().id().delete(id);
     }
+    crate::chat::prune(ctx);
     let idle_buckets: Vec<String> = ctx
         .db
         .rate_limit()

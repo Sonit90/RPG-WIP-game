@@ -121,7 +121,7 @@ time.
 `mygame` without flags is the offline game, unchanged. `--network-mode online` (or
 `--online`) creates an `OnlineSession`; everything else in the app branches on one
 `Option`. See [RECONNECTION.md](RECONNECTION.md), [MATCHMAKING.md](MATCHMAKING.md),
-[PARTY_SYSTEM.md](PARTY_SYSTEM.md), [DUNGEON_INSTANCES.md](DUNGEON_INSTANCES.md),
+[PARTY_SYSTEM.md](PARTY_SYSTEM.md), [CHAT.md](CHAT.md), [DUNGEON_INSTANCES.md](DUNGEON_INSTANCES.md),
 [AUTHENTICATION.md](AUTHENTICATION.md), [PERSISTENCE.md](PERSISTENCE.md),
 [SPACETIMEDB_DEPLOYMENT.md](SPACETIMEDB_DEPLOYMENT.md).
 

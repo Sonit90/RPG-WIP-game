@@ -466,6 +466,43 @@ pub struct PlayerNotice {
     pub created_at: Timestamp,
 }
 
+/// One chat line. Private: clients read `my_chat`, which is scoped to the caller.
+///
+/// The sender's name is the character they are playing, read server-side when the line is
+/// stored; a client never supplies one.
+#[spacetimedb::table(accessor = chat_message)]
+#[derive(Debug, Clone)]
+pub struct ChatMessage {
+    /// Message id; larger is newer.
+    #[primary_key]
+    #[auto_inc]
+    pub id: u64,
+    /// `engine_realm::chat::Channel::as_u8`.
+    #[index(btree)]
+    pub channel: u8,
+    /// Who sent it.
+    #[index(btree)]
+    pub sender: Identity,
+    /// The sender's account id.
+    pub sender_account: String,
+    /// The sender's character name when it was sent.
+    pub sender_name: String,
+    /// A party message's party; zero for the other channels.
+    #[index(btree)]
+    pub party_id: u64,
+    /// A whisper's target; `Identity::ZERO` for the other channels.
+    #[index(btree)]
+    pub recipient: Identity,
+    /// A whisper's target account id; empty for the other channels.
+    pub recipient_account: String,
+    /// A whisper's target character name; empty for the other channels.
+    pub recipient_name: String,
+    /// The cleaned text.
+    pub text: String,
+    /// When it was sent.
+    pub sent_at: Timestamp,
+}
+
 /// A dungeon result waiting for the persistence bridge to collect it.
 ///
 /// The bridge decodes rows by position (`backend/crates/game/src/bridge.rs`): a field added
