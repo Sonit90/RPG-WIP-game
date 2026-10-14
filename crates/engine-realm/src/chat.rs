@@ -130,21 +130,20 @@ pub fn resolve_whisper<'a, K: PartialEq>(
     }
 }
 
-/// The name a player speaks under: their party character, else their queued one. `None`
-/// means they have no character the realm knows, and may not chat.
+/// The name a player speaks under: their party character, else their queued one, else the
+/// account's display name (a player standing in the hub with neither). `None` means the realm
+/// knows no name for them at all, and they may not chat.
 #[must_use]
 pub fn speaker_name<'a>(
     party_character: Option<&'a str>,
     ticket_character: Option<&'a str>,
+    display_name: Option<&'a str>,
 ) -> Option<&'a str> {
-    party_character
+    [party_character, ticket_character, display_name]
+        .into_iter()
+        .flatten()
         .map(str::trim)
-        .filter(|name| !name.is_empty())
-        .or_else(|| {
-            ticket_character
-                .map(str::trim)
-                .filter(|name| !name.is_empty())
-        })
+        .find(|name| !name.is_empty())
 }
 
 /// Who a stored message was addressed to.
@@ -217,7 +216,7 @@ pub fn prune(messages: &[Stored], now: Micros) -> Vec<u64> {
 pub fn no_character() -> RealmError {
     RealmError::new(
         ErrorCategory::Authorization,
-        "Choose a character and join the queue to chat.",
+        "Sign in with a character to chat.",
     )
 }
 
@@ -305,11 +304,12 @@ mod tests {
     }
 
     #[test]
-    fn the_speaker_is_the_party_character_then_the_queued_one() {
-        assert_eq!(speaker_name(Some("Aldric"), Some("Other")), Some("Aldric"));
-        assert_eq!(speaker_name(None, Some("Brienne")), Some("Brienne"));
-        assert_eq!(speaker_name(None, None), None);
-        assert_eq!(speaker_name(Some("  "), None), None);
+    fn the_speaker_is_the_party_character_then_the_queued_one_then_the_account() {
+        assert_eq!(speaker_name(Some("Aldric"), Some("Other"), Some("acct")), Some("Aldric"));
+        assert_eq!(speaker_name(None, Some("Brienne"), Some("acct")), Some("Brienne"));
+        assert_eq!(speaker_name(None, None, Some("Hubwalker")), Some("Hubwalker"));
+        assert_eq!(speaker_name(None, None, None), None);
+        assert_eq!(speaker_name(Some("  "), None, Some(" ")), None);
     }
 
     fn envelope(channel: Channel) -> Envelope<u32> {
