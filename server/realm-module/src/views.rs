@@ -67,6 +67,15 @@ fn my_instance_monsters(ctx: &ViewContext) -> Vec<InstanceMonster> {
         .collect()
 }
 
+#[view(accessor = my_run_summary, public, primary_key = result_id)]
+fn my_run_summary(ctx: &ViewContext) -> Vec<RunSummary> {
+    ctx.db
+        .run_summary()
+        .identity()
+        .filter(ctx.sender())
+        .collect()
+}
+
 #[view(accessor = my_notices, public, primary_key = id)]
 fn my_notices(ctx: &ViewContext) -> Vec<PlayerNotice> {
     ctx.db

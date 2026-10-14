@@ -45,6 +45,9 @@ pub enum PartyStateTag {
     Failed,
     /// Gone.
     Disbanded,
+    /// Everyone accepted; waiting for a member to insert their key (appended last: the
+    /// variant order is the wire format).
+    ChoosingKey,
 }
 
 /// `engine_realm::party::ReadyResponse`.
@@ -230,6 +233,10 @@ pub struct QueueTicket {
     pub dungeon_id: String,
     /// As which role.
     pub role: RoleTag,
+    /// The dungeon the character's key opens. Empty: no key.
+    pub key_dungeon_id: String,
+    /// The key's level, from the persistence API. Zero: no key.
+    pub key_level: u32,
     /// When it was queued. Survives a cancelled ready check.
     pub enqueued_at: Timestamp,
     /// Searching or in a ready check.
@@ -250,8 +257,12 @@ pub struct Party {
     pub dungeon_id: String,
     /// Where it is in its life.
     pub state: PartyStateTag,
-    /// The leader, once chosen.
+    /// The leader, once chosen: whoever inserts the key.
     pub leader: Option<Identity>,
+    /// Whose key is inserted, while one is.
+    pub key_owner: Option<Identity>,
+    /// The inserted key's level. Zero: none.
+    pub key_level: u32,
     /// When the ready check expires.
     pub ready_deadline: Timestamp,
     /// Its instance, once started.
@@ -288,6 +299,10 @@ pub struct PartyMember {
     pub gear_score: u32,
     /// Its loadout as JSON.
     pub loadout: String,
+    /// The dungeon their key opens. Empty: no key.
+    pub key_dungeon_id: String,
+    /// Their key's level. Zero: no key.
+    pub key_level: u32,
     /// Their ready-check answer.
     pub ready: ReadyTag,
     /// Connected or not.
@@ -313,6 +328,8 @@ pub struct DungeonInstance {
     pub party_id: u64,
     /// Which dungeon.
     pub dungeon_id: String,
+    /// The level of the key the run was started with.
+    pub key_level: u32,
     /// Where it is in its life.
     pub state: InstanceStateTag,
     /// Whether its fight is ticking (countdown, active, or completed with a chest to loot):
@@ -450,6 +467,10 @@ pub struct PlayerNotice {
 }
 
 /// A dungeon result waiting for the persistence bridge to collect it.
+///
+/// The bridge decodes rows by position (`backend/crates/game/src/bridge.rs`): a field added
+/// here is appended after the last one and added there, at the same position
+/// (`key_level`, `key_owner`, `key_level_after`, `resources` follow `created_at`).
 #[spacetimedb::table(accessor = pending_result)]
 #[derive(Debug, Clone)]
 pub struct PendingResult {
@@ -470,6 +491,52 @@ pub struct PendingResult {
     pub duration_us: i64,
     /// Experience the server awarded.
     pub experience: u32,
+    /// When it was recorded.
+    pub created_at: Timestamp,
+    /// The level of the key the run was played at.
+    pub key_level: u32,
+    /// Whether this player's key was the one used.
+    pub key_owner: bool,
+    /// The owner's key level after the run; zero when unchanged.
+    pub key_level_after: u32,
+    /// Resources awarded, as JSON text: `[["crypt_dust",9],...]`.
+    pub resources: String,
+}
+
+/// What a finished run paid one player, for their results screen. Kept until the instance is
+/// torn down. Same key as their `pending_result`.
+#[spacetimedb::table(accessor = run_summary)]
+#[derive(Debug, Clone)]
+pub struct RunSummary {
+    /// `"<instance id>:<account id>"`.
+    #[primary_key]
+    pub result_id: String,
+    /// Whose.
+    #[index(btree)]
+    pub identity: Identity,
+    /// Which instance.
+    #[index(btree)]
+    pub instance_id: u64,
+    /// Which dungeon.
+    pub dungeon_id: String,
+    /// Its display name.
+    pub dungeon_name: String,
+    /// Completed or failed.
+    pub success: bool,
+    /// The key level the run was played at.
+    pub key_level: u32,
+    /// Whether this player's key was the one used.
+    pub key_owner: bool,
+    /// The owner's key level after the run; zero when unchanged.
+    pub key_level_after: u32,
+    /// How long the run took, microseconds.
+    pub duration_us: i64,
+    /// Experience awarded.
+    pub experience: u32,
+    /// Resources awarded, as JSON text: `[["crypt_dust",9],...]`.
+    pub resources: String,
+    /// The item rolled from the chest. Empty until known (or none).
+    pub loot_item: String,
     /// When it was recorded.
     pub created_at: Timestamp,
 }

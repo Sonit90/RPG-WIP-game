@@ -155,13 +155,23 @@ fn specs(
         .collect()
 }
 
+/// What the instance's key multiplies its monsters' health and damage by.
+fn key_scaling(instance: &DungeonInstance, dungeon: &crate::level::Dungeon) -> (f32, f32) {
+    engine_realm::key::scaling(&dungeon.definition.keys, instance.key_level.max(1))
+}
+
 /// Builds an instance's fight and writes its first rows. Called once, when the instance
 /// is created.
 pub fn start(ctx: &ReducerContext, instance: &DungeonInstance) -> Result<(), RealmError> {
     let dungeon = crate::level::dungeon(&instance.dungeon_id)?;
     let players = specs(ctx, instance, &dungeon);
     let barriers = barriers_of(&dungeon.scene, &dungeon.definition);
-    let fight = CombatInstance::new(&dungeon.scene, &players, &barriers);
+    let fight = CombatInstance::new(
+        &dungeon.scene,
+        &players,
+        &barriers,
+        key_scaling(instance, &dungeon),
+    );
     ctx.db.instance_combat().insert(InstanceCombat {
         instance_id: instance.id,
         tick: fight.tick(),
@@ -248,6 +258,7 @@ fn rebuild(
         &dungeon.scene,
         &players,
         &barriers,
+        key_scaling(instance, &dungeon),
         instance.barrier_open,
         &state,
     );

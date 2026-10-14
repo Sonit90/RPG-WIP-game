@@ -167,6 +167,7 @@ impl From<PartyStateTag> for PartyState {
             PartyStateTag::Completed => Self::Completed,
             PartyStateTag::Failed => Self::Failed,
             PartyStateTag::Disbanded => Self::Disbanded,
+            PartyStateTag::ChoosingKey => Self::ChoosingKey,
         }
     }
 }
@@ -181,6 +182,7 @@ impl From<PartyState> for PartyStateTag {
             PartyState::Completed => Self::Completed,
             PartyState::Failed => Self::Failed,
             PartyState::Disbanded => Self::Disbanded,
+            PartyState::ChoosingKey => Self::ChoosingKey,
         }
     }
 }

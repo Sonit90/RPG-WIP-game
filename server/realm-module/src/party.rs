@@ -8,7 +8,7 @@ use engine_realm::RealmError;
 use engine_realm::party::{
     DepartureEffect, MemberView, PartyAction, PartyState, PartyView, ReadyCheckOutcome,
     ReadyResponse, apply_ready_response, authorize, departure_effect, evaluate_ready_check,
-    pick_leader, successor,
+    successor,
 };
 use engine_realm::rate_limit::Operation;
 use spacetimedb::{Identity, ReducerContext, ScheduleAt, Table};
@@ -49,7 +49,17 @@ pub struct Loaded {
 impl Loaded {
     /// The rules' view.
     pub fn view(&self, ctx: &ReducerContext) -> PartyView {
+        let dungeon = crate::level::dungeon(&self.party.dungeon_id).ok();
+        let account_of = |identity: Option<Identity>| {
+            identity.and_then(|identity| {
+                self.members
+                    .iter()
+                    .find(|member| member.identity == identity)
+                    .map(|member| member.account_id.clone())
+            })
+        };
         PartyView {
+            key_owner: account_of(self.party.key_owner),
             state: self.party.state.into(),
             leader: self.party.leader.and_then(|leader| {
                 self.members
@@ -65,6 +75,14 @@ impl Loaded {
                     role: member.role.into(),
                     ready: member.ready.into(),
                     presence: present(ctx, member),
+                    has_key_for_dungeon: dungeon.as_ref().is_some_and(|dungeon| {
+                        engine_realm::key::validate_key(
+                            &dungeon.definition,
+                            &member.key_dungeon_id,
+                            member.key_level,
+                        )
+                        .is_ok()
+                    }),
                 })
                 .collect(),
         }
@@ -190,21 +208,15 @@ pub fn resolve_ready_check(ctx: &ReducerContext, party_id: u64) {
     match evaluate_ready_check(&view.members, now, micros(loaded.party.ready_deadline)) {
         ReadyCheckOutcome::Waiting => {}
         ReadyCheckOutcome::AllAccepted => {
-            let accounts: Vec<String> = loaded
-                .members
-                .iter()
-                .map(|m| m.account_id.clone())
-                .collect();
-            let roll: u64 = ctx.random();
-            let leader_account = pick_leader(&accounts, roll);
-            let leader = leader_account
-                .as_deref()
-                .and_then(|account| loaded.member(account))
-                .map(|member| member.identity);
-            let Ok(party) = transition(ctx, &loaded.party, PartyState::Ready) else {
+            let Ok(party) = transition(ctx, &loaded.party, PartyState::ChoosingKey) else {
                 return;
             };
-            ctx.db.party().id().update(Party { leader, ..party });
+            ctx.db.party().id().update(Party {
+                leader: None,
+                key_owner: None,
+                key_level: 0,
+                ..party
+            });
             for member in &loaded.members {
                 ctx.db.queue_ticket().identity().delete(member.identity);
                 notify(
@@ -212,17 +224,12 @@ pub fn resolve_ready_check(ctx: &ReducerContext, party_id: u64) {
                     member.identity,
                     "party_ready",
                     NoticeLevel::Info,
-                    if Some(member.identity) == leader {
-                        "Everyone is ready. You lead the party: start when ready.".to_owned()
-                    } else {
-                        "Everyone is ready. Waiting for the leader to start.".to_owned()
-                    },
+                    "Everyone is ready. Choose whose key to use.",
                 );
             }
             log::info!(
-                "event=party_created party_id={party_id} dungeon_id={} leader={}",
-                loaded.party.dungeon_id,
-                leader_account.unwrap_or_default()
+                "event=party_created party_id={party_id} dungeon_id={}",
+                loaded.party.dungeon_id
             );
         }
         ReadyCheckOutcome::Cancelled { requeue, remove } => {
@@ -342,6 +349,81 @@ pub fn party_start(ctx: &ReducerContext) -> Result<(), String> {
     let (member, loaded) = callers_party(ctx)?;
     authorize(&loaded.view(ctx), &member.account_id, &PartyAction::Start)?;
     crate::instance::create(ctx, &loaded)?;
+    Ok(())
+}
+
+/// Inserts the caller's key: they become the key owner and lead the party.
+#[spacetimedb::reducer]
+pub fn party_insert_key(ctx: &ReducerContext) -> Result<(), String> {
+    rate_limit(ctx, Operation::Party)?;
+    let (member, loaded) = callers_party(ctx)?;
+    authorize(
+        &loaded.view(ctx),
+        &member.account_id,
+        &PartyAction::InsertKey,
+    )?;
+    let party = transition(ctx, &loaded.party, PartyState::Ready)?;
+    ctx.db.party().id().update(Party {
+        key_owner: Some(member.identity),
+        key_level: member.key_level,
+        leader: Some(member.identity),
+        ..party
+    });
+    for other in &loaded.members {
+        notify(
+            ctx,
+            other.identity,
+            "key_inserted",
+            NoticeLevel::Info,
+            format!(
+                "{} inserted a level {} key. They lead the party.",
+                member.character_name, member.key_level
+            ),
+        );
+    }
+    log::info!(
+        "event=key_inserted party_id={} account_id={} key_level={}",
+        loaded.party.id,
+        member.account_id,
+        member.key_level
+    );
+    Ok(())
+}
+
+/// Takes the key back out: the party chooses again. Key owner only.
+#[spacetimedb::reducer]
+pub fn party_withdraw_key(ctx: &ReducerContext) -> Result<(), String> {
+    rate_limit(ctx, Operation::Party)?;
+    let (member, loaded) = callers_party(ctx)?;
+    authorize(
+        &loaded.view(ctx),
+        &member.account_id,
+        &PartyAction::WithdrawKey,
+    )?;
+    let party = transition(ctx, &loaded.party, PartyState::ChoosingKey)?;
+    ctx.db.party().id().update(Party {
+        key_owner: None,
+        key_level: 0,
+        leader: None,
+        ..party
+    });
+    for other in &loaded.members {
+        notify(
+            ctx,
+            other.identity,
+            "key_withdrawn",
+            NoticeLevel::Info,
+            format!(
+                "{} withdrew their key. Choose whose key to use.",
+                member.character_name
+            ),
+        );
+    }
+    log::info!(
+        "event=key_withdrawn party_id={} account_id={}",
+        loaded.party.id,
+        member.account_id
+    );
     Ok(())
 }
 
@@ -477,6 +559,8 @@ fn requeue(ctx: &ReducerContext, loaded: &Loaded, member: &PartyMember) {
         loadout: member.loadout.clone(),
         dungeon_id: loaded.party.dungeon_id.clone(),
         role: member.role,
+        key_dungeon_id: member.key_dungeon_id.clone(),
+        key_level: member.key_level,
         enqueued_at: member.enqueued_at,
         status: TicketStatus::Searching,
         party_id: None,

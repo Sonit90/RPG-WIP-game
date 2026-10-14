@@ -53,6 +53,8 @@ pub fn svc_enqueue(
     loadout: String,
     dungeon_id: String,
     role: RoleTag,
+    key_dungeon_id: String,
+    key_level: u32,
 ) -> Result<(), String> {
     let config = require_service(ctx)?;
     let identity = player_identity(&config, &account_id);
@@ -107,6 +109,8 @@ pub fn svc_enqueue(
             loadout,
             dungeon_id: dungeon_id.clone(),
             role,
+            key_dungeon_id,
+            key_level,
             enqueued_at: ctx.timestamp,
             status: TicketStatus::Searching,
             party_id: None,

@@ -87,6 +87,18 @@ fn advance(
 /// Builds a party's instance and starts its countdown.
 pub fn create(ctx: &ReducerContext, loaded: &Loaded) -> Result<(), RealmError> {
     let dungeon = crate::level::dungeon(&loaded.party.dungeon_id)?;
+    // The key is checked again here: the party's state says it was inserted, the rules say
+    // whether it still opens this dungeon.
+    let owner = loaded
+        .party
+        .key_owner
+        .and_then(|identity| loaded.members.iter().find(|m| m.identity == identity))
+        .ok_or_else(|| RealmError::party("No key has been inserted."))?;
+    engine_realm::key::validate_key(
+        &dungeon.definition,
+        &owner.key_dungeon_id,
+        loaded.party.key_level,
+    )?;
     let party = transition(ctx, &loaded.party, PartyState::Starting)?;
 
     let instance = ctx
@@ -96,6 +108,7 @@ pub fn create(ctx: &ReducerContext, loaded: &Loaded) -> Result<(), RealmError> {
             id: 0,
             party_id: party.id,
             dungeon_id: party.dungeon_id.clone(),
+            key_level: party.key_level,
             state: InstanceStateTag::Created,
             live: false,
             countdown_ends_at: None,
@@ -242,6 +255,16 @@ pub fn destroy(ctx: &ReducerContext, instance_id: u64, reason: &str) {
     for id in monsters {
         ctx.db.instance_monster().id().delete(id);
     }
+    let summaries: Vec<String> = ctx
+        .db
+        .run_summary()
+        .instance_id()
+        .filter(instance_id)
+        .map(|summary| summary.result_id)
+        .collect();
+    for id in summaries {
+        ctx.db.run_summary().result_id().delete(&id);
+    }
     crate::combat::forget(ctx, instance_id);
     ctx.db.dungeon_instance().id().delete(instance_id);
     log::info!("event=instance_cleanup instance_id={instance_id} reason={reason}");
@@ -276,7 +299,13 @@ pub fn finish(ctx: &ReducerContext, instance_id: u64, success: bool) -> Result<(
         transition(ctx, &party, next)?;
     }
     let duration = micros(ctx.timestamp) - micros(instance.created_at);
-    let experience = if success { 250 } else { 0 };
+    let dungeon = crate::level::dungeon(&instance.dungeon_id)?;
+    let key_owner = ctx
+        .db
+        .party()
+        .id()
+        .find(instance.party_id)
+        .and_then(|party| party.key_owner);
     // Each player's roll from the boss's chest, read before the fight can change. Nothing for
     // a failed run, or one ended without a chest (an admin finish).
     let rolls: Vec<(String, String)> = if success {
@@ -313,7 +342,11 @@ pub fn finish(ctx: &ReducerContext, instance_id: u64, success: bool) -> Result<(
         {
             continue;
         }
-        if let Some((_, key)) = rolls.iter().find(|(account, _)| *account == player.account_id) {
+        let mut loot_item = String::new();
+        if let Some((_, key)) = rolls
+            .iter()
+            .find(|(account, _)| *account == player.account_id)
+        {
             let character = member.as_ref().map(|m| m.character_id.clone());
             crate::loot::roll(
                 ctx,
@@ -322,7 +355,16 @@ pub fn finish(ctx: &ReducerContext, instance_id: u64, success: bool) -> Result<(
                 character.unwrap_or_default(),
                 key,
             );
+            loot_item.clone_from(key);
         }
+        let is_owner = key_owner == Some(player.identity);
+        let key_level = instance.key_level.max(1);
+        let rewards =
+            engine_realm::rewards::run_rewards(&dungeon.definition, key_level, success, is_owner);
+        let experience = rewards.experience;
+        let key_level_after = rewards.key_level_after.unwrap_or(0);
+        let resources =
+            serde_json::to_string(&rewards.resources).unwrap_or_else(|_| "[]".to_owned());
         ctx.db.pending_result().insert(PendingResult {
             result_id,
             account_id: player.account_id.clone(),
@@ -332,6 +374,26 @@ pub fn finish(ctx: &ReducerContext, instance_id: u64, success: bool) -> Result<(
             success,
             duration_us: duration,
             experience,
+            created_at: ctx.timestamp,
+            key_level,
+            key_owner: is_owner,
+            key_level_after,
+            resources: resources.clone(),
+        });
+        ctx.db.run_summary().insert(RunSummary {
+            result_id: format!("{instance_id}:{}", player.account_id),
+            identity: player.identity,
+            instance_id,
+            dungeon_id: instance.dungeon_id.clone(),
+            dungeon_name: dungeon.definition.name.clone(),
+            success,
+            key_level,
+            key_owner: is_owner,
+            key_level_after,
+            duration_us: duration,
+            experience,
+            resources,
+            loot_item,
             created_at: ctx.timestamp,
         });
         notify(
@@ -348,7 +410,13 @@ pub fn finish(ctx: &ReducerContext, instance_id: u64, success: bool) -> Result<(
                 NoticeLevel::Warning
             },
             if success {
-                format!("Dungeon complete! +{experience} experience.")
+                if key_level_after > 0 {
+                    format!(
+                        "Dungeon complete! +{experience} experience. Key upgraded to level {key_level_after}."
+                    )
+                } else {
+                    format!("Dungeon complete! +{experience} experience.")
+                }
             } else {
                 "The run has failed.".to_owned()
             },
