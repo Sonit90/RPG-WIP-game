@@ -1,7 +1,7 @@
 //! `realm-bot`: headless realm clients.
 //!
 //! ```text
-//! realm-bot scenario <slice|isolation|decline|reconnect|security|results|all>
+//! realm-bot scenario <slice|isolation|decline|reconnect|security|results|combat|loop|all>
 //! realm-bot bot --email E --password P --character warrior --role tank [--dungeon D] [--walk] [--lead]
 //! ```
 //!
@@ -53,6 +53,7 @@ fn main() -> ExitCode {
                 ("security", scenarios::security),
                 ("results", scenarios::results),
                 ("combat", scenarios::combat),
+                ("loop", scenarios::game_loop),
             ];
             let mut failed = false;
             for (name, run) in list {
@@ -88,6 +89,7 @@ fn main() -> ExitCode {
                 role,
                 dungeon: value(&args, "--dungeon").unwrap_or_else(|| "graveyard_crypt".into()),
                 accept: !args.iter().any(|a| a == "--decline"),
+                insert_key: args.iter().any(|a| a == "--lead"),
                 start_if_leader: args.iter().any(|a| a == "--lead"),
                 walk: args.iter().any(|a| a == "--walk"),
                 hunt: args.iter().any(|a| a == "--hunt"),
@@ -107,7 +109,7 @@ fn main() -> ExitCode {
         }
         _ => {
             eprintln!(
-                "usage: realm-bot scenario <slice|isolation|decline|reconnect|security|results|all>"
+                "usage: realm-bot scenario <slice|isolation|decline|reconnect|security|results|combat|loop|all>"
             );
             eprintln!(
                 "       realm-bot bot --email E --password P --character warrior --role tank [--walk] [--lead]"

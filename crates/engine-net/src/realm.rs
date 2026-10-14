@@ -22,14 +22,15 @@ use crate::bindings::{
     self as b, DbConnection, MyAccountTableAccess, MyCombatBatchesTableAccess,
     MyInstanceMonstersTableAccess, MyInstancePlayersTableAccess, MyInstanceTableAccess,
     MyNoticesTableAccess, MyPartyMembersTableAccess, MyPartyTableAccess, MyPlayerCombatTableAccess,
-    MyTicketTableAccess, QueuePopulationTableAccess, combat_act, dismiss_notice, move_input,
-    party_kick, party_leave, party_start, party_transfer_leader, queue_leave, ready_check_respond,
-    server_time,
+    MyRunSummaryTableAccess, MyTicketTableAccess, QueuePopulationTableAccess, combat_act,
+    dismiss_notice, move_input, party_insert_key, party_kick, party_leave, party_start,
+    party_transfer_leader, party_withdraw_key, queue_leave, ready_check_respond, server_time,
 };
 use crate::config::RealmEndpoints;
 use crate::model::{
     AccountInfo, InstanceInfo, MemberInfo, MonsterInfo, Notice, NoticeLevel, PartyInfo,
-    PlayerCombatInfo, Population, RealmMirror, RealmUpdate, RemotePlayerState, TicketInfo,
+    PlayerCombatInfo, Population, RealmMirror, RealmUpdate, RemotePlayerState, RunSummaryInfo,
+    TicketInfo,
 };
 use crate::session::{Action, NetEvent, WorkerMessage};
 
@@ -56,7 +57,7 @@ pub enum LinkSignal {
 }
 
 /// Every view the client subscribes to.
-const QUERIES: [&str; 11] = [
+const QUERIES: [&str; 12] = [
     "SELECT * FROM my_account",
     "SELECT * FROM my_ticket",
     "SELECT * FROM my_party",
@@ -68,6 +69,7 @@ const QUERIES: [&str; 11] = [
     "SELECT * FROM queue_population",
     "SELECT * FROM my_player_combat",
     "SELECT * FROM my_combat_batches",
+    "SELECT * FROM my_run_summary",
 ];
 
 /// An open realm connection.
@@ -302,6 +304,28 @@ impl RealmLink {
         self.report_send(Action::StartDungeon, sent);
     }
 
+    /// Inserts the caller's own key into the party.
+    pub fn party_insert_key(&self) {
+        let events = self.events.clone();
+        let sent = self
+            .connection
+            .reducers
+            .party_insert_key_then(move |_, outcome| report(&events, Action::InsertKey, outcome));
+        self.report_send(Action::InsertKey, sent);
+    }
+
+    /// Takes the caller's key back out of the party.
+    pub fn party_withdraw_key(&self) {
+        let events = self.events.clone();
+        let sent = self
+            .connection
+            .reducers
+            .party_withdraw_key_then(move |_, outcome| {
+                report(&events, Action::WithdrawKey, outcome);
+            });
+        self.report_send(Action::WithdrawKey, sent);
+    }
+
     /// Dismisses a notice.
     pub fn dismiss_notice(&self, id: u64) {
         let _ = self.connection.reducers.dismiss_notice(id);
@@ -392,6 +416,21 @@ fn register_callbacks(connection: &DbConnection, events: &Sender<NetEvent>) {
             let _ = tx.send(NetEvent::Realm(RealmUpdate::Population(
                 ctx.db.queue_population().iter().map(population).collect(),
             )));
+        });
+    }
+
+    {
+        let tx = events.clone();
+        db.my_run_summary().on_insert(move |ctx, _| {
+            let _ = tx.send(NetEvent::Realm(run_summary_update(&ctx.db)));
+        });
+        let tx = events.clone();
+        db.my_run_summary().on_update(move |ctx, _, _| {
+            let _ = tx.send(NetEvent::Realm(run_summary_update(&ctx.db)));
+        });
+        let tx = events.clone();
+        db.my_run_summary().on_delete(move |ctx, _| {
+            let _ = tx.send(NetEvent::Realm(run_summary_update(&ctx.db)));
         });
     }
 
@@ -501,6 +540,7 @@ fn snapshot(db: &b::RemoteTables) -> RealmMirror {
             notices
         },
         population: db.queue_population().iter().map(population).collect(),
+        run_summary: latest_run_summary(db),
         revision: 0,
     }
 }
@@ -542,17 +582,20 @@ fn ticket(row: b::QueueTicket) -> TicketInfo {
 /// The party, with its leader translated from identity to account id via the member list.
 fn party_of(db: &b::RemoteTables) -> Option<PartyInfo> {
     let row = db.my_party().iter().next()?;
-    let leader = row.leader.and_then(|leader| {
+    let account_of = |identity| {
         db.my_party_members()
             .iter()
-            .find(|member| member.identity == leader)
+            .find(|member| member.identity == identity)
             .map(|member| member.account_id)
-    });
+    };
+    let leader = row.leader.and_then(account_of);
+    let key_owner = row.key_owner.and_then(account_of);
     Some(PartyInfo {
         id: row.id,
         dungeon_id: row.dungeon_id,
         state: match row.state {
             b::PartyStateTag::ReadyCheck => PartyState::ReadyCheck,
+            b::PartyStateTag::ChoosingKey => PartyState::ChoosingKey,
             b::PartyStateTag::Ready => PartyState::Ready,
             b::PartyStateTag::Starting => PartyState::Starting,
             b::PartyStateTag::InDungeon => PartyState::InDungeon,
@@ -561,6 +604,8 @@ fn party_of(db: &b::RemoteTables) -> Option<PartyInfo> {
             b::PartyStateTag::Disbanded => PartyState::Disbanded,
         },
         leader,
+        key_owner,
+        key_level: row.key_level,
         ready_deadline: micros(row.ready_deadline),
         instance_id: row.instance_id,
     })
@@ -575,6 +620,8 @@ fn member(row: b::PartyMember) -> MemberInfo {
         role: role(row.role),
         level: row.level,
         gear_score: row.gear_score,
+        key_dungeon_id: row.key_dungeon_id,
+        key_level: row.key_level,
         ready: match row.ready {
             b::ReadyTag::Pending => ReadyResponse::Pending,
             b::ReadyTag::Accepted => ReadyResponse::Accepted,
@@ -582,6 +629,37 @@ fn member(row: b::PartyMember) -> MemberInfo {
         },
         present: matches!(row.presence, b::PresenceTag::Present),
         slot: row.slot,
+    }
+}
+
+/// The newest run summary in the cache, if any.
+fn latest_run_summary(db: &b::RemoteTables) -> Option<RunSummaryInfo> {
+    db.my_run_summary()
+        .iter()
+        .max_by_key(|row| micros(row.created_at))
+        .map(|row| run_summary(&row))
+}
+
+fn run_summary_update(db: &b::RemoteTables) -> RealmUpdate {
+    RealmUpdate::RunSummary(latest_run_summary(db))
+}
+
+fn run_summary(row: &b::RunSummary) -> RunSummaryInfo {
+    RunSummaryInfo {
+        instance_id: row.instance_id,
+        dungeon_id: row.dungeon_id.clone(),
+        dungeon_name: row.dungeon_name.clone(),
+        success: row.success,
+        key_level: row.key_level,
+        key_owner: row.key_owner,
+        key_level_after: row.key_level_after,
+        duration_us: row.duration_us,
+        experience: row.experience,
+        resources: serde_json::from_str(&row.resources).unwrap_or_else(|error| {
+            log::warn!("realm: unreadable run resources: {error}");
+            Vec::new()
+        }),
+        loot_item: row.loot_item.clone(),
     }
 }
 

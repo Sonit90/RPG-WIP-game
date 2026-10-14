@@ -57,8 +57,12 @@ pub struct PartyInfo {
     pub dungeon_id: String,
     /// Where it is in its life.
     pub state: PartyState,
-    /// The leader's account id, once chosen.
+    /// The leader's account id, once chosen (whoever inserts the key).
     pub leader: Option<String>,
+    /// The account id of whoever inserted the key, once one is in.
+    pub key_owner: Option<String>,
+    /// The inserted key's level (0 while none is in).
+    pub key_level: u32,
     /// When the ready check expires, server time.
     pub ready_deadline: Micros,
     /// Its instance, once started.
@@ -82,6 +86,10 @@ pub struct MemberInfo {
     pub level: u32,
     /// Its gear score.
     pub gear_score: u32,
+    /// The dungeon their key is for (empty when they have none).
+    pub key_dungeon_id: String,
+    /// Their key's level as snapshotted at queue time (0 when they have none).
+    pub key_level: u32,
     /// Their ready-check answer.
     pub ready: ReadyResponse,
     /// Whether they are connected.
@@ -103,6 +111,33 @@ pub struct InstanceInfo {
     pub countdown_ends_at: Option<Micros>,
     /// Whether the starting barrier is open.
     pub barrier_open: bool,
+}
+
+/// How the player's last run ended, for the completion screen.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunSummaryInfo {
+    /// The instance it was.
+    pub instance_id: u64,
+    /// Which dungeon.
+    pub dungeon_id: String,
+    /// Its display name.
+    pub dungeon_name: String,
+    /// Whether the boss fell.
+    pub success: bool,
+    /// The key level the run used.
+    pub key_level: u32,
+    /// Whether this player inserted the key.
+    pub key_owner: bool,
+    /// The owner's key level after the run (equal to `key_level` on failure).
+    pub key_level_after: u32,
+    /// How long the run took, microseconds.
+    pub duration_us: i64,
+    /// Experience granted.
+    pub experience: u32,
+    /// Resources granted, `(resource id, amount)`.
+    pub resources: Vec<(String, u32)>,
+    /// The chest's item key, once the roll settled (empty before).
+    pub loot_item: String,
 }
 
 /// One player in the instance, as the server last described them.
@@ -277,6 +312,8 @@ pub enum RealmUpdate {
     NoticeRemoved(u64),
     /// Queue counts per dungeon.
     Population(Vec<(String, Population)>),
+    /// The run summary row (inserted, updated or deleted).
+    RunSummary(Option<RunSummaryInfo>),
 }
 
 /// The client's copy of its slice of the realm.
@@ -304,6 +341,8 @@ pub struct RealmMirror {
     pub notices: Vec<Notice>,
     /// Queue counts per dungeon id.
     pub population: BTreeMap<String, Population>,
+    /// How the latest run ended, for the completion screen.
+    pub run_summary: Option<RunSummaryInfo>,
     /// Counts every applied update; lets a reader notice change without diffing.
     pub revision: u64,
 }
@@ -369,6 +408,7 @@ impl RealmMirror {
             RealmUpdate::Population(rows) => {
                 self.population = rows.into_iter().collect();
             }
+            RealmUpdate::RunSummary(summary) => self.run_summary = summary,
         }
     }
 
@@ -468,6 +508,63 @@ mod tests {
         mirror.apply(RealmUpdate::PlayerUpsert(player("me", 1.0)));
         mirror.apply(RealmUpdate::Instance(None));
         assert!(mirror.players.is_empty());
+    }
+
+    fn summary(instance_id: u64, experience: u32) -> RunSummaryInfo {
+        RunSummaryInfo {
+            instance_id,
+            dungeon_id: "crypt".into(),
+            dungeon_name: "The Crypt".into(),
+            success: true,
+            key_level: 2,
+            key_owner: true,
+            key_level_after: 3,
+            duration_us: 1_000,
+            experience,
+            resources: vec![("crypt_dust".into(), 7)],
+            loot_item: String::new(),
+        }
+    }
+
+    #[test]
+    fn run_summary_applies_updates_and_clears() {
+        let mut mirror = RealmMirror::default();
+        mirror.apply(RealmUpdate::RunSummary(Some(summary(1, 100))));
+        assert_eq!(mirror.run_summary.as_ref().map(|s| s.experience), Some(100));
+        let mut settled = summary(1, 100);
+        settled.loot_item = "sword".into();
+        mirror.apply(RealmUpdate::RunSummary(Some(settled)));
+        assert_eq!(
+            mirror.run_summary.as_ref().map(|s| s.loot_item.as_str()),
+            Some("sword")
+        );
+        mirror.apply(RealmUpdate::RunSummary(None));
+        assert!(mirror.run_summary.is_none());
+    }
+
+    #[test]
+    fn reset_replaces_run_summary_and_key_data() {
+        let mut mirror = RealmMirror::default();
+        mirror.apply(RealmUpdate::RunSummary(Some(summary(1, 100))));
+        mirror.apply(RealmUpdate::Party(Some(PartyInfo {
+            id: 1,
+            dungeon_id: "crypt".into(),
+            state: PartyState::Ready,
+            leader: Some("a".into()),
+            key_owner: Some("a".into()),
+            key_level: 4,
+            ready_deadline: 0,
+            instance_id: None,
+        })));
+        mirror.apply(RealmUpdate::Reset(Box::default()));
+        assert!(mirror.run_summary.is_none());
+        assert!(mirror.party.is_none());
+        let fresh = RealmMirror {
+            run_summary: Some(summary(2, 5)),
+            ..RealmMirror::default()
+        };
+        mirror.apply(RealmUpdate::Reset(Box::new(fresh)));
+        assert_eq!(mirror.run_summary.map(|s| s.instance_id), Some(2));
     }
 
     #[test]

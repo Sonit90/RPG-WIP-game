@@ -18,6 +18,8 @@ pub(super) struct SvcEnqueueArgs {
     pub loadout: String,
     pub dungeon_id: String,
     pub role: RoleTag,
+    pub key_dungeon_id: String,
+    pub key_level: u32,
 }
 
 impl From<SvcEnqueueArgs> for super::Reducer {
@@ -32,6 +34,8 @@ impl From<SvcEnqueueArgs> for super::Reducer {
             loadout: args.loadout,
             dungeon_id: args.dungeon_id,
             role: args.role,
+            key_dungeon_id: args.key_dungeon_id,
+            key_level: args.key_level,
         }
     }
 }
@@ -62,6 +66,8 @@ pub trait svc_enqueue {
         loadout: String,
         dungeon_id: String,
         role: RoleTag,
+        key_dungeon_id: String,
+        key_level: u32,
     ) -> __sdk::Result<()> {
         self.svc_enqueue_then(
             account_id,
@@ -73,6 +79,8 @@ pub trait svc_enqueue {
             loadout,
             dungeon_id,
             role,
+            key_dungeon_id,
+            key_level,
             |_, _| {},
         )
     }
@@ -94,6 +102,8 @@ pub trait svc_enqueue {
         loadout: String,
         dungeon_id: String,
         role: RoleTag,
+        key_dungeon_id: String,
+        key_level: u32,
 
         callback: impl FnOnce(
             &super::ReducerEventContext,
@@ -115,6 +125,8 @@ impl svc_enqueue for super::RemoteReducers {
         loadout: String,
         dungeon_id: String,
         role: RoleTag,
+        key_dungeon_id: String,
+        key_level: u32,
 
         callback: impl FnOnce(
             &super::ReducerEventContext,
@@ -133,6 +145,8 @@ impl svc_enqueue for super::RemoteReducers {
                 loadout,
                 dungeon_id,
                 role,
+                key_dungeon_id,
+                key_level,
             },
             callback,
         )

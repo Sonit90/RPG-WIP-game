@@ -31,13 +31,15 @@ fn run_tag() -> String {
     format!("{}", engine_net::clock::local_now() / 1000 % 10_000_000_000)
 }
 
-/// Three bots, one per role.
+/// Three bots, one per role. With `lead` the tank (index 0) is the designated lead: it inserts
+/// its key when the party is choosing one, and then starts the dungeon. Nobody else does, so
+/// which bot leads is deterministic.
 fn trio(
     tag: &str,
     prefix: &str,
     endpoints: &RealmEndpoints,
     walk: bool,
-    start: bool,
+    lead: bool,
 ) -> Result<Vec<Bot>, String> {
     let roles = [
         ("tank", "warrior", Role::Tank),
@@ -46,7 +48,8 @@ fn trio(
     ];
     roles
         .iter()
-        .map(|(label, definition, role)| {
+        .enumerate()
+        .map(|(index, (label, definition, role))| {
             Bot::start(
                 BotConfig {
                     name: format!("{prefix}-{label}"),
@@ -56,7 +59,8 @@ fn trio(
                     role: *role,
                     dungeon: "graveyard_crypt".into(),
                     accept: true,
-                    start_if_leader: start,
+                    insert_key: lead && index == 0,
+                    start_if_leader: lead && index == 0,
                     walk,
                     hunt: false,
                     queue: true,
@@ -83,6 +87,45 @@ fn drive(bots: &mut [Bot], timeout: Duration, mut done: impl FnMut(&[Bot]) -> bo
     false
 }
 
+/// Completes `instance` with the owner-only `admin_finish_instance`, through the `spacetime`
+/// CLI (set `SPACETIME_CLI` if it is not on PATH).
+fn finish_instance(endpoints: &RealmEndpoints, instance: u64, success: bool) -> Outcome {
+    let cli = std::env::var("SPACETIME_CLI").unwrap_or_else(|_| "spacetime".into());
+    let output = std::process::Command::new(&cli)
+        .args([
+            "call",
+            "--server",
+            &endpoints.spacetimedb_url,
+            &endpoints.spacetimedb_database,
+            "admin_finish_instance",
+            &instance.to_string(),
+            if success { "true" } else { "false" },
+        ])
+        .output()
+        .map_err(|e| format!("could not run {cli}: {e}"))?;
+    check(output.status.success(), "the owner completed the instance")
+}
+
+/// Asks the API for every bot's characters again and lets the answers arrive.
+fn refetch(bots: &mut [Bot], wait: Duration) {
+    for bot in bots.iter() {
+        bot.send(NetCommand::FetchCharacters);
+    }
+    drive(bots, wait, |_| false);
+}
+
+fn key_level_of(bot: &Bot) -> u32 {
+    bot.character()
+        .and_then(|c| c.key.as_ref())
+        .map_or(0, |k| k.level)
+}
+
+fn resource_of(bot: &Bot, id: &str) -> u64 {
+    bot.character()
+        .and_then(|c| c.resources.iter().find(|(r, _)| r == id))
+        .map_or(0, |(_, amount)| *amount)
+}
+
 fn all_active(bots: &[Bot]) -> bool {
     bots.iter().all(|bot| {
         bot.mirror
@@ -92,8 +135,8 @@ fn all_active(bots: &[Bot]) -> bool {
     })
 }
 
-/// The vertical slice: log in, queue 1/1/1, match, ready check, random leader, start,
-/// countdown, barrier, authoritative movement seen by everyone.
+/// The vertical slice: log in, queue 1/1/1, match, ready check, key insertion (the tank's key
+/// makes it the leader), start, countdown, barrier, authoritative movement seen by everyone.
 pub fn slice(endpoints: &RealmEndpoints) -> Outcome {
     log::info!("scenario: slice");
     let tag = run_tag();
@@ -123,6 +166,19 @@ pub fn slice(endpoints: &RealmEndpoints) -> Outcome {
     check(started, "the leader started the dungeon")?;
     let leader = bots[0].mirror.party.as_ref().and_then(|p| p.leader.clone());
     check(leader.is_some(), "the server assigned a leader")?;
+    let tank = bots[0].session.as_ref().map(|s| s.account_id.clone());
+    check(
+        leader == tank,
+        "the designated bot, which inserted its key, is the leader",
+    )?;
+    check(
+        bots[0]
+            .mirror
+            .party
+            .as_ref()
+            .is_some_and(|p| p.key_owner == tank && p.key_level >= 1),
+        "the party records the key's owner and level",
+    )?;
     check(
         bots.iter().filter(|b| b.mirror.i_lead()).count() == 1,
         "exactly one bot leads",
@@ -428,7 +484,46 @@ pub fn security(endpoints: &RealmEndpoints) -> Outcome {
     log::info!("scenario: security");
     let tag = run_tag();
     let mut bots = trio(&tag, "sec", endpoints, false, false)?;
-    let ready = drive(&mut bots, Duration::from_secs(30), |bots| {
+    // Hold the third bot's answer so the party stays in its ready check for a moment.
+    bots[2].hold_ready = true;
+    let checking = drive(&mut bots, Duration::from_secs(30), |bots| {
+        bots.iter().all(|b| {
+            b.mirror
+                .party
+                .as_ref()
+                .is_some_and(|p| p.state == PartyState::ReadyCheck)
+        }) && bots[0].answered()
+    });
+    check(checking, "a party formed and its ready check is open")?;
+    bots[0].send(NetCommand::InsertKey);
+    drive(&mut bots, Duration::from_secs(2), |_| false);
+    check(
+        refused(&bots[0], Action::InsertKey).is_some(),
+        "a key cannot be inserted during the ready check",
+    )?;
+    bots[2].hold_ready = false;
+    let choosing = drive(&mut bots, Duration::from_secs(10), |bots| {
+        bots.iter().all(|b| {
+            b.mirror
+                .party
+                .as_ref()
+                .is_some_and(|p| p.state == PartyState::ChoosingKey)
+        })
+    });
+    check(choosing, "everyone accepted: the party is choosing a key")?;
+    check(
+        bots.iter()
+            .all(|b| b.mirror.party.as_ref().is_some_and(|p| p.leader.is_none())),
+        "nobody leads before a key is inserted",
+    )?;
+    bots[0].send(NetCommand::StartDungeon);
+    drive(&mut bots, Duration::from_secs(2), |_| false);
+    check(
+        refused(&bots[0], Action::StartDungeon).is_some(),
+        "the dungeon cannot start while the party is choosing a key",
+    )?;
+    bots[0].send(NetCommand::InsertKey);
+    let ready = drive(&mut bots, Duration::from_secs(10), |bots| {
         bots.iter().all(|b| {
             b.mirror
                 .party
@@ -436,13 +531,38 @@ pub fn security(endpoints: &RealmEndpoints) -> Outcome {
                 .is_some_and(|p| p.state == PartyState::Ready)
         })
     });
-    check(ready, "a party formed and is waiting for its leader")?;
-    let leader = bots
-        .iter()
-        .position(|b| b.mirror.i_lead())
-        .ok_or("no leader")?;
-    let other = (leader + 1) % 3;
-    let target = bots[(leader + 2) % 3]
+    check(
+        ready,
+        "the key went in and the party is waiting for its leader",
+    )?;
+    let leader = 0;
+    let other = 1;
+    check(
+        bots[leader].mirror.i_lead(),
+        "the key's owner leads the party",
+    )?;
+    bots[other].send(NetCommand::WithdrawKey);
+    drive(&mut bots, Duration::from_secs(2), |_| false);
+    check(
+        refused(&bots[other], Action::WithdrawKey) == Some(ErrorCategory::Authorization),
+        "a non-owner cannot withdraw the key",
+    )?;
+    bots[other].send(NetCommand::InsertKey);
+    drive(&mut bots, Duration::from_secs(2), |_| false);
+    check(
+        refused(&bots[other], Action::InsertKey).is_some(),
+        "a second key cannot be inserted once the party is ready",
+    )?;
+    check(
+        bots.iter().all(|b| {
+            b.mirror.party.as_ref().is_some_and(|p| {
+                p.state == PartyState::Ready
+                    && p.key_owner == bots[0].mirror.my_account_id().map(str::to_owned)
+            })
+        }),
+        "the refused calls changed nothing",
+    )?;
+    let target = bots[2]
         .session
         .as_ref()
         .map(|s| s.account_id.clone())
@@ -501,7 +621,7 @@ pub fn security(endpoints: &RealmEndpoints) -> Outcome {
         endpoints,
         &token,
         "svc_enqueue",
-        &serde_json::json!([account, "fake-character", "Cheater", "warrior", 60, 99999, "{}", "graveyard_crypt", {"tank": []}]),
+        &serde_json::json!([account, "fake-character", "Cheater", "warrior", 60, 99999, "{}", "graveyard_crypt", {"tank": []}, "graveyard_crypt", 1]),
     );
     check(
         module_refused(status),
@@ -704,11 +824,11 @@ pub fn security(endpoints: &RealmEndpoints) -> Outcome {
     Ok(())
 }
 
-/// A completed run's rewards reach the persistent database exactly once.
+/// A completed run's rewards reach the persistent database exactly once, the key owner's key
+/// goes up by exactly one level, and everything survives a reconnect.
 ///
 /// Completion is triggered with the owner-only `admin_finish_instance` through the
-/// `spacetime` CLI (set `SPACETIME_CLI` if it is not on PATH): server-side combat, which will
-/// complete dungeons on its own, is a later phase.
+/// `spacetime` CLI (set `SPACETIME_CLI` if it is not on PATH).
 pub fn results(endpoints: &RealmEndpoints) -> Outcome {
     log::info!("scenario: results");
     let tag = run_tag();
@@ -721,27 +841,20 @@ pub fn results(endpoints: &RealmEndpoints) -> Outcome {
         .as_ref()
         .map(|i| i.id)
         .ok_or("no instance")?;
+    // Bot 0 is the key owner (it inserted its key to lead).
     let before: Vec<u64> = bots
         .iter()
         .map(|b| b.character().map_or(0, |c| c.experience))
         .collect();
+    let levels_before: Vec<u32> = bots
+        .iter()
+        .map(|b| b.character().map_or(0, |c| c.level))
+        .collect();
+    let keys_before: Vec<u32> = bots.iter().map(key_level_of).collect();
+    let dust_before: Vec<u64> = bots.iter().map(|b| resource_of(b, "crypt_dust")).collect();
+    check(keys_before[0] >= 1, "the key owner has a key")?;
 
-    let cli = std::env::var("SPACETIME_CLI").unwrap_or_else(|_| "spacetime".into());
-    let server = endpoints.spacetimedb_url.clone();
-    let status = std::process::Command::new(&cli)
-        .args([
-            "call",
-            "--server",
-            &server,
-            &endpoints.spacetimedb_database,
-            "admin_finish_instance",
-            &instance.to_string(),
-            "true",
-        ])
-        .output()
-        .map_err(|e| format!("could not run {cli}: {e}"))?;
-    check(status.status.success(), "the owner completed the instance")?;
-
+    finish_instance(endpoints, instance, true)?;
     let completed = drive(&mut bots, Duration::from_secs(5), |bots| {
         bots.iter().all(|b| {
             b.mirror
@@ -751,56 +864,223 @@ pub fn results(endpoints: &RealmEndpoints) -> Outcome {
         })
     });
     check(completed, "every client sees the run completed")?;
+    let summaries = drive(&mut bots, Duration::from_secs(5), |bots| {
+        bots.iter().all(|b| b.mirror.run_summary.is_some())
+    });
+    check(summaries, "every client received its run summary")?;
+    let summary = bots[0].mirror.run_summary.clone().ok_or("no summary")?;
+    check(summary.success, "the summary reports a success")?;
+    check(
+        summary.key_owner && summary.key_level == keys_before[0],
+        "the owner's summary shows the key level the run used",
+    )?;
+    check(
+        summary.key_level_after == keys_before[0] + 1,
+        "the owner's summary shows the key one level higher",
+    )?;
+    check(
+        bots[1..]
+            .iter()
+            .all(|b| b.mirror.run_summary.as_ref().is_some_and(|s| !s.key_owner)),
+        "the other members' summaries are not the key owner's",
+    )?;
+    let dust_reward = summary
+        .resources
+        .iter()
+        .find(|(id, _)| id == "crypt_dust")
+        .map_or(0, |(_, amount)| u64::from(*amount));
+    check(dust_reward > 0, "the summary lists a crypt_dust reward")?;
 
-    // The bridge collects every few seconds; poll the API.
-    let deadline = Instant::now() + Duration::from_secs(20);
+    // The bridge collects every few seconds; poll the API until the key moved.
+    let deadline = Instant::now() + Duration::from_secs(25);
     loop {
-        for bot in &bots {
-            bot.send(NetCommand::FetchCharacters);
-        }
-        drive(&mut bots, Duration::from_millis(800), |_| false);
-        let after: Vec<u64> = bots
-            .iter()
-            .map(|b| b.character().map_or(0, |c| c.experience))
-            .collect();
-        let levels: Vec<u32> = bots
-            .iter()
-            .map(|b| b.character().map_or(0, |c| c.level))
-            .collect();
-        let gained = after.iter().zip(&before).all(|(a, b)| a > b) || levels.iter().all(|l| *l > 1);
-        if gained {
-            log::info!("  experience {before:?} -> {after:?}, levels {levels:?}");
+        refetch(&mut bots, Duration::from_millis(800));
+        if key_level_of(&bots[0]) > keys_before[0] {
             break;
         }
         if Instant::now() > deadline {
             return Err(format!(
-                "FAILED: experience was not persisted ({before:?} -> {after:?})"
+                "FAILED: the result was not persisted (key still {})",
+                key_level_of(&bots[0])
             ));
         }
     }
+    let snapshot = |bots: &[Bot]| -> (Vec<u64>, Vec<u32>, Vec<u32>, Vec<u64>) {
+        (
+            bots.iter()
+                .map(|b| b.character().map_or(0, |c| c.experience))
+                .collect(),
+            bots.iter()
+                .map(|b| b.character().map_or(0, |c| c.level))
+                .collect(),
+            bots.iter().map(key_level_of).collect(),
+            bots.iter().map(|b| resource_of(b, "crypt_dust")).collect(),
+        )
+    };
+    let first = snapshot(&bots);
     check(
-        true,
+        first.2[0] == keys_before[0] + 1,
+        "the owner's key went up by exactly one level",
+    )?;
+    check(
+        first.2[1] == keys_before[1] && first.2[2] == keys_before[2],
+        "the other members' keys did not change",
+    )?;
+    check(
+        first.0.iter().zip(&before).all(|(a, b)| a > b)
+            || first.1.iter().zip(&levels_before).all(|(a, b)| a > b),
         "the server-awarded experience was persisted for every member",
     )?;
-    let first: Vec<u64> = bots
-        .iter()
-        .map(|b| b.character().map_or(0, |c| c.experience))
-        .collect();
+    for index in 0..3 {
+        if first.1[index] == levels_before[index] {
+            check(
+                first.0[index] - before[index] == u64::from(summary.experience),
+                &format!("bot {index} received the summary's experience exactly"),
+            )?;
+        }
+    }
+    check(
+        first
+            .3
+            .iter()
+            .zip(&dust_before)
+            .all(|(a, b)| a - b == dust_reward),
+        "every member received the crypt_dust reward exactly once",
+    )?;
+
     // Let the bridge run again: a re-delivered result must not be applied twice.
     drive(&mut bots, Duration::from_secs(7), |_| false);
-    for bot in &bots {
-        bot.send(NetCommand::FetchCharacters);
-    }
-    drive(&mut bots, Duration::from_secs(1), |_| false);
-    let second: Vec<u64> = bots
-        .iter()
-        .map(|b| b.character().map_or(0, |c| c.experience))
-        .collect();
-    check(first == second, "results are applied exactly once")?;
+    refetch(&mut bots, Duration::from_secs(1));
+    check(
+        snapshot(&bots) == first,
+        "results are applied exactly once (experience, resources, key)",
+    )?;
+
+    // A reconnect: a fresh client for the owner sees the same summary and the same character.
+    let owner_config = BotConfig {
+        queue: false,
+        insert_key: false,
+        start_if_leader: false,
+        ..bots[0].config.clone()
+    };
+    let mut again = Bot::start(owner_config, endpoints).map_err(|e| e.message)?;
+    let back = drive(
+        std::slice::from_mut(&mut again),
+        Duration::from_secs(20),
+        |b| b[0].mirror.run_summary.is_some() && b[0].character().is_some(),
+    );
+    check(back, "a fresh connection receives the run summary again")?;
+    check(
+        again.mirror.run_summary.as_ref() == Some(&summary),
+        "the run summary is unchanged after reconnecting",
+    )?;
+    check(
+        key_level_of(&again) == first.2[0] && resource_of(&again, "crypt_dust") == first.3[0],
+        "the character's key and resources persist after reconnecting",
+    )?;
+    drop(again);
     for bot in &bots {
         bot.send(NetCommand::LeaveParty);
     }
     drive(&mut bots, Duration::from_secs(2), |bots| {
+        bots.iter().all(|b| b.mirror.party.is_none())
+    });
+    Ok(())
+}
+
+/// The whole loop: three bots run a dungeon to its end, leave, queue again immediately and are
+/// matched into a new party that is choosing a key - at the key level the run earned.
+pub fn game_loop(endpoints: &RealmEndpoints) -> Outcome {
+    log::info!("scenario: loop");
+    let tag = run_tag();
+    let mut bots = trio(&tag, "loop", endpoints, false, true)?;
+    let active = drive(&mut bots, Duration::from_secs(45), all_active);
+    check(active, "the first run became active")?;
+    let first_party = bots[0].mirror.party.as_ref().map(|p| p.id);
+    let instance = bots[0]
+        .mirror
+        .instance
+        .as_ref()
+        .map(|i| i.id)
+        .ok_or("no instance")?;
+    let key_before = key_level_of(&bots[0]);
+    finish_instance(endpoints, instance, true)?;
+    let completed = drive(&mut bots, Duration::from_secs(5), |bots| {
+        bots.iter().all(|b| {
+            b.mirror
+                .instance
+                .as_ref()
+                .is_some_and(|i| i.state == InstanceState::Completed)
+        }) && bots.iter().all(|b| b.mirror.run_summary.is_some())
+    });
+    check(
+        completed,
+        "the run completed and every client has its summary",
+    )?;
+
+    // Wait for the rewards to land so the next key reflects the run.
+    let deadline = Instant::now() + Duration::from_secs(25);
+    loop {
+        refetch(&mut bots, Duration::from_millis(800));
+        if key_level_of(&bots[0]) > key_before {
+            break;
+        }
+        if Instant::now() > deadline {
+            return Err("FAILED: the run's key progression was not persisted".into());
+        }
+    }
+    check(
+        key_level_of(&bots[0]) == key_before + 1,
+        "the owner's key advanced one level",
+    )?;
+
+    // Return to the hub, then queue again at once (the bots queue by themselves when idle).
+    bots[0].config.start_if_leader = false;
+    for bot in &bots {
+        bot.send(NetCommand::LeaveParty);
+    }
+    let left = drive(&mut bots, Duration::from_secs(5), |bots| {
+        bots.iter()
+            .all(|b| b.mirror.party.is_none() && b.mirror.instance.is_none())
+    });
+    check(left, "everyone left the finished run")?;
+    let rematched = drive(&mut bots, Duration::from_secs(45), |bots| {
+        bots.iter().all(|b| {
+            b.mirror
+                .party
+                .as_ref()
+                .is_some_and(|p| p.state == PartyState::ChoosingKey && Some(p.id) != first_party)
+        })
+    });
+    check(
+        rematched,
+        "queuing again formed a new party that is choosing a key",
+    )?;
+    let ready = drive(&mut bots, Duration::from_secs(10), |bots| {
+        bots.iter().all(|b| {
+            b.mirror
+                .party
+                .as_ref()
+                .is_some_and(|p| p.state == PartyState::Ready)
+        })
+    });
+    check(
+        ready,
+        "the designated bot inserted its key in the new party",
+    )?;
+    check(
+        bots[0]
+            .mirror
+            .party
+            .as_ref()
+            .is_some_and(|p| p.key_level == key_before + 1),
+        "the new party's key is the level the last run earned",
+    )?;
+    for bot in &mut bots {
+        bot.config.queue = false;
+        bot.send(NetCommand::LeaveParty);
+    }
+    drive(&mut bots, Duration::from_secs(3), |bots| {
         bots.iter().all(|b| b.mirror.party.is_none())
     });
     Ok(())

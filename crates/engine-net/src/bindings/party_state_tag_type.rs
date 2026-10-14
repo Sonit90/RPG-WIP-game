@@ -21,6 +21,8 @@ pub enum PartyStateTag {
     Failed,
 
     Disbanded,
+
+    ChoosingKey,
 }
 
 impl __sdk::InModule for PartyStateTag {

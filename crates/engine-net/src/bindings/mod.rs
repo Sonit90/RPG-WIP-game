@@ -34,6 +34,7 @@ pub mod my_notices_table;
 pub mod my_party_members_table;
 pub mod my_party_table;
 pub mod my_player_combat_table;
+pub mod my_run_summary_table;
 pub mod my_ticket_table;
 pub mod net_ability_type;
 pub mod net_action_type;
@@ -45,6 +46,7 @@ pub mod net_input_frame_type;
 pub mod net_resources_type;
 pub mod net_status_type;
 pub mod notice_level_type;
+pub mod party_insert_key_reducer;
 pub mod party_kick_reducer;
 pub mod party_leave_reducer;
 pub mod party_member_type;
@@ -52,6 +54,8 @@ pub mod party_start_reducer;
 pub mod party_state_tag_type;
 pub mod party_transfer_leader_reducer;
 pub mod party_type;
+pub mod party_withdraw_key_reducer;
+pub mod pending_loot_type;
 pub mod pending_result_type;
 pub mod player_combat_type;
 pub mod player_notice_type;
@@ -66,9 +70,12 @@ pub mod ready_check_timer_type;
 pub mod ready_tag_type;
 pub mod realm_config_type;
 pub mod role_tag_type;
+pub mod run_summary_type;
 pub mod server_time_procedure;
+pub mod svc_ack_loot_reducer;
 pub mod svc_ack_results_reducer;
 pub mod svc_enqueue_reducer;
+pub mod svc_take_loot_procedure;
 pub mod svc_take_results_procedure;
 pub mod ticket_status_type;
 pub mod v_3_type;
@@ -101,6 +108,7 @@ pub use my_notices_table::*;
 pub use my_party_members_table::*;
 pub use my_party_table::*;
 pub use my_player_combat_table::*;
+pub use my_run_summary_table::*;
 pub use my_ticket_table::*;
 pub use net_ability_type::NetAbility;
 pub use net_action_type::NetAction;
@@ -112,6 +120,7 @@ pub use net_input_frame_type::NetInputFrame;
 pub use net_resources_type::NetResources;
 pub use net_status_type::NetStatus;
 pub use notice_level_type::NoticeLevel;
+pub use party_insert_key_reducer::party_insert_key;
 pub use party_kick_reducer::party_kick;
 pub use party_leave_reducer::party_leave;
 pub use party_member_type::PartyMember;
@@ -119,6 +128,8 @@ pub use party_start_reducer::party_start;
 pub use party_state_tag_type::PartyStateTag;
 pub use party_transfer_leader_reducer::party_transfer_leader;
 pub use party_type::Party;
+pub use party_withdraw_key_reducer::party_withdraw_key;
+pub use pending_loot_type::PendingLoot;
 pub use pending_result_type::PendingResult;
 pub use player_combat_type::PlayerCombat;
 pub use player_notice_type::PlayerNotice;
@@ -133,9 +144,12 @@ pub use ready_check_timer_type::ReadyCheckTimer;
 pub use ready_tag_type::ReadyTag;
 pub use realm_config_type::RealmConfig;
 pub use role_tag_type::RoleTag;
+pub use run_summary_type::RunSummary;
 pub use server_time_procedure::server_time;
+pub use svc_ack_loot_reducer::svc_ack_loot;
 pub use svc_ack_results_reducer::svc_ack_results;
 pub use svc_enqueue_reducer::svc_enqueue;
+pub use svc_take_loot_procedure::svc_take_loot;
 pub use svc_take_results_procedure::svc_take_results;
 pub use ticket_status_type::TicketStatus;
 pub use v_3_type::V3;
@@ -178,6 +192,7 @@ pub enum Reducer {
     MoveInput {
         frames: Vec<NetInputFrame>,
     },
+    PartyInsertKey,
     PartyKick {
         target_account_id: String,
     },
@@ -186,9 +201,13 @@ pub enum Reducer {
     PartyTransferLeader {
         target_account_id: String,
     },
+    PartyWithdrawKey,
     QueueLeave,
     ReadyCheckRespond {
         accept: bool,
+    },
+    SvcAckLoot {
+        loot_ids: Vec<String>,
     },
     SvcAckResults {
         result_ids: Vec<String>,
@@ -203,6 +222,8 @@ pub enum Reducer {
         loadout: String,
         dungeon_id: String,
         role: RoleTag,
+        key_dungeon_id: String,
+        key_level: u32,
     },
 }
 
@@ -220,12 +241,15 @@ impl __sdk::Reducer for Reducer {
             Reducer::CombatAct { .. } => "combat_act",
             Reducer::DismissNotice { .. } => "dismiss_notice",
             Reducer::MoveInput { .. } => "move_input",
+            Reducer::PartyInsertKey => "party_insert_key",
             Reducer::PartyKick { .. } => "party_kick",
             Reducer::PartyLeave => "party_leave",
             Reducer::PartyStart => "party_start",
             Reducer::PartyTransferLeader { .. } => "party_transfer_leader",
+            Reducer::PartyWithdrawKey => "party_withdraw_key",
             Reducer::QueueLeave => "queue_leave",
             Reducer::ReadyCheckRespond { .. } => "ready_check_respond",
+            Reducer::SvcAckLoot { .. } => "svc_ack_loot",
             Reducer::SvcAckResults { .. } => "svc_ack_results",
             Reducer::SvcEnqueue { .. } => "svc_enqueue",
             _ => unreachable!(),
@@ -286,6 +310,9 @@ impl __sdk::Reducer for Reducer {
                     frames: frames.clone(),
                 })
             }
+            Reducer::PartyInsertKey => {
+                __sats::bsatn::to_vec(&party_insert_key_reducer::PartyInsertKeyArgs {})
+            }
             Reducer::PartyKick { target_account_id } => {
                 __sats::bsatn::to_vec(&party_kick_reducer::PartyKickArgs {
                     target_account_id: target_account_id.clone(),
@@ -298,10 +325,18 @@ impl __sdk::Reducer for Reducer {
                     target_account_id: target_account_id.clone(),
                 })
             }
+            Reducer::PartyWithdrawKey => {
+                __sats::bsatn::to_vec(&party_withdraw_key_reducer::PartyWithdrawKeyArgs {})
+            }
             Reducer::QueueLeave => __sats::bsatn::to_vec(&queue_leave_reducer::QueueLeaveArgs {}),
             Reducer::ReadyCheckRespond { accept } => {
                 __sats::bsatn::to_vec(&ready_check_respond_reducer::ReadyCheckRespondArgs {
                     accept: accept.clone(),
+                })
+            }
+            Reducer::SvcAckLoot { loot_ids } => {
+                __sats::bsatn::to_vec(&svc_ack_loot_reducer::SvcAckLootArgs {
+                    loot_ids: loot_ids.clone(),
                 })
             }
             Reducer::SvcAckResults { result_ids } => {
@@ -319,6 +354,8 @@ impl __sdk::Reducer for Reducer {
                 loadout,
                 dungeon_id,
                 role,
+                key_dungeon_id,
+                key_level,
             } => __sats::bsatn::to_vec(&svc_enqueue_reducer::SvcEnqueueArgs {
                 account_id: account_id.clone(),
                 character_id: character_id.clone(),
@@ -329,6 +366,8 @@ impl __sdk::Reducer for Reducer {
                 loadout: loadout.clone(),
                 dungeon_id: dungeon_id.clone(),
                 role: role.clone(),
+                key_dungeon_id: key_dungeon_id.clone(),
+                key_level: key_level.clone(),
             }),
             _ => unreachable!(),
         }
@@ -348,6 +387,7 @@ pub struct DbUpdate {
     my_party: __sdk::TableUpdate<Party>,
     my_party_members: __sdk::TableUpdate<PartyMember>,
     my_player_combat: __sdk::TableUpdate<PlayerCombat>,
+    my_run_summary: __sdk::TableUpdate<RunSummary>,
     my_ticket: __sdk::TableUpdate<QueueTicket>,
     queue_population: __sdk::TableUpdate<QueuePopulation>,
 }
@@ -385,6 +425,9 @@ impl TryFrom<__ws::v2::TransactionUpdate> for DbUpdate {
                 "my_player_combat" => db_update
                     .my_player_combat
                     .append(my_player_combat_table::parse_table_update(table_update)?),
+                "my_run_summary" => db_update
+                    .my_run_summary
+                    .append(my_run_summary_table::parse_table_update(table_update)?),
                 "my_ticket" => db_update
                     .my_ticket
                     .append(my_ticket_table::parse_table_update(table_update)?),
@@ -442,6 +485,9 @@ impl __sdk::DbUpdate for DbUpdate {
         diff.my_player_combat = cache
             .apply_diff_to_table::<PlayerCombat>("my_player_combat", &self.my_player_combat)
             .with_updates_by_pk(|row| &row.identity);
+        diff.my_run_summary = cache
+            .apply_diff_to_table::<RunSummary>("my_run_summary", &self.my_run_summary)
+            .with_updates_by_pk(|row| &row.result_id);
         diff.my_ticket = cache.apply_diff_to_table::<QueueTicket>("my_ticket", &self.my_ticket);
         diff.queue_population = cache
             .apply_diff_to_table::<QueuePopulation>("queue_population", &self.queue_population)
@@ -479,6 +525,9 @@ impl __sdk::DbUpdate for DbUpdate {
                     .append(__sdk::parse_row_list_as_inserts(table_rows.rows)?),
                 "my_player_combat" => db_update
                     .my_player_combat
+                    .append(__sdk::parse_row_list_as_inserts(table_rows.rows)?),
+                "my_run_summary" => db_update
+                    .my_run_summary
                     .append(__sdk::parse_row_list_as_inserts(table_rows.rows)?),
                 "my_ticket" => db_update
                     .my_ticket
@@ -526,6 +575,9 @@ impl __sdk::DbUpdate for DbUpdate {
                 "my_player_combat" => db_update
                     .my_player_combat
                     .append(__sdk::parse_row_list_as_deletes(table_rows.rows)?),
+                "my_run_summary" => db_update
+                    .my_run_summary
+                    .append(__sdk::parse_row_list_as_deletes(table_rows.rows)?),
                 "my_ticket" => db_update
                     .my_ticket
                     .append(__sdk::parse_row_list_as_deletes(table_rows.rows)?),
@@ -556,6 +608,7 @@ pub struct AppliedDiff<'r> {
     my_party: __sdk::TableAppliedDiff<'r, Party>,
     my_party_members: __sdk::TableAppliedDiff<'r, PartyMember>,
     my_player_combat: __sdk::TableAppliedDiff<'r, PlayerCombat>,
+    my_run_summary: __sdk::TableAppliedDiff<'r, RunSummary>,
     my_ticket: __sdk::TableAppliedDiff<'r, QueueTicket>,
     queue_population: __sdk::TableAppliedDiff<'r, QueuePopulation>,
     __unused: std::marker::PhantomData<&'r ()>,
@@ -602,6 +655,11 @@ impl<'r> __sdk::AppliedDiff<'r> for AppliedDiff<'r> {
         callbacks.invoke_table_row_callbacks::<PlayerCombat>(
             "my_player_combat",
             &self.my_player_combat,
+            event,
+        );
+        callbacks.invoke_table_row_callbacks::<RunSummary>(
+            "my_run_summary",
+            &self.my_run_summary,
             event,
         );
         callbacks.invoke_table_row_callbacks::<QueueTicket>("my_ticket", &self.my_ticket, event);
@@ -1279,6 +1337,7 @@ impl __sdk::SpacetimeModule for RemoteModule {
         my_party_table::register_table(client_cache);
         my_party_members_table::register_table(client_cache);
         my_player_combat_table::register_table(client_cache);
+        my_run_summary_table::register_table(client_cache);
         my_ticket_table::register_table(client_cache);
         queue_population_table::register_table(client_cache);
     }
@@ -1292,6 +1351,7 @@ impl __sdk::SpacetimeModule for RemoteModule {
         "my_party",
         "my_party_members",
         "my_player_combat",
+        "my_run_summary",
         "my_ticket",
         "queue_population",
     ];

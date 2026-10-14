@@ -584,6 +584,8 @@ impl OnlineSession {
                 self.characters = characters;
                 self.busy = None;
             }
+            // The hub UI phase consumes the economy catalog.
+            NetEvent::Economy(_) => {}
             NetEvent::Settings(document) => {
                 self.settings_version = Some(document.version);
                 if document.version > 0 && document.settings.is_object() {

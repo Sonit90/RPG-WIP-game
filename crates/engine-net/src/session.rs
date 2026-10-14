@@ -21,7 +21,8 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use engine_realm::api::{
-    CharacterDetail, CharacterSummary, MoveItemRequest, QueueRequest, SettingsDocument, TokenPair,
+    CharacterDetail, CharacterSummary, EconomyInfo, MoveItemRequest, QueueRequest,
+    SettingsDocument, TokenPair,
 };
 use engine_realm::loadout::SlotRef;
 use engine_realm::movement::InputFrame;
@@ -83,6 +84,24 @@ pub enum NetCommand {
         /// Take the item, rather than only reading.
         take: bool,
     },
+    /// Break one bag item down into a resource.
+    Salvage {
+        /// Which character.
+        character_id: String,
+        /// The bag index of the item.
+        index: u32,
+    },
+    /// Exchange resources through a catalog exchange.
+    Exchange {
+        /// Which character.
+        character_id: String,
+        /// The catalog exchange id.
+        exchange_id: String,
+        /// How many times.
+        times: u32,
+    },
+    /// Load the economy catalog.
+    FetchEconomy,
     /// Load the account's synced settings.
     FetchSettings,
     /// Save the account's synced settings.
@@ -108,6 +127,10 @@ pub enum NetCommand {
     TransferLeader(String),
     /// Start the dungeon (leader).
     StartDungeon,
+    /// Insert the caller's own key into the party (while choosing the key).
+    InsertKey,
+    /// Take the caller's key back out (key owner, before the start).
+    WithdrawKey,
     /// Movement input frames.
     Input(Vec<InputFrame>),
     /// A combat button press (or only a target change).
@@ -129,6 +152,12 @@ pub enum Action {
     MoveItem,
     /// Taking or reading mail.
     Mail,
+    /// Salvaging an item.
+    Salvage,
+    /// Exchanging resources.
+    Exchange,
+    /// Loading the economy catalog.
+    Economy,
     /// Loading or saving settings.
     Settings,
     /// Joining the queue.
@@ -145,6 +174,10 @@ pub enum Action {
     TransferLeader,
     /// Starting the dungeon.
     StartDungeon,
+    /// Inserting the key.
+    InsertKey,
+    /// Withdrawing the key.
+    WithdrawKey,
 }
 
 /// The realm connection's state.
@@ -196,6 +229,8 @@ pub enum NetEvent {
     Characters(Vec<CharacterSummary>),
     /// One character in full.
     Character(Box<CharacterDetail>),
+    /// The economy catalog.
+    Economy(Box<EconomyInfo>),
     /// The account's synced settings.
     Settings(SettingsDocument),
     /// Settings were saved; this is the new version.
@@ -516,6 +551,37 @@ impl Worker {
                     Err(error) => self.fail(Action::Mail, error),
                 }
             }
+            NetCommand::Salvage {
+                character_id,
+                index,
+            } => {
+                let Some(token) = self.access() else { return };
+                match self.api.salvage(&token, &character_id, index) {
+                    Ok(detail) => self.emit(NetEvent::Character(Box::new(detail))),
+                    Err(error) => self.fail(Action::Salvage, error),
+                }
+            }
+            NetCommand::Exchange {
+                character_id,
+                exchange_id,
+                times,
+            } => {
+                let Some(token) = self.access() else { return };
+                match self
+                    .api
+                    .exchange(&token, &character_id, &exchange_id, times)
+                {
+                    Ok(detail) => self.emit(NetEvent::Character(Box::new(detail))),
+                    Err(error) => self.fail(Action::Exchange, error),
+                }
+            }
+            NetCommand::FetchEconomy => {
+                let Some(token) = self.access() else { return };
+                match self.api.economy(&token) {
+                    Ok(economy) => self.emit(NetEvent::Economy(Box::new(economy))),
+                    Err(error) => self.fail(Action::Economy, error),
+                }
+            }
             NetCommand::FetchSettings => {
                 let Some(token) = self.access() else { return };
                 match self.api.settings(&token) {
@@ -561,6 +627,12 @@ impl Worker {
             }
             NetCommand::StartDungeon => {
                 self.with_link(Action::StartDungeon, RealmLink::party_start);
+            }
+            NetCommand::InsertKey => {
+                self.with_link(Action::InsertKey, RealmLink::party_insert_key);
+            }
+            NetCommand::WithdrawKey => {
+                self.with_link(Action::WithdrawKey, RealmLink::party_withdraw_key);
             }
             NetCommand::Input(frames) => {
                 if let Some(link) = &self.link

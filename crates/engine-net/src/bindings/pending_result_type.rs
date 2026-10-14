@@ -16,6 +16,10 @@ pub struct PendingResult {
     pub duration_us: i64,
     pub experience: u32,
     pub created_at: __sdk::Timestamp,
+    pub key_level: u32,
+    pub key_owner: bool,
+    pub key_level_after: u32,
+    pub resources: String,
 }
 
 impl __sdk::InModule for PendingResult {
@@ -35,6 +39,10 @@ pub struct PendingResultCols {
     pub duration_us: __sdk::__query_builder::Col<PendingResult, i64>,
     pub experience: __sdk::__query_builder::Col<PendingResult, u32>,
     pub created_at: __sdk::__query_builder::Col<PendingResult, __sdk::Timestamp>,
+    pub key_level: __sdk::__query_builder::Col<PendingResult, u32>,
+    pub key_owner: __sdk::__query_builder::Col<PendingResult, bool>,
+    pub key_level_after: __sdk::__query_builder::Col<PendingResult, u32>,
+    pub resources: __sdk::__query_builder::Col<PendingResult, String>,
 }
 
 impl __sdk::__query_builder::HasCols for PendingResult {
@@ -50,6 +58,10 @@ impl __sdk::__query_builder::HasCols for PendingResult {
             duration_us: __sdk::__query_builder::Col::new(table_name, "duration_us"),
             experience: __sdk::__query_builder::Col::new(table_name, "experience"),
             created_at: __sdk::__query_builder::Col::new(table_name, "created_at"),
+            key_level: __sdk::__query_builder::Col::new(table_name, "key_level"),
+            key_owner: __sdk::__query_builder::Col::new(table_name, "key_owner"),
+            key_level_after: __sdk::__query_builder::Col::new(table_name, "key_level_after"),
+            resources: __sdk::__query_builder::Col::new(table_name, "resources"),
         }
     }
 }

@@ -7,8 +7,9 @@
 use std::time::Duration;
 
 use engine_realm::api::{
-    CharacterDetail, CharacterSummary, ErrorBody, LoginRequest, MoveItemRequest, QueueRequest,
-    RefreshRequest, RegisterRequest, SettingsDocument, TokenPair, UserProfile,
+    CharacterDetail, CharacterSummary, EconomyInfo, ErrorBody, ExchangeRequest, LoginRequest,
+    MoveItemRequest, QueueRequest, RefreshRequest, RegisterRequest, SalvageRequest,
+    SettingsDocument, TokenPair, UserProfile,
 };
 use engine_realm::{ErrorCategory, RealmError};
 use serde::Serialize;
@@ -195,6 +196,66 @@ impl ApiClient {
             ),
             Some(token),
             &serde_json::json!({}),
+            Category::Persistence,
+        )
+    }
+
+    /// Breaks one bag item down into a resource.
+    ///
+    /// # Errors
+    ///
+    /// The index is not a bag item, the character is not the caller's, or the server is
+    /// unreachable.
+    pub fn salvage(
+        &self,
+        token: &str,
+        id: &str,
+        index: u32,
+    ) -> Result<CharacterDetail, RealmError> {
+        self.post(
+            &self.persistence,
+            &format!("/api/v1/characters/{}/salvage", path_segment(id)),
+            Some(token),
+            &SalvageRequest { index },
+            Category::Persistence,
+        )
+    }
+
+    /// Exchanges resources `times` over, by catalog exchange id.
+    ///
+    /// # Errors
+    ///
+    /// Unknown exchange, insufficient resources, the character is not the caller's, or the
+    /// server is unreachable.
+    pub fn exchange(
+        &self,
+        token: &str,
+        id: &str,
+        exchange_id: &str,
+        times: u32,
+    ) -> Result<CharacterDetail, RealmError> {
+        self.post(
+            &self.persistence,
+            &format!("/api/v1/characters/{}/exchange", path_segment(id)),
+            Some(token),
+            &ExchangeRequest {
+                exchange_id: exchange_id.to_owned(),
+                times,
+            },
+            Category::Persistence,
+        )
+    }
+
+    /// The economy catalog: resources, salvage yield, exchanges.
+    ///
+    /// # Errors
+    ///
+    /// The token is invalid, or the server is unreachable.
+    pub fn economy(&self, token: &str) -> Result<EconomyInfo, RealmError> {
+        self.get(
+            &self.persistence,
+            "/api/v1/economy",
+            token,
             Category::Persistence,
         )
     }

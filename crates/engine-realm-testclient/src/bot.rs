@@ -2,8 +2,9 @@
 //!
 //! A bot is exactly what the game client is minus the window: a `RealmClient`, a
 //! `RealmMirror`, and decisions taken from what the server says. It signs in (registering
-//! first if the account is new), queues its character, accepts the ready check, starts the
-//! dungeon if it leads, and walks forward once the barrier lifts.
+//! first if the account is new), queues its character, accepts the ready check, inserts its
+//! key if it is the designated lead, starts the dungeon if it leads, and walks forward once the
+//! barrier lifts.
 
 use std::time::{Duration, Instant};
 
@@ -37,6 +38,8 @@ pub struct BotConfig {
     pub dungeon: String,
     /// Accept the ready check (false: decline it).
     pub accept: bool,
+    /// Insert the character's own key when the party is choosing one (the designated lead).
+    pub insert_key: bool,
     /// Start the dungeon when leading.
     pub start_if_leader: bool,
     /// Walk forward once the run is active.
@@ -67,6 +70,9 @@ pub struct Bot {
     queue_sent_at: Option<Instant>,
     answered_party: Option<u64>,
     start_sent_for: Option<u64>,
+    key_sent_for: Option<u64>,
+    /// Do not answer a ready check (a test holds the party in it).
+    pub hold_ready: bool,
     next_seq: u32,
     last_input: Instant,
     last_act: Option<Instant>,
@@ -102,6 +108,8 @@ impl Bot {
             queue_sent_at: None,
             answered_party: None,
             start_sent_for: None,
+            key_sent_for: None,
+            hold_ready: false,
             next_seq: 1,
             last_input: Instant::now(),
             last_act: None,
@@ -211,6 +219,7 @@ impl Bot {
             return;
         };
         if party.state == PartyState::ReadyCheck
+            && !self.hold_ready
             && self.answered_party != Some(party.id)
             && self
                 .mirror
@@ -230,6 +239,18 @@ impl Bot {
             self.client
                 .send(NetCommand::RespondReadyCheck(self.config.accept));
             self.answered_party = Some(party.id);
+        }
+        if party.state == PartyState::ChoosingKey
+            && self.config.insert_key
+            && self.key_sent_for != Some(party.id)
+        {
+            log::info!(
+                "[{}] party {} is choosing a key: inserting its own",
+                self.config.name,
+                party.id
+            );
+            self.client.send(NetCommand::InsertKey);
+            self.key_sent_for = Some(party.id);
         }
         if party.state == PartyState::Ready
             && self.config.start_if_leader
