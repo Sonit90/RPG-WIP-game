@@ -207,7 +207,7 @@ fn the_report_has_every_section_and_every_class() {
         "Warrior / Default",
         "Druid / Default",
         "Mage / Build B",
-        "Mage Default / avg(W,D)",
+        "Mage Default / (W+D)",
     ] {
         assert!(text.contains(needle), "report lacks {needle:?}");
     }
