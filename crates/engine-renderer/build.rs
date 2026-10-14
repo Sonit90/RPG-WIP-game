@@ -646,13 +646,25 @@ const ICONS: &[IconEntry] = &[
         file: "aura/deflection.svg",
         constant: "AURA_DEFLECTION",
     },
+    IconEntry {
+        file: "aura/plagued.svg",
+        constant: "AURA_PLAGUED",
+    },
+    IconEntry {
+        file: "modifier/rotating_beams.svg",
+        constant: "MODIFIER_ROTATING_BEAMS",
+    },
+    IconEntry {
+        file: "modifier/plague_explosion.svg",
+        constant: "MODIFIER_PLAGUE_EXPLOSION",
+    },
 ];
 
 /// One icon: a file under `assets/icons/` and the constant its texels are bound to.
 ///
 /// The path carries the folder, and the folders are who the icon belongs to: `firemage/`,
-/// `warrior/`, `druid/`, `equipment/`, `map/` (the dungeon map's markers and sidebar art) and
-/// `aura/` (buffs and debuffs that are not simply an ability's own effect). A class's art is then one directory to look in
+/// `warrior/`, `druid/`, `equipment/`, `map/` (the dungeon map's markers and sidebar art), `modifier/` (dungeon key
+/// modifiers) and `aura/` (buffs and debuffs that are not simply an ability's own effect). A class's art is then one directory to look in
 /// rather than eleven names to pick out of forty-five.
 struct IconEntry {
     /// File under `assets/icons/`, including its folder.

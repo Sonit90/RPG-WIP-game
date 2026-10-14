@@ -142,6 +142,10 @@ pub(super) fn modifier_lines(kind: StatusKind) -> Vec<String> {
             EffectModifier::DamageDealt { per_stack } => {
                 format!("{} damage dealt{per}", percent(per_stack))
             }
+            EffectModifier::HealingReduced => format!(
+                "{:.0}% less healing received",
+                definition.generic.magnitude * 100.0
+            ),
         })
         .collect()
 }

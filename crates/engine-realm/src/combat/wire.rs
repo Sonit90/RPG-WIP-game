@@ -296,6 +296,37 @@ pub enum WireEvent {
         /// `0` the bag was full, `1` never opened.
         reason: u8,
     },
+    ModifierBeamsStarted {
+        id: u32,
+        center: [f32; 3],
+        start_angle: f32,
+        angular_speed: f32,
+        radius: f32,
+        width: f32,
+        beams: u8,
+        /// Simulation seconds, the server's: only the gap between the two means anything to
+        /// a client, which rebases both onto its own clock.
+        warmup_end_time: f64,
+        start_time: f64,
+    },
+    ModifierBeamsEnded {
+        id: u32,
+    },
+    PlagueArmed {
+        id: u32,
+        position: [f32; 3],
+        radius: f32,
+        armed_time: f64,
+        explode_time: f64,
+    },
+    PlagueExploded {
+        id: u32,
+        position: [f32; 3],
+        radius: f32,
+    },
+    PlagueCloudEnded {
+        id: u32,
+    },
 }
 
 /// The wire form of `event`, naming entities with `name`. `None` for events not carried.
@@ -611,6 +642,54 @@ pub fn encode(event: &CombatEvent, name: &dyn Fn(EntityId) -> EntityRef) -> Opti
                 MailReason::SlotRemoved => 2,
             },
         },
+        CombatEvent::ModifierBeamsStarted {
+            id,
+            center,
+            start_angle,
+            angular_speed,
+            radius,
+            width,
+            beams,
+            warmup_end_time,
+            start_time,
+            ..
+        } => WireEvent::ModifierBeamsStarted {
+            id,
+            center: v3(center),
+            start_angle,
+            angular_speed,
+            radius,
+            width,
+            beams,
+            warmup_end_time,
+            start_time,
+        },
+        CombatEvent::ModifierBeamsEnded { id, .. } => WireEvent::ModifierBeamsEnded { id },
+        CombatEvent::PlagueArmed {
+            id,
+            position,
+            radius,
+            armed_time,
+            explode_time,
+            ..
+        } => WireEvent::PlagueArmed {
+            id,
+            position: v3(position),
+            radius,
+            armed_time,
+            explode_time,
+        },
+        CombatEvent::PlagueExploded {
+            id,
+            position,
+            radius,
+            ..
+        } => WireEvent::PlagueExploded {
+            id,
+            position: v3(position),
+            radius,
+        },
+        CombatEvent::PlagueCloudEnded { id, .. } => WireEvent::PlagueCloudEnded { id },
         _ => return None,
     })
 }
@@ -982,6 +1061,54 @@ pub fn decode(
             },
             tick,
         },
+        WireEvent::ModifierBeamsStarted {
+            id,
+            center,
+            start_angle,
+            angular_speed,
+            radius,
+            width,
+            beams,
+            warmup_end_time,
+            start_time,
+        } => CombatEvent::ModifierBeamsStarted {
+            id: *id,
+            center: vec(*center),
+            start_angle: *start_angle,
+            angular_speed: *angular_speed,
+            radius: *radius,
+            width: *width,
+            beams: *beams,
+            warmup_end_time: *warmup_end_time,
+            start_time: *start_time,
+            tick,
+        },
+        WireEvent::ModifierBeamsEnded { id } => CombatEvent::ModifierBeamsEnded { id: *id, tick },
+        WireEvent::PlagueArmed {
+            id,
+            position,
+            radius,
+            armed_time,
+            explode_time,
+        } => CombatEvent::PlagueArmed {
+            id: *id,
+            position: vec(*position),
+            radius: *radius,
+            armed_time: *armed_time,
+            explode_time: *explode_time,
+            tick,
+        },
+        WireEvent::PlagueExploded {
+            id,
+            position,
+            radius,
+        } => CombatEvent::PlagueExploded {
+            id: *id,
+            position: vec(*position),
+            radius: *radius,
+            tick,
+        },
+        WireEvent::PlagueCloudEnded { id } => CombatEvent::PlagueCloudEnded { id: *id, tick },
     })
 }
 
@@ -1134,6 +1261,56 @@ mod tests {
             item: "no_such_item".into(),
         };
         assert!(decode(&unknown, &resolve, 0).is_none());
+    }
+
+    #[test]
+    fn modifier_events_round_trip_through_json_and_keep_their_clocks() {
+        let name = |_: EntityId| EntityRef::None;
+        let resolve = |_: &EntityRef| None;
+        let events = [
+            CombatEvent::ModifierBeamsStarted {
+                id: 3 << 30,
+                center: Vec3::new(1.0, 0.0, -2.0),
+                start_angle: 1.25,
+                angular_speed: -0.61,
+                radius: 9.0,
+                width: 0.9,
+                beams: 3,
+                warmup_end_time: 123.456_789,
+                start_time: 121.456_789,
+                tick: 1,
+            },
+            CombatEvent::ModifierBeamsEnded {
+                id: 3 << 30,
+                tick: 2,
+            },
+            CombatEvent::PlagueArmed {
+                id: (3 << 30) + 1,
+                position: Vec3::new(4.0, 0.0, 5.0),
+                radius: 4.0,
+                armed_time: 10.0,
+                explode_time: 15.0,
+                tick: 3,
+            },
+            CombatEvent::PlagueExploded {
+                id: (3 << 30) + 1,
+                position: Vec3::new(4.0, 0.0, 5.0),
+                radius: 4.0,
+                tick: 4,
+            },
+            CombatEvent::PlagueCloudEnded {
+                id: (3 << 30) + 1,
+                tick: 5,
+            },
+        ];
+        for event in events {
+            let wire = encode(&event, &name).expect("carried");
+            let json = serde_json::to_string(&wire).expect("serializes");
+            let back: WireEvent = serde_json::from_str(&json).expect("deserializes");
+            assert_eq!(back, wire);
+            let decoded = decode(&back, &resolve, event.tick()).expect("needs no entity");
+            assert_eq!(decoded, event, "the event survived the wire unchanged");
+        }
     }
 
     #[test]

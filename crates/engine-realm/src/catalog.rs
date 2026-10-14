@@ -3,10 +3,11 @@
 //! ```text
 //! assets/catalog/characters.json ─┐
 //! assets/catalog/dungeons.json  ──┼─► Catalog ─► module (validation), client (screens),
-//! assets/catalog/economy.json   ──┘              persistence API (starter characters)
+//! assets/catalog/economy.json   ──┤              persistence API (starter characters)
+//! assets/catalog/modifiers.json ─┘
 //! ```
 //!
-//! All three files are compiled into every program that reads them ([`Catalog::builtin`]), so the
+//! All four files are compiled into every program that reads them ([`Catalog::builtin`]), so the
 //! server, the client and the API cannot disagree about which dungeons exist: they were built
 //! from the same bytes. Adding a dungeon or a character is a row in a JSON file and nothing
 //! anywhere iterates a hardcoded list of three.
@@ -18,6 +19,7 @@
 use engine_game::hero::Hero;
 use serde::Deserialize;
 
+use crate::modifiers::ModifierCatalog;
 use crate::role::Role;
 
 /// The character catalog as written.
@@ -26,6 +28,8 @@ const CHARACTERS_JSON: &str = include_str!("../../../assets/catalog/characters.j
 const DUNGEONS_JSON: &str = include_str!("../../../assets/catalog/dungeons.json");
 /// The economy catalog as written.
 const ECONOMY_JSON: &str = include_str!("../../../assets/catalog/economy.json");
+/// The dungeon modifier catalog as written.
+const MODIFIERS_JSON: &str = include_str!("../../../assets/catalog/modifiers.json");
 
 /// The catalog format this build reads.
 pub const CATALOG_VERSION: u32 = 1;
@@ -345,6 +349,7 @@ pub struct Catalog {
     characters: Vec<CharacterDefinition>,
     dungeons: Vec<DungeonDefinition>,
     economy: Economy,
+    modifiers: ModifierCatalog,
 }
 
 /// Why a catalog could not be read.
@@ -415,7 +420,7 @@ impl Catalog {
     ///
     /// Only if the shipped JSON is broken, which `cargo test` catches before anything ships.
     pub fn builtin() -> Result<Self, CatalogError> {
-        Self::parse(CHARACTERS_JSON, DUNGEONS_JSON, ECONOMY_JSON)
+        Self::parse_all(CHARACTERS_JSON, DUNGEONS_JSON, ECONOMY_JSON, MODIFIERS_JSON)
     }
 
     /// A catalog from the three documents' text.
@@ -426,6 +431,21 @@ impl Catalog {
     /// no role, a dungeon with no spawn point or an impossible level range or key rules, a
     /// reward naming a resource that does not exist, or an economy that contradicts itself.
     pub fn parse(characters: &str, dungeons: &str, economy: &str) -> Result<Self, CatalogError> {
+        Self::parse_all(characters, dungeons, economy, MODIFIERS_JSON)
+    }
+
+    /// A catalog from all four documents' text.
+    ///
+    /// # Errors
+    ///
+    /// Everything [`Catalog::parse`] refuses, and a modifier catalog that is malformed or
+    /// contradicts itself (see [`ModifierCatalog::parse`]).
+    pub fn parse_all(
+        characters: &str,
+        dungeons: &str,
+        economy: &str,
+        modifiers: &str,
+    ) -> Result<Self, CatalogError> {
         let characters: CharacterFile = serde_json::from_str(characters)
             .map_err(|error| CatalogError(format!("characters.json: {error}")))?;
         let dungeons: DungeonFile = serde_json::from_str(dungeons)
@@ -442,11 +462,13 @@ impl Catalog {
         }
 
         economy.validate()?;
+        let modifiers = ModifierCatalog::parse(modifiers)?;
 
         let mut out = Self {
             characters: Vec::with_capacity(characters.characters.len()),
             dungeons: Vec::with_capacity(dungeons.dungeons.len()),
             economy,
+            modifiers,
         };
         for record in characters.characters {
             if out.character(&record.id).is_some() {
@@ -557,6 +579,12 @@ impl Catalog {
     #[must_use]
     pub fn economy(&self) -> &Economy {
         &self.economy
+    }
+
+    /// Dungeon key modifiers and the key-level progression table.
+    #[must_use]
+    pub fn modifiers(&self) -> &ModifierCatalog {
+        &self.modifiers
     }
 
     /// The character definition with this id.

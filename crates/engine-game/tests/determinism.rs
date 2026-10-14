@@ -626,6 +626,31 @@ fn describe(event: &CombatEvent) -> String {
         CombatEvent::MailBagFull { player, tick } => {
             format!("mail bag full for {} on {tick}", player.index())
         }
+        CombatEvent::ModifierBeamsStarted {
+            id,
+            center,
+            start_angle,
+            angular_speed,
+            start_time,
+            tick,
+            ..
+        } => format!(
+            "beams {id} at {:.2},{:.2} from {start_angle} turning {angular_speed} since {start_time} on {tick}",
+            center.x, center.z
+        ),
+        CombatEvent::ModifierBeamsEnded { id, tick } => format!("beams {id} ended on {tick}"),
+        CombatEvent::PlagueArmed {
+            id,
+            position,
+            explode_time,
+            tick,
+            ..
+        } => format!(
+            "plague {id} armed at {:.2},{:.2} to burst {explode_time} on {tick}",
+            position.x, position.z
+        ),
+        CombatEvent::PlagueExploded { id, tick, .. } => format!("plague {id} burst on {tick}"),
+        CombatEvent::PlagueCloudEnded { id, tick } => format!("plague {id} ended on {tick}"),
         CombatEvent::Aggro {
             enemy,
             entity,

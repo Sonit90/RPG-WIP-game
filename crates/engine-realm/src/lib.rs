@@ -28,6 +28,7 @@
 //! | [`loadout`] | what a character wears, and its gear score |
 //! | [`economy`] | resources, salvage and exchanges |
 //! | [`key`] | dungeon keys: validity, progression, scaling |
+//! | [`modifiers`] | dungeon key modifiers: rolling, scaling, reroll, downgrade |
 //! | [`rewards`] | what a finished run pays |
 //! | [`matchmaking`] | which queued tickets become a party |
 //! | [`party`] | the party state machine, the ready check, who may do what |
@@ -47,6 +48,7 @@ pub mod instance;
 pub mod key;
 pub mod loadout;
 pub mod matchmaking;
+pub mod modifiers;
 pub mod movement;
 pub mod party;
 pub mod progression;

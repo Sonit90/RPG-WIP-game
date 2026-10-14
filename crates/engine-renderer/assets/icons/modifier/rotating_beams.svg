@@ -1,0 +1,26 @@
+<svg version="1.1" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+<defs>
+<linearGradient id="rotating_beams_panel" gradientUnits="userSpaceOnUse" x1="16" y1="496" x2="496" y2="16">
+<stop offset="0" stop-color="rgb(40,8,10)"></stop>
+<stop offset="1" stop-color="rgb(122,26,34)"></stop>
+</linearGradient>
+<radialGradient id="rotating_beams_glow" gradientUnits="userSpaceOnUse" cx="256" cy="256" r="250">
+<stop offset="0" stop-color="rgb(255,96,64)" stop-opacity="0.55"></stop>
+<stop offset="0.6" stop-color="rgb(255,96,64)" stop-opacity="0.16"></stop>
+<stop offset="1" stop-color="rgb(255,96,64)" stop-opacity="0"></stop>
+</radialGradient>
+<clipPath id="rotating_beams_tile"><path d="M 16 92 C 16 50 50 16 92 16 L 420 16 C 462 16 496 50 496 92 L 496 420 C 496 462 462 496 420 496 L 92 496 C 50 496 16 462 16 420 Z"></path></clipPath>
+</defs>
+<g clip-path="url(#rotating_beams_tile)">
+<path fill="url(#rotating_beams_panel)" d="M 0 0 L 512 0 L 512 512 L 0 512 Z"></path>
+<path fill="url(#rotating_beams_glow)" d="M 0 0 L 512 0 L 512 512 L 0 512 Z"></path>
+<circle cx="256" cy="256" r="214" fill="none" stroke="rgb(255,150,110)" stroke-opacity="0.35" stroke-width="10"></circle>
+<path fill="rgb(255,124,86)" d="M 274 256 L 266 56 L 246 56 L 238 256 Z"></path>
+<path fill="rgb(255,124,86)" d="M 247 271.6 L 424.2 364.7 L 434.2 347.3 L 265 240.4 Z"></path>
+<path fill="rgb(255,124,86)" d="M 247 240.4 L 77.8 347.3 L 87.8 364.7 L 265 271.6 Z"></path>
+<circle cx="256" cy="256" r="46" fill="rgb(255,210,170)"></circle>
+<circle cx="256" cy="256" r="20" fill="rgb(60,12,14)"></circle>
+<path fill="none" stroke="rgb(255,210,170)" stroke-width="12" stroke-linecap="round" d="M 400 160 A 170 170 0 0 1 430 240"></path>
+<path fill="rgb(255,210,170)" d="M 444 214 L 440 262 L 408 232 Z"></path>
+</g>
+</svg>

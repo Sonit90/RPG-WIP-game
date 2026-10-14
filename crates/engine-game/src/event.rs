@@ -645,6 +645,79 @@ pub enum CombatEvent {
         /// The simulation tick it happened on.
         tick: u64,
     },
+    /// A rotating-beam emitter appeared (the Rotating Beams dungeon modifier).
+    ///
+    /// Carries everything the beams' geometry is a function of: beam `i` of `beams` points
+    /// along yaw `start_angle + i · 2π / beams + angular_speed · (t − start_time)`, so a client
+    /// draws and tests them every frame without any further message. Times are the
+    /// simulation's own seconds; a client that runs a different clock rebases them to the
+    /// moment it received the event (see `crate::modifier`).
+    ModifierBeamsStarted {
+        /// Names this emitter, so its end can be matched to its start.
+        id: u32,
+        /// Where the beams meet: the engaged pack's centroid when it engaged.
+        center: Vec3,
+        /// Yaw of beam zero at `start_time`, radians about +Y. Zero faces −Z.
+        start_angle: f32,
+        /// Radians a second the beams turn; the sign is the direction.
+        angular_speed: f32,
+        /// How far each beam reaches from the centre, in metres.
+        radius: f32,
+        /// How wide each beam is, edge to edge, in metres.
+        width: f32,
+        /// How many beams there are, evenly spaced.
+        beams: u8,
+        /// When the beams become dangerous. Until then they are only a warning.
+        warmup_end_time: f64,
+        /// When the emitter appeared.
+        start_time: f64,
+        /// The simulation tick it happened on.
+        tick: u64,
+    },
+    /// A rotating-beam emitter went out: its encounter ended, was reset, or the dungeon is
+    /// over.
+    ModifierBeamsEnded {
+        /// Which emitter, matching an earlier [`CombatEvent::ModifierBeamsStarted`].
+        id: u32,
+        /// The simulation tick it happened on.
+        tick: u64,
+    },
+    /// A monster died and its corpse began to fester (the Plague Explosion modifier).
+    PlagueArmed {
+        /// Names this corpse's plague through its fuse, explosion and cloud.
+        id: u32,
+        /// Where it will burst.
+        position: Vec3,
+        /// The radius of the burst, in metres.
+        radius: f32,
+        /// When the fuse was lit.
+        armed_time: f64,
+        /// When it bursts, in simulation seconds.
+        explode_time: f64,
+        /// The simulation tick it happened on.
+        tick: u64,
+    },
+    /// A festering corpse burst; a plague cloud of the same footprint now covers the spot
+    /// until [`CombatEvent::PlagueCloudEnded`].
+    PlagueExploded {
+        /// Matches the earlier [`CombatEvent::PlagueArmed`].
+        id: u32,
+        /// Where it burst.
+        position: Vec3,
+        /// The radius of the burst and of the cloud, in metres.
+        radius: f32,
+        /// The simulation tick it happened on.
+        tick: u64,
+    },
+    /// A plague cloud thinned out. Also ends a fuse that was dropped before it burst, so a
+    /// visual keyed by `id` is always taken down by this event or by
+    /// [`CombatEvent::PlagueExploded`] followed by it.
+    PlagueCloudEnded {
+        /// Matches the earlier [`CombatEvent::PlagueArmed`].
+        id: u32,
+        /// The simulation tick it happened on.
+        tick: u64,
+    },
 }
 
 impl CombatEvent {
@@ -693,7 +766,12 @@ impl CombatEvent {
             | Self::LootAwarded { tick, .. }
             | Self::LootMailed { tick, .. }
             | Self::MailTaken { tick, .. }
-            | Self::MailBagFull { tick, .. } => tick,
+            | Self::MailBagFull { tick, .. }
+            | Self::ModifierBeamsStarted { tick, .. }
+            | Self::ModifierBeamsEnded { tick, .. }
+            | Self::PlagueArmed { tick, .. }
+            | Self::PlagueExploded { tick, .. }
+            | Self::PlagueCloudEnded { tick, .. } => tick,
             Self::Damage(damage) => damage.tick,
         }
     }

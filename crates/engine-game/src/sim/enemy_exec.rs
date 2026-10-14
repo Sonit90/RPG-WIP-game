@@ -1665,6 +1665,8 @@ impl Simulation {
         self.hazards.clear_into(&mut expired);
         self.hazard_expired = expired;
         self.flush_expired_hazards();
+        // The ground a dungeon modifier laid is ground like any other: a reset puts it out too.
+        self.clear_modifier_ground();
     }
 
     /// Announces a phase transition.

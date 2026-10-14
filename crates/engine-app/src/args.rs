@@ -364,6 +364,9 @@ options:
   --scene-file <path>    load this scene file instead of the scene's built-in layout.
                          Written by the in-game editor (F6, in a build made with
                          --features editor) and readable by any build
+  --modifiers <list>     force dungeon modifiers on for local play-testing, e.g.
+                         rotating_beams,plague_explosion:1.5 (':n' is a magnitude
+                         multiplier, default 1). Offline only
   --shadows <level>      shadow quality for this run: off, low, medium, high or ultra.
                          Overrides settings.cfg without writing to it, which is what
                          makes 'the same scene at two quality levels' one binary and
@@ -612,6 +615,26 @@ impl ShadowOverrides {
     }
 }
 
+/// Parses `rotating_beams,plague_explosion:1.5` into modifiers at their fallback numbers;
+/// `None` for an unknown id or a bad magnitude.
+fn parse_modifiers(list: &str) -> Option<Vec<engine_game::modifier::ActiveModifier>> {
+    use engine_game::modifier::{ActiveModifier, ModifierKind};
+    list.split(',')
+        .map(str::trim)
+        .filter(|entry| !entry.is_empty())
+        .map(|entry| {
+            let (id, magnitude) = match entry.split_once(':') {
+                Some((id, magnitude)) => (id, magnitude.trim().parse::<f32>().ok()?),
+                None => (entry, 1.0),
+            };
+            if !magnitude.is_finite() || magnitude < 0.0 {
+                return None;
+            }
+            Some(ActiveModifier::new(ModifierKind::from_id(id)?, magnitude))
+        })
+        .collect()
+}
+
 /// Parses `1280x720,1920x1080` into a list of client sizes.
 ///
 /// Separate from the parser above because it is the one option with structure inside it, and
@@ -724,6 +747,11 @@ pub struct Args {
     /// A value here is *not* written back: it is a measurement control, and a benchmark run
     /// must not change what the player sees next time they start the game.
     pub shadows: Option<engine_settings::ShadowQuality>,
+    /// Dungeon modifiers forced on the offline simulation, for play-testing them locally.
+    ///
+    /// `--modifiers rotating_beams,plague_explosion:1.5`: ids of the modifier kinds, each with
+    /// an optional magnitude multiplier (default 1). Empty by default.
+    pub modifiers: Vec<engine_game::modifier::ActiveModifier>,
     /// Whether the game UI is drawn.
     ///
     /// A measurement control rather than a game option: with it, the interface's cost is
@@ -900,6 +928,7 @@ impl Default for Args {
             stress_shadow_lights: 0,
             shadow_overrides: ShadowOverrides::default(),
             shadows: None,
+            modifiers: Vec::new(),
             report_interval_secs: 1.0,
             overlay: false,
             dummies: 4,
@@ -1097,6 +1126,13 @@ where
                     .next()
                     .ok_or(ArgsError::MissingValue("--shadow-tweak"))?;
                 args.shadow_overrides.parse_into(raw.as_ref())?;
+            }
+            "--modifiers" => {
+                let value: String = next_value(&mut iter, "--modifiers")?;
+                args.modifiers = parse_modifiers(&value).ok_or(ArgsError::InvalidValue {
+                    option: "--modifiers",
+                    value,
+                })?;
             }
             "--shadows" => {
                 let value: String = next_value(&mut iter, "--shadows")?;

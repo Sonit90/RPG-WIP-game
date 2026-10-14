@@ -109,6 +109,7 @@ impl AuraKind {
                 StatusKind::CurseOfWeakness => UiIcon::AuraCurseOfWeakness,
                 StatusKind::WitheringPlague => UiIcon::AuraWitheringPlague,
                 StatusKind::MagicVulnerability => UiIcon::AuraMagicVulnerability,
+                StatusKind::Plagued => UiIcon::AuraPlagued,
             },
             Self::Ignite => UiIcon::AuraBurning,
             Self::Scorched => UiIcon::AuraScorched,

@@ -968,6 +968,9 @@ impl App {
         if args.scene.is_monsters() {
             playground.install(&mut simulation);
         }
+        if !args.modifiers.is_empty() {
+            simulation.set_modifiers(args.modifiers.clone());
+        }
         crate::startup::stage("simulation build");
         // The environment library, uploaded once: sixteen `create_model` calls, whatever the
         // scene's object count is. Every placement of an asset then shares the mesh and
@@ -1605,10 +1608,10 @@ impl App {
                     engine_realm::Role::from_key(role).map(|role| (character.clone(), role))
                 }),
             };
-            let mut session =
-                crate::online::OnlineSession::start(endpoints, Box::new(store), dev).map_err(
-                    |error| EngineError::unsupported(format!("start the network layer: {error}")),
-                )?;
+            let mut session = crate::online::OnlineSession::start(endpoints, Box::new(store), dev)
+                .map_err(|error| {
+                    EngineError::unsupported(format!("start the network layer: {error}"))
+                })?;
             // The hub is its own scene, swapped in whenever the player is not in an instance.
             // Without it (no file, or no dungeon level loaded to swap with) the hub stays in
             // the dungeon's start area.
@@ -4588,7 +4591,10 @@ impl App {
             source: self.map_source.take(),
         });
         self.online_level = wanted;
-        log::info!("online: loading the {wanted:?} level '{}'", parked.scene.name);
+        log::info!(
+            "online: loading the {wanted:?} level '{}'",
+            parked.scene.name
+        );
         if let Err(error) = self.load_level(parked.scene, parked.source) {
             log::error!("online: could not load the {wanted:?} level: {error}");
         }
@@ -6498,6 +6504,8 @@ impl Application for App {
                 self.telegraphs.observe(&self.simulation);
                 self.telegraphs
                     .advance(ctx.time().real_delta().as_secs_f32(), &self.simulation);
+                // A dungeon modifier's beams and plague, derived from the simulation's state.
+                self.telegraphs.sync_modifiers(&self.simulation);
             } else {
                 self.telegraphs.clear();
             }

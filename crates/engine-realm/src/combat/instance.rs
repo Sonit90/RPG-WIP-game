@@ -416,6 +416,12 @@ impl CombatInstance {
         instance
     }
 
+    /// Puts the run's dungeon modifiers in force (see `ModifierCatalog::resolve`). Called once,
+    /// before the first tick, with what the key resolved to; a keyless run sets nothing.
+    pub fn set_modifiers(&mut self, modifiers: Vec<engine_game::modifier::ActiveModifier>) {
+        self.sim.set_modifiers(modifiers);
+    }
+
     /// The fight rebuilt from the tables after the server lost it (a restart, a fresh module
     /// instance). Placed monsters keep their keys; ones the tables say are dead are removed;
     /// summoned ones are gone; casts, threat and cooldowns start over.

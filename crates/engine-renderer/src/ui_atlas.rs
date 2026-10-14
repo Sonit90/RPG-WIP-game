@@ -571,6 +571,9 @@ fn icon_texels(icon: UiIcon) -> [&'static [u8]; ICON_VARIANTS] {
         UiIcon::AuraWitheringPlague => raster::AURA_WITHERING_PLAGUE,
         UiIcon::AuraMagicVulnerability => raster::AURA_MAGIC_VULNERABILITY,
         UiIcon::AuraDeflection => raster::AURA_DEFLECTION,
+        UiIcon::AuraPlagued => raster::AURA_PLAGUED,
+        UiIcon::ModifierRotatingBeams => raster::MODIFIER_ROTATING_BEAMS,
+        UiIcon::ModifierPlagueExplosion => raster::MODIFIER_PLAGUE_EXPLOSION,
     }
 }
 

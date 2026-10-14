@@ -455,11 +455,17 @@ pub enum UiIcon {
     AuraMagicVulnerability,
     /// Unspent Deflection: a steel shield turning a blow aside.
     AuraDeflection,
+    /// Plagued: a green cloud over a healing cross, struck through.
+    AuraPlagued,
+    /// The Rotating Beams modifier: three beams turning about a hub.
+    ModifierRotatingBeams,
+    /// The Plague Explosion modifier: a skull in a green burst.
+    ModifierPlagueExplosion,
 }
 
 impl UiIcon {
     /// Every icon, in atlas order.
-    pub const ALL: [Self; 108] = [
+    pub const ALL: [Self; 111] = [
         Self::Firebolt,
         Self::Meteor,
         Self::FlameCone,
@@ -568,6 +574,9 @@ impl UiIcon {
         Self::AuraWitheringPlague,
         Self::AuraMagicVulnerability,
         Self::AuraDeflection,
+        Self::AuraPlagued,
+        Self::ModifierRotatingBeams,
+        Self::ModifierPlagueExplosion,
     ];
 
     /// How many icons there are.

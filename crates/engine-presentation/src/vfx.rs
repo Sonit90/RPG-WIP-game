@@ -170,6 +170,9 @@ const GATE_TINT: [f32; 4] = [0.55, 0.30, 0.95, 0.85];
 /// An add arriving, and the gate breaking.
 const CRYPT_TINT: [f32; 4] = [0.65, 0.35, 0.95, 1.0];
 
+/// A plague burst: the explosion the catalogue already has, sickly green.
+const PLAGUE_TINT: [f32; 4] = [0.45, 0.90, 0.25, 1.0];
+
 /// The most telegraph shapes remembered at once.
 ///
 /// Each is dropped by its own end event; the cap only bounds the list if one is ever missed.
@@ -561,6 +564,12 @@ impl VfxDirector {
                 self.spawn(VfxSpawn::at(VfxId::BlinkDeparture, from).with_radius(0.8));
                 self.spawn(VfxSpawn::at(VfxId::BlinkArrival, to).with_radius(1.1));
             }
+            // The plague debuff is not a burn: no fire aura for a status the cloud refreshes every
+            // second or so. Its icon on the status bar and the cloud on the floor say it.
+            CombatEvent::StatusApplied {
+                status: engine_game::status::StatusKind::Plagued,
+                ..
+            } => {}
             // Burning: one aura per target, refreshed rather than stacked.
             CombatEvent::StatusApplied {
                 target, duration, ..
@@ -716,6 +725,17 @@ impl VfxDirector {
                         .tinted(CONTROL_TINT),
                 );
             }
+            // A festering corpse burst (Plague Explosion): the explosion the catalogue already has,
+            // at the radius gameplay hit with. The cloud it leaves is drawn as a floor indicator.
+            CombatEvent::PlagueExploded {
+                position, radius, ..
+            } => {
+                self.spawn(
+                    VfxSpawn::at(VfxId::Explosion, position + Vec3::new(0.0, 0.4, 0.0))
+                        .with_radius(radius.max(1.0))
+                        .tinted(PLAGUE_TINT),
+                );
+            }
             // The gate breaking: a burst where it stood, the size of the doorway.
             CombatEvent::BossUnlocked { position, .. } => {
                 self.spawn(
@@ -776,7 +796,13 @@ impl VfxDirector {
             }
             CombatEvent::LootMailed { .. }
             | CombatEvent::MailTaken { .. }
-            | CombatEvent::MailBagFull { .. } => {}
+            | CombatEvent::MailBagFull { .. }
+            // A modifier's ground is drawn as floor indicators derived from the simulation's
+            // state (`TelegraphIndicators::sync_modifiers`); only the burst has a burst.
+            | CombatEvent::ModifierBeamsStarted { .. }
+            | CombatEvent::ModifierBeamsEnded { .. }
+            | CombatEvent::PlagueArmed { .. }
+            | CombatEvent::PlagueCloudEnded { .. } => {}
             // A point of Deflection and a shield taking a hit move no picture of their own:
             // both happen several times a second in a pack, and the block that caused them
             // has already been drawn.
