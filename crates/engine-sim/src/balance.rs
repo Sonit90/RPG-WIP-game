@@ -147,8 +147,8 @@ fn balance_check(out: &mut String, matrix: &Matrix) {
     }
     let _ = writeln!(
         out,
-        "**Ratio = Mage DPS / mean(Warrior DPS, Druid DPS)**, target about 1.00. Above 1 the \
-         Mage out-damages the average of the other two. The Mage is shown with its `Default` \
+        "**Ratio = Mage DPS / (Warrior DPS + Druid DPS)**, target about 1.00: the design asks \
+         for the Mage to deal roughly what the other two deal together. The Mage is shown with its `Default` \
          build (no talents) and with the best of its builds.\n"
     );
     for (scenario_index, title) in [
@@ -158,7 +158,7 @@ fn balance_check(out: &mut String, matrix: &Matrix) {
         let _ = writeln!(out, "**{title}**\n");
         let _ = writeln!(
             out,
-            "| Gear | Warrior | Druid | Mage Default | Mage best (build) | Mage Default / avg(W,D) | Mage best / avg(W,D) |"
+            "| Gear | Warrior | Druid | Mage Default | Mage best (build) | Mage Default / (W+D) | Mage best / (W+D) |"
         );
         let _ = writeln!(out, "|---|---:|---:|---:|---:|---:|---:|");
         for profile in matrix.profiles() {
@@ -172,13 +172,13 @@ fn balance_check(out: &mut String, matrix: &Matrix) {
             else {
                 continue;
             };
-            let mean = (warrior + druid) / 2.0;
+            let sum = warrior + druid;
             let _ = writeln!(
                 out,
                 "| {} | {warrior:.0} | {druid:.0} | {default:.0} | {best:.0} ({best_name}) | **{:.2}** | **{:.2}** |",
                 profile.label(),
-                ratio(default, mean),
-                ratio(best, mean),
+                ratio(default, sum),
+                ratio(best, sum),
             );
         }
         let _ = writeln!(out);
