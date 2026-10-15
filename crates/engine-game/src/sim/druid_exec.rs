@@ -1002,17 +1002,22 @@ impl Simulation {
         target: EntityId,
         damage_type: crate::combat::DamageType,
     ) -> f32 {
-        self.world.statuses(target).map_or(1.0, |statuses| {
+        let base = self.world.statuses(target).map_or(1.0, |statuses| {
             statuses.damage_taken_multiplier(damage_type)
-        })
+        });
+        // Fervent Guard replaces Battle Fervor's numbers; the registry row carries the
+        // untalented ones, so the Warrior's own talent corrects them here.
+        base * self.fervor_corrections(target).1
     }
 
     /// What the effects on `source` multiply the damage it deals by: Bloodlust, a curse.
     #[must_use]
     pub(super) fn damage_dealt_multiplier(&self, source: EntityId) -> f32 {
-        self.world
+        let base = self
+            .world
             .statuses(source)
-            .map_or(1.0, crate::status::StatusSet::damage_dealt_multiplier)
+            .map_or(1.0, crate::status::StatusSet::damage_dealt_multiplier);
+        base * self.fervor_corrections(source).0
     }
 
     /// **Astral Sunfire's conversion**: a share of what the party dealt becomes healing.

@@ -38,6 +38,7 @@ impl Simulation {
                 self.warrior_talents = grid;
                 self.warrior_effects =
                     crate::talent::warrior::WarriorTalentEffects::from_grid(&grid);
+                self.refresh_warrior_talents();
             }
         }
     }

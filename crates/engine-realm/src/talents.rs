@@ -209,6 +209,7 @@ mod tests {
     use engine_game::firemage::TalentEffects;
     use engine_game::talent::TalentKey;
     use engine_game::talent::druid::{DruidTalent, DruidTalentEffects};
+    use engine_game::talent::warrior::{WarriorTalent, WarriorTalentEffects};
 
     #[test]
     fn the_shipped_json_is_exactly_the_numbers_the_code_defaults_to() {
@@ -238,7 +239,12 @@ mod tests {
                         "{}",
                         spec.key
                     ),
-                    Hero::Warrior => unreachable!("the Warrior has no talents yet"),
+                    Hero::Warrior => assert_ne!(
+                        WarriorTalentEffects::from_grid(&grid),
+                        WarriorTalentEffects::default(),
+                        "{}",
+                        spec.key
+                    ),
                 }
             }
         }
@@ -258,6 +264,24 @@ mod tests {
             (DruidTalent::TranquilMind, 4, 5),
         ] {
             let spec = &catalog.heroes[Hero::Druid.index()].talents[TalentKey::index(talent)];
+            assert_eq!((spec.tier, spec.cost), (tier, cost), "{}", spec.key);
+        }
+    }
+
+    #[test]
+    fn the_warrior_talents_are_priced_by_tier() {
+        let catalog = builtin().expect("parses");
+        for (talent, tier, cost) in [
+            (WarriorTalent::UnbrokenMomentum, 1, 3),
+            (WarriorTalent::Shockwave, 1, 3),
+            (WarriorTalent::Executioner, 2, 4),
+            (WarriorTalent::BloodiedValor, 2, 4),
+            (WarriorTalent::FerventGuard, 3, 4),
+            (WarriorTalent::RelentlessCharge, 3, 4),
+            (WarriorTalent::BulwarkRhythm, 4, 5),
+            (WarriorTalent::Unyielding, 4, 5),
+        ] {
+            let spec = &catalog.heroes[Hero::Warrior.index()].talents[TalentKey::index(talent)];
             assert_eq!((spec.tier, spec.cost), (tier, cost), "{}", spec.key);
         }
     }
@@ -283,6 +307,8 @@ mod tests {
                 assert!(!is_valid(Hero::Warrior, key));
             }
         }
+        assert!(is_valid(Hero::Warrior, "shockwave"));
+        assert!(!is_valid(Hero::Druid, "shockwave"));
         assert!(!is_valid(Hero::FireMage, "infinite_damage"));
         assert!(!is_valid(Hero::FireMage, "swift_wrath"));
         assert_eq!(

@@ -320,6 +320,28 @@ fn the_talents_in_a_player_spec_reach_the_simulation() {
 }
 
 #[test]
+fn a_warriors_talents_reach_the_simulation_and_stay_with_the_warrior() {
+    let (scene, barriers, mut players) = crypt();
+    players[0].talents = vec!["unyielding".into()];
+    players[0].talent_points = 5;
+    let mut fight = CombatInstance::new(&scene, &players, &barriers, (1.0, 1.0));
+    let tank = fight
+        .resolve(&EntityRef::Player("tank".into()))
+        .expect("tank");
+    let healer = fight
+        .resolve(&EntityRef::Player("healer".into()))
+        .expect("healer");
+    let stacks = |fight: &mut CombatInstance, id| {
+        fight
+            .sim
+            .with_player(id, |sim| sim.warrior_effects().last_stand_fervor_stacks)
+            .expect("player")
+    };
+    assert_eq!(stacks(&mut fight, tank), 2);
+    assert_eq!(stacks(&mut fight, healer), 0);
+}
+
+#[test]
 fn talents_that_do_not_fit_are_dropped_whole() {
     let (scene, barriers, mut players) = crypt();
     // Six points cannot hold seven; and an unknown key spoils the whole set too.

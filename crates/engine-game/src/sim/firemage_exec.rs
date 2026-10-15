@@ -29,8 +29,8 @@ use crate::ability::AbilityId;
 use crate::entity::EntityId;
 use crate::event::CombatEvent;
 use crate::firemage::{
-    AbilityError, BeamEnd, CRIT_FEEDBACK_CAP, FireAbility, IgniteTick, PendingImpact, TargetMode, Zone,
-    ZoneKind, ZoneShape, ZoneTick,
+    AbilityError, BeamEnd, CRIT_FEEDBACK_CAP, FireAbility, IgniteTick, PendingImpact, TargetMode,
+    Zone, ZoneKind, ZoneShape, ZoneTick,
 };
 use crate::hero::Hero;
 use crate::sim::CastEnd;
@@ -371,7 +371,7 @@ impl Simulation {
                     .world
                     .distance_between(caster, target)
                     .ok_or(AbilityError::TargetInvalid)?;
-                if distance > definition.range {
+                if distance > self.ability_range(ability) {
                     return Err(AbilityError::OutOfRange);
                 }
                 let position = self
@@ -1024,10 +1024,11 @@ impl Simulation {
                     None => self.facing_yaw(),
                 };
                 self.face_towards(origin + Vec3::new(-yaw.sin(), 0.0, -yaw.cos()));
+                let reach = self.ability_range(ability);
                 self.collect_in_cone(
                     origin,
                     yaw,
-                    definition.range,
+                    reach,
                     crate::firemage::TARGET_CLEAVE_HALF_ANGLE,
                 );
             }

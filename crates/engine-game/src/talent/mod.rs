@@ -18,7 +18,7 @@
 //!    numbers gameplay reads, never scattered as `if has_talent(..)`.
 //!
 //! A hero's talents are an enum implementing [`TalentKey`]: its variant order is the table's
-//! row order. Adding a Warrior talent is a row in the JSON, a variant, and an effect field.
+//! row order. Adding a talent is a row in the JSON, a variant, and an effect field.
 
 pub mod druid;
 pub mod warrior;
@@ -623,7 +623,7 @@ mod tests {
         TalentCatalog::default().validate().expect("valid");
         assert_eq!(hero_talents(Hero::FireMage).talents.len(), 12);
         assert_eq!(hero_talents(Hero::Druid).talents.len(), 8);
-        assert!(hero_talents(Hero::Warrior).talents.is_empty());
+        assert_eq!(hero_talents(Hero::Warrior).talents.len(), 8);
     }
 
     #[test]

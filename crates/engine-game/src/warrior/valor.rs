@@ -35,13 +35,37 @@ use super::tuning::VALOR_MAX;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Valor {
     stacks: u8,
+    /// The stack that fills the bar: [`VALOR_MAX`] unless a talent shortens it. Zero is the
+    /// default and means [`VALOR_MAX`], so a derived `Default` stays the untalented bar.
+    capacity: u8,
 }
 
 impl Valor {
     /// A Warrior who has not cast anything yet.
     #[must_use]
     pub const fn empty() -> Self {
-        Self { stacks: 0 }
+        Self {
+            stacks: 0,
+            capacity: 0,
+        }
+    }
+
+    /// How many stacks fill the bar.
+    #[must_use]
+    pub const fn capacity(&self) -> u8 {
+        if self.capacity == 0 {
+            VALOR_MAX
+        } else {
+            self.capacity
+        }
+    }
+
+    /// Changes how many stacks fill the bar (Unbroken Momentum). What is banked is kept,
+    /// except that a bar already at the new capacity is left one short of it rather than
+    /// being filled by a talent purchase.
+    pub fn set_capacity(&mut self, capacity: u8) {
+        self.capacity = capacity.clamp(1, VALOR_MAX);
+        self.stacks = self.stacks.min(self.capacity.saturating_sub(1));
     }
 
     /// How many stacks are banked.
@@ -53,7 +77,7 @@ impl Valor {
     /// How full the bar is, in `0.0..=1.0`.
     #[must_use]
     pub fn fraction(&self) -> f32 {
-        (f32::from(self.stacks) / f32::from(VALOR_MAX)).clamp(0.0, 1.0)
+        (f32::from(self.stacks) / f32::from(self.capacity())).clamp(0.0, 1.0)
     }
 
     /// **Adds one stack, and reports whether that filled the bar.**
@@ -62,8 +86,9 @@ impl Valor {
     /// because filling it *is* spending it. The caller's only job on `true` is to apply the
     /// Battle Fervor stack the fifth pip bought.
     pub fn gain(&mut self) -> bool {
-        self.stacks = (self.stacks + 1).min(VALOR_MAX);
-        if self.stacks >= VALOR_MAX {
+        let capacity = self.capacity();
+        self.stacks = (self.stacks + 1).min(capacity);
+        if self.stacks >= capacity {
             self.stacks = 0;
             return true;
         }
@@ -78,7 +103,7 @@ impl Valor {
     /// Sets the stacks directly, clamped to the bar. For arena setup, tests and a client
     /// mirroring what the server says.
     pub fn set(&mut self, stacks: u8) {
-        self.stacks = stacks.min(VALOR_MAX);
+        self.stacks = stacks.min(self.capacity());
     }
 }
 
@@ -108,6 +133,16 @@ mod tests {
         let mut valor = Valor::empty();
         valor.set(2);
         assert!((valor.fraction() - 0.4).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_shorter_bar_fills_sooner() {
+        let mut valor = Valor::empty();
+        valor.set_capacity(4);
+        assert_eq!(valor.capacity(), 4);
+        assert!(!valor.gain() && !valor.gain() && !valor.gain());
+        assert!(valor.gain(), "the fourth fills it");
+        assert_eq!(valor.stacks(), 0);
     }
 
     #[test]

@@ -165,20 +165,26 @@ impl Simulation {
         } else {
             statuses.damage_reduction()
         };
+        let (dealt_correction, taken_correction) = self.fervor_corrections(entity);
         Some(EffectStats {
             health: health.current(),
             max_health: health.max(),
             move_speed: base_speed * move_speed_multiplier,
             move_speed_multiplier,
             attack_speed,
-            damage_dealt: statuses.damage_dealt_multiplier(),
+            damage_dealt: statuses.damage_dealt_multiplier() * dealt_correction,
             damage_taken: [
                 DamageType::Physical,
                 DamageType::Fire,
                 DamageType::Arcane,
                 DamageType::Nature,
             ]
-            .map(|damage_type| (damage_type, statuses.damage_taken_multiplier(damage_type))),
+            .map(|damage_type| {
+                (
+                    damage_type,
+                    statuses.damage_taken_multiplier(damage_type) * taken_correction,
+                )
+            }),
             damage_reduction,
             sheet: player.then(|| self.character_stats()),
         })

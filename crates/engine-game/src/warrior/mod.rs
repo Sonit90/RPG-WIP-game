@@ -164,6 +164,13 @@ pub mod tuning {
 
     /// War Stomp: the armour the Warrior gains while something carries a full stack.
     pub const WAR_STOMP_ARMOR_BONUS: f32 = 0.10;
+
+    /// Colossus Strike: the most enemies its bleed lands on (the selected target first, then
+    /// the nearest). The direct hit still reaches everything in the smash.
+    ///
+    /// Without a cap the bleed, about three quarters of the ability's damage, is paid once
+    /// per enemy in reach and the Warrior out-damages every other class against a pack.
+    pub const COLOSSUS_BLEED_MAX_TARGETS: usize = 3;
 }
 
 use tuning::*;
