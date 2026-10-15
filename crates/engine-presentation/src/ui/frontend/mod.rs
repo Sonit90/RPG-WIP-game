@@ -471,6 +471,18 @@ pub struct Toast {
     pub message: String,
 }
 
+/// A party member who dropped out of the run and may still return.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AwayMember {
+    /// Identifies this particular drop (a member who drops again gets a new key), so a "Wait"
+    /// answered to one does not hide the next.
+    pub key: String,
+    /// Their character's name.
+    pub name: String,
+    /// Whole seconds left before the realm removes them, from the server's timestamps.
+    pub seconds_left: u64,
+}
+
 /// Everything the front-end draws, built by the app from the realm mirror each frame.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct FrontEndView {
@@ -512,6 +524,9 @@ pub struct FrontEndView {
     pub reconnecting: Option<String>,
     /// Recent messages from the server.
     pub toasts: Vec<Toast>,
+    /// Party members who dropped during the run and are being waited for: the world shows
+    /// "<Name> has disconnected" with a countdown and the choice to wait or leave.
+    pub away: Vec<AwayMember>,
 }
 
 /// What the player asked for.
@@ -657,6 +672,8 @@ enum Hit {
     WithdrawKey,
     Start,
     LeaveParty,
+    /// "Wait" on the disconnect prompt: hides it for the drops it shows.
+    AwayWait,
     ReturnToHub,
     Kick(String),
     /// A bag cell on the workshop screen, by bag index.
@@ -696,6 +713,8 @@ pub struct FrontEndUi {
     clock: f32,
     /// The key change the hub key panel is asking to confirm.
     confirm: Option<KeyChange>,
+    /// Disconnect prompts the player answered "Wait" to, by drop key.
+    waited: Vec<String>,
 }
 
 impl Default for FrontEndUi {
@@ -800,6 +819,7 @@ impl FrontEndUi {
             pointer: (0.0, 0.0),
             clock: 0.0,
             confirm: None,
+            waited: Vec::new(),
         }
     }
 
@@ -925,6 +945,10 @@ impl FrontEndUi {
         if view.screen != Screen::Hub || view.busy.is_some() {
             self.confirm = None;
         }
+        // An answered drop that is over (the member came back, or was removed) is forgotten, so
+        // a later drop of the same member asks again.
+        self.waited
+            .retain(|key| view.away.iter().any(|away| away.key == *key));
         if !input.pressed {
             return actions;
         }
@@ -1005,6 +1029,13 @@ impl FrontEndUi {
                 None => {}
             },
             Hit::Panel => {}
+            Hit::AwayWait => {
+                let shown: Vec<String> = pending_away(view, &self.waited)
+                    .iter()
+                    .map(|away| away.key.clone())
+                    .collect();
+                self.waited.extend(shown);
+            }
             Hit::Dungeon(index) => actions.push(FrontEndAction::SelectDungeon(index)),
             Hit::Role(role) => actions.push(FrontEndAction::SelectRole(role)),
             Hit::LeaveQueue => actions.push(FrontEndAction::LeaveQueue),
@@ -1295,6 +1326,13 @@ impl FrontEndUi {
                 } else {
                     // A small "leave" control while in the dungeon.
                     layout.add(Hit::LeaveParty, in_world_leave(w, scale));
+                    let away = pending_away(view, &self.waited);
+                    if !away.is_empty() {
+                        let panel = away_panel(away.len(), w, h, scale);
+                        layout.add(Hit::Panel, panel.panel);
+                        layout.add(Hit::AwayWait, panel.wait);
+                        layout.add(Hit::LeaveParty, panel.leave);
+                    }
                 }
             }
         }
@@ -1347,7 +1385,7 @@ impl FrontEndUi {
             Screen::ReadyCheck => draw_ready_check(&mut ctx, view, w, h),
             Screen::KeySelect => draw_key_select(&mut ctx, view, w, h),
             Screen::Party => draw_party(&mut ctx, view, w, h),
-            Screen::InWorld => draw_in_world(&mut ctx, view, w, h),
+            Screen::InWorld => draw_in_world(&mut ctx, view, &self.waited, w, h),
         }
         // Over the world a refusal is a toast; a full page keeps the sentence on screen.
         if let Some(error) = &view.error
@@ -4219,7 +4257,102 @@ fn draw_party(ctx: &mut Painter<'_>, view: &FrontEndView, w: f32, h: f32) {
     }
 }
 
-fn draw_in_world(ctx: &mut Painter<'_>, view: &FrontEndView, w: f32, h: f32) {
+/// The drops the disconnect prompt still asks about: not yet answered with "Wait".
+fn pending_away<'v>(view: &'v FrontEndView, waited: &[String]) -> Vec<&'v AwayMember> {
+    view.away
+        .iter()
+        .filter(|away| !waited.contains(&away.key))
+        .take(AWAY_ROWS)
+        .collect()
+}
+
+/// The most members the disconnect prompt lists.
+const AWAY_ROWS: usize = 3;
+
+/// Where the disconnect prompt and its two buttons sit.
+struct AwayRects {
+    panel: UiRect,
+    wait: UiRect,
+    leave: UiRect,
+}
+
+fn away_panel(rows: usize, w: f32, h: f32, scale: UiScale) -> AwayRects {
+    let px = |v: f32| scale.px(v);
+    #[allow(clippy::cast_precision_loss, reason = "a handful of rows")]
+    let height = px(150.0) + px(30.0) * rows as f32;
+    let panel = UiRect::new(
+        (w - px(480.0)) * 0.5,
+        (h * 0.16).max(px(150.0)),
+        px(480.0),
+        height,
+    );
+    let y = panel.y + panel.height - px(56.0);
+    let width = (panel.width - px(72.0)) * 0.5;
+    AwayRects {
+        panel,
+        wait: UiRect::new(panel.x + px(28.0), y, width, px(38.0)),
+        leave: UiRect::new(panel.x + px(44.0) + width, y, width, px(38.0)),
+    }
+}
+
+fn draw_away(ctx: &mut Painter<'_>, away: &[&AwayMember], w: f32, h: f32) {
+    let scale = ctx.scale;
+    let px = move |v: f32| scale.px(v);
+    let rects = away_panel(away.len(), w, h, scale);
+    ctx.panel(rects.panel);
+    let mut y = rects.panel.y + px(22.0);
+    for member in away {
+        ctx.text(
+            (rects.panel.x + px(28.0), y),
+            &format!("{} has disconnected.", member.name),
+            BAD,
+            UiFont::SemiBold,
+            19.0,
+            TextAlign::Left,
+        );
+        ctx.text(
+            (rects.panel.x + rects.panel.width - px(28.0), y),
+            &clock_text(member.seconds_left),
+            GOLD,
+            UiFont::SemiBold,
+            19.0,
+            TextAlign::Right,
+        );
+        y += px(30.0);
+    }
+    ctx.text(
+        (rects.panel.x + px(28.0), y + px(6.0)),
+        "Their place is held until the timer ends.",
+        DIM,
+        UiFont::Regular,
+        15.0,
+        TextAlign::Left,
+    );
+    ctx.text(
+        (rects.panel.x + px(28.0), y + px(30.0)),
+        "Wait for them, or leave and return to the hub.",
+        DIM,
+        UiFont::Regular,
+        15.0,
+        TextAlign::Left,
+    );
+    ctx.button(
+        rects.wait,
+        "Wait",
+        ButtonKind::Primary,
+        &Hit::AwayWait,
+        true,
+    );
+    ctx.button(
+        rects.leave,
+        "Leave Party",
+        ButtonKind::Secondary,
+        &Hit::LeaveParty,
+        true,
+    );
+}
+
+fn draw_in_world(ctx: &mut Painter<'_>, view: &FrontEndView, waited: &[String], w: f32, h: f32) {
     let scale = ctx.scale;
     let px = move |v: f32| scale.px(v);
     match view.countdown {
@@ -4266,6 +4399,10 @@ fn draw_in_world(ctx: &mut Painter<'_>, view: &FrontEndView, w: f32, h: f32) {
             &Hit::LeaveParty,
             true,
         );
+        let away = pending_away(view, waited);
+        if !away.is_empty() {
+            draw_away(ctx, &away, w, h);
+        }
     }
     if let Some((level, text)) = &view.connection
         && *level != StatusLevel::Good
@@ -4954,7 +5091,7 @@ mod tests {
         assert!(text.contains(&"Monster drops: 2 (sent to your mail)".to_owned()));
         assert!(text.contains(&"Gold: +135".to_owned()));
         assert!(text.contains(&"Aether Shard: +1".to_owned()));
-        assert!(text.contains(&"Reward bonus: +25%".to_owned()));
+        assert!(text.contains(&"Loot bonus: +25% (key rerolled)".to_owned()));
         let epic = rows
             .iter()
             .find(|(_, v, _)| v.starts_with("Ashgrave"))
@@ -5455,5 +5592,120 @@ mod tests {
         let mut unchanged = completion(true, false, false);
         unchanged.key_level_after = 0;
         assert!(!rows(&unchanged).iter().any(|r| r.starts_with("Your key")));
+    }
+
+    fn away(key: &str, name: &str, seconds_left: u64) -> AwayMember {
+        AwayMember {
+            key: key.into(),
+            name: name.into(),
+            seconds_left,
+        }
+    }
+
+    fn world_with_away(away: Vec<AwayMember>) -> FrontEndView {
+        FrontEndView {
+            screen: Screen::InWorld,
+            away,
+            ..FrontEndView::default()
+        }
+    }
+
+    /// Clicks the middle of `rect` and returns what the front-end asked for.
+    fn click_rect(ui: &mut FrontEndUi, view: &FrontEndView, rect: UiRect) -> Vec<FrontEndAction> {
+        let none = || None;
+        ui.update(
+            &input(center(rect), true, &[], &none),
+            view,
+            VIEWPORT,
+            scale(),
+            0.016,
+        )
+    }
+
+    fn away_rects(rows: usize) -> AwayRects {
+        away_panel(rows, VIEWPORT.0 as f32, VIEWPORT.1 as f32, scale())
+    }
+
+    #[test]
+    fn the_disconnect_prompt_names_the_member_and_counts_down() {
+        let ui = FrontEndUi::new();
+        let mut list = UiDrawList::new();
+        ui.draw(
+            &mut list,
+            &world_with_away(vec![away("a@1", "Mirelle", 125)]),
+            VIEWPORT,
+            scale(),
+        );
+        let text = words(&list);
+        assert!(
+            text.contains(&"Mirelle has disconnected.".to_owned()),
+            "{text:?}"
+        );
+        assert!(text.contains(&"2:05".to_owned()), "{text:?}");
+        assert!(text.contains(&"Wait".to_owned()));
+        // Nobody away: no prompt.
+        let mut quiet = UiDrawList::new();
+        ui.draw(&mut quiet, &world_with_away(Vec::new()), VIEWPORT, scale());
+        assert!(!words(&quiet).iter().any(|t| t.contains("disconnected")));
+    }
+
+    #[test]
+    fn wait_hides_the_prompt_for_that_drop_and_a_new_drop_brings_it_back() {
+        let mut ui = FrontEndUi::new();
+        let view = world_with_away(vec![away("a@1", "Mirelle", 200)]);
+        assert!(rect_of(&ui, &view, &Hit::AwayWait).is_some());
+        let wait = away_rects(1).wait;
+        assert!(
+            click_rect(&mut ui, &view, wait).is_empty(),
+            "Wait asks for nothing"
+        );
+        assert!(rect_of(&ui, &view, &Hit::AwayWait).is_none());
+        let mut list = UiDrawList::new();
+        ui.draw(&mut list, &view, VIEWPORT, scale());
+        assert!(!words(&list).iter().any(|t| t.contains("disconnected")));
+        // The countdown ticking does not bring it back.
+        let later = world_with_away(vec![away("a@1", "Mirelle", 150)]);
+        assert!(rect_of(&ui, &later, &Hit::AwayWait).is_none());
+        // Another member dropping does.
+        let two = world_with_away(vec![away("a@1", "Mirelle", 140), away("b@2", "Gorm", 300)]);
+        assert!(rect_of(&ui, &two, &Hit::AwayWait).is_some());
+        let mut list = UiDrawList::new();
+        ui.draw(&mut list, &two, VIEWPORT, scale());
+        let text = words(&list);
+        assert!(text.contains(&"Gorm has disconnected.".to_owned()));
+        assert!(!text.contains(&"Mirelle has disconnected.".to_owned()));
+        // The same member returning and dropping again is a new key, so it asks again.
+        let back = world_with_away(Vec::new());
+        ui.update(
+            &input((0.0, 0.0), false, &[], &|| None),
+            &back,
+            VIEWPORT,
+            scale(),
+            0.016,
+        );
+        let again = world_with_away(vec![away("a@9", "Mirelle", 300)]);
+        assert!(rect_of(&ui, &again, &Hit::AwayWait).is_some());
+    }
+
+    #[test]
+    fn leave_on_the_prompt_leaves_the_party() {
+        let mut ui = FrontEndUi::new();
+        let view = world_with_away(vec![away("a@1", "Mirelle", 200)]);
+        let leave = away_rects(1).leave;
+        assert_eq!(
+            click_rect(&mut ui, &view, leave),
+            vec![FrontEndAction::LeaveParty]
+        );
+    }
+
+    #[test]
+    fn the_prompt_takes_the_pointer_and_never_covers_a_finished_run() {
+        let ui = FrontEndUi::new();
+        let view = world_with_away(vec![away("a@1", "Mirelle", 200)]);
+        let hits = ui.layout(&view, VIEWPORT, scale()).hits;
+        assert!(hits.iter().any(|(hit, _)| *hit == Hit::Panel));
+        let mut done = view;
+        done.completion = Some(completion(true, true, false));
+        assert!(rect_of(&ui, &done, &Hit::AwayWait).is_none());
     }
 }

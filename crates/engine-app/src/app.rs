@@ -2421,6 +2421,12 @@ impl App {
         if self.character_menu.is_open() {
             self.hovered_ability = None;
             self.hovered_slot = None;
+            // Queued, in a party or in a run, the sheet is the run's locked configuration.
+            let locked = self
+                .online
+                .as_ref()
+                .is_some_and(|online| online.is_engaged());
+            self.character_menu.set_locked(locked);
             match self
                 .character_menu
                 .update(&ui_input, &self.snapshot, viewport)

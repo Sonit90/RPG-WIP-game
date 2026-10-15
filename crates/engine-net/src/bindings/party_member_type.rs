@@ -30,6 +30,7 @@ pub struct PartyMember {
     pub ready: ReadyTag,
     pub presence: PresenceTag,
     pub disconnected_at: Option<__sdk::Timestamp>,
+    pub reconnect_grace_us: i64,
     pub enqueued_at: __sdk::Timestamp,
     pub slot: u8,
 }
@@ -61,6 +62,7 @@ pub struct PartyMemberCols {
     pub ready: __sdk::__query_builder::Col<PartyMember, ReadyTag>,
     pub presence: __sdk::__query_builder::Col<PartyMember, PresenceTag>,
     pub disconnected_at: __sdk::__query_builder::Col<PartyMember, Option<__sdk::Timestamp>>,
+    pub reconnect_grace_us: __sdk::__query_builder::Col<PartyMember, i64>,
     pub enqueued_at: __sdk::__query_builder::Col<PartyMember, __sdk::Timestamp>,
     pub slot: __sdk::__query_builder::Col<PartyMember, u8>,
 }
@@ -88,6 +90,7 @@ impl __sdk::__query_builder::HasCols for PartyMember {
             ready: __sdk::__query_builder::Col::new(table_name, "ready"),
             presence: __sdk::__query_builder::Col::new(table_name, "presence"),
             disconnected_at: __sdk::__query_builder::Col::new(table_name, "disconnected_at"),
+            reconnect_grace_us: __sdk::__query_builder::Col::new(table_name, "reconnect_grace_us"),
             enqueued_at: __sdk::__query_builder::Col::new(table_name, "enqueued_at"),
             slot: __sdk::__query_builder::Col::new(table_name, "slot"),
         }

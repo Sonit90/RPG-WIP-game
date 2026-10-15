@@ -99,6 +99,10 @@ pub struct MemberInfo {
     pub ready: ReadyResponse,
     /// Whether they are connected.
     pub present: bool,
+    /// When the server saw them drop, while they are away (server time).
+    pub disconnected_at: Option<Micros>,
+    /// How long their place is held after `disconnected_at`.
+    pub reconnect_grace: Micros,
     /// Party order.
     pub slot: u8,
 }
