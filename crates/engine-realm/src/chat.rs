@@ -323,9 +323,18 @@ mod tests {
 
     #[test]
     fn the_speaker_is_the_account_then_the_character() {
-        assert_eq!(speaker_name(Some("Aldric"), Some("Fire Mage"), None), Some("Aldric"));
-        assert_eq!(speaker_name(None, Some("Brienne"), Some("Other")), Some("Brienne"));
-        assert_eq!(speaker_name(Some(" "), None, Some("Hubwalker")), Some("Hubwalker"));
+        assert_eq!(
+            speaker_name(Some("Aldric"), Some("Fire Mage"), None),
+            Some("Aldric")
+        );
+        assert_eq!(
+            speaker_name(None, Some("Brienne"), Some("Other")),
+            Some("Brienne")
+        );
+        assert_eq!(
+            speaker_name(Some(" "), None, Some("Hubwalker")),
+            Some("Hubwalker")
+        );
         assert_eq!(speaker_name(None, None, None), None);
         assert_eq!(speaker_name(Some("  "), None, Some(" ")), None);
     }

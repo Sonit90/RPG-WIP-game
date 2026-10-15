@@ -50,7 +50,9 @@ pub fn modifier_reroll(ctx: &ReducerContext, index: u8) -> Result<(), String> {
         .find(player.instance_id)
         .ok_or_else(|| RealmError::dungeon("That dungeon no longer exists.").to_wire())?;
     if InstanceState::from(instance.state) != InstanceState::Active {
-        return Err(RealmError::dungeon("A key can only be rerolled while the run is under way.").into());
+        return Err(
+            RealmError::dungeon("A key can only be rerolled while the run is under way.").into(),
+        );
     }
     let catalog = crate::level::catalog()?;
     let rules = catalog.modifiers();

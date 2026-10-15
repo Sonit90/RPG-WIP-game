@@ -216,6 +216,25 @@ fn arm(ctx: &ReducerContext, instance: &DungeonInstance, fight: &mut CombatInsta
             instance.id
         ),
     }
+    fight.seed_loot(loot_seed(instance));
+}
+
+/// The seed an instance's loot is rolled from: its own, so no two runs roll the same chest,
+/// and fixed for its lifetime, so a rebuilt fight rolls what the original would have.
+fn loot_seed(instance: &DungeonInstance) -> u64 {
+    // SplitMix64 over the instance id and the moment it was created.
+    #[allow(
+        clippy::cast_sign_loss,
+        reason = "only the bits matter: the timestamp is mixed, not compared"
+    )]
+    let created = instance.created_at.to_micros_since_unix_epoch() as u64;
+    let mut z = instance
+        .id
+        .wrapping_mul(0x9E37_79B9_7F4A_7C15)
+        .wrapping_add(created);
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^ (z >> 31)
 }
 
 /// Builds an instance's fight and writes its first rows. Called once, when the instance
@@ -242,7 +261,11 @@ pub fn start(ctx: &ReducerContext, instance: &DungeonInstance) -> Result<(), Rea
     FIGHTS.with(|fights| fights.borrow_mut().insert(instance.id, fight));
     with_fight(ctx, instance, |fight| {
         project(ctx, instance.id, fight);
-        write_meter(ctx, instance.id, fight.meter_rows(micros(ctx.timestamp), true));
+        write_meter(
+            ctx,
+            instance.id,
+            fight.meter_rows(micros(ctx.timestamp), true),
+        );
     })?;
     Ok(())
 }

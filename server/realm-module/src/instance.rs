@@ -8,10 +8,10 @@
 use engine_realm::RealmError;
 use engine_realm::combat::RolledItem;
 use engine_realm::haul::{self, SummaryItem};
-use engine_realm::meter::ReportMember;
 use engine_realm::instance::{
     Countdown, InstanceState, MemberPresence, barrier_closed, should_clean_up,
 };
+use engine_realm::meter::ReportMember;
 use engine_realm::party::PartyState;
 use spacetimedb::{ReducerContext, ScheduleAt, Table, TimeDuration};
 
@@ -468,10 +468,7 @@ pub fn finish(ctx: &ReducerContext, instance_id: u64, success: bool) -> Result<(
             success,
             is_owner,
         );
-        let key_level_after = rewards
-            .key_level_after
-            .or(participant_bump)
-            .unwrap_or(0);
+        let key_level_after = rewards.key_level_after.or(participant_bump).unwrap_or(0);
         let currency_spent = take_spend(ctx, instance_id, &player.account_id);
         let resources =
             serde_json::to_string(&rewards.resources).unwrap_or_else(|_| "[]".to_owned());
@@ -502,7 +499,11 @@ pub fn finish(ctx: &ReducerContext, instance_id: u64, success: bool) -> Result<(
             currency_spent: serde_json::to_string(&currency_spent)
                 .unwrap_or_else(|_| "[]".to_owned()),
             participant_key_bump: participant_bump.is_some(),
-            own_key_level: if participant_bump.is_some() { own_level } else { 0 },
+            own_key_level: if participant_bump.is_some() {
+                own_level
+            } else {
+                0
+            },
         });
         ctx.db.run_summary().insert(RunSummary {
             result_id: format!("{instance_id}:{}", player.account_id),

@@ -479,6 +479,15 @@ impl CombatInstance {
         self.sim.set_loot_rules(rules, key_level, reward_bonus_pct);
     }
 
+    /// Seeds what the fight rolls loot with: the boss's chest and every monster drop.
+    ///
+    /// A fight is otherwise built from the fixed default seed, so every run of a dungeon would
+    /// roll the same chest. The realm passes a seed of its own per instance, the same one on a
+    /// rebuild, so a rebuilt fight rolls what the original would have.
+    pub fn seed_loot(&mut self, seed: u64) {
+        self.sim.reseed_loot(seed);
+    }
+
     /// Changes the run's reward bonus, per cent: what a key modifier grants. It scales what is
     /// rolled from now on (currency chances and gold, the chest's chance of an extra item); the
     /// realm scales the run's resource payout with the same number

@@ -512,10 +512,18 @@ fn slay_all(fight: &mut CombatInstance, killer: EntityId) -> Vec<WireEvent> {
 
 /// Clears the crypt at `bonus` per cent reward bonus and returns every event of the run.
 fn cleared_with_loot(bonus: u32) -> (CombatInstance, Vec<WireEvent>) {
+    cleared_with_seed(bonus, None)
+}
+
+/// As [`cleared_with_loot`], with the loot rolled from `seed` when one is given.
+fn cleared_with_seed(bonus: u32, seed: Option<u64>) -> (CombatInstance, Vec<WireEvent>) {
     let (scene, barriers, players) = crypt();
     let mut fight = CombatInstance::new(&scene, &players, &barriers, (1.0, 1.0));
     let rules = crate::loot::builtin_rules().expect("the shipped rules build");
     fight.set_loot(rules.clone(), 5, bonus);
+    if let Some(seed) = seed {
+        fight.seed_loot(seed);
+    }
     assert_eq!(fight.reward_bonus(), bonus);
     fight.open_start_barrier();
     let mage = fight
@@ -582,6 +590,25 @@ fn a_cleared_run_with_loot_rules_rolls_two_items_per_player_and_pays_gold() {
         };
         assert!(["tank", "healer", "dps"].contains(&account.as_str()));
     }
+}
+
+/// Every player's chest items, as (item key, quality), for comparing two runs.
+fn chests_of(fight: &CombatInstance) -> Vec<(String, u8)> {
+    ["tank", "healer", "dps"]
+        .iter()
+        .flat_map(|account| fight.loot_items_of(account))
+        .map(|item| (item.key.to_string(), item.props.quality))
+        .collect()
+}
+
+#[test]
+fn the_loot_seed_decides_the_chest_and_the_same_seed_rolls_it_again() {
+    let (first, _) = cleared_with_seed(0, Some(11));
+    let (again, _) = cleared_with_seed(0, Some(11));
+    assert_eq!(chests_of(&first), chests_of(&again), "one seed, one chest");
+    let chest = chests_of(&first);
+    let differs = (12..20).any(|seed| chests_of(&cleared_with_seed(0, Some(seed)).0) != chest);
+    assert!(differs, "other seeds roll other chests");
 }
 
 #[test]

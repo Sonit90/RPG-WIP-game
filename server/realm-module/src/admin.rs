@@ -143,7 +143,11 @@ pub fn admin_clear_instance(ctx: &ReducerContext, instance_id: u64) -> Result<()
 /// summons are left). An operator tool, and the integration tests' way to reach the key
 /// reroll's unlock without clearing half a dungeon.
 #[spacetimedb::reducer]
-pub fn admin_clear_dungeon(ctx: &ReducerContext, instance_id: u64, percent: u8) -> Result<(), String> {
+pub fn admin_clear_dungeon(
+    ctx: &ReducerContext,
+    instance_id: u64,
+    percent: u8,
+) -> Result<(), String> {
     require_owner(ctx)?;
     let instance = ctx
         .db
@@ -154,7 +158,9 @@ pub fn admin_clear_dungeon(ctx: &ReducerContext, instance_id: u64, percent: u8) 
     let slain = crate::combat::with_fight(ctx, &instance, |fight| {
         fight.slay_placed_until(f32::from(percent.min(100)) / 100.0)
     })?;
-    log::info!("event=admin_clear_dungeon instance_id={instance_id} percent={percent} slain={slain}");
+    log::info!(
+        "event=admin_clear_dungeon instance_id={instance_id} percent={percent} slain={slain}"
+    );
     Ok(())
 }
 
