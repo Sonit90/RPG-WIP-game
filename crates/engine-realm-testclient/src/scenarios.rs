@@ -627,8 +627,9 @@ pub fn reconnect_party(endpoints: &RealmEndpoints) -> Outcome {
         "equipment, bag and talents are what they were",
     )?;
     bots.push(back);
+    // Everyone still in the party: the healer who left sees no members at all.
     let present = drive(&mut bots, Duration::from_secs(5), |bots| {
-        bots.iter().all(|b| {
+        bots.iter().filter(|b| b.mirror.party.is_some()).all(|b| {
             b.mirror
                 .members
                 .iter()
