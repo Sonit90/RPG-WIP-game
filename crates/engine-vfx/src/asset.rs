@@ -405,8 +405,9 @@ pub enum VfxId {
     BlinkDeparture,
     /// Somebody arrived here.
     BlinkArrival,
-    /// The Ultimate: the biggest thing in the catalogue.
-    Cataclysm,
+    /// The Ultimate: a channelled beam of fire from the caster's hands, as long and as wide
+    /// as the gameplay beam, re-aimed every frame by the director.
+    FireBeam,
 }
 
 impl VfxId {
@@ -424,7 +425,7 @@ impl VfxId {
         Self::CastCharge,
         Self::BlinkDeparture,
         Self::BlinkArrival,
-        Self::Cataclysm,
+        Self::FireBeam,
     ];
 
     /// Dense index into the effect table.
@@ -875,82 +876,76 @@ const BLINK_ARRIVAL_LAYERS: [MeshLayer; 1] = [MeshLayer {
     ..MeshLayer::disc()
 }];
 
-const CATACLYSM_EMITTERS: [EmitterDesc; 3] = [
-    // The column of fire, for the whole life.
+/// The beam is particles only. The world pass does not blend, so a solid mesh would be an
+/// opaque bar across the fight; a dense additive stream along the beam's own length reads as
+/// light, and the floor under it is marked by the ground indicator the app draws for it.
+const FIRE_BEAM_EMITTERS: [EmitterDesc; 4] = [
+    // The white-hot core, thin and dense along the whole reach.
     EmitterDesc {
-        rate: 260.0,
-        shape: SpawnShape::Disc { radius: 0.5 },
-        speed: (4.0, 12.0),
-        lifetime: (0.5, 1.1),
-        size: (0.55, 0.05),
-        color_start: [1.0, 0.80, 0.40, 1.0],
-        color_end: [0.85, 0.15, 0.0, 0.0],
-        gravity: -5.0,
+        rate: 1_100.0,
+        shape: SpawnShape::Line {
+            length: 1.0,
+            width: 0.10,
+        },
+        speed: (0.1, 0.6),
+        lifetime: (0.10, 0.22),
+        size: (0.42, 0.14),
+        color_start: [1.0, 0.95, 0.72, 0.95],
+        color_end: [1.0, 0.55, 0.12, 0.0],
+        gravity: -0.4,
+        drag: 1.0,
+        attached: true,
+        ..EmitterDesc::stream(1_100.0)
+    },
+    // The flame around it, as wide as the beam hits.
+    EmitterDesc {
+        rate: 800.0,
+        shape: SpawnShape::Line {
+            length: 1.0,
+            width: 0.75,
+        },
+        speed: (0.5, 1.7),
+        lifetime: (0.2, 0.5),
+        size: (0.62, 0.18),
+        color_start: [1.0, 0.52, 0.14, 0.8],
+        color_end: [0.7, 0.10, 0.0, 0.0],
+        gravity: -1.6,
         drag: 1.2,
         attached: true,
-        ..EmitterDesc::stream(260.0)
+        ..EmitterDesc::stream(800.0)
     },
-    // The outward blast, once, at the moment it lands.
+    // Sparks thrown off it.
     EmitterDesc {
-        burst: 200,
-        window: Window::new(0.25, 0.25),
-        shape: SpawnShape::Disc { radius: 0.2 },
-        speed: (12.0, 26.0),
-        lifetime: (0.4, 0.9),
-        size: (0.5, 0.05),
+        rate: 140.0,
+        shape: SpawnShape::Line {
+            length: 1.0,
+            width: 1.0,
+        },
+        speed: (2.0, 6.5),
+        lifetime: (0.3, 0.8),
+        size: (0.12, 0.02),
         color_start: [1.0, 0.85, 0.45, 1.0],
-        color_end: [0.85, 0.12, 0.0, 0.0],
-        gravity: 7.0,
-        drag: 2.4,
-        ..EmitterDesc::burst(200)
+        color_end: [0.9, 0.25, 0.0, 0.0],
+        gravity: 3.0,
+        drag: 0.6,
+        ..EmitterDesc::stream(140.0)
     },
+    // And the smoke it leaves, the one alpha-blended layer.
     EmitterDesc {
         rate: 26.0,
-        shape: SpawnShape::Disc { radius: 0.9 },
-        speed: (1.0, 3.0),
-        lifetime: (1.2, 2.2),
-        size: (1.4, 3.2),
-        color_start: [0.26, 0.21, 0.18, 0.45],
+        shape: SpawnShape::Line {
+            length: 1.0,
+            width: 0.9,
+        },
+        speed: (0.4, 1.3),
+        lifetime: (0.9, 1.6),
+        size: (0.8, 2.0),
+        color_start: [0.24, 0.19, 0.16, 0.38],
         color_end: [0.10, 0.09, 0.09, 0.0],
-        gravity: -2.0,
-        drag: 1.8,
+        gravity: -1.5,
+        drag: 1.6,
         blend: ParticleBlend::Alpha,
-        attached: true,
         ..EmitterDesc::stream(26.0)
-    },
-];
-
-const CATACLYSM_LAYERS: [MeshLayer; 3] = [
-    // Anticipation: a ring that closes over the first quarter of the effect.
-    MeshLayer {
-        shape: VfxShape::Ring,
-        window: Window::new(0.0, 0.25),
-        radius: (1.5, 1.0),
-        color: [1.0, 0.70, 0.30, 0.9],
-        emissive: (1.4, 2.8),
-        ..MeshLayer::disc()
-    },
-    // The pillar.
-    MeshLayer {
-        shape: VfxShape::Column,
-        window: Window::new(0.25, 1.0),
-        align: LayerAlign::Upright,
-        // A pillar at the full radius would be an opaque wall across the arena. A third of
-        // it reads as a column of fire and leaves the fight behind it visible.
-        radius: (0.3, 0.2),
-        height: (14.0, 4.0),
-        color: [1.0, 0.55, 0.20, 0.65],
-        emissive: (2.6, 0.4),
-        spin: 1.5,
-        uses_length: false,
-    },
-    // The scorch it leaves.
-    MeshLayer {
-        window: Window::new(0.25, 1.0),
-        radius: (1.0, 1.0),
-        color: [0.9, 0.32, 0.10, 0.8],
-        emissive: (1.6, 0.2),
-        ..MeshLayer::disc()
     },
 ];
 
@@ -1046,11 +1041,12 @@ pub static EFFECTS: [VfxAsset; EFFECT_COUNT] = [
         layers: &BLINK_ARRIVAL_LAYERS,
     },
     VfxAsset {
-        id: VfxId::Cataclysm,
-        name: "CATACLYSM",
-        lifetime: 4.0,
-        emitters: &CATACLYSM_EMITTERS,
-        layers: &CATACLYSM_LAYERS,
+        id: VfxId::FireBeam,
+        name: "FIRE BEAM",
+        // Overridden at spawn with the channel's own length.
+        lifetime: 6.0,
+        emitters: &FIRE_BEAM_EMITTERS,
+        layers: &[],
     },
 ];
 

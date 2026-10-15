@@ -157,9 +157,9 @@ mod tests {
     #[test]
     fn the_ultimate_has_an_identity_of_its_own() {
         // It is not on the bar, but its damage still has to reach the meter.
-        let id = AbilityId::from_fire(FireAbility::Cataclysm);
+        let id = AbilityId::from_fire(FireAbility::FireBeam);
         assert!(id.is_valid());
-        assert_eq!(id.slot(), FireAbility::Cataclysm.index());
+        assert_eq!(id.slot(), FireAbility::FireBeam.index());
         assert_eq!(id.key_hint(), "R");
 
         // And so does Ignite, which is nobody's button but is the class's largest row.

@@ -727,8 +727,10 @@ pub enum NetAction {
     Ultimate(V3),
     /// An extra button.
     Extra(u8),
-    /// Open the boss's chest (appended last: the variant order is the wire format).
+    /// Open the boss's chest (appended: the variant order is the wire format).
     OpenChest,
+    /// Steer a channelled Moving Fire Beam towards a ground point (appended last).
+    ChannelAim(V3),
 }
 
 /// A player's combat state beyond health and position (which live on `InstancePlayer`).

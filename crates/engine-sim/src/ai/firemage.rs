@@ -125,6 +125,20 @@ impl RotationAi {
 
     /// Takes at most one action this tick.
     fn act_once(&mut self, simulation: &mut Simulation, pack: &[EntityId]) {
+        // Moving Fire Beam: while it burns the player does nothing else (casting would break
+        // it) but keep it on the pack, which is what steering with the cursor amounts to.
+        if simulation.is_channelling_beam() {
+            let living: Vec<EntityId> = pack
+                .iter()
+                .copied()
+                .filter(|id| simulation.world().is_alive(*id))
+                .collect();
+            if !living.is_empty() {
+                let centre = centroid(simulation, &living);
+                simulation.steer_beam(centre);
+            }
+            return;
+        }
         if !ready_to_act(simulation) {
             return;
         }
@@ -133,6 +147,17 @@ impl RotationAi {
             .copied()
             .filter(|id| simulation.world().is_alive(*id))
             .collect();
+        // The Ultimate on cooldown: a full bar and a ready button, aimed at the pack's
+        // centre - which for a single enemy is the enemy.
+        if !living.is_empty()
+            && simulation.mage().energy.is_full()
+            && simulation.mage().abilities.is_ready(FireAbility::FireBeam)
+        {
+            let centre = centroid(simulation, &living);
+            if simulation.cast_at(FireAbility::FireBeam, centre).is_ok() {
+                return;
+            }
+        }
         let Some(primary) = self.choose_target(simulation, &living) else {
             return;
         };
@@ -379,6 +404,7 @@ impl Rotation for RotationAi {
     fn priority(&self) -> &'static [&'static str] {
         match self.style {
             Style::Haste => &[
+                "Moving Fire Beam on a full Ultimate bar, aimed at the pack and kept on it for the whole channel.",
                 "Fire Mastery on cooldown, once there is a burn (2 stacks) or 30 Heat to amplify.",
                 "Detonate a full burn when it would kill the target anyway, is about to expire, or is fresh (80% of its duration left).",
                 "Flame Cone / Firestorm when two or more enemies stand in the pack.",
@@ -387,6 +413,7 @@ impl Rotation for RotationAi {
                 "Flame Lance with a spare charge, then Firebolt as the filler.",
             ],
             Style::Crit => &[
+                "Moving Fire Beam on a full Ultimate bar, aimed at the pack and kept on it for the whole channel.",
                 "Fire Mastery on cooldown, once there is a burn (2 stacks) or 30 Heat to amplify.",
                 "Detonate only when holding the burn is worthless (lethal anyway, or about to expire).",
                 "At a full burn: Pyroblast, then Meteor.",

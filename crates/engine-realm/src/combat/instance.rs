@@ -83,6 +83,11 @@ pub enum ActionKind {
     /// Take the player's item from the boss's chest. The simulation checks that the chest
     /// has landed, that they are close enough and that it is not already taken.
     OpenChest,
+    /// Steer the channelled Moving Fire Beam towards a ground point.
+    ///
+    /// Appended last: the variant order is the wire format. Not a targeting press - the
+    /// selection is left as it is - and a no-op unless the player is channelling.
+    ChannelAim([f32; 3]),
 }
 
 /// A button press, with the target the player had selected when they pressed it.
@@ -693,6 +698,16 @@ impl CombatInstance {
             ActionKind::OpenChest => {
                 // Not a targeting press: the selection is left as it is.
                 self.sim.push_command_for(entity, PlayerCommand::OpenChest);
+                return Ok(());
+            }
+            ActionKind::ChannelAim(p) if finite(&p) => {
+                // Steering an existing channel is not a targeting press either.
+                self.sim.push_command_for(
+                    entity,
+                    PlayerCommand::ChannelAim {
+                        position: Vec3::new(p[0], p[1], p[2]),
+                    },
+                );
                 return Ok(());
             }
             _ => return Err(ActionError::Malformed),

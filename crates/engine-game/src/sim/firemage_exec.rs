@@ -29,7 +29,7 @@ use crate::ability::AbilityId;
 use crate::entity::EntityId;
 use crate::event::CombatEvent;
 use crate::firemage::{
-    AbilityError, CRIT_FEEDBACK_CAP, FireAbility, IgniteTick, PendingImpact, TargetMode, Zone,
+    AbilityError, BeamEnd, CRIT_FEEDBACK_CAP, FireAbility, IgniteTick, PendingImpact, TargetMode, Zone,
     ZoneKind, ZoneShape, ZoneTick,
 };
 use crate::hero::Hero;
@@ -178,13 +178,24 @@ impl Simulation {
         if ability.is_passive() {
             return Err(AbilityError::OnCooldown);
         }
-        // One ability in the game is switched off, and it is Cataclysm. The *slot* beside
-        // the bar is not: the Warrior's Last Stand lives there and is a real button.
+        // One ability in the game can be switched off, and it is Moving Fire Beam. The
+        // *slot* beside the bar is not: the Warrior's Last Stand lives there and is a real
+        // button.
         if ability.is_disabled() {
             return Err(AbilityError::UltimateDisabled);
         }
         if !self.world.is_alive(caster) {
             return Err(AbilityError::CasterDead);
+        }
+        // The Ultimate pressed again while it is being channelled ends the channel early.
+        // Before the cooldown check, because the cooldown started with the cast.
+        if ability == FireAbility::FireBeam && self.mage.beam.is_active() {
+            self.end_beam(BeamEnd::Cancelled);
+            return Ok(0);
+        }
+        // The mage walks while channelling but does not blink out of the beam.
+        if ability == FireAbility::Blink && self.mage.beam.is_active() {
+            return Err(AbilityError::Channelling);
         }
         if self.player.cast.is_some() {
             self.player.queued = Some(super::QueuedCast {
@@ -210,6 +221,12 @@ impl Simulation {
         // global cooldown. Inert for every other hero.
         self.druid_can_cast(ability)?;
         self.validate_aim(ability, aim)?;
+
+        // Casting anything else breaks the channel. After every refusal above, so a press
+        // that was never going to happen does not cost the mage their beam.
+        if self.mage.beam.is_active() {
+            self.end_beam(BeamEnd::Interrupted);
+        }
 
         // An aimed ability turns the character to where it was aimed. Choosing a direction
         // is how a player says which way they are pointing.
@@ -523,6 +540,10 @@ impl Simulation {
             }
             FireAbility::Firestorm => {
                 self.spawn_firestorm(aim, origin);
+                0
+            }
+            FireAbility::FireBeam => {
+                self.begin_beam(aim, origin);
                 0
             }
             _ => self.apply_direct(ability),
@@ -965,7 +986,7 @@ impl Simulation {
     }
 
     /// Which way the character is pointing.
-    fn facing_yaw(&self) -> f32 {
+    pub(super) fn facing_yaw(&self) -> f32 {
         self.world
             .body(self.player.entity)
             .map_or(0.0, |body| body.facing_yaw)
@@ -1183,7 +1204,7 @@ impl Simulation {
     }
 
     /// Applies Ignite, respecting the current maximum.
-    fn apply_ignite(&mut self, target: EntityId, stacks: u8) {
+    pub(super) fn apply_ignite(&mut self, target: EntityId, stacks: u8) {
         if stacks == 0 || !self.world.is_alive(target) {
             return;
         }

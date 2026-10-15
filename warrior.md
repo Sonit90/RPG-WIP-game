@@ -50,7 +50,7 @@ New, because there was nothing to reuse:
 
 `ABILITY_SLOTS` is ten and stays ten: renumbering the keyboard for one class would change
 what every other hero's `4` does. The eleventh ability is the hero's **Ultimate** — the slot
-beside the bar on `R` that already existed for the FireMage's (disabled) Cataclysm. The
+beside the bar on `R` that already existed for the FireMage's Moving Fire Beam. The
 Warrior's is Last Stand, and `FireAbility::is_ultimate` now asks the owning hero rather than
 naming one ability.
 

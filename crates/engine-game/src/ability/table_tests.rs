@@ -54,17 +54,37 @@ fn the_removed_abilities_are_gone_from_the_class() {
 }
 
 #[test]
-fn the_ultimate_is_not_on_the_bar_and_is_disabled() {
-    assert!(FireAbility::Cataclysm.is_ultimate());
-    assert_eq!(FireAbility::Cataclysm.bar_slot(), None);
+fn the_ultimate_is_not_on_the_bar_and_is_enabled() {
+    assert!(FireAbility::FireBeam.is_ultimate());
+    assert_eq!(FireAbility::FireBeam.bar_slot(), None);
     assert_eq!(Hero::FireMage.abilities().len(), ABILITY_SLOTS);
     #[allow(
         clippy::assertions_on_constants,
         reason = "the constant is the subject"
     )]
     {
-        assert!(!ULTIMATE_ENABLED, "the ultimate has no design yet");
+        assert!(
+            ULTIMATE_ENABLED,
+            "Moving Fire Beam is the FireMage's Ultimate"
+        );
     }
+    assert!(!FireAbility::FireBeam.is_disabled());
+}
+
+#[test]
+fn moving_fire_beam_is_a_ninety_second_channel_that_costs_the_whole_bar() {
+    let beam = FireAbility::FireBeam.definition();
+    assert_eq!(FireAbility::FireBeam.config_name(), "fire_beam");
+    assert_eq!(beam.name, "MOVING FIRE BEAM");
+    assert_eq!(beam.cooldown, 90.0);
+    assert!(!beam.cooldown_hasted, "ninety seconds is ninety seconds");
+    assert_eq!(beam.cast_time, 0.0);
+    assert!(beam.on_global_cooldown);
+    assert_eq!((beam.range, beam.width, beam.duration), (22.0, 2.6, 6.0));
+    assert_eq!(beam.tick_interval, 0.25);
+    assert_eq!(beam.fire().energy_cost, 100.0);
+    assert_eq!(beam.fire().ignite_stacks, 1);
+    assert_eq!(beam.target, TargetMode::Line);
 }
 
 #[test]
@@ -154,7 +174,9 @@ fn the_table_matches_the_design_document() {
         "haste both fills the bank and spends it"
     );
     for ability in FireAbility::ALL {
-        if ability != FireAbility::Detonate {
+        // Detonate cashes a bank haste already fills; the beam's ninety seconds is the
+        // cadence the whole Ultimate is balanced on.
+        if ability != FireAbility::Detonate && ability != FireAbility::FireBeam {
             assert!(
                 ability.definition().cooldown_hasted,
                 "{ability:?} stopped scaling with haste"
@@ -171,10 +193,7 @@ fn only_the_ultimate_costs_a_resource() {
     for ability in Hero::FireMage.abilities() {
         assert_eq!(ability.definition().fire().energy_cost, 0.0);
     }
-    assert_eq!(
-        FireAbility::Cataclysm.definition().fire().energy_cost,
-        100.0
-    );
+    assert_eq!(FireAbility::FireBeam.definition().fire().energy_cost, 100.0);
 }
 
 #[test]
@@ -309,7 +328,7 @@ fn everything_on_the_bar_can_be_assigned_and_nothing_else_can() {
         "a damage meter row is not a button"
     );
     assert!(
-        !FireAbility::Cataclysm.is_assignable(),
+        !FireAbility::FireBeam.is_assignable(),
         "the Ultimate has a place of its own"
     );
 }

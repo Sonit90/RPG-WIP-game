@@ -51,13 +51,13 @@ pub fn longest_range() -> f32 {
         .fold(0.0, f32::max)
 }
 
-/// Whether the Ultimate can be used.
+/// Whether the FireMage's Ultimate can be used.
 ///
-/// **False for this iteration.** FireMage has no Ultimate concept yet, so the button is
-/// inert and the cast is refused - but the ability, its energy cost, the resource that pays
-/// for it and the whole targeting path stay exactly where they are. Turning the Ultimate
-/// back on is this one constant.
-pub const ULTIMATE_ENABLED: bool = false;
+/// **True: the Ultimate is Moving Fire Beam.** The constant stays as the one switch for
+/// the ability, its energy cost, the resource that pays for it and the whole targeting path:
+/// turning it false makes the button inert and the cast refused, exactly as the class shipped
+/// before the beam had a design.
+pub const ULTIMATE_ENABLED: bool = true;
 
 /// Which ability. The first ten are the bar, in bar order; the eleventh is the Ultimate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -83,8 +83,9 @@ pub enum FireAbility {
     FlameShield,
     /// A short teleport.
     Blink,
-    /// The Ultimate. Not on the bar, and disabled this iteration.
-    Cataclysm,
+    /// The Ultimate. Not on the bar: a six-second channelled beam the mage steers with the
+    /// cursor, paid for by a full Ultimate Energy bar.
+    FireBeam,
     /// Warrior: the filler. Attacks, and stacks a heal on the caster.
     Recuperate,
     /// Warrior: a targeted 120-degree cleave that slows what it catches.
@@ -157,7 +158,7 @@ impl FireAbility {
         Self::FireMastery,
         Self::FlameShield,
         Self::Blink,
-        Self::Cataclysm,
+        Self::FireBeam,
         Self::Recuperate,
         Self::WarStomp,
         Self::ColossusStrike,
@@ -219,7 +220,7 @@ impl FireAbility {
     ///
     /// Asked of the owning hero rather than written down here, so the one place that
     /// decides which ability sits beside the bar is [`Hero::ultimate`]. The FireMage's is
-    /// Cataclysm and is switched off ([`ULTIMATE_ENABLED`]); the Warrior's is Last Stand and
+    /// Moving Fire Beam ([`ULTIMATE_ENABLED`] is its switch); the Warrior's is Last Stand and
     /// is a real button, which is what lets an eleven-ability class fit a ten-key bar
     /// without renumbering the keyboard for the other two heroes.
     #[must_use]
@@ -229,12 +230,12 @@ impl FireAbility {
 
     /// Whether this ability is disabled outright, whatever its cooldown says.
     ///
-    /// One ability is: Cataclysm, which has no design yet. Kept as a question about the
-    /// ability rather than about "the Ultimate", because the Ultimate *slot* now holds a
-    /// working ability for the Warrior.
+    /// One ability can be: Moving Fire Beam, behind [`ULTIMATE_ENABLED`]. Kept as a question
+    /// about the ability rather than about "the Ultimate", because the Ultimate *slot* holds
+    /// a working ability for the other two heroes whatever that switch says.
     #[must_use]
     pub fn is_disabled(self) -> bool {
-        matches!(self, Self::Cataclysm) && !ULTIMATE_ENABLED
+        matches!(self, Self::FireBeam) && !ULTIMATE_ENABLED
     }
 
     /// Whether this is a row in the meter rather than something that can be cast.
@@ -279,7 +280,7 @@ impl FireAbility {
             Self::FireMastery => "fire_mastery",
             Self::FlameShield => "flame_shield",
             Self::Blink => "blink",
-            Self::Cataclysm => "cataclysm",
+            Self::FireBeam => "fire_beam",
             Self::Recuperate => "recuperate",
             Self::WarStomp => "war_stomp",
             Self::ColossusStrike => "colossus_strike",

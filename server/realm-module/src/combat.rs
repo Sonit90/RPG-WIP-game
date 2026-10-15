@@ -670,6 +670,7 @@ pub fn combat_act(
         NetAction::Ultimate(p) => ActionKind::Ultimate([p.x, p.y, p.z]),
         NetAction::Extra(index) => ActionKind::Extra(index),
         NetAction::OpenChest => ActionKind::OpenChest,
+        NetAction::ChannelAim(p) => ActionKind::ChannelAim([p.x, p.y, p.z]),
     };
     let request = CombatAction {
         target: entity_ref(&target),

@@ -275,6 +275,12 @@ pub enum SoundId {
     CataclysmCast,
     /// The Ultimate landing.
     CataclysmImpact,
+    /// Moving Fire Beam igniting: the surge as the channel opens.
+    BeamStart,
+    /// Moving Fire Beam roaring. Loops for as long as the channel does.
+    BeamLoop,
+    /// Moving Fire Beam guttering out, however the channel ended.
+    BeamEnd,
     /// A target catching fire.
     IgniteApply,
     /// A target burning. Loops while the burn is on it.
@@ -330,7 +336,7 @@ pub enum SoundId {
 }
 
 /// How many sounds there are.
-pub const SOUND_COUNT: usize = 50;
+pub const SOUND_COUNT: usize = 53;
 
 impl SoundId {
     /// Every sound, in table order. The order is the order of [`SOUNDS`].
@@ -359,6 +365,9 @@ impl SoundId {
         Self::BlinkArrive,
         Self::CataclysmCast,
         Self::CataclysmImpact,
+        Self::BeamStart,
+        Self::BeamLoop,
+        Self::BeamEnd,
         Self::IgniteApply,
         Self::IgniteLoop,
         Self::CastFizzle,
@@ -712,6 +721,45 @@ pub static SOUNDS: [SoundDesc; SOUND_COUNT] = [
     )
     .gain(1.0)
     .carries(12.0, 120.0),
+    // ---- Moving Fire Beam: a surge, a roar for as long as it is held, a gutter at the end
+    SoundDesc::sfx(
+        "beam_start",
+        ABILITIES,
+        Recipe::new(0.9)
+            .noise(0.9, 600.0, 2_800.0)
+            .tone(0.6, 90.0, 260.0)
+            .crackle(0.3, 50.0)
+            .envelope(0.12, 0.25, 1.5),
+        PRIORITY_ULTIMATE,
+    )
+    .gain(0.8)
+    .carries(8.0, 90.0),
+    SoundDesc::sfx(
+        "beam_loop",
+        ABILITIES,
+        Recipe::new(1.6)
+            .noise(0.95, 1_000.0, 1_200.0)
+            .tone(0.5, 110.0, 120.0)
+            .crackle(0.35, 30.0)
+            .tremolo(7.0, 0.35)
+            .looped(),
+        PRIORITY_ULTIMATE,
+    )
+    .gain(0.55)
+    .carries(6.0, 80.0)
+    // One roar per mage in the party is a fight; more than three is a wall.
+    .limit(3, 0.0),
+    SoundDesc::sfx(
+        "beam_end",
+        ABILITIES,
+        Recipe::new(0.7)
+            .noise(0.8, 2_000.0, 300.0)
+            .tone(0.5, 240.0, 60.0)
+            .envelope(0.003, 0.1, 2.2),
+        PRIORITY_CAST,
+    )
+    .gain(0.7)
+    .carries(6.0, 70.0),
     // ---- Ignite: a small ignition, and a bed that many targets share -------------------
     SoundDesc::sfx(
         "ignite_apply",
@@ -1369,6 +1417,7 @@ mod tests {
         for id in [
             SoundId::IgniteLoop,
             SoundId::FirestormLoop,
+            SoundId::BeamLoop,
             SoundId::FlameShieldLoop,
             SoundId::AmbientWind,
             SoundId::FireboltTravel,

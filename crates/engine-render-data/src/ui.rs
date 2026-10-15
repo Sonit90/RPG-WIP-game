@@ -246,6 +246,8 @@ pub enum UiIcon {
     FlameShield,
     /// The short teleport.
     Blink,
+    /// The Ultimate: a beam of fire swept across the ground.
+    FireBeam,
 
     // The Warrior's eleven. Cold steel where the mage's are fire, one warm amber the eye
     // lands on, and blood only where an ability actually draws it.
@@ -467,7 +469,7 @@ pub enum UiIcon {
 
 impl UiIcon {
     /// Every icon, in atlas order.
-    pub const ALL: [Self; 112] = [
+    pub const ALL: [Self; 113] = [
         Self::Firebolt,
         Self::Meteor,
         Self::FlameCone,
@@ -478,6 +480,7 @@ impl UiIcon {
         Self::FireMastery,
         Self::FlameShield,
         Self::Blink,
+        Self::FireBeam,
         Self::Recuperate,
         Self::WarStomp,
         Self::ColossusStrike,

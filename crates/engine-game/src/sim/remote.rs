@@ -83,6 +83,7 @@ impl Simulation {
                     | PlayerCommand::UseAbilityAt { .. }
                     | PlayerCommand::UseUltimate { .. }
                     | PlayerCommand::UseExtra(_)
+                    | PlayerCommand::ChannelAim { .. }
                     | PlayerCommand::OpenChest
             )
     }
@@ -105,6 +106,9 @@ impl Simulation {
             cast.elapsed = (cast.elapsed + step).min(cast.duration);
         }
         self.prune_modifier_mirror();
+        // The same for a channelled beam, which also turns towards the player's own aim so it
+        // is drawn where they steer. It deals nothing here.
+        self.tick_presented_beam(step);
         self.flush_observations();
     }
 

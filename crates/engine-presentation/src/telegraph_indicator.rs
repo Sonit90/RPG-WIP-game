@@ -26,11 +26,16 @@ use engine_game::entity::EntityId;
 use engine_game::event::CombatEvent;
 use engine_game::sim::Simulation;
 
+use crate::beam::BeamTracker;
 use crate::extract::lerp_position;
 use crate::ui::targeting::TargetShape;
 
 /// The most indicators tracked at once. Past it the oldest is dropped.
 pub const MAX_INDICATORS: usize = 64;
+
+/// Added to an entity's slot to name the indicator of the beam it is channelling, so a beam
+/// can never be mistaken for one of gameplay's own telegraph ids, which count up from zero.
+pub const BEAM_INDICATOR_BASE: u32 = 0x8000_0000;
 
 /// How long past its own delay an indicator is kept waiting for its end event, in seconds.
 ///
@@ -74,6 +79,10 @@ pub enum IndicatorKind {
     Plague,
     /// Plague on the ground after a burst: a filled, green-tinted disc.
     PlagueCloud,
+    /// A Moving Fire Beam's footprint, following its channeller and turning with the beam.
+    ///
+    /// Not a warning - the player's own colour, never mistaken for a monster's area.
+    FireBeam,
 }
 
 /// One monster telegraph being shown.
@@ -235,6 +244,42 @@ impl TelegraphIndicators {
             indicator.anchor = lerp_position(previous.position, body.position, alpha);
             true
         });
+    }
+
+    /// Lays the floor under every beam in `beams`: a rectangle as long and as wide as the
+    /// beam hits, anchored at its channeller and turned to the beam's yaw.
+    ///
+    /// Rebuilt from the tracker every frame rather than kept: a beam moves every frame, and
+    /// the tracker is already the one place that knows where each one points. The ids are
+    /// stable per channeller, so the app's slot for a beam is the same slot next frame.
+    pub fn sync_beams(&mut self, beams: &BeamTracker, simulation: &Simulation) {
+        self.active
+            .retain(|indicator| indicator.kind != IndicatorKind::FireBeam);
+        for beam in beams.iter() {
+            if self.active.len() >= MAX_INDICATORS {
+                break;
+            }
+            let Some(anchor) = beams.origin_of(beam, simulation) else {
+                continue;
+            };
+            self.active.push(TelegraphIndicator {
+                id: BEAM_INDICATOR_BASE | beam.entity.index() as u32,
+                kind: IndicatorKind::FireBeam,
+                shape: TargetShape::Line {
+                    width: engine_game::firemage::BEAM_WIDTH,
+                    length: engine_game::firemage::BEAM_LENGTH,
+                },
+                anchor,
+                facing: beam.yaw,
+                // Followed, so the app rebuilds the footprint every frame as it does a mark.
+                follow: Some(beam.entity),
+                delay: 0.0,
+                elapsed: 0.0,
+                // Always fully drawn, and turned every frame.
+                held: Some(1.0),
+                moving: true,
+            });
+        }
     }
 
     /// The indicators, oldest first.

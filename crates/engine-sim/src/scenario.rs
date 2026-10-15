@@ -275,6 +275,13 @@ impl Encounter {
         simulation.set_stat_bonus(*gear);
         simulation.select_nearest_target();
         build.apply(&mut simulation);
+        // The Mage's Ultimate is ready at the pull. A boss fight is entered after trash, and
+        // the bar refills in about ninety seconds of casting (see the refill test), so a fresh
+        // fight starts with a full bar; the beam's own ninety-second cooldown then sets how
+        // often it is used. Inert for the other two heroes.
+        simulation
+            .mage_mut()
+            .gain_energy(engine_game::firemage::ENERGY_MAXIMUM);
 
         Self {
             simulation,

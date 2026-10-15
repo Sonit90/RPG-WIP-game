@@ -348,7 +348,13 @@ fn every_shape_stays_inside_its_piece_budget_on_rough_ground() {
     let terrain = terrain_from(|x, z| (x * 1.1).sin() * 0.45 + (z * 0.9).cos() * 0.35);
     for (name, shape) in [
         ("meteor", TargetShape::Circle { radius: 5.0 }),
-        ("cataclysm", TargetShape::Circle { radius: 10.0 }),
+        (
+            "fire_beam",
+            TargetShape::Line {
+                width: 2.6,
+                length: 22.0,
+            },
+        ),
         (
             "cone",
             TargetShape::Cone {

@@ -739,6 +739,45 @@ pub enum CombatEvent {
         /// The simulation tick it happened on.
         tick: u64,
     },
+    /// A FireMage began channelling the Moving Fire Beam.
+    BeamChannelStarted {
+        /// The channeller.
+        entity: EntityId,
+        /// Which way the beam points, radians about +Y.
+        yaw: f32,
+        /// The simulation time the channel began at, in seconds.
+        start_time: f64,
+        /// Seconds the channel will last unless it is broken.
+        duration: f32,
+        /// The simulation tick it happened on.
+        tick: u64,
+    },
+    /// The beam's steering target moved.
+    ///
+    /// Emitted at most ten times a second, and only when the target changed. The beam turns
+    /// at a fixed rate, so an observer that knows where it points and where it is turning to
+    /// can draw it every frame in between without hearing again.
+    BeamYaw {
+        /// The channeller.
+        entity: EntityId,
+        /// Which way the beam points at `time`.
+        yaw: f32,
+        /// The yaw it is turning towards.
+        turn_target_yaw: f32,
+        /// The simulation time of the report, in seconds.
+        time: f64,
+        /// The simulation tick it happened on.
+        tick: u64,
+    },
+    /// The Moving Fire Beam stopped.
+    BeamChannelEnded {
+        /// The channeller.
+        entity: EntityId,
+        /// Why.
+        reason: crate::firemage::BeamEnd,
+        /// The simulation tick it happened on.
+        tick: u64,
+    },
 }
 
 impl CombatEvent {
@@ -793,7 +832,10 @@ impl CombatEvent {
             | Self::ModifierBeamsEnded { tick, .. }
             | Self::PlagueArmed { tick, .. }
             | Self::PlagueExploded { tick, .. }
-            | Self::PlagueCloudEnded { tick, .. } => tick,
+            | Self::PlagueCloudEnded { tick, .. }
+            | Self::BeamChannelStarted { tick, .. }
+            | Self::BeamYaw { tick, .. }
+            | Self::BeamChannelEnded { tick, .. } => tick,
             Self::Damage(damage) => damage.tick,
         }
     }

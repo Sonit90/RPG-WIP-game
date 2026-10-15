@@ -228,14 +228,18 @@ impl Heat {
 /// Most Ultimate Energy a FireMage can hold, and the cost of the Ultimate.
 pub const ENERGY_MAXIMUM: f32 = 100.0;
 
-/// Passive Ultimate Energy per second: one every two seconds.
-pub const ENERGY_PASSIVE_PER_SECOND: f32 = 0.5;
-
-/// Ultimate Energy, which fills passively and from casting.
+/// Passive Ultimate Energy per second: one every four seconds.
 ///
-/// Kept exactly as it was while the Ultimate is disabled: the class has no Ultimate concept
-/// yet, and deleting the resource would be a change to an architecture that is meant to
-/// survive this rework untouched.
+/// **Tuned for a sixty-to-ninety-second cadence.** Moving Fire Beam costs a full bar and has a
+/// ninety-second cooldown of its own, and the bar is meant to be the slower of the two in an
+/// ordinary fight: casting generates about a point a second (every ability's `energy` column,
+/// halved from the days the Ultimate was a placeholder) and this adds a quarter of one, so a
+/// rotation fills the bar in roughly eighty seconds. The simulator measures it
+/// (`the_bar_refills_in_about_a_minute_and_a_half`).
+pub const ENERGY_PASSIVE_PER_SECOND: f32 = 0.25;
+
+/// Ultimate Energy, which fills passively and from casting, and which Moving Fire Beam spends
+/// all of.
 #[derive(Debug, Default, Clone, Copy, PartialEq)]
 pub struct UltimateEnergy {
     value: f32,
@@ -389,9 +393,9 @@ mod tests {
     }
 
     #[test]
-    fn energy_still_trickles_in_because_the_ultimate_system_is_untouched() {
+    fn energy_trickles_in_a_point_every_four_seconds() {
         let mut energy = UltimateEnergy::new();
-        energy.tick(2.0);
+        energy.tick(4.0);
         assert!((energy.value() - 1.0).abs() < 1e-5);
         energy.gain(200.0);
         assert!(energy.is_full());

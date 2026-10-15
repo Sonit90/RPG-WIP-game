@@ -240,6 +240,9 @@ pub(crate) struct TelegraphVisuals {
     warning: KindMaterials,
     /// Plague: sickly green.
     plague: KindMaterials,
+    /// The same three for the player's own Moving Fire Beam: the orange of the targeting
+    /// decal's family, so the floor under a beam reads as the player's and never as a threat.
+    beam: KindMaterials,
 }
 
 /// The three materials one kind of telegraph is drawn with.
@@ -307,6 +310,11 @@ impl TelegraphVisuals {
             Vec3::new(0.55, 1.0, 0.25),
             Vec3::new(0.40, 0.85, 0.15),
         )?;
+        let beam = kind(
+            [0.02, 0.01, 0.003],
+            Vec3::new(1.2, 0.55, 0.12),
+            Vec3::new(1.0, 0.42, 0.08),
+        )?;
         Ok(Self {
             quad_mesh,
             quad_bounds,
@@ -314,6 +322,7 @@ impl TelegraphVisuals {
             mark,
             warning,
             plague,
+            beam,
         })
     }
 
@@ -325,6 +334,7 @@ impl TelegraphVisuals {
             IndicatorKind::BeamWarning => self.warning,
             IndicatorKind::Beam => self.enemy,
             IndicatorKind::Plague | IndicatorKind::PlagueCloud => self.plague,
+            IndicatorKind::FireBeam => self.beam,
         }
     }
 }

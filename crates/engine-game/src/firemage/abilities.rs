@@ -7,6 +7,11 @@
 use crate::ability::text::TextValue;
 use crate::ability::{AbilityDef, ClassRow, FireAbility, FireMageRow, TargetMode, ThreatScale};
 use crate::combat::DamageType;
+use crate::firemage::beam::{
+    BEAM_COOLDOWN, BEAM_DURATION, BEAM_ENERGY_COST, BEAM_IGNITE_STACKS, BEAM_LENGTH,
+    BEAM_MOVE_SPEED_MULTIPLIER, BEAM_TICK_COEFFICIENT, BEAM_TICK_INTERVAL, BEAM_TURN_RATE_DEGREES,
+    BEAM_WIDTH,
+};
 
 /// What every FireMage row starts from: fire, damage-dealer threat, and a [`FireMageRow`].
 const BASE: AbilityDef = AbilityDef {
@@ -30,7 +35,7 @@ pub(crate) const ROWS: [AbilityDef; 11] = [
             ignite_stacks: 1,
             ignite_chance: 0.50,
             heat: 3.0,
-            energy: 1.0,
+            energy: 0.5,
             ..FireMageRow::NONE
         }),
         ..BASE
@@ -49,7 +54,7 @@ pub(crate) const ROWS: [AbilityDef; 11] = [
             ignite_stacks: 2,
             ignite_chance: 1.0,
             heat: 4.0,
-            energy: 2.0,
+            energy: 1.0,
             ..FireMageRow::NONE
         }),
         ..BASE
@@ -66,7 +71,7 @@ pub(crate) const ROWS: [AbilityDef; 11] = [
             ignite_stacks: 2,
             ignite_chance: 1.0,
             heat: 3.0,
-            energy: 2.0,
+            energy: 1.0,
             ..FireMageRow::NONE
         }),
         ..BASE
@@ -84,7 +89,7 @@ pub(crate) const ROWS: [AbilityDef; 11] = [
         class: ClassRow::FireMage(FireMageRow {
             ignite_bonus_per_stack: 0.15,
             heat: 5.0,
-            energy: 5.0,
+            energy: 2.5,
             ..FireMageRow::NONE
         }),
         ..BASE
@@ -101,7 +106,7 @@ pub(crate) const ROWS: [AbilityDef; 11] = [
         class: ClassRow::FireMage(FireMageRow {
             ignite_bonus_per_stack: 0.15,
             heat: 5.0,
-            energy: 10.0,
+            energy: 5.0,
             ..FireMageRow::NONE
         }),
         ..BASE
@@ -121,7 +126,7 @@ pub(crate) const ROWS: [AbilityDef; 11] = [
             ignite_stacks: 1,
             ignite_chance: 0.15,
             heat: 5.0,
-            energy: 8.0,
+            energy: 4.0,
             ..FireMageRow::NONE
         }),
         ..BASE
@@ -136,7 +141,7 @@ pub(crate) const ROWS: [AbilityDef; 11] = [
         on_global_cooldown: false,
         cooldown_hasted: false,
         class: ClassRow::FireMage(FireMageRow {
-            energy: 3.0,
+            energy: 1.5,
             ..FireMageRow::NONE
         }),
         ..BASE
@@ -174,22 +179,22 @@ pub(crate) const ROWS: [AbilityDef; 11] = [
         ..BASE
     },
     AbilityDef {
-        id: FireAbility::Cataclysm,
-        name: "CATACLYSM",
-        description: "Not yet available.",
-        target: TargetMode::Ground,
-        cast_time: 1.0,
-        range: 35.0,
-        radius: 10.0,
-        duration: 8.0,
-        impact_delay: 0.5,
-        coefficient: 12.00,
-        tick_coefficient: 1.50,
-        tick_interval: 1.0,
+        id: FireAbility::FireBeam,
+        name: "MOVING FIRE BEAM",
+        description: "Channel a beam of fire for {duration} that reaches {range} and is {width} wide. It turns towards your cursor at up to {turn_rate} per second, and you can walk at {move_speed} of your normal speed while you channel. Every {tick_interval}, every enemy inside it takes {tick_damage} of your spell power as Fire damage, and it adds a stack of Ignite to each of them every second. Consumes all of your Ultimate Energy. Cast something else, or press it again, to stop.",
+        target: TargetMode::Line,
+        cooldown: BEAM_COOLDOWN,
+        range: BEAM_LENGTH,
+        width: BEAM_WIDTH,
+        duration: BEAM_DURATION,
+        tick_coefficient: BEAM_TICK_COEFFICIENT,
+        tick_interval: BEAM_TICK_INTERVAL,
+        // Ninety seconds is ninety seconds: haste already shortens how often the bar fills.
+        cooldown_hasted: false,
         class: ClassRow::FireMage(FireMageRow {
-            ignite_stacks: 3,
+            ignite_stacks: BEAM_IGNITE_STACKS,
             ignite_chance: 1.0,
-            energy_cost: 100.0,
+            energy_cost: BEAM_ENERGY_COST,
             ..FireMageRow::NONE
         }),
         ..BASE
@@ -211,7 +216,7 @@ pub(crate) const IGNITE: AbilityDef = AbilityDef {
 /// The FireMage's template tokens: the rules in the executor and the talents that a sentence
 /// names.
 pub(crate) fn token(ability: FireAbility, key: &str) -> Option<TextValue> {
-    use TextValue::{Percent, Seconds};
+    use TextValue::{Degrees, Percent, Seconds};
     Some(match (ability, key) {
         (FireAbility::FlameLance, "crit_reduction") => {
             Seconds(crate::firemage::TalentEffects::default().flame_lance_crit_reduction)
@@ -221,6 +226,9 @@ pub(crate) fn token(ability: FireAbility, key: &str) -> Option<TextValue> {
             Percent(crate::firemage::TalentEffects::default().mastery_active_bonus)
         }
         (FireAbility::FlameShield, "reduction") => Percent(crate::firemage::FLAME_SHIELD_REDUCTION),
+        (FireAbility::FireBeam, "turn_rate") => Degrees(BEAM_TURN_RATE_DEGREES),
+        (FireAbility::FireBeam, "move_speed") => Percent(BEAM_MOVE_SPEED_MULTIPLIER),
+        (FireAbility::FireBeam, "tick_damage") => Percent(BEAM_TICK_COEFFICIENT),
         _ => return None,
     })
 }

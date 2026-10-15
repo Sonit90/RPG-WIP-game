@@ -15,7 +15,7 @@ use engine_game::arena::{self, ArenaConfig};
 use engine_game::entity::EntityId;
 use engine_game::firemage::{
     CRIT_FEEDBACK_CAP, FireAbility, FireMastery, HEAT_COMBAT_TIMEOUT, HeatTier,
-    IGNITE_BASE_TICK_INTERVAL, TalentGrid, TalentId, ULTIMATE_ENABLED,
+    IGNITE_BASE_TICK_INTERVAL, TalentGrid, TalentId,
 };
 use engine_game::sim::Simulation;
 
@@ -345,7 +345,7 @@ fn every_bar_ability_agrees_with_the_documented_ally_rule() {
         FireAbility::FireMastery,
         FireAbility::FlameShield,
         FireAbility::Blink,
-        FireAbility::Cataclysm,
+        FireAbility::FireBeam,
     ] {
         assert!(usable(ability), "{:?} does not need an enemy", ability);
     }
@@ -767,31 +767,6 @@ fn molten_meteor_leaves_ground_that_burns_and_makes_fire_hurt_more() {
         simulation.mage().vulnerability.has(dummy),
         "standing in it did not apply the debuff"
     );
-}
-
-#[test]
-fn the_ultimate_is_switched_off_but_still_exists() {
-    let mut simulation = arena();
-    simulation.mage_mut().gain_energy(100.0);
-    // A constant on purpose: the Ultimate is switched off by a `const`, and this is the
-    // test that notices when someone turns it back on without designing one.
-    #[allow(
-        clippy::assertions_on_constants,
-        reason = "the constant is the subject"
-    )]
-    {
-        assert!(!ULTIMATE_ENABLED, "the ultimate was enabled with no design");
-    }
-    assert_eq!(
-        simulation.cast_at(FireAbility::Cataclysm, Vec3::new(0.0, 0.0, -10.0)),
-        Err(engine_game::firemage::AbilityError::UltimateDisabled)
-    );
-    // The architecture is untouched: the ability, its cost and its resource are all here.
-    assert_eq!(
-        FireAbility::Cataclysm.definition().fire().energy_cost,
-        100.0
-    );
-    assert!(simulation.mage().energy.is_full());
 }
 
 #[test]

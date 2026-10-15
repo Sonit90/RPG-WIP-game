@@ -114,6 +114,10 @@ pub struct AudioDirector {
     telegraphs: Vec<Held<u32>>,
     /// The gathering sound on each enemy that is casting, by entity slot.
     enemy_casts: Vec<Held<u32>>,
+    /// The roar of each other player's Moving Fire Beam, by entity slot.
+    beams: Vec<Held<u32>>,
+    /// The local player's own beam roar, while they channel.
+    beam: Option<VoiceHandle>,
     /// The mage's defensive shell, while Flame Shield is up.
     shield: Option<VoiceHandle>,
     /// The Fire Mastery aura, while it is up.
@@ -176,6 +180,8 @@ impl AudioDirector {
         self.incoming.clear();
         self.telegraphs.clear();
         self.enemy_casts.clear();
+        self.beams.clear();
+        self.beam = None;
         self.shield = None;
         self.mastery = None;
         self.cast = None;
@@ -196,6 +202,8 @@ impl AudioDirector {
                 + self.enemy_casts.len()
                 + self.incoming.len()
                 + self.ignited.iter().filter(|slot| slot.is_some()).count()
+                + self.beams.len()
+                + usize::from(self.beam.is_some())
                 + usize::from(self.shield.is_some())
                 + usize::from(self.mastery.is_some())
                 + usize::from(self.cast.is_some()),
@@ -384,13 +392,8 @@ impl AudioDirector {
             }
             // The rock is committed to. The whistle plays for the delay gameplay is counting
             // down, at the place it will land, so the player can hear where to not be.
-            CombatEvent::ImpactScheduled {
-                ability, position, ..
-            } => {
-                let sound = match ability.fire() {
-                    Some(FireAbility::Cataclysm) => SoundId::CataclysmCast,
-                    _ => SoundId::MeteorIncoming,
-                };
+            CombatEvent::ImpactScheduled { position, .. } => {
+                let sound = SoundId::MeteorIncoming;
                 let key = self.next_incoming;
                 self.next_incoming = self.next_incoming.wrapping_add(1);
                 if let Some(handle) = self.request(SoundCue::at(sound, position), audio) {
@@ -406,7 +409,6 @@ impl AudioDirector {
                     self.incoming.remove(0);
                 }
                 let sound = match ability.fire() {
-                    Some(FireAbility::Cataclysm) => SoundId::CataclysmImpact,
                     Some(FireAbility::Pyroblast) => SoundId::PyroblastImpact,
                     _ => SoundId::MeteorImpact,
                 };
@@ -431,7 +433,10 @@ impl AudioDirector {
             // the same tick and the catalogue's minimum interval turns that into one hit.
             CombatEvent::Damage(damage) => {
                 // A burn ticking is not an impact. The bed says the target is on fire.
-                if damage.ability.fire() == Some(FireAbility::Ignite) {
+                if matches!(
+                    damage.ability.fire(),
+                    Some(FireAbility::Ignite | FireAbility::FireBeam)
+                ) {
                     return;
                 }
                 let sound = if damage.critical {
@@ -588,6 +593,31 @@ impl AudioDirector {
             | CombatEvent::MobCurrency { .. } => {}
             // The ends of a modifier's ground are silent: the floor indicator goes with them.
             CombatEvent::ModifierBeamsEnded { .. } | CombatEvent::PlagueCloudEnded { .. } => {}
+            // Moving Fire Beam: a surge as it opens, a roar for as long as it is held and a
+            // gutter as it ends. The local player's roar is synchronised from their state;
+            // everybody else's follows the events.
+            CombatEvent::BeamChannelStarted { entity, .. } => {
+                let origin = self.chest_of(entity, simulation);
+                self.request(SoundCue::at(SoundId::BeamStart, origin), audio);
+                if entity != simulation.player().entity {
+                    self.end_beam_loop(entity, audio);
+                    let key = entity.index() as u32;
+                    if let Some(handle) = self.request(
+                        SoundCue::at(SoundId::BeamLoop, origin)
+                            .anchored_to(key)
+                            .looped(true),
+                        audio,
+                    ) {
+                        self.beams.push(Held { key, handle });
+                    }
+                }
+            }
+            CombatEvent::BeamChannelEnded { entity, .. } => {
+                self.end_beam_loop(entity, audio);
+                let origin = self.chest_of(entity, simulation);
+                self.request(SoundCue::at(SoundId::BeamEnd, origin), audio);
+            }
+            CombatEvent::BeamYaw { .. } => {}
             // Nothing to hear, or a state the frame synchronises instead. A phase change is
             // seen rather than heard: this phase authors no new cues. A point of Valor
             // short of a full bar is deliberately silent: the cast that paid it has already
@@ -728,6 +758,15 @@ impl AudioDirector {
             &mut self.refused,
         );
 
+        // The local player's roar: a state, held for exactly as long as they channel.
+        Self::sync_loop(
+            &mut self.beam,
+            simulation.is_channelling_beam(),
+            SoundCue::at(SoundId::BeamLoop, simulation.player_position()).anchored_to(slot),
+            audio,
+            &mut self.refused,
+        );
+
         let mastered = simulation.mage().mastery_buff.is_active();
         Self::sync_loop(
             &mut self.mastery,
@@ -736,6 +775,15 @@ impl AudioDirector {
             audio,
             &mut self.refused,
         );
+    }
+
+    /// Stops another player's beam roar, however their channel ended.
+    fn end_beam_loop(&mut self, entity: EntityId, audio: &mut AudioSystem) {
+        let key = entity.index() as u32;
+        if let Some(index) = self.beams.iter().position(|held| held.key == key) {
+            let held = self.beams.swap_remove(index);
+            audio.stop(held.handle);
+        }
     }
 
     /// Starts `cue` when `wanted` becomes true and stops it when it becomes false.
@@ -845,7 +893,13 @@ impl AudioDirector {
         self.telegraphs.retain(|held| audio.is_playing(held.handle));
         self.enemy_casts
             .retain(|held| audio.is_playing(held.handle));
-        for held in [&mut self.shield, &mut self.mastery, &mut self.cast] {
+        self.beams.retain(|held| audio.is_playing(held.handle));
+        for held in [
+            &mut self.shield,
+            &mut self.mastery,
+            &mut self.cast,
+            &mut self.beam,
+        ] {
             if let Some(handle) = *held
                 && !audio.is_playing(handle)
             {
@@ -915,7 +969,9 @@ pub fn activation_sound(ability: FireAbility) -> Option<SoundId> {
         | FireAbility::WildRush
         | FireAbility::AstralPower
         | FireAbility::Tranquility => Some(SoundId::FireMasteryActivate),
-        FireAbility::FlameLance | FireAbility::Pyroblast | FireAbility::Cataclysm => None,
+        FireAbility::FlameLance | FireAbility::Pyroblast => None,
+        // Its sound is the channel's events, not the cast's: a surge, a roar, a gutter.
+        FireAbility::FireBeam => None,
         FireAbility::Blink | FireAbility::Ignite => None,
     }
 }
@@ -927,7 +983,6 @@ pub fn charge_sound(ability: FireAbility) -> Option<SoundId> {
         FireAbility::Firebolt => Some(SoundId::FireboltCharge),
         FireAbility::FlameLance => Some(SoundId::FlameLanceCast),
         FireAbility::Pyroblast => Some(SoundId::PyroblastCast),
-        FireAbility::Cataclysm => Some(SoundId::CataclysmCast),
         // Everything else is instant, or its cast is short enough that the activation is the
         // whole sound.
         _ => None,
@@ -958,7 +1013,6 @@ pub fn impact_sound(ability: FireAbility) -> SoundId {
         FireAbility::Pyroblast => SoundId::PyroblastImpact,
         FireAbility::Meteor => SoundId::MeteorImpact,
         FireAbility::Detonate => SoundId::DetonateExplosion,
-        FireAbility::Cataclysm => SoundId::CataclysmImpact,
         _ => SoundId::FireboltImpact,
     }
 }
@@ -987,6 +1041,38 @@ mod tests {
                 || matches!(ability, FireAbility::Blink);
             assert!(heard, "{ability:?} makes no sound when it is used");
         }
+    }
+
+    #[test]
+    fn the_beam_roars_for_exactly_as_long_as_the_channel() {
+        use engine_core::math::Vec3;
+        use engine_game::arena::{self, ArenaConfig};
+
+        let mut audio = runtime();
+        let mut director = AudioDirector::new();
+        let mut simulation = arena::training_arena(&ArenaConfig::default());
+        simulation.mage_mut().gain_energy(100.0);
+        simulation
+            .cast_at(FireAbility::FireBeam, Vec3::new(0.0, 0.0, -10.0))
+            .expect("a full bar casts it");
+        director.observe(&simulation, &mut audio);
+        director.update(&simulation, 1.0 / 60.0, &mut audio);
+        assert_eq!(audio.playing(SoundId::BeamStart), 1, "the surge");
+        assert_eq!(audio.playing(SoundId::BeamLoop), 1, "the roar");
+
+        // Stopping it stops the roar and gutters.
+        assert!(simulation.break_channel(engine_game::event::ControlKind::Stun));
+        director.observe(&simulation, &mut audio);
+        director.update(&simulation, 1.0 / 60.0, &mut audio);
+        // A stopped voice fades before it is gone, so let the mixer run.
+        let mut output = vec![0.0; 4_000 * engine_audio::CHANNELS];
+        audio.render(&mut output);
+        assert_eq!(
+            audio.playing(SoundId::BeamLoop),
+            0,
+            "the roar outlived the beam"
+        );
+        assert_eq!(audio.playing(SoundId::BeamEnd), 1);
     }
 
     #[test]

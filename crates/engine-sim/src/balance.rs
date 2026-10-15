@@ -550,6 +550,12 @@ fn caveats(out: &mut String) {
          * Targets wander on a seeded timer, so area abilities lose some hits and the \
          Warrior spends some time walking; this is part of the number, not noise.\n\
          * Cooldown *max casts* ignores cooldown-reduction effects, so an ability that is \
-         reset by another can exceed 100%."
+         reset by another can exceed 100%.
+\
+         * The Mage starts every fight with a full Ultimate bar and uses Moving Fire Beam at \
+         the pull. The bar refills in about ninety seconds, level with the beam's own \
+         ninety-second cooldown, so a sixty-second window holds one beam where a long fight \
+         holds one every ninety seconds: the 60 s Mage figures overstate the sustained \
+         contribution by about half."
     );
 }

@@ -2866,6 +2866,7 @@ pub fn icon_for(ability: FireAbility) -> Option<UiIcon> {
         FireAbility::FireMastery => Some(UiIcon::FireMastery),
         FireAbility::FlameShield => Some(UiIcon::FlameShield),
         FireAbility::Blink => Some(UiIcon::Blink),
+        FireAbility::FireBeam => Some(UiIcon::FireBeam),
         FireAbility::Recuperate => Some(UiIcon::Recuperate),
         FireAbility::WarStomp => Some(UiIcon::WarStomp),
         FireAbility::ColossusStrike => Some(UiIcon::ColossusStrike),
@@ -2892,11 +2893,9 @@ pub fn icon_for(ability: FireAbility) -> Option<UiIcon> {
         FireAbility::WildRush => Some(UiIcon::WildRush),
         FireAbility::AstralPower => Some(UiIcon::AstralPower),
         FireAbility::Tranquility => Some(UiIcon::Tranquility),
-        // Two rows with nothing to draw: the mage's Ultimate is switched off, and Ignite is
-        // credited damage rather than a cast — it has a row so the meter can name it. A slot
-        // with no icon draws its abbreviated name, which is the fallback every ability had
-        // before the icon sets were painted.
-        FireAbility::Cataclysm => None,
+        // Ignite is credited damage rather than a cast - it has a row so the meter can name
+        // it. A slot with no icon draws its abbreviated name, which is the fallback every
+        // ability had before the icon sets were painted.
         FireAbility::Ignite => None,
     }
 }
@@ -3729,8 +3728,17 @@ mod tests {
             );
         }
         assert_eq!(
+            drawn
+                .iter()
+                .filter(|(icon, _)| *icon == UiIcon::FireBeam)
+                .count(),
+            1,
+            "the Ultimate button wears its art"
+        );
+        assert_eq!(
             drawn.len(),
-            art.len(),
+            // The ten on the bar and the Ultimate beside it.
+            art.len() + 1,
             "something drew an icon nobody asked for"
         );
     }
