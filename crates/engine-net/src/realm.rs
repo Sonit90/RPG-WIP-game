@@ -738,7 +738,10 @@ fn run_summary(row: &b::RunSummary) -> RunSummaryInfo {
             log::warn!("realm: unreadable run resources: {error}");
             Vec::new()
         }),
-        loot_item: row.loot_item.clone(),
+        loot: engine_realm::haul::decode_items(&row.loot_items),
+        mob_drops: row.mob_drops,
+        looted: engine_realm::haul::decode_currencies(&row.looted),
+        bonus_pct: row.bonus_pct,
     }
 }
 

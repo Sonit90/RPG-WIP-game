@@ -333,10 +333,14 @@ pub enum SoundId {
     UiSelect,
     /// A screen being closed.
     UiCancel,
+    /// Something worth having dropping: a bright little chime.
+    LootDrop,
+    /// An epic dropping: the same chime, lower and longer, with a shimmer over it.
+    LootEpic,
 }
 
 /// How many sounds there are.
-pub const SOUND_COUNT: usize = 53;
+pub const SOUND_COUNT: usize = 55;
 
 impl SoundId {
     /// Every sound, in table order. The order is the order of [`SOUNDS`].
@@ -394,6 +398,8 @@ impl SoundId {
         Self::UiClick,
         Self::UiSelect,
         Self::UiCancel,
+        Self::LootDrop,
+        Self::LootEpic,
     ];
 
     /// Its index into [`SOUNDS`] and into any per-sound array.
@@ -1098,6 +1104,34 @@ pub static SOUNDS: [SoundDesc; SOUND_COUNT] = [
     .gain(0.4)
     .jitter(0.0, 0.0)
     .limit(3, 0.03),
+    SoundDesc::sfx(
+        "loot_drop",
+        UI,
+        Recipe::new(0.32)
+            .tone(0.8, 1_320.0, 1_760.0)
+            .tone(0.4, 1_980.0, 2_640.0)
+            .envelope(0.002, 0.04, 2.2),
+        PRIORITY_UI,
+    )
+    .on(AudioCategory::Ui)
+    .gain(0.4)
+    .jitter(0.0, 0.0)
+    .limit(2, 0.1),
+    SoundDesc::sfx(
+        "loot_epic",
+        UI,
+        Recipe::new(0.7)
+            .tone(0.8, 660.0, 990.0)
+            .tone(0.5, 1_320.0, 1_980.0)
+            .tone(0.3, 2_640.0, 3_960.0)
+            .noise(0.08, 6_000.0, 3_000.0)
+            .envelope(0.004, 0.08, 1.8),
+        PRIORITY_UI,
+    )
+    .on(AudioCategory::Ui)
+    .gain(0.45)
+    .jitter(0.0, 0.0)
+    .limit(1, 0.4),
 ];
 
 /// One sound's samples: mono PCM and the rate it was authored at.

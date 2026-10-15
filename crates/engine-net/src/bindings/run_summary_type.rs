@@ -19,7 +19,10 @@ pub struct RunSummary {
     pub duration_us: i64,
     pub experience: u32,
     pub resources: String,
-    pub loot_item: String,
+    pub loot_items: String,
+    pub mob_drops: u32,
+    pub looted: String,
+    pub bonus_pct: u32,
     pub created_at: __sdk::Timestamp,
 }
 
@@ -43,7 +46,10 @@ pub struct RunSummaryCols {
     pub duration_us: __sdk::__query_builder::Col<RunSummary, i64>,
     pub experience: __sdk::__query_builder::Col<RunSummary, u32>,
     pub resources: __sdk::__query_builder::Col<RunSummary, String>,
-    pub loot_item: __sdk::__query_builder::Col<RunSummary, String>,
+    pub loot_items: __sdk::__query_builder::Col<RunSummary, String>,
+    pub mob_drops: __sdk::__query_builder::Col<RunSummary, u32>,
+    pub looted: __sdk::__query_builder::Col<RunSummary, String>,
+    pub bonus_pct: __sdk::__query_builder::Col<RunSummary, u32>,
     pub created_at: __sdk::__query_builder::Col<RunSummary, __sdk::Timestamp>,
 }
 
@@ -63,7 +69,10 @@ impl __sdk::__query_builder::HasCols for RunSummary {
             duration_us: __sdk::__query_builder::Col::new(table_name, "duration_us"),
             experience: __sdk::__query_builder::Col::new(table_name, "experience"),
             resources: __sdk::__query_builder::Col::new(table_name, "resources"),
-            loot_item: __sdk::__query_builder::Col::new(table_name, "loot_item"),
+            loot_items: __sdk::__query_builder::Col::new(table_name, "loot_items"),
+            mob_drops: __sdk::__query_builder::Col::new(table_name, "mob_drops"),
+            looted: __sdk::__query_builder::Col::new(table_name, "looted"),
+            bonus_pct: __sdk::__query_builder::Col::new(table_name, "bonus_pct"),
             created_at: __sdk::__query_builder::Col::new(table_name, "created_at"),
         }
     }

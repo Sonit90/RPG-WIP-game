@@ -20,7 +20,7 @@
 //! decides nothing; it shows what happened, for as long as it takes to read.
 
 use engine_game::Simulation;
-use engine_game::character::{ItemId, ItemStack, MailReason, item};
+use engine_game::character::{ItemId, ItemProps, ItemStack, MailReason, item};
 use engine_game::event::CombatEvent;
 use engine_render_data::ui::{TextAlign, UiDrawList, UiRect};
 
@@ -35,11 +35,19 @@ use crate::snapshot::CharacterView;
 pub const TOAST_SECONDS: f32 = 5.0;
 /// How long it takes to slide in, and out again at the end.
 const SLIDE_SECONDS: f32 = 0.3;
+/// How long a toast stays when more are waiting behind it.
+const QUEUED_TOAST_SECONDS: f32 = 2.5;
+/// How long the currency line stays after the last drop.
+const CURRENCY_SECONDS: f32 = 4.0;
 
 /// What the toast reports.
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct Toast {
     item: ItemId,
+    /// The copy's quality, enhancement and broken state.
+    props: ItemProps,
+    /// A monster's drop: the headline names its rarity (`RARE DROP`).
+    drop: bool,
     /// `None` for an item put in the bag, the reason for one sent to the mail.
     mailed: Option<MailReason>,
     age: f32,
@@ -49,6 +57,12 @@ struct Toast {
 #[derive(Debug, Default)]
 pub struct LootHud {
     toast: Option<Toast>,
+    /// Toasts waiting their turn: a chest gives several items at once.
+    queue: std::collections::VecDeque<Toast>,
+    /// Currency picked up recently: resource id and amount, merged.
+    currency: Vec<(&'static str, u32)>,
+    /// Seconds since the last currency drop.
+    currency_age: f32,
     tooltip: ItemTooltip,
 }
 
@@ -58,13 +72,27 @@ impl LootHud {
     pub fn new() -> Self {
         Self {
             toast: None,
+            queue: std::collections::VecDeque::new(),
+            currency: Vec::new(),
+            currency_age: 0.0,
             tooltip: ItemTooltip::new(),
         }
     }
 
-    /// Removes the toast.
+    /// Removes the toasts and the currency line.
     pub fn clear(&mut self) {
         self.toast = None;
+        self.queue.clear();
+        self.currency.clear();
+    }
+
+    /// Shows `toast` now, or after the ones ahead of it.
+    fn show(&mut self, toast: Toast) {
+        if self.toast.is_some() {
+            self.queue.push_back(toast);
+        } else {
+            self.toast = Some(toast);
+        }
     }
 
     /// Whether a toast is up.
@@ -82,9 +110,16 @@ impl LootHud {
         let mut changed = false;
         for event in simulation.events() {
             match *event {
-                CombatEvent::LootAwarded { player, item, .. } if player == local => {
-                    self.toast = Some(Toast {
+                CombatEvent::LootAwarded {
+                    player,
+                    item,
+                    props,
+                    ..
+                } if player == local => {
+                    self.show(Toast {
                         item,
+                        props,
+                        drop: false,
                         mailed: None,
                         age: 0.0,
                     });
@@ -93,15 +128,43 @@ impl LootHud {
                 CombatEvent::LootMailed {
                     player,
                     item,
+                    props,
                     reason,
                     ..
                 } if player == local => {
-                    self.toast = Some(Toast {
+                    self.show(Toast {
                         item,
+                        props,
+                        drop: false,
                         mailed: Some(reason),
                         age: 0.0,
                     });
                     changed = true;
+                }
+                // A monster's drop is mailed by the server: the character changes there.
+                CombatEvent::MobLoot {
+                    player,
+                    item,
+                    props,
+                    ..
+                } if player == local => self.show(Toast {
+                    item,
+                    props,
+                    drop: true,
+                    mailed: Some(MailReason::DungeonDrop),
+                    age: 0.0,
+                }),
+                CombatEvent::MobCurrency {
+                    player,
+                    resource,
+                    amount,
+                    ..
+                } if player == local => {
+                    match self.currency.iter_mut().find(|(id, _)| *id == resource) {
+                        Some((_, held)) => *held = held.saturating_add(amount),
+                        None => self.currency.push((resource, amount)),
+                    }
+                    self.currency_age = 0.0;
                 }
                 _ => {}
             }
@@ -109,14 +172,43 @@ impl LootHud {
         changed
     }
 
-    /// Ages the toast by `delta` real seconds, ending it when its time is up.
+    /// Ages the toast by `delta` real seconds, ending it when its time is up; the next queued
+    /// one follows. While others wait, a toast is shown for a shorter time.
     pub fn advance(&mut self, delta: f32) {
+        self.currency_age += delta;
+        if self.currency_age >= CURRENCY_SECONDS {
+            self.currency.clear();
+        }
+        let limit = if self.queue.is_empty() {
+            TOAST_SECONDS
+        } else {
+            QUEUED_TOAST_SECONDS
+        };
         if let Some(toast) = self.toast.as_mut() {
             toast.age += delta;
-            if toast.age >= TOAST_SECONDS {
-                self.toast = None;
+            if toast.age >= limit {
+                self.toast = self.queue.pop_front();
             }
         }
+    }
+
+    /// The currency line (`+12 Gold  +1 Aether Shard`) while there is something to say.
+    #[must_use]
+    pub fn currency_line(&self) -> Option<String> {
+        if self.currency.is_empty() {
+            return None;
+        }
+        let mut line = String::with_capacity(48);
+        for (resource, amount) in &self.currency {
+            if !line.is_empty() {
+                line.push_str("   ");
+            }
+            line.push('+');
+            write_integer(&mut line, i64::from(*amount));
+            line.push(' ');
+            push_title_case(&mut line, &resource.replace('_', " "));
+        }
+        Some(line)
     }
 
     /// Where the toast rests, before its slide.
@@ -149,13 +241,25 @@ impl LootHud {
         pointer: (f32, f32),
         viewport: (u32, u32),
     ) {
+        let rest = Self::toast_rect(kit, viewport);
+        if let Some(line) = self.currency_line() {
+            kit.text(
+                list,
+                rest.x + rest.width * 0.5,
+                rest.y - kit.px(18.0),
+                &line,
+                type_scale::HEADING,
+                color::BRONZE_BRIGHT,
+                TextAlign::Center,
+            );
+        }
         let Some(toast) = self.toast else {
             return;
         };
         let Some(def) = item(toast.item) else {
             return;
         };
-        let rest = Self::toast_rect(kit, viewport);
+        let stack = ItemStack::with_props(toast.item, toast.props);
         let rect = UiRect::new(
             rest.x,
             rest.y + kit.px(Self::slide(toast.age)),
@@ -190,9 +294,13 @@ impl LootHud {
         let text_x = icon.right() + kit.px(16.0);
         let mut line = String::with_capacity(64);
         match toast.mailed {
+            _ if toast.drop => {
+                line.push_str(def.quality.name());
+                line.push_str(" DROP - SENT TO YOUR MAIL");
+            }
             None => line.push_str("YOU RECEIVED"),
             Some(MailReason::BagFull) => line.push_str("YOUR BAGS ARE FULL - SENT TO YOUR MAIL"),
-            Some(MailReason::Unclaimed | MailReason::SlotRemoved) => {
+            Some(MailReason::Unclaimed | MailReason::SlotRemoved | MailReason::DungeonDrop) => {
                 line.push_str("SENT TO YOUR MAIL");
             }
         }
@@ -207,6 +315,9 @@ impl LootHud {
         );
         line.clear();
         push_title_case(&mut line, def.name);
+        line.push_str(" (");
+        write_integer(&mut line, toast.props.total_pct().round() as i64);
+        line.push_str("%)");
         kit.text(
             list,
             text_x,
@@ -218,7 +329,7 @@ impl LootHud {
         );
         // The stat lines, as the tooltip prints them.
         line.clear();
-        for (stat, value) in def.stats.entries() {
+        for (stat, value) in stack.stats().entries() {
             if !line.is_empty() {
                 line.push_str("   ");
             }
@@ -238,7 +349,6 @@ impl LootHud {
         );
 
         if rect.contains(pointer.0, pointer.1) {
-            let stack = ItemStack::one(toast.item);
             let place = if toast.mailed.is_some() {
                 ItemPlace::Mailed
             } else {
@@ -322,6 +432,8 @@ mod tests {
         let item = engine_game::character::loot_pool()[0].id;
         let mut hud = LootHud::new();
         hud.toast = Some(Toast {
+            props: ItemProps::STANDARD,
+            drop: false,
             item,
             mailed: None,
             age: 1.0,
@@ -345,6 +457,8 @@ mod tests {
         let item = engine_game::character::loot_pool()[0].id;
         let mut hud = LootHud::new();
         hud.toast = Some(Toast {
+            props: ItemProps::STANDARD,
+            drop: false,
             item,
             mailed: Some(MailReason::BagFull),
             age: 1.0,
@@ -395,5 +509,83 @@ mod tests {
         let rect = LootHud::toast_rect(&kit, (1280, 720));
         assert!(rect.x >= 0.0 && rect.right() <= 1280.0 && rect.y >= 0.0);
         assert!(rect.bottom() < 720.0 - 100.0);
+    }
+
+    #[test]
+    fn a_monster_drop_toasts_its_rarity_and_quality_and_a_chest_queues_both_items() {
+        let mut simulation = arena::training_arena(&ArenaConfig::default());
+        simulation.step_once();
+        let snapshot = UiSnapshot::build(&simulation);
+        let local = simulation.player().entity;
+        let items = engine_game::character::loot_pool();
+        let tick = simulation.tick_count();
+        simulation.inject_event(CombatEvent::MobLoot {
+            player: local,
+            item: items[0].id,
+            props: ItemProps::rolled(104),
+            tick,
+        });
+        simulation.inject_event(CombatEvent::LootAwarded {
+            player: local,
+            item: items[1].id,
+            props: ItemProps::rolled(77),
+            index: 0,
+            tick,
+        });
+        simulation.inject_event(CombatEvent::LootAwarded {
+            player: local,
+            item: items[2].id,
+            props: ItemProps::rolled(88),
+            index: 1,
+            tick,
+        });
+        let mut hud = LootHud::new();
+        assert!(
+            hud.observe(&simulation),
+            "a chest item changes the character"
+        );
+        let kit = Kit::new(UiScale::default());
+        let mut list = UiDrawList::new();
+        hud.push_toast(&mut list, &kit, &snapshot.character, (0.0, 0.0), VIEWPORT);
+        let drawn = texts(&list);
+        let headline = format!("{} DROP - SENT TO YOUR MAIL", items[0].quality.name());
+        assert!(drawn.contains(&headline), "{drawn:?}");
+        assert!(drawn.iter().any(|t| t.ends_with("(104%)")), "{drawn:?}");
+        // The first toast ends early because two more wait; then the chest items follow.
+        hud.advance(QUEUED_TOAST_SECONDS + 0.1);
+        let mut list = UiDrawList::new();
+        hud.push_toast(&mut list, &kit, &snapshot.character, (0.0, 0.0), VIEWPORT);
+        assert!(texts(&list).iter().any(|t| t.ends_with("(77%)")));
+        hud.advance(QUEUED_TOAST_SECONDS + 0.1);
+        let mut list = UiDrawList::new();
+        hud.push_toast(&mut list, &kit, &snapshot.character, (0.0, 0.0), VIEWPORT);
+        assert!(texts(&list).iter().any(|t| t.ends_with("(88%)")));
+    }
+
+    #[test]
+    fn currency_drops_merge_into_one_line_that_fades() {
+        let mut simulation = arena::training_arena(&ArenaConfig::default());
+        simulation.step_once();
+        let local = simulation.player().entity;
+        let tick = simulation.tick_count();
+        for (resource, amount) in [("gold", 5), ("aether_shard", 1), ("gold", 7)] {
+            simulation.inject_event(CombatEvent::MobCurrency {
+                player: local,
+                resource,
+                amount,
+                tick,
+            });
+        }
+        let mut hud = LootHud::new();
+        assert!(
+            !hud.observe(&simulation),
+            "currency is not a character change here"
+        );
+        assert_eq!(
+            hud.currency_line().as_deref(),
+            Some("+12 Gold   +1 Aether Shard")
+        );
+        hud.advance(CURRENCY_SECONDS);
+        assert_eq!(hud.currency_line(), None);
     }
 }

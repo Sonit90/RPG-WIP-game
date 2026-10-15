@@ -82,6 +82,7 @@ fn sender_key(sender: MailSender) -> &'static str {
     match sender {
         MailSender::DungeonChest => "dungeon_chest",
         MailSender::System => "system",
+        MailSender::Dungeon => "dungeon",
     }
 }
 
@@ -90,6 +91,7 @@ fn reason_key(reason: MailReason) -> &'static str {
         MailReason::BagFull => "bag_full",
         MailReason::Unclaimed => "unclaimed",
         MailReason::SlotRemoved => "slot_removed",
+        MailReason::DungeonDrop => "dungeon_drop",
     }
 }
 
@@ -98,6 +100,7 @@ fn sender_of(key: &str) -> MailSender {
     match key {
         "dungeon_chest" => MailSender::DungeonChest,
         "system" => MailSender::System,
+        "dungeon" => MailSender::Dungeon,
         other => {
             log::warn!("character: unknown mail sender {other:?}");
             MailSender::DungeonChest
@@ -111,6 +114,7 @@ fn reason_of(key: &str) -> MailReason {
         "bag_full" => MailReason::BagFull,
         "unclaimed" => MailReason::Unclaimed,
         "slot_removed" => MailReason::SlotRemoved,
+        "dungeon_drop" => MailReason::DungeonDrop,
         other => {
             log::warn!("character: unknown mail reason {other:?}");
             MailReason::Unclaimed

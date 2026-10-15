@@ -214,6 +214,71 @@ pub struct ExchangeRow {
     pub affordable: bool,
 }
 
+/// An item the enhance panel can act on, as the app addresses it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EnhanceTarget {
+    /// A worn item, by its slot's key.
+    Worn(String),
+    /// A bag cell.
+    Bag(u32),
+}
+
+/// One worn item in the enhance panel's row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EnhanceWorn {
+    /// The slot's key (`ring1`).
+    pub slot: String,
+    /// The picture.
+    pub icon: ItemIcon,
+    /// The rank its edge is coloured by.
+    pub quality: ItemQuality,
+    /// Its enhancement level (zero when broken).
+    pub level: u8,
+    /// Whether it is broken.
+    pub broken: bool,
+}
+
+/// One resource of an enhancement's price.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EnhanceCost {
+    /// Display name.
+    pub name: String,
+    /// What one attempt takes.
+    pub needed: u64,
+    /// What the character holds.
+    pub owned: u64,
+}
+
+/// What enhancing the selected item would cost and risk.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EnhanceDetail {
+    /// The item's name.
+    pub name: String,
+    /// Its rank, for the name's colour.
+    pub quality: ItemQuality,
+    /// Its current state: `Enhancement +7%  Total 113%`.
+    pub current: String,
+    /// Why it cannot be enhanced (broken, fully enhanced, not equipment), if it cannot.
+    pub blocked: Option<String>,
+    /// The next level and what it adds: `Next: +8 (+1% of base stats)`.
+    pub next: String,
+    /// The price of one attempt.
+    pub cost: Vec<EnhanceCost>,
+    /// The chance the attempt breaks the item, as text (`95%`); `None` when it cannot.
+    pub break_chance: Option<String>,
+}
+
+/// The enhance half of the workshop screen.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct EnhanceCard {
+    /// The worn items, in slot order.
+    pub worn: Vec<EnhanceWorn>,
+    /// The selected item, if one is.
+    pub selected: Option<EnhanceTarget>,
+    /// Its price and risk.
+    pub detail: Option<EnhanceDetail>,
+}
+
 /// The salvage and exchange screen.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct WorkshopCard {
@@ -229,6 +294,19 @@ pub struct WorkshopCard {
     pub resources: Vec<(String, u64)>,
     /// Available exchanges.
     pub exchanges: Vec<ExchangeRow>,
+    /// The enhance panel, while it is the one showing (instead of the tray and exchanges).
+    pub enhance: Option<EnhanceCard>,
+}
+
+/// One chest item on the completion panel.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompletionItem {
+    /// Display name.
+    pub name: String,
+    /// Its rank, for the colour.
+    pub quality: ItemQuality,
+    /// Rolled quality, per cent of the base stats.
+    pub percent: u8,
 }
 
 /// How a run ended, for the panel over the world.
@@ -250,8 +328,16 @@ pub struct CompletionCard {
     pub experience: u32,
     /// Resources granted: display name and amount.
     pub resources: Vec<(String, u32)>,
-    /// The loot line: the item's name, or a prompt to open the chest. `None`: no loot.
+    /// The chest items, once rolled: name, rarity colour and quality.
+    pub items: Vec<CompletionItem>,
+    /// The prompt shown instead of items until they are known (open the chest).
     pub loot: Option<String>,
+    /// How many items monsters dropped (they were mailed).
+    pub mob_drops: u32,
+    /// Gold and aether shards picked up from monsters: display name and amount.
+    pub looted: Vec<(String, u32)>,
+    /// The run's reward bonus, per cent.
+    pub bonus_pct: u32,
     /// Whether Return to Hub was pressed and the rewards are being saved.
     pub returning: bool,
 }
@@ -490,6 +576,12 @@ pub enum FrontEndAction {
     SalvageTray,
     /// Make this exchange once.
     Exchange(String),
+    /// Show the enhance panel (`true`) or the salvage tray and exchanges (`false`).
+    WorkshopMode(bool),
+    /// Select an item to enhance.
+    SelectEnhance(EnhanceTarget),
+    /// Try to enhance the selected item one level.
+    Enhance,
 }
 
 /// The frame's input, as the front-end reads it.
@@ -547,6 +639,12 @@ enum Hit {
     TrayCell(usize),
     SalvageTray,
     Exchange(String),
+    /// The workshop's switch between salvage and enhance.
+    EnhanceMode(bool),
+    /// A worn item in the enhance row, by position.
+    EnhanceWorn(usize),
+    /// The Enhance button.
+    EnhanceGo,
     /// A panel with nothing to press: it only keeps the pointer from the camera.
     Panel,
 }
@@ -826,7 +924,27 @@ impl FrontEndUi {
             Hit::InsertKey => actions.push(FrontEndAction::InsertKey),
             Hit::WithdrawKey => actions.push(FrontEndAction::WithdrawKey),
             Hit::ReturnToHub => actions.push(FrontEndAction::ReturnToHub),
-            Hit::BagCell(index) => actions.push(FrontEndAction::StageSalvage(index)),
+            Hit::BagCell(index) => {
+                if view.workshop.as_ref().is_some_and(|w| w.enhance.is_some()) {
+                    actions.push(FrontEndAction::SelectEnhance(EnhanceTarget::Bag(index)));
+                } else {
+                    actions.push(FrontEndAction::StageSalvage(index));
+                }
+            }
+            Hit::EnhanceMode(on) => actions.push(FrontEndAction::WorkshopMode(on)),
+            Hit::EnhanceGo => actions.push(FrontEndAction::Enhance),
+            Hit::EnhanceWorn(position) => {
+                if let Some(worn) = view
+                    .workshop
+                    .as_ref()
+                    .and_then(|w| w.enhance.as_ref())
+                    .and_then(|e| e.worn.get(position))
+                {
+                    actions.push(FrontEndAction::SelectEnhance(EnhanceTarget::Worn(
+                        worn.slot.clone(),
+                    )));
+                }
+            }
             Hit::TrayCell(position) => {
                 if let Some(index) = view
                     .workshop
@@ -983,8 +1101,35 @@ impl FrontEndUi {
             Screen::Workshop => {
                 let panels = workshop_panels(w, h, scale);
                 let exchange = panels.exchange;
-                if let Some(workshop) = &view.workshop {
+                if let Some(workshop) = &view.workshop
+                    && let Some(enhance) = &workshop.enhance
+                {
                     let idle = view.busy.is_none();
+                    let panel = enhance_panel(&panels);
+                    layout.add(Hit::Panel, panel);
+                    layout.add(Hit::EnhanceMode(false), mode_button(panel, scale));
+                    for row in &workshop.bag {
+                        layout.add(
+                            Hit::BagCell(row.index),
+                            bag_cell_rect(panels.bag, row.index as usize, scale),
+                        );
+                    }
+                    for position in 0..enhance.worn.len() {
+                        layout.add(
+                            Hit::EnhanceWorn(position),
+                            enhance_worn_rect(panel, position, scale),
+                        );
+                    }
+                    if idle
+                        && enhance.detail.as_ref().is_some_and(|d| {
+                            d.blocked.is_none() && d.cost.iter().all(|c| c.owned >= c.needed)
+                        })
+                    {
+                        layout.add(Hit::EnhanceGo, enhance_button(panel, scale));
+                    }
+                } else if let Some(workshop) = &view.workshop {
+                    let idle = view.busy.is_none();
+                    layout.add(Hit::EnhanceMode(true), mode_button(panels.salvage, scale));
                     if idle {
                         for row in &workshop.bag {
                             if !workshop.tray.contains(&row.index) {
@@ -1945,6 +2090,49 @@ fn tray_cell_rect(salvage: UiRect, position: usize, scale: UiScale) -> UiRect {
     )
 }
 
+/// The enhance panel: the salvage tray's and the exchanges' space together.
+fn enhance_panel(panels: &WorkshopPanels) -> UiRect {
+    UiRect::new(
+        panels.salvage.x,
+        panels.salvage.y,
+        panels.salvage.width,
+        panels.exchange.bottom() - panels.salvage.y,
+    )
+}
+
+/// The switch between the salvage and enhance halves, on a panel's title row.
+fn mode_button(panel: UiRect, scale: UiScale) -> UiRect {
+    let px = |v: f32| scale.px(v);
+    UiRect::new(
+        panel.right() - px(160.0),
+        panel.y + px(10.0),
+        px(140.0),
+        px(28.0),
+    )
+}
+
+/// Worn item `position` in the enhance panel's row.
+fn enhance_worn_rect(panel: UiRect, position: usize, scale: UiScale) -> UiRect {
+    let origin = (panel.x + scale.px(20.0), panel.y + scale.px(46.0));
+    item_cell(
+        origin,
+        position % INVENTORY_COLUMNS,
+        position / INVENTORY_COLUMNS,
+        scale,
+    )
+}
+
+/// The Enhance button, at the bottom right of the enhance panel.
+fn enhance_button(panel: UiRect, scale: UiScale) -> UiRect {
+    let px = |v: f32| scale.px(v);
+    UiRect::new(
+        panel.right() - px(20.0) - px(150.0),
+        panel.bottom() - px(48.0),
+        px(150.0),
+        px(36.0),
+    )
+}
+
 /// The Salvage button, at the bottom right of the salvage panel.
 fn salvage_button(salvage: UiRect, scale: UiScale) -> UiRect {
     let px = |v: f32| scale.px(v);
@@ -2860,7 +3048,14 @@ fn draw_workshop(ctx: &mut Painter<'_>, view: &FrontEndView, w: f32, h: f32) {
     ctx.heading("SALVAGE & EXCHANGE", &holding, w);
     let panels = workshop_panels(w, h, scale);
     let (bag, salvage, exchange) = (panels.bag, panels.salvage, panels.exchange);
-    for (panel, title) in [(bag, "BAG"), (salvage, "SALVAGE"), (exchange, "EXCHANGE")] {
+    let enhancing = workshop.enhance.is_some();
+    let big = enhance_panel(&panels);
+    let shown: Vec<(UiRect, &str)> = if enhancing {
+        vec![(bag, "BAG"), (big, "ENHANCE")]
+    } else {
+        vec![(bag, "BAG"), (salvage, "SALVAGE"), (exchange, "EXCHANGE")]
+    };
+    for (panel, title) in shown {
         ctx.panel(panel);
         ctx.text(
             (panel.x + px(20.0), panel.y + px(18.0)),
@@ -2877,7 +3072,7 @@ fn draw_workshop(ctx: &mut Painter<'_>, view: &FrontEndView, w: f32, h: f32) {
     // but dimmed, so the player sees where it came from.
     for index in 0..INVENTORY_SLOTS {
         let row = find(u32::try_from(index).unwrap_or(u32::MAX));
-        let staged = row.is_some_and(|row| workshop.tray.contains(&row.index));
+        let staged = !enhancing && row.is_some_and(|row| workshop.tray.contains(&row.index));
         let hit = row.map(|row| Hit::BagCell(row.index));
         draw_item_cell(
             ctx,
@@ -2908,6 +3103,7 @@ fn draw_workshop(ctx: &mut Painter<'_>, view: &FrontEndView, w: f32, h: f32) {
             )
         }
         None if workshop.bag.is_empty() => "Your bag is empty.".to_owned(),
+        None if enhancing => "Click an item to enhance it.".to_owned(),
         None => "Click an item to put it in the salvage tray.".to_owned(),
     };
     ctx.text(
@@ -2917,6 +3113,30 @@ fn draw_workshop(ctx: &mut Painter<'_>, view: &FrontEndView, w: f32, h: f32) {
         UiFont::Medium,
         14.0,
         TextAlign::Left,
+    );
+
+    if let Some(enhance) = &workshop.enhance {
+        draw_enhance(ctx, view, enhance, big);
+        let (back, _) = footer_buttons(w, h, scale);
+        ctx.button(back, "Back", ButtonKind::Secondary, &Hit::Back, true);
+        if let Some(busy) = &view.busy {
+            ctx.text(
+                (w * 0.5 + px(140.0), back.y + px(15.0)),
+                busy,
+                BUSY,
+                UiFont::Medium,
+                16.0,
+                TextAlign::Left,
+            );
+        }
+        return;
+    }
+    ctx.button(
+        mode_button(salvage, scale),
+        "Enhance items",
+        ButtonKind::Secondary,
+        &Hit::EnhanceMode(true),
+        true,
     );
 
     // The tray: the same cells, filled in the order the player chose.
@@ -3003,6 +3223,145 @@ fn draw_workshop(ctx: &mut Painter<'_>, view: &FrontEndView, w: f32, h: f32) {
             TextAlign::Left,
         );
     }
+}
+
+/// The enhance panel's contents: the worn items, then the selected item's state, price and
+/// risk, then the button. The break chance is red whenever it is above zero.
+fn draw_enhance(ctx: &mut Painter<'_>, view: &FrontEndView, enhance: &EnhanceCard, panel: UiRect) {
+    let scale = ctx.scale;
+    let px = move |v: f32| scale.px(v);
+    ctx.button(
+        mode_button(panel, scale),
+        "Salvage & Exchange",
+        ButtonKind::Secondary,
+        &Hit::EnhanceMode(false),
+        true,
+    );
+    let selected_slot = match &enhance.selected {
+        Some(EnhanceTarget::Worn(slot)) => Some(slot.as_str()),
+        _ => None,
+    };
+    for (position, worn) in enhance.worn.iter().enumerate() {
+        let row = BagRow {
+            index: 0,
+            name: String::new(),
+            quantity: 1,
+            item_level: 0,
+            icon: worn.icon,
+            quality: worn.quality,
+            yields: String::new(),
+        };
+        let rect = enhance_worn_rect(panel, position, scale);
+        let hit = Hit::EnhanceWorn(position);
+        draw_item_cell(ctx, rect, Some(&row), false, Some(&hit));
+        if selected_slot == Some(worn.slot.as_str()) {
+            ctx.list
+                .panel_stroke(rect, 6.0 * px(1.0), 2.5 * px(1.0), SELECTED);
+        }
+        if worn.broken || worn.level > 0 {
+            let (label, color) = if worn.broken {
+                ("!".to_owned(), BAD)
+            } else {
+                (format!("+{}", worn.level), GOOD)
+            };
+            ctx.text(
+                (rect.x + px(4.0), rect.y + px(2.0)),
+                &label,
+                color,
+                UiFont::SemiBold,
+                13.0,
+                TextAlign::Left,
+            );
+        }
+    }
+    let rows = enhance.worn.len().div_ceil(INVENTORY_COLUMNS).max(1);
+    let mut y = enhance_worn_rect(panel, 0, scale).y
+        + (enhance_worn_rect(panel, INVENTORY_COLUMNS, scale).y
+            - enhance_worn_rect(panel, 0, scale).y)
+            * rows as f32
+        + px(8.0);
+    let x = panel.x + px(20.0);
+    let Some(detail) = &enhance.detail else {
+        ctx.text(
+            (x, y),
+            "Select a worn item above or an item in your bag.",
+            DIM,
+            UiFont::Medium,
+            15.0,
+            TextAlign::Left,
+        );
+        return;
+    };
+    ctx.text(
+        (x, y),
+        &detail.name,
+        super::character_menu::quality_color(detail.quality),
+        UiFont::SemiBold,
+        18.0,
+        TextAlign::Left,
+    );
+    y += px(26.0);
+    ctx.text(
+        (x, y),
+        &detail.current,
+        TEXT,
+        UiFont::Medium,
+        14.0,
+        TextAlign::Left,
+    );
+    y += px(22.0);
+    if let Some(blocked) = &detail.blocked {
+        ctx.text(
+            (x, y),
+            blocked,
+            BAD,
+            UiFont::SemiBold,
+            15.0,
+            TextAlign::Left,
+        );
+        return;
+    }
+    ctx.text(
+        (x, y),
+        &detail.next,
+        GOOD,
+        UiFont::Medium,
+        14.0,
+        TextAlign::Left,
+    );
+    y += px(22.0);
+    for cost in &detail.cost {
+        let color = if cost.owned >= cost.needed { TEXT } else { BAD };
+        ctx.text(
+            (x, y),
+            &format!("{}: {} / {}", cost.name, cost.owned, cost.needed),
+            color,
+            UiFont::Medium,
+            14.0,
+            TextAlign::Left,
+        );
+        y += px(20.0);
+    }
+    let (chance, color) = match &detail.break_chance {
+        Some(chance) => (format!("Break chance: {chance}"), BAD),
+        None => ("Break chance: none".to_owned(), GOOD),
+    };
+    ctx.text(
+        (x, y + px(4.0)),
+        &chance,
+        color,
+        UiFont::SemiBold,
+        15.0,
+        TextAlign::Left,
+    );
+    let affordable = detail.cost.iter().all(|c| c.owned >= c.needed);
+    ctx.button(
+        enhance_button(panel, scale),
+        "Enhance",
+        ButtonKind::Primary,
+        &Hit::EnhanceGo,
+        affordable && view.busy.is_none(),
+    );
 }
 
 fn ready_label(state: ReadyState) -> (&'static str, UiColor) {
@@ -3540,9 +3899,35 @@ fn completion_rows(card: &CompletionCard) -> Vec<(String, String, UiColor)> {
         for (name, amount) in &card.resources {
             rows.push((name.clone(), format!("+{amount}"), TEXT));
         }
-        if let Some(loot) = &card.loot {
+        for item in &card.items {
+            rows.push((
+                "Chest".to_owned(),
+                format!("{} ({}%)", item.name, item.percent),
+                super::character_menu::quality_color(item.quality),
+            ));
+        }
+        if card.items.is_empty()
+            && let Some(loot) = &card.loot
+        {
             rows.push(("Loot".to_owned(), loot.clone(), GOLD));
         }
+    }
+    if card.mob_drops > 0 {
+        rows.push((
+            "Monster drops".to_owned(),
+            format!("{} (sent to your mail)", card.mob_drops),
+            GOLD,
+        ));
+    }
+    for (name, amount) in &card.looted {
+        rows.push((name.clone(), format!("+{amount}"), GOLD));
+    }
+    if card.bonus_pct > 0 {
+        rows.push((
+            "Reward bonus".to_owned(),
+            format!("+{}%", card.bonus_pct),
+            GOOD,
+        ));
     }
     rows
 }
@@ -3792,7 +4177,11 @@ mod tests {
             } else {
                 Vec::new()
             },
+            items: Vec::new(),
             loot: success.then(|| "Open the chest to claim your loot".to_owned()),
+            mob_drops: 0,
+            looted: Vec::new(),
+            bonus_pct: 0,
             returning,
         }
     }
@@ -4119,6 +4508,149 @@ mod tests {
         assert!(!guest.iter().any(|row| row.starts_with("Key upgraded")));
     }
 
+    #[test]
+    fn the_completion_panel_lists_items_drops_currencies_and_the_bonus() {
+        let mut card = completion(true, true, false);
+        card.items = vec![
+            CompletionItem {
+                name: "Ashgrave's Seal".into(),
+                quality: ItemQuality::Epic,
+                percent: 106,
+            },
+            CompletionItem {
+                name: "Warden's Helm".into(),
+                quality: ItemQuality::Rare,
+                percent: 71,
+            },
+        ];
+        card.mob_drops = 2;
+        card.looted = vec![("Gold".into(), 135), ("Aether Shard".into(), 1)];
+        card.bonus_pct = 25;
+        let rows = completion_rows(&card);
+        let text: Vec<String> = rows.iter().map(|(l, v, _)| format!("{l}: {v}")).collect();
+        assert!(
+            text.contains(&"Chest: Ashgrave's Seal (106%)".to_owned()),
+            "{text:?}"
+        );
+        assert!(text.contains(&"Chest: Warden's Helm (71%)".to_owned()));
+        assert!(text.contains(&"Monster drops: 2 (sent to your mail)".to_owned()));
+        assert!(text.contains(&"Gold: +135".to_owned()));
+        assert!(text.contains(&"Aether Shard: +1".to_owned()));
+        assert!(text.contains(&"Reward bonus: +25%".to_owned()));
+        let epic = rows
+            .iter()
+            .find(|(_, v, _)| v.starts_with("Ashgrave"))
+            .expect("row");
+        assert_eq!(
+            epic.2,
+            super::super::character_menu::quality_color(ItemQuality::Epic)
+        );
+        // A failed run still shows what was picked up.
+        let mut lost = completion(false, true, false);
+        lost.looted = vec![("Gold".into(), 20)];
+        let lost: Vec<String> = completion_rows(&lost)
+            .iter()
+            .map(|(l, v, _)| format!("{l}: {v}"))
+            .collect();
+        assert!(lost.contains(&"Gold: +20".to_owned()));
+    }
+
+    fn enhance_view(selected: bool, affordable: bool, blocked: Option<&str>) -> FrontEndView {
+        let mut view = workshop_view(vec![]);
+        if let Some(workshop) = view.workshop.as_mut() {
+            workshop.enhance = Some(EnhanceCard {
+                worn: vec![EnhanceWorn {
+                    slot: "ring1".into(),
+                    icon: ItemIcon::Helm,
+                    quality: ItemQuality::Epic,
+                    level: 4,
+                    broken: false,
+                }],
+                selected: selected.then(|| EnhanceTarget::Worn("ring1".into())),
+                detail: selected.then(|| EnhanceDetail {
+                    name: "Ashgrave's Seal".into(),
+                    quality: ItemQuality::Epic,
+                    current: "Enhancement +4%  Total 110%".into(),
+                    blocked: blocked.map(str::to_owned),
+                    next: "Next: +5 (+1% of base stats)".into(),
+                    cost: vec![EnhanceCost {
+                        name: "Crypt Dust".into(),
+                        needed: 75,
+                        owned: if affordable { 100 } else { 10 },
+                    }],
+                    break_chance: Some("95%".into()),
+                }),
+            });
+        }
+        view
+    }
+
+    #[test]
+    fn the_enhance_panel_selects_an_item_and_emits_the_enhance_action() {
+        let mut ui = FrontEndUi::new();
+        let view = enhance_view(true, true, None);
+        assert_eq!(
+            click(&mut ui, &view, &Hit::EnhanceWorn(0)),
+            vec![FrontEndAction::SelectEnhance(EnhanceTarget::Worn(
+                "ring1".into()
+            ))]
+        );
+        assert_eq!(
+            click(&mut ui, &view, &Hit::BagCell(4)),
+            vec![FrontEndAction::SelectEnhance(EnhanceTarget::Bag(4))],
+            "in enhance mode a bag click selects, it does not stage salvage"
+        );
+        assert_eq!(
+            click(&mut ui, &view, &Hit::EnhanceGo),
+            vec![FrontEndAction::Enhance]
+        );
+        assert_eq!(
+            click(&mut ui, &view, &Hit::EnhanceMode(false)),
+            vec![FrontEndAction::WorkshopMode(false)]
+        );
+        // Not affordable or blocked: no button to press.
+        for view in [
+            enhance_view(true, false, None),
+            enhance_view(true, true, Some("A broken item cannot be enhanced.")),
+        ] {
+            assert!(rect_of(&ui, &view, &Hit::EnhanceGo).is_none());
+        }
+        // And the salvage side offers the way in.
+        let salvage = workshop_view(vec![]);
+        assert_eq!(
+            click(&mut ui, &salvage, &Hit::EnhanceMode(true)),
+            vec![FrontEndAction::WorkshopMode(true)]
+        );
+    }
+
+    #[test]
+    fn the_enhance_panel_draws_the_cost_and_a_red_break_chance() {
+        let view = enhance_view(true, true, None);
+        let mut list = UiDrawList::new();
+        let mut ctx = Painter {
+            list: &mut list,
+            scale: scale(),
+            hovered: None,
+        };
+        draw_workshop(&mut ctx, &view, 1280.0, 720.0);
+        let drawn: Vec<(String, UiColor)> = list
+            .commands()
+            .iter()
+            .filter_map(|command| match command {
+                engine_render_data::ui::UiCommand::Label { range, color, .. } => {
+                    Some((list.text_of(*range).to_owned(), *color))
+                }
+                _ => None,
+            })
+            .collect();
+        let has = |text: &str| drawn.iter().find(|(t, _)| t == text);
+        assert!(has("ENHANCE").is_some());
+        assert!(has("Next: +5 (+1% of base stats)").is_some());
+        assert_eq!(has("Crypt Dust: 100 / 75").map(|(_, c)| *c), Some(TEXT));
+        assert_eq!(has("Break chance: 95%").map(|(_, c)| *c), Some(BAD));
+        assert!(has("Enhance").is_some());
+    }
+
     fn rusty_sword(index: u32) -> BagRow {
         BagRow {
             index,
@@ -4155,6 +4687,7 @@ mod tests {
                     affordable: false,
                 },
             ],
+            enhance: None,
         });
         view
     }

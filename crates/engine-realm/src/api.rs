@@ -303,6 +303,10 @@ pub struct DungeonResult {
     /// Talent points granted. Applied once with the result, like everything else in it.
     #[serde(default)]
     pub talent_points: u32,
+    /// What the player picked up from monsters during the run (gold, aether shards): paid
+    /// whether the run succeeded or failed, in the same transaction as everything else here.
+    #[serde(default)]
+    pub looted: Vec<(String, u32)>,
 }
 
 /// Whether the realm has a character engaged: queued, in a party, or in an instance.
@@ -334,8 +338,58 @@ pub struct LootDelivery {
     pub item: String,
     /// `"bag"` (the player opened the chest: bag if there is room, else mail) or `"mail"`.
     pub kind: String,
-    /// For mail, why: `"bag_full"` or `"unclaimed"`.
+    /// For mail, why: `"bag_full"`, `"unclaimed"` or `"dungeon_drop"`.
     pub reason: String,
+    /// Rolled quality, per cent of the base stats.
+    #[serde(default = "default_quality")]
+    pub quality: u8,
+    /// Enhancement level (zero for anything just rolled).
+    #[serde(default)]
+    pub enhancement: u8,
+    /// Whether the item is broken.
+    #[serde(default)]
+    pub broken: bool,
+}
+
+fn default_quality() -> u8 {
+    engine_game::character::QUALITY_DEFAULT
+}
+
+impl LootDelivery {
+    /// The item's instance properties, clamped into the legal ranges: a forged row can be
+    /// wrong but never stronger than the rules allow.
+    #[must_use]
+    pub fn props(&self) -> engine_game::character::ItemProps {
+        engine_game::character::ItemProps::new(self.quality, self.enhancement, self.broken)
+    }
+}
+
+/// `POST /api/v1/characters/{id}/enhance`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EnhanceRequest {
+    /// The worn slot or bag cell holding the item. There is no roll in it: the server rolls.
+    pub slot: SlotRef,
+}
+
+/// How an enhancement attempt ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EnhanceOutcomeName {
+    /// The item gained a level.
+    Success,
+    /// The item broke.
+    Broken,
+}
+
+/// What `POST /api/v1/characters/{id}/enhance` answers with.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EnhanceResponse {
+    /// `"success"` or `"broken"`.
+    pub outcome: EnhanceOutcomeName,
+    /// The item's enhancement level afterwards (zero when it broke).
+    pub new_level: u8,
+    /// The character in full, as every other change answers.
+    pub character: CharacterDetail,
 }
 
 #[cfg(test)]

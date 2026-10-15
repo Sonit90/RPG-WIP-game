@@ -166,18 +166,44 @@ fn key_scaling(instance: &DungeonInstance, dungeon: &crate::level::Dungeon) -> (
     engine_realm::key::scaling(&dungeon.definition.keys, instance.key_level.max(1))
 }
 
+/// The run's reward bonus, per cent: how much more every drop and payout is worth.
+///
+/// Zero until the dungeon key's modifiers set one. This is the single place that decides it:
+/// the fight is armed with it when built or rebuilt, and `instance::finish` scales the run's
+/// resource payout with it, so the two cannot disagree. It reads the instance (not the live
+/// fight) because a rebuilt fight must come back with the same bonus.
+pub fn reward_bonus(_ctx: &ReducerContext, _instance: &DungeonInstance) -> u32 {
+    0
+}
+
+/// Gives a freshly built (or rebuilt) fight the loot rules, the key level and the reward bonus.
+fn arm(ctx: &ReducerContext, instance: &DungeonInstance, fight: &mut CombatInstance) {
+    match engine_realm::loot::builtin_rules() {
+        Some(rules) => fight.set_loot(
+            rules.clone(),
+            instance.key_level.max(1),
+            reward_bonus(ctx, instance),
+        ),
+        None => log::error!(
+            "event=loot_rules_missing instance_id={} the legacy chest is used",
+            instance.id
+        ),
+    }
+}
+
 /// Builds an instance's fight and writes its first rows. Called once, when the instance
 /// is created.
 pub fn start(ctx: &ReducerContext, instance: &DungeonInstance) -> Result<(), RealmError> {
     let dungeon = crate::level::dungeon(&instance.dungeon_id)?;
     let players = specs(ctx, instance, &dungeon);
     let barriers = barriers_of(&dungeon.scene, &dungeon.definition);
-    let fight = CombatInstance::new(
+    let mut fight = CombatInstance::new(
         &dungeon.scene,
         &players,
         &barriers,
         key_scaling(instance, &dungeon),
     );
+    arm(ctx, instance, &mut fight);
     ctx.db.instance_combat().insert(InstanceCombat {
         instance_id: instance.id,
         tick: fight.tick(),
@@ -306,6 +332,7 @@ fn rebuild(
         instance.barrier_open,
         &state,
     );
+    arm(ctx, instance, &mut fight);
     // The rebuilt fight dropped what no row holds (summoned monsters); its first projection
     // writes every row again, which removes them.
     fight.forget_written();
@@ -603,6 +630,9 @@ pub fn combat_tick(ctx: &ReducerContext, _timer: CombatTimer) -> Result<(), Stri
                 unlocked,
                 ..combat
             });
+        // Monster drops are durable the moment they fall, and before `finish` reads them: the
+        // boss's gold is in the batch that completes the run.
+        crate::loot::record_drops(ctx, instance.id, &events);
         if let Some(seconds) = completed {
             if InstanceState::from(instance.state) == InstanceState::Active {
                 log::info!(

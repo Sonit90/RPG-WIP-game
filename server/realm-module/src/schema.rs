@@ -553,6 +553,9 @@ pub struct PendingResult {
     pub damage_report: String,
     /// Talent points awarded.
     pub talent_points: u32,
+    /// What the player picked up from monsters (gold, aether shards), as JSON text:
+    /// `[["gold",40],["aether_shard",1]]`. Paid on success and on failure alike.
+    pub looted: String,
 }
 
 /// What a finished run paid one player, for their results screen. Kept until the instance is
@@ -587,17 +590,54 @@ pub struct RunSummary {
     pub experience: u32,
     /// Resources awarded, as JSON text: `[["crypt_dust",9],...]`.
     pub resources: String,
-    /// The item rolled from the chest. Empty until known (or none).
-    pub loot_item: String,
+    /// The items the chest rolled, in roll order, as JSON text
+    /// (`engine_realm::haul::SummaryItem`): `[{"item":"ashgraves_seal","quality":106}]`. Empty
+    /// until known (or none).
+    pub loot_items: String,
+    /// How many items monsters dropped for this player so far (they are mailed as they fall).
+    pub mob_drops: u32,
+    /// The currencies monsters dropped, as JSON text: `[["gold",40],["aether_shard",1]]`.
+    pub looted: String,
+    /// The run's reward bonus, per cent.
+    pub bonus_pct: u32,
     /// When it was recorded.
     pub created_at: Timestamp,
 }
 
-/// A player's roll from the boss's chest, on its way to their character.
+/// What one player has taken from monsters in one run, kept in a row so it survives a restart
+/// of the fight (the fight's memory is not durable, the tables are).
 ///
-/// Written at `finish` as `"rolled"` - durable, so a restart cannot lose it. Then exactly one
-/// thing settles it: the sim reports the chest opened (`"bag"`), the sim reports it mailed
-/// (`"mail"`), or the instance is torn down with it still rolled (`"mail"`, `"unclaimed"`).
+/// Currency accumulates here until `finish` folds it into the player's `pending_result`;
+/// `settled` then stops it being folded twice. The count is also the sequence number of the
+/// player's next dropped item (`"<instance>:<account>:mob:<n>"`), so an id is never reused even
+/// after the bridge has acknowledged and deleted the earlier rows.
+#[spacetimedb::table(accessor = run_loot)]
+#[derive(Debug, Clone)]
+pub struct RunLoot {
+    /// `"<instance id>:<account id>"`.
+    #[primary_key]
+    pub key: String,
+    /// Which instance.
+    #[index(btree)]
+    pub instance_id: u64,
+    /// Whose.
+    pub account_id: String,
+    /// Which of their characters is in the run: where a drop is delivered.
+    pub character_id: String,
+    /// Items dropped so far.
+    pub items: u32,
+    /// Currencies dropped so far, as JSON text.
+    pub currencies: String,
+    /// Whether the run's result has taken the currencies.
+    pub settled: bool,
+}
+
+/// An item on its way to a character: a boss-chest roll or a monster drop.
+///
+/// A chest item is written at `finish` as `"rolled"` - durable, so a restart cannot lose it.
+/// Then exactly one thing settles it: the sim reports the chest opened (`"bag"`), the sim
+/// reports it mailed (`"mail"`), or the instance is torn down with it still rolled (`"mail"`,
+/// `"unclaimed"`). A monster drop is written already settled (`"mail"`, `"dungeon_drop"`).
 /// The bridge collects settled rows and the API delivers each once, under `loot_id`.
 ///
 /// The bridge decodes rows by position (`backend/crates/game/src/bridge.rs`): a field added
@@ -605,7 +645,8 @@ pub struct RunSummary {
 #[spacetimedb::table(accessor = pending_loot)]
 #[derive(Debug, Clone)]
 pub struct PendingLoot {
-    /// Idempotency key: `"<instance id>:<account id>:loot"`.
+    /// Idempotency key: `"<instance id>:<account id>:loot:<index>"` for a chest item,
+    /// `"<instance id>:<account id>:mob:<n>"` for a monster's.
     #[primary_key]
     pub loot_id: String,
     /// Whose.
@@ -619,10 +660,16 @@ pub struct PendingLoot {
     pub item: String,
     /// `"rolled"` (not settled, never collected), `"bag"` or `"mail"`.
     pub state: String,
-    /// For mail: `"bag_full"` or `"unclaimed"`. Empty otherwise.
+    /// For mail: `"bag_full"`, `"unclaimed"` or `"dungeon_drop"`. Empty otherwise.
     pub reason: String,
     /// When it was rolled.
     pub created_at: Timestamp,
+    /// Rolled quality, per cent of the base stats.
+    pub quality: u8,
+    /// Enhancement level (zero for anything just rolled).
+    pub enhancement: u8,
+    /// Whether the item is broken.
+    pub broken: bool,
 }
 
 /// An entity as both ends can name it: `engine_realm::combat::EntityRef`.

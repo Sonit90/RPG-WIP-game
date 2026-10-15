@@ -34,7 +34,9 @@ use std::hash::{Hash, Hasher};
 
 use engine_game::ability::text::{self as ability_text, ResourceMode};
 use engine_game::character::stat::{HEALTH_PER_STAMINA, armor_reduction};
-use engine_game::character::{EquipSlot, ItemDef, ItemSlot, ItemStack, Stat, StatBlock};
+use engine_game::character::{
+    BROKEN_PENALTY, EquipSlot, ItemProps, ItemSlot, ItemStack, Stat, StatBlock,
+};
 use engine_game::firemage::{FireAbility, FireMastery, TargetMode};
 use engine_game::hero::Hero;
 use engine_render_data::ui::{TextAlign, UiColor, UiDrawList, UiRect};
@@ -73,6 +75,8 @@ pub enum SectionKind {
     Details,
     /// An item's stat lines, in the body size and the stat green.
     Stats,
+    /// An item copy's quality, enhancement and total, or that it is broken.
+    Quality,
     /// What an item's stats are worth to the character looking at it.
     Numbers,
     /// An item against the one it would replace; lines starting `+` are green, `-` red.
@@ -84,7 +88,7 @@ impl SectionKind {
     #[must_use]
     pub fn heading(self) -> Option<&'static str> {
         match self {
-            Self::Description | Self::Effect | Self::Details | Self::Stats => None,
+            Self::Description | Self::Effect | Self::Details | Self::Stats | Self::Quality => None,
             Self::Numbers => Some("WHAT IT DOES FOR YOU"),
             Self::Comparison => Some("COMPARED TO EQUIPPED"),
             Self::Resource => Some("RESOURCE"),
@@ -102,6 +106,7 @@ impl SectionKind {
             Self::Empowered => color::AMBER,
             Self::Requirements => color::EMBER,
             Self::Stats => color::VERDANT,
+            Self::Quality => color::BRONZE_BRIGHT,
             Self::Numbers | Self::Comparison => color::BRONZE_BRIGHT,
             _ => color::TEXT_MUTED,
         }
@@ -111,7 +116,9 @@ impl SectionKind {
     #[must_use]
     pub fn style(self) -> TextStyle {
         match self {
-            Self::Effect | Self::Details | Self::Numbers | Self::Comparison => tokens::TOOLTIP_META,
+            Self::Effect | Self::Details | Self::Numbers | Self::Comparison | Self::Quality => {
+                tokens::TOOLTIP_META
+            }
             _ => tokens::TOOLTIP_BODY,
         }
     }
@@ -934,8 +941,13 @@ fn write_percent(out: &mut String, fraction: f32) {
 ///
 /// Built like [`fill_ability`], from the item table and the reader's own sheet: no sentence
 /// here is written for one item.
-pub fn fill_item(model: &mut TooltipModel, def: &ItemDef, hero: Hero, context: &ItemContext) {
+pub fn fill_item(model: &mut TooltipModel, stack: ItemStack, hero: Hero, context: &ItemContext) {
     model.clear();
+    let Some(def) = stack.def() else {
+        return;
+    };
+    // What this copy grants: the table's stats scaled by its quality and enhancement.
+    let granted = stack.stats();
     super::map_style::write_title_case(&mut model.title, def.name);
     let quality = super::character_menu::quality_color(def.quality);
     model.title_color = quality;
@@ -962,11 +974,11 @@ pub fn fill_item(model: &mut TooltipModel, def: &ItemDef, hero: Hero, context: &
     // The stats, as the genre prints them: "+2 Haste".
     let stats = model.section(SectionKind::Stats);
     stats.color = color::VERDANT;
-    if def.stats.is_empty() {
+    if granted.is_empty() {
         stats.color = color::TEXT_MUTED;
         stats.text.push_str("Grants no combat stats");
     }
-    for (stat, value) in def.stats.entries() {
+    for (stat, value) in granted.entries() {
         if !stats.text.is_empty() {
             stats.text.push('\n');
         }
@@ -975,8 +987,13 @@ pub fn fill_item(model: &mut TooltipModel, def: &ItemDef, hero: Hero, context: &
         super::map_style::push_title_case(&mut stats.text, stat.display_for(hero));
     }
 
+    // This copy's quality: what it rolled, what enhancement added, what it is worth in all.
+    if !granted.is_empty() {
+        write_quality_lines(model, stack.props);
+    }
+
     // What they do for this character, in the numbers combat uses.
-    let mine = effective(&def.stats, hero);
+    let mine = effective(&granted, hero);
     let (before, after) = match (context.place, context.replaces) {
         (ItemPlace::Equipped(_), _) => (
             swapped(&context.total, &mine, &StatBlock::zero()),
@@ -991,7 +1008,7 @@ pub fn fill_item(model: &mut TooltipModel, def: &ItemDef, hero: Hero, context: &
             swapped(&context.total, &StatBlock::zero(), &mine),
         ),
     };
-    if !def.stats.is_empty() {
+    if !granted.is_empty() {
         let numbers = model.section(SectionKind::Numbers);
         numbers.color = color::TEXT_SECONDARY;
         for stat in Stat::ALL {
@@ -1027,9 +1044,10 @@ pub fn fill_item(model: &mut TooltipModel, def: &ItemDef, hero: Hero, context: &
 
     // Against what it would replace.
     if !matches!(context.place, ItemPlace::Equipped(_))
-        && let Some(worn) = context.replaces.and_then(ItemStack::def)
+        && let Some(worn_stack) = context.replaces
+        && let Some(worn) = worn_stack.def()
     {
-        let theirs = effective(&worn.stats, hero);
+        let theirs = effective(&worn_stack.stats(), hero);
         let compare = model.section(SectionKind::Comparison);
         compare.color = color::TEXT_SECONDARY;
         compare.text.push_str("vs. ");
@@ -1052,6 +1070,32 @@ pub fn fill_item(model: &mut TooltipModel, def: &ItemDef, hero: Hero, context: &
         ItemPlace::Loose => "Added to your bag",
         ItemPlace::Mailed => "Sent to your mail",
     });
+}
+
+/// Writes the quality sections of an item copy: `Base Quality: 106%`, `Enhancement: +7%`,
+/// `Total: 113%`, and for a broken one a red line saying so.
+fn write_quality_lines(model: &mut TooltipModel, props: ItemProps) {
+    let section = model.section(SectionKind::Quality);
+    section.color = color::TEXT_SECONDARY;
+    section.text.push_str("Base Quality: ");
+    write_amount(&mut section.text, props.base_quality_pct());
+    section.text.push('%');
+    if props.broken {
+        section.text.push_str("\nTotal: ");
+    } else {
+        section.text.push_str("\nEnhancement: +");
+        write_amount(&mut section.text, props.enhancement_pct());
+        section.text.push_str("%\nTotal: ");
+    }
+    write_amount(&mut section.text, props.total_pct());
+    section.text.push('%');
+    if props.broken {
+        let broken = model.section(SectionKind::Quality);
+        broken.color = color::CRIMSON;
+        broken.text.push_str("BROKEN (-");
+        write_integer(&mut broken.text, (BROKEN_PENALTY * 100.0).round() as i64);
+        broken.text.push_str("%) - cannot be enhanced");
+    }
 }
 
 /// An item tooltip with its own storage, docked beside whatever shows the item.
@@ -1091,8 +1135,8 @@ impl ItemTooltip {
         anchor: UiRect,
         viewport: (u32, u32),
     ) -> Option<UiRect> {
-        let def = stack.def()?;
-        fill_item(&mut self.model, def, hero, context);
+        stack.def()?;
+        fill_item(&mut self.model, stack, hero, context);
         let (dock, direction) = slot_dock(anchor, kit.px(DEFAULT_WIDTH), kit, viewport);
         Some(
             self.panel
@@ -1285,7 +1329,7 @@ mod tests {
         assert!(kit.style.size(tokens::TOOLTIP_TITLE) >= 19.0);
     }
 
-    fn loot_item() -> &'static ItemDef {
+    fn loot_item() -> &'static engine_game::character::ItemDef {
         engine_game::character::loot_pool()
             .iter()
             .find(|def| def.stats.entries().count() == 2)
@@ -1304,7 +1348,7 @@ mod tests {
         let character = character();
         let context = ItemContext::loose(&character, ItemStack::one(def.id), ItemPlace::Bag);
         let mut model = TooltipModel::new();
-        fill_item(&mut model, def, Hero::FireMage, &context);
+        fill_item(&mut model, ItemStack::one(def.id), Hero::FireMage, &context);
         assert_eq!(
             model.title_color,
             super::super::character_menu::quality_color(def.quality)
@@ -1326,7 +1370,7 @@ mod tests {
         let character = character();
         let context = ItemContext::loose(&character, ItemStack::one(def.id), ItemPlace::Bag);
         let mut model = TooltipModel::new();
-        fill_item(&mut model, def, Hero::FireMage, &context);
+        fill_item(&mut model, ItemStack::one(def.id), Hero::FireMage, &context);
         let numbers = &model.find(SectionKind::Numbers).expect("numbers").text;
         assert!(numbers.contains("Haste: +"), "{numbers}");
         assert!(numbers.contains("0.00% >"), "{numbers}");
@@ -1345,7 +1389,12 @@ mod tests {
             "the starting boots are not replaced"
         );
         let mut model = TooltipModel::new();
-        fill_item(&mut model, ring, Hero::FireMage, &context);
+        fill_item(
+            &mut model,
+            ItemStack::one(ring.id),
+            Hero::FireMage,
+            &context,
+        );
         let compare = model.find(SectionKind::Comparison).expect("a comparison");
         assert!(compare.text.starts_with("vs. "), "{}", compare.text);
     }
@@ -1390,5 +1439,68 @@ mod tests {
         );
         assert!(rect.bottom() <= 1080.0);
         assert!(rect.x >= bottom.right());
+    }
+
+    fn tooltip_of(stack: ItemStack) -> TooltipModel {
+        let character = character();
+        let context = ItemContext::loose(&character, stack, ItemPlace::Bag);
+        let mut model = TooltipModel::new();
+        fill_item(&mut model, stack, Hero::FireMage, &context);
+        model
+    }
+
+    #[test]
+    fn an_items_quality_enhancement_and_total_are_printed() {
+        let def = loot_item();
+        let stack = ItemStack::with_props(def.id, ItemProps::new(106, 7, false));
+        let model = tooltip_of(stack);
+        let lines = &model
+            .find(SectionKind::Quality)
+            .expect("quality lines")
+            .text;
+        assert_eq!(lines, "Base Quality: 106%\nEnhancement: +7%\nTotal: 113%");
+        // The stats shown are the props-scaled ones, not the table's.
+        let base = tooltip_of(ItemStack::one(def.id));
+        let (scaled, plain) = (
+            &model.find(SectionKind::Stats).expect("stats").text,
+            &base.find(SectionKind::Stats).expect("stats").text,
+        );
+        assert_ne!(scaled, plain, "113% is not 100%");
+        assert_eq!(model.sections().count(), base.sections().count());
+    }
+
+    #[test]
+    fn a_broken_item_says_so_in_red_and_loses_its_enhancement_line() {
+        let def = loot_item();
+        let model = tooltip_of(ItemStack::with_props(def.id, ItemProps::new(100, 0, true)));
+        let mut quality = model
+            .sections()
+            .filter(|section| section.kind == Some(SectionKind::Quality));
+        let lines = quality.next().expect("quality lines");
+        assert_eq!(lines.text, "Base Quality: 100%\nTotal: 85%");
+        let broken = quality.next().expect("a broken line");
+        assert!(broken.text.starts_with("BROKEN (-15%)"), "{}", broken.text);
+        assert!(broken.text.contains("cannot be enhanced"));
+        assert_eq!(broken.color, color::CRIMSON);
+    }
+
+    #[test]
+    fn an_epic_is_titled_in_purple() {
+        let def = engine_realm_epic();
+        let model = tooltip_of(ItemStack::with_props(def.id, ItemProps::rolled(104)));
+        assert_eq!(
+            model.title_color,
+            super::super::character_menu::quality_color(engine_game::character::ItemQuality::Epic)
+        );
+        assert_eq!(model.meta[0].0, "Epic");
+    }
+
+    /// An epic from the registered catalog items, if the catalog registered any.
+    fn engine_realm_epic() -> &'static engine_game::character::ItemDef {
+        engine_realm::loot::ensure_items_registered();
+        engine_game::character::catalog_items()
+            .iter()
+            .find(|def| def.quality == engine_game::character::ItemQuality::Epic)
+            .expect("the catalog has an epic")
     }
 }

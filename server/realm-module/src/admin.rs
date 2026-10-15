@@ -120,6 +120,25 @@ pub fn admin_finish_instance(
     Ok(())
 }
 
+/// Kills every living monster of an instance. An operator tool and the integration tests' way
+/// to clear a dungeon: unlike `admin_finish_instance` the run then completes through the
+/// ordinary ticks, so the boss's chest and every drop are the real ones. Call it again until
+/// the instance is completed (the boss's gate opens when the rest are dead).
+#[spacetimedb::reducer]
+pub fn admin_clear_instance(ctx: &ReducerContext, instance_id: u64) -> Result<(), String> {
+    require_owner(ctx)?;
+    let instance = ctx
+        .db
+        .dungeon_instance()
+        .id()
+        .find(instance_id)
+        .ok_or_else(|| RealmError::dungeon("That dungeon no longer exists.").to_wire())?;
+    let events = crate::combat::with_fight(ctx, &instance, |fight| fight.admin_kill_all())
+        .map_err(|error| error.to_wire())?;
+    crate::loot::record_drops(ctx, instance_id, &events);
+    Ok(())
+}
+
 /// The server's clock, in microseconds since the Unix epoch.
 ///
 /// A client calls this a few times, keeps the round trip with the least delay, and from it

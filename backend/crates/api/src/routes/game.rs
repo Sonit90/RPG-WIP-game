@@ -9,6 +9,7 @@
 //! | `POST /characters/{id}/mail/{mail_id}/read` | mark mail read |
 //! | `POST /characters/{id}/salvage` | break bag items down into a resource |
 //! | `POST /characters/{id}/exchange` | trade resources at a catalog rate |
+//! | `POST /characters/{id}/enhance` | one enhancement attempt: the server rolls, the locked row pays |
 //! | `GET  /economy` | the economy catalog: resources, salvage rule, exchanges |
 //! | `PUT  /characters/{id}/talents` | replace talents: keys, points and the engagement lock checked |
 //! | `GET  /player/settings` | the account's synced settings |
@@ -30,8 +31,9 @@ use axum::{
     Json, Router,
 };
 use engine_realm::api::{
-    CharacterDetail, CharacterSummary, EconomyInfo, ExchangeInfo, ExchangeRequest, MoveItemRequest,
-    QueueRequest, ResourceInfo, SalvageInfo, SalvageRequest, SettingsDocument, TalentsRequest,
+    CharacterDetail, CharacterSummary, EconomyInfo, EnhanceOutcomeName, EnhanceRequest,
+    EnhanceResponse, ExchangeInfo, ExchangeRequest, MoveItemRequest, QueueRequest, ResourceInfo,
+    SalvageInfo, SalvageRequest, SettingsDocument, TalentsRequest,
 };
 use generic_auth_core::AppError;
 use realm_game::bridge::{BridgeError, Snapshot};
@@ -52,6 +54,7 @@ pub fn router() -> Router<AppState> {
         .route("/characters/{id}/mail/{mail_id}/read", post(read_mail))
         .route("/characters/{id}/salvage", post(salvage))
         .route("/characters/{id}/exchange", post(exchange))
+        .route("/characters/{id}/enhance", post(enhance))
         .route("/economy", get(get_economy))
         .route("/characters/{id}/talents", put(save_talents))
         .route("/player/settings", get(get_settings).put(put_settings))
@@ -268,6 +271,68 @@ async fn exchange(
         "resources exchanged"
     );
     Ok(detail)
+}
+
+/// A random number in `[0, 1)` from the operating system's secure source: the only place an
+/// enhancement's fate is decided. Never derived from the request.
+fn secure_roll() -> f64 {
+    use rand::Rng;
+    rand::rngs::OsRng.gen_range(0.0..1.0)
+}
+
+async fn enhance(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(id): Path<String>,
+    Json(body): Json<EnhanceRequest>,
+) -> ApiResult<Json<EnhanceResponse>> {
+    enhance_with(&state, &user, &id, &body, secure_roll()).await
+}
+
+/// One enhancement attempt with the server's `roll`. Rate limited like every character
+/// mutation, refused (409) while the character is engaged, then priced, rolled and written in
+/// one locked read-modify-write of the character row. Split from [`enhance`] so a test can
+/// inject the roll.
+async fn enhance_with(
+    state: &AppState,
+    user: &AuthUser,
+    id: &str,
+    body: &EnhanceRequest,
+    roll: f64,
+) -> ApiResult<Json<EnhanceResponse>> {
+    state
+        .limits
+        .check(
+            &format!("character:{}", user.user_id),
+            rate_limit::CHARACTER_WRITES_PER_ACCOUNT,
+        )
+        .map_err(ApiError)?;
+    let character = character_id(id)?;
+    ensure_unlocked(state, user).await?;
+    let outcome = store::enhance_character(&state.db, user.user_id, character, &body.slot, roll)
+        .await
+        .map_err(ApiError)?
+        .ok_or(ApiError(AppError::NotFound))?;
+    let (name, new_level) = match outcome {
+        engine_realm::enhance::EnhanceOutcome::Success { new_level } => {
+            (EnhanceOutcomeName::Success, new_level)
+        }
+        engine_realm::enhance::EnhanceOutcome::Broken => (EnhanceOutcomeName::Broken, 0),
+    };
+    tracing::info!(
+        account_id = %user.user_id,
+        character_id = %character,
+        outcome = ?name,
+        new_level,
+        "enhancement attempted"
+    );
+    let row = owned(state, user, id).await?;
+    let Json(detail) = detail_of(state, user, &row).await?;
+    Ok(Json(EnhanceResponse {
+        outcome: name,
+        new_level,
+        character: detail,
+    }))
 }
 
 /// A refused salvage or exchange as the HTTP error: the request was wrong (400) or the state

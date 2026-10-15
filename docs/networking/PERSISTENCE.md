@@ -38,6 +38,7 @@ disagree with it.
 * `POST /api/v1/characters/{id}/mail/{mail_id}/read` — marks the letter read.
   Both answer with the character in full, which the client applies exactly as it applies a
   move, so the mailbox window redraws from the server's copy.
+* `POST /api/v1/characters/{id}/enhance` - see [ECONOMY.md](ECONOMY.md). Locked while engaged, like equipment.
 * `PUT /api/v1/characters/{id}/talents` — every key must be a talent the character's hero
   has and the set must cost no more than the character's points (400 / 409), and the
   character must not be engaged (409, see below). Answers with the character.
@@ -90,22 +91,41 @@ completion, loot or experience (`security` scenario: `admin_finish_instance` and
 ## Loot (exactly once)
 
 ```text
-realm instance::finish ─► pending_loot "rolled" (one per member, written once, durable)
-combat events ─► LootAwarded ─► "bag"   LootMailed ─► "mail" (+ bag_full | unclaimed)
+realm instance::finish ─► pending_loot "rolled" (one row per chest item, written once, durable)
+combat events ─► LootAwarded{index} ─► "bag"   LootMailed{index} ─► "mail" (+ bag_full | unclaimed)
+combat events ─► MobLoot ─► pending_loot "mail" + dungeon_drop   (settled at once)
+              └─ MobCurrency ─► run_loot tally ─► finish folds it into pending_result.looted
 instance destroy ─► rows still "rolled" ─► "mail" + unclaimed
 API bridge (with results, every 5 s): svc_take_loot (settled rows only)
   ─► for each: apply_loot in one Postgres transaction
-       INSERT loot_deliveries ON CONFLICT (loot_id) DO NOTHING      (loot_id = "<instance>:<account>:loot")
+       INSERT loot_deliveries ON CONFLICT (loot_id) DO NOTHING
+            (loot_id = "<instance>:<account>:loot:<index>" or "<instance>:<account>:mob:<n>")
        if new: lock the character; `bag` ─► first free cell, or the mailbox as `bag_full` if
                there is none; `mail` ─► the mailbox with the reason it was sent for
+               - the item arrives with the quality, enhancement and broken state it was rolled with
   ─► svc_ack_loot(ids) ─► realm deletes them
 ```
 
-The roll is made by the realm's simulation at the end of the run (`pending_loot`, state
-`rolled`) and never again, so a restart mid-fight loses nothing and a row settles once: later
-events for the same player are ignored. A player who opens the chest settles their row to
-`bag`; one whose bag was full settles to `mail`; one who never opened it is settled to `mail`
+The simulation rolls the chest when the dungeon completes (`equipment_per_completion` items per
+player, from the boss table, at the run's key level) and `finish` writes one `pending_loot` row
+per item (state `rolled`) and never again, so a restart mid-fight loses nothing and a row settles
+once: later events for the same item are ignored. A player who opens the chest settles their rows
+to `bag`; one whose bag was full settles to `mail`; one who never opened it is settled to `mail`
 (`unclaimed`) when the instance is destroyed. Only settled rows leave the realm.
+
+**Monster drops** are recorded from the events of the tick that produced them, inside the
+transaction that stepped the fight, so a rolled-back tick drops nothing. An item becomes a row
+already settled to `mail` with reason `dungeon_drop`; its number `n` is a per-player counter kept
+in `run_loot`, so an id is never reused after earlier rows are acknowledged and deleted. Gold and
+aether shards accumulate in the same row and are folded, once, into the player's `pending_result`
+(`looted`) when the run ends - success or failure, since they were picked up either way.
+`apply_result` pays them in the result's own transaction (only resources the economy defines, each
+capped), next to the run's resources, which a failure does not pay. A run abandoned before it
+produced a result pays what was looted as a failed result when the instance is torn down.
+
+The reward bonus (a key modifier's) is read in one place (`combat::reward_bonus`), arms the fight
+(`CombatInstance::set_loot`, `set_reward_bonus`) and scales the run's resource payout
+(`RunRewards::with_bonus`).
 
 `loot_deliveries.outcome` says where the item went: `bag`, `mail`, `mail_bag_full`, or - when
 nothing could be given - `no_character` / `unknown_item`, so an item a player earned can be

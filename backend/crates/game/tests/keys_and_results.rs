@@ -65,6 +65,7 @@ fn winning(account: Uuid, character: Uuid, key: &store::KeyRow, tag: &str) -> Du
         resources: vec![("crypt_dust".into(), 9)],
         damage_report: None,
         talent_points: 2,
+        looted: Vec::new(),
     }
 }
 
@@ -262,6 +263,9 @@ async fn character_key_and_loot_survive_a_refetch() {
         item: item.into(),
         kind: "bag".into(),
         reason: String::new(),
+        quality: 100,
+        enhancement: 0,
+        broken: false,
     };
     assert!(store::apply_loot(&pool, &delivery).await.expect("loot"));
 
@@ -386,5 +390,142 @@ async fn talent_points_are_granted_once_per_result_and_only_for_a_success() {
     let another = winning(account, row.id, &key, "points-again");
     assert!(store::apply_result(&pool, &another).await.expect("another"));
     assert_eq!(earned(&pool, account, row.id).await, 4);
+    drop_account(&pool, account).await;
+}
+
+/// Gold held, as stored.
+async fn gold(pool: &PgPool, account: Uuid, character: Uuid) -> u64 {
+    store::get(pool, account, character)
+        .await
+        .expect("get")
+        .expect("exists")
+        .loadout
+        .0
+        .resources
+        .get("gold")
+        .copied()
+        .unwrap_or(0)
+}
+
+#[tokio::test]
+#[ignore]
+async fn looted_currency_is_paid_once_on_success_and_on_failure() {
+    let pool = pool().await;
+    let account = new_account(&pool).await;
+    let (row, key) = first_character(&pool, account).await;
+
+    let mut won = winning(account, row.id, &key, "loot-won");
+    won.looted = vec![("gold".into(), 40), ("aether_shard".into(), 2)];
+    assert!(store::apply_result(&pool, &won).await.expect("won"));
+    assert_eq!(gold(&pool, account, row.id).await, 40);
+    // Delivered again: recorded already, so nothing is paid twice.
+    assert!(!store::apply_result(&pool, &won).await.expect("again"));
+    assert_eq!(gold(&pool, account, row.id).await, 40);
+
+    // A failed run pays no run resources but what was picked up is kept.
+    let mut lost = winning(account, row.id, &key, "loot-lost");
+    lost.success = false;
+    lost.looted = vec![("gold".into(), 15)];
+    assert!(store::apply_result(&pool, &lost).await.expect("lost"));
+    assert_eq!(gold(&pool, account, row.id).await, 55);
+    assert_eq!(stored(&pool, account, row.id).await.1, 9, "only the win paid dust");
+    drop_account(&pool, account).await;
+}
+
+#[tokio::test]
+#[ignore]
+async fn loot_with_props_is_delivered_once_to_the_bag_or_the_mail() {
+    let pool = pool().await;
+    let account = new_account(&pool).await;
+    let (row, _) = first_character(&pool, account).await;
+    engine_realm::loot::ensure_items_registered();
+    let item = "ashgraves_seal";
+    let chest = LootDelivery {
+        loot_id: format!("i:{account}:loot:0"),
+        account_id: account.to_string(),
+        character_id: row.id.to_string(),
+        item: item.into(),
+        kind: "bag".into(),
+        reason: String::new(),
+        quality: 106,
+        enhancement: 0,
+        broken: false,
+    };
+    let drop = LootDelivery {
+        loot_id: format!("i:{account}:mob:0"),
+        kind: "mail".into(),
+        reason: "dungeon_drop".into(),
+        quality: 71,
+        ..chest.clone()
+    };
+    for delivery in [&chest, &drop] {
+        assert!(store::apply_loot(&pool, delivery).await.expect("first"));
+        assert!(!store::apply_loot(&pool, delivery).await.expect("again"));
+    }
+    let after = store::get(&pool, account, row.id)
+        .await
+        .expect("get")
+        .expect("row");
+    let bag: Vec<_> = after.loadout.0.inventory.iter().filter(|e| e.item == item).collect();
+    assert_eq!(bag.len(), 1, "delivered once");
+    assert_eq!(bag[0].quality, 106);
+    let mail: Vec<_> = after.loadout.0.mail.iter().filter(|m| m.item == item).collect();
+    assert_eq!(mail.len(), 1);
+    assert_eq!((mail[0].quality, mail[0].reason.as_str()), (71, "dungeon_drop"));
+    drop_account(&pool, account).await;
+}
+
+#[tokio::test]
+#[ignore]
+async fn an_enhancement_pays_and_persists_under_the_row_lock() {
+    use engine_realm::enhance::EnhanceOutcome;
+    use engine_realm::loadout::SlotRef;
+    let pool = pool().await;
+    let account = new_account(&pool).await;
+    let (row, _) = first_character(&pool, account).await;
+    engine_realm::loot::ensure_items_registered();
+    store::update_loadout(&pool, account, row.id, |current| {
+        let mut loadout = current.clone();
+        loadout.equipment.retain(|e| e.slot != "ring1");
+        loadout
+            .equipment
+            .push(engine_realm::loadout::EquippedItem::new("ring1", "ashgraves_seal"));
+        engine_realm::economy::add_resources(&mut loadout, &[("crypt_dust".into(), 30)]);
+        Ok(loadout)
+    })
+    .await
+    .expect("stock")
+    .expect("owned");
+    let slot = SlotRef::Equipment {
+        slot: "ring1".into(),
+    };
+    let outcome = store::enhance_character(&pool, account, row.id, &slot, 0.5)
+        .await
+        .expect("allowed")
+        .expect("owned");
+    assert_eq!(outcome, EnhanceOutcome::Success { new_level: 1 });
+    let after = store::get(&pool, account, row.id).await.expect("get").expect("row");
+    let ring = after.loadout.0.equipment.iter().find(|e| e.slot == "ring1").expect("ring");
+    assert_eq!(ring.enhancement, 1);
+    assert_eq!(after.loadout.0.resources.get("crypt_dust"), Some(&20));
+    // Another account's character is not found, and nothing is paid.
+    let other = new_account(&pool).await;
+    assert!(store::enhance_character(&pool, other, row.id, &slot, 0.5)
+        .await
+        .expect("no error")
+        .is_none());
+    // Broken items are refused.
+    store::update_loadout(&pool, account, row.id, |current| {
+        let mut loadout = current.clone();
+        loadout.equipment[0].broken = true;
+        Ok(loadout)
+    })
+    .await
+    .expect("break")
+    .expect("owned");
+    assert!(store::enhance_character(&pool, account, row.id, &slot, 0.5)
+        .await
+        .is_err());
+    drop_account(&pool, other).await;
     drop_account(&pool, account).await;
 }

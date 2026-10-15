@@ -1,22 +1,30 @@
-//! Chest loot: from the roll at the end of a run to the bridge's outbox.
+//! Loot: from the roll at the end of a run, and the drops during it, to the bridge's outbox.
 //!
 //! ```text
-//! finish ──► pending_loot "rolled"   (every member's roll, durable)
+//! finish ──► pending_loot "rolled"   (one row per chest item, durable)
 //!                 │
 //!   combat events │  LootAwarded ──► "bag"                   (opened the chest)
 //!                 │  LootMailed  ──► "mail" + bag_full/...   (the sim had no room)
 //!   teardown      │  still rolled ─► "mail" + unclaimed      (never opened)
 //!                 ▼
 //!   svc_take_loot (settled rows) ─► API delivers once ─► svc_ack_loot
+//!
+//! combat events ─ MobLoot ──────► pending_loot "mail" + dungeon_drop  (settled at once)
+//!               └ MobCurrency ──► run_loot tally ─► finish folds it into pending_result
 //! ```
 //!
-//! The roll is written at `finish` and never again, so a lost fight (a restart) loses
-//! nothing: the row is in the table, and teardown settles it. A row settles once - later
-//! events for the same player are ignored - and the API's `loot_id` key makes delivery
-//! exactly-once in effect.
+//! The chest roll is written at `finish` and never again, so a lost fight (a restart) loses
+//! nothing: the rows are in the table, and teardown settles them. A row settles once - later
+//! events for the same item are ignored - and the API's `loot_id` key makes delivery
+//! exactly-once in effect. Monster drops are recorded from the events of the tick that
+//! produced them, in the transaction that stepped the fight, so a tick that is rolled back
+//! drops nothing and a tick that commits drops exactly what it rolled; nothing a client sends
+//! reaches any of it.
 
-use engine_realm::combat::{EntityRef, WireEvent};
-use engine_realm::loadout::{MAIL_BAG_FULL, MAIL_UNCLAIMED};
+use engine_game::character::ItemProps;
+use engine_realm::combat::{EntityRef, RolledItem, WireEvent};
+use engine_realm::haul::{self, Drop, RunTally};
+use engine_realm::loadout::{MAIL_BAG_FULL, MAIL_DUNGEON_DROP, MAIL_UNCLAIMED};
 use spacetimedb::{ReducerContext, Table};
 
 use crate::schema::*;
@@ -26,41 +34,44 @@ const ROLLED: &str = "rolled";
 const BAG: &str = "bag";
 const MAIL: &str = "mail";
 
-fn loot_id(instance_id: u64, account_id: &str) -> String {
-    format!("{instance_id}:{account_id}:loot")
+fn run_key(instance_id: u64, account_id: &str) -> String {
+    format!("{instance_id}:{account_id}")
 }
 
-/// Records a player's roll, if they do not already have one for this instance.
+/// Records a chest item, if the player does not already have a row for that roll.
 pub fn roll(
     ctx: &ReducerContext,
     instance_id: u64,
     account_id: &str,
-    character_id: String,
-    item: &str,
+    character_id: &str,
+    index: usize,
+    item: &RolledItem,
 ) {
-    let loot_id = loot_id(instance_id, account_id);
+    let loot_id = haul::chest_loot_id(instance_id, account_id, index);
     if ctx.db.pending_loot().loot_id().find(&loot_id).is_some() {
         return;
     }
     ctx.db.pending_loot().insert(PendingLoot {
         loot_id,
         account_id: account_id.to_owned(),
-        character_id,
+        character_id: character_id.to_owned(),
         instance_id,
-        item: item.to_owned(),
+        item: item.key.to_owned(),
         state: ROLLED.to_owned(),
         reason: String::new(),
         created_at: ctx.timestamp,
+        quality: item.props.quality,
+        enhancement: item.props.enhancement,
+        broken: item.props.broken,
     });
 }
 
 /// Settles a rolled row. A row already settled, collected or absent is left alone.
-fn settle(ctx: &ReducerContext, instance_id: u64, account_id: &str, state: &str, reason: &str) {
-    let id = loot_id(instance_id, account_id);
-    if let Some(row) = ctx.db.pending_loot().loot_id().find(&id)
+fn settle(ctx: &ReducerContext, loot_id: &str, state: &str, reason: &str) {
+    if let Some(row) = ctx.db.pending_loot().loot_id().find(loot_id.to_owned())
         && row.state == ROLLED
     {
-        log::info!("event=loot_settled loot_id={id} state={state} reason={reason}");
+        log::info!("event=loot_settled loot_id={loot_id} state={state} reason={reason}");
         ctx.db.pending_loot().loot_id().update(PendingLoot {
             state: state.to_owned(),
             reason: reason.to_owned(),
@@ -75,18 +86,28 @@ pub fn on_events(ctx: &ReducerContext, instance_id: u64, events: &[WireEvent]) {
         match event {
             WireEvent::LootAwarded {
                 player: EntityRef::Player(account),
+                index,
                 ..
-            } => settle(ctx, instance_id, account, BAG, ""),
+            } => settle(
+                ctx,
+                &haul::chest_loot_id(instance_id, account, usize::from(*index)),
+                BAG,
+                "",
+            ),
             WireEvent::LootMailed {
                 player: EntityRef::Player(account),
+                index,
                 reason,
                 ..
             } => settle(
                 ctx,
-                instance_id,
-                account,
+                &haul::chest_loot_id(instance_id, account, usize::from(*index)),
                 MAIL,
-                if *reason == 0 { MAIL_BAG_FULL } else { MAIL_UNCLAIMED },
+                if *reason == 0 {
+                    MAIL_BAG_FULL
+                } else {
+                    MAIL_UNCLAIMED
+                },
             ),
             _ => {}
         }
@@ -101,10 +122,205 @@ pub fn mail_unclaimed(ctx: &ReducerContext, instance_id: u64) {
         .instance_id()
         .filter(instance_id)
         .filter(|row| row.state == ROLLED)
-        .map(|row| row.account_id)
+        .map(|row| row.loot_id)
         .collect();
-    for account in rolled {
-        settle(ctx, instance_id, &account, MAIL, MAIL_UNCLAIMED);
+    for id in rolled {
+        settle(ctx, &id, MAIL, MAIL_UNCLAIMED);
+    }
+}
+
+/// Opens the tally of what each member takes from monsters in this run.
+pub fn open_run(ctx: &ReducerContext, instance_id: u64, members: &[(String, String)]) {
+    for (account_id, character_id) in members {
+        let key = run_key(instance_id, account_id);
+        if ctx.db.run_loot().key().find(&key).is_none() {
+            ctx.db.run_loot().insert(RunLoot {
+                key,
+                instance_id,
+                account_id: account_id.clone(),
+                character_id: character_id.clone(),
+                items: 0,
+                currencies: "[]".to_owned(),
+                settled: false,
+            });
+        }
+    }
+}
+
+/// The monster drops among a tick's `events`: items become settled mail rows at once,
+/// currencies join the player's tally for `finish` to fold into their result.
+///
+/// Call this *before* `finish` handles the same tick's completion: the boss's gold is in the
+/// batch that completes the run.
+pub fn record_drops(ctx: &ReducerContext, instance_id: u64, events: &[WireEvent]) {
+    for drop in haul::drops_in(events) {
+        match drop {
+            Drop::Item {
+                account,
+                item,
+                props,
+            } => drop_item(ctx, instance_id, &account, &item, props),
+            Drop::Currency {
+                account,
+                resource,
+                amount,
+            } => drop_currency(ctx, instance_id, &account, &resource, amount),
+        }
+    }
+}
+
+fn run_row(ctx: &ReducerContext, instance_id: u64, account_id: &str) -> Option<RunLoot> {
+    let key = run_key(instance_id, account_id);
+    if let Some(row) = ctx.db.run_loot().key().find(&key) {
+        return Some(row);
+    }
+    // A player the run never opened a tally for (a member that joined late): open one, with the
+    // character from their membership if they still have it.
+    let character_id = ctx
+        .db
+        .instance_player()
+        .instance_id()
+        .filter(instance_id)
+        .find(|player| player.account_id == account_id)
+        .and_then(|player| ctx.db.party_member().identity().find(player.identity))
+        .map(|member| member.character_id)?;
+    Some(ctx.db.run_loot().insert(RunLoot {
+        key,
+        instance_id,
+        account_id: account_id.to_owned(),
+        character_id,
+        items: 0,
+        currencies: "[]".to_owned(),
+        settled: false,
+    }))
+}
+
+fn drop_item(ctx: &ReducerContext, instance_id: u64, account: &str, item: &str, props: ItemProps) {
+    let Some(row) = run_row(ctx, instance_id, account) else {
+        log::warn!("event=mob_drop_unowned instance_id={instance_id} account_id={account}");
+        return;
+    };
+    let mut tally = tally_of(&row);
+    let loot_id = haul::mob_loot_id(instance_id, account, tally.add_item());
+    ctx.db.pending_loot().insert(PendingLoot {
+        loot_id: loot_id.clone(),
+        account_id: account.to_owned(),
+        character_id: row.character_id.clone(),
+        instance_id,
+        item: item.to_owned(),
+        state: MAIL.to_owned(),
+        reason: MAIL_DUNGEON_DROP.to_owned(),
+        created_at: ctx.timestamp,
+        quality: props.quality,
+        enhancement: props.enhancement,
+        broken: props.broken,
+    });
+    ctx.db.run_loot().key().update(with_tally(row, &tally));
+    log::info!(
+        "event=mob_drop loot_id={loot_id} item={item} quality={}",
+        props.quality
+    );
+}
+
+fn drop_currency(
+    ctx: &ReducerContext,
+    instance_id: u64,
+    account: &str,
+    resource: &str,
+    amount: u32,
+) {
+    let Some(row) = run_row(ctx, instance_id, account) else {
+        return;
+    };
+    let mut tally = tally_of(&row);
+    if !tally.add_currency(resource, amount) {
+        // The result already left: a late kill after the run ended pays nothing more.
+        return;
+    }
+    ctx.db.run_loot().key().update(with_tally(row, &tally));
+}
+
+fn tally_of(row: &RunLoot) -> RunTally {
+    RunTally {
+        items: row.items,
+        currencies: haul::decode_currencies(&row.currencies),
+        settled: row.settled,
+    }
+}
+
+fn with_tally(row: RunLoot, tally: &RunTally) -> RunLoot {
+    RunLoot {
+        items: tally.items,
+        currencies: haul::encode_currencies(&tally.currencies),
+        settled: tally.settled,
+        ..row
+    }
+}
+
+/// What `account` took from monsters, handed to their result: `(items dropped, currencies)`.
+/// Marks the tally settled, so nothing is folded into a second result.
+pub fn take_haul(
+    ctx: &ReducerContext,
+    instance_id: u64,
+    account_id: &str,
+) -> (u32, Vec<(String, u32)>) {
+    let Some(row) = ctx
+        .db
+        .run_loot()
+        .key()
+        .find(run_key(instance_id, account_id))
+    else {
+        return (0, Vec::new());
+    };
+    let mut tally = tally_of(&row);
+    let currencies = tally.settle();
+    let items = tally.items;
+    ctx.db.run_loot().key().update(with_tally(row, &tally));
+    (items, currencies)
+}
+
+/// The instance is torn down: a player whose run never produced a result (it was abandoned)
+/// still gets what they picked up, as a failed run with nothing but loot. Then the tallies go.
+pub fn close_run(ctx: &ReducerContext, instance: &DungeonInstance) {
+    let rows: Vec<RunLoot> = ctx
+        .db
+        .run_loot()
+        .instance_id()
+        .filter(instance.id)
+        .collect();
+    for row in rows {
+        let result_id = run_key(instance.id, &row.account_id);
+        let currencies = haul::decode_currencies(&row.currencies);
+        if !row.settled
+            && !currencies.is_empty()
+            && ctx
+                .db
+                .pending_result()
+                .result_id()
+                .find(&result_id)
+                .is_none()
+        {
+            log::info!("event=abandoned_haul result_id={result_id}");
+            ctx.db.pending_result().insert(PendingResult {
+                result_id,
+                account_id: row.account_id.clone(),
+                character_id: row.character_id.clone(),
+                dungeon_id: instance.dungeon_id.clone(),
+                instance_id: instance.id,
+                success: false,
+                duration_us: 0,
+                experience: 0,
+                created_at: ctx.timestamp,
+                key_level: instance.key_level.max(1),
+                key_owner: false,
+                key_level_after: 0,
+                resources: "[]".to_owned(),
+                damage_report: String::new(),
+                talent_points: 0,
+                looted: haul::encode_currencies(&currencies),
+            });
+        }
+        ctx.db.run_loot().key().delete(&row.key);
     }
 }
 

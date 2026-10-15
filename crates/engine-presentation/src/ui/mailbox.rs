@@ -483,6 +483,7 @@ pub fn subject(reason: MailReason) -> &'static str {
         MailReason::BagFull => "Your bags were full",
         MailReason::Unclaimed => "Left in the chest",
         MailReason::SlotRemoved => "Its slot was removed",
+        MailReason::DungeonDrop => "Dropped in the dungeon",
     }
 }
 
@@ -500,6 +501,10 @@ pub fn body(reason: MailReason) -> &'static str {
         }
         MailReason::SlotRemoved => {
             "This was worn in an equipment slot that no longer exists, and your bags were full.              Make some room and take it whenever you like."
+        }
+        MailReason::DungeonDrop => {
+            "A monster dropped this while you were in the dungeon. Take it whenever you are \
+             ready."
         }
     }
 }
@@ -824,7 +829,7 @@ fn push_row(
         list,
         kit,
         icon,
-        ItemStack::one(letter.item),
+        ItemStack::with_props(letter.item, letter.props),
         menu.hovered_icon == Some(letter.id),
         1.0,
     );
@@ -975,7 +980,7 @@ fn push_detail(
         "ATTACHMENT",
     );
     let slot = menu.attachment_rect(viewport);
-    let stack = ItemStack::one(letter.item);
+    let stack = ItemStack::with_props(letter.item, letter.props);
     item_slot(list, kit, slot, stack, menu.attachment_hovered, 1.0);
     if let Some(def) = item(letter.item) {
         let text_x = slot.right() + kit.px(16.0);
@@ -1077,7 +1082,7 @@ fn push_tooltip(
     let Some(letter) = mailbox.get(id) else {
         return;
     };
-    let stack = ItemStack::one(letter.item);
+    let stack = ItemStack::with_props(letter.item, letter.props);
     let context = ItemContext::loose(character, stack, ItemPlace::Mailed);
     tooltip.push(list, kit, stack, character.hero, &context, anchor, viewport);
 }

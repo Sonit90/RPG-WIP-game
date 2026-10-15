@@ -179,6 +179,10 @@ fn removed_slot_subject(item_name: &str) -> String {
     format!("{item_name} from a removed slot")
 }
 
+fn dungeon_drop_subject(item_name: &str) -> String {
+    format!("{item_name} dropped in the dungeon")
+}
+
 /// Mailed because the bag had no room when the item was claimed.
 pub const MAIL_BAG_FULL: &str = "bag_full";
 /// Mailed because the chest was never opened.
@@ -186,8 +190,12 @@ pub const MAIL_UNCLAIMED: &str = "unclaimed";
 /// Mailed because the item was worn in an equipment slot that no longer exists and the bag
 /// had no room for it.
 pub const MAIL_SLOT_REMOVED: &str = "slot_removed";
+/// Mailed because a monster dropped it in the dungeon.
+pub const MAIL_DUNGEON_DROP: &str = "dungeon_drop";
 /// Who dungeon loot mail is from.
 pub const MAIL_SENDER_CHEST: &str = "Dungeon Chest";
+/// Who a monster's drop is from.
+pub const MAIL_SENDER_DUNGEON: &str = "Dungeon";
 /// Who housekeeping mail is from.
 pub const MAIL_SENDER_SYSTEM: &str = "System";
 
@@ -271,12 +279,14 @@ pub fn loadout_of(sheet: &CharacterSheet) -> Loadout {
             sender: letter.sender.name().to_owned(),
             subject: match letter.reason {
                 MailReason::SlotRemoved => removed_slot_subject(def.name),
+                MailReason::DungeonDrop => dungeon_drop_subject(def.name),
                 _ => mail_subject(def.name),
             },
             reason: match letter.reason {
                 MailReason::BagFull => MAIL_BAG_FULL,
                 MailReason::Unclaimed => MAIL_UNCLAIMED,
                 MailReason::SlotRemoved => MAIL_SLOT_REMOVED,
+                MailReason::DungeonDrop => MAIL_DUNGEON_DROP,
             }
             .to_owned(),
             received_at: letter.received_at as i64,
@@ -349,14 +359,15 @@ pub fn sheet_of(hero: Hero, loadout: &Loadout) -> CharacterSheet {
             id: letter.id,
             item: def.id,
             props: ItemProps::new(letter.quality, letter.enhancement, letter.broken),
-            sender: if letter.sender == MAIL_SENDER_SYSTEM {
-                MailSender::System
-            } else {
-                MailSender::DungeonChest
+            sender: match letter.sender.as_str() {
+                MAIL_SENDER_SYSTEM => MailSender::System,
+                MAIL_SENDER_DUNGEON => MailSender::Dungeon,
+                _ => MailSender::DungeonChest,
             },
             reason: match letter.reason.as_str() {
                 MAIL_BAG_FULL => MailReason::BagFull,
                 MAIL_SLOT_REMOVED => MailReason::SlotRemoved,
+                MAIL_DUNGEON_DROP => MailReason::DungeonDrop,
                 _ => MailReason::Unclaimed,
             },
             received_at: letter.received_at as f64,
@@ -507,12 +518,17 @@ pub fn add_stack_to_mail(
 ) -> Result<u64, BagError> {
     ensure_items_registered();
     let def = item_by_key(key).ok_or(BagError::UnknownItem)?;
+    let (sender, subject) = if reason == MAIL_DUNGEON_DROP {
+        (MAIL_SENDER_DUNGEON, dungeon_drop_subject(def.name))
+    } else {
+        (MAIL_SENDER_CHEST, mail_subject(def.name))
+    };
     Ok(push_mail(
         loadout,
         def.key,
         props,
-        MAIL_SENDER_CHEST,
-        mail_subject(def.name),
+        sender,
+        subject,
         reason,
         received_at,
     ))

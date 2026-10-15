@@ -6,6 +6,8 @@
 //! instance id, and every view a client reads starts from the caller's own membership.
 
 use engine_realm::RealmError;
+use engine_realm::combat::RolledItem;
+use engine_realm::haul::{self, SummaryItem};
 use engine_realm::meter::ReportMember;
 use engine_realm::instance::{
     Countdown, InstanceState, MemberPresence, barrier_closed, should_clean_up,
@@ -165,6 +167,14 @@ pub fn create(ctx: &ReducerContext, loaded: &Loaded) -> Result<(), RealmError> {
         });
     }
 
+    // What each member takes from monsters is tallied from the first kill.
+    let members: Vec<(String, String)> = loaded
+        .members
+        .iter()
+        .map(|member| (member.account_id.clone(), member.character_id.clone()))
+        .collect();
+    crate::loot::open_run(ctx, instance.id, &members);
+
     // The fight: the real simulation with the party in it. Its first projection writes the
     // monsters' rows and every player's health.
     crate::combat::start(ctx, &instance)?;
@@ -232,8 +242,10 @@ pub fn destroy(ctx: &ReducerContext, instance_id: u64, reason: &str) {
     let Some(instance) = ctx.db.dungeon_instance().id().find(instance_id) else {
         return;
     };
-    // Chest items nobody took go to their owners' mail.
+    // Chest items nobody took go to their owners' mail; what a player picked up from monsters
+    // in a run that never produced their result still reaches them.
     crate::loot::mail_unclaimed(ctx, instance_id);
+    crate::loot::close_run(ctx, &instance);
     if let Ok(cleaning) = advance(ctx, &instance, InstanceState::CleaningUp) {
         let _ = advance(ctx, &cleaning, InstanceState::Destroyed);
     }
@@ -309,7 +321,7 @@ pub fn finish(ctx: &ReducerContext, instance_id: u64, success: bool) -> Result<(
         .and_then(|party| party.key_owner);
     // Each player's roll from the boss's chest, read before the fight can change. Nothing for
     // a failed run, or one ended without a chest (an admin finish).
-    let rolls: Vec<(String, String)> = if success {
+    let rolls: Vec<(String, Vec<RolledItem>)> = if success {
         let accounts: Vec<String> = ctx
             .db
             .instance_player()
@@ -320,11 +332,8 @@ pub fn finish(ctx: &ReducerContext, instance_id: u64, success: bool) -> Result<(
         crate::combat::with_fight(ctx, &instance, |fight| {
             accounts
                 .iter()
-                .filter_map(|account| {
-                    fight
-                        .loot_of(account)
-                        .map(|key| (account.clone(), key.to_owned()))
-                })
+                .map(|account| (account.clone(), fight.loot_items_of(account)))
+                .filter(|(_, items)| !items.is_empty())
                 .collect()
         })
         .unwrap_or_default()
@@ -380,29 +389,40 @@ pub fn finish(ctx: &ReducerContext, instance_id: u64, success: bool) -> Result<(
         {
             continue;
         }
-        let mut loot_item = String::new();
-        if let Some((_, key)) = rolls
+        let mut chest_items: Vec<SummaryItem> = Vec::new();
+        if let Some((_, items)) = rolls
             .iter()
             .find(|(account, _)| *account == player.account_id)
         {
-            let character = member.as_ref().map(|m| m.character_id.clone());
-            crate::loot::roll(
-                ctx,
-                instance_id,
-                &player.account_id,
-                character.unwrap_or_default(),
-                key,
-            );
-            loot_item.clone_from(key);
+            let character = member
+                .as_ref()
+                .map(|m| m.character_id.clone())
+                .unwrap_or_default();
+            for (index, item) in items.iter().enumerate() {
+                crate::loot::roll(
+                    ctx,
+                    instance_id,
+                    &player.account_id,
+                    &character,
+                    index,
+                    item,
+                );
+                chest_items.push(SummaryItem::new(item.key, item.props));
+            }
         }
         let is_owner = key_owner == Some(player.identity);
         let key_level = instance.key_level.max(1);
+        let bonus_pct = crate::combat::reward_bonus(ctx, &instance);
         let rewards =
-            engine_realm::rewards::run_rewards(&dungeon.definition, key_level, success, is_owner);
+            engine_realm::rewards::run_rewards(&dungeon.definition, key_level, success, is_owner)
+                .with_bonus(bonus_pct);
         let experience = rewards.experience;
         let key_level_after = rewards.key_level_after.unwrap_or(0);
         let resources =
             serde_json::to_string(&rewards.resources).unwrap_or_else(|_| "[]".to_owned());
+        // What the player took from monsters is paid with the result, win or lose.
+        let (mob_drops, looted) = crate::loot::take_haul(ctx, instance_id, &player.account_id);
+        let looted_text = haul::encode_currencies(&looted);
         ctx.db.pending_result().insert(PendingResult {
             result_id,
             account_id: player.account_id.clone(),
@@ -423,6 +443,7 @@ pub fn finish(ctx: &ReducerContext, instance_id: u64, success: bool) -> Result<(
                 .map(|(_, report)| report.clone())
                 .unwrap_or_default(),
             talent_points: rewards.talent_points,
+            looted: looted_text.clone(),
         });
         ctx.db.run_summary().insert(RunSummary {
             result_id: format!("{instance_id}:{}", player.account_id),
@@ -437,7 +458,10 @@ pub fn finish(ctx: &ReducerContext, instance_id: u64, success: bool) -> Result<(
             duration_us: duration,
             experience,
             resources,
-            loot_item,
+            loot_items: haul::encode_items(&chest_items),
+            mob_drops,
+            looted: looted_text,
+            bonus_pct,
             created_at: ctx.timestamp,
         });
         notify(
