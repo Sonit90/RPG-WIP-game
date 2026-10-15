@@ -1054,7 +1054,12 @@ impl EnemyBrain {
                     // A random pick is made by the simulation when the cast starts; the brain
                     // only needs to know there is somebody to pick from, and its own target
                     // is proof of that.
-                    EnemyTarget::Victim | EnemyTarget::Random => target,
+                    EnemyTarget::Victim => target,
+                    // A leap at a random player has a minimum range, and the victim is
+                    // usually inside it: the ability is available when *somebody* is out
+                    // there, which is what the executor's farthest-hostile scan reports.
+                    EnemyTarget::Random if definition.min_range > 0.0 => percept.farthest?,
+                    EnemyTarget::Random => target,
                     EnemyTarget::WoundedAlly => percept.wounded_ally?,
                     EnemyTarget::Farthest => percept.farthest?,
                 };
