@@ -1605,10 +1605,10 @@ impl App {
                     engine_realm::Role::from_key(role).map(|role| (character.clone(), role))
                 }),
             };
-            let mut session =
-                crate::online::OnlineSession::start(endpoints, Box::new(store), dev).map_err(
-                    |error| EngineError::unsupported(format!("start the network layer: {error}")),
-                )?;
+            let mut session = crate::online::OnlineSession::start(endpoints, Box::new(store), dev)
+                .map_err(|error| {
+                    EngineError::unsupported(format!("start the network layer: {error}"))
+                })?;
             // The hub is its own scene, swapped in whenever the player is not in an instance.
             // Without it (no file, or no dungeon level loaded to swap with) the hub stays in
             // the dungeon's start area.
@@ -2390,11 +2390,16 @@ impl App {
 
         // The talent menu, which covers everything while it is up.
         if self.talent_menu.is_open() {
+            // Locked while the realm holds a snapshot of the character: queued, in a party,
+            // in a dungeon. The menu shows why and emits nothing.
+            let locked = self
+                .online
+                .as_ref()
+                .is_some_and(|online| online.is_engaged());
+            self.talent_menu.set_locked(locked);
             match self.talent_menu.update(&ui_input, &self.snapshot, viewport) {
-                TalentMenuOutcome::Purchase(talent) => {
-                    self.simulation
-                        .push_command(PlayerCommand::PurchaseTalent(talent));
-                }
+                TalentMenuOutcome::Purchase(talent) => self.change_talents(Some(talent)),
+                TalentMenuOutcome::Reset => self.change_talents(None),
                 TalentMenuOutcome::Idle | TalentMenuOutcome::Closed => {}
             }
             return;
@@ -2670,6 +2675,35 @@ impl App {
             self.simulation.spawn_loot_chest_at(at);
             log::info!("dev: loot chest dropped at {at:?}");
         }
+    }
+
+    /// Buys talent row `talent` of the active hero's tree, or (`None`) refunds all of them.
+    ///
+    /// Offline it is a command like any other. Online the new build is applied at once and sent
+    /// to the API, whose answer (the stored character) settles it; the API refuses it while the
+    /// character is engaged, and the menu does not offer it then.
+    fn change_talents(&mut self, talent: Option<usize>) {
+        let Some(online) = self.online.as_mut() else {
+            self.simulation.push_command(match talent {
+                Some(index) => PlayerCommand::PurchaseTalent(index),
+                None => PlayerCommand::ResetTalents,
+            });
+            return;
+        };
+        if online.is_engaged() {
+            return;
+        }
+        let mut grid = self.simulation.talent_grid();
+        match talent {
+            Some(index) => {
+                if grid.purchase_index(index).is_err() {
+                    return;
+                }
+            }
+            None => grid.reset(),
+        }
+        online.save_talents(grid.purchased_keys());
+        self.simulation.set_talents(grid);
     }
 
     /// Opens the talent window, closing the character sheet.
@@ -4588,7 +4622,10 @@ impl App {
             source: self.map_source.take(),
         });
         self.online_level = wanted;
-        log::info!("online: loading the {wanted:?} level '{}'", parked.scene.name);
+        log::info!(
+            "online: loading the {wanted:?} level '{}'",
+            parked.scene.name
+        );
         if let Err(error) = self.load_level(parked.scene, parked.source) {
             log::error!("online: could not load the {wanted:?} level: {error}");
         }
@@ -6202,6 +6239,16 @@ impl Application for App {
                     }
                     crate::online::Directive::OpenCharacterMenu => {
                         self.open_sheet_next_frame = true;
+                    }
+                    crate::online::Directive::ApplyTalents(hero, keys, total_points) => {
+                        let grid =
+                            engine_game::talent::TalentGrid::from_keys(hero, &keys, total_points)
+                                // A stored set that no longer fits is shown empty; the realm drops it
+                                // the same way.
+                                .unwrap_or_else(|_| {
+                                    engine_game::talent::TalentGrid::with_points(hero, total_points)
+                                });
+                        self.simulation.set_talents(grid);
                     }
                     crate::online::Directive::ApplyLoadout(hero, loadout) => {
                         *self.simulation.roster_mut().sheet_mut(hero) =

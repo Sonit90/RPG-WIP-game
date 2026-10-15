@@ -54,6 +54,8 @@ pub struct PlayerSlot {
     last_defense: Option<crate::character::DefenseOutcome>,
     warrior: Warrior,
     druid: Druid,
+    warrior_talents: crate::talent::TalentGrid,
+    warrior_effects: crate::talent::warrior::WarriorTalentEffects,
     converting: bool,
     fire: FireCounters,
     impacts: Vec<PendingImpact>,
@@ -89,6 +91,8 @@ impl PlayerSlot {
             last_defense: None,
             warrior: Warrior::new(),
             druid: Druid::new(),
+            warrior_talents: crate::talent::TalentGrid::new(Hero::Warrior),
+            warrior_effects: crate::talent::warrior::WarriorTalentEffects::default(),
             converting: false,
             fire: FireCounters::default(),
             impacts: Vec::with_capacity(8),
@@ -125,6 +129,8 @@ impl Simulation {
         swap(&mut self.last_defense, &mut slot.last_defense);
         swap(&mut self.warrior, &mut slot.warrior);
         swap(&mut self.druid, &mut slot.druid);
+        swap(&mut self.warrior_talents, &mut slot.warrior_talents);
+        swap(&mut self.warrior_effects, &mut slot.warrior_effects);
         swap(&mut self.converting, &mut slot.converting);
         swap(&mut self.fire, &mut slot.fire);
         swap(&mut self.impacts, &mut slot.impacts);

@@ -3,7 +3,7 @@
 //! ```text
 //! assets/catalog/characters.json ─┐
 //! assets/catalog/dungeons.json  ──┼─► Catalog ─► module (validation), client (screens),
-//! assets/catalog/economy.json   ──┘              persistence API (starter characters)
+//! assets/catalog/economy.json   ──┘   (and talents.json, installed into engine-game)              persistence API (starter characters)
 //! ```
 //!
 //! All three files are compiled into every program that reads them ([`Catalog::builtin`]), so the
@@ -415,6 +415,9 @@ impl Catalog {
     ///
     /// Only if the shipped JSON is broken, which `cargo test` catches before anything ships.
     pub fn builtin() -> Result<Self, CatalogError> {
+        // The talents ship beside the characters, and every program that reads one needs the
+        // other: installing them here is how the shipped numbers reach `engine-game`.
+        crate::talents::install_builtin()?;
         Self::parse(CHARACTERS_JSON, DUNGEONS_JSON, ECONOMY_JSON)
     }
 

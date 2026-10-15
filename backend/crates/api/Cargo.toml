@@ -52,3 +52,4 @@ utoipa-swagger-ui = { workspace = true }
 
 [dev-dependencies]
 tower = { workspace = true }
+engine-game = { path = "../../../crates/engine-game" }

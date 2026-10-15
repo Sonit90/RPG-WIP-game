@@ -347,7 +347,7 @@ fn war_stomp_and_exposure_keep_their_numbers_through_the_registry() {
     let (mut simulation, mut playground) = playground();
     let skeleton = monster(&mut simulation, &mut playground, EnemyKind::SkeletonWarrior);
     playground.apply_effect(&mut simulation, StatusKind::Sundered, 30.0, 8);
-    playground.apply_effect(&mut simulation, StatusKind::NaturesExposure, 30.0, 15);
+    playground.apply_effect(&mut simulation, StatusKind::NaturesExposure, 30.0, 10);
     simulation.step_once();
     let stats = simulation.effect_stats(skeleton).expect("a monster");
     assert!(
@@ -355,8 +355,8 @@ fn war_stomp_and_exposure_keep_their_numbers_through_the_registry() {
         "{}",
         stats.attack_speed
     );
-    assert!((stats.damage_taken[3].1 - 1.45).abs() < 1e-5);
-    assert!((stats.damage_taken[2].1 - 1.45).abs() < 1e-5);
+    assert!((stats.damage_taken[3].1 - 1.20).abs() < 1e-5);
+    assert!((stats.damage_taken[2].1 - 1.20).abs() < 1e-5);
     assert!(
         (stats.damage_taken[0].1 - 1.0).abs() < 1e-5,
         "physical untouched"
@@ -479,7 +479,7 @@ fn every_applicable_effect_fits_on_one_body_at_once() {
     // The stackable ones are at their full stack.
     assert_eq!(
         stacks(&simulation, skeleton, StatusKind::NaturesExposure),
-        15
+        StatusKind::NaturesExposure.max_stacks()
     );
     simulation.step_many(60);
     assert!(simulation.world().is_alive(skeleton) || simulation.world().contains(skeleton));

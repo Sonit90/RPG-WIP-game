@@ -557,6 +557,8 @@ fn requeue(ctx: &ReducerContext, loaded: &Loaded, member: &PartyMember) {
         level: member.level,
         gear_score: member.gear_score,
         loadout: member.loadout.clone(),
+        talents: member.talents.clone(),
+        talent_points: member.talent_points,
         dungeon_id: loaded.party.dungeon_id.clone(),
         role: member.role,
         key_dungeon_id: member.key_dungeon_id.clone(),

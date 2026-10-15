@@ -18,6 +18,7 @@ pub mod connection_type;
 pub mod countdown_timer_type;
 pub mod dismiss_notice_reducer;
 pub mod dungeon_instance_type;
+pub mod engagement_type;
 pub mod instance_combat_type;
 pub mod instance_monster_type;
 pub mod instance_player_type;
@@ -74,6 +75,7 @@ pub mod run_summary_type;
 pub mod server_time_procedure;
 pub mod svc_ack_loot_reducer;
 pub mod svc_ack_results_reducer;
+pub mod svc_engagement_procedure;
 pub mod svc_enqueue_reducer;
 pub mod svc_take_loot_procedure;
 pub mod svc_take_results_procedure;
@@ -92,6 +94,7 @@ pub use connection_type::Connection;
 pub use countdown_timer_type::CountdownTimer;
 pub use dismiss_notice_reducer::dismiss_notice;
 pub use dungeon_instance_type::DungeonInstance;
+pub use engagement_type::Engagement;
 pub use instance_combat_type::InstanceCombat;
 pub use instance_monster_type::InstanceMonster;
 pub use instance_player_type::InstancePlayer;
@@ -148,6 +151,7 @@ pub use run_summary_type::RunSummary;
 pub use server_time_procedure::server_time;
 pub use svc_ack_loot_reducer::svc_ack_loot;
 pub use svc_ack_results_reducer::svc_ack_results;
+pub use svc_engagement_procedure::svc_engagement;
 pub use svc_enqueue_reducer::svc_enqueue;
 pub use svc_take_loot_procedure::svc_take_loot;
 pub use svc_take_results_procedure::svc_take_results;
@@ -224,6 +228,8 @@ pub enum Reducer {
         role: RoleTag,
         key_dungeon_id: String,
         key_level: u32,
+        talents: String,
+        talent_points: u32,
     },
 }
 
@@ -356,6 +362,8 @@ impl __sdk::Reducer for Reducer {
                 role,
                 key_dungeon_id,
                 key_level,
+                talents,
+                talent_points,
             } => __sats::bsatn::to_vec(&svc_enqueue_reducer::SvcEnqueueArgs {
                 account_id: account_id.clone(),
                 character_id: character_id.clone(),
@@ -368,6 +376,8 @@ impl __sdk::Reducer for Reducer {
                 role: role.clone(),
                 key_dungeon_id: key_dungeon_id.clone(),
                 key_level: key_level.clone(),
+                talents: talents.clone(),
+                talent_points: talent_points.clone(),
             }),
             _ => unreachable!(),
         }

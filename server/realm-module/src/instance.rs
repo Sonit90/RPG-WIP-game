@@ -379,6 +379,7 @@ pub fn finish(ctx: &ReducerContext, instance_id: u64, success: bool) -> Result<(
             key_owner: is_owner,
             key_level_after,
             resources: resources.clone(),
+            talent_points: rewards.talent_points,
         });
         ctx.db.run_summary().insert(RunSummary {
             result_id: format!("{instance_id}:{}", player.account_id),

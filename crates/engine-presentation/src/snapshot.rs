@@ -23,7 +23,7 @@ use engine_game::enemy::EnemyAbility;
 use engine_game::enemy::brain::AiState;
 use engine_game::firemage::{
     ABILITY_SLOTS, AbilityError, ENERGY_MAXIMUM, FireAbility, FireMastery, HEAT_HOT_THRESHOLD,
-    HEAT_MAXIMUM, HEAT_WARM_THRESHOLD, HeatTier, TALENTS, TalentId, ULTIMATE_ENABLED,
+    HEAT_MAXIMUM, HEAT_WARM_THRESHOLD, HeatTier, ULTIMATE_ENABLED,
 };
 use engine_game::hero::Hero;
 use engine_game::sim::Simulation;
@@ -277,6 +277,9 @@ pub struct DruidView {
     pub armed: bool,
     /// Whether the button can be pressed right now.
     pub can_arm: bool,
+    /// What an empowerment costs: 100, or less with Astral Attunement. Zero before the first
+    /// frame the Druid is played.
+    pub astral_spend: f32,
     /// Seconds of Astral Wrath left. Zero when it is not running.
     pub astral_wrath: f32,
     /// Seconds of Wild Rush left. Zero when it is not running.
@@ -306,7 +309,11 @@ impl DruidView {
     /// What one press of the button costs the next compatible spell.
     #[must_use]
     pub fn astral_cost(&self) -> f32 {
-        ASTRAL_SPEND
+        if self.astral_spend > 0.0 {
+            self.astral_spend
+        } else {
+            ASTRAL_SPEND
+        }
     }
 }
 
@@ -332,6 +339,7 @@ fn druid_view(simulation: &Simulation) -> DruidView {
         astral: druid.astral.value(),
         armed: druid.astral.is_armed(),
         can_arm: druid.astral.can_arm(),
+        astral_spend: druid.astral.spend_cost(),
         astral_wrath: seconds(StatusKind::AstralWrath),
         wild_rush: seconds(StatusKind::WildRush),
         channelling: druid.channel.active,
@@ -735,8 +743,8 @@ pub struct NotificationView {
 /// The talent grid, as the menu sees it.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TalentView {
-    /// Which talent.
-    pub id: TalentId,
+    /// Which talent: its row in the hero's table.
+    pub index: usize,
     /// Its name.
     pub name: &'static str,
     /// Which tier it sits in.
@@ -917,6 +925,10 @@ pub struct UiSnapshot {
     pub notification: NotificationView,
     /// Talent points left to spend.
     pub talent_points: u32,
+    /// Every talent point the active hero has, spent or not.
+    pub talent_points_total: u32,
+    /// Whose tree `talents` lists.
+    pub talent_hero: Hero,
     /// Letters in the active character's mailbox that have not been read: the badge on the
     /// mailbox button.
     pub mail_unread: u32,
@@ -1019,8 +1031,10 @@ impl UiSnapshot {
             combat: CombatView::default(),
             notification: NotificationView::default(),
             talent_points: 0,
+            talent_points_total: 0,
+            talent_hero: Hero::default(),
             mail_unread: 0,
-            talents: Vec::with_capacity(TALENTS.len()),
+            talents: Vec::with_capacity(engine_game::talent::MAX_TALENTS),
             spell_power: 0.0,
             haste: 0.0,
             crit_chance: 0.0,
@@ -1147,18 +1161,25 @@ impl UiSnapshot {
             error: simulation.recent_error(),
         };
 
-        self.talent_points = mage.talents.available_points();
+        let grid = simulation.talent_grid();
+        self.talent_hero = simulation.hero();
+        self.talent_points = grid.available_points();
+        self.talent_points_total = grid.total_points();
         self.mail_unread = u32::try_from(simulation.mailbox().unread_count()).unwrap_or(u32::MAX);
         self.talents.clear();
-        for talent in &TALENTS {
+        for (index, talent) in engine_game::talent::hero_talents(simulation.hero())
+            .talents
+            .iter()
+            .enumerate()
+        {
             self.talents.push(TalentView {
-                id: talent.id,
-                name: talent.name,
+                index,
+                name: talent.name.as_str(),
                 tier: talent.tier,
                 cost: talent.cost,
-                description: talent.description,
-                purchased: mage.talents.has(talent.id),
-                affordable: mage.talents.can_purchase(talent.id),
+                description: talent.description.as_str(),
+                purchased: grid.has_index(index),
+                affordable: grid.purchase_error_index(index).is_none(),
             });
         }
         let stats = mage.stats();
@@ -1757,18 +1778,20 @@ mod tests {
     fn the_talent_grid_reports_what_is_owned_and_what_can_be_bought() {
         let mut simulation = arena();
         let snapshot = UiSnapshot::build(&simulation);
-        assert_eq!(snapshot.talents.len(), TALENTS.len());
+        assert_eq!(
+            snapshot.talents.len(),
+            engine_game::talent::hero_talents(Hero::FireMage)
+                .talents
+                .len()
+        );
         assert!(snapshot.talents.iter().all(|talent| !talent.purchased));
         assert_eq!(
             snapshot.talent_points,
             simulation.mage().talents.available_points()
         );
 
-        let first = snapshot.talents[0].id;
-        simulation
-            .mage_mut()
-            .purchase_talent(first)
-            .expect("affordable");
+        let first = snapshot.talents[0].index;
+        simulation.purchase_talent_index(first).expect("affordable");
         let snapshot = UiSnapshot::build(&simulation);
         assert!(snapshot.talents[0].purchased);
     }
@@ -1806,6 +1829,11 @@ mod tests {
             snapshot.refresh(&simulation, None);
         }
         assert_eq!(snapshot.talents.capacity(), capacity, "the snapshot grew");
-        assert_eq!(snapshot.talents.len(), TALENTS.len());
+        assert_eq!(
+            snapshot.talents.len(),
+            engine_game::talent::hero_talents(Hero::FireMage)
+                .talents
+                .len()
+        );
     }
 }

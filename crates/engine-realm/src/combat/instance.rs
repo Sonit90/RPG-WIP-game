@@ -30,6 +30,7 @@ use engine_game::firemage::{ABILITY_SLOTS, FireAbility};
 use engine_game::hero::Hero;
 use engine_game::movement::{Body, MoveIntent};
 use engine_game::sim::Simulation;
+use engine_game::talent::TalentGrid;
 use engine_game::world::EntityDesc;
 use serde::{Deserialize, Serialize};
 
@@ -56,6 +57,10 @@ pub struct PlayerSpec {
     pub hero: Hero,
     /// What they wear, from the persistence API. `None` is the class's starting gear.
     pub loadout: Option<Loadout>,
+    /// The talents they bought, by key, from the snapshot taken at queue time.
+    pub talents: Vec<String>,
+    /// Every talent point they had when the snapshot was taken: what the keys must fit in.
+    pub talent_points: u32,
     /// Where they start, and respawn.
     pub spawn: StartPoint,
 }
@@ -329,6 +334,25 @@ pub struct CombatInstance {
     written_players: HashMap<String, (PlayerState, u64)>,
 }
 
+/// The talents a player enters the fight with.
+///
+/// Checked again here, whatever the API did: a key the hero lacks or a set that costs more than
+/// the snapshot's points drops *all* the talents (and says so) rather than half of them.
+fn talent_grid_of(spec: &PlayerSpec) -> TalentGrid {
+    match TalentGrid::from_keys(spec.hero, &spec.talents, spec.talent_points) {
+        Ok(grid) => grid,
+        Err(error) => {
+            log::warn!(
+                "event=talents_dropped account_id={} hero={} reason={}",
+                spec.account_id,
+                spec.hero.config_name(),
+                error.as_str()
+            );
+            TalentGrid::with_points(spec.hero, spec.talent_points)
+        }
+    }
+}
+
 impl CombatInstance {
     /// The fight for `scene` with `players` in it, the start barrier standing. `key_scaling` is
     /// the dungeon key's `(health, damage)` multipliers (see [`crate::key::scaling`]); `(1.0,
@@ -374,6 +398,7 @@ impl CombatInstance {
                 if let Some(loadout) = &spec.loadout {
                     *sim.roster_mut().sheet_mut(spec.hero) = sheet_of(spec.hero, loadout);
                 }
+                sim.set_talents(talent_grid_of(spec));
                 sim.refresh_character();
                 // A selection the arena made for a solo player means nothing here.
                 sim.push_command(PlayerCommand::ClearTarget);

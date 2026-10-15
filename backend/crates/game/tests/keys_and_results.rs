@@ -63,6 +63,7 @@ fn winning(account: Uuid, character: Uuid, key: &store::KeyRow, tag: &str) -> Du
         key_owner: true,
         key_level_after: key.level + 1,
         resources: vec![("crypt_dust".into(), 9)],
+        talent_points: 2,
     }
 }
 
@@ -280,5 +281,42 @@ async fn character_key_and_loot_survive_a_refetch() {
         .inventory
         .iter()
         .any(|entry| entry.item == item));
+    drop_account(&pool, account).await;
+}
+
+/// Talent points the character has earned, as stored.
+async fn earned(pool: &PgPool, account: Uuid, character: Uuid) -> i32 {
+    store::get(pool, account, character)
+        .await
+        .expect("get")
+        .expect("exists")
+        .talent_points_earned
+}
+
+#[tokio::test]
+#[ignore]
+async fn talent_points_are_granted_once_per_result_and_only_for_a_success() {
+    let pool = pool().await;
+    let account = new_account(&pool).await;
+    let (row, key) = first_character(&pool, account).await;
+    assert_eq!(earned(&pool, account, row.id).await, 0);
+
+    let run = winning(account, row.id, &key, "points");
+    assert!(store::apply_result(&pool, &run).await.expect("first"));
+    assert_eq!(earned(&pool, account, row.id).await, 2);
+    // Delivered again: recorded already, so nothing is granted twice.
+    assert!(!store::apply_result(&pool, &run).await.expect("second"));
+    assert_eq!(earned(&pool, account, row.id).await, 2);
+
+    // A failure that claims points grants none.
+    let mut failed = winning(account, row.id, &key, "points-fail");
+    failed.success = false;
+    assert!(store::apply_result(&pool, &failed).await.expect("failed"));
+    assert_eq!(earned(&pool, account, row.id).await, 2);
+
+    // A second, distinct result grants again.
+    let another = winning(account, row.id, &key, "points-again");
+    assert!(store::apply_result(&pool, &another).await.expect("another"));
+    assert_eq!(earned(&pool, account, row.id).await, 4);
     drop_account(&pool, account).await;
 }

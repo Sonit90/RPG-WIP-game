@@ -1,0 +1,243 @@
+{
+  "version": 1,
+  "progression": {
+    "starting_points": 5,
+    "points_per_completion": 1,
+    "bonus_points_min_key_level": 3,
+    "bonus_points": 1
+  },
+  "heroes": {
+    "firemage": {
+      "talents": [
+        {
+          "key": "burning_embers",
+          "name": "BURNING EMBERS",
+          "tier": 1,
+          "cost": 3,
+          "description": "EACH IGNITE STACK CONSUMED INCREASES DETONATE DAMAGE BY {per_stack%}%",
+          "values": {
+            "per_stack": 0.03
+          }
+        },
+        {
+          "key": "extended_flame",
+          "name": "EXTENDED FLAME",
+          "tier": 1,
+          "cost": 2,
+          "description": "IGNITE LASTS {bonus_seconds} SECONDS LONGER",
+          "values": {
+            "bonus_seconds": 10.0
+          }
+        },
+        {
+          "key": "infernal_capacity",
+          "name": "INFERNAL CAPACITY",
+          "tier": 3,
+          "cost": 5,
+          "description": "MAXIMUM IGNITE +{extra_stacks}. DETONATE THEN REQUIRES THE FULL STACK",
+          "values": {
+            "extra_stacks": 1.0
+          }
+        },
+        {
+          "key": "rapid_combustion",
+          "name": "RAPID COMBUSTION",
+          "tier": 2,
+          "cost": 4,
+          "description": "DETONATE: {chance%}% CHANCE TO CUT FLAME CONE, FIRESTORM AND METEOR BY {reduction} S",
+          "values": {
+            "chance": 0.2,
+            "reduction": 2.0
+          }
+        },
+        {
+          "key": "molten_meteor",
+          "name": "MOLTEN METEOR",
+          "tier": 2,
+          "cost": 4,
+          "description": "METEOR IMPACT REDUCED TO {damage_scale%}% AND CANNOT CRIT. LEAVES BURNING GROUND FOR {ground_duration} S",
+          "values": {
+            "damage_scale": 0.75,
+            "ground_duration": 15.0,
+            "ground_interval": 3.0,
+            "ground_tick_coefficient": 0.55,
+            "ground_vulnerability": 0.03
+          }
+        },
+        {
+          "key": "furnace_mastery",
+          "name": "FURNACE MASTERY",
+          "tier": 3,
+          "cost": 5,
+          "description": "THE INFERNO STATE LASTS {bonus_seconds} SECONDS LONGER",
+          "values": {
+            "bonus_seconds": 2.0
+          }
+        },
+        {
+          "key": "meteoric_impact",
+          "name": "METEORIC IMPACT",
+          "tier": 2,
+          "cost": 4,
+          "description": "METEOR +{crit_damage_bonus%}% CRIT DAMAGE. A CRITICAL METEOR CUTS PYROBLAST BY {pyroblast_reduction} S",
+          "values": {
+            "crit_damage_bonus": 1.0,
+            "pyroblast_reduction": 4.0
+          }
+        },
+        {
+          "key": "spellfire_feedback",
+          "name": "SPELLFIRE FEEDBACK",
+          "tier": 2,
+          "cost": 4,
+          "description": "CRIT FLAME LANCE AND CRIT PYROBLAST CUT EACH OTHER BY {reduction} S INSTEAD OF {base_reduction}",
+          "values": {
+            "reduction": 1.5,
+            "base_reduction": 1.0
+          }
+        },
+        {
+          "key": "burning_precision",
+          "name": "BURNING PRECISION",
+          "tier": 1,
+          "cost": 3,
+          "description": "A CRITICAL IGNITE TICK HAS A {chance%}% CHANCE TO CUT METEOR BY {reduction} S",
+          "values": {
+            "chance": 0.1,
+            "reduction": 1.0
+          }
+        },
+        {
+          "key": "volatile_ignition",
+          "name": "VOLATILE IGNITION",
+          "tier": 3,
+          "cost": 5,
+          "description": "IGNITE DAMAGE REDUCED TO {ignite_scale%}%. PYROBLAST GAINS {extra_charges} CHARGE",
+          "values": {
+            "ignite_scale": 0.8,
+            "extra_charges": 1.0
+          }
+        },
+        {
+          "key": "chain_pyroblast",
+          "name": "CHAIN PYROBLAST",
+          "tier": 3,
+          "cost": 5,
+          "description": "PYROBLAST BOUNCES AT YOUR CRIT CHANCE. -{falloff%}% A BOUNCE, {max_bounces} MAXIMUM",
+          "values": {
+            "falloff": 0.2,
+            "max_bounces": 10.0
+          }
+        },
+        {
+          "key": "dual_fire_mastery",
+          "name": "DUAL FIRE MASTERY",
+          "tier": 4,
+          "cost": 7,
+          "description": "FIRE MASTERY GRANTS +{dual_bonus%}% HASTE AND +{dual_bonus%}% CRIT INSTEAD OF ONE STAT",
+          "values": {
+            "dual_bonus": 0.1,
+            "single_bonus": 0.15
+          }
+        }
+      ]
+    },
+    "warrior": {
+      "talents": []
+    },
+    "druid": {
+      "talents": [
+        {
+          "key": "swift_wrath",
+          "name": "SWIFT WRATH",
+          "tier": 1,
+          "cost": 3,
+          "description": "EVERY {every}TH CONSECUTIVE WRATH IS INSTANT AND GENERATES {astral_multiplier}X ASTRAL POWER",
+          "values": {
+            "every": 4.0,
+            "astral_multiplier": 2.0
+          }
+        },
+        {
+          "key": "verdant_sunfire",
+          "name": "VERDANT SUNFIRE",
+          "tier": 1,
+          "cost": 3,
+          "description": "SUNFIRE RADIUS +{radius_bonus%}%. SUNFIRE TICK DAMAGE -{tick_penalty%}%",
+          "values": {
+            "radius_bonus": 0.5,
+            "tick_penalty": 0.2
+          }
+        },
+        {
+          "key": "deep_exposure",
+          "name": "DEEP EXPOSURE",
+          "tier": 2,
+          "cost": 4,
+          "description": "NATURES EXPOSURE MAXIMUM STACKS +{extra_stacks}. ITS DURATION -{duration_penalty%}%",
+          "values": {
+            "extra_stacks": 4.0,
+            "duration_penalty": 0.3
+          }
+        },
+        {
+          "key": "living_seed",
+          "name": "LIVING SEED",
+          "tier": 2,
+          "cost": 4,
+          "description": "REGROWTH AND SWIFTMEND LEAVE A SEED. {fraction%}% OF THE HEAL IS PAID WHEN THE TARGET NEXT TAKES DAMAGE WITHIN {window} S",
+          "values": {
+            "fraction": 0.3,
+            "window": 10.0
+          }
+        },
+        {
+          "key": "overgrowth",
+          "name": "OVERGROWTH",
+          "tier": 3,
+          "cost": 4,
+          "description": "SWIFTMEND COOLDOWN -{cooldown_cut} S. EACH SWIFTMEND REFUNDS {astral_refund} ASTRAL POWER",
+          "values": {
+            "cooldown_cut": 3.0,
+            "astral_refund": 10.0
+          }
+        },
+        {
+          "key": "astral_attunement",
+          "name": "ASTRAL ATTUNEMENT",
+          "tier": 3,
+          "cost": 4,
+          "description": "EMPOWERMENT COSTS {spend} ASTRAL POWER INSTEAD OF 100. EMPOWERED BONUSES -{bonus_penalty%}%",
+          "values": {
+            "spend": 75.0,
+            "bonus_penalty": 0.15
+          }
+        },
+        {
+          "key": "barkskin_instinct",
+          "name": "BARKSKIN INSTINCT",
+          "tier": 4,
+          "cost": 5,
+          "description": "WILD RUSH ALSO GIVES ALLIES WITHIN {radius} M {reduction%}% DAMAGE REDUCTION FOR {duration} S",
+          "values": {
+            "radius": 8.0,
+            "reduction": 0.25,
+            "duration": 4.0
+          }
+        },
+        {
+          "key": "tranquil_mind",
+          "name": "TRANQUIL MIND",
+          "tier": 4,
+          "cost": 5,
+          "description": "TRANQUILITY COOLDOWN -{cooldown_cut} S AND MANA COST -{mana_cut%}%. ITS HEALING -{heal_penalty%}%",
+          "values": {
+            "cooldown_cut": 40.0,
+            "mana_cut": 0.5,
+            "heal_penalty": 0.15
+          }
+        }
+      ]
+    }
+  }
+}

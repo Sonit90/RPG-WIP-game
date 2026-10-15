@@ -127,6 +127,12 @@ pub struct CharacterDetail {
     pub mail: Vec<crate::loadout::MailItem>,
     /// Talents bought, by key.
     pub talents: Vec<String>,
+    /// Every talent point the character has: the starting points plus the ones it earned.
+    #[serde(default)]
+    pub talent_points_total: u32,
+    /// Talent points not yet spent.
+    #[serde(default)]
+    pub talent_points_available: u32,
     /// Derived stats, `(key, value)`.
     pub stats: Vec<(String, f32)>,
     /// Dungeons completed, by id, with counts.
@@ -290,7 +296,26 @@ pub struct DungeonResult {
     /// Resources paid, `(resource id, amount)`.
     #[serde(default)]
     pub resources: Vec<(String, u32)>,
+    /// Talent points granted. Applied once with the result, like everything else in it.
+    #[serde(default)]
+    pub talent_points: u32,
 }
+
+/// Whether the realm has a character engaged: queued, in a party, or in an instance.
+///
+/// The answer to `svc_engagement`. While `engaged`, the API refuses to change the character's
+/// talents or equipment: the realm holds a snapshot of them for the run.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Engagement {
+    /// Whether the account is queued, in a party or in an instance.
+    pub engaged: bool,
+    /// Which: `"none"`, `"queued"`, `"party"` or `"instance"`.
+    pub state: String,
+}
+
+/// The sentence a refused change shows.
+pub const ENGAGED_MESSAGE: &str =
+    "Your talents and equipment are locked while you are in a dungeon or queue.";
 
 /// One chest item to deliver to a character, as the bridge hands it to the persistence store.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -344,6 +369,8 @@ mod tests {
             inventory: vec![],
             mail: vec![],
             talents: vec![],
+            talent_points_total: 5,
+            talent_points_available: 5,
             stats: vec![("str".into(), 1.0)],
             completions: vec![],
         };

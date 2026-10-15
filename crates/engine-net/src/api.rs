@@ -174,6 +174,30 @@ impl ApiClient {
         )
     }
 
+    /// Replaces a character's talents, validated against its points and the engagement lock.
+    ///
+    /// # Errors
+    ///
+    /// An unknown talent, too few points, the character is engaged (a conflict), it is not the
+    /// caller's, or the server is unreachable.
+    pub fn save_talents(
+        &self,
+        token: &str,
+        id: &str,
+        talents: &[String],
+    ) -> Result<CharacterDetail, RealmError> {
+        self.send(
+            "PUT",
+            &self.persistence,
+            &format!("/api/v1/characters/{}/talents", path_segment(id)),
+            Some(token),
+            &engine_realm::api::TalentsRequest {
+                talents: talents.to_vec(),
+            },
+            Category::Persistence,
+        )
+    }
+
     /// Takes a mail's item into the bag, or marks the mail read (`take = false`).
     ///
     /// # Errors

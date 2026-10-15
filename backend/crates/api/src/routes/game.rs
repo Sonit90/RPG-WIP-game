@@ -10,10 +10,15 @@
 //! | `POST /characters/{id}/salvage` | break bag items down into a resource |
 //! | `POST /characters/{id}/exchange` | trade resources at a catalog rate |
 //! | `GET  /economy` | the economy catalog: resources, salvage rule, exchanges |
-//! | `PUT  /characters/{id}/talents` | replace talents, validated against the catalog |
+//! | `PUT  /characters/{id}/talents` | replace talents: keys, points and the engagement lock checked |
 //! | `GET  /player/settings` | the account's synced settings |
 //! | `PUT  /player/settings` | save them, with optimistic versioning |
 //! | `POST /realm/queue` | queue a character: ownership, role and gear checked here |
+//!
+//! Talents and equipment (move, salvage, taking mail) are **locked while the character is
+//! engaged** - queued, in a party, in an instance - because the realm holds a snapshot of
+//! them for the run. The API asks the realm (`svc_engagement`) before each such change and
+//! answers 409 when it is engaged; if the realm cannot be asked, the change is refused too.
 //!
 //! Every route takes the account from the verified token and scopes every query by it. A
 //! character id in a path is a request, never a proof of ownership.
@@ -51,6 +56,19 @@ pub fn router() -> Router<AppState> {
         .route("/characters/{id}/talents", put(save_talents))
         .route("/player/settings", get(get_settings).put(put_settings))
         .route("/realm/queue", post(queue))
+}
+
+/// Refuses with 409 while the realm has the account queued, in a party or in an instance.
+async fn ensure_unlocked(state: &AppState, user: &AuthUser) -> Result<(), ApiError> {
+    let token = state
+        .jwt
+        .issue_service(&state.settings.realm.service_subject)
+        .map_err(ApiError)?;
+    let answer = state
+        .realm
+        .engagement(&token, &user.user_id.to_string())
+        .await;
+    realm_game::bridge::lock_decision(answer).map_err(ApiError)
 }
 
 fn character_id(raw: &str) -> Result<Uuid, ApiError> {
@@ -127,6 +145,7 @@ async fn move_item(
         )
         .map_err(ApiError)?;
     let row = owned(&state, &user, &id).await?;
+    ensure_unlocked(&state, &user).await?;
     let hero = realm_game::catalog()
         .character(&row.definition_id)
         .map(|definition| definition.hero)
@@ -149,6 +168,7 @@ async fn mail_change(
     state: &AppState,
     user: &AuthUser,
     id: &str,
+    locked_while_engaged: bool,
     change: impl FnOnce(&mut engine_realm::loadout::Loadout) -> Result<(), AppError>,
 ) -> ApiResult<Json<CharacterDetail>> {
     state
@@ -159,6 +179,9 @@ async fn mail_change(
         )
         .map_err(ApiError)?;
     let character = character_id(id)?;
+    if locked_while_engaged {
+        ensure_unlocked(state, user).await?;
+    }
     store::update_loadout(&state.db, user.user_id, character, |stored| {
         let mut loadout = stored.clone();
         change(&mut loadout)?;
@@ -178,7 +201,7 @@ async fn take_mail(
 ) -> ApiResult<Json<CharacterDetail>> {
     use engine_realm::loadout::{take_mail, TakeMailError};
     let account = user.user_id;
-    let detail = mail_change(&state, &user, &id, |loadout| {
+    let detail = mail_change(&state, &user, &id, true, |loadout| {
         take_mail(loadout, mail_id)
             .map(|_| ())
             .map_err(|error| match error {
@@ -196,7 +219,7 @@ async fn read_mail(
     user: AuthUser,
     Path((id, mail_id)): Path<(String, u64)>,
 ) -> ApiResult<Json<CharacterDetail>> {
-    mail_change(&state, &user, &id, |loadout| {
+    mail_change(&state, &user, &id, false, |loadout| {
         if engine_realm::loadout::mark_mail_read(loadout, mail_id) {
             Ok(())
         } else {
@@ -214,7 +237,7 @@ async fn salvage(
 ) -> ApiResult<Json<CharacterDetail>> {
     let economy = realm_game::catalog().economy();
     let account = user.user_id;
-    let detail = mail_change(&state, &user, &id, |loadout| {
+    let detail = mail_change(&state, &user, &id, true, |loadout| {
         engine_realm::economy::salvage_many(loadout, &body.indices, economy)
             .map(|_| ())
             .map_err(economy_error)
@@ -232,7 +255,7 @@ async fn exchange(
 ) -> ApiResult<Json<CharacterDetail>> {
     let economy = realm_game::catalog().economy();
     let account = user.user_id;
-    let detail = mail_change(&state, &user, &id, |loadout| {
+    let detail = mail_change(&state, &user, &id, false, |loadout| {
         engine_realm::economy::exchange(loadout, &body.exchange_id, body.times, economy)
             .map_err(economy_error)
     })
@@ -301,7 +324,7 @@ async fn save_talents(
     user: AuthUser,
     Path(id): Path<String>,
     Json(body): Json<TalentsRequest>,
-) -> ApiResult<StatusCode> {
+) -> ApiResult<Json<CharacterDetail>> {
     state
         .limits
         .check(
@@ -310,26 +333,37 @@ async fn save_talents(
         )
         .map_err(ApiError)?;
     let row = owned(&state, &user, &id).await?;
-    let hero = realm_game::catalog()
-        .character(&row.definition_id)
-        .map(|definition| definition.hero)
-        .unwrap_or_default();
+    ensure_unlocked(&state, &user).await?;
+    let hero = characters::hero(&row);
     let mut talents: Vec<String> = Vec::new();
     for key in body.talents {
-        if !engine_realm::talents::is_valid(hero, &key) {
-            return Err(ApiError(AppError::BadRequest(format!(
-                "{key} is not a talent this character has."
-            ))));
-        }
         if !talents.contains(&key) {
             talents.push(key);
         }
     }
+    engine_realm::talents::validate(hero, &talents, characters::earned_points(&row))
+        .map_err(talent_error)
+        .map_err(ApiError)?;
     store::save_talents(&state.db, user.user_id, row.id, &talents)
         .await
         .map_err(ApiError)?;
     tracing::info!(account_id = %user.user_id, character_id = %row.id, count = talents.len(), "talents changed");
-    Ok(StatusCode::NO_CONTENT)
+    let row = owned(&state, &user, &id).await?;
+    detail_of(&state, &user, &row).await
+}
+
+/// A refused talent set as the HTTP error: an unknown key is a bad request, too few points
+/// a conflict with what the character has.
+fn talent_error(error: engine_realm::talents::TalentError) -> AppError {
+    use engine_realm::talents::TalentError;
+    match error {
+        TalentError::UnknownTalent => {
+            AppError::BadRequest("That is not a talent this character has.".into())
+        }
+        TalentError::NotEnoughPoints | TalentError::AlreadyOwned => {
+            AppError::Conflict("You do not have enough talent points for that.".into())
+        }
+    }
 }
 
 async fn get_settings(
@@ -417,6 +451,15 @@ async fn queue(
         .await
         .map_err(ApiError)?;
     let summary = characters::summary(&row, key.as_ref());
+    // The snapshot is checked once more here: a set that no longer fits (the starting points
+    // changed, or a talent was retired) is refused before it reaches the realm.
+    let hero = characters::hero(&row);
+    engine_realm::talents::validate(hero, &row.talents.0, characters::earned_points(&row))
+        .map_err(|_| {
+            ApiError(AppError::BadRequest(
+                "Your talents are not valid. Reset them in the talent window.".into(),
+            ))
+        })?;
     dungeon
         .admits(summary.level, summary.gear_score)
         .map_err(|e| ApiError(AppError::BadRequest(e.message)))?;
@@ -438,6 +481,8 @@ async fn queue(
             .map(|key| key.dungeon_id.clone())
             .unwrap_or_default(),
         key_level: key.as_ref().map_or(0, |key| key.level),
+        talents: row.talents.0.clone(),
+        talent_points: engine_realm::talents::total_points(characters::earned_points(&row)),
     };
     match state
         .realm
@@ -465,5 +510,35 @@ async fn queue(
                 "The game server is unavailable.",
             )))
         }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    fn druid() -> engine_game::hero::Hero {
+        realm_game::catalog()
+            .character("druid")
+            .expect("a druid")
+            .hero
+    }
+
+    #[test]
+    fn a_talent_set_above_the_characters_points_is_a_conflict() {
+        let keys = vec!["swift_wrath".to_owned(), "verdant_sunfire".to_owned()];
+        // 5 starting points hold one 3-point talent, not two.
+        let error = engine_realm::talents::validate(druid(), &keys, 0).expect_err("too dear");
+        assert!(matches!(talent_error(error), AppError::Conflict(_)));
+        // One earned point later they fit.
+        assert!(engine_realm::talents::validate(druid(), &keys, 1).is_ok());
+    }
+
+    #[test]
+    fn a_key_the_hero_lacks_is_a_bad_request() {
+        let error = engine_realm::talents::validate(druid(), &["burning_embers".to_owned()], 9)
+            .expect_err("a mage talent");
+        assert!(matches!(talent_error(error), AppError::BadRequest(_)));
     }
 }

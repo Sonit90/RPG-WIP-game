@@ -71,7 +71,7 @@ pub(crate) const ROWS: [AbilityDef; 13] = [
         cast_time: 1.5,
         range: 30.0,
         duration: 15.0,
-        coefficient: 2.20,
+        coefficient: 1.85,
         requires_line_of_sight: true,
         class: ClassRow::Druid(DruidRow {
             astral_generation: 15.0,

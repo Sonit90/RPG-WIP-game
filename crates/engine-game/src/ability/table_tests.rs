@@ -209,10 +209,10 @@ fn two_charges_are_spent_one_at_a_time_and_return_one_at_a_time() {
 
 #[test]
 fn volatile_ignition_hands_pyroblast_a_second_charge() {
-    let mut grid = TalentGrid::with_points(100);
+    let mut grid = TalentGrid::with_points(crate::hero::Hero::FireMage, 100);
     grid.purchase(TalentId::VolatileIgnition)
         .expect("affordable");
-    let effects = grid.effects();
+    let effects = TalentEffects::from_grid(&grid);
     assert_eq!(
         FireAbility::Pyroblast.definition().charges_with(&effects),
         2

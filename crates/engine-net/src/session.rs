@@ -75,6 +75,13 @@ pub enum NetCommand {
         /// To.
         to: SlotRef,
     },
+    /// Replace a character's talents.
+    SaveTalents {
+        /// Which character.
+        character_id: String,
+        /// Every talent it should have, by key.
+        talents: Vec<String>,
+    },
     /// Take a mail's item into the bag (`take`), or only mark the mail read.
     Mail {
         /// Which character.
@@ -150,6 +157,8 @@ pub enum Action {
     Characters,
     /// Moving an item.
     MoveItem,
+    /// Saving talents.
+    Talents,
     /// Taking or reading mail.
     Mail,
     /// Salvaging an item.
@@ -538,6 +547,16 @@ impl Worker {
                 {
                     Ok(detail) => self.emit(NetEvent::Character(Box::new(detail))),
                     Err(error) => self.fail(Action::MoveItem, error),
+                }
+            }
+            NetCommand::SaveTalents {
+                character_id,
+                talents,
+            } => {
+                let Some(token) = self.access() else { return };
+                match self.api.save_talents(&token, &character_id, &talents) {
+                    Ok(detail) => self.emit(NetEvent::Character(Box::new(detail))),
+                    Err(error) => self.fail(Action::Talents, error),
                 }
             }
             NetCommand::Mail {

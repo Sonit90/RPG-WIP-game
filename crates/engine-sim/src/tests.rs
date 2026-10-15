@@ -241,3 +241,26 @@ fn the_command_line_selects_classes_and_gear() {
     assert!(crate::parse_options(["--class".to_owned(), "bard".to_owned()].into_iter()).is_err());
     assert!(crate::parse_options(["--iterations".to_owned()].into_iter()).is_err());
 }
+
+/// The FireMage's designed builds, same seed, same gear: pinned to the damage they dealt
+/// before the talent numbers moved into `assets/catalog/talents.json`. The data move changes
+/// nothing, and this is where that is held to.
+#[test]
+fn the_designed_mage_builds_deal_what_they_dealt_before_the_talents_became_data() {
+    engine_realm::talents::install_builtin().expect("the shipped talents install");
+    let profile = GearProfile::headline(GearTier::Top);
+    let builds = builds_for(Class::Mage);
+    let damage: Vec<u64> = builds
+        .iter()
+        .map(|build| fight(Class::Mage, build, &profile, SEED).damage.to_bits())
+        .collect();
+    assert_eq!(damage, PINNED_MAGE_DAMAGE);
+}
+
+/// `f64::to_bits` of the damage three fights of each Mage build dealt, recorded from the
+/// build before the move.
+const PINNED_MAGE_DAMAGE: [u64; 3] = [
+    4_675_261_171_194_658_816,
+    4_675_744_281_617_061_205,
+    4_675_759_511_685_125_461,
+];

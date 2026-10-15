@@ -539,17 +539,21 @@ fn the_conversion_never_feeds_itself() {
 // ------------------------------------------------------------------------ wrath
 
 #[test]
-fn wrath_stacks_natures_exposure_to_fifteen_and_no_further() {
+fn wrath_stacks_natures_exposure_to_ten_and_no_further() {
     let mut simulation = druid();
     let victim = target(&simulation);
     for _ in 0..20 {
         cast_through(&mut simulation, FireAbility::Wrath);
         simulation.step_many(10);
     }
-    assert_eq!(stacks(&simulation, victim, StatusKind::NaturesExposure), 15);
-    // Fifteen stacks at three per cent each is the design's forty-five.
+    assert_eq!(
+        stacks(&simulation, victim, StatusKind::NaturesExposure),
+        NATURES_EXPOSURE_MAX_STACKS
+    );
+    // Ten stacks at two per cent each is the design's twenty.
+    assert_eq!(NATURES_EXPOSURE_MAX_STACKS, 10);
     assert!(
-        (engine_game::druid::Druid::exposure_multiplier(15) - 1.45).abs() < 1e-6,
+        (engine_game::druid::Druid::exposure_multiplier(10) - 1.20).abs() < 1e-6,
         "the ceiling moved"
     );
 }
@@ -589,8 +593,8 @@ fn natures_exposure_amplifies_nature_and_arcane_from_any_source() {
     assert_eq!(stacks(&simulation, victim, StatusKind::NaturesExposure), 5);
 
     for (school, expected) in [
-        (DamageType::Nature, 1.15),
-        (DamageType::Arcane, 1.15),
+        (DamageType::Nature, 1.0 + 5.0 * NATURES_EXPOSURE_PER_STACK),
+        (DamageType::Arcane, 1.0 + 5.0 * NATURES_EXPOSURE_PER_STACK),
         (DamageType::Fire, 1.0),
         (DamageType::Physical, 1.0),
     ] {

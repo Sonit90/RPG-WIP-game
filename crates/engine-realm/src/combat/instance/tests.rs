@@ -26,6 +26,8 @@ fn crypt() -> (EnvironmentScene, Vec<Barrier>, Vec<PlayerSpec>) {
         name: account.to_uppercase(),
         hero: *hero,
         loadout: None,
+        talents: Vec::new(),
+        talent_points: 5,
         spawn: dungeon.spawn_point(slot),
     })
     .collect();
@@ -280,4 +282,67 @@ fn a_rebuilt_fight_keeps_keys_the_dead_and_the_bodies() {
     assert!((tank.body.position - body.position).length() < 1e-3);
     assert!((tank.health - 100.0).abs() < 1e-3);
     assert!((rebuilt.credited() - 5.0).abs() < 1e-3);
+}
+
+#[test]
+fn the_talents_in_a_player_spec_reach_the_simulation() {
+    let (scene, barriers, mut players) = crypt();
+    players[1].talents = vec!["swift_wrath".into(), "verdant_sunfire".into()];
+    players[1].talent_points = 6;
+    players[2].talents = vec!["infernal_capacity".into()];
+    let mut fight = CombatInstance::new(&scene, &players, &barriers, (1.0, 1.0));
+    let healer = fight
+        .resolve(&EntityRef::Player("healer".into()))
+        .expect("healer");
+    let mage = fight
+        .resolve(&EntityRef::Player("dps".into()))
+        .expect("dps");
+    let tank = fight
+        .resolve(&EntityRef::Player("tank".into()))
+        .expect("tank");
+
+    let effects = fight
+        .sim
+        .with_player(healer, |sim| *sim.druid().effects())
+        .expect("druid");
+    assert_eq!(effects.swift_wrath_every, 4);
+    assert!(effects.sunfire_radius_scale > 1.0);
+    let ignite = fight
+        .sim
+        .with_player(mage, |sim| sim.mage().effects().ignite_max_stacks)
+        .expect("mage");
+    assert_eq!(ignite, 6);
+    let tank_points = fight
+        .sim
+        .with_player(tank, |sim| sim.talent_grid().purchased_count())
+        .expect("warrior");
+    assert_eq!(tank_points, 0);
+}
+
+#[test]
+fn talents_that_do_not_fit_are_dropped_whole() {
+    let (scene, barriers, mut players) = crypt();
+    // Six points cannot hold seven; and an unknown key spoils the whole set too.
+    players[1].talents = vec!["swift_wrath".into(), "deep_exposure".into()];
+    players[1].talent_points = 6;
+    players[2].talents = vec!["infernal_capacity".into(), "no_such_talent".into()];
+    let mut fight = CombatInstance::new(&scene, &players, &barriers, (1.0, 1.0));
+    let healer = fight
+        .resolve(&EntityRef::Player("healer".into()))
+        .expect("healer");
+    let mage = fight
+        .resolve(&EntityRef::Player("dps".into()))
+        .expect("dps");
+    assert_eq!(
+        fight
+            .sim
+            .with_player(healer, |sim| sim.talent_grid().purchased_count()),
+        Some(0)
+    );
+    assert_eq!(
+        fight
+            .sim
+            .with_player(mage, |sim| sim.mage().effects().ignite_max_stacks),
+        Some(5)
+    );
 }

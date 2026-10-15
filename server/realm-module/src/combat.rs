@@ -144,11 +144,17 @@ fn specs(
             let loadout = member
                 .as_ref()
                 .and_then(|m| serde_json::from_str::<Loadout>(&m.loadout).ok());
+            let talents = member
+                .as_ref()
+                .map(|m| engine_realm::talents::decode_keys(&m.talents))
+                .unwrap_or_default();
             PlayerSpec {
                 account_id: player.account_id.clone(),
                 name: player.name.clone(),
                 hero,
                 loadout,
+                talents,
+                talent_points: member.as_ref().map_or(0, |m| m.talent_points),
                 spawn: dungeon.definition.spawn_point(slot),
             }
         })

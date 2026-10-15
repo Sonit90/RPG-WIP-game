@@ -334,9 +334,7 @@ fn resources(
             let _ = writeln!(
                 out,
                 "* Astral Power: {:.0} generated, {:.0} spent on empowerments ({:.1} empowered casts).",
-                r.astral_generated,
-                r.astral_spent,
-                r.astral_spent / engine_game::druid::tuning::ASTRAL_SPEND as f64
+                r.astral_generated, r.astral_spent, r.empowerments
             );
         }
         Class::Warrior => {
@@ -547,8 +545,8 @@ fn caveats(out: &mut String) {
          defensive and healing kits are not exercised, and the Warrior's defence-driven \
          resource is never generated because the dummies do not attack.\n\
          * Versatility and Spirit are not part of any gear profile.\n\
-         * Warrior and Druid have no talents yet; each has a `Default` build and adding `Build \
-         A` / `Build B` is adding rows to `builds_for` in `build.rs`.\n\
+         * The Warrior has no talents yet (`Default` only). The Druid's `Build A` (damage) \
+         and `Build B` (area) buy talents from `assets/catalog/talents.json`.\n\
          * Targets wander on a seeded timer, so area abilities lose some hits and the \
          Warrior spends some time walking; this is part of the number, not noise.\n\
          * Cooldown *max casts* ignores cooldown-reduction effects, so an ability that is \
