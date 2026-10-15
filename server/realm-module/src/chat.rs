@@ -29,9 +29,9 @@ fn speaker(ctx: &ReducerContext, identity: Identity) -> Option<(String, u64)> {
     let ticket = ctx.db.queue_ticket().identity().find(identity);
     let account = ctx.db.account().identity().find(identity);
     let name = speaker_name(
+        account.as_ref().map(|a| a.display_name.as_str()),
         member.as_ref().map(|m| m.character_name.as_str()),
         ticket.as_ref().map(|t| t.character_name.as_str()),
-        account.as_ref().map(|a| a.display_name.as_str()),
     )?
     .to_owned();
     Some((name, member.map_or(0, |m| m.party_id)))

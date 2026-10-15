@@ -1230,24 +1230,10 @@ pub fn chat(endpoints: &RealmEndpoints) -> Outcome {
         bots[3].mirror.ticket.is_some() && bots[3].mirror.party.is_none()
     });
     check(queued, "the outsider is queued alone, with no party")?;
-    let outsider_name = bots[3]
-        .mirror
-        .ticket
-        .as_ref()
-        .map(|t| t.character_name.clone())
-        .unwrap_or_default();
-    let leader_name = bots[0]
-        .mirror
-        .my_membership()
-        .map(|m| m.character_name.clone())
-        .unwrap_or_default();
-    check(
-        !outsider_name.is_empty() && !leader_name.is_empty(),
-        "both have character names",
-    )?;
     let settle = |bots: &mut [Bot]| drive(bots, Duration::from_secs(2), |_| false);
 
-    // Server: everyone, under the sender's own character name and account.
+    // Server: everyone, under the sender's own account name. Character names are the hero's
+    // ("Fire Mage") and shared, so the player's name is the account's display name.
     let server_text = format!("hello realm {tag}");
     said(&bots[3], Channel::Server, "", &server_text);
     let everyone = drive(&mut bots, Duration::from_secs(10), |bots| {
@@ -1255,9 +1241,13 @@ pub fn chat(endpoints: &RealmEndpoints) -> Outcome {
     });
     check(everyone, "a Server message reached all four players")?;
     let line = heard(&bots[0], &server_text);
+    let outsider_name = line.map(|m| m.sender_name.clone()).unwrap_or_default();
     check(
-        line.is_some_and(|m| m.sender_name == outsider_name),
-        "the sender's name is the server's: their character",
+        !outsider_name.is_empty()
+            && bots
+                .iter()
+                .all(|b| heard(b, &server_text).is_some_and(|m| m.sender_name == outsider_name)),
+        "the sender's name is the server's, the same for every reader",
     )?;
     check(
         line.is_some_and(|m| Some(m.sender_account.as_str()) == bots[3].mirror.my_account_id()),
@@ -1271,6 +1261,13 @@ pub fn chat(endpoints: &RealmEndpoints) -> Outcome {
         bots[..3].iter().all(|b| heard(b, &party_text).is_some())
     });
     check(party_heard, "a Party message reached the whole party")?;
+    let leader_name = heard(&bots[1], &party_text)
+        .map(|m| m.sender_name.clone())
+        .unwrap_or_default();
+    check(
+        !leader_name.is_empty() && leader_name != outsider_name,
+        "players speak under distinct names",
+    )?;
     settle(&mut bots);
     check(
         heard(&bots[3], &party_text).is_none(),

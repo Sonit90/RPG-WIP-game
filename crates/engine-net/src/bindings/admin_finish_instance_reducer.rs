@@ -50,11 +50,9 @@ pub trait admin_finish_instance {
         instance_id: u64,
         success: bool,
 
-        callback: impl FnOnce(
-            &super::ReducerEventContext,
-            Result<Result<(), String>, __sdk::InternalError>,
-        ) + Send
-        + 'static,
+        callback: impl FnOnce(&super::ReducerEventContext, Result<Result<(), String>, __sdk::InternalError>)
+            + Send
+            + 'static,
     ) -> __sdk::Result<()>;
 }
 
@@ -64,11 +62,9 @@ impl admin_finish_instance for super::RemoteReducers {
         instance_id: u64,
         success: bool,
 
-        callback: impl FnOnce(
-            &super::ReducerEventContext,
-            Result<Result<(), String>, __sdk::InternalError>,
-        ) + Send
-        + 'static,
+        callback: impl FnOnce(&super::ReducerEventContext, Result<Result<(), String>, __sdk::InternalError>)
+            + Send
+            + 'static,
     ) -> __sdk::Result<()> {
         self.imp.invoke_reducer_with_callback(
             AdminFinishInstanceArgs {

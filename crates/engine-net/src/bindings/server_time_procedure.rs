@@ -25,8 +25,8 @@ pub trait server_time {
         &self,
 
         __callback: impl FnOnce(&super::ProcedureEventContext, Result<i64, __sdk::InternalError>)
-        + Send
-        + 'static,
+            + Send
+            + 'static,
     );
 }
 
@@ -35,8 +35,8 @@ impl server_time for super::RemoteProcedures {
         &self,
 
         __callback: impl FnOnce(&super::ProcedureEventContext, Result<i64, __sdk::InternalError>)
-        + Send
-        + 'static,
+            + Send
+            + 'static,
     ) {
         self.imp.invoke_procedure_with_callback::<_, i64>(
             "server_time",

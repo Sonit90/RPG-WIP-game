@@ -79,7 +79,13 @@ pub trait RegisterPort: Send + Sync {
         expires_at: time::OffsetDateTime,
     ) -> Result<(), AppError>;
 
-    fn issue_access_token(&self, user_id: Uuid, role: Role) -> Result<String, AppError>;
+    /// A player's access token. `name` is the display name the realm shows other players.
+    fn issue_access_token(
+        &self,
+        user_id: Uuid,
+        role: Role,
+        name: Option<&str>,
+    ) -> Result<String, AppError>;
 }
 
 #[async_trait::async_trait]
@@ -116,8 +122,13 @@ impl RegisterPort for AppState {
             .map_err(Into::into)
     }
 
-    fn issue_access_token(&self, user_id: Uuid, role: Role) -> Result<String, AppError> {
-        self.jwt.issue(user_id, role)
+    fn issue_access_token(
+        &self,
+        user_id: Uuid,
+        role: Role,
+        name: Option<&str>,
+    ) -> Result<String, AppError> {
+        self.jwt.issue_named(user_id, role, name)
     }
 }
 
@@ -134,7 +145,9 @@ pub async fn register_user(
     let user = port
         .create_user(&body.email, &phc, body.display_name.as_deref())
         .await?;
-    let access = port.issue_access_token(user.id, user.role)?;
+    // The display name rides in the token from the first sign-in, exactly as it does on every
+    // later one, so a new player is not "Adventurer" to everyone until they log in again.
+    let access = port.issue_access_token(user.id, user.role, user.display_name.as_deref())?;
 
     let refresh = generate_refresh_token();
     let hash = hash_refresh_token(&refresh);
@@ -1117,7 +1130,12 @@ mod tests {
                 .expect("store_token_response not set")
         }
 
-        fn issue_access_token(&self, _u: uuid::Uuid, _r: Role) -> Result<String, AppError> {
+        fn issue_access_token(
+            &self,
+            _u: uuid::Uuid,
+            _r: Role,
+            _n: Option<&str>,
+        ) -> Result<String, AppError> {
             self.issue_token_response
                 .lock()
                 .unwrap()

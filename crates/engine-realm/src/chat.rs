@@ -94,6 +94,8 @@ pub enum WhisperRefusal {
     NotOnline,
     /// The sender named their own character.
     Yourself,
+    /// More than one connected player has that name, so it names nobody in particular.
+    Ambiguous,
 }
 
 impl WhisperRefusal {
@@ -103,6 +105,10 @@ impl WhisperRefusal {
         match self {
             Self::NotOnline => format!("No player named {} is online.", target.trim()),
             Self::Yourself => "You cannot whisper yourself.".to_owned(),
+            Self::Ambiguous => format!(
+                "More than one player named {} is online; whisper is not delivered.",
+                target.trim()
+            ),
         }
     }
 }
@@ -113,16 +119,18 @@ impl WhisperRefusal {
 /// # Errors
 ///
 /// [`WhisperRefusal::NotOnline`] if no connected character has the name,
-/// [`WhisperRefusal::Yourself`] if it is the sender's own.
+/// [`WhisperRefusal::Yourself`] if it is the sender's own, [`WhisperRefusal::Ambiguous`] if
+/// several connected players share it — a whisper must never reach someone it was not for.
 pub fn resolve_whisper<'a, K: PartialEq>(
     sender: &K,
     target: &str,
     online: &'a [(K, String)],
 ) -> Result<&'a K, WhisperRefusal> {
-    let (who, _) = online
-        .iter()
-        .find(|(_, name)| names_match(name, target))
-        .ok_or(WhisperRefusal::NotOnline)?;
+    let mut matches = online.iter().filter(|(_, name)| names_match(name, target));
+    let (who, _) = matches.next().ok_or(WhisperRefusal::NotOnline)?;
+    if matches.next().is_some() {
+        return Err(WhisperRefusal::Ambiguous);
+    }
     if who == sender {
         Err(WhisperRefusal::Yourself)
     } else {
@@ -130,16 +138,17 @@ pub fn resolve_whisper<'a, K: PartialEq>(
     }
 }
 
-/// The name a player speaks under: their party character, else their queued one, else the
-/// account's display name (a player standing in the hub with neither). `None` means the realm
-/// knows no name for them at all, and they may not chat.
+/// The name a player speaks under: their account's display name, which is who the *player*
+/// is. A character's name is its hero definition's ("Fire Mage") and is shared by everyone
+/// playing that hero, so it is only the fallback for an account with no display name.
+/// `None` means the realm knows no name for them at all, and they may not chat.
 #[must_use]
 pub fn speaker_name<'a>(
+    display_name: Option<&'a str>,
     party_character: Option<&'a str>,
     ticket_character: Option<&'a str>,
-    display_name: Option<&'a str>,
 ) -> Option<&'a str> {
-    [party_character, ticket_character, display_name]
+    [display_name, party_character, ticket_character]
         .into_iter()
         .flatten()
         .map(str::trim)
@@ -283,6 +292,15 @@ mod tests {
     }
 
     #[test]
+    fn a_name_two_players_share_reaches_neither() {
+        let online = vec![(1, "Aldric".into()), (2, "Twin".into()), (3, "twin".into())];
+        assert_eq!(
+            resolve_whisper(&1, "Twin", &online),
+            Err(WhisperRefusal::Ambiguous)
+        );
+    }
+
+    #[test]
     fn a_whisper_to_nobody_or_oneself_is_refused() {
         let online = online();
         assert_eq!(
@@ -304,10 +322,10 @@ mod tests {
     }
 
     #[test]
-    fn the_speaker_is_the_party_character_then_the_queued_one_then_the_account() {
-        assert_eq!(speaker_name(Some("Aldric"), Some("Other"), Some("acct")), Some("Aldric"));
-        assert_eq!(speaker_name(None, Some("Brienne"), Some("acct")), Some("Brienne"));
-        assert_eq!(speaker_name(None, None, Some("Hubwalker")), Some("Hubwalker"));
+    fn the_speaker_is_the_account_then_the_character() {
+        assert_eq!(speaker_name(Some("Aldric"), Some("Fire Mage"), None), Some("Aldric"));
+        assert_eq!(speaker_name(None, Some("Brienne"), Some("Other")), Some("Brienne"));
+        assert_eq!(speaker_name(Some(" "), None, Some("Hubwalker")), Some("Hubwalker"));
         assert_eq!(speaker_name(None, None, None), None);
         assert_eq!(speaker_name(Some("  "), None, Some(" ")), None);
     }
