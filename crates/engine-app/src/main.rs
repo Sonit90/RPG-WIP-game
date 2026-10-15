@@ -11,6 +11,7 @@ mod audio_device;
 mod benchmark;
 mod map_bake;
 mod online;
+mod online_audio;
 mod run_profile;
 #[cfg(feature = "standalone")]
 mod standalone;

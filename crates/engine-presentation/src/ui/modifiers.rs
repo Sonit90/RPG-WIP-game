@@ -540,7 +540,7 @@ pub fn push_modifiers(
                 &kit,
                 button,
                 "Reroll",
-                None,
+                Some((UiIcon::ControlDice, kit.px(16.0))),
                 ButtonVariant::Primary,
                 Interaction::at(button, &input).disabled(!can_press),
             );

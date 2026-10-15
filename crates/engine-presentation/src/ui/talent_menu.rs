@@ -17,7 +17,7 @@
 //! While the character is **locked** (queued, in a party, in a dungeon) the menu still opens and
 //! shows the build, with a banner saying why nothing can be changed, and emits nothing.
 
-use engine_render_data::ui::{TextAlign, UiColor, UiDrawList, UiRect, UiScale};
+use engine_render_data::ui::{TextAlign, UiColor, UiDrawList, UiIcon, UiRect, UiScale};
 
 use engine_game::talent::TALENT_TIERS;
 
@@ -520,6 +520,46 @@ pub fn push_talent_menu(
     );
 }
 
+/// The icon a talent wears: the ability family it modifies, by the talent's key.
+///
+/// One icon per talent, reusing the ability and aura art rather than growing the atlas by a
+/// tile for every row; a talent that reshapes Meteor wears Meteor.
+#[must_use]
+pub fn talent_icon(key: &str) -> Option<UiIcon> {
+    Some(match key {
+        // Fire Mage.
+        "burning_embers" => UiIcon::Detonate,
+        "extended_flame" => UiIcon::AuraBurning,
+        "infernal_capacity" => UiIcon::AuraInferno,
+        "rapid_combustion" => UiIcon::FlameCone,
+        "molten_meteor" | "meteoric_impact" => UiIcon::Meteor,
+        "furnace_mastery" | "dual_fire_mastery" => UiIcon::FireMastery,
+        "spellfire_feedback" => UiIcon::FlameLance,
+        "burning_precision" => UiIcon::Firebolt,
+        "volatile_ignition" => UiIcon::AuraScorched,
+        "chain_pyroblast" => UiIcon::Pyroblast,
+        // Druid.
+        "swift_wrath" => UiIcon::Wrath,
+        "verdant_sunfire" => UiIcon::Sunfire,
+        "deep_exposure" => UiIcon::AuraNaturesExposure,
+        "living_seed" => UiIcon::Regrowth,
+        "overgrowth" => UiIcon::Swiftmend,
+        "astral_attunement" => UiIcon::AstralPower,
+        "barkskin_instinct" => UiIcon::WildRush,
+        "tranquil_mind" => UiIcon::Tranquility,
+        // Warrior.
+        "unbroken_momentum" => UiIcon::Valor,
+        "shockwave" => UiIcon::WarStomp,
+        "executioner" => UiIcon::ColossusStrike,
+        "bloodied_valor" => UiIcon::PunctureBlood,
+        "fervent_guard" => UiIcon::BattleFervor,
+        "relentless_charge" => UiIcon::ShieldCharge,
+        "bulwark_rhythm" => UiIcon::ShieldBlock,
+        "unyielding" => UiIcon::LastStand,
+        _ => return None,
+    })
+}
+
 /// One talent node: name, cost, description, and what state it is in.
 fn push_node(
     list: &mut UiDrawList,
@@ -538,6 +578,25 @@ fn push_node(
         theme.locked
     };
     list.rect(rect, fill);
+    // The family's art, faint behind the words so no layout had to give way for it.
+    if let Some(icon) = talent.icon {
+        let size = scale.px(52.0);
+        let alpha = if talent.purchased || talent.affordable {
+            0.42
+        } else {
+            0.2
+        };
+        list.icon(
+            UiRect::new(
+                rect.right() - size - scale.px(4.0),
+                rect.y + (rect.height - size) * 0.5 + scale.px(6.0),
+                size,
+                size,
+            ),
+            icon,
+            [1.0, 1.0, 1.0, alpha],
+        );
+    }
     if hovered {
         list.outline(rect, scale.px(2.0), theme.hover);
     } else {
@@ -897,6 +956,19 @@ mod tests {
                     "{} is too long for a node: {}",
                     talent.name,
                     talent.description.len()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn every_talent_of_every_hero_has_an_icon() {
+        for hero in engine_game::hero::Hero::ALL {
+            for talent in &engine_game::talent::hero_talents(hero).talents {
+                assert!(
+                    talent_icon(&talent.key).is_some(),
+                    "{} has no icon",
+                    talent.key
                 );
             }
         }

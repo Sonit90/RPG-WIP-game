@@ -73,6 +73,15 @@ pub struct Recipe {
     pub tone_start_hz: f32,
     /// Where the sine ends, in Hz.
     pub tone_end_hz: f32,
+    /// Level of a second sine riding the first at a fixed frequency ratio: what makes a
+    /// chime a chime (ratio 2) or a struck piece of metal metal (ratio 2.76).
+    pub harmonic: f32,
+    /// That second sine's frequency as a multiple of the first's.
+    pub harmonic_ratio: f32,
+    /// How many separate notes the tone sweep is quantised into. Zero or one leaves it a
+    /// smooth sweep; more turns it into an arpeggio of that many plucked, semitone-snapped
+    /// notes from the start frequency to the end one.
+    pub steps: u8,
     /// Level of the sparse impulses.
     pub crackle: f32,
     /// How many impulses a second.
@@ -100,6 +109,9 @@ impl Recipe {
             tone: 0.0,
             tone_start_hz: 220.0,
             tone_end_hz: 220.0,
+            harmonic: 0.0,
+            harmonic_ratio: 2.0,
+            steps: 0,
             crackle: 0.0,
             crackle_rate: 0.0,
             tremolo_hz: 0.0,
@@ -123,6 +135,21 @@ impl Recipe {
         self.tone = level;
         self.tone_start_hz = start;
         self.tone_end_hz = end;
+        self
+    }
+
+    /// With a second sine at `level`, `ratio` times the tone's frequency.
+    #[must_use]
+    pub const fn harmonic(mut self, level: f32, ratio: f32) -> Self {
+        self.harmonic = level;
+        self.harmonic_ratio = ratio;
+        self
+    }
+
+    /// With the tone played as `count` plucked notes instead of one sweep.
+    #[must_use]
+    pub const fn steps(mut self, count: u8) -> Self {
+        self.steps = count;
         self
     }
 
@@ -196,6 +223,7 @@ pub fn render(recipe: &Recipe, sample_rate: u32, seed: u64) -> Vec<f32> {
     // render, which is why the loop below is a fold rather than a map.
     let mut filtered = 0.0_f32;
     let mut phase = 0.0_f32;
+    let mut harmonic_phase = 0.0_f32;
     // Fractional impulses per sample; a counter crossing 1 fires one and keeps the remainder,
     // which is what makes a rate of 7.5 a second mean 7.5 a second rather than 7.
     let crackle_step = (recipe.crackle_rate.max(0.0)) / rate;
@@ -219,12 +247,28 @@ pub fn render(recipe: &Recipe, sample_rate: u32, seed: u64) -> Vec<f32> {
 
         // The swept sine. Frequency is interpolated exponentially so a drop from 300 Hz to
         // 40 Hz sounds like one steady fall rather than a cliff at the start.
-        let hz = exp_lerp(recipe.tone_start_hz, recipe.tone_end_hz, fraction);
+        let stepped = recipe.steps > 1;
+        let hz = if stepped {
+            stepped_hz(recipe, fraction)
+        } else {
+            exp_lerp(recipe.tone_start_hz, recipe.tone_end_hz, fraction)
+        };
         phase += std::f32::consts::TAU * hz / rate;
         if phase > std::f32::consts::TAU {
             phase -= std::f32::consts::TAU;
         }
-        let tone = phase.sin() * recipe.tone;
+        // An arpeggio's notes are each plucked: a short ramp in, then a decay to the next.
+        let pluck = if stepped {
+            let local = (fraction * f32::from(recipe.steps)).fract();
+            (local / 0.03).min(1.0) * (1.0 - local).powf(1.2)
+        } else {
+            1.0
+        };
+        harmonic_phase += std::f32::consts::TAU * hz * recipe.harmonic_ratio / rate;
+        if harmonic_phase > std::f32::consts::TAU {
+            harmonic_phase -= std::f32::consts::TAU;
+        }
+        let tone = (phase.sin() * recipe.tone + harmonic_phase.sin() * recipe.harmonic) * pluck;
 
         // Sparse impulses, each a short exponential blip rather than a single sample: one
         // sample is a click at any sample rate and a blip is a crack.
@@ -299,6 +343,19 @@ fn normalise(samples: &mut [f32]) {
     for sample in samples.iter_mut() {
         *sample *= scale;
     }
+}
+
+/// The frequency of the arpeggio note playing at `fraction`, snapped to a semitone.
+fn stepped_hz(recipe: &Recipe, fraction: f32) -> f32 {
+    let count = f32::from(recipe.steps.max(2));
+    let note = (fraction * count).floor().min(count - 1.0);
+    let hz = exp_lerp(
+        recipe.tone_start_hz,
+        recipe.tone_end_hz,
+        note / (count - 1.0),
+    );
+    let semitones = (hz / recipe.tone_start_hz.max(1.0)).log2() * 12.0;
+    recipe.tone_start_hz.max(1.0) * (semitones.round() / 12.0).exp2()
 }
 
 /// Linear interpolation.
@@ -395,6 +452,32 @@ mod tests {
             assert!(samples.iter().all(|sample| sample.is_finite()));
             assert!(samples.len() <= (MAX_DURATION * 48_000.0) as usize + 1);
         }
+    }
+
+    #[test]
+    fn an_arpeggio_is_several_notes_and_a_sweep_is_one() {
+        let notes = Recipe::new(0.6)
+            .tone(1.0, 440.0, 660.0)
+            .harmonic(0.4, 2.0)
+            .steps(3);
+        let samples = render(&notes, 48_000, 1);
+        assert_eq!(samples.len(), 28_800);
+        // Each plucked note starts quietly and swells to its peak: the energy of the first
+        // millisecond of the second note is far below that of its middle.
+        let second_start = samples.len() / 3;
+        let edge = energy(&samples[second_start..second_start + 24]);
+        let body = energy(&samples[second_start + 600..second_start + 1_200]);
+        assert!(edge < body, "a pluck ramps in: {edge} vs {body}");
+        assert!(samples.iter().all(|sample| sample.is_finite()));
+    }
+
+    #[test]
+    fn stepped_notes_land_on_semitones() {
+        let recipe = Recipe::new(1.0).tone(1.0, 440.0, 660.0).steps(2);
+        assert!((stepped_hz(&recipe, 0.1) - 440.0).abs() < 0.01);
+        // 660 Hz is 7.02 semitones above 440: snapped to 7.
+        let top = 440.0 * (7.0_f32 / 12.0).exp2();
+        assert!((stepped_hz(&recipe, 0.9) - top).abs() < 0.01);
     }
 
     fn energy(samples: &[f32]) -> f32 {

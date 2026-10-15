@@ -755,6 +755,8 @@ pub struct TalentView {
     pub purchased: bool,
     /// Whether it could be bought right now.
     pub affordable: bool,
+    /// The icon of the ability family it belongs to.
+    pub icon: Option<engine_render_data::ui::UiIcon>,
 }
 
 /// One party member, as their frame shows them.
@@ -1237,6 +1239,7 @@ impl UiSnapshot {
                 description: talent.description.as_str(),
                 purchased: grid.has_index(index),
                 affordable: grid.purchase_error_index(index).is_none(),
+                icon: crate::ui::talent_menu::talent_icon(talent.key.as_str()),
             });
         }
         let stats = mage.stats();

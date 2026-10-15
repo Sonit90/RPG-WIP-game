@@ -414,6 +414,10 @@ pub enum UiIcon {
     ControlReset,
     /// Edit HUD: Drag to move.
     ControlMove,
+    /// A dungeon key: a ring bow on a notched shaft.
+    ControlKey,
+    /// A die, five pips: the key reroll.
+    ControlDice,
 
     // Buffs and debuffs. An effect that *is* an ability — Rejuvenation, Shield Block — wears
     // that ability's icon; these are the ones that are not.
@@ -477,7 +481,7 @@ pub enum UiIcon {
 
 impl UiIcon {
     /// Every icon, in atlas order.
-    pub const ALL: [Self; 117] = [
+    pub const ALL: [Self; 119] = [
         Self::Firebolt,
         Self::Meteor,
         Self::FlameCone,
@@ -567,6 +571,8 @@ impl UiIcon {
         Self::ControlSnap,
         Self::ControlReset,
         Self::ControlMove,
+        Self::ControlKey,
+        Self::ControlDice,
         Self::AuraBurning,
         Self::AuraBleeding,
         Self::AuraRecovering,

@@ -173,6 +173,8 @@ pub enum Directive {
     /// Set this hero's talents to the persistent character's: its saved keys, and every point
     /// it has (starting plus earned).
     ApplyTalents(Hero, Vec<String>, u32),
+    /// Play this interface sound.
+    PlaySound(engine_audio::SoundId),
 }
 
 /// One other player, as the world shows them.
@@ -393,6 +395,8 @@ pub struct OnlineSession {
     /// The latest key reroll this client has seen, as `(instance id, reroll counter)`: the
     /// reveal plays when the counter grows past it.
     seen_reroll: Option<(u64, u32)>,
+    /// What the realm's state changing is worth in sound.
+    sounds: crate::online_audio::NetSoundWatch,
 }
 
 /// Re-fetching the character after chest loot, until the item shows up in the bag or mailbox.
@@ -491,6 +495,7 @@ impl OnlineSession {
             enhance_mode: false,
             enhance_target: None,
             seen_reroll: None,
+            sounds: crate::online_audio::NetSoundWatch::default(),
         })
     }
 
@@ -766,9 +771,33 @@ impl OnlineSession {
             .ui
             .update(&front_input, &self.view, viewport, scale, delta_seconds);
         for action in actions {
+            self.directives
+                .push(Directive::PlaySound(crate::online_audio::action_sound(
+                    &action,
+                )));
             self.on_action(action);
         }
         self.view = self.build_view();
+        self.hear_the_realm();
+    }
+
+    /// Queues the sounds the realm's latest state change calls for.
+    fn hear_the_realm(&mut self) {
+        let snapshot = crate::online_audio::NetSnapshot {
+            queued: self.mirror.ticket.is_some(),
+            party: self.mirror.party.as_ref().map(|p| (p.id, p.state)),
+            key_in: self
+                .mirror
+                .party
+                .as_ref()
+                .is_some_and(|party| party.key_owner.is_some()),
+            instance: self.mirror.instance.as_ref().map(|i| i.state),
+            countdown: self.view.countdown,
+        };
+        let mut sounds = Vec::new();
+        self.sounds.observe(snapshot, &mut sounds);
+        self.directives
+            .extend(sounds.into_iter().map(Directive::PlaySound));
     }
 
     /// Draws the online interface into `list`.
@@ -1046,6 +1075,10 @@ impl OnlineSession {
     }
 
     fn toast(&mut self, level: StatusLevel, message: impl Into<String>) {
+        if matches!(level, StatusLevel::Warning | StatusLevel::Bad) {
+            self.directives
+                .push(Directive::PlaySound(engine_audio::SoundId::UiError));
+        }
         self.toasts.push_back((
             Toast {
                 level,
@@ -1239,7 +1272,11 @@ impl OnlineSession {
                     self.saving = None;
                 }
                 match action {
-                    Action::SignIn => self.error = Some(error.message),
+                    Action::SignIn => {
+                        self.error = Some(error.message);
+                        self.directives
+                            .push(Directive::PlaySound(engine_audio::SoundId::UiError));
+                    }
                     _ if error.category == ErrorCategory::Connection => {
                         self.toast(StatusLevel::Warning, error.message);
                     }
