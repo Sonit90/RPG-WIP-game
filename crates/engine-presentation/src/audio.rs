@@ -566,7 +566,9 @@ impl AudioDirector {
                     self.request(SoundCue::ui(SoundId::UiSelect), audio);
                 }
             }
-            CombatEvent::MailBagFull { .. } => {}
+            CombatEvent::MailBagFull { .. }
+            | CombatEvent::MobLoot { .. }
+            | CombatEvent::MobCurrency { .. } => {}
             // Nothing to hear, or a state the frame synchronises instead. A phase change is
             // seen rather than heard: this phase authors no new cues. A point of Valor
             // short of a full bar is deliberately silent: the cast that paid it has already

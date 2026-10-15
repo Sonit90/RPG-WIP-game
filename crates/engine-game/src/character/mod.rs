@@ -49,8 +49,10 @@ pub use equipment::{
     Equipment, INVENTORY_COLUMNS, INVENTORY_SLOTS, Inventory, ItemSlot, MoveError,
 };
 pub use item::{
-    EquipSlot, ITEMS, ItemDef, ItemFamily, ItemIcon, ItemId, ItemQuality, ItemStack, item,
-    item_by_key, loot_pool, starting_item,
+    BROKEN_PENALTY, CATALOG_ID_BASE, CatalogItem, ENHANCE_STEP_PCT, ENHANCEMENT_CEILING, EquipSlot,
+    ITEMS, ItemDef, ItemFamily, ItemIcon, ItemId, ItemProps, ItemQuality, ItemStack,
+    QUALITY_DEFAULT, QUALITY_MAX, QUALITY_MIN, catalog_items, item, item_by_key, loot_pool,
+    register_catalog_items, starting_item,
 };
 pub use mail::{MAIL_SOFT_CAP, MailItem, MailReason, MailSender, Mailbox, TakeMailError};
 pub use spirit::{
@@ -159,8 +161,8 @@ impl CharacterSheet {
         if let Some(index) = self.inventory.add(stack) {
             return Some(index);
         }
-        self.mailbox.send(
-            stack.item,
+        self.mailbox.send_stack(
+            stack,
             MailSender::System,
             MailReason::SlotRemoved,
             received_at,

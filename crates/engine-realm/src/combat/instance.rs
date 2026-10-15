@@ -315,6 +315,15 @@ struct Member {
     idle_ticks: u32,
 }
 
+/// An item the boss's chest rolled: its stable key and its instance properties.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RolledItem {
+    /// The item's stable key.
+    pub key: &'static str,
+    /// Its quality, enhancement and broken state.
+    pub props: engine_game::character::ItemProps,
+}
+
 /// One instance's fight.
 pub struct CombatInstance {
     sim: Simulation,
@@ -526,18 +535,34 @@ impl CombatInstance {
             .is_some_and(engine_game::dungeon_run::DungeonRun::is_unlocked)
     }
 
-    /// The item the boss's chest rolled for `account`, as its stable key, whether or not they
-    /// have opened the chest. `None` when there is no chest or no roll for them.
+    /// The first item the boss's chest rolled for `account`, as its stable key, whether or not
+    /// they have opened the chest. `None` when there is no chest or no roll for them.
     ///
-    /// What the realm persists at the end of the run: the item is theirs either way.
+    /// What the realm persists at the end of the run today: one item per player. A run with
+    /// loot rules set rolls several; read them all with [`CombatInstance::loot_items_of`].
     #[must_use]
     pub fn loot_of(&self, account: &str) -> Option<&'static str> {
-        let entity = self.member(account)?.entity;
+        self.loot_items_of(account).first().map(|item| item.key)
+    }
+
+    /// Every item the boss's chest rolled for `account`, in roll order, whether or not they
+    /// have opened the chest. Empty when there is no chest or no roll for them.
+    #[must_use]
+    pub fn loot_items_of(&self, account: &str) -> Vec<RolledItem> {
+        crate::loot::ensure_items_registered();
+        let Some(member) = self.member(account) else {
+            return Vec::new();
+        };
         self.sim
             .chest_loot()
-            .find(|(player, _, _)| *player == entity)
-            .and_then(|(_, item, _)| engine_game::character::item(item))
-            .map(|def| def.key)
+            .filter(|(player, _, _)| *player == member.entity)
+            .filter_map(|(_, stack, _)| {
+                engine_game::character::item(stack.item).map(|def| RolledItem {
+                    key: def.key,
+                    props: stack.props,
+                })
+            })
+            .collect()
     }
 
     /// Whether every player is down.

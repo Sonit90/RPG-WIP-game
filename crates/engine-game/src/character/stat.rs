@@ -194,6 +194,14 @@ impl Stat {
         }
     }
 
+    /// The stat saved or authored under `key` (see [`Stat::key`]), if this build has one.
+    ///
+    /// How a data file names a stat: by key, never by index.
+    #[must_use]
+    pub fn from_key(key: &str) -> Option<Self> {
+        Self::STORED.into_iter().find(|stat| stat.key() == key)
+    }
+
     /// Which group the sheet lists this stat under.
     #[must_use]
     pub fn group(self) -> StatGroup {

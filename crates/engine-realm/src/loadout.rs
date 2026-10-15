@@ -18,25 +18,79 @@ use std::collections::BTreeMap;
 
 use engine_game::character::MailItem as SimMail;
 use engine_game::character::{
-    CharacterSheet, EquipSlot, INVENTORY_SLOTS, Inventory, ItemSlot, ItemStack, MailReason,
-    MailSender, MoveError, item_by_key,
+    CharacterSheet, EquipSlot, INVENTORY_SLOTS, Inventory, ItemProps, ItemSlot, ItemStack,
+    MailReason, MailSender, MoveError, QUALITY_DEFAULT, item_by_key,
 };
 use engine_game::hero::Hero;
 use serde::{Deserialize, Serialize};
 
 use crate::error::RealmError;
+use crate::loot::ensure_items_registered;
+
+/// The quality of a stored item that has none: rows saved before quality existed.
+fn default_quality() -> u8 {
+    QUALITY_DEFAULT
+}
+
+fn is_default_quality(quality: &u8) -> bool {
+    *quality == QUALITY_DEFAULT
+}
+
+fn is_zero(value: &u8) -> bool {
+    *value == 0
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
+}
 
 /// One worn item, by name.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EquippedItem {
     /// The slot's stable key (`"head"`, `"ring1"` …).
     pub slot: String,
     /// The item's stable key.
     pub item: String,
+    /// Rolled quality, per cent of the base stats. Absent in older rows: 100.
+    #[serde(
+        default = "default_quality",
+        skip_serializing_if = "is_default_quality"
+    )]
+    pub quality: u8,
+    /// Enhancement level. Absent in older rows: 0.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub enhancement: u8,
+    /// Whether it broke. Absent in older rows: false.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub broken: bool,
+}
+
+impl EquippedItem {
+    /// A worn item of default props.
+    #[must_use]
+    pub fn new(slot: &str, item: &str) -> Self {
+        Self {
+            slot: slot.to_owned(),
+            item: item.to_owned(),
+            quality: QUALITY_DEFAULT,
+            ..Self::default()
+        }
+    }
+
+    /// Its instance properties, clamped into the legal ranges.
+    #[must_use]
+    pub fn props(&self) -> ItemProps {
+        ItemProps::new(self.quality, self.enhancement, self.broken)
+    }
+
+    fn set_props(&mut self, props: ItemProps) {
+        (self.quality, self.enhancement, self.broken) =
+            (props.quality, props.enhancement, props.broken);
+    }
 }
 
 /// One carried stack, by name.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BagItem {
     /// The bag cell.
     pub index: u32,
@@ -44,18 +98,67 @@ pub struct BagItem {
     pub item: String,
     /// How many.
     pub quantity: u16,
+    /// Rolled quality, per cent of the base stats. Absent in older rows: 100.
+    #[serde(
+        default = "default_quality",
+        skip_serializing_if = "is_default_quality"
+    )]
+    pub quality: u8,
+    /// Enhancement level. Absent in older rows: 0.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub enhancement: u8,
+    /// Whether it broke. Absent in older rows: false.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub broken: bool,
+}
+
+impl BagItem {
+    /// A carried stack of default props.
+    #[must_use]
+    pub fn new(index: u32, item: &str, quantity: u16) -> Self {
+        Self {
+            index,
+            item: item.to_owned(),
+            quantity,
+            quality: QUALITY_DEFAULT,
+            ..Self::default()
+        }
+    }
+
+    /// Its instance properties, clamped into the legal ranges.
+    #[must_use]
+    pub fn props(&self) -> ItemProps {
+        ItemProps::new(self.quality, self.enhancement, self.broken)
+    }
+
+    fn set_props(&mut self, props: ItemProps) {
+        (self.quality, self.enhancement, self.broken) =
+            (props.quality, props.enhancement, props.broken);
+    }
 }
 
 /// One piece of mail: an item waiting to be taken into the bag.
 ///
 /// Mail is how loot that could not be handed over in the dungeon (the bag was full, or the
 /// chest was never opened) still reaches the character.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MailItem {
     /// Stable within the character; never reused.
     pub id: u64,
     /// The attached item's stable key.
     pub item: String,
+    /// The attachment's quality, per cent of the base stats. Absent in older rows: 100.
+    #[serde(
+        default = "default_quality",
+        skip_serializing_if = "is_default_quality"
+    )]
+    pub quality: u8,
+    /// The attachment's enhancement level. Absent in older rows: 0.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub enhancement: u8,
+    /// Whether the attachment is broken. Absent in older rows: false.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub broken: bool,
     /// Who it is from.
     pub sender: String,
     /// The subject line.
@@ -139,22 +242,20 @@ pub fn starting_loadout(hero: Hero) -> Loadout {
 /// The stored form of a character sheet.
 #[must_use]
 pub fn loadout_of(sheet: &CharacterSheet) -> Loadout {
+    ensure_items_registered();
     let mut loadout = Loadout::default();
     for (slot, stack) in sheet.equipment().worn() {
         if let Some(def) = stack.def() {
-            loadout.equipment.push(EquippedItem {
-                slot: slot.key().to_owned(),
-                item: def.key.to_owned(),
-            });
+            let mut entry = EquippedItem::new(slot.key(), def.key);
+            entry.set_props(stack.props);
+            loadout.equipment.push(entry);
         }
     }
     for (index, stack) in sheet.inventory().contents() {
         if let (Some(def), Ok(index)) = (stack.def(), u32::try_from(index)) {
-            loadout.inventory.push(BagItem {
-                index,
-                item: def.key.to_owned(),
-                quantity: stack.quantity,
-            });
+            let mut entry = BagItem::new(index, def.key, stack.quantity);
+            entry.set_props(stack.props);
+            loadout.inventory.push(entry);
         }
     }
     for letter in sheet.mailbox().letters() {
@@ -164,6 +265,9 @@ pub fn loadout_of(sheet: &CharacterSheet) -> Loadout {
         loadout.mail.push(MailItem {
             id: letter.id,
             item: def.key.to_owned(),
+            quality: letter.props.quality,
+            enhancement: letter.props.enhancement,
+            broken: letter.props.broken,
             sender: letter.sender.name().to_owned(),
             subject: match letter.reason {
                 MailReason::SlotRemoved => removed_slot_subject(def.name),
@@ -186,6 +290,7 @@ pub fn loadout_of(sheet: &CharacterSheet) -> Loadout {
 /// dropped and logged, never trusted.
 #[must_use]
 pub fn sheet_of(hero: Hero, loadout: &Loadout) -> CharacterSheet {
+    ensure_items_registered();
     // Rows saved while there were four trinket slots still name `trinket3` / `trinket4`.
     // Rehome them first so the item reaches the bag (or the mailbox) rather than vanishing.
     let migrated;
@@ -206,7 +311,7 @@ pub fn sheet_of(hero: Hero, loadout: &Loadout) -> CharacterSheet {
         };
         if sheet
             .equipment_mut()
-            .equip(slot, ItemStack::one(def.id))
+            .equip(slot, ItemStack::with_props(def.id, entry.props()))
             .is_err()
         {
             log::warn!("loadout: {} does not fit {}", def.key, slot.key());
@@ -226,7 +331,9 @@ pub fn sheet_of(hero: Hero, loadout: &Loadout) -> CharacterSheet {
             continue;
         }
         let quantity = entry.quantity.clamp(1, def.max_stack.max(1));
-        inventory.put(index, Some(ItemStack::new(def.id, quantity)));
+        let mut stack = ItemStack::new(def.id, quantity);
+        stack.props = entry.props();
+        inventory.put(index, Some(stack));
     }
     *sheet.inventory_mut() = inventory;
     for letter in &loadout.mail {
@@ -241,6 +348,7 @@ pub fn sheet_of(hero: Hero, loadout: &Loadout) -> CharacterSheet {
         sheet.mailbox_mut().restore(SimMail {
             id: letter.id,
             item: def.id,
+            props: ItemProps::new(letter.quality, letter.enhancement, letter.broken),
             sender: if letter.sender == MAIL_SENDER_SYSTEM {
                 MailSender::System
             } else {
@@ -258,20 +366,22 @@ pub fn sheet_of(hero: Hero, loadout: &Loadout) -> CharacterSheet {
     sheet
 }
 
-/// Gear score: ten times the summed item level of everything worn.
+/// Gear score: ten times the summed item level of everything worn, each scaled by its item's
+/// props like its stats are.
 ///
 /// Summed rather than averaged over the slots, so an empty slot costs what the item in it
 /// would have been worth and a character with nothing worn is 0 rather than a fraction. Ten
-/// times so a single item level is a visible step in a three-digit number.
+/// times so a single item level is a visible step in a three-digit number. An item of default
+/// props counts exactly its item level; a 110 per cent piece counts a tenth more and a broken
+/// one 15 per cent less.
 #[must_use]
 pub fn gear_score_of(sheet: &CharacterSheet) -> u32 {
-    let levels: u32 = sheet
+    let levels: f32 = sheet
         .equipment()
         .worn()
-        .filter_map(|(_, stack)| stack.def())
-        .map(|def| u32::from(def.item_level))
+        .map(|(_, stack)| stack.effective_item_level())
         .sum();
-    levels.saturating_mul(10)
+    (levels * 10.0).round() as u32
 }
 
 /// The gear score of a stored loadout, after the same validation [`sheet_of`] applies — so an
@@ -333,16 +443,29 @@ pub enum BagError {
 /// [`BagError::UnknownItem`] for a key no item has; [`BagError::Full`] when all
 /// [`INVENTORY_SLOTS`] cells are taken (the loadout is left as it was).
 pub fn add_to_bag(loadout: &mut Loadout, key: &str) -> Result<u32, BagError> {
+    add_stack_to_bag(loadout, key, ItemProps::STANDARD)
+}
+
+/// [`add_to_bag`] for an item with these props: what a rolled chest or monster drop is
+/// delivered with.
+///
+/// # Errors
+///
+/// As [`add_to_bag`].
+pub fn add_stack_to_bag(
+    loadout: &mut Loadout,
+    key: &str,
+    props: ItemProps,
+) -> Result<u32, BagError> {
+    ensure_items_registered();
     let def = item_by_key(key).ok_or(BagError::UnknownItem)?;
     let free = (0..INVENTORY_SLOTS)
         .filter_map(|cell| u32::try_from(cell).ok())
         .find(|cell| loadout.inventory.iter().all(|entry| entry.index != *cell))
         .ok_or(BagError::Full)?;
-    loadout.inventory.push(BagItem {
-        index: free,
-        item: def.key.to_owned(),
-        quantity: 1,
-    });
+    let mut entry = BagItem::new(free, def.key, 1);
+    entry.set_props(props);
+    loadout.inventory.push(entry);
     loadout.inventory.sort_by_key(|entry| entry.index);
     Ok(free)
 }
@@ -367,10 +490,27 @@ pub fn add_to_mail(
     reason: &str,
     received_at: i64,
 ) -> Result<u64, BagError> {
+    add_stack_to_mail(loadout, key, ItemProps::STANDARD, reason, received_at)
+}
+
+/// [`add_to_mail`] for an item with these props.
+///
+/// # Errors
+///
+/// As [`add_to_mail`].
+pub fn add_stack_to_mail(
+    loadout: &mut Loadout,
+    key: &str,
+    props: ItemProps,
+    reason: &str,
+    received_at: i64,
+) -> Result<u64, BagError> {
+    ensure_items_registered();
     let def = item_by_key(key).ok_or(BagError::UnknownItem)?;
     Ok(push_mail(
         loadout,
         def.key,
+        props,
         MAIL_SENDER_CHEST,
         mail_subject(def.name),
         reason,
@@ -381,6 +521,7 @@ pub fn add_to_mail(
 fn push_mail(
     loadout: &mut Loadout,
     key: &str,
+    props: ItemProps,
     sender: &str,
     subject: String,
     reason: &str,
@@ -395,6 +536,9 @@ fn push_mail(
     loadout.mail.push(MailItem {
         id,
         item: key.to_owned(),
+        quality: props.quality,
+        enhancement: props.enhancement,
+        broken: props.broken,
         sender: sender.to_owned(),
         subject,
         reason: reason.to_owned(),
@@ -418,6 +562,7 @@ pub fn has_removed_slots(loadout: &Loadout) -> bool {
 /// Items whose key no item has are dropped, as everywhere else. `received_at` is the unix time
 /// stamped on any letter. Returns how many items moved.
 pub fn migrate_removed_slots(loadout: &mut Loadout, received_at: i64) -> usize {
+    ensure_items_registered();
     let (removed, kept): (Vec<_>, Vec<_>) = std::mem::take(&mut loadout.equipment)
         .into_iter()
         .partition(|entry| EquipSlot::REMOVED_KEYS.contains(&entry.slot.as_str()));
@@ -432,10 +577,12 @@ pub fn migrate_removed_slots(loadout: &mut Loadout, received_at: i64) -> usize {
             );
             continue;
         };
-        if add_to_bag(loadout, def.key).is_err() {
+        let props = entry.props();
+        if add_stack_to_bag(loadout, def.key, props).is_err() {
             push_mail(
                 loadout,
                 def.key,
+                props,
                 MAIL_SENDER_SYSTEM,
                 removed_slot_subject(def.name),
                 MAIL_SLOT_REMOVED,
@@ -460,7 +607,9 @@ pub fn take_mail(loadout: &mut Loadout, mail_id: u64) -> Result<u32, TakeMailErr
         .position(|m| m.id == mail_id)
         .ok_or(TakeMailError::NotFound)?;
     let key = loadout.mail[index].item.clone();
-    match add_to_bag(loadout, &key) {
+    let letter = &loadout.mail[index];
+    let props = ItemProps::new(letter.quality, letter.enhancement, letter.broken);
+    match add_stack_to_bag(loadout, &key, props) {
         Ok(cell) => {
             loadout.mail.remove(index);
             Ok(cell)
@@ -510,10 +659,9 @@ mod tests {
             EquipSlot::Feet,
         ] {
             let def = starting_item(slot.family()).expect("a white piece");
-            loadout.equipment.push(EquippedItem {
-                slot: slot.key().to_owned(),
-                item: def.key.to_owned(),
-            });
+            loadout
+                .equipment
+                .push(EquippedItem::new(slot.key(), def.key));
         }
         loadout
     }
@@ -542,10 +690,9 @@ mod tests {
     fn old_loadout_with_four_trinkets() -> Loadout {
         let mut loadout = kit_loadout();
         for slot in ["trinket1", "trinket2", "trinket3", "trinket4"] {
-            loadout.equipment.push(EquippedItem {
-                slot: slot.into(),
-                item: trinket_key().into(),
-            });
+            loadout
+                .equipment
+                .push(EquippedItem::new(slot, trinket_key()));
         }
         loadout
     }
@@ -554,11 +701,7 @@ mod tests {
     fn items_in_removed_slots_move_to_the_first_free_bag_cells() {
         let hero = Hero::Warrior;
         let mut old = old_loadout_with_four_trinkets();
-        old.inventory.push(BagItem {
-            index: 0,
-            item: trinket_key().into(),
-            quantity: 1,
-        });
+        old.inventory.push(BagItem::new(0, trinket_key(), 1));
         let sheet = sheet_of(hero, &old);
         assert!(sheet.equipment().get(EquipSlot::Trinket1).is_some());
         assert!(sheet.equipment().get(EquipSlot::Trinket2).is_some());
@@ -620,20 +763,16 @@ mod tests {
         let mut loadout = kit_loadout();
         let honest = gear_score(hero, &loadout);
         // An item that does not exist, and a real item in a slot it does not fit.
-        loadout.equipment.push(EquippedItem {
-            slot: "trinket1".into(),
-            item: "legendary_sword_of_lies".into(),
-        });
+        loadout
+            .equipment
+            .push(EquippedItem::new("trinket1", "legendary_sword_of_lies"));
         let chest = loadout
             .equipment
             .iter()
             .find(|entry| entry.slot == "chest")
             .map(|entry| entry.item.clone())
             .expect("the starting set has a chest");
-        loadout.equipment.push(EquippedItem {
-            slot: "ring1".into(),
-            item: chest,
-        });
+        loadout.equipment.push(EquippedItem::new("ring1", &chest));
         assert_eq!(gear_score(hero, &loadout), honest);
     }
 
@@ -641,11 +780,7 @@ mod tests {
     fn loot_goes_to_the_first_free_cell_until_the_bag_is_full() {
         let key = engine_game::character::loot_pool()[0].key;
         let mut loadout = Loadout::default();
-        loadout.inventory.push(BagItem {
-            index: 1,
-            item: key.into(),
-            quantity: 1,
-        });
+        loadout.inventory.push(BagItem::new(1, key, 1));
         // Cell 0 is free, cell 1 is taken.
         assert_eq!(add_to_bag(&mut loadout, key), Ok(0));
         assert_eq!(add_to_bag(&mut loadout, key), Ok(2));
@@ -749,5 +884,145 @@ mod tests {
             .is_err()
         );
         assert!(move_item(hero, &loadout, &SlotRef::Inventory { index: 999 }, &cell).is_err());
+    }
+
+    /// A row exactly as it was stored before item properties existed.
+    const OLD_ROW: &str = r#"{
+        "equipment": [{"slot": "ring1", "item": "reinforced_iron_band"}],
+        "inventory": [{"index": 3, "item": "head_haste_critical_strike", "quantity": 1}],
+        "mail": [{"id": 1, "item": "head_haste_critical_strike", "sender": "Dungeon Chest",
+                  "subject": "x", "reason": "bag_full", "received_at": 10, "read": false}],
+        "resources": {"crypt_dust": 4}
+    }"#;
+
+    #[test]
+    fn rows_stored_before_item_properties_still_load_as_legacy_items() {
+        let old: Loadout = serde_json::from_str(OLD_ROW).expect("an old row deserializes");
+        assert_eq!(old.equipment[0].props(), ItemProps::STANDARD);
+        assert_eq!(old.inventory[0].props(), ItemProps::STANDARD);
+        assert_eq!(old.mail[0].quality, 100);
+        let sheet = sheet_of(Hero::Warrior, &old);
+        let ring = sheet
+            .equipment()
+            .get(EquipSlot::Ring1)
+            .expect("the ring is worn");
+        assert_eq!(ring.props, ItemProps::STANDARD);
+        assert!((ring.stats().get(engine_game::character::Stat::Stamina) - 10.0).abs() < 1e-5);
+        assert_eq!(
+            sheet.mailbox().letters()[0].props,
+            ItemProps::STANDARD,
+            "the letter lost its defaults"
+        );
+        // And writing it back changes nothing about it: defaults are not written at all.
+        let back = serde_json::to_value(loadout_of(&sheet)).expect("serializes");
+        assert!(back["equipment"][0].get("quality").is_none());
+        assert!(back["inventory"][0].get("broken").is_none());
+        assert_eq!(loadout_of(&sheet).equipment, old.equipment);
+    }
+
+    #[test]
+    fn properties_survive_the_trip_through_a_sheet_and_through_json() {
+        let hero = Hero::Warrior;
+        let mut loadout = Loadout::default();
+        let mut worn = EquippedItem::new("ring1", "reinforced_iron_band");
+        (worn.quality, worn.enhancement) = (107, 6);
+        loadout.equipment.push(worn);
+        let mut carried = BagItem::new(2, engine_game::character::loot_pool()[0].key, 1);
+        (carried.quality, carried.broken) = (93, true);
+        loadout.inventory.push(carried);
+        add_stack_to_mail(
+            &mut loadout,
+            "reinforced_iron_band",
+            ItemProps::new(110, 2, false),
+            MAIL_UNCLAIMED,
+            9,
+        )
+        .expect("a real item");
+
+        let json = serde_json::to_string(&loadout).expect("serializes");
+        let read: Loadout = serde_json::from_str(&json).expect("deserializes");
+        assert_eq!(read, loadout);
+
+        let sheet = sheet_of(hero, &read);
+        assert_eq!(
+            sheet.equipment().get(EquipSlot::Ring1).map(|s| s.props),
+            Some(ItemProps::new(107, 6, false))
+        );
+        assert_eq!(
+            sheet.inventory().get(2).map(|s| s.props),
+            Some(ItemProps::new(93, 0, true))
+        );
+        assert_eq!(
+            sheet.mailbox().letters()[0].props,
+            ItemProps::new(110, 2, false)
+        );
+        assert_eq!(loadout_of(&sheet), read, "the stored form round trips");
+        // Taking the mail keeps the props.
+        let mut mailed = read;
+        let cell = take_mail(&mut mailed, 1).expect("room");
+        let taken = mailed
+            .inventory
+            .iter()
+            .find(|entry| entry.index == cell)
+            .expect("in the bag");
+        assert_eq!(taken.props(), ItemProps::new(110, 2, false));
+    }
+
+    #[test]
+    fn a_forged_row_cannot_exceed_the_legal_properties() {
+        let hero = Hero::Warrior;
+        let mut loadout = Loadout::default();
+        let mut worn = EquippedItem::new("ring1", "reinforced_iron_band");
+        (worn.quality, worn.enhancement) = (255, 250);
+        loadout.equipment.push(worn);
+        let props = sheet_of(hero, &loadout)
+            .equipment()
+            .get(EquipSlot::Ring1)
+            .expect("worn")
+            .props;
+        assert_eq!(props.quality, engine_game::character::QUALITY_MAX);
+        assert!(props.enhancement <= engine_game::character::ENHANCEMENT_CEILING);
+        // Item level 10 at the most the rules allow: 110 plus 20 per cent.
+        assert!(gear_score(hero, &loadout) <= 130);
+    }
+
+    #[test]
+    fn gear_score_follows_the_items_properties() {
+        let hero = Hero::Warrior;
+        let plain = |quality, enhancement, broken| {
+            let mut loadout = Loadout::default();
+            let mut worn = EquippedItem::new("ring1", "reinforced_iron_band");
+            (worn.quality, worn.enhancement, worn.broken) = (quality, enhancement, broken);
+            loadout.equipment.push(worn);
+            gear_score(hero, &loadout)
+        };
+        // Item level 10, so 100 at default props.
+        assert_eq!(plain(100, 0, false), 100);
+        assert_eq!(plain(110, 0, false), 110);
+        assert_eq!(plain(100, 10, false), 110);
+        assert_eq!(plain(100, 0, true), 85);
+        assert_eq!(plain(50, 0, false), 50);
+    }
+
+    #[test]
+    fn catalog_items_are_wearable_and_carry_their_stats() {
+        let hero = Hero::FireMage;
+        let mut loadout = Loadout::default();
+        loadout
+            .equipment
+            .push(EquippedItem::new("head", "crown_of_the_hollow_steward"));
+        let sheet = sheet_of(hero, &loadout);
+        let crown = sheet
+            .equipment()
+            .get(EquipSlot::Head)
+            .expect("a catalog helm fits the head");
+        assert!(crown.def().is_some_and(|def| !def.grants_nothing()));
+        assert!(gear_score(hero, &loadout) >= 120);
+        // A ring does not fit a head, even a catalog one.
+        let mut wrong = Loadout::default();
+        wrong
+            .equipment
+            .push(EquippedItem::new("head", "ashgraves_seal"));
+        assert_eq!(gear_score(hero, &wrong), 0);
     }
 }

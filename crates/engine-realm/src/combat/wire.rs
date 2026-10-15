@@ -16,7 +16,7 @@
 
 use engine_core::math::Vec3;
 use engine_game::ability::AbilityId;
-use engine_game::character::{DefenseOutcome, MailReason};
+use engine_game::character::{DefenseOutcome, ItemProps, MailReason, QUALITY_DEFAULT};
 use engine_game::combat::DamageType;
 use engine_game::enemy::{EnemyAbility, TelegraphShape};
 use engine_game::entity::EntityId;
@@ -25,6 +25,27 @@ use engine_game::firemage::{FireAbility, ZoneShape};
 use engine_game::sim::CastEnd;
 use engine_game::status::{StatusEnd, StatusKind};
 use serde::{Deserialize, Serialize};
+
+use crate::loot::ensure_items_registered;
+
+fn default_quality() -> u8 {
+    QUALITY_DEFAULT
+}
+
+/// An item's quality, enhancement and broken state as they travel: flat fields, each
+/// defaulted, so an event from a build that predates quality still reads (as the legacy item).
+fn props_of(quality: u8, enhancement: u8, broken: bool) -> ItemProps {
+    ItemProps::new(quality, enhancement, broken)
+}
+
+/// The currency or gold resource id this build knows by `id`, as the `'static` string events
+/// carry. `None` for a resource no loot rule drops.
+fn known_resource(id: &str) -> Option<&'static str> {
+    let rules = crate::loot::builtin_rules()?;
+    [rules.currency.resource, rules.gold.resource]
+        .into_iter()
+        .find(|resource| *resource == id)
+}
 
 /// An entity, as both ends of the connection can name it.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
@@ -287,13 +308,48 @@ pub enum WireEvent {
         player: EntityRef,
         /// The item's stable key (`engine_game::character::item_by_key`).
         item: String,
+        /// Rolled quality, per cent of the base stats.
+        #[serde(default = "default_quality")]
+        quality: u8,
+        #[serde(default)]
+        enhancement: u8,
+        #[serde(default)]
+        broken: bool,
+        /// Which of the player's chest items this is, in roll order.
+        #[serde(default)]
+        index: u8,
     },
     LootMailed {
         player: EntityRef,
         /// The item's stable key.
         item: String,
+        #[serde(default = "default_quality")]
+        quality: u8,
+        #[serde(default)]
+        enhancement: u8,
+        #[serde(default)]
+        broken: bool,
+        #[serde(default)]
+        index: u8,
         /// `0` the bag was full, `1` never opened.
         reason: u8,
+    },
+    MobLoot {
+        player: EntityRef,
+        /// The item's stable key.
+        item: String,
+        #[serde(default = "default_quality")]
+        quality: u8,
+        #[serde(default)]
+        enhancement: u8,
+        #[serde(default)]
+        broken: bool,
+    },
+    MobCurrency {
+        player: EntityRef,
+        /// The resource's id in the economy catalog.
+        resource: String,
+        amount: u32,
     },
 }
 
@@ -301,6 +357,7 @@ pub enum WireEvent {
 #[must_use]
 #[allow(clippy::too_many_lines, reason = "one arm per carried event")]
 pub fn encode(event: &CombatEvent, name: &dyn Fn(EntityId) -> EntityRef) -> Option<WireEvent> {
+    ensure_items_registered();
     let a = AbilityRef::of;
     Some(match *event {
         CombatEvent::AbilityUsed {
@@ -590,18 +647,56 @@ pub fn encode(event: &CombatEvent, name: &dyn Fn(EntityId) -> EntityRef) -> Opti
             chest,
             by: name(by),
         },
-        CombatEvent::LootAwarded { player, item, .. } => WireEvent::LootAwarded {
+        CombatEvent::LootAwarded {
+            player,
+            item,
+            props,
+            index,
+            ..
+        } => WireEvent::LootAwarded {
             player: name(player),
             item: engine_game::character::item(item)?.key.to_owned(),
+            quality: props.quality,
+            enhancement: props.enhancement,
+            broken: props.broken,
+            index,
+        },
+        CombatEvent::MobLoot {
+            player,
+            item,
+            props,
+            ..
+        } => WireEvent::MobLoot {
+            player: name(player),
+            item: engine_game::character::item(item)?.key.to_owned(),
+            quality: props.quality,
+            enhancement: props.enhancement,
+            broken: props.broken,
+        },
+        CombatEvent::MobCurrency {
+            player,
+            resource,
+            amount,
+            ..
+        } => WireEvent::MobCurrency {
+            player: name(player),
+            resource: resource.to_owned(),
+            amount,
         },
         CombatEvent::LootMailed {
             player,
             item,
+            props,
+            index,
             reason,
             ..
         } => WireEvent::LootMailed {
             player: name(player),
             item: engine_game::character::item(item)?.key.to_owned(),
+            quality: props.quality,
+            enhancement: props.enhancement,
+            broken: props.broken,
+            index,
             reason: match reason {
                 MailReason::BagFull => 0,
                 MailReason::Unclaimed => 1,
@@ -644,6 +739,7 @@ pub fn decode(
     resolve: &dyn Fn(&EntityRef) -> Option<EntityId>,
     tick: u64,
 ) -> Option<CombatEvent> {
+    ensure_items_registered();
     let any = |r: &EntityRef| resolve(r).unwrap_or(EntityId::INVALID);
     let need = |r: &EntityRef| resolve(r);
     Some(match wire {
@@ -958,18 +1054,55 @@ pub fn decode(
             by: need(by)?,
             tick,
         },
-        WireEvent::LootAwarded { player, item } => CombatEvent::LootAwarded {
+        WireEvent::LootAwarded {
+            player,
+            item,
+            quality,
+            enhancement,
+            broken,
+            index,
+        } => CombatEvent::LootAwarded {
             player: need(player)?,
             item: engine_game::character::item_by_key(item)?.id,
+            props: props_of(*quality, *enhancement, *broken),
+            index: *index,
+            tick,
+        },
+        WireEvent::MobLoot {
+            player,
+            item,
+            quality,
+            enhancement,
+            broken,
+        } => CombatEvent::MobLoot {
+            player: need(player)?,
+            item: engine_game::character::item_by_key(item)?.id,
+            props: props_of(*quality, *enhancement, *broken),
+            tick,
+        },
+        WireEvent::MobCurrency {
+            player,
+            resource,
+            amount,
+        } => CombatEvent::MobCurrency {
+            player: need(player)?,
+            resource: known_resource(resource)?,
+            amount: *amount,
             tick,
         },
         WireEvent::LootMailed {
             player,
             item,
+            quality,
+            enhancement,
+            broken,
+            index,
             reason,
         } => CombatEvent::LootMailed {
             player: need(player)?,
             item: engine_game::character::item_by_key(item)?.id,
+            props: props_of(*quality, *enhancement, *broken),
+            index: *index,
             reason: match *reason {
                 0 => MailReason::BagFull,
                 2 => MailReason::SlotRemoved,
@@ -1051,6 +1184,8 @@ mod tests {
         let server = EntityId::new(3, 1);
         let client = EntityId::new(8, 2);
         let def = &engine_game::character::loot_pool()[0];
+        let props = ItemProps::new(107, 4, false);
+        let rules = crate::loot::builtin_rules().expect("the shipped rules build");
         let name = |_: EntityId| EntityRef::Player("acct".into());
         let resolve = |r: &EntityRef| matches!(r, EntityRef::Player(_)).then_some(client);
         let events = [
@@ -1069,13 +1204,29 @@ mod tests {
             CombatEvent::LootAwarded {
                 player: server,
                 item: def.id,
+                props,
+                index: 1,
                 tick: 3,
             },
             CombatEvent::LootMailed {
                 player: server,
                 item: def.id,
+                props,
+                index: 0,
                 reason: MailReason::Unclaimed,
                 tick: 4,
+            },
+            CombatEvent::MobLoot {
+                player: server,
+                item: def.id,
+                props,
+                tick: 5,
+            },
+            CombatEvent::MobCurrency {
+                player: server,
+                resource: rules.currency.resource,
+                amount: 2,
+                tick: 6,
             },
         ];
         for event in events {
@@ -1103,23 +1254,56 @@ mod tests {
                 }
                 (
                     CombatEvent::LootAwarded { .. },
-                    CombatEvent::LootAwarded { player, item, .. },
+                    CombatEvent::LootAwarded {
+                        player,
+                        item,
+                        props: got,
+                        index,
+                        ..
+                    },
                 ) => {
                     assert_eq!(player, client);
                     assert_eq!(item, def.id);
+                    assert_eq!((got, index), (props, 1));
                 }
                 (
                     CombatEvent::LootMailed { .. },
                     CombatEvent::LootMailed {
                         player,
                         item,
+                        props: got,
+                        index,
                         reason,
                         ..
                     },
                 ) => {
                     assert_eq!(player, client);
                     assert_eq!(item, def.id);
+                    assert_eq!((got, index), (props, 0));
                     assert_eq!(reason, MailReason::Unclaimed);
+                }
+                (
+                    CombatEvent::MobLoot { .. },
+                    CombatEvent::MobLoot {
+                        player,
+                        item,
+                        props: got,
+                        ..
+                    },
+                ) => {
+                    assert_eq!((player, item, got), (client, def.id, props));
+                }
+                (
+                    CombatEvent::MobCurrency { .. },
+                    CombatEvent::MobCurrency {
+                        player,
+                        resource,
+                        amount,
+                        ..
+                    },
+                ) => {
+                    assert_eq!(player, client);
+                    assert_eq!((resource, amount), ("aether_shard", 2));
                 }
                 (sent, got) => panic!("{sent:?} came back as {got:?}"),
             }
@@ -1127,8 +1311,34 @@ mod tests {
         let unknown = WireEvent::LootAwarded {
             player: EntityRef::Player("acct".into()),
             item: "no_such_item".into(),
+            quality: 100,
+            enhancement: 0,
+            broken: false,
+            index: 0,
         };
         assert!(decode(&unknown, &resolve, 0).is_none());
+        // A resource no loot rule drops does not decode into a `'static` id.
+        let strange = WireEvent::MobCurrency {
+            player: EntityRef::Player("acct".into()),
+            resource: "moon_cheese".into(),
+            amount: 1,
+        };
+        assert!(decode(&strange, &resolve, 0).is_none());
+    }
+
+    #[test]
+    fn loot_events_from_before_quality_existed_still_read_as_the_legacy_item() {
+        let old = r#"{"e":"LootAwarded","player":{"t":"Player","v":"acct"},"item":"head_haste_critical_strike"}"#;
+        let wire: WireEvent = serde_json::from_str(old).expect("an old event reads");
+        let client = EntityId::new(8, 2);
+        let resolve = |_: &EntityRef| Some(client);
+        match decode(&wire, &resolve, 1) {
+            Some(CombatEvent::LootAwarded { props, index, .. }) => {
+                assert_eq!(props, ItemProps::STANDARD);
+                assert_eq!(index, 0);
+            }
+            other => panic!("decoded into {other:?}"),
+        }
     }
 
     #[test]

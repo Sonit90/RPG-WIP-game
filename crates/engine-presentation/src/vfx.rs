@@ -780,7 +780,9 @@ impl VfxDirector {
             }
             CombatEvent::LootMailed { .. }
             | CombatEvent::MailTaken { .. }
-            | CombatEvent::MailBagFull { .. } => {}
+            | CombatEvent::MailBagFull { .. }
+            | CombatEvent::MobLoot { .. }
+            | CombatEvent::MobCurrency { .. } => {}
             // A point of Valor short of a full bar and a shield taking a hit move no picture of
             // their own: the cast and the block that caused them have already been drawn.
             CombatEvent::Damage(_)

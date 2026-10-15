@@ -23,6 +23,23 @@ pub struct RunRewards {
     pub key_level_after: Option<u32>,
 }
 
+impl RunRewards {
+    /// These rewards raised by a key modifier's `bonus_pct` per cent: every resource amount
+    /// becomes `amount x (100 + bonus) / 100`, rounded to nearest. Experience and the key's
+    /// progress are not touched. A bonus of zero changes nothing.
+    ///
+    /// The simulation applies the same number to what it rolls (`Simulation::set_loot_rules`),
+    /// so a bonus reads as more of everything the run pays.
+    #[must_use]
+    pub fn with_bonus(mut self, bonus_pct: u32) -> Self {
+        for (_, amount) in &mut self.resources {
+            let scaled = (u64::from(*amount) * u64::from(100 + bonus_pct) + 50) / 100;
+            *amount = u32::try_from(scaled).unwrap_or(u32::MAX);
+        }
+        self
+    }
+}
+
 /// The rewards for a run of `dungeon` at `key_level`.
 ///
 /// On success, experience and every resource grow linearly with the levels above the first. On
@@ -83,6 +100,19 @@ mod tests {
         let tenth = run_rewards(&dungeon, 10, true, false);
         assert_eq!(tenth.experience, 200 + 50 * 9);
         assert_eq!(tenth.resources, vec![("crypt_dust".to_owned(), 5 + 2 * 9)]);
+    }
+
+    #[test]
+    fn a_reward_bonus_raises_resources_only() {
+        let dungeon = crypt();
+        let plain = run_rewards(&dungeon, 3, true, true);
+        let bonus = plain.clone().with_bonus(25);
+        assert_eq!(bonus.experience, plain.experience);
+        assert_eq!(bonus.key_level_after, plain.key_level_after);
+        // 9 crypt dust at key level 3, +25 per cent, rounded to nearest.
+        assert_eq!(plain.resources, vec![("crypt_dust".to_owned(), 9)]);
+        assert_eq!(bonus.resources, vec![("crypt_dust".to_owned(), 11)]);
+        assert_eq!(plain.clone().with_bonus(0), plain);
     }
 
     #[test]

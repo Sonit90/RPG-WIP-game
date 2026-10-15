@@ -2430,7 +2430,7 @@ impl OnlineSession {
                 )
             };
             match &wire {
-                engine_realm::combat::WireEvent::LootAwarded { player, item }
+                engine_realm::combat::WireEvent::LootAwarded { player, item, .. }
                     if is_mine(player) =>
                 {
                     self.on_loot(item, None);
@@ -2439,6 +2439,7 @@ impl OnlineSession {
                     player,
                     item,
                     reason,
+                    ..
                 } if is_mine(player) => {
                     let reason = if *reason == 0 {
                         engine_realm::loadout::MAIL_BAG_FULL

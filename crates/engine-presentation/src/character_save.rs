@@ -200,6 +200,7 @@ pub fn sheet_of(hero: Hero, loadout: &HeroLoadout) -> CharacterSheet {
         sheet.mailbox_mut().restore(MailItem {
             id: entry.id,
             item: def.id,
+            props: engine_game::character::ItemProps::STANDARD,
             sender: sender_of(&entry.sender),
             reason: reason_of(&entry.reason),
             received_at: entry.received_at,

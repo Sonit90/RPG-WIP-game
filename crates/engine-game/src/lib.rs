@@ -54,6 +54,7 @@
 //! | [`command`] | What the player asked for |
 //! | [`input_map`] | Keys to commands — the only module that knows a key |
 //! | [`character`] | Stats, items, the thirteen equipment slots and the bag |
+//! | [`loot`] | Loot rules and the seeded rolls: quality, epics, equipment, mob currency |
 //! | [`druid`] | Mana, Astral Power and the Druid's own state |
 //! | [`arena`] | The training arena |
 //! | [`demo`] | The collision demo scene: geometry, no combat |
@@ -95,6 +96,8 @@ pub mod firemage;
 /// Which playable character the player is, and which abilities that gives them.
 pub mod hero;
 pub mod input_map;
+/// Loot rules and the rolls made from them: quality, epics, equipment and mob currency.
+pub mod loot;
 /// Line of sight for targeted abilities, and nothing else.
 pub mod los;
 pub mod los_course;

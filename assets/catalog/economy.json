@@ -15,9 +15,42 @@
       "id": "steward_ember",
       "name": "Steward's Ember",
       "description": "A coal that still glows from the Hollow Steward's lantern. Rare."
+    },
+    {
+      "id": "aether_shard",
+      "name": "Aether Shard",
+      "description": "A sliver of crystallised aether that monsters carry. Spent to reroll a dungeon key's modifiers."
+    },
+    {
+      "id": "gold",
+      "name": "Gold",
+      "description": "Coin of the realm. Dropped by every monster."
     }
   ],
   "salvage": { "resource": "bone_shard", "base": 1, "per_item_level": 1, "slots": 16 },
+  "enhancement": {
+    "max_level": 10,
+    "step_pct": 1,
+    "costs": [
+      { "level": 1, "resource": "crypt_dust", "amount": 10 },
+      { "level": 2, "resource": "crypt_dust", "amount": 20 },
+      { "level": 3, "resource": "crypt_dust", "amount": 35 },
+      { "level": 4, "resource": "crypt_dust", "amount": 50 },
+      { "level": 5, "resource": "crypt_dust", "amount": 75 },
+      { "level": 5, "resource": "steward_ember", "amount": 1 },
+      { "level": 6, "resource": "crypt_dust", "amount": 100 },
+      { "level": 6, "resource": "steward_ember", "amount": 1 },
+      { "level": 7, "resource": "crypt_dust", "amount": 150 },
+      { "level": 7, "resource": "steward_ember", "amount": 2 },
+      { "level": 8, "resource": "crypt_dust", "amount": 200 },
+      { "level": 8, "resource": "steward_ember", "amount": 2 },
+      { "level": 9, "resource": "crypt_dust", "amount": 300 },
+      { "level": 9, "resource": "steward_ember", "amount": 3 },
+      { "level": 10, "resource": "crypt_dust", "amount": 400 },
+      { "level": 10, "resource": "steward_ember", "amount": 4 }
+    ],
+    "break_chance_by_level": [0, 0, 0, 0, 0.95, 0.96, 0.97, 0.98, 0.99, 0.995]
+  },
   "exchanges": [
     {
       "id": "dust_to_ember",

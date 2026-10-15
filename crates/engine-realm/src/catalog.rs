@@ -2,11 +2,12 @@
 //!
 //! ```text
 //! assets/catalog/characters.json ─┐
-//! assets/catalog/dungeons.json  ──┼─► Catalog ─► module (validation), client (screens),
-//! assets/catalog/economy.json   ──┘              persistence API (starter characters)
+//! assets/catalog/dungeons.json  ──┤
+//! assets/catalog/economy.json   ──┼─► Catalog ─► module (validation), client (screens),
+//! assets/catalog/loot.json      ──┘              persistence API (starter characters)
 //! ```
 //!
-//! All three files are compiled into every program that reads them ([`Catalog::builtin`]), so the
+//! All four files are compiled into every program that reads them ([`Catalog::builtin`]), so the
 //! server, the client and the API cannot disagree about which dungeons exist: they were built
 //! from the same bytes. Adding a dungeon or a character is a row in a JSON file and nothing
 //! anywhere iterates a hardcoded list of three.
@@ -18,6 +19,7 @@
 use engine_game::hero::Hero;
 use serde::Deserialize;
 
+use crate::loot::{LOOT_JSON, LootCatalog};
 use crate::role::Role;
 
 /// The character catalog as written.
@@ -273,14 +275,68 @@ pub struct ExchangeRule {
     pub to_amount: u32,
 }
 
-/// Resources, salvage and exchanges.
+/// One resource an enhancement attempt costs.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct EnhancementCost {
+    /// The attempt this is part of the price of: the level it tries to reach, `1..=max_level`.
+    pub level: u8,
+    /// The resource's id.
+    pub resource: String,
+    /// How much of it.
+    pub amount: u64,
+}
+
+/// How equipment is enhanced: what each attempt costs and how likely it is to break the item.
+///
+/// Attempt `n` tries to take an item from `+(n-1)` to `+n`. The cost is paid whatever the
+/// outcome.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+pub struct EnhancementRule {
+    /// The highest level. Zero (the default) means equipment cannot be enhanced.
+    #[serde(default)]
+    pub max_level: u8,
+    /// What a level adds, in per cent of the base stats. Must equal
+    /// `engine_game::character::ENHANCE_STEP_PCT`, which is what stats are *read* with.
+    #[serde(default)]
+    pub step_pct: u8,
+    /// The price of each attempt; a level may list several resources.
+    #[serde(default)]
+    pub costs: Vec<EnhancementCost>,
+    /// The chance an attempt breaks the item, by target level minus one: index 0 is the
+    /// attempt to reach +1. One entry per level.
+    #[serde(default)]
+    pub break_chance_by_level: Vec<f64>,
+}
+
+impl EnhancementRule {
+    /// What the attempt to reach `target` level costs.
+    pub fn costs_for(&self, target: u8) -> impl Iterator<Item = &EnhancementCost> {
+        self.costs.iter().filter(move |cost| cost.level == target)
+    }
+
+    /// The chance that the attempt to reach `target` breaks the item. Zero for a level the
+    /// table does not list.
+    #[must_use]
+    pub fn break_chance(&self, target: u8) -> f64 {
+        usize::from(target)
+            .checked_sub(1)
+            .and_then(|index| self.break_chance_by_level.get(index))
+            .copied()
+            .unwrap_or(0.0)
+    }
+}
+
+/// Resources, salvage and exchanges.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct Economy {
     version: u32,
     /// Every resource that exists.
     pub resources: Vec<ResourceDefinition>,
     /// What salvaging an item yields.
     pub salvage: SalvageRule,
+    /// How equipment is enhanced.
+    #[serde(default)]
+    pub enhancement: EnhancementRule,
     /// Every trade on offer.
     pub exchanges: Vec<ExchangeRule>,
 }
@@ -313,6 +369,7 @@ impl Economy {
                 self.salvage.resource
             )));
         }
+        self.validate_enhancement()?;
         for (index, exchange) in self.exchanges.iter().enumerate() {
             if self.exchanges[..index].iter().any(|e| e.id == exchange.id) {
                 return Err(CatalogError(format!(
@@ -337,14 +394,58 @@ impl Economy {
         }
         Ok(())
     }
+
+    fn validate_enhancement(&self) -> Result<(), CatalogError> {
+        let rule = &self.enhancement;
+        if rule.max_level == 0 {
+            return Ok(());
+        }
+        let bad = |what: String| Err(CatalogError(format!("enhancement {what}")));
+        if rule.max_level > engine_game::character::ENHANCEMENT_CEILING {
+            return bad(format!(
+                "max_level is above {}",
+                engine_game::character::ENHANCEMENT_CEILING
+            ));
+        }
+        if rule.step_pct != engine_game::character::ENHANCE_STEP_PCT {
+            return bad(format!(
+                "step_pct {} disagrees with the {} the game reads stats with",
+                rule.step_pct,
+                engine_game::character::ENHANCE_STEP_PCT
+            ));
+        }
+        if rule.break_chance_by_level.len() != usize::from(rule.max_level) {
+            return bad("needs one break chance per level".to_owned());
+        }
+        if rule
+            .break_chance_by_level
+            .iter()
+            .any(|chance| !(0.0..=1.0).contains(chance))
+        {
+            return bad("has a break chance outside 0 to 1".to_owned());
+        }
+        for cost in &rule.costs {
+            if cost.level == 0 || cost.level > rule.max_level {
+                return bad(format!("prices level {}, which does not exist", cost.level));
+            }
+            if cost.amount == 0 {
+                return bad(format!("has a zero price at level {}", cost.level));
+            }
+            if self.resource(&cost.resource).is_none() {
+                return bad(format!("costs unknown resource {:?}", cost.resource));
+            }
+        }
+        Ok(())
+    }
 }
 
-/// Every character, dungeon and economy definition.
+/// Every character, dungeon, economy and loot definition.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Catalog {
     characters: Vec<CharacterDefinition>,
     dungeons: Vec<DungeonDefinition>,
     economy: Economy,
+    loot: LootCatalog,
 }
 
 /// Why a catalog could not be read.
@@ -409,23 +510,42 @@ struct DungeonRecord {
 }
 
 impl Catalog {
-    /// The catalog this build was compiled with.
+    /// The catalog this build was compiled with. **Registers its loot items** with
+    /// `engine-game` (idempotent), so item keys and ids resolve everywhere afterwards.
     ///
     /// # Errors
     ///
     /// Only if the shipped JSON is broken, which `cargo test` catches before anything ships.
     pub fn builtin() -> Result<Self, CatalogError> {
-        Self::parse(CHARACTERS_JSON, DUNGEONS_JSON, ECONOMY_JSON)
+        let catalog = Self::parse_all(CHARACTERS_JSON, DUNGEONS_JSON, ECONOMY_JSON, LOOT_JSON)?;
+        catalog.loot.register_items();
+        Ok(catalog)
     }
 
-    /// A catalog from the three documents' text.
+    /// A catalog from the first three documents' text and the shipped loot document. Does not
+    /// register any items.
+    ///
+    /// # Errors
+    ///
+    /// See [`Catalog::parse_all`].
+    pub fn parse(characters: &str, dungeons: &str, economy: &str) -> Result<Self, CatalogError> {
+        Self::parse_all(characters, dungeons, economy, LOOT_JSON)
+    }
+
+    /// A catalog from the four documents' text. Does not register any items.
     ///
     /// # Errors
     ///
     /// Malformed JSON, an unknown version, a duplicate id, an unknown hero, a character with
     /// no role, a dungeon with no spawn point or an impossible level range or key rules, a
-    /// reward naming a resource that does not exist, or an economy that contradicts itself.
-    pub fn parse(characters: &str, dungeons: &str, economy: &str) -> Result<Self, CatalogError> {
+    /// reward naming a resource that does not exist, an economy that contradicts itself, or a
+    /// loot document that does (an unknown item, an empty table, quality bands with a gap).
+    pub fn parse_all(
+        characters: &str,
+        dungeons: &str,
+        economy: &str,
+        loot: &str,
+    ) -> Result<Self, CatalogError> {
         let characters: CharacterFile = serde_json::from_str(characters)
             .map_err(|error| CatalogError(format!("characters.json: {error}")))?;
         let dungeons: DungeonFile = serde_json::from_str(dungeons)
@@ -442,11 +562,14 @@ impl Catalog {
         }
 
         economy.validate()?;
+        let loot = LootCatalog::parse(loot)?;
+        loot.validate_resources(&economy)?;
 
         let mut out = Self {
             characters: Vec::with_capacity(characters.characters.len()),
             dungeons: Vec::with_capacity(dungeons.dungeons.len()),
             economy,
+            loot,
         };
         for record in characters.characters {
             if out.character(&record.id).is_some() {
@@ -557,6 +680,12 @@ impl Catalog {
     #[must_use]
     pub fn economy(&self) -> &Economy {
         &self.economy
+    }
+
+    /// The dungeon items, drop tables and loot numbers.
+    #[must_use]
+    pub fn loot(&self) -> &LootCatalog {
+        &self.loot
     }
 
     /// The character definition with this id.
@@ -681,7 +810,7 @@ mod tests {
             }]
         );
         let economy = catalog.economy();
-        assert_eq!(economy.resources.len(), 3);
+        assert_eq!(economy.resources.len(), 5);
         assert_eq!(economy.salvage.resource, "bone_shard");
         let trade = economy.exchange("dust_to_ember").expect("a trade");
         assert_eq!((trade.from_amount, trade.to_amount), (20, 1));
@@ -732,6 +861,60 @@ mod tests {
         assert!(dungeon.admits(dungeon.max_level + 1, 10_000).is_err());
         if dungeon.min_level > 0 {
             assert!(dungeon.admits(dungeon.min_level - 1, 10_000).is_err());
+        }
+    }
+
+    #[test]
+    fn the_enhancement_rules_are_read_and_checked() {
+        let catalog = Catalog::builtin().expect("the shipped catalog parses");
+        let rule = &catalog.economy().enhancement;
+        assert_eq!((rule.max_level, rule.step_pct), (10, 1));
+        assert_eq!(rule.break_chance_by_level.len(), 10);
+        assert_eq!(&rule.break_chance_by_level[..4], &[0.0; 4]);
+        assert!((rule.break_chance(5) - 0.95).abs() < 1e-12);
+        assert!((rule.break_chance(10) - 0.995).abs() < 1e-12);
+        assert_eq!(rule.break_chance(0), 0.0);
+        assert_eq!(rule.break_chance(11), 0.0);
+        // Costs scale with the level, and the late levels also want embers.
+        let dust = |level| {
+            rule.costs_for(level)
+                .find(|cost| cost.resource == "crypt_dust")
+                .map(|cost| cost.amount)
+                .expect("every level costs dust")
+        };
+        for level in 2..=10 {
+            assert!(dust(level) > dust(level - 1));
+        }
+        assert!(rule.costs_for(1).all(|cost| cost.resource == "crypt_dust"));
+        assert!(
+            rule.costs_for(10)
+                .any(|cost| cost.resource == "steward_ember")
+        );
+        // The resources the drops and costs name exist.
+        for id in ["aether_shard", "gold"] {
+            assert!(catalog.economy().resource(id).is_some(), "{id}");
+        }
+
+        let edit = |from: &str, to: &str| ECONOMY_JSON.replacen(from, to, 1);
+        for bad in [
+            // A step the game does not read stats with.
+            edit("\"step_pct\": 1", "\"step_pct\": 2"),
+            // A chance for every level but one.
+            edit("0.99, 0.995]", "0.99]"),
+            edit("0.995]", "1.5]"),
+            // A price in a resource that does not exist.
+            edit(
+                "{ \"level\": 1, \"resource\": \"crypt_dust\"",
+                "{ \"level\": 1, \"resource\": \"moon_cheese\"",
+            ),
+            // A price for a level that does not exist.
+            edit(
+                "{ \"level\": 10, \"resource\": \"crypt_dust\"",
+                "{ \"level\": 11, \"resource\": \"crypt_dust\"",
+            ),
+        ] {
+            assert_ne!(bad, ECONOMY_JSON);
+            assert!(Catalog::parse(CHARACTERS_JSON, DUNGEONS_JSON, &bad).is_err());
         }
     }
 }

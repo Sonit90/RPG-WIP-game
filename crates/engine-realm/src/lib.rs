@@ -27,6 +27,8 @@
 //! | [`catalog`] | which characters and dungeons exist |
 //! | [`loadout`] | what a character wears, and its gear score |
 //! | [`economy`] | resources, salvage and exchanges |
+//! | [`enhance`] | enhancing equipment: cost, success and breakage |
+//! | [`loot`] | the loot catalog: dungeon items, drop tables, quality and epic odds |
 //! | [`key`] | dungeon keys: validity, progression, scaling |
 //! | [`rewards`] | what a finished run pays |
 //! | [`matchmaking`] | which queued tickets become a party |
@@ -44,10 +46,12 @@ pub mod catalog;
 pub mod chat;
 pub mod combat;
 pub mod economy;
+pub mod enhance;
 pub mod error;
 pub mod instance;
 pub mod key;
 pub mod loadout;
+pub mod loot;
 pub mod matchmaking;
 pub mod movement;
 pub mod ops;

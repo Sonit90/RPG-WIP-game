@@ -593,17 +593,48 @@ fn describe(event: &CombatEvent) -> String {
         CombatEvent::ChestOpened { chest, by, tick } => {
             format!("chest {chest} opened by {} on {tick}", by.index())
         }
-        CombatEvent::LootAwarded { player, item, tick } => {
-            format!("loot {} to {} on {tick}", item.0, player.index())
+        CombatEvent::LootAwarded {
+            player,
+            item,
+            props,
+            index,
+            tick,
+        } => {
+            format!(
+                "loot {} {props:?} #{index} to {} on {tick}",
+                item.0,
+                player.index()
+            )
         }
         CombatEvent::LootMailed {
             player,
             item,
+            props,
+            index,
             reason,
             tick,
         } => format!(
-            "loot {} mailed to {} ({reason:?}) on {tick}",
+            "loot {} {props:?} #{index} mailed to {} ({reason:?}) on {tick}",
             item.0,
+            player.index()
+        ),
+        CombatEvent::MobLoot {
+            player,
+            item,
+            props,
+            tick,
+        } => format!(
+            "mob loot {} {props:?} to {} on {tick}",
+            item.0,
+            player.index()
+        ),
+        CombatEvent::MobCurrency {
+            player,
+            resource,
+            amount,
+            tick,
+        } => format!(
+            "mob currency {amount} {resource} to {} on {tick}",
             player.index()
         ),
         CombatEvent::MailTaken { player, item, tick } => {
