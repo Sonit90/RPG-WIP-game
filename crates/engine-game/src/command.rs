@@ -166,6 +166,10 @@ pub enum PlayerCommand {
         /// Which letter.
         id: u64,
     },
+    /// Use the active of the trinket worn in trinket slot `n` (`0` is the first). Edge-triggered.
+    ///
+    /// Off the global cooldown: a trinket has a cooldown of its own. Appended last.
+    UseTrinket(usize),
 }
 
 impl PlayerCommand {

@@ -523,6 +523,10 @@ impl AudioDirector {
                 let origin = self.chest_of(target, simulation);
                 self.request(SoundCue::at(SoundId::HitNormal, origin), audio);
             }
+            CombatEvent::TrinketUsed { entity, .. } => {
+                let origin = self.chest_of(entity, simulation);
+                self.request(SoundCue::at(SoundId::TrinketUse, origin), audio);
+            }
             CombatEvent::SpellReflected { source, .. } => {
                 let origin = self.chest_of(source, simulation);
                 self.request(SoundCue::at(SoundId::DetonateExplosion, origin), audio);

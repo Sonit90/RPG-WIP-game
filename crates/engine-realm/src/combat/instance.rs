@@ -89,6 +89,10 @@ pub enum ActionKind {
     /// Appended last: the variant order is the wire format. Not a targeting press - the
     /// selection is left as it is - and a no-op unless the player is channelling.
     ChannelAim([f32; 3]),
+    /// Use the trinket in trinket slot `n` (`0` or `1`).
+    ///
+    /// Appended last: the variant order is the wire format. Not a targeting press.
+    Trinket(u8),
 }
 
 /// A button press, with the target the player had selected when they pressed it.
@@ -165,6 +169,10 @@ pub struct Resources {
     pub global_cooldown: f32,
     /// Damage the player absorbs before health moves: every shield on them, summed.
     pub absorb: f32,
+    /// Seconds left on the first trinket's cooldown, when the row was written.
+    pub trinket1: f32,
+    /// Seconds left on the second trinket's cooldown.
+    pub trinket2: f32,
 }
 
 /// Everything about one player a client needs beyond its own prediction.
@@ -216,6 +224,8 @@ impl PlayerState {
             || resource(r.valor, o.valor)
             || resource(r.astral, o.astral)
             || resource(r.absorb, o.absorb)
+            || ran_down(o.trinket1, r.trinket1)
+            || ran_down(o.trinket2, r.trinket2)
             || ran_down(o.global_cooldown, r.global_cooldown)
             || self.cooldowns.len() != older.cooldowns.len()
             || self.cooldowns.iter().zip(&older.cooldowns).any(|(n, c)| {
@@ -769,6 +779,14 @@ impl CombatInstance {
                 self.sim.push_command_for(entity, PlayerCommand::OpenChest);
                 return Ok(());
             }
+            ActionKind::Trinket(index)
+                if usize::from(index) < engine_game::trinket::TRINKET_SLOTS =>
+            {
+                // A button of its own: the selection is left as it is.
+                self.sim
+                    .push_command_for(entity, PlayerCommand::UseTrinket(usize::from(index)));
+                return Ok(());
+            }
             ActionKind::ChannelAim(p) if finite(&p) => {
                 // Steering an existing channel is not a targeting press either.
                 self.sim.push_command_for(
@@ -925,6 +943,8 @@ impl CombatInstance {
                     astral: sim.druid().astral.value(),
                     global_cooldown: mage.global_cooldown.remaining(),
                     absorb: sim.absorb_of(entity),
+                    trinket1: sim.trinket_remaining(0),
+                    trinket2: sim.trinket_remaining(1),
                 };
                 let cooldowns = hero
                     .abilities()

@@ -736,10 +736,17 @@ impl Simulation {
             return None;
         }
 
-        let (absorbed, remaining) = self.warrior.absorb.absorb(landing);
+        // The trinket's shield first, then the Warrior's own: one event, with what both
+        // together have left.
+        let (from_trinket, landing) = self.trinket.absorb.absorb(landing);
+        if from_trinket > 0.0 && !self.trinket.absorb.is_active() {
+            self.end_trinket_absorb_status(defender);
+        }
+        let (from_warrior, remaining) = self.warrior.absorb.absorb(landing);
+        let absorbed = from_trinket + from_warrior;
         if absorbed > 0.0 {
             let tick = self.tick;
-            let left = self.warrior.absorb.remaining();
+            let left = self.warrior.absorb.remaining() + self.trinket.absorb.remaining();
             self.events.push(CombatEvent::Absorbed {
                 target: defender,
                 amount: absorbed,

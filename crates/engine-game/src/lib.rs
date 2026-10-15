@@ -115,6 +115,8 @@ pub mod status;
 pub mod talent;
 pub mod targeting;
 pub mod telemetry;
+/// Active trinkets: the button a worn trinket gives, its cooldown and what it does.
+pub mod trinket;
 /// The Warrior: Valor, Battle Fervor, and the state its eleven abilities leave behind.
 pub mod warrior;
 pub mod world;
@@ -143,5 +145,6 @@ pub use party::{MAX_PARTY, Party};
 pub use sim::{Player, SimConfig, SimStats, Simulation};
 pub use status::{DispelSchool, StatusKind, StatusSet};
 pub use telemetry::CombatMeter;
+pub use trinket::{TrinketActive, TrinketEffect};
 pub use warrior::{Valor, Warrior};
 pub use world::{EntityDesc, EntityKind, GameWorld};

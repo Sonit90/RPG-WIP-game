@@ -886,6 +886,46 @@ impl CharacterView {
     }
 }
 
+/// One trinket button, as the HUD draws it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TrinketView {
+    /// Which button: `0` is the first slot.
+    pub index: usize,
+    /// The item's name.
+    pub name: &'static str,
+    /// The picture it is drawn with.
+    pub icon: engine_game::character::ItemIcon,
+    /// What the button does, with its numbers.
+    pub active: engine_game::trinket::TrinketActive,
+    /// Seconds until it can be used again. Zero when ready.
+    pub cooldown_remaining: f32,
+    /// Seconds left on the effect it left on the player (the ward, the shield). Zero when none.
+    pub buff_remaining: f32,
+}
+
+impl TrinketView {
+    /// Whether it is cooling down.
+    #[must_use]
+    pub fn is_cooling(&self) -> bool {
+        self.cooldown_remaining > 0.0
+    }
+
+    /// How much of the cooldown is left, `0..=1`.
+    #[must_use]
+    pub fn cooldown_fraction(&self) -> f32 {
+        if self.active.cooldown <= 0.0 {
+            return 0.0;
+        }
+        (self.cooldown_remaining / self.active.cooldown).clamp(0.0, 1.0)
+    }
+
+    /// Whether the effect it left is up: the button glows while it is.
+    #[must_use]
+    pub fn is_active(&self) -> bool {
+        self.buff_remaining > 0.0
+    }
+}
+
 /// Everything the interface may read, rebuilt every frame.
 #[derive(Debug, Clone)]
 pub struct UiSnapshot {
@@ -915,6 +955,8 @@ pub struct UiSnapshot {
     /// Two at most, in the hero's own order, on `F` and `G` — see
     /// [`engine_game::hero::Hero::extras`]. Empty for the FireMage and the Warrior.
     pub extras: [Option<AbilitySlotView>; 2],
+    /// The two trinket buttons. `None` for a slot with nothing worn, or a trinket with no active.
+    pub trinkets: [Option<TrinketView>; 2],
     /// The cast in progress.
     pub cast: Option<CastView>,
     /// The fight so far.
@@ -1025,6 +1067,7 @@ impl UiSnapshot {
             abilities: [None; ABILITY_SLOTS],
             ultimate: None,
             extras: [None; 2],
+            trinkets: [None; 2],
             cast: None,
             combat: CombatView::default(),
             notification: NotificationView::default(),
@@ -1141,6 +1184,8 @@ impl UiSnapshot {
             self.extras[index] = Some(ability_view(simulation, ability, aiming));
         }
 
+        self.trinkets = trinket_views(simulation);
+
         self.cast = simulation
             .casting()
             .map(|cast| CastView {
@@ -1200,6 +1245,43 @@ impl UiSnapshot {
         self.crit_chance = stats.crit();
         self.ignite_max = mage.ignite_max();
     }
+}
+
+/// The two trinket buttons: what is worn, its cooldown, and whether its effect is up.
+fn trinket_views(simulation: &Simulation) -> [Option<TrinketView>; 2] {
+    let player = simulation.player().entity;
+    let statuses = simulation.world().statuses(player);
+    let mut views = [None; 2];
+    for (index, view) in views.iter_mut().enumerate() {
+        let Some(active) = simulation.trinket_active(index) else {
+            continue;
+        };
+        let Some(def) = engine_game::trinket::slot_of(index)
+            .and_then(|slot| simulation.sheet().equipment().get(slot))
+            .and_then(ItemStack::def)
+        else {
+            continue;
+        };
+        let buff = match active.effect {
+            engine_game::trinket::TrinketEffect::GroupDamageReduction => StatusKind::TrinketWard,
+            engine_game::trinket::TrinketEffect::GroupAbsorb => StatusKind::TrinketAbsorb,
+            _ => StatusKind::TrinketWard,
+        };
+        let buff_remaining = if active.effect.has_duration() {
+            statuses.map_or(0.0, |set| set.remaining(buff))
+        } else {
+            0.0
+        };
+        *view = Some(TrinketView {
+            index,
+            name: def.name,
+            icon: def.icon,
+            active,
+            cooldown_remaining: simulation.trinket_remaining(index),
+            buff_remaining,
+        });
+    }
+    views
 }
 
 /// One entity as a frame shows it: the target, and the target's target.

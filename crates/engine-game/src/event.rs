@@ -30,6 +30,7 @@ use crate::entity::EntityId;
 use crate::firemage::ZoneShape;
 use crate::sim::CastEnd;
 use crate::status::{DispelSchool, StatusEnd, StatusKind};
+use crate::trinket::TrinketEffect;
 
 /// One instance of damage landing.
 ///
@@ -739,6 +740,19 @@ pub enum CombatEvent {
         /// The simulation tick it happened on.
         tick: u64,
     },
+    /// A player used a trinket's button. Announced once, before the effects it produces (the
+    /// ordinary [`CombatEvent::StatusApplied`], [`CombatEvent::Dispelled`] and
+    /// [`CombatEvent::AbsorbApplied`] that follow).
+    TrinketUsed {
+        /// Who used it.
+        entity: EntityId,
+        /// Which trinket button: `0` is the first slot, `1` the second.
+        slot: u8,
+        /// What it did.
+        effect: TrinketEffect,
+        /// The simulation tick it happened on.
+        tick: u64,
+    },
     /// A FireMage began channelling the Moving Fire Beam.
     BeamChannelStarted {
         /// The channeller.
@@ -833,6 +847,7 @@ impl CombatEvent {
             | Self::PlagueArmed { tick, .. }
             | Self::PlagueExploded { tick, .. }
             | Self::PlagueCloudEnded { tick, .. }
+            | Self::TrinketUsed { tick, .. }
             | Self::BeamChannelStarted { tick, .. }
             | Self::BeamYaw { tick, .. }
             | Self::BeamChannelEnded { tick, .. } => tick,

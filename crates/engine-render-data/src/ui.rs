@@ -332,6 +332,14 @@ pub enum UiIcon {
     Ring,
     /// A trinket.
     Trinket,
+    /// An active trinket: a shield with a chevron.
+    TrinketWard,
+    /// An active trinket: a censer ring.
+    TrinketDispel,
+    /// An active trinket: an hourglass.
+    TrinketHaste,
+    /// An active trinket: a bright bubble.
+    TrinketAbsorb,
 
     // The dungeon map: its markers, and the sidebar's portraits and ability schools.
     /// A monster pack on the dungeon map: crossed swords on gold.
@@ -469,7 +477,7 @@ pub enum UiIcon {
 
 impl UiIcon {
     /// Every icon, in atlas order.
-    pub const ALL: [Self; 113] = [
+    pub const ALL: [Self; 117] = [
         Self::Firebolt,
         Self::Meteor,
         Self::FlameCone,
@@ -519,6 +527,10 @@ impl UiIcon {
         Self::Amulet,
         Self::Ring,
         Self::Trinket,
+        Self::TrinketWard,
+        Self::TrinketDispel,
+        Self::TrinketHaste,
+        Self::TrinketAbsorb,
         Self::MapPack,
         Self::MapBoss,
         Self::MapPlayer,

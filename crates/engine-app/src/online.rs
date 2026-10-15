@@ -2849,6 +2849,10 @@ impl OnlineSession {
                     Some((ability, c.charges, (c.recharge - age).max(0.0)))
                 })
                 .collect();
+            simulation.present_trinkets([
+                (row.resources.trinket1 - age).max(0.0),
+                (row.resources.trinket2 - age).max(0.0),
+            ]);
             simulation.present_class_state(
                 &cooldowns,
                 PresentedResources {
@@ -2942,6 +2946,7 @@ impl OnlineSession {
                 }
                 engine_game::PlayerCommand::UseExtra(index) => ActionKind::Extra(slot(index)),
                 engine_game::PlayerCommand::OpenChest => ActionKind::OpenChest,
+                engine_game::PlayerCommand::UseTrinket(index) => ActionKind::Trinket(slot(index)),
                 engine_game::PlayerCommand::ChannelAim { position } => {
                     ActionKind::ChannelAim(at(position))
                 }

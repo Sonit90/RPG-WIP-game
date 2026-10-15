@@ -88,6 +88,8 @@ pub mod remote;
 pub mod respawn;
 /// Talents: the active hero's grid, seen through the simulation.
 pub mod talent_exec;
+/// Active trinkets: cooldowns, the group effects and the absorb pool.
+pub mod trinket_exec;
 /// Casting the Warrior: Valor, the incoming-damage pipeline and the charge.
 mod warrior_exec;
 
@@ -633,6 +635,8 @@ pub struct Simulation {
     /// The character-sheet stats the player's effects gave them when last looked at; a
     /// change is what makes the derived numbers be recomputed. See `sync_effect_stats`.
     effect_stat_bonus: crate::character::StatBlock,
+    /// The active player's trinket cooldowns and Group Absorb pool.
+    trinket: crate::trinket::TrinketState,
 }
 
 impl Simulation {
@@ -724,6 +728,7 @@ impl Simulation {
             periodic_damage: false,
             health_override: None,
             effect_stat_bonus: crate::character::StatBlock::default(),
+            trinket: crate::trinket::TrinketState::new(),
             tick: 0,
             time: 0.0,
             stats: SimStats::default(),
@@ -785,6 +790,7 @@ impl Simulation {
         self.mage.reset();
         self.warrior.reset();
         self.druid.reset();
+        self.trinket.reset();
         let leaving = self.player.entity;
         self.seeds.retain(|seed| seed.owner != leaving);
         // The old hero's own effects go with them: a Wild Rush on a character who has just
@@ -1286,10 +1292,9 @@ impl Simulation {
                 .map_or(0.0, |(_, amount)| *amount);
         }
         if entity == self.player.entity {
-            return self.warrior.absorb.remaining();
+            return self.warrior.absorb.remaining() + self.trinket.absorb.remaining();
         }
-        self.inactive_warrior(entity)
-            .map_or(0.0, |warrior| warrior.absorb.remaining())
+        self.inactive_absorb(entity)
     }
 
     /// Steps until the player could start another ability: no cast running and the global
@@ -1421,6 +1426,7 @@ impl Simulation {
         self.for_each_player(|sim| {
             sim.sync_effect_stats();
             sim.sync_war_stomp();
+            sim.tick_trinket(step);
         });
         stats.statuses += status_started.elapsed();
 
@@ -1742,6 +1748,9 @@ impl Simulation {
                 PlayerCommand::OpenChest => self.open_chest(),
                 PlayerCommand::TakeMail { id } => self.take_mail(id),
                 PlayerCommand::MarkMailRead { id } => self.mark_mail_read(id),
+                PlayerCommand::UseTrinket(index) => {
+                    let _ = self.use_trinket(index);
+                }
                 PlayerCommand::Move { .. } => {}
             }
         }
@@ -2969,6 +2978,7 @@ impl Simulation {
         self.mage.reset();
         self.warrior.reset();
         self.druid.reset();
+        self.trinket.reset();
         self.seeds.clear();
         // The player's own buffs and burns are part of the state the control exists to clear.
         if let Some(statuses) = self.world.statuses_mut(self.player.entity) {

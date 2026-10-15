@@ -1,0 +1,23 @@
+<svg version="1.1" xmlns="http://www.w3.org/2000/svg" style="display: block;" viewBox="0 0 512 512" width="512" height="512" preserveAspectRatio="none">
+<defs>
+	<linearGradient id="trinket_ward_panel" gradientUnits="userSpaceOnUse" x1="40" y1="472" x2="472" y2="40">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(14,22,34)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(34,56,86)"></stop>
+	</linearGradient>
+	<radialGradient id="trinket_ward_glow" gradientUnits="userSpaceOnUse" cx="256" cy="272" r="230">
+		<stop offset="0" stop-opacity="0.40" stop-color="rgb(120,170,240)"></stop>
+		<stop offset="1" stop-opacity="0" stop-color="rgb(120,170,240)"></stop>
+	</radialGradient>
+	<clipPath id="trinket_ward_tile">
+		<path d="M 40 120 C 40 76 76 40 120 40 L 392 40 C 436 40 472 76 472 120 L 472 392 C 472 436 436 472 392 472 L 120 472 C 76 472 40 436 40 392 Z"></path>
+	</clipPath>
+</defs>
+<g clip-path="url(#trinket_ward_tile)">
+	<path fill="url(#trinket_ward_panel)" d="M 40 120 C 40 76 76 40 120 40 L 392 40 C 436 40 472 76 472 120 L 472 392 C 472 436 436 472 392 472 L 120 472 C 76 472 40 436 40 392 Z"></path>
+	<path fill="url(#trinket_ward_glow)" d="M 40 40 L 472 40 L 472 472 L 40 472 Z"></path>
+	<path fill="rgb(92,136,200)" d="M 256 80 L 400 128 L 400 270 C 400 350 340 410 256 450 C 172 410 112 350 112 270 L 112 128 Z"></path>
+	<path fill="rgb(170,206,250)" d="M 256 80 L 400 128 L 400 270 C 400 300 392 326 380 348 L 256 300 Z"></path>
+	<path fill="rgb(52,86,142)" d="M 256 300 L 380 348 C 350 392 306 424 256 450 C 206 424 162 392 132 348 Z"></path>
+	<path fill="rgb(170,206,250)" d="M 256 160 L 330 250 L 296 250 L 296 330 L 216 330 L 216 250 L 182 250 Z"></path>
+</g>
+</svg>

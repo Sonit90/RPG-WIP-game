@@ -471,6 +471,8 @@ fn project(ctx: &ReducerContext, instance_id: u64, fight: &mut CombatInstance) {
                     astral: state.resources.astral,
                     global_cooldown: state.resources.global_cooldown,
                     absorb: state.resources.absorb,
+                    trinket1: state.resources.trinket1,
+                    trinket2: state.resources.trinket2,
                 },
                 cooldowns: state
                     .cooldowns
@@ -730,6 +732,7 @@ pub fn combat_act(
         NetAction::Extra(index) => ActionKind::Extra(index),
         NetAction::OpenChest => ActionKind::OpenChest,
         NetAction::ChannelAim(p) => ActionKind::ChannelAim([p.x, p.y, p.z]),
+        NetAction::Trinket(index) => ActionKind::Trinket(index),
     };
     let request = CombatAction {
         target: entity_ref(&target),

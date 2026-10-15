@@ -50,6 +50,12 @@ pub enum AbilityError {
     NoHealOverTime,
     /// A friendly ability was cast with nothing friendly to point it at.
     NoFriendlyTarget,
+    /// The trinket's button is still cooling down.
+    TrinketNotReady,
+    /// Nothing is worn in that trinket slot, or what is worn has no button.
+    NoTrinketActive,
+    /// The caster is stunned.
+    Stunned,
 }
 
 impl AbilityError {
@@ -76,6 +82,9 @@ impl AbilityError {
             Self::NotEnoughAstralPower => "Not enough Astral Power.",
             Self::NoHealOverTime => "No heal over time on the target.",
             Self::NoFriendlyTarget => "No friendly target.",
+            Self::TrinketNotReady => "That trinket is not ready yet.",
+            Self::NoTrinketActive => "That trinket has no use.",
+            Self::Stunned => "You are stunned.",
         }
     }
 
@@ -102,6 +111,9 @@ impl AbilityError {
             Self::NotEnoughAstralPower => "NOT ENOUGH ASTRAL POWER",
             Self::NoHealOverTime => "NO HEAL OVER TIME ON THE TARGET",
             Self::NoFriendlyTarget => "NO FRIENDLY TARGET",
+            Self::TrinketNotReady => "TRINKET NOT READY",
+            Self::NoTrinketActive => "NO TRINKET TO USE",
+            Self::Stunned => "YOU ARE STUNNED",
         }
     }
 }
@@ -301,6 +313,28 @@ impl AbilityBook {
             }
         }
         0.0
+    }
+
+    /// Takes `fraction` of the time left off `ability`'s recharge, and returns the seconds
+    /// removed.
+    ///
+    /// Only the recharge that is running is shortened; a ready ability has nothing to cut. A
+    /// share of what is *left* can never reach zero, so this never hands out a charge by
+    /// itself - the recharge simply ends sooner, and the charge returns on the next tick the
+    /// way it always does. Charges already banked are untouched.
+    pub fn reduce_remaining_fraction(&mut self, ability: FireAbility, fraction: f32) -> f32 {
+        let fraction = if fraction.is_finite() {
+            fraction.clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let state = &mut self.states[ability.index()];
+        if state.recharge <= 0.0 || fraction <= 0.0 {
+            return 0.0;
+        }
+        let removed = state.recharge * fraction;
+        state.recharge -= removed;
+        removed
     }
 
     /// Hands `ability` one charge, up to its maximum.

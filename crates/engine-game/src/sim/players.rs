@@ -64,6 +64,7 @@ pub struct PlayerSlot {
     health_override: Option<f32>,
     effect_stat_bonus: crate::character::StatBlock,
     last_move: MoveResult,
+    trinket: crate::trinket::TrinketState,
 }
 
 impl PlayerSlot {
@@ -101,6 +102,7 @@ impl PlayerSlot {
             health_override: None,
             effect_stat_bonus: crate::character::StatBlock::default(),
             last_move: MoveResult::default(),
+            trinket: crate::trinket::TrinketState::new(),
         }
     }
 
@@ -139,6 +141,7 @@ impl Simulation {
         swap(&mut self.health_override, &mut slot.health_override);
         swap(&mut self.effect_stat_bonus, &mut slot.effect_stat_bonus);
         swap(&mut self.last_move, &mut slot.last_move);
+        swap(&mut self.trinket, &mut slot.trinket);
     }
 
     /// Runs `body` with the player at `index` in `others` active, then restores the active
@@ -225,13 +228,15 @@ impl Simulation {
         self.with_slot(index, body)
     }
 
-    /// The class state of the player controlling `entity` while another player is active.
-    pub(super) fn inactive_warrior(&self, entity: EntityId) -> Option<&Warrior> {
+    /// How much the player controlling `entity` absorbs while another player is active.
+    pub(super) fn inactive_absorb(&self, entity: EntityId) -> f32 {
         self.others
             .iter()
             .flatten()
             .find(|slot| slot.entity() == entity)
-            .map(|slot| &slot.warrior)
+            .map_or(0.0, |slot| {
+                slot.warrior.absorb.remaining() + slot.trinket.absorb.remaining()
+            })
     }
 
     /// Runs `body` once with each player active, the active one first.

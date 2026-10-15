@@ -145,6 +145,13 @@ pub enum StatusKind {
     /// Barkskin Instinct: an ally's share of Wild Rush. The damage reduction is the
     /// status's own [`Status::magnitude`], which the talent's data decides.
     Barkskin,
+    /// A trinket's group ward: less damage taken, by the status's own [`Status::magnitude`].
+    /// **Appended last**: statuses travel the wire by their index in [`StatusKind::ALL`].
+    TrinketWard,
+    /// A trinket's group absorb. The shield itself is a pool on the player (see
+    /// `crate::trinket::TrinketState`); this is what the frames and the aura row show while it
+    /// stands, and it goes when the pool is spent.
+    TrinketAbsorb,
 }
 
 /// How a harmful effect is classified for dispelling.
@@ -347,7 +354,7 @@ impl GenericApplication {
 }
 
 /// How many effects exist.
-pub const STATUS_KIND_COUNT: usize = 30;
+pub const STATUS_KIND_COUNT: usize = 32;
 
 impl StatusKind {
     /// Every effect, in registry order.
@@ -382,6 +389,8 @@ impl StatusKind {
         Self::BattleFervor,
         Self::Plagued,
         Self::Barkskin,
+        Self::TrinketWard,
+        Self::TrinketAbsorb,
     ];
 
     /// Its row in [`STATUS_DEFS`].
@@ -447,6 +456,20 @@ impl StatusKind {
     #[must_use]
     pub fn is_dispellable(self) -> bool {
         self.is_harmful() && self.dispel_school().is_some()
+    }
+
+    /// Whether a dispel aimed at an *enemy* may strip it: a helpful effect the registry puts
+    /// in a school (Mass Dispel's other half).
+    ///
+    /// The counterpart of [`StatusKind::is_dispellable`], and the same table answers it: a
+    /// buff with no school cannot be stripped, and neither can the lifecycle's own
+    /// bookkeeping.
+    #[must_use]
+    pub fn is_purgeable(self) -> bool {
+        let definition = self.definition();
+        definition.class == EffectClass::Buff
+            && definition.dispel.is_some()
+            && definition.applicable
     }
 
     /// Whether this is one of the Druid's own healing-over-time effects.
@@ -745,6 +768,8 @@ pub static STATUS_DEFS: [StatusDef; STATUS_KIND_COUNT] = [
         overlay_name: "FORTITUDE",
         name: "Fortitude",
         description: "20 more Stamina per stack.",
+        // The buffs below are spells: a Mass Dispel strips them from an enemy.
+        dispel: Some(DispelSchool::Magic),
         max_stacks: 3,
         modifiers: &[EffectModifier::Stat {
             stat: Stat::Stamina,
@@ -759,6 +784,7 @@ pub static STATUS_DEFS: [StatusDef; STATUS_KIND_COUNT] = [
         overlay_name: "BATTLE SHOUT",
         name: "Battle Shout",
         description: "40 more Strength.",
+        dispel: Some(DispelSchool::Magic),
         modifiers: &[EffectModifier::Stat {
             stat: Stat::Strength,
             per_stack: 40.0,
@@ -772,6 +798,7 @@ pub static STATUS_DEFS: [StatusDef; STATUS_KIND_COUNT] = [
         overlay_name: "ARCANE INTELLECT",
         name: "Arcane Intellect",
         description: "40 more Intellect.",
+        dispel: Some(DispelSchool::Magic),
         modifiers: &[EffectModifier::Stat {
             stat: Stat::Intellect,
             per_stack: 40.0,
@@ -785,6 +812,7 @@ pub static STATUS_DEFS: [StatusDef; STATUS_KIND_COUNT] = [
         overlay_name: "BLOODLUST",
         name: "Bloodlust",
         description: "30% more haste, 20% more damage dealt and 10% faster.",
+        dispel: Some(DispelSchool::Magic),
         modifiers: &[
             EffectModifier::Stat {
                 stat: Stat::Haste,
@@ -802,6 +830,7 @@ pub static STATUS_DEFS: [StatusDef; STATUS_KIND_COUNT] = [
         overlay_name: "REGENERATION",
         name: "Regeneration",
         description: "Healing every second.",
+        dispel: Some(DispelSchool::Magic),
         heals: true,
         generic: GenericApplication::new(20.0, 12.0, 0.0),
         ..BUFF
@@ -897,6 +926,26 @@ pub static STATUS_DEFS: [StatusDef; STATUS_KIND_COUNT] = [
         description: "Taking less damage, shared by a Druid's Wild Rush.",
         modifiers: &[EffectModifier::DamageReductionMagnitude],
         generic: GenericApplication::new(4.0, 0.0, 0.25),
+        ..BUFF
+    },
+    StatusDef {
+        kind: StatusKind::TrinketWard,
+        id: "trinket_ward",
+        overlay_name: "WARD",
+        name: "Rallying Ward",
+        description: "Taking less damage from every source.",
+        modifiers: &[EffectModifier::DamageReductionMagnitude],
+        generic: GenericApplication::new(8.0, 0.0, 0.15),
+        ..BUFF
+    },
+    StatusDef {
+        kind: StatusKind::TrinketAbsorb,
+        id: "trinket_absorb",
+        overlay_name: "AEGIS",
+        name: "Aegis",
+        description: "A shield takes damage before health does.",
+        // The pool is the player's (`TrinketState::absorb`); this only says it stands.
+        generic: GenericApplication::new(10.0, 0.0, 0.20),
         ..BUFF
     },
 ];
@@ -1840,6 +1889,25 @@ mod tests {
         assert!(!StatusKind::Rejuvenation.is_harmful());
         assert!(StatusKind::Rejuvenation.is_druid_hot());
         assert!(!StatusKind::AstralWrath.is_druid_hot());
+    }
+
+    #[test]
+    fn only_a_buff_in_a_school_can_be_purged_and_only_a_debuff_in_one_dispelled() {
+        for kind in StatusKind::ALL {
+            // The two halves of Mass Dispel never claim the same effect.
+            assert!(
+                !(kind.is_purgeable() && kind.is_dispellable()),
+                "{kind:?} is both"
+            );
+        }
+        assert!(StatusKind::Bloodlust.is_purgeable());
+        assert!(StatusKind::Fortitude.is_purgeable());
+        assert!(!StatusKind::Burning.is_purgeable());
+        // Lifecycle bookkeeping, a bare buff and the trinkets' own effects are not purged.
+        assert!(!StatusKind::RespawnProtection.is_purgeable());
+        assert!(!StatusKind::Rejuvenation.is_purgeable());
+        assert!(!StatusKind::TrinketWard.is_purgeable());
+        assert!(!StatusKind::TrinketAbsorb.is_purgeable());
     }
 
     #[test]

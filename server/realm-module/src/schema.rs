@@ -805,6 +805,10 @@ pub struct NetResources {
     pub global_cooldown: f32,
     /// Damage absorbed before health moves.
     pub absorb: f32,
+    /// Seconds left on the first trinket's cooldown, when the row was written.
+    pub trinket1: f32,
+    /// Seconds left on the second trinket's cooldown.
+    pub trinket2: f32,
 }
 
 /// A bar slot aimed at a point.
@@ -833,6 +837,8 @@ pub enum NetAction {
     OpenChest,
     /// Steer a channelled Moving Fire Beam towards a ground point (appended last).
     ChannelAim(V3),
+    /// Use the trinket in trinket slot `n` (appended last).
+    Trinket(u8),
 }
 
 /// A player's combat state beyond health and position (which live on `InstancePlayer`).

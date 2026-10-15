@@ -242,6 +242,7 @@ impl CombatMeter {
                 | CombatEvent::BeamChannelStarted { .. }
                 | CombatEvent::BeamYaw { .. }
                 | CombatEvent::BeamChannelEnded { .. }
+                | CombatEvent::TrinketUsed { .. }
                 // The Warrior's defensive stream. A Block, a Parry, a Dodge, a point of
                 // Valor and a shield taking a hit all *prevent* damage rather than
                 // move any, and the healing they cause arrives as `Healing` like every

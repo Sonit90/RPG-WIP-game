@@ -80,6 +80,7 @@ impl Simulation {
             && matches!(
                 command,
                 PlayerCommand::UseAbility(_)
+                    | PlayerCommand::UseTrinket(_)
                     | PlayerCommand::UseAbilityAt { .. }
                     | PlayerCommand::UseUltimate { .. }
                     | PlayerCommand::UseExtra(_)
@@ -106,6 +107,7 @@ impl Simulation {
             cast.elapsed = (cast.elapsed + step).min(cast.duration);
         }
         self.prune_modifier_mirror();
+        self.trinket.tick(step);
         // The same for a channelled beam, which also turns towards the player's own aim so it
         // is drawn where they steer. It deals nothing here.
         self.tick_presented_beam(step);
@@ -160,6 +162,13 @@ impl Simulation {
             Some(index) => self.presented_absorbs[index].1 = amount,
             None if amount > 0.0 => self.presented_absorbs.push((entity, amount)),
             None => {}
+        }
+    }
+
+    /// Shows how long the local player's trinkets have left, as the server has it.
+    pub fn present_trinkets(&mut self, remaining: [f32; crate::trinket::TRINKET_SLOTS]) {
+        for (index, seconds) in remaining.into_iter().enumerate() {
+            self.trinket.set_remaining(index, seconds);
         }
     }
 
