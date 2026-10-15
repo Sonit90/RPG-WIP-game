@@ -93,6 +93,7 @@ mod tests {
         let gear = resolve_gear(&[EquippedItem {
             slot: "head".into(),
             item: "no_such_item".into(),
+            ..EquippedItem::default()
         }]);
         assert_eq!(gear[0].name, "no_such_item");
         assert!(gear[0].quality.is_none());
@@ -104,6 +105,7 @@ mod tests {
         let gear = resolve_gear(&[EquippedItem {
             slot: "chest".into(),
             item: def.key.into(),
+            ..EquippedItem::default()
         }]);
         assert_eq!(gear[0].name, def.name);
         assert_eq!(gear[0].item_level, Some(def.item_level));

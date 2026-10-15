@@ -622,7 +622,7 @@ pub fn security(endpoints: &RealmEndpoints) -> Outcome {
         endpoints,
         &token,
         "svc_enqueue",
-        &serde_json::json!([account, "fake-character", "Cheater", "warrior", 60, 99999, "{}", "graveyard_crypt", {"tank": []}, "graveyard_crypt", 1]),
+        &serde_json::json!([account, "fake-character", "Cheater", "warrior", 60, 99999, "{}", "graveyard_crypt", {"tank": []}, "graveyard_crypt", 1, "[]", 0]),
     );
     check(
         module_refused(status),

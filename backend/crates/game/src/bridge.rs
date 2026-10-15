@@ -357,7 +357,7 @@ mod tests {
         let report = r#"{"party":[{"account_id":"acct","character_name":"Ash","class":"Fire Mage","role":"dps"}],"total_damage":1200,"dps":40.0,"duration_seconds":30.0,"boss_kill_seconds":12.5,"abilities":[{"ability":"Firebolt","damage":1200,"casts":10}]}"#;
         let body = serde_json::json!([[
             "12:acct", "acct", "char", "graveyard_crypt", 12, true, 5_000_000, 250, [1], 3, true,
-            4, "[]", report
+            4, "[]", report, 0
         ]])
         .to_string();
         let rows: Vec<PendingRow> = serde_json::from_str(&body).unwrap();
